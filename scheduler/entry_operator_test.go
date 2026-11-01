@@ -248,7 +248,7 @@ func (f *entryOperatorFixture) assertUnchanged(msg string, cashBefore float64) {
 	}
 }
 
-func TestEntryOperatorReleasesAVerifiedAbsentAttemptExactlyOnce(t *testing.T) {
+func entryOperatorCaseEntryOperatorReleasesAVerifiedAbsentAttemptExactlyOnce(t *testing.T) {
 	for _, provider := range []string{"hyperliquid", "okx-spot", "okx-swap"} {
 		t.Run(provider, func(t *testing.T) {
 			f := newEntryOperatorFixture(t, provider)
@@ -326,7 +326,7 @@ func TestEntryOperatorReleasesAVerifiedAbsentAttemptExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestEntryOperatorQueriesFillHistoryOnlyThroughTheReleaseDeadline(t *testing.T) {
+func entryOperatorCaseEntryOperatorQueriesFillHistoryOnlyThroughTheReleaseDeadline(t *testing.T) {
 	for _, provider := range []string{"hyperliquid", "okx-swap"} {
 		t.Run(provider, func(t *testing.T) {
 			f := newEntryOperatorFixture(t, provider)
@@ -379,7 +379,7 @@ func TestEntryOperatorQueriesFillHistoryOnlyThroughTheReleaseDeadline(t *testing
 	}
 }
 
-func TestEntryRecoveryAndCommandHoldOnAClientIDFillBeforeTheReleaseDeadline(t *testing.T) {
+func entryOperatorCaseEntryRecoveryAndCommandHoldOnAClientIDFillBeforeTheReleaseDeadline(t *testing.T) {
 	f := newEntryOperatorFixture(t, "hyperliquid")
 	f.backdate()
 	in := f.intent()
@@ -405,7 +405,7 @@ func TestEntryRecoveryAndCommandHoldOnAClientIDFillBeforeTheReleaseDeadline(t *t
 	f.assertUnchanged(msg, cashBefore)
 }
 
-func TestEntryRecoveryOKXFillHistoryFailureOnlyBlocksTheRelease(t *testing.T) {
+func entryOperatorCaseEntryRecoveryOKXFillHistoryFailureOnlyBlocksTheRelease(t *testing.T) {
 	failed := func() *entryFillCoverage {
 		return &entryFillCoverage{Complete: false, Reason: "the fill history query failed: OKX fills query failed: {'code': '50011'}", Source: "trade/fills"}
 	}
@@ -463,7 +463,7 @@ func TestEntryRecoveryOKXFillHistoryFailureOnlyBlocksTheRelease(t *testing.T) {
 	})
 }
 
-func TestEntryOperatorAuthorizationAndOwnershipRefuseBeforeMutation(t *testing.T) {
+func entryOperatorCaseEntryOperatorAuthorizationAndOwnershipRefuseBeforeMutation(t *testing.T) {
 	paper := entryTestHLStrategy("hl-paper", "paper")
 	other := entryTestHLStrategy("hl-other", "live")
 	f := newEntryOperatorFixture(t, "hyperliquid", paper, other)
@@ -511,7 +511,7 @@ func TestEntryOperatorAuthorizationAndOwnershipRefuseBeforeMutation(t *testing.T
 	}
 }
 
-func TestEntryOperatorRefusesEveryUnprovenOrContradictedState(t *testing.T) {
+func entryOperatorCaseEntryOperatorRefusesEveryUnprovenOrContradictedState(t *testing.T) {
 	found := func(r *entryRecoveryResult) *entryRecoveryResult {
 		r.Order = &entryRecoveryOrder{Found: true, Status: "canceled", OrderID: "901", Terminal: true, Coverage: entryTestCoverage()}
 		return r
@@ -655,7 +655,7 @@ func TestEntryOperatorRefusesEveryUnprovenOrContradictedState(t *testing.T) {
 	}
 }
 
-func TestEntryOperatorRefusesSettlingAndReservedAttempts(t *testing.T) {
+func entryOperatorCaseEntryOperatorRefusesSettlingAndReservedAttempts(t *testing.T) {
 	f := newEntryOperatorFixture(t, "hyperliquid")
 	f.backdate()
 	partial := &entryRecoveryResult{Platform: "hyperliquid", Account: entryTestHLAccountKey,
@@ -730,7 +730,7 @@ func waitEntered(t *testing.T, b *blockingVenue) {
 	}
 }
 
-func TestEntryOperatorSerializesWithRecoveryAndOtherRequests(t *testing.T) {
+func entryOperatorCaseEntryOperatorSerializesWithRecoveryAndOtherRequests(t *testing.T) {
 	filled := func() *entryRecoveryResult {
 		return &entryRecoveryResult{Platform: "hyperliquid", Account: entryTestHLAccountKey,
 			Order: &entryRecoveryOrder{Found: true, Status: "filled", OrderID: "901", OrigSz: 0.4, ExecutedSz: 0.4, Terminal: true, FillQty: 0.4, FillNotional: 40.2, FillFee: 0.018, FillCount: 2, FillAvgPx: 100.5, FillsComplete: true, Coverage: entryTestCoverage()},
@@ -909,7 +909,7 @@ func TestEntryOperatorSerializesWithRecoveryAndOtherRequests(t *testing.T) {
 	})
 }
 
-func TestEntryOperatorFailedCommitKeepsTheHoldAndRetrySucceeds(t *testing.T) {
+func entryOperatorCaseEntryOperatorFailedCommitKeepsTheHoldAndRetrySucceeds(t *testing.T) {
 	f := newEntryOperatorFixture(t, "okx-spot")
 	f.backdate()
 	q := fixedVenue(entryAbsentOKX("spot"), nil)
@@ -932,7 +932,7 @@ func TestEntryOperatorFailedCommitKeepsTheHoldAndRetrySucceeds(t *testing.T) {
 	}
 }
 
-func TestEntryRecoveryKeepsProvenExecutionAgainstLaterEmptyResults(t *testing.T) {
+func entryOperatorCaseEntryRecoveryKeepsProvenExecutionAgainstLaterEmptyResults(t *testing.T) {
 	t.Run("a booking conflict saves the proven fill before holding", func(t *testing.T) {
 		useEntryTestHLAccount(t)
 		env, sc := entryTestUnknownScaleIn(t)
@@ -1001,4 +1001,21 @@ func TestEntryRecoveryKeepsProvenExecutionAgainstLaterEmptyResults(t *testing.T)
 			})
 		}
 	})
+}
+
+func TestEntryOperatorReleaseAndRecovery(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"ReleasesAVerifiedAbsentAttemptExactlyOnce", entryOperatorCaseEntryOperatorReleasesAVerifiedAbsentAttemptExactlyOnce},
+		{"QueriesFillHistoryOnlyThroughTheReleaseDeadline", entryOperatorCaseEntryOperatorQueriesFillHistoryOnlyThroughTheReleaseDeadline},
+		{"RecoveryAndCommandHoldOnAClientIDFillBeforeTheReleaseDeadline", entryOperatorCaseEntryRecoveryAndCommandHoldOnAClientIDFillBeforeTheReleaseDeadline},
+		{"RecoveryOKXFillHistoryFailureOnlyBlocksTheRelease", entryOperatorCaseEntryRecoveryOKXFillHistoryFailureOnlyBlocksTheRelease},
+		{"AuthorizationAndOwnershipRefuseBeforeMutation", entryOperatorCaseEntryOperatorAuthorizationAndOwnershipRefuseBeforeMutation},
+		{"RefusesEveryUnprovenOrContradictedState", entryOperatorCaseEntryOperatorRefusesEveryUnprovenOrContradictedState},
+		{"RefusesSettlingAndReservedAttempts", entryOperatorCaseEntryOperatorRefusesSettlingAndReservedAttempts},
+		{"SerializesWithRecoveryAndOtherRequests", entryOperatorCaseEntryOperatorSerializesWithRecoveryAndOtherRequests},
+		{"FailedCommitKeepsTheHoldAndRetrySucceeds", entryOperatorCaseEntryOperatorFailedCommitKeepsTheHoldAndRetrySucceeds},
+		{"RecoveryKeepsProvenExecutionAgainstLaterEmptyResults", entryOperatorCaseEntryRecoveryKeepsProvenExecutionAgainstLaterEmptyResults},
+	} {
+		t.Run(tc.name, tc.run)
+	}
 }

@@ -126,243 +126,242 @@ func useHLInfoURLs(t *testing.T, mainnet, testnet string) {
 	t.Setenv("HYPERLIQUID_TESTNET", "")
 }
 
-func TestHLLotMetadataFetchesThroughTheBudgetedTransport(t *testing.T) {
-	mainSrv := newHLMetaServer(t, hlMetaBody(`{"name":"ETH","szDecimals":4}`, `{"name":"DOGE","szDecimals":0}`, `{"name":"BTC","szDecimals":5}`))
-	testSrv := newHLMetaServer(t, hlMetaBody(`{"name":"ETH","szDecimals":3}`))
-	useHLInfoURLs(t, mainSrv.srv.URL, testSrv.srv.URL)
-	ledger := newFeedRequestLedger(nil, false, nil)
-	c, clock, lines := newHLLotTestCache(t, withFeedLedger(context.Background(), ledger))
+func TestHLLotMetadataCache(t *testing.T) {
+	t.Run("FetchesThroughTheBudgetedTransport", func(t *testing.T) {
+		mainSrv := newHLMetaServer(t, hlMetaBody(`{"name":"ETH","szDecimals":4}`, `{"name":"DOGE","szDecimals":0}`, `{"name":"BTC","szDecimals":5}`))
+		testSrv := newHLMetaServer(t, hlMetaBody(`{"name":"ETH","szDecimals":3}`))
+		useHLInfoURLs(t, mainSrv.srv.URL, testSrv.srv.URL)
+		ledger := newFeedRequestLedger(nil, false, nil)
+		c, clock, lines := newHLLotTestCache(t, withFeedLedger(context.Background(), ledger))
 
-	if got := c.Lookup("ETH"); got.Known || !strings.Contains(got.Reason, "no venue metadata fetched yet") {
-		t.Fatalf("cold lookup = %+v, want unknown before any fetch", got)
-	}
-	c.Ensure("ETH")
-	if n := mainSrv.requests.Load(); n != 1 {
-		t.Fatalf("mainnet requests = %d, want 1", n)
-	}
-	totals := ledger.snapshot()
-	if totals.ByReason[string(feedRestLotMeta)] != 1 || totals.ByType["meta"] != 1 {
-		t.Fatalf("ledger totals = %+v, want one meta request charged as %s", totals, feedRestLotMeta)
-	}
-	for coin, want := range map[string]int{"ETH": 4, "DOGE": 0, "BTC": 5} {
-		if got := c.Lookup(coin); !got.Known || got.SzDecimals != want {
-			t.Fatalf("Lookup(%s) = %+v, want szDecimals %d", coin, got, want)
+		if got := c.Lookup("ETH"); got.Known || !strings.Contains(got.Reason, "no venue metadata fetched yet") {
+			t.Fatalf("cold lookup = %+v, want unknown before any fetch", got)
 		}
-	}
-	for _, coin := range []string{"eth", "ETH-PERP", "SOL"} {
-		if got := c.Lookup(coin); got.Known || got.Reason != "coin absent from the venue perps universe" {
-			t.Fatalf("Lookup(%s) = %+v, want an exact-coin miss", coin, got)
-		}
-	}
-
-	c.Ensure("ETH")
-	if n := mainSrv.requests.Load(); n != 1 {
-		t.Fatalf("fresh snapshot refetched: requests = %d", n)
-	}
-
-	t.Setenv("HYPERLIQUID_TESTNET", "1")
-	if got := c.Lookup("ETH"); got.Known {
-		t.Fatalf("testnet lookup used the mainnet snapshot: %+v", got)
-	}
-	c.Ensure("ETH")
-	if got := c.Lookup("ETH"); !got.Known || got.SzDecimals != 3 || got.Endpoint != testSrv.srv.URL {
-		t.Fatalf("testnet lookup = %+v, want szDecimals 3 from the testnet endpoint", got)
-	}
-	t.Setenv("HYPERLIQUID_TESTNET", "")
-	if got := c.Lookup("ETH"); !got.Known || got.SzDecimals != 4 {
-		t.Fatalf("mainnet lookup after the testnet fetch = %+v, want 4", got)
-	}
-
-	clock.Advance(hlLotMetadataRefreshAfter + time.Minute)
-	c.Ensure("ETH")
-	if n := mainSrv.requests.Load(); n != 2 {
-		t.Fatalf("requests after the refresh age = %d, want 2", n)
-	}
-
-	mainSrv.set(http.StatusInternalServerError, "down")
-	clock.Advance(hlLotMetadataExpiry)
-	c.Ensure("ETH")
-	if n := mainSrv.requests.Load(); n != 3 {
-		t.Fatalf("requests after expiry = %d, want 3", n)
-	}
-	*lines = nil
-	for i := 0; i < 3; i++ {
-		if got := c.Lookup("ETH"); got.Known || !strings.Contains(got.Reason, "venue metadata expired") || !strings.Contains(got.Reason, "http 500") {
-			t.Fatalf("expired lookup = %+v, want an expired reason that names the failed refresh", got)
-		}
-	}
-	if len(*lines) != 1 || !strings.Contains((*lines)[0], "ETH lot size unavailable") {
-		t.Fatalf("outage lines = %q, want exactly one", *lines)
-	}
-
-	c.Ensure("ETH")
-	if n := mainSrv.requests.Load(); n != 3 {
-		t.Fatalf("retry before the backoff elapsed: requests = %d", n)
-	}
-	clock.Advance(hlLotMetadataRetryInitial)
-	c.Ensure("ETH")
-	if n := mainSrv.requests.Load(); n != 4 {
-		t.Fatalf("requests after the first backoff = %d, want 4", n)
-	}
-	clock.Advance(hlLotMetadataRetryInitial)
-	c.Ensure("ETH")
-	if n := mainSrv.requests.Load(); n != 4 {
-		t.Fatalf("second backoff did not double: requests = %d", n)
-	}
-	for i := 0; i < 12; i++ {
-		clock.Advance(hlLotMetadataRetryMax)
 		c.Ensure("ETH")
-	}
-	if wait := c.retryWait[mainSrv.srv.URL]; wait != hlLotMetadataRetryMax {
-		t.Fatalf("retry wait = %s, want capped at %s", wait, hlLotMetadataRetryMax)
-	}
+		if n := mainSrv.requests.Load(); n != 1 {
+			t.Fatalf("mainnet requests = %d, want 1", n)
+		}
+		totals := ledger.snapshot()
+		if totals.ByReason[string(feedRestLotMeta)] != 1 || totals.ByType["meta"] != 1 {
+			t.Fatalf("ledger totals = %+v, want one meta request charged as %s", totals, feedRestLotMeta)
+		}
+		for coin, want := range map[string]int{"ETH": 4, "DOGE": 0, "BTC": 5} {
+			if got := c.Lookup(coin); !got.Known || got.SzDecimals != want {
+				t.Fatalf("Lookup(%s) = %+v, want szDecimals %d", coin, got, want)
+			}
+		}
+		for _, coin := range []string{"eth", "ETH-PERP", "SOL"} {
+			if got := c.Lookup(coin); got.Known || got.Reason != "coin absent from the venue perps universe" {
+				t.Fatalf("Lookup(%s) = %+v, want an exact-coin miss", coin, got)
+			}
+		}
 
-	mainSrv.set(http.StatusOK, hlMetaBody(`{"name":"ETH","szDecimals":4}`))
-	clock.Advance(hlLotMetadataRetryMax)
-	c.Ensure("ETH")
-	*lines = nil
-	if got := c.Lookup("ETH"); !got.Known || got.SzDecimals != 4 {
-		t.Fatalf("lookup after recovery = %+v", got)
-	}
-	if len(*lines) != 1 || !strings.Contains((*lines)[0], "restored") {
-		t.Fatalf("recovery lines = %q, want one restored line", *lines)
-	}
-	c.Lookup("ETH")
-	if len(*lines) != 1 {
-		t.Fatalf("a known lookup logged again: %q", *lines)
-	}
+		c.Ensure("ETH")
+		if n := mainSrv.requests.Load(); n != 1 {
+			t.Fatalf("fresh snapshot refetched: requests = %d", n)
+		}
 
-	mainSrv.set(http.StatusOK, hlMetaBody(`{"name":"BTC","szDecimals":5}`))
-	clock.Advance(hlLotMetadataRefreshAfter + time.Minute)
-	c.Ensure("ETH")
-	*lines = nil
-	c.Lookup("ETH")
-	c.Lookup("ETH")
-	if len(*lines) != 1 || !strings.Contains((*lines)[0], "coin absent") {
-		t.Fatalf("a new outage after recovery logged %q, want one new line", *lines)
-	}
-}
+		t.Setenv("HYPERLIQUID_TESTNET", "1")
+		if got := c.Lookup("ETH"); got.Known {
+			t.Fatalf("testnet lookup used the mainnet snapshot: %+v", got)
+		}
+		c.Ensure("ETH")
+		if got := c.Lookup("ETH"); !got.Known || got.SzDecimals != 3 || got.Endpoint != testSrv.srv.URL {
+			t.Fatalf("testnet lookup = %+v, want szDecimals 3 from the testnet endpoint", got)
+		}
+		t.Setenv("HYPERLIQUID_TESTNET", "")
+		if got := c.Lookup("ETH"); !got.Known || got.SzDecimals != 4 {
+			t.Fatalf("mainnet lookup after the testnet fetch = %+v, want 4", got)
+		}
 
-func TestHLLotMetadataRefreshIsSharedAndRunsOutsideTheSchedulerLock(t *testing.T) {
-	srv := newHLMetaServer(t, hlMetaBody(`{"name":"ETH","szDecimals":4}`))
-	useHLInfoURLs(t, srv.srv.URL, "http://127.0.0.1:1")
-	c, _, _ := newHLLotTestCache(t, nil)
-	srv.mu.Lock()
-	srv.gate = make(chan struct{})
-	srv.entered = make(chan struct{}, 16)
-	srv.mu.Unlock()
+		clock.Advance(hlLotMetadataRefreshAfter + time.Minute)
+		c.Ensure("ETH")
+		if n := mainSrv.requests.Load(); n != 2 {
+			t.Fatalf("requests after the refresh age = %d, want 2", n)
+		}
 
-	var schedulerMu sync.RWMutex
-	schedulerMu.Lock()
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		mainSrv.set(http.StatusInternalServerError, "down")
+		clock.Advance(hlLotMetadataExpiry)
+		c.Ensure("ETH")
+		if n := mainSrv.requests.Load(); n != 3 {
+			t.Fatalf("requests after expiry = %d, want 3", n)
+		}
+		*lines = nil
+		for i := 0; i < 3; i++ {
+			if got := c.Lookup("ETH"); got.Known || !strings.Contains(got.Reason, "venue metadata expired") || !strings.Contains(got.Reason, "http 500") {
+				t.Fatalf("expired lookup = %+v, want an expired reason that names the failed refresh", got)
+			}
+		}
+		if len(*lines) != 1 || !strings.Contains((*lines)[0], "ETH lot size unavailable") {
+			t.Fatalf("outage lines = %q, want exactly one", *lines)
+		}
+
+		c.Ensure("ETH")
+		if n := mainSrv.requests.Load(); n != 3 {
+			t.Fatalf("retry before the backoff elapsed: requests = %d", n)
+		}
+		clock.Advance(hlLotMetadataRetryInitial)
+		c.Ensure("ETH")
+		if n := mainSrv.requests.Load(); n != 4 {
+			t.Fatalf("requests after the first backoff = %d, want 4", n)
+		}
+		clock.Advance(hlLotMetadataRetryInitial)
+		c.Ensure("ETH")
+		if n := mainSrv.requests.Load(); n != 4 {
+			t.Fatalf("second backoff did not double: requests = %d", n)
+		}
+		for i := 0; i < 12; i++ {
+			clock.Advance(hlLotMetadataRetryMax)
 			c.Ensure("ETH")
-		}()
-	}
-	select {
-	case <-srv.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no refresh reached the venue")
-	}
-	time.Sleep(50 * time.Millisecond)
-	close(srv.gate)
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("refresh waited on the scheduler lock")
-	}
-	schedulerMu.Unlock()
-	if n := srv.requests.Load(); n != 1 {
-		t.Fatalf("concurrent refreshes sent %d requests, want 1", n)
-	}
-	if got := c.Lookup("ETH"); !got.Known || got.SzDecimals != 4 {
-		t.Fatalf("lookup after the shared refresh = %+v", got)
-	}
-}
+		}
+		if wait := c.retryWait[mainSrv.srv.URL]; wait != hlLotMetadataRetryMax {
+			t.Fatalf("retry wait = %s, want capped at %s", wait, hlLotMetadataRetryMax)
+		}
 
-func TestHLLotMetadataLocalLedgerBoundsRequests(t *testing.T) {
-	srv := newHLMetaServer(t, "not json")
-	useHLInfoURLs(t, srv.srv.URL, "http://127.0.0.1:1")
-	c, clock, _ := newHLLotTestCache(t, nil)
-	ledger := feedLedgerFrom(c.baseCtx)
-	if ledger == nil || !ledger.enforce || ledger.perMinute != hlLotMetadataLedgerPerMinute {
-		t.Fatalf("standalone cache ledger = %+v, want an enforced local ledger", ledger)
-	}
-	for i := 0; i < hlLotMetadataLedgerPerMinute+2; i++ {
-		c.Ensure("ETH")
+		mainSrv.set(http.StatusOK, hlMetaBody(`{"name":"ETH","szDecimals":4}`))
 		clock.Advance(hlLotMetadataRetryMax)
-	}
-	if n := srv.requests.Load(); n != hlLotMetadataLedgerPerMinute {
-		t.Fatalf("requests = %d, want the %d-per-minute local budget", n, hlLotMetadataLedgerPerMinute)
-	}
-	if got := ledger.status(); got.Totals.Refused != 2 {
-		t.Fatalf("refused = %d, want 2", got.Totals.Refused)
-	}
-	if !strings.Contains(c.lastErr[srv.srv.URL], errFeedBudgetExhausted.Error()) {
-		t.Fatalf("last refresh error = %q, want the budget refusal", c.lastErr[srv.srv.URL])
-	}
-	if got := c.Lookup("ETH"); got.Known {
-		t.Fatalf("malformed response produced a lot size: %+v", got)
-	}
-}
-
-func TestHLLotMetadataParsesOnlyValidLotSizes(t *testing.T) {
-	coins, err := parseHLLotMetadata([]byte(hlMetaBody(
-		`{"name":"ZERO","szDecimals":0}`,
-		`{"name":"OK","szDecimals":5}`,
-		`{"name":"ABSENT"}`,
-		`{"name":"NULL","szDecimals":null}`,
-		`{"name":"BOOL","szDecimals":true}`,
-		`{"name":"FRAC","szDecimals":4.5}`,
-		`{"name":"FLOAT","szDecimals":4.0}`,
-		`{"name":"NEG","szDecimals":-1}`,
-		`{"name":"STR","szDecimals":"4"}`,
-		`{"name":"BIG","szDecimals":13}`,
-		`{"name":"DUP","szDecimals":2}`,
-		`{"name":"DUP","szDecimals":2}`,
-		`{"szDecimals":3}`,
-	)))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if e := coins["ZERO"]; e.Problem != "" || e.SzDecimals != 0 {
-		t.Fatalf("valid zero = %+v", e)
-	}
-	if e := coins["OK"]; e.Problem != "" || e.SzDecimals != 5 {
-		t.Fatalf("valid five = %+v", e)
-	}
-	for _, name := range []string{"ABSENT", "NULL", "BOOL", "FRAC", "FLOAT", "NEG", "STR", "BIG", "DUP"} {
-		if e, ok := coins[name]; !ok || e.Problem == "" {
-			t.Fatalf("%s = %+v (present %v), want a refused entry", name, e, ok)
+		c.Ensure("ETH")
+		*lines = nil
+		if got := c.Lookup("ETH"); !got.Known || got.SzDecimals != 4 {
+			t.Fatalf("lookup after recovery = %+v", got)
 		}
-	}
-	if len(coins) != 11 {
-		t.Fatalf("parsed %d coins, want 11 named entries", len(coins))
-	}
-	for name, body := range map[string]string{
-		"not json":       "{",
-		"no universe":    `{"marginTables":[]}`,
-		"empty universe": `{"universe":[]}`,
-		"null universe":  `{"universe":null}`,
-		"wrong shape":    `{"universe":{"ETH":4}}`,
-	} {
-		if _, err := parseHLLotMetadata([]byte(body)); err == nil {
-			t.Fatalf("%s parsed without error", name)
+		if len(*lines) != 1 || !strings.Contains((*lines)[0], "restored") {
+			t.Fatalf("recovery lines = %q, want one restored line", *lines)
 		}
-	}
+		c.Lookup("ETH")
+		if len(*lines) != 1 {
+			t.Fatalf("a known lookup logged again: %q", *lines)
+		}
 
-	big := newHLMetaServer(t, `{"universe":[`+strings.Repeat(" ", hlLotMetadataMaxResponseBytes)+`]}`)
-	if _, err := fetchHLLotMetadataRaw(context.Background(), big.srv.URL); err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("oversized response err = %v, want a size refusal", err)
-	}
+		mainSrv.set(http.StatusOK, hlMetaBody(`{"name":"BTC","szDecimals":5}`))
+		clock.Advance(hlLotMetadataRefreshAfter + time.Minute)
+		c.Ensure("ETH")
+		*lines = nil
+		c.Lookup("ETH")
+		c.Lookup("ETH")
+		if len(*lines) != 1 || !strings.Contains((*lines)[0], "coin absent") {
+			t.Fatalf("a new outage after recovery logged %q, want one new line", *lines)
+		}
+	})
+	t.Run("RefreshIsSharedAndRunsOutsideTheSchedulerLock", func(t *testing.T) {
+		srv := newHLMetaServer(t, hlMetaBody(`{"name":"ETH","szDecimals":4}`))
+		useHLInfoURLs(t, srv.srv.URL, "http://127.0.0.1:1")
+		c, _, _ := newHLLotTestCache(t, nil)
+		srv.mu.Lock()
+		srv.gate = make(chan struct{})
+		srv.entered = make(chan struct{}, 16)
+		srv.mu.Unlock()
+
+		var schedulerMu sync.RWMutex
+		schedulerMu.Lock()
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				c.Ensure("ETH")
+			}()
+		}
+		select {
+		case <-srv.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("no refresh reached the venue")
+		}
+		time.Sleep(50 * time.Millisecond)
+		close(srv.gate)
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("refresh waited on the scheduler lock")
+		}
+		schedulerMu.Unlock()
+		if n := srv.requests.Load(); n != 1 {
+			t.Fatalf("concurrent refreshes sent %d requests, want 1", n)
+		}
+		if got := c.Lookup("ETH"); !got.Known || got.SzDecimals != 4 {
+			t.Fatalf("lookup after the shared refresh = %+v", got)
+		}
+	})
+	t.Run("LocalLedgerBoundsRequests", func(t *testing.T) {
+		srv := newHLMetaServer(t, "not json")
+		useHLInfoURLs(t, srv.srv.URL, "http://127.0.0.1:1")
+		c, clock, _ := newHLLotTestCache(t, nil)
+		ledger := feedLedgerFrom(c.baseCtx)
+		if ledger == nil || !ledger.enforce || ledger.perMinute != hlLotMetadataLedgerPerMinute {
+			t.Fatalf("standalone cache ledger = %+v, want an enforced local ledger", ledger)
+		}
+		for i := 0; i < hlLotMetadataLedgerPerMinute+2; i++ {
+			c.Ensure("ETH")
+			clock.Advance(hlLotMetadataRetryMax)
+		}
+		if n := srv.requests.Load(); n != hlLotMetadataLedgerPerMinute {
+			t.Fatalf("requests = %d, want the %d-per-minute local budget", n, hlLotMetadataLedgerPerMinute)
+		}
+		if got := ledger.status(); got.Totals.Refused != 2 {
+			t.Fatalf("refused = %d, want 2", got.Totals.Refused)
+		}
+		if !strings.Contains(c.lastErr[srv.srv.URL], errFeedBudgetExhausted.Error()) {
+			t.Fatalf("last refresh error = %q, want the budget refusal", c.lastErr[srv.srv.URL])
+		}
+		if got := c.Lookup("ETH"); got.Known {
+			t.Fatalf("malformed response produced a lot size: %+v", got)
+		}
+	})
+	t.Run("ParsesOnlyValidLotSizes", func(t *testing.T) {
+		coins, err := parseHLLotMetadata([]byte(hlMetaBody(
+			`{"name":"ZERO","szDecimals":0}`,
+			`{"name":"OK","szDecimals":5}`,
+			`{"name":"ABSENT"}`,
+			`{"name":"NULL","szDecimals":null}`,
+			`{"name":"BOOL","szDecimals":true}`,
+			`{"name":"FRAC","szDecimals":4.5}`,
+			`{"name":"FLOAT","szDecimals":4.0}`,
+			`{"name":"NEG","szDecimals":-1}`,
+			`{"name":"STR","szDecimals":"4"}`,
+			`{"name":"BIG","szDecimals":13}`,
+			`{"name":"DUP","szDecimals":2}`,
+			`{"name":"DUP","szDecimals":2}`,
+			`{"szDecimals":3}`,
+		)))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if e := coins["ZERO"]; e.Problem != "" || e.SzDecimals != 0 {
+			t.Fatalf("valid zero = %+v", e)
+		}
+		if e := coins["OK"]; e.Problem != "" || e.SzDecimals != 5 {
+			t.Fatalf("valid five = %+v", e)
+		}
+		for _, name := range []string{"ABSENT", "NULL", "BOOL", "FRAC", "FLOAT", "NEG", "STR", "BIG", "DUP"} {
+			if e, ok := coins[name]; !ok || e.Problem == "" {
+				t.Fatalf("%s = %+v (present %v), want a refused entry", name, e, ok)
+			}
+		}
+		if len(coins) != 11 {
+			t.Fatalf("parsed %d coins, want 11 named entries", len(coins))
+		}
+		for name, body := range map[string]string{
+			"not json":       "{",
+			"no universe":    `{"marginTables":[]}`,
+			"empty universe": `{"universe":[]}`,
+			"null universe":  `{"universe":null}`,
+			"wrong shape":    `{"universe":{"ETH":4}}`,
+		} {
+			if _, err := parseHLLotMetadata([]byte(body)); err == nil {
+				t.Fatalf("%s parsed without error", name)
+			}
+		}
+
+		big := newHLMetaServer(t, `{"universe":[`+strings.Repeat(" ", hlLotMetadataMaxResponseBytes)+`]}`)
+		if _, err := fetchHLLotMetadataRaw(context.Background(), big.srv.URL); err == nil || !strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("oversized response err = %v, want a size refusal", err)
+		}
+	})
 }
 
 func TestHLFloorLotSizeMatchesThePythonDecimalFloor(t *testing.T) {

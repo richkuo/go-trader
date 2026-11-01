@@ -14,173 +14,174 @@ import (
 	"time"
 )
 
-func TestBasketConfigLoadAcceptsValidAndRefusesNamedCases(t *testing.T) {
-	cfg := loadBasketTestConfig(t, nil)
-	if len(cfg.Baskets) != 1 || len(basketMemberConfigs(cfg, cfg.Baskets[0])) != 4 {
-		t.Fatalf("valid basket did not load: %+v", cfg.Baskets)
-	}
-	member := func(id string, edit func(sc map[string]interface{})) func(root map[string]interface{}) {
-		return func(root map[string]interface{}) { edit(basketTestStrategy(root, id)) }
-	}
-	basket := func(edit func(b map[string]interface{})) func(root map[string]interface{}) {
-		return func(root map[string]interface{}) { edit(basketTestBasket(root)) }
-	}
-	addStrategy := func(sc map[string]interface{}) func(root map[string]interface{}) {
-		return func(root map[string]interface{}) {
-			root["strategies"] = append(root["strategies"].([]interface{}), sc)
+func TestBasketConfigLoadAndReloadRefusals(t *testing.T) {
+	t.Run("load_accepts_valid_and_refuses_named_cases", func(t *testing.T) {
+		cfg := loadBasketTestConfig(t, nil)
+		if len(cfg.Baskets) != 1 || len(basketMemberConfigs(cfg, cfg.Baskets[0])) != 4 {
+			t.Fatalf("valid basket did not load: %+v", cfg.Baskets)
 		}
-	}
-	plain := func(id, positional, coin string) map[string]interface{} {
-		return map[string]interface{}{
-			"id": id, "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py",
-			"args": []interface{}{positional, coin, "1h", "--mode=paper"}, "capital": 1000,
+		member := func(id string, edit func(sc map[string]interface{})) func(root map[string]interface{}) {
+			return func(root map[string]interface{}) { edit(basketTestStrategy(root, id)) }
 		}
-	}
-	cases := []struct {
-		name   string
-		mutate func(root map[string]interface{})
-		want   string
-	}{
-		{"duplicate coin", member("hl-bsk-eth", func(sc map[string]interface{}) {
-			sc["args"] = []interface{}{"basket_member", "BTC", "1h", "--mode=paper"}
-		}), "duplicate coin BTC"},
-		{"non-member holder", addStrategy(plain("hl-other-btc", "rsi", "BTC")), "which basket \"xs-test\" owns exclusively"},
-		{"mixed paper source", func(root map[string]interface{}) {
-			root["paper_sources"] = []interface{}{map[string]interface{}{"id": "alt", "db_file": filepath.Join(t.TempDir(), "alt.db")}}
-			basketTestStrategy(root, "hl-bsk-sol")["paper_source"] = "alt"
-		}, "members span risk partitions"},
-		{"rest feed", func(root map[string]interface{}) { root["market_feed"] = "rest" }, "the rest feed has no sealed deadline snapshot"},
-		{"unknown basket key", basket(func(b map[string]interface{}) { b["rebalance_every"] = 1 }), "unknown field \"rebalance_every\""},
-		{"unknown eligibility key", basket(func(b map[string]interface{}) {
-			b["eligibility"].(map[string]interface{})["sources"] = "x"
-		}), "unknown field \"sources\" in eligibility block"},
-		{"unknown listing key", basket(func(b map[string]interface{}) {
-			b["eligibility"].(map[string]interface{})["listings"].(map[string]interface{})["BTC"].(map[string]interface{})["listed"] = "x"
-		}), "unknown field \"listed\" in eligibility.listings[BTC]"},
-		{"unknown ranker param", basket(func(b map[string]interface{}) { b["params"].(map[string]interface{})["lookback"] = 3 }), "unknown field \"lookback\" in params"},
-		{"ranker as open strategy", addStrategy(func() map[string]interface{} {
-			sc := plain("hl-open-doge", "rsi", "DOGE")
-			sc["open_strategy"] = map[string]interface{}{"name": "basket_scripted_fixture"}
-			return sc
-		}()), "open strategy \"basket_scripted_fixture\" is a basket evaluator"},
-		{"ranker as positional", addStrategy(plain("hl-pos-doge", "basket_scripted_fixture", "DOGE")), "positional strategy \"basket_scripted_fixture\" is a basket evaluator"},
-		{"ranker as close fallback", addStrategy(func() map[string]interface{} {
-			sc := plain("hl-close-doge", "rsi", "DOGE")
-			sc["close_strategy"] = map[string]interface{}{"name": "basket_scripted_fixture"}
-			return sc
-		}()), "close-fallback strategy \"basket_scripted_fixture\" is a basket evaluator"},
-		{"momentum ranker as open strategy", addStrategy(func() map[string]interface{} {
-			sc := plain("hl-open-doge", "rsi", "DOGE")
-			sc["open_strategy"] = map[string]interface{}{"name": "cross_sectional_momentum"}
-			return sc
-		}()), "open strategy \"cross_sectional_momentum\" is a basket evaluator"},
-		{"momentum ranker as positional", addStrategy(plain("hl-pos-doge", "cross_sectional_momentum", "DOGE")), "positional strategy \"cross_sectional_momentum\" is a basket evaluator"},
-		{"momentum ranker as close fallback", addStrategy(func() map[string]interface{} {
-			sc := plain("hl-close-doge", "rsi", "DOGE")
-			sc["close_strategy"] = map[string]interface{}{"name": "cross_sectional_momentum"}
-			return sc
-		}()), "close-fallback strategy \"cross_sectional_momentum\" is a basket evaluator"},
-		{"momentum ranker param outside its declared keys", basket(func(b map[string]interface{}) {
-			b["ranker"] = "cross_sectional_momentum"
-			b["params"] = map[string]interface{}{"gross_budget_usd": 4000}
-		}), "unknown field \"gross_budget_usd\" in params for ranker cross_sectional_momentum"},
-		{"reversal ranker as open strategy", addStrategy(func() map[string]interface{} {
-			sc := plain("hl-open-doge", "rsi", "DOGE")
-			sc["open_strategy"] = map[string]interface{}{"name": "cross_sectional_reversal"}
-			return sc
-		}()), "open strategy \"cross_sectional_reversal\" is a basket evaluator"},
-		{"reversal ranker as positional", addStrategy(plain("hl-pos-doge", "cross_sectional_reversal", "DOGE")), "positional strategy \"cross_sectional_reversal\" is a basket evaluator"},
-		{"reversal ranker as close fallback", addStrategy(func() map[string]interface{} {
-			sc := plain("hl-close-doge", "rsi", "DOGE")
-			sc["close_strategy"] = map[string]interface{}{"name": "cross_sectional_reversal"}
-			return sc
-		}()), "close-fallback strategy \"cross_sectional_reversal\" is a basket evaluator"},
-		{"reversal ranker param outside its declared keys", basket(func(b map[string]interface{}) {
-			b["ranker"] = "cross_sectional_reversal"
-			b["params"] = map[string]interface{}{"max_coin_notional_usd": 1200}
-		}), "unknown field \"max_coin_notional_usd\" in params for ranker cross_sectional_reversal"},
-		{"no closed-bar identity", member("hl-bsk-btc", func(sc map[string]interface{}) { delete(sc, "closed_bar_decisions") }), "requires \"closed_bar_decisions\": true"},
-		{"gross budget", basket(func(b map[string]interface{}) { b["gross_budget_usd"] = 0 }), "gross_budget_usd must be a finite positive number"},
-		{"net above gross", basket(func(b map[string]interface{}) { b["max_transition_net_usd"] = 5000 }), "max_transition_net_usd 5000 exceeds gross_budget_usd"},
-		{"coin cap above gross", basket(func(b map[string]interface{}) { b["max_coin_notional_usd"] = 4001 }), "max_coin_notional_usd 4001 exceeds gross_budget_usd"},
-		{"window", basket(func(b map[string]interface{}) { b["evaluation_window_seconds"] = 86400 }), "evaluation_window_seconds must be positive and shorter"},
-		{"ranker timeout", basket(func(b map[string]interface{}) { b["ranker_timeout_seconds"] = 3600 }), "ranker_timeout_seconds must be in"},
-		{"schedule grid", basket(func(b map[string]interface{}) { b["rebalance_interval_seconds"] = 5400 }), "is not a multiple of member"},
-		{"min population", basket(func(b map[string]interface{}) { b["min_eligible_members"] = 9 }), "min_eligible_members must be in"},
-		{"scale-in route", member("hl-bsk-btc", func(sc map[string]interface{}) { sc["allow_scale_in"] = true }), "must not set allow_scale_in"},
-		{"own open strategy", member("hl-bsk-btc", func(sc map[string]interface{}) {
-			sc["open_strategy"] = map[string]interface{}{"name": "rsi"}
-		}), "must not set open_strategy"},
-		{"inversion route", member("hl-bsk-btc", func(sc map[string]interface{}) { sc["invert_signal"] = true }), "must not set invert_signal"},
-		{"open fallback close", member("hl-bsk-btc", func(sc map[string]interface{}) {
-			sc["close_strategy"] = map[string]interface{}{"name": "rsi"}
-		}), "is an open-strategy close fallback"},
-		{"live member", member("hl-bsk-btc", func(sc map[string]interface{}) {
-			sc["args"] = []interface{}{"basket_member", "BTC", "1h", "--mode=live"}
-		}), "live basket dispatch is refused"},
-		{"live member with acknowledgement", member("hl-bsk-btc", func(sc map[string]interface{}) {
-			sc["args"] = []interface{}{"basket_member", "BTC", "1h", "--mode=live"}
-			sc["allow_no_edge"] = true
-		}), "allow_no_edge: true does not lift this refusal"},
-		{"reserved member token", addStrategy(plain("hl-token-doge", "basket_member", "DOGE")), "is reserved for basket members"},
-		{"member not listed", func(root map[string]interface{}) {
-			b := basketTestBasket(root)
-			b["members"] = b["members"].([]string)[1:]
-		}, "but that basket does not list it as a member"},
-		{"missing listing fact", basket(func(b map[string]interface{}) {
-			delete(b["eligibility"].(map[string]interface{})["listings"].(map[string]interface{}), "SOL")
-		}), "has no listing fact for member coin SOL"},
-		{"unknown ranker", basket(func(b map[string]interface{}) { b["ranker"] = "momentum" }), "is not a registered basket evaluator"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			path := basketTestConfigJSON(t, dir, tc.mutate)
-			_, err := LoadConfigReadOnly(path)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("want refusal containing %q, got %v", tc.want, err)
+		basket := func(edit func(b map[string]interface{})) func(root map[string]interface{}) {
+			return func(root map[string]interface{}) { edit(basketTestBasket(root)) }
+		}
+		addStrategy := func(sc map[string]interface{}) func(root map[string]interface{}) {
+			return func(root map[string]interface{}) {
+				root["strategies"] = append(root["strategies"].([]interface{}), sc)
 			}
-		})
-	}
-}
-
-func TestBasketReloadRefusesEveryBasketChange(t *testing.T) {
-	cur := loadBasketTestConfig(t, nil)
-	for name, mutate := range map[string]func(root map[string]interface{}){
-		"budget":   func(root map[string]interface{}) { basketTestBasket(root)["gross_budget_usd"] = 3000 },
-		"window":   func(root map[string]interface{}) { basketTestBasket(root)["evaluation_window_seconds"] = 900 },
-		"timeout":  func(root map[string]interface{}) { basketTestBasket(root)["ranker_timeout_seconds"] = 30 },
-		"schedule": func(root map[string]interface{}) { basketTestBasket(root)["rebalance_interval_seconds"] = 43200 },
-		"ranker": func(root map[string]interface{}) {
-			basketTestBasket(root)["params"] = map[string]interface{}{"hold": "x"}
-		},
-		"listings": func(root map[string]interface{}) {
-			basketTestBasket(root)["eligibility"].(map[string]interface{})["version"] = "v2"
-		},
-		"remove id": func(root map[string]interface{}) {
-			delete(basketTestStrategy(root, "hl-bsk-sol"), "basket_id")
-			basketTestStrategy(root, "hl-bsk-sol")["args"] = []interface{}{"rsi", "SOL", "1h", "--mode=paper"}
-			delete(basketTestBasket(root)["eligibility"].(map[string]interface{})["listings"].(map[string]interface{}), "SOL")
-			basketTestBasket(root)["members"] = []string{"hl-bsk-avax", "hl-bsk-btc", "hl-bsk-eth"}
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			next := loadBasketTestConfig(t, mutate)
-			next.DBFile, next.LogDir = cur.DBFile, cur.LogDir
-			err := validateHotReloadCompatible(cur, next)
-			if err == nil || !strings.Contains(err.Error(), "restart") {
-				t.Fatalf("want a restart-required refusal, got %v", err)
+		}
+		plain := func(id, positional, coin string) map[string]interface{} {
+			return map[string]interface{}{
+				"id": id, "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py",
+				"args": []interface{}{positional, coin, "1h", "--mode=paper"}, "capital": 1000,
 			}
-			if !strings.Contains(err.Error(), "baskets changed") && !strings.Contains(err.Error(), "basket_id changed") {
-				t.Fatalf("refusal does not name the basket change: %v", err)
-			}
-		})
-	}
-	same := loadBasketTestConfig(t, nil)
-	same.DBFile, same.LogDir = cur.DBFile, cur.LogDir
-	if err := validateHotReloadCompatible(cur, same); err != nil {
-		t.Fatalf("unchanged baskets must reload: %v", err)
-	}
+		}
+		cases := []struct {
+			name   string
+			mutate func(root map[string]interface{})
+			want   string
+		}{
+			{"duplicate coin", member("hl-bsk-eth", func(sc map[string]interface{}) {
+				sc["args"] = []interface{}{"basket_member", "BTC", "1h", "--mode=paper"}
+			}), "duplicate coin BTC"},
+			{"non-member holder", addStrategy(plain("hl-other-btc", "rsi", "BTC")), "which basket \"xs-test\" owns exclusively"},
+			{"mixed paper source", func(root map[string]interface{}) {
+				root["paper_sources"] = []interface{}{map[string]interface{}{"id": "alt", "db_file": filepath.Join(t.TempDir(), "alt.db")}}
+				basketTestStrategy(root, "hl-bsk-sol")["paper_source"] = "alt"
+			}, "members span risk partitions"},
+			{"rest feed", func(root map[string]interface{}) { root["market_feed"] = "rest" }, "the rest feed has no sealed deadline snapshot"},
+			{"unknown basket key", basket(func(b map[string]interface{}) { b["rebalance_every"] = 1 }), "unknown field \"rebalance_every\""},
+			{"unknown eligibility key", basket(func(b map[string]interface{}) {
+				b["eligibility"].(map[string]interface{})["sources"] = "x"
+			}), "unknown field \"sources\" in eligibility block"},
+			{"unknown listing key", basket(func(b map[string]interface{}) {
+				b["eligibility"].(map[string]interface{})["listings"].(map[string]interface{})["BTC"].(map[string]interface{})["listed"] = "x"
+			}), "unknown field \"listed\" in eligibility.listings[BTC]"},
+			{"unknown ranker param", basket(func(b map[string]interface{}) { b["params"].(map[string]interface{})["lookback"] = 3 }), "unknown field \"lookback\" in params"},
+			{"ranker as open strategy", addStrategy(func() map[string]interface{} {
+				sc := plain("hl-open-doge", "rsi", "DOGE")
+				sc["open_strategy"] = map[string]interface{}{"name": "basket_scripted_fixture"}
+				return sc
+			}()), "open strategy \"basket_scripted_fixture\" is a basket evaluator"},
+			{"ranker as positional", addStrategy(plain("hl-pos-doge", "basket_scripted_fixture", "DOGE")), "positional strategy \"basket_scripted_fixture\" is a basket evaluator"},
+			{"ranker as close fallback", addStrategy(func() map[string]interface{} {
+				sc := plain("hl-close-doge", "rsi", "DOGE")
+				sc["close_strategy"] = map[string]interface{}{"name": "basket_scripted_fixture"}
+				return sc
+			}()), "close-fallback strategy \"basket_scripted_fixture\" is a basket evaluator"},
+			{"momentum ranker as open strategy", addStrategy(func() map[string]interface{} {
+				sc := plain("hl-open-doge", "rsi", "DOGE")
+				sc["open_strategy"] = map[string]interface{}{"name": "cross_sectional_momentum"}
+				return sc
+			}()), "open strategy \"cross_sectional_momentum\" is a basket evaluator"},
+			{"momentum ranker as positional", addStrategy(plain("hl-pos-doge", "cross_sectional_momentum", "DOGE")), "positional strategy \"cross_sectional_momentum\" is a basket evaluator"},
+			{"momentum ranker as close fallback", addStrategy(func() map[string]interface{} {
+				sc := plain("hl-close-doge", "rsi", "DOGE")
+				sc["close_strategy"] = map[string]interface{}{"name": "cross_sectional_momentum"}
+				return sc
+			}()), "close-fallback strategy \"cross_sectional_momentum\" is a basket evaluator"},
+			{"momentum ranker param outside its declared keys", basket(func(b map[string]interface{}) {
+				b["ranker"] = "cross_sectional_momentum"
+				b["params"] = map[string]interface{}{"gross_budget_usd": 4000}
+			}), "unknown field \"gross_budget_usd\" in params for ranker cross_sectional_momentum"},
+			{"reversal ranker as open strategy", addStrategy(func() map[string]interface{} {
+				sc := plain("hl-open-doge", "rsi", "DOGE")
+				sc["open_strategy"] = map[string]interface{}{"name": "cross_sectional_reversal"}
+				return sc
+			}()), "open strategy \"cross_sectional_reversal\" is a basket evaluator"},
+			{"reversal ranker as positional", addStrategy(plain("hl-pos-doge", "cross_sectional_reversal", "DOGE")), "positional strategy \"cross_sectional_reversal\" is a basket evaluator"},
+			{"reversal ranker as close fallback", addStrategy(func() map[string]interface{} {
+				sc := plain("hl-close-doge", "rsi", "DOGE")
+				sc["close_strategy"] = map[string]interface{}{"name": "cross_sectional_reversal"}
+				return sc
+			}()), "close-fallback strategy \"cross_sectional_reversal\" is a basket evaluator"},
+			{"reversal ranker param outside its declared keys", basket(func(b map[string]interface{}) {
+				b["ranker"] = "cross_sectional_reversal"
+				b["params"] = map[string]interface{}{"max_coin_notional_usd": 1200}
+			}), "unknown field \"max_coin_notional_usd\" in params for ranker cross_sectional_reversal"},
+			{"no closed-bar identity", member("hl-bsk-btc", func(sc map[string]interface{}) { delete(sc, "closed_bar_decisions") }), "requires \"closed_bar_decisions\": true"},
+			{"gross budget", basket(func(b map[string]interface{}) { b["gross_budget_usd"] = 0 }), "gross_budget_usd must be a finite positive number"},
+			{"net above gross", basket(func(b map[string]interface{}) { b["max_transition_net_usd"] = 5000 }), "max_transition_net_usd 5000 exceeds gross_budget_usd"},
+			{"coin cap above gross", basket(func(b map[string]interface{}) { b["max_coin_notional_usd"] = 4001 }), "max_coin_notional_usd 4001 exceeds gross_budget_usd"},
+			{"window", basket(func(b map[string]interface{}) { b["evaluation_window_seconds"] = 86400 }), "evaluation_window_seconds must be positive and shorter"},
+			{"ranker timeout", basket(func(b map[string]interface{}) { b["ranker_timeout_seconds"] = 3600 }), "ranker_timeout_seconds must be in"},
+			{"schedule grid", basket(func(b map[string]interface{}) { b["rebalance_interval_seconds"] = 5400 }), "is not a multiple of member"},
+			{"min population", basket(func(b map[string]interface{}) { b["min_eligible_members"] = 9 }), "min_eligible_members must be in"},
+			{"scale-in route", member("hl-bsk-btc", func(sc map[string]interface{}) { sc["allow_scale_in"] = true }), "must not set allow_scale_in"},
+			{"own open strategy", member("hl-bsk-btc", func(sc map[string]interface{}) {
+				sc["open_strategy"] = map[string]interface{}{"name": "rsi"}
+			}), "must not set open_strategy"},
+			{"inversion route", member("hl-bsk-btc", func(sc map[string]interface{}) { sc["invert_signal"] = true }), "must not set invert_signal"},
+			{"open fallback close", member("hl-bsk-btc", func(sc map[string]interface{}) {
+				sc["close_strategy"] = map[string]interface{}{"name": "rsi"}
+			}), "is an open-strategy close fallback"},
+			{"live member", member("hl-bsk-btc", func(sc map[string]interface{}) {
+				sc["args"] = []interface{}{"basket_member", "BTC", "1h", "--mode=live"}
+			}), "live basket dispatch is refused"},
+			{"live member with acknowledgement", member("hl-bsk-btc", func(sc map[string]interface{}) {
+				sc["args"] = []interface{}{"basket_member", "BTC", "1h", "--mode=live"}
+				sc["allow_no_edge"] = true
+			}), "allow_no_edge: true does not lift this refusal"},
+			{"reserved member token", addStrategy(plain("hl-token-doge", "basket_member", "DOGE")), "is reserved for basket members"},
+			{"member not listed", func(root map[string]interface{}) {
+				b := basketTestBasket(root)
+				b["members"] = b["members"].([]string)[1:]
+			}, "but that basket does not list it as a member"},
+			{"missing listing fact", basket(func(b map[string]interface{}) {
+				delete(b["eligibility"].(map[string]interface{})["listings"].(map[string]interface{}), "SOL")
+			}), "has no listing fact for member coin SOL"},
+			{"unknown ranker", basket(func(b map[string]interface{}) { b["ranker"] = "momentum" }), "is not a registered basket evaluator"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				path := basketTestConfigJSON(t, dir, tc.mutate)
+				_, err := LoadConfigReadOnly(path)
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("want refusal containing %q, got %v", tc.want, err)
+				}
+			})
+		}
+	})
+	t.Run("reload_refuses_every_basket_change", func(t *testing.T) {
+		cur := loadBasketTestConfig(t, nil)
+		for name, mutate := range map[string]func(root map[string]interface{}){
+			"budget":   func(root map[string]interface{}) { basketTestBasket(root)["gross_budget_usd"] = 3000 },
+			"window":   func(root map[string]interface{}) { basketTestBasket(root)["evaluation_window_seconds"] = 900 },
+			"timeout":  func(root map[string]interface{}) { basketTestBasket(root)["ranker_timeout_seconds"] = 30 },
+			"schedule": func(root map[string]interface{}) { basketTestBasket(root)["rebalance_interval_seconds"] = 43200 },
+			"ranker": func(root map[string]interface{}) {
+				basketTestBasket(root)["params"] = map[string]interface{}{"hold": "x"}
+			},
+			"listings": func(root map[string]interface{}) {
+				basketTestBasket(root)["eligibility"].(map[string]interface{})["version"] = "v2"
+			},
+			"remove id": func(root map[string]interface{}) {
+				delete(basketTestStrategy(root, "hl-bsk-sol"), "basket_id")
+				basketTestStrategy(root, "hl-bsk-sol")["args"] = []interface{}{"rsi", "SOL", "1h", "--mode=paper"}
+				delete(basketTestBasket(root)["eligibility"].(map[string]interface{})["listings"].(map[string]interface{}), "SOL")
+				basketTestBasket(root)["members"] = []string{"hl-bsk-avax", "hl-bsk-btc", "hl-bsk-eth"}
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				next := loadBasketTestConfig(t, mutate)
+				next.DBFile, next.LogDir = cur.DBFile, cur.LogDir
+				err := validateHotReloadCompatible(cur, next)
+				if err == nil || !strings.Contains(err.Error(), "restart") {
+					t.Fatalf("want a restart-required refusal, got %v", err)
+				}
+				if !strings.Contains(err.Error(), "baskets changed") && !strings.Contains(err.Error(), "basket_id changed") {
+					t.Fatalf("refusal does not name the basket change: %v", err)
+				}
+			})
+		}
+		same := loadBasketTestConfig(t, nil)
+		same.DBFile, same.LogDir = cur.DBFile, cur.LogDir
+		if err := validateHotReloadCompatible(cur, same); err != nil {
+			t.Fatalf("unchanged baskets must reload: %v", err)
+		}
+	})
 }
 
 func TestBasketPaperRebalanceEndToEndAndRestart(t *testing.T) {
@@ -396,341 +397,346 @@ func TestBasketStorageInspectionReportsPendingRecovery(t *testing.T) {
 	}
 }
 
-func TestBasketTransitionBoundsHoldEveryReachableState(t *testing.T) {
-	cfg := loadBasketTestConfig(t, nil)
-	venue := newScriptedBasketVenue(false)
-	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
-	bounds := basketBoundsFor(env.rt().Contract)
-	marks := basketTestMarks()
-	venue.onSubmit = func(a *basketAction) {
-		exp := basketExposure{Qty: map[string]float64{}, Mark: marks}
-		for _, m := range basketTestMembers {
-			exp.Qty[m.Coin] = basketPositionSigned(env.state.Strategies[m.ID], m.Coin)
+func TestBasketTransitionBoundsHold(t *testing.T) {
+	t.Run("every_reachable_state", func(t *testing.T) {
+		cfg := loadBasketTestConfig(t, nil)
+		venue := newScriptedBasketVenue(false)
+		env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
+		bounds := basketBoundsFor(env.rt().Contract)
+		marks := basketTestMarks()
+		venue.onSubmit = func(a *basketAction) {
+			exp := basketExposure{Qty: map[string]float64{}, Mark: marks}
+			for _, m := range basketTestMembers {
+				exp.Qty[m.Coin] = basketPositionSigned(env.state.Strategies[m.ID], m.Coin)
+			}
+			basketReachableWithin(t, "submission", exp, *a, bounds)
 		}
-		basketReachableWithin(t, "submission", exp, *a, bounds)
-	}
-	deadline := basketTestDeadline()
-	for h := 0; h < 6; h++ {
-		candle := deadline.Add(time.Duration(h) * time.Hour)
-		snap := basketTestSnapshot(candle, 60, marks, 1)
-		env.cycle(candle.Add(time.Minute), candle, snap, true)
-	}
-	rb := env.rt().Rebalances[deadline.UnixMilli()]
-	if rb == nil || rb.Status != basketRebalanceCompleted {
-		t.Fatalf("rebalance did not complete within six candles under the $400 net bound: %+v", rb)
-	}
-	if len(venue.submits) < 5 {
-		t.Fatalf("the $400 net bound should split the $1000 legs into tranches, saw %d submissions", len(venue.submits))
-	}
-	perCandle := map[string]map[int64]int{}
-	for _, a := range venue.submits {
-		if a.Direction != basketDirectionIncrease {
-			continue
+		deadline := basketTestDeadline()
+		for h := 0; h < 6; h++ {
+			candle := deadline.Add(time.Duration(h) * time.Hour)
+			snap := basketTestSnapshot(candle, 60, marks, 1)
+			env.cycle(candle.Add(time.Minute), candle, snap, true)
 		}
-		if perCandle[a.StrategyID] == nil {
-			perCandle[a.StrategyID] = map[int64]int{}
+		rb := env.rt().Rebalances[deadline.UnixMilli()]
+		if rb == nil || rb.Status != basketRebalanceCompleted {
+			t.Fatalf("rebalance did not complete within six candles under the $400 net bound: %+v", rb)
 		}
-		perCandle[a.StrategyID][a.DecisionBarOpenMs]++
-		if perCandle[a.StrategyID][a.DecisionBarOpenMs] > 1 {
-			t.Fatalf("%s submitted two increases from the candle opened %d", a.StrategyID, a.DecisionBarOpenMs)
+		if len(venue.submits) < 5 {
+			t.Fatalf("the $400 net bound should split the $1000 legs into tranches, saw %d submissions", len(venue.submits))
 		}
-	}
-}
-
-func TestBasketNoLegalSequenceHoldsAndInitialBreachHoldsIncreases(t *testing.T) {
-	start := basketExposure{Qty: map[string]float64{"BTC": 0, "SOL": 0}, Mark: map[string]float64{"BTC": 60000, "SOL": 150}}
-	b := basketBounds{GrossUSD: 1000, NetUSD: 5, PerCoinUSD: 1000}
-	floor := func(coin string, qty float64) float64 {
-		q := hlFloorLotSize(qty, basketTestLots[coin])
-		if q*start.Mark[coin] < hlVenueCloseGateThresholdUSD() {
-			return 0
-		}
-		return q
-	}
-	c := basketCandidate{StrategyID: "hl-bsk-btc", Coin: "BTC", Direction: basketDirectionIncrease, PositionSide: entrySideLong, OrderSide: "buy", FullQty: 0.01}
-	if tr := basketLegalTranche(start, c, b, true, floor); tr.Qty > 0 {
-		t.Fatalf("a $5 net bound admits no lot-sized BTC tranche, got %v", tr)
-	}
-	breached := basketExposure{Qty: map[string]float64{"BTC": 0.02, "SOL": 0}, Mark: start.Mark}
-	inc := basketCandidate{StrategyID: "hl-bsk-sol", Coin: "SOL", Direction: basketDirectionIncrease, PositionSide: entrySideShort, OrderSide: "sell", FullQty: 1}
-	if tr := basketLegalTranche(breached, inc, basketBounds{GrossUSD: 1000, NetUSD: 2000, PerCoinUSD: 1000}, true, floor); tr.Qty > 0 {
-		t.Fatalf("an increase from an exposure already over the gross budget must hold, got %v", tr)
-	}
-	red := basketCandidate{StrategyID: "hl-bsk-btc", Coin: "BTC", Direction: basketDirectionReduce, PositionSide: entrySideLong, OrderSide: "sell", FullQty: 0.02, CurrentQty: 0.02}
-	if tr := basketLegalTranche(breached, red, basketBounds{GrossUSD: 1000, NetUSD: 2000, PerCoinUSD: 1000}, false, floor); !(tr.Qty > 0) {
-		t.Fatalf("a reduction that does not worsen the breach must stay available, got %v", tr)
-	}
-}
-
-func TestBasketInconsistentVenueFillStaysUnresolved(t *testing.T) {
-	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
-		basketTestBasket(root)["max_transition_net_usd"] = 1100
-	})
-	venue := newScriptedBasketVenue(false)
-	venue.outcomes = []basketVenueOutcome{{Outcome: basketVenuePartial, FilledQty: 0}}
-	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
-	deadline := basketTestDeadline()
-	snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
-	env.cycle(deadline.Add(time.Minute), deadline, snap, true)
-	if len(venue.submits) != 1 {
-		t.Fatalf("want exactly one submission before the inconsistent outcome holds, got %d", len(venue.submits))
-	}
-	a := env.rt().pendingAction()
-	if a == nil || a.Status != basketActionUnresolved || a.AppliedQty != 0 {
-		t.Fatalf("a partial outcome with no quantity must stay unresolved and unbooked: %+v", a)
-	}
-	for _, m := range basketTestMembers {
-		if q := env.signedQty(m.ID, m.Coin); q != 0 {
-			t.Fatalf("%s booked %.10g from an inconsistent outcome", m.ID, q)
-		}
-	}
-	env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
-	if len(venue.submits) != 1 {
-		t.Fatalf("no new elective order may be sent while an action is unresolved; submissions %d", len(venue.submits))
-	}
-}
-
-func TestBasketPartialUnknownRejectedAndRestartRecovery(t *testing.T) {
-	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
-		basketTestBasket(root)["max_transition_net_usd"] = 1100
-	})
-	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0x"+strings.Repeat("a", 40))
-	venue := newScriptedBasketVenue(true)
-	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
-	deadline := basketTestDeadline()
-	snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
-	rt := env.rt()
-
-	venue.outcomes = []basketVenueOutcome{{Outcome: basketVenuePartial, FilledQty: -0.5}, {Outcome: basketVenueUnknown, Detail: "disconnect after send"}}
-	env.cycle(deadline.Add(time.Minute), deadline, snap, true)
-	if len(venue.submits) != 2 {
-		t.Fatalf("want the partial leg then one unknown leg, saw %d submissions", len(venue.submits))
-	}
-	first := venue.submits[0]
-	half := hlFloorLotSize(first.RequestedQty*0.5, basketTestLots[first.Symbol])
-	if got := env.signedQty(first.StrategyID, first.Symbol); !basketQtyEqual(math.Abs(got), half) {
-		t.Fatalf("partial fill booked %.10g, want %.10g", got, half)
-	}
-	pending := rt.pendingAction()
-	if pending == nil || pending.Status != basketActionUnresolved || pending.ActionID == first.ActionID {
-		t.Fatalf("want the second leg unresolved, got %+v", pending)
-	}
-	in := env.state.Strategies[pending.StrategyID].EntryGuard.Intents[pending.EntryIntentID]
-	if in == nil || in.Status != entryIntentSubmitting || in.ClientOrderID != pending.ClientOrderID {
-		t.Fatalf("the unresolved increase must keep its submitting entry intent with the same client id: %+v", in)
-	}
-
-	env.restartFromDisk(basketTestRanker(basketTestWeights, ""), venue.factory())
-	rt = env.rt()
-	again := rt.pendingAction()
-	if again == nil || again.ActionID != pending.ActionID || again.Status != basketActionUnresolved {
-		t.Fatalf("restart lost the unresolved action: %+v", again)
-	}
-	submitsBefore := len(venue.submits)
-	env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
-	if len(venue.submits) != submitsBefore {
-		t.Fatalf("an unresolved order must reconcile before any other elective order; %d new submissions", len(venue.submits)-submitsBefore)
-	}
-
-	venue.queries[pending.ClientOrderID] = []basketVenueOutcome{{Outcome: basketVenueFilled, FilledQty: again.RequestedQty, VenueOrderID: "777"}}
-	venue.outcomes = []basketVenueOutcome{{Outcome: basketVenueRejected, Detail: "insufficient margin"}}
-	next := deadline.Add(time.Hour)
-	nextSnap := basketTestSnapshot(next, 60, basketTestMarks(), 1)
-	env.cycle(next.Add(time.Minute), next, nextSnap, true)
-	resolved := rt.Actions[pending.ActionID]
-	if resolved.Status != basketActionCommitted || resolved.VenueOrderID != "777" {
-		t.Fatalf("the race-resolved fill was not booked once: %+v", resolved)
-	}
-	if got := env.signedQty(resolved.StrategyID, resolved.Symbol); !basketQtyEqual(math.Abs(got), resolved.RequestedQty) {
-		t.Fatalf("%s holds %.10g after reconciliation, want %.10g", resolved.StrategyID, got, resolved.RequestedQty)
-	}
-	if in := env.state.Strategies[resolved.StrategyID].EntryGuard.Intents[resolved.EntryIntentID]; in != nil && in.Status != entryIntentCommitted {
-		t.Fatalf("the reconciled entry intent must commit with the fill, got %s", in.Status)
-	}
-	rb := rt.Rebalances[deadline.UnixMilli()]
-	if !rb.IncreasesFrozen || !strings.Contains(rb.Outcome.FreezeReason, "rejected") {
-		t.Fatalf("a rejected leg must freeze increases: frozen=%v reason=%q", rb.IncreasesFrozen, rb.Outcome.FreezeReason)
-	}
-	submits := len(venue.submits)
-	later := next.Add(time.Hour)
-	env.cycle(later.Add(time.Minute), later, basketTestSnapshot(later, 60, basketTestMarks(), 1), true)
-	for _, a := range venue.submits[submits:] {
-		if a.Direction == basketDirectionIncrease {
-			t.Fatalf("an increase was sent after the freeze: %+v", a)
-		}
-	}
-	seen := map[string]bool{}
-	for _, a := range venue.submits {
-		if seen[a.ClientOrderID] {
-			t.Fatalf("client order id %s was submitted twice", a.ClientOrderID)
-		}
-		seen[a.ClientOrderID] = true
-	}
-	found := false
-	for _, d := range rb.Outcome.Deviations {
-		if d.Kind == "partial_fill" && strings.Contains(d.Detail, first.StrategyID) {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("the underfill of %s must be recorded as a deviation: %+v", first.StrategyID, rb.Outcome.Deviations)
-	}
-	if n := env.dbCount(`SELECT COUNT(*) FROM entry_order_intents WHERE status = 'committed'`); n < 1 {
-		t.Fatalf("live-shaped increases must commit their entry intents in the owning file, got %d", n)
-	}
-}
-func TestBasketPartialIncreaseConsumesTheDecisionCandle(t *testing.T) {
-	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
-		basketTestBasket(root)["max_transition_net_usd"] = 1100
-	})
-	venue := newScriptedBasketVenue(false)
-	venue.outcomes = []basketVenueOutcome{{Outcome: basketVenuePartial, FilledQty: -0.5}}
-	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
-	deadline := basketTestDeadline()
-	snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
-	env.cycle(deadline.Add(time.Minute), deadline, snap, true)
-	if len(venue.submits) == 0 {
-		t.Fatal("no submission")
-	}
-	pid := venue.submits[0].StrategyID
-	count := func() int {
-		n := 0
+		perCandle := map[string]map[int64]int{}
 		for _, a := range venue.submits {
-			if a.StrategyID == pid {
-				n++
+			if a.Direction != basketDirectionIncrease {
+				continue
+			}
+			if perCandle[a.StrategyID] == nil {
+				perCandle[a.StrategyID] = map[int64]int{}
+			}
+			perCandle[a.StrategyID][a.DecisionBarOpenMs]++
+			if perCandle[a.StrategyID][a.DecisionBarOpenMs] > 1 {
+				t.Fatalf("%s submitted two increases from the candle opened %d", a.StrategyID, a.DecisionBarOpenMs)
 			}
 		}
-		return n
-	}
-	env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
-	if n := count(); n != 1 {
-		t.Fatalf("a top-up must not reuse the consumed decision candle; %s submissions %d", pid, n)
-	}
-	rb := env.rt().Rebalances[deadline.UnixMilli()]
-	if rb.Status != basketRebalanceExecuting {
-		t.Fatalf("the underfilled rebalance must stay executing, got %s", rb.Status)
-	}
-	next := deadline.Add(time.Hour)
-	env.cycle(next.Add(time.Minute), next, basketTestSnapshot(next, 60, basketTestMarks(), 1), true)
-	if n := count(); n != 2 {
-		t.Fatalf("the underfill should be retried from the next eligible candle; %s submissions %d", pid, n)
-	}
-	var coin string
-	for _, m := range basketTestMembers {
-		if m.ID == pid {
-			coin = m.Coin
-		}
-	}
-	if got := env.signedQty(pid, coin); !basketQtyEqual(got, rb.targets.Members[pid].TargetQty) {
-		t.Fatalf("%s holds %.10g after the second tranche, target %.10g", pid, got, rb.targets.Members[pid].TargetQty)
-	}
-	if rb.Status != basketRebalanceCompleted || rb.Outcome.Result != "completed_with_deviations" {
-		t.Fatalf("the rebalance should complete with the recorded underfill deviation: %s %s", rb.Status, rb.Outcome.Result)
-	}
-}
-func TestBasketProtectiveExitRecordsExceptionAndHoldsIncreases(t *testing.T) {
-	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
-		basketTestBasket(root)["max_transition_net_usd"] = 1100
 	})
-	venue := newScriptedBasketVenue(false)
-	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
-	deadline := basketTestDeadline()
-	snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
-	env.cycle(deadline.Add(time.Minute), deadline, snap, true)
-	rt := env.rt()
-	rb := rt.Rebalances[deadline.UnixMilli()]
-	if rb.Status != basketRebalanceCompleted {
-		t.Fatalf("setup rebalance did not complete: %s", rb.Status)
-	}
-	env.mu.Lock()
-	for _, id := range []string{"hl-bsk-sol", "hl-bsk-avax"} {
-		coin := strings.ToUpper(strings.TrimPrefix(id, "hl-bsk-"))
-		if !recordPerpsStopLossClose(env.state.Strategies[id], coin, basketTestMarks()[coin]*1.05, "stop_loss", &StrategyLogger{stratID: id, writer: os.Stdout}) {
-			env.mu.Unlock()
-			t.Fatalf("could not record the protective stop close for %s", id)
+	t.Run("no_legal_sequence_and_initial_breach_hold_increases", func(t *testing.T) {
+		start := basketExposure{Qty: map[string]float64{"BTC": 0, "SOL": 0}, Mark: map[string]float64{"BTC": 60000, "SOL": 150}}
+		b := basketBounds{GrossUSD: 1000, NetUSD: 5, PerCoinUSD: 1000}
+		floor := func(coin string, qty float64) float64 {
+			q := hlFloorLotSize(qty, basketTestLots[coin])
+			if q*start.Mark[coin] < hlVenueCloseGateThresholdUSD() {
+				return 0
+			}
+			return q
 		}
-	}
-	env.mu.Unlock()
-	submits := len(venue.submits)
-	env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
-	if len(rb.Outcome.Exceptions) != 2 {
-		t.Fatalf("both protective exits must be recorded: %+v", rb.Outcome.Exceptions)
-	}
-	if rb.Outcome.Result != "protective_exception" {
-		t.Fatalf("a protective exit must never report a bounded success, result %q", rb.Outcome.Result)
-	}
-	if !strings.Contains(rb.Outcome.Exceptions[0].Breach, "net") {
-		t.Fatalf("closing both short legs breaches the $1100 net bound; breach %q", rb.Outcome.Exceptions[0].Breach)
-	}
-	for _, id := range []string{"hl-bsk-sol", "hl-bsk-avax"} {
-		if rt.Expected[id] != 0 {
-			t.Fatalf("the exception must acknowledge the residual book for %s, expected %.10g", id, rt.Expected[id])
+		c := basketCandidate{StrategyID: "hl-bsk-btc", Coin: "BTC", Direction: basketDirectionIncrease, PositionSide: entrySideLong, OrderSide: "buy", FullQty: 0.01}
+		if tr := basketLegalTranche(start, c, b, true, floor); tr.Qty > 0 {
+			t.Fatalf("a $5 net bound admits no lot-sized BTC tranche, got %v", tr)
 		}
-	}
-	for _, a := range venue.submits[submits:] {
-		if a.Direction != basketDirectionReduce {
-			t.Fatalf("after a protective exit only reductions may run, got %+v", a)
+		breached := basketExposure{Qty: map[string]float64{"BTC": 0.02, "SOL": 0}, Mark: start.Mark}
+		inc := basketCandidate{StrategyID: "hl-bsk-sol", Coin: "SOL", Direction: basketDirectionIncrease, PositionSide: entrySideShort, OrderSide: "sell", FullQty: 1}
+		if tr := basketLegalTranche(breached, inc, basketBounds{GrossUSD: 1000, NetUSD: 2000, PerCoinUSD: 1000}, true, floor); tr.Qty > 0 {
+			t.Fatalf("an increase from an exposure already over the gross budget must hold, got %v", tr)
 		}
-	}
-	exp := basketExposure{Qty: map[string]float64{}, Mark: basketTestMarks()}
-	for _, m := range basketTestMembers {
-		exp.Qty[m.Coin] = env.signedQty(m.ID, m.Coin)
-	}
-	if v := exp.reading().violations(basketBoundsFor(rt.Contract)); len(v) > 0 {
-		t.Fatalf("reduce-only recovery left a breach: %v", v)
-	}
-	if rb.Outcome.RecoveryOpen {
-		t.Fatal("recovery should close once the net bound holds")
-	}
-	env.cycle(deadline.Add(3*time.Minute), deadline, snap, true)
-	if len(rb.Outcome.Exceptions) != 2 {
-		t.Fatalf("each exit must be recorded once, got %d", len(rb.Outcome.Exceptions))
-	}
+		red := basketCandidate{StrategyID: "hl-bsk-btc", Coin: "BTC", Direction: basketDirectionReduce, PositionSide: entrySideLong, OrderSide: "sell", FullQty: 0.02, CurrentQty: 0.02}
+		if tr := basketLegalTranche(breached, red, basketBounds{GrossUSD: 1000, NetUSD: 2000, PerCoinUSD: 1000}, false, floor); !(tr.Qty > 0) {
+			t.Fatalf("a reduction that does not worsen the breach must stay available, got %v", tr)
+		}
+	})
 }
-func TestBasketExceptionDuringExecutionStartsReduceOnlyRecovery(t *testing.T) {
-	cfg := loadBasketTestConfig(t, nil)
-	venue := newScriptedBasketVenue(false)
-	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
-	deadline := basketTestDeadline()
-	snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
-	env.cycle(deadline.Add(time.Minute), deadline, snap, true)
-	rt := env.rt()
-	rb := rt.Rebalances[deadline.UnixMilli()]
-	if rb.Status != basketRebalanceExecuting {
-		t.Fatalf("a $400 net bound should leave the first candle executing, got %s", rb.Status)
-	}
-	var shortID, shortCoin string
-	for _, m := range basketTestMembers {
-		if env.signedQty(m.ID, m.Coin) < 0 {
-			shortID, shortCoin = m.ID, m.Coin
+
+func TestBasketPartialUnknownAndInconsistentVenueOutcomes(t *testing.T) {
+	t.Run("inconsistent_venue_fill_stays_unresolved", func(t *testing.T) {
+		cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+			basketTestBasket(root)["max_transition_net_usd"] = 1100
+		})
+		venue := newScriptedBasketVenue(false)
+		venue.outcomes = []basketVenueOutcome{{Outcome: basketVenuePartial, FilledQty: 0}}
+		env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
+		deadline := basketTestDeadline()
+		snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+		env.cycle(deadline.Add(time.Minute), deadline, snap, true)
+		if len(venue.submits) != 1 {
+			t.Fatalf("want exactly one submission before the inconsistent outcome holds, got %d", len(venue.submits))
 		}
-	}
-	if shortID == "" {
-		t.Fatal("no short leg was opened in the first candle")
-	}
-	env.mu.Lock()
-	recordPerpsStopLossClose(env.state.Strategies[shortID], shortCoin, 1e9, "stop_loss", &StrategyLogger{stratID: shortID, writer: os.Stdout})
-	env.mu.Unlock()
-	submits := len(venue.submits)
-	next := deadline.Add(time.Hour)
-	env.cycle(next.Add(time.Minute), next, basketTestSnapshot(next, 60, basketTestMarks(), 1), true)
-	if !rb.IncreasesFrozen {
-		t.Fatal("an exit during execution must freeze increases")
-	}
-	reductions := 0
-	for _, a := range venue.submits[submits:] {
-		if a.Direction == basketDirectionIncrease {
-			t.Fatalf("an increase was sent during reduce-only recovery: %+v", a)
+		a := env.rt().pendingAction()
+		if a == nil || a.Status != basketActionUnresolved || a.AppliedQty != 0 {
+			t.Fatalf("a partial outcome with no quantity must stay unresolved and unbooked: %+v", a)
 		}
-		reductions++
-	}
-	exp := basketExposure{Qty: map[string]float64{}, Mark: basketTestMarks()}
-	for _, m := range basketTestMembers {
-		exp.Qty[m.Coin] = env.signedQty(m.ID, m.Coin)
-	}
-	if v := exp.reading().violations(basketBoundsFor(rt.Contract)); len(v) > 0 {
-		t.Fatalf("reduce-only recovery left a breach: %v (reductions %d)", v, reductions)
-	}
+		for _, m := range basketTestMembers {
+			if q := env.signedQty(m.ID, m.Coin); q != 0 {
+				t.Fatalf("%s booked %.10g from an inconsistent outcome", m.ID, q)
+			}
+		}
+		env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
+		if len(venue.submits) != 1 {
+			t.Fatalf("no new elective order may be sent while an action is unresolved; submissions %d", len(venue.submits))
+		}
+	})
+	t.Run("partial_unknown_rejected_and_restart_recovery", func(t *testing.T) {
+		cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+			basketTestBasket(root)["max_transition_net_usd"] = 1100
+		})
+		t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0x"+strings.Repeat("a", 40))
+		venue := newScriptedBasketVenue(true)
+		env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
+		deadline := basketTestDeadline()
+		snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+		rt := env.rt()
+
+		venue.outcomes = []basketVenueOutcome{{Outcome: basketVenuePartial, FilledQty: -0.5}, {Outcome: basketVenueUnknown, Detail: "disconnect after send"}}
+		env.cycle(deadline.Add(time.Minute), deadline, snap, true)
+		if len(venue.submits) != 2 {
+			t.Fatalf("want the partial leg then one unknown leg, saw %d submissions", len(venue.submits))
+		}
+		first := venue.submits[0]
+		half := hlFloorLotSize(first.RequestedQty*0.5, basketTestLots[first.Symbol])
+		if got := env.signedQty(first.StrategyID, first.Symbol); !basketQtyEqual(math.Abs(got), half) {
+			t.Fatalf("partial fill booked %.10g, want %.10g", got, half)
+		}
+		pending := rt.pendingAction()
+		if pending == nil || pending.Status != basketActionUnresolved || pending.ActionID == first.ActionID {
+			t.Fatalf("want the second leg unresolved, got %+v", pending)
+		}
+		in := env.state.Strategies[pending.StrategyID].EntryGuard.Intents[pending.EntryIntentID]
+		if in == nil || in.Status != entryIntentSubmitting || in.ClientOrderID != pending.ClientOrderID {
+			t.Fatalf("the unresolved increase must keep its submitting entry intent with the same client id: %+v", in)
+		}
+
+		env.restartFromDisk(basketTestRanker(basketTestWeights, ""), venue.factory())
+		rt = env.rt()
+		again := rt.pendingAction()
+		if again == nil || again.ActionID != pending.ActionID || again.Status != basketActionUnresolved {
+			t.Fatalf("restart lost the unresolved action: %+v", again)
+		}
+		submitsBefore := len(venue.submits)
+		env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
+		if len(venue.submits) != submitsBefore {
+			t.Fatalf("an unresolved order must reconcile before any other elective order; %d new submissions", len(venue.submits)-submitsBefore)
+		}
+
+		venue.queries[pending.ClientOrderID] = []basketVenueOutcome{{Outcome: basketVenueFilled, FilledQty: again.RequestedQty, VenueOrderID: "777"}}
+		venue.outcomes = []basketVenueOutcome{{Outcome: basketVenueRejected, Detail: "insufficient margin"}}
+		next := deadline.Add(time.Hour)
+		nextSnap := basketTestSnapshot(next, 60, basketTestMarks(), 1)
+		env.cycle(next.Add(time.Minute), next, nextSnap, true)
+		resolved := rt.Actions[pending.ActionID]
+		if resolved.Status != basketActionCommitted || resolved.VenueOrderID != "777" {
+			t.Fatalf("the race-resolved fill was not booked once: %+v", resolved)
+		}
+		if got := env.signedQty(resolved.StrategyID, resolved.Symbol); !basketQtyEqual(math.Abs(got), resolved.RequestedQty) {
+			t.Fatalf("%s holds %.10g after reconciliation, want %.10g", resolved.StrategyID, got, resolved.RequestedQty)
+		}
+		if in := env.state.Strategies[resolved.StrategyID].EntryGuard.Intents[resolved.EntryIntentID]; in != nil && in.Status != entryIntentCommitted {
+			t.Fatalf("the reconciled entry intent must commit with the fill, got %s", in.Status)
+		}
+		rb := rt.Rebalances[deadline.UnixMilli()]
+		if !rb.IncreasesFrozen || !strings.Contains(rb.Outcome.FreezeReason, "rejected") {
+			t.Fatalf("a rejected leg must freeze increases: frozen=%v reason=%q", rb.IncreasesFrozen, rb.Outcome.FreezeReason)
+		}
+		submits := len(venue.submits)
+		later := next.Add(time.Hour)
+		env.cycle(later.Add(time.Minute), later, basketTestSnapshot(later, 60, basketTestMarks(), 1), true)
+		for _, a := range venue.submits[submits:] {
+			if a.Direction == basketDirectionIncrease {
+				t.Fatalf("an increase was sent after the freeze: %+v", a)
+			}
+		}
+		seen := map[string]bool{}
+		for _, a := range venue.submits {
+			if seen[a.ClientOrderID] {
+				t.Fatalf("client order id %s was submitted twice", a.ClientOrderID)
+			}
+			seen[a.ClientOrderID] = true
+		}
+		found := false
+		for _, d := range rb.Outcome.Deviations {
+			if d.Kind == "partial_fill" && strings.Contains(d.Detail, first.StrategyID) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("the underfill of %s must be recorded as a deviation: %+v", first.StrategyID, rb.Outcome.Deviations)
+		}
+		if n := env.dbCount(`SELECT COUNT(*) FROM entry_order_intents WHERE status = 'committed'`); n < 1 {
+			t.Fatalf("live-shaped increases must commit their entry intents in the owning file, got %d", n)
+		}
+	})
+	t.Run("partial_increase_consumes_the_decision_candle", func(t *testing.T) {
+		cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+			basketTestBasket(root)["max_transition_net_usd"] = 1100
+		})
+		venue := newScriptedBasketVenue(false)
+		venue.outcomes = []basketVenueOutcome{{Outcome: basketVenuePartial, FilledQty: -0.5}}
+		env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
+		deadline := basketTestDeadline()
+		snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+		env.cycle(deadline.Add(time.Minute), deadline, snap, true)
+		if len(venue.submits) == 0 {
+			t.Fatal("no submission")
+		}
+		pid := venue.submits[0].StrategyID
+		count := func() int {
+			n := 0
+			for _, a := range venue.submits {
+				if a.StrategyID == pid {
+					n++
+				}
+			}
+			return n
+		}
+		env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
+		if n := count(); n != 1 {
+			t.Fatalf("a top-up must not reuse the consumed decision candle; %s submissions %d", pid, n)
+		}
+		rb := env.rt().Rebalances[deadline.UnixMilli()]
+		if rb.Status != basketRebalanceExecuting {
+			t.Fatalf("the underfilled rebalance must stay executing, got %s", rb.Status)
+		}
+		next := deadline.Add(time.Hour)
+		env.cycle(next.Add(time.Minute), next, basketTestSnapshot(next, 60, basketTestMarks(), 1), true)
+		if n := count(); n != 2 {
+			t.Fatalf("the underfill should be retried from the next eligible candle; %s submissions %d", pid, n)
+		}
+		var coin string
+		for _, m := range basketTestMembers {
+			if m.ID == pid {
+				coin = m.Coin
+			}
+		}
+		if got := env.signedQty(pid, coin); !basketQtyEqual(got, rb.targets.Members[pid].TargetQty) {
+			t.Fatalf("%s holds %.10g after the second tranche, target %.10g", pid, got, rb.targets.Members[pid].TargetQty)
+		}
+		if rb.Status != basketRebalanceCompleted || rb.Outcome.Result != "completed_with_deviations" {
+			t.Fatalf("the rebalance should complete with the recorded underfill deviation: %s %s", rb.Status, rb.Outcome.Result)
+		}
+	})
+}
+
+func TestBasketExceptionsHoldIncreasesAndStartRecovery(t *testing.T) {
+	t.Run("protective_exit_records_exception_and_holds_increases", func(t *testing.T) {
+		cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+			basketTestBasket(root)["max_transition_net_usd"] = 1100
+		})
+		venue := newScriptedBasketVenue(false)
+		env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
+		deadline := basketTestDeadline()
+		snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+		env.cycle(deadline.Add(time.Minute), deadline, snap, true)
+		rt := env.rt()
+		rb := rt.Rebalances[deadline.UnixMilli()]
+		if rb.Status != basketRebalanceCompleted {
+			t.Fatalf("setup rebalance did not complete: %s", rb.Status)
+		}
+		env.mu.Lock()
+		for _, id := range []string{"hl-bsk-sol", "hl-bsk-avax"} {
+			coin := strings.ToUpper(strings.TrimPrefix(id, "hl-bsk-"))
+			if !recordPerpsStopLossClose(env.state.Strategies[id], coin, basketTestMarks()[coin]*1.05, "stop_loss", &StrategyLogger{stratID: id, writer: os.Stdout}) {
+				env.mu.Unlock()
+				t.Fatalf("could not record the protective stop close for %s", id)
+			}
+		}
+		env.mu.Unlock()
+		submits := len(venue.submits)
+		env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
+		if len(rb.Outcome.Exceptions) != 2 {
+			t.Fatalf("both protective exits must be recorded: %+v", rb.Outcome.Exceptions)
+		}
+		if rb.Outcome.Result != "protective_exception" {
+			t.Fatalf("a protective exit must never report a bounded success, result %q", rb.Outcome.Result)
+		}
+		if !strings.Contains(rb.Outcome.Exceptions[0].Breach, "net") {
+			t.Fatalf("closing both short legs breaches the $1100 net bound; breach %q", rb.Outcome.Exceptions[0].Breach)
+		}
+		for _, id := range []string{"hl-bsk-sol", "hl-bsk-avax"} {
+			if rt.Expected[id] != 0 {
+				t.Fatalf("the exception must acknowledge the residual book for %s, expected %.10g", id, rt.Expected[id])
+			}
+		}
+		for _, a := range venue.submits[submits:] {
+			if a.Direction != basketDirectionReduce {
+				t.Fatalf("after a protective exit only reductions may run, got %+v", a)
+			}
+		}
+		exp := basketExposure{Qty: map[string]float64{}, Mark: basketTestMarks()}
+		for _, m := range basketTestMembers {
+			exp.Qty[m.Coin] = env.signedQty(m.ID, m.Coin)
+		}
+		if v := exp.reading().violations(basketBoundsFor(rt.Contract)); len(v) > 0 {
+			t.Fatalf("reduce-only recovery left a breach: %v", v)
+		}
+		if rb.Outcome.RecoveryOpen {
+			t.Fatal("recovery should close once the net bound holds")
+		}
+		env.cycle(deadline.Add(3*time.Minute), deadline, snap, true)
+		if len(rb.Outcome.Exceptions) != 2 {
+			t.Fatalf("each exit must be recorded once, got %d", len(rb.Outcome.Exceptions))
+		}
+	})
+	t.Run("exception_during_execution_starts_reduce_only_recovery", func(t *testing.T) {
+		cfg := loadBasketTestConfig(t, nil)
+		venue := newScriptedBasketVenue(false)
+		env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
+		deadline := basketTestDeadline()
+		snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+		env.cycle(deadline.Add(time.Minute), deadline, snap, true)
+		rt := env.rt()
+		rb := rt.Rebalances[deadline.UnixMilli()]
+		if rb.Status != basketRebalanceExecuting {
+			t.Fatalf("a $400 net bound should leave the first candle executing, got %s", rb.Status)
+		}
+		var shortID, shortCoin string
+		for _, m := range basketTestMembers {
+			if env.signedQty(m.ID, m.Coin) < 0 {
+				shortID, shortCoin = m.ID, m.Coin
+			}
+		}
+		if shortID == "" {
+			t.Fatal("no short leg was opened in the first candle")
+		}
+		env.mu.Lock()
+		recordPerpsStopLossClose(env.state.Strategies[shortID], shortCoin, 1e9, "stop_loss", &StrategyLogger{stratID: shortID, writer: os.Stdout})
+		env.mu.Unlock()
+		submits := len(venue.submits)
+		next := deadline.Add(time.Hour)
+		env.cycle(next.Add(time.Minute), next, basketTestSnapshot(next, 60, basketTestMarks(), 1), true)
+		if !rb.IncreasesFrozen {
+			t.Fatal("an exit during execution must freeze increases")
+		}
+		reductions := 0
+		for _, a := range venue.submits[submits:] {
+			if a.Direction == basketDirectionIncrease {
+				t.Fatalf("an increase was sent during reduce-only recovery: %+v", a)
+			}
+			reductions++
+		}
+		exp := basketExposure{Qty: map[string]float64{}, Mark: basketTestMarks()}
+		for _, m := range basketTestMembers {
+			exp.Qty[m.Coin] = env.signedQty(m.ID, m.Coin)
+		}
+		if v := exp.reading().violations(basketBoundsFor(rt.Contract)); len(v) > 0 {
+			t.Fatalf("reduce-only recovery left a breach: %v (reductions %d)", v, reductions)
+		}
+	})
 }
 
 func TestBasketHoldsWholeTargetSetOnDegradedInputs(t *testing.T) {
@@ -790,105 +796,188 @@ func TestBasketHoldsWholeTargetSetOnDegradedInputs(t *testing.T) {
 	}
 }
 
-func TestBasketSaveFailureHoldsTheNextElectiveAction(t *testing.T) {
-	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
-		basketTestBasket(root)["max_transition_net_usd"] = 1100
+func TestBasketSaveFailuresCrashesAndConcurrentSaves(t *testing.T) {
+	t.Run("save_failure_holds_the_next_elective_action", func(t *testing.T) {
+		cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+			basketTestBasket(root)["max_transition_net_usd"] = 1100
+		})
+		venue := newScriptedBasketVenue(false)
+		env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
+		deadline := basketTestDeadline()
+		snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+		saves := 0
+		prev := storeCommitHook
+		storeCommitHook = func(role storageRole) error {
+			saves++
+			if len(venue.submits) == 1 && saves > 0 {
+				return errors.New("disk full")
+			}
+			return nil
+		}
+		t.Cleanup(func() { storeCommitHook = prev })
+		env.cycle(deadline.Add(time.Minute), deadline, snap, true)
+		if len(venue.submits) != 1 {
+			t.Fatalf("a failed settlement save must stop further elective actions; submissions %d", len(venue.submits))
+		}
+		rt := env.rt()
+		if !rt.needsDurable {
+			t.Fatal("the coordinator must remember that the settlement is not durable")
+		}
+		storeCommitHook = prev
+		env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
+		if len(venue.submits) != 1 {
+			t.Fatalf("no elective action may run before the settlement saves; submissions %d", len(venue.submits))
+		}
+		for part, err := range env.store.SaveAll(env.state) {
+			if err != nil {
+				t.Fatalf("SaveAll(%s): %v", partitionLabel(part), err)
+			}
+		}
+		if rt.needsDurable {
+			t.Fatal("a successful full save must make the settlement durable")
+		}
+		env.cycle(deadline.Add(3*time.Minute), deadline, snap, true)
+		if len(venue.submits) != 4 {
+			t.Fatalf("after the durable save the rebalance should finish; submissions %d", len(venue.submits))
+		}
+		if n := env.dbCount(`SELECT COUNT(*) FROM trades WHERE is_close = 0`); n != 4 {
+			t.Fatalf("persisted opens %d, want 4 (one per fill, none duplicated)", n)
+		}
 	})
-	venue := newScriptedBasketVenue(false)
-	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
-	deadline := basketTestDeadline()
-	snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
-	saves := 0
-	prev := storeCommitHook
-	storeCommitHook = func(role storageRole) error {
-		saves++
-		if len(venue.submits) == 1 && saves > 0 {
-			return errors.New("disk full")
+	t.Run("crash_before_commit_leaves_no_booking_and_recovers", func(t *testing.T) {
+		cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+			basketTestBasket(root)["max_transition_net_usd"] = 1100
+		})
+		env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), nil)
+		deadline := basketTestDeadline()
+		snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+		prev := storeCommitHook
+		fail := false
+		storeCommitHook = func(role storageRole) error {
+			if fail {
+				return errors.New("crash")
+			}
+			return nil
 		}
-		return nil
-	}
-	t.Cleanup(func() { storeCommitHook = prev })
-	env.cycle(deadline.Add(time.Minute), deadline, snap, true)
-	if len(venue.submits) != 1 {
-		t.Fatalf("a failed settlement save must stop further elective actions; submissions %d", len(venue.submits))
-	}
-	rt := env.rt()
-	if !rt.needsDurable {
-		t.Fatal("the coordinator must remember that the settlement is not durable")
-	}
-	storeCommitHook = prev
-	env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
-	if len(venue.submits) != 1 {
-		t.Fatalf("no elective action may run before the settlement saves; submissions %d", len(venue.submits))
-	}
-	for part, err := range env.store.SaveAll(env.state) {
-		if err != nil {
-			t.Fatalf("SaveAll(%s): %v", partitionLabel(part), err)
+		t.Cleanup(func() { storeCommitHook = prev })
+		origVenue := env.bc.venueFor
+		env.bc.venueFor = func(sc StrategyConfig) (basketVenue, error) {
+			v, err := origVenue(sc)
+			if err != nil {
+				return nil, err
+			}
+			return crashAfterSubmitVenue{basketVenue: v, arm: func() { fail = true }}, nil
 		}
-	}
-	if rt.needsDurable {
-		t.Fatal("a successful full save must make the settlement durable")
-	}
-	env.cycle(deadline.Add(3*time.Minute), deadline, snap, true)
-	if len(venue.submits) != 4 {
-		t.Fatalf("after the durable save the rebalance should finish; submissions %d", len(venue.submits))
-	}
-	if n := env.dbCount(`SELECT COUNT(*) FROM trades WHERE is_close = 0`); n != 4 {
-		t.Fatalf("persisted opens %d, want 4 (one per fill, none duplicated)", n)
-	}
-}
-
-func TestBasketCrashBeforeCommitLeavesNoBookingAndRecovers(t *testing.T) {
-	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
-		basketTestBasket(root)["max_transition_net_usd"] = 1100
+		env.cycle(deadline.Add(time.Minute), deadline, snap, true)
+		fail = false
+		env.restartFromDisk(basketTestRanker(basketTestWeights, ""), nil)
+		for _, m := range basketTestMembers {
+			if q := env.signedQty(m.ID, m.Coin); q != 0 {
+				t.Fatalf("%s holds %.10g after a crash before the settlement commit", m.ID, q)
+			}
+		}
+		a := env.rt().pendingAction()
+		if a == nil || a.Status != basketActionSubmitting {
+			t.Fatalf("want the submitting action from before the crash, got %+v", a)
+		}
+		env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
+		if got := env.rt().Actions[a.ActionID]; got.Status != basketActionNoFill {
+			t.Fatalf("a paper action that never committed must resolve as no fill, got %s", got.Status)
+		}
+		if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb.Status == basketRebalanceCompleted {
+			t.Fatal("the candle first observed after a restart with no durable entry record is a bootstrap hold; it must not fund increases")
+		}
+		next := deadline.Add(time.Hour)
+		env.cycle(next.Add(time.Minute), next, basketTestSnapshot(next, 60, basketTestMarks(), 1), true)
+		if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb.Status != basketRebalanceCompleted {
+			t.Fatalf("recovery should finish the frozen targets on the next candle, got %s", rb.Status)
+		}
+		if n := env.dbCount(`SELECT COUNT(*) FROM trades WHERE is_close = 0`); n != 4 {
+			t.Fatalf("persisted opens %d, want 4", n)
+		}
 	})
-	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), nil)
-	deadline := basketTestDeadline()
-	snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
-	prev := storeCommitHook
-	fail := false
-	storeCommitHook = func(role storageRole) error {
-		if fail {
-			return errors.New("crash")
+	t.Run("step_is_ordered_against_concurrent_saves", func(t *testing.T) {
+		cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+			basketTestBasket(root)["max_transition_net_usd"] = 1100
+		})
+		deadline := basketTestDeadline()
+		next := deadline.Add(24 * time.Hour)
+		reversed := map[string]float64{"BTC": -0.25, "ETH": -0.25, "SOL": 0.25, "AVAX": 0.25}
+		ranker := func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
+			var req basketRankRequest
+			if err := json.Unmarshal(stdin, &req); err != nil {
+				return nil, nil, err
+			}
+			if req.DeadlineMs == next.UnixMilli() {
+				return basketTestRanker(reversed, "")(ctx, stdin, timeout)
+			}
+			return basketTestRanker(basketTestWeights, "")(ctx, stdin, timeout)
 		}
-		return nil
-	}
-	t.Cleanup(func() { storeCommitHook = prev })
-	origVenue := env.bc.venueFor
-	env.bc.venueFor = func(sc StrategyConfig) (basketVenue, error) {
-		v, err := origVenue(sc)
-		if err != nil {
-			return nil, err
+		env := newBasketTestEnv(t, cfg, ranker, nil)
+		stop := make(chan struct{})
+		done := make(chan struct{})
+		saves := 0
+		go func() {
+			defer close(done)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				env.mu.Lock()
+				if err := SaveStateWithStore(env.state, env.store); err != nil {
+					t.Errorf("concurrent save: %v", err)
+				}
+				saves++
+				env.mu.Unlock()
+			}
+		}()
+		env.cycle(deadline.Add(time.Minute), deadline, basketTestSnapshot(deadline, 60, basketTestMarks(), 1), true)
+		env.cycle(next.Add(time.Minute), next, basketTestSnapshot(next, 60, basketTestMarks(), 1), true)
+		close(stop)
+		<-done
+		if saves == 0 {
+			t.Fatal("the concurrent saver never ran")
 		}
-		return crashAfterSubmitVenue{basketVenue: v, arm: func() { fail = true }}, nil
-	}
-	env.cycle(deadline.Add(time.Minute), deadline, snap, true)
-	fail = false
-	env.restartFromDisk(basketTestRanker(basketTestWeights, ""), nil)
-	for _, m := range basketTestMembers {
-		if q := env.signedQty(m.ID, m.Coin); q != 0 {
-			t.Fatalf("%s holds %.10g after a crash before the settlement commit", m.ID, q)
+		rt := env.rt()
+		if _, ok := rt.Rebalances[deadline.UnixMilli()]; ok {
+			t.Fatal("the superseded first deadline should be pruned from memory once it is durable")
 		}
-	}
-	a := env.rt().pendingAction()
-	if a == nil || a.Status != basketActionSubmitting {
-		t.Fatalf("want the submitting action from before the crash, got %+v", a)
-	}
-	env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
-	if got := env.rt().Actions[a.ActionID]; got.Status != basketActionNoFill {
-		t.Fatalf("a paper action that never committed must resolve as no fill, got %s", got.Status)
-	}
-	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb.Status == basketRebalanceCompleted {
-		t.Fatal("the candle first observed after a restart with no durable entry record is a bootstrap hold; it must not fund increases")
-	}
-	next := deadline.Add(time.Hour)
-	env.cycle(next.Add(time.Minute), next, basketTestSnapshot(next, 60, basketTestMarks(), 1), true)
-	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb.Status != basketRebalanceCompleted {
-		t.Fatalf("recovery should finish the frozen targets on the next candle, got %s", rb.Status)
-	}
-	if n := env.dbCount(`SELECT COUNT(*) FROM trades WHERE is_close = 0`); n != 4 {
-		t.Fatalf("persisted opens %d, want 4", n)
-	}
+		rb := rt.Rebalances[next.UnixMilli()]
+		if rb == nil || rb.Status != basketRebalanceCompleted {
+			t.Fatalf("the second deadline did not complete: %+v", rb)
+		}
+		inMemory := map[string]string{}
+		for id, a := range rt.Actions {
+			inMemory[id] = a.Status
+		}
+		if len(inMemory) == 0 {
+			t.Fatal("the second deadline sent no action")
+		}
+		if n := env.dbCount(`SELECT COUNT(*) FROM basket_member_actions`); n < len(inMemory) {
+			t.Fatalf("the database holds %d actions, fewer than the %d in memory", n, len(inMemory))
+		}
+		reranks := 0
+		env.restartFromDisk(func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
+			reranks++
+			return ranker(ctx, stdin, timeout)
+		}, nil)
+		loaded := env.rt()
+		for id, status := range inMemory {
+			a := loaded.Actions[id]
+			if a == nil || a.Status != status {
+				t.Fatalf("after restart action %s is %+v, in memory it was %s", id, a, status)
+			}
+		}
+		if len(loaded.Actions) != len(inMemory) {
+			t.Fatalf("after restart %d actions loaded, %d were in memory", len(loaded.Actions), len(inMemory))
+		}
+		env.cycle(next.Add(2*time.Minute), next, basketTestSnapshot(next, 60, basketTestMarks(), 1), true)
+		if reranks != 0 {
+			t.Fatalf("a recorded deadline was reranked %d time(s) after restart", reranks)
+		}
+	})
 }
 
 type crashAfterSubmitVenue struct {
@@ -978,303 +1067,220 @@ func basketDelistedSOLConfig(t *testing.T, deadline time.Time) *Config {
 
 var basketNoSOLWeights = map[string]float64{"BTC": 0.25, "ETH": 0.25, "AVAX": -0.25}
 
-func TestBasketListingExcludedMemberNeedsNoFrameOrMark(t *testing.T) {
-	deadline := basketTestDeadline()
-	cfg := basketDelistedSOLConfig(t, deadline)
-	venue := newScriptedBasketVenue(false)
-	env := newBasketTestEnv(t, cfg, basketListingTestRanker(basketNoSOLWeights), venue.factory())
-	rt := env.rt()
-	sol, _ := rt.Contract.memberByCoin("SOL")
-	if why := basketListingExclusion(rt.Contract, sol, deadline.UnixMilli()); why != "delisted at or before the deadline" {
-		t.Fatalf("the declared delisting must exclude SOL at the deadline, got %q", why)
-	}
-	reqs := env.bc.cycleRequirements(map[string]time.Time{"xs-test": deadline}, feedRequirements{})
-	for _, k := range reqs.Keys {
-		if k.Key.Symbol == "SOL" {
-			t.Fatalf("the cycle requirements still request the excluded SOL frame: %+v", reqs.Keys)
+func TestBasketDeclaredListingExclusions(t *testing.T) {
+	t.Run("excluded_member_needs_no_frame_or_mark", func(t *testing.T) {
+		deadline := basketTestDeadline()
+		cfg := basketDelistedSOLConfig(t, deadline)
+		venue := newScriptedBasketVenue(false)
+		env := newBasketTestEnv(t, cfg, basketListingTestRanker(basketNoSOLWeights), venue.factory())
+		rt := env.rt()
+		sol, _ := rt.Contract.memberByCoin("SOL")
+		if why := basketListingExclusion(rt.Contract, sol, deadline.UnixMilli()); why != "delisted at or before the deadline" {
+			t.Fatalf("the declared delisting must exclude SOL at the deadline, got %q", why)
 		}
-	}
-	snap := basketTestSnapshot(deadline, 60, basketMarksWithout("SOL"), 1)
-	env.cycle(deadline.Add(time.Minute), deadline, snap, true)
-	rb := rt.Rebalances[deadline.UnixMilli()]
-	if rb == nil || rb.Status != basketRebalanceCompleted {
-		t.Fatalf("a delisted, flat SOL with no frame and no mark must not block the rebalance: %+v", rb)
-	}
-	targets, err := rb.Targets()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := targets.Members["hl-bsk-sol"].Excluded; got != "delisted at or before the deadline" {
-		t.Fatalf("the SOL exclusion reason is %q", got)
-	}
-	for _, m := range basketTestMembers {
-		got := env.signedQty(m.ID, m.Coin)
-		if m.Coin == "SOL" {
-			if got != 0 {
-				t.Fatalf("the excluded SOL member traded %.10g", got)
+		reqs := env.bc.cycleRequirements(map[string]time.Time{"xs-test": deadline}, feedRequirements{})
+		for _, k := range reqs.Keys {
+			if k.Key.Symbol == "SOL" {
+				t.Fatalf("the cycle requirements still request the excluded SOL frame: %+v", reqs.Keys)
 			}
-			continue
 		}
-		if got == 0 || !basketQtyEqual(got, targets.Members[m.ID].TargetQty) {
-			t.Fatalf("%s holds %.10g, target %.10g", m.ID, got, targets.Members[m.ID].TargetQty)
+		snap := basketTestSnapshot(deadline, 60, basketMarksWithout("SOL"), 1)
+		env.cycle(deadline.Add(time.Minute), deadline, snap, true)
+		rb := rt.Rebalances[deadline.UnixMilli()]
+		if rb == nil || rb.Status != basketRebalanceCompleted {
+			t.Fatalf("a delisted, flat SOL with no frame and no mark must not block the rebalance: %+v", rb)
 		}
-	}
-
-	env.mu.Lock()
-	if !recordPerpsStopLossClose(env.state.Strategies["hl-bsk-avax"], "AVAX", 31.5, "stop_loss", &StrategyLogger{stratID: "hl-bsk-avax", writer: os.Stdout}) {
-		env.mu.Unlock()
-		t.Fatal("could not record the protective AVAX stop close")
-	}
-	env.mu.Unlock()
-	submits := len(venue.submits)
-	env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
-	if len(rb.Outcome.Exceptions) != 1 || !strings.Contains(rb.Outcome.Exceptions[0].Breach, "net") {
-		t.Fatalf("closing the AVAX short breaches the $1100 net bound, and the breach must be known without a SOL mark: %+v", rb.Outcome.Exceptions)
-	}
-	reductions := 0
-	for _, a := range venue.submits[submits:] {
-		if a.Direction != basketDirectionReduce || a.Symbol == "SOL" {
-			t.Fatalf("reduce-only recovery may only reduce the priced members, got %+v", a)
+		targets, err := rb.Targets()
+		if err != nil {
+			t.Fatal(err)
 		}
-		reductions++
-	}
-	if reductions == 0 {
-		t.Fatal("reduce-only recovery sent no reduction while SOL was flat and unpriced")
-	}
-	exp := basketExposure{Qty: map[string]float64{}, Mark: basketMarksWithout("SOL")}
-	for _, m := range basketTestMembers {
-		exp.Qty[m.Coin] = env.signedQty(m.ID, m.Coin)
-	}
-	if v := exp.reading().violations(basketBoundsFor(rt.Contract)); len(v) > 0 {
-		t.Fatalf("reduce-only recovery left a breach: %v", v)
-	}
-	if rb.Outcome.RecoveryOpen {
-		t.Fatal("recovery should close once the net bound holds")
-	}
-}
-
-func TestBasketUnpricedHeldMemberHoldsAndAlerts(t *testing.T) {
-	deadline := basketTestDeadline()
-	cfg := basketDelistedSOLConfig(t, deadline)
-	venue := newScriptedBasketVenue(false)
-	env := newBasketTestEnv(t, cfg, basketListingTestRanker(basketNoSOLWeights), venue.factory())
-	env.mu.Lock()
-	env.state.Strategies["hl-bsk-sol"].Positions["SOL"] = &Position{Symbol: "SOL", Quantity: 2, AvgCost: 150, Side: "long", Multiplier: 1}
-	env.mu.Unlock()
-	env.rt().Expected["hl-bsk-sol"] = 2
-	env.cycle(deadline.Add(time.Minute), deadline, basketTestSnapshot(deadline, 60, basketMarksWithout("SOL"), 1), true)
-	rb := env.rt().Rebalances[deadline.UnixMilli()]
-	if rb == nil || rb.Status != basketRebalanceFrozen {
-		t.Fatalf("the deadline must still rank and freeze, got %+v", rb)
-	}
-	if len(venue.submits) != 0 {
-		t.Fatalf("no elective order may run while a held member has no mark: %+v", venue.submits)
-	}
-	if !rb.Outcome.alerted("unpriced-held|hl-bsk-sol") {
-		t.Fatal("a held position in a delisted coin with no mark must raise the CRITICAL alert")
-	}
-}
-
-func TestBasketRankerEligibilityMustMatchTheDeclaredListing(t *testing.T) {
-	deadline := basketTestDeadline()
-	cfg := basketDelistedSOLConfig(t, deadline)
-	venue := newScriptedBasketVenue(false)
-	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
-	env.cycle(deadline.Add(time.Minute), deadline, basketTestSnapshot(deadline, 60, basketTestMarks(), 1), true)
-	rb := env.rt().Rebalances[deadline.UnixMilli()]
-	if rb == nil || rb.Status != basketRebalanceHeld {
-		t.Fatalf("a ranker that reports a declared-delisted member as eligible must hold the deadline, got %+v", rb)
-	}
-	if rb.TargetsJSON != "" {
-		t.Fatalf("a refused eligibility record must freeze no targets, got %s", rb.TargetsJSON)
-	}
-	if len(venue.submits) != 0 {
-		t.Fatalf("no member order may be sent after the refusal: %+v", venue.submits)
-	}
-	for _, m := range basketTestMembers {
-		if q := env.signedQty(m.ID, m.Coin); q != 0 {
-			t.Fatalf("%s traded %.10g after the refusal", m.ID, q)
+		if got := targets.Members["hl-bsk-sol"].Excluded; got != "delisted at or before the deadline" {
+			t.Fatalf("the SOL exclusion reason is %q", got)
 		}
-	}
-	if n := env.dbCount(`SELECT COUNT(*) FROM basket_rebalances WHERE status = 'held' AND targets_json = ''`); n != 1 {
-		t.Fatalf("held rows without targets %d, want 1", n)
-	}
-	if n := env.dbCount(`SELECT COUNT(*) FROM basket_member_actions`); n != 0 {
-		t.Fatalf("member actions %d, want 0", n)
-	}
-	env.cycle(deadline.Add(2*time.Minute), deadline, basketTestSnapshot(deadline, 60, basketTestMarks(), 1), true)
-	if len(venue.submits) != 0 || env.rt().Rebalances[deadline.UnixMilli()].Status != basketRebalanceHeld {
-		t.Fatal("the held deadline must never be reranked or traded on a later cycle")
-	}
-	if !strings.Contains(rb.HoldReason, "declared listing evidence") {
-		t.Fatalf("the hold must name the listing disagreement, got %q", rb.HoldReason)
-	}
-}
-
-func TestBasketDeadlineWaitsForASealAfterTheBoundary(t *testing.T) {
-	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
-		basketTestBasket(root)["max_transition_net_usd"] = 1100
-	})
-	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), newScriptedBasketVenue(false).factory())
-	deadline := basketTestDeadline()
-	early := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
-	early.SealedAt, early.Deadline = deadline.Add(-2*time.Second), time.Time{}
-	env.cycle(deadline.Add(3*time.Second), deadline, early, false)
-	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb != nil {
-		t.Fatalf("a snapshot sealed before the deadline must reserve nothing, got %+v", rb)
-	}
-	if d := env.bc.wakeDelay(deadline.Add(3 * time.Second)); d != 0 {
-		t.Fatalf("the late-seal case must keep the fast wake, got %s", d)
-	}
-	if n := env.dbCount(`SELECT COUNT(*) FROM basket_rebalances`); n != 0 {
-		t.Fatalf("rows reserved %d, want 0", n)
-	}
-	env.cycle(deadline.Add(time.Minute), deadline, basketTestSnapshot(deadline, 60, basketTestMarks(), 1), true)
-	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceCompleted {
-		t.Fatalf("the next cycle inside the window must rank the deadline, got %+v", rb)
-	}
-
-	cfg2 := loadBasketTestConfig(t, nil)
-	env2 := newBasketTestEnv(t, cfg2, basketTestRanker(basketTestWeights, ""), nil)
-	onTime := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
-	onTime.SealedAt, onTime.Deadline = deadline.Add(time.Second), time.Time{}
-	env2.cycle(deadline.Add(time.Second), deadline, onTime, false)
-	if rb := env2.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status == basketRebalanceHeld || rb.TargetsJSON == "" {
-		t.Fatalf("a cycle that starts after the boundary must rank the deadline in that cycle, got %+v", rb)
-	}
-}
-
-func TestBasketStepIsOrderedAgainstConcurrentSaves(t *testing.T) {
-	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
-		basketTestBasket(root)["max_transition_net_usd"] = 1100
-	})
-	deadline := basketTestDeadline()
-	next := deadline.Add(24 * time.Hour)
-	reversed := map[string]float64{"BTC": -0.25, "ETH": -0.25, "SOL": 0.25, "AVAX": 0.25}
-	ranker := func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
-		var req basketRankRequest
-		if err := json.Unmarshal(stdin, &req); err != nil {
-			return nil, nil, err
-		}
-		if req.DeadlineMs == next.UnixMilli() {
-			return basketTestRanker(reversed, "")(ctx, stdin, timeout)
-		}
-		return basketTestRanker(basketTestWeights, "")(ctx, stdin, timeout)
-	}
-	env := newBasketTestEnv(t, cfg, ranker, nil)
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	saves := 0
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
+		for _, m := range basketTestMembers {
+			got := env.signedQty(m.ID, m.Coin)
+			if m.Coin == "SOL" {
+				if got != 0 {
+					t.Fatalf("the excluded SOL member traded %.10g", got)
+				}
+				continue
 			}
-			env.mu.Lock()
-			if err := SaveStateWithStore(env.state, env.store); err != nil {
-				t.Errorf("concurrent save: %v", err)
+			if got == 0 || !basketQtyEqual(got, targets.Members[m.ID].TargetQty) {
+				t.Fatalf("%s holds %.10g, target %.10g", m.ID, got, targets.Members[m.ID].TargetQty)
 			}
-			saves++
+		}
+
+		env.mu.Lock()
+		if !recordPerpsStopLossClose(env.state.Strategies["hl-bsk-avax"], "AVAX", 31.5, "stop_loss", &StrategyLogger{stratID: "hl-bsk-avax", writer: os.Stdout}) {
 			env.mu.Unlock()
+			t.Fatal("could not record the protective AVAX stop close")
 		}
-	}()
-	env.cycle(deadline.Add(time.Minute), deadline, basketTestSnapshot(deadline, 60, basketTestMarks(), 1), true)
-	env.cycle(next.Add(time.Minute), next, basketTestSnapshot(next, 60, basketTestMarks(), 1), true)
-	close(stop)
-	<-done
-	if saves == 0 {
-		t.Fatal("the concurrent saver never ran")
-	}
-	rt := env.rt()
-	if _, ok := rt.Rebalances[deadline.UnixMilli()]; ok {
-		t.Fatal("the superseded first deadline should be pruned from memory once it is durable")
-	}
-	rb := rt.Rebalances[next.UnixMilli()]
-	if rb == nil || rb.Status != basketRebalanceCompleted {
-		t.Fatalf("the second deadline did not complete: %+v", rb)
-	}
-	inMemory := map[string]string{}
-	for id, a := range rt.Actions {
-		inMemory[id] = a.Status
-	}
-	if len(inMemory) == 0 {
-		t.Fatal("the second deadline sent no action")
-	}
-	if n := env.dbCount(`SELECT COUNT(*) FROM basket_member_actions`); n < len(inMemory) {
-		t.Fatalf("the database holds %d actions, fewer than the %d in memory", n, len(inMemory))
-	}
-	reranks := 0
-	env.restartFromDisk(func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
-		reranks++
-		return ranker(ctx, stdin, timeout)
-	}, nil)
-	loaded := env.rt()
-	for id, status := range inMemory {
-		a := loaded.Actions[id]
-		if a == nil || a.Status != status {
-			t.Fatalf("after restart action %s is %+v, in memory it was %s", id, a, status)
+		env.mu.Unlock()
+		submits := len(venue.submits)
+		env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
+		if len(rb.Outcome.Exceptions) != 1 || !strings.Contains(rb.Outcome.Exceptions[0].Breach, "net") {
+			t.Fatalf("closing the AVAX short breaches the $1100 net bound, and the breach must be known without a SOL mark: %+v", rb.Outcome.Exceptions)
 		}
-	}
-	if len(loaded.Actions) != len(inMemory) {
-		t.Fatalf("after restart %d actions loaded, %d were in memory", len(loaded.Actions), len(inMemory))
-	}
-	env.cycle(next.Add(2*time.Minute), next, basketTestSnapshot(next, 60, basketTestMarks(), 1), true)
-	if reranks != 0 {
-		t.Fatalf("a recorded deadline was reranked %d time(s) after restart", reranks)
-	}
+		reductions := 0
+		for _, a := range venue.submits[submits:] {
+			if a.Direction != basketDirectionReduce || a.Symbol == "SOL" {
+				t.Fatalf("reduce-only recovery may only reduce the priced members, got %+v", a)
+			}
+			reductions++
+		}
+		if reductions == 0 {
+			t.Fatal("reduce-only recovery sent no reduction while SOL was flat and unpriced")
+		}
+		exp := basketExposure{Qty: map[string]float64{}, Mark: basketMarksWithout("SOL")}
+		for _, m := range basketTestMembers {
+			exp.Qty[m.Coin] = env.signedQty(m.ID, m.Coin)
+		}
+		if v := exp.reading().violations(basketBoundsFor(rt.Contract)); len(v) > 0 {
+			t.Fatalf("reduce-only recovery left a breach: %v", v)
+		}
+		if rb.Outcome.RecoveryOpen {
+			t.Fatal("recovery should close once the net bound holds")
+		}
+	})
+	t.Run("unpriced_held_member_holds_and_alerts", func(t *testing.T) {
+		deadline := basketTestDeadline()
+		cfg := basketDelistedSOLConfig(t, deadline)
+		venue := newScriptedBasketVenue(false)
+		env := newBasketTestEnv(t, cfg, basketListingTestRanker(basketNoSOLWeights), venue.factory())
+		env.mu.Lock()
+		env.state.Strategies["hl-bsk-sol"].Positions["SOL"] = &Position{Symbol: "SOL", Quantity: 2, AvgCost: 150, Side: "long", Multiplier: 1}
+		env.mu.Unlock()
+		env.rt().Expected["hl-bsk-sol"] = 2
+		env.cycle(deadline.Add(time.Minute), deadline, basketTestSnapshot(deadline, 60, basketMarksWithout("SOL"), 1), true)
+		rb := env.rt().Rebalances[deadline.UnixMilli()]
+		if rb == nil || rb.Status != basketRebalanceFrozen {
+			t.Fatalf("the deadline must still rank and freeze, got %+v", rb)
+		}
+		if len(venue.submits) != 0 {
+			t.Fatalf("no elective order may run while a held member has no mark: %+v", venue.submits)
+		}
+		if !rb.Outcome.alerted("unpriced-held|hl-bsk-sol") {
+			t.Fatal("a held position in a delisted coin with no mark must raise the CRITICAL alert")
+		}
+	})
+	t.Run("ranker_eligibility_must_match_the_declared_listing", func(t *testing.T) {
+		deadline := basketTestDeadline()
+		cfg := basketDelistedSOLConfig(t, deadline)
+		venue := newScriptedBasketVenue(false)
+		env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
+		env.cycle(deadline.Add(time.Minute), deadline, basketTestSnapshot(deadline, 60, basketTestMarks(), 1), true)
+		rb := env.rt().Rebalances[deadline.UnixMilli()]
+		if rb == nil || rb.Status != basketRebalanceHeld {
+			t.Fatalf("a ranker that reports a declared-delisted member as eligible must hold the deadline, got %+v", rb)
+		}
+		if rb.TargetsJSON != "" {
+			t.Fatalf("a refused eligibility record must freeze no targets, got %s", rb.TargetsJSON)
+		}
+		if len(venue.submits) != 0 {
+			t.Fatalf("no member order may be sent after the refusal: %+v", venue.submits)
+		}
+		for _, m := range basketTestMembers {
+			if q := env.signedQty(m.ID, m.Coin); q != 0 {
+				t.Fatalf("%s traded %.10g after the refusal", m.ID, q)
+			}
+		}
+		if n := env.dbCount(`SELECT COUNT(*) FROM basket_rebalances WHERE status = 'held' AND targets_json = ''`); n != 1 {
+			t.Fatalf("held rows without targets %d, want 1", n)
+		}
+		if n := env.dbCount(`SELECT COUNT(*) FROM basket_member_actions`); n != 0 {
+			t.Fatalf("member actions %d, want 0", n)
+		}
+		env.cycle(deadline.Add(2*time.Minute), deadline, basketTestSnapshot(deadline, 60, basketTestMarks(), 1), true)
+		if len(venue.submits) != 0 || env.rt().Rebalances[deadline.UnixMilli()].Status != basketRebalanceHeld {
+			t.Fatal("the held deadline must never be reranked or traded on a later cycle")
+		}
+		if !strings.Contains(rb.HoldReason, "declared listing evidence") {
+			t.Fatalf("the hold must name the listing disagreement, got %q", rb.HoldReason)
+		}
+	})
 }
 
-func TestBasketSaveBlockedDeadlineWakesAtTheRetryCadence(t *testing.T) {
-	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
-		basketTestBasket(root)["max_transition_net_usd"] = 1100
-	})
-	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), nil)
-	deadline := basketTestDeadline()
-	snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
-	now := deadline.Add(time.Minute)
-	env.bc.beginCycle()
-	env.bc.step(basketCycleInputs{Now: now, Snapshot: snap, SnapshotFor: func(*basketRuntime, time.Time) *marketSnapshot { return snap }, SaveBlocked: true, Once: true})
-	if _, ok := env.bc.dueDeadlines(now)["xs-test"]; !ok {
-		t.Fatal("a save-blocked deadline must stay due so a later cycle can rank it")
-	}
-	if d := env.bc.wakeDelay(now.Add(time.Second)); d < 30*time.Second {
-		t.Fatalf("a save-blocked deadline must not force a fast wake, got %s", d)
-	}
-	if d := env.bc.adjustDelay(10*time.Minute, now.Add(time.Second)); d != basketHeldWakeRetry-time.Second {
-		t.Fatalf("the loop should retry at the held cadence, got %s", d)
-	}
-	env.cycle(now.Add(basketHeldWakeRetry), deadline, snap, true)
-	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceCompleted {
-		t.Fatalf("after saves recover inside the window the deadline must rank, got %+v", rb)
-	}
-}
+func TestBasketDeadlineSealAndRetryCadence(t *testing.T) {
+	t.Run("deadline_waits_for_a_seal_after_the_boundary", func(t *testing.T) {
+		cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+			basketTestBasket(root)["max_transition_net_usd"] = 1100
+		})
+		env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), newScriptedBasketVenue(false).factory())
+		deadline := basketTestDeadline()
+		early := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+		early.SealedAt, early.Deadline = deadline.Add(-2*time.Second), time.Time{}
+		env.cycle(deadline.Add(3*time.Second), deadline, early, false)
+		if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb != nil {
+			t.Fatalf("a snapshot sealed before the deadline must reserve nothing, got %+v", rb)
+		}
+		if d := env.bc.wakeDelay(deadline.Add(3 * time.Second)); d != 0 {
+			t.Fatalf("the late-seal case must keep the fast wake, got %s", d)
+		}
+		if n := env.dbCount(`SELECT COUNT(*) FROM basket_rebalances`); n != 0 {
+			t.Fatalf("rows reserved %d, want 0", n)
+		}
+		env.cycle(deadline.Add(time.Minute), deadline, basketTestSnapshot(deadline, 60, basketTestMarks(), 1), true)
+		if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceCompleted {
+			t.Fatalf("the next cycle inside the window must rank the deadline, got %+v", rb)
+		}
 
-func TestBasketFailedReservationWakesAtTheRetryCadence(t *testing.T) {
-	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
-		basketTestBasket(root)["max_transition_net_usd"] = 1100
+		cfg2 := loadBasketTestConfig(t, nil)
+		env2 := newBasketTestEnv(t, cfg2, basketTestRanker(basketTestWeights, ""), nil)
+		onTime := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+		onTime.SealedAt, onTime.Deadline = deadline.Add(time.Second), time.Time{}
+		env2.cycle(deadline.Add(time.Second), deadline, onTime, false)
+		if rb := env2.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status == basketRebalanceHeld || rb.TargetsJSON == "" {
+			t.Fatalf("a cycle that starts after the boundary must rank the deadline in that cycle, got %+v", rb)
+		}
 	})
-	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), nil)
-	deadline := basketTestDeadline()
-	snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
-	prev := storeCommitHook
-	storeCommitHook = func(storageRole) error { return errors.New("injected commit failure") }
-	t.Cleanup(func() { storeCommitHook = prev })
-	env.cycle(deadline.Add(5*time.Second), deadline, snap, false)
-	storeCommitHook = prev
-	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb != nil {
-		t.Fatalf("a failed reservation must leave no deadline record, got %+v", rb)
-	}
-	if _, ok := env.bc.dueDeadlines(deadline.Add(6 * time.Second))["xs-test"]; !ok {
-		t.Fatal("the deadline must stay due after a failed reservation")
-	}
-	if d := env.bc.wakeDelay(deadline.Add(6 * time.Second)); d < 30*time.Second {
-		t.Fatalf("a failed reservation must not force a fast wake, got %s", d)
-	}
-	env.cycle(deadline.Add(5*time.Second+basketHeldWakeRetry), deadline, snap, true)
-	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceCompleted {
-		t.Fatalf("after the file recovers inside the window the deadline must rank, got %+v", rb)
-	}
+	t.Run("save_blocked_deadline_wakes_at_the_retry_cadence", func(t *testing.T) {
+		cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+			basketTestBasket(root)["max_transition_net_usd"] = 1100
+		})
+		env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), nil)
+		deadline := basketTestDeadline()
+		snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+		now := deadline.Add(time.Minute)
+		env.bc.beginCycle()
+		env.bc.step(basketCycleInputs{Now: now, Snapshot: snap, SnapshotFor: func(*basketRuntime, time.Time) *marketSnapshot { return snap }, SaveBlocked: true, Once: true})
+		if _, ok := env.bc.dueDeadlines(now)["xs-test"]; !ok {
+			t.Fatal("a save-blocked deadline must stay due so a later cycle can rank it")
+		}
+		if d := env.bc.wakeDelay(now.Add(time.Second)); d < 30*time.Second {
+			t.Fatalf("a save-blocked deadline must not force a fast wake, got %s", d)
+		}
+		if d := env.bc.adjustDelay(10*time.Minute, now.Add(time.Second)); d != basketHeldWakeRetry-time.Second {
+			t.Fatalf("the loop should retry at the held cadence, got %s", d)
+		}
+		env.cycle(now.Add(basketHeldWakeRetry), deadline, snap, true)
+		if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceCompleted {
+			t.Fatalf("after saves recover inside the window the deadline must rank, got %+v", rb)
+		}
+	})
+	t.Run("failed_reservation_wakes_at_the_retry_cadence", func(t *testing.T) {
+		cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+			basketTestBasket(root)["max_transition_net_usd"] = 1100
+		})
+		env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), nil)
+		deadline := basketTestDeadline()
+		snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+		prev := storeCommitHook
+		storeCommitHook = func(storageRole) error { return errors.New("injected commit failure") }
+		t.Cleanup(func() { storeCommitHook = prev })
+		env.cycle(deadline.Add(5*time.Second), deadline, snap, false)
+		storeCommitHook = prev
+		if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb != nil {
+			t.Fatalf("a failed reservation must leave no deadline record, got %+v", rb)
+		}
+		if _, ok := env.bc.dueDeadlines(deadline.Add(6 * time.Second))["xs-test"]; !ok {
+			t.Fatal("the deadline must stay due after a failed reservation")
+		}
+		if d := env.bc.wakeDelay(deadline.Add(6 * time.Second)); d < 30*time.Second {
+			t.Fatalf("a failed reservation must not force a fast wake, got %s", d)
+		}
+		env.cycle(deadline.Add(5*time.Second+basketHeldWakeRetry), deadline, snap, true)
+		if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceCompleted {
+			t.Fatalf("after the file recovers inside the window the deadline must rank, got %+v", rb)
+		}
+	})
 }

@@ -597,92 +597,195 @@ func vpSession(owner *marketFeedOwner, coin string, cutoffMs int64) feedProfileS
 	return snap.Sessions[len(snap.Sessions)-1]
 }
 
-func TestVolumeProfileRestartWarmupAndLimits(t *testing.T) {
-	D0 := int64(1_790_000_000_000) / vpTestDayMs * vpTestDayMs
-	D1, D2 := D0+vpTestDayMs, D0+2*vpTestDayMs
-	var clockMs atomic.Int64
-	clockMs.Store(D0 + 6*3_600_000)
-	owner := vpFeedOwner(t, &clockMs, "BTC")
-	owner.IngestTradeSubscription("BTC", time.UnixMilli(D0+6*3_600_000), []byte("{}"))
-	tid := uint64(1)
-	for recv := D0 + 6*3_600_000 + 10_000; recv <= D2+3_600_000; recv += 20_000 {
-		px := "100"
-		if tid%2 == 0 {
-			px = "101"
-		}
-		vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", px, "0.01"))
-		tid++
-		if recv == D1+3_600_000-10_000 {
-			if s := vpSession(owner, "BTC", D1+3_600_000); s.Status != feedProfileStatusPending || s.Code != feedProfileCodeNotFinal {
-				t.Fatalf("a session that began before this owner started must hold as pending, got %+v", s)
+func TestVolumeProfileSessionCoverageAfterStartOrAttach(t *testing.T) {
+	t.Run("RestartWarmupAndLimits", func(t *testing.T) {
+		D0 := int64(1_790_000_000_000) / vpTestDayMs * vpTestDayMs
+		D1, D2 := D0+vpTestDayMs, D0+2*vpTestDayMs
+		var clockMs atomic.Int64
+		clockMs.Store(D0 + 6*3_600_000)
+		owner := vpFeedOwner(t, &clockMs, "BTC")
+		owner.IngestTradeSubscription("BTC", time.UnixMilli(D0+6*3_600_000), []byte("{}"))
+		tid := uint64(1)
+		for recv := D0 + 6*3_600_000 + 10_000; recv <= D2+3_600_000; recv += 20_000 {
+			px := "100"
+			if tid%2 == 0 {
+				px = "101"
+			}
+			vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", px, "0.01"))
+			tid++
+			if recv == D1+3_600_000-10_000 {
+				if s := vpSession(owner, "BTC", D1+3_600_000); s.Status != feedProfileStatusPending || s.Code != feedProfileCodeNotFinal {
+					t.Fatalf("a session that began before this owner started must hold as pending, got %+v", s)
+				}
 			}
 		}
-	}
-	if s := vpSession(owner, "BTC", D2+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact == nil || s.Artifact.Trades != 4320 {
-		t.Fatalf("the first complete session after a restart must become available, got %+v", s)
-	}
-	frozen := vpSession(owner, "BTC", D2+3_600_000).Artifact
-	lateRecv := D2 + 3_600_000 + 20_000
-	vpIngest(owner, &clockMs, lateRecv, vpTrade("BTC", 99_000_001, D1+5*3_600_000+1_000, "A", "100", "7"), vpTrade("BTC", tid, lateRecv-300, "B", "101", "0.01"))
-	owner.feedMu.Lock()
-	evicted := owner.tradeFlows[tradeFlowKeyFor("BTC")].interval(D1+5*3_600_000) == nil
-	owner.feedMu.Unlock()
-	if !evicted {
-		t.Fatal("the profile-only trade state must have evicted the minute 20 hours back")
-	}
-	if s := vpSession(owner, "BTC", D2+3_600_000+3_600_000); s.Status != feedProfileStatusInvalidated || s.Code != feedProfileCodeLate || s.InvalidMs != lateRecv {
-		t.Fatalf("a new trade for a finalized minute whose interval and identity were evicted must still revoke the session: %+v", s)
-	}
-	if s := vpSession(owner, "BTC", D2+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact != frozen || s.Artifact.Units != frozen.Units {
-		t.Fatalf("a revocation after the cutoff must leave the earlier view and the frozen numbers unchanged: %+v", s)
-	}
+		if s := vpSession(owner, "BTC", D2+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact == nil || s.Artifact.Trades != 4320 {
+			t.Fatalf("the first complete session after a restart must become available, got %+v", s)
+		}
+		frozen := vpSession(owner, "BTC", D2+3_600_000).Artifact
+		lateRecv := D2 + 3_600_000 + 20_000
+		vpIngest(owner, &clockMs, lateRecv, vpTrade("BTC", 99_000_001, D1+5*3_600_000+1_000, "A", "100", "7"), vpTrade("BTC", tid, lateRecv-300, "B", "101", "0.01"))
+		owner.feedMu.Lock()
+		evicted := owner.tradeFlows[tradeFlowKeyFor("BTC")].interval(D1+5*3_600_000) == nil
+		owner.feedMu.Unlock()
+		if !evicted {
+			t.Fatal("the profile-only trade state must have evicted the minute 20 hours back")
+		}
+		if s := vpSession(owner, "BTC", D2+3_600_000+3_600_000); s.Status != feedProfileStatusInvalidated || s.Code != feedProfileCodeLate || s.InvalidMs != lateRecv {
+			t.Fatalf("a new trade for a finalized minute whose interval and identity were evicted must still revoke the session: %+v", s)
+		}
+		if s := vpSession(owner, "BTC", D2+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact != frozen || s.Artifact.Units != frozen.Units {
+			t.Fatalf("a revocation after the cutoff must leave the earlier view and the frozen numbers unchanged: %+v", s)
+		}
 
-	for name, tc := range map[string]struct {
-		trade func(i int) map[string]any
-		n     int
-		code  string
-	}{
-		"entries": {func(i int) map[string]any {
-			return vpTrade("ETH", uint64(10_000+i), D0+10_000, "B", fmt.Sprintf("%d.5", 1000+i), "0.001")
-		}, feedProfileMaxEntries + 1, feedProfileCodeEntries},
-		"field": {func(i int) map[string]any {
-			return vpTrade("ETH", uint64(20_000+i), D0+10_000, "B", "1000000000000000.12345678", "0.001")
-		}, 1, feedProfileCodeFieldLength},
-		"overflow": {func(i int) map[string]any {
-			return vpTrade("ETH", uint64(30_000+i), D0+10_000, "B", "1000", "9999999999")
-		}, 1000, feedProfileCodeOverflow},
-	} {
+		for name, tc := range map[string]struct {
+			trade func(i int) map[string]any
+			n     int
+			code  string
+		}{
+			"entries": {func(i int) map[string]any {
+				return vpTrade("ETH", uint64(10_000+i), D0+10_000, "B", fmt.Sprintf("%d.5", 1000+i), "0.001")
+			}, feedProfileMaxEntries + 1, feedProfileCodeEntries},
+			"field": {func(i int) map[string]any {
+				return vpTrade("ETH", uint64(20_000+i), D0+10_000, "B", "1000000000000000.12345678", "0.001")
+			}, 1, feedProfileCodeFieldLength},
+			"overflow": {func(i int) map[string]any {
+				return vpTrade("ETH", uint64(30_000+i), D0+10_000, "B", "1000", "9999999999")
+			}, 1000, feedProfileCodeOverflow},
+		} {
+			var ck atomic.Int64
+			ck.Store(D0 - 120_000)
+			o := vpFeedOwner(t, &ck, "ETH")
+			o.IngestTradeSubscription("ETH", time.UnixMilli(D0-120_000), []byte("{}"))
+			for recv := D0 - 100_000; recv <= D0; recv += 20_000 {
+				vpIngest(o, &ck, recv, vpTrade("ETH", uint64(recv/1000), recv-300, "B", "1000", "0.001"))
+			}
+			var batch []map[string]any
+			for i := 0; i < tc.n; i++ {
+				batch = append(batch, tc.trade(i))
+			}
+			vpIngest(o, &ck, D0+10_500, batch...)
+			o.feedMu.Lock()
+			d := o.profileStateLocked("ETH").Days[D0]
+			status, code, prices := d.Status, d.Code, d.prices
+			o.feedMu.Unlock()
+			if status != feedProfileDayUnavailable || code != tc.code || prices != nil {
+				t.Fatalf("%s limit: day status %s code %s, map released %v", name, status, code, prices == nil)
+			}
+		}
+
 		var ck atomic.Int64
 		ck.Store(D0 - 120_000)
-		o := vpFeedOwner(t, &ck, "ETH")
-		o.IngestTradeSubscription("ETH", time.UnixMilli(D0-120_000), []byte("{}"))
-		for recv := D0 - 100_000; recv <= D0; recv += 20_000 {
-			vpIngest(o, &ck, recv, vpTrade("ETH", uint64(recv/1000), recv-300, "B", "1000", "0.001"))
+		flat := vpFeedOwner(t, &ck, "SOL")
+		flat.IngestTradeSubscription("SOL", time.UnixMilli(D0-120_000), []byte("{}"))
+		for recv := D0 - 100_000; recv <= D1+30_000; recv += 20_000 {
+			vpIngest(flat, &ck, recv, vpTrade("SOL", uint64(recv/1000), recv-300, "B", "50", "1"))
 		}
-		var batch []map[string]any
-		for i := 0; i < tc.n; i++ {
-			batch = append(batch, tc.trade(i))
+		if s := vpSession(flat, "SOL", D1+3_600_000); s.Status != feedProfileStatusUnavailable || s.Code != feedProfileCodeZeroRange {
+			t.Fatalf("a complete session at one price must be unavailable, got %+v", s)
 		}
-		vpIngest(o, &ck, D0+10_500, batch...)
-		o.feedMu.Lock()
-		d := o.profileStateLocked("ETH").Days[D0]
-		status, code, prices := d.Status, d.Code, d.prices
-		o.feedMu.Unlock()
-		if status != feedProfileDayUnavailable || code != tc.code || prices != nil {
-			t.Fatalf("%s limit: day status %s code %s, map released %v", name, status, code, prices == nil)
+	})
+	t.Run("AttachedToAnActiveTradeStreamWaitsForAFullSession", func(t *testing.T) {
+		D0 := int64(1_790_000_000_000) / vpTestDayMs * vpTestDayMs
+		D1, D2 := D0+vpTestDayMs, D0+2*vpTestDayMs
+		var clockMs atomic.Int64
+		clockMs.Store(D0 - 180_000)
+		owner := newMarketFeedOwner(func() time.Time { return time.UnixMilli(clockMs.Load()).UTC() }, t.Logf)
+		owner.feedMu.Lock()
+		owner.applyObservationNeedsLocked(map[feedObservationKey]int64{tradeFlowKeyFor("BTC"): 2 * 3_600_000})
+		owner.feedMu.Unlock()
+		owner.SetConnected(true)
+		owner.IngestTradeSubscription("BTC", time.UnixMilli(D0-180_000), []byte("{}"))
+		tid := uint64(1)
+		attached := false
+		for recv := D0 - 170_000; recv <= D2+30_000; recv += 20_000 {
+			px := "100"
+			if tid%2 == 0 {
+				px = "101"
+			}
+			vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", px, "0.01"))
+			tid++
+			if !attached && recv >= D0+30_000 {
+				owner.feedMu.Lock()
+				owner.applyObservationNeedsLocked(map[feedObservationKey]int64{tradeFlowKeyFor("BTC"): 2 * 3_600_000, volumeProfileKeyFor("BTC"): feedProfileWindowMs})
+				owner.feedMu.Unlock()
+				attached = true
+			}
 		}
-	}
-
-	var ck atomic.Int64
-	ck.Store(D0 - 120_000)
-	flat := vpFeedOwner(t, &ck, "SOL")
-	flat.IngestTradeSubscription("SOL", time.UnixMilli(D0-120_000), []byte("{}"))
-	for recv := D0 - 100_000; recv <= D1+30_000; recv += 20_000 {
-		vpIngest(flat, &ck, recv, vpTrade("SOL", uint64(recv/1000), recv-300, "B", "50", "1"))
-	}
-	if s := vpSession(flat, "SOL", D1+3_600_000); s.Status != feedProfileStatusUnavailable || s.Code != feedProfileCodeZeroRange {
-		t.Fatalf("a complete session at one price must be unavailable, got %+v", s)
-	}
+		if s := vpSession(owner, "BTC", D1+2*3_600_000); s.Status != feedProfileStatusUnavailable || s.Code != feedProfileCodeAttached {
+			t.Fatalf("a profile attached after trades of its first minute were accepted must not seal that session: %+v", s)
+		}
+		if s := vpSession(owner, "BTC", D2+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact == nil || s.Artifact.Trades != 4320 {
+			t.Fatalf("the next full session after the attach must become available: %+v", s)
+		}
+	})
+	t.Run("AttachedBeforeAFutureSkewedMinuteWaitsForTheNextSession", func(t *testing.T) {
+		D0 := int64(1_790_000_000_000) / vpTestDayMs * vpTestDayMs
+		D1, D2 := D0+vpTestDayMs, D0+2*vpTestDayMs
+		var clockMs atomic.Int64
+		clockMs.Store(D0 - 180_000)
+		owner := newMarketFeedOwner(func() time.Time { return time.UnixMilli(clockMs.Load()).UTC() }, t.Logf)
+		owner.feedMu.Lock()
+		owner.applyObservationNeedsLocked(map[feedObservationKey]int64{tradeFlowKeyFor("BTC"): 2 * 3_600_000})
+		owner.feedMu.Unlock()
+		owner.SetConnected(true)
+		owner.IngestTradeSubscription("BTC", time.UnixMilli(D0-180_000), []byte("{}"))
+		tid := uint64(1)
+		for recv := D0 - 170_000; recv < D0-200; recv += 20_000 {
+			vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", "100", "0.01"))
+			tid++
+		}
+		vpIngest(owner, &clockMs, D0-200, vpTrade("BTC", tid, D0+300, "A", "101", "0.01"))
+		tid++
+		clockMs.Store(D0 - 100)
+		owner.feedMu.Lock()
+		owner.applyObservationNeedsLocked(map[feedObservationKey]int64{tradeFlowKeyFor("BTC"): 2 * 3_600_000, volumeProfileKeyFor("BTC"): feedProfileWindowMs})
+		notBefore := owner.profileStateLocked("BTC").NotBeforeMs
+		owner.feedMu.Unlock()
+		if notBefore != D0+feedTradeIntervalMs {
+			t.Fatalf("a profile attached while minute %d already holds an accepted trade must start after it, got NotBeforeMs %d", D0, notBefore)
+		}
+		for recv := D0 + 10_000; recv <= D2+30_000; recv += 20_000 {
+			px := "100"
+			if tid%2 == 0 {
+				px = "101"
+			}
+			vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", px, "0.01"))
+			tid++
+		}
+		if s := vpSession(owner, "BTC", D1+3_600_000); s.Status != feedProfileStatusUnavailable || s.Code != feedProfileCodeAttached {
+			t.Fatalf("a session whose first minute held a trade accepted before the attach must stay unavailable: %+v", s)
+		}
+		if s := vpSession(owner, "BTC", D2+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact == nil || s.Artifact.Trades != 4320 {
+			t.Fatalf("the next full session after the attach must become available: %+v", s)
+		}
+	})
+	t.Run("AttachedToAFreshTradeStateSealsTheFirstCoveredSession", func(t *testing.T) {
+		D0 := int64(1_790_000_000_000) / vpTestDayMs * vpTestDayMs
+		D1 := D0 + vpTestDayMs
+		var clockMs atomic.Int64
+		clockMs.Store(D0 - 180_000)
+		owner := vpFeedOwner(t, &clockMs, "BTC")
+		owner.feedMu.Lock()
+		notBefore := owner.profileStateLocked("BTC").NotBeforeMs
+		owner.feedMu.Unlock()
+		if notBefore != 0 {
+			t.Fatalf("a profile attached to a trade state with no coverage and no intervals must keep NotBeforeMs 0, got %d", notBefore)
+		}
+		owner.IngestTradeSubscription("BTC", time.UnixMilli(D0-180_000), []byte("{}"))
+		tid := uint64(1)
+		for recv := D0 - 170_000; recv <= D1+30_000; recv += 20_000 {
+			px := "100"
+			if tid%2 == 0 {
+				px = "101"
+			}
+			vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", px, "0.01"))
+			tid++
+		}
+		if s := vpSession(owner, "BTC", D1+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact == nil || s.Artifact.Trades != 4320 {
+			t.Fatalf("the first fully covered session of a fresh profile must become available: %+v", s)
+		}
+	})
 }
 
 func vpMaxArtifact(coin string, start int64) *feedProfileArtifact {
@@ -825,110 +928,6 @@ func TestVolumeProfileCapacityAtLimitsAndEntryOnlyIsolation(t *testing.T) {
 				t.Fatalf("one coin's malformed profile must not affect another coin: %s", other.Status)
 			}
 		}
-	}
-}
-
-func TestVolumeProfileAttachedToAnActiveTradeStreamWaitsForAFullSession(t *testing.T) {
-	D0 := int64(1_790_000_000_000) / vpTestDayMs * vpTestDayMs
-	D1, D2 := D0+vpTestDayMs, D0+2*vpTestDayMs
-	var clockMs atomic.Int64
-	clockMs.Store(D0 - 180_000)
-	owner := newMarketFeedOwner(func() time.Time { return time.UnixMilli(clockMs.Load()).UTC() }, t.Logf)
-	owner.feedMu.Lock()
-	owner.applyObservationNeedsLocked(map[feedObservationKey]int64{tradeFlowKeyFor("BTC"): 2 * 3_600_000})
-	owner.feedMu.Unlock()
-	owner.SetConnected(true)
-	owner.IngestTradeSubscription("BTC", time.UnixMilli(D0-180_000), []byte("{}"))
-	tid := uint64(1)
-	attached := false
-	for recv := D0 - 170_000; recv <= D2+30_000; recv += 20_000 {
-		px := "100"
-		if tid%2 == 0 {
-			px = "101"
-		}
-		vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", px, "0.01"))
-		tid++
-		if !attached && recv >= D0+30_000 {
-			owner.feedMu.Lock()
-			owner.applyObservationNeedsLocked(map[feedObservationKey]int64{tradeFlowKeyFor("BTC"): 2 * 3_600_000, volumeProfileKeyFor("BTC"): feedProfileWindowMs})
-			owner.feedMu.Unlock()
-			attached = true
-		}
-	}
-	if s := vpSession(owner, "BTC", D1+2*3_600_000); s.Status != feedProfileStatusUnavailable || s.Code != feedProfileCodeAttached {
-		t.Fatalf("a profile attached after trades of its first minute were accepted must not seal that session: %+v", s)
-	}
-	if s := vpSession(owner, "BTC", D2+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact == nil || s.Artifact.Trades != 4320 {
-		t.Fatalf("the next full session after the attach must become available: %+v", s)
-	}
-}
-
-func TestVolumeProfileAttachedBeforeAFutureSkewedMinuteWaitsForTheNextSession(t *testing.T) {
-	D0 := int64(1_790_000_000_000) / vpTestDayMs * vpTestDayMs
-	D1, D2 := D0+vpTestDayMs, D0+2*vpTestDayMs
-	var clockMs atomic.Int64
-	clockMs.Store(D0 - 180_000)
-	owner := newMarketFeedOwner(func() time.Time { return time.UnixMilli(clockMs.Load()).UTC() }, t.Logf)
-	owner.feedMu.Lock()
-	owner.applyObservationNeedsLocked(map[feedObservationKey]int64{tradeFlowKeyFor("BTC"): 2 * 3_600_000})
-	owner.feedMu.Unlock()
-	owner.SetConnected(true)
-	owner.IngestTradeSubscription("BTC", time.UnixMilli(D0-180_000), []byte("{}"))
-	tid := uint64(1)
-	for recv := D0 - 170_000; recv < D0-200; recv += 20_000 {
-		vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", "100", "0.01"))
-		tid++
-	}
-	vpIngest(owner, &clockMs, D0-200, vpTrade("BTC", tid, D0+300, "A", "101", "0.01"))
-	tid++
-	clockMs.Store(D0 - 100)
-	owner.feedMu.Lock()
-	owner.applyObservationNeedsLocked(map[feedObservationKey]int64{tradeFlowKeyFor("BTC"): 2 * 3_600_000, volumeProfileKeyFor("BTC"): feedProfileWindowMs})
-	notBefore := owner.profileStateLocked("BTC").NotBeforeMs
-	owner.feedMu.Unlock()
-	if notBefore != D0+feedTradeIntervalMs {
-		t.Fatalf("a profile attached while minute %d already holds an accepted trade must start after it, got NotBeforeMs %d", D0, notBefore)
-	}
-	for recv := D0 + 10_000; recv <= D2+30_000; recv += 20_000 {
-		px := "100"
-		if tid%2 == 0 {
-			px = "101"
-		}
-		vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", px, "0.01"))
-		tid++
-	}
-	if s := vpSession(owner, "BTC", D1+3_600_000); s.Status != feedProfileStatusUnavailable || s.Code != feedProfileCodeAttached {
-		t.Fatalf("a session whose first minute held a trade accepted before the attach must stay unavailable: %+v", s)
-	}
-	if s := vpSession(owner, "BTC", D2+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact == nil || s.Artifact.Trades != 4320 {
-		t.Fatalf("the next full session after the attach must become available: %+v", s)
-	}
-}
-
-func TestVolumeProfileAttachedToAFreshTradeStateSealsTheFirstCoveredSession(t *testing.T) {
-	D0 := int64(1_790_000_000_000) / vpTestDayMs * vpTestDayMs
-	D1 := D0 + vpTestDayMs
-	var clockMs atomic.Int64
-	clockMs.Store(D0 - 180_000)
-	owner := vpFeedOwner(t, &clockMs, "BTC")
-	owner.feedMu.Lock()
-	notBefore := owner.profileStateLocked("BTC").NotBeforeMs
-	owner.feedMu.Unlock()
-	if notBefore != 0 {
-		t.Fatalf("a profile attached to a trade state with no coverage and no intervals must keep NotBeforeMs 0, got %d", notBefore)
-	}
-	owner.IngestTradeSubscription("BTC", time.UnixMilli(D0-180_000), []byte("{}"))
-	tid := uint64(1)
-	for recv := D0 - 170_000; recv <= D1+30_000; recv += 20_000 {
-		px := "100"
-		if tid%2 == 0 {
-			px = "101"
-		}
-		vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", px, "0.01"))
-		tid++
-	}
-	if s := vpSession(owner, "BTC", D1+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact == nil || s.Artifact.Trades != 4320 {
-		t.Fatalf("the first fully covered session of a fresh profile must become available: %+v", s)
 	}
 }
 

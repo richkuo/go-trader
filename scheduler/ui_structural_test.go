@@ -93,239 +93,240 @@ func configStrategyIDs(t *testing.T, path string) []string {
 	return ids
 }
 
-func TestUIStructuralEndpointsRejectCrossOriginAndNonPOST(t *testing.T) {
-	ss, _, _ := newStructuralTestServer(t)
-	endpoints := map[string]func(http.ResponseWriter, *http.Request){
-		"/api/config/add-strategy": ss.handleAPIAddStrategy,
-		"/api/strategies/hl-momentum-eth/remove-strategy": func(w http.ResponseWriter, r *http.Request) {
-			ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "remove-strategy")
-		},
-		"/api/strategies/hl-momentum-eth/paper-to-live": func(w http.ResponseWriter, r *http.Request) {
-			ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "paper-to-live")
-		},
-		"/api/strategies/hl-momentum-eth/apply-regime-gate": func(w http.ResponseWriter, r *http.Request) {
-			ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "apply-regime-gate")
-		},
-	}
-	for url, h := range endpoints {
-		w := mutationPost(ss, h, url, `{"nonce":"x","params":{}}`, map[string]string{"Origin": "http://evil.example"})
-		if w.Code != http.StatusForbidden {
-			t.Errorf("%s cross-origin status = %d, want 403", url, w.Code)
+func TestUIStructuralRequestGuards(t *testing.T) {
+	t.Run("UIStructuralEndpointsRejectCrossOriginAndNonPOST", func(t *testing.T) {
+		ss, _, _ := newStructuralTestServer(t)
+		endpoints := map[string]func(http.ResponseWriter, *http.Request){
+			"/api/config/add-strategy": ss.handleAPIAddStrategy,
+			"/api/strategies/hl-momentum-eth/remove-strategy": func(w http.ResponseWriter, r *http.Request) {
+				ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "remove-strategy")
+			},
+			"/api/strategies/hl-momentum-eth/paper-to-live": func(w http.ResponseWriter, r *http.Request) {
+				ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "paper-to-live")
+			},
+			"/api/strategies/hl-momentum-eth/apply-regime-gate": func(w http.ResponseWriter, r *http.Request) {
+				ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "apply-regime-gate")
+			},
 		}
-		req := newTestGetRequest(url)
-		rec := newTestRecorder()
-		h(rec, req)
-		if rec.Code != http.StatusMethodNotAllowed {
-			t.Errorf("%s GET status = %d, want 405", url, rec.Code)
-		}
-		w = mutationPost(ss, h, url, `{"params":{}}`, nil)
-		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "nonce is required") {
-			t.Errorf("%s no-nonce status = %d body %s, want 400 nonce-required", url, w.Code, w.Body.String())
-		}
-		w = mutationPost(ss, h, url, `{"nonce":"deadbeef","params":{}}`, nil)
-		if w.Code != http.StatusForbidden {
-			t.Errorf("%s bogus-nonce status = %d, want 403", url, w.Code)
-		}
-	}
-}
-
-func TestUIAddStrategyEndToEnd(t *testing.T) {
-	ss, path, restarts := newStructuralTestServer(t)
-	params := `{"name":"momentum","platform":"hyperliquid","asset":"SOL"}`
-	confirm := structuralConfirm(t, ss, "add-strategy", "", params)
-	if confirm.ConfirmPhrase == "" || !strings.HasPrefix(confirm.ConfirmPhrase, "hl-") {
-		t.Fatalf("confirm phrase should be the generated hl- id, got %q", confirm.ConfirmPhrase)
-	}
-	if !strings.Contains(confirm.Description, "PAPER mode") {
-		t.Errorf("description should state paper mode: %s", confirm.Description)
-	}
-	if !strings.Contains(confirm.Description, "restart-required") {
-		t.Errorf("description should state the restart requirement: %s", confirm.Description)
-	}
-
-	body := fmt.Sprintf(`{"nonce":%q,"params":%s}`, confirm.Nonce, params)
-	w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("add-strategy status = %d, body %s", w.Code, w.Body.String())
-	}
-	ids := configStrategyIDs(t, path)
-	if len(ids) != 3 || ids[2] != confirm.ConfirmPhrase {
-		t.Fatalf("config strategies after add = %v, want 3rd = %s", ids, confirm.ConfirmPhrase)
-	}
-	if !strings.Contains(string(mustReadFile(t, path)), "--mode=paper") {
-		t.Error("new strategy must be created in paper mode")
-	}
-	if restarts.Load() != 0 {
-		t.Fatalf("restarts = %d, want 0 (restart not requested)", restarts.Load())
-	}
-	if _, err := LoadConfigForProbe(path); err != nil {
-		t.Fatalf("config after add-strategy fails validation: %v", err)
-	}
-
-	w = mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("nonce replay status = %d, want 403", w.Code)
-	}
-	if got := configStrategyIDs(t, path); len(got) != 3 {
-		t.Fatalf("replay must not mutate config; strategies = %v", got)
-	}
-}
-
-func TestUIAddStrategyCreatesPaperMoneyFlowIndexReversal(t *testing.T) {
-	ss, path, _ := newStructuralTestServer(t)
-	params := `{"name":"money_flow_index_reversal","platform":"hyperliquid","asset":"BTC"}`
-	confirm := structuralConfirm(t, ss, "add-strategy", "", params)
-	if confirm.ConfirmPhrase != "hl-mfi-btc" {
-		t.Fatalf("confirm phrase = %q, want hl-mfi-btc", confirm.ConfirmPhrase)
-	}
-	body := fmt.Sprintf(`{"nonce":%q,"params":%s}`, confirm.Nonce, params)
-	w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("add-strategy status = %d, body %s", w.Code, w.Body.String())
-	}
-	list, err := configStrategies(readConfigRoot(t, path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var added map[string]interface{}
-	for _, raw := range list {
-		if strategyRawID(raw) == "hl-mfi-btc" {
-			if err := json.Unmarshal(raw, &added); err != nil {
-				t.Fatal(err)
+		for url, h := range endpoints {
+			w := mutationPost(ss, h, url, `{"nonce":"x","params":{}}`, map[string]string{"Origin": "http://evil.example"})
+			if w.Code != http.StatusForbidden {
+				t.Errorf("%s cross-origin status = %d, want 403", url, w.Code)
+			}
+			req := newTestGetRequest(url)
+			rec := newTestRecorder()
+			h(rec, req)
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Errorf("%s GET status = %d, want 405", url, rec.Code)
+			}
+			w = mutationPost(ss, h, url, `{"params":{}}`, nil)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "nonce is required") {
+				t.Errorf("%s no-nonce status = %d body %s, want 400 nonce-required", url, w.Code, w.Body.String())
+			}
+			w = mutationPost(ss, h, url, `{"nonce":"deadbeef","params":{}}`, nil)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("%s bogus-nonce status = %d, want 403", url, w.Code)
 			}
 		}
-	}
-	if added == nil {
-		t.Fatalf("hl-mfi-btc missing from config: %s", mustReadFile(t, path))
-	}
-	args := added["args"].([]interface{})
-	if added["direction"] != DirectionBoth || args[0] != "money_flow_index_reversal" || args[len(args)-1] != "--mode=paper" {
-		t.Fatalf("added entry = %v, want direction both and explicit paper", added)
-	}
-	if _, has := added["allow_no_edge"]; has {
-		t.Fatal("status-page add must not write an acknowledgement")
-	}
-	if _, err := LoadConfigForProbe(path); err != nil {
-		t.Fatalf("config after add-strategy fails validation: %v", err)
-	}
-}
-
-func TestUIAddNoEdgeResearchStrategyIsBothSidedPaperWithoutAcknowledgement(t *testing.T) {
-	ss, path, _ := newStructuralTestServer(t)
-	params := `{"name":"ultimate_oscillator","platform":"hyperliquid","asset":"SOL"}`
-	confirm := structuralConfirm(t, ss, "add-strategy", "", params)
-	if confirm.ConfirmPhrase != "hl-uo-sol" {
-		t.Fatalf("confirm phrase = %q, want hl-uo-sol", confirm.ConfirmPhrase)
-	}
-	body := fmt.Sprintf(`{"nonce":%q,"params":%s}`, confirm.Nonce, params)
-	w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("add-strategy status = %d, body %s", w.Code, w.Body.String())
-	}
-	raw := rawStrategiesByID(t, path)["hl-uo-sol"]
-	if raw == nil {
-		t.Fatalf("hl-uo-sol missing from config: %v", configStrategyIDs(t, path))
-	}
-	args, _ := raw["args"].([]interface{})
-	if len(args) != 4 || args[0] != "ultimate_oscillator" || args[3] != "--mode=paper" {
-		t.Fatalf("args = %v, want ultimate_oscillator in explicit paper mode", raw["args"])
-	}
-	if raw["direction"] != DirectionBoth {
-		t.Fatalf("direction = %v, want %s for a short-entry strategy", raw["direction"], DirectionBoth)
-	}
-	if _, has := raw["allow_no_edge"]; has {
-		t.Fatal("status-page add must never grant a live acknowledgement")
-	}
-	cfg, err := LoadConfigForProbe(path)
-	if err != nil {
-		t.Fatalf("config after add-strategy fails validation: %v", err)
-	}
-	for _, sc := range cfg.Strategies {
-		if sc.ID == "hl-uo-sol" && (portfolioScopeFor(sc) != ScopePaper || sc.AllowNoEdgeAcknowledged()) {
-			t.Fatalf("hl-uo-sol must load as unacknowledged paper: scope=%s ack=%v", portfolioScopeFor(sc), sc.AllowNoEdgeAcknowledged())
+	})
+	t.Run("UIStructuralNonceBindingCoversParams", func(t *testing.T) {
+		ss, path, _ := newStructuralTestServer(t)
+		confirm := structuralConfirm(t, ss, "add-strategy", "", `{"name":"momentum","platform":"hyperliquid","asset":"SOL"}`)
+		body := fmt.Sprintf(`{"nonce":%q,"params":{"name":"momentum","platform":"hyperliquid","asset":"DOGE"}}`, confirm.Nonce)
+		w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("param-mismatch status = %d, want 403; body %s", w.Code, w.Body.String())
 		}
-	}
+		if got := configStrategyIDs(t, path); len(got) != 2 {
+			t.Fatalf("mismatched execute must not mutate config; strategies = %v", got)
+		}
+	})
 }
 
-func TestUIAddStrategyRestartParamFiresRestart(t *testing.T) {
-	ss, _, restarts := newStructuralTestServer(t)
-	params := `{"name":"momentum","platform":"hyperliquid","asset":"SOL","restart":true}`
-	confirm := structuralConfirm(t, ss, "add-strategy", "", params)
-	body := fmt.Sprintf(`{"nonce":%q,"params":%s}`, confirm.Nonce, params)
-	w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("add-strategy status = %d, body %s", w.Code, w.Body.String())
-	}
-	waitForRestarts(t, restarts, 1)
+func TestUIAddStrategy(t *testing.T) {
+	t.Run("UIAddStrategyEndToEnd", func(t *testing.T) {
+		ss, path, restarts := newStructuralTestServer(t)
+		params := `{"name":"momentum","platform":"hyperliquid","asset":"SOL"}`
+		confirm := structuralConfirm(t, ss, "add-strategy", "", params)
+		if confirm.ConfirmPhrase == "" || !strings.HasPrefix(confirm.ConfirmPhrase, "hl-") {
+			t.Fatalf("confirm phrase should be the generated hl- id, got %q", confirm.ConfirmPhrase)
+		}
+		if !strings.Contains(confirm.Description, "PAPER mode") {
+			t.Errorf("description should state paper mode: %s", confirm.Description)
+		}
+		if !strings.Contains(confirm.Description, "restart-required") {
+			t.Errorf("description should state the restart requirement: %s", confirm.Description)
+		}
+
+		body := fmt.Sprintf(`{"nonce":%q,"params":%s}`, confirm.Nonce, params)
+		w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("add-strategy status = %d, body %s", w.Code, w.Body.String())
+		}
+		ids := configStrategyIDs(t, path)
+		if len(ids) != 3 || ids[2] != confirm.ConfirmPhrase {
+			t.Fatalf("config strategies after add = %v, want 3rd = %s", ids, confirm.ConfirmPhrase)
+		}
+		if !strings.Contains(string(mustReadFile(t, path)), "--mode=paper") {
+			t.Error("new strategy must be created in paper mode")
+		}
+		if restarts.Load() != 0 {
+			t.Fatalf("restarts = %d, want 0 (restart not requested)", restarts.Load())
+		}
+		if _, err := LoadConfigForProbe(path); err != nil {
+			t.Fatalf("config after add-strategy fails validation: %v", err)
+		}
+
+		w = mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("nonce replay status = %d, want 403", w.Code)
+		}
+		if got := configStrategyIDs(t, path); len(got) != 3 {
+			t.Fatalf("replay must not mutate config; strategies = %v", got)
+		}
+	})
+	t.Run("UIAddStrategyCreatesPaperMoneyFlowIndexReversal", func(t *testing.T) {
+		ss, path, _ := newStructuralTestServer(t)
+		params := `{"name":"money_flow_index_reversal","platform":"hyperliquid","asset":"BTC"}`
+		confirm := structuralConfirm(t, ss, "add-strategy", "", params)
+		if confirm.ConfirmPhrase != "hl-mfi-btc" {
+			t.Fatalf("confirm phrase = %q, want hl-mfi-btc", confirm.ConfirmPhrase)
+		}
+		body := fmt.Sprintf(`{"nonce":%q,"params":%s}`, confirm.Nonce, params)
+		w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("add-strategy status = %d, body %s", w.Code, w.Body.String())
+		}
+		list, err := configStrategies(readConfigRoot(t, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var added map[string]interface{}
+		for _, raw := range list {
+			if strategyRawID(raw) == "hl-mfi-btc" {
+				if err := json.Unmarshal(raw, &added); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if added == nil {
+			t.Fatalf("hl-mfi-btc missing from config: %s", mustReadFile(t, path))
+		}
+		args := added["args"].([]interface{})
+		if added["direction"] != DirectionBoth || args[0] != "money_flow_index_reversal" || args[len(args)-1] != "--mode=paper" {
+			t.Fatalf("added entry = %v, want direction both and explicit paper", added)
+		}
+		if _, has := added["allow_no_edge"]; has {
+			t.Fatal("status-page add must not write an acknowledgement")
+		}
+		if _, err := LoadConfigForProbe(path); err != nil {
+			t.Fatalf("config after add-strategy fails validation: %v", err)
+		}
+	})
+	t.Run("UIAddNoEdgeResearchStrategyIsBothSidedPaperWithoutAcknowledgement", func(t *testing.T) {
+		ss, path, _ := newStructuralTestServer(t)
+		params := `{"name":"ultimate_oscillator","platform":"hyperliquid","asset":"SOL"}`
+		confirm := structuralConfirm(t, ss, "add-strategy", "", params)
+		if confirm.ConfirmPhrase != "hl-uo-sol" {
+			t.Fatalf("confirm phrase = %q, want hl-uo-sol", confirm.ConfirmPhrase)
+		}
+		body := fmt.Sprintf(`{"nonce":%q,"params":%s}`, confirm.Nonce, params)
+		w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("add-strategy status = %d, body %s", w.Code, w.Body.String())
+		}
+		raw := rawStrategiesByID(t, path)["hl-uo-sol"]
+		if raw == nil {
+			t.Fatalf("hl-uo-sol missing from config: %v", configStrategyIDs(t, path))
+		}
+		args, _ := raw["args"].([]interface{})
+		if len(args) != 4 || args[0] != "ultimate_oscillator" || args[3] != "--mode=paper" {
+			t.Fatalf("args = %v, want ultimate_oscillator in explicit paper mode", raw["args"])
+		}
+		if raw["direction"] != DirectionBoth {
+			t.Fatalf("direction = %v, want %s for a short-entry strategy", raw["direction"], DirectionBoth)
+		}
+		if _, has := raw["allow_no_edge"]; has {
+			t.Fatal("status-page add must never grant a live acknowledgement")
+		}
+		cfg, err := LoadConfigForProbe(path)
+		if err != nil {
+			t.Fatalf("config after add-strategy fails validation: %v", err)
+		}
+		for _, sc := range cfg.Strategies {
+			if sc.ID == "hl-uo-sol" && (portfolioScopeFor(sc) != ScopePaper || sc.AllowNoEdgeAcknowledged()) {
+				t.Fatalf("hl-uo-sol must load as unacknowledged paper: scope=%s ack=%v", portfolioScopeFor(sc), sc.AllowNoEdgeAcknowledged())
+			}
+		}
+	})
+	t.Run("UIAddStrategyRestartParamFiresRestart", func(t *testing.T) {
+		ss, _, restarts := newStructuralTestServer(t)
+		params := `{"name":"momentum","platform":"hyperliquid","asset":"SOL","restart":true}`
+		confirm := structuralConfirm(t, ss, "add-strategy", "", params)
+		body := fmt.Sprintf(`{"nonce":%q,"params":%s}`, confirm.Nonce, params)
+		w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("add-strategy status = %d, body %s", w.Code, w.Body.String())
+		}
+		waitForRestarts(t, restarts, 1)
+	})
 }
 
-func TestUIStructuralNonceBindingCoversParams(t *testing.T) {
-	ss, path, _ := newStructuralTestServer(t)
-	confirm := structuralConfirm(t, ss, "add-strategy", "", `{"name":"momentum","platform":"hyperliquid","asset":"SOL"}`)
-	body := fmt.Sprintf(`{"nonce":%q,"params":{"name":"momentum","platform":"hyperliquid","asset":"DOGE"}}`, confirm.Nonce)
-	w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("param-mismatch status = %d, want 403; body %s", w.Code, w.Body.String())
-	}
-	if got := configStrategyIDs(t, path); len(got) != 2 {
-		t.Fatalf("mismatched execute must not mutate config; strategies = %v", got)
-	}
-}
+func TestUIRemoveStrategy(t *testing.T) {
+	t.Run("UIRemoveStrategyEndToEnd", func(t *testing.T) {
+		ss, path, restarts := newStructuralTestServer(t)
+		confirm := structuralConfirm(t, ss, "remove-strategy", "sma-btc", `{}`)
+		if confirm.ConfirmPhrase != "sma-btc" {
+			t.Fatalf("confirm phrase = %q, want sma-btc", confirm.ConfirmPhrase)
+		}
+		h := func(w http.ResponseWriter, r *http.Request) {
+			ss.handleAPIStrategyStructural(w, r, "sma-btc", "remove-strategy")
+		}
+		body := fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce)
+		w := mutationPost(ss, h, "/api/strategies/sma-btc/remove-strategy", body, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("remove-strategy status = %d, body %s", w.Code, w.Body.String())
+		}
+		if ids := configStrategyIDs(t, path); len(ids) != 1 || ids[0] != "hl-momentum-eth" {
+			t.Fatalf("strategies after remove = %v, want [hl-momentum-eth]", ids)
+		}
+		if restarts.Load() != 0 {
+			t.Fatalf("restarts = %d, want 0", restarts.Load())
+		}
+		if _, err := LoadConfigForProbe(path); err != nil {
+			t.Fatalf("config after remove fails validation: %v", err)
+		}
 
-func TestUIRemoveStrategyEndToEnd(t *testing.T) {
-	ss, path, restarts := newStructuralTestServer(t)
-	confirm := structuralConfirm(t, ss, "remove-strategy", "sma-btc", `{}`)
-	if confirm.ConfirmPhrase != "sma-btc" {
-		t.Fatalf("confirm phrase = %q, want sma-btc", confirm.ConfirmPhrase)
-	}
-	h := func(w http.ResponseWriter, r *http.Request) {
-		ss.handleAPIStrategyStructural(w, r, "sma-btc", "remove-strategy")
-	}
-	body := fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce)
-	w := mutationPost(ss, h, "/api/strategies/sma-btc/remove-strategy", body, nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("remove-strategy status = %d, body %s", w.Code, w.Body.String())
-	}
-	if ids := configStrategyIDs(t, path); len(ids) != 1 || ids[0] != "hl-momentum-eth" {
-		t.Fatalf("strategies after remove = %v, want [hl-momentum-eth]", ids)
-	}
-	if restarts.Load() != 0 {
-		t.Fatalf("restarts = %d, want 0", restarts.Load())
-	}
-	if _, err := LoadConfigForProbe(path); err != nil {
-		t.Fatalf("config after remove fails validation: %v", err)
-	}
-
-	ss.UpdateStrategies([]StrategyConfig{{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h", "--mode=paper"}}})
-	cbody := `{"action":"remove-strategy","strategy_id":"hl-momentum-eth","params":{}}`
-	w = mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", cbody, nil)
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "only strategy") {
-		t.Fatalf("only-strategy confirm status = %d body %s, want 400 refusal", w.Code, w.Body.String())
-	}
-	if ids := configStrategyIDs(t, path); len(ids) != 1 {
-		t.Fatalf("refused confirm must not mutate config; strategies = %v", ids)
-	}
-}
-
-func TestUIRemoveStrategyExecuteRefusesOnlyStrategyAfterConcurrentPrune(t *testing.T) {
-	ss, path, _ := newStructuralTestServer(t)
-	confirm := structuralConfirm(t, ss, "remove-strategy", "hl-momentum-eth", `{}`)
-	if err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
-		return removeStrategyFromRoot(root, "sma-btc")
-	}); err != nil {
-		t.Fatalf("concurrent prune: %v", err)
-	}
-	h := func(w http.ResponseWriter, r *http.Request) {
-		ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "remove-strategy")
-	}
-	body := fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce)
-	w := mutationPost(ss, h, "/api/strategies/hl-momentum-eth/remove-strategy", body, nil)
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "only strategy") {
-		t.Fatalf("execute-after-prune status = %d body %s, want 409 only-strategy", w.Code, w.Body.String())
-	}
-	if ids := configStrategyIDs(t, path); len(ids) != 1 {
-		t.Fatalf("refused execute must not mutate config; strategies = %v", ids)
-	}
+		ss.UpdateStrategies([]StrategyConfig{{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h", "--mode=paper"}}})
+		cbody := `{"action":"remove-strategy","strategy_id":"hl-momentum-eth","params":{}}`
+		w = mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", cbody, nil)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "only strategy") {
+			t.Fatalf("only-strategy confirm status = %d body %s, want 400 refusal", w.Code, w.Body.String())
+		}
+		if ids := configStrategyIDs(t, path); len(ids) != 1 {
+			t.Fatalf("refused confirm must not mutate config; strategies = %v", ids)
+		}
+	})
+	t.Run("UIRemoveStrategyExecuteRefusesOnlyStrategyAfterConcurrentPrune", func(t *testing.T) {
+		ss, path, _ := newStructuralTestServer(t)
+		confirm := structuralConfirm(t, ss, "remove-strategy", "hl-momentum-eth", `{}`)
+		if err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
+			return removeStrategyFromRoot(root, "sma-btc")
+		}); err != nil {
+			t.Fatalf("concurrent prune: %v", err)
+		}
+		h := func(w http.ResponseWriter, r *http.Request) {
+			ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "remove-strategy")
+		}
+		body := fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce)
+		w := mutationPost(ss, h, "/api/strategies/hl-momentum-eth/remove-strategy", body, nil)
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "only strategy") {
+			t.Fatalf("execute-after-prune status = %d body %s, want 409 only-strategy", w.Code, w.Body.String())
+		}
+		if ids := configStrategyIDs(t, path); len(ids) != 1 {
+			t.Fatalf("refused execute must not mutate config; strategies = %v", ids)
+		}
+	})
 }
 
 func TestUIRemoveStrategyConfirmWarnsOnOpenPosition(t *testing.T) {
@@ -339,37 +340,103 @@ func TestUIRemoveStrategyConfirmWarnsOnOpenPosition(t *testing.T) {
 	}
 }
 
-func TestUIPaperToLiveEndToEnd(t *testing.T) {
-	ss, path, _ := newStructuralTestServer(t)
-	confirm := structuralConfirm(t, ss, "paper-to-live", "hl-momentum-eth", `{}`)
-	if !strings.Contains(confirm.Description, "REAL ORDERS WITH REAL FUNDS") {
-		t.Fatalf("confirm description must carry the live-funds warning: %s", confirm.Description)
-	}
-	h := func(w http.ResponseWriter, r *http.Request) {
-		ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "paper-to-live")
-	}
-	body := fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce)
-	w := mutationPost(ss, h, "/api/strategies/hl-momentum-eth/paper-to-live", body, nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("paper-to-live status = %d, body %s", w.Code, w.Body.String())
-	}
-	raw := string(mustReadFile(t, path))
-	if strings.Contains(raw, "--mode=paper") || !strings.Contains(raw, "--mode=live") {
-		t.Fatalf("args not flipped to live:\n%s", raw)
-	}
-	if _, err := LoadConfigForProbe(path); err != nil {
-		t.Fatalf("config after paper-to-live fails validation: %v", err)
-	}
+func TestUIPaperToLive(t *testing.T) {
+	t.Run("UIPaperToLiveEndToEnd", func(t *testing.T) {
+		ss, path, _ := newStructuralTestServer(t)
+		confirm := structuralConfirm(t, ss, "paper-to-live", "hl-momentum-eth", `{}`)
+		if !strings.Contains(confirm.Description, "REAL ORDERS WITH REAL FUNDS") {
+			t.Fatalf("confirm description must carry the live-funds warning: %s", confirm.Description)
+		}
+		h := func(w http.ResponseWriter, r *http.Request) {
+			ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "paper-to-live")
+		}
+		body := fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce)
+		w := mutationPost(ss, h, "/api/strategies/hl-momentum-eth/paper-to-live", body, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("paper-to-live status = %d, body %s", w.Code, w.Body.String())
+		}
+		raw := string(mustReadFile(t, path))
+		if strings.Contains(raw, "--mode=paper") || !strings.Contains(raw, "--mode=live") {
+			t.Fatalf("args not flipped to live:\n%s", raw)
+		}
+		if _, err := LoadConfigForProbe(path); err != nil {
+			t.Fatalf("config after paper-to-live fails validation: %v", err)
+		}
 
-	ss.UpdateStrategies([]StrategyConfig{
-		{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
-		{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h", "--mode=live"}},
+		ss.UpdateStrategies([]StrategyConfig{
+			{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+			{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h", "--mode=live"}},
+		})
+		body = `{"action":"paper-to-live","strategy_id":"hl-momentum-eth","params":{}}`
+		rec := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "already live") {
+			t.Fatalf("already-live confirm status = %d body %s, want 400 already-live", rec.Code, rec.Body.String())
+		}
 	})
-	body = `{"action":"paper-to-live","strategy_id":"hl-momentum-eth","params":{}}`
-	rec := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "already live") {
-		t.Fatalf("already-live confirm status = %d body %s, want 400 already-live", rec.Code, rec.Body.String())
-	}
+	t.Run("PaperToLiveReadsBothModeForms", func(t *testing.T) {
+		cases := []struct {
+			name string
+			args []string
+			want []string
+		}{
+			{"equals paper", []string{"breakout", "ETH", "1h", "--mode=paper"}, []string{"breakout", "ETH", "1h", "--mode=live"}},
+			{"split paper", []string{"breakout", "ETH", "1h", "--mode", "paper"}, []string{"breakout", "ETH", "1h", "--mode=live"}},
+			{"split live", []string{"breakout", "ETH", "1h", "--mode", "live"}, nil},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				ss, path, _ := newStructuralTestServer(t)
+				argsJSON, err := json.Marshal(tc.args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg := strings.Replace(minimalConfigJSON, `["momentum", "ETH", "1h", "--mode=paper"]`, string(argsJSON), 1)
+				if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				ss.UpdateStrategies([]StrategyConfig{
+					{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+					{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: tc.args},
+				})
+				if tc.want == nil {
+					body := `{"action":"paper-to-live","strategy_id":"hl-momentum-eth","params":{}}`
+					rec := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
+					if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "already live") {
+						t.Fatalf("UI confirm status = %d body %s, want 400 already-live", rec.Code, rec.Body.String())
+					}
+					if _, err := ss.executePaperToLive("hl-momentum-eth"); err == nil || !strings.Contains(err.Error(), "already live") {
+						t.Fatalf("Discord execute error = %v, want already-live", err)
+					}
+					if got := string(mustReadFile(t, path)); got != cfg {
+						t.Fatalf("refused flip must not rewrite the config:\n%s", got)
+					}
+					return
+				}
+				confirm := structuralConfirm(t, ss, "paper-to-live", "hl-momentum-eth", `{}`)
+				h := func(w http.ResponseWriter, r *http.Request) {
+					ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "paper-to-live")
+				}
+				w := mutationPost(ss, h, "/api/strategies/hl-momentum-eth/paper-to-live", fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce), nil)
+				if w.Code != http.StatusOK {
+					t.Fatalf("paper-to-live status = %d, body %s", w.Code, w.Body.String())
+				}
+				list, err := configStrategies(readConfigRoot(t, path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var item struct {
+					ID   string   `json:"id"`
+					Args []string `json:"args"`
+				}
+				if err := json.Unmarshal(list[1], &item); err != nil {
+					t.Fatal(err)
+				}
+				if item.ID != "hl-momentum-eth" || !slices.Equal(item.Args, tc.want) || !isLiveArgs(item.Args) {
+					t.Fatalf("flipped %s args = %q, want %q", item.ID, item.Args, tc.want)
+				}
+			})
+		}
+	})
 }
 
 func TestUIPaperToLiveFlatChecks(t *testing.T) {
@@ -413,101 +480,85 @@ func TestUIStructuralConfirmRejectsModelessPaperToLiveAndIneligibleRegimeGate(t 
 	}
 }
 
-func TestPaperToLiveReadsBothModeForms(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-		want []string
-	}{
-		{"equals paper", []string{"breakout", "ETH", "1h", "--mode=paper"}, []string{"breakout", "ETH", "1h", "--mode=live"}},
-		{"split paper", []string{"breakout", "ETH", "1h", "--mode", "paper"}, []string{"breakout", "ETH", "1h", "--mode=live"}},
-		{"split live", []string{"breakout", "ETH", "1h", "--mode", "live"}, nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ss, path, _ := newStructuralTestServer(t)
-			argsJSON, err := json.Marshal(tc.args)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg := strings.Replace(minimalConfigJSON, `["momentum", "ETH", "1h", "--mode=paper"]`, string(argsJSON), 1)
-			if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			ss.UpdateStrategies([]StrategyConfig{
-				{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
-				{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: tc.args},
-			})
-			if tc.want == nil {
-				body := `{"action":"paper-to-live","strategy_id":"hl-momentum-eth","params":{}}`
-				rec := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
-				if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "already live") {
-					t.Fatalf("UI confirm status = %d body %s, want 400 already-live", rec.Code, rec.Body.String())
-				}
-				if _, err := ss.executePaperToLive("hl-momentum-eth"); err == nil || !strings.Contains(err.Error(), "already live") {
-					t.Fatalf("Discord execute error = %v, want already-live", err)
-				}
-				if got := string(mustReadFile(t, path)); got != cfg {
-					t.Fatalf("refused flip must not rewrite the config:\n%s", got)
-				}
-				return
-			}
-			confirm := structuralConfirm(t, ss, "paper-to-live", "hl-momentum-eth", `{}`)
-			h := func(w http.ResponseWriter, r *http.Request) {
-				ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "paper-to-live")
-			}
-			w := mutationPost(ss, h, "/api/strategies/hl-momentum-eth/paper-to-live", fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce), nil)
-			if w.Code != http.StatusOK {
-				t.Fatalf("paper-to-live status = %d, body %s", w.Code, w.Body.String())
-			}
-			list, err := configStrategies(readConfigRoot(t, path))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var item struct {
-				ID   string   `json:"id"`
-				Args []string `json:"args"`
-			}
-			if err := json.Unmarshal(list[1], &item); err != nil {
-				t.Fatal(err)
-			}
-			if item.ID != "hl-momentum-eth" || !slices.Equal(item.Args, tc.want) || !isLiveArgs(item.Args) {
-				t.Fatalf("flipped %s args = %q, want %q", item.ID, item.Args, tc.want)
-			}
-		})
-	}
-}
-
-func TestUIApplyRegimeGateEndToEnd(t *testing.T) {
-	ss, path, _ := newStructuralTestServer(t)
-	confirm := structuralConfirm(t, ss, "apply-regime-gate", "hl-momentum-eth", `{}`)
-	if !strings.Contains(confirm.Description, defaultRegimeGatePresetName) {
-		t.Fatalf("confirm description should name the preset: %s", confirm.Description)
-	}
-	h := func(w http.ResponseWriter, r *http.Request) {
-		ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "apply-regime-gate")
-	}
-	body := fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce)
-	w := mutationPost(ss, h, "/api/strategies/hl-momentum-eth/apply-regime-gate", body, nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("apply-regime-gate status = %d, body %s", w.Code, w.Body.String())
-	}
-	cfg, err := LoadConfigForProbe(path)
-	if err != nil {
-		t.Fatalf("config after apply-regime-gate fails validation: %v", err)
-	}
-	var target *StrategyConfig
-	for i := range cfg.Strategies {
-		if cfg.Strategies[i].ID == "hl-momentum-eth" {
-			target = &cfg.Strategies[i]
+func TestUIApplyRegimeGate(t *testing.T) {
+	t.Run("UIApplyRegimeGateEndToEnd", func(t *testing.T) {
+		ss, path, _ := newStructuralTestServer(t)
+		confirm := structuralConfirm(t, ss, "apply-regime-gate", "hl-momentum-eth", `{}`)
+		if !strings.Contains(confirm.Description, defaultRegimeGatePresetName) {
+			t.Fatalf("confirm description should name the preset: %s", confirm.Description)
 		}
-	}
-	if target == nil || target.RegimeGateWindow != "comp_p21" || len(target.AllowedRegimes) == 0 {
-		t.Fatalf("gate wiring missing on target: %+v", target)
-	}
-	if cfg.Regime == nil || !cfg.Regime.Enabled {
-		t.Fatal("regime detection should be enabled after apply")
-	}
+		h := func(w http.ResponseWriter, r *http.Request) {
+			ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "apply-regime-gate")
+		}
+		body := fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce)
+		w := mutationPost(ss, h, "/api/strategies/hl-momentum-eth/apply-regime-gate", body, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("apply-regime-gate status = %d, body %s", w.Code, w.Body.String())
+		}
+		cfg, err := LoadConfigForProbe(path)
+		if err != nil {
+			t.Fatalf("config after apply-regime-gate fails validation: %v", err)
+		}
+		var target *StrategyConfig
+		for i := range cfg.Strategies {
+			if cfg.Strategies[i].ID == "hl-momentum-eth" {
+				target = &cfg.Strategies[i]
+			}
+		}
+		if target == nil || target.RegimeGateWindow != "comp_p21" || len(target.AllowedRegimes) == 0 {
+			t.Fatalf("gate wiring missing on target: %+v", target)
+		}
+		if cfg.Regime == nil || !cfg.Regime.Enabled {
+			t.Fatal("regime detection should be enabled after apply")
+		}
+	})
+	t.Run("UIApplyRegimeGateBlastRadiusGrowthRefused", func(t *testing.T) {
+		ss, path, _ := newStructuralTestServer(t)
+		confirm := structuralConfirm(t, ss, "apply-regime-gate", "hl-momentum-eth", `{}`)
+
+		root := readConfigRoot(t, path)
+		list, err := configStrategies(root)
+		if err != nil {
+			t.Fatalf("configStrategies: %v", err)
+		}
+		for i, raw := range list {
+			if strategyRawID(raw) != "sma-btc" {
+				continue
+			}
+			var item map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &item); err != nil {
+				t.Fatalf("parse sma-btc: %v", err)
+			}
+			item["allowed_regimes"] = json.RawMessage(`["ranging"]`)
+			nb, err := json.Marshal(item)
+			if err != nil {
+				t.Fatalf("marshal sma-btc: %v", err)
+			}
+			list[i] = nb
+		}
+		if err := setConfigStrategies(root, list); err != nil {
+			t.Fatalf("setConfigStrategies: %v", err)
+		}
+		if err := writeValidatedConfigRoot(path, root); err != nil {
+			t.Fatalf("write concurrent edit: %v", err)
+		}
+
+		h := func(w http.ResponseWriter, r *http.Request) {
+			ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "apply-regime-gate")
+		}
+		body := fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce)
+		w := mutationPost(ss, h, "/api/strategies/hl-momentum-eth/apply-regime-gate", body, nil)
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "blast radius") {
+			t.Fatalf("blast-radius-growth status = %d body %s, want 409 refusal", w.Code, w.Body.String())
+		}
+		cfg, err := LoadConfigForProbe(path)
+		if err != nil {
+			t.Fatalf("config invalid after refusal: %v", err)
+		}
+		if cfg.Regime != nil && cfg.Regime.Enabled {
+			t.Fatal("refused apply must not enable regime detection")
+		}
+	})
 }
 
 func TestUIApplyRegimeGateFlatChecks(t *testing.T) {
@@ -534,85 +585,86 @@ func TestUIApplyRegimeGateFlatChecks(t *testing.T) {
 	}
 }
 
-func TestUIApplyRegimeGateBlastRadiusGrowthRefused(t *testing.T) {
-	ss, path, _ := newStructuralTestServer(t)
-	confirm := structuralConfirm(t, ss, "apply-regime-gate", "hl-momentum-eth", `{}`)
-
-	root := readConfigRoot(t, path)
-	list, err := configStrategies(root)
-	if err != nil {
-		t.Fatalf("configStrategies: %v", err)
-	}
-	for i, raw := range list {
-		if strategyRawID(raw) != "sma-btc" {
-			continue
-		}
-		var item map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &item); err != nil {
-			t.Fatalf("parse sma-btc: %v", err)
-		}
-		item["allowed_regimes"] = json.RawMessage(`["ranging"]`)
-		nb, err := json.Marshal(item)
+func TestUIConfigInterleavedWrites(t *testing.T) {
+	t.Run("UIStructuralInterleavedWrites", func(t *testing.T) {
+		ss, path, _ := newStructuralTestServer(t)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 10; i++ {
+				_ = ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
+					_, _, err := applyTopLevelConfigSet(root, "default_stop_loss_atr_mult", "1.5")
+					return err
+				})
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 10; i++ {
+				_ = ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
+					_, _, err := applyTopLevelConfigSet(root, "interval_seconds", "120")
+					return err
+				})
+			}
+		}()
+		wg.Wait()
+		cfg, err := LoadConfigForProbe(path)
 		if err != nil {
-			t.Fatalf("marshal sma-btc: %v", err)
+			t.Fatalf("config invalid after interleaved writes: %v", err)
 		}
-		list[i] = nb
-	}
-	if err := setConfigStrategies(root, list); err != nil {
-		t.Fatalf("setConfigStrategies: %v", err)
-	}
-	if err := writeValidatedConfigRoot(path, root); err != nil {
-		t.Fatalf("write concurrent edit: %v", err)
-	}
+		if cfg.IntervalSeconds != 120 {
+			t.Fatalf("interval_seconds = %d, want 120", cfg.IntervalSeconds)
+		}
+		if cfg.DefaultStopLossATRMult == nil || *cfg.DefaultStopLossATRMult != 1.5 {
+			t.Fatalf("default_stop_loss_atr_mult = %v, want 1.5", cfg.DefaultStopLossATRMult)
+		}
+	})
+	t.Run("UIMutationsInterleavedWrites", func(t *testing.T) {
+		ss, path, _ := newMutationTestServer(t)
+		pause := func(w http.ResponseWriter, r *http.Request) { ss.handleAPIStrategyPause(w, r, "spot-btc") }
 
-	h := func(w http.ResponseWriter, r *http.Request) {
-		ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "apply-regime-gate")
-	}
-	body := fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce)
-	w := mutationPost(ss, h, "/api/strategies/hl-momentum-eth/apply-regime-gate", body, nil)
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "blast radius") {
-		t.Fatalf("blast-radius-growth status = %d body %s, want 409 refusal", w.Code, w.Body.String())
-	}
-	cfg, err := LoadConfigForProbe(path)
-	if err != nil {
-		t.Fatalf("config invalid after refusal: %v", err)
-	}
-	if cfg.Regime != nil && cfg.Regime.Enabled {
-		t.Fatal("refused apply must not enable regime detection")
-	}
-}
+		var wg sync.WaitGroup
+		const rounds = 20
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				w := mutationPost(ss, pause, "/pause", `{"paused":true}`, nil)
+				if w.Code != http.StatusOK {
+					t.Errorf("pause round %d status = %d", i, w.Code)
+					return
+				}
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				ss.configWriteMu.Lock()
+				data, err := os.ReadFile(path)
+				if err == nil {
+					var root map[string]json.RawMessage
+					if err = json.Unmarshal(data, &root); err == nil {
+						root["notify_ratchet_triggers"], _ = json.Marshal(i%2 == 0)
+						err = writeValidatedConfigRoot(path, root)
+					}
+				}
+				ss.configWriteMu.Unlock()
+				if err != nil {
+					t.Errorf("root write round %d: %v", i, err)
+					return
+				}
+			}
+		}()
+		wg.Wait()
 
-func TestUIStructuralInterleavedWrites(t *testing.T) {
-	ss, path, _ := newStructuralTestServer(t)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 10; i++ {
-			_ = ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
-				_, _, err := applyTopLevelConfigSet(root, "default_stop_loss_atr_mult", "1.5")
-				return err
-			})
+		strat := readConfigStrategy(t, path)
+		if strat["paused"] != true {
+			t.Fatalf("paused = %v, want true after interleaved writes", strat["paused"])
 		}
-	}()
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 10; i++ {
-			_ = ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
-				_, _, err := applyTopLevelConfigSet(root, "interval_seconds", "120")
-				return err
-			})
+		root := readConfigRoot(t, path)
+		if v := string(root["notify_ratchet_triggers"]); v != "true" && v != "false" {
+			t.Fatalf("root notify_ratchet_triggers = %q, want a bool to survive", v)
 		}
-	}()
-	wg.Wait()
-	cfg, err := LoadConfigForProbe(path)
-	if err != nil {
-		t.Fatalf("config invalid after interleaved writes: %v", err)
-	}
-	if cfg.IntervalSeconds != 120 {
-		t.Fatalf("interval_seconds = %d, want 120", cfg.IntervalSeconds)
-	}
-	if cfg.DefaultStopLossATRMult == nil || *cfg.DefaultStopLossATRMult != 1.5 {
-		t.Fatalf("default_stop_loss_atr_mult = %v, want 1.5", cfg.DefaultStopLossATRMult)
-	}
+	})
 }

@@ -25,69 +25,70 @@ func tier(mult, frac, after float64) map[string]interface{} {
 	return map[string]interface{}{"atr_multiple": mult, "close_fraction": frac, "trailing_mult_after": after}
 }
 
-func TestApplyTrailingTPRatchetToPosition_AlertLongMath(t *testing.T) {
-	sc := ratchetAlertSC(3.0, tier(1.0, 0, 2.0), tier(2.0, 0, 1.0))
-	pos := &Position{
-		Symbol: "ETH", Side: "long", Quantity: 2, InitialQuantity: 2,
-		AvgCost: 100, EntryATR: 10, Multiplier: 1, Regime: "ranging",
-	}
-	tightened, a := applyTrailingTPRatchetToPosition(sc, pos, "ETH", 115, nil)
-	if !tightened || a == nil {
-		t.Fatalf("expected tighten+alert, got tightened=%v alert=%v", tightened, a)
-	}
-	if a.TierIdx != 0 || a.TotalTiers != 2 {
-		t.Fatalf("tier=%d/%d want 0/2", a.TierIdx, a.TotalTiers)
-	}
-	if a.TierATRMultiple != 1.0 || a.TierTriggerPx != 110 {
-		t.Fatalf("tierATR=%g triggerPx=%g want 1.0,110", a.TierATRMultiple, a.TierTriggerPx)
-	}
-	if a.MarkPrice != 115 || a.AnchorPrice != 100 || a.EntryATR != 10 {
-		t.Fatalf("mark=%g anchor=%g atr=%g", a.MarkPrice, a.AnchorPrice, a.EntryATR)
-	}
-	if a.ProfitATR != 1.5 || a.ProfitUSD != 30 {
-		t.Fatalf("profitATR=%g profitUSD=%g want 1.5,30", a.ProfitATR, a.ProfitUSD)
-	}
-	if a.OldTrailMult != 3.0 || a.NewTrailMult != 2.0 {
-		t.Fatalf("trail %g->%g want 3->2", a.OldTrailMult, a.NewTrailMult)
-	}
-	// Wrong: these pins required the deleted alert-only price 95. The trailing
-	// path records anchor-percent geometry, which is 92 for this fixture.
-	if a.HighWaterMark != 0 || a.StopTriggerPx != 0 || a.Outcome != "" {
-		t.Fatalf("build stored geometry hwm=%g trigger=%g outcome=%q", a.HighWaterMark, a.StopTriggerPx, a.Outcome)
-	}
-	if a.PrevStopTriggerPx != 0 || a.Side != "long" {
-		t.Fatalf("prev=%g side=%s", a.PrevStopTriggerPx, a.Side)
-	}
-	if !a.HasNextTier || a.NextTierATRMultiple != 2.0 || a.NextTierTrailAfter != 1.0 || a.NextTierTriggerPx != 120 {
-		t.Fatalf("next tier mismatch: %+v", a)
-	}
-}
-
-func TestApplyTrailingTPRatchetToPosition_AlertShortMath(t *testing.T) {
-	sc := ratchetAlertSC(3.0, tier(1.0, 0, 2.0), tier(2.0, 0, 1.0))
-	pos := &Position{
-		Symbol: "ETH", Side: "short", Quantity: 1, InitialQuantity: 1,
-		AvgCost: 100, EntryATR: 10, Multiplier: 1, Regime: "ranging",
-	}
-	tightened, a := applyTrailingTPRatchetToPosition(sc, pos, "ETH", 85, nil)
-	if !tightened || a == nil {
-		t.Fatalf("expected tighten+alert, got tightened=%v alert=%v", tightened, a)
-	}
-	if a.TierTriggerPx != 90 {
-		t.Fatalf("triggerPx=%g want 90", a.TierTriggerPx)
-	}
-	if a.ProfitATR != 1.5 || a.ProfitUSD != 15 {
-		t.Fatalf("profitATR=%g profitUSD=%g want 1.5,15", a.ProfitATR, a.ProfitUSD)
-	}
-	// Wrong: these pins required the deleted alert-only price 105. The trailing
-	// path records anchor-percent geometry, which is 102 for this fixture.
-	if a.HighWaterMark != 0 || a.StopTriggerPx != 0 || a.Outcome != "" {
-		t.Fatalf("build stored geometry hwm=%g trigger=%g outcome=%q", a.HighWaterMark, a.StopTriggerPx, a.Outcome)
-	}
-	if a.PrevStopTriggerPx != 0 || a.Side != "short" {
-		t.Fatalf("prev=%g side=%s", a.PrevStopTriggerPx, a.Side)
-	}
-	if a.NextTierTriggerPx != 80 {
-		t.Fatalf("nextTriggerPx=%g want 80", a.NextTierTriggerPx)
-	}
+func TestApplyTrailingTPRatchetToPositionAlertMath(t *testing.T) {
+	t.Run("Long", func(t *testing.T) {
+		sc := ratchetAlertSC(3.0, tier(1.0, 0, 2.0), tier(2.0, 0, 1.0))
+		pos := &Position{
+			Symbol: "ETH", Side: "long", Quantity: 2, InitialQuantity: 2,
+			AvgCost: 100, EntryATR: 10, Multiplier: 1, Regime: "ranging",
+		}
+		tightened, a := applyTrailingTPRatchetToPosition(sc, pos, "ETH", 115, nil)
+		if !tightened || a == nil {
+			t.Fatalf("expected tighten+alert, got tightened=%v alert=%v", tightened, a)
+		}
+		if a.TierIdx != 0 || a.TotalTiers != 2 {
+			t.Fatalf("tier=%d/%d want 0/2", a.TierIdx, a.TotalTiers)
+		}
+		if a.TierATRMultiple != 1.0 || a.TierTriggerPx != 110 {
+			t.Fatalf("tierATR=%g triggerPx=%g want 1.0,110", a.TierATRMultiple, a.TierTriggerPx)
+		}
+		if a.MarkPrice != 115 || a.AnchorPrice != 100 || a.EntryATR != 10 {
+			t.Fatalf("mark=%g anchor=%g atr=%g", a.MarkPrice, a.AnchorPrice, a.EntryATR)
+		}
+		if a.ProfitATR != 1.5 || a.ProfitUSD != 30 {
+			t.Fatalf("profitATR=%g profitUSD=%g want 1.5,30", a.ProfitATR, a.ProfitUSD)
+		}
+		if a.OldTrailMult != 3.0 || a.NewTrailMult != 2.0 {
+			t.Fatalf("trail %g->%g want 3->2", a.OldTrailMult, a.NewTrailMult)
+		}
+		// Wrong: these pins required the deleted alert-only price 95. The trailing
+		// path records anchor-percent geometry, which is 92 for this fixture.
+		if a.HighWaterMark != 0 || a.StopTriggerPx != 0 || a.Outcome != "" {
+			t.Fatalf("build stored geometry hwm=%g trigger=%g outcome=%q", a.HighWaterMark, a.StopTriggerPx, a.Outcome)
+		}
+		if a.PrevStopTriggerPx != 0 || a.Side != "long" {
+			t.Fatalf("prev=%g side=%s", a.PrevStopTriggerPx, a.Side)
+		}
+		if !a.HasNextTier || a.NextTierATRMultiple != 2.0 || a.NextTierTrailAfter != 1.0 || a.NextTierTriggerPx != 120 {
+			t.Fatalf("next tier mismatch: %+v", a)
+		}
+	})
+	t.Run("Short", func(t *testing.T) {
+		sc := ratchetAlertSC(3.0, tier(1.0, 0, 2.0), tier(2.0, 0, 1.0))
+		pos := &Position{
+			Symbol: "ETH", Side: "short", Quantity: 1, InitialQuantity: 1,
+			AvgCost: 100, EntryATR: 10, Multiplier: 1, Regime: "ranging",
+		}
+		tightened, a := applyTrailingTPRatchetToPosition(sc, pos, "ETH", 85, nil)
+		if !tightened || a == nil {
+			t.Fatalf("expected tighten+alert, got tightened=%v alert=%v", tightened, a)
+		}
+		if a.TierTriggerPx != 90 {
+			t.Fatalf("triggerPx=%g want 90", a.TierTriggerPx)
+		}
+		if a.ProfitATR != 1.5 || a.ProfitUSD != 15 {
+			t.Fatalf("profitATR=%g profitUSD=%g want 1.5,15", a.ProfitATR, a.ProfitUSD)
+		}
+		// Wrong: these pins required the deleted alert-only price 105. The trailing
+		// path records anchor-percent geometry, which is 102 for this fixture.
+		if a.HighWaterMark != 0 || a.StopTriggerPx != 0 || a.Outcome != "" {
+			t.Fatalf("build stored geometry hwm=%g trigger=%g outcome=%q", a.HighWaterMark, a.StopTriggerPx, a.Outcome)
+		}
+		if a.PrevStopTriggerPx != 0 || a.Side != "short" {
+			t.Fatalf("prev=%g side=%s", a.PrevStopTriggerPx, a.Side)
+		}
+		if a.NextTierTriggerPx != 80 {
+			t.Fatalf("nextTriggerPx=%g want 80", a.NextTierTriggerPx)
+		}
+	})
 }

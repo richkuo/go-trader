@@ -146,70 +146,71 @@ func robinhoodTimeframeITConfig(t *testing.T, dir, name string, strat map[string
 	return path
 }
 
-func TestRobinhoodTimeframeRealBinaryRefusesUnsupportedTimeframesBeforeAnyCycle(t *testing.T) {
-	root := htfITRoot(t)
-	bin := robinhoodTimeframeITBinary(t, root)
-	dir := t.TempDir()
-	cases := []struct {
-		name   string
-		strat  map[string]any
-		regime map[string]any
-		want   string
-	}{
-		{"args-3m", map[string]any{"args": []string{"atr_breakout", "BTC", "3m", "--mode=paper"}}, nil,
-			`strategy[rh-tf]: robinhood args timeframe "3m" is not supported: Yahoo candles serve only 12h, 15m, 1M, 1d, 1h, 1m, 1mo, 1w, 2h, 2m, 30m, 4h, 5m, 60m, 6h, 8h, 90m`},
-		{"args-trailing-space", map[string]any{"args": []string{"atr_breakout", "BTC", "4h ", "--mode=paper"}}, nil,
-			`strategy[rh-tf]: robinhood args timeframe "4h " is not supported`},
-		{"regime-3d", map[string]any{"args": []string{"atr_breakout", "BTC", "1h", "--mode=paper"}}, map[string]any{"enabled": true, "timeframe": "3d"},
-			`strategy[rh-tf]: robinhood regime.timeframe "3d" is not supported`},
-		{"regime-1M", map[string]any{"args": []string{"atr_breakout", "BTC", "1h", "--mode=paper"}}, map[string]any{"enabled": true, "timeframe": "1M"},
-			`strategy[rh-tf]: regime.timeframe "1M" is ambiguous for robinhood: it means 1mo on Yahoo but go-trader lowercases it to "1m" (1m); write "1mo" or "1m"`},
-		{"live-closed-bar", map[string]any{"args": []string{"atr_breakout", "BTC", "1h", "--mode=live"}, "closed_bar_decisions": true}, nil,
-			`strategy[rh-tf]: closed_bar_decisions is not supported: live Robinhood fills settle through robinhood_order_attempts`},
-		{"paper-closed-bar-1m", map[string]any{"args": []string{"atr_breakout", "BTC", "1m", "--mode=paper"}, "closed_bar_decisions": true}, nil,
-			`strategy[rh-tf]: closed_bar_decisions does not support timeframe "1m" (fixed-duration intervals only: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d); on Robinhood Yahoo's newest closed 1m row was a flat zero-volume placeholder`},
-		{"paper-closed-bar-60m", map[string]any{"args": []string{"atr_breakout", "BTC", "60m", "--mode=paper"}, "closed_bar_decisions": true}, nil,
-			`strategy[rh-tf]: closed_bar_decisions does not support timeframe "60m"`},
-		{"args-2h-non-crypto", map[string]any{"args": []string{"atr_breakout", "XRP", "2h", "--mode=paper"}}, nil,
-			`strategy[rh-tf]: robinhood args timeframe "2h" is built from Yahoo 1h rows only for crypto pairs, and symbol "XRP" resolves to Yahoo "XRP", which is not one (Yahoo crypto pairs: ADA, AVAX, BTC, DOGE, DOT, ETH, LINK, MATIC, SHIB, SOL, or a symbol ending in -USD)`},
-		{"regime-12h-non-crypto", map[string]any{"args": []string{"atr_breakout", "AAPL", "1h", "--mode=paper"}}, map[string]any{"enabled": true, "timeframe": "12h"},
-			`strategy[rh-tf]: robinhood regime.timeframe "12h" is built from Yahoo 1h rows only for crypto pairs, and symbol "AAPL" resolves to Yahoo "AAPL"`},
-		{"paper-closed-bar-non-crypto", map[string]any{"args": []string{"atr_breakout", "AAPL", "1h", "--mode=paper"}, "closed_bar_decisions": true}, nil,
-			`strategy[rh-tf]: closed_bar_decisions is not supported: symbol "AAPL" resolves to Yahoo "AAPL", which is not a Yahoo crypto pair`},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			cfg := robinhoodTimeframeITConfig(t, dir, c.name, c.strat, c.regime)
-			cmd := exec.Command(bin, "--config", cfg, "--once")
-			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "ROBINHOOD_USERNAME=", "DISCORD_BOT_TOKEN=", "TELEGRAM_BOT_TOKEN=")
-			out, err := cmd.CombinedOutput()
-			log := string(out)
-			if err == nil {
-				t.Fatalf("--once accepted the config\n%s", log)
-			}
-			if !strings.Contains(log, "Failed to load config:") || !strings.Contains(log, c.want) {
-				t.Fatalf("want a config error containing %q\n%s", c.want, log)
-			}
-			if strings.Contains(log, "[rh-tf] [") {
-				t.Fatalf("a strategy cycle ran before the config error\n%s", log)
-			}
-		})
-	}
-}
-
-func TestRobinhoodTimeframeRealBinaryAcceptsAResampledPaperClosedBarStrategy(t *testing.T) {
-	root := htfITRoot(t)
-	bin := robinhoodTimeframeITBinary(t, root)
-	dir := t.TempDir()
-	cfg := robinhoodTimeframeITConfig(t, dir, "paper-4h", map[string]any{
-		"args": []string{"atr_breakout", "BTC", "4h", "--mode=paper"}, "closed_bar_decisions": true, "htf_filter": true,
-	}, map[string]any{"enabled": true, "timeframe": "1d"})
-	cmd := exec.Command(bin, "probe", "--config", cfg)
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "ROBINHOOD_USERNAME=", "DISCORD_BOT_TOKEN=", "TELEGRAM_BOT_TOKEN=")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("probe refused a supported Robinhood 4h paper closed-bar config: %v\n%s", err, out)
-	}
+func TestRobinhoodTimeframeRealBinary(t *testing.T) {
+	t.Run("RefusesUnsupportedTimeframesBeforeAnyCycle", func(t *testing.T) {
+		root := htfITRoot(t)
+		bin := robinhoodTimeframeITBinary(t, root)
+		dir := t.TempDir()
+		cases := []struct {
+			name   string
+			strat  map[string]any
+			regime map[string]any
+			want   string
+		}{
+			{"args-3m", map[string]any{"args": []string{"atr_breakout", "BTC", "3m", "--mode=paper"}}, nil,
+				`strategy[rh-tf]: robinhood args timeframe "3m" is not supported: Yahoo candles serve only 12h, 15m, 1M, 1d, 1h, 1m, 1mo, 1w, 2h, 2m, 30m, 4h, 5m, 60m, 6h, 8h, 90m`},
+			{"args-trailing-space", map[string]any{"args": []string{"atr_breakout", "BTC", "4h ", "--mode=paper"}}, nil,
+				`strategy[rh-tf]: robinhood args timeframe "4h " is not supported`},
+			{"regime-3d", map[string]any{"args": []string{"atr_breakout", "BTC", "1h", "--mode=paper"}}, map[string]any{"enabled": true, "timeframe": "3d"},
+				`strategy[rh-tf]: robinhood regime.timeframe "3d" is not supported`},
+			{"regime-1M", map[string]any{"args": []string{"atr_breakout", "BTC", "1h", "--mode=paper"}}, map[string]any{"enabled": true, "timeframe": "1M"},
+				`strategy[rh-tf]: regime.timeframe "1M" is ambiguous for robinhood: it means 1mo on Yahoo but go-trader lowercases it to "1m" (1m); write "1mo" or "1m"`},
+			{"live-closed-bar", map[string]any{"args": []string{"atr_breakout", "BTC", "1h", "--mode=live"}, "closed_bar_decisions": true}, nil,
+				`strategy[rh-tf]: closed_bar_decisions is not supported: live Robinhood fills settle through robinhood_order_attempts`},
+			{"paper-closed-bar-1m", map[string]any{"args": []string{"atr_breakout", "BTC", "1m", "--mode=paper"}, "closed_bar_decisions": true}, nil,
+				`strategy[rh-tf]: closed_bar_decisions does not support timeframe "1m" (fixed-duration intervals only: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d); on Robinhood Yahoo's newest closed 1m row was a flat zero-volume placeholder`},
+			{"paper-closed-bar-60m", map[string]any{"args": []string{"atr_breakout", "BTC", "60m", "--mode=paper"}, "closed_bar_decisions": true}, nil,
+				`strategy[rh-tf]: closed_bar_decisions does not support timeframe "60m"`},
+			{"args-2h-non-crypto", map[string]any{"args": []string{"atr_breakout", "XRP", "2h", "--mode=paper"}}, nil,
+				`strategy[rh-tf]: robinhood args timeframe "2h" is built from Yahoo 1h rows only for crypto pairs, and symbol "XRP" resolves to Yahoo "XRP", which is not one (Yahoo crypto pairs: ADA, AVAX, BTC, DOGE, DOT, ETH, LINK, MATIC, SHIB, SOL, or a symbol ending in -USD)`},
+			{"regime-12h-non-crypto", map[string]any{"args": []string{"atr_breakout", "AAPL", "1h", "--mode=paper"}}, map[string]any{"enabled": true, "timeframe": "12h"},
+				`strategy[rh-tf]: robinhood regime.timeframe "12h" is built from Yahoo 1h rows only for crypto pairs, and symbol "AAPL" resolves to Yahoo "AAPL"`},
+			{"paper-closed-bar-non-crypto", map[string]any{"args": []string{"atr_breakout", "AAPL", "1h", "--mode=paper"}, "closed_bar_decisions": true}, nil,
+				`strategy[rh-tf]: closed_bar_decisions is not supported: symbol "AAPL" resolves to Yahoo "AAPL", which is not a Yahoo crypto pair`},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				cfg := robinhoodTimeframeITConfig(t, dir, c.name, c.strat, c.regime)
+				cmd := exec.Command(bin, "--config", cfg, "--once")
+				cmd.Dir = root
+				cmd.Env = append(os.Environ(), "ROBINHOOD_USERNAME=", "DISCORD_BOT_TOKEN=", "TELEGRAM_BOT_TOKEN=")
+				out, err := cmd.CombinedOutput()
+				log := string(out)
+				if err == nil {
+					t.Fatalf("--once accepted the config\n%s", log)
+				}
+				if !strings.Contains(log, "Failed to load config:") || !strings.Contains(log, c.want) {
+					t.Fatalf("want a config error containing %q\n%s", c.want, log)
+				}
+				if strings.Contains(log, "[rh-tf] [") {
+					t.Fatalf("a strategy cycle ran before the config error\n%s", log)
+				}
+			})
+		}
+	})
+	t.Run("AcceptsAResampledPaperClosedBarStrategy", func(t *testing.T) {
+		root := htfITRoot(t)
+		bin := robinhoodTimeframeITBinary(t, root)
+		dir := t.TempDir()
+		cfg := robinhoodTimeframeITConfig(t, dir, "paper-4h", map[string]any{
+			"args": []string{"atr_breakout", "BTC", "4h", "--mode=paper"}, "closed_bar_decisions": true, "htf_filter": true,
+		}, map[string]any{"enabled": true, "timeframe": "1d"})
+		cmd := exec.Command(bin, "probe", "--config", cfg)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "ROBINHOOD_USERNAME=", "DISCORD_BOT_TOKEN=", "TELEGRAM_BOT_TOKEN=")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("probe refused a supported Robinhood 4h paper closed-bar config: %v\n%s", err, out)
+		}
+	})
 }

@@ -33,148 +33,149 @@ func postTPSLTestStrategy(slAfter interface{}, tiers []interface{}) StrategyConf
 	}
 }
 
-func TestRunPostTPStopLossAdjustment_CapsAtOnChainQty(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+func TestRunPostTPStopLossAdjustment(t *testing.T) {
+	t.Run("CapsAtOnChainQty", func(t *testing.T) {
+		old := runHyperliquidUpdateStopLossFunc
+		defer func() { runHyperliquidUpdateStopLossFunc = old }()
 
-	var gotQty float64
-	runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		gotQty = size
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
-	}
+		var gotQty float64
+		runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			gotQty = size
+			return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
+		}
 
-	sc := postTPSLTestStrategy("breakeven", []interface{}{
-		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-	})
-	pos := &Position{
-		Symbol: "ETH", Quantity: 1.0, InitialQuantity: 2.0,
-		AvgCost: 100, EntryATR: 5, Side: "long",
-		StopLossOID: 111, StopLossTriggerPx: 95,
-		TPOIDs:                   []int64{0, 222},
-		TPArmedTiers:             []bool{true, true},
-		SLAdjustedTiersProcessed: 0,
-	}
-	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
-	var mu sync.RWMutex
-
-	onChain := map[string]float64{"ETH": 0.7}
-	applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, hlAbsShare(onChain, "long"), nil, nil)
-	if !applied {
-		t.Fatal("expected runPostTPStopLossAdjustment to apply")
-	}
-	if gotQty != 0.7 {
-		t.Fatalf("subprocess size=%v, want 0.7 (capped at on-chain)", gotQty)
-	}
-}
-
-// The post-TP clamp fallback: the rule trigger lands past liquidation, so the
-// replace runs at the clamped trigger, with one fresh placement when the first
-// reply is protection-lost. Ground: the review finding that a deferred retry
-// was discarded, citing the first attempt's error.
-func TestRunPostTPStopLossAdjustment_LiquidationClampFallback(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-sl-after", "ETH")
-	defer clearHLLiquidationAlert("hl-sl-after", "ETH")
-
-	newState := func() *StrategyState {
-		return &StrategyState{ID: "hl-sl-after", Positions: map[string]*Position{"ETH": {
+		sc := postTPSLTestStrategy("breakeven", []interface{}{
+			map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
+			map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
+		})
+		pos := &Position{
 			Symbol: "ETH", Quantity: 1.0, InitialQuantity: 2.0,
 			AvgCost: 100, EntryATR: 5, Side: "long",
 			StopLossOID: 111, StopLossTriggerPx: 95,
 			TPOIDs:                   []int64{0, 222},
 			TPArmedTiers:             []bool{true, true},
 			SLAdjustedTiersProcessed: 0,
-		}}}
-	}
-	sc := postTPSLTestStrategy("breakeven", []interface{}{
-		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-	})
-	// Breakeven trigger is $100; liquidation at $100.4 clamps it to $100.902.
-	liqPx := map[string]float64{"ETH": 100.4}
-	netSide := map[string]string{"ETH": "long"}
-	onChain := map[string]float64{"ETH": 1.0}
-	const clampedTrigger = 100.4 * 1.005
-
-	run := func(t *testing.T, firstReply, retryReply *HyperliquidStopLossUpdateResult) (*StrategyState, *mockNotifier, bool, string) {
-		t.Helper()
-		clearHLLiquidationAlert("hl-sl-after", "ETH")
-		var logOutput bytes.Buffer
-		mock := &mockNotifier{}
-		mn := NewMultiNotifier(notifierBackend{
-			notifier:           mock,
-			tradeAlertChannels: map[string]string{"hyperliquid": "trade-alerts"},
-			ownerID:            "owner",
-		})
-		state := newState()
+		}
+		state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 		var mu sync.RWMutex
-		runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, _ float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-			if cancelOID == 111 {
-				return firstReply, "", nil
-			}
-			return retryReply, "", nil
-		}
-		logger := &StrategyLogger{stratID: "test", writer: &logOutput}
-		applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, mn, logger, hlAbsShare(onChain, "long"), liqPx, netSide)
-		return state, mock, applied, logOutput.String()
-	}
 
-	t.Run("clamped replace rests on the first attempt", func(t *testing.T) {
-		state, mock, applied, _ := run(t, &HyperliquidStopLossUpdateResult{StopLossOID: 555, StopLossTriggerPx: clampedTrigger}, nil)
+		onChain := map[string]float64{"ETH": 0.7}
+		applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, hlAbsShare(onChain, "long"), nil, nil)
 		if !applied {
-			t.Fatal("expected the clamped replace to apply")
+			t.Fatal("expected runPostTPStopLossAdjustment to apply")
 		}
-		pos := state.Positions["ETH"]
-		if pos.StopLossOID != 555 || pos.StopLossTriggerPx != clampedTrigger {
-			t.Errorf("stop = oid %d @ %.4f, want 555 @ %.4f", pos.StopLossOID, pos.StopLossTriggerPx, clampedTrigger)
-		}
-		if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "STOP PAST LIQUIDATION") {
-			t.Fatalf("dms = %v, want one clamp alert", mock.dms)
+		if gotQty != 0.7 {
+			t.Fatalf("subprocess size=%v, want 0.7 (capped at on-chain)", gotQty)
 		}
 	})
+	// The post-TP clamp fallback: the rule trigger lands past liquidation, so the
+	// replace runs at the clamped trigger, with one fresh placement when the first
+	// reply is protection-lost. Ground: the review finding that a deferred retry
+	// was discarded, citing the first attempt's error.
+	t.Run("LiquidationClampFallback", func(t *testing.T) {
+		old := runHyperliquidUpdateStopLossFunc
+		defer func() { runHyperliquidUpdateStopLossFunc = old }()
+		clearHLLiquidationAlert("hl-sl-after", "ETH")
+		defer clearHLLiquidationAlert("hl-sl-after", "ETH")
 
-	t.Run("protection-lost first reply, retry places", func(t *testing.T) {
-		state, _, applied, _ := run(t,
-			&HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: "first boom"},
-			&HyperliquidStopLossUpdateResult{StopLossOID: 888, StopLossTriggerPx: clampedTrigger})
-		if !applied {
-			t.Fatal("expected the retry placement to apply")
+		newState := func() *StrategyState {
+			return &StrategyState{ID: "hl-sl-after", Positions: map[string]*Position{"ETH": {
+				Symbol: "ETH", Quantity: 1.0, InitialQuantity: 2.0,
+				AvgCost: 100, EntryATR: 5, Side: "long",
+				StopLossOID: 111, StopLossTriggerPx: 95,
+				TPOIDs:                   []int64{0, 222},
+				TPArmedTiers:             []bool{true, true},
+				SLAdjustedTiersProcessed: 0,
+			}}}
 		}
-		pos := state.Positions["ETH"]
-		if pos.StopLossOID != 888 || pos.StopLossTriggerPx != clampedTrigger {
-			t.Errorf("stop = oid %d @ %.4f, want the retry's 888 @ %.4f", pos.StopLossOID, pos.StopLossTriggerPx, clampedTrigger)
-		}
-	})
+		sc := postTPSLTestStrategy("breakeven", []interface{}{
+			map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
+			map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
+		})
+		// Breakeven trigger is $100; liquidation at $100.4 clamps it to $100.902.
+		liqPx := map[string]float64{"ETH": 100.4}
+		netSide := map[string]string{"ETH": "long"}
+		onChain := map[string]float64{"ETH": 1.0}
+		const clampedTrigger = 100.4 * 1.005
 
-	t.Run("protection-lost first reply, retry also fails", func(t *testing.T) {
-		state, mock, applied, logOutput := run(t,
-			&HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: "first boom"},
-			&HyperliquidStopLossUpdateResult{StopLossError: "retry boom"})
-		if applied {
-			t.Fatal("a deferred retry must not apply")
-		}
-		pos := state.Positions["ETH"]
-		if pos.StopLossOID != 0 {
-			t.Errorf("StopLossOID = %d, want 0 after a landed cancel with nothing resting", pos.StopLossOID)
-		}
-		if len(mock.dms) != 1 {
-			t.Fatalf("dms = %v, want exactly one clamp alert (no duplicate protection-lost alert)", mock.dms)
-		}
-		if strings.Contains(mock.dms[0].content, "first boom") {
-			t.Errorf("clamp alert cites the first attempt's error: %s", mock.dms[0].content)
-		}
-		var criticalLog string
-		for _, line := range strings.Split(logOutput, "\n") {
-			if strings.Contains(line, "CRITICAL: post-TP SL for ETH cancelled OID=111") {
-				criticalLog = line
-				break
+		run := func(t *testing.T, firstReply, retryReply *HyperliquidStopLossUpdateResult) (*StrategyState, *mockNotifier, bool, string) {
+			t.Helper()
+			clearHLLiquidationAlert("hl-sl-after", "ETH")
+			var logOutput bytes.Buffer
+			mock := &mockNotifier{}
+			mn := NewMultiNotifier(notifierBackend{
+				notifier:           mock,
+				tradeAlertChannels: map[string]string{"hyperliquid": "trade-alerts"},
+				ownerID:            "owner",
+			})
+			state := newState()
+			var mu sync.RWMutex
+			runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, _ float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				if cancelOID == 111 {
+					return firstReply, "", nil
+				}
+				return retryReply, "", nil
 			}
+			logger := &StrategyLogger{stratID: "test", writer: &logOutput}
+			applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, mn, logger, hlAbsShare(onChain, "long"), liqPx, netSide)
+			return state, mock, applied, logOutput.String()
 		}
-		if !strings.Contains(criticalLog, "retry boom") || strings.Contains(criticalLog, "first boom") {
-			t.Errorf("critical log = %q, want the retry error only", criticalLog)
-		}
+
+		t.Run("clamped replace rests on the first attempt", func(t *testing.T) {
+			state, mock, applied, _ := run(t, &HyperliquidStopLossUpdateResult{StopLossOID: 555, StopLossTriggerPx: clampedTrigger}, nil)
+			if !applied {
+				t.Fatal("expected the clamped replace to apply")
+			}
+			pos := state.Positions["ETH"]
+			if pos.StopLossOID != 555 || pos.StopLossTriggerPx != clampedTrigger {
+				t.Errorf("stop = oid %d @ %.4f, want 555 @ %.4f", pos.StopLossOID, pos.StopLossTriggerPx, clampedTrigger)
+			}
+			if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "STOP PAST LIQUIDATION") {
+				t.Fatalf("dms = %v, want one clamp alert", mock.dms)
+			}
+		})
+
+		t.Run("protection-lost first reply, retry places", func(t *testing.T) {
+			state, _, applied, _ := run(t,
+				&HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: "first boom"},
+				&HyperliquidStopLossUpdateResult{StopLossOID: 888, StopLossTriggerPx: clampedTrigger})
+			if !applied {
+				t.Fatal("expected the retry placement to apply")
+			}
+			pos := state.Positions["ETH"]
+			if pos.StopLossOID != 888 || pos.StopLossTriggerPx != clampedTrigger {
+				t.Errorf("stop = oid %d @ %.4f, want the retry's 888 @ %.4f", pos.StopLossOID, pos.StopLossTriggerPx, clampedTrigger)
+			}
+		})
+
+		t.Run("protection-lost first reply, retry also fails", func(t *testing.T) {
+			state, mock, applied, logOutput := run(t,
+				&HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: "first boom"},
+				&HyperliquidStopLossUpdateResult{StopLossError: "retry boom"})
+			if applied {
+				t.Fatal("a deferred retry must not apply")
+			}
+			pos := state.Positions["ETH"]
+			if pos.StopLossOID != 0 {
+				t.Errorf("StopLossOID = %d, want 0 after a landed cancel with nothing resting", pos.StopLossOID)
+			}
+			if len(mock.dms) != 1 {
+				t.Fatalf("dms = %v, want exactly one clamp alert (no duplicate protection-lost alert)", mock.dms)
+			}
+			if strings.Contains(mock.dms[0].content, "first boom") {
+				t.Errorf("clamp alert cites the first attempt's error: %s", mock.dms[0].content)
+			}
+			var criticalLog string
+			for _, line := range strings.Split(logOutput, "\n") {
+				if strings.Contains(line, "CRITICAL: post-TP SL for ETH cancelled OID=111") {
+					criticalLog = line
+					break
+				}
+			}
+			if !strings.Contains(criticalLog, "retry boom") || strings.Contains(criticalLog, "first boom") {
+				t.Errorf("critical log = %q, want the retry error only", criticalLog)
+			}
+		})
 	})
 }
 
@@ -302,169 +303,169 @@ func (f slAfterParityFixture) strategy(t *testing.T, ladder, label string, slMul
 	}
 }
 
-func TestPaperSLAfterClearedTier(t *testing.T) {
-	f := loadSLAfterParityFixture(t)
-	if len(f.ClearedTier) == 0 {
-		t.Fatal("parity fixture has no cleared_tier cases")
-	}
-	for _, c := range f.ClearedTier {
-		t.Run(c.Name, func(t *testing.T) {
-			label := c.Label
-			if label == "" {
-				label = c.Regime
-			}
-			sc := f.strategy(t, c.Ladder, label, 1, nil, nil)
-			idx, ok := findHighestClearedTierByClosedRatio(paperSLAfterTierThresholds(sc, c.Regime), c.ClosedRatio, c.FromIdx)
-			got := -1
-			if ok {
-				got = idx
-			}
-			if got != c.WantIdx {
-				t.Fatalf("cleared tier = %d, want %d", got, c.WantIdx)
-			}
-		})
-	}
-}
-
-func TestRunPaperPostTPStopLossAdjustment(t *testing.T) {
-	f := loadSLAfterParityFixture(t)
-	if len(f.SLAfter) == 0 {
-		t.Fatal("parity fixture has no sl_after cases")
-	}
-	type scope struct {
-		name  string
-		args  []string
-		typ   string
-		moves bool
-	}
-	scopes := []scope{
-		{name: "paper perps", args: []string{"sma", "ETH", "1h"}, typ: "perps", moves: true},
-		{name: "live perps", args: []string{"sma", "ETH", "1h", "--mode=live"}, typ: "perps"},
-		{name: "paper manual", args: []string{"sma", "ETH", "1h"}, typ: "manual"},
-	}
-	for _, c := range f.SLAfter {
-		for _, sp := range scopes {
-			t.Run(c.Name+"/"+sp.name, func(t *testing.T) {
-				sc := f.strategy(t, c.Ladder, c.Label, c.StopLossATRMult, c.SLAfter, c.TierSLAfter)
-				sc.Args = sp.args
-				sc.Type = sp.typ
-				p := c.Position
-				pos := &Position{
-					Symbol:                   "ETH",
-					Side:                     p.Side,
-					AvgCost:                  p.AvgCost,
-					EntryATR:                 p.EntryATR,
-					Quantity:                 p.Quantity,
-					InitialQuantity:          p.InitialQuantity,
-					StopLossTriggerPx:        p.StopLossTriggerPx,
-					SLAdjustedTiersProcessed: p.SLAdjustedTiersProcessed,
-					Regime:                   p.Regime,
-					StopLossHighWaterPx:      p.StopLossHighWaterPx,
+func TestPaperPostTPStopLoss(t *testing.T) {
+	t.Run("SLAfterClearedTier", func(t *testing.T) {
+		f := loadSLAfterParityFixture(t)
+		if len(f.ClearedTier) == 0 {
+			t.Fatal("parity fixture has no cleared_tier cases")
+		}
+		for _, c := range f.ClearedTier {
+			t.Run(c.Name, func(t *testing.T) {
+				label := c.Label
+				if label == "" {
+					label = c.Regime
 				}
-				if strategyUsesUnifiedRegimeClose(sc) && sp.moves {
-					seedBookedConsumptionsForClosedRatio(sc, pos)
+				sc := f.strategy(t, c.Ladder, label, 1, nil, nil)
+				idx, ok := findHighestClearedTierByClosedRatio(paperSLAfterTierThresholds(sc, c.Regime), c.ClosedRatio, c.FromIdx)
+				got := -1
+				if ok {
+					got = idx
 				}
-				state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
-				var mu sync.RWMutex
-				want := c.Want
-				if !sp.moves {
-					want = slAfterParityWant{StopLossTriggerPx: p.StopLossTriggerPx, SLAdjustedTiersProcessed: p.SLAdjustedTiersProcessed, StopLossHighWaterPx: p.StopLossHighWaterPx}
+				if got != c.WantIdx {
+					t.Fatalf("cleared tier = %d, want %d", got, c.WantIdx)
 				}
-				wantMoved := want.StopLossTriggerPx != p.StopLossTriggerPx || want.PostTPTrailingATRMult != nil
-				assertState := func(call string) {
-					t.Helper()
-					gotTrail, wantTrail := 0.0, 0.0
-					if pos.PostTPTrailingATRMult != nil {
-						gotTrail = *pos.PostTPTrailingATRMult
-					}
-					if want.PostTPTrailingATRMult != nil {
-						wantTrail = *want.PostTPTrailingATRMult
-					}
-					if !approxEq(pos.StopLossTriggerPx, want.StopLossTriggerPx) ||
-						pos.SLAdjustedTiersProcessed != want.SLAdjustedTiersProcessed ||
-						(pos.PostTPTrailingATRMult == nil) != (want.PostTPTrailingATRMult == nil) ||
-						!approxEq(gotTrail, wantTrail) ||
-						!approxEq(pos.StopLossHighWaterPx, want.StopLossHighWaterPx) {
-						t.Fatalf("%s: trigger %v processed %d trail %v high water %v, want trigger %v processed %d trail %v high water %v",
-							call, pos.StopLossTriggerPx, pos.SLAdjustedTiersProcessed, pos.PostTPTrailingATRMult, pos.StopLossHighWaterPx,
-							want.StopLossTriggerPx, want.SLAdjustedTiersProcessed, want.PostTPTrailingATRMult, want.StopLossHighWaterPx)
-					}
-				}
-				if got := runPaperPostTPStopLossAdjustment(sc, state, "ETH", c.Mark, nil, &mu, nil, nil); got != wantMoved {
-					t.Fatalf("first call moved = %v, want %v", got, wantMoved)
-				}
-				assertState("first call")
-				if runPaperPostTPStopLossAdjustment(sc, state, "ETH", c.Mark+1, nil, &mu, nil, nil) {
-					t.Fatal("second call on the same tier moved the stop again")
-				}
-				assertState("second call")
 			})
 		}
-	}
-}
-
-func TestPaperPartialCloseMovesStopBeforeNextBreach(t *testing.T) {
-	useHLLotMetadataForTest(t, map[string]int{"ETH": 4})
-	prev := tradeRecorder
-	tradeRecorder = nil
-	t.Cleanup(func() { tradeRecorder = prev })
-	cases := []struct {
-		name          string
-		slAfter       interface{}
-		wantTrigger   float64
-		walkMark      float64
-		breachMark    float64
-		wantBreachPx  float64
-		wantTrailMult float64
-	}{
-		{name: "breakeven", slAfter: "breakeven", wantTrigger: 100, breachMark: 99.9, wantBreachPx: 99.9},
-		{name: "trail from here", slAfter: map[string]interface{}{"trail_from_here": map[string]interface{}{"atr_mult": 1.0}}, wantTrigger: 100, walkMark: 110, breachMark: 107, wantBreachPx: 107, wantTrailMult: 1},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			slMult := 1.0
-			sc := StrategyConfig{
-				ID: "hl-paper-sl-after", Platform: "hyperliquid", Type: "perps",
-				Args: []string{"sma", "ETH", "1h"}, StopLossATRMult: &slMult,
-				Direction: DirectionBoth, Leverage: 1, SizingLeverage: 1,
-				CloseStrategy: &StrategyRef{Name: "tiered_tp_atr", Params: map[string]interface{}{
-					"sl_after": c.slAfter,
-					"tp_tiers": []interface{}{
-						map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.5},
-						map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
-					},
-				}},
+	})
+	t.Run("RunPaperAdjustment", func(t *testing.T) {
+		f := loadSLAfterParityFixture(t)
+		if len(f.SLAfter) == 0 {
+			t.Fatal("parity fixture has no sl_after cases")
+		}
+		type scope struct {
+			name  string
+			args  []string
+			typ   string
+			moves bool
+		}
+		scopes := []scope{
+			{name: "paper perps", args: []string{"sma", "ETH", "1h"}, typ: "perps", moves: true},
+			{name: "live perps", args: []string{"sma", "ETH", "1h", "--mode=live"}, typ: "perps"},
+			{name: "paper manual", args: []string{"sma", "ETH", "1h"}, typ: "manual"},
+		}
+		for _, c := range f.SLAfter {
+			for _, sp := range scopes {
+				t.Run(c.Name+"/"+sp.name, func(t *testing.T) {
+					sc := f.strategy(t, c.Ladder, c.Label, c.StopLossATRMult, c.SLAfter, c.TierSLAfter)
+					sc.Args = sp.args
+					sc.Type = sp.typ
+					p := c.Position
+					pos := &Position{
+						Symbol:                   "ETH",
+						Side:                     p.Side,
+						AvgCost:                  p.AvgCost,
+						EntryATR:                 p.EntryATR,
+						Quantity:                 p.Quantity,
+						InitialQuantity:          p.InitialQuantity,
+						StopLossTriggerPx:        p.StopLossTriggerPx,
+						SLAdjustedTiersProcessed: p.SLAdjustedTiersProcessed,
+						Regime:                   p.Regime,
+						StopLossHighWaterPx:      p.StopLossHighWaterPx,
+					}
+					if strategyUsesUnifiedRegimeClose(sc) && sp.moves {
+						seedBookedConsumptionsForClosedRatio(sc, pos)
+					}
+					state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
+					var mu sync.RWMutex
+					want := c.Want
+					if !sp.moves {
+						want = slAfterParityWant{StopLossTriggerPx: p.StopLossTriggerPx, SLAdjustedTiersProcessed: p.SLAdjustedTiersProcessed, StopLossHighWaterPx: p.StopLossHighWaterPx}
+					}
+					wantMoved := want.StopLossTriggerPx != p.StopLossTriggerPx || want.PostTPTrailingATRMult != nil
+					assertState := func(call string) {
+						t.Helper()
+						gotTrail, wantTrail := 0.0, 0.0
+						if pos.PostTPTrailingATRMult != nil {
+							gotTrail = *pos.PostTPTrailingATRMult
+						}
+						if want.PostTPTrailingATRMult != nil {
+							wantTrail = *want.PostTPTrailingATRMult
+						}
+						if !approxEq(pos.StopLossTriggerPx, want.StopLossTriggerPx) ||
+							pos.SLAdjustedTiersProcessed != want.SLAdjustedTiersProcessed ||
+							(pos.PostTPTrailingATRMult == nil) != (want.PostTPTrailingATRMult == nil) ||
+							!approxEq(gotTrail, wantTrail) ||
+							!approxEq(pos.StopLossHighWaterPx, want.StopLossHighWaterPx) {
+							t.Fatalf("%s: trigger %v processed %d trail %v high water %v, want trigger %v processed %d trail %v high water %v",
+								call, pos.StopLossTriggerPx, pos.SLAdjustedTiersProcessed, pos.PostTPTrailingATRMult, pos.StopLossHighWaterPx,
+								want.StopLossTriggerPx, want.SLAdjustedTiersProcessed, want.PostTPTrailingATRMult, want.StopLossHighWaterPx)
+						}
+					}
+					if got := runPaperPostTPStopLossAdjustment(sc, state, "ETH", c.Mark, nil, &mu, nil, nil); got != wantMoved {
+						t.Fatalf("first call moved = %v, want %v", got, wantMoved)
+					}
+					assertState("first call")
+					if runPaperPostTPStopLossAdjustment(sc, state, "ETH", c.Mark+1, nil, &mu, nil, nil) {
+						t.Fatal("second call on the same tier moved the stop again")
+					}
+					assertState("second call")
+				})
 			}
-			s := paperStopTestState(sc, &Position{Symbol: "ETH", Quantity: 1, InitialQuantity: 1, AvgCost: 100, EntryATR: 2, Side: "long", StopLossTriggerPx: 98})
-			logger := silentStrategyLogger(sc.ID)
-			var mu sync.RWMutex
-			result := &HyperliquidResult{Symbol: "ETH", Signal: -1, Price: 102}
-			result.CloseFraction = 0.5
-			if trades, _, _, _ := executeHyperliquidResultDeferredOpen(sc, s, result, nil, "SELL", 102, nil, &Config{}, HurstGateDecision{}, logger); trades != 1 {
-				t.Fatalf("paper partial close trades = %d, want 1", trades)
-			}
-			if !runPaperPostTPStopLossAdjustment(sc, s, "ETH", 102, &Config{}, &mu, nil, logger) {
-				t.Fatal("paper partial close did not move the stop")
-			}
-			pos := s.Positions["ETH"]
-			if pos == nil || !approxEq(pos.Quantity, 0.5) || !approxEq(pos.StopLossTriggerPx, c.wantTrigger) {
-				t.Fatalf("after the tier = %+v, want 0.5 left with the stop at %v", pos, c.wantTrigger)
-			}
-			if c.wantTrailMult > 0 {
-				snap := hyperliquidProtectionPositionSnapshot(pos)
-				if effectiveTrailingStopPct(sc, snap) <= 0 {
-					t.Fatal("trail handoff: the fixed paper block still owns the stop, want the trailing walker")
+		}
+	})
+	t.Run("PartialCloseMovesStopBeforeNextBreach", func(t *testing.T) {
+		useHLLotMetadataForTest(t, map[string]int{"ETH": 4})
+		prev := tradeRecorder
+		tradeRecorder = nil
+		t.Cleanup(func() { tradeRecorder = prev })
+		cases := []struct {
+			name          string
+			slAfter       interface{}
+			wantTrigger   float64
+			walkMark      float64
+			breachMark    float64
+			wantBreachPx  float64
+			wantTrailMult float64
+		}{
+			{name: "breakeven", slAfter: "breakeven", wantTrigger: 100, breachMark: 99.9, wantBreachPx: 99.9},
+			{name: "trail from here", slAfter: map[string]interface{}{"trail_from_here": map[string]interface{}{"atr_mult": 1.0}}, wantTrigger: 100, walkMark: 110, breachMark: 107, wantBreachPx: 107, wantTrailMult: 1},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				slMult := 1.0
+				sc := StrategyConfig{
+					ID: "hl-paper-sl-after", Platform: "hyperliquid", Type: "perps",
+					Args: []string{"sma", "ETH", "1h"}, StopLossATRMult: &slMult,
+					Direction: DirectionBoth, Leverage: 1, SizingLeverage: 1,
+					CloseStrategy: &StrategyRef{Name: "tiered_tp_atr", Params: map[string]interface{}{
+						"sl_after": c.slAfter,
+						"tp_tiers": []interface{}{
+							map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.5},
+							map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+						},
+					}},
 				}
-				hw, trigger, breach, _ := runHyperliquidTrailingStopPaper(sc, pos.Side, snap, c.walkMark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, trailingReplacePolicy{})
-				if breach || hw != c.walkMark || trigger <= c.wantTrigger {
-					t.Fatalf("walker from the seeded high water = (hw %v trigger %v breach %v), want hw %v and a trigger above %v", hw, trigger, breach, c.walkMark, c.wantTrigger)
+				s := paperStopTestState(sc, &Position{Symbol: "ETH", Quantity: 1, InitialQuantity: 1, AvgCost: 100, EntryATR: 2, Side: "long", StopLossTriggerPx: 98})
+				logger := silentStrategyLogger(sc.ID)
+				var mu sync.RWMutex
+				result := &HyperliquidResult{Symbol: "ETH", Signal: -1, Price: 102}
+				result.CloseFraction = 0.5
+				if trades, _, _, _ := executeHyperliquidResultDeferredOpen(sc, s, result, nil, "SELL", 102, nil, &Config{}, HurstGateDecision{}, logger); trades != 1 {
+					t.Fatalf("paper partial close trades = %d, want 1", trades)
 				}
-				pos.StopLossHighWaterPx, pos.StopLossTriggerPx = hw, trigger
-			}
-			n, _ := applyPaperStopLossBreach(sc, s, "ETH", "long", c.breachMark, &mu, logger)
-			if n != 1 || s.Positions["ETH"] != nil || len(s.ClosedPositions) != 1 || math.Abs(s.ClosedPositions[0].ClosePrice-c.wantBreachPx*(1-SlippagePct)) > 1e-9 {
-				t.Fatalf("next-cycle breach = trades %d closed %+v, want the rest closed @ %v moved against the sell by SlippagePct", n, s.ClosedPositions, c.wantBreachPx)
-			}
-		})
-	}
+				if !runPaperPostTPStopLossAdjustment(sc, s, "ETH", 102, &Config{}, &mu, nil, logger) {
+					t.Fatal("paper partial close did not move the stop")
+				}
+				pos := s.Positions["ETH"]
+				if pos == nil || !approxEq(pos.Quantity, 0.5) || !approxEq(pos.StopLossTriggerPx, c.wantTrigger) {
+					t.Fatalf("after the tier = %+v, want 0.5 left with the stop at %v", pos, c.wantTrigger)
+				}
+				if c.wantTrailMult > 0 {
+					snap := hyperliquidProtectionPositionSnapshot(pos)
+					if effectiveTrailingStopPct(sc, snap) <= 0 {
+						t.Fatal("trail handoff: the fixed paper block still owns the stop, want the trailing walker")
+					}
+					hw, trigger, breach, _ := runHyperliquidTrailingStopPaper(sc, pos.Side, snap, c.walkMark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, trailingReplacePolicy{})
+					if breach || hw != c.walkMark || trigger <= c.wantTrigger {
+						t.Fatalf("walker from the seeded high water = (hw %v trigger %v breach %v), want hw %v and a trigger above %v", hw, trigger, breach, c.walkMark, c.wantTrigger)
+					}
+					pos.StopLossHighWaterPx, pos.StopLossTriggerPx = hw, trigger
+				}
+				n, _ := applyPaperStopLossBreach(sc, s, "ETH", "long", c.breachMark, &mu, logger)
+				if n != 1 || s.Positions["ETH"] != nil || len(s.ClosedPositions) != 1 || math.Abs(s.ClosedPositions[0].ClosePrice-c.wantBreachPx*(1-SlippagePct)) > 1e-9 {
+					t.Fatalf("next-cycle breach = trades %d closed %+v, want the rest closed @ %v moved against the sell by SlippagePct", n, s.ClosedPositions, c.wantBreachPx)
+				}
+			})
+		}
+	})
 }

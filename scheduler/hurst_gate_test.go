@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestHurstSizeMultiplierFormulaAndClamps(t *testing.T) {
+func hurstCaseHurstSizeMultiplierFormulaAndClamps(t *testing.T) {
 	cases := []struct {
 		h, floor, want float64
 	}{
@@ -33,7 +33,7 @@ func TestHurstSizeMultiplierFormulaAndClamps(t *testing.T) {
 	}
 }
 
-func TestPerpsOpenNotionalSizedAppliesEntryMultInNotionalMode(t *testing.T) {
+func hurstCasePerpsOpenNotionalSizedAppliesEntryMultInNotionalMode(t *testing.T) {
 	sizing := PerpsSizing{SizingLeverage: 2, ExchangeLeverage: 5}
 	full := PerpsOpenNotionalSized(1000, 100, sizing)
 	half := PerpsOpenNotionalSized(1000, 100, withEntrySizeMult(sizing, 0.5))
@@ -45,7 +45,7 @@ func TestPerpsOpenNotionalSizedAppliesEntryMultInNotionalMode(t *testing.T) {
 	}
 }
 
-func TestPerpsOpenNotionalSizedComposesWithRiskPerTradePct(t *testing.T) {
+func hurstCasePerpsOpenNotionalSizedComposesWithRiskPerTradePct(t *testing.T) {
 	sizing := PerpsSizing{RiskPerTradePct: 1, RiskStopDistance: 5, ExchangeLeverage: 10}
 	full := PerpsOpenNotionalSized(10000, 100, sizing)
 	scaled := PerpsOpenNotionalSized(10000, 100, withEntrySizeMult(sizing, 0.4))
@@ -66,7 +66,7 @@ func TestPerpsOpenNotionalSizedComposesWithRiskPerTradePct(t *testing.T) {
 	}
 }
 
-func TestEntrySizeMultOutOfRangeIsNeutral(t *testing.T) {
+func hurstCaseEntrySizeMultOutOfRangeIsNeutral(t *testing.T) {
 	for _, v := range []float64{-0.5, 0, 1.0001, 42} {
 		s := PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1, EntrySizeMult: v}
 		if s.entrySizeMult() != 1.0 {
@@ -75,7 +75,7 @@ func TestEntrySizeMultOutOfRangeIsNeutral(t *testing.T) {
 	}
 }
 
-func TestSpotPaperOpenScalesWithMultiplierAndClosesDoNot(t *testing.T) {
+func hurstCaseSpotPaperOpenScalesWithMultiplierAndClosesDoNot(t *testing.T) {
 	logger := silentStrategyLogger("spot-hurst")
 	newState := func() *StrategyState {
 		return &StrategyState{ID: "spot-hurst", Type: "spot", Cash: 1000, Positions: map[string]*Position{}, TradeHistory: []Trade{}}
@@ -105,7 +105,7 @@ func TestSpotPaperOpenScalesWithMultiplierAndClosesDoNot(t *testing.T) {
 	}
 }
 
-func TestFuturesPaperOpenFloorsToZeroAndRefuses(t *testing.T) {
+func hurstCaseFuturesPaperOpenFloorsToZeroAndRefuses(t *testing.T) {
 	logger := silentStrategyLogger("fut-hurst")
 	spec := ContractSpec{Margin: 400, Multiplier: 1}
 	s := &StrategyState{ID: "fut-hurst", Type: "futures", Cash: 1000, Positions: map[string]*Position{}, TradeHistory: []Trade{}}
@@ -123,5 +123,18 @@ func TestFuturesPaperOpenFloorsToZeroAndRefuses(t *testing.T) {
 	}
 	if s2.Cash != 1000 {
 		t.Fatalf("a refused open must not move cash, got %v", s2.Cash)
+	}
+}
+
+func TestHurstEntrySizeMultiplier(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"FormulaAndClamps", hurstCaseHurstSizeMultiplierFormulaAndClamps},
+		{"PerpsNotionalModeAppliesEntryMult", hurstCasePerpsOpenNotionalSizedAppliesEntryMultInNotionalMode},
+		{"PerpsNotionalComposesWithRiskPerTradePct", hurstCasePerpsOpenNotionalSizedComposesWithRiskPerTradePct},
+		{"OutOfRangeIsNeutral", hurstCaseEntrySizeMultOutOfRangeIsNeutral},
+		{"SpotPaperOpenScalesAndClosesDoNot", hurstCaseSpotPaperOpenScalesWithMultiplierAndClosesDoNot},
+		{"FuturesPaperOpenFloorsToZeroAndRefuses", hurstCaseFuturesPaperOpenFloorsToZeroAndRefuses},
+	} {
+		t.Run(tc.name, tc.run)
 	}
 }

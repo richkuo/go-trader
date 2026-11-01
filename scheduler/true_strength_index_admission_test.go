@@ -29,7 +29,7 @@ func tsiLoadBoth(t *testing.T, sc map[string]interface{}) (*Config, error) {
 	return cfg, loadErr
 }
 
-func TestTrueStrengthIndexAdmissionRoutesOpenAndCloseFallbackReferences(t *testing.T) {
+func noEdgeCaseTrueStrengthIndexAdmissionRoutesOpenAndCloseFallbackReferences(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	open := func(args ...string) map[string]interface{} {
 		return noEdgeHLStrategy("hl-tsi-eth", append([]string{tsiName, "ETH", "1h"}, args...)...)
@@ -71,7 +71,7 @@ func TestTrueStrengthIndexAdmissionRoutesOpenAndCloseFallbackReferences(t *testi
 	}
 }
 
-func TestTrueStrengthIndexOperatorAddCreatesALoadableExplicitPaperEntry(t *testing.T) {
+func noEdgeCaseTrueStrengthIndexOperatorAddCreatesALoadableExplicitPaperEntry(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry(tsiName, "hyperliquid", "sol")
 	if err != nil || id != "hl-tsi-sol" {
@@ -118,7 +118,7 @@ func TestTrueStrengthIndexOperatorAddCreatesALoadableExplicitPaperEntry(t *testi
 	}
 }
 
-func TestTrueStrengthIndexStudyParityConfigsLoadAsExplicitPaper(t *testing.T) {
+func noEdgeCaseTrueStrengthIndexStudyParityConfigsLoadAsExplicitPaper(t *testing.T) {
 	dir := filepath.Join("..", "backtest", "candidates", "true_strength_index_1667")
 	for _, tf := range []string{"1h", "4h"} {
 		data, err := os.ReadFile(filepath.Join(dir, "paper_parity_"+tf+".json"))
@@ -157,7 +157,7 @@ func TestTrueStrengthIndexStudyParityConfigsLoadAsExplicitPaper(t *testing.T) {
 	}
 }
 
-func TestV20NoEdgeMigrationNeverStampsTrueStrengthIndex(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationNeverStampsTrueStrengthIndex(t *testing.T) {
 	open := noEdgeHLStrategy("hl-tsi-open", tsiName, "ETH", "1h", "--mode=live")
 	fallback := noEdgeHLStrategy("hl-tsi-close", "breakout", "ETH", "1h", "--mode=live")
 	fallback["close_strategy"] = map[string]interface{}{"name": tsiName}

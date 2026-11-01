@@ -5,56 +5,87 @@ import (
 	"time"
 )
 
-func TestApplyScaleInBlendsPriceAndSizeFreezesRiskPlan(t *testing.T) {
-	mult := 1.5
-	pos := &Position{
-		Symbol:                   "ETH",
-		Side:                     "long",
-		Quantity:                 100,
-		InitialQuantity:          100,
-		AvgCost:                  2000,
-		EntryATR:                 50,
-		Regime:                   "trending",
-		RegimeWindows:            map[string]string{"medium": "trending"},
-		SLAdjustedTiersProcessed: 1,
-		TPArmedTiers:             []bool{true, false},
-		StopLossATRMult:          &mult,
-	}
-	applyScaleIn(pos, 100, 2200)
+func TestScaleInFreezesRiskGeometry(t *testing.T) {
+	t.Run("ApplyScaleInBlendsPriceAndSizeFreezesRiskPlan", func(t *testing.T) {
+		mult := 1.5
+		pos := &Position{
+			Symbol:                   "ETH",
+			Side:                     "long",
+			Quantity:                 100,
+			InitialQuantity:          100,
+			AvgCost:                  2000,
+			EntryATR:                 50,
+			Regime:                   "trending",
+			RegimeWindows:            map[string]string{"medium": "trending"},
+			SLAdjustedTiersProcessed: 1,
+			TPArmedTiers:             []bool{true, false},
+			StopLossATRMult:          &mult,
+		}
+		applyScaleIn(pos, 100, 2200)
 
-	if !approxEq(pos.AvgCost, 2100) {
-		t.Fatalf("AvgCost = %v, want 2100", pos.AvgCost)
-	}
-	if !approxEq(pos.Quantity, 200) {
-		t.Fatalf("Quantity = %v, want 200", pos.Quantity)
-	}
-	if !approxEq(pos.InitialQuantity, 200) {
-		t.Fatalf("InitialQuantity = %v, want 200", pos.InitialQuantity)
-	}
-	if pos.ScaleInCount != 1 {
-		t.Fatalf("ScaleInCount = %d, want 1", pos.ScaleInCount)
-	}
-	if !approxEq(pos.LastAddPrice, 2200) {
-		t.Fatalf("LastAddPrice = %v, want 2200", pos.LastAddPrice)
-	}
-	if !approxEq(pos.AddedNotionalUSD, 100*2200) {
-		t.Fatalf("AddedNotionalUSD = %v, want %v", pos.AddedNotionalUSD, 100*2200.0)
-	}
-	if !pos.ScaleInResizePending {
-		t.Fatalf("ScaleInResizePending = false, want true")
-	}
-	if !approxEq(pos.EntryATR, 50) {
-		t.Fatalf("EntryATR moved: %v, want 50 (frozen)", pos.EntryATR)
-	}
-	if pos.Regime != "trending" {
-		t.Fatalf("Regime moved: %q, want trending (frozen)", pos.Regime)
-	}
-	if pos.SLAdjustedTiersProcessed != 1 {
-		t.Fatalf("SLAdjustedTiersProcessed = %d, want 1 (watermark not reset)", pos.SLAdjustedTiersProcessed)
-	}
-	if len(pos.TPArmedTiers) != 2 || !pos.TPArmedTiers[0] || pos.TPArmedTiers[1] {
-		t.Fatalf("TPArmedTiers changed: %v, want [true false] (watermark not reset)", pos.TPArmedTiers)
-	}
+		if !approxEq(pos.AvgCost, 2100) {
+			t.Fatalf("AvgCost = %v, want 2100", pos.AvgCost)
+		}
+		if !approxEq(pos.Quantity, 200) {
+			t.Fatalf("Quantity = %v, want 200", pos.Quantity)
+		}
+		if !approxEq(pos.InitialQuantity, 200) {
+			t.Fatalf("InitialQuantity = %v, want 200", pos.InitialQuantity)
+		}
+		if pos.ScaleInCount != 1 {
+			t.Fatalf("ScaleInCount = %d, want 1", pos.ScaleInCount)
+		}
+		if !approxEq(pos.LastAddPrice, 2200) {
+			t.Fatalf("LastAddPrice = %v, want 2200", pos.LastAddPrice)
+		}
+		if !approxEq(pos.AddedNotionalUSD, 100*2200) {
+			t.Fatalf("AddedNotionalUSD = %v, want %v", pos.AddedNotionalUSD, 100*2200.0)
+		}
+		if !pos.ScaleInResizePending {
+			t.Fatalf("ScaleInResizePending = false, want true")
+		}
+		if !approxEq(pos.EntryATR, 50) {
+			t.Fatalf("EntryATR moved: %v, want 50 (frozen)", pos.EntryATR)
+		}
+		if pos.Regime != "trending" {
+			t.Fatalf("Regime moved: %q, want trending (frozen)", pos.Regime)
+		}
+		if pos.SLAdjustedTiersProcessed != 1 {
+			t.Fatalf("SLAdjustedTiersProcessed = %d, want 1 (watermark not reset)", pos.SLAdjustedTiersProcessed)
+		}
+		if len(pos.TPArmedTiers) != 2 || !pos.TPArmedTiers[0] || pos.TPArmedTiers[1] {
+			t.Fatalf("TPArmedTiers changed: %v, want [true false] (watermark not reset)", pos.TPArmedTiers)
+		}
+	})
+	t.Run("ApplyScaleInStampsFrozenRiskAnchor", func(t *testing.T) {
+		pos := &Position{Side: "long", Quantity: 100, InitialQuantity: 100, AvgCost: 2000}
+		applyScaleIn(pos, 100, 2200)
+		if !approxEq(pos.RiskAnchorPrice, 2000) {
+			t.Fatalf("RiskAnchorPrice = %v, want 2000 (original entry frozen)", pos.RiskAnchorPrice)
+		}
+		if !approxEq(pos.AvgCost, 2100) {
+			t.Fatalf("AvgCost = %v, want 2100 (blended for PnL)", pos.AvgCost)
+		}
+		applyScaleIn(pos, 200, 2400)
+		if !approxEq(pos.RiskAnchorPrice, 2000) {
+			t.Fatalf("RiskAnchorPrice moved on second add: %v, want 2000", pos.RiskAnchorPrice)
+		}
+		if !approxEq(pos.riskAnchorPrice(), 2000) {
+			t.Fatalf("riskAnchorPrice() = %v, want 2000", pos.riskAnchorPrice())
+		}
+	})
+	t.Run("FixedSLGeometry", func(t *testing.T) {
+		mult := 1.5
+		sc := StrategyConfig{Type: "perps", Platform: "hyperliquid", StopLossATRMult: &mult}
+		pos := &Position{
+			Side: "long", Quantity: 200, InitialQuantity: 200,
+			AvgCost: 2100, EntryATR: 50, RiskAnchorPrice: 2000, StopLossATRMult: &mult,
+		}
+		got := fixedStopLossATRTriggerPx(sc, "long", pos)
+		if !approxEq(got, 1925) {
+			t.Fatalf("fixed SL trigger = %v, want 1925 (frozen at riskAnchorPrice, not blended AvgCost)", got)
+		}
+	})
 }
 
 func TestApplyManualActionAddBlendsAndRecords(t *testing.T) {
@@ -111,24 +142,6 @@ func TestApplyManualActionAddBlendsAndRecords(t *testing.T) {
 	state2 := &AppState{Strategies: map[string]*StrategyState{"hl-manual-eth": flat}}
 	if err := applyManualAction(state2, nil, scByID, add); err == nil {
 		t.Errorf("expected error adding to a flat strategy")
-	}
-}
-
-func TestApplyScaleInStampsFrozenRiskAnchor(t *testing.T) {
-	pos := &Position{Side: "long", Quantity: 100, InitialQuantity: 100, AvgCost: 2000}
-	applyScaleIn(pos, 100, 2200)
-	if !approxEq(pos.RiskAnchorPrice, 2000) {
-		t.Fatalf("RiskAnchorPrice = %v, want 2000 (original entry frozen)", pos.RiskAnchorPrice)
-	}
-	if !approxEq(pos.AvgCost, 2100) {
-		t.Fatalf("AvgCost = %v, want 2100 (blended for PnL)", pos.AvgCost)
-	}
-	applyScaleIn(pos, 200, 2400)
-	if !approxEq(pos.RiskAnchorPrice, 2000) {
-		t.Fatalf("RiskAnchorPrice moved on second add: %v, want 2000", pos.RiskAnchorPrice)
-	}
-	if !approxEq(pos.riskAnchorPrice(), 2000) {
-		t.Fatalf("riskAnchorPrice() = %v, want 2000", pos.riskAnchorPrice())
 	}
 }
 

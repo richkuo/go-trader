@@ -211,92 +211,93 @@ func (e *basketTestEnv) offlineStep(now, deadline time.Time, snap *marketSnapsho
 	e.bc.step(basketCycleInputs{Now: now, Snapshot: snap, SnapshotFor: func(*basketRuntime, time.Time) *marketSnapshot { return snap }, Once: once})
 }
 
-func TestBasketOfflineRankClockRunsHistoricalWindows(t *testing.T) {
-	calls := int32(0)
-	counting := func(inner basketRankRunner) basketRankRunner {
-		return func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
-			atomic.AddInt32(&calls, 1)
-			if dl, ok := ctx.Deadline(); ok && time.Until(dl) <= 0 {
-				return nil, nil, context.DeadlineExceeded
-			}
-			return inner(ctx, stdin, timeout)
-		}
-	}
-	env, deadline := basketOfflineRankEnv(t, counting(basketTestRanker(basketTestWeights, "")))
-	snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
-	env.cycle(deadline.Add(time.Minute), deadline, snap, true)
-	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceCompleted {
-		t.Fatalf("a historical deadline must rank on the simulated window instead of expiring on the system clock: %+v", rb)
-	}
-
-	runtimeEnv, _ := basketOfflineRankEnv(t, counting(basketTestRanker(basketTestWeights, "")))
-	runtimeEnv.bc.rankClock = basketRankClockRuntime
-	runtimeEnv.cycle(deadline.Add(time.Minute), deadline, snap, true)
-	if rb := runtimeEnv.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status == basketRebalanceCompleted {
-		t.Fatalf("the runtime clock policy keeps its system-clock window: a historical deadline must not complete, got %+v", rb)
-	}
-
-	atEnd, _ := basketOfflineRankEnv(t, counting(basketTestRanker(basketTestWeights, "")))
-	before := atomic.LoadInt32(&calls)
-	windowEnd := deadline.Add(time.Duration(atEnd.rt().Contract.EvaluationWindowSeconds) * time.Second)
-	atEnd.offlineStep(windowEnd, deadline, snap, true)
-	if rb := atEnd.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceHeld {
-		t.Fatalf("a step at the simulated window end must hold the deadline: %+v", rb)
-	}
-	if atomic.LoadInt32(&calls) != before {
-		t.Fatal("a step at the simulated window end started a ranker job")
-	}
-}
-
-func TestBasketOfflineRankClockHoldsLateCancelledAndTimedOutResults(t *testing.T) {
-	release := make(chan struct{})
-	late, deadline := basketOfflineRankEnv(t, func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
-		<-release
-		return basketTestRanker(basketTestWeights, "")(ctx, stdin, timeout)
-	})
-	snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
-	late.offlineStep(deadline.Add(time.Minute), deadline, snap, false)
-	close(release)
-	job := late.rt().rank
-	if job == nil {
-		t.Fatal("the ranker job did not start")
-	}
-	<-job.done
-	windowEnd := deadline.Add(time.Duration(late.rt().Contract.EvaluationWindowSeconds) * time.Second)
-	late.offlineStep(windowEnd, deadline, snap, false)
-	if rb := late.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceHeld || rb.TargetsJSON != "" {
-		t.Fatalf("a result collected at the simulated window end must hold without targets: %+v", rb)
-	}
-
-	cancelled, _ := basketOfflineRankEnv(t, func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
-		<-ctx.Done()
-		return basketTestRanker(basketTestWeights, "")(context.Background(), stdin, timeout)
-	})
-	nearEnd := windowEnd.Add(-200 * time.Millisecond)
-	cancelled.offlineStep(nearEnd, deadline, snap, true)
-	if rb := cancelled.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceHeld || rb.TargetsJSON != "" {
-		t.Fatalf("valid JSON from a cancelled run must never freeze targets: %+v", rb)
-	}
-
-	timedOut, _ := basketOfflineRankEnv(t, func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
-		out, _, err := basketTestRanker(basketTestWeights, "")(ctx, stdin, timeout)
-		if err != nil {
-			return nil, nil, err
-		}
-		return out, nil, &pythonScriptTimeoutError{d: timeout}
-	})
-	timedOut.offlineStep(deadline.Add(time.Minute), deadline, snap, true)
-	rb := timedOut.rt().Rebalances[deadline.UnixMilli()]
-	if rb == nil || rb.Status != basketRebalanceHeld || rb.TargetsJSON != "" {
-		t.Fatalf("valid JSON from a timed-out run must never freeze targets: %+v", rb)
-	}
-	for _, m := range basketTestMembers {
-		for _, env := range []*basketTestEnv{late, cancelled, timedOut} {
-			if q := env.signedQty(m.ID, m.Coin); q != 0 {
-				t.Fatalf("%s traded %.10g after a refused ranker result", m.ID, q)
+func TestBasketOfflineRankClock(t *testing.T) {
+	t.Run("runs_historical_windows", func(t *testing.T) {
+		calls := int32(0)
+		counting := func(inner basketRankRunner) basketRankRunner {
+			return func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
+				atomic.AddInt32(&calls, 1)
+				if dl, ok := ctx.Deadline(); ok && time.Until(dl) <= 0 {
+					return nil, nil, context.DeadlineExceeded
+				}
+				return inner(ctx, stdin, timeout)
 			}
 		}
-	}
+		env, deadline := basketOfflineRankEnv(t, counting(basketTestRanker(basketTestWeights, "")))
+		snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+		env.cycle(deadline.Add(time.Minute), deadline, snap, true)
+		if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceCompleted {
+			t.Fatalf("a historical deadline must rank on the simulated window instead of expiring on the system clock: %+v", rb)
+		}
+
+		runtimeEnv, _ := basketOfflineRankEnv(t, counting(basketTestRanker(basketTestWeights, "")))
+		runtimeEnv.bc.rankClock = basketRankClockRuntime
+		runtimeEnv.cycle(deadline.Add(time.Minute), deadline, snap, true)
+		if rb := runtimeEnv.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status == basketRebalanceCompleted {
+			t.Fatalf("the runtime clock policy keeps its system-clock window: a historical deadline must not complete, got %+v", rb)
+		}
+
+		atEnd, _ := basketOfflineRankEnv(t, counting(basketTestRanker(basketTestWeights, "")))
+		before := atomic.LoadInt32(&calls)
+		windowEnd := deadline.Add(time.Duration(atEnd.rt().Contract.EvaluationWindowSeconds) * time.Second)
+		atEnd.offlineStep(windowEnd, deadline, snap, true)
+		if rb := atEnd.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceHeld {
+			t.Fatalf("a step at the simulated window end must hold the deadline: %+v", rb)
+		}
+		if atomic.LoadInt32(&calls) != before {
+			t.Fatal("a step at the simulated window end started a ranker job")
+		}
+	})
+	t.Run("holds_late_cancelled_and_timed_out_results", func(t *testing.T) {
+		release := make(chan struct{})
+		late, deadline := basketOfflineRankEnv(t, func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
+			<-release
+			return basketTestRanker(basketTestWeights, "")(ctx, stdin, timeout)
+		})
+		snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+		late.offlineStep(deadline.Add(time.Minute), deadline, snap, false)
+		close(release)
+		job := late.rt().rank
+		if job == nil {
+			t.Fatal("the ranker job did not start")
+		}
+		<-job.done
+		windowEnd := deadline.Add(time.Duration(late.rt().Contract.EvaluationWindowSeconds) * time.Second)
+		late.offlineStep(windowEnd, deadline, snap, false)
+		if rb := late.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceHeld || rb.TargetsJSON != "" {
+			t.Fatalf("a result collected at the simulated window end must hold without targets: %+v", rb)
+		}
+
+		cancelled, _ := basketOfflineRankEnv(t, func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
+			<-ctx.Done()
+			return basketTestRanker(basketTestWeights, "")(context.Background(), stdin, timeout)
+		})
+		nearEnd := windowEnd.Add(-200 * time.Millisecond)
+		cancelled.offlineStep(nearEnd, deadline, snap, true)
+		if rb := cancelled.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceHeld || rb.TargetsJSON != "" {
+			t.Fatalf("valid JSON from a cancelled run must never freeze targets: %+v", rb)
+		}
+
+		timedOut, _ := basketOfflineRankEnv(t, func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
+			out, _, err := basketTestRanker(basketTestWeights, "")(ctx, stdin, timeout)
+			if err != nil {
+				return nil, nil, err
+			}
+			return out, nil, &pythonScriptTimeoutError{d: timeout}
+		})
+		timedOut.offlineStep(deadline.Add(time.Minute), deadline, snap, true)
+		rb := timedOut.rt().Rebalances[deadline.UnixMilli()]
+		if rb == nil || rb.Status != basketRebalanceHeld || rb.TargetsJSON != "" {
+			t.Fatalf("valid JSON from a timed-out run must never freeze targets: %+v", rb)
+		}
+		for _, m := range basketTestMembers {
+			for _, env := range []*basketTestEnv{late, cancelled, timedOut} {
+				if q := env.signedQty(m.ID, m.Coin); q != 0 {
+					t.Fatalf("%s traded %.10g after a refused ranker result", m.ID, q)
+				}
+			}
+		}
+	})
 }
 
 func TestBasketReplayTradeExportReadsEveryStoredRow(t *testing.T) {

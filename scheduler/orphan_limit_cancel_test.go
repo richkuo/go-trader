@@ -65,137 +65,137 @@ type orphanLaneStubs struct {
 	cancelCalls int
 }
 
-func TestReconcileCancelLaneConvergesRowWhoseStrategyIsAbsent(t *testing.T) {
-	resetOrphanLimitCancelAlerts(t)
-	cfg := &Config{Strategies: []StrategyConfig{orphanLaneRoster()}}
-	state := newOrphanLaneState("hl-manual-eth-live")
-	db := newLimitTestStateDB(t)
-	var mu sync.RWMutex
-	seedOrphanLaneRow(t, db, "hl-manual-eth-live", true)
+func TestReconcileCancelLane(t *testing.T) {
+	t.Run("ConvergesRowWhoseStrategyIsAbsent", func(t *testing.T) {
+		resetOrphanLimitCancelAlerts(t)
+		cfg := &Config{Strategies: []StrategyConfig{orphanLaneRoster()}}
+		state := newOrphanLaneState("hl-manual-eth-live")
+		db := newLimitTestStateDB(t)
+		var mu sync.RWMutex
+		seedOrphanLaneRow(t, db, "hl-manual-eth-live", true)
 
-	stubs := &orphanLaneStubs{}
-	withStubbedLimitDeps(t,
-		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
-			stubs.statusCalls++
-			resting := stubs.cancelCalls == 0
-			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-				{OID: 9001, Resting: limitTestBoolPtr(resting), FilledSize: 0},
-			}}, "", nil
-		},
-		func(_ string, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
-			stubs.cancelCalls++
-			return &HyperliquidCancelOrderResult{OID: oid, Cancelled: true}, "", nil
-		},
-	)
+		stubs := &orphanLaneStubs{}
+		withStubbedLimitDeps(t,
+			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+				stubs.statusCalls++
+				resting := stubs.cancelCalls == 0
+				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+					{OID: 9001, Resting: limitTestBoolPtr(resting), FilledSize: 0},
+				}}, "", nil
+			},
+			func(_ string, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+				stubs.cancelCalls++
+				return &HyperliquidCancelOrderResult{OID: oid, Cancelled: true}, "", nil
+			},
+		)
 
-	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
+		notifier, mock := newOrphanLaneNotifier()
+		reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
-	if stubs.cancelCalls != 1 {
-		t.Fatalf("cancel calls = %d, want 1 — an orphaned cancel_requested row must be re-issued by the reconciler", stubs.cancelCalls)
-	}
-	orders, err := db.LoadPendingLimitOrders()
-	if err != nil {
-		t.Fatalf("load rows: %v", err)
-	}
-	if len(orders) != 0 {
-		t.Fatalf("row must be cleared once the order is off-book with no unbooked fill, got %+v", orders)
-	}
-	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "cancel-only lane") {
-		t.Fatalf("operator must be told the lane cleared the order, dms = %+v", mock.dms)
-	}
-}
-
-func TestReconcileCancelLaneKeepsRowAndBooksNothingOnUnadoptedFill(t *testing.T) {
-	resetOrphanLimitCancelAlerts(t)
-	cfg := &Config{Strategies: []StrategyConfig{orphanLaneRoster()}}
-	state := newOrphanLaneState("hl-manual-eth-live")
-	db := newLimitTestStateDB(t)
-	var mu sync.RWMutex
-	seedOrphanLaneRow(t, db, "hl-manual-eth-live", true)
-
-	withStubbedLimitDeps(t,
-		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
-			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-				{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.5, AvgPx: 2000, Fee: 0.7, Count: 1},
-			}}, "", nil
-		},
-		func(_ string, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
-			return &HyperliquidCancelOrderResult{OID: oid, Cancelled: true}, "", nil
-		},
-	)
-
-	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
-
-	orders, _ := db.LoadPendingLimitOrders()
-	if len(orders) != 1 {
-		t.Fatalf("the row must survive as the recovery record for an unbooked fill, got %+v", orders)
-	}
-	if pos := state.Strategies["hl-manual-eth-live"].Positions["ETH"]; pos != nil {
-		t.Fatalf("the lane must book no fill, position = %+v", pos)
-	}
-	if len(mock.dms) != 1 {
-		t.Fatalf("an unresolvable row must raise one owner alert, dms = %+v", mock.dms)
-	}
-	if !strings.Contains(mock.dms[0].content, "oid=9001") ||
-		!strings.Contains(mock.dms[0].content, "hl-manual-eth-live/ETH") {
-		t.Fatalf("alert must name the order and its order id, got: %s", mock.dms[0].content)
-	}
-}
-
-func TestReconcileCancelLaneFlushesAnAdoptedFillBeforeClearingTheRow(t *testing.T) {
-	resetOrphanLimitCancelAlerts(t)
-	dbPath := filepath.Join(t.TempDir(), "state.db")
-	db, err := OpenStateDB(dbPath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	state := newOrphanLaneState("hl-manual-eth-live")
-	ss := state.Strategies["hl-manual-eth-live"]
-	ss.Positions["ETH"] = &Position{
-		Symbol: "ETH", Quantity: 0.3, InitialQuantity: 0.3, AvgCost: 2000,
-		Side: "long", Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-manual-eth-live",
-		OpenedAt: time.Now().UTC(),
-	}
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("seed save: %v", err)
-	}
-	cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{orphanLaneRoster()}}
-	var mu sync.RWMutex
-
-	db.InsertPendingLimitOrder(PendingLimitOrder{
-		StrategyID: "hl-manual-eth-live", Symbol: "ETH", Side: "long", OrderOID: 9001,
-		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, FilledSize: 0.3,
-		AvgFillPrice: 2000, CancelRequested: true, CreatedAt: time.Now().UTC(),
+		if stubs.cancelCalls != 1 {
+			t.Fatalf("cancel calls = %d, want 1 — an orphaned cancel_requested row must be re-issued by the reconciler", stubs.cancelCalls)
+		}
+		orders, err := db.LoadPendingLimitOrders()
+		if err != nil {
+			t.Fatalf("load rows: %v", err)
+		}
+		if len(orders) != 0 {
+			t.Fatalf("row must be cleared once the order is off-book with no unbooked fill, got %+v", orders)
+		}
+		if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "cancel-only lane") {
+			t.Fatalf("operator must be told the lane cleared the order, dms = %+v", mock.dms)
+		}
 	})
+	t.Run("KeepsRowAndBooksNothingOnUnadoptedFill", func(t *testing.T) {
+		resetOrphanLimitCancelAlerts(t)
+		cfg := &Config{Strategies: []StrategyConfig{orphanLaneRoster()}}
+		state := newOrphanLaneState("hl-manual-eth-live")
+		db := newLimitTestStateDB(t)
+		var mu sync.RWMutex
+		seedOrphanLaneRow(t, db, "hl-manual-eth-live", true)
 
-	withStubbedLimitDeps(t,
-		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
-			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-				{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.3, AvgPx: 2000, Fee: 0.4, Count: 1},
-			}}, "", nil
-		},
-		func(_ string, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
-			return &HyperliquidCancelOrderResult{OID: oid, Cancelled: true}, "", nil
-		},
-	)
+		withStubbedLimitDeps(t,
+			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+					{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.5, AvgPx: 2000, Fee: 0.7, Count: 1},
+				}}, "", nil
+			},
+			func(_ string, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+				return &HyperliquidCancelOrderResult{OID: oid, Cancelled: true}, "", nil
+			},
+		)
 
-	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
+		notifier, mock := newOrphanLaneNotifier()
+		reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
-	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
-		t.Fatalf("row must be cleared once the adopted fill is flushed, got %+v", orders)
-	}
-	fresh, err := LoadStateWithDB(cfg, db)
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	pos := fresh.Strategies["hl-manual-eth-live"].Positions["ETH"]
-	if pos == nil || pos.Quantity != 0.3 {
-		t.Fatalf("the adopted fill must reach the state DB before the row is deleted, position = %+v", pos)
-	}
+		orders, _ := db.LoadPendingLimitOrders()
+		if len(orders) != 1 {
+			t.Fatalf("the row must survive as the recovery record for an unbooked fill, got %+v", orders)
+		}
+		if pos := state.Strategies["hl-manual-eth-live"].Positions["ETH"]; pos != nil {
+			t.Fatalf("the lane must book no fill, position = %+v", pos)
+		}
+		if len(mock.dms) != 1 {
+			t.Fatalf("an unresolvable row must raise one owner alert, dms = %+v", mock.dms)
+		}
+		if !strings.Contains(mock.dms[0].content, "oid=9001") ||
+			!strings.Contains(mock.dms[0].content, "hl-manual-eth-live/ETH") {
+			t.Fatalf("alert must name the order and its order id, got: %s", mock.dms[0].content)
+		}
+	})
+	t.Run("FlushesAnAdoptedFillBeforeClearingTheRow", func(t *testing.T) {
+		resetOrphanLimitCancelAlerts(t)
+		dbPath := filepath.Join(t.TempDir(), "state.db")
+		db, err := OpenStateDB(dbPath)
+		if err != nil {
+			t.Fatalf("open db: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+
+		state := newOrphanLaneState("hl-manual-eth-live")
+		ss := state.Strategies["hl-manual-eth-live"]
+		ss.Positions["ETH"] = &Position{
+			Symbol: "ETH", Quantity: 0.3, InitialQuantity: 0.3, AvgCost: 2000,
+			Side: "long", Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-manual-eth-live",
+			OpenedAt: time.Now().UTC(),
+		}
+		if err := db.SaveState(state); err != nil {
+			t.Fatalf("seed save: %v", err)
+		}
+		cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{orphanLaneRoster()}}
+		var mu sync.RWMutex
+
+		db.InsertPendingLimitOrder(PendingLimitOrder{
+			StrategyID: "hl-manual-eth-live", Symbol: "ETH", Side: "long", OrderOID: 9001,
+			LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, FilledSize: 0.3,
+			AvgFillPrice: 2000, CancelRequested: true, CreatedAt: time.Now().UTC(),
+		})
+
+		withStubbedLimitDeps(t,
+			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+					{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.3, AvgPx: 2000, Fee: 0.4, Count: 1},
+				}}, "", nil
+			},
+			func(_ string, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+				return &HyperliquidCancelOrderResult{OID: oid, Cancelled: true}, "", nil
+			},
+		)
+
+		reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
+
+		if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
+			t.Fatalf("row must be cleared once the adopted fill is flushed, got %+v", orders)
+		}
+		fresh, err := LoadStateWithDB(cfg, db)
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		pos := fresh.Strategies["hl-manual-eth-live"].Positions["ETH"]
+		if pos == nil || pos.Quantity != 0.3 {
+			t.Fatalf("the adopted fill must reach the state DB before the row is deleted, position = %+v", pos)
+		}
+	})
 }
 
 func TestOpenStateDBMigratesOperatorRequiredSinceOntoAnExistingQueue(t *testing.T) {

@@ -77,7 +77,7 @@ func rawStrategiesByID(t *testing.T, path string) map[string]map[string]interfac
 	return out
 }
 
-func TestNoEdgeAdmissionMatrixThroughRealLoaders(t *testing.T) {
+func noEdgeCaseNoEdgeAdmissionMatrixThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	ack := func(sc map[string]interface{}, v interface{}) map[string]interface{} {
 		sc["allow_no_edge"] = v
@@ -186,7 +186,7 @@ func TestNoEdgeAdmissionMatrixThroughRealLoaders(t *testing.T) {
 	}
 }
 
-func TestNoEdgeAcknowledgementMustBeAJSONBoolean(t *testing.T) {
+func noEdgeCaseNoEdgeAcknowledgementMustBeAJSONBoolean(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	for _, name := range []string{"rsi", "chande_momentum"} {
 		for _, v := range []interface{}{"true", 1, "yes"} {
@@ -226,7 +226,7 @@ func chandeLegacyFixture() []map[string]interface{} {
 	}
 }
 
-func TestV20NoEdgeMigrationNeverGrantsChandeMomentumAndReportVetoesIt(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationNeverGrantsChandeMomentumAndReportVetoesIt(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	for _, version := range []int{0, 19} {
 		refusedIDs := []string{"hl-cmo-close", "hl-cmo-false", "hl-cmo-mixed", "hl-cmo-open"}
@@ -371,7 +371,7 @@ func stampedIDs(r *noEdgeMigrationReport) []string {
 	return out
 }
 
-func TestV20NoEdgeMigrationStampsOnlyWorkingLiveConfigsAndIsIdempotent(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationStampsOnlyWorkingLiveConfigsAndIsIdempotent(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	path := writeNoEdgeConfig(t, 19, v19NoEdgeFixture()...)
 	cfg, err := LoadConfig(path)
@@ -423,7 +423,7 @@ func TestV20NoEdgeMigrationStampsOnlyWorkingLiveConfigsAndIsIdempotent(t *testin
 	}
 }
 
-func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	mixed := noEdgeHLStrategy("hl-mix", "sma_crossover", "AVAX", "1h", "--mode=live")
 	mixed["close_strategy"] = map[string]interface{}{"name": "vortex_trend"}
@@ -536,7 +536,7 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	}
 }
 
-func TestV20NoEdgeMigrationStampsOnlyNamesThatRanLiveBeforeV20(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationStampsOnlyNamesThatRanLiveBeforeV20(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	assertUnstamped := func(t *testing.T, path string, version int, id string) {
 		t.Helper()
@@ -611,7 +611,7 @@ func TestV20NoEdgeMigrationStampsOnlyNamesThatRanLiveBeforeV20(t *testing.T) {
 	})
 }
 
-func TestV20NoEdgeMigrationOrderingAndOwnership(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationOrderingAndOwnership(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	live := func(id string) map[string]interface{} {
 		sc := noEdgeHLStrategy(id, "rsi", "BTC", "1h", "--mode=live")
@@ -707,7 +707,7 @@ func TestV20NoEdgeMigrationOrderingAndOwnership(t *testing.T) {
 	})
 }
 
-func TestNoEdgeMigrationNoticeReachesOwnerOrLog(t *testing.T) {
+func noEdgeCaseNoEdgeMigrationNoticeReachesOwnerOrLog(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	preAck := noEdgeHLStrategy("hl-pre", "macd", "SOL", "1h", "--mode=live")
 	preAck["allow_no_edge"] = true
@@ -868,7 +868,7 @@ func TestNoEdgeSummaryAndInspectSurfaces(t *testing.T) {
 	}
 }
 
-func TestNoEdgePaperAddAcceptsEveryRegisteredPlatformName(t *testing.T) {
+func noEdgeCaseNoEdgePaperAddAcceptsEveryRegisteredPlatformName(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	seen := map[string]string{}
 	names := make([]string, 0, len(registeredOpenStrategyPlatforms))
@@ -958,7 +958,7 @@ func TestNoEdgeBatchSlotCarriesRawModeEvidenceAndAcknowledgement(t *testing.T) {
 	}
 }
 
-func TestChandeMomentumAndDualThrustOperatorAddCreateBothDirectionHourlyPaperEntries(t *testing.T) {
+func noEdgeCaseChandeMomentumAndDualThrustOperatorAddCreateBothDirectionHourlyPaperEntries(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	dualThrustClose := map[string]interface{}{"name": "tiered_tp_pct", "params": map[string]interface{}{
 		"tp_tiers": []interface{}{map[string]interface{}{"profit_pct": 0.03, "close_fraction": 1.0}}}}
@@ -1016,7 +1016,7 @@ func TestChandeMomentumAndDualThrustOperatorAddCreateBothDirectionHourlyPaperEnt
 	}
 }
 
-func TestMoneyFlowIndexReversalAdmissionAndPaperAdd(t *testing.T) {
+func noEdgeCaseMoneyFlowIndexReversalAdmissionAndPaperAdd(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const name = "money_flow_index_reversal"
 	const ref = "backtest/candidates/money_flow_index_reversal_1658/REPORT.md"
@@ -1145,7 +1145,7 @@ func TestMoneyFlowIndexReversalAdmissionAndPaperAdd(t *testing.T) {
 	}
 }
 
-func TestEaseOfMovementAdmissionThroughRealLoaders(t *testing.T) {
+func noEdgeCaseEaseOfMovementAdmissionThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const name = "ease_of_movement_breakout"
 	const ref = "backtest/candidates/ease_of_movement_1671/REPORT.md"
@@ -1235,7 +1235,7 @@ func assertEaseOfMovementPaperEntry(t *testing.T, sc StrategyConfig) {
 	}
 }
 
-func TestEaseOfMovementOperatorAddPathsCreateExplicitPaperEntries(t *testing.T) {
+func noEdgeCaseEaseOfMovementOperatorAddPathsCreateExplicitPaperEntries(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry("ease_of_movement_breakout", "hyperliquid", "btc")
 	if err != nil || id != "hl-eombo-btc" {
@@ -1322,7 +1322,7 @@ func aroonStudyStrategy(id string, params map[string]interface{}, modeArgs ...st
 	return sc
 }
 
-func TestAroonTrendAddAdmissionAndParamPreflightThroughRealLoaders(t *testing.T) {
+func noEdgeCaseAroonTrendAddAdmissionAndParamPreflightThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry("aroon_trend", "hyperliquid", "BTC")
 	if err != nil {
@@ -1429,7 +1429,7 @@ func TestAroonTrendAddAdmissionAndParamPreflightThroughRealLoaders(t *testing.T)
 	}
 }
 
-func TestChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
+func noEdgeCaseChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	t.Setenv("TOPSTEP_API_KEY", "k")
 	t.Setenv("TOPSTEP_API_SECRET", "s")
@@ -1540,7 +1540,7 @@ func TestChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
 	}
 }
 
-func TestChandeMomentumAndDualThrustStudyParityConfigsStillLoad(t *testing.T) {
+func noEdgeCaseChandeMomentumAndDualThrustStudyParityConfigsStillLoad(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	cases := []struct {
 		name      string
@@ -1584,7 +1584,7 @@ func dualThrustHLStrategy(id string, args ...string) map[string]interface{} {
 	return sc
 }
 
-func TestDualThrustAdmissionMatrixThroughRealLoaders(t *testing.T) {
+func noEdgeCaseDualThrustAdmissionMatrixThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const dt = "dual_thrust"
 	ack := func(sc map[string]interface{}, v interface{}) map[string]interface{} {
@@ -1674,7 +1674,7 @@ func TestDualThrustAdmissionMatrixThroughRealLoaders(t *testing.T) {
 	}
 }
 
-func TestDualThrustIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
+func noEdgeCaseDualThrustIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const dt = "dual_thrust"
 	withOpenParams := func(sc map[string]interface{}, params map[string]interface{}) map[string]interface{} {
@@ -1781,7 +1781,7 @@ func dualThrustLegacyFixture() []map[string]interface{} {
 	}
 }
 
-func TestV20NoEdgeMigrationNeverGrantsDualThrust(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationNeverGrantsDualThrust(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	if _, eligible := v20StampEligibleStrategies["dual_thrust"]; eligible {
 		t.Fatal("dual_thrust must never be v20 stamp-eligible")
@@ -1848,7 +1848,7 @@ func TestV20NoEdgeMigrationNeverGrantsDualThrust(t *testing.T) {
 	}
 }
 
-func TestRegressionChannelReversionLegacyConfigsGainNoGeneratedAcknowledgement(t *testing.T) {
+func noEdgeCaseRegressionChannelReversionLegacyConfigsGainNoGeneratedAcknowledgement(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	rcrOpen := noEdgeHLStrategy("hl-rcr", "regression_channel_reversion", "BTC", "4h", "--mode=live")
 	eligibleOpenRCRClose := noEdgeHLStrategy("hl-macd-rcr", "macd", "ETH", "4h", "--mode=live")
@@ -1913,7 +1913,7 @@ func rcrStudyStrategy(id string, params map[string]interface{}, modeArgs ...stri
 	return sc
 }
 
-func TestRegressionChannelReversionAddAdmissionAndParamPreflightThroughRealLoaders(t *testing.T) {
+func noEdgeCaseRegressionChannelReversionAddAdmissionAndParamPreflightThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry("regression_channel_reversion", "hyperliquid", "BTC")
 	if err != nil {
@@ -2034,4 +2034,142 @@ func TestRegressionChannelReversionAddAdmissionAndParamPreflightThroughRealLoade
 			}
 		})
 	}
+}
+
+func TestNoEdgeAdmissionMatrixThroughRealLoaders(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"Matrix", noEdgeCaseNoEdgeAdmissionMatrixThroughRealLoaders},
+		{"AdaptiveMovingAverage", noEdgeCaseAdaptiveMovingAverageAdmissionThroughRealLoaders},
+		{"AroonTrend", noEdgeCaseAroonTrendAddAdmissionAndParamPreflightThroughRealLoaders},
+		{"CalendarConditionedEntry", noEdgeCaseCalendarConditionedEntryAdmissionThroughTheConfigLoaders},
+		{"CamarillaPivotReversal", noEdgeCaseCamarillaPivotReversalAdmissionRoutesOpenAndCloseFallbackReferences},
+		{"DualThrust", noEdgeCaseDualThrustAdmissionMatrixThroughRealLoaders},
+		{"EaseOfMovement", noEdgeCaseEaseOfMovementAdmissionThroughRealLoaders},
+		{"ElderForcePullback", noEdgeCaseElderForcePullbackAdmissionRoutesOpenAndCloseFallbackReferences},
+		{"ElderRayPullback", noEdgeCaseElderRayPullbackAdmissionThroughRealLoaders},
+		{"FisherReversal", noEdgeCaseFisherReversalAdmissionThroughRealLoaders},
+		{"KlingerDivergence", noEdgeCaseKlingerDivergenceAdmissionAndBooleanAcknowledgementThroughRealLoaders},
+		{"MassIndexReversal", noEdgeCaseMassIndexReversalAdmissionRoutesOpenAndCloseFallbackReferences},
+		{"MoneyFlowIndexReversal", noEdgeCaseMoneyFlowIndexReversalAdmissionAndPaperAdd},
+		{"RegressionChannelReversion", noEdgeCaseRegressionChannelReversionAddAdmissionAndParamPreflightThroughRealLoaders},
+		{"SchaffTrendCycle", noEdgeCaseSchaffTrendCycleAdmissionThroughRealLoaders},
+		{"StochasticMomentumIndex", noEdgeCaseStochasticMomentumIndexAdmissionRoutesOpenAndCloseFallbackReferences},
+		{"TrixMomentum", noEdgeCaseTrixMomentumAdmissionThroughRealLoaders},
+		{"TrueStrengthIndex", noEdgeCaseTrueStrengthIndexAdmissionRoutesOpenAndCloseFallbackReferences},
+	} {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestNoEdgeAcknowledgementMustBeAJSONBoolean(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"Generic", noEdgeCaseNoEdgeAcknowledgementMustBeAJSONBoolean},
+		{"ElderRayPullback", noEdgeCaseElderRayPullbackAcknowledgementMustBeABoolean},
+		{"FisherReversal", noEdgeCaseFisherReversalAcknowledgementMustBeABoolean},
+		{"SchaffTrendCycle", noEdgeCaseSchaffTrendCycleAcknowledgementMustBeABoolean},
+	} {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestResearchStrategyRegistrationTables(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"CamarillaPivotReversal", noEdgeCaseCamarillaPivotReversalRegistrationTables},
+		{"CumulativeVolumeDelta", noEdgeCaseCumulativeVolumeDeltaRegistrationTables},
+		{"MassIndexReversal", noEdgeCaseMassIndexReversalRegistrationTables},
+		{"SchaffTrendCycle", noEdgeCaseSchaffTrendCycleRegistrationTables},
+	} {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestResearchStrategyClosedBarCadenceAndParamPreflight(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"CalendarConditionedEntryClosedBarsAndCadence", noEdgeCaseCalendarConditionedEntryNeedsClosedBarsAndTheMatchingCadence},
+		{"CalendarConditionedEntryTrainingSpan", noEdgeCaseCalendarConditionedEntryRefusesATrainingSpanThatFitsTheCheckFrame},
+		{"CamarillaPivotReversalCadence", noEdgeCaseCamarillaPivotReversalCadenceMatchesTheTimeframeAndTheSupportedSet},
+		{"CamarillaPivotReversalClosedBars", noEdgeCaseCamarillaPivotReversalRequiresHyperliquidPerpsClosedBarDecisions},
+		{"ChandeMomentumInterval", noEdgeCaseChandeMomentumIntervalMustMatchTheConfiguredTimeframe},
+		{"DualThrustInterval", noEdgeCaseDualThrustIntervalMustMatchTheConfiguredTimeframe},
+		{"KlingerDivergenceClosedBars", noEdgeCaseKlingerDivergenceRequiresHyperliquidClosedBarDecisions},
+		{"SchaffTrendCycleClosedBars", noEdgeCaseSchaffTrendCycleRequiresHyperliquidClosedBarDecisions},
+		{"StochasticMomentumIndexClosedBars", noEdgeCaseStochasticMomentumIndexRequiresHyperliquidPerpsClosedBarDecisions},
+	} {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestResearchStudyParityConfigsLoadAsPaper(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"AdaptiveMovingAverage", noEdgeCaseAdaptiveMovingAverageStudyPaperConfigsLoadAsUnacknowledgedPaper},
+		{"CalendarConditionedEntry", noEdgeCaseCalendarConditionedEntryStudyParityConfigsLoadAsExplicitPaper},
+		{"CamarillaPivotReversal", noEdgeCaseCamarillaPivotReversalStudyParityConfigsLoadAsExplicitPaper},
+		{"ChandeMomentumAndDualThrust", noEdgeCaseChandeMomentumAndDualThrustStudyParityConfigsStillLoad},
+		{"MassIndexReversal", noEdgeCaseMassIndexReversalStudyParityConfigsLoadAsExplicitPaper},
+		{"TrixMomentum", noEdgeCaseTrixMomentumStudyPaperConfigsLoadAsUnacknowledgedPaper},
+		{"TrueStrengthIndex", noEdgeCaseTrueStrengthIndexStudyParityConfigsLoadAsExplicitPaper},
+	} {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestV20NoEdgeMigrationNeverStampsResearchStrategies(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"AdaptiveMovingAverage", noEdgeCaseAdaptiveMovingAverageLegacyV20MigrationNeverGrantsLiveUse},
+		{"CalendarConditionedEntry", noEdgeCaseV20NoEdgeMigrationNeverStampsCalendarConditionedEntry},
+		{"CamarillaPivotReversal", noEdgeCaseV20NoEdgeMigrationNeverStampsCamarillaPivotReversal},
+		{"ChandeMomentum", noEdgeCaseV20NoEdgeMigrationNeverGrantsChandeMomentumAndReportVetoesIt},
+		{"DualThrust", noEdgeCaseV20NoEdgeMigrationNeverGrantsDualThrust},
+		{"ElderForcePullback", noEdgeCaseV20NoEdgeMigrationNeverStampsElderForcePullback},
+		{"ElderRayPullback", noEdgeCaseElderRayPullbackLegacyLiveConfigsGainNoMigrationAcknowledgement},
+		{"KlingerDivergence", noEdgeCaseV20NoEdgeMigrationNeverStampsKlingerDivergence},
+		{"MassIndexReversal", noEdgeCaseV20NoEdgeMigrationNeverStampsMassIndexReversal},
+		{"RegressionChannelReversion", noEdgeCaseRegressionChannelReversionLegacyConfigsGainNoGeneratedAcknowledgement},
+		{"SchaffTrendCycle", noEdgeCaseV20NoEdgeMigrationNeverStampsSchaffTrendCycle},
+		{"StochasticMomentumIndex", noEdgeCaseV20NoEdgeMigrationNeverStampsStochasticMomentumIndex},
+		{"TrixMomentum", noEdgeCaseTrixMomentumLegacyV20MigrationNeverGrantsLiveUse},
+		{"TrueStrengthIndex", noEdgeCaseV20NoEdgeMigrationNeverStampsTrueStrengthIndex},
+	} {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestV20NoEdgeMigrationRules(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"StampsOnlyWorkingLiveConfigsAndIsIdempotent", noEdgeCaseV20NoEdgeMigrationStampsOnlyWorkingLiveConfigsAndIsIdempotent},
+		{"NeverGrantsRefusedOrNonLiveReferences", noEdgeCaseV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences},
+		{"StampsOnlyNamesThatRanLiveBeforeV20", noEdgeCaseV20NoEdgeMigrationStampsOnlyNamesThatRanLiveBeforeV20},
+		{"OrderingAndOwnership", noEdgeCaseV20NoEdgeMigrationOrderingAndOwnership},
+		{"NoticeReachesOwnerOrLog", noEdgeCaseNoEdgeMigrationNoticeReachesOwnerOrLog},
+	} {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestNoEdgeOperatorAddCreatesExplicitPaperEntries(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"EveryRegisteredPlatformName", noEdgeCaseNoEdgePaperAddAcceptsEveryRegisteredPlatformName},
+		{"AdaptiveMovingAverage", noEdgeCaseAdaptiveMovingAverageOperatorAddPathsCreateExplicitPaperEntries},
+		{"CalendarConditionedEntry", noEdgeCaseCalendarConditionedEntryOperatorAddCreatesALoadableExplicitPaperEntry},
+		{"CamarillaPivotReversal", noEdgeCaseCamarillaPivotReversalOperatorAddCreatesALoadableExplicitPaperEntry},
+		{"ChandeMomentumAndDualThrust", noEdgeCaseChandeMomentumAndDualThrustOperatorAddCreateBothDirectionHourlyPaperEntries},
+		{"EaseOfMovement", noEdgeCaseEaseOfMovementOperatorAddPathsCreateExplicitPaperEntries},
+		{"ElderForcePullback", noEdgeCaseElderForcePullbackOperatorAddCreatesALoadableExplicitPaperEntry},
+		{"ElderRayPullback", noEdgeCaseElderRayPullbackOperatorAddPathsCreateExplicitPaperEntries},
+		{"FisherReversalDiscordBuilder", noEdgeCaseFisherReversalPaperAddThroughTheDiscordBuilder},
+		{"FisherReversalStatusPage", noEdgeCaseFisherReversalStatusPageAddCreatesExplicitPaper},
+		{"KlingerDivergence", noEdgeCaseKlingerDivergenceOperatorAddPathsCreateExplicitPaperEntries},
+		{"MassIndexReversal", noEdgeCaseMassIndexReversalOperatorAddCreatesALoadableExplicitPaperEntry},
+		{"SchaffTrendCycle", noEdgeCaseSchaffTrendCycleOperatorAddPathsCreateExplicitPaperEntries},
+		{"StochasticMomentumIndex", noEdgeCaseStochasticMomentumIndexOperatorAddCreatesALoadableExplicitPaperEntry},
+		{"TrixMomentum", noEdgeCaseTrixMomentumOperatorAddPathsCreateExplicitPaperEntries},
+		{"TrueStrengthIndex", noEdgeCaseTrueStrengthIndexOperatorAddCreatesALoadableExplicitPaperEntry},
+	} {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+type sigAdmCase struct {
+	name string
+	run  func(*testing.T)
 }

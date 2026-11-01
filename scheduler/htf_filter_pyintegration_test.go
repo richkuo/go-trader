@@ -200,7 +200,7 @@ func htfITHeld(log, id string) bool {
 	return strings.Contains(log, "["+id+"] [WARN] HTF filter: BUY signal suppressed — higher-timeframe 4h input unavailable")
 }
 
-func TestHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses(t *testing.T) {
+func htfITCaseHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses(t *testing.T) {
 	t.Parallel()
 	root := htfITRoot(t)
 	dir := t.TempDir()
@@ -408,7 +408,7 @@ func htfITBlock(status string, trend int, reason string) map[string]any {
 	return map[string]any{"status": status, "timeframe": "4h", "trend": trend, "reason": reason}
 }
 
-func TestHTFFilterIntegrationConsumersValidateTheContract(t *testing.T) {
+func htfITCaseHTFFilterIntegrationConsumersValidateTheContract(t *testing.T) {
 	root := htfITRoot(t)
 	t.Chdir(root)
 	stub := filepath.Join(t.TempDir(), "htf_stub.py")
@@ -547,7 +547,7 @@ func (s *htfITSink) drain() ([]mockMessage, []mockDM) {
 	return m, d
 }
 
-func TestHTFFilterIntegrationAlertsRouteThrottleAndRecover(t *testing.T) {
+func htfITCaseHTFFilterIntegrationAlertsRouteThrottleAndRecover(t *testing.T) {
 	root := htfITRoot(t)
 	t.Chdir(root)
 	resetHTFFilterTrackersForTest(t)
@@ -826,7 +826,7 @@ func htfITSameBlock(a, b *HTFFilterEcho) bool {
 	return a.Status == b.Status && a.Timeframe == b.Timeframe && *a.Trend == *b.Trend && a.Reason == b.Reason
 }
 
-func TestHTFFilterIntegrationHyperliquidFeedSingleAndBatch(t *testing.T) {
+func htfITCaseHTFFilterIntegrationHyperliquidFeedSingleAndBatch(t *testing.T) {
 	root := htfITRoot(t)
 	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	resetHTFFilterTrackersForTest(t)
@@ -933,5 +933,16 @@ func TestHTFFilterIntegrationHyperliquidFeedSingleAndBatch(t *testing.T) {
 	}
 	if held, why := unreadyFeed.feedHoldsSignal(single); !held || !strings.Contains(why, "higher-timeframe") {
 		t.Fatalf("an unready HTF key keeps its feed hold, got %t %q", held, why)
+	}
+}
+
+func TestHTFFilterIntegration(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"SchedulerOnceHoldsEntriesAndKeepsCloses", htfITCaseHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses},
+		{"ConsumersValidateTheContract", htfITCaseHTFFilterIntegrationConsumersValidateTheContract},
+		{"AlertsRouteThrottleAndRecover", htfITCaseHTFFilterIntegrationAlertsRouteThrottleAndRecover},
+		{"HyperliquidFeedSingleAndBatch", htfITCaseHTFFilterIntegrationHyperliquidFeedSingleAndBatch},
+	} {
+		t.Run(tc.name, tc.run)
 	}
 }

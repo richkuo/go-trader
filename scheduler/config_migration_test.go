@@ -24,135 +24,381 @@ func readRawConfig(t *testing.T, path string) map[string]interface{} {
 	return raw
 }
 
-func TestNewFieldsSince(t *testing.T) {
-	cases := []int{0, 1, MinSupportedConfigVersion, CurrentConfigVersion, 999}
-	for _, version := range cases {
-		fields := NewFieldsSince(version)
-		if len(fields) != 0 {
-			t.Errorf("NewFieldsSince(%d) returned %d fields, want 0 (registry emptied by #1285 floor)", version, len(fields))
-		}
-		for _, f := range fields {
-			if f.Version <= version {
-				t.Errorf("NewFieldsSince(%d) returned field %q with version %d", version, f.JSONPath, f.Version)
+func TestMigrateConfigFrameworkAndVersionFloor(t *testing.T) {
+	t.Run("NewFieldsSince", func(t *testing.T) {
+		cases := []int{0, 1, MinSupportedConfigVersion, CurrentConfigVersion, 999}
+		for _, version := range cases {
+			fields := NewFieldsSince(version)
+			if len(fields) != 0 {
+				t.Errorf("NewFieldsSince(%d) returned %d fields, want 0 (registry emptied by #1285 floor)", version, len(fields))
 			}
-			if f.JSONPath == "" || f.Description == "" || f.FieldType == "" || f.Version <= 0 {
-				t.Errorf("NewFieldsSince(%d) returned malformed field %+v", version, f)
+			for _, f := range fields {
+				if f.Version <= version {
+					t.Errorf("NewFieldsSince(%d) returned field %q with version %d", version, f.JSONPath, f.Version)
+				}
+				if f.JSONPath == "" || f.Description == "" || f.FieldType == "" || f.Version <= 0 {
+					t.Errorf("NewFieldsSince(%d) returned malformed field %+v", version, f)
+				}
 			}
 		}
-	}
-}
-
-func TestMinSupportedConfigVersionFloor(t *testing.T) {
-	if MinSupportedConfigVersion != 13 {
-		t.Errorf("MinSupportedConfigVersion = %d, want 13 — raising the floor requires fresh fleet verification (#1285)", MinSupportedConfigVersion)
-	}
-	if MinSupportedConfigVersion > CurrentConfigVersion {
-		t.Errorf("MinSupportedConfigVersion (%d) > CurrentConfigVersion (%d)", MinSupportedConfigVersion, CurrentConfigVersion)
-	}
-}
-
-func TestMigrateConfigWritesValues(t *testing.T) {
-	cases := []struct {
-		name   string
-		values map[string]string
-		check  func(t *testing.T, updated map[string]interface{})
-	}{
-		{
-			name:   "stamps_version_and_sets_value",
-			values: map[string]string{"discord.owner_id": "12345"},
-			check: func(t *testing.T, updated map[string]interface{}) {
-				discord, ok := updated["discord"].(map[string]interface{})
-				if !ok {
-					t.Fatal("discord section missing")
-				}
-				if discord["owner_id"] != "12345" {
-					t.Errorf("discord.owner_id = %v, want %q", discord["owner_id"], "12345")
-				}
-				if updated["interval_seconds"].(float64) != 300 {
-					t.Error("interval_seconds should be preserved")
-				}
-				if _, ok := updated["default_stop_loss_atr_mult"]; ok {
-					t.Error("default_stop_loss_atr_mult should no longer be backfilled on disk (#1285)")
-				}
+	})
+	t.Run("MinSupportedConfigVersionFloor", func(t *testing.T) {
+		if MinSupportedConfigVersion != 13 {
+			t.Errorf("MinSupportedConfigVersion = %d, want 13 — raising the floor requires fresh fleet verification (#1285)", MinSupportedConfigVersion)
+		}
+		if MinSupportedConfigVersion > CurrentConfigVersion {
+			t.Errorf("MinSupportedConfigVersion (%d) > CurrentConfigVersion (%d)", MinSupportedConfigVersion, CurrentConfigVersion)
+		}
+	})
+	t.Run("MigrateConfigWritesValues", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			values map[string]string
+			check  func(t *testing.T, updated map[string]interface{})
+		}{
+			{
+				name:   "stamps_version_and_sets_value",
+				values: map[string]string{"discord.owner_id": "12345"},
+				check: func(t *testing.T, updated map[string]interface{}) {
+					discord, ok := updated["discord"].(map[string]interface{})
+					if !ok {
+						t.Fatal("discord section missing")
+					}
+					if discord["owner_id"] != "12345" {
+						t.Errorf("discord.owner_id = %v, want %q", discord["owner_id"], "12345")
+					}
+					if updated["interval_seconds"].(float64) != 300 {
+						t.Error("interval_seconds should be preserved")
+					}
+					if _, ok := updated["default_stop_loss_atr_mult"]; ok {
+						t.Error("default_stop_loss_atr_mult should no longer be backfilled on disk (#1285)")
+					}
+				},
 			},
-		},
-		{
-			name:   "creates_nested_paths",
-			values: map[string]string{"discord.dm_channels.hyperliquid": "999888777"},
-			check: func(t *testing.T, updated map[string]interface{}) {
-				discord := updated["discord"].(map[string]interface{})
-				dmCh := discord["dm_channels"].(map[string]interface{})
-				if dmCh["hyperliquid"] != "999888777" {
-					t.Errorf("discord.dm_channels.hyperliquid = %v, want %q", dmCh["hyperliquid"], "999888777")
-				}
+			{
+				name:   "creates_nested_paths",
+				values: map[string]string{"discord.dm_channels.hyperliquid": "999888777"},
+				check: func(t *testing.T, updated map[string]interface{}) {
+					discord := updated["discord"].(map[string]interface{})
+					dmCh := discord["dm_channels"].(map[string]interface{})
+					if dmCh["hyperliquid"] != "999888777" {
+						t.Errorf("discord.dm_channels.hyperliquid = %v, want %q", dmCh["hyperliquid"], "999888777")
+					}
+				},
 			},
-		},
-		{
-			name:   "nil_values_still_stamp_version",
-			values: nil,
-			check:  func(t *testing.T, updated map[string]interface{}) {},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "config.json")
-			writeRawConfig(t, path, map[string]interface{}{
-				"interval_seconds": 300,
-				"strategies":       []interface{}{},
+			{
+				name:   "nil_values_still_stamp_version",
+				values: nil,
+				check:  func(t *testing.T, updated map[string]interface{}) {},
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "config.json")
+				writeRawConfig(t, path, map[string]interface{}{
+					"interval_seconds": 300,
+					"strategies":       []interface{}{},
+				})
+				if err := MigrateConfig(path, tc.values, nil); err != nil {
+					t.Fatalf("MigrateConfig failed: %v", err)
+				}
+				if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+					t.Error("temp file should not exist after migration")
+				}
+				updated := readRawConfig(t, path)
+				if version := int(updated["config_version"].(float64)); version != CurrentConfigVersion {
+					t.Errorf("config_version = %d, want %d", version, CurrentConfigVersion)
+				}
+				tc.check(t, updated)
 			})
-			if err := MigrateConfig(path, tc.values, nil); err != nil {
-				t.Fatalf("MigrateConfig failed: %v", err)
+		}
+	})
+	t.Run("MigrateConfigRejectsUnreadableInput", func(t *testing.T) {
+		t.Run("missing_file", func(t *testing.T) {
+			if err := MigrateConfig("/nonexistent/config.json", nil, nil); err == nil {
+				t.Error("expected error for missing file")
 			}
-			if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
-				t.Error("temp file should not exist after migration")
-			}
-			updated := readRawConfig(t, path)
-			if version := int(updated["config_version"].(float64)); version != CurrentConfigVersion {
-				t.Errorf("config_version = %d, want %d", version, CurrentConfigVersion)
-			}
-			tc.check(t, updated)
 		})
-	}
-}
-
-func TestMigrateConfigRejectsUnreadableInput(t *testing.T) {
-	t.Run("missing_file", func(t *testing.T) {
-		if err := MigrateConfig("/nonexistent/config.json", nil, nil); err == nil {
-			t.Error("expected error for missing file")
+		t.Run("invalid_json", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte("not json"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := MigrateConfig(path, nil, nil); err == nil {
+				t.Error("expected error for invalid JSON")
+			}
+		})
+	})
+	t.Run("MigrateConfigRejectsPreFloorVersions", func(t *testing.T) {
+		cases := []struct {
+			name    string
+			version int
+			extra   map[string]interface{}
+		}{
+			{
+				name:    "v5_channel_booleans",
+				version: 5,
+				extra: map[string]interface{}{
+					"discord": map[string]interface{}{
+						"enabled":              true,
+						"channel_paper_trades": true,
+						"channel_live_trades":  true,
+					},
+				},
+			},
+			{
+				name:    "v6_dm_booleans",
+				version: 6,
+				extra: map[string]interface{}{
+					"discord": map[string]interface{}{
+						"owner_id":        "disc-owner",
+						"dm_paper_trades": true,
+						"dm_live_trades":  false,
+					},
+				},
+			},
+			{
+				name:    "v7_summary_freq",
+				version: 7,
+				extra: map[string]interface{}{
+					"discord": map[string]interface{}{
+						"spot_summary_freq":    "hourly",
+						"options_summary_freq": "per_check",
+					},
+				},
+			},
+			{
+				name:    "v9_sizing_leverage",
+				version: 9,
+				extra: map[string]interface{}{
+					"strategies": []interface{}{
+						map[string]interface{}{"id": "hl-eth", "type": "perps", "leverage": float64(2)},
+					},
+				},
+			},
+			{
+				name:    "v12_boundary",
+				version: 12,
+				extra:   map[string]interface{}{},
+			},
+			{
+				name:    "v1_ancient",
+				version: 1,
+				extra:   map[string]interface{}{},
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "config.json")
+				obj := map[string]interface{}{"config_version": tc.version}
+				for k, v := range tc.extra {
+					obj[k] = v
+				}
+				original := writeRawConfig(t, path, obj)
+				err := MigrateConfig(path, nil, nil)
+				assertUnsupportedVersionError(t, err, tc.version, path, original)
+			})
 		}
 	})
-	t.Run("invalid_json", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "config.json")
-		if err := os.WriteFile(path, []byte("not json"), 0600); err != nil {
-			t.Fatal(err)
+	t.Run("MigrateConfigRetainsInertLegacyDiscordKeys", func(t *testing.T) {
+		inert := map[string]interface{}{
+			"channel_paper_trades": true,
+			"channel_live_trades":  true,
+			"spot_summary_freq":    "hourly",
 		}
-		if err := MigrateConfig(path, nil, nil); err == nil {
-			t.Error("expected error for invalid JSON")
+		cases := []struct {
+			name string
+			obj  map[string]interface{}
+		}{
+			{
+				name: "at_floor_version",
+				obj: map[string]interface{}{
+					"config_version": MinSupportedConfigVersion,
+					"discord":        inert,
+				},
+			},
+			{
+				name: "versionless",
+				obj: map[string]interface{}{
+					"interval_seconds": 3600,
+					"strategies":       []interface{}{},
+					"discord": map[string]interface{}{
+						"owner_id":             "disc-owner",
+						"channel_paper_trades": true,
+						"channel_live_trades":  true,
+						"spot_summary_freq":    "hourly",
+					},
+				},
+			},
+			{
+				name: "versionless_without_strategies",
+				obj: map[string]interface{}{
+					"interval_seconds": 3600,
+					"discord":          inert,
+				},
+			},
+			{
+				name: "at_current_version",
+				obj: map[string]interface{}{
+					"config_version": CurrentConfigVersion,
+					"discord":        inert,
+				},
+			},
 		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "config.json")
+				writeRawConfig(t, path, tc.obj)
+				if err := MigrateConfig(path, nil, nil); err != nil {
+					t.Fatalf("MigrateConfig failed: %v", err)
+				}
+				updated := readRawConfig(t, path)
+				if v := int(updated["config_version"].(float64)); v != CurrentConfigVersion {
+					t.Errorf("config_version = %d, want %d", v, CurrentConfigVersion)
+				}
+				discord := updated["discord"].(map[string]interface{})
+				for _, key := range []string{"channel_paper_trades", "channel_live_trades", "spot_summary_freq"} {
+					if _, ok := discord[key]; !ok {
+						t.Errorf("discord.%s should NOT be removed (inert) for a supported config", key)
+					}
+				}
+			})
+		}
+	})
+	t.Run("LoadConfigRejectsPreFloorVersion", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.json")
+		original := writeRawConfig(t, path, map[string]interface{}{
+			"config_version":   12,
+			"interval_seconds": 3600,
+			"strategies": []interface{}{
+				map[string]interface{}{
+					"id":               "hl-temacb-btc",
+					"type":             "perps",
+					"platform":         "hyperliquid",
+					"script":           "shared_scripts/check_hyperliquid.py",
+					"args":             []interface{}{"tema_cross_bd", "BTC", "1h", "--mode=paper"},
+					"open_strategy":    "tema_cross_bd",
+					"close_strategies": []interface{}{"tiered_tp_atr"},
+					"capital":          1000.0,
+					"max_drawdown_pct": 25.0,
+				},
+			},
+		})
+		_, err := LoadConfig(path)
+		assertUnsupportedVersionError(t, err, 12, path, original)
 	})
 }
 
-func TestSetNestedField(t *testing.T) {
-	obj := make(map[string]interface{})
+func TestConfigMigrationJSONHelpers(t *testing.T) {
+	t.Run("SetNestedField", func(t *testing.T) {
+		obj := make(map[string]interface{})
 
-	setNestedField(obj, "top_level", "value1")
-	if obj["top_level"] != "value1" {
-		t.Errorf("top_level = %v, want %q", obj["top_level"], "value1")
-	}
+		setNestedField(obj, "top_level", "value1")
+		if obj["top_level"] != "value1" {
+			t.Errorf("top_level = %v, want %q", obj["top_level"], "value1")
+		}
 
-	setNestedField(obj, "nested.field", "value2")
-	nested := obj["nested"].(map[string]interface{})
-	if nested["field"] != "value2" {
-		t.Errorf("nested.field = %v, want %q", nested["field"], "value2")
-	}
+		setNestedField(obj, "nested.field", "value2")
+		nested := obj["nested"].(map[string]interface{})
+		if nested["field"] != "value2" {
+			t.Errorf("nested.field = %v, want %q", nested["field"], "value2")
+		}
 
-	setNestedField(obj, "deep.nested.field", "value3")
-	deep := obj["deep"].(map[string]interface{})
-	deepNested := deep["nested"].(map[string]interface{})
-	if deepNested["field"] != "value3" {
-		t.Errorf("deep.nested.field = %v, want %q", deepNested["field"], "value3")
-	}
+		setNestedField(obj, "deep.nested.field", "value3")
+		deep := obj["deep"].(map[string]interface{})
+		deepNested := deep["nested"].(map[string]interface{})
+		if deepNested["field"] != "value3" {
+			t.Errorf("deep.nested.field = %v, want %q", deepNested["field"], "value3")
+		}
+	})
+	t.Run("JSONBoolish", func(t *testing.T) {
+		cases := []struct {
+			name string
+			in   interface{}
+			want bool
+		}{
+			{"bool true", true, true},
+			{"bool false", false, false},
+			{"string true", "true", true},
+			{"string True", "True", true},
+			{"string TRUE", "TRUE", true},
+			{"string 1", "1", true},
+			{"string false", "false", false},
+			{"string 0", "0", false},
+			{"string empty", "", false},
+			{"string whitespace true", "  true  ", true},
+			{"float64 nonzero", float64(1.5), true},
+			{"float64 negative", float64(-1), true},
+			{"float64 zero", float64(0), false},
+			{"nil", nil, false},
+			{"int", int(1), false},
+			{"slice", []interface{}{}, false},
+			{"map", map[string]interface{}{}, false},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got := jsonBoolish(tc.in)
+				if got != tc.want {
+					t.Errorf("jsonBoolish(%#v) = %v, want %v", tc.in, got, tc.want)
+				}
+			})
+		}
+	})
+	t.Run("CloneOrNewJSONMap", func(t *testing.T) {
+		t.Run("nil returns empty non-nil map", func(t *testing.T) {
+			got := cloneOrNewJSONMap(nil)
+			if got == nil {
+				t.Error("expected non-nil map, got nil")
+			}
+			if len(got) != 0 {
+				t.Errorf("expected empty map, got %v", got)
+			}
+		})
+		t.Run("non-map string returns empty non-nil map", func(t *testing.T) {
+			got := cloneOrNewJSONMap("hello")
+			if got == nil || len(got) != 0 {
+				t.Errorf("expected empty non-nil map, got %v", got)
+			}
+		})
+		t.Run("non-map int returns empty non-nil map", func(t *testing.T) {
+			got := cloneOrNewJSONMap(42)
+			if got == nil || len(got) != 0 {
+				t.Errorf("expected empty non-nil map, got %v", got)
+			}
+		})
+		t.Run("populated map is shallow copy", func(t *testing.T) {
+			orig := map[string]interface{}{"a": "alpha", "b": float64(2)}
+			got := cloneOrNewJSONMap(orig)
+			if got["a"] != "alpha" || got["b"] != float64(2) {
+				t.Errorf("clone missing expected values: %v", got)
+			}
+			got["a"] = "changed"
+			if orig["a"] != "alpha" {
+				t.Error("mutating clone affected original")
+			}
+			got["c"] = "new"
+			if _, ok := orig["c"]; ok {
+				t.Error("new key in clone leaked to original")
+			}
+		})
+	})
+	t.Run("StrictStringFromJSON", func(t *testing.T) {
+		if got := strictStringFromJSON(map[string]interface{}{"name": "foo"}); got != "" {
+			t.Errorf("strictStringFromJSON(map) = %q, want empty (fail-safe)", got)
+		}
+		if got := strictStringFromJSON([]interface{}{"a", "b"}); got != "" {
+			t.Errorf("strictStringFromJSON([]) = %q, want empty", got)
+		}
+		if got := strictStringFromJSON(42.0); got != "" {
+			t.Errorf("strictStringFromJSON(float) = %q, want empty", got)
+		}
+		if got := strictStringFromJSON("  real  "); got != "real" {
+			t.Errorf("strictStringFromJSON(string) = %q, want real (trimmed)", got)
+		}
+	})
 }
 
 func writeRawConfig(t *testing.T, path string, obj map[string]interface{}) []byte {
@@ -191,79 +437,6 @@ func assertUnsupportedVersionError(t *testing.T, err error, version int, path st
 	}
 }
 
-func TestMigrateConfigRejectsPreFloorVersions(t *testing.T) {
-	cases := []struct {
-		name    string
-		version int
-		extra   map[string]interface{}
-	}{
-		{
-			name:    "v5_channel_booleans",
-			version: 5,
-			extra: map[string]interface{}{
-				"discord": map[string]interface{}{
-					"enabled":              true,
-					"channel_paper_trades": true,
-					"channel_live_trades":  true,
-				},
-			},
-		},
-		{
-			name:    "v6_dm_booleans",
-			version: 6,
-			extra: map[string]interface{}{
-				"discord": map[string]interface{}{
-					"owner_id":        "disc-owner",
-					"dm_paper_trades": true,
-					"dm_live_trades":  false,
-				},
-			},
-		},
-		{
-			name:    "v7_summary_freq",
-			version: 7,
-			extra: map[string]interface{}{
-				"discord": map[string]interface{}{
-					"spot_summary_freq":    "hourly",
-					"options_summary_freq": "per_check",
-				},
-			},
-		},
-		{
-			name:    "v9_sizing_leverage",
-			version: 9,
-			extra: map[string]interface{}{
-				"strategies": []interface{}{
-					map[string]interface{}{"id": "hl-eth", "type": "perps", "leverage": float64(2)},
-				},
-			},
-		},
-		{
-			name:    "v12_boundary",
-			version: 12,
-			extra:   map[string]interface{}{},
-		},
-		{
-			name:    "v1_ancient",
-			version: 1,
-			extra:   map[string]interface{}{},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "config.json")
-			obj := map[string]interface{}{"config_version": tc.version}
-			for k, v := range tc.extra {
-				obj[k] = v
-			}
-			original := writeRawConfig(t, path, obj)
-			err := MigrateConfig(path, nil, nil)
-			assertUnsupportedVersionError(t, err, tc.version, path, original)
-		})
-	}
-}
-
 func assertVersionlessDMKeyError(t *testing.T, err error, key, path string, original []byte) {
 	t.Helper()
 	if err == nil {
@@ -287,664 +460,488 @@ func assertVersionlessDMKeyError(t *testing.T, err error, key, path string, orig
 	}
 }
 
-func TestVersionlessConfigRejectsRemovedDMTranslationKeys(t *testing.T) {
-	cases := []struct {
-		name    string
-		section string
-		key     string
-	}{
-		{"discord_dm_paper_trades", "discord", "dm_paper_trades"},
-		{"discord_dm_live_trades", "discord", "dm_live_trades"},
-		{"telegram_dm_paper_trades", "telegram", "dm_paper_trades"},
-		{"telegram_dm_live_trades", "telegram", "dm_live_trades"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "config.json")
-			ownerKey := "owner_id"
-			if tc.section == "telegram" {
-				ownerKey = "owner_chat_id"
-			}
-			obj := map[string]interface{}{
-				"interval_seconds": 3600,
-				tc.section: map[string]interface{}{
-					ownerKey: "owner-target",
-					tc.key:   true,
-				},
-			}
-			original := writeRawConfig(t, path, obj)
-			fullKey := tc.section + "." + tc.key
-
-			assertVersionlessDMKeyError(t, checkRawConfigVersionSupported(original), fullKey, "", nil)
-			assertVersionlessDMKeyError(t, MigrateConfig(path, nil, nil), fullKey, path, original)
-			_, loadErr := LoadConfig(path)
-			assertVersionlessDMKeyError(t, loadErr, fullKey, path, original)
-		})
-	}
-}
-
-func TestVersionlessConfigRemovedTranslationKeyAcceptance(t *testing.T) {
-	cases := []struct {
-		name string
-		obj  map[string]interface{}
-	}{
-		{
-			name: "versionless_inert_channel_and_summary_keys",
-			obj: map[string]interface{}{
-				"discord": map[string]interface{}{
-					"channel_paper_trades": true,
-					"channel_live_trades":  true,
-					"spot_summary_freq":    "hourly",
-				},
-			},
-		},
-		{
-			name: "versionless_current_dm_channels_map",
-			obj: map[string]interface{}{
-				"discord": map[string]interface{}{
-					"dm_channels": map[string]interface{}{"hyperliquid-paper": "disc-owner"},
-				},
-			},
-		},
-		{
-			name: "versionless_clean_no_discord",
-			obj:  map[string]interface{}{"interval_seconds": 3600},
-		},
-		{
-			name: "stamped_config_with_stray_dm_key",
-			obj: map[string]interface{}{
-				"config_version": CurrentConfigVersion,
-				"discord":        map[string]interface{}{"dm_paper_trades": true},
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			data, err := json.MarshalIndent(tc.obj, "", "  ")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if key, found := versionlessConfigRemovedTranslationKey(data); found {
-				t.Errorf("versionlessConfigRemovedTranslationKey flagged %q — %s should be accepted", key, tc.name)
-			}
-			if err := checkRawConfigVersionSupported(data); err != nil {
-				t.Errorf("checkRawConfigVersionSupported rejected %s: %v", tc.name, err)
-			}
-		})
-	}
-}
-
-func TestMigrateConfigRetainsInertLegacyDiscordKeys(t *testing.T) {
-	inert := map[string]interface{}{
-		"channel_paper_trades": true,
-		"channel_live_trades":  true,
-		"spot_summary_freq":    "hourly",
-	}
-	cases := []struct {
-		name string
-		obj  map[string]interface{}
-	}{
-		{
-			name: "at_floor_version",
-			obj: map[string]interface{}{
-				"config_version": MinSupportedConfigVersion,
-				"discord":        inert,
-			},
-		},
-		{
-			name: "versionless",
-			obj: map[string]interface{}{
-				"interval_seconds": 3600,
-				"strategies":       []interface{}{},
-				"discord": map[string]interface{}{
-					"owner_id":             "disc-owner",
-					"channel_paper_trades": true,
-					"channel_live_trades":  true,
-					"spot_summary_freq":    "hourly",
-				},
-			},
-		},
-		{
-			name: "versionless_without_strategies",
-			obj: map[string]interface{}{
-				"interval_seconds": 3600,
-				"discord":          inert,
-			},
-		},
-		{
-			name: "at_current_version",
-			obj: map[string]interface{}{
-				"config_version": CurrentConfigVersion,
-				"discord":        inert,
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.json")
-			writeRawConfig(t, path, tc.obj)
-			if err := MigrateConfig(path, nil, nil); err != nil {
-				t.Fatalf("MigrateConfig failed: %v", err)
-			}
-			updated := readRawConfig(t, path)
-			if v := int(updated["config_version"].(float64)); v != CurrentConfigVersion {
-				t.Errorf("config_version = %d, want %d", v, CurrentConfigVersion)
-			}
-			discord := updated["discord"].(map[string]interface{})
-			for _, key := range []string{"channel_paper_trades", "channel_live_trades", "spot_summary_freq"} {
-				if _, ok := discord[key]; !ok {
-					t.Errorf("discord.%s should NOT be removed (inert) for a supported config", key)
+func TestVersionlessConfigMigration(t *testing.T) {
+	t.Run("RejectsRemovedDMTranslationKeys", func(t *testing.T) {
+		cases := []struct {
+			name    string
+			section string
+			key     string
+		}{
+			{"discord_dm_paper_trades", "discord", "dm_paper_trades"},
+			{"discord_dm_live_trades", "discord", "dm_live_trades"},
+			{"telegram_dm_paper_trades", "telegram", "dm_paper_trades"},
+			{"telegram_dm_live_trades", "telegram", "dm_live_trades"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "config.json")
+				ownerKey := "owner_id"
+				if tc.section == "telegram" {
+					ownerKey = "owner_chat_id"
 				}
-			}
-		})
-	}
-}
+				obj := map[string]interface{}{
+					"interval_seconds": 3600,
+					tc.section: map[string]interface{}{
+						ownerKey: "owner-target",
+						tc.key:   true,
+					},
+				}
+				original := writeRawConfig(t, path, obj)
+				fullKey := tc.section + "." + tc.key
 
-func TestJSONBoolish(t *testing.T) {
-	cases := []struct {
-		name string
-		in   interface{}
-		want bool
-	}{
-		{"bool true", true, true},
-		{"bool false", false, false},
-		{"string true", "true", true},
-		{"string True", "True", true},
-		{"string TRUE", "TRUE", true},
-		{"string 1", "1", true},
-		{"string false", "false", false},
-		{"string 0", "0", false},
-		{"string empty", "", false},
-		{"string whitespace true", "  true  ", true},
-		{"float64 nonzero", float64(1.5), true},
-		{"float64 negative", float64(-1), true},
-		{"float64 zero", float64(0), false},
-		{"nil", nil, false},
-		{"int", int(1), false},
-		{"slice", []interface{}{}, false},
-		{"map", map[string]interface{}{}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := jsonBoolish(tc.in)
-			if got != tc.want {
-				t.Errorf("jsonBoolish(%#v) = %v, want %v", tc.in, got, tc.want)
-			}
-		})
-	}
-}
+				assertVersionlessDMKeyError(t, checkRawConfigVersionSupported(original), fullKey, "", nil)
+				assertVersionlessDMKeyError(t, MigrateConfig(path, nil, nil), fullKey, path, original)
+				_, loadErr := LoadConfig(path)
+				assertVersionlessDMKeyError(t, loadErr, fullKey, path, original)
+			})
+		}
+	})
+	t.Run("RemovedTranslationKeyAcceptance", func(t *testing.T) {
+		cases := []struct {
+			name string
+			obj  map[string]interface{}
+		}{
+			{
+				name: "versionless_inert_channel_and_summary_keys",
+				obj: map[string]interface{}{
+					"discord": map[string]interface{}{
+						"channel_paper_trades": true,
+						"channel_live_trades":  true,
+						"spot_summary_freq":    "hourly",
+					},
+				},
+			},
+			{
+				name: "versionless_current_dm_channels_map",
+				obj: map[string]interface{}{
+					"discord": map[string]interface{}{
+						"dm_channels": map[string]interface{}{"hyperliquid-paper": "disc-owner"},
+					},
+				},
+			},
+			{
+				name: "versionless_clean_no_discord",
+				obj:  map[string]interface{}{"interval_seconds": 3600},
+			},
+			{
+				name: "stamped_config_with_stray_dm_key",
+				obj: map[string]interface{}{
+					"config_version": CurrentConfigVersion,
+					"discord":        map[string]interface{}{"dm_paper_trades": true},
+				},
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				data, err := json.MarshalIndent(tc.obj, "", "  ")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if key, found := versionlessConfigRemovedTranslationKey(data); found {
+					t.Errorf("versionlessConfigRemovedTranslationKey flagged %q — %s should be accepted", key, tc.name)
+				}
+				if err := checkRawConfigVersionSupported(data); err != nil {
+					t.Errorf("checkRawConfigVersionSupported rejected %s: %v", tc.name, err)
+				}
+			})
+		}
+	})
+	t.Run("LoadConfigMigratesVersionlessEndToEnd", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.json")
 
-func TestCloneOrNewJSONMap(t *testing.T) {
-	t.Run("nil returns empty non-nil map", func(t *testing.T) {
-		got := cloneOrNewJSONMap(nil)
-		if got == nil {
-			t.Error("expected non-nil map, got nil")
+		legacy := map[string]interface{}{
+			"interval_seconds":           3600,
+			"log_dir":                    "logs",
+			"db_file":                    filepath.Join(dir, "state.db"),
+			"default_stop_loss_atr_mult": 1.0,
+			"portfolio_risk":             map[string]interface{}{"max_drawdown_pct": 25, "warn_threshold_pct": 60},
+			"strategies": []interface{}{
+				map[string]interface{}{
+					"id":               "hl-temacb-btc",
+					"type":             "perps",
+					"platform":         "hyperliquid",
+					"script":           "shared_scripts/check_hyperliquid.py",
+					"args":             []interface{}{"tema_cross_bd", "BTC", "1h", "--mode=paper"},
+					"open_strategy":    "tema_cross_bd",
+					"close_strategies": []interface{}{"tiered_tp_atr"},
+					"capital":          1000.0,
+					"max_drawdown_pct": 25.0,
+					"leverage":         1.0,
+					"allow_shorts":     true,
+					"params": map[string]interface{}{
+						"tp_tiers": []interface{}{
+							map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+							map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+						},
+						"short_period": 5.0,
+						"mid_period":   13.0,
+					},
+				},
+			},
 		}
-		if len(got) != 0 {
-			t.Errorf("expected empty map, got %v", got)
+		data, err := json.MarshalIndent(legacy, "", "  ")
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
-	t.Run("non-map string returns empty non-nil map", func(t *testing.T) {
-		got := cloneOrNewJSONMap("hello")
-		if got == nil || len(got) != 0 {
-			t.Errorf("expected empty non-nil map, got %v", got)
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
 		}
-	})
-	t.Run("non-map int returns empty non-nil map", func(t *testing.T) {
-		got := cloneOrNewJSONMap(42)
-		if got == nil || len(got) != 0 {
-			t.Errorf("expected empty non-nil map, got %v", got)
+
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
 		}
-	})
-	t.Run("populated map is shallow copy", func(t *testing.T) {
-		orig := map[string]interface{}{"a": "alpha", "b": float64(2)}
-		got := cloneOrNewJSONMap(orig)
-		if got["a"] != "alpha" || got["b"] != float64(2) {
-			t.Errorf("clone missing expected values: %v", got)
+		if err := validateConfig(cfg, false); err != nil {
+			t.Fatalf("validateConfig: %v", err)
 		}
-		got["a"] = "changed"
-		if orig["a"] != "alpha" {
-			t.Error("mutating clone affected original")
+
+		if got := cfg.ConfigVersion; got != CurrentConfigVersion {
+			t.Errorf("ConfigVersion = %d, want %d", got, CurrentConfigVersion)
 		}
-		got["c"] = "new"
-		if _, ok := orig["c"]; ok {
-			t.Error("new key in clone leaked to original")
+		if len(cfg.Strategies) != 1 {
+			t.Fatalf("len(strategies) = %d, want 1", len(cfg.Strategies))
+		}
+		sc := cfg.Strategies[0]
+
+		if sc.OpenStrategy.Name != "tema_cross_bd" {
+			t.Errorf("OpenStrategy.Name = %q, want tema_cross_bd", sc.OpenStrategy.Name)
+		}
+		if got := sc.OpenStrategy.Params["short_period"]; got != 5.0 {
+			t.Errorf("OpenStrategy.Params[short_period] = %v, want 5", got)
+		}
+		if got := sc.OpenStrategy.Params["mid_period"]; got != 13.0 {
+			t.Errorf("OpenStrategy.Params[mid_period] = %v, want 13", got)
+		}
+		if _, leaked := sc.OpenStrategy.Params["tiers"]; leaked {
+			t.Error("OpenStrategy.Params still contains tiers — the original #640 bug")
+		}
+		if sc.CloseStrategy == nil {
+			t.Fatalf("CloseStrategy = nil, want a single tiered_tp_atr ref")
+		}
+		close0 := *sc.CloseStrategy
+		if close0.Name != "tiered_tp_atr" {
+			t.Errorf("CloseStrategy.Name = %q, want tiered_tp_atr", close0.Name)
+		}
+		tiers, ok := close0.Params["tp_tiers"].([]interface{})
+		if !ok || len(tiers) != 2 {
+			t.Fatalf("CloseStrategy.Params[tp_tiers] = %v, want 2-element slice", close0.Params["tp_tiers"])
+		}
+
+		pos := &Position{Symbol: "BTC", Quantity: 1, AvgCost: 50000, EntryATR: 500, Side: "long"}
+		plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
+		if !ok {
+			t.Fatal("buildHyperliquidProtectionPlan returned ok=false")
+		}
+		wantTiers := []hlProtectionTier{{Multiple: 2, Fraction: 0.5}, {Multiple: 3, Fraction: 1}}
+		if !reflect.DeepEqual(plan.Tiers, wantTiers) {
+			t.Errorf("plan.Tiers = %+v, want %+v (custom tiers from migrated config)", plan.Tiers, wantTiers)
+		}
+
+		cfg2, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig (re-read): %v", err)
+		}
+		if !reflect.DeepEqual(cfg.Strategies[0].OpenStrategy, cfg2.Strategies[0].OpenStrategy) {
+			t.Error("re-load produced different OpenStrategy — migration is not idempotent")
 		}
 	})
 }
 
 func TestMigrateV13StrategyShape(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
+	t.Run("MigrateV13StrategyShape", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.json")
 
-	original := map[string]interface{}{
-		"strategies": []interface{}{
-			map[string]interface{}{
-				"id":               "hl-temacb-btc",
-				"type":             "perps",
-				"platform":         "hyperliquid",
-				"args":             []interface{}{"tema_cross_bd", "BTC", "1h", "--mode=paper"},
-				"open_strategy":    "tema_cross_bd",
-				"close_strategies": []interface{}{"tiered_tp_atr"},
-				"params": map[string]interface{}{
-					"tp_tiers": []interface{}{
-						map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
-						map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+		original := map[string]interface{}{
+			"strategies": []interface{}{
+				map[string]interface{}{
+					"id":               "hl-temacb-btc",
+					"type":             "perps",
+					"platform":         "hyperliquid",
+					"args":             []interface{}{"tema_cross_bd", "BTC", "1h", "--mode=paper"},
+					"open_strategy":    "tema_cross_bd",
+					"close_strategies": []interface{}{"tiered_tp_atr"},
+					"params": map[string]interface{}{
+						"tp_tiers": []interface{}{
+							map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+							map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+						},
+						"short_period": 5.0,
 					},
-					"short_period": 5.0,
+				},
+				map[string]interface{}{
+					"id":       "hl-rsi-eth",
+					"type":     "perps",
+					"platform": "hyperliquid",
+					"args":     []interface{}{"rsi", "ETH", "1h", "--mode=paper"},
 				},
 			},
-			map[string]interface{}{
-				"id":       "hl-rsi-eth",
-				"type":     "perps",
-				"platform": "hyperliquid",
-				"args":     []interface{}{"rsi", "ETH", "1h", "--mode=paper"},
-			},
-		},
-	}
-	data, err := json.MarshalIndent(original, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
+		}
+		data, err := json.MarshalIndent(original, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
 
-	if err := MigrateConfig(path, nil, nil); err != nil {
-		t.Fatalf("MigrateConfig: %v", err)
-	}
+		if err := MigrateConfig(path, nil, nil); err != nil {
+			t.Fatalf("MigrateConfig: %v", err)
+		}
 
-	migrated, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got map[string]interface{}
-	if err := json.Unmarshal(migrated, &got); err != nil {
-		t.Fatal(err)
-	}
+		migrated, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]interface{}
+		if err := json.Unmarshal(migrated, &got); err != nil {
+			t.Fatal(err)
+		}
 
-	if int(got["config_version"].(float64)) != CurrentConfigVersion {
-		t.Errorf("config_version = %v, want %d", got["config_version"], CurrentConfigVersion)
-	}
+		if int(got["config_version"].(float64)) != CurrentConfigVersion {
+			t.Errorf("config_version = %v, want %d", got["config_version"], CurrentConfigVersion)
+		}
 
-	strategies := got["strategies"].([]interface{})
-	if len(strategies) != 2 {
-		t.Fatalf("strategies len = %d, want 2", len(strategies))
-	}
+		strategies := got["strategies"].([]interface{})
+		if len(strategies) != 2 {
+			t.Fatalf("strategies len = %d, want 2", len(strategies))
+		}
 
-	s0 := strategies[0].(map[string]interface{})
-	if _, hasParams := s0["params"]; hasParams {
-		t.Error("strategy[0] still has flat `params` after migration")
-	}
-	open0, ok := s0["open_strategy"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("strategy[0].open_strategy = %v, want object", s0["open_strategy"])
-	}
-	if open0["name"] != "tema_cross_bd" {
-		t.Errorf("strategy[0].open_strategy.name = %v, want tema_cross_bd", open0["name"])
-	}
-	openParams, _ := open0["params"].(map[string]interface{})
-	if openParams == nil || openParams["short_period"] != 5.0 {
-		t.Errorf("strategy[0].open_strategy.params = %v, want {short_period:5}", openParams)
-	}
-	if _, leakedTiers := openParams["tiers"]; leakedTiers {
-		t.Error("strategy[0].open_strategy.params still contains tiers (should have moved to close ref)")
-	}
+		s0 := strategies[0].(map[string]interface{})
+		if _, hasParams := s0["params"]; hasParams {
+			t.Error("strategy[0] still has flat `params` after migration")
+		}
+		open0, ok := s0["open_strategy"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("strategy[0].open_strategy = %v, want object", s0["open_strategy"])
+		}
+		if open0["name"] != "tema_cross_bd" {
+			t.Errorf("strategy[0].open_strategy.name = %v, want tema_cross_bd", open0["name"])
+		}
+		openParams, _ := open0["params"].(map[string]interface{})
+		if openParams == nil || openParams["short_period"] != 5.0 {
+			t.Errorf("strategy[0].open_strategy.params = %v, want {short_period:5}", openParams)
+		}
+		if _, leakedTiers := openParams["tiers"]; leakedTiers {
+			t.Error("strategy[0].open_strategy.params still contains tiers (should have moved to close ref)")
+		}
 
-	closes0 := s0["close_strategies"].([]interface{})
-	if len(closes0) != 1 {
-		t.Fatalf("strategy[0].close_strategies len = %d, want 1", len(closes0))
-	}
-	close0 := closes0[0].(map[string]interface{})
-	if close0["name"] != "tiered_tp_atr" {
-		t.Errorf("strategy[0].close_strategies[0].name = %v, want tiered_tp_atr", close0["name"])
-	}
-	closeParams, ok := close0["params"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("strategy[0].close_strategies[0].params missing — tiers should have moved here")
-	}
-	tiers, ok := closeParams["tp_tiers"].([]interface{})
-	if !ok || len(tiers) != 2 {
-		t.Errorf("close ref params.tp_tiers = %v, want 2-element slice", closeParams["tp_tiers"])
-	}
+		closes0 := s0["close_strategies"].([]interface{})
+		if len(closes0) != 1 {
+			t.Fatalf("strategy[0].close_strategies len = %d, want 1", len(closes0))
+		}
+		close0 := closes0[0].(map[string]interface{})
+		if close0["name"] != "tiered_tp_atr" {
+			t.Errorf("strategy[0].close_strategies[0].name = %v, want tiered_tp_atr", close0["name"])
+		}
+		closeParams, ok := close0["params"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("strategy[0].close_strategies[0].params missing — tiers should have moved here")
+		}
+		tiers, ok := closeParams["tp_tiers"].([]interface{})
+		if !ok || len(tiers) != 2 {
+			t.Errorf("close ref params.tp_tiers = %v, want 2-element slice", closeParams["tp_tiers"])
+		}
 
-	s1 := strategies[1].(map[string]interface{})
-	open1 := s1["open_strategy"].(map[string]interface{})
-	if open1["name"] != "rsi" {
-		t.Errorf("strategy[1].open_strategy.name = %v, want rsi (from args[0])", open1["name"])
-	}
-	if _, hasParams := open1["params"]; hasParams {
-		t.Error("strategy[1] should not have open params (legacy had no params)")
-	}
-}
-
-func TestMigrateV13ManualStrategyDefaultsHold(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-
-	original := map[string]interface{}{
-		"strategies": []interface{}{
-			map[string]interface{}{
-				"id":        "hl-manual-eth",
-				"type":      "manual",
-				"platform":  "hyperliquid",
-				"symbol":    "ETH",
-				"timeframe": "1h",
-			},
-		},
-	}
-	data, err := json.MarshalIndent(original, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := MigrateConfig(path, nil, nil); err != nil {
-		t.Fatalf("MigrateConfig: %v", err)
-	}
-	migrated, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got map[string]interface{}
-	if err := json.Unmarshal(migrated, &got); err != nil {
-		t.Fatal(err)
-	}
-	strategies := got["strategies"].([]interface{})
-	open0 := strategies[0].(map[string]interface{})["open_strategy"].(map[string]interface{})
-	if open0["name"] != "hold" {
-		t.Errorf("manual strategy open_strategy.name = %v, want hold", open0["name"])
-	}
-}
-
-func TestStrictStringFromJSON(t *testing.T) {
-	if got := strictStringFromJSON(map[string]interface{}{"name": "foo"}); got != "" {
-		t.Errorf("strictStringFromJSON(map) = %q, want empty (fail-safe)", got)
-	}
-	if got := strictStringFromJSON([]interface{}{"a", "b"}); got != "" {
-		t.Errorf("strictStringFromJSON([]) = %q, want empty", got)
-	}
-	if got := strictStringFromJSON(42.0); got != "" {
-		t.Errorf("strictStringFromJSON(float) = %q, want empty", got)
-	}
-	if got := strictStringFromJSON("  real  "); got != "real" {
-		t.Errorf("strictStringFromJSON(string) = %q, want real (trimmed)", got)
-	}
-}
-
-func TestLoadConfigMigratesVersionlessEndToEnd(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-
-	legacy := map[string]interface{}{
-		"interval_seconds":           3600,
-		"log_dir":                    "logs",
-		"db_file":                    filepath.Join(dir, "state.db"),
-		"default_stop_loss_atr_mult": 1.0,
-		"portfolio_risk":             map[string]interface{}{"max_drawdown_pct": 25, "warn_threshold_pct": 60},
-		"strategies": []interface{}{
-			map[string]interface{}{
-				"id":               "hl-temacb-btc",
-				"type":             "perps",
-				"platform":         "hyperliquid",
-				"script":           "shared_scripts/check_hyperliquid.py",
-				"args":             []interface{}{"tema_cross_bd", "BTC", "1h", "--mode=paper"},
-				"open_strategy":    "tema_cross_bd",
-				"close_strategies": []interface{}{"tiered_tp_atr"},
-				"capital":          1000.0,
-				"max_drawdown_pct": 25.0,
-				"leverage":         1.0,
-				"allow_shorts":     true,
-				"params": map[string]interface{}{
-					"tp_tiers": []interface{}{
-						map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
-						map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
-					},
-					"short_period": 5.0,
-					"mid_period":   13.0,
-				},
-			},
-		},
-	}
-	data, err := json.MarshalIndent(legacy, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if err := validateConfig(cfg, false); err != nil {
-		t.Fatalf("validateConfig: %v", err)
-	}
-
-	if got := cfg.ConfigVersion; got != CurrentConfigVersion {
-		t.Errorf("ConfigVersion = %d, want %d", got, CurrentConfigVersion)
-	}
-	if len(cfg.Strategies) != 1 {
-		t.Fatalf("len(strategies) = %d, want 1", len(cfg.Strategies))
-	}
-	sc := cfg.Strategies[0]
-
-	if sc.OpenStrategy.Name != "tema_cross_bd" {
-		t.Errorf("OpenStrategy.Name = %q, want tema_cross_bd", sc.OpenStrategy.Name)
-	}
-	if got := sc.OpenStrategy.Params["short_period"]; got != 5.0 {
-		t.Errorf("OpenStrategy.Params[short_period] = %v, want 5", got)
-	}
-	if got := sc.OpenStrategy.Params["mid_period"]; got != 13.0 {
-		t.Errorf("OpenStrategy.Params[mid_period] = %v, want 13", got)
-	}
-	if _, leaked := sc.OpenStrategy.Params["tiers"]; leaked {
-		t.Error("OpenStrategy.Params still contains tiers — the original #640 bug")
-	}
-	if sc.CloseStrategy == nil {
-		t.Fatalf("CloseStrategy = nil, want a single tiered_tp_atr ref")
-	}
-	close0 := *sc.CloseStrategy
-	if close0.Name != "tiered_tp_atr" {
-		t.Errorf("CloseStrategy.Name = %q, want tiered_tp_atr", close0.Name)
-	}
-	tiers, ok := close0.Params["tp_tiers"].([]interface{})
-	if !ok || len(tiers) != 2 {
-		t.Fatalf("CloseStrategy.Params[tp_tiers] = %v, want 2-element slice", close0.Params["tp_tiers"])
-	}
-
-	pos := &Position{Symbol: "BTC", Quantity: 1, AvgCost: 50000, EntryATR: 500, Side: "long"}
-	plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
-	if !ok {
-		t.Fatal("buildHyperliquidProtectionPlan returned ok=false")
-	}
-	wantTiers := []hlProtectionTier{{Multiple: 2, Fraction: 0.5}, {Multiple: 3, Fraction: 1}}
-	if !reflect.DeepEqual(plan.Tiers, wantTiers) {
-		t.Errorf("plan.Tiers = %+v, want %+v (custom tiers from migrated config)", plan.Tiers, wantTiers)
-	}
-
-	cfg2, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig (re-read): %v", err)
-	}
-	if !reflect.DeepEqual(cfg.Strategies[0].OpenStrategy, cfg2.Strategies[0].OpenStrategy) {
-		t.Error("re-load produced different OpenStrategy — migration is not idempotent")
-	}
-}
-
-func TestLoadConfigRejectsPreFloorVersion(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	original := writeRawConfig(t, path, map[string]interface{}{
-		"config_version":   12,
-		"interval_seconds": 3600,
-		"strategies": []interface{}{
-			map[string]interface{}{
-				"id":               "hl-temacb-btc",
-				"type":             "perps",
-				"platform":         "hyperliquid",
-				"script":           "shared_scripts/check_hyperliquid.py",
-				"args":             []interface{}{"tema_cross_bd", "BTC", "1h", "--mode=paper"},
-				"open_strategy":    "tema_cross_bd",
-				"close_strategies": []interface{}{"tiered_tp_atr"},
-				"capital":          1000.0,
-				"max_drawdown_pct": 25.0,
-			},
-		},
+		s1 := strategies[1].(map[string]interface{})
+		open1 := s1["open_strategy"].(map[string]interface{})
+		if open1["name"] != "rsi" {
+			t.Errorf("strategy[1].open_strategy.name = %v, want rsi (from args[0])", open1["name"])
+		}
+		if _, hasParams := open1["params"]; hasParams {
+			t.Error("strategy[1] should not have open params (legacy had no params)")
+		}
 	})
-	_, err := LoadConfig(path)
-	assertUnsupportedVersionError(t, err, 12, path, original)
+	t.Run("MigrateV13ManualStrategyDefaultsHold", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.json")
+
+		original := map[string]interface{}{
+			"strategies": []interface{}{
+				map[string]interface{}{
+					"id":        "hl-manual-eth",
+					"type":      "manual",
+					"platform":  "hyperliquid",
+					"symbol":    "ETH",
+					"timeframe": "1h",
+				},
+			},
+		}
+		data, err := json.MarshalIndent(original, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := MigrateConfig(path, nil, nil); err != nil {
+			t.Fatalf("MigrateConfig: %v", err)
+		}
+		migrated, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]interface{}
+		if err := json.Unmarshal(migrated, &got); err != nil {
+			t.Fatal(err)
+		}
+		strategies := got["strategies"].([]interface{})
+		open0 := strategies[0].(map[string]interface{})["open_strategy"].(map[string]interface{})
+		if open0["name"] != "hold" {
+			t.Errorf("manual strategy open_strategy.name = %v, want hold", open0["name"])
+		}
+	})
 }
 
 func TestMigrateV14Direction(t *testing.T) {
-	cases := []struct {
-		name           string
-		strategy       map[string]interface{}
-		wantDir        string
-		wantLegacyKept bool
-	}{
-		{
-			name: "perps_allow_shorts_true_to_both",
-			strategy: map[string]interface{}{
-				"id": "hl-temab-eth", "type": "perps", "platform": "hyperliquid",
-				"allow_shorts": true,
+	t.Run("MigrateV14Direction", func(t *testing.T) {
+		cases := []struct {
+			name           string
+			strategy       map[string]interface{}
+			wantDir        string
+			wantLegacyKept bool
+		}{
+			{
+				name: "perps_allow_shorts_true_to_both",
+				strategy: map[string]interface{}{
+					"id": "hl-temab-eth", "type": "perps", "platform": "hyperliquid",
+					"allow_shorts": true,
+				},
+				wantDir: "both",
 			},
-			wantDir: "both",
-		},
-		{
-			name: "perps_allow_shorts_false_to_long",
-			strategy: map[string]interface{}{
-				"id": "hl-tema-eth", "type": "perps", "platform": "hyperliquid",
-				"allow_shorts": false,
+			{
+				name: "perps_allow_shorts_false_to_long",
+				strategy: map[string]interface{}{
+					"id": "hl-tema-eth", "type": "perps", "platform": "hyperliquid",
+					"allow_shorts": false,
+				},
+				wantDir: "long",
 			},
-			wantDir: "long",
-		},
-		{
-			name: "perps_already_has_direction_preserves",
-			strategy: map[string]interface{}{
-				"id": "hl-bear-eth", "type": "perps", "platform": "hyperliquid",
-				"allow_shorts": false, "direction": "short",
+			{
+				name: "perps_already_has_direction_preserves",
+				strategy: map[string]interface{}{
+					"id": "hl-bear-eth", "type": "perps", "platform": "hyperliquid",
+					"allow_shorts": false, "direction": "short",
+				},
+				wantDir: "short",
 			},
-			wantDir: "short",
-		},
-		{
-			name: "non_perps_drops_legacy_key_no_direction",
-			strategy: map[string]interface{}{
-				"id": "bn-sma-btc", "type": "spot", "platform": "binanceus",
-				"allow_shorts": true,
+			{
+				name: "non_perps_drops_legacy_key_no_direction",
+				strategy: map[string]interface{}{
+					"id": "bn-sma-btc", "type": "spot", "platform": "binanceus",
+					"allow_shorts": true,
+				},
+				wantDir: "",
 			},
-			wantDir: "",
-		},
-		{
-			name: "manual_allow_shorts_true_to_both",
-			strategy: map[string]interface{}{
-				"id": "hl-manual-eth", "type": "manual", "platform": "hyperliquid",
-				"allow_shorts": true,
+			{
+				name: "manual_allow_shorts_true_to_both",
+				strategy: map[string]interface{}{
+					"id": "hl-manual-eth", "type": "manual", "platform": "hyperliquid",
+					"allow_shorts": true,
+				},
+				wantDir: "both",
 			},
-			wantDir: "both",
-		},
-		{
-			name: "manual_allow_shorts_false_to_long",
-			strategy: map[string]interface{}{
-				"id": "hl-manual-btc", "type": "manual", "platform": "hyperliquid",
-				"allow_shorts": false,
+			{
+				name: "manual_allow_shorts_false_to_long",
+				strategy: map[string]interface{}{
+					"id": "hl-manual-btc", "type": "manual", "platform": "hyperliquid",
+					"allow_shorts": false,
+				},
+				wantDir: "long",
 			},
-			wantDir: "long",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			raw := map[string]interface{}{
-				"strategies": []interface{}{tc.strategy},
-			}
-			migrateV14Direction(raw)
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				raw := map[string]interface{}{
+					"strategies": []interface{}{tc.strategy},
+				}
+				migrateV14Direction(raw)
 
-			strategies := raw["strategies"].([]interface{})
-			sc := strategies[0].(map[string]interface{})
-			if _, leaked := sc["allow_shorts"]; leaked {
-				t.Errorf("allow_shorts must be deleted post-migration, got %+v", sc)
-			}
-			gotDir, _ := sc["direction"].(string)
-			if gotDir != tc.wantDir {
-				t.Errorf("direction = %q, want %q (full strategy: %+v)", gotDir, tc.wantDir, sc)
-			}
-		})
-	}
-}
+				strategies := raw["strategies"].([]interface{})
+				sc := strategies[0].(map[string]interface{})
+				if _, leaked := sc["allow_shorts"]; leaked {
+					t.Errorf("allow_shorts must be deleted post-migration, got %+v", sc)
+				}
+				gotDir, _ := sc["direction"].(string)
+				if gotDir != tc.wantDir {
+					t.Errorf("direction = %q, want %q (full strategy: %+v)", gotDir, tc.wantDir, sc)
+				}
+			})
+		}
+	})
+	t.Run("LoadConfig_V14_TranslatesAllowShortsToDirection", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "v13.json")
 
-func TestLoadConfig_V14_TranslatesAllowShortsToDirection(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "v13.json")
-
-	v13 := map[string]interface{}{
-		"config_version": MinSupportedConfigVersion,
-		"strategies": []interface{}{
-			map[string]interface{}{
-				"id":               "hl-temab-eth",
-				"type":             "perps",
-				"platform":         "hyperliquid",
-				"script":           "shared_scripts/check_hyperliquid.py",
-				"args":             []interface{}{"triple_ema_bidir", "ETH", "1h", "--mode=paper"},
-				"open_strategy":    map[string]interface{}{"name": "triple_ema_bidir"},
-				"capital":          1000.0,
-				"max_drawdown_pct": 25.0,
-				"leverage":         1.0,
-				"allow_shorts":     true,
+		v13 := map[string]interface{}{
+			"config_version": MinSupportedConfigVersion,
+			"strategies": []interface{}{
+				map[string]interface{}{
+					"id":               "hl-temab-eth",
+					"type":             "perps",
+					"platform":         "hyperliquid",
+					"script":           "shared_scripts/check_hyperliquid.py",
+					"args":             []interface{}{"triple_ema_bidir", "ETH", "1h", "--mode=paper"},
+					"open_strategy":    map[string]interface{}{"name": "triple_ema_bidir"},
+					"capital":          1000.0,
+					"max_drawdown_pct": 25.0,
+					"leverage":         1.0,
+					"allow_shorts":     true,
+				},
+				map[string]interface{}{
+					"id":               "hl-tema-btc",
+					"type":             "perps",
+					"platform":         "hyperliquid",
+					"script":           "shared_scripts/check_hyperliquid.py",
+					"args":             []interface{}{"triple_ema", "BTC", "1h", "--mode=paper"},
+					"open_strategy":    map[string]interface{}{"name": "triple_ema"},
+					"capital":          1000.0,
+					"max_drawdown_pct": 25.0,
+					"leverage":         1.0,
+					"allow_shorts":     false,
+				},
 			},
-			map[string]interface{}{
-				"id":               "hl-tema-btc",
-				"type":             "perps",
-				"platform":         "hyperliquid",
-				"script":           "shared_scripts/check_hyperliquid.py",
-				"args":             []interface{}{"triple_ema", "BTC", "1h", "--mode=paper"},
-				"open_strategy":    map[string]interface{}{"name": "triple_ema"},
-				"capital":          1000.0,
-				"max_drawdown_pct": 25.0,
-				"leverage":         1.0,
-				"allow_shorts":     false,
-			},
-		},
-	}
-	data, err := json.MarshalIndent(v13, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
+		}
+		data, err := json.MarshalIndent(v13, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
 
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if cfg.ConfigVersion != CurrentConfigVersion {
-		t.Errorf("ConfigVersion = %d, want %d", cfg.ConfigVersion, CurrentConfigVersion)
-	}
-	byID := map[string]StrategyConfig{}
-	for _, sc := range cfg.Strategies {
-		byID[sc.ID] = sc
-	}
-	if got := byID["hl-temab-eth"].Direction; got != "both" {
-		t.Errorf("hl-temab-eth Direction = %q, want %q (allow_shorts=true)", got, "both")
-	}
-	if got := byID["hl-tema-btc"].Direction; got != "long" {
-		t.Errorf("hl-tema-btc Direction = %q, want %q (allow_shorts=false)", got, "long")
-	}
-	if byID["hl-temab-eth"].AllowShorts {
-		t.Error("hl-temab-eth AllowShorts should be false post-migration (key removed from JSON)")
-	}
-	if byID["hl-tema-btc"].AllowShorts {
-		t.Error("hl-tema-btc AllowShorts should be false post-migration")
-	}
-	if got := EffectiveDirection(byID["hl-temab-eth"]); got != DirectionBoth {
-		t.Errorf("EffectiveDirection(temab) = %q, want %q", got, DirectionBoth)
-	}
-	if got := EffectiveDirection(byID["hl-tema-btc"]); got != DirectionLong {
-		t.Errorf("EffectiveDirection(tema) = %q, want %q", got, DirectionLong)
-	}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.ConfigVersion != CurrentConfigVersion {
+			t.Errorf("ConfigVersion = %d, want %d", cfg.ConfigVersion, CurrentConfigVersion)
+		}
+		byID := map[string]StrategyConfig{}
+		for _, sc := range cfg.Strategies {
+			byID[sc.ID] = sc
+		}
+		if got := byID["hl-temab-eth"].Direction; got != "both" {
+			t.Errorf("hl-temab-eth Direction = %q, want %q (allow_shorts=true)", got, "both")
+		}
+		if got := byID["hl-tema-btc"].Direction; got != "long" {
+			t.Errorf("hl-tema-btc Direction = %q, want %q (allow_shorts=false)", got, "long")
+		}
+		if byID["hl-temab-eth"].AllowShorts {
+			t.Error("hl-temab-eth AllowShorts should be false post-migration (key removed from JSON)")
+		}
+		if byID["hl-tema-btc"].AllowShorts {
+			t.Error("hl-tema-btc AllowShorts should be false post-migration")
+		}
+		if got := EffectiveDirection(byID["hl-temab-eth"]); got != DirectionBoth {
+			t.Errorf("EffectiveDirection(temab) = %q, want %q", got, DirectionBoth)
+		}
+		if got := EffectiveDirection(byID["hl-tema-btc"]); got != DirectionLong {
+			t.Errorf("EffectiveDirection(tema) = %q, want %q", got, DirectionLong)
+		}
+	})
 }
 
 func TestMigrateConfigV16UserDefaults(t *testing.T) {

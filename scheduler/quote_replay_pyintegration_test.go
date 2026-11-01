@@ -47,79 +47,79 @@ func quoteReplayPythonVerify(t *testing.T, spec *quoteReplaySpec, out quoteRepla
 	return v
 }
 
-func TestQuoteReplayPythonIndependentLedgerMatchesEverySettlement(t *testing.T) {
-	spec := quoteReplayTestSpec(t, quoteReplayTempDir(t), defaultQuoteReplayMarket(), nil)
-	out, code := runQuoteReplayForTest(t, spec)
-	quoteReplayMustComplete(t, out, code)
-	v := quoteReplayPythonVerify(t, spec, out)
-	if !v.OK || v.AppliedFill != len(out.Fills) || len(v.RoundTrips) == 0 || len(v.Funding) != 1 {
-		t.Fatalf("independent ledger: ok %v problems %v fills %d/%d round trips %d funding %d", v.OK, v.Problems, v.AppliedFill, len(out.Fills), len(v.RoundTrips), len(v.Funding))
-	}
-	tampered := out
-	book := *out.Book
-	book.Cash = book.Cash + "1"
-	tampered.Book = &book
-	if v := quoteReplayPythonVerify(t, spec, tampered); v.OK {
-		t.Fatal("the independent ledger accepted a changed settled cash")
-	}
-	bad := out
-	bad.VenueEvents = append([]quoteReplayVenueEventRow(nil), out.VenueEvents...)
-	for i, e := range bad.VenueEvents {
-		if e.Kind != "fill" {
-			continue
+func TestQuoteReplayPythonLedger(t *testing.T) {
+	t.Run("independent_ledger_matches_every_settlement", func(t *testing.T) {
+		spec := quoteReplayTestSpec(t, quoteReplayTempDir(t), defaultQuoteReplayMarket(), nil)
+		out, code := runQuoteReplayForTest(t, spec)
+		quoteReplayMustComplete(t, out, code)
+		v := quoteReplayPythonVerify(t, spec, out)
+		if !v.OK || v.AppliedFill != len(out.Fills) || len(v.RoundTrips) == 0 || len(v.Funding) != 1 {
+			t.Fatalf("independent ledger: ok %v problems %v fills %d/%d round trips %d funding %d", v.OK, v.Problems, v.AppliedFill, len(out.Fills), len(v.RoundTrips), len(v.Funding))
 		}
-		var p map[string]any
-		if err := json.Unmarshal(e.Event, &p); err != nil {
-			t.Fatal(err)
+		tampered := out
+		book := *out.Book
+		book.Cash = book.Cash + "1"
+		tampered.Book = &book
+		if v := quoteReplayPythonVerify(t, spec, tampered); v.OK {
+			t.Fatal("the independent ledger accepted a changed settled cash")
 		}
-		p["fill"].(map[string]any)["px"] = "1"
-		blob, _ := json.Marshal(p)
-		bad.VenueEvents[i].Event = blob
-		break
-	}
-	if v := quoteReplayPythonVerify(t, spec, bad); v.OK {
-		t.Fatal("the independent fill checks accepted a maker fill away from its order price")
-	}
-}
-
-func TestQuoteReplayPythonLedgerAppliesAFillAtTheFinalReadTime(t *testing.T) {
-	m := defaultQuoteReplayMarket()
-	m.sweepEvery = 0
-	last := quoteReplayTestStart + 60_000
-	spec := quoteReplayTestSpec(t, quoteReplayTempDir(t), m, func(s *quoteReplaySpec) {
-		s.Window.LastDeadlineMs = last
-		quoteReplayAddTrades(s, quoteReplayTradeSpec{RecvMs: last, TimeMs: last - 10, Tid: 9_300_001, Side: "A", Px: "99000", Sz: "1", Hash: "0xread"})
+		bad := out
+		bad.VenueEvents = append([]quoteReplayVenueEventRow(nil), out.VenueEvents...)
+		for i, e := range bad.VenueEvents {
+			if e.Kind != "fill" {
+				continue
+			}
+			var p map[string]any
+			if err := json.Unmarshal(e.Event, &p); err != nil {
+				t.Fatal(err)
+			}
+			p["fill"].(map[string]any)["px"] = "1"
+			blob, _ := json.Marshal(p)
+			bad.VenueEvents[i].Event = blob
+			break
+		}
+		if v := quoteReplayPythonVerify(t, spec, bad); v.OK {
+			t.Fatal("the independent fill checks accepted a maker fill away from its order price")
+		}
 	})
-	out, code := runQuoteReplayForTest(t, spec)
-	quoteReplayMustComplete(t, out, code)
-	atRead := 0
-	for _, f := range out.Fills {
-		if f.TimeMs == last && f.SettlementID != 0 && out.AppliedBoundary == last-1 {
-			atRead++
-		}
-	}
-	if atRead == 0 {
-		t.Fatalf("no fill settled at the final read time %d (boundary %d)", last, out.AppliedBoundary)
-	}
-	if v := quoteReplayPythonVerify(t, spec, out); !v.OK || v.AppliedFill != len(out.Fills) {
-		t.Fatalf("the independent ledger must apply fills through boundary+1: %v (%d of %d)", v.Problems, v.AppliedFill, len(out.Fills))
-	}
-}
-
-func TestQuoteReplayPythonRecoveredLedgerEqualsItsDurableEvents(t *testing.T) {
-	for _, fault := range []string{"after-call:16", "venue-before-persist:53", "issue-before-reserve:18"} {
-		t.Run(fault, func(t *testing.T) {
-			spec := quoteReplayShortSpec(t, quoteReplayTempDir(t))
-			_, code, _ := runQuoteReplaySubprocess(t, spec, "--fault", fault)
-			if code != basketReplayExitFault {
-				t.Fatalf("fault %s exited %d", fault, code)
-			}
-			spec.Mode = basketReplayModeResume
-			out, code := runQuoteReplayForTest(t, spec)
-			quoteReplayMustComplete(t, out, code)
-			if v := quoteReplayPythonVerify(t, spec, out); !v.OK {
-				t.Fatalf("the recovered ledger differs from the independent ledger of its durable events: %v", v.Problems)
-			}
+	t.Run("applies_a_fill_at_the_final_read_time", func(t *testing.T) {
+		m := defaultQuoteReplayMarket()
+		m.sweepEvery = 0
+		last := quoteReplayTestStart + 60_000
+		spec := quoteReplayTestSpec(t, quoteReplayTempDir(t), m, func(s *quoteReplaySpec) {
+			s.Window.LastDeadlineMs = last
+			quoteReplayAddTrades(s, quoteReplayTradeSpec{RecvMs: last, TimeMs: last - 10, Tid: 9_300_001, Side: "A", Px: "99000", Sz: "1", Hash: "0xread"})
 		})
-	}
+		out, code := runQuoteReplayForTest(t, spec)
+		quoteReplayMustComplete(t, out, code)
+		atRead := 0
+		for _, f := range out.Fills {
+			if f.TimeMs == last && f.SettlementID != 0 && out.AppliedBoundary == last-1 {
+				atRead++
+			}
+		}
+		if atRead == 0 {
+			t.Fatalf("no fill settled at the final read time %d (boundary %d)", last, out.AppliedBoundary)
+		}
+		if v := quoteReplayPythonVerify(t, spec, out); !v.OK || v.AppliedFill != len(out.Fills) {
+			t.Fatalf("the independent ledger must apply fills through boundary+1: %v (%d of %d)", v.Problems, v.AppliedFill, len(out.Fills))
+		}
+	})
+	t.Run("recovered_ledger_equals_its_durable_events", func(t *testing.T) {
+		for _, fault := range []string{"after-call:16", "venue-before-persist:53", "issue-before-reserve:18"} {
+			t.Run(fault, func(t *testing.T) {
+				spec := quoteReplayShortSpec(t, quoteReplayTempDir(t))
+				_, code, _ := runQuoteReplaySubprocess(t, spec, "--fault", fault)
+				if code != basketReplayExitFault {
+					t.Fatalf("fault %s exited %d", fault, code)
+				}
+				spec.Mode = basketReplayModeResume
+				out, code := runQuoteReplayForTest(t, spec)
+				quoteReplayMustComplete(t, out, code)
+				if v := quoteReplayPythonVerify(t, spec, out); !v.OK {
+					t.Fatalf("the recovered ledger differs from the independent ledger of its durable events: %v", v.Problems)
+				}
+			})
+		}
+	})
 }
