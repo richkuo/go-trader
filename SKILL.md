@@ -2524,7 +2524,7 @@ Research admission is unchanged: `pairPolicyStrategies`, `pairPolicyParamKeys` a
 
 **Probe.** `probeCheckScripts` registers `run_pair_policy.py --probe-only` (`pairPolicyScript`, `pairPolicyProbeArgv`) once whenever any strategy names a check script, beside the shared-script probes; startup and `go-trader probe` both reach it, and a deploy tree without the script fails the probe (exit 78).
 
-**Tests.** `TestBasketPairPolicyReal*` (`pyintegration && parkedresearch`, parked) runs real admission, the evaluator process, the coordinator and SQLite together, compares the bounded search with an exhaustive common-lot enumeration and covers the boundary, exit, process-failure, determinism and import-isolation cases, frozen-request replay after later quote and account inputs change (`TestBasketPairPolicyRealFrozenRequestIgnoresLaterInputs`) and canonical load failures in isolated runner copies (`TestBasketPairPolicyRealCanonicalLoadFailuresHold`); `TestBasketPairPolicyParams*` covers the raw parameter refusals in the default Go suite.
+**Tests.** `TestBasketPairPolicyReal*` (`pyintegration && parkedresearch`, parked) runs real admission, the evaluator process, the coordinator and SQLite together, compares the bounded search with an exhaustive common-lot enumeration and covers the boundary, exit, process-failure, determinism and import-isolation cases, frozen-request replay after later quote and account inputs change (`TestBasketPairPolicyRealFrozenRequestIgnoresLaterInputs`) and canonical load failures in isolated runner copies (`TestBasketPairPolicyRealCanonicalLoadFailuresHold`); `TestBasketPairPolicyParams*` (`parkedresearch`, parked) covers the raw parameter refusals.
 
 ### Pair cadence, clocks and host order (#1873)
 
@@ -2884,7 +2884,7 @@ Pair progress is version 2 (version 1 loads; an older binary refuses version 2),
 Rules: #1881 and #1882 call `preparePairRisk` before risk so a paper emergency close has a fresh own mark, run `bc.step` after the paper kill switch, and report `pairIncompleteEvidence`; they never book a pair member through a generic close owner.
 #1863 keeps the coordinator as the only pair book writer.
 
-**Tests.** `TestBasketPairNativeEmergency*` and `TestBasketPairPaperEmergency*` (`parkedresearch`, parked), the extended `TestBasketPairKillSwitch*`, `TestBasketMemberViewIncompleteValuationEscalatesAfterTheDeferral` and `TestBasketPairVirtualVenueNativeBookChangesCountOnce`, and `TestBasketPairEmergencyReal*` (`pyintegration && parkedresearch`: the real close scripts with substituted venue responses and refused network and signing).
+**Tests.** `TestBasketPairNativeEmergency*` and `TestBasketPairPaperEmergency*` (`parkedresearch`, parked), the extended `TestBasketPairKillSwitch*`, `TestBasketMemberViewIncompleteValuationEscalatesAfterTheDeferral` and `TestBasketPairVirtualVenueNativeBookChangesCountOnce` (`parkedresearch`, parked), and `TestBasketPairEmergencyReal*` (`pyintegration && parkedresearch`: the real close scripts with substituted venue responses and refused network and signing).
 
 ### Native fill resolution (#1927)
 
