@@ -21,12 +21,13 @@ import uuid
 from collections import namedtuple
 from datetime import datetime, timezone, timedelta
 from decimal import Context, Decimal, DivisionByZero, Inexact, InvalidOperation, Overflow, localcontext
-from typing import Tuple
+from typing import Optional, Tuple
 from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
 import egress_policy
+import option_data
 
 YAHOO_CRYPTO_MAP = {
     "BTC": "BTC-USD",
@@ -701,6 +702,21 @@ def robinhood_library():
         egress_policy.pin_robin_stocks()
         rh.helper.set_output(sys.stderr)
         yield rh
+
+
+class _TeeText:
+
+    def __init__(self, *targets):
+        self._targets = targets
+
+    def write(self, text):
+        for target in self._targets:
+            target.write(text)
+        return len(text)
+
+    def flush(self):
+        for target in self._targets:
+            target.flush()
 
 
 class RobinhoodLoginError(RuntimeError):
@@ -1545,36 +1561,11 @@ class RobinhoodExchangeAdapter:
             yahoo_sym = self._resolve_yahoo_symbol(underlying)
             ticker = yf.Ticker(yahoo_sym)
             hist = ticker.history(period="90d", interval="1d")
-            if hist.empty or len(hist) < 15:
-                return 0.30, 50.0
-            closes = hist["Close"].tolist()
-            returns = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes)) if closes[i - 1] > 0]
-            if len(returns) < 14:
-                return 0.30, 50.0
-
-            w = 14
-            mean = sum(returns[-w:]) / w
-            variance = sum((r - mean) ** 2 for r in returns[-w:]) / w
-            vol = math.sqrt(variance) * math.sqrt(252)
-
-            hvs = []
-            for i in range(len(returns) - w + 1):
-                chunk = returns[i:i + w]
-                m = sum(chunk) / w
-                v = sum((r - m) ** 2 for r in chunk) / w
-                hvs.append(math.sqrt(v) * math.sqrt(252) * 100)
-            current_hv = vol * 100
-            hv_min, hv_max = min(hvs), max(hvs)
-            if hv_max > hv_min:
-                iv_rank = (current_hv - hv_min) / (hv_max - hv_min) * 100
-                iv_rank = round(min(max(iv_rank, 0.0), 100.0), 1)
-            else:
-                iv_rank = 50.0
-
-            return round(vol, 4), iv_rank
+            closes = [] if hist.empty else hist["Close"].tolist()
         except Exception as e:
             print(f"[robinhood] vol_metrics error for {underlying}: {e}", file=sys.stderr)
-            return 0.30, 50.0
+            raise option_data.unavailable("volatility unavailable: daily history read failed", e) from e
+        return option_data.realized_vol_metrics(closes, 252)
 
     def get_real_expiry(self, underlying: str, target_dte: int) -> Tuple[str, int]:
         if self._logged_in:
@@ -1630,40 +1621,60 @@ class RobinhoodExchangeAdapter:
 
     def get_premium_and_greeks(self, underlying: str, option_type: str,
                                 strike: float, expiry: str, dte: float,
-                                spot: float, vol: float) -> Tuple[float, float, dict]:
+                                spot: float, vol: Optional[float] = None) -> Tuple[float, float, dict]:
         if self._logged_in:
-            try:
-                with robinhood_library() as rh:
+            return self._venue_option_premium(underlying, option_type, strike, expiry, spot)
+        from pricing import bs_price_and_greeks
+        spot, strike, dte, vol = option_data.require_model_inputs(spot, strike, dte, vol)
+        price_usd, greeks = bs_price_and_greeks(spot, strike, dte, vol, option_type=option_type)
+        premium_usd = price_usd * 100
+        mark_pct = price_usd / spot
+        return round(mark_pct, 6), round(premium_usd, 2), greeks
+
+    def _venue_option_premium(self, underlying: str, option_type: str, strike: float,
+                              expiry: str, spot: float) -> Tuple[float, float, dict]:
+        library_output = io.StringIO()
+        try:
+            with robinhood_library() as rh:
+                rh.helper.set_output(_TeeText(sys.stderr, library_output))
+                try:
                     options = rh.options.find_tradable_options(
                         underlying, expirationDate=expiry,
                         strikePrice=str(strike), optionType=option_type
                     )
-                if options:
-                    opt_id = options[0].get("id") or options[0].get("url", "").split("/")[-2]
+                    market_data = None
+                    option = options[0] if options and isinstance(options[0], dict) else None
+                    opt_id = None
+                    if option is not None:
+                        opt_id = option.get("id") or option.get("url", "").split("/")[-2]
                     if opt_id:
-                        with robinhood_library() as rh:
-                            market_data = rh.options.get_option_market_data_by_id(opt_id)
-                        if market_data and isinstance(market_data, list) and market_data[0]:
-                            md = market_data[0]
-                            mark = float(md.get("adjusted_mark_price", 0) or 0)
-                            greeks = {
-                                "delta": float(md.get("delta", 0) or 0),
-                                "gamma": float(md.get("gamma", 0) or 0),
-                                "theta": float(md.get("theta", 0) or 0),
-                                "vega": float(md.get("vega", 0) or 0),
-                            }
-                            premium_usd = mark * 100
-                            mark_pct = (mark / spot) if spot > 0 else 0.0
-                            return round(mark_pct, 6), round(premium_usd, 2), greeks
-            except Exception as e:
-                print(f"[robinhood] get_premium_and_greeks error: {e}", file=sys.stderr)
-
-        from pricing import bs_price_and_greeks
-        if vol <= 0:
-            vol = 0.30
-        price_usd, greeks = bs_price_and_greeks(spot, strike, dte, vol, option_type=option_type)
-        premium_usd = price_usd * 100
-        mark_pct = (price_usd / spot) if spot > 0 else 0.0
+                        market_data = rh.options.get_option_market_data_by_id(opt_id)
+                finally:
+                    rh.helper.set_output(sys.stderr)
+        except Exception as e:
+            print(f"[robinhood] get_premium_and_greeks error: {e}", file=sys.stderr)
+            raise option_data.unavailable("option quote unavailable: robinhood option read failed", e,
+                                          text=library_output.getvalue()) from e
+        if option is None or not opt_id:
+            raise option_data.unavailable("option quote unavailable: no tradable robinhood option matches",
+                                          text=library_output.getvalue())
+        if not (market_data and isinstance(market_data, list) and isinstance(market_data[0], dict)):
+            raise option_data.unavailable("option quote unavailable: robinhood option market data missing",
+                                          text=library_output.getvalue())
+        md = market_data[0]
+        try:
+            mark = float(md.get("adjusted_mark_price", 0) or 0)
+            greeks = {
+                "delta": float(md.get("delta", 0) or 0),
+                "gamma": float(md.get("gamma", 0) or 0),
+                "theta": float(md.get("theta", 0) or 0),
+                "vega": float(md.get("vega", 0) or 0),
+            }
+        except (TypeError, ValueError):
+            raise option_data.OptionDataUnavailable("option quote unavailable: robinhood option market data malformed") from None
+        option_data.require_finite_positive(mark, "option quote unavailable: robinhood mark is not positive")
+        premium_usd = mark * 100
+        mark_pct = (mark / spot) if spot > 0 else 0.0
         return round(mark_pct, 6), round(premium_usd, 2), greeks
 
 

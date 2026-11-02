@@ -2,14 +2,14 @@
 import os
 import re
 import sys
-import math
 import time
-from typing import Tuple
+from typing import Optional, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
 import ccxt
 import egress_policy
+import option_data
 
 
 def _bill_float(value) -> float:
@@ -592,33 +592,9 @@ class OKXExchangeAdapter:
     def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:
         try:
             ohlcv = self._exchange.fetch_ohlcv(underlying + "/USDT", "1d", limit=90)
-            if not ohlcv or len(ohlcv) < 15:
-                return 0.60, 50.0
-            closes = [c[4] for c in ohlcv]
-            returns = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
-            if len(returns) < 14:
-                return 0.60, 50.0
-            w = 14
-            mean = sum(returns[-w:]) / w
-            variance = sum((r - mean) ** 2 for r in returns[-w:]) / w
-            vol = math.sqrt(variance) * math.sqrt(365)
-
-            hvs = []
-            for i in range(len(returns) - w + 1):
-                chunk = returns[i:i + w]
-                m = sum(chunk) / w
-                v = sum((r - m) ** 2 for r in chunk) / w
-                hvs.append(math.sqrt(v) * math.sqrt(365) * 100)
-            current_hv = vol * 100
-            hv_min, hv_max = min(hvs), max(hvs)
-            if hv_max > hv_min:
-                iv_rank = (current_hv - hv_min) / (hv_max - hv_min) * 100
-                iv_rank = round(min(max(iv_rank, 0.0), 100.0), 1)
-            else:
-                iv_rank = 50.0
-            return round(vol, 4), iv_rank
-        except Exception:
-            return 0.60, 50.0
+        except Exception as e:
+            raise option_data.unavailable("volatility unavailable: daily history read failed", e) from e
+        return option_data.realized_vol_metrics(option_data.daily_closes(ohlcv), 365)
 
     def get_real_expiry(self, underlying: str, target_dte: int) -> Tuple[str, int]:
         self._load_markets()
@@ -692,43 +668,48 @@ class OKXExchangeAdapter:
 
     def get_premium_and_greeks(self, underlying: str, option_type: str,
                                 strike: float, expiry: str, dte: float,
-                                spot: float, vol: float) -> Tuple[float, float, dict]:
+                                spot: float, vol: Optional[float] = None) -> Tuple[float, float, dict]:
+        from datetime import datetime, timezone
         try:
             self._load_markets()
-            from datetime import datetime, timezone
-            exp_dt = datetime.strptime(expiry, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            exp_start = int(exp_dt.timestamp() * 1000)
-            exp_end = exp_start + 86400 * 1000
+        except Exception as e:
+            raise option_data.unavailable("option quote unavailable: okx markets read failed", e) from e
+        exp_dt = datetime.strptime(expiry, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        exp_start = int(exp_dt.timestamp() * 1000)
+        exp_end = exp_start + 86400 * 1000
 
-            opt_char = "C" if option_type == "call" else "P"
-            for sym, market in self._exchange.markets.items():
-                if (market.get("type") == "option"
-                        and market.get("base", "").upper() == underlying.upper()
-                        and market.get("optionType") == option_type
-                        and float(market.get("strike") or 0) == strike
-                        and market.get("active", True)):
-                    mkt_exp = market.get("expiry")
-                    if mkt_exp and exp_start <= int(mkt_exp) < exp_end:
+        matched = False
+        last_error = None
+        for sym, market in (self._exchange.markets or {}).items():
+            if (market.get("type") == "option"
+                    and market.get("base", "").upper() == underlying.upper()
+                    and market.get("optionType") == option_type
+                    and float(market.get("strike") or 0) == strike
+                    and market.get("active", True)):
+                mkt_exp = market.get("expiry")
+                if mkt_exp and exp_start <= int(mkt_exp) < exp_end:
+                    matched = True
+                    try:
                         ticker = self._exchange.fetch_ticker(sym)
-                        mark = ticker.get("last") or ticker.get("close") or 0
-                        if mark and mark > 0:
-                            premium_usd = float(mark) * spot
-                            premium_pct = float(mark)
-                            greeks = {
-                                "delta": ticker.get("info", {}).get("delta", 0),
-                                "gamma": ticker.get("info", {}).get("gamma", 0),
-                                "theta": ticker.get("info", {}).get("theta", 0),
-                                "vega": ticker.get("info", {}).get("vega", 0),
-                            }
-                            greeks = {k: float(v or 0) for k, v in greeks.items()}
-                            return premium_pct, premium_usd, greeks
-        except Exception:
-            pass
-
-        try:
-            from pricing import bs_price_and_greeks
-            premium_usd, greeks = bs_price_and_greeks(spot, strike, dte, vol, option_type)
-            premium_pct = premium_usd / spot if spot > 0 else 0
-            return round(premium_pct, 6), round(premium_usd, 2), greeks
-        except Exception:
-            return 0.0, 0.0, {"delta": 0, "gamma": 0, "theta": 0, "vega": 0}
+                    except Exception as e:
+                        print(f"[okx] option ticker read failed for {sym}: {e}", file=sys.stderr)
+                        last_error = e
+                        continue
+                    mark = ticker.get("last") or ticker.get("close") or 0
+                    if not option_data.is_finite_positive(mark):
+                        continue
+                    premium_usd = float(mark) * spot
+                    premium_pct = float(mark)
+                    greeks = {
+                        "delta": ticker.get("info", {}).get("delta", 0),
+                        "gamma": ticker.get("info", {}).get("gamma", 0),
+                        "theta": ticker.get("info", {}).get("theta", 0),
+                        "vega": ticker.get("info", {}).get("vega", 0),
+                    }
+                    greeks = {k: float(v or 0) for k, v in greeks.items()}
+                    return premium_pct, premium_usd, greeks
+        if last_error is not None:
+            raise option_data.unavailable("option quote unavailable: okx ticker read failed", last_error) from last_error
+        if not matched:
+            raise option_data.OptionDataUnavailable("option quote unavailable: no listed okx option matches")
+        raise option_data.OptionDataUnavailable("option quote unavailable: okx mark is not positive")

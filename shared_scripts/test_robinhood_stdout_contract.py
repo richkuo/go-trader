@@ -20,7 +20,7 @@ CASES = [
     ("execute_sell", "check_robinhood.py", ["--execute", "--symbol=BTC", "--side=sell", "--quantity=0.001", "--mode=live", "--ref-id=" + REF_ID, "--budget-ms=3000"], None, True, False),
     ("close", "close_robinhood_position.py", ["--symbol=BTC", "--mode=live", "--quantity=0.5"], None, True, False),
     ("positions", "fetch_robinhood_positions.py", [], None, True, False),
-    ("options", "check_options.py", ["vol_mean_reversion", "BTC", "--platform=robinhood"], "[]", False, True),
+    ("options", "check_options.py", ["vol_mean_reversion", "BTC", "--platform=robinhood"], "[]", True, True),
     ("balance", "check_balance.py", ["--platform=robinhood"], None, True, True),
     ("candles_paper", "fetch_candles.py", ["--platform", "robinhood", "--type", "spot", "--symbol", "BTC", "--timeframe", "1h", "--limit", "50", "--mode", "paper"], None, False, False),
     ("candles_live", "fetch_candles.py", ["--platform", "robinhood", "--type", "spot", "--symbol", "BTC", "--timeframe", "1h", "--limit", "50", "--mode", "live"], None, False, False),

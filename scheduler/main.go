@@ -2020,8 +2020,9 @@ func main() {
 				mu.RLock()
 				pv := PortfolioValue(stratState, prices)
 				var posJSON string
+				var posJSONErr error
 				if sc.Type == "options" {
-					posJSON = EncodeAllPositionsJSON(stratState.OptionPositions, stratState.Positions)
+					posJSON, posJSONErr = EncodeAllPositionsJSON(stratState.OptionPositions, stratState.Positions)
 				}
 				var spotPosCtx PositionCtx
 				if sc.Type == "spot" && sc.Platform != "okx" && sc.Platform != "robinhood" {
@@ -2221,6 +2222,7 @@ func main() {
 
 				trades := 0
 				var detail string
+				var detailLines []string
 				var hlStep *hlStepTradeAlerts
 				switch sc.Type {
 				case "spot":
@@ -2361,50 +2363,11 @@ func main() {
 						mu.Unlock()
 					}
 				case "options":
-					if result, signalStr, ok := runOptionsCheck(sc, posJSON, notifier, logger); ok {
-						if sc.Paused {
-							kept, dropped := pausedOptionsActions(result.Actions)
-							if dropped > 0 {
-								logger.Info("Paused: %d option open action(s) dropped — close actions still execute (#1150)", dropped)
-							}
-							result.Actions = kept
-						}
-						if sr.DailyLossEntriesHeld {
-							kept, dropped := pausedOptionsActions(result.Actions)
-							if dropped > 0 {
-								logger.Info("Daily loss limit: %d option open action(s) dropped — entries held until UTC rollover (#1269)", dropped)
-							}
-							result.Actions = kept
-						}
-						if sr.NotionalBlocked {
-							kept, dropped := pausedOptionsActions(result.Actions)
-							if dropped > 0 {
-								logger.Warn("Notional cap: %d option open action(s) dropped — new opens blocked, exits continue (#1344)", dropped)
-							}
-							result.Actions = kept
-						}
-						if persistenceHold {
-							kept, dropped := pausedOptionsActions(result.Actions)
-							if dropped > 0 {
-								logger.Warn("Persistence hold: %d option open action(s) dropped — the %s scope has an unacknowledged state save failure, so no new exposure is taken; closes continue (#1523)", dropped, scopeLabel(stratScope))
-							}
-							result.Actions = kept
-						}
-						if kept, dropped, capWhy := exposureCapOptionsActions(sr.ExposureCapStatus, extractAsset(sc), result.Actions); dropped > 0 {
-							logger.Warn("Exposure cap: %d option open action(s) dropped — %s (#1270)", dropped, capWhy)
-							result.Actions = kept
-						}
-						optionsRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
-						mu.Lock()
-						stratState.Regime = optionsRegime.PrimaryLabel(nil)
-						var harvestDetails []string
-						trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
-						mu.Unlock()
-						if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource); chKey != "" {
-							key := chKey + "|" + extractAsset(sc)
-							channelTradeDetails[key] = append(channelTradeDetails[key], harvestDetails...)
-						}
-					}
+					trades, detailLines = runOptionsDispatch(optionsDispatch{
+						SC: sc, State: stratState, PositionsJSON: posJSON, PositionsErr: posJSONErr,
+						Risk: sr, PersistenceHold: persistenceHold, Scope: stratScope, Regime: cfg.Regime,
+						Mu: &mu, Notifier: notifier, Logger: logger,
+					})
 				case "perps":
 					var hlProfileNext RegimeProfileState
 					var hlProfileActive string
@@ -2699,20 +2662,10 @@ func main() {
 				default:
 					logger.Error("Unknown strategy type: %s", sc.Type)
 				}
-				var detailLines []string
 				if sc.Type == "manual" && hlStep != nil {
 					trades, detailLines = hlStep.finishLines(&mu, notifier, cfg.Regime, logger)
 				}
-				if trades > 0 && (detail != "" || len(detailLines) > 0) {
-					if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource); chKey != "" {
-						channelTrades[chKey] += trades
-						key := chKey + "|" + extractAsset(sc)
-						if len(detailLines) > 0 {
-							channelTradeDetails[key] = append(channelTradeDetails[key], detailLines...)
-						} else {
-							channelTradeDetails[key] = append(channelTradeDetails[key], detail)
-						}
-					}
+				if routeCycleTrades(sc, trades, detail, detailLines, notifier, channelTrades, channelTradeDetails) {
 					if hlStep == nil {
 						sendTradeAlerts(sc, stratState, trades, &mu, notifier, cfg.Regime)
 					}
@@ -3262,32 +3215,14 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier,
 	} else if result.Signal == -1 {
 		signalStr = "BEARISH"
 	}
-	logger.InfoOrDebug(result.Signal != 0 || len(result.Actions) > 0, "Signal: %s | %s spot=$%s | IV rank=%.1f | %d actions",
-		signalStr, result.Underlying, formatSignalPrice(result.SpotPrice), result.IVRank, len(result.Actions))
+	rank := formatOptionsIVRank(result)
+	if result.VolMetricsError != "" {
+		rank += " (" + result.VolMetricsError + ")"
+	}
+	logger.InfoOrDebug(result.Signal != 0 || len(result.Actions) > 0, "Signal: %s | %s spot=$%s | IV rank=%s | %d actions",
+		signalStr, result.Underlying, formatSignalPrice(result.SpotPrice), rank, len(result.Actions))
 
 	return result, signalStr, true
-}
-
-func executeOptionsResult(sc StrategyConfig, s *StrategyState, result *OptionsResult, signalStr string, logger *StrategyLogger) (int, string, []string) {
-	trades, err := ExecuteOptionsSignal(s, result, logger)
-	if err != nil {
-		logger.Error("Options execution failed: %v", err)
-		return 0, "", nil
-	}
-
-	detail := ""
-	if trades > 0 {
-		detail = fmt.Sprintf("[%s] %s %s spot=$%s IV=%.1f", sc.ID, signalStr, result.Underlying, formatSignalPrice(result.SpotPrice), result.IVRank)
-	}
-
-	var harvestDetails []string
-	if sc.ThetaHarvest != nil {
-		harvestTrades, hDetails := CheckThetaHarvest(s, sc.ThetaHarvest, logger)
-		trades += harvestTrades
-		harvestDetails = hDetails
-	}
-
-	return trades, detail, harvestDetails
 }
 
 func shouldSkipZeroCapital(sc StrategyConfig) bool {
@@ -3329,6 +3264,22 @@ func isFreshPerStrategyCircuitBreaker(reason string) bool {
 	}
 	return strings.HasPrefix(reason, RiskReasonMaxDrawdownExceeded) ||
 		strings.HasPrefix(reason, RiskReasonConsecutiveLosses)
+}
+
+func routeCycleTrades(sc StrategyConfig, trades int, detail string, detailLines []string, notifier *MultiNotifier, channelTrades map[string]int, channelTradeDetails map[string][]string) bool {
+	if trades <= 0 || (detail == "" && len(detailLines) == 0) {
+		return false
+	}
+	if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource); chKey != "" {
+		channelTrades[chKey] += trades
+		key := chKey + "|" + extractAsset(sc)
+		if len(detailLines) > 0 {
+			channelTradeDetails[key] = append(channelTradeDetails[key], detailLines...)
+		} else {
+			channelTradeDetails[key] = append(channelTradeDetails[key], detail)
+		}
+	}
+	return true
 }
 
 func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, mu *sync.RWMutex, notifier tradeAlertRouter, rc *RegimeConfig) {

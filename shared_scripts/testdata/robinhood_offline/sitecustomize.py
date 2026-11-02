@@ -59,6 +59,8 @@ def _install():
     import yfinance
 
     def stub_history(self, *args, **kwargs):
+        if kwargs.get("interval") == "1d" and os.environ.get("RH_OFFLINE_STUB_DAILY") == "error":
+            raise RuntimeError("robinhood offline stub: daily history failure")
         n = 260
         index = pd.date_range(end=pd.Timestamp("2026-10-01 00:00", tz="UTC"), periods=n, freq="h")
         close = [100.0 + ((i * 7) % 23) - 11 + i * 0.05 for i in range(n)]
@@ -163,6 +165,11 @@ def _install():
     def route_answer(request, timeout):
         key = request.method + " " + request.url
         items = routes.get(key)
+        if items is None:
+            for pattern in sorted(routes):
+                if pattern.endswith("*") and key.startswith(pattern[:-1]):
+                    key, items = pattern, routes[pattern]
+                    break
         if items is None and request.method == "POST" and "/oauth2/token/" in request.url:
             log_route_request(request, timeout, True)
             return response(request, 200, {

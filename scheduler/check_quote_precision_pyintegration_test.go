@@ -35,6 +35,7 @@ const (
 var qpEnvKeys = []string{
 	"QP_CLOSE", "QP_QUOTE", "QP_SHAPE", "QP_NOW", "QP_TICKERS", "QP_CLOSES", "QP_CANDLES",
 	"QP_OKX_FILL", "QP_LOG", "QP_ALL_CLOSED",
+	"QP_DAILY", "QP_OPTION_QUOTE", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER", "QP_OKX_OPTIONS", "QP_STDOUT_NOISE",
 	"OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE", "OKX_SANDBOX",
 	"ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET",
 	"TOPSTEP_API_KEY", "TOPSTEP_API_SECRET", "TOPSTEP_ACCOUNT_ID",
@@ -1464,7 +1465,407 @@ func TestCheckQuotePrecision(t *testing.T) {
 		{"RobinhoodLiveKeepsTheVenueFill", qpCaseCheckQuotePrecisionRobinhoodLiveKeepsTheVenueFill},
 		{"OptionsSpotAndPremiumPrecedence", qpCaseCheckQuotePrecisionOptionsSpotAndPremiumPrecedence},
 		{"PriceTextKeepsLargePrices", qpCaseCheckQuotePrecisionPriceTextKeepsLargePrices},
+		{"OptionsOutageKeepsHarvestAndReporting", qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting},
+		{"OptionsEncodingFailureSpawnsNoCheck", qpCaseCheckQuotePrecisionOptionsEncodingFailureSpawnsNoCheck},
+		{"OptionsFailureAlertThresholds", qpCaseCheckQuotePrecisionOptionsFailureAlertThresholds},
+		{"OptionsSchedulerHarvestsDuringEntryOutage", qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage},
 	} {
 		t.Run(tc.name, tc.run)
+	}
+}
+
+const qpOptionsBaselineDaily = "baseline"
+
+func qpOptionsDaily(kind string) string {
+	if kind != qpOptionsBaselineDaily {
+		return kind
+	}
+	closes := make([]float64, 90)
+	for i := range closes {
+		x := 100 * math.Exp(0.03*math.Sin(float64(i)*1.7)+0.02*math.Cos(float64(i)*0.37)+0.001*float64(i))
+		closes[i] = math.Round(x*1e6) / 1e6
+	}
+	raw, err := json.Marshal(closes)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
+func qpOptionsHarvestSC(id string) StrategyConfig {
+	return StrategyConfig{ID: id, Type: "options", Platform: "ibkr", Script: "shared_scripts/check_options.py",
+		Args: []string{"vol_mean_reversion", "BTC", "--platform=ibkr"}, Capital: 1000, MaxDrawdownPct: 50,
+		ThetaHarvest: &ThetaHarvestConfig{Enabled: true, ProfitTargetPct: 60, StopLossPct: 200, MinDTEClose: 3}}
+}
+
+type qpOptionLeg struct {
+	id, optionType, action string
+	dte, entryUSD, value   float64
+	closes                 bool
+}
+
+func qpOptionLegs() []qpOptionLeg {
+	return []qpOptionLeg{
+		{id: "BTC-call-sell-profit", optionType: "call", action: "sell", dte: 20, entryUSD: 100, value: -30, closes: true},
+		{id: "BTC-put-sell-stop", optionType: "put", action: "sell", dte: 20, entryUSD: 100, value: -350, closes: true},
+		{id: "BTC-call-sell-dte", optionType: "call", action: "sell", dte: 2, entryUSD: 100, value: -90, closes: true},
+	}
+}
+
+const (
+	qpOptionsSeedCash    = 1350.0
+	qpOptionsHarvestCost = 30.0 + 350.0 + 90.0
+)
+
+func qpSeedOptionLegs(s *StrategyState, now time.Time) {
+	s.Cash = qpOptionsSeedCash
+	for i, leg := range qpOptionLegs() {
+		expiry := now.AddDate(0, 0, int(leg.dte)).Format("2006-01-02")
+		s.OptionPositions[leg.id] = &OptionPosition{ID: leg.id, Underlying: "BTC", OptionType: leg.optionType, Strike: float64(3000 + 100*i),
+			Expiry: expiry, DTE: leg.dte, Action: leg.action, Quantity: 1, EntryPremium: 0.1, EntryPremiumUSD: leg.entryUSD,
+			CurrentValueUSD: leg.value, OpenedAt: now.Add(-time.Hour)}
+	}
+}
+
+func qpResetScriptFailures(t *testing.T, ids ...string) {
+	t.Helper()
+	clear := func() {
+		for _, id := range ids {
+			scriptFailureTracker.Clear(id)
+			scriptFailureTransientTracker.Clear(id)
+		}
+	}
+	clear()
+	t.Cleanup(clear)
+}
+
+func qpOptionsNotifier() (*MultiNotifier, *mockNotifier) {
+	backend := &mockNotifier{}
+	return NewMultiNotifier(notifierBackend{notifier: backend, channels: map[string]string{"options": "opt-ch"}, ownerID: "owner"}), backend
+}
+
+func qpChannelMessages(m *mockNotifier, needle string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for _, msg := range m.messages {
+		if strings.Contains(msg.content, needle) {
+			out = append(out, msg.channelID+": "+msg.content)
+		}
+	}
+	return out
+}
+
+func qpCountRows(t *testing.T, db *sql.DB, query string, args ...interface{}) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(query, args...).Scan(&n); err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	return n
+}
+
+func qpOptionsDispatch(env *entryTestEnv, sc StrategyConfig, notifier *MultiNotifier, logger *StrategyLogger) (int, []string) {
+	s := env.strat(sc.ID)
+	env.mu.RLock()
+	posJSON, posErr := EncodeAllPositionsJSON(s.OptionPositions, s.Positions)
+	env.mu.RUnlock()
+	return runOptionsDispatch(optionsDispatch{SC: sc, State: s, PositionsJSON: posJSON, PositionsErr: posErr,
+		Risk: &scopeCycleRisk{Partition: partitionFor(sc)}, Scope: partitionFor(sc).Scope, Mu: &env.mu, Notifier: notifier, Logger: logger})
+}
+
+func qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting(t *testing.T) {
+	root := qpRoot(t)
+	cases := []struct {
+		name      string
+		daily     string
+		entries   int
+		wantError bool
+	}{
+		{name: "entry_check_fails", daily: "error", wantError: true},
+		{name: "entry_check_succeeds", daily: qpOptionsBaselineDaily, entries: 2},
+	}
+	t.Run("ineligible_legs_stay_open_after_a_failed_check", func(t *testing.T) {
+		sc := qpOptionsHarvestSC("qp-opt-harvest-off")
+		sc.ThetaHarvest = &ThetaHarvestConfig{Enabled: true, ProfitTargetPct: 90, StopLossPct: 400, MinDTEClose: 1}
+		qpResetScriptFailures(t, sc.ID)
+		qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": "error"})
+		env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
+		useEntryTradeRecorder(t, env.store)
+		qpSeedOptionLegs(env.strat(sc.ID), time.Now().UTC())
+		logger, buf := qpLogger(sc.ID)
+		trades, lines := qpOptionsDispatch(env, sc, nil, logger)
+		if trades != 0 || len(lines) != 0 || len(env.strat(sc.ID).OptionPositions) != len(qpOptionLegs()) || env.strat(sc.ID).Cash != qpOptionsSeedCash {
+			t.Fatalf("ineligible legs must stay open: trades=%d lines=%q legs=%d cash=%v; log:\n%s", trades, lines, len(env.strat(sc.ID).OptionPositions), env.strat(sc.ID).Cash, buf.String())
+		}
+	})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			qpDebugLogs(t)
+			sc := qpOptionsHarvestSC("qp-opt-harvest")
+			qpResetScriptFailures(t, sc.ID)
+			qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": qpOptionsDaily(tc.daily)})
+			env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
+			useEntryTradeRecorder(t, env.store)
+			qpSeedOptionLegs(env.strat(sc.ID), time.Now().UTC())
+			env.saveAll()
+			env = env.restart()
+			useEntryTradeRecorder(t, env.store)
+			if got := len(env.strat(sc.ID).OptionPositions); got != len(qpOptionLegs()) {
+				t.Fatalf("reloaded %d option legs, want %d", got, len(qpOptionLegs()))
+			}
+			notifier, backend := qpOptionsNotifier()
+			logger, buf := qpLogger(sc.ID)
+			trades, lines := qpOptionsDispatch(env, sc, notifier, logger)
+
+			if tc.wantError != strings.Contains(buf.String(), "Script returned error: vol_mean_reversion needs iv rank: volatility unavailable: daily history read failed") {
+				t.Fatalf("entry check error presence = %t; log:\n%s", !tc.wantError, buf.String())
+			}
+			if trades != tc.entries+3 || len(lines) != 3+boolInt(tc.entries > 0) {
+				t.Fatalf("trades=%d lines=%q, want %d trades; log:\n%s", trades, lines, tc.entries+3, buf.String())
+			}
+			harvestLines := lines
+			if tc.entries > 0 {
+				if !strings.HasPrefix(lines[0], "[qp-opt-harvest] BEARISH BTC spot=$1000.00 IV=78.8") {
+					t.Fatalf("the entry summary must lead the detail lines: %q", lines)
+				}
+				harvestLines = lines[1:]
+			}
+			for _, leg := range qpOptionLegs() {
+				n := 0
+				for _, line := range harvestLines {
+					if strings.Contains(line, "CLOSE "+leg.id+" ") {
+						n++
+					}
+				}
+				if (leg.closes && n != 1) || (!leg.closes && n != 0) {
+					t.Fatalf("leg %s appears in %d harvest detail(s): %q", leg.id, n, harvestLines)
+				}
+			}
+			s := env.strat(sc.ID)
+			if tc.entries == 0 && !qpClose(s.Cash, qpOptionsSeedCash-qpOptionsHarvestCost) {
+				t.Fatalf("cash = %v, want %v", s.Cash, qpOptionsSeedCash-qpOptionsHarvestCost)
+			}
+			if len(s.OptionPositions) != tc.entries {
+				t.Fatalf("option positions = %v, want only the %d new entries", s.OptionPositions, tc.entries)
+			}
+			for _, leg := range qpOptionLegs() {
+				if _, ok := s.OptionPositions[leg.id]; ok == leg.closes {
+					t.Fatalf("leg %s open=%t after harvest", leg.id, ok)
+				}
+			}
+
+			channelTrades := map[string]int{}
+			channelTradeDetails := map[string][]string{}
+			if !routeCycleTrades(sc, trades, "", lines, notifier, channelTrades, channelTradeDetails) {
+				t.Fatalf("the cycle tail must report %d options trades", trades)
+			}
+			sendTradeAlerts(sc, s, trades, &env.mu, notifier, nil)
+			if channelTrades["options"] != trades {
+				t.Fatalf("channel totals = %v, want options=%d", channelTrades, trades)
+			}
+			if got := channelTradeDetails["options|"+extractAsset(sc)]; len(got) != len(lines) {
+				t.Fatalf("channel details = %q, want %q", got, lines)
+			}
+			if alerts := qpChannelMessages(backend, ""); len(alerts) != trades {
+				t.Fatalf("trade alerts = %d, want %d: %q", len(alerts), trades, alerts)
+			}
+
+			env.saveAll()
+			db := env.fileFor(sc.ID).db
+			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM closed_option_positions WHERE strategy_id = ? AND close_reason = 'theta_harvest'`, sc.ID); n != 3 {
+				t.Fatalf("closed theta-harvest rows = %d, want 3 (harvest runs once)", n)
+			}
+			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND is_close = 1`, sc.ID); n != 3 {
+				t.Fatalf("close trade rows = %d, want 3", n)
+			}
+			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND is_close = 0`, sc.ID); n != tc.entries {
+				t.Fatalf("entry trade rows = %d, want %d", n, tc.entries)
+			}
+			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM option_positions WHERE strategy_id = ?`, sc.ID); n != tc.entries {
+				t.Fatalf("stored option legs = %d, want %d", n, tc.entries)
+			}
+		})
+	}
+}
+
+func qpCaseCheckQuotePrecisionOptionsEncodingFailureSpawnsNoCheck(t *testing.T) {
+	root := qpRoot(t)
+	sc := qpOptionsHarvestSC("qp-opt-encode")
+	qpResetScriptFailures(t, sc.ID)
+	logPath := filepath.Join(t.TempDir(), "qp.log")
+	qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": qpOptionsDaily(qpOptionsBaselineDaily), "QP_LOG": logPath})
+
+	if got, err := EncodeAllPositionsJSON(map[string]*OptionPosition{}, map[string]*Position{}); err != nil || got != "[]" {
+		t.Fatalf("empty book encodes as %q, %v; want [] and no error", got, err)
+	}
+
+	env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
+	useEntryTradeRecorder(t, env.store)
+	s := env.strat(sc.ID)
+	qpSeedOptionLegs(s, time.Now().UTC())
+	s.OptionPositions["BTC-put-sell-stop"].Greeks.Delta = math.Inf(1)
+	env.saveAll()
+	env = env.restart()
+	useEntryTradeRecorder(t, env.store)
+	if d := env.strat(sc.ID).OptionPositions["BTC-put-sell-stop"].Greeks.Delta; !math.IsInf(d, 1) {
+		t.Fatalf("the real store returned delta %v, want +Inf", d)
+	}
+
+	notifier, _ := qpOptionsNotifier()
+	logger, buf := qpLogger(sc.ID)
+	trades, lines := qpOptionsDispatch(env, sc, notifier, logger)
+	if !strings.Contains(buf.String(), "Options check skipped: options positions encoding failed: json: unsupported value: +Inf") {
+		t.Fatalf("encoding failure not reported; log:\n%s", buf.String())
+	}
+	if raw, err := os.ReadFile(logPath); err == nil && len(raw) > 0 {
+		t.Fatalf("a failed encoding must start no check subprocess, fixture log:\n%s", raw)
+	}
+	if strings.Contains(buf.String(), "check_options.py") {
+		t.Fatalf("the check script ran after a failed encoding; log:\n%s", buf.String())
+	}
+	scriptFailureTracker.mu.Lock()
+	entry := scriptFailureTracker.entries[sc.ID]
+	scriptFailureTracker.mu.Unlock()
+	if entry == nil || entry.count != 1 {
+		t.Fatalf("recorded failure = %+v, want one ordinary failure", entry)
+	}
+	if trades != 3 || len(lines) != 3 {
+		t.Fatalf("harvest after an encoding failure: trades=%d lines=%q, want 3", trades, lines)
+	}
+	if got := len(env.strat(sc.ID).OptionPositions); got != 0 {
+		t.Fatalf("option legs = %d, want every leg harvested and no entry", got)
+	}
+}
+
+func qpCaseCheckQuotePrecisionOptionsFailureAlertThresholds(t *testing.T) {
+	root := qpRoot(t)
+	run := func(sc StrategyConfig, notifier *MultiNotifier) bool {
+		logger, _ := qpLogger(sc.ID)
+		_, _, ok := runOptionsCheck(sc, "[]", notifier, logger)
+		return ok
+	}
+	failing := func(m *mockNotifier) int { return len(qpChannelMessages(m, "SIGNAL SCRIPT FAILING")) }
+
+	t.Run("ordinary_failures_alert_at_three", func(t *testing.T) {
+		sc := qpOptionsHarvestSC("qp-opt-alert")
+		qpResetScriptFailures(t, sc.ID)
+		notifier, backend := qpOptionsNotifier()
+		qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": "error"})
+		for i, want := range []int{0, 0, 1, 1} {
+			if run(sc, notifier) {
+				t.Fatalf("failure %d: the check succeeded", i+1)
+			}
+			if got := failing(backend); got != want {
+				t.Fatalf("after failure %d: %d failure alert(s), want %d", i+1, got, want)
+			}
+		}
+		if msgs := qpChannelMessages(backend, "SIGNAL SCRIPT FAILING"); !strings.Contains(msgs[0], "vol_mean_reversion needs iv rank: volatility unavailable: daily history read failed") || strings.Contains(msgs[0], "sustained upstream") {
+			t.Fatalf("ordinary alert = %q", msgs[0])
+		}
+		qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": qpOptionsDaily(qpOptionsBaselineDaily)})
+		if !run(sc, notifier) {
+			t.Fatal("the recovery check failed")
+		}
+		if len(qpChannelMessages(backend, "SIGNAL SCRIPT RECOVERED")) != 1 {
+			t.Fatalf("a success must clear the tracker with one recovery alert: %+v", backend.messages)
+		}
+		scriptFailureTracker.mu.Lock()
+		left := scriptFailureTracker.entries[sc.ID]
+		scriptFailureTracker.mu.Unlock()
+		if left != nil {
+			t.Fatalf("tracker entry survived a success: %+v", left)
+		}
+	})
+
+	t.Run("transient_failures_keep_their_policy", func(t *testing.T) {
+		sc := qpOptionsHarvestSC("qp-opt-transient")
+		qpResetScriptFailures(t, sc.ID)
+		notifier, backend := qpOptionsNotifier()
+		qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": "429"})
+		for i := 1; i <= scriptFailureTransientAlertThreshold; i++ {
+			if run(sc, notifier) {
+				t.Fatalf("failure %d: the check succeeded", i)
+			}
+			want := 0
+			if i == scriptFailureTransientAlertThreshold {
+				want = 1
+			}
+			if got := failing(backend); got != want {
+				t.Fatalf("after transient failure %d: %d alert(s), want %d", i, got, want)
+			}
+		}
+		if msgs := qpChannelMessages(backend, "SIGNAL SCRIPT FAILING (sustained upstream error)"); len(msgs) != 1 || !strings.Contains(msgs[0], "(upstream status 429)") {
+			t.Fatalf("transient alert = %q", msgs)
+		}
+	})
+
+	t.Run("transient_failures_alert_after_the_duration", func(t *testing.T) {
+		sc := qpOptionsHarvestSC("qp-opt-transient-age")
+		qpResetScriptFailures(t, sc.ID)
+		notifier, backend := qpOptionsNotifier()
+		qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": "503"})
+		if run(sc, notifier) || failing(backend) != 0 {
+			t.Fatal("the first transient failure must not alert")
+		}
+		scriptFailureTransientTracker.mu.Lock()
+		scriptFailureTransientTracker.entries[sc.ID].firstSeenAt = time.Now().UTC().Add(-scriptFailureTransientAlertMaxDuration - time.Minute)
+		scriptFailureTransientTracker.mu.Unlock()
+		if run(sc, notifier) || failing(backend) != 1 {
+			t.Fatalf("a transient failure past %v must alert once: %+v", scriptFailureTransientAlertMaxDuration, backend.messages)
+		}
+	})
+}
+
+func qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage(t *testing.T) {
+	t.Parallel()
+	root := robinhoodStdoutPyRoot(t)
+	sched := qpBuildScheduler(t, root)
+	sc := qpOptionsHarvestSC("qp-opt-sched")
+	sched.env = qpChildEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": "error"})
+	cfg := sched.config([]StrategyConfig{sc})
+	sched.run(cfg, "Cycle 1 complete", nil)
+
+	db, err := sql.Open("sqlite", filepath.Join(sched.dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	for i, leg := range qpOptionLegs() {
+		qpExec(t, db, `INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte, action, quantity, entry_premium, entry_premium_usd, current_value_usd, opened_at)
+			VALUES (?, ?, '', 'BTC', ?, ?, ?, ?, ?, 1, 0.1, ?, ?, ?)`,
+			sc.ID, leg.id, leg.optionType, float64(3000+100*i), now.AddDate(0, 0, int(leg.dte)).Format("2006-01-02"), leg.dte, leg.action, leg.entryUSD, leg.value, now.Add(-time.Hour).Format(time.RFC3339))
+	}
+	qpExec(t, db, `UPDATE strategies SET cash = ? WHERE id = ?`, qpOptionsSeedCash, sc.ID)
+
+	out := sched.run(cfg, "Cycle 2 complete", nil)
+	if !strings.Contains(out, "Script returned error: vol_mean_reversion needs iv rank: volatility unavailable: daily history read failed") {
+		t.Fatalf("the entry check must fail this cycle:\n%s", out)
+	}
+	for _, leg := range qpOptionLegs() {
+		n := strings.Count(out, "| "+leg.id+" | PnL:")
+		if (leg.closes && n != 1) || (!leg.closes && n != 0) {
+			t.Fatalf("leg %s harvested %d time(s):\n%s", leg.id, n, out)
+		}
+	}
+	var cash float64
+	if err := db.QueryRow(`SELECT cash FROM strategies WHERE id = ?`, sc.ID).Scan(&cash); err != nil {
+		t.Fatal(err)
+	}
+	if !qpClose(cash, qpOptionsSeedCash-qpOptionsHarvestCost) {
+		t.Fatalf("cash = %v, want %v", cash, qpOptionsSeedCash-qpOptionsHarvestCost)
+	}
+	if n := qpCountRows(t, db, `SELECT COUNT(*) FROM closed_option_positions WHERE strategy_id = ? AND close_reason = 'theta_harvest'`, sc.ID); n != 3 {
+		t.Fatalf("closed theta-harvest rows = %d, want 3", n)
+	}
+	if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND is_close = 1`, sc.ID); n != 3 {
+		t.Fatalf("close trade rows = %d, want 3", n)
+	}
+	if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND is_close = 0`, sc.ID); n != 0 {
+		t.Fatalf("entry trade rows = %d, want none", n)
+	}
+	if n := qpCountRows(t, db, `SELECT COUNT(*) FROM option_positions WHERE strategy_id = ?`, sc.ID); n != 0 {
+		t.Fatalf("stored option legs = %d, want none", n)
 	}
 }
