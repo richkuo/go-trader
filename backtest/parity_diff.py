@@ -1016,8 +1016,9 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--platform", default=None,
                         choices=["binanceus", "hyperliquid", "robinhood",
                                  "luno", "okx", "okx-perps"],
-                        help="Fee platform for --fills. Ad-hoc default "
-                             "binanceus. --config default: the strategy's "
+                        help="Platform for --config runs and --fills. "
+                             "Ad-hoc default binanceus. --config default: "
+                             "the strategy's "
                              "platform and type (okx perps -> okx-perps); "
                              "options, futures, non-Hyperliquid manual and "
                              "unknown platforms refuse automatic selection "
