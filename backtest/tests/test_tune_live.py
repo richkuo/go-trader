@@ -184,59 +184,59 @@ def test_param_changes_and_build_patch():
     assert patch["param_changes"] == {"fast_period": 10}
 
 
-def test_build_candidate_carries_close_direction_stops_and_gate_lookback():
-    case = "test_build_candidate_carries_close_direction_stops"
-    resolution = {
-        "strategy_type": "perps", "direction": "both",
-        "close_strategies": [{"name": "tiered_tp_atr", "params": {}}],
-        "stop_loss_atr_mult": 2.0, "regime_enabled": True,
-        "allowed_regimes": ["trending_up"],
-    }
-    cand = tl.build_candidate("tema_cross_bd", {"short_period": 5}, resolution)
-    assert cand["direction"] == "both", case
-    assert cand["type"] == "perps", case
-    assert cand["close_strategies"][0]["name"] == "tiered_tp_atr", case
-    assert cand["stop_loss_atr_mult"] == 2.0, case
-    assert cand["allowed_regimes"] == ["trending_up"], case
-    assert cand["regime_period"] == 14, case
-    assert cand["regime_adx_threshold"] == 20.0, case
+def test_build_candidate_carries_close_direction_stops_and_gate_lookback(subtests):
+    with subtests.test("test_build_candidate_carries_close_direction_stops_and_gate_lookback"):
+        case = "test_build_candidate_carries_close_direction_stops"
+        resolution = {
+            "strategy_type": "perps", "direction": "both",
+            "close_strategies": [{"name": "tiered_tp_atr", "params": {}}],
+            "stop_loss_atr_mult": 2.0, "regime_enabled": True,
+            "allowed_regimes": ["trending_up"],
+        }
+        cand = tl.build_candidate("tema_cross_bd", {"short_period": 5}, resolution)
+        assert cand["direction"] == "both", case
+        assert cand["type"] == "perps", case
+        assert cand["close_strategies"][0]["name"] == "tiered_tp_atr", case
+        assert cand["stop_loss_atr_mult"] == 2.0, case
+        assert cand["allowed_regimes"] == ["trending_up"], case
+        assert cand["regime_period"] == 14, case
+        assert cand["regime_adx_threshold"] == 20.0, case
 
-    case = "test_build_candidate_threads_live_adx_lookback"
-    resolution = {
-        "regime_enabled": True, "allowed_regimes": ["trending_up"],
-        "regime_period": 21, "regime_adx_threshold": 25.0,
-    }
-    cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
-    assert cand["allowed_regimes"] == ["trending_up"], case
-    assert cand["regime_period"] == 21, case
-    assert cand["regime_adx_threshold"] == 25.0, case
-    import eval_windows as ew
-    assert ew.validate_candidate(dict(cand)), case
+        case = "test_build_candidate_threads_live_adx_lookback"
+        resolution = {
+            "regime_enabled": True, "allowed_regimes": ["trending_up"],
+            "regime_period": 21, "regime_adx_threshold": 25.0,
+        }
+        cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
+        assert cand["allowed_regimes"] == ["trending_up"], case
+        assert cand["regime_period"] == 21, case
+        assert cand["regime_adx_threshold"] == 25.0, case
+        import eval_windows as ew
+        assert ew.validate_candidate(dict(cand)), case
 
-    case = "test_build_candidate_composite_gate_owns_lookback"
-    spec = {"primary": {"classifier": "composite", "period": 14}}
-    resolution = {
-        "regime_enabled": True, "allowed_regimes": ["trending_up"],
-        "regime_period": 21, "regime_adx_threshold": 25.0,
-        "regime_windows_spec": spec,
-    }
-    cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
-    assert cand["allowed_regimes"] == ["trending_up"], case
-    assert cand["regime_windows_spec"] == spec, case
-    assert "regime_period" not in cand, case
-    assert "regime_adx_threshold" not in cand, case
-
-    case = "test_build_candidate_dormant_gate_not_copied"
-    resolution = {
-        "strategy_type": "perps", "direction": "long",
-        "allowed_regimes": ["trending_up"], "regime_enabled": False,
-        "regime_windows_spec": {"primary": {"classifier": "adx", "period": 14}},
-    }
-    cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
-    assert "allowed_regimes" not in cand, case
-    assert "regime_windows_spec" not in cand, case
-    assert "regime_period" not in cand, case
-    assert "regime_adx_threshold" not in cand, case
+        case = "test_build_candidate_composite_gate_owns_lookback"
+        spec = {"primary": {"classifier": "composite", "period": 14}}
+        resolution = {
+            "regime_enabled": True, "allowed_regimes": ["trending_up"],
+            "regime_period": 21, "regime_adx_threshold": 25.0,
+            "regime_windows_spec": spec,
+        }
+        cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
+        assert cand["allowed_regimes"] == ["trending_up"], case
+        assert cand["regime_windows_spec"] == spec, case
+        assert "regime_period" not in cand, case
+        assert "regime_adx_threshold" not in cand, case
+    with subtests.test("test_build_candidate_dormant_gate_not_copied"):
+        resolution = {
+            "strategy_type": "perps", "direction": "long",
+            "allowed_regimes": ["trending_up"], "regime_enabled": False,
+            "regime_windows_spec": {"primary": {"classifier": "adx", "period": 14}},
+        }
+        cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
+        assert "allowed_regimes" not in cand
+        assert "regime_windows_spec" not in cand
+        assert "regime_period" not in cand
+        assert "regime_adx_threshold" not in cand
 
 
 def test_unsupported_reason():
@@ -482,25 +482,36 @@ def test_promotion_baseline_presence_matrix(tmp_path):
     assert b["user_close_defaults_present"] is True
 
 
-def test_promotion_baseline_deepcopy_no_alias(tmp_path):
-    from run_backtest import load_strategy_config
-    path = _write_config(tmp_path, _sma_config(
-        params={"fast_period": 18, "slow_period": 50}))
-    assert "promotion_baseline" not in load_strategy_config(path, "spot-sma-btc")
-    kwargs = load_strategy_config(path, "spot-sma-btc",
-                                  include_promotion_baseline=True)
-    assert "promotion_baseline" in kwargs
-    _assert_complete_promotion_baseline(kwargs["promotion_baseline"])
-    baseline = kwargs["promotion_baseline"]
-    baseline["open_strategy"]["params"]["fast_period"] = 999
-    baseline["open_strategy"]["name"] = "mutated"
-    assert kwargs["open_strategy"]["params"]["fast_period"] == 18
-    assert kwargs["open_strategy"]["name"] == "sma_crossover"
-    res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
-                           load_registry("spot"), _make_args(dry_run=True), {},
-                           str(tmp_path))
-    res["promotion_baseline"]["open_strategy"]["params"]["fast_period"] = 111
-    assert res["baseline_params"]["fast_period"] == 18
+def test_promotion_baseline_deepcopy_no_alias(tmp_path, subtests):
+    with subtests.test("test_promotion_baseline_deepcopy_no_alias"):
+        case_path = tmp_path / "test_promotion_baseline_deepcopy_no_alias"
+        case_path.mkdir()
+        from run_backtest import load_strategy_config
+        path = _write_config(case_path, _sma_config(
+            params={"fast_period": 18, "slow_period": 50}))
+        kwargs = load_strategy_config(path, "spot-sma-btc",
+                                      include_promotion_baseline=True)
+        baseline = kwargs["promotion_baseline"]
+        baseline["open_strategy"]["params"]["fast_period"] = 999
+        baseline["open_strategy"]["name"] = "mutated"
+        assert kwargs["open_strategy"]["params"]["fast_period"] == 18
+        assert kwargs["open_strategy"]["name"] == "sma_crossover"
+        res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
+                               load_registry("spot"), _make_args(dry_run=True), {},
+                               str(case_path))
+        res["promotion_baseline"]["open_strategy"]["params"]["fast_period"] = 111
+        assert res["baseline_params"]["fast_period"] == 18
+    with subtests.test("test_promotion_baseline_opt_in_spread_contract"):
+        case_path = tmp_path / "test_promotion_baseline_opt_in_spread_contract"
+        case_path.mkdir()
+        from run_backtest import load_strategy_config
+        path = _write_config(case_path, _sma_config())
+        kwargs = load_strategy_config(path, "spot-sma-btc")
+        assert "promotion_baseline" not in kwargs
+        kwargs_flag = load_strategy_config(path, "spot-sma-btc",
+                                           include_promotion_baseline=True)
+        assert "promotion_baseline" in kwargs_flag
+        _assert_complete_promotion_baseline(kwargs_flag["promotion_baseline"])
 
 
 def test_dry_run_emits_spec_without_running_stage2(tmp_path, monkeypatch):
@@ -862,32 +873,34 @@ def test_unsupported_live_shapes_are_skipped_and_a_dormant_regime_is_not(tmp_pat
                 assert res["reason"] == reason
 
 
-def test_all_failed_fleet_returns_nonzero(tmp_path):
-    cfg = {"config_version": 13,
-           "strategies": [
-               {"id": "a", "type": "spot", "args": ["sma_crossover", "BTC/USDT", "1d"],
-                "open_strategy": {"name": "sma_crossover", "params": {}}},
-               {"id": "b", "type": "spot", "args": ["ema_crossover", "BTC/USDT", "1d"],
-                "open_strategy": {"name": "ema_crossover", "params": {}}},
-           ]}
-    path = _write_config(tmp_path, cfg)
-    rc = tl.main(["--config", path, "--out-dir", str(tmp_path),
-                  "--json", str(tmp_path / "art.json"), "--dry-run"])
-    assert rc == 1
-    art = json.loads((tmp_path / "art.json").read_text())
-    assert all(s["status"] == "config_error" for s in art["strategies"])
-
-    case = "test_all_benign_skip_fleet_returns_zero"
-    benign = tmp_path / "benign"
-    benign.mkdir()
-    cfg = {"config_version": 15, "strategies": [{
-        "id": "hl-sma", "type": "perps", "platform": "hyperliquid",
-        "args": ["sma_crossover", "BTC/USDT", "1d"], "stop_loss_pct": 0.05,
-        "open_strategy": {"name": "sma_crossover", "params": {}}}]}
-    path = _write_config(benign, cfg)
-    rc = tl.main(["--config", path, "--out-dir", str(benign),
-                  "--json", str(benign / "art.json"), "--dry-run"])
-    assert rc == 0, case
+def test_all_failed_fleet_returns_nonzero(tmp_path, subtests):
+    with subtests.test("test_all_failed_fleet_returns_nonzero"):
+        case_path = tmp_path / "test_all_failed_fleet_returns_nonzero"
+        case_path.mkdir()
+        cfg = {"config_version": 13,
+               "strategies": [
+                   {"id": "a", "type": "spot", "args": ["sma_crossover", "BTC/USDT", "1d"],
+                    "open_strategy": {"name": "sma_crossover", "params": {}}},
+                   {"id": "b", "type": "spot", "args": ["ema_crossover", "BTC/USDT", "1d"],
+                    "open_strategy": {"name": "ema_crossover", "params": {}}},
+               ]}
+        path = _write_config(case_path, cfg)
+        rc = tl.main(["--config", path, "--out-dir", str(case_path),
+                      "--json", str(case_path / "art.json"), "--dry-run"])
+        assert rc == 1
+        art = json.loads((case_path / "art.json").read_text())
+        assert all(s["status"] == "config_error" for s in art["strategies"])
+    with subtests.test("test_all_benign_skip_fleet_returns_zero"):
+        case_path = tmp_path / "test_all_benign_skip_fleet_returns_zero"
+        case_path.mkdir()
+        cfg = {"config_version": 15, "strategies": [{
+            "id": "hl-sma", "type": "perps", "platform": "hyperliquid",
+            "args": ["sma_crossover", "BTC/USDT", "1d"], "stop_loss_pct": 0.05,
+            "open_strategy": {"name": "sma_crossover", "params": {}}}]}
+        path = _write_config(case_path, cfg)
+        rc = tl.main(["--config", path, "--out-dir", str(case_path),
+                      "--json", str(case_path / "art.json"), "--dry-run"])
+        assert rc == 0
 
 
 def test_mixed_fleet_with_one_success_returns_zero(tmp_path, monkeypatch):

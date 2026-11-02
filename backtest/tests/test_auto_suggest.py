@@ -217,30 +217,29 @@ def test_noise_argv_tail_threads_seed_and_direction():
     assert "--params" in tail
 
 
-def test_m6_argv_tail_repeats_allowed_regimes():
-    m6c = {"baseline_config": "/cfg", "strategy_id": "s",
-           "candidate_close": [{"name": "atr_stop"}], "candidate_stops": "inherit",
-           "allowed_regimes": ["ranging_quiet", "ranging_volatile"]}
-    tail = asug.m6_argv_tail(m6c, "futures", ["is", "oos"], None, 10000, 1066, "/t/m6.json")
-    assert tail.count("--allowed-regimes") == 2
-    assert "--bootstrap-resamples" in tail and "10000" in tail
-    assert "--candidate-stops" in tail and "inherit" in tail
-
-    case = "test_m6_argv_tail_baseline_config_path"
-    m6c = {"baseline_config": "/cfg.json", "strategy_id": "s",
-           "candidate_close": [{"name": "atr_stop"}]}
-    tail = asug.m6_argv_tail(m6c, "spot", ["oos"], None, 100, 1066, "/t/m6.json")
-    assert "--baseline-config" in tail and "/cfg.json" in tail, case
-    assert "--incumbent-close" not in tail, case
-
-    case = "test_m6_argv_tail_incumbent_close_path_omits_baseline"
-    m6c = {"strategy_id": "squeeze_momentum",
-           "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
-           "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}
-    tail = asug.m6_argv_tail(m6c, "spot", ["oos"], None, 100, 1066, "/t/m6.json")
-    assert "--baseline-config" not in tail, case
-    assert "--incumbent-close" in tail, case
-    assert "--strategy" in tail and "squeeze_momentum" in tail, case
+def test_m6_argv_tail_repeats_allowed_regimes(subtests):
+    with subtests.test("test_m6_argv_tail_repeats_allowed_regimes"):
+        m6c = {"baseline_config": "/cfg", "strategy_id": "s",
+               "candidate_close": [{"name": "atr_stop"}], "candidate_stops": "inherit",
+               "allowed_regimes": ["ranging_quiet", "ranging_volatile"]}
+        tail = asug.m6_argv_tail(m6c, "futures", ["is", "oos"], None, 10000, 1066, "/t/m6.json")
+        assert tail.count("--allowed-regimes") == 2
+        assert "--bootstrap-resamples" in tail and "10000" in tail
+        assert "--candidate-stops" in tail and "inherit" in tail
+    with subtests.test("test_m6_argv_tail_baseline_config_path"):
+        m6c = {"baseline_config": "/cfg.json", "strategy_id": "s",
+               "candidate_close": [{"name": "atr_stop"}]}
+        tail = asug.m6_argv_tail(m6c, "spot", ["oos"], None, 100, 1066, "/t/m6.json")
+        assert "--baseline-config" in tail and "/cfg.json" in tail
+        assert "--incumbent-close" not in tail
+    with subtests.test("test_m6_argv_tail_incumbent_close_path_omits_baseline"):
+        m6c = {"strategy_id": "squeeze_momentum",
+               "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
+               "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}
+        tail = asug.m6_argv_tail(m6c, "spot", ["oos"], None, 100, 1066, "/t/m6.json")
+        assert "--baseline-config" not in tail
+        assert "--incumbent-close" in tail
+        assert "--strategy" in tail and "squeeze_momentum" in tail
 
 
 def test_m5_argv_tail():
@@ -311,53 +310,55 @@ def test_extract_m5_matches_strategy_row():
     assert out["fee_drag_pp"] == 0.3
 
 
-def test_apply_correction_matches_direct_bh_and_handles_empty_and_family_size():
-    tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
-             for p in [0.001, 0.02, 0.04, 0.5]]
-    corr = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05)
-    mask = benjamini_hochberg([t["p"] for t in tests], 0.05)
-    stamped = asug.apply_family_correction(tests, 0.05) and [t["bh_pass"] for t in tests]
-    assert stamped == mask
-    assert corr["m"] == 4
-    assert corr["bonferroni_threshold"] == pytest.approx(0.05 / 4)
-    if any(mask):
-        assert corr["effective_threshold"] == max(p for p, ok in
-                                                   zip([t["p"] for t in tests], mask) if ok)
+def test_apply_correction_matches_direct_bh_and_handles_empty_and_family_size(subtests):
+    with subtests.test("test_apply_correction_matches_direct_bh_and_handles_empty_and_family_size"):
+        tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
+                 for p in [0.001, 0.02, 0.04, 0.5]]
+        corr = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05)
+        mask = benjamini_hochberg([t["p"] for t in tests], 0.05)
+        stamped = asug.apply_family_correction(tests, 0.05) and [t["bh_pass"] for t in tests]
+        assert stamped == mask
+        assert corr["m"] == 4
+        assert corr["bonferroni_threshold"] == pytest.approx(0.05 / 4)
+        if any(mask):
+            assert corr["effective_threshold"] == max(p for p, ok in
+                                                       zip([t["p"] for t in tests], mask) if ok)
 
-    case = "test_correction_empty_family"
-    corr = asug.apply_family_correction([], alpha=0.05)
-    assert corr["m"] == 0, case
-    assert corr["effective_threshold"] is None, case
-    assert corr["n_survivors"] == 0, case
+        case = "test_correction_empty_family"
+        corr = asug.apply_family_correction([], alpha=0.05)
+        assert corr["m"] == 0, case
+        assert corr["effective_threshold"] is None, case
+        assert corr["n_survivors"] == 0, case
 
-    case = "test_apply_correction_family_size_reports_m_and_tests_run"
-    tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
-             for p in [0.001, 0.02]]
-    corr = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
-                                        family_size=8)
-    assert corr["m"] == 8, case
-    assert corr["tests_run"] == 2, case
-    assert corr["bonferroni_threshold"] == pytest.approx(0.05 / 8), case
-    strict = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
-                                          family_size=8)
-    loose = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05)
-    assert strict["n_survivors"] <= loose["n_survivors"], case
+        case = "test_apply_correction_family_size_reports_m_and_tests_run"
+        tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
+                 for p in [0.001, 0.02]]
+        corr = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
+                                            family_size=8)
+        assert corr["m"] == 8, case
+        assert corr["tests_run"] == 2, case
+        assert corr["bonferroni_threshold"] == pytest.approx(0.05 / 8), case
+        strict = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
+                                              family_size=8)
+        loose = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05)
+        assert strict["n_survivors"] <= loose["n_survivors"], case
+    with subtests.test("test_apply_correction_family_size_below_produced_count_raises"):
+        tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
+                 for p in [0.001, 0.02, 0.04]]
+        with pytest.raises(ValueError, match="family_size"):
+            asug.apply_family_correction(tests, alpha=0.05, family_size=2)
 
-    tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
-             for p in [0.001, 0.02, 0.04]]
-    with pytest.raises(ValueError, match="family_size"):
-        asug.apply_family_correction(tests, alpha=0.05, family_size=2)
 
-
-def test_bh_family_size_widens_denominator_and_is_stricter():
-    pvals = [0.01, 0.04]
-    assert benjamini_hochberg(pvals, 0.05) == [True, True]
-    assert benjamini_hochberg(pvals, 0.05, family_size=10) == [False, False]
-    assert (benjamini_hochberg(pvals, 0.05, family_size=2)
-            == benjamini_hochberg(pvals, 0.05))
-
-    with pytest.raises(ValueError, match="family_size"):
-        benjamini_hochberg([0.01, 0.04], 0.05, family_size=1)
+def test_bh_family_size_widens_denominator_and_is_stricter(subtests):
+    with subtests.test("test_bh_family_size_widens_denominator_and_is_stricter"):
+        pvals = [0.01, 0.04]
+        assert benjamini_hochberg(pvals, 0.05) == [True, True]
+        assert benjamini_hochberg(pvals, 0.05, family_size=10) == [False, False]
+        assert (benjamini_hochberg(pvals, 0.05, family_size=2)
+                == benjamini_hochberg(pvals, 0.05))
+    with subtests.test("test_bh_family_size_below_test_count_raises"):
+        with pytest.raises(ValueError, match="family_size"):
+            benjamini_hochberg([0.01, 0.04], 0.05, family_size=1)
 
 
 def test_load_spec_accepts_positive_family_size():
@@ -579,33 +580,33 @@ def test_gate_relevant_results_drops_only_advisory_harnesses(subtests):
         assert all(t["harness"] != "mc" for t in with_mc)
 
 
-def test_mc_argv_tail_threads_the_candidate_json_and_exclusive_threshold_sources():
-    tail = asug.mc_argv_tail("/t/c.json", "spot", ["is", "oos"],
-                             ["BTC/USDT:1h"], 500, 7, {}, "/t/o.json")
-    assert tail[:2] == ["--candidate-json", "/t/c.json"]
-    assert "--strategy" not in tail
-    assert "--windows" in tail and tail[tail.index("--windows") + 1] == "is,oos"
-    assert tail[tail.index("--datasets") + 1] == "BTC/USDT:1h"
-    assert tail[tail.index("--n-paths") + 1] == "500"
-    assert tail[tail.index("--seed") + 1] == "7"
+def test_mc_argv_tail_threads_the_candidate_json_and_exclusive_threshold_sources(subtests):
+    with subtests.test("test_mc_argv_tail_threads_the_candidate_json_and_exclusive_threshold_sources"):
+        tail = asug.mc_argv_tail("/t/c.json", "spot", ["is", "oos"],
+                                 ["BTC/USDT:1h"], 500, 7, {}, "/t/o.json")
+        assert tail[:2] == ["--candidate-json", "/t/c.json"]
+        assert "--strategy" not in tail
+        assert "--windows" in tail and tail[tail.index("--windows") + 1] == "is,oos"
+        assert tail[tail.index("--datasets") + 1] == "BTC/USDT:1h"
+        assert tail[tail.index("--n-paths") + 1] == "500"
+        assert tail[tail.index("--seed") + 1] == "7"
 
-    case = "test_mc_argv_tail_threshold_sources_are_exclusive"
-    explicit = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
-                                 {"kill_switch_pct": 30}, "/o")
-    assert explicit[explicit.index("--kill-switch-pct") + 1] == "30", case
-    assert "--config" not in explicit, case
+        case = "test_mc_argv_tail_threshold_sources_are_exclusive"
+        explicit = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
+                                     {"kill_switch_pct": 30}, "/o")
+        assert explicit[explicit.index("--kill-switch-pct") + 1] == "30", case
+        assert "--config" not in explicit, case
 
-    from_cfg = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
-                                 {"config": "/cfg.json", "strategy_id": "hl-x"},
-                                 "/o")
-    assert from_cfg[from_cfg.index("--config") + 1] == "/cfg.json", case
-    assert from_cfg[from_cfg.index("--strategy-id") + 1] == "hl-x", case
-    assert "--kill-switch-pct" not in from_cfg, case
-
-    case = "test_mc_argv_tail_omits_datasets_when_none_and_threshold_when_default"
-    tail = asug.mc_argv_tail("/t/c.json", "spot", ["is"], None, 10, 1, {}, "/o")
-    assert "--datasets" not in tail, case
-    assert "--kill-switch-pct" not in tail and "--config" not in tail, case
+        from_cfg = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
+                                     {"config": "/cfg.json", "strategy_id": "hl-x"},
+                                     "/o")
+        assert from_cfg[from_cfg.index("--config") + 1] == "/cfg.json", case
+        assert from_cfg[from_cfg.index("--strategy-id") + 1] == "hl-x", case
+        assert "--kill-switch-pct" not in from_cfg, case
+    with subtests.test("test_mc_argv_tail_omits_datasets_when_none_and_threshold_when_default"):
+        tail = asug.mc_argv_tail("/t/c.json", "spot", ["is"], None, 10, 1, {}, "/o")
+        assert "--datasets" not in tail
+        assert "--kill-switch-pct" not in tail and "--config" not in tail
 
 
 def test_load_spec_resolves_mc_config_against_the_spec_dir():

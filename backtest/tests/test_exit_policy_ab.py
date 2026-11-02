@@ -339,29 +339,30 @@ def test_backtester_kwargs_threads_present_stops_only_none_and_regime_trailing()
     assert kw["trailing_stop_atr_mult_regime"] == regime_trail, case
 
 
-def test_control_keeps_stop_regardless_of_candidate_mode():
-    incumbent = {"stop_loss_atr_mult": 1.5}
-    inh = m._candidate_stops("inherit", incumbent)
-    assert inh == incumbent and inh is not incumbent, "test_candidate_stops_inherit_copies_and_drop_clears"
-    assert m._candidate_stops("drop", incumbent) == {}, "test_candidate_stops_inherit_copies_and_drop_clears"
-    assert m._candidate_stops("inherit", None) == {}, "test_candidate_stops_inherit_copies_and_drop_clears"
+def test_control_keeps_stop_regardless_of_candidate_mode(subtests):
+    with subtests.test("test_control_keeps_stop_regardless_of_candidate_mode"):
+        incumbent_stops = {"stop_loss_atr_mult": 1.5}
+        control_kw = m._backtester_kwargs(
+            "sqz", {}, [{"name": "tiered_tp_atr", "params": {}}], "long", 10000.0,
+            {"allowed_regimes": None}, stops=incumbent_stops)
+        assert control_kw["stop_loss_atr_mult"] == 1.5
 
-    incumbent_stops = {"stop_loss_atr_mult": 1.5}
-    control_kw = m._backtester_kwargs(
-        "sqz", {}, [{"name": "tiered_tp_atr", "params": {}}], "long", 10000.0,
-        {"allowed_regimes": None}, stops=incumbent_stops)
-    assert control_kw["stop_loss_atr_mult"] == 1.5
-
-    inherit_kw = m._backtester_kwargs(
-        "sqz", {}, [{"name": "atr_stop", "params": {}}], "long", 10000.0,
-        {"allowed_regimes": None},
-        stops=m._candidate_stops("inherit", incumbent_stops))
-    drop_kw = m._backtester_kwargs(
-        "sqz", {}, [{"name": "atr_stop", "params": {}}], "long", 10000.0,
-        {"allowed_regimes": None},
-        stops=m._candidate_stops("drop", incumbent_stops))
-    assert inherit_kw["stop_loss_atr_mult"] == 1.5
-    assert "stop_loss_atr_mult" not in drop_kw
+        inherit_kw = m._backtester_kwargs(
+            "sqz", {}, [{"name": "atr_stop", "params": {}}], "long", 10000.0,
+            {"allowed_regimes": None},
+            stops=m._candidate_stops("inherit", incumbent_stops))
+        drop_kw = m._backtester_kwargs(
+            "sqz", {}, [{"name": "atr_stop", "params": {}}], "long", 10000.0,
+            {"allowed_regimes": None},
+            stops=m._candidate_stops("drop", incumbent_stops))
+        assert inherit_kw["stop_loss_atr_mult"] == 1.5
+        assert "stop_loss_atr_mult" not in drop_kw
+    with subtests.test("test_candidate_stops_inherit_copies_and_drop_clears"):
+        incumbent = {"stop_loss_atr_mult": 1.5}
+        inh = m._candidate_stops("inherit", incumbent)
+        assert inh == incumbent and inh is not incumbent
+        assert m._candidate_stops("drop", incumbent) == {}
+        assert m._candidate_stops("inherit", None) == {}
 
 
 def _spec_args(extra=None):
@@ -512,13 +513,15 @@ def test_replay_positions_anchored_on_df_signals_not_df(monkeypatch):
     assert res is not None and res["paired_diag"]["paired"] == 1
 
 
-def test_backtester_kwargs_carry_intrabar_resolution(monkeypatch):
-    kw = m._backtester_kwargs("momentum", None, None, None, 1000.0, {})
-    assert kw["intrabar_resolution"] == m.INTRABAR_RESOLUTION == "ohlc_walk"
-
-    monkeypatch.setattr(m, "INTRABAR_RESOLUTION", "bar_close")
-    kw = m._backtester_kwargs("momentum", None, None, None, 1000.0, {})
-    assert kw["intrabar_resolution"] == "bar_close", "test_module_mode_reaches_backtester_kwargs"
+def test_backtester_kwargs_carry_intrabar_resolution(monkeypatch, subtests):
+    with subtests.test("test_backtester_kwargs_carry_intrabar_resolution"):
+        kw = m._backtester_kwargs("momentum", None, None, None, 1000.0, {})
+        assert kw["intrabar_resolution"] == m.INTRABAR_RESOLUTION == "ohlc_walk"
+    with subtests.test("test_module_mode_reaches_backtester_kwargs"):
+        with monkeypatch.context() as mp:
+            mp.setattr(m, "INTRABAR_RESOLUTION", "bar_close")
+            kw = m._backtester_kwargs("momentum", None, None, None, 1000.0, {})
+            assert kw["intrabar_resolution"] == "bar_close"
 
 
 def test_parser_accepts_and_rejects_intrabar_modes():

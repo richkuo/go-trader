@@ -79,18 +79,20 @@ def test_profit_factor_mixed_is_finite():
     assert m["profit_factor"] == pytest.approx(round(80.0 / 20.0, 3))
 
 
-def test_profit_factor_none_never_serializes_as_infinity():
+def test_profit_factor_none_never_serializes_as_infinity(subtests):
     trades = [_trade(50.0, 0.05), _trade(30.0, 0.03)]
     m = _metrics([1000, 1050, 1080], trades=trades)
-    assert m["profit_factor"] is None
-    dumped = json.dumps(m)
-    assert "Infinity" not in dumped
-    assert "-Infinity" not in dumped
-    assert "NaN" not in dumped
-    reparsed = json.loads(dumped)
-    assert reparsed["profit_factor"] is None
-    assert reparsed["sortino_ratio"] is None
-    json.dumps(m, allow_nan=False)
+    with subtests.test("test_profit_factor_none_never_serializes_as_infinity"):
+        dumped = json.dumps(m)
+        assert "Infinity" not in dumped
+        assert "-Infinity" not in dumped
+        assert "NaN" not in dumped
+        reparsed = json.loads(dumped)
+        assert reparsed["profit_factor"] is None
+        assert reparsed["sortino_ratio"] is None
+        json.dumps(m, allow_nan=False)
+    with subtests.test("test_profit_factor_all_win_is_none"):
+        assert m["profit_factor"] is None
 
 
 def test_format_results_tolerates_none_metrics():

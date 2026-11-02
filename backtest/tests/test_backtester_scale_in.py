@@ -239,14 +239,17 @@ def _assert_frozen_sl_exits_full_grown_quantity():
     assert trade["shares"] == pytest.approx(100.0 + 10000.0 / 104.0)
 
 
-def test_add_leaves_cash_negative_but_equity_exact_and_creates_no_trade_rows():
+def test_add_leaves_cash_negative_but_equity_exact_and_creates_no_trade_rows(subtests):
     closes = [100, 100, 100, 100, 100, 100]
     df = _df(closes, [1, 0, 1, 0, -1, 0])
     res = _run(df, allow_scale_in=True)
-    assert res["scale_in_adds"] == 1
-    assert res["final_capital"] == pytest.approx(10000.0)
-    assert len(res["trades"]) == 1
-    assert res["total_trades"] == 1
+    with subtests.test("test_add_leaves_cash_negative_but_equity_exact"):
+        assert res["scale_in_adds"] == 1
+        assert res["final_capital"] == pytest.approx(10000.0)
+    with subtests.test("test_adds_create_no_trade_rows"):
+        assert res["scale_in_adds"] == 1
+        assert len(res["trades"]) == 1
+        assert res["total_trades"] == 1
 
 
 def _assert_short_add_mirrors_long_math():

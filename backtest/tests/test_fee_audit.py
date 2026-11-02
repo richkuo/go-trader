@@ -146,42 +146,43 @@ def test_rank_rows_orders_by_drag_no_trades_last_and_tiebreaks_by_name():
     assert ordered == ["alpha", "zeta"], case
 
 
-def test_render_markdown_unscreened_short_section_and_dagger():
-    ranked = [
-        fa.aggregate_strategy("churner", "spot",
-                              [_leg(1500, 365.0, -40.0, 6.0)]),
-        fa.aggregate_strategy("hopeless", "spot",
-                              [_leg(900, 365.0, -20.0, -5.0)]),
-        fa.aggregate_strategy("idle", "spot", []),
-    ]
-    meta = {"command": "uv run ...", "registry": "spot",
-            "windows_desc": "oos", "datasets_desc": "BTC/USDT 4h",
-            "capital": 1000.0, "date": "2026-06-12"}
-    md = fa.render_markdown(ranked, meta)
-    assert "# Fee-aware selectivity audit (#999 M5)" in md
-    assert "| rank | strategy |" in md
-    assert "## Deprecation list" in md
-    assert "hopeless" in md
-    assert "## M1 graduations" in md
-    assert "churner" in md
-    assert "raise selectivity" in md
-
-    ranked = fa.rank_rows([
-        fa.aggregate_strategy("shorty", "futures",
-                              [_leg(80, 365.0, -10.0, -2.0)],
-                              short_capable=True),
-        fa.aggregate_strategy("clean", "spot",
-                              [_leg(900, 365.0, -20.0, -5.0)]),
-    ])
-    meta = {"command": "uv run ...", "registry": "both",
-            "windows_desc": "oos", "datasets_desc": "BTC/USDT 4h",
-            "capital": 1000.0, "date": "2026-06-12"}
-    md = fa.render_markdown(ranked, meta)
-    assert "## Unscreened short legs" in md
-    assert "shorty †" in md
-    dep_section = md.split("## Deprecation list")[1].split("## M1 graduations")[0]
-    assert "shorty" not in dep_section
-    assert "clean" in dep_section
+def test_render_markdown_unscreened_short_section_and_dagger(subtests):
+    with subtests.test("test_render_markdown_unscreened_short_section_and_dagger"):
+        ranked = fa.rank_rows([
+            fa.aggregate_strategy("shorty", "futures",
+                                  [_leg(80, 365.0, -10.0, -2.0)],
+                                  short_capable=True),
+            fa.aggregate_strategy("clean", "spot",
+                                  [_leg(900, 365.0, -20.0, -5.0)]),
+        ])
+        meta = {"command": "uv run ...", "registry": "both",
+                "windows_desc": "oos", "datasets_desc": "BTC/USDT 4h",
+                "capital": 1000.0, "date": "2026-06-12"}
+        md = fa.render_markdown(ranked, meta)
+        assert "## Unscreened short legs" in md
+        assert "shorty †" in md
+        dep_section = md.split("## Deprecation list")[1].split("## M1 graduations")[0]
+        assert "shorty" not in dep_section
+        assert "clean" in dep_section
+    with subtests.test("test_render_markdown_has_table_and_sections"):
+        ranked = [
+            fa.aggregate_strategy("churner", "spot",
+                                  [_leg(1500, 365.0, -40.0, 6.0)]),
+            fa.aggregate_strategy("hopeless", "spot",
+                                  [_leg(900, 365.0, -20.0, -5.0)]),
+            fa.aggregate_strategy("idle", "spot", []),
+        ]
+        meta = {"command": "uv run ...", "registry": "spot",
+                "windows_desc": "oos", "datasets_desc": "BTC/USDT 4h",
+                "capital": 1000.0, "date": "2026-06-12"}
+        md = fa.render_markdown(ranked, meta)
+        assert "# Fee-aware selectivity audit (#999 M5)" in md
+        assert "| rank | strategy |" in md
+        assert "## Deprecation list" in md
+        assert "hopeless" in md
+        assert "## M1 graduations" in md
+        assert "churner" in md
+        assert "raise selectivity" in md
 
 
 def test_enumerate_targets_both_skips_hold_and_handles_variants():

@@ -252,37 +252,43 @@ def _ledger_segment(sc: dict, basis: str) -> dict:
     return segment
 
 
-def test_every_live_config_consumer_converts_once(tmp_path):
-    case = GEOMETRY["pct_long"]
-    path = _write(tmp_path, _config(case))
-    loaded = run_backtest.load_strategy_config(path, STRATEGY_ID)
-    assert loaded["stop_loss_pct"] == pytest.approx(0.02)
-    parity = parity_diff.config_from_live_config(path, STRATEGY_ID)
-    assert parity.stop_kwargs["stop_loss_pct"] == pytest.approx(0.02)
-    baseline = exit_policy_ab.resolve_from_baseline(path, STRATEGY_ID)
-    assert baseline["stops"]["stop_loss_pct"] == pytest.approx(0.02)
-    tuned = run_backtest.load_strategy_config(path, STRATEGY_ID, inject_user_defaults=True)
-    candidate = tune_live.build_candidate("sma_crossover", {}, tuned)
-    assert candidate["stop_context"]["stop_loss_pct"] == pytest.approx(0.02)
-    round_trip = eval_windows.candidate_stop_kwargs(json.loads(json.dumps(candidate)))
-    assert round_trip["stop_loss_pct"] == pytest.approx(0.02)
-    ledger_inputs = []
-    for basis in ledger_compare.STOP_BASES:
-        segment = _ledger_segment(_config(case)["strategies"][0], basis)
-        verdict = ledger_compare.resolve_historical_stops(segment, 2, "strict")
-        assert verdict["status"] == "modeled" and verdict["owner"] == "fixed_pct"
-        assert verdict["resolved_live_units"]["stop_loss_pct"] == 2
-        assert verdict["kwargs"]["stop_loss_pct"] == pytest.approx(0.02)
-        ledger_inputs.append(verdict["kwargs"])
-    for kwargs in ({"stop_loss_pct": 0.02}, parity.stop_kwargs, baseline["stops"], round_trip, *ledger_inputs):
-        _, _, events = _run(dict(kwargs, platform="hyperliquid"), case)
+def test_every_live_config_consumer_converts_once(tmp_path, subtests):
+    with subtests.test("test_every_live_config_consumer_converts_once"):
+        case = GEOMETRY["pct_long"]
+        path = _write(tmp_path, _config(case))
+        loaded = run_backtest.load_strategy_config(path, STRATEGY_ID)
+        assert loaded["stop_loss_pct"] == pytest.approx(0.02)
+        parity = parity_diff.config_from_live_config(path, STRATEGY_ID)
+        assert parity.stop_kwargs["stop_loss_pct"] == pytest.approx(0.02)
+        baseline = exit_policy_ab.resolve_from_baseline(path, STRATEGY_ID)
+        assert baseline["stops"]["stop_loss_pct"] == pytest.approx(0.02)
+        tuned = run_backtest.load_strategy_config(path, STRATEGY_ID, inject_user_defaults=True)
+        candidate = tune_live.build_candidate("sma_crossover", {}, tuned)
+        assert candidate["stop_context"]["stop_loss_pct"] == pytest.approx(0.02)
+        round_trip = eval_windows.candidate_stop_kwargs(json.loads(json.dumps(candidate)))
+        assert round_trip["stop_loss_pct"] == pytest.approx(0.02)
+        ledger_inputs = []
+        for basis in ledger_compare.STOP_BASES:
+            segment = _ledger_segment(_config(case)["strategies"][0], basis)
+            verdict = ledger_compare.resolve_historical_stops(segment, 2, "strict")
+            assert verdict["status"] == "modeled" and verdict["owner"] == "fixed_pct"
+            assert verdict["resolved_live_units"]["stop_loss_pct"] == 2
+            assert verdict["kwargs"]["stop_loss_pct"] == pytest.approx(0.02)
+            ledger_inputs.append(verdict["kwargs"])
+        for kwargs in (parity.stop_kwargs, baseline["stops"], round_trip, *ledger_inputs):
+            _, _, events = _run(dict(kwargs, platform="hyperliquid"), case)
+            arm = next(e for e in events if e["event"] == "arm")
+            assert _near(arm["trigger"], EXPECTED["geometry"]["pct_long"]["arm_trigger"])
+
+        report = tune_live.tune_strategy(path, STRATEGY_ID, "", "", "futures", None, None,
+                                         {}, str(tmp_path))
+        assert report["stop_owner"]["stop_loss_pct"] == 2
+        assert report["stop_owner_units"]["stop_loss_pct"] == "live_percent"
+    with subtests.test("test_direct_fraction_contract_is_unchanged"):
+        case = GEOMETRY["pct_long"]
+        _, _, events = _run({"platform": "hyperliquid", "stop_loss_pct": 0.02}, case)
         arm = next(e for e in events if e["event"] == "arm")
         assert _near(arm["trigger"], EXPECTED["geometry"]["pct_long"]["arm_trigger"])
-
-    report = tune_live.tune_strategy(path, STRATEGY_ID, "", "", "futures", None, None,
-                                     {}, str(tmp_path))
-    assert report["stop_owner"]["stop_loss_pct"] == 2
-    assert report["stop_owner_units"]["stop_loss_pct"] == "live_percent"
 
 
 def test_preview_payload_converts_once_and_requires_unit_marker():
@@ -532,30 +538,32 @@ def test_handoff_present_falsy_raw_field_keeps_its_value(tmp_path):
         "present": True, "value": 0}
 
 
-def test_handoff_invalid_context_or_unknown_consumer_or_phase_refuses():
-    for case_id, context in [
-        ("unknown_evidence_status",
-         CapabilityContext(input_evidence={"leverage": {"status": "assumed", "source": "x",
-                                                        "value": 1}})),
-        ("absent_field_with_value",
-         CapabilityContext(raw_fields={"leverage": {"present": False, "value": 5}})),
-        ("plain_dict", {"raw_fields": {}, "resolved_stop_owner": None, "input_evidence": {}}),
-    ]:
-        label = f"test_handoff_invalid_context_refuses[{case_id}]"
-        with _raises_for(label, CloseCapabilityError) as exc:
-            Backtester(platform="hyperliquid", stop_loss_pct=0.02, capability_context=context)
-        assert exc.value.reason_code == "INVALID_CAPABILITY_CONTEXT", label
-    for consumer, phase in [("bogus", "preflight"), ("engine", "bogus")]:
-        label = f"test_handoff_unknown_consumer_or_phase_refuses[{consumer}-{phase}]"
-        cfg = _config({"strategy": {"stop_loss_pct": 2}})
-        sc = cfg["strategies"][0]
-        with _raises_for(label, CloseCapabilityError) as exc:
-            run_backtest.translate_live_stop_config(
-                cfg, sc, run_backtest.stop_raw_fields(sc), platform="hyperliquid",
-                strategy_type="perps", close_refs=[], regime_cfg={},
-                regime_windows_spec=None, risk_per_trade_pct=None,
-                consumer=consumer, phase=phase)
-        assert exc.value.reason_code == "INVALID_CAPABILITY_CONTEXT", label
+def test_handoff_invalid_context_or_unknown_consumer_or_phase_refuses(subtests):
+    with subtests.test("test_handoff_invalid_context_refuses"):
+        for case_id, context in [
+            ("unknown_evidence_status",
+             CapabilityContext(input_evidence={"leverage": {"status": "assumed", "source": "x",
+                                                            "value": 1}})),
+            ("absent_field_with_value",
+             CapabilityContext(raw_fields={"leverage": {"present": False, "value": 5}})),
+            ("plain_dict", {"raw_fields": {}, "resolved_stop_owner": None, "input_evidence": {}}),
+        ]:
+            label = f"test_handoff_invalid_context_refuses[{case_id}]"
+            with _raises_for(label, CloseCapabilityError) as exc:
+                Backtester(platform="hyperliquid", stop_loss_pct=0.02, capability_context=context)
+            assert exc.value.reason_code == "INVALID_CAPABILITY_CONTEXT", label
+    with subtests.test("test_handoff_unknown_consumer_or_phase_refuses"):
+        for consumer, phase in [("bogus", "preflight"), ("engine", "bogus")]:
+            label = f"test_handoff_unknown_consumer_or_phase_refuses[{consumer}-{phase}]"
+            cfg = _config({"strategy": {"stop_loss_pct": 2}})
+            sc = cfg["strategies"][0]
+            with _raises_for(label, CloseCapabilityError) as exc:
+                run_backtest.translate_live_stop_config(
+                    cfg, sc, run_backtest.stop_raw_fields(sc), platform="hyperliquid",
+                    strategy_type="perps", close_refs=[], regime_cfg={},
+                    regime_windows_spec=None, risk_per_trade_pct=None,
+                    consumer=consumer, phase=phase)
+            assert exc.value.reason_code == "INVALID_CAPABILITY_CONTEXT", label
 
 
 def test_capability_context_survives_copy(tmp_path):

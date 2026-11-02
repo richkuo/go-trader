@@ -872,19 +872,22 @@ def _unified_ref(rule):
     }
 
 
-def test_unified_label_parse_and_fractions():
-    ref = _unified_ref("breakeven")
-    rules, errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="")
-    assert errs == []
-    assert not rules.has_any()
-    absent, absent_errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="not_a_label")
-    assert absent_errs == []
-    assert not absent.has_any()
-    rules, errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="ranging")
-    assert errs == []
-    assert rules.per_tier[0].kind == "breakeven"
-    assert sl.parse_tp_tier_close_fractions([ref], regime="ranging") == [0.5, 1.0]
-    assert sl.parse_tp_tier_close_fractions([ref], regime="") == []
+def test_unified_label_parse_and_fractions(subtests):
+    with subtests.test("unified_empty_label_parse_is_empty"):
+        ref = _unified_ref("breakeven")
+        rules, errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="")
+        assert errs == []
+        assert not rules.has_any()
+        absent, absent_errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="not_a_label")
+        assert absent_errs == []
+        assert not absent.has_any()
+    with subtests.test("unified_label_parse_and_fractions"):
+        ref = _unified_ref("breakeven")
+        rules, errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="ranging")
+        assert errs == []
+        assert rules.per_tier[0].kind == "breakeven"
+        assert sl.parse_tp_tier_close_fractions([ref], regime="ranging") == [0.5, 1.0]
+        assert sl.parse_tp_tier_close_fractions([ref], regime="") == []
 
 
 def test_unified_validation_counts_label_stop_and_rejects_manual_trail():

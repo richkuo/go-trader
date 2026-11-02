@@ -24,7 +24,7 @@ def _df_open_then_hold(opens, closes, atrs, side="long"):
     )
 
 
-def test_plain_close_gross_winner_flips_to_net_loss():
+def test_plain_close_gross_winner_flips_to_net_loss(subtests):
     df = _df_signals(
         opens=[100.0, 100.0, 100.0, 100.0, 100.15, 100.15],
         signals=[0, 1, 0, -1, 0, 0],
@@ -36,25 +36,25 @@ def test_plain_close_gross_winner_flips_to_net_loss():
     )
     result = bt.run(df, save=False)
 
-    assert result["total_trades"] == 1
-    trade = result["trades"][0]
+    with subtests.test("test_plain_close_gross_winner_flips_to_net_loss"):
+        assert result["total_trades"] == 1
+        trade = result["trades"][0]
 
-    assert trade["entry_fee"] > 0.0
-    assert trade["exit_fee"] > 0.0
+        assert trade["entry_fee"] > 0.0
+        assert trade["exit_fee"] > 0.0
 
-    gross = trade["pnl"] + trade["entry_fee"] + trade["exit_fee"]
-    assert gross > 0.0
+        gross = trade["pnl"] + trade["entry_fee"] + trade["exit_fee"]
+        assert gross > 0.0
 
-    assert trade["pnl"] < 0.0
+        assert trade["pnl"] < 0.0
 
-    assert result["win_rate"] == 0.0
-    assert result["profit_factor"] == 0.0
-
-    case = "test_avg_loss_uses_net_convention_not_gross_pnl_pct"
-    assert result["trades"][0]["pnl"] < 0.0, case
-    assert result["trades"][0]["pnl_pct"] > 0.0, case
-    assert result["avg_loss_pct"] < 0.0, case
-    assert result["avg_win_pct"] == 0.0, case
+        assert result["win_rate"] == 0.0
+        assert result["profit_factor"] == 0.0
+    with subtests.test("test_avg_loss_uses_net_convention_not_gross_pnl_pct"):
+        assert result["trades"][0]["pnl"] < 0.0
+        assert result["trades"][0]["pnl_pct"] > 0.0
+        assert result["avg_loss_pct"] < 0.0
+        assert result["avg_win_pct"] == 0.0
 
 
 def test_partial_close_prorated_entry_fees_sum_and_net():

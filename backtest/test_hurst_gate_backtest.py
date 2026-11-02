@@ -85,48 +85,47 @@ def test_readings_above_one_stay_coherent():
     assert reversion.advance(2.0033) == hg.HURST_STATE_DISARMED
 
 
-def test_fail_closed_is_flat_only():
-    gate = hg.HurstGate({"enabled": True, "min": 0.55, "on_failure": "closed"})
-    blocked_flat, _ = gate.step(float("nan"), flat=True)
-    assert blocked_flat, "unknown H must hold a FRESH open under fail-closed"
-    gate2 = hg.HurstGate({"enabled": True, "min": 0.55, "on_failure": "closed"})
-    blocked_open, _ = gate2.step(float("nan"), flat=False)
-    assert not blocked_open, "fail-closed must never hold while a position is open"
-
-    case = "test_fail_open_admits_unknown_h"
-    gate = hg.HurstGate({"enabled": True, "min": 0.55, "on_failure": "open"})
-    for flat in (True, False):
-        assert gate.step(float("nan"), flat=flat) == (False, 1.0), case
-
-    case = "test_known_disarmed_holds_regardless_of_position"
-    gate = hg.HurstGate({"enabled": True, "min": 0.55})
-    blocked, _ = gate.step(0.20, flat=False)
-    assert blocked, case
-
-    case = "test_disabled_gate_is_completely_inert"
-    gate = hg.HurstGate({"enabled": False, "min": 0.9})
-    for h in (0.1, 0.9, float("nan")):
-        assert gate.step(h, flat=True) == (False, 1.0), case
+def test_fail_closed_is_flat_only(subtests):
+    with subtests.test("test_fail_closed_is_flat_only"):
+        gate = hg.HurstGate({"enabled": True, "min": 0.55, "on_failure": "closed"})
+        blocked_flat, _ = gate.step(float("nan"), flat=True)
+        assert blocked_flat, "unknown H must hold a FRESH open under fail-closed"
+        gate2 = hg.HurstGate({"enabled": True, "min": 0.55, "on_failure": "closed"})
+        blocked_open, _ = gate2.step(float("nan"), flat=False)
+        assert not blocked_open, "fail-closed must never hold while a position is open"
+    with subtests.test("test_disabled_gate_is_completely_inert"):
+        gate = hg.HurstGate({"enabled": False, "min": 0.9})
+        for h in (0.1, 0.9, float("nan")):
+            assert gate.step(h, flat=True) == (False, 1.0)
+    with subtests.test("test_fail_open_admits_unknown_h"):
+        gate = hg.HurstGate({"enabled": True, "min": 0.55, "on_failure": "open"})
+        for flat in (True, False):
+            assert gate.step(float("nan"), flat=flat) == (False, 1.0)
+    with subtests.test("test_known_disarmed_holds_regardless_of_position"):
+        gate = hg.HurstGate({"enabled": True, "min": 0.55})
+        blocked, _ = gate.step(0.20, flat=False)
+        assert blocked
 
 
-def test_size_multiplier_matches_the_go_formula():
-    cases = [
-        (0.50, 0.25, 0.25),
-        (0.575, 0.25, 0.5),
-        (0.65, 0.25, 1.0),
-        (0.80, 0.25, 1.0),
-        (0.35, 0.25, 1.0),
-        (2.0033, 0.25, 1.0),
-        (0.50, 0.9, 0.9),
-    ]
-    for h, floor, want in cases:
-        gate = hg.HurstGate({"enabled": True, "mode": "size", "size_floor": floor})
-        assert gate.size_multiplier(h) == pytest.approx(want), (
-            f"test_size_multiplier_matches_the_go_formula[{h}-{floor}-{want}]")
-
-    gate = hg.HurstGate({"enabled": True, "mode": "size"})
-    for h in np.linspace(0.0, 3.0, 400):
-        assert gate.size_multiplier(float(h)) <= 1.0, "test_size_multiplier_never_exceeds_one"
+def test_size_multiplier_matches_the_go_formula(subtests):
+    with subtests.test("test_size_multiplier_matches_the_go_formula"):
+        cases = [
+            (0.50, 0.25, 0.25),
+            (0.575, 0.25, 0.5),
+            (0.65, 0.25, 1.0),
+            (0.80, 0.25, 1.0),
+            (0.35, 0.25, 1.0),
+            (2.0033, 0.25, 1.0),
+            (0.50, 0.9, 0.9),
+        ]
+        for h, floor, want in cases:
+            gate = hg.HurstGate({"enabled": True, "mode": "size", "size_floor": floor})
+            assert gate.size_multiplier(h) == pytest.approx(want), (
+                f"test_size_multiplier_matches_the_go_formula[{h}-{floor}-{want}]")
+    with subtests.test("test_size_multiplier_never_exceeds_one"):
+        gate = hg.HurstGate({"enabled": True, "mode": "size"})
+        for h in np.linspace(0.0, 3.0, 400):
+            assert gate.size_multiplier(float(h)) <= 1.0
 
 
 def test_size_mode_never_holds_on_a_known_reading():
@@ -197,40 +196,40 @@ def _parity_frame_hurst(windows_spec, *, period: int = 150, n: int = 420):
     return df, frame
 
 
-def test_parity_diff_reads_hurst_over_the_engines_frame_depth():
-    spec = {"long": {"period": 150, "classifier": "composite"}}
-    depth = hg.hurst_live_frame_bars(spec, 14)
-    assert depth == 311
+def test_parity_diff_reads_hurst_over_the_engines_frame_depth(subtests):
+    with subtests.test("test_parity_diff_reads_hurst_over_the_engines_frame_depth"):
+        spec = {"long": {"period": 150, "classifier": "composite"}}
+        depth = hg.hurst_live_frame_bars(spec, 14)
+        assert depth == 311
 
-    df, frame = _parity_frame_hurst(spec)
-    expected = hg.rolling_hurst(df["close"], depth).shift(1)
-    stale = hg.rolling_hurst(df["close"], 200).shift(1)
+        df, frame = _parity_frame_hurst(spec)
+        expected = hg.rolling_hurst(df["close"], depth).shift(1)
+        stale = hg.rolling_hurst(df["close"], 200).shift(1)
 
-    compared = 0
-    for _, row in frame.iterrows():
-        want = expected.loc[row["ts"]]
-        got = row["bt_hurst"]
-        if pd.isna(want):
-            assert got is None or pd.isna(got), f"expected NaN at {row['ts']}, got {got}"
-        else:
-            assert got is not None and math.isclose(got, float(want), rel_tol=1e-12)
-            compared += 1
-    assert compared, "the fixture must produce at least one defined H"
+        compared = 0
+        for _, row in frame.iterrows():
+            want = expected.loc[row["ts"]]
+            got = row["bt_hurst"]
+            if pd.isna(want):
+                assert got is None or pd.isna(got), f"expected NaN at {row['ts']}, got {got}"
+            else:
+                assert got is not None and math.isclose(got, float(want), rel_tol=1e-12)
+                compared += 1
+        assert compared, "the fixture must produce at least one defined H"
 
-    warm = [ts for ts in frame["ts"] if pd.isna(expected.loc[ts]) and not pd.isna(stale.loc[ts])]
-    assert warm, "fixture must contain a bar where the two depths disagree"
-
-    case = "test_parity_diff_single_window_default_stays_at_two_hundred_bars"
-    assert hg.hurst_live_frame_bars(None, 14) == 200, case
-    df, frame = _parity_frame_hurst(None)
-    expected = hg.rolling_hurst(df["close"], 200).shift(1)
-    for _, row in frame.iterrows():
-        want = expected.loc[row["ts"]]
-        got = row["bt_hurst"]
-        if pd.isna(want):
-            assert got is None or pd.isna(got), case
-        else:
-            assert got is not None and math.isclose(got, float(want), rel_tol=1e-12), case
+        warm = [ts for ts in frame["ts"] if pd.isna(expected.loc[ts]) and not pd.isna(stale.loc[ts])]
+        assert warm, "fixture must contain a bar where the two depths disagree"
+    with subtests.test("test_parity_diff_single_window_default_stays_at_two_hundred_bars"):
+        assert hg.hurst_live_frame_bars(None, 14) == 200
+        df, frame = _parity_frame_hurst(None)
+        expected = hg.rolling_hurst(df["close"], 200).shift(1)
+        for _, row in frame.iterrows():
+            want = expected.loc[row["ts"]]
+            got = row["bt_hurst"]
+            if pd.isna(want):
+                assert got is None or pd.isna(got)
+            else:
+                assert got is not None and math.isclose(got, float(want), rel_tol=1e-12)
 
 
 def test_parity_config_carries_the_resolved_windows_spec_and_hurst_block():
@@ -246,39 +245,41 @@ def test_parity_config_carries_the_resolved_windows_spec_and_hurst_block():
     assert pdiff.ParityConfig(strategy_name="momentum").regime_windows_spec is None
 
 
-def test_validation_enforces_bound_ordering_and_range():
-    with pytest.raises(ValueError, match="hurst_gate.mode"):
-        hg.validate_hurst_gate_config({"mode": "throttle", "min": 0.55})
-    with pytest.raises(ValueError, match="hurst_gate_on_failure"):
-        hg.validate_hurst_gate_config({"min": 0.55, "on_failure": "halt"})
-    with pytest.raises(ValueError, match="requires at least one of min/max"):
-        hg.validate_hurst_gate_config({})
-    with pytest.raises(ValueError, match="must be <"):
-        hg.validate_hurst_gate_config({"min": 0.7, "max": 0.3})
-    with pytest.raises(ValueError, match="disarm_min requires"):
-        hg.validate_hurst_gate_config({"disarm_min": 0.4})
-    with pytest.raises(ValueError, match="disarm_max requires"):
-        hg.validate_hurst_gate_config({"disarm_max": 0.6})
-    with pytest.raises(ValueError, match="must be <= hurst_gate.min"):
-        hg.validate_hurst_gate_config({"min": 0.5, "disarm_min": 0.6})
-    with pytest.raises(ValueError, match="must be >= hurst_gate.max"):
-        hg.validate_hurst_gate_config({"max": 0.5, "disarm_max": 0.4})
-    for bad in ({"min": 0.0}, {"min": 1.0}, {"max": 0.0}, {"max": 1.0}):
-        with pytest.raises(ValueError, match=r"\(0, 1\) exclusive"):
-            hg.validate_hurst_gate_config(bad)
-    hg.validate_hurst_gate_config({"min": 0.55, "disarm_min": 0.55})
-
-    with pytest.raises(ValueError, match="size_floor only applies"):
-        hg.validate_hurst_gate_config({"min": 0.55, "size_floor": 0.5})
-    with pytest.raises(ValueError, match="size_floor must be in"):
-        hg.validate_hurst_gate_config({"mode": "size", "size_floor": 1.5})
-    with pytest.raises(ValueError, match="has no meaning with"):
-        hg.validate_hurst_gate_config({"mode": "size", "min": 0.55})
-    hg.validate_hurst_gate_config({"mode": "size"})
-    hg.validate_hurst_gate_config({"mode": "size", "size_floor": 0.3})
-
-    with pytest.raises(ValueError):
-        hg.validate_hurst_gate_config({"enabled": False, "mode": "bogus"})
+def test_validation_enforces_bound_ordering_and_range(subtests):
+    with subtests.test("test_validation_enforces_bound_ordering_and_range"):
+        with pytest.raises(ValueError, match="requires at least one of min/max"):
+            hg.validate_hurst_gate_config({})
+        with pytest.raises(ValueError, match="must be <"):
+            hg.validate_hurst_gate_config({"min": 0.7, "max": 0.3})
+        with pytest.raises(ValueError, match="disarm_min requires"):
+            hg.validate_hurst_gate_config({"disarm_min": 0.4})
+        with pytest.raises(ValueError, match="disarm_max requires"):
+            hg.validate_hurst_gate_config({"disarm_max": 0.6})
+        with pytest.raises(ValueError, match="must be <= hurst_gate.min"):
+            hg.validate_hurst_gate_config({"min": 0.5, "disarm_min": 0.6})
+        with pytest.raises(ValueError, match="must be >= hurst_gate.max"):
+            hg.validate_hurst_gate_config({"max": 0.5, "disarm_max": 0.4})
+        for bad in ({"min": 0.0}, {"min": 1.0}, {"max": 0.0}, {"max": 1.0}):
+            with pytest.raises(ValueError, match=r"\(0, 1\) exclusive"):
+                hg.validate_hurst_gate_config(bad)
+        hg.validate_hurst_gate_config({"min": 0.55, "disarm_min": 0.55})
+    with subtests.test("test_validation_enforces_mode_scoping"):
+        with pytest.raises(ValueError, match="size_floor only applies"):
+            hg.validate_hurst_gate_config({"min": 0.55, "size_floor": 0.5})
+        with pytest.raises(ValueError, match="size_floor must be in"):
+            hg.validate_hurst_gate_config({"mode": "size", "size_floor": 1.5})
+        with pytest.raises(ValueError, match="has no meaning with"):
+            hg.validate_hurst_gate_config({"mode": "size", "min": 0.55})
+        hg.validate_hurst_gate_config({"mode": "size"})
+        hg.validate_hurst_gate_config({"mode": "size", "size_floor": 0.3})
+    with subtests.test("test_validation_rejects_bad_vocabulary"):
+        with pytest.raises(ValueError, match="hurst_gate.mode"):
+            hg.validate_hurst_gate_config({"mode": "throttle", "min": 0.55})
+        with pytest.raises(ValueError, match="hurst_gate_on_failure"):
+            hg.validate_hurst_gate_config({"min": 0.55, "on_failure": "halt"})
+    with subtests.test("test_validation_runs_even_when_disabled"):
+        with pytest.raises(ValueError):
+            hg.validate_hurst_gate_config({"enabled": False, "mode": "bogus"})
 
 
 def _write_cfg(tmp_path, strategy_extra: dict, regime: dict) -> str:
@@ -316,24 +317,29 @@ _COMPOSITE_REGIME = {
 }
 
 
-def test_backtest_accepts_a_primary_composite_window(tmp_path, load_strategy_config):
-    path = _write_cfg(
-        tmp_path,
-        {"hurst_gate": {"enabled": True, "min": 0.55, "disarm_min": 0.5}},
-        _COMPOSITE_REGIME,
-    )
-    loaded = load_strategy_config(path, "s1")
-    assert loaded["hurst_gate"]["enabled"] is True
-    assert loaded["hurst_gate"]["window_key"] == "medium"
-    assert loaded["hurst_gate"]["on_failure"] == "open"
-
-    regime = dict(_COMPOSITE_REGIME, hurst_gate_on_failure="closed")
-    path = _write_cfg(tmp_path, {"hurst_gate": {"enabled": True, "min": 0.55}}, regime)
-    assert load_strategy_config(path, "s1")["hurst_gate"]["on_failure"] == "closed"
-    path = _write_cfg(
-        tmp_path, {"hurst_gate": {"enabled": True, "min": 0.55, "on_failure": "open"}}, regime
-    )
-    assert load_strategy_config(path, "s1")["hurst_gate"]["on_failure"] == "open"
+def test_backtest_accepts_a_primary_composite_window(tmp_path, load_strategy_config, subtests):
+    with subtests.test("test_backtest_accepts_a_primary_composite_window"):
+        case_path = tmp_path / "test_backtest_accepts_a_primary_composite_window"
+        case_path.mkdir()
+        path = _write_cfg(
+            case_path,
+            {"hurst_gate": {"enabled": True, "min": 0.55, "disarm_min": 0.5}},
+            _COMPOSITE_REGIME,
+        )
+        loaded = load_strategy_config(path, "s1")
+        assert loaded["hurst_gate"]["enabled"] is True
+        assert loaded["hurst_gate"]["window_key"] == "medium"
+        assert loaded["hurst_gate"]["on_failure"] == "open"
+    with subtests.test("test_backtest_resolves_global_on_failure_default"):
+        case_path = tmp_path / "test_backtest_resolves_global_on_failure_default"
+        case_path.mkdir()
+        regime = dict(_COMPOSITE_REGIME, hurst_gate_on_failure="closed")
+        path = _write_cfg(case_path, {"hurst_gate": {"enabled": True, "min": 0.55}}, regime)
+        assert load_strategy_config(path, "s1")["hurst_gate"]["on_failure"] == "closed"
+        path = _write_cfg(
+            case_path, {"hurst_gate": {"enabled": True, "min": 0.55, "on_failure": "open"}}, regime
+        )
+        assert load_strategy_config(path, "s1")["hurst_gate"]["on_failure"] == "open"
 
 
 _ADX_REGIME = {"enabled": True, "windows": {"medium": {"classifier": "adx", "period": 20}}}
@@ -375,16 +381,21 @@ def test_backtest_rejects_bad_hurst_gate_config(tmp_path, load_strategy_config, 
                 load_strategy_config(path, "s1")
 
 
-def test_backtest_passes_through_a_disabled_block(tmp_path, load_strategy_config):
-    path = _write_cfg(
-        tmp_path,
-        {"hurst_gate": {"enabled": False, "min": 0.55}},
-        {"enabled": True, "windows": {"medium": {"classifier": "adx", "period": 20}}},
-    )
-    assert load_strategy_config(path, "s1")["hurst_gate"] is None
-
-    path = _write_cfg(tmp_path, {}, _COMPOSITE_REGIME)
-    assert load_strategy_config(path, "s1")["hurst_gate"] is None, "test_backtest_absent_block_is_none"
+def test_backtest_passes_through_a_disabled_block(tmp_path, load_strategy_config, subtests):
+    with subtests.test("test_backtest_passes_through_a_disabled_block"):
+        case_path = tmp_path / "test_backtest_passes_through_a_disabled_block"
+        case_path.mkdir()
+        path = _write_cfg(
+            case_path,
+            {"hurst_gate": {"enabled": False, "min": 0.55}},
+            {"enabled": True, "windows": {"medium": {"classifier": "adx", "period": 20}}},
+        )
+        assert load_strategy_config(path, "s1")["hurst_gate"] is None
+    with subtests.test("test_backtest_absent_block_is_none"):
+        case_path = tmp_path / "test_backtest_absent_block_is_none"
+        case_path.mkdir()
+        path = _write_cfg(case_path, {}, _COMPOSITE_REGIME)
+        assert load_strategy_config(path, "s1")["hurst_gate"] is None
 
 
 @pytest.fixture(scope="module")

@@ -198,25 +198,29 @@ class TestOhlcvRoundTrip:
 
 
 class TestBacktestRoundTrip:
-    def test_store_and_retrieve(self, db_path):
+    def test_store_and_retrieve(self, db_path, subtests):
         result = _sample_backtest_result()
         store_backtest_result(result, db_path=db_path)
 
         df = get_backtest_results(db_path=db_path)
-        assert len(df) == 1
-        assert df["strategy_name"].iloc[0] == "sma_crossover"
-        assert df["symbol"].iloc[0] == "BTC/USDT"
-        assert df["initial_capital"].iloc[0] == pytest.approx(10000.0)
-        assert df["final_capital"].iloc[0] == pytest.approx(12500.0)
-        assert df["total_return_pct"].iloc[0] == pytest.approx(25.0)
-        assert df["sharpe_ratio"].iloc[0] == pytest.approx(1.5)
-        assert df["total_trades"].iloc[0] == 42
-        params = json.loads(df["params"].iloc[0])
-        assert params["fast_period"] == 10 and params["slow_period"] == 50
-        trades = json.loads(df["trades_json"].iloc[0])
-        assert len(trades) == 1 and trades[0]["side"] == "buy"
-        assert df["created_at"].iloc[0] is not None
-        assert len(df["created_at"].iloc[0]) > 0
+        with subtests.test("test_store_and_retrieve"):
+            assert len(df) == 1
+            assert df["strategy_name"].iloc[0] == "sma_crossover"
+            assert df["symbol"].iloc[0] == "BTC/USDT"
+            assert df["initial_capital"].iloc[0] == pytest.approx(10000.0)
+            assert df["final_capital"].iloc[0] == pytest.approx(12500.0)
+            assert df["total_return_pct"].iloc[0] == pytest.approx(25.0)
+            assert df["sharpe_ratio"].iloc[0] == pytest.approx(1.5)
+            assert df["total_trades"].iloc[0] == 42
+        for column, check in [
+            ("params", lambda v: v["fast_period"] == 10 and v["slow_period"] == 50),
+            ("trades_json", lambda v: len(v) == 1 and v[0]["side"] == "buy"),
+        ]:
+            with subtests.test("test_nested_fields_stored_as_json", column=column):
+                assert check(json.loads(df[column].iloc[0]))
+        with subtests.test("test_created_at_populated"):
+            assert df["created_at"].iloc[0] is not None
+            assert len(df["created_at"].iloc[0]) > 0
 
     def test_filter_by_strategy_name(self, db_path):
         r1 = _sample_backtest_result()

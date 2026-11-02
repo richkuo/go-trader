@@ -164,37 +164,44 @@ def test_direction_both_with_close_strategy_threads_through(monkeypatch):
         {"name": "tiered_tp_atr", "params": {}}]
 
 
-def test_direction_short_rejected_in_optimize_mode(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(run_backtest, "run_walk_forward",
-                        lambda *a, **kw: seen.setdefault("hit", True))
-    for extra in ([], ["--sweep-close"],
-                  ["--close-strategy", "tiered_tp_atr"]):
-        monkeypatch.setattr("sys.argv", [
-            "run_backtest.py", "--mode", "optimize",
-            "--strategy", "sma_crossover", "--direction", "short", *extra,
-        ])
-        with pytest.raises(SystemExit):
-            run_backtest.main()
-    assert "hit" not in seen
-
-    monkeypatch.setattr("sys.argv", [
-        "run_backtest.py", "--mode", "optimize",
-        "--strategy", "sma_crossover", "--sweep-close",
-        "--direction", "both",
-    ])
-    with pytest.raises(SystemExit):
-        run_backtest.main()
-    assert "hit" not in seen, "test_direction_both_with_default_sweep_grid_rejected"
-
-    single = _spy_single(monkeypatch)
-    monkeypatch.setattr("sys.argv", [
-        "run_backtest.py", "--mode", "single",
-        "--strategy", "sma_crossover", "--direction", "both",
-    ])
-    with pytest.raises(SystemExit):
-        run_backtest.main()
-    assert "calls" not in single, "test_direction_both_without_close_rejected_before_running"
+def test_direction_short_rejected_in_optimize_mode(monkeypatch, subtests):
+    with subtests.test("test_direction_short_rejected_in_optimize_mode"):
+        with monkeypatch.context() as mp:
+            seen = {}
+            mp.setattr(run_backtest, "run_walk_forward",
+                       lambda *a, **kw: seen.setdefault("hit", True))
+            for extra in ([], ["--sweep-close"],
+                          ["--close-strategy", "tiered_tp_atr"]):
+                mp.setattr("sys.argv", [
+                    "run_backtest.py", "--mode", "optimize",
+                    "--strategy", "sma_crossover", "--direction", "short", *extra,
+                ])
+                with pytest.raises(SystemExit):
+                    run_backtest.main()
+            assert "hit" not in seen
+    with subtests.test("test_direction_both_with_default_sweep_grid_rejected"):
+        with monkeypatch.context() as mp:
+            seen = {}
+            mp.setattr(run_backtest, "run_walk_forward",
+                       lambda *a, **kw: seen.setdefault("hit", True))
+            mp.setattr("sys.argv", [
+                "run_backtest.py", "--mode", "optimize",
+                "--strategy", "sma_crossover", "--sweep-close",
+                "--direction", "both",
+            ])
+            with pytest.raises(SystemExit):
+                run_backtest.main()
+            assert "hit" not in seen
+    with subtests.test("test_direction_both_without_close_rejected_before_running"):
+        with monkeypatch.context() as mp:
+            seen = _spy_single(mp)
+            mp.setattr("sys.argv", [
+                "run_backtest.py", "--mode", "single",
+                "--strategy", "sma_crossover", "--direction", "both",
+            ])
+            with pytest.raises(SystemExit):
+                run_backtest.main()
+            assert "calls" not in seen
 
 
 def test_direction_both_with_close_only_stacks_json_reaches_walk_forward(

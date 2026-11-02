@@ -97,26 +97,28 @@ def test_score_labels_masks_warmup():
     assert out_a["h4"]["significance"]["p_value"] == out_b["h4"]["significance"]["p_value"]
 
 
-def test_score_labels_target_volatility_stamped_and_distinct():
-    from regime_diagnostics import score_labels
-    rng = np.random.default_rng(1)
-    steps = np.concatenate([rng.normal(0, 0.001, 150), rng.normal(0, 0.02, 150)])
-    close = 100 * np.exp(np.cumsum(steps))
-    labels = np.array(["quiet"] * 150 + ["loud"] * 150, dtype=object)
-    feats = rng.normal(0, 1, (300, 4))
+def test_score_labels_target_volatility_stamped_and_distinct(subtests):
+    with subtests.test("test_score_labels_target_volatility_stamped_and_distinct"):
+        from regime_diagnostics import score_labels
+        rng = np.random.default_rng(1)
+        steps = np.concatenate([rng.normal(0, 0.001, 150), rng.normal(0, 0.02, 150)])
+        close = 100 * np.exp(np.cumsum(steps))
+        labels = np.array(["quiet"] * 150 + ["loud"] * 150, dtype=object)
+        feats = rng.normal(0, 1, (300, 4))
 
-    vol = score_labels(close, labels, feats, horizons=(4,), seed=0, target="volatility")
-    ret = score_labels(close, labels, feats, horizons=(4,), seed=0, target="returns")
-    assert vol["target"] == "volatility" and ret["target"] == "returns"
-    assert vol["h4"]["separation"]["kruskal_h"] != ret["h4"]["separation"]["kruskal_h"]
-    assert vol["h4"]["separation"]["kruskal_h"] > 5.0
-
-    import pytest
-    close = 100 * np.cumprod(1 + np.zeros(50))
-    labels = np.array(["a"] * 50, dtype=object)
-    feats = np.zeros((50, 4))
-    with pytest.raises(ValueError):
-        score_labels(close, labels, feats, horizons=(4,), target="sharpe")
+        vol = score_labels(close, labels, feats, horizons=(4,), seed=0, target="volatility")
+        ret = score_labels(close, labels, feats, horizons=(4,), seed=0, target="returns")
+        assert vol["target"] == "volatility" and ret["target"] == "returns"
+        assert vol["h4"]["separation"]["kruskal_h"] != ret["h4"]["separation"]["kruskal_h"]
+        assert vol["h4"]["separation"]["kruskal_h"] > 5.0
+    with subtests.test("test_score_labels_rejects_unknown_target"):
+        from regime_diagnostics import score_labels
+        import pytest
+        close = 100 * np.cumprod(1 + np.zeros(50))
+        labels = np.array(["a"] * 50, dtype=object)
+        feats = np.zeros((50, 4))
+        with pytest.raises(ValueError):
+            score_labels(close, labels, feats, horizons=(4,), target="sharpe")
 
 
 def test_per_state_significance():

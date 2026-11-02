@@ -212,10 +212,6 @@ class TestFillExtraction:
                 _assert_out(result["execution"]["fill"], want_fill)
 
     _UNCONFIRMED_FILL_RESPONSES = [
-            {
-                "status": "ok",
-                "response": {"type": "order", "data": {"statuses": []}},
-            },
             {"status": "err", "response": "rejected"},
             {
                 "status": "ok",
@@ -251,14 +247,23 @@ class TestFillExtraction:
             },
     ]
 
-    def test_unconfirmed_fill_exits_with_error(self):
-        for i, sdk_response in enumerate(self._UNCONFIRMED_FILL_RESPONSES):
-            with _case(i, sdk_response):
-                result, exit_code = self._run_execute_with_mock_response(sdk_response)
-                assert exit_code == 1
-                assert result["execution"] is None
-                assert "error" in result
-                assert result["error"]
+    def test_unconfirmed_fill_exits_with_error(self, subtests):
+        with subtests.test("test_unconfirmed_fill_exits_with_error"):
+            for i, sdk_response in enumerate(self._UNCONFIRMED_FILL_RESPONSES):
+                with _case(i, sdk_response):
+                    result, exit_code = self._run_execute_with_mock_response(sdk_response)
+                    assert exit_code == 1
+                    assert result["execution"] is None
+                    assert result["error"]
+        with subtests.test("test_fill_empty_statuses"):
+            sdk_response = {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": []}},
+            }
+            result, exit_code = self._run_execute_with_mock_response(sdk_response)
+            assert exit_code == 1
+            assert result["execution"] is None
+            assert "error" in result
 
     _FILL_OUTCOME_CASES = [
         ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "3000", "totalSz": "0.2", "oid": 7}}]}}}, "filled", True),
@@ -371,10 +376,7 @@ class TestPeerLeverageSkip:
         mock_adapter_cls = MagicMock()
         mock_adapter = MagicMock()
         mock_adapter_cls.return_value = mock_adapter
-        if isinstance(current_state, Exception):
-            mock_adapter.get_position_leverage.side_effect = current_state
-        else:
-            mock_adapter.get_position_leverage.return_value = current_state
+        mock_adapter.get_position_leverage.return_value = current_state
         mock_adapter.market_open.return_value = {
             "status": "ok",
             "response": {"type": "order", "data": {"statuses": [
@@ -403,25 +405,62 @@ class TestPeerLeverageSkip:
                     exit_code = e.code
         return json.loads(captured.getvalue()), mock_adapter, exit_code
 
-    def test_update_leverage_only_when_state_differs(self):
-        cases = [
-            ({"margin_mode": "isolated", "leverage": 5}, False),
-            ({"margin_mode": "cross", "leverage": 5}, True),
-            ({"margin_mode": "isolated", "leverage": 3}, True),
-            (None, True),
-            (RuntimeError("info endpoint timeout"), True),
-        ]
-        for current_state, expect_update in cases:
-            with _case(current_state, expect_update):
-                result, adapter, exit_code = self._run_execute_with_existing_pos(
-                    "isolated", 5, current_state)
-                assert exit_code == 0
-                if expect_update:
-                    adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
-                else:
-                    adapter.update_leverage.assert_not_called()
-                adapter.market_open.assert_called_once()
-                assert result["execution"]["action"] == "buy"
+    def test_update_leverage_only_when_state_differs(self, subtests):
+        with subtests.test("test_update_leverage_only_when_state_differs"):
+            cases = [
+                ({"margin_mode": "isolated", "leverage": 5}, False),
+                ({"margin_mode": "cross", "leverage": 5}, True),
+                ({"margin_mode": "isolated", "leverage": 3}, True),
+                (None, True),
+            ]
+            for current_state, expect_update in cases:
+                with _case(current_state, expect_update):
+                    result, adapter, exit_code = self._run_execute_with_existing_pos(
+                        "isolated", 5, current_state)
+                    assert exit_code == 0
+                    if expect_update:
+                        adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
+                    else:
+                        adapter.update_leverage.assert_not_called()
+                    adapter.market_open.assert_called_once()
+                    assert result["execution"]["action"] == "buy"
+        with subtests.test("test_state_fetch_failure_falls_back_to_calling_update_leverage"):
+            mod, spec = _load_check_module()
+            spec.loader.exec_module(mod)
+
+            mock_adapter_cls = MagicMock()
+            mock_adapter = MagicMock()
+            mock_adapter_cls.return_value = mock_adapter
+            mock_adapter.get_position_leverage.side_effect = RuntimeError("info endpoint timeout")
+            mock_adapter.market_open.return_value = {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": [
+                    {"filled": {"avgPx": "50000", "totalSz": "0.01"}}
+                ]}},
+            }
+
+            captured = StringIO()
+            import builtins
+            original_import = builtins.__import__
+
+            def mock_import(name, *args, **kwargs):
+                if name == "adapter":
+                    fake_mod = MagicMock()
+                    fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                    return fake_mod
+                return original_import(name, *args, **kwargs)
+
+            with patch("builtins.__import__", side_effect=mock_import):
+                with patch("sys.stdout", captured):
+                    exit_code = 0
+                    try:
+                        mod.run_execute("ETH", "buy", 0.5, "live",
+                                        margin_mode="isolated", leverage=5)
+                    except SystemExit as e:
+                        exit_code = e.code
+
+            assert exit_code == 0
+            mock_adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
 
 
 class TestClassifySLResponse:
@@ -819,15 +858,17 @@ class TestCloseFullPosition:
 
         return json.loads(captured.getvalue()), mock_adapter
 
-    def test_uses_market_close_and_reports_the_sized_close_shape(self):
+    def test_uses_market_close_and_reports_the_sized_close_shape(self, subtests):
         out, adapter = self._run_close_full()
-        adapter.market_close.assert_called_once_with("ETH", sz=None)
-        adapter.market_open.assert_not_called()
-        assert "execution" in out
-        fill = out["execution"]["fill"]
-        assert fill["avg_px"] == 3000.5
-        assert fill["total_sz"] == 0.211
-        assert fill["oid"] == 888
+        with subtests.test("test_uses_market_close_not_market_open"):
+            adapter.market_close.assert_called_once_with("ETH", sz=None)
+            adapter.market_open.assert_not_called()
+        with subtests.test("test_output_shape_matches_sized_close"):
+            assert "execution" in out
+            fill = out["execution"]["fill"]
+            assert fill["avg_px"] == 3000.5
+            assert fill["total_sz"] == 0.211
+            assert fill["oid"] == 888
 
 
 class TestRunExecuteCloseMode:

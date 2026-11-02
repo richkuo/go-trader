@@ -63,57 +63,64 @@ def test_flat_box_detected_and_measured():
     assert abs(shape["bottom_edge_slope"]) < 1e-3
 
 
-def test_contracting_triangle_shape():
-    n = 24
-    span = np.linspace(3.0, 0.3, n)
-    level = 100.0
-    highs = level + span
-    lows = level - span
-    closes = np.full(n, level)
-    df = _candles(highs, lows, closes)
-    ep = Episode(start_idx=0, end_idx=n, method="t")
-    shape = measure_shape(df, ep)
-    assert shape["width_contraction"] < 1.0
-    assert shape["top_edge_slope"] < 0
-    assert shape["bottom_edge_slope"] > 0
-    assert classify_pattern(shape) == "symmetrical_triangle", "test_classify_pattern_via_measure_shape_on_triangle"
+def test_contracting_triangle_shape(subtests):
+    with subtests.test("test_contracting_triangle_shape"):
+        n = 24
+        span = np.linspace(3.0, 0.3, n)
+        level = 100.0
+        highs = level + span
+        lows = level - span
+        closes = np.full(n, level)
+        df = _candles(highs, lows, closes)
+        ep = Episode(start_idx=0, end_idx=n, method="t")
+        shape = measure_shape(df, ep)
+        assert shape["width_contraction"] < 1.0
+        assert shape["top_edge_slope"] < 0
+        assert shape["bottom_edge_slope"] > 0
+    with subtests.test("test_classify_pattern_via_measure_shape_on_triangle"):
+        n = 24
+        span = np.linspace(3.0, 0.3, n)
+        level = 100.0
+        df = _candles(level + span, level - span, np.full(n, level))
+        shape = measure_shape(df, Episode(0, n, "t"))
+        assert classify_pattern(shape) == "symmetrical_triangle"
 
 
-def test_escape_candle_flagged_upward():
-    quiet_h = [100.4] * 12
-    quiet_l = [99.6] * 12
-    quiet_c = [100.0] * 12
-    df = _candles(
-        quiet_h + [104.0],
-        quiet_l + [99.9],
-        quiet_c + [103.5],
-    )
-    ep = Episode(start_idx=0, end_idx=12, method="t")
-    atr_series = atr(df, 14)
-    esc = measure_escape_candle(df, ep, atr_series, escape_k=1.5)
-    assert esc["escape_idx"] == 12.0
-    assert esc["escape_by_edge"] == 1.0
-    assert esc["escape_by_median_tr"] == 1.0
-    assert esc["breakout_direction"] == 1.0
-
-    case = "test_escape_candle_downward_direction"
-    quiet_l = [99.6] * 12
-    quiet_c = [100.0] * 12
-    df = _candles(
-        quiet_h + [100.1],
-        quiet_l + [96.0],
-        quiet_c + [96.5],
-    )
-    ep = Episode(start_idx=0, end_idx=12, method="t")
-    esc = measure_escape_candle(df, ep, atr(df, 14), escape_k=1.5)
-    assert esc["escape_by_edge"] == 1.0, case
-    assert esc["breakout_direction"] == -1.0, case
-
-    case = "test_no_escape_when_episode_runs_to_end"
-    df = _flat_box(n=12)
-    ep = Episode(start_idx=0, end_idx=len(df), method="t")
-    esc = measure_escape_candle(df, ep, atr(df, 14))
-    assert np.isnan(esc["escape_idx"]), case
+def test_escape_candle_flagged_upward(subtests):
+    with subtests.test("test_escape_candle_flagged_upward"):
+        quiet_h = [100.4] * 12
+        quiet_l = [99.6] * 12
+        quiet_c = [100.0] * 12
+        df = _candles(
+            quiet_h + [104.0],
+            quiet_l + [99.9],
+            quiet_c + [103.5],
+        )
+        ep = Episode(start_idx=0, end_idx=12, method="t")
+        atr_series = atr(df, 14)
+        esc = measure_escape_candle(df, ep, atr_series, escape_k=1.5)
+        assert esc["escape_idx"] == 12.0
+        assert esc["escape_by_edge"] == 1.0
+        assert esc["escape_by_median_tr"] == 1.0
+        assert esc["breakout_direction"] == 1.0
+    with subtests.test("test_escape_candle_downward_direction"):
+        quiet_h = [100.4] * 12
+        quiet_l = [99.6] * 12
+        quiet_c = [100.0] * 12
+        df = _candles(
+            quiet_h + [100.1],
+            quiet_l + [96.0],
+            quiet_c + [96.5],
+        )
+        ep = Episode(start_idx=0, end_idx=12, method="t")
+        esc = measure_escape_candle(df, ep, atr(df, 14), escape_k=1.5)
+        assert esc["escape_by_edge"] == 1.0
+        assert esc["breakout_direction"] == -1.0
+    with subtests.test("test_no_escape_when_episode_runs_to_end"):
+        df = _flat_box(n=12)
+        ep = Episode(start_idx=0, end_idx=len(df), method="t")
+        esc = measure_escape_candle(df, ep, atr(df, 14))
+        assert np.isnan(esc["escape_idx"])
 
 
 def test_regression_flatness_detects_flat_run():

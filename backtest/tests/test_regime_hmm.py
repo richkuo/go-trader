@@ -49,26 +49,27 @@ def test_fit_counts_adjacent_transitions_but_not_across_a_midseries_nan():
     assert abs(A[0][1] - 0.4) < 1e-9, "test_fit_counts_genuine_adjacent_transition"
 
 
-def test_forward_filter_look_ahead_safe():
-    from regime_hmm import forward_filter_labels
-    rng = np.random.default_rng(0)
-    feats = np.vstack([rng.normal(0, 1, (60, 4)), rng.normal(4, 1, (60, 4))])
-    labels = np.array(["s0"] * 60 + ["s1"] * 60, dtype=object)
-    m = fit_label_anchored_hmm(feats, labels, STATES, filter_window=8)
-    lab_a, _ = forward_filter_labels(feats, m)
-    perturbed = feats.copy()
-    perturbed[71:] += 100.0
-    lab_b, _ = forward_filter_labels(perturbed, m)
-    assert list(lab_a[:71]) == list(lab_b[:71])
-
-    case = "test_decode_min_dwell_is_look_ahead_safe"
-    feats, labels = _noisy_fixture()
-    m = {**fit_label_anchored_hmm(feats, labels, STATES, filter_window=8), "decode_min_dwell": 3}
-    lab_a, _ = forward_filter_labels(feats, m)
-    perturbed = feats.copy()
-    perturbed[71:] += 100.0
-    lab_b, _ = forward_filter_labels(perturbed, m)
-    assert list(lab_a[:71]) == list(lab_b[:71]), case
+def test_forward_filter_look_ahead_safe(subtests):
+    with subtests.test("test_forward_filter_look_ahead_safe"):
+        from regime_hmm import forward_filter_labels
+        rng = np.random.default_rng(0)
+        feats = np.vstack([rng.normal(0, 1, (60, 4)), rng.normal(4, 1, (60, 4))])
+        labels = np.array(["s0"] * 60 + ["s1"] * 60, dtype=object)
+        m = fit_label_anchored_hmm(feats, labels, STATES, filter_window=8)
+        lab_a, _ = forward_filter_labels(feats, m)
+        perturbed = feats.copy()
+        perturbed[71:] += 100.0
+        lab_b, _ = forward_filter_labels(perturbed, m)
+        assert list(lab_a[:71]) == list(lab_b[:71])
+    with subtests.test("test_decode_min_dwell_is_look_ahead_safe"):
+        from regime_hmm import forward_filter_labels
+        feats, labels = _noisy_fixture()
+        m = {**fit_label_anchored_hmm(feats, labels, STATES, filter_window=8), "decode_min_dwell": 3}
+        lab_a, _ = forward_filter_labels(feats, m)
+        perturbed = feats.copy()
+        perturbed[71:] += 100.0
+        lab_b, _ = forward_filter_labels(perturbed, m)
+        assert list(lab_a[:71]) == list(lab_b[:71])
 
 
 def test_forward_filter_recovers_regime():

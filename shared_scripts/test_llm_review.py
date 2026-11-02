@@ -81,20 +81,22 @@ class TestSummarizeOhlcv:
 
 
 class TestJudgeParsing:
-    def test_verdict_parsing_and_strict_json_rationale(self, mod):
-        cases = [
-            ('{"verdict": "bullish", "rationale": "looks good"}', "bullish"),
-            ('{"verdict":"bearish","rationale":"r"}', "bearish"),
-            ('{"rationale": "r", "verdict": "mixed"}', "mixed"),
-        ]
-        for raw, verdict in cases:
-            v, _ = mod.parse_judge_output(raw, 55)
-            assert v == verdict, ("test_verdict_parsing", raw)
-        _, r = mod.parse_judge_output('{"verdict": "bullish", "rationale": "looks good"}', 55)
-        assert r == "looks good", "test_strict_json_rationale"
-        long = " ".join(["w"] * 100)
-        _, r = mod.parse_judge_output(json.dumps({"verdict": "mixed", "rationale": long}), 10)
-        assert len(r.split()) == 11, "test_rationale_capped"
+    def test_verdict_parsing_and_strict_json_rationale(self, mod, subtests):
+        with subtests.test("test_verdict_parsing_and_strict_json_rationale"):
+            cases = [
+                ('{"verdict": "bullish", "rationale": "looks good"}', "bullish"),
+                ('{"verdict":"bearish","rationale":"r"}', "bearish"),
+                ('{"rationale": "r", "verdict": "mixed"}', "mixed"),
+            ]
+            for raw, verdict in cases:
+                v, _ = mod.parse_judge_output(raw, 55)
+                assert v == verdict, ("test_verdict_parsing", raw)
+            _, r = mod.parse_judge_output('{"verdict": "bullish", "rationale": "looks good"}', 55)
+            assert r == "looks good", "test_strict_json_rationale"
+        with subtests.test("test_rationale_capped"):
+            long = " ".join(["w"] * 100)
+            _, r = mod.parse_judge_output(json.dumps({"verdict": "mixed", "rationale": long}), 10)
+            assert len(r.split()) == 11
 
     def test_non_schema_output_raises(self, mod):
         cases = [

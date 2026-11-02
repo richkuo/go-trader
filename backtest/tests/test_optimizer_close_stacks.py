@@ -258,30 +258,33 @@ def test_joint_sweep_defaults_to_long_universe():
         f"must not open shorts under the default long entry universe")
 
 
-def test_optimize_rejects_short_direction_even_with_close_refs():
-    df = _trending_ohlc()
-    with pytest.raises(ValueError, match="warmup seeder"):
-        walk_forward_optimize(
-            df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
-            n_splits=2, verbose=False, direction="short",
-        )
-    with pytest.raises(ValueError, match="warmup seeder"):
-        walk_forward_optimize(
-            df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
-            n_splits=2, verbose=False, direction="short",
-            close_strategies=[{"name": "tiered_tp_atr",
-                               "params": {"tp_tiers": WIDE_LADDER}}],
-        )
-    grid = generate_close_stack_grid([
-        {"close": {"name": "tiered_tp_atr",
-                   "params": {"tp_tiers": [WIDE_LADDER]}}},
-    ])
-    with pytest.raises(ValueError, match="warmup seeder"):
-        walk_forward_optimize(
-            df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
-            n_splits=2, verbose=False, direction="short",
-            close_stack_grid=grid,
-        )
+def test_optimize_rejects_short_direction_even_with_close_refs(subtests):
+    with subtests.test("test_optimize_rejects_short_direction_even_with_close_refs"):
+        df = _trending_ohlc()
+        with pytest.raises(ValueError, match="warmup seeder"):
+            walk_forward_optimize(
+                df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
+                n_splits=2, verbose=False, direction="short",
+                close_strategies=[{"name": "tiered_tp_atr",
+                                   "params": {"tp_tiers": WIDE_LADDER}}],
+            )
+        grid = generate_close_stack_grid([
+            {"close": {"name": "tiered_tp_atr",
+                       "params": {"tp_tiers": [WIDE_LADDER]}}},
+        ])
+        with pytest.raises(ValueError, match="warmup seeder"):
+            walk_forward_optimize(
+                df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
+                n_splits=2, verbose=False, direction="short",
+                close_stack_grid=grid,
+            )
+    with subtests.test("test_optimize_rejects_short_direction_with_no_close_ref"):
+        df = _trending_ohlc()
+        with pytest.raises(ValueError, match="warmup seeder"):
+            walk_forward_optimize(
+                df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
+                n_splits=2, verbose=False, direction="short",
+            )
 
 
 def test_optimize_long_direction_with_no_close_ref_runs():

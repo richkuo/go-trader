@@ -112,36 +112,35 @@ def _warmup_train_df() -> pd.DataFrame:
     )
 
 
-def test_warmup_exit_long_entry_detects_unclosed_buy():
-    df = _warmup_train_df()
-    seed = warmup_exit_long_entry(df.iloc[:30], slippage_pct=0.0)
-    assert seed is not None, "warmup ends long — seed must be non-None"
-    assert seed["entry_price"] == pytest.approx(100.0)
-
-    case = "test_warmup_exit_long_entry_returns_none_when_flat"
-    seed = warmup_exit_long_entry(df.iloc[:47], slippage_pct=0.0)
-    assert seed is None, case
-
-    case = "test_no_seed_when_fold_zero_has_no_warmup"
-    empty = pd.DataFrame(columns=["open", "close", "signal"])
-    assert warmup_exit_long_entry(empty, slippage_pct=0.0) is None, case
-
-    case = "test_warmup_exit_long_entry_applies_slippage"
-    seed = warmup_exit_long_entry(df.iloc[:30], slippage_pct=0.001)
-    assert seed is not None, case
-    assert seed["entry_price"] == pytest.approx(100.1), case
-
-    case = "test_warmup_exit_long_entry_ignores_repeat_buy_while_long"
-    opens = [100.0, 100.0, 100.0, 100.0, 100.0, 150.0, 150.0, 150.0]
-    closes = opens[:]
-    signals = [1, 0, 0, 1, 0, 0, 0, 0]
-    idx = pd.date_range("2024-01-01", periods=8, freq="D")
-    repeat = pd.DataFrame(
-        {"open": opens, "close": closes, "signal": signals}, index=idx,
-    )
-    seed = warmup_exit_long_entry(repeat, slippage_pct=0.0)
-    assert seed is not None, case
-    assert seed["entry_price"] == pytest.approx(100.0), case
+def test_warmup_exit_long_entry_detects_unclosed_buy(subtests):
+    with subtests.test("test_warmup_exit_long_entry_detects_unclosed_buy"):
+        df = _warmup_train_df()
+        seed = warmup_exit_long_entry(df.iloc[:30], slippage_pct=0.0)
+        assert seed is not None, "warmup ends long — seed must be non-None"
+        assert seed["entry_price"] == pytest.approx(100.0)
+    with subtests.test("test_no_seed_when_fold_zero_has_no_warmup"):
+        empty = pd.DataFrame(columns=["open", "close", "signal"])
+        assert warmup_exit_long_entry(empty, slippage_pct=0.0) is None
+    with subtests.test("test_warmup_exit_long_entry_applies_slippage"):
+        df = _warmup_train_df()
+        seed = warmup_exit_long_entry(df.iloc[:30], slippage_pct=0.001)
+        assert seed is not None
+        assert seed["entry_price"] == pytest.approx(100.1)
+    with subtests.test("test_warmup_exit_long_entry_ignores_repeat_buy_while_long"):
+        opens = [100.0, 100.0, 100.0, 100.0, 100.0, 150.0, 150.0, 150.0]
+        closes = opens[:]
+        signals = [1, 0, 0, 1, 0, 0, 0, 0]
+        idx = pd.date_range("2024-01-01", periods=8, freq="D")
+        df = pd.DataFrame(
+            {"open": opens, "close": closes, "signal": signals}, index=idx,
+        )
+        seed = warmup_exit_long_entry(df, slippage_pct=0.0)
+        assert seed is not None
+        assert seed["entry_price"] == pytest.approx(100.0)
+    with subtests.test("test_warmup_exit_long_entry_returns_none_when_flat"):
+        df = _warmup_train_df()
+        seed = warmup_exit_long_entry(df.iloc[:47], slippage_pct=0.0)
+        assert seed is None
 
 
 def test_train_fold_captures_trade_spanning_warmup_boundary():
@@ -215,52 +214,51 @@ def test_seeded_metrics_anchor_at_initial_capital():
     assert result["max_drawdown_pct"] == pytest.approx(0.0, abs=0.01)
 
 
-def test_warmup_seed_stamps_entry_atr_and_high_water():
-    n = 30
-    opens = [100.0] * n
-    closes = [100.0] * 10 + [104.0, 108.0] + [103.0] * (n - 12)
-    signals = [0] * n
-    signals[5] = 1
-    idx = pd.date_range("2024-01-01", periods=n, freq="D")
-    df = pd.DataFrame({
-        "open": opens, "close": closes, "signal": signals,
-        "atr": [2.5] * n,
-    }, index=idx)
-    seed = warmup_exit_long_entry(df, slippage_pct=0.0)
-    assert seed is not None
-    assert seed["entry_atr"] == pytest.approx(2.5)
-    assert seed["high_water"] == pytest.approx(108.0)
-
-    case = "test_warmup_seed_omits_implausible_entry_atr"
-    n = 20
-    signals = [0] * n
-    signals[5] = 1
-    idx = pd.date_range("2024-01-01", periods=n, freq="D")
-    df = pd.DataFrame({
-        "open": [100.0] * n, "close": [100.0] * n, "signal": signals,
-        "atr": [80.0] * n,
-    }, index=idx)
-    seed = warmup_exit_long_entry(df, slippage_pct=0.0)
-    assert seed is not None, case
-    assert "entry_atr" not in seed, case
-    assert seed["high_water"] == pytest.approx(100.0), case
-
-    case = "test_warmup_seed_high_water_resets_on_reentry"
-    n = 20
-    closes = [100.0] * 5 + [150.0] * 5 + [100.0] * 10
-    signals = [0] * n
-    signals[2] = 1
-    signals[9] = -1
-    signals[12] = 1
-    idx = pd.date_range("2024-01-01", periods=n, freq="D")
-    df = pd.DataFrame({
-        "open": closes[:], "close": closes, "signal": signals,
-        "atr": [2.0] * n,
-    }, index=idx)
-    seed = warmup_exit_long_entry(df, slippage_pct=0.0)
-    assert seed is not None, case
-    assert seed["high_water"] == pytest.approx(100.0), (
-        "the closed first trade's 150 HWM must not survive the re-entry")
+def test_warmup_seed_stamps_entry_atr_and_high_water(subtests):
+    with subtests.test("test_warmup_seed_stamps_entry_atr_and_high_water"):
+        n = 30
+        opens = [100.0] * n
+        closes = [100.0] * 10 + [104.0, 108.0] + [103.0] * (n - 12)
+        signals = [0] * n
+        signals[5] = 1
+        idx = pd.date_range("2024-01-01", periods=n, freq="D")
+        df = pd.DataFrame({
+            "open": opens, "close": closes, "signal": signals,
+            "atr": [2.5] * n,
+        }, index=idx)
+        seed = warmup_exit_long_entry(df, slippage_pct=0.0)
+        assert seed is not None
+        assert seed["entry_atr"] == pytest.approx(2.5)
+        assert seed["high_water"] == pytest.approx(108.0)
+    with subtests.test("test_warmup_seed_high_water_resets_on_reentry"):
+        n = 20
+        closes = [100.0] * 5 + [150.0] * 5 + [100.0] * 10
+        signals = [0] * n
+        signals[2] = 1
+        signals[9] = -1
+        signals[12] = 1
+        idx = pd.date_range("2024-01-01", periods=n, freq="D")
+        df = pd.DataFrame({
+            "open": closes[:], "close": closes, "signal": signals,
+            "atr": [2.0] * n,
+        }, index=idx)
+        seed = warmup_exit_long_entry(df, slippage_pct=0.0)
+        assert seed is not None
+        assert seed["high_water"] == pytest.approx(100.0), (
+            "the closed first trade's 150 HWM must not survive the re-entry")
+    with subtests.test("test_warmup_seed_omits_implausible_entry_atr"):
+        n = 20
+        signals = [0] * n
+        signals[5] = 1
+        idx = pd.date_range("2024-01-01", periods=n, freq="D")
+        df = pd.DataFrame({
+            "open": [100.0] * n, "close": [100.0] * n, "signal": signals,
+            "atr": [80.0] * n,
+        }, index=idx)
+        seed = warmup_exit_long_entry(df, slippage_pct=0.0)
+        assert seed is not None
+        assert "entry_atr" not in seed
+        assert seed["high_water"] == pytest.approx(100.0)
 
 
 def test_walk_forward_still_seeds_a_long_only_strategy(monkeypatch):

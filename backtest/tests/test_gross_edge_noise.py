@@ -271,24 +271,31 @@ def _synthetic_df(n=120):
     }, index=idx)
 
 
-def test_run_leg_keep_trades_attaches_samples(monkeypatch):
-    df = _synthetic_df()
-    import data_fetcher
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: df, raising=True)
-    leg = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
-                     ("2026-01-01", None), keep_trades=True)
-    assert leg is not None and leg["trades"] > 0
-    samples = leg["trade_samples"]
-    assert len(samples) == leg["trades"]
-    for s in samples:
-        assert isinstance(s["entry_date"], str) and s["entry_date"]
-        assert isinstance(s["pnl_pct"], float)
-
-    leg = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
-                     ("2026-01-01", None))
-    assert leg is not None, "test_run_leg_default_omits_trade_samples"
-    assert "trade_samples" not in leg, "test_run_leg_default_omits_trade_samples"
+def test_run_leg_keep_trades_attaches_samples(monkeypatch, subtests):
+    with subtests.test("test_run_leg_keep_trades_attaches_samples"):
+        with monkeypatch.context() as mp:
+            df = _synthetic_df()
+            import data_fetcher
+            mp.setattr(data_fetcher, "load_cached_data",
+                       lambda *a, **k: df, raising=True)
+            leg = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                             ("2026-01-01", None), keep_trades=True)
+            assert leg is not None and leg["trades"] > 0
+            samples = leg["trade_samples"]
+            assert len(samples) == leg["trades"]
+            for s in samples:
+                assert isinstance(s["entry_date"], str) and s["entry_date"]
+                assert isinstance(s["pnl_pct"], float)
+    with subtests.test("test_run_leg_default_omits_trade_samples"):
+        with monkeypatch.context() as mp:
+            df = _synthetic_df()
+            import data_fetcher
+            mp.setattr(data_fetcher, "load_cached_data",
+                       lambda *a, **k: df, raising=True)
+            leg = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                             ("2026-01-01", None))
+            assert leg is not None
+            assert "trade_samples" not in leg
 
 
 def test_collect_gross_legs_zeroes_friction(monkeypatch):

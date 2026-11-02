@@ -100,24 +100,24 @@ def test_tiered_tp_atr_live_regime_re_resolves_multiplier_mid_trade(subtests):
             assert result["trades"][0]["exit_price"] == pytest.approx(want_exit_price)
 
 
-def test_stop_loss_atr_mult_regime_use_defaults_matches_baseline_table():
-    mult = regime_atr.resolve_regime_atr(
-        regime_atr.parse_regime_atr_block(
-            {"use_defaults": True}, "probe", regime_atr.SURFACE_STOP_LOSS,
-        )[0],
-        "ranging",
-    )
-    assert mult == regime_atr.REGIME_ATR_DEFAULTS_STOP_LOSS["ranging"].atr
-
-    case = "test_trailing_stop_atr_mult_regime_use_defaults_parses"
-    blk, errs = regime_atr.parse_regime_atr_block(
-        {"use_defaults": True},
-        "trailing_stop_atr_mult_regime",
-        regime_atr.SURFACE_TRAILING,
-    )
-    assert not errs, case
-    mult = regime_atr.resolve_regime_atr(blk, "trending_up")
-    assert mult == regime_atr.REGIME_ATR_DEFAULTS_TRAILING["trending_up"].atr, case
+def test_stop_loss_atr_mult_regime_use_defaults_matches_baseline_table(subtests):
+    with subtests.test("test_stop_loss_atr_mult_regime_use_defaults_matches_baseline_table"):
+        mult = regime_atr.resolve_regime_atr(
+            regime_atr.parse_regime_atr_block(
+                {"use_defaults": True}, "probe", regime_atr.SURFACE_STOP_LOSS,
+            )[0],
+            "ranging",
+        )
+        assert mult == regime_atr.REGIME_ATR_DEFAULTS_STOP_LOSS["ranging"].atr
+    with subtests.test("test_trailing_stop_atr_mult_regime_use_defaults_parses"):
+        blk, errs = regime_atr.parse_regime_atr_block(
+            {"use_defaults": True},
+            "trailing_stop_atr_mult_regime",
+            regime_atr.SURFACE_TRAILING,
+        )
+        assert not errs
+        mult = regime_atr.resolve_regime_atr(blk, "trending_up")
+        assert mult == regime_atr.REGIME_ATR_DEFAULTS_TRAILING["trending_up"].atr
 
 
 def test_stop_loss_atr_mult_regime_seeds_initial_sl_trigger_from_open_stamp():
