@@ -1,0 +1,8 @@
+{
+  "base_commit": "d335ffcfb63ee343672a92b25855804ab736c893",
+  "capture_date": "2026-11-02",
+  "capture_method": "In an exported copy of the base commit (git archive, never a worktree, never committed), a scratch test built with -tags parkedresearch ran two base helpers: newBasketTestEnv stepping one paper rebalance (the TestBasketPaperRebalanceEndToEndAndRestart setup), then a basket-member entry intent reserved through StateStore.ReserveEntryIntent in the basket coordinator's request form (kind basket:<action>, owner_mode empty, status reserved), and a paper PortfolioRiskState with PairValuationIncompleteSince 2026-09-30T08:15:00Z saved through StateStore.SaveAll; and newPairTestEnv stepping two pair slots (entry and hedge) and saved through StateStore.SaveAll. The pair file's basket_*, pair_*, entry_order_intents, strategies, positions and trades rows were copied into the basket file with ATTACH (integer primary keys renumbered), then dumped.",
+  "capture_command": "sqlite3 merged.db .dump > state.sql",
+  "dump_sha256": "9f9e23d7193cd6f1eeddf8865505c34e05ca7e3e6ebb2690652a45374df98b11",
+  "purpose": "Pins old-database survival for the basket and pair research removal (issue 1955): retired tables, rows, indexes and triggers, retired entry intents and the stored portfolio_risk.pair_valuation_incomplete_since value stay unchanged across an ordinary load and save."
+}

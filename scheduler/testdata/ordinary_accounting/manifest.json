@@ -1,0 +1,8 @@
+{
+  "base_commit": "d335ffcfb63ee343672a92b25855804ab736c893",
+  "capture_date": "2026-11-02",
+  "capture_command": "rm -f scheduler/testdata/ordinary_accounting/golden.json && ORDINARY_ACCOUNTING_CAPTURE_GOLDEN=1 go -C scheduler test -count=1 -run '^TestOrdinaryAccountingGolden$' .",
+  "golden_sha256": "9687e75638a628286330ec8cc913149097818a3181f466d6ce4d6dc270816447",
+  "purpose": "Pins ordinary valuation, risk, kill switch, fee and slippage output on the code before the basket and pair research removal (issue 1955). The test file and golden.json stay byte-identical through the removal.",
+  "determinism": "Numbers are formatted to 12 significant digits, trade and closed-position lists are sorted, and local-time stamps are stripped, so map iteration order and the machine time zone do not change the bytes."
+}
