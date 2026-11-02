@@ -220,6 +220,7 @@ type ciWorkflowJob struct {
 	raw      []string
 	logical  [][]string
 	problems []string
+	docsGate bool
 }
 
 var (
@@ -299,6 +300,7 @@ func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
 			job.problems = append(job.problems, fmt.Sprintf("job %s must carry the docs-only gate as exactly one %q line and one %q line, or neither", name, strings.TrimSpace(ciDocsGateNeeds), strings.TrimSpace(ciDocsGateIf)))
 		}
 		job.raw = kept
+		job.docsGate = gateNeeds > 0 || gateIf > 0
 		for i := 0; i < len(job.raw); i++ {
 			m := ciRunKey.FindStringSubmatch(job.raw[i])
 			if m == nil {
@@ -386,6 +388,11 @@ func requireCIChangesJob(t *testing.T, workflow string, jobs map[string]*ciWorkf
 	job, ok := jobs["changes"]
 	if !ok {
 		t.Fatalf(".github/workflows/%s has no changes job, but its suite jobs read needs.changes.outputs.code", workflow)
+	}
+	for _, name := range []string{"changes", "checks"} {
+		if j, ok := jobs[name]; ok && j.docsGate {
+			t.Fatalf(".github/workflows/%s job %s carries the docs-only gate, but it must run on every pull request", workflow, name)
+		}
 	}
 	want := [][]string{{"bash scripts/check_ci_code_changed.sh"}, {"bash scripts/ci_code_changed.sh"}}
 	if !reflect.DeepEqual(job.logical, want) {
