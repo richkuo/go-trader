@@ -21,8 +21,26 @@ env:
   SUITE_MARKER: "PASS: container image (identity, clean layers, volume setup, bind and token policy, auth, SIGHUP reload, dashboard and crash restarts, persistence, graceful stop with a Python child, fatal holds 78/79/80, early-failure restarts, one-shot exits, backup and restore)"
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Decide whether the change touches anything a test reads
+        id: diff
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash scripts/ci_code_changed.sh
+
   image:
     name: image (${{ matrix.arch }})
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     strategy:
       fail-fast: false
       matrix:

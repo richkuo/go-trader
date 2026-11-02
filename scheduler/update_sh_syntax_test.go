@@ -236,6 +236,11 @@ var (
 	ciShellJobKey = regexp.MustCompile(`^\s*(- )?(strategy|matrix|needs):`)
 )
 
+const (
+	ciDocsGateNeeds = "    needs: changes"
+	ciDocsGateIf    = "    if: ${{ needs.changes.outputs.code == 'true' }}"
+)
+
 func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -277,6 +282,22 @@ func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
 		}
 	}
 	for name, job := range jobs {
+		var kept []string
+		gateNeeds, gateIf := 0, 0
+		for _, line := range job.raw {
+			switch line {
+			case ciDocsGateNeeds:
+				gateNeeds++
+			case ciDocsGateIf:
+				gateIf++
+			default:
+				kept = append(kept, line)
+			}
+		}
+		if gateNeeds != gateIf || gateNeeds > 1 {
+			job.problems = append(job.problems, fmt.Sprintf("job %s must carry the docs-only gate as exactly one %q line and one %q line, or neither", name, strings.TrimSpace(ciDocsGateNeeds), strings.TrimSpace(ciDocsGateIf)))
+		}
+		job.raw = kept
 		for i := 0; i < len(job.raw); i++ {
 			m := ciRunKey.FindStringSubmatch(job.raw[i])
 			if m == nil {
