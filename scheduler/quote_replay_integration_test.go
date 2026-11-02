@@ -168,7 +168,7 @@ func quoteReplayCheckInvariants(t *testing.T, spec *quoteReplaySpec, out quoteRe
 
 func quoteReplayMustComplete(t *testing.T, out quoteReplayOutput, code int) {
 	t.Helper()
-	if code != 0 || out.Status != basketReplayStatusComplete {
+	if code != 0 || out.Status != replayStatusComplete {
 		t.Fatalf("exit %d status %s refusal %+v error %q stopped %q", code, out.Status, out.Refusal, out.Error, out.Stopped)
 	}
 }
@@ -255,12 +255,12 @@ func TestQuoteReplayResumeMatchesAnUninterruptedRun(t *testing.T) {
 	dirB := quoteReplayTempDir(t)
 	spec := quoteReplayShortSpec(t, dirB)
 	part, code := runQuoteReplayForTest(t, spec, "--max-deadlines", "11")
-	if code != 0 || part.Status != basketReplayStatusStopped || len(part.Decisions) != 11 {
+	if code != 0 || part.Status != replayStatusStopped || len(part.Decisions) != 11 {
 		t.Fatalf("partial run: exit %d status %s decisions %d", code, part.Status, len(part.Decisions))
 	}
-	spec.Mode = basketReplayModeResume
+	spec.Mode = replayModeResume
 	part2, code := runQuoteReplayForTest(t, spec, "--max-deadlines", "13")
-	if code != 0 || part2.Status != basketReplayStatusStopped || !part2.Resumed {
+	if code != 0 || part2.Status != replayStatusStopped || !part2.Resumed {
 		t.Fatalf("second slice: exit %d status %s", code, part2.Status)
 	}
 	rest, code := runQuoteReplayForTest(t, spec)
@@ -302,10 +302,10 @@ func quoteReplayFaultCase(t *testing.T, point string, n int) (quoteReplayOutput,
 	dir := quoteReplayTempDir(t)
 	spec := quoteReplayShortSpec(t, dir)
 	crash, code, stderr := runQuoteReplaySubprocess(t, spec, "--fault", fmt.Sprintf("%s:%d", point, n))
-	if code != basketReplayExitFault || !strings.Contains(stderr, "fault injection: exiting at "+point) {
+	if code != replayExitFault || !strings.Contains(stderr, "fault injection: exiting at "+point) {
 		t.Fatalf("%s:%d exited %d (status %s); stderr tail %s", point, n, code, crash.Status, quoteReplayTail(stderr, 600))
 	}
-	spec.Mode = basketReplayModeResume
+	spec.Mode = replayModeResume
 	out, code := runQuoteReplayForTest(t, spec)
 	quoteReplayMustComplete(t, out, code)
 	quoteReplayCheckInvariants(t, spec, out)
@@ -403,11 +403,11 @@ func TestQuoteReplayFaultsRecoverWithTheirStatedClass(t *testing.T) {
 	t.Run("a repeat that dies before its own progress repeats again", func(t *testing.T) {
 		dir := quoteReplayTempDir(t)
 		spec := quoteReplayShortSpec(t, dir)
-		if _, code, _ := runQuoteReplaySubprocess(t, spec, "--fault", "after-call:16"); code != basketReplayExitFault {
+		if _, code, _ := runQuoteReplaySubprocess(t, spec, "--fault", "after-call:16"); code != replayExitFault {
 			t.Fatalf("first fault exited %d", code)
 		}
-		spec.Mode = basketReplayModeResume
-		if _, code, _ := runQuoteReplaySubprocess(t, spec, "--fault", "progress-before-write:1"); code != basketReplayExitFault {
+		spec.Mode = replayModeResume
+		if _, code, _ := runQuoteReplaySubprocess(t, spec, "--fault", "progress-before-write:1"); code != replayExitFault {
 			t.Fatalf("second fault exited %d", code)
 		}
 		out, code := runQuoteReplayForTest(t, spec)
@@ -437,7 +437,7 @@ func TestQuoteReplayRefusesUnsafeStateAndInputs(t *testing.T) {
 		t.Setenv("HYPERLIQUID_SECRET_KEY", "0xdeadbeefsecret")
 		var buf strings.Builder
 		code := runQuoteReplayProcess([]string{"--spec", path}, strings.NewReader(""), &buf)
-		if code != basketReplayExitRefused || !strings.Contains(buf.String(), "credentials_refused") || strings.Contains(buf.String(), "deadbeef") {
+		if code != replayExitRefused || !strings.Contains(buf.String(), "credentials_refused") || strings.Contains(buf.String(), "deadbeef") {
 			t.Fatalf("exit %d output %s", code, buf.String())
 		}
 		if _, err := os.Stat(spec.Run.StateDir); !os.IsNotExist(err) {
@@ -466,7 +466,7 @@ func TestQuoteReplayRefusesUnsafeStateAndInputs(t *testing.T) {
 	refuse := func(t *testing.T, spec *quoteReplaySpec, reason string) {
 		t.Helper()
 		out, code := runQuoteReplayForTest(t, spec)
-		if code != basketReplayExitRefused || out.Refusal == nil || out.Refusal.Reason != reason {
+		if code != replayExitRefused || out.Refusal == nil || out.Refusal.Reason != reason {
 			t.Fatalf("want refusal %s, got exit %d status %s refusal %+v error %s", reason, code, out.Status, out.Refusal, out.Error)
 		}
 	}
@@ -493,7 +493,7 @@ func TestQuoteReplayRefusesUnsafeStateAndInputs(t *testing.T) {
 			t.Fatal(err)
 		}
 		refuse(t, spec, "state_exists")
-		spec.Mode = basketReplayModeResume
+		spec.Mode = replayModeResume
 		refuse(t, spec, "state_foreign")
 	})
 	t.Run("an unmarked state file in a run directory is foreign", func(t *testing.T) {
@@ -511,17 +511,17 @@ func TestQuoteReplayRefusesUnsafeStateAndInputs(t *testing.T) {
 			}
 		}
 		db.Close()
-		spec.Mode = basketReplayModeResume
+		spec.Mode = replayModeResume
 		refuse(t, spec, "state_foreign")
 	})
 	t.Run("extra entries, hard links, changed data and a moved directory refuse resume", func(t *testing.T) {
 		dir := quoteReplayTempDir(t)
 		spec := quoteReplaySmallSpec(t, dir, nil)
 		out, code := runQuoteReplayForTest(t, spec, "--max-deadlines", "10")
-		if code != 0 || out.Status != basketReplayStatusStopped {
+		if code != 0 || out.Status != replayStatusStopped {
 			t.Fatalf("exit %d status %s", code, out.Status)
 		}
-		spec.Mode = basketReplayModeResume
+		spec.Mode = replayModeResume
 		extra := filepath.Join(spec.Run.StateDir, "notes.txt")
 		if err := os.WriteFile(extra, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
@@ -535,7 +535,7 @@ func TestQuoteReplayRefusesUnsafeStateAndInputs(t *testing.T) {
 		refuse(t, spec, "state_foreign")
 		os.Remove(link)
 		changed := quoteReplaySmallSpec(t, dir, nil)
-		changed.Mode = basketReplayModeResume
+		changed.Mode = replayModeResume
 		changed.Trades[5].Sz = "0.6"
 		refuse(t, changed, "resume_refused")
 		moved := filepath.Join(dir, "moved-run")
@@ -570,7 +570,7 @@ func TestQuoteReplayRefusesUnsafeStateAndInputs(t *testing.T) {
 			spec := quoteReplaySmallSpec(t, dir, cases[name])
 			spec.Run.StateDir = filepath.Join(dir, strings.ReplaceAll(name, " ", "-"))
 			out, code := runQuoteReplayForTest(t, spec)
-			if code != basketReplayExitRefused || out.Refusal == nil {
+			if code != replayExitRefused || out.Refusal == nil {
 				t.Fatalf("%s: exit %d status %s", name, code, out.Status)
 			}
 			if _, err := os.Stat(spec.Run.StateDir); !os.IsNotExist(err) {
@@ -583,7 +583,7 @@ func TestQuoteReplayRefusesUnsafeStateAndInputs(t *testing.T) {
 			t.Fatal(err)
 		}
 		var buf strings.Builder
-		if code := runQuoteReplayWith([]string{"--spec", path}, strings.NewReader(""), &buf); code != basketReplayExitRefused || !strings.Contains(buf.String(), "spec_malformed") {
+		if code := runQuoteReplayWith([]string{"--spec", path}, strings.NewReader(""), &buf); code != replayExitRefused || !strings.Contains(buf.String(), "spec_malformed") {
 			t.Fatalf("unknown field: exit %d %s", code, buf.String())
 		}
 	})
@@ -631,7 +631,7 @@ func TestQuoteReplayStaysOutsideProduction(t *testing.T) {
 		dir := quoteReplayTempDir(t)
 		spec := quoteReplaySmallSpec(t, dir, nil)
 		_, code, _ := runQuoteReplaySubprocess(t, spec, "--fault", "progress-before-write:1")
-		if code != basketReplayExitFault {
+		if code != replayExitFault {
 			t.Fatalf("the first-deadline fault exited %d", code)
 		}
 		copyDir := filepath.Join(dir, "copied")

@@ -191,6 +191,13 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func shortFingerprint(fp string) string {
+	if len(fp) > 12 {
+		return fp[:12]
+	}
+	return fp
+}
+
 type captureSourceFile struct {
 	Spec  storageFileSpec
 	Stamp ledgerFileStamp

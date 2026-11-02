@@ -81,7 +81,84 @@ const entryIntentBaseColumns = `intent_id, scope, source, strategy_id, symbol, i
     hold_reason, confirmed_qty, confirmed_notional, confirmed_fee, applied_qty, applied_notional,
     applied_fee, settlement_seq, replay_payload_json, replay_delivered_seq, created_at_ms, updated_at_ms`
 
-var entryIntentOwnerColumns = []basketColumnDefault{
+type columnDefault struct {
+	Name    string
+	Default string
+}
+
+func (sdb *StateDB) columnProjection(table string, cols []columnDefault) (string, error) {
+	parts := make([]string, 0, len(cols))
+	for _, c := range cols {
+		has, err := sdb.tableHasColumn(table, c.Name)
+		if err != nil {
+			return "", fmt.Errorf("introspect %s columns in the %s state file: %w", table, sdb.storageRoleOf(), err)
+		}
+		if has {
+			parts = append(parts, c.Name)
+		} else {
+			parts = append(parts, c.Default+" AS "+c.Name)
+		}
+	}
+	return strings.Join(parts, ", "), nil
+}
+
+const entryIntentsV2DDL = `CREATE TABLE entry_order_intents_v2 (
+    intent_id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL CHECK (scope IN ('live','paper')),
+    source TEXT NOT NULL DEFAULT '',
+    strategy_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    interval_ms INTEGER NOT NULL,
+    target_side TEXT NOT NULL CHECK (target_side IN ('long','short')),
+    bar_open_ms INTEGER NOT NULL,
+    decision_boundary_ms INTEGER NOT NULL,
+    cutoff_ms INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    account_key TEXT NOT NULL DEFAULT '',
+    instrument_type TEXT NOT NULL DEFAULT '',
+    client_order_id TEXT NOT NULL,
+    initial_stop_client_id TEXT NOT NULL DEFAULT '',
+    venue_order_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK (status IN ('reserved','submitting','settling','committed','no_fill')),
+    request_json TEXT NOT NULL DEFAULT '',
+    evidence_json TEXT NOT NULL DEFAULT '',
+    hold_reason TEXT NOT NULL DEFAULT '',
+    confirmed_qty REAL NOT NULL DEFAULT 0,
+    confirmed_notional REAL NOT NULL DEFAULT 0,
+    confirmed_fee REAL NOT NULL DEFAULT 0,
+    applied_qty REAL NOT NULL DEFAULT 0,
+    applied_notional REAL NOT NULL DEFAULT 0,
+    applied_fee REAL NOT NULL DEFAULT 0,
+    settlement_seq INTEGER NOT NULL DEFAULT 0,
+    replay_payload_json TEXT NOT NULL DEFAULT '',
+    replay_delivered_seq INTEGER NOT NULL DEFAULT 0,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    decision_kind TEXT NOT NULL DEFAULT 'candle' CHECK (decision_kind IN ('candle','quote')),
+    quote_event_id TEXT NOT NULL DEFAULT '',
+    owner_mode TEXT NOT NULL DEFAULT '' CHECK (owner_mode IN ('','basket','pair')),
+    owner_group_id TEXT NOT NULL DEFAULT '',
+    CHECK ((decision_kind = 'candle' AND interval_ms > 0 AND quote_event_id = '')
+        OR (decision_kind = 'quote' AND interval_ms = 0 AND quote_event_id != '' AND owner_mode = 'pair'))
+)`
+
+var entryIntentIndexDDL = []string{
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_entry_intents_one_unresolved
+    ON entry_order_intents(scope, source, strategy_id)
+    WHERE status IN ('reserved','submitting','settling')`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_entry_intents_client_order
+    ON entry_order_intents(provider, account_key, client_order_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_entry_intents_decision
+    ON entry_order_intents(scope, source, strategy_id, symbol, interval_ms, target_side, bar_open_ms)`,
+	`CREATE TRIGGER IF NOT EXISTS trg_entry_intents_owner_immutable
+    BEFORE UPDATE ON entry_order_intents
+    WHEN NEW.owner_mode != OLD.owner_mode OR NEW.owner_group_id != OLD.owner_group_id
+      OR NEW.decision_kind != OLD.decision_kind OR NEW.quote_event_id != OLD.quote_event_id
+      OR NEW.client_order_id != OLD.client_order_id OR NEW.strategy_id != OLD.strategy_id
+    BEGIN SELECT RAISE(ABORT, 'entry intent owner and decision identity are immutable'); END`,
+}
+
+var entryIntentOwnerColumns = []columnDefault{
 	{"decision_kind", "'candle'"},
 	{"quote_event_id", "''"},
 	{"owner_mode", "CASE WHEN request_json LIKE '%\"kind\":\"basket:%' THEN 'basket' ELSE '' END"},
@@ -89,7 +166,7 @@ var entryIntentOwnerColumns = []basketColumnDefault{
 }
 
 func (sdb *StateDB) entryIntentSelect() (string, error) {
-	proj, err := sdb.basketProjection("entry_order_intents", entryIntentOwnerColumns)
+	proj, err := sdb.columnProjection("entry_order_intents", entryIntentOwnerColumns)
 	if err != nil {
 		return "", err
 	}
@@ -101,6 +178,51 @@ func (sdb *StateDB) migrateEntryDecisionSchema() error {
 		return fmt.Errorf("create entry decision tables: %w", err)
 	}
 	return sdb.migrateEntryIntentOwnerSchema()
+}
+
+func (sdb *StateDB) rebuildTableTx(table, ddl, copySQL string, after []string) error {
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmts := []string{
+		fmt.Sprintf("DROP TABLE IF EXISTS %s_v2", table),
+		ddl,
+		copySQL,
+		fmt.Sprintf("DROP TABLE %s", table),
+		fmt.Sprintf("ALTER TABLE %s_v2 RENAME TO %s", table, table),
+	}
+	stmts = append(stmts, after...)
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("rebuild %s: %w", table, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (sdb *StateDB) migrateEntryIntentOwnerSchema() error {
+	has, err := sdb.tableHasColumn("entry_order_intents", "owner_mode")
+	if err != nil {
+		return fmt.Errorf("introspect entry intent columns: %w", err)
+	}
+	if !has {
+		copySQL := `INSERT INTO entry_order_intents_v2 (` + entryIntentBaseColumns + `, decision_kind, quote_event_id, owner_mode, owner_group_id)
+			SELECT ` + entryIntentBaseColumns + `, 'candle', '',
+			    CASE WHEN request_json LIKE '%"kind":"basket:%' THEN 'basket' ELSE '' END, ''
+			FROM entry_order_intents ORDER BY rowid`
+		if err := sdb.rebuildTableTx("entry_order_intents", entryIntentsV2DDL, copySQL, entryIntentIndexDDL); err != nil {
+			return err
+		}
+		return nil
+	}
+	for _, ddl := range entryIntentIndexDDL {
+		if _, err := sdb.db.Exec(ddl); err != nil {
+			return fmt.Errorf("migrate entry intent indexes: %w", err)
+		}
+	}
+	return nil
 }
 
 func validEntryPartition(p RiskPartition) error {

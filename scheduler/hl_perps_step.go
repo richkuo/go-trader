@@ -19,7 +19,6 @@ type hlPerpsStep struct {
 	prices                   map[string]float64
 	feedCtx                  *marketFeedContext
 	hlBatchResults           *hlBatchCycleResults
-	basketCoord              *basketCoordinator
 	intervals                map[string]int
 	stratScope               PortfolioScope
 	persistenceHold          bool
@@ -133,7 +132,6 @@ func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 	prices := x.prices
 	feedCtx := x.feedCtx
 	hlBatchResults := x.hlBatchResults
-	basketCoord := x.basketCoord
 	intervals := x.intervals
 	stratScope := x.stratScope
 	persistenceHold := x.persistenceHold
@@ -178,27 +176,10 @@ func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 	var trades int
 	var detail string
 	var hlStep *hlStepTradeAlerts
-	if isPairMember(sc) {
-		basketCoord.observePair(sc, StrategyDecisionFields{}, nil, 0, "the management check has not returned a validated pair echo this cycle")
-	}
 	if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, hlBatchResults, feedCtx); ok {
 		validatedRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 		result.Regime = &validatedRegime
 		prices[result.Symbol] = price
-		if isBasketMember(sc) {
-			if pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
-				logger.Error("Basket member check returned a position-increasing %s signal; only the basket coordinator places member increases, so it is dropped (#1781)", signalStr)
-				result.Signal = 0
-			}
-			basketCoord.observe(sc, result, price)
-		}
-		if isPairMember(sc) {
-			if pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
-				logger.Error("Pair member check returned a position-increasing %s signal; only the pair coordinator places member increases, so it is dropped (#1862)", signalStr)
-				result.Signal = 0
-			}
-			basketCoord.observePair(sc, result.StrategyDecisionFields, result.Indicators, price, "")
-		}
 		if hlPosCtx.RestingTP != nil {
 			mu.Lock()
 			recordRestingTPScan(stratState, result.Symbol, hlPosCtx.RestingTP, result.StrategyDecisionFields)
@@ -278,10 +259,6 @@ func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 		entryAdm := admitClosedBarEntry(sc, stratState, mu, result.Symbol, result.StrategyDecisionFields, result.Signal, result.CloseFraction, hlPosQty, hlPosSide, tradingNow())
 		logEntryAdmission(entryAdm, signalStr, logger)
 		applyEntryAdmission(entryAdm, &result.Signal, &result.CloseFraction)
-		if isPairMember(sc) && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
-			logger.Error("Pair member %s signal would increase the position after management; only the pair coordinator places member increases, so it is dropped (#1862)", signalStr)
-			result.Signal = 0
-		}
 		mu.Lock()
 		syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 		updateStrategyDivergenceState(stratState, result.Divergence)
@@ -324,16 +301,13 @@ func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 			mu.Lock()
 			if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
 				if breach {
-					if bookPx, costErr := paperStopBookPx(sc, stratState, hlPosSide, breachPx); costErr != nil {
-						logStrategyCostRefusal(logger, "paper trailing stop", result.Symbol, costErr)
-					} else {
-						if newTrigger > 0 {
-							pos.StopLossTriggerPx = newTrigger
-						}
-						stopAt := hlStep.historyLenLocked()
-						if recordPerpsStopLossClose(stratState, result.Symbol, bookPx, paperStopReasonTrailing, logger) {
-							hlStep.bindWindowLocked(stopAt, fmt.Sprintf("[%s] PAPER TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, bookPx))
-						}
+					bookPx := paperStopBookPx(hlPosSide, breachPx)
+					if newTrigger > 0 {
+						pos.StopLossTriggerPx = newTrigger
+					}
+					stopAt := hlStep.historyLenLocked()
+					if recordPerpsStopLossClose(stratState, result.Symbol, bookPx, paperStopReasonTrailing, logger) {
+						hlStep.bindWindowLocked(stopAt, fmt.Sprintf("[%s] PAPER TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, bookPx))
 					}
 				} else {
 					if newHighWater > 0 {
@@ -386,9 +360,7 @@ func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 				}
 				if breach {
 					stopAt := hlStep.historyLenLocked()
-					if bookPx, costErr := paperStopBookPx(sc, stratState, hlPosSide, breachPx); costErr != nil {
-						logStrategyCostRefusal(logger, "paper stop", result.Symbol, costErr)
-					} else if recordPerpsStopLossClose(stratState, result.Symbol, bookPx, stopReason, logger) {
+					if bookPx := paperStopBookPx(hlPosSide, breachPx); recordPerpsStopLossClose(stratState, result.Symbol, bookPx, stopReason, logger) {
 						hlStep.bindWindowLocked(stopAt, fmt.Sprintf("[%s] %s %s @ $%.2f", sc.ID, paperStopLossDetailLabel(stopReason), result.Symbol, bookPx))
 					}
 				}

@@ -69,10 +69,6 @@ type HyperliquidResult struct {
 	SizedClosePreSend               hlCloseView            `json:"-"`
 	PaperPartialCloseHold           string                 `json:"-"`
 	EntrySubmitGate                 hlEntrySubmitGate      `json:"-"`
-	BasketMember                    bool                   `json:"basket_member,omitempty"`
-	BasketOpenQty                   float64                `json:"-"`
-	PairMember                      *pairMemberRequest     `json:"pair_member,omitempty"`
-	PairFill                        *pairBookFill          `json:"-"`
 }
 
 type hlEntryOrderTags struct {
@@ -237,22 +233,6 @@ func (b *pythonBoundedBuffer) Write(p []byte) (int, error) {
 	return b.buf.Write(p)
 }
 
-func acquirePythonSlot(ctx context.Context) (func(), error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	select {
-	case pythonSemaphore <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	if err := ctx.Err(); err != nil {
-		<-pythonSemaphore
-		return nil, err
-	}
-	return func() { <-pythonSemaphore }, nil
-}
-
 func spawnPythonProcessWithEnvLimited(parentCtx context.Context, script string, args []string, stdinData []byte, timeout time.Duration, envOverrides map[string]string, limits pythonOutputLimits) ([]byte, []byte, error) {
 	stdout, stderr, err := spawnPythonProcessRawLimited(parentCtx, ".venv/bin/python3", egressPythonArgv(script, args), stdinData, timeout, egressChildEnvironment(envOverrides), limits)
 	return stdout, processEgress.recordChildOutcome(stderr), err
@@ -298,9 +278,6 @@ func spawnPythonProcessRawLimited(parentCtx context.Context, python string, cmdA
 
 	if err := cmd.Start(); err != nil {
 		return nil, nil, err
-	}
-	if box, ok := parentCtx.Value(pairOraclePidKey{}).(*pairOraclePidBox); ok && cmd.Process != nil {
-		box.pid.Store(int64(cmd.Process.Pid))
 	}
 	err := cmd.Wait()
 	if ctx.Err() != nil {
@@ -837,7 +814,6 @@ type HyperliquidClose struct {
 	Fill        *HyperliquidCloseFill `json:"fill,omitempty"`
 	AlreadyFlat bool                  `json:"already_flat,omitempty"`
 	SubmittedSz float64               `json:"submitted_sz,omitempty"`
-	Evidence    *nativeCloseEvidence  `json:"evidence,omitempty"`
 }
 
 type HyperliquidCloseResult struct {
@@ -1524,7 +1500,6 @@ type OKXResult struct {
 	EntrySubmitGate okxEntrySubmitGate     `json:"-"`
 	CloseReduceOnly bool                   `json:"-"`
 	OrderSubmitted  bool                   `json:"-"`
-	PairMember      *pairMemberRequest     `json:"pair_member,omitempty"`
 }
 
 type okxEntrySubmitGate func(side string, size float64) (okxEntryOrderTags, error)
@@ -1631,14 +1606,12 @@ type OKXCloseFill struct {
 	TotalSz float64 `json:"total_sz,omitempty"`
 	OID     string  `json:"oid,omitempty"`
 	Fee     float64 `json:"fee,omitempty"`
-	BaseSz  float64 `json:"base_sz,omitempty"`
 }
 
 type OKXClose struct {
-	Symbol      string               `json:"symbol"`
-	Fill        *OKXCloseFill        `json:"fill,omitempty"`
-	AlreadyFlat bool                 `json:"already_flat,omitempty"`
-	Evidence    *nativeCloseEvidence `json:"evidence,omitempty"`
+	Symbol      string        `json:"symbol"`
+	Fill        *OKXCloseFill `json:"fill,omitempty"`
+	AlreadyFlat bool          `json:"already_flat,omitempty"`
 }
 
 type OKXCloseResult struct {
@@ -1663,9 +1636,6 @@ func RunOKXClose(script, symbol string, partialSz *float64) (*OKXCloseResult, st
 func parseOKXCloseOutput(stdout []byte, stderrStr string, runErr error) (*OKXCloseResult, string, error) {
 	var result OKXCloseResult
 	parseErr := json.Unmarshal(stdout, &result)
-	if result.Close != nil && result.Close.Fill != nil {
-		result.Close.Fill.BaseSz = 0
-	}
 
 	switch {
 	case runErr == nil && parseErr == nil && result.Error == "":

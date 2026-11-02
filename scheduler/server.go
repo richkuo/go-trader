@@ -355,7 +355,6 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Hedge                          *HedgeStatus               `json:"hedge,omitempty"`
 		Partition                      string                     `json:"partition,omitempty"`
 		PaperSource                    string                     `json:"paper_source,omitempty"`
-		PairValuation                  string                     `json:"pair_valuation,omitempty"`
 	}
 
 	type PaperSourceStatus struct {
@@ -392,9 +391,6 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PaperSources         []PaperSourceStatus             `json:"paper_sources,omitempty"`
 		Partitions           []PartitionStatus               `json:"partitions,omitempty"`
 		Egress               egressStatus                    `json:"egress"`
-		PairValuation        string                          `json:"pair_valuation,omitempty"`
-		PairValuationByScope map[string]string               `json:"pair_valuation_by_scope,omitempty"`
-		PairAccounts         []pairAccountDisplay            `json:"pair_accounts,omitempty"`
 	}
 
 	ss.strategiesMu.RLock()
@@ -405,11 +401,8 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		cfgByID[sc.ID] = sc
 	}
 
-	pm := ss.state.pairMarksLocked()
-	totalValue, totalStatus := latestDisplayTotalMarked(ss.state, prices, pm)
-	totalNotional, notionalStatus := portfolioNotionalMarked(ss.state.Strategies, prices, pm)
-	totalStatus.merge(notionalStatus)
-	pairByScope := map[string]string{}
+	totalValue := latestDisplayTotal(ss.state, prices)
+	totalNotional := portfolioNotional(ss.state.Strategies, prices)
 
 	// Every by-scope map is keyed by partition text, so a folded source's own
 	// risk, value, notional and correlation are distinct from every other's.
@@ -425,13 +418,8 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		} else {
 			riskByScope[key] = PortfolioRiskState{}
 		}
-		var partStatus, partNotionalStatus pairValueStatus
-		valueByScope[key], partStatus = latestDisplayTotalForPartitionMarked(ss.state, cfgStrategies, part, prices, pm)
-		notionalByScope[key], partNotionalStatus = portfolioNotionalMarked(filterStatesByPartition(ss.state.Strategies, cfgStrategies, part), prices, pm)
-		partStatus.merge(partNotionalStatus)
-		if label := partStatus.label(); label != "" {
-			pairByScope[key] = label
-		}
+		valueByScope[key] = latestDisplayTotalForPartition(ss.state, cfgStrategies, part, prices)
+		notionalByScope[key] = portfolioNotional(filterStatesByPartition(ss.state.Strategies, cfgStrategies, part), prices)
 		if snap := ss.state.partitionCorrelation(part); snap != nil {
 			corrByScope[key] = snap
 		}
@@ -455,11 +443,6 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ReconciliationGaps:   ss.state.ReconciliationGaps,
 		MarketFeed:           marketFeedStatusBlock(),
 		Egress:               processEgress.status(),
-		PairValuation:        totalStatus.label(),
-		PairAccounts:         pairAccountDisplays(pm),
-	}
-	if len(pairByScope) > 0 {
-		resp.PairValuationByScope = pairByScope
 	}
 	// Only sources this process actually owns are listed, so the dashboard's
 	// selector can never offer a deployment this process does not read.
@@ -491,7 +474,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp.Correlation = ss.state.partitionCorrelation(legacyScope)
 
 	for id, s := range ss.state.Strategies {
-		pv, pvStatus := displayStrategyValueMarked(s, prices, pm)
+		pv := displayStrategyValue(s, prices)
 		sc, configured := cfgByID[id]
 		// A state row the roster no longer configures has no owning partition,
 		// and naming one would file its alerts under a deployment it may not
@@ -538,7 +521,6 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			Hedge:                          buildHedgeStatus(sc, s),
 			Partition:                      partitionText,
 			PaperSource:                    sc.PaperSource,
-			PairValuation:                  pvStatus.label(),
 		}
 	}
 

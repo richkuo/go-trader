@@ -1444,7 +1444,7 @@ def resolve_comparison_cost_model(doc: dict, start: pd.Timestamp, end: pd.Timest
         source = "booked_rows" if doc["schema_version"] >= 2 else "export_version_1_rows_read_as_0"
     if version in REPLAY_FILL_COST_MODEL_VERSIONS:
         out["refusals"].append({"reason": "paper_cost_model_replay_unsupported", "version": version,
-                                "detail": f"cost model version {version} marks offline basket replay fills booked with "
+                                "detail": f"cost model version {version} marks offline research replay fills booked with "
                                           "a custom replay cost policy; their per-fill policy evidence lives in the "
                                           "replay state file, and this comparison never substitutes the frozen "
                                           "default paper costs for them"})

@@ -1295,7 +1295,7 @@ def contract_selector(registry):
         and tuple(entry.get("platforms") or ()) == ("futures",)
         and entry.get("short_entries") is True
         and str(entry.get("edge_ref") or "").startswith("backtest/candidates/")
-        and not entry.get("basket") and not entry.get("pair") and not entry.get("quote")
+        and not entry.get("quote")
     )
 
 

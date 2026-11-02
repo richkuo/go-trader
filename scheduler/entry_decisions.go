@@ -89,11 +89,24 @@ const (
 	entryDecisionKindQuote  = "quote"
 )
 
-func (in *entryIntent) pairOwned() bool {
+const (
+	entryOwnerModePair   = "pair"
+	entryOwnerModeBasket = "basket"
+)
+
+func (in *entryIntent) researchGroupOwned() bool {
 	if in == nil {
 		return false
 	}
-	return in.OwnerMode == pairGroupMode || in.DecisionKind == entryDecisionKindQuote || strings.HasPrefix(entryIntentRequestKind(in), "pair:")
+	if in.OwnerMode == entryOwnerModePair || in.OwnerMode == entryOwnerModeBasket || in.DecisionKind == entryDecisionKindQuote {
+		return true
+	}
+	kind := entryIntentRequestKind(in)
+	return strings.HasPrefix(kind, entryOwnerModePair+":") || strings.HasPrefix(kind, entryOwnerModeBasket+":")
+}
+
+func retiredResearchIntentRefusal(intentID string) string {
+	return fmt.Sprintf("entry attempt %s belongs to the basket and pair research feature removed in issue 1955; its code is kept in git tag %s, the attempt is never resolved or released here, and the strategy needs a fresh id", intentID, retiredResearchArchiveTag)
 }
 
 func entryIntentRequestKind(in *entryIntent) string {

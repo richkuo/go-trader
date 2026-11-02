@@ -21,7 +21,7 @@ jobs:
         run: cd scheduler && go build -ldflags "-X main.Version=$(git describe --tags --always --dirty=-mod)" .
 
       - name: Remaining Go tests
-        run: cd scheduler && go test -skip '^TestBasket' ./...
+        run: cd scheduler && go test ./...
 
       - name: Format check (every tracked Go file)
         run: |

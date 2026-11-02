@@ -378,15 +378,6 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 
 		req.Strategies[sc.ID] = entry
 	}
-	for _, b := range cfg.Baskets {
-		for _, sc := range basketMemberConfigs(cfg, b) {
-			symbol, timeframe := strategyArgSymbolTimeframe(sc.Args)
-			if symbol == "" || timeframe == "" {
-				continue
-			}
-			req.addKey(feedKeyFor(symbol, timeframe), basketFrameLookback(b.LookbackBars))
-		}
-	}
 	if err := volumeProfileUnionError(req); err != nil {
 		errs = append(errs, err.Error())
 	}

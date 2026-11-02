@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-const pairMemberProbeRequestJSON = `{"pair_id":"probe","member_id":"probe","provider":"hyperliquid","instrument":"BTC","mode":"management_only"}`
-
 var probeArgv = []string{
 	"probe", "BTC", "1h",
 	"--strategy-refs", `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}]}`,
@@ -33,8 +31,6 @@ var probeArgv = []string{
 	allowNoEdgeFlag,
 	closedBarDecisionsFlag,
 	decisionRegimeTimeframeFlag + "=1h",
-	basketMemberFlag,
-	pairMemberFlag + "=" + pairMemberProbeRequestJSON,
 	"--probe-only",
 }
 
@@ -57,24 +53,6 @@ var probeCompositeArgv = []string{
 	allowNoEdgeFlag,
 	closedBarDecisionsFlag,
 	decisionRegimeTimeframeFlag + "=1h",
-	basketMemberFlag,
-	pairMemberFlag + "=" + pairMemberProbeRequestJSON,
-	"--probe-only",
-}
-
-const okxPairMemberProbeRequestJSON = `{"pair_id":"probe","member_id":"probe","provider":"okx","instrument":"BTC-USDT-SWAP","mode":"management_only"}`
-
-var okxPairManagementProbeArgv = []string{
-	"pair_member", "BTC", "1h", "--mode=paper", "--inst-type=swap",
-	"--position-side", "long",
-	"--position-avg-cost=1",
-	"--position-qty=1",
-	"--position-initial-qty=1",
-	"--position-entry-atr=1",
-	"--position-risk-anchor-price=1",
-	"--strategy-refs", `{"open":{"name":"pair_member","params":{}},"closes":[{"name":"atr_stop","params":{"atr_mult":3}}]}`,
-	pairMemberFlag + "=" + okxPairMemberProbeRequestJSON,
-	pairManagementStdinFlag,
 	"--probe-only",
 }
 
@@ -144,8 +122,6 @@ var sizedCloseProbeArgv = []string{
 	"--cloid=0x00000000000000000000000000000003",
 	"--probe-only",
 }
-
-var basketRankerProbeArgv = []string{"--probe-only"}
 
 var limitOpenProbeArgv = []string{
 	"--limit-open",
@@ -274,34 +250,6 @@ var robinhoodCloseProbeArgv = []string{
 	"--ref-id=00000000-0000-4000-8000-000000000000", "--probe-only",
 }
 
-const (
-	pairOrderHLProbeRequestJSON     = `{"v":2,"pair_id":"probe","partition":"live","member_id":"probe","provider":"hyperliquid","account_key":"hyperliquid:mainnet:0x0000000000000000000000000000000000000001","instrument":"BTC","client_order_id":"0x00000000000000000000000000000005","purpose":"pair_exit","order_side":"sell","position_side":"long","base_qty":0.001,"native_qty":0.001,"contract_size":1,"price_bound":1,"accept_deadline_ms":1,"origin_slot_ms":1,"reduce_only":true,"contract_fingerprint":"0000000000000000000000000000000000000000000000000000000000000000","reference_max_age_ms":1,"reference_receipt_ms":1,"reference_px":"1"}`
-	pairOrderOKXProbeRequestJSON    = `{"v":2,"pair_id":"probe","partition":"live","member_id":"probe","provider":"okx","account_key":"okx:swap:live:key-0000000000000000","instrument":"BTC-USDT-SWAP","client_order_id":"gtprobe","purpose":"pair_entry","order_side":"buy","position_side":"long","base_qty":0.01,"native_qty":1,"contract_size":0.01,"price_bound":1,"accept_deadline_ms":1,"quote_event_id":"pq-probe","origin_slot_ms":1,"reduce_only":false,"contract_fingerprint":"0000000000000000000000000000000000000000000000000000000000000000","capability_hash":"0000000000000000000000000000000000000000000000000000000000000000","evidence_hash":"0000000000000000000000000000000000000000000000000000000000000000"}`
-	pairPositionHLProbeRequestJSON  = `{"v":1,"provider":"hyperliquid","account_key":"hyperliquid:mainnet:0x0000000000000000000000000000000000000001","instrument":"BTC","member_id":"probe","partition":"live"}`
-	pairPositionOKXProbeRequestJSON = `{"v":1,"provider":"okx","account_key":"okx:swap:live:key-0000000000000000","instrument":"BTC-USDT-SWAP","member_id":"probe","partition":"live"}`
-	pairNativeHistoryHLProbeJSON    = `{"v":1,"pair_id":"probe","partition":"live","member_id":"probe","provider":"hyperliquid","account_key":"hyperliquid:mainnet:0x0000000000000000000000000000000000000001","instrument":"BTC","attempt_id":"pna-00000000000000000000000000000000","order_side":"sell","venue_order_ids":["1"],"from_ms":1,"through_ms":2,"revision":"0000000000000000"}`
-	pairNativeHistoryOKXProbeJSON   = `{"v":1,"pair_id":"probe","partition":"live","member_id":"probe","provider":"okx","account_key":"okx:swap:live:key-0000000000000000","instrument":"BTC-USDT-SWAP","attempt_id":"pna-00000000000000000000000000000000","order_side":"buy","venue_order_ids":["1"],"from_ms":1,"through_ms":2,"revision":"0000000000000000"}`
-)
-
-var pairOrderHLProbeArgvs = [][]string{
-	{pairOrderFlag + "=" + pairOrderHLProbeRequestJSON, "--mode=live", "--probe-only"},
-	{pairQueryFlag + "=" + pairOrderHLProbeRequestJSON, "--since-ms=1", "--mode=live", "--probe-only"},
-	{pairPositionFlag + "=" + pairPositionHLProbeRequestJSON, "--mode=live", "--probe-only"},
-	{pairNativeHistoryFlag + "=" + pairNativeHistoryHLProbeJSON, "--mode=live", "--probe-only"},
-}
-
-var pairOrderOKXProbeArgvs = [][]string{
-	{pairOrderFlag + "=" + pairOrderOKXProbeRequestJSON, "--mode=live", "--probe-only"},
-	{pairQueryFlag + "=" + pairOrderOKXProbeRequestJSON, "--since-ms=1", "--mode=live", "--probe-only"},
-	{pairNativeHistoryFlag + "=" + pairNativeHistoryOKXProbeJSON, "--mode=live", "--probe-only"},
-}
-
-var pairPositionOKXProbeArgv = []string{pairPositionFlag + "=" + pairPositionOKXProbeRequestJSON, "--mode=live", "--probe-only"}
-
-var pairEvidenceHyperliquidProbeArgv = []string{"--provider=hyperliquid", "--instrument=BTC", "--probe-only"}
-
-var pairEvidenceOKXProbeArgv = []string{"--provider=okx", "--instrument=BTC-USDT-SWAP", "--probe-only"}
-
 const probeTimeout = 15 * time.Second
 
 var probeOneCheckScriptFn = probeOneCheckScript
@@ -354,11 +302,6 @@ func probeCheckScripts(cfg *Config) error {
 					return err
 				}
 			}
-			for _, argv := range pairOrderHLProbeArgvs {
-				if err := probeOneCheckScriptFn(script, argv); err != nil {
-					return err
-				}
-			}
 		}
 		if filepath.Base(script) == "check_robinhood.py" {
 			if err := probeOneCheckScriptFn(script, robinhoodExecuteProbeArgv); err != nil {
@@ -378,14 +321,6 @@ func probeCheckScripts(cfg *Config) error {
 			if err := probeOneCheckScriptFn(script, okxRecoverEntryProbeArgv); err != nil {
 				return err
 			}
-			for _, argv := range pairOrderOKXProbeArgvs {
-				if err := probeOneCheckScriptFn(script, argv); err != nil {
-					return err
-				}
-			}
-			if err := probeOneCheckScriptFn(script, okxPairManagementProbeArgv); err != nil {
-				return err
-			}
 		}
 	}
 	if anyRobinhoodLiveSpot(cfg) {
@@ -401,44 +336,6 @@ func probeCheckScripts(cfg *Config) error {
 	}
 	if anyHLLiveReconcilable(cfg) {
 		if err := probeOneCheckScriptFn(hyperliquidLiveCloseScript, sizedCloseProbeArgv); err != nil {
-			return err
-		}
-	}
-	hlPerps, okxSwap := pairEvidenceProbeProviders(cfg)
-	if hlPerps {
-		if err := probeOneCheckScriptFn(pairEvidenceReaderScript, pairEvidenceHyperliquidProbeArgv); err != nil {
-			return err
-		}
-		if err := probeOneCheckScriptFn(pairQuoteReaderScript, pairQuoteHLPublicProbeArgv); err != nil {
-			return err
-		}
-		if err := probeOneCheckScriptFn(pairQuoteReaderScript, pairQuoteHLArchiveProbeArgv); err != nil {
-			return err
-		}
-		for _, argv := range [][]string{pairHistoryHLCandlesProbeArgv, pairHistoryHLFundingProbeArgv, pairHistoryHLOracleProbeArgv, pairHistoryHLResearchFundingProbeArgv} {
-			if err := probeOneCheckScriptFn(pairHistoryReaderScript, argv); err != nil {
-				return err
-			}
-		}
-	}
-	if okxSwap {
-		if err := probeOneCheckScriptFn(pairEvidenceReaderScript, pairEvidenceOKXProbeArgv); err != nil {
-			return err
-		}
-		if err := probeOneCheckScriptFn(pairQuoteReaderScript, pairQuoteOKXPublicProbeArgv); err != nil {
-			return err
-		}
-		if err := probeOneCheckScriptFn(okxFetchPositionsScript, pairPositionOKXProbeArgv); err != nil {
-			return err
-		}
-		for _, argv := range [][]string{pairHistoryOKXCandlesProbeArgv, pairHistoryOKXFundingProbeArgv, pairHistoryOKXResearchFundingProbeArgv} {
-			if err := probeOneCheckScriptFn(pairHistoryReaderScript, argv); err != nil {
-				return err
-			}
-		}
-	}
-	if len(cfg.Baskets) > 0 {
-		if err := probeOneCheckScriptFn(basketRankerScript, basketRankerProbeArgv); err != nil {
 			return err
 		}
 	}
@@ -463,23 +360,8 @@ func probeCheckScripts(cfg *Config) error {
 		if err := probeOneCheckScriptFn("shared_scripts/simulate_strategy.py", simulateStrategyProbeArgv); err != nil {
 			return err
 		}
-		if err := probeOneCheckScriptFn(pairPolicyScript, pairPolicyProbeArgv); err != nil {
-			return err
-		}
 	}
 	return nil
-}
-
-func pairEvidenceProbeProviders(cfg *Config) (hlPerps, okxSwap bool) {
-	for _, sc := range cfg.Strategies {
-		switch {
-		case sc.Platform == "hyperliquid" && sc.Type == "perps":
-			hlPerps = true
-		case sc.Platform == "okx" && sc.Type == "perps" && okxInstType(sc.Args) == "swap":
-			okxSwap = true
-		}
-	}
-	return hlPerps, okxSwap
 }
 
 func anyHLLiveReconcilable(cfg *Config) bool {

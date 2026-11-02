@@ -108,9 +108,6 @@ var knownShortNames = map[string]string{
 	"camarilla_pivot_reversal":     "cpr",
 	"mass_index_reversal":          "massrev",
 	"calendar_conditioned_entry":   "cce",
-	"basket_scripted_fixture":      "bskfix",
-	"cross_sectional_momentum":     "xsmom",
-	"cross_sectional_reversal":     "xsrev",
 	"stochastic_momentum_index":    "smi",
 	"elder_force_pullback":         "efp",
 	"true_strength_index":          "tsi",
@@ -182,9 +179,6 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"camarilla_pivot_reversal":     {"futures"},
 	"mass_index_reversal":          {"futures"},
 	"calendar_conditioned_entry":   {"futures"},
-	"basket_scripted_fixture":      {"futures"},
-	"cross_sectional_momentum":     {"futures"},
-	"cross_sectional_reversal":     {"futures"},
 	"stochastic_momentum_index":    {"futures"},
 	"elder_force_pullback":         {"futures"},
 	"true_strength_index":          {"futures"},
@@ -214,17 +208,10 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"perpetual_premium_reversion":        {"futures"},
 	"order_book_imbalance":               {"futures"},
 	"inventory_market_making":            {"futures"},
-	"cross_exchange_perp_arbitrage":      {"futures"},
 }
 
 func openStrategyRegisteredFor(name, registryPlatform string) bool {
-	if basketRankerStrategies[name] {
-		return false
-	}
 	if _, quote := quoteCapabilityStrategies[name]; quote {
-		return false
-	}
-	if pairPolicyStrategies[name] {
 		return false
 	}
 	for _, p := range registeredOpenStrategyPlatforms[name] {

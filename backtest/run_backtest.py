@@ -92,7 +92,7 @@ def _attach_funding_if_needed(df, strategy_name, symbol, since,
                 print(f"  Funding: {have}/{len(out)} bars covered (HL hourly, coin={coin})")
     return out
 from htf_filter import get_default_htf, apply_htf_filter
-from registry_loader import load_registry, refuse_basket_evaluator, refuse_pair_evaluator
+from registry_loader import load_registry, refuse_quote_capability
 from lead_lag_history import (LEADER_INPUT_STRATEGIES, LeaderDataUnavailable, cached_leader_params,
                               manifest_leader_params, refuse_leader_input_strategy)
 from backtester import (Backtester, CapabilityContext, CloseCapabilityError,
@@ -1786,7 +1786,6 @@ def run_single_backtest(
     regime_label_plan: Optional[dict] = None,
     resting_tp_trade_through: bool = False,
 ) -> Optional[dict]:
-    refuse_pair_evaluator(load_registry(registry), strategy_name)
     if strategy_name in BOOK_INPUT_STRATEGIES:
         try:
             refuse_book_input_strategy(strategy_name, "run_backtest.py single runs (cached or --manifest)")
@@ -1869,7 +1868,7 @@ def run_single_backtest(
         phase="preflight",
     )
     reg = load_registry(registry)
-    refuse_basket_evaluator(reg, strategy_name)
+    refuse_quote_capability(reg, strategy_name)
     strat = reg.STRATEGY_REGISTRY.get(strategy_name)
     if not strat:
         print(f"Unknown strategy '{strategy_name}' in '{registry}' registry")
@@ -2345,7 +2344,7 @@ def run_walk_forward(
                                     comparison_mode=comparison_mode,
                                     platform=platform, phase="preflight")
     reg = load_registry(registry)
-    refuse_basket_evaluator(reg, strategy_name)
+    refuse_quote_capability(reg, strategy_name)
     refuse_leader_input_strategy(strategy_name, "walk-forward optimization")
     refuse_book_input_strategy(strategy_name, "walk-forward optimization")
     if strategy_name in VOLUME_PROFILE_INPUT_STRATEGIES:

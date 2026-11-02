@@ -293,9 +293,6 @@ func quoteOwnerConfigErrors(sc StrategyConfig) []string {
 	if HedgeEnabled(sc) || sc.Hedge != nil {
 		add("hedge is refused for a quote owner")
 	}
-	if strings.TrimSpace(sc.BasketID) != "" {
-		add("basket ownership is refused for a quote owner")
-	}
 	if sc.RegimeProfileAllocation != nil || sc.RegimeDirectionalPolicy != nil || sc.RegimeWindowDivergence != nil {
 		add("regime close and allocation features are refused for a quote owner")
 	}
