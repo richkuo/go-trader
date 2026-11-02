@@ -2839,6 +2839,7 @@ No test reads these files, and the container image does not hold them.
 With `code=false`, every Go, Python-backed, shell-suite, Python and container image job is skipped, and `checks` still runs (it holds the CLAUDE.md size and layout check).
 A push to main, a release, a manual run, any other path and any git error all give `code=true`, so the full CI runs; a rename counts both its old and its new path.
 When a test starts to read one of these files, remove that file from the list in the script.
+Before it decides, the `changes` job runs `scripts/check_ci_code_changed.sh`, which runs the detector on real merge commits in a temporary repository (docs-only, docs and code, push, no event, a test-read doc, renames, a non-merge head) and checks that both workflows wire the `code` output; a failure there fails the run, so a broken detector never skips the suites without a red check.
 Each gated suite job carries exactly `needs: changes` and `if: ${{ needs.changes.outputs.code == 'true' }}` at job level; `TestShellSuiteCIWiring` accepts only that pair and still refuses every other condition.
 
 **Python CI and the test budget.** Python CI has two suites: `default` (`uv run pytest` over `testpaths`) and `shared_scripts` (`uv run pytest shared_scripts/`, which sits outside `testpaths`).

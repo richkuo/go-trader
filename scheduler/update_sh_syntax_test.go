@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"sort"
@@ -378,6 +379,30 @@ func requireCIJob(t *testing.T, jobs map[string]*ciWorkflowJob, name string) *ci
 		t.Fatalf("job %s has no run: steps", name)
 	}
 	return job
+}
+
+func requireCIChangesJob(t *testing.T, workflow string, jobs map[string]*ciWorkflowJob) {
+	t.Helper()
+	job, ok := jobs["changes"]
+	if !ok {
+		t.Fatalf(".github/workflows/%s has no changes job, but its suite jobs read needs.changes.outputs.code", workflow)
+	}
+	want := [][]string{{"bash scripts/check_ci_code_changed.sh"}, {"bash scripts/ci_code_changed.sh"}}
+	if !reflect.DeepEqual(job.logical, want) {
+		t.Fatalf(".github/workflows/%s changes job runs %q, want the detector check and then the detector: %q", workflow, job.logical, want)
+	}
+	outputs := 0
+	for _, line := range job.raw {
+		if line == "      code: ${{ steps.diff.outputs.code }}" {
+			outputs++
+		}
+		if ciStepIf.MatchString(line) || strings.Contains(line, "continue-on-error") {
+			t.Fatalf(".github/workflows/%s changes job has %s, so the detector check might not run", workflow, strings.TrimSpace(line))
+		}
+	}
+	if outputs != 1 {
+		t.Fatalf(".github/workflows/%s changes job declares its code output %d times, want 1", workflow, outputs)
+	}
 }
 
 func goTestFuncBody(t *testing.T, path, name string) string {
@@ -823,6 +848,13 @@ func TestShellSuiteCIWiring(t *testing.T) {
 		t.Fatal(".github/workflows/ci.yml sets GOFLAGS, which can change the tests a go-python-integration shard selects")
 	}
 	jobs := parseCIWorkflowJobs(t, workflowPath)
+	for _, wf := range []string{"ci.yml", "container.yml"} {
+		wfJobs := jobs
+		if wf != "ci.yml" {
+			wfJobs = parseCIWorkflowJobs(t, filepath.Join(repoRoot, ".github", "workflows", wf))
+		}
+		requireCIChangesJob(t, wf, wfJobs)
+	}
 	shards := readPyIntegrationShards(t, jobs)
 	allowlist := shards[0].run
 	requireCIJob(t, jobs, ciShellSuitesJob)

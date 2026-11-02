@@ -31,6 +31,9 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
+      - name: Check the change detector and its wiring
+        run: bash scripts/check_ci_code_changed.sh
+
       - name: Decide whether the change touches anything a test reads
         id: diff
         env:
