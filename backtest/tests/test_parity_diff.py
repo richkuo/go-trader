@@ -1,6 +1,7 @@
 
 import os
 import sys
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -341,53 +342,78 @@ def test_backtest_effective_columns_are_prior_bar_inputs():
     want = frame["bt_signal"].iloc[:-1].tolist()
     assert got == want
 
-def _live_config_json(stype: str = "perps") -> dict:
-    return {
-        "config_version": 15,
-        "strategies": [{
-            "id": "test-strat",
-            "type": stype,
-            "script": "shared_scripts/check_hyperliquid.py",
-            "args": ["sma_crossover", "BTC/USDT", "1h"],
-            "open_strategy": {
-                "name": "sma_crossover",
-                "params": {"fast_period": 5, "slow_period": 20},
-            },
-        }],
+def _live_config_json(stype: str = "perps", sid: str = "test-strat",
+                      platform: Optional[str] = None, **extra) -> dict:
+    sc = {
+        "id": sid,
+        "type": stype,
+        "script": "shared_scripts/check_hyperliquid.py",
+        "args": ["sma_crossover", "BTC/USDT", "1h"],
+        "open_strategy": {
+            "name": "sma_crossover",
+            "params": {"fast_period": 5, "slow_period": 20},
+        },
     }
+    if platform:
+        sc["platform"] = platform
+    sc.update(extra)
+    return {"config_version": 15, "strategies": [sc]}
 
 
-def test_config_mode_platform_autodetect_and_explicit_override(tmp_path, subtests):
+def _write_live_config(tmp_path, stype="perps", sid="test-strat", platform=None, **extra):
     import json as _json
-    for stype, want_platform in [
-        ("perps", "hyperliquid"),
-        ("manual", "hyperliquid"),
-        ("futures", "binanceus"),
-        ("spot", "binanceus"),
-    ]:
-        with subtests.test(stype=stype):
-            cfg_path = tmp_path / "config.json"
-            cfg_path.write_text(_json.dumps(_live_config_json(stype)))
-            cfg = config_from_live_config(str(cfg_path), "test-strat", platform="")
+    cfg_path = tmp_path / f"{sid}-{stype}-{platform}.json"
+    cfg_path.write_text(_json.dumps(_live_config_json(stype, sid, platform, **extra)))
+    return str(cfg_path)
+
+
+_CONFIG_AUTOMATIC_PLATFORM_CASES = [
+    ("test-strat", "perps", None, "binanceus"),
+    ("test-strat", "spot", None, "binanceus"),
+    ("test-strat", "perps", "hyperliquid", "hyperliquid"),
+    ("test-strat", "manual", "hyperliquid", "hyperliquid"),
+    ("hl-strat", "perps", None, "hyperliquid"),
+    ("rh-strat", "spot", None, "robinhood"),
+    ("hl-strat", "spot", "robinhood", "robinhood"),
+    ("okx-strat", "perps", None, "okx-perps"),
+    ("okx-strat", "spot", None, "okx"),
+    ("luno-strat", "spot", None, "luno"),
+]
+
+
+def test_config_mode_platform_autodetect_and_explicit_override(tmp_path, capsys, subtests):
+    for sid, stype, platform, want_platform in _CONFIG_AUTOMATIC_PLATFORM_CASES:
+        with subtests.test(sid=sid, stype=stype, platform=platform):
+            path = _write_live_config(tmp_path, stype, sid, platform)
+            cfg = config_from_live_config(path, sid, platform="")
             assert cfg.platform == want_platform
+            assert "platform selection" not in capsys.readouterr().err
+    for sid, stype, platform in [("test-strat", "futures", None),
+                                 ("test-strat", "manual", None),
+                                 ("deribit-strat", "options", None),
+                                 ("test-strat", "spot", "kraken")]:
+        with subtests.test(sid=sid, stype=stype, platform=platform, refused=True):
+            path = _write_live_config(tmp_path, stype, sid, platform)
+            with pytest.raises(ValueError, match="explicit --platform"):
+                config_from_live_config(path, sid, platform="")
     with subtests.test(case="explicit_platform_overrides_autodetect"):
-        _assert_config_mode_explicit_platform_overrides_autodetect(tmp_path)
+        _assert_config_mode_explicit_platform_overrides_autodetect(tmp_path, capsys)
 
 
-def _assert_config_mode_explicit_platform_overrides_autodetect(tmp_path):
-    import json as _json
-    cfg_path = tmp_path / "config.json"
-    cfg_path.write_text(_json.dumps(_live_config_json("spot")))
-    cfg = config_from_live_config(str(cfg_path), "test-strat",
-                                  platform="hyperliquid")
+def _assert_config_mode_explicit_platform_overrides_autodetect(tmp_path, capsys):
+    path = _write_live_config(tmp_path, "spot")
+    cfg = config_from_live_config(path, "test-strat", platform="hyperliquid")
     assert cfg.platform == "hyperliquid"
+    warnings = [l for l in capsys.readouterr().err.splitlines()
+                if l.startswith("[WARN] platform selection")]
+    assert len(warnings) == 1
+    assert "'binanceus'" in warnings[0] and "'spot'" in warnings[0]
+    assert "--platform hyperliquid" in warnings[0]
 
 
 def test_main_config_mode_fills_use_autodetected_platform(tmp_path, monkeypatch):
-    import json as _json
     import data_fetcher
-    cfg_path = tmp_path / "config.json"
-    cfg_path.write_text(_json.dumps(_live_config_json("perps")))
+    path = _write_live_config(tmp_path, "perps", platform="hyperliquid")
     monkeypatch.setattr(data_fetcher, "load_cached_data",
                         lambda *a, **k: _trending_ohlcv(200))
     captured = {}
@@ -397,10 +423,139 @@ def test_main_config_mode_fills_use_autodetected_platform(tmp_path, monkeypatch)
         return []
 
     monkeypatch.setattr(parity_diff, "extract_fills", spy_extract_fills)
-    rc = main(["--config", str(cfg_path), "--strategy-id", "test-strat",
+    rc = main(["--config", path, "--strategy-id", "test-strat",
                "--fills", "--window", "60"])
     assert rc in (0, 1)
     assert captured["platform"] == "hyperliquid"
+
+
+def _recording_engine(monkeypatch):
+    seen = []
+
+    class RecordingBacktester(parity_diff.Backtester):
+        def run(self, *a, **k):
+            out = super().run(*a, **k)
+            seen.append((self, out))
+            return out
+
+    monkeypatch.setattr(parity_diff, "Backtester", RecordingBacktester)
+    return seen
+
+
+def _guard_funding(monkeypatch, allow=False):
+    import funding_fetcher
+    calls = []
+
+    def load(*a, **k):
+        calls.append(a)
+        if not allow:
+            raise AssertionError("unexpected funding history request")
+        raise RuntimeError("fixture: funding history unavailable")
+
+    monkeypatch.setattr(funding_fetcher, "load_cached_funding", load)
+    return calls
+
+
+def _assert_parity_engine_costs(df, report, engine, metrics, commission, slippage=0.0005):
+    assert engine.commission_pct == commission
+    assert engine.slippage_pct == slippage
+    trades = metrics["trades"]
+    assert trades, "fixture must produce fills"
+    entries = [f for f in report["fills"] if f["event"] == "entry"]
+    assert [f["fill_px"] for f in entries] == [t["entry_price"] for t in trades]
+    for t in trades:
+        sign = 1 if t["side"] == "long" else -1
+        raw = float(df["open"].loc[pd.Timestamp(t["entry_date"])])
+        assert t["entry_price"] == pytest.approx(raw * (1 + sign * slippage), rel=1e-12)
+        notional = t["shares"] * t["entry_price"]
+        assert t["entry_fee"] in (pytest.approx(notional * commission, abs=2e-6),
+                                  pytest.approx(notional * commission / (1 - commission), abs=2e-6))
+        if t["exit_reason"]:
+            assert t["exit_fee"] == pytest.approx(t["shares"] * t["exit_price"] * commission, abs=2e-6)
+
+
+_PARITY_ENGINE_FEE_CASES = [
+    ("rh-strat", "spot", None, "robinhood", 0.0),
+    ("okx-strat", "perps", None, "okx-perps", 0.0005),
+    ("okx-strat", "spot", None, "okx", 0.001),
+    ("luno-strat", "spot", None, "luno", 0.01),
+    ("hl-strat", "perps", None, "hyperliquid", 0.00045),
+    ("test-strat", "manual", "hyperliquid", "hyperliquid", 0.00045),
+    ("test-strat", "spot", "binanceus", "binanceus", 0.001),
+    ("test-strat", "perps", None, "binanceus", 0.001),
+]
+
+
+def test_config_mode_fills_charge_the_resolved_fee_in_the_real_engine(tmp_path, monkeypatch, subtests):
+    df = _ohlcv(300)
+    for sid, stype, platform, want, commission in _PARITY_ENGINE_FEE_CASES:
+        with subtests.test(sid=sid, stype=stype):
+            with monkeypatch.context() as mp:
+                seen = _recording_engine(mp)
+                _guard_funding(mp)
+                cfg = config_from_live_config(
+                    _write_live_config(tmp_path, stype, sid, platform), sid)
+                cfg.funding_mode = "off"
+                assert cfg.platform == want
+                report = parity_diff.extract_fills_report(df, cfg)
+                engine, metrics = seen[-1]
+                _assert_parity_engine_costs(df, report, engine, metrics, commission)
+
+
+def test_config_mode_platform_scope_and_refusals(tmp_path, monkeypatch, capsys, subtests):
+    df = _ohlcv(300)
+    with subtests.test("automatic okx perps requests no hyperliquid funding"):
+        with monkeypatch.context() as mp:
+            calls = _guard_funding(mp)
+            cfg = config_from_live_config(_write_live_config(tmp_path, "perps", "okx-strat"), "okx-strat")
+            assert cfg.funding_mode == "charge"
+            parity_diff.extract_fills_report(df, cfg)
+            assert calls == []
+    with subtests.test("explicit hyperliquid proxy prices hyperliquid funding"):
+        with monkeypatch.context() as mp:
+            calls = _guard_funding(mp, allow=True)
+            cfg = config_from_live_config(_write_live_config(tmp_path, "perps", "okx-strat"),
+                                          "okx-strat", platform="hyperliquid")
+            assert cfg.stop_kwargs["stop_platform"] == "okx"
+            cfg.funding_mode = "partial"
+            report = parity_diff.extract_fills_report(df, cfg)
+            assert calls
+            assert report["funding"]["available"] is False
+    with subtests.test("explicit okx-perps on okx perps is silent; okx warns"):
+        path = _write_live_config(tmp_path, "perps", "okx-strat")
+        capsys.readouterr()
+        assert config_from_live_config(path, "okx-strat", platform="okx-perps").platform == "okx-perps"
+        assert "platform selection" not in capsys.readouterr().err
+        assert config_from_live_config(path, "okx-strat", platform="okx").platform == "okx"
+        err = capsys.readouterr().err
+        assert err.count("[WARN] platform selection") == 1 and "'okx-perps'" in err
+    with subtests.test("refused automatic selection warns even for an equal explicit key"):
+        path = _write_live_config(tmp_path, "manual")
+        capsys.readouterr()
+        assert config_from_live_config(path, "test-strat", platform="binanceus").platform == "binanceus"
+        err = capsys.readouterr().err
+        assert err.count("[WARN] platform selection") == 1 and "'manual'" in err
+    with subtests.test("config validation still refuses an explicit proxy"):
+        path = _write_live_config(tmp_path, "spot", "rh-hedge",
+                                  hedge={"enabled": True, "symbol": "ETH"})
+        with pytest.raises(ValueError, match="hedge"):
+            config_from_live_config(path, "rh-hedge", platform="robinhood")
+    for sid, stype in [("deribit-strat", "options"), ("test-strat", "futures")]:
+        with subtests.test("main exits 2 on refused automatic selection", stype=stype):
+            with monkeypatch.context() as mp:
+                import data_fetcher
+                mp.setattr(data_fetcher, "load_cached_data",
+                           lambda *a, **k: pytest.fail("data access before the refusal"))
+                rc = main(["--config", _write_live_config(tmp_path, stype, sid),
+                           "--strategy-id", sid])
+                assert rc == 2
+                err = capsys.readouterr().err
+                assert f"type='{stype}'" in err and "explicit --platform" in err
+    with subtests.test("unknown explicit platform fails during argument parsing"):
+        with pytest.raises(SystemExit) as exc:
+            main(["--config", _write_live_config(tmp_path, "spot", "rh-strat"),
+                  "--strategy-id", "rh-strat", "--platform", "kraken"])
+        assert exc.value.code == 2
 
 
 def test_main_zero_bars_compared_is_data_error(monkeypatch):

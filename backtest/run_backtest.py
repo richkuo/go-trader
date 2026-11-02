@@ -96,7 +96,7 @@ from registry_loader import load_registry, refuse_quote_capability
 from lead_lag_history import (LEADER_INPUT_STRATEGIES, LeaderDataUnavailable, cached_leader_params,
                               manifest_leader_params, refuse_leader_input_strategy)
 from backtester import (Backtester, CapabilityContext, CloseCapabilityError,
-                        FundingIncompleteError, _LABELS_UNSET,
+                        FundingIncompleteError, PLATFORM_FEE_PCT, _LABELS_UNSET,
                         STOP_FIELD_KEYS, STOP_GEOMETRY_INPUT_KEYS,
                         STOP_PERCENT_FIELD_KEYS, STOP_REGIME_FIELD_KEYS,
                         STOP_SCALAR_FIELD_KEYS, STOP_UNITS_LIVE_CONFIG,
@@ -996,6 +996,40 @@ def live_strategy_platform(sc: dict) -> str:
         if sid.startswith(prefix):
             return name
     return "deribit" if str(sc.get("type") or "") == "options" else "binanceus"
+
+
+_FEE_PLATFORM_TYPES = ("spot", "perps", "manual")
+
+
+def backtest_fee_platform(platform: str, strategy_type: str) -> str:
+    plat = str(platform or "").strip().lower()
+    stype = str(strategy_type or "").strip().lower()
+    if stype in _FEE_PLATFORM_TYPES and plat in PLATFORM_FEE_PCT and plat != "okx-perps" \
+            and (stype != "manual" or plat == "hyperliquid"):
+        return "okx-perps" if plat == "okx" and stype == "perps" else plat
+    raise ValueError(
+        f"automatic fee selection does not support platform={plat!r} "
+        f"type={stype!r}: the backtest fee table models spot and perps on "
+        f"binanceus, hyperliquid, robinhood, luno and okx, and manual on "
+        f"hyperliquid only. Pass an explicit --platform to choose a research "
+        f"fee proxy; the proxy also selects funding and Hyperliquid tier "
+        f"behavior, and every other config validation still applies.")
+
+
+def platform_selection_warning(config_platform: str, strategy_type: str,
+                               selected: str) -> Optional[str]:
+    try:
+        auto = backtest_fee_platform(config_platform, strategy_type)
+    except ValueError as exc:
+        return (f"[WARN] platform selection: explicit --platform {selected} is a "
+                f"research proxy for config platform={config_platform!r} "
+                f"type={strategy_type!r}; {exc}")
+    if auto == selected:
+        return None
+    return (f"[WARN] platform selection: explicit --platform {selected} overrides "
+            f"the automatic fee key {auto!r} for config platform="
+            f"{config_platform!r} type={strategy_type!r}; the proxy also selects "
+            f"funding and Hyperliquid tier behavior")
 
 
 def _live_max_drawdown_pct(cfg: dict, sc: dict, platform: str, strategy_type: str) -> float:
@@ -2117,6 +2151,8 @@ def run_single_backtest(
         regime_label_columns=label_columns,
         **(feature_label_kwargs(regime_label_plan) if label_columns else {}),
     )
+    print(f"  Fee model: platform={platform} commission_pct={bt.commission_pct} "
+          f"slippage_pct={bt.slippage_pct}")
     if manifest is None:
         from funding_fetcher import rejoin_funding_columns
         df_signals = rejoin_funding_columns(df_signals, df)
@@ -2425,8 +2461,16 @@ def _build_parser() -> argparse.ArgumentParser:
                                  "luno", "okx", "okx-perps"],
                         default=None,
                         help="Exchange fee model (matches fees.go). Default: "
-                             "the --config strategy's platform when it is "
-                             "hyperliquid, else binanceus")
+                             "with --config, the strategy's platform and type "
+                             "(okx perps -> okx-perps); options, futures, "
+                             "non-Hyperliquid manual and unknown platforms "
+                             "refuse automatic selection. Without --config, "
+                             "binanceus. An explicit value is a research proxy "
+                             "that also selects funding and Hyperliquid tier "
+                             "behavior and warns when it differs from the "
+                             "automatic key or automatic selection refuses. "
+                             "--manifest ignores it: the manifest "
+                             "venue and execution spec own platform and costs")
     parser.add_argument("--symbol", default="BTC/USDT",
                         help="Trading pair")
     parser.add_argument("--symbols", nargs="+", default=None,
@@ -2692,6 +2736,7 @@ def _main():
     open_params: Optional[dict] = None
     live_stop_kwargs: dict = {}
     config_platform = ""
+    config_type = ""
     try:
         resting_tp_trade_through = resolve_resting_tp_trade_through(
             cli=args.resting_tp_trade_through, config_path=args.config,
@@ -2712,6 +2757,7 @@ def _main():
             print(exc)
             sys.exit(1)
         config_platform = live_kwargs.get("platform", "")
+        config_type = live_kwargs.get("strategy_type", "")
         if close_refs:
             print("--close-strategy is not allowed alongside --config (refs come from the live config)")
             sys.exit(1)
@@ -2794,8 +2840,20 @@ def _main():
             _validate_allowed_regimes_vocabulary(
                 args.allowed_regimes, live_kwargs.get("regime_windows_spec"))
 
+    if args.config and not args.manifest:
+        if args.platform is None:
+            try:
+                args.platform = backtest_fee_platform(config_platform, config_type)
+            except ValueError as exc:
+                print(exc)
+                sys.exit(1)
+        else:
+            warning = platform_selection_warning(config_platform, config_type,
+                                                 args.platform)
+            if warning:
+                print(warning)
     if args.platform is None:
-        args.platform = "hyperliquid" if config_platform == "hyperliquid" else "binanceus"
+        args.platform = "binanceus"
 
     if args.stop_loss_atr_mult is not None:
         live_stop_kwargs.setdefault("stop_loss_atr_mult", args.stop_loss_atr_mult)
