@@ -752,6 +752,11 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 }
 
 func strategyRestartShape(sc StrategyConfig) StrategyConfig {
+	if robinhoodSpotIdentityOwner(sc) {
+		args := append([]string(nil), sc.Args...)
+		args[1] = canonicalRobinhoodCoin(args[1])
+		sc.Args = args
+	}
 	sc.MaxDrawdownPct = 0
 	sc.CircuitBreaker = nil
 	sc.CBDrawdownCooldownMinutes = nil

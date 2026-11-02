@@ -1832,4 +1832,59 @@ UPDATE_UNIT_SUDO="" update_unit_install_with_backup "$rec_test/unit-test/go-trad
 chmod 0700 "$rec_test/unit-test"
 rm -rf "$rec_test"
 
+rh_test=$(mktemp -d)
+rh_seed() {
+    python3 -I - "$rh_test/state.db" "$1" "$2" <<'PY'
+import sqlite3, sys
+path, pos_symbol, attempt_symbol = sys.argv[1:4]
+con = sqlite3.connect(path)
+con.execute("DROP TABLE IF EXISTS positions")
+con.execute("DROP TABLE IF EXISTS robinhood_order_attempts")
+con.execute("DROP TABLE IF EXISTS strategies")
+con.execute("CREATE TABLE positions (strategy_id TEXT, symbol TEXT)")
+con.execute("CREATE TABLE robinhood_order_attempts (strategy_id TEXT, symbol TEXT, status TEXT)")
+con.execute("CREATE TABLE strategies (id TEXT, risk_pending_circuit_closes_json TEXT)")
+if pos_symbol:
+    con.execute("INSERT INTO positions VALUES (?, ?)", ("rh-btc-store", pos_symbol))
+if attempt_symbol:
+    con.execute("INSERT INTO robinhood_order_attempts VALUES (?, ?, ?)", ("rh-btc-store", attempt_symbol, "unknown"))
+    con.execute("INSERT INTO robinhood_order_attempts VALUES (?, ?, ?)", ("rh-btc-store", attempt_symbol.lower(), "settled"))
+con.execute("INSERT INTO strategies VALUES (?, ?)", ("rh-btc-store", None))
+con.commit()
+PY
+}
+rh_config() {
+    printf '{"db_file": "%s", "strategies": [{"id": "rh-btc", "storage_strategy_id": "rh-btc-store", "type": "spot", "args": ["momentum_pro", "%s", "1h", "--mode=live"]}, {"id": "hl-eth", "type": "perps", "args": ["x", "eth", "1h"]}]}\n' "$rh_test/state.db" "$1" >"$rh_test/config.json"
+}
+rh_check() {
+    GO_TRADER_UPDATE_CONFIG="$rh_test/config.json" update_robinhood_identity_rollback_check 2>"$rh_test/err" && printf 'ok' || printf 'blocked'
+}
+rh_config btc; rh_seed BTC ""
+assert_eq "$(rh_check)" "blocked" "rh identity: a lowercase config over a migrated BTC book blocks the previous binary"
+grep -q "rh-btc: config args\[1\] is 'btc'" "$rh_test/err" || { echo "FAIL: rh identity blocker names the strategy" >&2; cat "$rh_test/err" >&2; exit 1; }
+rh_config BTC
+assert_eq "$(rh_check)" "ok" "rh identity: a canonical config over a canonical book starts"
+rh_config btc; rh_seed btc ""
+assert_eq "$(rh_check)" "ok" "rh identity: an unmigrated lowercase book with a lowercase config starts"
+rh_config BTC
+assert_eq "$(rh_check)" "blocked" "rh identity: a canonical config over an unmigrated lowercase book blocks"
+rh_config btc; rh_seed "" BTC
+assert_eq "$(rh_check)" "blocked" "rh identity: a migrated unresolved attempt blocks under a lowercase config"
+rh_config BTC
+assert_eq "$(rh_check)" "ok" "rh identity: settled history in another spelling never blocks"
+python3 -I - "$rh_test/state.db" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("DELETE FROM robinhood_order_attempts")
+con.execute("UPDATE strategies SET risk_pending_circuit_closes_json = ?", ('{"robinhood": {"symbols": [{"symbol": "BTC", "size": 0.5}]}}',))
+con.commit()
+PY
+rh_config btc
+assert_eq "$(rh_check)" "blocked" "rh identity: a migrated pending circuit close blocks under a lowercase config"
+printf 'not a database' >"$rh_test/state.db"
+assert_eq "$(rh_check)" "blocked" "rh identity: an unreadable state file fails closed"
+printf '{"db_file": "%s", "strategies": [{"id": "hl-eth", "type": "perps", "args": ["x", "eth", "1h"]}]}\n' "$rh_test/state.db" >"$rh_test/config.json"
+assert_eq "$(rh_check)" "ok" "rh identity: a roster with no Robinhood spot strategy never opens the state files"
+rm -rf "$rh_test"
+
 echo "OK: update_helpers tests passed"

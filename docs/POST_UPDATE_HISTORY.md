@@ -2,6 +2,20 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 1908: one Robinhood coin identity
+
+Runtime behavior changes for every Robinhood spot strategy, with a one-time startup state migration.
+A Robinhood spot `args[1]` is trimmed and uppercased when the config loads, in memory only; the config file is never written, and a coin that is empty after trimming refuses the load.
+Startup prints one `[config] WARN` line per rewritten strategy and asks the operator to write the uppercase spelling into `args[1]`.
+Before this change a lowercase coin such as `btc` kept the book under `btc` while the venue holdings read returned `BTC`, so the kill switch and the circuit-breaker close could report the coin flat and clear a held book with no sale, and mixed-case peers took separate locks and each looked like the sole owner.
+Now the signal result must echo the canonical coin, the holdings read uppercases each coin and fails the whole read on an empty or duplicate coin, and locks, owner lists, unresolved-order checks and books all use one coin.
+Writable startup converts stored aliases before any other state write: the position key and symbol, Robinhood pending circuit-close symbols, the shared-close notice coin, unresolved order attempt symbols and entry decision rows.
+Quantities, position ids, order evidence, frozen request and evidence payloads, trades, closed positions, settled attempts and completed entry intents stay unchanged.
+A conflict (two positions, pending closes or entry decisions that convert to one key, an active entry intent under an alias, or two unresolved attempts for one account and coin) refuses startup with exit 80 before any write and names the rows; review them against the venue and a backup before any manual correction and never delete a row to pass.
+Each changed book commits in its own transaction. A failure rolls that book back; books in other state files that already committed stay canonical, startup stops with exit 80, and the next start finishes the rest.
+An older binary reads books by the exact configured spelling, so after the migration it reads a canonical book as flat under a lowercase config. `update.sh` recovery now refuses to start the previous binary when a configured spelling differs from the stored spelling (`rh_identity=blocked`) and names the strategy to edit. The `update.sh` that first deploys this change is the previous one, so write the uppercase spelling into the config right before that update.
+Deploy with `bash scripts/update.sh --restart`.
+
 ### Issue 1945: command-line regime admission under a sealed feed
 
 Runtime behavior changes for `manual-open` and `manual-add` run from the command line when `market_feed` is `shared` or `websocket`.

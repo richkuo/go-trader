@@ -40,9 +40,18 @@ func defaultRobinhoodPositionsFetcher() ([]RobinhoodPosition, error) {
 		return nil, err
 	}
 	positions := make([]RobinhoodPosition, 0, len(result.Positions))
+	seen := make(map[string]string, len(result.Positions))
 	for _, p := range result.Positions {
+		coin := canonicalRobinhoodCoin(p.Coin)
+		if coin == "" {
+			return nil, fmt.Errorf("robinhood holdings read returned a holding with an empty coin; refusing the whole read (#1908)")
+		}
+		if prev, dup := seen[coin]; dup {
+			return nil, fmt.Errorf("robinhood holdings read returned %q and %q, which are one coin %s; refusing the whole read (#1908)", prev, p.Coin, coin)
+		}
+		seen[coin] = p.Coin
 		positions = append(positions, RobinhoodPosition{
-			Coin:     p.Coin,
+			Coin:     coin,
 			Size:     p.Size,
 			AvgPrice: p.AvgPrice,
 		})

@@ -801,6 +801,7 @@ update_exit_coordinator() {
     local venv_owner_status="skipped"
     local stage_recovery_probe="skipped"
     local stage_recovery_service="skipped"
+    local stage_rh_identity="skipped"
 
     if [[ "$restart_attempted" == "1" ]]; then
         if restart_uses_signal_pid; then
@@ -915,9 +916,20 @@ update_exit_coordinator() {
             echo "[update] recovery: probe=skipped (no pre-update binary)" >&2
         fi
 
+        if [[ "$restart_attempted" == "1" ]]; then
+            if update_robinhood_identity_rollback_check; then
+                stage_rh_identity="ok"
+            else
+                stage_rh_identity="blocked"
+            fi
+        fi
+
         if [[ "$stage_recovery_probe" == "failed" || "$stage_restore_ownership" == "failed" ]]; then
             stage_recovery_service="blocked"
             echo "[update] recovery: service=blocked (probe or post-probe ownership failed)" >&2
+        elif [[ "$stage_rh_identity" == "blocked" ]]; then
+            stage_recovery_service="blocked"
+            echo "[update] recovery: service=blocked (Robinhood coin spelling in the config differs from the state files)" >&2
         elif [[ "$restart_attempted" == "1" ]]; then
             if start_and_verify_recovered_service; then
                 stage_recovery_service="ok"
@@ -939,7 +951,7 @@ update_exit_coordinator() {
         fi
     fi
 
-    local stages_summary="stop_service=$stage_stop_service files=$stage_restore_files venv=$stage_restore_venv binaries=$stage_restore_binaries external=$stage_restore_external ownership=$stage_restore_ownership venv_owner=$venv_owner_status probe=$stage_recovery_probe service=$stage_recovery_service"
+    local stages_summary="stop_service=$stage_stop_service files=$stage_restore_files venv=$stage_restore_venv binaries=$stage_restore_binaries external=$stage_restore_external ownership=$stage_restore_ownership venv_owner=$venv_owner_status probe=$stage_recovery_probe rh_identity=$stage_rh_identity service=$stage_recovery_service"
     local any_failed=0
     case " $stages_summary " in
         *"=failed "*|*"=blocked "*) any_failed=1 ;;

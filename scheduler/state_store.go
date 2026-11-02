@@ -894,41 +894,25 @@ func (st *StateStore) LoadRobinhoodOrderGuards(state *AppState, cfgs []StrategyC
 	if st == nil || state == nil {
 		return fmt.Errorf("state store unavailable")
 	}
-	live := make(map[string]bool)
 	for _, sc := range cfgs {
 		if !isRobinhoodLiveSpot(sc) {
 			continue
 		}
-		live[sc.ID] = true
 		if s := state.Strategies[sc.ID]; s != nil {
 			s.RobinhoodOrders = newRobinhoodOrderGuard()
 		}
 	}
-	primary := st.primary()
-	for _, role := range st.order {
-		db := st.file(role)
-		if db == nil {
-			continue
+	owned, err := st.ownedUnresolvedRobinhoodAttempts(cfgs)
+	if err != nil {
+		return err
+	}
+	for _, o := range owned {
+		s := state.Strategies[o.ProcID]
+		if s == nil || s.RobinhoodOrders == nil {
+			return fmt.Errorf("unresolved Robinhood order attempt %s belongs to strategy %q, which has no state", o.Attempt.AttemptID, o.ProcID)
 		}
-		attempts, sids, err := db.loadUnresolvedRobinhoodAttempts()
-		if err != nil {
-			return err
-		}
-		for i, a := range attempts {
-			if db != primary || !robinhoodRoleOwnsLive(st.layout, role) {
-				return fmt.Errorf("unresolved Robinhood order attempt %s sits in the %s state file, which does not own the live partition; resolve the venue order and move it by hand", a.AttemptID, role)
-			}
-			procID, mapped := db.mapStoredStrategyID(sids[i])
-			if !mapped || !live[procID] {
-				return fmt.Errorf("unresolved Robinhood order attempt %s (%s %s) belongs to stored strategy %q, which is not a configured live Robinhood spot strategy; restore the strategy or resolve the venue order by hand", a.AttemptID, a.Side, a.Symbol, sids[i])
-			}
-			s := state.Strategies[procID]
-			if s == nil || s.RobinhoodOrders == nil {
-				return fmt.Errorf("unresolved Robinhood order attempt %s belongs to strategy %q, which has no state", a.AttemptID, procID)
-			}
-			a.StrategyID = procID
-			s.RobinhoodOrders.Attempts[a.AttemptID] = a
-		}
+		o.Attempt.StrategyID = o.ProcID
+		s.RobinhoodOrders.Attempts[o.Attempt.AttemptID] = o.Attempt
 	}
 	return nil
 }
