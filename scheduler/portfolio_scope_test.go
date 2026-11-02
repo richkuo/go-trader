@@ -93,11 +93,8 @@ func TestPerScopeRiskIsolation(t *testing.T) {
 				legacyStates[id] = s
 			}
 			legacyPV, _ := computeSubsetPortfolioValue(cfg.Strategies, state, nil, nil, nil)
-			legacyNotional, notionalStatus := portfolioNotionalMarked(legacyStates, nil, nil)
-			legacyLoss, legacyMargin, marginStatus := aggregatePerpsMarginInputsMarked(legacyStates, cfg.Strategies, nil, nil)
-			if !notionalStatus.complete() || !marginStatus.complete() {
-				t.Fatalf("ordinary strategies must read complete: %s %s", notionalStatus.label(), marginStatus.label())
-			}
+			legacyNotional := portfolioNotional(legacyStates, nil)
+			legacyLoss, legacyMargin := aggregatePerpsMarginInputs(legacyStates, cfg.Strategies, nil)
 			allowed, nb, warning, reason := checkPortfolioRiskWithEquityAvailability(
 				legacyPrs, cfg.PortfolioRisk, legacyPV, legacyNotional, legacyLoss, legacyMargin, true, true)
 

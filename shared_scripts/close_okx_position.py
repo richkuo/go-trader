@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "platforms", "okx"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
 
 def main():
@@ -42,11 +41,6 @@ def main():
         orders = adapter.market_close_orders(args.symbol, args.sz)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        sent = getattr(e, "orders", None)
-        if isinstance(sent, list) and sent:
-            from native_close_evidence import okx_partial_close_evidence
-            _emit_error(args.symbol, str(e), evidence=okx_partial_close_evidence(sent, f"a later close order failed, so another order may have an unknown result: {e}"))
-            return
         _emit_error(args.symbol, str(e))
         return
 
@@ -80,16 +74,13 @@ def main():
         except (TypeError, ValueError):
             pass
 
-    from native_close_evidence import okx_close_evidence
-    _emit_success(args.symbol, fill, evidence=okx_close_evidence(adapter, args.symbol, orders))
+    _emit_success(args.symbol, fill)
 
 
-def _emit_success(symbol, fill, already_flat=False, evidence=None):
+def _emit_success(symbol, fill, already_flat=False):
     close = {"symbol": symbol, "fill": fill}
     if already_flat:
         close["already_flat"] = True
-    if evidence is not None:
-        close["evidence"] = evidence
     print(json.dumps({
         "close": close,
         "platform": "okx",
@@ -97,12 +88,9 @@ def _emit_success(symbol, fill, already_flat=False, evidence=None):
     }))
 
 
-def _emit_error(symbol, message, evidence=None):
-    close = {"symbol": symbol, "fill": {}}
-    if evidence is not None:
-        close["evidence"] = evidence
+def _emit_error(symbol, message):
     print(json.dumps({
-        "close": close,
+        "close": {"symbol": symbol, "fill": {}},
         "platform": "okx",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "error": message,

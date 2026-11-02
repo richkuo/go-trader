@@ -43,12 +43,6 @@ func unbindTradingClock(owner string) {
 	}
 }
 
-func tradingClockBound() bool {
-	tradingClockMu.RLock()
-	defer tradingClockMu.RUnlock()
-	return tradingClockFn != nil
-}
-
 type simulatedClock struct {
 	mu  sync.RWMutex
 	now time.Time

@@ -29,7 +29,6 @@ type okxStepContext struct {
 	Risk             *scopeCycleRisk
 	Scope            PortfolioScope
 	PersistenceHold  bool
-	Coord            *basketCoordinator
 	Pos              okxStepPosition
 	Cash             float64
 	PoolBalanceKnown bool
@@ -63,8 +62,6 @@ func okxStepRefusal(c okxStepContext, sc StrategyConfig, check okxCheckFunc) str
 		return "no check was supplied"
 	case c.Cfg == nil, c.State == nil, c.StratState == nil, c.Store == nil, c.StratDB == nil, c.Mu == nil, c.Prices == nil, c.Risk == nil:
 		return "the step context is missing its configuration, state, storage, lock, prices or partition risk"
-	case isPairMember(sc) && c.Coord == nil:
-		return "a pair member needs the basket coordinator to record its observation"
 	}
 	return ""
 }
@@ -79,21 +76,6 @@ func okxOrdinaryCheck(prices map[string]float64, cfg *Config, notifier *MultiNot
 	}
 }
 
-func okxPairManagementCheck(input pairManagementInput, notifier *MultiNotifier) okxCheckFunc {
-	return okxPairManagementCheckWith(input, notifier, runPythonReadOnlyWithStdin)
-}
-
-func okxPairManagementCheckWith(input pairManagementInput, notifier *MultiNotifier, run func(script string, args []string, stdin []byte) ([]byte, []byte, error)) okxCheckFunc {
-	return func(sc StrategyConfig, posCtx PositionCtx, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
-		args, result, stderr, err := runOKXPairManagementCheckRawWith(sc, posCtx, input, logger, run)
-		frozen := map[string]float64{}
-		if sym := okxSymbol(sc.Args); sym != "" && okxUsablePrice(input.MarkPrice) {
-			frozen[sym] = input.MarkPrice
-		}
-		return completeOKXCheck(sc, args, result, stderr, err, frozen, notifier, logger)
-	}
-}
-
 func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out okxStepResult) {
 	if why := okxStepRefusal(c, sc, check); why != "" {
 		if c.Logger != nil {
@@ -102,24 +84,17 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 		return out
 	}
 	allowsLong, allowsShort, _ := okxStepDirection(sc)
-	basketCoord, prices, cfg, notifier, logger := c.Coord, c.Prices, c.Cfg, c.Notifier, c.Logger
+	prices, cfg, notifier, logger := c.Prices, c.Cfg, c.Notifier, c.Logger
 	okxPosCtx, okxPosQty, okxPosSide, okxAvgCost, okxPosLeverage := c.Pos.Ctx, c.Pos.Qty, c.Pos.Side, c.Pos.AvgCost, c.Pos.Leverage
 	stratState, mu, sr, persistenceHold, stratScope := c.StratState, c.Mu, c.Risk, c.PersistenceHold, c.Scope
 	store, stratDB, state := c.Store, c.StratDB, c.State
 	okxCash, okxPoolBalanceKnown, okxCashReconcile := c.Cash, c.PoolBalanceKnown, c.CashReconcile
 	var trades int
 	var detail string
-	if isPairMember(sc) {
-		basketCoord.observePair(sc, StrategyDecisionFields{}, nil, 0, "the management check has not returned a validated pair echo this cycle")
-	}
 	if result, signalStr, price, ok := check(sc, okxPosCtx, logger); ok {
 		validatedRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 		result.Regime = &validatedRegime
 		prices[result.Symbol] = price
-		suppressPairMemberIncrease(sc, &result.Signal, result.CloseFraction, okxPosQty, okxPosSide, signalStr, logger)
-		if isPairMember(sc) {
-			basketCoord.observePair(sc, result.StrategyDecisionFields, result.Indicators, price, "")
-		}
 		storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 		result.Regime = &storeRegime
 		decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
@@ -169,7 +144,6 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 		logEntryAdmission(entryAdm, signalStr, logger)
 		applyEntryAdmission(entryAdm, &result.Signal, &result.CloseFraction)
 		result.CloseReduceOnly = entryAdm.CloseOnly
-		suppressPairMemberIncrease(sc, &result.Signal, result.CloseFraction, okxPosQty, okxPosSide, signalStr, logger)
 		mu.Lock()
 		syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 		mu.Unlock()

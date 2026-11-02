@@ -491,9 +491,6 @@ type StateDB struct {
 	role     storageRole
 	ident    *fileIdentity
 	readOnly bool
-
-	pairVirtualTipMu sync.Mutex
-	pairVirtualTips  map[string]pairVirtualTip
 }
 
 func OpenStateDB(path string) (*StateDB, error) {
@@ -691,9 +688,6 @@ func (sdb *StateDB) migrateSchema() error {
 		return err
 	}
 	if err := sdb.migrateRobinhoodOrderSchema(); err != nil {
-		return err
-	}
-	if err := sdb.migrateBasketSchema(); err != nil {
 		return err
 	}
 	if err := sdb.migrateQuoteSchema(); err != nil {
@@ -1758,22 +1752,6 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 			return err
 		}
 	}
-	basketSaves := basketSavesFor(req.Strategies)
-	for _, bs := range basketSaves {
-		next, err := sdb.writeBasketTx(tx, bs.rt, bs.books, bs.rt.auditNowMs())
-		if err != nil {
-			return err
-		}
-		bs.next = next
-	}
-	for i, s := range req.Strategies {
-		if s.Basket != nil {
-			continue
-		}
-		if err := sdb.reconcileStoredBasketLifecycleTx(tx, storageIDs[i], s); err != nil {
-			return err
-		}
-	}
 
 	scopeFilter, scopeArgs := scopePlaceholders(req.Scopes)
 	if req.FullFile {
@@ -1828,7 +1806,7 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 			prs.LastWarningEquityDDPct, prs.LastWarningMarginDDPct,
 			prs.WarningEquityDeltaPct, prs.WarningMarginDeltaPct,
 			basisRebaselined, ddSubstituted, formatTime(prs.UntrustedOverLimitSince), closeApplied, quoteRebaselined,
-			formatTime(prs.PairValuationIncompleteSince),
+			prs.retiredPairValuationSince,
 		); err != nil {
 			return fmt.Errorf("upsert portfolio_risk: %w", err)
 		}
@@ -1891,9 +1869,6 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		pruneEntryGuardAfterCommit(s)
 		pruneRobinhoodOrderGuardAfterCommit(s, true)
 		s.robinhoodPartitionSavePending = false
-	}
-	for _, bs := range basketSaves {
-		markBasketDurable(bs.rt, bs.books, bs.next)
 	}
 	for _, f := range flushed {
 		f.strat.TradeHistory[f.index].persisted = true
@@ -1995,20 +1970,6 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 		return err
 	}
 
-	var basketSave *basketSave
-	if s.Basket != nil {
-		if saves := basketSavesFor([]*StrategyState{s}); len(saves) == 1 {
-			basketSave = saves[0]
-			next, err := sdb.writeBasketTx(tx, basketSave.rt, basketSave.books, basketSave.rt.auditNowMs())
-			if err != nil {
-				return err
-			}
-			basketSave.next = next
-		}
-	} else if err := sdb.reconcileStoredBasketLifecycleTx(tx, sid, s); err != nil {
-		return err
-	}
-
 	if err := deletePendingManualActionsByID(tx, ackIDs); err != nil {
 		return err
 	}
@@ -2040,9 +2001,6 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 	}
 	pruneEntryGuardAfterCommit(s)
 	pruneRobinhoodOrderGuardAfterCommit(s, false)
-	if basketSave != nil {
-		markBasketDurable(basketSave.rt, basketSave.books, basketSave.next)
-	}
 	enqueueFlushedDiagnostics(flushedDiags)
 	return nil
 }
@@ -2651,13 +2609,13 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 	}
 	defer prsRows.Close()
 	for prsRows.Next() {
-		var scopeStr, ksAtStr, warnBandEnteredAtStr, untrustedOverLimitSinceStr, pairIncompleteSinceStr string
+		var scopeStr, ksAtStr, warnBandEnteredAtStr, untrustedOverLimitSinceStr, retiredPairSinceStr string
 		var ksActiveInt, warnSentInt, basisRebaselinedInt, ddSubstitutedInt, closeAppliedInt, quoteRebaselinedInt int
 		prs := &PortfolioRiskState{}
 		if err := prsRows.Scan(&scopeStr, &prs.PeakValue, &prs.CurrentDrawdownPct, &prs.CurrentMarginDrawdownPct,
 			&ksActiveInt, &ksAtStr, &warnSentInt, &warnBandEnteredAtStr, &prs.LastWarningEquityDDPct,
 			&prs.LastWarningMarginDDPct, &prs.WarningEquityDeltaPct, &prs.WarningMarginDeltaPct,
-			&basisRebaselinedInt, &ddSubstitutedInt, &untrustedOverLimitSinceStr, &closeAppliedInt, &quoteRebaselinedInt, &pairIncompleteSinceStr); err != nil {
+			&basisRebaselinedInt, &ddSubstitutedInt, &untrustedOverLimitSinceStr, &closeAppliedInt, &quoteRebaselinedInt, &retiredPairSinceStr); err != nil {
 			return nil, fmt.Errorf("scan portfolio_risk: %w", err)
 		}
 		prs.KillSwitchCloseApplied = closeAppliedInt != 0
@@ -2665,7 +2623,7 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		prs.QuotePrecisionRebaselined = quoteRebaselinedInt != 0
 		prs.DrawdownReadingSubstituted = ddSubstitutedInt != 0
 		prs.UntrustedOverLimitSince = parseTime(untrustedOverLimitSinceStr)
-		prs.PairValuationIncompleteSince = parseTime(pairIncompleteSinceStr)
+		prs.retiredPairValuationSince = retiredPairSinceStr
 		prs.KillSwitchActive = ksActiveInt != 0
 		prs.KillSwitchAt = parseTime(ksAtStr)
 		prs.WarningSent = warnSentInt != 0

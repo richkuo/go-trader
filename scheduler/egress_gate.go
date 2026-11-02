@@ -20,20 +20,16 @@ import (
 var egressNetworkSubcommands = map[string]bool{
 	"manual-open": true, "manual-add": true, "manual-close": true, "force-close": true,
 	"manual-cancel": true, "manual-update-sl": true, "manual-cancel-sl": true, "backfill": true,
-	"record-observations": true, "robinhood-login": true, "basket-replay-paper": true,
+	"record-observations": true, "robinhood-login": true,
 }
 
 var egressOfflineSubcommands = map[string]bool{
 	"quote-replay": true,
 }
 
-var egressConfiglessSubcommands = map[string]bool{
-	"basket-replay": true,
-}
-
 var egressLocalSubcommands = map[string]bool{
 	"init": true, "export": true, "inspect": true, "storage-inspect": true, "agent-info": true,
-	"diagnostics": true, "feed-fetch": true, "basket-replay": true,
+	"diagnostics": true, "feed-fetch": true,
 	"manual-clear-limit-row": true,
 }
 
@@ -59,10 +55,7 @@ func subcommandConfigPath(args []string) string {
 }
 
 func gateSubcommandEgress(sub string, args []string) (int, bool) {
-	if egressResearchSubcommands[sub] {
-		return gateResearchEgress(sub, args, os.Stdout)
-	}
-	if egressOfflineSubcommands[sub] || egressConfiglessSubcommands[sub] {
+	if egressOfflineSubcommands[sub] {
 		if os.Getenv(egresspolicy.EnvProxy) == "" {
 			return 0, false
 		}

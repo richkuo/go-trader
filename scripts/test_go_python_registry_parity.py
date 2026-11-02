@@ -128,7 +128,7 @@ def mapping_mismatches(go, py):
 
 def test_go_no_edge_metadata_equals_python_registry():
     go, py = go_no_edge_metadata(), python_no_edge_metadata()
-    assert len(py) == 74
+    assert len(py) == 70
     assert mapping_mismatches(go, py) == []
     assert OPEN_REGISTRY.DISCOVERY_HIDDEN_STRATEGIES == frozenset(py)
     for source, ref in py.values():
@@ -181,7 +181,6 @@ def test_go_production_refusal_equals_python_registry():
         "perpetual_premium_reversion": "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
         "order_book_imbalance": "backtest/candidates/order_book_imbalance_1635/REPORT.md",
         "inventory_market_making": "backtest/candidates/inventory_market_making_1636/REPORT.md",
-        "cross_exchange_perp_arbitrage": "backtest/candidates/cross_exchange_perp_arbitrage_1655/REPORT.md",
     }
     assert go == py
     for name in py:
@@ -395,7 +394,7 @@ def test_go_quote_capabilities_equal_python_registry():
         assert name in OPEN_REGISTRY.build_registry("futures", include_hidden=True)
         assert name not in OPEN_REGISTRY.build_registry("futures")
         assert name not in OPEN_REGISTRY.build_registry("spot", include_hidden=True)
-        assert name not in OPEN_REGISTRY.short_entry_strategies() and name not in OPEN_REGISTRY.basket_rankers()
+        assert name not in OPEN_REGISTRY.short_entry_strategies()
 
 
 def test_quote_capabilities_refuse_every_scalar_path():
@@ -409,8 +408,6 @@ def test_quote_capabilities_refuse_every_scalar_path():
             OPEN_REGISTRY.STRATEGIES[name]["fn"](None)
         with pytest.raises(ValueError, match="quote capability"):
             loader.refuse_quote_capability(shim, name)
-        with pytest.raises(ValueError, match="quote capability"):
-            loader.refuse_basket_evaluator(shim, name)
         entry = dict(OPEN_REGISTRY.STRATEGIES[name], production_refused=False)
         with pytest.raises(ValueError, match="quote capability"):
             composition.admit_strategy_references([composition.StrategyReference("open", name)],
@@ -441,181 +438,3 @@ def test_register_rejects_malformed_quote_metadata(subtests):
                 scratch_registry.register("_scratch_quote", "scratch", **kwargs)(_noop)
             assert set(scratch_registry.STRATEGIES) == before
 
-
-def go_basket_rankers():
-    block = _go_block(_go_source("basket_config.go"), "var basketRankerStrategies = map[string]bool{")
-    entries = re.findall(r'^\s*"(\w+)":\s*(true|false),\s*$', block, re.M)
-    assert len(entries) == len([line for line in block.splitlines() if line.strip()]), (
-        "unparsed line in basketRankerStrategies")
-    return {name: True for name, value in entries if value == "true"}
-
-
-def go_basket_ranker_param_keys():
-    block = _go_block(_go_source("basket_config.go"), "var basketRankerParamKeys = map[string][]string{")
-    return {name: set(re.findall(r'"(\w+)"', keys))
-            for name, keys in re.findall(r'^\s*"(\w+)":\s*\{([^}]*)\},\s*$', block, re.M)}
-
-
-def python_basket_rankers():
-    return {name: True for name in OPEN_REGISTRY.basket_rankers()}
-
-
-def test_go_basket_rankers_equal_python_registry():
-    go, py = go_basket_rankers(), python_basket_rankers()
-    assert py == {"basket_scripted_fixture": True, "cross_sectional_momentum": True, "cross_sectional_reversal": True}
-    assert mapping_mismatches(go, py) == []
-    for name in py:
-        entry = OPEN_REGISTRY.STRATEGIES[name]
-        assert entry["basket"] == OPEN_REGISTRY.BASKET_CONTRACT
-        assert entry["platforms"] == ("futures",)
-        assert entry["edge_status"] == OPEN_REGISTRY.EDGE_STATUS_NO_EDGE
-
-
-def test_go_basket_ranker_param_keys_equal_python_defaults():
-    go = go_basket_ranker_param_keys()
-    py = {name: set(OPEN_REGISTRY.STRATEGIES[name]["default_params"]) for name in OPEN_REGISTRY.basket_rankers()}
-    assert go == py
-
-
-def test_basket_rankers_stay_out_of_every_single_symbol_registry():
-    for platform in OPEN_REGISTRY.VALID_PLATFORMS:
-        for hidden in (True, False):
-            assert set(OPEN_REGISTRY.build_registry(platform, include_hidden=hidden)).isdisjoint(OPEN_REGISTRY.basket_rankers())
-    loader = _load("_parity_registry_loader", "backtest", "registry_loader.py")
-    shim = loader.load_registry("futures")
-    for name in sorted(OPEN_REGISTRY.basket_rankers()):
-        entry = OPEN_REGISTRY.STRATEGIES[name]
-        with pytest.raises(ValueError, match="basket evaluator"):
-            entry["fn"](None)
-        assert callable(OPEN_REGISTRY.get_basket_ranker(name)["basket_fn"])
-        assert name not in shim.STRATEGY_REGISTRY
-        with pytest.raises(ValueError, match="single-asset backtest or parity run cannot evaluate it"):
-            loader.refuse_basket_evaluator(shim, name)
-    with pytest.raises(ValueError, match="not a registered basket evaluator"):
-        OPEN_REGISTRY.get_basket_ranker("sma_crossover")
-
-
-def test_register_rejects_malformed_basket_metadata(subtests):
-    for index, (case, match) in enumerate([
-        ({"basket": {"input": "closed_bar_frames"}}, "basket must be exactly"),
-        ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("spot", "futures")},
-         "platforms"),
-        ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("futures",),
-          "short_entries": True, "default_params": {"allow_short": True}}, "short_entries"),
-        ({"basket_preflight": lambda params, context: None}, "basket_preflight applies only to a basket evaluator"),
-        ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("futures",),
-          "basket_preflight": "not callable"}, "basket_preflight must be callable"),
-    ]):
-        with subtests.test(case=f"kwargs{index}", match=match):
-            scratch_registry = _scratch_registry()
-            kwargs = {"default_params": {}, "short_entries": False, **case}
-            before = set(scratch_registry.STRATEGIES)
-            with pytest.raises(ValueError, match=match):
-                scratch_registry.register("_scratch_basket", "scratch", **kwargs)(_noop)
-            assert set(scratch_registry.STRATEGIES) == before
-
-
-def go_pair_policies():
-    source = _go_source("pair_config.go")
-    consts = dict(re.findall(r'^const (\w+) = "([^"]*)"$', source, re.M))
-    lines = re.findall(r"^var pairPolicyStrategies = map\[string\]bool\{(.*)\}$", source, re.M)
-    assert len(lines) == 1, "pairPolicyStrategies must be one map literal line"
-    raw = [item.strip() for item in lines[0].split(",") if item.strip()]
-    names = []
-    for item in raw:
-        m = re.fullmatch(r'(\w+|"\w+"):\s*true', item)
-        assert m, f"unparsed pairPolicyStrategies entry: {item!r}"
-        key = m.group(1)
-        names.append(key.strip('"') if key.startswith('"') else consts[key])
-    assert len(names) == len(raw)
-    block = _go_block(source, "var pairPolicyParamKeys = map[string][]string{")
-    entries = re.findall(r'^\s*(\w+|"\w+"):\s*\{([^}]*)\},\s*$', block, re.M)
-    assert len(entries) == len([line for line in block.splitlines() if line.strip()]), "unparsed pairPolicyParamKeys line"
-    keys = {(k.strip('"') if k.startswith('"') else consts[k]): tuple(sorted(re.findall(r'"(\w+)"', v))) for k, v in entries}
-    assert set(keys) == set(names)
-    return keys
-
-
-def test_go_pair_policies_equal_python_pair_registry_and_evaluator():
-    pairs = OPEN_REGISTRY.pair_registry
-    py = {name: OPEN_REGISTRY.STRATEGIES[name]["pair_param_keys"] for name in OPEN_REGISTRY.pair_evaluators()}
-    assert set(py) == set(pairs.pair_policies()) == {"cross_exchange_perp_arbitrage"}
-    for name in sorted(py):
-        descriptor = pairs.pair_descriptor(name)
-        entry = OPEN_REGISTRY.STRATEGIES[name]
-        assert entry["pair"] == OPEN_REGISTRY.PAIR_CONTRACT == descriptor["contract"]
-        assert entry["platforms"] == descriptor["platforms"] == ("futures",)
-        assert entry["short_entries"] is False and entry["production_refused"] is True
-        assert (entry["edge_status"], entry["edge_source"], entry["edge_ref"]) == (
-            descriptor["edge_status"], descriptor["edge_source"], descriptor["edge_ref"])
-        assert entry["default_params"] == {} and entry["constraints"] == () and entry["param_validator"] is None
-        evaluate = OPEN_REGISTRY.get_pair_evaluator(name)
-        module = sys.modules[descriptor["module"]]
-        assert os.path.realpath(module.__file__) == os.path.realpath(os.path.join(REPO, descriptor["path"]))
-        assert evaluate is module.evaluate_pair
-        assert module.POLICY == name
-        assert tuple(module.PARAM_KEYS) == descriptor["param_keys"] == py[name]
-    assert go_pair_policies() == {name: tuple(sorted(keys)) for name, keys in py.items()}
-    with pytest.raises(OPEN_REGISTRY.UnknownPairPolicy):
-        OPEN_REGISTRY.get_pair_evaluator("sma_crossover")
-
-
-def test_pair_policies_refuse_every_single_symbol_path():
-    for platform in OPEN_REGISTRY.VALID_PLATFORMS:
-        for hidden in (True, False):
-            assert set(OPEN_REGISTRY.build_registry(platform, include_hidden=hidden)).isdisjoint(OPEN_REGISTRY.pair_evaluators())
-    loader = _load("_parity_pair_registry_loader", "backtest", "registry_loader.py")
-    if os.path.join(REPO, "shared_tools") not in sys.path:
-        sys.path.insert(0, os.path.join(REPO, "shared_tools"))
-    composition = importlib.import_module("strategy_composition")
-    for platform in OPEN_REGISTRY.VALID_PLATFORMS:
-        shim = loader.load_registry(platform)
-        for name in sorted(OPEN_REGISTRY.pair_evaluators()):
-            assert name not in shim.STRATEGY_REGISTRY
-            for refuse in (loader.refuse_pair_evaluator, loader.refuse_quote_capability, loader.refuse_basket_evaluator):
-                with pytest.raises(ValueError, match="is a pair policy"):
-                    refuse(shim, name)
-    for name in sorted(OPEN_REGISTRY.pair_evaluators()):
-        with pytest.raises(ValueError, match="is a pair policy"):
-            OPEN_REGISTRY.STRATEGIES[name]["fn"](None)
-        entry = dict(OPEN_REGISTRY.STRATEGIES[name], production_refused=False)
-        with pytest.raises(ValueError, match="is a pair policy"):
-            composition.admit_strategy_references([composition.StrategyReference("open", name)],
-                                                  composition.GateMode(composition.GATE_MODE_PAPER, ""),
-                                                  composition.Acknowledgement(True, None), lambda _n: entry)
-    for name in ("sma_crossover", "inventory_market_making", "cross_sectional_momentum"):
-        loader.refuse_pair_evaluator(loader.load_registry("futures"), name)
-        assert name not in OPEN_REGISTRY.pair_evaluators()
-
-
-def test_register_rejects_malformed_pair_metadata(subtests):
-    for index, (case, match) in enumerate([
-        ({"pair": {"input": "pair_policy_request_v2"}}, "pair must be exactly"),
-        ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}}, "carries no basket metadata"),
-        ({"quote": {"input": "deadline_book_evidence"}}, "carries no quote metadata"),
-        ({"quote_spec": {"strategy": "cross_exchange_perp_arbitrage"}}, "carries no quote metadata"),
-        ({"edge_source": "study_fail"}, "differs from the pair_registry descriptor"),
-        ({"edge_ref": "x.md"}, "differs from the pair_registry descriptor"),
-        ({"platforms": ("spot", "futures")}, "differs from the pair_registry descriptor"),
-        ({"default_params": {"entry_threshold_bps": 5}}, "no single-symbol default_params"),
-        ({"param_validator": lambda p: None}, "no single-symbol default_params"),
-        ({"name": "_scratch_pair"}, "needs a descriptor"),
-    ]):
-        with subtests.test(case=f"kwargs{index}", match=match):
-            scratch_registry = _scratch_registry()
-            kwargs = dict(case)
-            name = kwargs.pop("name", "cross_exchange_perp_arbitrage")
-            descriptor = scratch_registry.pair_registry.pair_descriptor("cross_exchange_perp_arbitrage")
-            scratch_registry.STRATEGIES.pop("cross_exchange_perp_arbitrage")
-            base = {"description": descriptor["description"], "default_params": {},
-                    "platforms": descriptor["platforms"], "edge_status": descriptor["edge_status"],
-                    "edge_source": descriptor["edge_source"], "edge_ref": descriptor["edge_ref"],
-                    "short_entries": False, "production_refused": True,
-                    "pair": dict(scratch_registry.PAIR_CONTRACT)}
-            kwargs = {**base, **kwargs}
-            before = dict(scratch_registry.STRATEGIES)
-            with pytest.raises(ValueError, match=match):
-                scratch_registry.register(name, **kwargs)(_noop)
-            assert scratch_registry.STRATEGIES == before
-            scratch_registry.register("cross_exchange_perp_arbitrage", **base)(_noop)
-            assert scratch_registry.pair_evaluators() == frozenset({"cross_exchange_perp_arbitrage"})

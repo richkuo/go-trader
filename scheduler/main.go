@@ -37,8 +37,6 @@ var knownSubcommands = []string{
 	"version",
 	"supervise",
 	"healthcheck",
-	"basket-replay",
-	"basket-replay-paper",
 	"quote-replay",
 	"robinhood-login",
 	"notify-broker",
@@ -118,10 +116,6 @@ func main() {
 			os.Exit(runSupervise(os.Args[2:]))
 		case "healthcheck":
 			os.Exit(runHealthcheck(os.Args[2:]))
-		case "basket-replay":
-			os.Exit(runBasketReplay(os.Args[2:]))
-		case "basket-replay-paper":
-			os.Exit(runBasketReplayPaper(os.Args[2:]))
 		case "quote-replay":
 			os.Exit(runQuoteReplay(os.Args[2:]))
 		case "robinhood-login":
@@ -467,25 +461,6 @@ func main() {
 		}
 	}
 
-	var basketCoord *basketCoordinator
-	basketExpiryFeedState := &basketExpiryFeed{}
-	if !readOnlyReport && len(cfg.Baskets) > 0 {
-		runtimes, basketErr := store.LoadBaskets(state, cfg)
-		if basketErr == nil {
-			basketCoord = newBasketCoordinator(cfg, state, store, &sync.RWMutex{}, notifier, nil, runtimes)
-			basketErr = basketCoord.startupCheck()
-		}
-		if basketErr != nil {
-			fmt.Fprintf(os.Stderr, "[basket] CRITICAL: refusing to start: %v\n", basketErr)
-			sendStartupRefusalDM(notifier, "Basket recovery", basketErr.Error())
-			cleanupNotifier()
-			os.Exit(1)
-		}
-		for _, line := range basketStartupLines(runtimes) {
-			fmt.Println(line)
-		}
-		basketCoord.recoverInterrupted(time.Now())
-	}
 	if !readOnlyReport {
 		if err := quoteStartupRecoveryFor(shutdownReadOnlyCtx, store); err != nil {
 			fmt.Fprintf(os.Stderr, "[quote] CRITICAL: refusing to start: startup quote recovery failed: %v (exit %d)\n", err, ExitStorageOwnership)
@@ -550,10 +525,6 @@ func main() {
 	defer logMgr.Close()
 
 	var mu sync.RWMutex
-	if basketCoord != nil {
-		basketCoord.mu = &mu
-		basketCoord.logMgr = logMgr
-	}
 
 	initShutdownContexts()
 
@@ -877,7 +848,6 @@ func main() {
 		tickSeconds = schedulerTickSeconds(cfg)
 		drawdownWarnThresholdPct = configuredDrawdownWarnThresholdPct(cfg)
 		paperFundingSyncLines := syncPaperFundingEligibility(state, cfg.Strategies, paperFundingClock())
-		basketCoord.reload(cfg)
 		mu.Unlock()
 		for _, line := range paperFundingSyncLines {
 			fmt.Println("[reload] " + line)
@@ -961,7 +931,6 @@ func main() {
 		processConfigReloads()
 
 		cycleStart := time.Now()
-		basketCoord.beginCycle()
 		mu.Lock()
 		state.CycleCount++
 		cycle := state.CycleCount
@@ -1023,10 +992,7 @@ func main() {
 
 		dueStrategies = orderReplaySourcesBeforeMirrors(dueStrategies)
 
-		basketDue := basketCoord.dueDeadlines(time.Now())
-		basketWork := len(basketDue) > 0 || basketCoord.rankReady() || basketCoord.expiryWork(time.Now())
-
-		if len(dueStrategies) == 0 && !basketWork {
+		if len(dueStrategies) == 0 {
 			if audSec := liquidationAuditIntervalSeconds(cfg.Strategies, intervals); audSec > 0 && os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
 				now := time.Now().UTC()
 				if lastLiquidationAudit.IsZero() || now.Sub(lastLiquidationAudit) >= time.Duration(audSec)*time.Second {
@@ -1041,7 +1007,7 @@ func main() {
 					offCycleAuditSaveDirty = flushOffCycleLiquidationAuditState(state, cfg, store, &mu, mutations, offCycleAuditSaveDirty, false)
 					continue
 				}
-				delay := basketCoord.adjustDelay(cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient)), time.Now())
+				delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
 				if wait := time.Until(lastLiquidationAudit.Add(time.Duration(audSec) * time.Second)); wait < delay {
 					delay = wait
 				}
@@ -1064,7 +1030,7 @@ func main() {
 					return
 				}
 			}
-			delay := basketCoord.adjustDelay(cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient)), time.Now())
+			delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
 			armMainLoopDeadline(delay + mainLoopWakeGrace)
 			timer := time.NewTimer(delay)
 			select {
@@ -1092,17 +1058,8 @@ func main() {
 
 		feedCtx := &marketFeedContext{Enabled: deadlineFeed, Requirements: feedReq, Interval: cfg.IntervalSeconds}
 		var cycleFeedReqs cycleMarketRequirements
-		basketDueAtShared := make(map[string]time.Time)
-		for id, d := range basketDue {
-			if d.Equal(sharedDeadline) {
-				basketDueAtShared[id] = d
-			}
-		}
 		if sharedFeed && sharedClient != nil && len(evaluationMarks) > 0 {
 			cycleFeedReqs = cycleRequirementsForDue(dueStrategies, feedReq)
-			if len(basketDueAtShared) > 0 {
-				cycleFeedReqs = mergeCycleRequirements(cycleFeedReqs, basketCoord.cycleRequirements(basketDueAtShared, feedReq))
-			}
 			sharedKey := sharedDeadline.Unix()
 			snap, report := sharedClient.Fetch(shutdownReadOnlyCtx, sharedKey, cycleFeedReqs)
 			feedCtx.Snapshot = snap
@@ -1119,9 +1076,6 @@ func main() {
 		}
 		if websocketFeed && feedOwner != nil {
 			cycleFeedReqs = cycleRequirementsForDue(dueStrategies, feedReq)
-			if len(basketDue) > 0 {
-				cycleFeedReqs = mergeCycleRequirements(cycleFeedReqs, basketCoord.cycleRequirements(basketDue, feedReq))
-			}
 			evalID := cycleEvaluationID(evaluationMarks, cycle)
 			feedCtx.Snapshot = sealCycleMarketSnapshot(feedOwnerCtx, feedOwner, cycleFeedReqs, evalID, time.Now().UTC())
 			globalMarketFeedStatus.setSnapshotID(evalID)
@@ -1234,47 +1188,6 @@ func main() {
 
 		runPaperFundingCycle(shutdownReadOnlyCtx, state, cfg, store, &mu, websocketFeed || sharedFeed, feedCtx.Snapshot, paperFundingMarks, notifier)
 
-		if sharedFeed && feedCtx.Snapshot != nil {
-			if coins := basketCoord.expiryMarkCoins(time.Now()); len(coins) > 0 && snapshotHasFreshMids(feedCtx.Snapshot, coins) {
-				basketCoord.stepExpiry(basketCycleInputs{Now: time.Now(), Snapshot: feedCtx.Snapshot, SaveBlocked: allPartitionsSaveBlocked(store, cfg), Once: *once})
-			}
-		}
-
-		basketSnapshots := make(map[int64]*marketSnapshot)
-		basketSnapshotFor := func(rt *basketRuntime, deadline time.Time) *marketSnapshot {
-			if websocketFeed {
-				return feedCtx.Snapshot
-			}
-			if !sharedFeed || sharedClient == nil {
-				return nil
-			}
-			key := deadline.Unix()
-			if feedCtx.SharedKey == key && feedCtx.Snapshot != nil {
-				return feedCtx.Snapshot
-			}
-			if snap, ok := basketSnapshots[key]; ok {
-				return snap
-			}
-			reqs := basketCoord.cycleRequirements(map[string]time.Time{rt.Contract.BasketID: deadline}, feedReq)
-			snap, report := sharedClient.Fetch(shutdownReadOnlyCtx, key, reqs)
-			fmt.Println(sharedFeedAuditLine(report, 0, feedEffectiveCadences(cfg, intervals)))
-			basketSnapshots[key] = snap
-			return snap
-		}
-		basketMarkSnapshot := func() *marketSnapshot {
-			if feedCtx.Snapshot != nil {
-				return feedCtx.Snapshot
-			}
-			var best *marketSnapshot
-			var bestKey int64
-			for k, snap := range basketSnapshots {
-				if snap != nil && k > bestKey {
-					best, bestKey = snap, k
-				}
-			}
-			return best
-		}
-
 		var totalPV float64
 		sharedWallets := detectSharedWallets(cfg.Strategies)
 		walletBalances := make(map[SharedWalletKey]float64)
@@ -1296,7 +1209,6 @@ func main() {
 			mu.RLock()
 			totalPV, _ = computeTotalPortfolioValue(cfg.Strategies, state, prices, nil, sharedWallets)
 			mu.RUnlock()
-			basketCoord.step(basketCycleInputs{Now: time.Now(), Snapshot: feedCtx.Snapshot, SnapshotFor: basketSnapshotFor, SaveBlocked: true, Once: *once})
 		} else {
 			regimeStoreReady := startRegimeStorePopulationWithExports(globalRegimeStore, dueStrategies, cfg.Regime, notifier, feedCtx, manualRegimeExportsFor(cfg, store, dueStrategies))
 			cyclePartitions := activePartitions(cfg.Strategies)
@@ -1448,19 +1360,15 @@ func main() {
 			}
 
 			sharedWalletRiskGeneration++
-			if basketCoord != nil {
-				basketCoord.preparePairRisk(basketCycleInputs{Now: time.Now().UTC()})
-			}
 			mu.RLock()
-			riskPairMarks := state.pairMarksLocked()
 			riskWalletBalances, usedStaleRiskBalance, pooledEquityComplete := resolveSharedWalletRiskBalances(
 				cfg.Strategies, state.Strategies, sharedWallets, walletBalances,
 				sharedWalletRiskBalances, sharedWalletRiskGeneration)
 			riskOpenSymbols := snapshotOpenSymbolsByStrategy(state)
 			totalPV = 0
 			for _, part := range cyclePartitions {
-				sr := measureScopeCycleRiskMarked(part, scopeRisk[part].Config, cfg.Strategies, state, prices,
-					riskWalletBalances, sharedWallets, pooledEquityComplete, usedStaleRiskBalance, time.Now().UTC(), riskPairMarks)
+				sr := measureScopeCycleRisk(part, scopeRisk[part].Config, cfg.Strategies, state, prices,
+					riskWalletBalances, sharedWallets, pooledEquityComplete, usedStaleRiskBalance, time.Now().UTC())
 				scopeRisk[part] = sr
 				totalPV += sr.TotalPV
 			}
@@ -1606,7 +1514,7 @@ func main() {
 					HLPositions:       hlPositions,
 					HLLiveAll:         hlKillSwitchAll,
 					HLHedgeCoins:      hlHedgeCoins,
-					HLCloser:          basketCoord.pairKillSwitchHLCloser(defaultHyperliquidLiveCloser),
+					HLCloser:          defaultHyperliquidLiveCloser,
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
@@ -1648,7 +1556,7 @@ func main() {
 					HLLimitOrderTimeout: 60 * time.Second,
 					OKXLiveAllPerps:     okxLivePerps,
 					OKXLiveAllSpot:      okxLiveSpot,
-					OKXCloser:           basketCoord.pairKillSwitchOKXCloser(defaultOKXLiveCloser),
+					OKXCloser:           defaultOKXLiveCloser,
 					OKXFetcher:          defaultOKXPositionsFetcher,
 					RHLiveCrypto:        rhLiveCrypto,
 					RHLiveOptions:       rhLiveOptions,
@@ -1699,14 +1607,8 @@ func main() {
 						forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlKillSwitchAll, hlVirtualQty, rhFlatCoins, nil)
 					}
 				}
-				livePairPending := pairEmergencyPendingFor(state, livePartition)
-				if len(livePairPending) > 0 {
-					plan.DiscordMessage = pairKillSwitchAccountingNote(plan.DiscordMessage, livePairPending)
-				}
 				if !notifier.HasOwner() {
-					if len(livePairPending) > 0 {
-						fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset suppressed: pair member accounting is not committed (%s)\n", strings.Join(livePairPending, "; "))
-					} else if plan.CanAutoResetWithoutOwner() {
+					if plan.CanAutoResetWithoutOwner() {
 						peakRebaselineAvailable := liveSR.PeakRebaselineAvailable
 						killSwitchAutoReset = AutoResetConfirmedFlatKillSwitch(state.partitionRisk(livePartition), liveSR.TotalPV,
 							peakRebaselineAvailable,
@@ -2116,7 +2018,7 @@ func main() {
 				tsLiveStrategy := sc.Type == "futures" && sc.Platform == "topstep" && topstepIsLive(sc.Args)
 
 				mu.RLock()
-				pv, _ := portfolioValueMarked(stratState, prices, state.pairMarksLocked())
+				pv := PortfolioValue(stratState, prices)
 				var posJSON string
 				if sc.Type == "options" {
 					posJSON = EncodeAllPositionsJSON(stratState.OptionPositions, stratState.Positions)
@@ -2280,7 +2182,7 @@ func main() {
 					}
 				}
 				mu.Lock()
-				allowed, reason := checkStrategyRiskWithView(&sc, stratState, pv, prices, state.pairMarksLocked(), logger, riskAssist)
+				allowed, reason := CheckRisk(&sc, stratState, pv, prices, logger, riskAssist)
 				cbSnapshot := perStrategyCircuitBreakerSnapshot{}
 				if !allowed && isFreshPerStrategyCircuitBreaker(reason) {
 					cbSnapshot = snapshotPerStrategyCircuitBreaker(stratState, prices)
@@ -2324,7 +2226,7 @@ func main() {
 				case "spot":
 					if sc.Platform == "okx" {
 						okxOut := runOKXStep(okxStepContext{Cfg: cfg, State: state, StratState: stratState, Store: store, StratDB: stratDB, Mu: &mu, Notifier: notifier, Logger: logger,
-							Prices: prices, Risk: sr, Scope: stratScope, PersistenceHold: persistenceHold, Coord: basketCoord,
+							Prices: prices, Risk: sr, Scope: stratScope, PersistenceHold: persistenceHold,
 							Pos:  okxStepPosition{Ctx: okxPosCtx, Qty: okxPosQty, Side: okxPosSide, AvgCost: okxAvgCost, Leverage: okxPosLeverage},
 							Cash: okxCash, PoolBalanceKnown: okxPoolBalanceKnown, CashReconcile: okxCashReconcile}, sc, okxOrdinaryCheck(prices, cfg, notifier))
 						trades, detail = okxOut.Trades, okxOut.Detail
@@ -2520,7 +2422,7 @@ func main() {
 					}
 					if sc.Platform == "okx" {
 						okxOut := runOKXStep(okxStepContext{Cfg: cfg, State: state, StratState: stratState, Store: store, StratDB: stratDB, Mu: &mu, Notifier: notifier, Logger: logger,
-							Prices: prices, Risk: sr, Scope: stratScope, PersistenceHold: persistenceHold, Coord: basketCoord,
+							Prices: prices, Risk: sr, Scope: stratScope, PersistenceHold: persistenceHold,
 							Pos:  okxStepPosition{Ctx: okxPosCtx, Qty: okxPosQty, Side: okxPosSide, AvgCost: okxAvgCost, Leverage: okxPosLeverage},
 							Cash: okxCash, PoolBalanceKnown: okxPoolBalanceKnown, CashReconcile: okxCashReconcile}, sc, okxOrdinaryCheck(prices, cfg, notifier))
 						trades, detail = okxOut.Trades, okxOut.Detail
@@ -2539,7 +2441,6 @@ func main() {
 							prices:                   prices,
 							feedCtx:                  feedCtx,
 							hlBatchResults:           hlBatchResults,
-							basketCoord:              basketCoord,
 							intervals:                intervals,
 							stratScope:               stratScope,
 							persistenceHold:          persistenceHold,
@@ -2869,52 +2770,6 @@ func main() {
 				mu.RUnlock()
 			}
 			setHLActiveCycleShare(nil)
-			if basketCoord.active() {
-				basketIn := basketCycleInputs{Now: time.Now(), Snapshot: feedCtx.Snapshot, SnapshotFor: basketSnapshotFor, ScopeRisk: scopeRisk, Once: *once}
-				if websocketFeed && feedOwner != nil {
-					markReqs := cycleMarketRequirements{Coins: append([]string(nil), feedReq.MidCoins...)}
-					markID := cycleEvaluationID(evaluationMarks, cycle) + "/basket-marks"
-					basketIn.Snapshot = sealCycleMarketSnapshot(feedOwnerCtx, feedOwner, markReqs, markID, time.Now().UTC())
-					for waitUntil := time.Now().Add(20 * time.Second); *once && time.Now().Before(waitUntil) && !snapshotHasFreshMids(basketIn.Snapshot, basketCoord.memberCoins()); {
-						time.Sleep(500 * time.Millisecond)
-						basketIn.Snapshot = sealCycleMarketSnapshot(feedOwnerCtx, feedOwner, markReqs, markID, time.Now().UTC())
-					}
-					basketIn.Now = time.Now()
-				}
-				if basketIn.Snapshot == nil {
-					for _, rt := range basketCoord.runtimes {
-						if d, ok := basketDue[rt.Contract.BasketID]; ok {
-							basketSnapshotFor(rt, d)
-						}
-					}
-					basketIn.Snapshot = basketMarkSnapshot()
-				}
-				if sharedFeed && sharedClient != nil {
-					if coins := basketCoord.expiryMarkCoins(time.Now()); len(coins) > 0 {
-						basketExpiryFeedState.client, basketExpiryFeedState.sched = sharedClient, sharedFeedScheduleFor(cfg, sharedClient)
-						got := basketExpiryFeedState.marks(shutdownReadOnlyCtx, time.Now(), coins, basketIn.Snapshot, feedCtx.SharedKey)
-						if got.Report != nil {
-							fmt.Println(sharedFeedAuditLine(*got.Report, 0, feedEffectiveCadences(cfg, intervals)))
-							for _, alert := range got.Report.Alerts {
-								fmt.Println("[feed] " + alert)
-								if notifier != nil && notifier.HasBackends() {
-									notifier.SendToAllChannels(alert)
-									notifier.SendOwnerDM(alert)
-								}
-							}
-						}
-						if got.Detail != "" {
-							fmt.Printf("[basket] holding-horizon marks for %s: %s\n", strings.Join(coins, ", "), got.Detail)
-						}
-						if got.Snapshot != nil {
-							basketIn.Snapshot = got.Snapshot
-						}
-						basketIn.MarksRetryAt = got.RetryAt
-						basketIn.Now = time.Now()
-					}
-				}
-				basketCoord.step(basketIn)
-			}
 		}
 
 		mu.RLock()
@@ -3002,7 +2857,7 @@ func main() {
 						detailKey = chKey + "|" + assetKeys[0]
 					}
 					chDetails := channelTradeDetails[detailKey]
-					chAdj, _, _ := computeSubsetDisplayValueMarked(chStrats, state, prices, walletBalances, sharedWallets, state.pairMarksLocked())
+					chAdj, _ := computeSubsetDisplayValue(chStrats, state, prices, walletBalances, sharedWallets)
 					chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
 					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chAdj, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats, cfg.Regime)
 					for _, msg := range msgs {
@@ -3012,7 +2867,7 @@ func main() {
 					for _, asset := range assetKeys {
 						assetStrats := assetGroups[asset]
 						assetDetails := channelTradeDetails[chKey+"|"+asset]
-						assetAdj, _, _ := computeSubsetDisplayValueMarked(assetStrats, state, prices, walletBalances, sharedWallets, state.pairMarksLocked())
+						assetAdj, _ := computeSubsetDisplayValue(assetStrats, state, prices, walletBalances, sharedWallets)
 						assetTrades := len(assetDetails)
 						assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
 						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetAdj, prices, assetDetails, assetStrats, state, chKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats, cfg.Regime)
@@ -3117,7 +2972,7 @@ func main() {
 		mu.RLock()
 		endIntervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
-		delay := basketCoord.adjustDelay(cycleSchedulerDelay(cfg, endIntervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient)), time.Now())
+		delay := cycleSchedulerDelay(cfg, endIntervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
 		armMainLoopDeadline(delay + mainLoopWakeGrace)
 		timer := time.NewTimer(delay)
 		select {
@@ -3186,7 +3041,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	lifetimeStats := loadLifetimeStatsBestEffort(sdb, "[summary]")
 	assetGroups, assetKeys := groupByAsset(chStrats)
 	if len(assetKeys) <= 1 {
-		chAdj, _, _ := computeSubsetDisplayValueMarked(chStrats, state, prices, summaryWalletBalances, summaryAccountShared, state.pairMarksLocked())
+		chAdj, _ := computeSubsetDisplayValue(chStrats, state, prices, summaryWalletBalances, summaryAccountShared)
 		chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
 		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chAdj, prices, nil, chStrats, state, channelKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats, cfg.Regime)
 		for _, msg := range msgs {
@@ -3196,7 +3051,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	} else {
 		for _, asset := range assetKeys {
 			assetStrats := assetGroups[asset]
-			assetAdj, _, _ := computeSubsetDisplayValueMarked(assetStrats, state, prices, summaryWalletBalances, summaryAccountShared, state.pairMarksLocked())
+			assetAdj, _ := computeSubsetDisplayValue(assetStrats, state, prices, summaryWalletBalances, summaryAccountShared)
 			assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
 			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetAdj, prices, nil, assetStrats, state, channelKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats, cfg.Regime)
 			for _, msg := range msgs {
@@ -3473,8 +3328,7 @@ func isFreshPerStrategyCircuitBreaker(reason string) bool {
 		return false
 	}
 	return strings.HasPrefix(reason, RiskReasonMaxDrawdownExceeded) ||
-		strings.HasPrefix(reason, RiskReasonConsecutiveLosses) ||
-		strings.HasPrefix(reason, RiskReasonPairValuationStale)
+		strings.HasPrefix(reason, RiskReasonConsecutiveLosses)
 }
 
 func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, mu *sync.RWMutex, notifier tradeAlertRouter, rc *RegimeConfig) {
@@ -3640,10 +3494,6 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		}
 	}
 	args = appendAllowNoEdgeArg(args, *sc)
-	if isBasketMember(*sc) {
-		args = append(args, basketMemberFlag)
-	}
-	args = appendPairMemberArg(args, *sc)
 	if marketStdin != nil {
 		args = append(args, marketStdinFlag)
 	}
@@ -3673,14 +3523,6 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 }
 
 func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode, sentInvert bool) (*HyperliquidResult, string, float64, bool) {
-	if isBasketMember(*sc) && result != nil && errMsg == "" && result.Degraded == "" && !result.BasketMember {
-		errMsg, mode, result = "the basket member check did not echo the management-only contract; no entry evaluator output is trusted (#1781)", scriptFailureError, nil
-	}
-	if isPairMember(*sc) && result != nil && errMsg == "" && result.Degraded == "" {
-		if msg := pairMemberCheckError(*sc, result.PairMember); msg != "" {
-			errMsg, mode, result = msg+" (#1862)", scriptFailureError, nil
-		}
-	}
 	if result != nil && errMsg == "" && result.Degraded == "" {
 		if want := hlCloseOwnerForCheck(*sc, posCtx); want != "" && result.CloseOwner != want {
 			errMsg = fmt.Sprintf("close-owner contract mismatch: sent close_owner=%q but the check returned close_owner=%q; holding this signal because the check script may have evaluated a close the on-chain take-profit owns (redeploy with scripts/update.sh so Go and Python match)", want, result.CloseOwner)
@@ -4024,22 +3866,6 @@ func paperTierFillQty(pos *Position, closeFraction float64) float64 {
 }
 
 func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
-	var (
-		trades       int
-		detail       string
-		openTrade    *Trade
-		ratchetAlert *RatchetTriggerAlert
-	)
-	if err := withPairDispatchCostScope(sc, s, func() {
-		trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpenScoped(sc, s, result, execResult, signalStr, price, regime, cfg, hurst, logger)
-	}); err != nil {
-		logStrategyCostRefusal(logger, "Hyperliquid "+signalStr, result.Symbol, err)
-		return 0, "", nil, nil
-	}
-	return trades, detail, openTrade, ratchetAlert
-}
-
-func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
 	if execResult != nil {
 		if _, err := confirmHyperliquidExecuteFill(execResult, nil); err != nil {
 			return 0, "", nil, nil
@@ -4052,14 +3878,6 @@ func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategySt
 		fillQty = execResult.Execution.Fill.TotalSz
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
-	if execResult == nil && result.BasketOpenQty > 0 {
-		fillQty = result.BasketOpenQty
-		fillPrice = ApplyAdverseSlippage(price, result.Signal > 0)
-	}
-	if execResult == nil && result.PairFill != nil {
-		fillQty = result.PairFill.Qty
-		fillPrice = result.PairFill.Px
-	}
 
 	sizing := withEntrySizeMult(PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators)), hurst.OpenSizeMult())
 
@@ -4071,10 +3889,6 @@ func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategySt
 			fillOID = fmt.Sprintf("%d", fill.OID)
 		}
 		fillFee = fill.Fee
-	}
-	if execResult == nil && result.PairFill != nil {
-		fillOID = result.PairFill.OID
-		fillFee = result.PairFill.Fee.DeltaUSD
 	}
 
 	bookCloseFraction := result.CloseFraction
@@ -4095,7 +3909,7 @@ func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategySt
 		}
 	}
 
-	lotPolicy := newHLPaperLotPolicy(sc, result.Symbol, price, execResult != nil || result.PairFill != nil)
+	lotPolicy := newHLPaperLotPolicy(sc, result.Symbol, price, execResult != nil)
 	exec, err := executePerpsSignalWithLotPolicyDeferredOpen(s, result.Signal, result.Symbol, bookPrice, sizing, fillQty, fillOID, fillFee, EffectiveDirection(sc), bookCloseFraction, logger, lotPolicy)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
@@ -4150,16 +3964,13 @@ func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategySt
 			if p, ok := s.Positions[result.Symbol]; ok {
 				pos = p
 			}
-			var costErr error
 			if pos != nil {
-				stopPx, costErr = paperStopBookPx(sc, s, pos.Side, stopPx)
+				stopPx = paperStopBookPx(pos.Side, stopPx)
 			}
 			if recordPositionOpen(s, sc, openTrade, pos) {
 				openTrade = nil
 			}
-			if costErr != nil {
-				logStrategyCostRefusal(logger, "open-cycle paper stop", result.Symbol, costErr)
-			} else if recordPerpsStopLossClose(s, result.Symbol, stopPx, stopReason, logger) {
+			if recordPerpsStopLossClose(s, result.Symbol, stopPx, stopReason, logger) {
 				trades++
 			}
 		}
@@ -4816,7 +4627,6 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 		args = append(args, refsArgs...)
 	}
 	args = appendAllowNoEdgeArg(args, sc)
-	args = appendPairMemberArg(args, sc)
 	logger.Running(sc.Script, args)
 
 	result, stderr, err := RunOKXCheck(sc.Script, args)
@@ -4848,14 +4658,6 @@ func completeOKXCheck(sc StrategyConfig, args []string, result *OKXResult, stder
 		logger.Error("Script returned error: %s", msg)
 		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
 		return nil, "", 0, false
-	}
-	if isPairMember(sc) {
-		if msg := pairMemberCheckError(sc, result.PairMember); msg != "" {
-			logger.RunningOnFailure(sc.Script, args)
-			logger.Error("Script returned error: %s (#1862)", msg)
-			notifyScriptFailure(notifier, sc, scriptFailureError, msg)
-			return nil, "", 0, false
-		}
 	}
 	if msg := htfFilterContractError(sc, result.StrategyDecisionFields, htfFilterContext{}); msg != "" {
 		logger.RunningOnFailure(sc.Script, args)
@@ -5016,18 +4818,6 @@ func confirmOKXEntryFill(res *OKXExecuteResult) error {
 }
 
 func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {
-	var trades int
-	var detail, cashAlert string
-	if err := withPairDispatchCostScope(sc, s, func() {
-		trades, detail, cashAlert = executeOKXResultScoped(sc, s, db, result, execResult, signalStr, price, regime, cfg, hurst, logger)
-	}); err != nil {
-		logStrategyCostRefusal(logger, "OKX "+signalStr, result.Symbol, err)
-		return 0, "", ""
-	}
-	return trades, detail, cashAlert
-}
-
-func executeOKXResultScoped(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64

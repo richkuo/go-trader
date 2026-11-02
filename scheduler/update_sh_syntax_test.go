@@ -396,72 +396,6 @@ type pyIntegrationCIExemption struct {
 
 var pyIntegrationCIExemptions = map[string]pyIntegrationCIExemption{}
 
-func localOnlyBasketTest(test string) bool {
-	return strings.HasPrefix(test, "TestBasket")
-}
-
-const parkedResearchTag = "parkedresearch"
-
-func parkedResearchBuildTests(t *testing.T, schedDir string) []string {
-	t.Helper()
-	parked := build.Default
-	parked.GOOS = "linux"
-	parked.GOARCH = "amd64"
-	parked.BuildTags = []string{"pyintegration", parkedResearchTag}
-	ordinary := parked
-	ordinary.BuildTags = []string{"pyintegration"}
-	paths, err := filepath.Glob(filepath.Join(schedDir, "*_test.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	fset := token.NewFileSet()
-	var tests []string
-	for _, path := range paths {
-		inParked, err := parked.MatchFile(schedDir, filepath.Base(path))
-		if err != nil {
-			t.Fatalf("read build constraints of %s: %v", filepath.Base(path), err)
-		}
-		inOrdinary, err := ordinary.MatchFile(schedDir, filepath.Base(path))
-		if err != nil {
-			t.Fatalf("read build constraints of %s: %v", filepath.Base(path), err)
-		}
-		if !inParked || inOrdinary {
-			continue
-		}
-		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatalf("parse %s: %v", filepath.Base(path), err)
-		}
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if ok && fn.Recv == nil && goTestRunnerName(fn, "testing", "Test", "T") {
-				tests = append(tests, fn.Name.Name)
-			}
-		}
-	}
-	sort.Strings(tests)
-	return tests
-}
-
-func checkParkedResearchOutsideCI(t *testing.T, workflow string, shards []ciPyIntegrationShard, parked []string) {
-	t.Helper()
-	for _, marker := range []string{parkedResearchTag, "GO_TRADER_PARKED_RESEARCH"} {
-		if strings.Contains(workflow, marker) {
-			t.Errorf(".github/workflows/ci.yml names %s; parked research tests must not run or build in CI", marker)
-		}
-	}
-	if len(parked) == 0 {
-		t.Errorf("found no %s test functions; the parked research files lost their build tag", parkedResearchTag)
-	}
-	for _, test := range parked {
-		for _, shard := range shards {
-			if shard.selects(test) {
-				t.Errorf("%s selects the parked research test %s", shard.job, test)
-			}
-		}
-	}
-}
-
 func (s ciPyIntegrationShard) selects(test string) bool {
 	return s.run.MatchString(test) && (s.skip == nil || !s.skip.MatchString(test))
 }
@@ -700,9 +634,7 @@ func checkPyIntegrationPartition(t *testing.T, shards []ciPyIntegrationShard, te
 			t.Errorf("no %s shard job runs the allowlisted %s", ciPyIntegrationJob, test)
 		case len(owners) > 1:
 			t.Errorf("%s runs in more than one shard job: %s", test, strings.Join(owners, ", "))
-		case localOnlyBasketTest(test) && (allowed || len(owners) > 0):
-			t.Errorf("basket test %s is selected by CI (%s); basket tests run locally, not in CI", test, strings.Join(append(owners, map[bool]string{true: ciPyIntegrationJob}[allowed]), ", "))
-		case tagged[test] && !allowed && !exempt && !localOnlyBasketTest(test):
+		case tagged[test] && !allowed && !exempt:
 			t.Errorf("the pyintegration test %s runs in no CI job: add it to the %s allowlist, or to pyIntegrationCIExemptions with a written reason and an issue number", test, ciPyIntegrationJob)
 		}
 	}
@@ -882,7 +814,6 @@ func TestShellSuiteCIWiring(t *testing.T) {
 	sort.Strings(shellJobs)
 	pyTests, pyTagged := pyIntegrationBuildTests(t, schedDir)
 	checkPyIntegrationPartition(t, shards, pyTests, pyTagged)
-	checkParkedResearchOutsideCI(t, string(workflow), shards, parkedResearchBuildTests(t, schedDir))
 
 	invoked := map[string]int{}
 	shardRuns := map[string][]ciSuiteShard{}

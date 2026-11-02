@@ -300,12 +300,13 @@ func recoverEntryIntents(cfg *Config, state *AppState, store *StateStore, mu *sy
 	mu.RLock()
 	for _, id := range sortedEntryGuardStrategyIDs(state) {
 		sc, ok := byID[id]
-		if !ok || isBasketMember(sc) || isPairMember(sc) {
+		if !ok {
 			continue
 		}
 		s := state.Strategies[id]
 		for _, intentID := range s.EntryGuard.sortedIntentIDs() {
 			if s.EntryGuard.Intents[intentID].researchGroupOwned() {
+				logOnChangef("entry-retired-research|"+id+"|"+intentID, "refused", "[entry] %s: recovery refused: %s\n", id, retiredResearchIntentRefusal(intentID))
 				continue
 			}
 			pending = append(pending, pendingRecovery{sc: sc, state: s, intentID: intentID})

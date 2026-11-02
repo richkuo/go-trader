@@ -49,26 +49,7 @@ def load_registry(platform: str = "spot") -> ModuleType:
     return mod
 
 
-def refuse_basket_evaluator(reg: ModuleType, name: str) -> None:
-    canonical = getattr(reg, "_registry", None)
-    entry = getattr(canonical, "STRATEGIES", {}).get(name)
-    if isinstance(entry, dict) and entry.get("basket"):
-        raise ValueError(
-            f"{name} is a basket evaluator; a single-asset backtest or parity run cannot evaluate it")
-    refuse_quote_capability(reg, name)
-
-
-def refuse_pair_evaluator(reg: ModuleType, name: str) -> None:
-    canonical = getattr(reg, "_registry", None)
-    entry = getattr(canonical, "STRATEGIES", {}).get(name)
-    if isinstance(entry, dict) and entry.get("pair"):
-        raise ValueError(
-            f"{name} is a pair policy; it decides one cross-venue pair from a frozen two-venue request through the "
-            "research pair coordinator, so a single-asset backtest, optimizer or parity run cannot evaluate it")
-
-
 def refuse_quote_capability(reg: ModuleType, name: str) -> None:
-    refuse_pair_evaluator(reg, name)
     canonical = getattr(reg, "_registry", None)
     entry = getattr(canonical, "STRATEGIES", {}).get(name)
     if isinstance(entry, dict) and entry.get("quote"):

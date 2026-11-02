@@ -27,39 +27,27 @@ type storageRiskRow struct {
 }
 
 type storageFileInspection struct {
-	Role                    storageRole          `json:"role"`
-	Path                    string               `json:"path"`
-	Canonical               string               `json:"canonical_path"`
-	Present                 bool                 `json:"present"`
-	LockHeld                bool                 `json:"lock_held"`
-	LockHolderPID           int                  `json:"lock_holder_pid,omitempty"`
-	ScopesOwned             []PortfolioScope     `json:"scopes_owned"`
-	PartitionsOwned         []string             `json:"partitions_owned"`
-	Strategies              []storageStrategyRow `json:"strategies"`
-	Orphans                 []storageStrategyRow `json:"orphans"`
-	PendingActions          int                  `json:"pending_manual_actions"`
-	RiskRows                []storageRiskRow     `json:"portfolio_risk_rows"`
-	LegacyUnscoped          bool                 `json:"legacy_unscoped_risk_row"`
-	EntryDecisions          int                  `json:"entry_decision_rows"`
-	EntryUnmapped           int                  `json:"entry_unmapped_rows"`
-	EntryHeld               []string             `json:"unresolved_entry_intents"`
-	RobinhoodRows           int                  `json:"robinhood_order_attempt_rows"`
-	RobinhoodHeld           []string             `json:"unresolved_robinhood_order_attempts"`
-	BasketRebalances        int                  `json:"basket_rebalance_rows"`
-	BasketPending           []string             `json:"pending_basket_recovery"`
-	PairFunding             int                  `json:"pair_funding_event_rows"`
-	PairFundingApplied      int                  `json:"pair_funding_applied_rows"`
-	PairFundingInventory    int                  `json:"pair_funding_inventory_rows"`
-	PairFundingPending      []string             `json:"pending_pair_funding"`
-	PairFundingUnresolvable []string             `json:"unresolvable_pair_funding,omitempty"`
-	PairVirtualEvents       int                  `json:"pair_virtual_event_rows"`
-	PairVirtualAllocations  int                  `json:"pair_virtual_allocation_rows"`
-	PairVirtualPending      []string             `json:"unresolved_pair_virtual_orders,omitempty"`
-	ReplayRuns              []string             `json:"basket_replay_runs,omitempty"`
-	QuoteReplayRuns         []string             `json:"quote_replay_runs,omitempty"`
-	QuoteOwners             int                  `json:"quote_owner_contracts"`
-	QuotePending            []string             `json:"pending_quote_recovery"`
-	FillCostPolicies        []string             `json:"fill_cost_policies,omitempty"`
+	Role            storageRole          `json:"role"`
+	Path            string               `json:"path"`
+	Canonical       string               `json:"canonical_path"`
+	Present         bool                 `json:"present"`
+	LockHeld        bool                 `json:"lock_held"`
+	LockHolderPID   int                  `json:"lock_holder_pid,omitempty"`
+	ScopesOwned     []PortfolioScope     `json:"scopes_owned"`
+	PartitionsOwned []string             `json:"partitions_owned"`
+	Strategies      []storageStrategyRow `json:"strategies"`
+	Orphans         []storageStrategyRow `json:"orphans"`
+	PendingActions  int                  `json:"pending_manual_actions"`
+	RiskRows        []storageRiskRow     `json:"portfolio_risk_rows"`
+	LegacyUnscoped  bool                 `json:"legacy_unscoped_risk_row"`
+	EntryDecisions  int                  `json:"entry_decision_rows"`
+	EntryUnmapped   int                  `json:"entry_unmapped_rows"`
+	EntryHeld       []string             `json:"unresolved_entry_intents"`
+	RobinhoodRows   int                  `json:"robinhood_order_attempt_rows"`
+	RobinhoodHeld   []string             `json:"unresolved_robinhood_order_attempts"`
+	QuoteReplayRuns []string             `json:"quote_replay_runs,omitempty"`
+	QuoteOwners     int                  `json:"quote_owner_contracts"`
+	QuotePending    []string             `json:"pending_quote_recovery"`
 }
 
 type storageInspection struct {
@@ -301,17 +289,11 @@ func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storag
 	}
 	rejections = append(rejections, rhRejections...)
 
-	basketRejections, err := inspectBasketRows(db, fi, ident)
+	retiredRejections, err := inspectRetiredReplayState(db, fi)
 	if err != nil {
 		return nil, err
 	}
-	rejections = append(rejections, basketRejections...)
-
-	replayRejections, err := inspectBasketReplayRows(db, fi)
-	if err != nil {
-		return nil, err
-	}
-	rejections = append(rejections, replayRejections...)
+	rejections = append(rejections, retiredRejections...)
 
 	quoteReplayRejections, err := inspectQuoteReplayRows(db, fi)
 	if err != nil {
@@ -362,6 +344,14 @@ func foreignRoleForStorageID(ident storageIdentityMap, layout storageLayout, rol
 		}
 	}
 	return "", false
+}
+
+func inspectRetiredReplayState(db *StateDB, fi *storageFileInspection) ([]string, error) {
+	ok, err := tableExists(db, "basket_replay_runs")
+	if err != nil || !ok {
+		return nil, err
+	}
+	return []string{fmt.Sprintf("%s state file: it holds a basket_replay_runs table, which is retired offline research replay state; the basket and pair research feature was removed in issue 1955 and its code is kept in git tag %s; the scheduler never runs on replay state", fi.Role, retiredResearchArchiveTag)}, nil
 }
 
 func tableExists(db *StateDB, table string) (bool, error) {
@@ -430,37 +420,12 @@ func formatStorageInspection(si storageInspection) string {
 		for _, line := range fi.RobinhoodHeld {
 			fmt.Fprintf(&b, "    UNRESOLVED ROBINHOOD ORDER %s\n", line)
 		}
-		fmt.Fprintf(&b, "  basket rebalance records: %d\n", fi.BasketRebalances)
-		for _, line := range fi.BasketPending {
-			fmt.Fprintf(&b, "    PENDING BASKET RECOVERY %s\n", line)
-		}
-		if fi.PairFunding > 0 || fi.PairFundingInventory > 0 {
-			fmt.Fprintf(&b, "  pair funding events: %d (%d applied), inventory changes: %d\n", fi.PairFunding, fi.PairFundingApplied, fi.PairFundingInventory)
-		}
-		for _, line := range fi.PairFundingPending {
-			fmt.Fprintf(&b, "    PENDING PAIR FUNDING %s\n", line)
-		}
-		for _, line := range fi.PairFundingUnresolvable {
-			fmt.Fprintf(&b, "    UNRESOLVABLE PAIR FUNDING %s\n", line)
-		}
-		if fi.PairVirtualEvents > 0 || fi.PairVirtualAllocations > 0 {
-			fmt.Fprintf(&b, "  pair virtual venue records: %d, client identifier allocations: %d\n", fi.PairVirtualEvents, fi.PairVirtualAllocations)
-		}
-		for _, line := range fi.PairVirtualPending {
-			fmt.Fprintf(&b, "    UNRESOLVED PAIR VIRTUAL ORDER %s\n", line)
-		}
 		fmt.Fprintf(&b, "  quote owner contracts: %d\n", fi.QuoteOwners)
 		for _, line := range fi.QuotePending {
 			fmt.Fprintf(&b, "    PENDING QUOTE RECOVERY %s\n", line)
 		}
-		for _, line := range fi.ReplayRuns {
-			fmt.Fprintf(&b, "  OFFLINE BASKET REPLAY RUN %s\n", line)
-		}
 		for _, line := range fi.QuoteReplayRuns {
 			fmt.Fprintf(&b, "  OFFLINE QUOTE REPLAY RUN %s\n", line)
-		}
-		for _, line := range fi.FillCostPolicies {
-			fmt.Fprintf(&b, "  fill cost policy evidence: %s\n", line)
 		}
 	}
 	if len(si.Rejections) == 0 {

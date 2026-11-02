@@ -123,11 +123,6 @@ func advancePaperDynamicCloseRegime(sc StrategyConfig, stratState *StrategyState
 		}
 		return 0, ""
 	}
-	if _, err := pairDispatchCostPolicy(sc, stratState); err != nil {
-		noteStrategyCostFault(stratState, err.Error())
-		logStrategyCostRefusal(logger, "paper dynamic close regime", symbol, err)
-		return 0, ""
-	}
 	oldLabel := pos.RegimeAppliedLabel
 	if !advanceDynamicCloseRegime(pos, stratState, sc) {
 		return 0, ""
@@ -148,11 +143,7 @@ func advancePaperDynamicCloseRegime(sc StrategyConfig, stratState *StrategyState
 	if !trailingStopBreached(pos.Side, mark, newTrigger) {
 		return 0, ""
 	}
-	fillPx, err := paperStopBookPx(sc, stratState, pos.Side, paperStopFillPx(pos.Side, mark, newTrigger))
-	if err != nil {
-		logStrategyCostRefusal(logger, "paper dynamic stop", symbol, err)
-		return 0, ""
-	}
+	fillPx := paperStopBookPx(pos.Side, paperStopFillPx(pos.Side, mark, newTrigger))
 	if !recordPerpsStopLossClose(stratState, symbol, fillPx, paperStopReasonATR, logger) {
 		return 0, ""
 	}

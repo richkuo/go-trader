@@ -236,15 +236,6 @@ func mutatePaperPerpsBook(s *StrategyState, symbol string, mutate func()) {
 }
 
 func mutatePaperPerpsBookCoins(s *StrategyState, symbols []string, mutate func()) {
-	bumpPairCoinEpoch(symbols...)
-	defer bumpPairCoinEpoch(symbols...)
-	if pairInventoryTrack(s, symbols, func() { mutatePaperPerpsBookCoinsLegacy(s, symbols, mutate) }) {
-		return
-	}
-	mutatePaperPerpsBookCoinsLegacy(s, symbols, mutate)
-}
-
-func mutatePaperPerpsBookCoinsLegacy(s *StrategyState, symbols []string, mutate func()) {
 	if s == nil || s.PaperFunding == nil {
 		mutate()
 		return
@@ -353,7 +344,7 @@ func syncPaperFundingEligibility(state *AppState, cfgs []StrategyConfig, now tim
 	var lines []string
 	for _, sc := range cfgs {
 		s := state.Strategies[sc.ID]
-		if s == nil || quoteFundingOwned(sc, s) || pairFundingOwned(sc) {
+		if s == nil || quoteFundingOwned(sc, s) {
 			continue
 		}
 		if !paperFundingEligible(sc) {
@@ -501,10 +492,6 @@ func validatePaperFundingState(st *paperFundingState) error {
 		}
 	}
 	return nil
-}
-
-func pairFundingOwned(sc StrategyConfig) bool {
-	return isPairMember(sc)
 }
 
 func quoteFundingOwned(sc StrategyConfig, s *StrategyState) bool {

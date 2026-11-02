@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -161,5 +162,85 @@ func validateUserDefaultsJSONKeys(rawData []byte) []string {
 		}
 	}
 
+	return errs
+}
+
+const retiredResearchArchiveTag = "archive/basket-pair-research"
+
+const (
+	retiredBasketMemberToken = "basket_member"
+	retiredPairMemberToken   = "pair_member"
+	retiredBasketMemberFlag  = "--basket-member"
+	retiredPairMemberFlag    = "--pair-member-json"
+	retiredManagementFlag    = "--management-stdin"
+)
+
+func retiredResearchRefusal(subject, what string) string {
+	return fmt.Sprintf("%s: %s belongs to the basket and pair research feature removed in issue 1955; its code is kept in git tag %s and no load route accepts it", subject, what, retiredResearchArchiveTag)
+}
+
+func retiredResearchConfigRefusals(raw []byte) []string {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil
+	}
+	var errs []string
+	for _, key := range []string{"baskets", "pairs"} {
+		if _, ok := root[key]; ok {
+			errs = append(errs, retiredResearchRefusal("config root", strconv.Quote(key)))
+		}
+	}
+	rawStrategies, ok := root["strategies"]
+	if !ok {
+		return errs
+	}
+	var strategies []map[string]json.RawMessage
+	if err := json.Unmarshal(rawStrategies, &strategies); err != nil {
+		return errs
+	}
+	for i, s := range strategies {
+		subject := fmt.Sprintf("strategy[%d]", i)
+		if idRaw, ok := s["id"]; ok {
+			var id string
+			if json.Unmarshal(idRaw, &id) == nil && id != "" {
+				subject = fmt.Sprintf("strategy[%s]", id)
+			}
+		}
+		for _, key := range []string{"basket_id", "pair_id"} {
+			if _, ok := s[key]; ok {
+				errs = append(errs, retiredResearchRefusal(subject, strconv.Quote(key)))
+			}
+		}
+		var args []string
+		if rawArgs, ok := s["args"]; ok && json.Unmarshal(rawArgs, &args) == nil {
+			if len(args) > 0 {
+				if token := strings.TrimSpace(args[0]); token == retiredBasketMemberToken || token == retiredPairMemberToken {
+					errs = append(errs, retiredResearchRefusal(subject, "args[0] "+strconv.Quote(token)))
+				}
+			}
+			for _, flag := range []string{retiredBasketMemberFlag, retiredPairMemberFlag, retiredManagementFlag} {
+				for _, a := range args {
+					if a == flag || strings.HasPrefix(a, flag+"=") {
+						errs = append(errs, retiredResearchRefusal(subject, "the flag "+flag))
+						break
+					}
+				}
+			}
+		}
+		if rawOpen, ok := s["open_strategy"]; ok {
+			var ref struct {
+				Name string `json:"name"`
+			}
+			var name string
+			if json.Unmarshal(rawOpen, &ref) == nil {
+				name = ref.Name
+			} else if json.Unmarshal(rawOpen, &name) != nil {
+				name = ""
+			}
+			if name = strings.TrimSpace(name); name == retiredBasketMemberToken || name == retiredPairMemberToken {
+				errs = append(errs, retiredResearchRefusal(subject, "open_strategy "+strconv.Quote(name)))
+			}
+		}
+	}
 	return errs
 }

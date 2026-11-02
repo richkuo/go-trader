@@ -44,7 +44,6 @@ var opsCommandNames = map[string]bool{
 	"clear-operator-close":    true,
 	"resolve-entry":           true,
 	"resolve-robinhood-order": true,
-	pairNativeCommandName:     true,
 }
 
 func authorizeCommand(name, invokerID, guildID, ownerID string) (bool, string) {
@@ -146,13 +145,10 @@ func formatStatusResponse(state *AppState, prices map[string]float64) string {
 			reconcileIDs = append(reconcileIDs, id)
 		}
 	}
-	value, status := latestDisplayTotalMarked(state, prices, state.pairMarksLocked())
+	value := latestDisplayTotal(state, prices)
 	line := formatStatusLine(cash, posCount, value, trades, regime)
 	if len(state.LatestSharedWalletBalances) > 0 {
 		line += "\nℹ️ shared-wallet equity is counted once in value; cash remains the virtual strategy-book sum."
-	}
-	if label := status.label(); label != "" {
-		line += "\nvalue is incomplete (" + label + ")"
 	}
 	if len(reconcileIDs) == 0 {
 		return line
@@ -163,7 +159,6 @@ func formatStatusResponse(state *AppState, prices map[string]float64) string {
 func formatPositionsResponse(state *AppState, prices map[string]float64) string {
 	lines := map[string][]string{}
 	platforms := []string{}
-	pm := state.pairMarksLocked()
 	for _, id := range sortedAppStateIDs(state) {
 		s := state.Strategies[id]
 		syms := make([]string, 0, len(s.Positions))
@@ -177,16 +172,6 @@ func formatPositionsResponse(state *AppState, prices map[string]float64) string 
 				continue
 			}
 			price := prices[sym]
-			mvText := ""
-			if mark, state, _, pair := pm.markFor(s, sym); pair {
-				price = mark
-				if state != "" {
-					mvText = " " + state + " pair mark"
-				}
-				if state == pairMarkUnavailable {
-					mvText = "mv unavailable: no checked pair mark"
-				}
-			}
 			if price == 0 {
 				price = p.AvgCost
 			}
@@ -195,13 +180,8 @@ func formatPositionsResponse(state *AppState, prices map[string]float64) string 
 			if _, ok := lines[plat]; !ok {
 				platforms = append(platforms, plat)
 			}
-			if mvText == "mv unavailable: no checked pair mark" {
-				lines[plat] = append(lines[plat], fmt.Sprintf(
-					"  %s %s %.4f @ $%.2f (%s) [%s]", sym, p.Side, p.Quantity, p.AvgCost, mvText, id))
-				continue
-			}
 			lines[plat] = append(lines[plat], fmt.Sprintf(
-				"  %s %s %.4f @ $%.2f (mv $%.2f%s) [%s]", sym, p.Side, p.Quantity, p.AvgCost, mv, mvText, id))
+				"  %s %s %.4f @ $%.2f (mv $%.2f) [%s]", sym, p.Side, p.Quantity, p.AvgCost, mv, id))
 		}
 	}
 	if len(platforms) == 0 {
@@ -228,12 +208,9 @@ func formatPnLResponse(state *AppState, prices map[string]float64) string {
 	var totPnL, totCap float64
 	var totalIncludesPool bool
 	var perStrat []string
-	pm := state.pairMarksLocked()
-	var incomplete pairValueStatus
 	for _, id := range sortedAppStateIDs(state) {
 		s := state.Strategies[id]
-		pv, status := displayStrategyValueMarked(s, prices, pm)
-		incomplete.merge(status)
+		pv := displayStrategyValue(s, prices)
 		cap := s.InitialCapital
 		poolBudget := s.SharedWalletPoolBudget || s.SharedWalletPerformanceOnly
 		if poolBudget {
@@ -251,24 +228,16 @@ func formatPnLResponse(state *AppState, prices map[string]float64) string {
 		byPlatform[plat].pnl += pnl
 		byPlatform[plat].capital += cap
 		byPlatform[plat].includesPool = byPlatform[plat].includesPool || poolBudget
-		row := fmt.Sprintf("  %s: $%+.2f (%s)", id, pnl, formatPnLPercent(pnl, cap, poolBudget))
-		if label := status.label(); label != "" {
-			row += " [" + label + "]"
-		}
-		perStrat = append(perStrat, row)
+		perStrat = append(perStrat, fmt.Sprintf("  %s: $%+.2f (%s)", id, pnl, formatPnLPercent(pnl, cap, poolBudget)))
 	}
 	sort.Strings(platforms)
 	var sb strings.Builder
 	sb.WriteString("**P&L**\n")
-	totalDisplayValue, totalStatus := latestDisplayTotalMarked(state, prices, pm)
-	incomplete.merge(totalStatus)
+	totalDisplayValue := latestDisplayTotal(state, prices)
 	sb.WriteString(fmt.Sprintf(
 		"Total: $%+.2f (%s) — value $%.2f / capital $%.2f\n",
 		totPnL, formatPnLPercent(totPnL, totCap, totalIncludesPool), totalDisplayValue, totCap,
 	))
-	if label := incomplete.label(); label != "" {
-		sb.WriteString("Total is incomplete (" + label + ")\n")
-	}
 	sb.WriteString("__By platform__\n")
 	for _, plat := range platforms {
 		a := byPlatform[plat]
@@ -524,7 +493,6 @@ func slashCommands() []*discordgo.ApplicationCommand {
 				{Name: robinhoodAttestReleaseChoice, Value: robinhoodAttestReleaseChoice},
 			}},
 		}},
-		pairNativeSlashCommand(),
 	}
 }
 
@@ -660,8 +628,6 @@ func (d *DiscordNotifier) interactionCreate(s discordTransport, i *discordgo.Int
 		d.handleResolveEntry(s, i, data.Options)
 	case "resolve-robinhood-order":
 		d.handleResolveRobinhoodOrder(s, i, data.Options)
-	case pairNativeCommandName:
-		d.handleResolvePairNative(s, i, data.Options)
 	default:
 		respondEphemeral(s, i, "unknown command")
 	}

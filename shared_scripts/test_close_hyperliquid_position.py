@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 from io import StringIO
 from unittest.mock import MagicMock, call, patch
@@ -533,6 +534,35 @@ def test_probe_only_accepts_the_sized_close_argv():
     out, code, adapter = _run_sized(_filled(0.5), _SIZED_CANCEL + ["--probe-only"])
     assert code == 0
     adapter.market_close_sized.assert_not_called()
+
+
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+CLOSE_HL = os.path.join(_REPO_ROOT, "shared_scripts", "close_hyperliquid_position.py")
+
+
+def _env():
+    env = dict(os.environ)
+    env["HYPERLIQUID_SECRET_KEY"] = ""
+    env["HYPERLIQUID_ACCOUNT_ADDRESS"] = ""
+    env["GO_TRADER_HL_OHLCV_CACHE"] = "0"
+    return env
+
+
+def test_sized_close_cloid_contract_is_validated_before_any_order():
+    base = ["--symbol=BTC", "--mode=live", "--sz=0.01", "--side=sell", "--close-mode=reduce_only"]
+    proc = subprocess.run([sys.executable, CLOSE_HL, *base, "--cloid=0x" + "0" * 32, "--probe-only"],
+                          capture_output=True, text=True, cwd=_REPO_ROOT, env=_env(), timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    proc = subprocess.run([sys.executable, CLOSE_HL, *base, "--cloid=not-a-cloid"],
+                          capture_output=True, text=True, cwd=_REPO_ROOT, env=_env(), timeout=60)
+    out = json.loads(proc.stdout)
+    assert out["order_outcome"] == "not_sent"
+    assert "--cloid" in out["error"]
+    proc = subprocess.run([sys.executable, CLOSE_HL, "--symbol=BTC", "--mode=live", "--cloid=0x" + "0" * 32],
+                          capture_output=True, text=True, cwd=_REPO_ROOT, env=_env(), timeout=60)
+    assert proc.returncode == 1
+    out = json.loads(proc.stdout)
+    assert out["order_outcome"] == "not_sent" and "requires --close-mode" in out["error"]
 
 
 if __name__ == "__main__":

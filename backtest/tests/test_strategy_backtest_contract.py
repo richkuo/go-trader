@@ -69,7 +69,7 @@ from . import test_vortex_trend_backtest as vtx
 from . import test_williams_r_backtest as wr
 
 EDGE_SOURCES = ("unvalidated", "study_fail", "study_inconclusive")
-OTHER_PRODUCTION_REFUSED = frozenset({"inventory_market_making", "cross_exchange_perp_arbitrage"})
+OTHER_PRODUCTION_REFUSED = frozenset({"inventory_market_making"})
 REPLACED_PER_STRATEGY_TESTS = (
     "test_batched_explicit_paper_parity_is_clean",
     "test_batched_explicit_paper_parity_matches_solo",
@@ -161,7 +161,7 @@ def _covered_kind():
     return frozenset(
         name for name, entry in strategies.items()
         if entry["platforms"] == ("futures",) and entry["short_entries"] is True
-        and not entry["basket"] and not entry["pair"] and not entry["quote"]
+        and not entry["quote"]
         and entry["edge_status"] == "no_edge"
         and str(entry["edge_ref"] or "").startswith("backtest/candidates/")
     )
@@ -1634,7 +1634,7 @@ def test_production_refused_set_is_the_side_input_cases_plus_the_non_candle_capa
     refused = _fut()._registry.production_refused_strategies()
     assert refused == frozenset({"cumulative_volume_delta_divergence", "bitcoin_lead_lag", "macro_event_breakout",
                                  "volume_profile_reclaim", "perpetual_premium_reversion", "order_book_imbalance",
-                                 "inventory_market_making", "cross_exchange_perp_arbitrage"})
+                                 "inventory_market_making"})
     table = {name for name, case in CASES.items() if case.registration.production_refused}
     assert refused == frozenset(table) | OTHER_PRODUCTION_REFUSED
 

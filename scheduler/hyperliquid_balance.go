@@ -303,7 +303,7 @@ func reconcileHyperliquidPositionsForStrategy(
 	pendingOrphanCloses *[]RegimeDirectionOrphanCloseJob,
 	ownerDMs *[]string,
 ) bool {
-	if stratState == nil || sym == "" || isPairMember(sc) {
+	if stratState == nil || sym == "" {
 		return false
 	}
 
@@ -910,8 +910,8 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 
 func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, rc *RegimeConfig, positions []HLPosition, prices map[string]float64, accountAddress string, notifier ownerDMSender, notifyTPSLFills bool) (bool, []HyperliquidProtectionFillHint, []RegimeDirectionOrphanCloseJob) {
 	mu.RLock()
-	dueStrategies = withoutPairMembers(withoutQuoteOwned(dueStrategies, state))
-	allStrategies = withoutPairMembers(withoutQuoteOwned(allStrategies, state))
+	dueStrategies = withoutQuoteOwned(dueStrategies, state)
+	allStrategies = withoutQuoteOwned(allStrategies, state)
 	mu.RUnlock()
 	resolveFee, fillHints := buildCachedHyperliquidReconcileFillResolver(accountAddress, allStrategies, state, mu, positions)
 
@@ -2413,7 +2413,7 @@ func runPendingHyperliquidCircuitCloses(
 			}
 			partial := sz
 			cancelOIDs := j.slOIDs[c.Symbol]
-			result, err := pairCircuitHLCloserFor(state, j.stratID, closer)(c.Symbol, &partial, cancelOIDs)
+			result, err := closer(c.Symbol, &partial, cancelOIDs)
 			if err != nil {
 				fmt.Printf("[CRITICAL] hl-circuit-close: strategy %s coin %s sz=%.6f failed: %v\n", j.stratID, c.Symbol, sz, err)
 				allOK = false
@@ -2531,14 +2531,6 @@ func hyperliquidOnChainCloseTradeLabel(closeReason string) string {
 }
 
 func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, fillPx, fillFee, onChainSigned float64, fillOID int64, closeReason string) {
-	if err := withStrategyCostScope(s, func() {
-		applyHyperliquidCircuitCloseFillScoped(s, symbol, fillSz, fillPx, fillFee, onChainSigned, fillOID, closeReason)
-	}); err != nil {
-		fmt.Printf("[CRITICAL] hl-circuit-close: %s/%s confirmed close fill %.6f @ $%.4f (oid %d) is not booked: %v; the pair runtime opens recovery and no legacy stamp is used\n", s.ID, symbol, fillSz, fillPx, fillOID, err)
-	}
-}
-
-func applyHyperliquidCircuitCloseFillScoped(s *StrategyState, symbol string, fillSz, fillPx, fillFee, onChainSigned float64, fillOID int64, closeReason string) {
 	if s != nil && s.Quote != nil {
 		fmt.Printf("[CRITICAL] [quote] %s: a generic circuit-breaker close fill on %s is refused; quote-owned fills settle only through the quote settlement\n", s.ID, symbol)
 		return
@@ -2548,10 +2540,6 @@ func applyHyperliquidCircuitCloseFillScoped(s *StrategyState, symbol string, fil
 	}
 	closeLabel := hyperliquidOnChainCloseTradeLabel(closeReason)
 	if s == nil || fillSz <= 0 || fillPx <= 0 {
-		return
-	}
-	if strategyPairCostRequired(s) {
-		fmt.Printf("[CRITICAL] hl-circuit-close: %s/%s generic close fill %.6f @ $%.4f (oid %d) is not booked: a pair member books its native closes only from confirmed fill records through the pair coordinator\n", s.ID, symbol, fillSz, fillPx, fillOID)
 		return
 	}
 	var oidStr string

@@ -188,17 +188,9 @@ func applyPerpsScaleIn(s *StrategyState, sc StrategyConfig, symbol string, addPr
 		n     int
 		trade *Trade
 	)
-	if err := withPairDispatchCostScope(sc, s, func() {
-		mutatePaperPerpsBook(s, symbol, func() {
-			n, trade = applyPerpsScaleInInner(s, sc, symbol, addPrice, addQty, fillFee, fillOID, useFillFee, logger)
-		})
-		if trade != nil && s.costScope != nil {
-			trade.CostModelVersion, trade.CostPolicyID = s.costScope.ModelVersion, s.costScope.PolicyID
-		}
-	}); err != nil {
-		logStrategyCostRefusal(logger, "scale-in", symbol, err)
-		return 0, nil
-	}
+	mutatePaperPerpsBook(s, symbol, func() {
+		n, trade = applyPerpsScaleInInner(s, sc, symbol, addPrice, addQty, fillFee, fillOID, useFillFee, logger)
+	})
 	return n, trade
 }
 
@@ -218,7 +210,7 @@ func applyPerpsScaleInInner(s *StrategyState, sc StrategyConfig, symbol string, 
 		feePlatform = "okx-perps"
 	}
 	notional := addQty * addPrice
-	fee := strategyExecutionFee(s, strategyPlatformFee(s, feePlatform, notional), fillFee, useFillFee)
+	fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), fillFee, useFillFee)
 	s.Cash -= fee
 	side := "buy"
 	if pos.Side == "short" {
@@ -243,7 +235,7 @@ func applyPerpsScaleInInner(s *StrategyState, sc StrategyConfig, symbol string, 
 		Details:         fmt.Sprintf("Scale-in %s %.6f @ $%.2f (add #%d, new qty %.6f, avg $%.2f, fee $%.2f)", pos.Side, addQty, addPrice, pos.ScaleInCount, pos.Quantity, pos.AvgCost, fee),
 		ExchangeOrderID: oid,
 		ExchangeFee:     fee,
-		FeeSource:       strategyExecutionFeeSource(s, fillFee, useFillFee),
+		FeeSource:       executionFeeSource(fillFee, useFillFee),
 		PnLGross:        true,
 		IsClose:         false,
 	}
@@ -345,27 +337,12 @@ func executeHyperliquidScaleInDeferredOpen(sc StrategyConfig, s *StrategyState, 
 		fillFee = fill.Fee
 		useFillFee = true
 		logger.Info("Live scale-in fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillAddQty, price)
-	} else if result.PairFill != nil {
-		fillPrice = result.PairFill.Px
-		fillAddQty = result.PairFill.Qty
-		fillOID = result.PairFill.OID
-		fillFee = result.PairFill.Fee.DeltaUSD
-		useFillFee = result.PairFill.Fee.Present
 	} else if !hyperliquidIsLive(sc.Args) {
 		if pos := s.Positions[result.Symbol]; pos != nil {
-			p, err := pairDispatchCostPolicy(sc, s)
-			if err != nil {
-				noteStrategyCostFault(s, err.Error())
-				logStrategyCostRefusal(logger, "scale-in", result.Symbol, err)
-				return 0, "", nil, nil
-			}
 			fillPrice = ApplyAdverseSlippage(price, pos.Side == "long")
-			if strategyPairCostRequired(s) {
-				fillPrice = applySlippageRate(price, pos.Side == "long", p.SlippagePct)
-			}
 		}
 	}
-	if lotPolicy := newHLPaperLotPolicy(sc, result.Symbol, price, execResult != nil || result.PairFill != nil); lotPolicy != nil {
+	if lotPolicy := newHLPaperLotPolicy(sc, result.Symbol, price, execResult != nil); lotPolicy != nil {
 		d := lotPolicy.entry(fillAddQty, fillPrice)
 		if d.Hold != "" {
 			logHLPaperLotHold(logger, "scale-in "+scaleInSideLabel(s, result.Symbol), result.Symbol, d)

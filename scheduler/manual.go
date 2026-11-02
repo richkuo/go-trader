@@ -108,7 +108,7 @@ func runManualOpen(args []string) int {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)\n", dailyLossHoldDetail(st))
 					return 1
 				}
-				if held, detail := evaluateNotionalCapHoldMarked(scopedPR, scopedStates, nil, state.pairMarksLocked()); held {
+				if held, detail := evaluateNotionalCapHold(scopedPR, scopedStates, nil); held {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked (closes and SL edits are unaffected)\n", detail)
 					return 1
 				}
@@ -515,13 +515,9 @@ func applyManualActionWithCriticals(state *AppState, cfg *Config, scByID map[str
 	if state != nil {
 		ss = state.Strategies[a.StrategyID]
 	}
-	if scopeErr := withStrategyCostScope(ss, func() {
-		mutatePaperPerpsBook(ss, a.Symbol, func() {
-			criticals, err = applyManualActionWithCriticalsInner(state, cfg, scByID, a)
-		})
-	}); scopeErr != nil {
-		return nil, fmt.Errorf("manual %s for %s/%s refused before any book change: %w", a.Action, a.StrategyID, a.Symbol, scopeErr)
-	}
+	mutatePaperPerpsBook(ss, a.Symbol, func() {
+		criticals, err = applyManualActionWithCriticalsInner(state, cfg, scByID, a)
+	})
 	return criticals, err
 }
 

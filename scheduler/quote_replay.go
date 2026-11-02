@@ -576,9 +576,6 @@ func quoteReplayConfigRefusal(cfg *Config, spec *quoteReplaySpec, stateDir strin
 	if filepath.Dir(cfg.DBFile) != stateDir {
 		errs = append(errs, fmt.Sprintf("db_file %q is outside the run state directory", cfg.DBFile))
 	}
-	if len(cfg.Baskets) > 0 || len(cfg.Pairs) > 0 {
-		errs = append(errs, "baskets and pairs are refused in a quote replay")
-	}
 	for _, sc := range cfg.Strategies {
 		if sc.ID != quoteReplayOwnerID || sc.Quote == nil || effectiveOpenStrategy(sc) != inventoryMarketMakingStrategyName {
 			errs = append(errs, fmt.Sprintf("strategy %s is not the single inventory_market_making quote owner", sc.ID))

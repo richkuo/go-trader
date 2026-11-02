@@ -236,9 +236,6 @@ func TestMacroEventFeedPipeline(t *testing.T) {
 	if peerOnly := cycleRequirementsForDue([]StrategyConfig{peer}, req); len(peerOnly.Macro) != 0 {
 		t.Fatalf("a peer-only cycle must not request macro inputs: %+v", peerOnly.Macro)
 	}
-	if merged := mergeCycleRequirements(cycle, cycleMarketRequirements{}); merged.Macro[quoteKey] != wantWindow {
-		t.Fatalf("mergeCycleRequirements dropped macro needs: %+v", merged.Macro)
-	}
 	union := unionFeedRequirements([]feedConsumer{{Path: "macro", Loaded: true, Req: req}})
 	if full := fullCycleRequirements(union); full.Macro[quoteKey] != wantWindow || full.Macro[calKey] != 0 {
 		t.Fatalf("full-cycle macro needs %+v", full.Macro)
