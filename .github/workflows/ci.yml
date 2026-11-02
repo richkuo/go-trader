@@ -7,66 +7,6 @@ on:
     types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
-  docs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Agent instructions size and layout
-        run: |
-          fail=0
-          if [ -L CLAUDE.md ] || [ ! -f CLAUDE.md ]; then
-            echo "::error::CLAUDE.md must be a regular file at the repository root."
-            fail=1
-          fi
-          if [ ! -L AGENTS.md ] || [ "$(readlink AGENTS.md)" != "CLAUDE.md" ]; then
-            echo "::error::AGENTS.md must be a symlink to CLAUDE.md."
-            fail=1
-          fi
-          extra=$(git ls-files | grep -E '(^|/)(CLAUDE(\.local)?\.md|AGENTS\.md)$' | grep -vx -e 'CLAUDE.md' -e 'AGENTS.md' || true)
-          if [ -n "$extra" ]; then
-            echo "::error::Agent instructions stay in one root CLAUDE.md. Remove these files:"
-            echo "$extra"
-            fail=1
-          fi
-          if [ -f CLAUDE.md ] && [ ! -L CLAUDE.md ]; then
-            bytes=$(wc -c < CLAUDE.md | tr -d ' ')
-            echo "CLAUDE.md: $bytes bytes (ceiling 17000, target 16500)"
-            if [ "$bytes" -ge 17000 ]; then
-              echo "::error::CLAUDE.md is $bytes bytes, at or above the 17000-byte ceiling. Move mechanism to SKILL.md, shorten wording, drop no guardrail."
-              echo "Bytes per section:"
-              LC_ALL=C awk 'BEGIN{h="(header)"} /^## /{printf "%6d  %s\n",n,h; h=$0; n=0} {n+=length($0)+1} END{printf "%6d  %s\n",n,h}' CLAUDE.md
-              fail=1
-            elif [ "$bytes" -gt 16500 ]; then
-              echo "::warning::CLAUDE.md is $bytes bytes, above the 16500-byte target. The CI check fails at 17000."
-            fi
-          fi
-          exit $fail
-
-      - name: SKILL.md and POST_UPDATE_HISTORY.md line length
-        run: |
-          limit=1000
-          LC_ALL=C awk -v limit="$limit" '
-            FNR == 1 { fence = 0 }
-            match($0, /^ *```/) && RLENGTH <= 6 { fence = !fence; next }
-            fence { next }
-            $0 ~ /^[ \t]*\|/ { next }
-            length($0) > limit {
-              printf "::error file=%s,line=%d::line is %d bytes, above the %d-byte limit. Put one sentence per line.\n", FILENAME, FNR, length($0), limit
-              bad = 1
-            }
-            END { exit bad }
-          ' SKILL.md docs/POST_UPDATE_HISTORY.md
-
-      - name: .github/scripts holds only test_workflow_logic.py
-        run: |
-          files=$(git ls-files .github/scripts)
-          if [ "$files" != ".github/scripts/test_workflow_logic.py" ]; then
-            echo "::error::.github/scripts must hold exactly test_workflow_logic.py. Put other scripts under scripts/. Tracked files:"
-            echo "$files"
-            exit 1
-          fi
-
   go:
     runs-on: ubuntu-latest
     steps:
@@ -376,8 +316,10 @@ jobs:
             --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='update_recovery' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
-  python-collect:
+  checks:
     runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.python.outputs.result }}
     steps:
       - uses: actions/checkout@v4
 
@@ -406,6 +348,68 @@ jobs:
           path: ${{ runner.temp }}/pytest-collect/
           if-no-files-found: error
           retention-days: 7
+
+      - name: Python checks passed
+        id: python
+        run: echo result=success >> "$GITHUB_OUTPUT"
+
+      - name: Agent instructions size and layout
+        if: ${{ !cancelled() }}
+        run: |
+          fail=0
+          if [ -L CLAUDE.md ] || [ ! -f CLAUDE.md ]; then
+            echo "::error::CLAUDE.md must be a regular file at the repository root."
+            fail=1
+          fi
+          if [ ! -L AGENTS.md ] || [ "$(readlink AGENTS.md)" != "CLAUDE.md" ]; then
+            echo "::error::AGENTS.md must be a symlink to CLAUDE.md."
+            fail=1
+          fi
+          extra=$(git ls-files | grep -E '(^|/)(CLAUDE(\.local)?\.md|AGENTS\.md)$' | grep -vx -e 'CLAUDE.md' -e 'AGENTS.md' || true)
+          if [ -n "$extra" ]; then
+            echo "::error::Agent instructions stay in one root CLAUDE.md. Remove these files:"
+            echo "$extra"
+            fail=1
+          fi
+          if [ -f CLAUDE.md ] && [ ! -L CLAUDE.md ]; then
+            bytes=$(wc -c < CLAUDE.md | tr -d ' ')
+            echo "CLAUDE.md: $bytes bytes (ceiling 17000, target 16500)"
+            if [ "$bytes" -ge 17000 ]; then
+              echo "::error::CLAUDE.md is $bytes bytes, at or above the 17000-byte ceiling. Move mechanism to SKILL.md, shorten wording, drop no guardrail."
+              echo "Bytes per section:"
+              LC_ALL=C awk 'BEGIN{h="(header)"} /^## /{printf "%6d  %s\n",n,h; h=$0; n=0} {n+=length($0)+1} END{printf "%6d  %s\n",n,h}' CLAUDE.md
+              fail=1
+            elif [ "$bytes" -gt 16500 ]; then
+              echo "::warning::CLAUDE.md is $bytes bytes, above the 16500-byte target. The CI check fails at 17000."
+            fi
+          fi
+          exit $fail
+
+      - name: SKILL.md and POST_UPDATE_HISTORY.md line length
+        if: ${{ !cancelled() }}
+        run: |
+          limit=1000
+          LC_ALL=C awk -v limit="$limit" '
+            FNR == 1 { fence = 0 }
+            match($0, /^ *```/) && RLENGTH <= 6 { fence = !fence; next }
+            fence { next }
+            $0 ~ /^[ \t]*\|/ { next }
+            length($0) > limit {
+              printf "::error file=%s,line=%d::line is %d bytes, above the %d-byte limit. Put one sentence per line.\n", FILENAME, FNR, length($0), limit
+              bad = 1
+            }
+            END { exit bad }
+          ' SKILL.md docs/POST_UPDATE_HISTORY.md
+
+      - name: .github/scripts holds only test_workflow_logic.py
+        if: ${{ !cancelled() }}
+        run: |
+          files=$(git ls-files .github/scripts)
+          if [ "$files" != ".github/scripts/test_workflow_logic.py" ]; then
+            echo "::error::.github/scripts must hold exactly test_workflow_logic.py. Put other scripts under scripts/. Tracked files:"
+            echo "$files"
+            exit 1
+          fi
 
   python-shard:
     name: python-shard (${{ matrix.suite }} ${{ matrix.group }}/${{ matrix.splits }})
@@ -446,7 +450,7 @@ jobs:
           retention-days: 7
 
   python:
-    needs: [python-collect, python-shard]
+    needs: [checks, python-shard]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
@@ -490,10 +494,10 @@ jobs:
       - name: Every Python job passed
         if: ${{ !cancelled() }}
         env:
-          COLLECT: ${{ needs.python-collect.result }}
+          COLLECT: ${{ needs.checks.outputs.python }}
           SHARDS: ${{ needs.python-shard.result }}
         run: |
-          echo "python-collect: $COLLECT, python-shard: $SHARDS"
+          echo "python checks: ${COLLECT:-not run}, python-shard: $SHARDS"
           if [ "$COLLECT" != success ] || [ "$SHARDS" != success ]; then
             echo "::error::a Python CI job did not succeed"
             exit 1
