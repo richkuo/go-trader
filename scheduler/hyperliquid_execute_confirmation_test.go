@@ -62,19 +62,85 @@ func TestConfirmHyperliquidExecuteFill(t *testing.T) {
 	}
 }
 
-func TestParseHyperliquidExecuteOutputRetainsParsedResultOnTransportError(t *testing.T) {
-	stdout := []byte(`{"execution":null,"cancel_stop_loss_succeeded":true,"cancel_stop_loss_succeeded_oids":[111]}`)
-	result, _, parseErr := parseHyperliquidExecuteOutput(stdout, "cancel warning", errors.New("exit status 1"))
-	if parseErr == nil {
-		t.Fatal("parse error = nil, want transport error")
-	}
-	if result == nil || !result.CancelStopLossSucceeded || !reflect.DeepEqual(result.CancelStopLossSucceededOIDs, []int64{111}) {
-		t.Fatalf("parsed cancellation metadata = %+v, want retained metadata", result)
-	}
-	confirmed, confirmErr := confirmHyperliquidExecuteFill(result, parseErr)
-	if confirmed != result || confirmErr == nil {
-		t.Fatalf("confirmed result/error = %p/%v, want parsed result and error", confirmed, confirmErr)
-	}
+func TestParseHyperliquidExecuteOutput(t *testing.T) {
+	t.Run("StopLossFields", func(t *testing.T) {
+		stdout := []byte(`{
+		"execution": {
+			"action": "sell",
+			"symbol": "BTC",
+			"size": 0.01,
+			"fill": {"avg_px": 67000, "total_sz": 0.01, "oid": 42}
+		},
+		"platform": "hyperliquid",
+		"timestamp": "2026-04-23T12:00:00+00:00",
+		"cancel_stop_loss_error": "trigger already cancelled",
+		"stop_loss_error": "placement rejected: max triggers reached"
+	}`)
+
+		result, _, err := parseHyperliquidExecuteOutput(stdout, "warn: something", nil)
+		if err != nil {
+			t.Fatalf("non-fatal SL errors: parse failed: %v", err)
+		}
+		if result.CancelStopLossError != "trigger already cancelled" {
+			t.Errorf("non-fatal SL errors: CancelStopLossError: got %q", result.CancelStopLossError)
+		}
+		if result.StopLossError != "placement rejected: max triggers reached" {
+			t.Errorf("non-fatal SL errors: StopLossError: got %q", result.StopLossError)
+		}
+		if result.Execution == nil || result.Execution.Fill.OID != 42 {
+			t.Errorf("non-fatal SL errors: main fill should still parse: %+v", result)
+		}
+
+		stdout = []byte(`{
+		"execution": {"action": "buy", "symbol": "ETH", "size": 0.1, "fill": {"avg_px": 3200, "total_sz": 0.1, "oid": 1}},
+		"platform": "hyperliquid",
+		"timestamp": "2026-04-25T00:00:00+00:00",
+		"stop_loss_filled_immediately": true
+	}`)
+		result, _, err = parseHyperliquidExecuteOutput(stdout, "", nil)
+		if err != nil {
+			t.Fatalf("stop loss filled immediately: parse: %v", err)
+		}
+		if !result.StopLossFilledImmediately {
+			t.Errorf("stop loss filled immediately: expected StopLossFilledImmediately=true, got %+v", result)
+		}
+		if result.Execution.Fill.StopLossOID != 0 {
+			t.Errorf("stop loss filled immediately: instant-fill should have no resting OID; got %d", result.Execution.Fill.StopLossOID)
+		}
+
+		stdout = []byte(`{
+		"execution": null,
+		"platform": "hyperliquid",
+		"timestamp": "2026-04-25T00:00:00+00:00",
+		"error": "market_open: insufficient balance",
+		"cancel_stop_loss_succeeded": true
+	}`)
+		runErr := errors.New("exit status 1")
+		result, _, err = parseHyperliquidExecuteOutput(stdout, "", runErr)
+		if err != nil {
+			t.Fatalf("cancel succeeded on failure: parse should swallow runErr when JSON carries .error: %v", err)
+		}
+		if !result.CancelStopLossSucceeded {
+			t.Errorf("cancel succeeded on failure: CancelStopLossSucceeded should be true, got %+v", result)
+		}
+		if result.Error == "" {
+			t.Errorf("cancel succeeded on failure: error payload should be preserved")
+		}
+	})
+	t.Run("RetainsParsedResultOnTransportError", func(t *testing.T) {
+		stdout := []byte(`{"execution":null,"cancel_stop_loss_succeeded":true,"cancel_stop_loss_succeeded_oids":[111]}`)
+		result, _, parseErr := parseHyperliquidExecuteOutput(stdout, "cancel warning", errors.New("exit status 1"))
+		if parseErr == nil {
+			t.Fatal("parse error = nil, want transport error")
+		}
+		if result == nil || !result.CancelStopLossSucceeded || !reflect.DeepEqual(result.CancelStopLossSucceededOIDs, []int64{111}) {
+			t.Fatalf("parsed cancellation metadata = %+v, want retained metadata", result)
+		}
+		confirmed, confirmErr := confirmHyperliquidExecuteFill(result, parseErr)
+		if confirmed != result || confirmErr == nil {
+			t.Fatalf("confirmed result/error = %p/%v, want parsed result and error", confirmed, confirmErr)
+		}
+	})
 }
 
 func TestHyperliquidExecuteCancellationClearsOnlyConfirmedProtection(t *testing.T) {
@@ -129,214 +195,212 @@ func confirmationNotifier() (*MultiNotifier, *mockNotifier) {
 	}), backend
 }
 
-func TestHyperliquidScaleInRejectsUnconfirmedBeforeBooking(t *testing.T) {
-	originalExecute := runHyperliquidExecuteFn
-	originalThrottle := liveExecThrottle
-	t.Cleanup(func() {
-		runHyperliquidExecuteFn = originalExecute
-		liveExecThrottle = originalThrottle
+func TestHyperliquidRejectsUnconfirmedFill(t *testing.T) {
+	t.Run("ScaleInBeforeBooking", func(t *testing.T) {
+		originalExecute := runHyperliquidExecuteFn
+		originalThrottle := liveExecThrottle
+		t.Cleanup(func() {
+			runHyperliquidExecuteFn = originalExecute
+			liveExecThrottle = originalThrottle
+		})
+		runHyperliquidExecuteFn = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			return unconfirmedExecuteResult(), "", nil
+		}
+		liveExecThrottle = &LiveExecFailureThrottle{}
+		notifier, _ := confirmationNotifier()
+		sc := confirmationTestStrategy(DirectionLong)
+		result := &HyperliquidResult{Symbol: "ETH", Signal: 1, Price: 2000}
+		got, ok := runHyperliquidScaleInOrder(sc, result, 0.1, hlExecuteSnapshot{}, notifier, silentStrategyLogger(sc.ID))
+		if ok || got == nil {
+			t.Fatalf("scale-in result = %+v, ok=%t, want rejected result", got, ok)
+		}
+
+		state := &StrategyState{ID: sc.ID, Type: sc.Type, Platform: sc.Platform, Cash: 1000, Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.4, AvgCost: 2000, Side: "long"},
+		}}
+		trades, detail, trade, alert := executeHyperliquidScaleInDeferredOpen(sc, state, result, unconfirmedExecuteResult(), "BUY", 2000, 0.1, silentStrategyLogger(sc.ID))
+		if trades != 0 || detail != "" || trade != nil || alert != nil {
+			t.Fatalf("unconfirmed scale-in booking = trades %d detail %q trade %+v alert %+v", trades, detail, trade, alert)
+		}
+		if state.Positions["ETH"].Quantity != 0.4 || state.Cash != 1000 {
+			t.Fatalf("state changed after unconfirmed scale-in: position=%+v cash=%g", state.Positions["ETH"], state.Cash)
+		}
 	})
-	runHyperliquidExecuteFn = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
-		return unconfirmedExecuteResult(), "", nil
-	}
-	liveExecThrottle = &LiveExecFailureThrottle{}
-	notifier, _ := confirmationNotifier()
-	sc := confirmationTestStrategy(DirectionLong)
-	result := &HyperliquidResult{Symbol: "ETH", Signal: 1, Price: 2000}
-	got, ok := runHyperliquidScaleInOrder(sc, result, 0.1, hlExecuteSnapshot{}, notifier, silentStrategyLogger(sc.ID))
-	if ok || got == nil {
-		t.Fatalf("scale-in result = %+v, ok=%t, want rejected result", got, ok)
-	}
+	t.Run("ResultBeforeBooking", func(t *testing.T) {
+		sc := confirmationTestStrategy(DirectionLong)
+		state := &StrategyState{ID: sc.ID, Type: sc.Type, Platform: sc.Platform, Cash: 1000, Positions: map[string]*Position{}, TradeHistory: []Trade{{StrategyID: sc.ID, Symbol: "ETH", Quantity: 0.2, Price: 2000}}}
+		result := &HyperliquidResult{Symbol: "ETH", Signal: 1, Price: 2000}
+		trades, detail, trade, alert := executeHyperliquidResultDeferredOpen(sc, state, result, unconfirmedExecuteResult(), "BUY", 2000, nil, &Config{}, HurstGateDecision{}, silentStrategyLogger(sc.ID))
+		if trades != 0 || detail != "" || trade != nil || alert != nil {
+			t.Fatalf("unconfirmed result booking = trades %d detail %q trade %+v alert %+v", trades, detail, trade, alert)
+		}
+		if state.Cash != 1000 || len(state.TradeHistory) != 1 || len(state.Positions) != 0 {
+			t.Fatalf("state changed after unconfirmed result: cash=%g trades=%d positions=%v", state.Cash, len(state.TradeHistory), state.Positions)
+		}
+	})
+	t.Run("HedgeOpenAndAdd", func(t *testing.T) {
+		prev := tradeRecorder
+		tradeRecorder = nil
+		t.Cleanup(func() { tradeRecorder = prev })
 
-	state := &StrategyState{ID: sc.ID, Type: sc.Type, Platform: sc.Platform, Cash: 1000, Positions: map[string]*Position{
-		"ETH": {Symbol: "ETH", Quantity: 0.4, AvgCost: 2000, Side: "long"},
-	}}
-	trades, detail, trade, alert := executeHyperliquidScaleInDeferredOpen(sc, state, result, unconfirmedExecuteResult(), "BUY", 2000, 0.1, silentStrategyLogger(sc.ID))
-	if trades != 0 || detail != "" || trade != nil || alert != nil {
-		t.Fatalf("unconfirmed scale-in booking = trades %d detail %q trade %+v alert %+v", trades, detail, trade, alert)
-	}
-	if state.Positions["ETH"].Quantity != 0.4 || state.Cash != 1000 {
-		t.Fatalf("state changed after unconfirmed scale-in: position=%+v cash=%g", state.Positions["ETH"], state.Cash)
-	}
-}
-
-func TestHyperliquidResultRejectsUnconfirmedBeforeBooking(t *testing.T) {
-	sc := confirmationTestStrategy(DirectionLong)
-	state := &StrategyState{ID: sc.ID, Type: sc.Type, Platform: sc.Platform, Cash: 1000, Positions: map[string]*Position{}, TradeHistory: []Trade{{StrategyID: sc.ID, Symbol: "ETH", Quantity: 0.2, Price: 2000}}}
-	result := &HyperliquidResult{Symbol: "ETH", Signal: 1, Price: 2000}
-	trades, detail, trade, alert := executeHyperliquidResultDeferredOpen(sc, state, result, unconfirmedExecuteResult(), "BUY", 2000, nil, &Config{}, HurstGateDecision{}, silentStrategyLogger(sc.ID))
-	if trades != 0 || detail != "" || trade != nil || alert != nil {
-		t.Fatalf("unconfirmed result booking = trades %d detail %q trade %+v alert %+v", trades, detail, trade, alert)
-	}
-	if state.Cash != 1000 || len(state.TradeHistory) != 1 || len(state.Positions) != 0 {
-		t.Fatalf("state changed after unconfirmed result: cash=%g trades=%d positions=%v", state.Cash, len(state.TradeHistory), state.Positions)
-	}
-}
-
-func TestHedgeRejectsUnconfirmedOpenAndAdd(t *testing.T) {
-	prev := tradeRecorder
-	tradeRecorder = nil
-	t.Cleanup(func() { tradeRecorder = prev })
-
-	cases := []struct {
-		name       string
-		primaryQty float64
-		hedgeQty   float64
-		freshQty   float64
-	}{
-		{name: "open", primaryQty: 10, freshQty: 10},
-		{name: "add", primaryQty: 15, hedgeQty: 0.4},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			sc := hedgeTestConfig()
-			s := hedgeTestState("eth-long")
-			s.Positions["ETH"] = primaryPos(tc.primaryQty, "long")
-			if tc.hedgeQty > 0 {
-				s.Positions["BTC"] = hedgePos(tc.hedgeQty, "short", 10)
-			}
-			var mu sync.RWMutex
-			f := &fakeHedgeExec{openResult: unconfirmedExecuteResult()}
-
-			if kind := runHedgeSync(sc, s, &mu, f.executor(), hedgeSyncInputs{
-				PrimaryPx: testPrimaryPx, HedgePx: testHedgePx, FreshExposureQty: tc.freshQty, Live: true,
-			}, nil, silentStrategyLogger("eth-long")); kind != hedgeActionNone {
-				t.Fatalf("action = %v, want none", kind)
-			}
-			if tc.hedgeQty == 0 {
-				if _, ok := s.Positions["BTC"]; ok {
-					t.Fatal("unconfirmed hedge open created a position")
+		cases := []struct {
+			name       string
+			primaryQty float64
+			hedgeQty   float64
+			freshQty   float64
+		}{
+			{name: "open", primaryQty: 10, freshQty: 10},
+			{name: "add", primaryQty: 15, hedgeQty: 0.4},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				sc := hedgeTestConfig()
+				s := hedgeTestState("eth-long")
+				s.Positions["ETH"] = primaryPos(tc.primaryQty, "long")
+				if tc.hedgeQty > 0 {
+					s.Positions["BTC"] = hedgePos(tc.hedgeQty, "short", 10)
 				}
-			} else if got := s.Positions["BTC"].Quantity; got != tc.hedgeQty {
-				t.Fatalf("hedge quantity = %g, want %g", got, tc.hedgeQty)
-			}
-		})
-	}
-}
+				var mu sync.RWMutex
+				f := &fakeHedgeExec{openResult: unconfirmedExecuteResult()}
 
-func TestManualLiveExecuteRejectsUnconfirmedWithoutQueueing(t *testing.T) {
-	cases := []string{"open", "add", "close"}
-	for _, action := range cases {
-		t.Run(action, func(t *testing.T) {
-			dir := t.TempDir()
-			dbPath := filepath.Join(dir, "state.db")
-			db, err := OpenStateDB(dbPath)
-			if err != nil {
-				t.Fatalf("OpenStateDB: %v", err)
-			}
-			defer db.Close()
-			strategyID := "hl-manual-confirmation"
-			sc := StrategyConfig{
-				ID: strategyID, Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
-				Script: "shared_scripts/check_hyperliquid.py", Args: []string{"hold", "ETH", "1h", "--mode=live"}, Leverage: 2,
-			}
-			position := &Position{
-				Symbol: "ETH", Quantity: 0.4, InitialQuantity: 0.4, AvgCost: 2000, Side: "long",
-				OwnerStrategyID: strategyID, StopLossOID: 111, StopLossTriggerPx: 1900,
-				TPOIDs: []int64{222, 333}, TPArmedTiers: []bool{true, true},
-			}
-			strategyState := &StrategyState{
-				ID: strategyID, Type: "manual", Platform: "hyperliquid", Cash: 1000,
-				Positions: map[string]*Position{}, TradeHistory: []Trade{{StrategyID: strategyID, Symbol: "ETH", Quantity: 0.2, Price: 2000}},
-			}
-			if action != "open" {
-				strategyState.Positions["ETH"] = position
-			}
-			state := &AppState{Strategies: map[string]*StrategyState{strategyID: strategyState}}
-			if err := db.SaveState(state); err != nil {
-				t.Fatalf("SaveState: %v", err)
-			}
-			cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{sc}}
-			deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
-			deps.fetchMids = func([]string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
-			deps.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
-				result := unconfirmedExecuteResult()
+				if kind := runHedgeSync(sc, s, &mu, f.executor(), hedgeSyncInputs{
+					PrimaryPx: testPrimaryPx, HedgePx: testHedgePx, FreshExposureQty: tc.freshQty, Live: true,
+				}, nil, silentStrategyLogger("eth-long")); kind != hedgeActionNone {
+					t.Fatalf("action = %v, want none", kind)
+				}
+				if tc.hedgeQty == 0 {
+					if _, ok := s.Positions["BTC"]; ok {
+						t.Fatal("unconfirmed hedge open created a position")
+					}
+				} else if got := s.Positions["BTC"].Quantity; got != tc.hedgeQty {
+					t.Fatalf("hedge quantity = %g, want %g", got, tc.hedgeQty)
+				}
+			})
+		}
+	})
+	t.Run("ManualLiveExecuteWithoutQueueing", func(t *testing.T) {
+		cases := []string{"open", "add", "close"}
+		for _, action := range cases {
+			t.Run(action, func(t *testing.T) {
+				dir := t.TempDir()
+				dbPath := filepath.Join(dir, "state.db")
+				db, err := OpenStateDB(dbPath)
+				if err != nil {
+					t.Fatalf("OpenStateDB: %v", err)
+				}
+				defer db.Close()
+				strategyID := "hl-manual-confirmation"
+				sc := StrategyConfig{
+					ID: strategyID, Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
+					Script: "shared_scripts/check_hyperliquid.py", Args: []string{"hold", "ETH", "1h", "--mode=live"}, Leverage: 2,
+				}
+				position := &Position{
+					Symbol: "ETH", Quantity: 0.4, InitialQuantity: 0.4, AvgCost: 2000, Side: "long",
+					OwnerStrategyID: strategyID, StopLossOID: 111, StopLossTriggerPx: 1900,
+					TPOIDs: []int64{222, 333}, TPArmedTiers: []bool{true, true},
+				}
+				strategyState := &StrategyState{
+					ID: strategyID, Type: "manual", Platform: "hyperliquid", Cash: 1000,
+					Positions: map[string]*Position{}, TradeHistory: []Trade{{StrategyID: strategyID, Symbol: "ETH", Quantity: 0.2, Price: 2000}},
+				}
+				if action != "open" {
+					strategyState.Positions["ETH"] = position
+				}
+				state := &AppState{Strategies: map[string]*StrategyState{strategyID: strategyState}}
+				if err := db.SaveState(state); err != nil {
+					t.Fatalf("SaveState: %v", err)
+				}
+				cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{sc}}
+				deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
+				deps.fetchMids = func([]string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
+				deps.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+					result := unconfirmedExecuteResult()
+					if action == "close" {
+						result.CancelStopLossSucceeded = true
+						result.CancelStopLossSucceededOIDs = []int64{111, 333}
+					}
+					return result, "", nil
+				}
+
+				var result *manualCoreResult
+				switch action {
+				case "open":
+					result, err = manualOpenCore(deps, sc, manualOpenInputs{StrategyID: strategyID, Margin: 50})
+				case "add":
+					result, err = manualAddCore(deps, sc, manualAddInputs{StrategyID: strategyID, Margin: 50})
+				case "close":
+					result, err = manualCloseCore(deps, sc, manualCloseInputs{StrategyID: strategyID})
+				}
+				if err == nil || result == nil || result.queued || !strings.Contains(err.Error(), "exchange returned no confirmed fill") {
+					t.Fatalf("result=%+v err=%v, want an unconfirmed-fill refusal without queue", result, err)
+				}
+				actions, err := db.LoadPendingManualActions()
+				if err != nil {
+					t.Fatalf("LoadPendingManualActions: %v", err)
+				}
+				if len(actions) != 0 {
+					t.Fatalf("pending actions = %+v, want none", actions)
+				}
+				loaded, err := LoadStateWithDB(cfg, db)
+				if err != nil {
+					t.Fatalf("LoadStateWithDB: %v", err)
+				}
+				loadedStrategy := loaded.Strategies[strategyID]
+				if loadedStrategy.Cash != 1000 || len(loadedStrategy.TradeHistory) != 1 {
+					t.Fatalf("accounting changed: cash=%g trade history=%d", loadedStrategy.Cash, len(loadedStrategy.TradeHistory))
+				}
+				if action == "open" {
+					if loadedStrategy.Positions["ETH"] != nil {
+						t.Fatal("unconfirmed open created a position")
+					}
+					return
+				}
+				loadedPosition := loadedStrategy.Positions["ETH"]
+				if loadedPosition == nil || loadedPosition.Quantity != 0.4 {
+					t.Fatalf("position = %+v, want unchanged quantity", loadedPosition)
+				}
 				if action == "close" {
-					result.CancelStopLossSucceeded = true
-					result.CancelStopLossSucceededOIDs = []int64{111, 333}
+					if loadedPosition.StopLossOID != 0 || loadedPosition.StopLossTriggerPx != 0 || !reflect.DeepEqual(loadedPosition.TPOIDs, []int64{222, 0}) || !reflect.DeepEqual(loadedPosition.TPArmedTiers, []bool{true, false}) {
+						t.Fatalf("recorded protection = sl %d @ %g tp %v armed %v, want canceled OIDs cleared", loadedPosition.StopLossOID, loadedPosition.StopLossTriggerPx, loadedPosition.TPOIDs, loadedPosition.TPArmedTiers)
+					}
 				}
-				return result, "", nil
-			}
-
-			var result *manualCoreResult
-			switch action {
-			case "open":
-				result, err = manualOpenCore(deps, sc, manualOpenInputs{StrategyID: strategyID, Margin: 50})
-			case "add":
-				result, err = manualAddCore(deps, sc, manualAddInputs{StrategyID: strategyID, Margin: 50})
-			case "close":
-				result, err = manualCloseCore(deps, sc, manualCloseInputs{StrategyID: strategyID})
-			}
-			if err == nil || result == nil || result.queued || !strings.Contains(err.Error(), "exchange returned no confirmed fill") {
-				t.Fatalf("result=%+v err=%v, want an unconfirmed-fill refusal without queue", result, err)
-			}
-			actions, err := db.LoadPendingManualActions()
-			if err != nil {
-				t.Fatalf("LoadPendingManualActions: %v", err)
-			}
-			if len(actions) != 0 {
-				t.Fatalf("pending actions = %+v, want none", actions)
-			}
-			loaded, err := LoadStateWithDB(cfg, db)
-			if err != nil {
-				t.Fatalf("LoadStateWithDB: %v", err)
-			}
-			loadedStrategy := loaded.Strategies[strategyID]
-			if loadedStrategy.Cash != 1000 || len(loadedStrategy.TradeHistory) != 1 {
-				t.Fatalf("accounting changed: cash=%g trade history=%d", loadedStrategy.Cash, len(loadedStrategy.TradeHistory))
-			}
-			if action == "open" {
-				if loadedStrategy.Positions["ETH"] != nil {
-					t.Fatal("unconfirmed open created a position")
-				}
-				return
-			}
-			loadedPosition := loadedStrategy.Positions["ETH"]
-			if loadedPosition == nil || loadedPosition.Quantity != 0.4 {
-				t.Fatalf("position = %+v, want unchanged quantity", loadedPosition)
-			}
-			if action == "close" {
-				if loadedPosition.StopLossOID != 0 || loadedPosition.StopLossTriggerPx != 0 || !reflect.DeepEqual(loadedPosition.TPOIDs, []int64{222, 0}) || !reflect.DeepEqual(loadedPosition.TPArmedTiers, []bool{true, false}) {
-					t.Fatalf("recorded protection = sl %d @ %g tp %v armed %v, want canceled OIDs cleared", loadedPosition.StopLossOID, loadedPosition.StopLossTriggerPx, loadedPosition.TPOIDs, loadedPosition.TPArmedTiers)
-				}
-			}
-		})
-	}
-}
-
-func TestDaemonManualCloseRejectsUnconfirmedAndRestoresTheStop(t *testing.T) {
-	ss, db, _ := newTradeActionTestServer(t)
-	stubs := stubTradeDeps(t, ss)
-	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
-		return &HyperliquidExecuteResult{
-			Execution:                   &HyperliquidExecution{Fill: &HyperliquidFill{}},
-			CancelStopLossSucceeded:     true,
-			CancelStopLossSucceededOIDs: []int64{111},
-		}, "", nil
-	}
-	var gotCancelOID int64
-	var gotTrigger, gotSize float64
-	stubs.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		gotCancelOID, gotTrigger, gotSize = cancelOID, triggerPx, size
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 222, StopLossTriggerPx: triggerPx}, "", nil
-	}
-	nonce := confirmNonceFor(t, ss, "close", "hl-manual-eth", `{}`)
-	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/close", fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "exchange returned no confirmed fill") {
-		t.Fatalf("daemon close status = %d, body %s", w.Code, w.Body.String())
-	}
-	if gotCancelOID != 111 || gotTrigger != 1900 || gotSize != 0.4 {
-		t.Fatalf("updateSL called with cancelOID=%d trigger=%v size=%v, want 111/1900/0.4", gotCancelOID, gotTrigger, gotSize)
-	}
-	actions, err := db.LoadPendingManualActions()
-	if err != nil {
-		t.Fatalf("LoadPendingManualActions: %v", err)
-	}
-	if len(actions) != 0 {
-		t.Fatalf("pending actions = %+v, want none", actions)
-	}
-	position := ss.state.Strategies["hl-manual-eth"].Positions["ETH"]
-	if position.Quantity != 0.4 || position.StopLossOID != 222 || position.StopLossTriggerPx != 1900 {
-		t.Fatalf("daemon state = %+v, want quantity unchanged and the stop restored at OID 222 / $1900", position)
-	}
+			})
+		}
+	})
+	t.Run("DaemonManualCloseRestoresTheStop", func(t *testing.T) {
+		ss, db, _ := newTradeActionTestServer(t)
+		stubs := stubTradeDeps(t, ss)
+		stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			return &HyperliquidExecuteResult{
+				Execution:                   &HyperliquidExecution{Fill: &HyperliquidFill{}},
+				CancelStopLossSucceeded:     true,
+				CancelStopLossSucceededOIDs: []int64{111},
+			}, "", nil
+		}
+		var gotCancelOID int64
+		var gotTrigger, gotSize float64
+		stubs.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			gotCancelOID, gotTrigger, gotSize = cancelOID, triggerPx, size
+			return &HyperliquidStopLossUpdateResult{StopLossOID: 222, StopLossTriggerPx: triggerPx}, "", nil
+		}
+		nonce := confirmNonceFor(t, ss, "close", "hl-manual-eth", `{}`)
+		w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/close", fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "exchange returned no confirmed fill") {
+			t.Fatalf("daemon close status = %d, body %s", w.Code, w.Body.String())
+		}
+		if gotCancelOID != 111 || gotTrigger != 1900 || gotSize != 0.4 {
+			t.Fatalf("updateSL called with cancelOID=%d trigger=%v size=%v, want 111/1900/0.4", gotCancelOID, gotTrigger, gotSize)
+		}
+		actions, err := db.LoadPendingManualActions()
+		if err != nil {
+			t.Fatalf("LoadPendingManualActions: %v", err)
+		}
+		if len(actions) != 0 {
+			t.Fatalf("pending actions = %+v, want none", actions)
+		}
+		position := ss.state.Strategies["hl-manual-eth"].Positions["ETH"]
+		if position.Quantity != 0.4 || position.StopLossOID != 222 || position.StopLossTriggerPx != 1900 {
+			t.Fatalf("daemon state = %+v, want quantity unchanged and the stop restored at OID 222 / $1900", position)
+		}
+	})
 }

@@ -204,7 +204,7 @@ func qpRunnerEnv(t *testing.T, root string, r qpRunner, vars map[string]string) 
 	qpEnv(t, root, merged)
 }
 
-func TestCheckQuotePrecisionRunnersReturnTheFullQuote(t *testing.T) {
+func qpCaseCheckQuotePrecisionRunnersReturnTheFullQuote(t *testing.T) {
 	root := qpRoot(t)
 	qpDebugLogs(t)
 	for _, r := range qpRunners() {
@@ -230,7 +230,7 @@ func TestCheckQuotePrecisionRunnersReturnTheFullQuote(t *testing.T) {
 	}
 }
 
-func TestCheckQuotePrecisionRunnerFallbacksAndFailures(t *testing.T) {
+func qpCaseCheckQuotePrecisionRunnerFallbacksAndFailures(t *testing.T) {
 	root := qpRoot(t)
 	q := 0.00001234
 	for _, r := range qpRunners() {
@@ -277,7 +277,7 @@ func TestCheckQuotePrecisionRunnerFallbacksAndFailures(t *testing.T) {
 	}
 }
 
-func TestCheckQuotePrecisionFetchPricesKeepsTheTickerQuote(t *testing.T) {
+func qpCaseCheckQuotePrecisionFetchPricesKeepsTheTickerQuote(t *testing.T) {
 	root := qpRoot(t)
 	tickers := map[string]interface{}{
 		"A/USDT": 0.1234, "B/USDT": 0.006, "C/USDT": 0.00001234, "BTC/USDT": 65000.5,
@@ -475,7 +475,7 @@ func qpStatusPrices(t *testing.T, statusURL string) map[string]float64 {
 	return body.Prices
 }
 
-func TestCheckQuotePrecisionSchedulerCycleKeepsTinySpotQuotes(t *testing.T) {
+func qpCaseCheckQuotePrecisionSchedulerCycleKeepsTinySpotQuotes(t *testing.T) {
 	t.Parallel()
 	root := robinhoodStdoutPyRoot(t)
 	sched := qpBuildScheduler(t, root)
@@ -587,7 +587,7 @@ func qpOKXCheck(t *testing.T, root string, sc StrategyConfig, shape string, q fl
 	return r, sig, price
 }
 
-func TestCheckQuotePrecisionPaperBookingUsesTheFullQuote(t *testing.T) {
+func qpCaseCheckQuotePrecisionPaperBookingUsesTheFullQuote(t *testing.T) {
 	root := qpRoot(t)
 
 	t.Run("spot_open_partial_and_full_close", func(t *testing.T) {
@@ -774,7 +774,7 @@ func qpOKXLiveEnv(t *testing.T, root, log string, fill map[string]interface{}, s
 	})
 }
 
-func TestCheckQuotePrecisionOKXLiveSizingAndFillPrecedence(t *testing.T) {
+func qpCaseCheckQuotePrecisionOKXLiveSizingAndFillPrecedence(t *testing.T) {
 	root := qpRoot(t)
 
 	t.Run("spot_buy_sizes_from_the_full_quote_and_books_the_fill", func(t *testing.T) {
@@ -916,7 +916,7 @@ func TestCheckQuotePrecisionOKXLiveSizingAndFillPrecedence(t *testing.T) {
 	})
 }
 
-func TestCheckQuotePrecisionRobinhoodLiveKeepsTheVenueFill(t *testing.T) {
+func qpCaseCheckQuotePrecisionRobinhoodLiveKeepsTheVenueFill(t *testing.T) {
 	q := 0.00001234
 
 	t.Run("confirmed_buy_books_the_venue_price", func(t *testing.T) {
@@ -1006,7 +1006,7 @@ func TestCheckQuotePrecisionRobinhoodLiveKeepsTheVenueFill(t *testing.T) {
 	})
 }
 
-func TestCheckQuotePrecisionOptionsSpotAndPremiumPrecedence(t *testing.T) {
+func qpCaseCheckQuotePrecisionOptionsSpotAndPremiumPrecedence(t *testing.T) {
 	root := qpRoot(t)
 	sc := StrategyConfig{ID: "qp-opt", Type: "options", Platform: "deribit", Script: "shared_scripts/check_options.py",
 		Args: []string{"vol_mean_reversion", "BTC", "--platform=deribit"}, Capital: 1000}
@@ -1060,7 +1060,7 @@ func TestCheckQuotePrecisionOptionsSpotAndPremiumPrecedence(t *testing.T) {
 	})
 }
 
-func TestCheckQuotePrecisionPriceTextKeepsLargePrices(t *testing.T) {
+func qpCaseCheckQuotePrecisionPriceTextKeepsLargePrices(t *testing.T) {
 	root := qpRoot(t)
 	qpDebugLogs(t)
 	cases := []struct {
@@ -1451,4 +1451,20 @@ func TestCheckQuotePrecisionRebaselineSurvivesABookSaveBeforeSaveAll(t *testing.
 			t.Fatal("a spent marker still moved a peak")
 		}
 	})
+}
+
+func TestCheckQuotePrecision(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"RunnersReturnTheFullQuote", qpCaseCheckQuotePrecisionRunnersReturnTheFullQuote},
+		{"RunnerFallbacksAndFailures", qpCaseCheckQuotePrecisionRunnerFallbacksAndFailures},
+		{"FetchPricesKeepsTheTickerQuote", qpCaseCheckQuotePrecisionFetchPricesKeepsTheTickerQuote},
+		{"SchedulerCycleKeepsTinySpotQuotes", qpCaseCheckQuotePrecisionSchedulerCycleKeepsTinySpotQuotes},
+		{"PaperBookingUsesTheFullQuote", qpCaseCheckQuotePrecisionPaperBookingUsesTheFullQuote},
+		{"OKXLiveSizingAndFillPrecedence", qpCaseCheckQuotePrecisionOKXLiveSizingAndFillPrecedence},
+		{"RobinhoodLiveKeepsTheVenueFill", qpCaseCheckQuotePrecisionRobinhoodLiveKeepsTheVenueFill},
+		{"OptionsSpotAndPremiumPrecedence", qpCaseCheckQuotePrecisionOptionsSpotAndPremiumPrecedence},
+		{"PriceTextKeepsLargePrices", qpCaseCheckQuotePrecisionPriceTextKeepsLargePrices},
+	} {
+		t.Run(tc.name, tc.run)
+	}
 }

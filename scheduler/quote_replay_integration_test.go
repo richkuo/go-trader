@@ -589,93 +589,112 @@ func TestQuoteReplayRefusesUnsafeStateAndInputs(t *testing.T) {
 	})
 }
 
-func TestQuoteReplayRunDocumentIsRefusedOutsideTheRunner(t *testing.T) {
-	dir := quoteReplayTempDir(t)
-	spec := quoteReplaySmallSpec(t, dir, nil)
-	if err := validateQuoteReplaySpec(spec); err != nil {
-		t.Fatal(err)
-	}
-	doc, err := spec.configDocument(filepath.Join(dir, "run"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(dir, "run-document.json")
-	if err := os.WriteFile(path, doc, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	setNoEdgeLiveCredentials(t)
-	for name, load := range map[string]func(string) (*Config, error){"LoadConfig": LoadConfig, "LoadConfigForProbe": LoadConfigForProbe, "LoadConfigReadOnly": LoadConfigReadOnly} {
-		if _, err := load(path); err == nil || !strings.Contains(err.Error(), "production_refused") {
-			t.Fatalf("%s accepted the replay run document: %v", name, err)
+func TestQuoteReplayStaysOutsideProduction(t *testing.T) {
+	t.Run("run_document_is_refused_outside_the_runner", func(t *testing.T) {
+		dir := quoteReplayTempDir(t)
+		spec := quoteReplaySmallSpec(t, dir, nil)
+		if err := validateQuoteReplaySpec(spec); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if _, err := os.Stat(filepath.Join(dir, "run")); !os.IsNotExist(err) {
-		t.Fatal("an ordinary loader created replay state")
-	}
-	stop := 2.0
-	sc := StrategyConfig{ID: "imm", Type: "perps", Platform: "hyperliquid", Script: hyperliquidCheckScript, Args: []string{inventoryMarketMakingStrategyName, "BTC", "1m", "--mode=paper"},
-		OpenStrategy: StrategyRef{Name: inventoryMarketMakingStrategyName, Params: spec.Params}, StopLossPct: &stop}
-	req, err := deriveFeedRequirements(&Config{MarketFeed: marketFeedWebsocket, Strategies: []StrategyConfig{sc}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if need := req.Books[l2BookKeyFor("BTC")]; need.Depth != 20 || need.Capacity != 256 || need.WindowMs != 60_000+1_000+7_500 {
-		t.Fatalf("the quote book need %+v", need)
-	}
-	if err := validateMarketFeedConfig(&Config{MarketFeed: marketFeedREST, Strategies: []StrategyConfig{sc}}); err == nil || !strings.Contains(err.Error(), "cannot supply sealed l2_book observations") {
-		t.Fatalf("a REST feed must refuse the quote book need: %v", err)
-	}
-}
-
-func TestQuoteReplayStateIsRefusedByNormalStartupInspection(t *testing.T) {
-	dir := quoteReplayTempDir(t)
-	spec := quoteReplaySmallSpec(t, dir, nil)
-	_, code, _ := runQuoteReplaySubprocess(t, spec, "--fault", "progress-before-write:1")
-	if code != basketReplayExitFault {
-		t.Fatalf("the first-deadline fault exited %d", code)
-	}
-	copyDir := filepath.Join(dir, "copied")
-	if err := os.Mkdir(copyDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	copied := filepath.Join(copyDir, "state.db")
-	for _, suffix := range []string{"", "-wal"} {
-		blob, err := os.ReadFile(filepath.Join(spec.Run.StateDir, quoteReplayDBName) + suffix)
-		if os.IsNotExist(err) && suffix != "" {
-			continue
-		}
+		doc, err := spec.configDocument(filepath.Join(dir, "run"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(copied+suffix, blob, 0o600); err != nil {
+		path := filepath.Join(dir, "run-document.json")
+		if err := os.WriteFile(path, doc, 0o600); err != nil {
 			t.Fatal(err)
 		}
-	}
-	for _, path := range []string{filepath.Join(spec.Run.StateDir, quoteReplayDBName), copied} {
-		cfgPath := writeNoEdgeConfigAt(t, filepath.Dir(path), path)
-		cfg, err := LoadConfigReadOnly(cfgPath)
+		setNoEdgeLiveCredentials(t)
+		for name, load := range map[string]func(string) (*Config, error){"LoadConfig": LoadConfig, "LoadConfigForProbe": LoadConfigForProbe, "LoadConfigReadOnly": LoadConfigReadOnly} {
+			if _, err := load(path); err == nil || !strings.Contains(err.Error(), "production_refused") {
+				t.Fatalf("%s accepted the replay run document: %v", name, err)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(dir, "run")); !os.IsNotExist(err) {
+			t.Fatal("an ordinary loader created replay state")
+		}
+		stop := 2.0
+		sc := StrategyConfig{ID: "imm", Type: "perps", Platform: "hyperliquid", Script: hyperliquidCheckScript, Args: []string{inventoryMarketMakingStrategyName, "BTC", "1m", "--mode=paper"},
+			OpenStrategy: StrategyRef{Name: inventoryMarketMakingStrategyName, Params: spec.Params}, StopLossPct: &stop}
+		req, err := deriveFeedRequirements(&Config{MarketFeed: marketFeedWebsocket, Strategies: []StrategyConfig{sc}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		layout, err := resolveStorageLayout(cfg)
-		if err != nil {
+		if need := req.Books[l2BookKeyFor("BTC")]; need.Depth != 20 || need.Capacity != 256 || need.WindowMs != 60_000+1_000+7_500 {
+			t.Fatalf("the quote book need %+v", need)
+		}
+		if err := validateMarketFeedConfig(&Config{MarketFeed: marketFeedREST, Strategies: []StrategyConfig{sc}}); err == nil || !strings.Contains(err.Error(), "cannot supply sealed l2_book observations") {
+			t.Fatalf("a REST feed must refuse the quote book need: %v", err)
+		}
+	})
+	t.Run("state_is_refused_by_normal_startup_inspection", func(t *testing.T) {
+		dir := quoteReplayTempDir(t)
+		spec := quoteReplaySmallSpec(t, dir, nil)
+		_, code, _ := runQuoteReplaySubprocess(t, spec, "--fault", "progress-before-write:1")
+		if code != basketReplayExitFault {
+			t.Fatalf("the first-deadline fault exited %d", code)
+		}
+		copyDir := filepath.Join(dir, "copied")
+		if err := os.Mkdir(copyDir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		ident, err := buildStorageIdentityMap(cfg, layout)
-		if err != nil {
-			t.Fatal(err)
+		copied := filepath.Join(copyDir, "state.db")
+		for _, suffix := range []string{"", "-wal"} {
+			blob, err := os.ReadFile(filepath.Join(spec.Run.StateDir, quoteReplayDBName) + suffix)
+			if os.IsNotExist(err) && suffix != "" {
+				continue
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(copied+suffix, blob, 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
-		si, err := inspectStorageOwnership(layout, ident, cfg, false)
-		if err != nil {
-			t.Fatal(err)
+		for _, path := range []string{filepath.Join(spec.Run.StateDir, quoteReplayDBName), copied} {
+			cfgPath := writeNoEdgeConfigAt(t, filepath.Dir(path), path)
+			cfg, err := LoadConfigReadOnly(cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			layout, err := resolveStorageLayout(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ident, err := buildStorageIdentityMap(cfg, layout)
+			if err != nil {
+				t.Fatal(err)
+			}
+			si, err := inspectStorageOwnership(layout, ident, cfg, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if si.OK() || !strings.Contains(strings.Join(si.Rejections, "\n"), "offline quote replay run") {
+				t.Fatalf("storage inspection of %s did not refuse the replay marker: %v", path, si.Rejections)
+			}
+			if !strings.Contains(formatStorageInspection(si), "OFFLINE QUOTE REPLAY RUN") {
+				t.Fatal("the inspection view does not show the replay run")
+			}
 		}
-		if si.OK() || !strings.Contains(strings.Join(si.Rejections, "\n"), "offline quote replay run") {
-			t.Fatalf("storage inspection of %s did not refuse the replay marker: %v", path, si.Rejections)
+	})
+	t.Run("offline_egress_branch_reads_no_deployed_config", func(t *testing.T) {
+		prev := processEgress
+		processEgress = &egressRuntime{}
+		t.Cleanup(func() { processEgress = prev })
+		t.Setenv(egresspolicy.EnvProxy, "http://127.0.0.1:9")
+		code, stop := gateSubcommandEgress("quote-replay", []string{"--spec", "/nonexistent/plan.json", "--config", "/nonexistent/config.json"})
+		if stop || code != 0 {
+			t.Fatalf("the offline branch refused (%d, %v)", code, stop)
 		}
-		if !strings.Contains(formatStorageInspection(si), "OFFLINE QUOTE REPLAY RUN") {
-			t.Fatal("the inspection view does not show the replay run")
+		if !processEgress.isActive() {
+			t.Fatal("proxy mode stays recorded for the offline command")
 		}
-	}
+		processEgress = &egressRuntime{}
+		t.Setenv(egresspolicy.EnvProxy, "")
+		if code, stop := gateSubcommandEgress("quote-replay", nil); stop || code != 0 || processEgress.isActive() {
+			t.Fatalf("no proxy variable needs no setup (%d, %v)", code, stop)
+		}
+	})
 }
 
 func writeNoEdgeConfigAt(t *testing.T, dir, dbPath string) string {
@@ -692,23 +711,4 @@ func writeNoEdgeConfigAt(t *testing.T, dir, dbPath string) string {
 		t.Fatal(err)
 	}
 	return path
-}
-
-func TestQuoteReplayOfflineEgressBranchReadsNoDeployedConfig(t *testing.T) {
-	prev := processEgress
-	processEgress = &egressRuntime{}
-	t.Cleanup(func() { processEgress = prev })
-	t.Setenv(egresspolicy.EnvProxy, "http://127.0.0.1:9")
-	code, stop := gateSubcommandEgress("quote-replay", []string{"--spec", "/nonexistent/plan.json", "--config", "/nonexistent/config.json"})
-	if stop || code != 0 {
-		t.Fatalf("the offline branch refused (%d, %v)", code, stop)
-	}
-	if !processEgress.isActive() {
-		t.Fatal("proxy mode stays recorded for the offline command")
-	}
-	processEgress = &egressRuntime{}
-	t.Setenv(egresspolicy.EnvProxy, "")
-	if code, stop := gateSubcommandEgress("quote-replay", nil); stop || code != 0 || processEgress.isActive() {
-		t.Fatalf("no proxy variable needs no setup (%d, %v)", code, stop)
-	}
 }

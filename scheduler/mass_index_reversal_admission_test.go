@@ -25,7 +25,7 @@ func massIndexLoadBoth(t *testing.T, sc map[string]interface{}) (*Config, error)
 	return cfg, loadErr
 }
 
-func TestMassIndexReversalRegistrationTables(t *testing.T) {
+func noEdgeCaseMassIndexReversalRegistrationTables(t *testing.T) {
 	if knownShortNames[massIndexName] != "massrev" || !isBidirectionalPerpsStrategy(massIndexName) {
 		t.Fatalf("short name %q, bidirectional %v", knownShortNames[massIndexName], isBidirectionalPerpsStrategy(massIndexName))
 	}
@@ -53,7 +53,7 @@ func TestMassIndexReversalRegistrationTables(t *testing.T) {
 	}
 }
 
-func TestMassIndexReversalAdmissionRoutesOpenAndCloseFallbackReferences(t *testing.T) {
+func noEdgeCaseMassIndexReversalAdmissionRoutesOpenAndCloseFallbackReferences(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	open := func(args ...string) map[string]interface{} {
 		return noEdgeHLStrategy("hl-massrev-eth", append([]string{massIndexName, "ETH", "1h"}, args...)...)
@@ -95,7 +95,7 @@ func TestMassIndexReversalAdmissionRoutesOpenAndCloseFallbackReferences(t *testi
 	}
 }
 
-func TestMassIndexReversalOperatorAddCreatesALoadableExplicitPaperEntry(t *testing.T) {
+func noEdgeCaseMassIndexReversalOperatorAddCreatesALoadableExplicitPaperEntry(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry(massIndexName, "hyperliquid", "sol")
 	if err != nil || id != "hl-massrev-sol" {
@@ -143,7 +143,7 @@ func TestMassIndexReversalOperatorAddCreatesALoadableExplicitPaperEntry(t *testi
 	}
 }
 
-func TestMassIndexReversalStudyParityConfigsLoadAsExplicitPaper(t *testing.T) {
+func noEdgeCaseMassIndexReversalStudyParityConfigsLoadAsExplicitPaper(t *testing.T) {
 	dir := filepath.Join("..", "backtest", "candidates", "mass_index_reversal_1670")
 	for _, tf := range []string{"1h", "4h"} {
 		data, err := os.ReadFile(filepath.Join(dir, "paper_parity_"+tf+".json"))
@@ -174,7 +174,7 @@ func TestMassIndexReversalStudyParityConfigsLoadAsExplicitPaper(t *testing.T) {
 	}
 }
 
-func TestV20NoEdgeMigrationNeverStampsMassIndexReversal(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationNeverStampsMassIndexReversal(t *testing.T) {
 	open := noEdgeHLStrategy("hl-massrev-open", massIndexName, "ETH", "1h", "--mode=live")
 	fallback := noEdgeHLStrategy("hl-massrev-close", "breakout", "ETH", "1h", "--mode=live")
 	fallback["close_strategy"] = map[string]interface{}{"name": massIndexName}

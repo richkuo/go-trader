@@ -9,7 +9,7 @@ import (
 
 const cvdReportRef = "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md"
 
-func TestCumulativeVolumeDeltaRegistrationTables(t *testing.T) {
+func noEdgeCaseCumulativeVolumeDeltaRegistrationTables(t *testing.T) {
 	name := cumulativeVolumeDeltaStrategyName
 	if knownShortNames[name] != "cvddiv" || !isBidirectionalPerpsStrategy(name) {
 		t.Fatalf("short name %q, bidirectional %v", knownShortNames[name], isBidirectionalPerpsStrategy(name))

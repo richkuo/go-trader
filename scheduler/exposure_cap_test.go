@@ -103,143 +103,144 @@ func perpsCfg(id, strategy, coin string) StrategyConfig {
 	return StrategyConfig{ID: id, Type: "perps", Platform: "hyperliquid", Args: []string{strategy, coin, "1h"}}
 }
 
-func TestEvaluateExposureCap_Buckets(t *testing.T) {
-	bucketCap := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxSameDirectionNotionalUSD: 15000}
-	cases := []struct {
-		name               string
-		pr                 *PortfolioRiskConfig
-		states             map[string]*StrategyState
-		cfgs               []StrategyConfig
-		prices             map[string]float64
-		pv                 float64
-		wantConfigured     bool
-		wantLong           float64
-		wantShort          float64
-		wantLongBlocked    bool
-		wantShortBlocked   bool
-		wantSkipped        []string
-		wantSkippedWarning string
-	}{
-		{name: "all_long_book_blocks_longs_only",
-			pr: bucketCap, states: exposureTestStates(), cfgs: exposureTestConfigs(), prices: exposureTestPrices(), pv: 20000,
-			wantConfigured: true, wantLong: 19000, wantShort: 0, wantLongBlocked: true},
-		{name: "netting_per_asset",
-			pr: bucketCap,
-			states: map[string]*StrategyState{
-				"hl-a-btc": perpsPosState("hl-a-btc", "BTC", 0.2, "long", 48000),
-				"hl-b-eth": perpsPosState("hl-b-eth", "ETH", 2, "short", 2900),
-			},
-			cfgs:   []StrategyConfig{perpsCfg("hl-a-btc", "momentum", "BTC"), perpsCfg("hl-b-eth", "momentum", "ETH")},
-			prices: map[string]float64{"BTC": 50000, "ETH": 5000}, pv: 20000,
-			wantConfigured: true, wantLong: 10000, wantShort: 10000},
-		{name: "same_asset_nets_before_bucketing",
-			pr: bucketCap,
-			states: map[string]*StrategyState{
-				"hl-a-btc": perpsPosState("hl-a-btc", "BTC", 0.3, "long", 48000),
-				"hl-b-btc": perpsPosState("hl-b-btc", "BTC", 0.1, "short", 48000),
-			},
-			cfgs:   []StrategyConfig{perpsCfg("hl-a-btc", "momentum", "BTC"), perpsCfg("hl-b-btc", "triple_ema", "BTC")},
-			prices: map[string]float64{"BTC": 50000}, pv: 20000,
-			wantConfigured: true, wantLong: 10000, wantShort: 0},
-		{name: "disabled_by_default_zero_thresholds",
-			pr: &PortfolioRiskConfig{MaxDrawdownPct: 25}, states: exposureTestStates(), cfgs: exposureTestConfigs(), prices: exposureTestPrices(), pv: 20000,
-			wantConfigured: false},
-		{name: "disabled_nil_config",
-			pr: nil, states: exposureTestStates(), cfgs: exposureTestConfigs(), prices: exposureTestPrices(), pv: 20000,
-			wantConfigured: false},
-		{name: "fail_safe_exclusions_do_not_inflate_sum",
-			pr: bucketCap,
-			states: map[string]*StrategyState{
-				"hl-a-btc": perpsPosState("hl-a-btc", "BTC", 0.2, "long", 48000),
-				"hl-b-xyz": perpsPosState("hl-b-xyz", "XYZ", 5, "long", 0),
-				"hl-c-eth": perpsPosState("hl-c-eth", "ETH", -1, "long", 3000),
-			},
-			cfgs:   []StrategyConfig{perpsCfg("hl-a-btc", "momentum", "BTC"), perpsCfg("hl-b-xyz", "momentum", "XYZ"), perpsCfg("hl-c-eth", "momentum", "ETH")},
-			prices: map[string]float64{"BTC": 50000, "ETH": 3000}, pv: 20000,
-			wantConfigured: true, wantLong: 10000, wantShort: 0,
-			wantSkipped:        []string{"hl-b-xyz/XYZ: no usable price", "hl-c-eth/ETH: non-positive quantity"},
-			wantSkippedWarning: "2 position(s) excluded"},
-		{name: "avg_cost_fallback_without_prices",
-			pr: bucketCap, states: exposureTestStates(), cfgs: exposureTestConfigs(), prices: nil, pv: 0,
-			wantConfigured: true, wantLong: 18200, wantShort: 0, wantLongBlocked: true},
-		{name: "manual_positions_counted",
-			pr:     &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxSameDirectionNotionalUSD: 10000},
-			states: map[string]*StrategyState{"hl-manual": {ID: "hl-manual", Type: "manual", Positions: map[string]*Position{"ETH": {Symbol: "ETH", Quantity: 4, Side: "long", AvgCost: 2900}}, OptionPositions: make(map[string]*OptionPosition)}},
-			cfgs:   []StrategyConfig{{ID: "hl-manual", Type: "manual", Platform: "hyperliquid", Args: []string{"hold", "ETH"}}},
-			prices: map[string]float64{"ETH": 3000}, pv: 20000,
-			wantConfigured: true, wantLong: 12000, wantShort: 0, wantLongBlocked: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			st := evaluateExposureCap(tc.pr, tc.states, tc.cfgs, tc.prices, tc.pv)
-			if st.Configured != tc.wantConfigured {
-				t.Fatalf("Configured = %v, want %v", st.Configured, tc.wantConfigured)
-			}
-			if !tc.wantConfigured {
-				if st.LongBlocked || st.ShortBlocked {
-					t.Fatalf("disabled cap must not mark buckets blocked: %+v", st)
+func TestEvaluateExposureCap(t *testing.T) {
+	t.Run("Buckets", func(t *testing.T) {
+		bucketCap := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxSameDirectionNotionalUSD: 15000}
+		cases := []struct {
+			name               string
+			pr                 *PortfolioRiskConfig
+			states             map[string]*StrategyState
+			cfgs               []StrategyConfig
+			prices             map[string]float64
+			pv                 float64
+			wantConfigured     bool
+			wantLong           float64
+			wantShort          float64
+			wantLongBlocked    bool
+			wantShortBlocked   bool
+			wantSkipped        []string
+			wantSkippedWarning string
+		}{
+			{name: "all_long_book_blocks_longs_only",
+				pr: bucketCap, states: exposureTestStates(), cfgs: exposureTestConfigs(), prices: exposureTestPrices(), pv: 20000,
+				wantConfigured: true, wantLong: 19000, wantShort: 0, wantLongBlocked: true},
+			{name: "netting_per_asset",
+				pr: bucketCap,
+				states: map[string]*StrategyState{
+					"hl-a-btc": perpsPosState("hl-a-btc", "BTC", 0.2, "long", 48000),
+					"hl-b-eth": perpsPosState("hl-b-eth", "ETH", 2, "short", 2900),
+				},
+				cfgs:   []StrategyConfig{perpsCfg("hl-a-btc", "momentum", "BTC"), perpsCfg("hl-b-eth", "momentum", "ETH")},
+				prices: map[string]float64{"BTC": 50000, "ETH": 5000}, pv: 20000,
+				wantConfigured: true, wantLong: 10000, wantShort: 10000},
+			{name: "same_asset_nets_before_bucketing",
+				pr: bucketCap,
+				states: map[string]*StrategyState{
+					"hl-a-btc": perpsPosState("hl-a-btc", "BTC", 0.3, "long", 48000),
+					"hl-b-btc": perpsPosState("hl-b-btc", "BTC", 0.1, "short", 48000),
+				},
+				cfgs:   []StrategyConfig{perpsCfg("hl-a-btc", "momentum", "BTC"), perpsCfg("hl-b-btc", "triple_ema", "BTC")},
+				prices: map[string]float64{"BTC": 50000}, pv: 20000,
+				wantConfigured: true, wantLong: 10000, wantShort: 0},
+			{name: "disabled_by_default_zero_thresholds",
+				pr: &PortfolioRiskConfig{MaxDrawdownPct: 25}, states: exposureTestStates(), cfgs: exposureTestConfigs(), prices: exposureTestPrices(), pv: 20000,
+				wantConfigured: false},
+			{name: "disabled_nil_config",
+				pr: nil, states: exposureTestStates(), cfgs: exposureTestConfigs(), prices: exposureTestPrices(), pv: 20000,
+				wantConfigured: false},
+			{name: "fail_safe_exclusions_do_not_inflate_sum",
+				pr: bucketCap,
+				states: map[string]*StrategyState{
+					"hl-a-btc": perpsPosState("hl-a-btc", "BTC", 0.2, "long", 48000),
+					"hl-b-xyz": perpsPosState("hl-b-xyz", "XYZ", 5, "long", 0),
+					"hl-c-eth": perpsPosState("hl-c-eth", "ETH", -1, "long", 3000),
+				},
+				cfgs:   []StrategyConfig{perpsCfg("hl-a-btc", "momentum", "BTC"), perpsCfg("hl-b-xyz", "momentum", "XYZ"), perpsCfg("hl-c-eth", "momentum", "ETH")},
+				prices: map[string]float64{"BTC": 50000, "ETH": 3000}, pv: 20000,
+				wantConfigured: true, wantLong: 10000, wantShort: 0,
+				wantSkipped:        []string{"hl-b-xyz/XYZ: no usable price", "hl-c-eth/ETH: non-positive quantity"},
+				wantSkippedWarning: "2 position(s) excluded"},
+			{name: "avg_cost_fallback_without_prices",
+				pr: bucketCap, states: exposureTestStates(), cfgs: exposureTestConfigs(), prices: nil, pv: 0,
+				wantConfigured: true, wantLong: 18200, wantShort: 0, wantLongBlocked: true},
+			{name: "manual_positions_counted",
+				pr:     &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxSameDirectionNotionalUSD: 10000},
+				states: map[string]*StrategyState{"hl-manual": {ID: "hl-manual", Type: "manual", Positions: map[string]*Position{"ETH": {Symbol: "ETH", Quantity: 4, Side: "long", AvgCost: 2900}}, OptionPositions: make(map[string]*OptionPosition)}},
+				cfgs:   []StrategyConfig{{ID: "hl-manual", Type: "manual", Platform: "hyperliquid", Args: []string{"hold", "ETH"}}},
+				prices: map[string]float64{"ETH": 3000}, pv: 20000,
+				wantConfigured: true, wantLong: 12000, wantShort: 0, wantLongBlocked: true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				st := evaluateExposureCap(tc.pr, tc.states, tc.cfgs, tc.prices, tc.pv)
+				if st.Configured != tc.wantConfigured {
+					t.Fatalf("Configured = %v, want %v", st.Configured, tc.wantConfigured)
 				}
-				return
-			}
-			if st.LongUSD != tc.wantLong {
-				t.Errorf("LongUSD = %f, want %f", st.LongUSD, tc.wantLong)
-			}
-			if st.ShortUSD != tc.wantShort {
-				t.Errorf("ShortUSD = %f, want %f", st.ShortUSD, tc.wantShort)
-			}
-			if st.LongBlocked != tc.wantLongBlocked {
-				t.Errorf("LongBlocked = %v, want %v", st.LongBlocked, tc.wantLongBlocked)
-			}
-			if st.ShortBlocked != tc.wantShortBlocked {
-				t.Errorf("ShortBlocked = %v, want %v", st.ShortBlocked, tc.wantShortBlocked)
-			}
-			if len(st.SkippedPositions) != len(tc.wantSkipped) {
-				t.Fatalf("SkippedPositions = %v, want %d entries %v", st.SkippedPositions, len(tc.wantSkipped), tc.wantSkipped)
-			}
-			joined := strings.Join(st.SkippedPositions, "; ")
-			for _, want := range tc.wantSkipped {
-				if !strings.Contains(joined, want) {
-					t.Errorf("missing skip entry %q in %v", want, st.SkippedPositions)
+				if !tc.wantConfigured {
+					if st.LongBlocked || st.ShortBlocked {
+						t.Fatalf("disabled cap must not mark buckets blocked: %+v", st)
+					}
+					return
 				}
-			}
-			if tc.wantSkippedWarning != "" {
-				if msg := exposureCapSkippedWarning(st); !strings.Contains(msg, tc.wantSkippedWarning) {
-					t.Errorf("unexpected skipped warning: %q", msg)
+				if st.LongUSD != tc.wantLong {
+					t.Errorf("LongUSD = %f, want %f", st.LongUSD, tc.wantLong)
 				}
-			}
-		})
-	}
-}
+				if st.ShortUSD != tc.wantShort {
+					t.Errorf("ShortUSD = %f, want %f", st.ShortUSD, tc.wantShort)
+				}
+				if st.LongBlocked != tc.wantLongBlocked {
+					t.Errorf("LongBlocked = %v, want %v", st.LongBlocked, tc.wantLongBlocked)
+				}
+				if st.ShortBlocked != tc.wantShortBlocked {
+					t.Errorf("ShortBlocked = %v, want %v", st.ShortBlocked, tc.wantShortBlocked)
+				}
+				if len(st.SkippedPositions) != len(tc.wantSkipped) {
+					t.Fatalf("SkippedPositions = %v, want %d entries %v", st.SkippedPositions, len(tc.wantSkipped), tc.wantSkipped)
+				}
+				joined := strings.Join(st.SkippedPositions, "; ")
+				for _, want := range tc.wantSkipped {
+					if !strings.Contains(joined, want) {
+						t.Errorf("missing skip entry %q in %v", want, st.SkippedPositions)
+					}
+				}
+				if tc.wantSkippedWarning != "" {
+					if msg := exposureCapSkippedWarning(st); !strings.Contains(msg, tc.wantSkippedWarning) {
+						t.Errorf("unexpected skipped warning: %q", msg)
+					}
+				}
+			})
+		}
+	})
+	t.Run("Concentration", func(t *testing.T) {
+		pr := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxAssetConcentrationPct: 40}
+		st := evaluateExposureCap(pr, exposureTestStates(), exposureTestConfigs(), exposureTestPrices(), 20000)
 
-func TestEvaluateExposureCap_Concentration(t *testing.T) {
-	pr := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxAssetConcentrationPct: 40}
-	st := evaluateExposureCap(pr, exposureTestStates(), exposureTestConfigs(), exposureTestPrices(), 20000)
+		if st.LongBlocked || st.ShortBlocked {
+			t.Error("bucket arm is disabled (cap 0) — no bucket block expected")
+		}
+		stat, ok := st.OverConcentrated["BTC"]
+		if !ok {
+			t.Fatalf("expected BTC over-concentrated, got %v", st.OverConcentrated)
+		}
+		if stat.Direction != "long" || stat.Pct != 50 {
+			t.Errorf("BTC stat = %+v, want long 50%%", stat)
+		}
+		if _, ok := st.OverConcentrated["ETH"]; ok {
+			t.Error("ETH must not be over-concentrated at 30%")
+		}
 
-	if st.LongBlocked || st.ShortBlocked {
-		t.Error("bucket arm is disabled (cap 0) — no bucket block expected")
-	}
-	stat, ok := st.OverConcentrated["BTC"]
-	if !ok {
-		t.Fatalf("expected BTC over-concentrated, got %v", st.OverConcentrated)
-	}
-	if stat.Direction != "long" || stat.Pct != 50 {
-		t.Errorf("BTC stat = %+v, want long 50%%", stat)
-	}
-	if _, ok := st.OverConcentrated["ETH"]; ok {
-		t.Error("ETH must not be over-concentrated at 30%")
-	}
-
-	if blocked, why := exposureCapBlocksSignal(st, "BTC", 1, 0, 0, "", true, true); !blocked {
-		t.Error("expected BTC long open blocked by concentration")
-	} else if !strings.Contains(why, "BTC") || !strings.Contains(why, "50.0%") {
-		t.Errorf("unexpected reason: %q", why)
-	}
-	if blocked, _ := exposureCapBlocksSignal(st, "BTC", -1, 0, 0, "", true, true); blocked {
-		t.Error("BTC short entry must pass — it reduces the long concentration")
-	}
-	if blocked, _ := exposureCapBlocksSignal(st, "ETH", 1, 0, 0, "", true, true); blocked {
-		t.Error("ETH long entry must pass — only the over-concentrated asset is held")
-	}
+		if blocked, why := exposureCapBlocksSignal(st, "BTC", 1, 0, 0, "", true, true); !blocked {
+			t.Error("expected BTC long open blocked by concentration")
+		} else if !strings.Contains(why, "BTC") || !strings.Contains(why, "50.0%") {
+			t.Errorf("unexpected reason: %q", why)
+		}
+		if blocked, _ := exposureCapBlocksSignal(st, "BTC", -1, 0, 0, "", true, true); blocked {
+			t.Error("BTC short entry must pass — it reduces the long concentration")
+		}
+		if blocked, _ := exposureCapBlocksSignal(st, "ETH", 1, 0, 0, "", true, true); blocked {
+			t.Error("ETH long entry must pass — only the over-concentrated asset is held")
+		}
+	})
 }
 
 func manualExposureTestConfig() *Config {

@@ -6,66 +6,67 @@ import (
 	"testing"
 )
 
-func TestForceCloseRobinhoodLive_CloseErrorLatches(t *testing.T) {
-	rhLive := []StrategyConfig{
-		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
-			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
-	}
-	positions := []RobinhoodPosition{{Coin: "BTC", Size: 0.01}}
-	closer := func(req RobinhoodCloseRequest) (*RobinhoodCloseResult, error) {
-		return nil, fmt.Errorf("robin_stocks 503")
-	}
+func TestForceCloseRobinhoodLive(t *testing.T) {
+	t.Run("CloseErrorLatches", func(t *testing.T) {
+		rhLive := []StrategyConfig{
+			{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
+				Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
+		}
+		positions := []RobinhoodPosition{{Coin: "BTC", Size: 0.01}}
+		closer := func(req RobinhoodCloseRequest) (*RobinhoodCloseResult, error) {
+			return nil, fmt.Errorf("robin_stocks 503")
+		}
 
-	report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, robinhoodKillSwitchCloseDeps{
-		Closer: closer,
-		Book:   robinhoodBookSnapshot{Targets: map[string]float64{"BTC": 0.01}},
+		report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, robinhoodKillSwitchCloseDeps{
+			Closer: closer,
+			Book:   robinhoodBookSnapshot{Targets: map[string]float64{"BTC": 0.01}},
+		})
+
+		if report.ConfirmedFlat() {
+			t.Fatal("expected NOT ConfirmedFlat on close error")
+		}
+		if _, ok := report.Errors["BTC"]; !ok {
+			t.Errorf("expected BTC in errors, got %v", report.Errors)
+		}
 	})
+	t.Run("NegativeSizeNotTraded", func(t *testing.T) {
+		rhLive := []StrategyConfig{
+			{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
+				Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
+		}
+		positions := []RobinhoodPosition{
+			{Coin: "BTC", Size: -0.01},
+			{Coin: "DOGE", Size: -100},
+		}
+		var calls []string
+		closer := func(req RobinhoodCloseRequest) (*RobinhoodCloseResult, error) {
+			calls = append(calls, req.Symbol)
+			return &RobinhoodCloseResult{}, nil
+		}
 
-	if report.ConfirmedFlat() {
-		t.Fatal("expected NOT ConfirmedFlat on close error")
-	}
-	if _, ok := report.Errors["BTC"]; !ok {
-		t.Errorf("expected BTC in errors, got %v", report.Errors)
-	}
-}
+		flat := func() ([]RobinhoodPosition, error) { return nil, nil }
+		book := robinhoodBookSnapshot{Targets: map[string]float64{"BTC": 0.01}}
+		report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, robinhoodKillSwitchCloseDeps{
+			Closer:    closer,
+			Fetcher:   flat,
+			Book:      book,
+			BookAfter: func() robinhoodBookSnapshot { return book },
+			Settle:    func() robinhoodSettleOutcome { return robinhoodSettleOutcome{} },
+		})
 
-func TestForceCloseRobinhoodLive_NegativeSizeNotTraded(t *testing.T) {
-	rhLive := []StrategyConfig{
-		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
-			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
-	}
-	positions := []RobinhoodPosition{
-		{Coin: "BTC", Size: -0.01},
-		{Coin: "DOGE", Size: -100},
-	}
-	var calls []string
-	closer := func(req RobinhoodCloseRequest) (*RobinhoodCloseResult, error) {
-		calls = append(calls, req.Symbol)
-		return &RobinhoodCloseResult{}, nil
-	}
-
-	flat := func() ([]RobinhoodPosition, error) { return nil, nil }
-	book := robinhoodBookSnapshot{Targets: map[string]float64{"BTC": 0.01}}
-	report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, robinhoodKillSwitchCloseDeps{
-		Closer:    closer,
-		Fetcher:   flat,
-		Book:      book,
-		BookAfter: func() robinhoodBookSnapshot { return book },
-		Settle:    func() robinhoodSettleOutcome { return robinhoodSettleOutcome{} },
+		if len(calls) != 0 {
+			t.Errorf("negative-size position must NOT trigger close, got calls=%v", calls)
+		}
+		if len(report.Unconfigured) != 0 {
+			t.Errorf("negative-size unowned position must NOT be Unconfigured, got %+v", report.Unconfigured)
+		}
+		if len(report.AlreadyFlat) != 1 || report.AlreadyFlat[0] != "BTC" {
+			t.Errorf("negative-size owned position should be treated as already-flat, got %v", report.AlreadyFlat)
+		}
+		if !report.ConfirmedFlat() {
+			t.Errorf("negative-size positions must not block ConfirmedFlat, got errors=%v", report.Errors)
+		}
 	})
-
-	if len(calls) != 0 {
-		t.Errorf("negative-size position must NOT trigger close, got calls=%v", calls)
-	}
-	if len(report.Unconfigured) != 0 {
-		t.Errorf("negative-size unowned position must NOT be Unconfigured, got %+v", report.Unconfigured)
-	}
-	if len(report.AlreadyFlat) != 1 || report.AlreadyFlat[0] != "BTC" {
-		t.Errorf("negative-size owned position should be treated as already-flat, got %v", report.AlreadyFlat)
-	}
-	if !report.ConfirmedFlat() {
-		t.Errorf("negative-size positions must not block ConfirmedFlat, got errors=%v", report.Errors)
-	}
 }
 
 func TestParseRobinhoodCloseOutput(t *testing.T) {

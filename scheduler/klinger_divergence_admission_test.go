@@ -11,7 +11,7 @@ import (
 
 const klingerName = "klinger_divergence"
 
-func TestKlingerDivergenceAdmissionAndBooleanAcknowledgementThroughRealLoaders(t *testing.T) {
+func noEdgeCaseKlingerDivergenceAdmissionAndBooleanAcknowledgementThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const ref = "backtest/candidates/klinger_divergence_1662/REPORT.md"
 	kd := func(args ...string) map[string]interface{} {
@@ -102,7 +102,7 @@ func TestKlingerDivergenceAdmissionAndBooleanAcknowledgementThroughRealLoaders(t
 	}
 }
 
-func TestKlingerDivergenceRequiresHyperliquidClosedBarDecisions(t *testing.T) {
+func noEdgeCaseKlingerDivergenceRequiresHyperliquidClosedBarDecisions(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	t.Setenv("TOPSTEP_API_KEY", "k")
 	t.Setenv("TOPSTEP_API_SECRET", "s")
@@ -188,7 +188,7 @@ func TestKlingerDivergenceRequiresHyperliquidClosedBarDecisions(t *testing.T) {
 	}
 }
 
-func TestV20NoEdgeMigrationNeverStampsKlingerDivergence(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationNeverStampsKlingerDivergence(t *testing.T) {
 	open := noEdgeHLStrategy("hl-klingerdiv-open", klingerName, "ETH", "4h", "--mode=live")
 	fallback := noEdgeHLStrategy("hl-klingerdiv-close", "breakout", "ETH", "4h", "--mode=live")
 	fallback["close_strategy"] = map[string]interface{}{"name": klingerName}
@@ -245,7 +245,7 @@ func assertKlingerPaperEntry(t *testing.T, sc StrategyConfig, id string) {
 	}
 }
 
-func TestKlingerDivergenceOperatorAddPathsCreateExplicitPaperEntries(t *testing.T) {
+func noEdgeCaseKlingerDivergenceOperatorAddPathsCreateExplicitPaperEntries(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry(klingerName, "hyperliquid", "sol")
 	if err != nil || id != "hl-klingerdiv-sol" {

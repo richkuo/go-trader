@@ -16,52 +16,51 @@ func getTuningPage(t *testing.T, path, method string) *httptest.ResponseRecorder
 	return rr
 }
 
-func TestTuningPageServesDedicatedApp(t *testing.T) {
-	for _, method := range []string{http.MethodGet, http.MethodHead} {
-		rr := getTuningPage(t, "/tuning", method)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("%s status = %d, want 200", method, rr.Code)
-		}
-		if got := rr.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
-			t.Errorf("%s content type = %q, want text/html", method, got)
-		}
-		if method == http.MethodGet {
-			body := rr.Body.String()
-			for _, want := range []string{
-				`data-page="tuning"`,
-				`id="tuning-launch-form"`,
-				`id="tuning-runs"`,
-				`id="tuning-results"`,
-				`src="/dashboard/app.js"`,
-			} {
-				if !strings.Contains(body, want) {
-					t.Errorf("tuning page missing %q", want)
+func TestTuningPage(t *testing.T) {
+	t.Run("TuningPageServesDedicatedApp", func(t *testing.T) {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			rr := getTuningPage(t, "/tuning", method)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("%s status = %d, want 200", method, rr.Code)
+			}
+			if got := rr.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+				t.Errorf("%s content type = %q, want text/html", method, got)
+			}
+			if method == http.MethodGet {
+				body := rr.Body.String()
+				for _, want := range []string{
+					`data-page="tuning"`,
+					`id="tuning-launch-form"`,
+					`id="tuning-runs"`,
+					`id="tuning-results"`,
+					`src="/dashboard/app.js"`,
+				} {
+					if !strings.Contains(body, want) {
+						t.Errorf("tuning page missing %q", want)
+					}
 				}
 			}
 		}
-	}
-}
+	})
+	t.Run("TuningPageRoutingGuards", func(t *testing.T) {
+		if rr := getTuningPage(t, "/tuning/unknown", http.MethodGet); rr.Code != http.StatusNotFound {
+			t.Errorf("unknown path status = %d, want 404", rr.Code)
+		}
+		if rr := getTuningPage(t, "/tuning", http.MethodPost); rr.Code != http.StatusMethodNotAllowed {
+			t.Errorf("POST status = %d, want 405", rr.Code)
+		}
 
-func TestTuningPageRoutingGuards(t *testing.T) {
-	if rr := getTuningPage(t, "/tuning/unknown", http.MethodGet); rr.Code != http.StatusNotFound {
-		t.Errorf("unknown path status = %d, want 404", rr.Code)
-	}
-	if rr := getTuningPage(t, "/tuning", http.MethodPost); rr.Code != http.StatusMethodNotAllowed {
-		t.Errorf("POST status = %d, want 405", rr.Code)
-	}
-
-	shutdownDraining.Store(true)
-	defer shutdownDraining.Store(false)
-	if rr := getTuningPage(t, "/tuning", http.MethodGet); rr.Code != http.StatusServiceUnavailable {
-		t.Errorf("draining status = %d, want 503", rr.Code)
-	}
-}
-
-func TestTuningDiffAndBaselineStates(t *testing.T) {
-	if _, err := exec.LookPath("node"); err != nil {
-		t.Skip("node is unavailable")
-	}
-	const script = `
+		shutdownDraining.Store(true)
+		defer shutdownDraining.Store(false)
+		if rr := getTuningPage(t, "/tuning", http.MethodGet); rr.Code != http.StatusServiceUnavailable {
+			t.Errorf("draining status = %d, want 503", rr.Code)
+		}
+	})
+	t.Run("TuningDiffAndBaselineStates", func(t *testing.T) {
+		if _, err := exec.LookPath("node"); err != nil {
+			t.Skip("node is unavailable")
+		}
+		const script = `
 const assert = require("assert");
 const logic = require("./static/ui/app.js");
 
@@ -152,8 +151,9 @@ confirm = logic.applyConfirmMessage("spot-a", "cand_1", {has_open_position: true
 assert.ok(confirm.includes("open trade"));
 assert.ok(confirm.includes("exits"));
 `
-	cmd := exec.Command("node", "-e", script)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("tuning logic checks failed: %v\n%s", err, output)
-	}
+		cmd := exec.Command("node", "-e", script)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("tuning logic checks failed: %v\n%s", err, output)
+		}
+	})
 }

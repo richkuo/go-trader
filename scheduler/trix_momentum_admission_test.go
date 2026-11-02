@@ -19,7 +19,7 @@ var trixFrozenLadder = []interface{}{
 	map[string]interface{}{"profit_pct": 0.04, "close_fraction": 1.0},
 }
 
-func TestTrixMomentumAdmissionThroughRealLoaders(t *testing.T) {
+func noEdgeCaseTrixMomentumAdmissionThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const ref = "backtest/candidates/trix_momentum_1659/REPORT.md"
 	trix := func(args ...string) map[string]interface{} {
@@ -78,7 +78,7 @@ func TestTrixMomentumAdmissionThroughRealLoaders(t *testing.T) {
 	}
 }
 
-func TestTrixMomentumLegacyV20MigrationNeverGrantsLiveUse(t *testing.T) {
+func noEdgeCaseTrixMomentumLegacyV20MigrationNeverGrantsLiveUse(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	open := noEdgeHLStrategy("hl-trix", trixName, "BTC", "4h", "--mode=live")
 	fallback := noEdgeHLStrategy("hl-bo-trix", "breakout", "ETH", "4h", "--mode=live")
@@ -145,7 +145,7 @@ func assertTrixMomentumPaperEntry(t *testing.T, sc StrategyConfig, wantID string
 	}
 }
 
-func TestTrixMomentumStudyPaperConfigsLoadAsUnacknowledgedPaper(t *testing.T) {
+func noEdgeCaseTrixMomentumStudyPaperConfigsLoadAsUnacknowledgedPaper(t *testing.T) {
 	for _, tf := range []string{"1h", "4h"} {
 		t.Run(tf, func(t *testing.T) {
 			src := filepath.Join("..", "backtest", "candidates", "trix_momentum_1659", "paper_parity_"+tf+".json")
@@ -176,7 +176,7 @@ func TestTrixMomentumStudyPaperConfigsLoadAsUnacknowledgedPaper(t *testing.T) {
 	}
 }
 
-func TestTrixMomentumOperatorAddPathsCreateExplicitPaperEntries(t *testing.T) {
+func noEdgeCaseTrixMomentumOperatorAddPathsCreateExplicitPaperEntries(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry(trixName, "hyperliquid", "btc")
 	if err != nil || id != "hl-trix-btc" {

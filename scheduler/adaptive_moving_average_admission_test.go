@@ -12,7 +12,7 @@ import (
 
 const amaName = "adaptive_moving_average"
 
-func TestAdaptiveMovingAverageAdmissionThroughRealLoaders(t *testing.T) {
+func noEdgeCaseAdaptiveMovingAverageAdmissionThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const ref = "backtest/candidates/adaptive_moving_average_1641/REPORT.md"
 	ama := func(args ...string) map[string]interface{} {
@@ -92,7 +92,7 @@ func TestAdaptiveMovingAverageAdmissionThroughRealLoaders(t *testing.T) {
 	}
 }
 
-func TestAdaptiveMovingAverageLegacyV20MigrationNeverGrantsLiveUse(t *testing.T) {
+func noEdgeCaseAdaptiveMovingAverageLegacyV20MigrationNeverGrantsLiveUse(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	open := noEdgeHLStrategy("hl-ama", amaName, "BTC", "4h", "--mode=live")
 	fallback := noEdgeHLStrategy("hl-bo-ama", "breakout", "ETH", "4h", "--mode=live")
@@ -153,7 +153,7 @@ func assertAdaptiveMovingAveragePaperEntry(t *testing.T, sc StrategyConfig, want
 	}
 }
 
-func TestAdaptiveMovingAverageStudyPaperConfigsLoadAsUnacknowledgedPaper(t *testing.T) {
+func noEdgeCaseAdaptiveMovingAverageStudyPaperConfigsLoadAsUnacknowledgedPaper(t *testing.T) {
 	for _, tf := range []string{"1h", "4h"} {
 		t.Run(tf, func(t *testing.T) {
 			src := filepath.Join("..", "backtest", "candidates", "adaptive_moving_average_1641", "paper_parity_"+tf+".json")
@@ -184,7 +184,7 @@ func TestAdaptiveMovingAverageStudyPaperConfigsLoadAsUnacknowledgedPaper(t *test
 	}
 }
 
-func TestAdaptiveMovingAverageOperatorAddPathsCreateExplicitPaperEntries(t *testing.T) {
+func noEdgeCaseAdaptiveMovingAverageOperatorAddPathsCreateExplicitPaperEntries(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry(amaName, "hyperliquid", "btc")
 	if err != nil || id != "hl-ama-btc" {

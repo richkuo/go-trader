@@ -48,7 +48,7 @@ func calendarLoadRoot(t *testing.T, root map[string]interface{}, sc map[string]i
 	return cfg, loadErr
 }
 
-func TestCalendarConditionedEntryRefusesATrainingSpanThatFitsTheCheckFrame(t *testing.T) {
+func noEdgeCaseCalendarConditionedEntryRefusesATrainingSpanThatFitsTheCheckFrame(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const missing = "never supply bars_held"
 	daily := calendarHL("hl-cce-eth", "1d", "--mode=paper")
@@ -84,7 +84,7 @@ func TestCalendarConditionedEntryRefusesATrainingSpanThatFitsTheCheckFrame(t *te
 	}
 }
 
-func TestCalendarConditionedEntryAdmissionThroughTheConfigLoaders(t *testing.T) {
+func noEdgeCaseCalendarConditionedEntryAdmissionThroughTheConfigLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	paper, err := calendarLoad(t, calendarHL("hl-cce-eth", "1h", "--mode=paper"))
 	if err != nil {
@@ -124,7 +124,7 @@ func TestCalendarConditionedEntryAdmissionThroughTheConfigLoaders(t *testing.T) 
 	}
 }
 
-func TestCalendarConditionedEntryNeedsClosedBarsAndTheMatchingCadence(t *testing.T) {
+func noEdgeCaseCalendarConditionedEntryNeedsClosedBarsAndTheMatchingCadence(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	off := calendarHL("hl-cce-eth", "1h", "--mode=paper")
 	off["closed_bar_decisions"] = false
@@ -141,7 +141,7 @@ func TestCalendarConditionedEntryNeedsClosedBarsAndTheMatchingCadence(t *testing
 	}
 }
 
-func TestCalendarConditionedEntryStudyParityConfigsLoadAsExplicitPaper(t *testing.T) {
+func noEdgeCaseCalendarConditionedEntryStudyParityConfigsLoadAsExplicitPaper(t *testing.T) {
 	dir := filepath.Join("..", "backtest", "candidates", "calendar_conditioned_entry_1653")
 	for tf, want := range map[string]struct {
 		interval int64
@@ -183,7 +183,7 @@ func TestCalendarConditionedEntryStudyParityConfigsLoadAsExplicitPaper(t *testin
 	}
 }
 
-func TestV20NoEdgeMigrationNeverStampsCalendarConditionedEntry(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationNeverStampsCalendarConditionedEntry(t *testing.T) {
 	open := noEdgeHLStrategy("hl-cce-open", calendarEntryName, "ETH", "1h", "--mode=live")
 	fallback := noEdgeHLStrategy("hl-cce-close", "breakout", "ETH", "1h", "--mode=live")
 	fallback["close_strategy"] = map[string]interface{}{"name": calendarEntryName}
@@ -207,7 +207,7 @@ func TestV20NoEdgeMigrationNeverStampsCalendarConditionedEntry(t *testing.T) {
 	}
 }
 
-func TestCalendarConditionedEntryOperatorAddCreatesALoadableExplicitPaperEntry(t *testing.T) {
+func noEdgeCaseCalendarConditionedEntryOperatorAddCreatesALoadableExplicitPaperEntry(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry(calendarEntryName, "hyperliquid", "eth")
 	if err != nil || id != "hl-cce-eth" {

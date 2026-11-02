@@ -248,7 +248,7 @@ func useEntryTradeRecorder(t *testing.T, store *StateStore) {
 	t.Cleanup(func() { tradeRecorder = prev })
 }
 
-func TestClosedBarEntryPaperStopOutHoldsSameCandleAtEveryCadence(t *testing.T) {
+func closedBarEntryCaseClosedBarEntryPaperStopOutHoldsSameCandleAtEveryCadence(t *testing.T) {
 	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	cases := []struct {
 		name    string
@@ -334,7 +334,7 @@ func TestClosedBarEntryPaperStopOutHoldsSameCandleAtEveryCadence(t *testing.T) {
 	}
 }
 
-func TestClosedBarEntryImmediateOpeningStopConsumesCandle(t *testing.T) {
+func closedBarEntryCaseClosedBarEntryImmediateOpeningStopConsumesCandle(t *testing.T) {
 	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	sc := entryTestHLStrategy("hl-cb-stop", "paper")
 	pct := 0.001
@@ -369,7 +369,7 @@ func TestClosedBarEntryImmediateOpeningStopConsumesCandle(t *testing.T) {
 	}
 }
 
-func TestClosedBarEntryReversalClosesWhileOpeningLegWaits(t *testing.T) {
+func closedBarEntryCaseClosedBarEntryReversalClosesWhileOpeningLegWaits(t *testing.T) {
 	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	sc := entryTestHLStrategy("hl-cb-rev", "paper")
 	env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
@@ -418,7 +418,7 @@ func TestClosedBarEntryReversalClosesWhileOpeningLegWaits(t *testing.T) {
 	}
 }
 
-func TestClosedBarEntryShortToLongReversalHeldStillCloses(t *testing.T) {
+func closedBarEntryCaseClosedBarEntryShortToLongReversalHeldStillCloses(t *testing.T) {
 	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	sc := entryTestHLStrategy("hl-cb-rev-short", "paper")
 	env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
@@ -445,7 +445,7 @@ func TestClosedBarEntryShortToLongReversalHeldStillCloses(t *testing.T) {
 	}
 }
 
-func TestClosedBarEntryScaleInSharesTheSideAllowance(t *testing.T) {
+func closedBarEntryCaseClosedBarEntryScaleInSharesTheSideAllowance(t *testing.T) {
 	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	sc := entryTestHLStrategy("hl-cb-add", "paper")
 	sc.AllowScaleIn = true
@@ -492,7 +492,7 @@ func TestClosedBarEntryScaleInSharesTheSideAllowance(t *testing.T) {
 	}
 }
 
-func TestClosedBarEntryRejectsUnusableDecisionIdentity(t *testing.T) {
+func closedBarEntryCaseClosedBarEntryRejectsUnusableDecisionIdentity(t *testing.T) {
 	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	sc := entryTestHLStrategy("hl-cb-id", "paper")
 	env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
@@ -537,7 +537,7 @@ func TestClosedBarEntryRejectsUnusableDecisionIdentity(t *testing.T) {
 	}
 }
 
-func TestClosedBarEntryUpgradeBootstrapHoldsFirstObservedCandle(t *testing.T) {
+func closedBarEntryCaseClosedBarEntryUpgradeBootstrapHoldsFirstObservedCandle(t *testing.T) {
 	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	sc := entryTestHLStrategy("hl-cb-boot", "paper")
 	cfg := newEntryTestConfig(t, sc)
@@ -578,7 +578,7 @@ func TestClosedBarEntryUpgradeBootstrapHoldsFirstObservedCandle(t *testing.T) {
 	}
 }
 
-func TestClosedBarEntryPartitionsAndAliasesKeepSeparateAllowances(t *testing.T) {
+func closedBarEntryCaseClosedBarEntryPartitionsAndAliasesKeepSeparateAllowances(t *testing.T) {
 	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	dir := t.TempDir()
 	live := entryTestHLStrategy("hl-live", "live")
@@ -815,7 +815,7 @@ func (e *entryTestEnv) dispatchHLLive(sc StrategyConfig, signal int, price float
 	return adm
 }
 
-func TestClosedBarLiveEntrySavesSubmissionBeforeTheOrderAndCommitsWithTheBook(t *testing.T) {
+func closedBarEntryCaseClosedBarLiveEntrySavesSubmissionBeforeTheOrderAndCommitsWithTheBook(t *testing.T) {
 	sc := entryTestHLStrategy("hl-live", "live")
 	env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
 	useEntryTradeRecorder(t, env.store)
@@ -847,7 +847,7 @@ func TestClosedBarLiveEntrySavesSubmissionBeforeTheOrderAndCommitsWithTheBook(t 
 	}
 }
 
-func TestClosedBarLiveEntryPartialAndImmediatelyStoppedFillsConsumeOnce(t *testing.T) {
+func closedBarEntryCaseClosedBarLiveEntryPartialAndImmediatelyStoppedFillsConsumeOnce(t *testing.T) {
 	cases := []struct {
 		name     string
 		respond  func([]string) (*HyperliquidExecuteResult, error)
@@ -892,7 +892,7 @@ func TestClosedBarLiveEntryPartialAndImmediatelyStoppedFillsConsumeOnce(t *testi
 	}
 }
 
-func TestClosedBarLiveEntryRejectionReleasesAndUnknownHoldsWithoutResend(t *testing.T) {
+func closedBarEntryCaseClosedBarLiveEntryRejectionReleasesAndUnknownHoldsWithoutResend(t *testing.T) {
 	sc := entryTestHLStrategy("hl-live", "live")
 	env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
 	venue := &entryLiveVenue{t: t, env: env}
@@ -990,7 +990,7 @@ func backdateEntryDeadlines(t *testing.T, env *entryTestEnv, id string) {
 	}
 }
 
-func TestClosedBarLiveEntryRecoveryNamesTheUnresolvedAttemptAtStartupAndBooksProvenFillOnce(t *testing.T) {
+func closedBarEntryCaseClosedBarLiveEntryRecoveryNamesTheUnresolvedAttemptAtStartupAndBooksProvenFillOnce(t *testing.T) {
 	env, sc := entryTestUnknownAttempt(t)
 	lines := entryGuardStartupLines(env.state)
 	sort.Strings(lines)
@@ -1044,7 +1044,7 @@ func TestClosedBarLiveEntryRecoveryNamesTheUnresolvedAttemptAtStartupAndBooksPro
 	}
 }
 
-func TestClosedBarLiveEntryRecoveryKeepsAmbiguousEvidenceHeld(t *testing.T) {
+func closedBarEntryCaseClosedBarLiveEntryRecoveryKeepsAmbiguousEvidenceHeld(t *testing.T) {
 	cases := []struct {
 		name  string
 		res   *entryRecoveryResult
@@ -1088,7 +1088,7 @@ func TestClosedBarLiveEntryRecoveryKeepsAmbiguousEvidenceHeld(t *testing.T) {
 	}
 }
 
-func TestClosedBarLiveEntryReservedRowIsReleasedWithoutAVenueQuery(t *testing.T) {
+func closedBarEntryCaseClosedBarLiveEntryReservedRowIsReleasedWithoutAVenueQuery(t *testing.T) {
 	sc := entryTestHLStrategy("hl-live", "live")
 	env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
 	at := entryTestBar(1).Add(10 * time.Second)
@@ -1108,7 +1108,7 @@ func TestClosedBarLiveEntryReservedRowIsReleasedWithoutAVenueQuery(t *testing.T)
 	}
 }
 
-func TestClosedBarLiveEntrySettlementCommitFailureKeepsTheAttemptHeld(t *testing.T) {
+func closedBarEntryCaseClosedBarLiveEntrySettlementCommitFailureKeepsTheAttemptHeld(t *testing.T) {
 	sc := entryTestHLStrategy("hl-live", "live")
 	env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
 	useEntryTradeRecorder(t, env.store)
@@ -1162,7 +1162,7 @@ func TestClosedBarLiveEntrySettlementCommitFailureKeepsTheAttemptHeld(t *testing
 	}
 }
 
-func TestClosedBarLiveEntryReplayEventsPublishOnceAfterCommit(t *testing.T) {
+func closedBarEntryCaseClosedBarLiveEntryReplayEventsPublishOnceAfterCommit(t *testing.T) {
 	sc := entryTestHLStrategy("hl-live", "live")
 	sc.ReplaySharing = ReplaySharingLiveMirror
 	cfg := newEntryTestConfig(t, sc)
@@ -1276,7 +1276,7 @@ func (e *entryTestEnv) dispatchOKX(sc StrategyConfig, signal int, price float64,
 	return adm
 }
 
-func TestClosedBarOKXLiveEntryNeedsAConfirmedFillAndRecovers(t *testing.T) {
+func closedBarEntryCaseClosedBarOKXLiveEntryNeedsAConfirmedFillAndRecovers(t *testing.T) {
 	for _, instType := range []string{"spot", "swap"} {
 		t.Run(instType, func(t *testing.T) {
 			typ := "spot"
@@ -1334,7 +1334,7 @@ func TestClosedBarOKXLiveEntryNeedsAConfirmedFillAndRecovers(t *testing.T) {
 	}
 }
 
-func TestClosedBarOKXLiveEntryConfirmedFillBooksAndPerpsReversalCloseIsReduceOnly(t *testing.T) {
+func closedBarEntryCaseClosedBarOKXLiveEntryConfirmedFillBooksAndPerpsReversalCloseIsReduceOnly(t *testing.T) {
 	sc := StrategyConfig{ID: "okx-live", Type: "perps", Platform: "okx", Script: "shared_scripts/check_okx.py",
 		Args: []string{"breakout", "BTC", "1h", "--mode=live", "--inst-type=swap"}, ClosedBarDecisions: true,
 		Direction: DirectionBoth, Capital: 1000, Leverage: 1, SizingLeverage: 1}
@@ -1372,7 +1372,7 @@ func TestClosedBarOKXLiveEntryConfirmedFillBooksAndPerpsReversalCloseIsReduceOnl
 	}
 }
 
-func TestClosedBarBinanceUSPaperSpotEntryUsesTheSameAllowance(t *testing.T) {
+func closedBarEntryCaseClosedBarBinanceUSPaperSpotEntryUsesTheSameAllowance(t *testing.T) {
 	sc := StrategyConfig{ID: "bus-cb", Type: "spot", Platform: "binanceus", Script: "shared_scripts/check_strategy.py",
 		Args: []string{"breakout", "BTC/USDT", "1h", "--mode=paper"}, ClosedBarDecisions: true, Capital: 1000}
 	env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
@@ -1457,7 +1457,7 @@ func entryTestScaleInFill() *entryRecoveryResult {
 	return &entryRecoveryResult{Platform: "hyperliquid", Order: &entryRecoveryOrder{Found: true, Status: "filled", OrderID: "903", OrigSz: 0.2, ExecutedSz: 0.2, Terminal: true, FillQty: 0.2, FillNotional: 20.3, FillFee: 0.01, FillCount: 1, FillAvgPx: 101.5, FillsComplete: true}}
 }
 
-func TestClosedBarLiveScaleInRecoveryAfterAccountSyncBooksTheAddOnce(t *testing.T) {
+func closedBarEntryCaseClosedBarLiveScaleInRecoveryAfterAccountSyncBooksTheAddOnce(t *testing.T) {
 	env, sc := entryTestUnknownScaleIn(t)
 	env.hlAccountSync(sc, 0.6, 100.5)
 	if qty, _ := env.position(sc.ID, "BTC"); qty != 0.6 {
@@ -1503,7 +1503,7 @@ func TestClosedBarLiveScaleInRecoveryAfterAccountSyncBooksTheAddOnce(t *testing.
 	}
 }
 
-func TestClosedBarLiveScaleInRecoveryHoldsWhenTheBookMovedOtherwise(t *testing.T) {
+func closedBarEntryCaseClosedBarLiveScaleInRecoveryHoldsWhenTheBookMovedOtherwise(t *testing.T) {
 	env, sc := entryTestUnknownScaleIn(t)
 	env.hlAccountSync(sc, 0.5, 100.5)
 	stub := &entryRecoveryStub{res: entryTestScaleInFill()}
@@ -1531,7 +1531,7 @@ func TestClosedBarLiveScaleInRecoveryHoldsWhenTheBookMovedOtherwise(t *testing.T
 	}
 }
 
-func TestClosedBarOKXLiveEntryVenueDeadlineGatesRelease(t *testing.T) {
+func closedBarEntryCaseClosedBarOKXLiveEntryVenueDeadlineGatesRelease(t *testing.T) {
 	sc := StrategyConfig{ID: "okx-live", Type: "perps", Platform: "okx", Script: "shared_scripts/check_okx.py",
 		Args: []string{"breakout", "BTC", "1h", "--mode=live", "--inst-type=swap"}, ClosedBarDecisions: true,
 		Direction: DirectionLong, Capital: 1000, Leverage: 1, SizingLeverage: 1}
@@ -1621,4 +1621,47 @@ func TestClosedBarOKXLiveEntryVenueDeadlineGatesRelease(t *testing.T) {
 			t.Fatalf("an existing order was released: %v", got)
 		}
 	})
+}
+
+func TestClosedBarEntryPaperAllowance(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"PaperStopOutHoldsSameCandleAtEveryCadence", closedBarEntryCaseClosedBarEntryPaperStopOutHoldsSameCandleAtEveryCadence},
+		{"ImmediateOpeningStopConsumesCandle", closedBarEntryCaseClosedBarEntryImmediateOpeningStopConsumesCandle},
+		{"ReversalClosesWhileOpeningLegWaits", closedBarEntryCaseClosedBarEntryReversalClosesWhileOpeningLegWaits},
+		{"ShortToLongReversalHeldStillCloses", closedBarEntryCaseClosedBarEntryShortToLongReversalHeldStillCloses},
+		{"ScaleInSharesTheSideAllowance", closedBarEntryCaseClosedBarEntryScaleInSharesTheSideAllowance},
+		{"RejectsUnusableDecisionIdentity", closedBarEntryCaseClosedBarEntryRejectsUnusableDecisionIdentity},
+		{"UpgradeBootstrapHoldsFirstObservedCandle", closedBarEntryCaseClosedBarEntryUpgradeBootstrapHoldsFirstObservedCandle},
+		{"PartitionsAndAliasesKeepSeparateAllowances", closedBarEntryCaseClosedBarEntryPartitionsAndAliasesKeepSeparateAllowances},
+		{"BinanceUSPaperSpotEntryUsesTheSameAllowance", closedBarEntryCaseClosedBarBinanceUSPaperSpotEntryUsesTheSameAllowance},
+	} {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestClosedBarLiveEntryAttempts(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"SavesSubmissionBeforeTheOrderAndCommitsWithTheBook", closedBarEntryCaseClosedBarLiveEntrySavesSubmissionBeforeTheOrderAndCommitsWithTheBook},
+		{"PartialAndImmediatelyStoppedFillsConsumeOnce", closedBarEntryCaseClosedBarLiveEntryPartialAndImmediatelyStoppedFillsConsumeOnce},
+		{"RejectionReleasesAndUnknownHoldsWithoutResend", closedBarEntryCaseClosedBarLiveEntryRejectionReleasesAndUnknownHoldsWithoutResend},
+		{"RecoveryNamesTheUnresolvedAttemptAtStartupAndBooksProvenFillOnce", closedBarEntryCaseClosedBarLiveEntryRecoveryNamesTheUnresolvedAttemptAtStartupAndBooksProvenFillOnce},
+		{"RecoveryKeepsAmbiguousEvidenceHeld", closedBarEntryCaseClosedBarLiveEntryRecoveryKeepsAmbiguousEvidenceHeld},
+		{"ReservedRowIsReleasedWithoutAVenueQuery", closedBarEntryCaseClosedBarLiveEntryReservedRowIsReleasedWithoutAVenueQuery},
+		{"SettlementCommitFailureKeepsTheAttemptHeld", closedBarEntryCaseClosedBarLiveEntrySettlementCommitFailureKeepsTheAttemptHeld},
+		{"ReplayEventsPublishOnceAfterCommit", closedBarEntryCaseClosedBarLiveEntryReplayEventsPublishOnceAfterCommit},
+		{"ScaleInRecoveryAfterAccountSyncBooksTheAddOnce", closedBarEntryCaseClosedBarLiveScaleInRecoveryAfterAccountSyncBooksTheAddOnce},
+		{"ScaleInRecoveryHoldsWhenTheBookMovedOtherwise", closedBarEntryCaseClosedBarLiveScaleInRecoveryHoldsWhenTheBookMovedOtherwise},
+	} {
+		t.Run(tc.name, tc.run)
+	}
+}
+
+func TestClosedBarOKXLiveEntry(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"NeedsAConfirmedFillAndRecovers", closedBarEntryCaseClosedBarOKXLiveEntryNeedsAConfirmedFillAndRecovers},
+		{"ConfirmedFillBooksAndPerpsReversalCloseIsReduceOnly", closedBarEntryCaseClosedBarOKXLiveEntryConfirmedFillBooksAndPerpsReversalCloseIsReduceOnly},
+		{"VenueDeadlineGatesRelease", closedBarEntryCaseClosedBarOKXLiveEntryVenueDeadlineGatesRelease},
+	} {
+		t.Run(tc.name, tc.run)
+	}
 }

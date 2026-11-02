@@ -83,7 +83,7 @@ func batchOK(ids ...string) *HyperliquidBatchResult {
 	return out
 }
 
-func TestSharedStateFailureLeavesMembersAsMisses(t *testing.T) {
+func hlBatchCaseSharedStateFailureLeavesMembersAsMisses(t *testing.T) {
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
 	inputs, cfg := hlBatchTwoMemberInput(t)
@@ -105,7 +105,7 @@ func TestSharedStateFailureLeavesMembersAsMisses(t *testing.T) {
 	}
 }
 
-func TestMissingOrDuplicateSlotLeavesThatMemberAMiss(t *testing.T) {
+func hlBatchCaseMissingOrDuplicateSlotLeavesThatMemberAMiss(t *testing.T) {
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
 	inputs, cfg := hlBatchTwoMemberInput(t)
@@ -124,7 +124,7 @@ func TestMissingOrDuplicateSlotLeavesThatMemberAMiss(t *testing.T) {
 	}
 }
 
-func TestFailedSlotIsNotResurrectedByThePricePath(t *testing.T) {
+func hlBatchCaseFailedSlotIsNotResurrectedByThePricePath(t *testing.T) {
 	resetFailureTrackers(t)
 	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h")
 	posCtx := PositionCtx{}
@@ -140,7 +140,7 @@ func TestFailedSlotIsNotResurrectedByThePricePath(t *testing.T) {
 	}
 }
 
-func TestRunHyperliquidCheckRefusesToDecideOnAFailedSlot(t *testing.T) {
+func hlBatchCaseRunHyperliquidCheckRefusesToDecideOnAFailedSlot(t *testing.T) {
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
 	inputs, cfg := hlBatchTwoMemberInput(t)
@@ -171,7 +171,7 @@ func TestRunHyperliquidCheckRefusesToDecideOnAFailedSlot(t *testing.T) {
 	}
 }
 
-func TestRunHyperliquidCheckRejectsAStaleCachedSlot(t *testing.T) {
+func hlBatchCaseRunHyperliquidCheckRejectsAStaleCachedSlot(t *testing.T) {
 	resetFailureTrackers(t)
 	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h")
 	prices := map[string]float64{"BTC": 25_000}
@@ -194,7 +194,7 @@ func TestRunHyperliquidCheckRejectsAStaleCachedSlot(t *testing.T) {
 	_ = prices
 }
 
-func TestReplayChokePointsSeeIdenticalResults(t *testing.T) {
+func hlBatchCaseReplayChokePointsSeeIdenticalResults(t *testing.T) {
 	resetFailureTrackers(t)
 	paper := hlBatchStrategy("hl-mirror", "breakout", "BTC", "1h", func(sc *StrategyConfig) {
 		sc.ReplaySharing = ReplaySharingLiveMirror
@@ -263,5 +263,18 @@ func TestReplayChokePointsSeeIdenticalResults(t *testing.T) {
 				t.Fatalf("replay suppression batched=%v direct=%v, want %v", gotBatch, gotDirect, tc.suppress)
 			}
 		})
+	}
+}
+
+func TestHLBatchSlotFailuresAndReplayParity(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"SharedStateFailureLeavesMembersAsMisses", hlBatchCaseSharedStateFailureLeavesMembersAsMisses},
+		{"MissingOrDuplicateSlotLeavesThatMemberAMiss", hlBatchCaseMissingOrDuplicateSlotLeavesThatMemberAMiss},
+		{"FailedSlotIsNotResurrectedByThePricePath", hlBatchCaseFailedSlotIsNotResurrectedByThePricePath},
+		{"RunHyperliquidCheckRefusesToDecideOnAFailedSlot", hlBatchCaseRunHyperliquidCheckRefusesToDecideOnAFailedSlot},
+		{"RunHyperliquidCheckRejectsAStaleCachedSlot", hlBatchCaseRunHyperliquidCheckRejectsAStaleCachedSlot},
+		{"ReplayChokePointsSeeIdenticalResults", hlBatchCaseReplayChokePointsSeeIdenticalResults},
+	} {
+		t.Run(tc.name, tc.run)
 	}
 }

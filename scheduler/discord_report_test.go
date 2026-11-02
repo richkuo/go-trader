@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestBuildIssueRequest(t *testing.T) {
+func discordReportCaseBuildIssueRequest(t *testing.T) {
 	req := buildIssueRequest("  Bug in /status  ", "It crashes\n", "bug", "alice (Discord ID 42)")
 	if req.Title != "Bug in /status" {
 		t.Fatalf("title not trimmed: %q", req.Title)
@@ -29,7 +29,7 @@ func TestBuildIssueRequest(t *testing.T) {
 	}
 }
 
-func TestBuildIssueRequestNoLabelNoReporter(t *testing.T) {
+func discordReportCaseBuildIssueRequestNoLabelNoReporter(t *testing.T) {
 	req := buildIssueRequest("t", "b", "  ", "")
 	if req.Labels != nil {
 		t.Fatalf("expected no labels, got %v", req.Labels)
@@ -39,7 +39,7 @@ func TestBuildIssueRequestNoLabelNoReporter(t *testing.T) {
 	}
 }
 
-func TestCreateGitHubIssueSuccess(t *testing.T) {
+func discordReportCaseCreateGitHubIssueSuccess(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST, got %s", r.Method)
@@ -79,7 +79,7 @@ func TestCreateGitHubIssueSuccess(t *testing.T) {
 	}
 }
 
-func TestCreateGitHubIssueErrorStatus(t *testing.T) {
+func discordReportCaseCreateGitHubIssueErrorStatus(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = io.WriteString(w, `{"message":"Bad credentials"}`)
@@ -100,7 +100,7 @@ func TestCreateGitHubIssueErrorStatus(t *testing.T) {
 	}
 }
 
-func TestReportCommandIsOwnerDMGated(t *testing.T) {
+func discordReportCaseReportCommandIsOwnerDMGated(t *testing.T) {
 	if ok, _ := authorizeCommand("report-an-issue", "intruder", "", "owner"); ok {
 		t.Fatal("report must reject non-owner")
 	}
@@ -112,7 +112,7 @@ func TestReportCommandIsOwnerDMGated(t *testing.T) {
 	}
 }
 
-func TestReportTokenResolution(t *testing.T) {
+func discordReportCaseReportTokenResolution(t *testing.T) {
 	t.Setenv("GO_TRADER_GITHUB_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
 	c := DiscordConfig{ReportGitHubToken: "cfgtok"}
@@ -126,5 +126,18 @@ func TestReportTokenResolution(t *testing.T) {
 	t.Setenv("GO_TRADER_GITHUB_TOKEN", "primary")
 	if got := c.reportToken(); got != "primary" {
 		t.Fatalf("GO_TRADER_GITHUB_TOKEN should win, got %q", got)
+	}
+}
+
+func TestDiscordReportCommand(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"BuildIssueRequest", discordReportCaseBuildIssueRequest},
+		{"BuildIssueRequestNoLabelNoReporter", discordReportCaseBuildIssueRequestNoLabelNoReporter},
+		{"CreateGitHubIssueSuccess", discordReportCaseCreateGitHubIssueSuccess},
+		{"CreateGitHubIssueErrorStatus", discordReportCaseCreateGitHubIssueErrorStatus},
+		{"ReportCommandIsOwnerDMGated", discordReportCaseReportCommandIsOwnerDMGated},
+		{"ReportTokenResolution", discordReportCaseReportTokenResolution},
+	} {
+		t.Run(tc.name, tc.run)
 	}
 }
