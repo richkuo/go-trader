@@ -410,6 +410,9 @@ def _assert_cli_by_name_threads_windows_spec_to_backtester(monkeypatch):
     seen = {}
 
     class SpyBacktester:
+        commission_pct = 0.0
+        slippage_pct = 0.0
+
         def __init__(self, *args, regime_windows_spec=None, **kwargs):
             seen["regime_windows_spec"] = regime_windows_spec
 
@@ -500,6 +503,9 @@ def _assert_cli_composite_label_reaches_backtester_with_spec(monkeypatch):
     seen = {}
 
     class SpyBacktester:
+        commission_pct = 0.0
+        slippage_pct = 0.0
+
         def __init__(self, *args, regime_windows_spec=None, allowed_regimes=None, **kwargs):
             seen["regime_windows_spec"] = regime_windows_spec
             seen["allowed_regimes"] = allowed_regimes
@@ -559,6 +565,9 @@ def _spy_backtester_seen(monkeypatch, df):
     seen = {}
 
     class SpyBacktester:
+        commission_pct = 0.0
+        slippage_pct = 0.0
+
         def __init__(self, *args, regime_windows_spec=None, allowed_regimes=None, **kwargs):
             seen["regime_windows_spec"] = regime_windows_spec
             seen["allowed_regimes"] = allowed_regimes

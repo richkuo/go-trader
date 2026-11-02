@@ -117,10 +117,19 @@ def _plan_label_series(feature_frame: pd.DataFrame, plan: dict) -> dict:
 def config_from_live_config(config_path: str, strategy_id: str,
                             platform: str = "",
                             comparison_mode: Optional[str] = None) -> ParityConfig:
-    from run_backtest import live_stop_kwargs, load_strategy_config
+    from run_backtest import (backtest_fee_platform, live_stop_kwargs,
+                              load_strategy_config, platform_selection_warning)
     loaded = load_strategy_config(config_path, strategy_id,
                                   inject_user_defaults=True,
                                   comparison_mode=comparison_mode)
+    config_platform = str(loaded.get("platform") or "")
+    config_type = str(loaded.get("strategy_type") or "")
+    if platform:
+        warning = platform_selection_warning(config_platform, config_type, platform)
+        if warning:
+            print(warning, file=sys.stderr)
+    else:
+        platform = backtest_fee_platform(config_platform, config_type)
     with open(config_path) as fh:
         raw = json.load(fh)
     entry = next(
@@ -149,8 +158,7 @@ def config_from_live_config(config_path: str, strategy_id: str,
         strategy_name=open_ref["name"],
         params=dict(open_ref.get("params") or {}),
         registry="futures" if stype in ("perps", "futures", "manual") else "spot",
-        platform=platform or ("hyperliquid" if stype in ("perps", "manual")
-                              else "binanceus"),
+        platform=platform,
         symbol=symbol,
         timeframe=timeframe,
         close_refs=loaded.get("close_strategies") or None,
@@ -1006,9 +1014,18 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--registry", choices=["spot", "futures"],
                         default="spot")
     parser.add_argument("--platform", default=None,
-                        help="Fee platform for --fills (ad-hoc default "
-                             "binanceus; --config mode auto-detects from the "
-                             "strategy type unless explicitly set)")
+                        choices=["binanceus", "hyperliquid", "robinhood",
+                                 "luno", "okx", "okx-perps"],
+                        help="Platform for --config runs and --fills. "
+                             "Ad-hoc default binanceus. --config default: "
+                             "the strategy's "
+                             "platform and type (okx perps -> okx-perps); "
+                             "options, futures, non-Hyperliquid manual and "
+                             "unknown platforms refuse automatic selection "
+                             "(exit 2). An explicit value is a research proxy "
+                             "that also selects funding and Hyperliquid tier "
+                             "behavior and warns when it differs from the "
+                             "automatic key or automatic selection refuses")
     parser.add_argument("--close", action="append", default=[],
                         help="Close ref: name or name:{json params} "
                              "(repeatable; single ref since #842)")
