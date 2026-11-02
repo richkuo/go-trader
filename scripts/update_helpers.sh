@@ -587,10 +587,24 @@ for line in sorted(set(blockers)):
 sys.exit(1 if blockers else 0)
 '
 
+UPDATE_RH_IDENTITY_CAPABILITY="go-trader-capability:robinhood-coin-identity-v1"
+
+update_robinhood_identity_binary_capability() {
+    local bin_path="$1" grep_rc=0
+    [[ -n "$bin_path" && -f "$bin_path" && -r "$bin_path" ]] || return 2
+    LC_ALL=C grep -aqF -- "$UPDATE_RH_IDENTITY_CAPABILITY" "$bin_path" || grep_rc=$?
+    case "$grep_rc" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
 update_robinhood_identity_rollback_check() {
+    local bin_path="${1:-}"
     local cfg_path="${GO_TRADER_UPDATE_CONFIG:-scheduler/config.json}"
     local -a db_paths=()
-    local line out rc=0
+    local line out rc=0 cap_rc=0
     [[ -f "$cfg_path" ]] || return 0
     while IFS= read -r line; do
         [[ -n "$line" ]] && db_paths+=("$line")
@@ -599,11 +613,23 @@ update_robinhood_identity_rollback_check() {
     if [[ "$rc" == "0" ]]; then
         return 0
     fi
+    if [[ "$rc" == "1" ]]; then
+        update_robinhood_identity_binary_capability "$bin_path" || cap_rc=$?
+        if [[ "$cap_rc" == "0" ]]; then
+            echo "[update] recovery: Robinhood coin identity: the restored binary ${bin_path} reads the trimmed uppercase coin identity (#1908), so the spelling differences below do not block the start" >&2
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && echo "[update] recovery: Robinhood coin identity (not blocking): $line" >&2
+            done <<<"$out"
+            return 0
+        fi
+    fi
     while IFS= read -r line; do
         [[ -n "$line" ]] && echo "[update] recovery: Robinhood coin identity: $line" >&2
     done <<<"$out"
-    if [[ "$rc" == "1" ]]; then
-        echo "[update] recovery: ACTION REQUIRED: the previous binary reads Robinhood books by the exact configured coin spelling, so it would see these held books as flat. Write the uppercase coin shown above into args[1] for each named strategy in the config, then start the service (#1908)" >&2
+    if [[ "$rc" == "1" && "$cap_rc" == "1" ]]; then
+        echo "[update] recovery: ACTION REQUIRED: the restored binary ${bin_path} predates the Robinhood coin identity rule (#1908) and reads Robinhood books by the exact configured coin spelling, so it would see these held books as flat. Write the uppercase coin shown above into args[1] for each named strategy in the config, then start the service (#1908)" >&2
+    elif [[ "$rc" == "1" ]]; then
+        echo "[update] recovery: ACTION REQUIRED: could not read the restored binary ${bin_path:-<none>} to confirm that it reads the trimmed uppercase Robinhood coin identity (#1908). An older binary reads Robinhood books by the exact configured coin spelling and would see these held books as flat. Write the uppercase coin shown above into args[1] for each named strategy in the config, then start the service (#1908)" >&2
     else
         echo "[update] recovery: ACTION REQUIRED: the Robinhood coin identity check could not read the config or a state file; check them by hand before starting the previous binary (#1908)" >&2
     fi

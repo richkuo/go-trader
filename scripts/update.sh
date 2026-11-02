@@ -917,7 +917,7 @@ update_exit_coordinator() {
         fi
 
         if [[ "$restart_attempted" == "1" ]]; then
-            if update_robinhood_identity_rollback_check; then
+            if update_robinhood_identity_rollback_check "$repo_root/go-trader"; then
                 stage_rh_identity="ok"
             else
                 stage_rh_identity="blocked"
@@ -929,7 +929,7 @@ update_exit_coordinator() {
             echo "[update] recovery: service=blocked (probe or post-probe ownership failed)" >&2
         elif [[ "$stage_rh_identity" == "blocked" ]]; then
             stage_recovery_service="blocked"
-            echo "[update] recovery: service=blocked (Robinhood coin spelling in the config differs from the state files)" >&2
+            echo "[update] recovery: service=blocked (Robinhood coin spelling in the config differs from the state files and the restored binary does not prove the #1908 coin identity rule)" >&2
         elif [[ "$restart_attempted" == "1" ]]; then
             if start_and_verify_recovered_service; then
                 stage_recovery_service="ok"

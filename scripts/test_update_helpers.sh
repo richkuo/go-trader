@@ -1856,12 +1856,23 @@ PY
 rh_config() {
     printf '{"db_file": "%s", "strategies": [{"id": "rh-btc", "storage_strategy_id": "rh-btc-store", "type": "spot", "args": ["momentum_pro", "%s", "1h", "--mode=live"]}, {"id": "hl-eth", "type": "perps", "args": ["x", "eth", "1h"]}]}\n' "$rh_test/state.db" "$1" >"$rh_test/config.json"
 }
+printf 'old go-trader build\n' >"$rh_test/go-trader-pre1908"
+printf 'new go-trader build %s tail\n' "$UPDATE_RH_IDENTITY_CAPABILITY" >"$rh_test/go-trader-1908"
 rh_check() {
-    GO_TRADER_UPDATE_CONFIG="$rh_test/config.json" update_robinhood_identity_rollback_check 2>"$rh_test/err" && printf 'ok' || printf 'blocked'
+    GO_TRADER_UPDATE_CONFIG="$rh_test/config.json" update_robinhood_identity_rollback_check "${1:-$rh_test/go-trader-pre1908}" 2>"$rh_test/err" && printf 'ok' || printf 'blocked'
 }
+grep -qF "const robinhoodCoinIdentityCapability = \"$UPDATE_RH_IDENTITY_CAPABILITY\"" "$(dirname "$0")/../scheduler/robinhood_identity.go" || { echo "FAIL: rh identity: update_helpers.sh capability marker differs from scheduler/robinhood_identity.go" >&2; exit 1; }
 rh_config btc; rh_seed BTC ""
-assert_eq "$(rh_check)" "blocked" "rh identity: a lowercase config over a migrated BTC book blocks the previous binary"
+assert_eq "$(rh_check)" "blocked" "rh identity: a lowercase config over a migrated BTC book blocks a restored pre-#1908 binary"
 grep -q "rh-btc: config args\[1\] is 'btc'" "$rh_test/err" || { echo "FAIL: rh identity blocker names the strategy" >&2; cat "$rh_test/err" >&2; exit 1; }
+grep -q "predates the Robinhood coin identity rule" "$rh_test/err" || { echo "FAIL: rh identity: a pre-#1908 binary block names the old binary" >&2; cat "$rh_test/err" >&2; exit 1; }
+assert_eq "$(rh_check "$rh_test/go-trader-1908")" "ok" "rh identity: a lowercase config over a migrated BTC book starts a restored binary that has the #1908 identity rule"
+grep -q "reads the trimmed uppercase coin identity" "$rh_test/err" || { echo "FAIL: rh identity: a #1908 binary start logs why it does not block" >&2; cat "$rh_test/err" >&2; exit 1; }
+assert_eq "$(rh_check "$rh_test/missing-go-trader")" "blocked" "rh identity: a lowercase config over a migrated BTC book blocks when the restored binary cannot be read"
+grep -q "could not read the restored binary" "$rh_test/err" || { echo "FAIL: rh identity: an unknown binary block says the build is unknown" >&2; cat "$rh_test/err" >&2; exit 1; }
+mkdir -p "$rh_test/dir-go-trader"
+assert_eq "$(rh_check "$rh_test/dir-go-trader")" "blocked" "rh identity: a restored binary path that is not a file blocks"
+assert_eq "$(GO_TRADER_UPDATE_CONFIG="$rh_test/config.json" update_robinhood_identity_rollback_check 2>/dev/null && printf ok || printf blocked)" "blocked" "rh identity: no restored binary path blocks"
 rh_config BTC
 assert_eq "$(rh_check)" "ok" "rh identity: a canonical config over a canonical book starts"
 rh_config btc; rh_seed btc ""
@@ -1883,6 +1894,7 @@ rh_config btc
 assert_eq "$(rh_check)" "blocked" "rh identity: a migrated pending circuit close blocks under a lowercase config"
 printf 'not a database' >"$rh_test/state.db"
 assert_eq "$(rh_check)" "blocked" "rh identity: an unreadable state file fails closed"
+assert_eq "$(rh_check "$rh_test/go-trader-1908")" "blocked" "rh identity: an unreadable state file fails closed for a #1908 binary too"
 printf '{"db_file": "%s", "strategies": [{"id": "hl-eth", "type": "perps", "args": ["x", "eth", "1h"]}]}\n' "$rh_test/state.db" >"$rh_test/config.json"
 assert_eq "$(rh_check)" "ok" "rh identity: a roster with no Robinhood spot strategy never opens the state files"
 rm -rf "$rh_test"

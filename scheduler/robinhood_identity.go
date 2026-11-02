@@ -13,6 +13,8 @@ type robinhoodCoinRewrite struct {
 	To         string
 }
 
+const robinhoodCoinIdentityCapability = "go-trader-capability:robinhood-coin-identity-v1"
+
 func canonicalRobinhoodCoin(raw string) string {
 	return strings.ToUpper(strings.TrimSpace(raw))
 }

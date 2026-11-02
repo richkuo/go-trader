@@ -26,9 +26,10 @@ func runVersion(args []string) int {
 		return 0
 	}
 	out, err := json.Marshal(struct {
-		Version      string `json:"version"`
-		SourceCommit string `json:"source_commit"`
-	}{Version, SourceCommit})
+		Version      string   `json:"version"`
+		SourceCommit string   `json:"source_commit"`
+		Capabilities []string `json:"capabilities"`
+	}{Version, SourceCommit, []string{robinhoodCoinIdentityCapability}})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "version: %v\n", err)
 		return 1
