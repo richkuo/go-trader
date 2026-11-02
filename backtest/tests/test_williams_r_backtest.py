@@ -64,7 +64,14 @@ def _market(n=420, seed=1650):
     return df
 
 
-def test_long_entry_fills_next_bar_open_and_the_take_profit_owns_the_exit():
+def test_entries_fill_next_bar_open_the_take_profit_owns_the_exit_and_an_open_position_blocks_new_entries(subtests):
+    with subtests.test(case="long_entry_and_take_profit"):
+        _long_entry_fills_next_bar_open_and_the_take_profit_owns_the_exit()
+    with subtests.test(case="short_mirror_and_open_position_blocks"):
+        _short_mirror_and_an_open_position_blocks_new_entries()
+
+
+def _long_entry_fills_next_bar_open_and_the_take_profit_owns_the_exit():
     rows = FLAT + [_bar(100, 99), _bar(99, 98), _bar(98, 97), _bar(97, 98.5)]
     rows += [_bar(98.5 + i * 1.5, 100 + i * 1.5) for i in range(8)]
     df = _frame(rows)
@@ -84,7 +91,7 @@ def test_long_entry_fills_next_bar_open_and_the_take_profit_owns_the_exit():
     assert res["close_validation"]["incomplete_parity"] is False
 
 
-def test_short_mirror_and_an_open_position_blocks_new_entries():
+def _short_mirror_and_an_open_position_blocks_new_entries():
     rows = FLAT + [_bar(100, 101), _bar(101, 102), _bar(102, 103), _bar(103, 101.5)]
     rows += [_bar(101.5, 100.0), _bar(100.0, 99.0), _bar(99.0, 98.0), _bar(98.0, 99.5)]
     rows += [_bar(99.5, 99.4)] * 6

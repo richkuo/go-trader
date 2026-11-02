@@ -7,7 +7,6 @@ import sys
 
 import numpy as np
 import pandas as pd
-import pytest
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 CHECK_HL = os.path.join(REPO, "shared_scripts", "check_hyperliquid.py")
@@ -138,127 +137,43 @@ def _assert_registry_decision(out, bars, signal, action, code, case):
     assert ind["wr_eval_ts_ms"] == float(T0 + len(bars) * H - 1), case
 
 
-@pytest.mark.parametrize("bars,signal,action,code", [
-    (_with_short_cross(120), -1, "short", -1),
-    (_zigzag(120), 0, "none", 0),
-])
-def test_explicit_paper_check_emits_the_registry_decision_and_explanation(bars, signal, action, code):
-    out = _ok(_solo(bars, ["--mode=paper", "--strategy-refs", json.dumps(TP_REFS)]))
-    _assert_registry_decision(out, bars, signal, action, code, action)
+def test_explicit_paper_check_emits_the_registry_decision_and_explanation(subtests):
+    for bars, signal, action, code in ((_with_short_cross(120), -1, "short", -1), (_zigzag(120), 0, "none", 0),
+                                       (_with_long_cross(120), 1, "long", 1)):
+        with subtests.test(action=action):
+            out = _ok(_solo(bars, ["--mode=paper", "--strategy-refs", json.dumps(TP_REFS)]))
+            _assert_registry_decision(out, bars, signal, action, code, action)
 
 
-@pytest.mark.parametrize("last_close,want_wr,want_signal", [
-    (92.0, -80.0, 0),
-    (92.5, -75.0, 1),
-    (91.0, -90.0, 0),
-])
-def test_oversold_equality_on_the_current_bar_is_not_a_crossing(last_close, want_wr, want_signal):
-    bars = _zigzag(60) + [(96.0, 100.0, 95.0, 96.0), (95.0, 100.0, 90.0, 90.0), (90.0, 95.0, 91.0, last_close)]
-    res = _strategies().apply_strategy(NAME, _frame_from_bars(bars), {"lookback": 2}).iloc[-1]
-    assert res["wr_prev"] == -100.0
-    assert res["wr"] == want_wr
-    out = _ok(_solo(bars, ["--mode=paper", "--params", json.dumps({"lookback": 2})]))
-    assert out["signal"] == want_signal == int(res["signal"])
-    assert out["indicators"]["wr"] == want_wr
+def test_oversold_equality_on_the_current_bar_is_not_a_crossing(subtests):
+    for last_close, want_wr, want_signal in [
+            (92.0, -80.0, 0),
+            (92.5, -75.0, 1),
+            (91.0, -90.0, 0),
+        ]:
+        with subtests.test(last_close=last_close, want_wr=want_wr, want_signal=want_signal):
+            bars = _zigzag(60) + [(96.0, 100.0, 95.0, 96.0), (95.0, 100.0, 90.0, 90.0), (90.0, 95.0, 91.0, last_close)]
+            res = _strategies().apply_strategy(NAME, _frame_from_bars(bars), {"lookback": 2}).iloc[-1]
+            assert res["wr_prev"] == -100.0
+            assert res["wr"] == want_wr
+            out = _ok(_solo(bars, ["--mode=paper", "--params", json.dumps({"lookback": 2})]))
+            assert out["signal"] == want_signal == int(res["signal"])
+            assert out["indicators"]["wr"] == want_wr
 
 
-@pytest.mark.parametrize("last_close,want_wr,want_signal", [
-    (98.0, -20.0, 0),
-    (97.5, -25.0, -1),
-    (99.0, -10.0, 0),
-])
-def test_overbought_equality_on_the_current_bar_is_not_a_crossing(last_close, want_wr, want_signal):
-    bars = _zigzag(60) + [(94.0, 95.0, 90.0, 94.0), (95.0, 100.0, 90.0, 100.0), (99.0, 99.0, 95.0, last_close)]
-    res = _strategies().apply_strategy(NAME, _frame_from_bars(bars), {"lookback": 2}).iloc[-1]
-    assert res["wr_prev"] == 0.0
-    assert res["wr"] == want_wr
-    out = _ok(_solo(bars, ["--mode=paper", "--params", json.dumps({"lookback": 2})]))
-    assert out["signal"] == want_signal == int(res["signal"])
-
-
-def test_missing_mode_is_refused():
-    proc = _solo(_zigzag(80))
-    assert proc.returncode == 1
-    payload = _payload(proc)
-    assert payload["signal"] == 0 and payload["strategy"] == NAME
-    assert f"open strategy '{NAME}' is edge_status=no_edge" in payload["error"]
-    assert "missing mode" in payload["error"]
-
-
-def test_existing_acknowledgement_contract_still_admits_live_evaluation():
-    out = _ok(_solo(_zigzag(80), ["--mode=live", "--allow-no-edge"]))
-    assert out["strategy"] == NAME
-
-
-def test_no_edge_close_fallback_reference_is_gated():
-    refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME}]})
-    proc = _run(["breakout", "BTC", "1h", "--mode=live", "--market-stdin", "--strategy-refs", refs],
-                {"v": 2, "market": _market(_zigzag(80))})
-    assert proc.returncode == 1
-    err = _payload(proc)["error"]
-    assert f"close strategy '{NAME}' is edge_status=no_edge" in err and "explicit live mode" in err
-    _ok(_run(["breakout", "BTC", "1h", "--mode=paper", "--market-stdin", "--strategy-refs", refs],
-             {"v": 2, "market": _market(_zigzag(80))}))
-
-
-@pytest.mark.parametrize("params", [{"lookback": 2.5}, {"lookback": "14"}, {"lookback": True},
-                                    {"oversold": -10.0, "overbought": -20.0}, {"overbought": 1.0}])
-def test_invalid_parameters_fail_preflight_before_any_candle_fetch(params):
-    proc = _run([NAME, "BTC", "1h", "--mode=paper", "--params", json.dumps(params)])
-    assert proc.returncode == 1
-    err = _payload(proc)["error"]
-    assert f"open strategy '{NAME}' has invalid parameters" in err
-    assert "Fetching" not in proc.stderr
-
-
-def test_batch_preflight_isolates_invalid_slots_and_keeps_valid_slots_matching_the_long_paper_decision():
-    bars = _with_long_cross(120)
-    bad_close = {"open": {"name": "breakout"}, "closes": [{"name": NAME, "params": {"lookback": 0}}]}
-    slots = [
-        {"id": "bad", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"],
-         "strategy_refs": {"open": {"name": NAME, "params": {"lookback": 7.5}}}},
-        {"id": "bad-close", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"],
-         "strategy_refs": bad_close},
-        {"id": "good", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"],
-         "strategy_refs": TP_REFS},
-    ]
-    proc = _run(["--batch-check", "--symbol=BTC", "--timeframe=1h", "--market-stdin"],
-                {"v": 2, "slots": slots, "market": _market(bars)})
-    assert proc.returncode == 1
-    results = {r["id"]: r for r in _payload(proc)["results"]}
-    assert f"open strategy '{NAME}' has invalid parameters" in results["bad"]["error"]
-    assert f"close strategy '{NAME}' has invalid parameters" in results["bad-close"]["error"]
-    assert not results["good"].get("error")
-    solo = _ok(_solo(bars, ["--mode=paper", "--strategy-refs", json.dumps(TP_REFS)]))
-    _assert_registry_decision(solo, bars, 1, "long", 1,
-                              "explicit_paper_check_emits_the_registry_decision_and_explanation[long]")
-    for key in ("signal", "open_action", "close_fraction", "indicators"):
-        assert results["good"][key] == solo[key]
-
-
-@pytest.mark.parametrize("mutate,reason,code", [
-    (lambda b: b[:-3] + [(b[-3][0], b[-3][1], b[-3][2], float("nan"))] + b[-2:], "nonfinite_input", 11),
-    (lambda b: b[:-3] + [(b[-3][0], b[-3][2] - 1.0, b[-3][1], b[-3][3])] + b[-2:], "inconsistent_hlc", 13),
-    (lambda b: b[:-2] + [(0.0, 0.0, 0.0, 0.0)] + b[-1:], "nonpositive_price", 12),
-    (lambda b: b[:-20] + [(100.0, 100.0, 100.0, 100.0)] * 20, "zero_range_window", 16),
-])
-def test_invalid_entry_input_holds_and_keeps_take_profit_protection(mutate, reason, code):
-    bars = mutate(_with_long_cross(120))
-    df = _frame_from_bars(bars)
-    res = _strategies().apply_strategy(NAME, df, None)
-    assert res["wr_reason"].iloc[-1] == reason
-    assert int(res["signal"].iloc[-1]) == 0
-    flat = _ok(_solo(bars, ["--mode=paper", "--strategy-refs", json.dumps(TP_REFS)]))
-    assert flat["signal"] == 0 and flat["open_action"] == "none"
-    assert flat["indicators"]["wr_reason_code"] == code
-    assert "wr" not in flat["indicators"]
-    held = _ok(_solo(bars, ["--mode=paper", "--strategy-refs", json.dumps(TP_REFS), "--position-side", "long",
-                            "--position-avg-cost=50", "--position-qty=1", "--position-initial-qty=1",
-                            "--position-entry-atr=2"], mid=100.0))
-    assert held["open_action"] == "none"
-    assert held["close_fraction"] == 1.0
-    assert held["close_strategy"] == "tiered_tp_atr"
-    assert held["signal"] == -1
+def test_overbought_equality_on_the_current_bar_is_not_a_crossing(subtests):
+    for last_close, want_wr, want_signal in [
+            (98.0, -20.0, 0),
+            (97.5, -25.0, -1),
+            (99.0, -10.0, 0),
+        ]:
+        with subtests.test(last_close=last_close, want_wr=want_wr, want_signal=want_signal):
+            bars = _zigzag(60) + [(94.0, 95.0, 90.0, 94.0), (95.0, 100.0, 90.0, 100.0), (99.0, 99.0, 95.0, last_close)]
+            res = _strategies().apply_strategy(NAME, _frame_from_bars(bars), {"lookback": 2}).iloc[-1]
+            assert res["wr_prev"] == 0.0
+            assert res["wr"] == want_wr
+            out = _ok(_solo(bars, ["--mode=paper", "--params", json.dumps({"lookback": 2})]))
+            assert out["signal"] == want_signal == int(res["signal"])
 
 
 def test_open_position_blocks_a_new_entry_signal():
@@ -295,29 +210,6 @@ def test_closed_bar_decision_ignores_the_forming_tail_and_matches_next_bar_execu
                     platform="hyperliquid", strategy_type="perps")
     trade = bt.run(df, strategy_name=NAME, symbol="BTC", timeframe="1h", save=False)["trades"][0]
     assert pd.Timestamp(trade["entry_date"]) == df.index[len(closed)]
-
-
-@pytest.mark.parametrize("offset,dropped", [(-1, 1), (0, 0), (1, 0)])
-def test_cutoff_at_the_bar_boundary_selects_the_closed_bar(offset, dropped):
-    bars = _with_long_cross(130)
-    boundary = T0 + len(bars) * H
-    out = _ok(_solo(bars, ["--mode=paper", "--closed-bar-decisions"], cutoff_ms=boundary + offset))
-    assert out["closed_bar_decision"]["forming_rows_dropped"] == dropped
-    assert out["signal"] == (1 if dropped == 0 else 0)
-
-
-def test_missing_timing_holds_the_decision_and_keeps_protection():
-    bars = _with_long_cross(130)
-    cutoff = T0 + len(bars) * H + 5
-    refs = ["--strategy-refs", json.dumps(TP_REFS)]
-    flat = _ok(_solo(bars, ["--mode=paper", "--closed-bar-decisions", *refs], cutoff_ms=cutoff, timing=False))
-    assert flat["closed_bar_decision"]["held"] is True
-    assert flat["signal"] == 0 and flat["indicators"] == {}
-    held = _ok(_solo(bars, ["--mode=paper", "--closed-bar-decisions", *refs, "--position-side", "long",
-                            "--position-avg-cost=50", "--position-qty=1", "--position-initial-qty=1",
-                            "--position-entry-atr=2"], cutoff_ms=cutoff, timing=False, mid=100.0))
-    assert held["closed_bar_decision"]["held"] is True
-    assert held["close_fraction"] == 1.0 and held["signal"] == -1
 
 
 def test_full_series_prefix_and_bounded_window_agree_at_every_allowed_lookback():

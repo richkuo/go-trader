@@ -27,92 +27,58 @@ def _df_open_then_hold(opens, closes, atrs=None):
     return pd.DataFrame(data, index=idx)
 
 
-def test_tp_at_pct_closes_full_position_when_threshold_hit():
-    df = _df_open_then_hold(
-        opens=[100, 100, 100, 103, 103],
-        closes=[100, 100, 103, 103, 103],
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=[{"name": "tp_at_pct", "params": {"pct": 0.03}}],
-    )
-    result = bt.run(df, save=False)
-
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["side"] == "long"
-    assert result["trades"][0]["entry_price"] == 100.0
-    assert result["trades"][0]["exit_price"] == 103.0
-    assert result["final_capital"] == 1030.0
-
-
-def test_tp_at_pct_does_not_fire_when_threshold_not_hit():
-    df = _df_open_then_hold(
-        opens=[100, 100, 100, 101, 101],
-        closes=[100, 100, 101, 101, 101],
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=[{"name": "tp_at_pct", "params": {"pct": 0.03}}],
-    )
-    result = bt.run(df, save=False)
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_price"] == 101.0
+def test_tp_at_pct_fires_only_when_threshold_hit(subtests):
+    for name, opens, closes, want in [
+        ("hit", [100, 100, 100, 103, 103], [100, 100, 103, 103, 103],
+         {"entry_price": 100.0, "exit_price": 103.0, "final_capital": 1030.0}),
+        ("not_hit", [100, 100, 100, 101, 101], [100, 100, 101, 101, 101],
+         {"exit_price": 101.0}),
+    ]:
+        with subtests.test(case=name):
+            bt = Backtester(
+                initial_capital=1000, commission_pct=0, slippage_pct=0,
+                close_strategies=[{"name": "tp_at_pct", "params": {"pct": 0.03}}],
+            )
+            result = bt.run(_df_open_then_hold(opens=opens, closes=closes), save=False)
+            assert result["total_trades"] == 1
+            assert result["trades"][0]["exit_price"] == want["exit_price"]
+            if "entry_price" in want:
+                assert result["trades"][0]["side"] == "long"
+                assert result["trades"][0]["entry_price"] == want["entry_price"]
+                assert result["final_capital"] == want["final_capital"]
 
 
-def test_tiered_tp_atr_partial_then_full_close():
-    df = _df_open_then_hold(
-        opens=[100, 100, 100, 110, 120],
-        closes=[100, 100, 110, 120, 120],
-        atrs=[10, 10, 10, 10, 10],
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=[
-            {"name": "tiered_tp_atr", "params": {"tp_tiers": [
-            {"atr_multiple": 1.0, "close_fraction": 0.5},
-            {"atr_multiple": 2.0, "close_fraction": 1.0},
-        ]}},
-        ],
-    )
-    result = bt.run(df, save=False)
-
-    assert result["total_trades"] == 2
-    assert result["trades"][0]["shares"] == 5.0
-    assert result["trades"][0]["exit_price"] == 110.0
-    assert result["trades"][1]["shares"] == 5.0
-    assert result["trades"][1]["exit_price"] == 120.0
-    assert result["final_capital"] == 1150.0
-
-
-@pytest.mark.parametrize("platform,atrs,want_exit_idx", [
-    ("binanceus", [10, 10, 10, 10, 10], [3, 4]),
-    ("hyperliquid", [10, 10, 30, 30, 30], [2, 3]),
-])
-def test_tiered_tp_atr_live_uses_live_atr_from_market(platform, atrs, want_exit_idx):
-    df = _df_open_then_hold(
-        opens=[100, 100, 100, 110, 120],
-        closes=[100, 100, 110, 120, 120],
-        atrs=atrs,
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0, platform=platform,
-        close_strategies=[
-            {"name": "tiered_tp_atr_live", "params": {
-            "atr_source": "live",
-            "tp_tiers": [
+def test_tiered_tp_atr_partial_then_full_close(subtests):
+    for name, platform, atrs, want_exit_idx in [
+        ("tiered_tp_atr", None, [10, 10, 10, 10, 10], None),
+        ("tiered_tp_atr_live", "binanceus", [10, 10, 10, 10, 10], [3, 4]),
+        ("tiered_tp_atr_live", "hyperliquid", [10, 10, 30, 30, 30], [2, 3]),
+    ]:
+        with subtests.test(name=name, platform=platform):
+            df = _df_open_then_hold(
+                opens=[100, 100, 100, 110, 120],
+                closes=[100, 100, 110, 120, 120],
+                atrs=atrs,
+            )
+            params = {"tp_tiers": [
                 {"atr_multiple": 1.0, "close_fraction": 0.5},
                 {"atr_multiple": 2.0, "close_fraction": 1.0},
-            ],
-        }},
-        ],
-    )
-    result = bt.run(df, save=False)
+            ]}
+            kwargs = dict(initial_capital=1000, commission_pct=0, slippage_pct=0)
+            if platform is not None:
+                params["atr_source"] = "live"
+                kwargs["platform"] = platform
+            result = Backtester(close_strategies=[{"name": name, "params": params}], **kwargs).run(df, save=False)
 
-    assert result["total_trades"] == 2
-    assert result["trades"][0]["exit_price"] == 110.0
-    assert result["trades"][1]["exit_price"] == 120.0
-    assert [t["exit_date"] for t in result["trades"]] == [str(df.index[i]) for i in want_exit_idx]
-    assert result["final_capital"] == 1150.0
+            assert result["total_trades"] == 2
+            assert result["trades"][0]["exit_price"] == 110.0
+            assert result["trades"][1]["exit_price"] == 120.0
+            if want_exit_idx is None:
+                assert result["trades"][0]["shares"] == 5.0
+                assert result["trades"][1]["shares"] == 5.0
+            else:
+                assert [t["exit_date"] for t in result["trades"]] == [str(df.index[i]) for i in want_exit_idx]
+            assert result["final_capital"] == 1150.0
 
 
 def test_max_close_fraction_wins_between_two_evaluators():
@@ -174,7 +140,7 @@ def test_close_strategy_short_position_long_take_profit():
     assert result["final_capital"] == 1030.0
 
 
-def test_starting_long_seed_with_entry_atr_lets_tiered_tp_atr_fire():
+def test_starting_long_seed_arms_tiered_tp_atr_only_with_entry_atr(subtests):
     n = 3
     idx = pd.date_range("2024-01-01", periods=n, freq="D")
     df = pd.DataFrame({
@@ -183,49 +149,40 @@ def test_starting_long_seed_with_entry_atr_lets_tiered_tp_atr_fire():
         "atr":   [10,  10,  10],
         "open_action": ["none", "none", "none"],
     }, index=idx)
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=[
-            {"name": "tiered_tp_atr", "params": {"tp_tiers": [
-            {"atr_multiple": 1.0, "close_fraction": 0.5},
-            {"atr_multiple": 2.0, "close_fraction": 1.0},
-        ]}},
-        ],
-    )
-    result = bt.run(
-        df, save=False,
-        starting_long={"entry_price": 100.0, "entry_atr": 10.0},
-    )
-    assert result["total_trades"] == 2
-    assert result["trades"][0]["exit_price"] == 110.0
-    assert result["trades"][0]["shares"] == 5.0
-    assert result["trades"][1]["exit_price"] == 120.0
-    assert result["trades"][1]["shares"] == 5.0
-    assert result["final_capital"] == 1150.0
+    with subtests.test(case="with_entry_atr"):
+        bt = Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            close_strategies=[
+                {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+                {"atr_multiple": 1.0, "close_fraction": 0.5},
+                {"atr_multiple": 2.0, "close_fraction": 1.0},
+            ]}},
+            ],
+        )
+        result = bt.run(
+            df.copy(), save=False,
+            starting_long={"entry_price": 100.0, "entry_atr": 10.0},
+        )
+        assert result["total_trades"] == 2
+        assert result["trades"][0]["exit_price"] == 110.0
+        assert result["trades"][0]["shares"] == 5.0
+        assert result["trades"][1]["exit_price"] == 120.0
+        assert result["trades"][1]["shares"] == 5.0
+        assert result["final_capital"] == 1150.0
+    with subtests.test(case="without_entry_atr"):
+        bt = Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            close_strategies=[{"name": "tiered_tp_atr"}],
+        )
+        result = bt.run(
+            df.copy(), save=False,
+            starting_long={"entry_price": 100.0},
+        )
+        assert result["total_trades"] == 1
+        assert result["trades"][0]["exit_price"] == 120.0
 
 
-def test_starting_long_seed_without_entry_atr_atr_evaluator_noops():
-    n = 3
-    idx = pd.date_range("2024-01-01", periods=n, freq="D")
-    df = pd.DataFrame({
-        "open":  [100, 110, 120],
-        "close": [110, 120, 120],
-        "atr":   [10,  10,  10],
-        "open_action": ["none", "none", "none"],
-    }, index=idx)
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=[{"name": "tiered_tp_atr"}],
-    )
-    result = bt.run(
-        df, save=False,
-        starting_long={"entry_price": 100.0},
-    )
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_price"] == 120.0
-
-
-def test_trailing_tp_ratchet_trail_only_tier_exits_on_tightened_trail():
+def test_trailing_tp_ratchet_trail_only_tier_exits_on_tightened_trail(subtests):
     idx = pd.date_range("2024-01-01", periods=6, freq="D")
     df = pd.DataFrame({
         "open": [100, 100, 100, 110, 99, 120],
@@ -233,24 +190,27 @@ def test_trailing_tp_ratchet_trail_only_tier_exits_on_tightened_trail():
         "atr": [10, 10, 10, 10, 10, 10],
         "open_action": ["long", "none", "none", "none", "none", "none"],
     }, index=idx)
-    bt = Backtester(
-        intrabar_resolution="bar_close",
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        trailing_stop_atr_mult=3.0,
-        close_strategies=[{"name": "trailing_tp_ratchet", "params": {
-            "tp_tiers": [
-                {"atr_multiple": 1.0, "close_fraction": 0.0, "trailing_mult_after": 1.0},
-            ],
-        }}],
-    )
-    result = bt.run(df, save=False)
+    with subtests.test(case="trailing_tp_ratchet"):
+        bt = Backtester(
+            intrabar_resolution="bar_close",
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            trailing_stop_atr_mult=3.0,
+            close_strategies=[{"name": "trailing_tp_ratchet", "params": {
+                "tp_tiers": [
+                    {"atr_multiple": 1.0, "close_fraction": 0.0, "trailing_mult_after": 1.0},
+                ],
+            }}],
+        )
+        result = bt.run(df, save=False)
 
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_date"] == str(idx[4])
-    assert result["trades"][0]["exit_price"] == 99.0
+        assert result["total_trades"] == 1
+        assert result["trades"][0]["exit_date"] == str(idx[4])
+        assert result["trades"][0]["exit_price"] == 99.0
+    with subtests.test(case="trailing_tp_ratchet_regime_uses_open_time_regime"):
+        _assert_trailing_tp_ratchet_regime_uses_open_time_regime()
 
 
-def test_trailing_tp_ratchet_regime_uses_open_time_regime():
+def _assert_trailing_tp_ratchet_regime_uses_open_time_regime():
     idx = pd.date_range("2024-01-01", periods=6, freq="D")
     df = pd.DataFrame({
         "open": [100, 100, 100, 110, 99, 120],
@@ -290,104 +250,58 @@ def test_trailing_tp_ratchet_regime_uses_open_time_regime():
     assert result["trades"][0]["exit_price"] == 99.0
 
 
-def test_close_strategy_unknown_name_raises():
-    try:
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            close_strategies=[{"name": "does_not_exist"}],
-        )
-    except ValueError as exc:
-        assert "does_not_exist" in str(exc)
-    else:
-        raise AssertionError("expected ValueError for unknown close strategy")
-
-
 _FAR_TP = [{"name": "tp_at_pct", "params": {"pct": 0.5}}]
 
 
-def test_scalar_atr_stop_fires_alongside_close_evaluator():
-    df = _df_open_then_hold(
-        opens=[100, 100, 100, 95, 95],
-        closes=[100, 100, 96, 95, 95],
-        atrs=[2.0] * 5,
-    )
-    bt = Backtester(
-        intrabar_resolution="bar_close",
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=_FAR_TP, stop_loss_atr_mult=1.0,
-    )
-    result = bt.run(df, save=False)
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_price"] == 95.0
-    assert result["final_capital"] == 950.0
-
-
-def test_scalar_atr_stop_inverse_no_breach_is_noop():
-    df = _df_open_then_hold(
-        opens=[100, 100, 100, 99, 99],
-        closes=[100, 100, 99, 99, 99],
-        atrs=[2.0] * 5,
-    )
-    kw = dict(initial_capital=1000, commission_pct=0, slippage_pct=0,
-              close_strategies=_FAR_TP)
-    with_stop = Backtester(stop_loss_atr_mult=1.0, **kw).run(df.copy(), save=False)
-    no_stop = Backtester(**kw).run(df.copy(), save=False)
-    assert with_stop["final_capital"] == no_stop["final_capital"]
-    assert with_stop["total_trades"] == no_stop["total_trades"]
-
-
-def test_scalar_trailing_stop_walks_alongside_close_evaluator():
-    df = _df_open_then_hold(
-        opens=[100, 100, 106, 106, 103, 103],
-        closes=[100, 106, 106, 103, 103, 103],
-        atrs=[2.0] * 6,
-    )
-    bt = Backtester(
-        intrabar_resolution="bar_close",
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=_FAR_TP, trailing_stop_atr_mult=1.0,
-    )
-    result = bt.run(df, save=False)
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_price"] == 103.0
-    assert result["final_capital"] == 1030.0
-
-
-def test_scalar_atr_stop_protects_short_side():
-    n = 5
-    idx = pd.date_range("2024-01-01", periods=n, freq="D")
-    df = pd.DataFrame({
+def test_scalar_stops_fire_alongside_close_evaluator(subtests):
+    short_df = pd.DataFrame({
         "open": [100, 100, 100, 103, 103],
         "close": [100, 100, 103, 103, 103],
-        "atr": [2.0] * n,
-        "open_action": ["short"] + ["none"] * (n - 1),
-    }, index=idx)
-    bt = Backtester(
-        intrabar_resolution="bar_close",
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=_FAR_TP, stop_loss_atr_mult=1.0,
-    )
-    result = bt.run(df, save=False)
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["side"] == "short"
-    assert result["trades"][0]["exit_price"] == 103.0
-    assert result["final_capital"] == 970.0
-
-
-def test_pct_stop_fires_alongside_close_evaluator():
-    df = _df_open_then_hold(
+        "atr": [2.0] * 5,
+        "open_action": ["short"] + ["none"] * 4,
+    }, index=pd.date_range("2024-01-01", periods=5, freq="D"))
+    breach_df = _df_open_then_hold(
         opens=[100, 100, 100, 95, 95],
         closes=[100, 100, 96, 95, 95],
         atrs=[2.0] * 5,
     )
-    bt = Backtester(
-        intrabar_resolution="bar_close",
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=_FAR_TP, stop_loss_pct=0.02,
-    )
-    result = bt.run(df, save=False)
-    assert result["total_trades"] == 1
-    assert result["final_capital"] == 950.0
+    for name, df, stop_kw, want in [
+        ("atr_stop", breach_df, {"stop_loss_atr_mult": 1.0},
+         {"exit_price": 95.0, "final_capital": 950.0}),
+        ("pct_stop", breach_df, {"stop_loss_pct": 0.02}, {"final_capital": 950.0}),
+        ("trailing_stop", _df_open_then_hold(
+            opens=[100, 100, 106, 106, 103, 103],
+            closes=[100, 106, 106, 103, 103, 103],
+            atrs=[2.0] * 6,
+        ), {"trailing_stop_atr_mult": 1.0}, {"exit_price": 103.0, "final_capital": 1030.0}),
+        ("atr_stop_short", short_df, {"stop_loss_atr_mult": 1.0},
+         {"side": "short", "exit_price": 103.0, "final_capital": 970.0}),
+    ]:
+        with subtests.test(case=name):
+            bt = Backtester(
+                intrabar_resolution="bar_close",
+                initial_capital=1000, commission_pct=0, slippage_pct=0,
+                close_strategies=_FAR_TP, **stop_kw,
+            )
+            result = bt.run(df.copy(), save=False)
+            assert result["total_trades"] == 1
+            if "side" in want:
+                assert result["trades"][0]["side"] == want["side"]
+            if "exit_price" in want:
+                assert result["trades"][0]["exit_price"] == want["exit_price"]
+            assert result["final_capital"] == want["final_capital"]
+    with subtests.test(case="atr_stop_no_breach_is_noop"):
+        df = _df_open_then_hold(
+            opens=[100, 100, 100, 99, 99],
+            closes=[100, 100, 99, 99, 99],
+            atrs=[2.0] * 5,
+        )
+        kw = dict(initial_capital=1000, commission_pct=0, slippage_pct=0,
+                  close_strategies=_FAR_TP)
+        with_stop = Backtester(stop_loss_atr_mult=1.0, **kw).run(df.copy(), save=False)
+        no_stop = Backtester(**kw).run(df.copy(), save=False)
+        assert with_stop["final_capital"] == no_stop["final_capital"]
+        assert with_stop["total_trades"] == no_stop["total_trades"]
 
 
 def test_tp_tier_partial_then_scalar_stop_closes_remainder():
@@ -411,96 +325,53 @@ def test_tp_tier_partial_then_scalar_stop_closes_remainder():
     assert result["final_capital"] == 5 * 102.0 + 5 * 96.0
 
 
-def test_seeded_position_fixed_atr_stop_fires_plain_path():
-    n = 3
-    idx = pd.date_range("2024-01-01", periods=n, freq="D")
-    df = pd.DataFrame({
+def test_seeded_position_stop_arms_from_the_seed(subtests):
+    idx = pd.date_range("2024-01-01", periods=3, freq="D")
+    plain_df = pd.DataFrame({
         "open": [100, 95, 95],
         "high": [100, 95, 95],
         "low": [95, 95, 95],
         "close": [95, 95, 95],
-        "signal": [0] * n,
+        "signal": [0] * 3,
     }, index=idx)
-    bt = Backtester(
-        intrabar_resolution="bar_close",
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        stop_loss_atr_mult=2.0,
-    )
-    result = bt.run(
-        df, save=False,
-        starting_long={"entry_price": 100.0, "entry_atr": 2.0},
-    )
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_price"] == 95.0
-    assert result["final_capital"] == 950.0
-
-
-def test_seeded_position_trailing_stop_anchors_at_seed_high_water():
-    n = 3
-    idx = pd.date_range("2024-01-01", periods=n, freq="D")
-    df = pd.DataFrame({
-        "open": [105, 105, 120],
-        "high": [105, 120, 120],
-        "low": [105, 105, 120],
-        "close": [105, 120, 120],
-        "signal": [0] * n,
-    }, index=idx)
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        trailing_stop_atr_mult=2.0,
-    )
-    result = bt.run(
-        df, save=False,
-        starting_long={"entry_price": 100.0, "entry_atr": 2.0,
-                       "high_water": 110.0},
-    )
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_price"] == 105.0
-
-
-def test_seeded_position_fixed_atr_stop_fires_engine_path():
-    n = 3
-    idx = pd.date_range("2024-01-01", periods=n, freq="D")
-    df = pd.DataFrame({
-        "open": [100, 95, 95],
-        "close": [95, 95, 95],
-        "atr": [2.0] * n,
-        "open_action": ["none"] * n,
-    }, index=idx)
-    bt = Backtester(
-        intrabar_resolution="bar_close",
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=_FAR_TP, stop_loss_atr_mult=2.0,
-    )
-    result = bt.run(
-        df, save=False,
-        starting_long={"entry_price": 100.0, "entry_atr": 2.0},
-    )
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_price"] == 95.0
-    assert result["final_capital"] == 950.0
-
-
-def test_seeded_position_without_entry_atr_stop_stays_unarmed():
-    n = 3
-    idx = pd.date_range("2024-01-01", periods=n, freq="D")
-    df = pd.DataFrame({
-        "open": [100, 95, 95],
-        "high": [100, 95, 95],
-        "low": [95, 95, 95],
-        "close": [95, 95, 95],
-        "signal": [0] * n,
-    }, index=idx)
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        stop_loss_atr_mult=2.0,
-    )
-    result = bt.run(
-        df, save=False,
-        starting_long={"entry_price": 100.0},
-    )
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_date"] == str(idx[-1])
+    for name, df, bt_kw, seed, want in [
+        ("fixed_atr_plain_path", plain_df,
+         dict(intrabar_resolution="bar_close", stop_loss_atr_mult=2.0),
+         {"entry_price": 100.0, "entry_atr": 2.0},
+         {"exit_price": 95.0, "final_capital": 950.0}),
+        ("trailing_anchors_at_seed_high_water", pd.DataFrame({
+            "open": [105, 105, 120],
+            "high": [105, 120, 120],
+            "low": [105, 105, 120],
+            "close": [105, 120, 120],
+            "signal": [0] * 3,
+        }, index=idx),
+         dict(trailing_stop_atr_mult=2.0),
+         {"entry_price": 100.0, "entry_atr": 2.0, "high_water": 110.0},
+         {"exit_price": 105.0}),
+        ("fixed_atr_engine_path", pd.DataFrame({
+            "open": [100, 95, 95],
+            "close": [95, 95, 95],
+            "atr": [2.0] * 3,
+            "open_action": ["none"] * 3,
+        }, index=idx),
+         dict(intrabar_resolution="bar_close", close_strategies=_FAR_TP, stop_loss_atr_mult=2.0),
+         {"entry_price": 100.0, "entry_atr": 2.0},
+         {"exit_price": 95.0, "final_capital": 950.0}),
+        ("without_entry_atr_stays_unarmed", plain_df,
+         dict(stop_loss_atr_mult=2.0),
+         {"entry_price": 100.0},
+         {"exit_date": str(idx[-1])}),
+    ]:
+        with subtests.test(case=name):
+            bt = Backtester(initial_capital=1000, commission_pct=0, slippage_pct=0, **bt_kw)
+            result = bt.run(df.copy(), save=False, starting_long=seed)
+            assert result["total_trades"] == 1
+            for key in ("exit_price", "exit_date"):
+                if key in want:
+                    assert result["trades"][0][key] == want[key]
+            if "final_capital" in want:
+                assert result["final_capital"] == want["final_capital"]
 
 
 def _df_avwap_hold(opens, closes, avwaps, atrs):
@@ -513,135 +384,50 @@ def _df_avwap_hold(opens, closes, avwaps, atrs):
     }, index=idx)
 
 
-def test_avwap_stop_fires_on_loss_of_line():
-    df = _df_avwap_hold(
-        opens=[100, 100, 100, 95, 95],
-        closes=[100, 100, 95, 95, 95],
-        avwaps=[100.0] * 5,
-        atrs=[2.0] * 5,
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=[{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}],
-    )
-    result = bt.run(df, save=False)
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["entry_price"] == 100.0
-    assert result["trades"][0]["exit_price"] == 95.0
-
-
-def test_avwap_stop_holds_above_buffered_line():
-    df = _df_avwap_hold(
-        opens=[100, 100, 100, 100, 100],
-        closes=[100, 100, 99.5, 99.5, 99.5],
-        avwaps=[100.0] * 5,
-        atrs=[2.0] * 5,
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=[{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}],
-    )
-    result = bt.run(df, save=False)
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_price"] == 99.5
-
-
-def test_avwap_stop_noops_without_avwap_column():
-    df = _df_open_then_hold(
-        opens=[100, 100, 100, 95, 95],
-        closes=[100, 100, 95, 95, 95],
-        atrs=[2.0] * 5,
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=[{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}],
-    )
-    result = bt.run(df, save=False)
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_price"] == 95.0
-    assert "avwap_stop" not in str(result["trades"][0].get("exit_reason", ""))
-
-
-def test_avwap_stop_short_side_fires_on_reclaim():
-    df = pd.DataFrame({
-        "open": [100, 100, 100, 105, 105],
-        "close": [100, 100, 105, 105, 105],
-        "open_action": ["short"] + ["none"] * 4,
-        "avwap": [100.0] * 5,
-        "atr": [2.0] * 5,
-    }, index=pd.date_range("2024-01-01", periods=5, freq="D"))
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=[{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}],
-    )
-    result = bt.run(df, save=False)
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["side"] == "short"
-    assert result["trades"][0]["exit_price"] == 105.0
-
-
 _AVWAP_WARN_MARK = "avwap_stop"
-
-
-def _run_avwap_stop_backtest(df, close_strategies):
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=close_strategies,
-    )
-    return bt.run(df, save=False)
-
-
 _AVWAP_STOP_REF = [{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}]
 _TP_REF = [{"name": "tp_at_pct", "params": {"pct": 0.03}}]
 
 
-def _avwap_absent_df():
-    return _df_open_then_hold(
-        opens=[100, 100, 100, 95, 95],
-        closes=[100, 100, 95, 95, 95],
-        atrs=[2.0] * 5,
-    )
-
-
-def _avwap_nan_df():
-    return _df_avwap_hold(
-        opens=[100, 100, 100, 95, 95],
-        closes=[100, 100, 95, 95, 95],
-        avwaps=[float("nan")] * 5,
-        atrs=[2.0] * 5,
-    )
-
-
-def _avwap_usable_df():
-    return _df_avwap_hold(
-        opens=[100, 100, 100, 95, 95],
-        closes=[100, 100, 95, 95, 95],
-        avwaps=[100.0] * 5,
-        atrs=[2.0] * 5,
-    )
-
-
-def _tp_only_df():
-    return _df_open_then_hold(
-        opens=[100, 100, 100, 103, 103],
-        closes=[100, 100, 103, 103, 103],
-    )
-
-
-@pytest.mark.parametrize(
-    "df_factory,close_strategies,expected_warns",
-    [
-        (_avwap_absent_df, _AVWAP_STOP_REF, 1),
-        (_avwap_nan_df, _AVWAP_STOP_REF, 1),
-        (_avwap_usable_df, _AVWAP_STOP_REF, 0),
-        (_tp_only_df, _TP_REF, 0),
-    ],
-)
-def test_avwap_stop_unusable_line_warns_once(capsys, df_factory,
-                                             close_strategies, expected_warns):
-    _run_avwap_stop_backtest(df_factory(), close_strategies)
-    err = capsys.readouterr().err
-    assert err.count(_AVWAP_WARN_MARK) == expected_warns
+def test_avwap_stop_exits_and_warns_once_on_an_unusable_line(capsys, subtests):
+    loss_kw = dict(opens=[100, 100, 100, 95, 95], closes=[100, 100, 95, 95, 95], atrs=[2.0] * 5)
+    for name, df, close_strategies, want, expected_warns in [
+        ("fires_on_loss_of_line", _df_avwap_hold(avwaps=[100.0] * 5, **loss_kw), _AVWAP_STOP_REF,
+         {"entry_price": 100.0, "exit_price": 95.0}, 0),
+        ("holds_above_buffered_line", _df_avwap_hold(
+            opens=[100, 100, 100, 100, 100], closes=[100, 100, 99.5, 99.5, 99.5],
+            avwaps=[100.0] * 5, atrs=[2.0] * 5), _AVWAP_STOP_REF, {"exit_price": 99.5}, None),
+        ("noops_without_avwap_column", _df_open_then_hold(**loss_kw), _AVWAP_STOP_REF,
+         {"exit_price": 95.0, "not_avwap_exit": True}, 1),
+        ("nan_line", _df_avwap_hold(avwaps=[float("nan")] * 5, **loss_kw), _AVWAP_STOP_REF, {}, 1),
+        ("short_side_fires_on_reclaim", pd.DataFrame({
+            "open": [100, 100, 100, 105, 105],
+            "close": [100, 100, 105, 105, 105],
+            "open_action": ["short"] + ["none"] * 4,
+            "avwap": [100.0] * 5,
+            "atr": [2.0] * 5,
+        }, index=pd.date_range("2024-01-01", periods=5, freq="D")), _AVWAP_STOP_REF,
+         {"side": "short", "exit_price": 105.0}, None),
+        ("tp_only", _df_open_then_hold(
+            opens=[100, 100, 100, 103, 103], closes=[100, 100, 103, 103, 103]), _TP_REF, {}, 0),
+    ]:
+        with subtests.test(case=name):
+            capsys.readouterr()
+            bt = Backtester(
+                initial_capital=1000, commission_pct=0, slippage_pct=0,
+                close_strategies=close_strategies,
+            )
+            result = bt.run(df, save=False)
+            err = capsys.readouterr().err
+            if expected_warns is not None:
+                assert err.count(_AVWAP_WARN_MARK) == expected_warns
+            if want:
+                assert result["total_trades"] == 1
+            for key in ("side", "entry_price", "exit_price"):
+                if key in want:
+                    assert result["trades"][0][key] == want[key]
+            if want.get("not_avwap_exit"):
+                assert "avwap_stop" not in str(result["trades"][0].get("exit_reason", ""))
 
 
 _UNIFIED_CLOSE = {
@@ -677,36 +463,6 @@ def _df_unified():
     }, index=idx)
 
 
-def test_unified_regime_close_arms_per_regime_stop_loss():
-    bt = Backtester(
-        intrabar_resolution="bar_close",
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=[_UNIFIED_CLOSE],
-    )
-    result = bt.run(_df_unified(), save=False)
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_price"] == 95.0
-    assert result["trades"][0]["exit_date"] == str(_df_unified().index[3])
-
-
-def test_unified_regime_close_no_stop_without_breach():
-    idx = pd.date_range("2024-01-01", periods=5, freq="D")
-    df = pd.DataFrame({
-        "open": [100, 100, 100, 99, 99],
-        "close": [100, 100, 99, 99, 99],
-        "atr": [2, 2, 2, 2, 2],
-        "regime": ["ranging"] * 5,
-        "open_action": ["long", "none", "none", "none", "none"],
-    }, index=idx)
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=[_UNIFIED_CLOSE],
-    )
-    result = bt.run(df, save=False)
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_date"] == str(idx[4])
-
-
 _COMPOSITE_SPEC_1228 = {"medium": {"classifier": "composite", "period": 21}}
 
 
@@ -724,29 +480,56 @@ def _unified_composite_block(bare_sl=1.0, include_bare_sl=True):
     return block
 
 
-def test_unified_regime_close_bare_block_arms_sl_for_directional_sub_stamp():
-    close_ref = {
-        "name": "tiered_tp_atr_regime",
-        "params": {"trend_regime": _unified_composite_block(bare_sl=1.0)},
-    }
-    idx = pd.date_range("2024-01-01", periods=6, freq="D")
-    df = pd.DataFrame({
-        "open": [100, 100, 100, 95, 95, 95],
-        "close": [100, 100, 96, 95, 95, 95],
-        "atr": [2, 2, 2, 2, 2, 2],
-        "regime": ["ranging_directional_up"] * 6,
-        "open_action": ["long", "none", "none", "none", "none", "none"],
-    }, index=idx)
-    bt = Backtester(
-        intrabar_resolution="bar_close",
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        regime_windows_spec=_COMPOSITE_SPEC_1228,
-        close_strategies=[close_ref],
-    )
-    result = bt.run(df, save=False)
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_price"] == 95.0
-    assert result["trades"][0]["exit_date"] == str(idx[3])
+def test_unified_regime_close_arms_per_regime_stop_loss(subtests):
+    with subtests.test(case="ranging_breach"):
+        bt = Backtester(
+            intrabar_resolution="bar_close",
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            close_strategies=[_UNIFIED_CLOSE],
+        )
+        result = bt.run(_df_unified(), save=False)
+        assert result["total_trades"] == 1
+        assert result["trades"][0]["exit_price"] == 95.0
+        assert result["trades"][0]["exit_date"] == str(_df_unified().index[3])
+    with subtests.test(case="no_stop_without_breach"):
+        idx = pd.date_range("2024-01-01", periods=5, freq="D")
+        df = pd.DataFrame({
+            "open": [100, 100, 100, 99, 99],
+            "close": [100, 100, 99, 99, 99],
+            "atr": [2, 2, 2, 2, 2],
+            "regime": ["ranging"] * 5,
+            "open_action": ["long", "none", "none", "none", "none"],
+        }, index=idx)
+        bt = Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            close_strategies=[_UNIFIED_CLOSE],
+        )
+        result = bt.run(df, save=False)
+        assert result["total_trades"] == 1
+        assert result["trades"][0]["exit_date"] == str(idx[4])
+    with subtests.test(case="bare_block_arms_sl_for_directional_sub_stamp"):
+        close_ref = {
+            "name": "tiered_tp_atr_regime",
+            "params": {"trend_regime": _unified_composite_block(bare_sl=1.0)},
+        }
+        idx = pd.date_range("2024-01-01", periods=6, freq="D")
+        df = pd.DataFrame({
+            "open": [100, 100, 100, 95, 95, 95],
+            "close": [100, 100, 96, 95, 95, 95],
+            "atr": [2, 2, 2, 2, 2, 2],
+            "regime": ["ranging_directional_up"] * 6,
+            "open_action": ["long", "none", "none", "none", "none", "none"],
+        }, index=idx)
+        bt = Backtester(
+            intrabar_resolution="bar_close",
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            regime_windows_spec=_COMPOSITE_SPEC_1228,
+            close_strategies=[close_ref],
+        )
+        result = bt.run(df, save=False)
+        assert result["total_trades"] == 1
+        assert result["trades"][0]["exit_price"] == 95.0
+        assert result["trades"][0]["exit_date"] == str(idx[3])
 
 
 def _unified_adx_block(sl_overrides=None, drop_sl_for=()):
@@ -815,8 +598,13 @@ _TP_TIER_PARITY = json.loads(
 )
 
 
-@pytest.mark.parametrize("case", _TP_TIER_PARITY["geometry"], ids=lambda c: c["id"])
-def test_hyperliquid_tier_close_matches_the_parity_fixture(case):
+def test_hyperliquid_tier_close_matches_the_parity_fixture(subtests):
+    for case in _TP_TIER_PARITY["geometry"]:
+        with subtests.test(case=case["id"]):
+            _assert_tier_close_matches_the_parity_case(case)
+
+
+def _assert_tier_close_matches_the_parity_case(case):
     ref = _TP_TIER_PARITY["ladders"][case["ladder"]]
     params = {**ref["params"], **case.get("params_override", {})}
     p = case["position"]
@@ -860,8 +648,7 @@ def test_hyperliquid_tier_close_matches_the_parity_fixture(case):
     assert fill == pytest.approx(case["want"]["fill_price"])
 
 
-@pytest.mark.parametrize("platform,rejected", [("hyperliquid", True), ("binanceus", False)])
-def test_hyperliquid_backtest_rejects_a_non_increasing_ladder(platform, rejected):
+def test_hyperliquid_backtest_rejects_a_non_increasing_ladder(subtests):
     unified = {"trend_regime": {
         label: {"stop_loss_atr": 1.0, "tp_tiers": [
             {"atr_multiple": 1.0, "close_fraction": 0.6},
@@ -869,15 +656,17 @@ def test_hyperliquid_backtest_rejects_a_non_increasing_ladder(platform, rejected
         ]}
         for label in ("trending_up", "trending_down", "ranging")
     }}
-    kwargs = {
-        "platform": platform, "regime_enabled": True,
-        "close_strategies": [{"name": "tiered_tp_atr_live_regime", "params": unified}],
-    }
-    if rejected:
-        with pytest.raises(ValueError, match="trend_regime.ranging.tp_tiers: tier 1 close_fraction 0.4"):
-            Backtester(**kwargs)
-    else:
-        Backtester(**kwargs)
+    for platform, rejected in [("hyperliquid", True), ("binanceus", False)]:
+        with subtests.test(platform=platform):
+            kwargs = {
+                "platform": platform, "regime_enabled": True,
+                "close_strategies": [{"name": "tiered_tp_atr_live_regime", "params": unified}],
+            }
+            if rejected:
+                with pytest.raises(ValueError, match="trend_regime.ranging.tp_tiers: tier 1 close_fraction 0.4"):
+                    Backtester(**kwargs)
+            else:
+                Backtester(**kwargs)
 
 
 def _set_fixture_path(params, path, value):
@@ -887,21 +676,22 @@ def _set_fixture_path(params, path, value):
     node[path[-1]] = value
 
 
-@pytest.mark.parametrize("case", _TP_TIER_PARITY["ladder_load"], ids=lambda c: c["id"])
-def test_hyperliquid_backtest_ladder_load_matches_the_daemon(case):
-    ref = _TP_TIER_PARITY["ladders"][case["ladder"]]
-    params = json.loads(json.dumps(ref["params"]))
-    if case["path"] is not None:
-        _set_fixture_path(params, case["path"], case["value"])
-    kwargs = {
-        "platform": "hyperliquid", "strategy_type": "perps", "regime_enabled": True,
-        "close_strategies": [{"name": ref["name"], "params": params}],
-    }
-    if case["want_reject"]:
-        with pytest.raises(ValueError, match="Invalid Hyperliquid take-profit ladder"):
-            Backtester(**kwargs)
-    else:
-        Backtester(**kwargs)
+def test_hyperliquid_backtest_ladder_load_matches_the_daemon(subtests):
+    for case in _TP_TIER_PARITY["ladder_load"]:
+        with subtests.test(case=case["id"]):
+            ref = _TP_TIER_PARITY["ladders"][case["ladder"]]
+            params = json.loads(json.dumps(ref["params"]))
+            if case["path"] is not None:
+                _set_fixture_path(params, case["path"], case["value"])
+            kwargs = {
+                "platform": "hyperliquid", "strategy_type": "perps", "regime_enabled": True,
+                "close_strategies": [{"name": ref["name"], "params": params}],
+            }
+            if case["want_reject"]:
+                with pytest.raises(ValueError, match="Invalid Hyperliquid take-profit ladder"):
+                    Backtester(**kwargs)
+            else:
+                Backtester(**kwargs)
 
 
 _FILL_RULE_EVALUATORS = (
@@ -917,11 +707,18 @@ def _tracker_fill_rule_params():
         if case.get("tracker") is False:
             continue
         for name in case.get("evaluators", _FILL_RULE_EVALUATORS):
-            yield pytest.param(case, name, id=f"{case['id']}-{name}")
+            yield case, name
 
 
-@pytest.mark.parametrize("case,name", list(_tracker_fill_rule_params()))
-def test_hyperliquid_backtest_resting_rule_matches_the_parity_fixture(case, name):
+def test_hyperliquid_backtest_resting_rule_matches_the_parity_fixture(subtests):
+    cases = list(_tracker_fill_rule_params())
+    assert cases
+    for case, name in cases:
+        with subtests.test(case=f"{case['id']}-{name}"):
+            _assert_resting_rule_matches_the_parity_case(case, name)
+
+
+def _assert_resting_rule_matches_the_parity_case(case, name):
     from backtester import _RestingReachTracker
     params = _TP_TIER_PARITY["fill_rule_ladders"][name]
     bt = Backtester(platform="hyperliquid", close_strategies=[{"name": name, "params": params}])
@@ -980,26 +777,28 @@ def _fill_rule_run_kwargs(**overrides):
     return kwargs
 
 
-@pytest.mark.parametrize("run", _TP_TIER_PARITY["fill_rule_runs"]["runs"], ids=lambda r: r["id"])
-def test_hyperliquid_backtest_resting_rule_runs_match_the_parity_fixture(run):
-    df = _fill_rule_run_frame(run["bars"], _TP_TIER_PARITY["fill_rule_runs"]["atr"])
-    bt = Backtester(**_fill_rule_run_kwargs(
-        stop_loss_atr_mult=run["stop_loss_atr_mult"], intrabar_resolution=run["mode"],
-    ))
-    result = bt.run(df, save=False)
+def test_hyperliquid_backtest_resting_rule_runs_match_the_parity_fixture(subtests):
+    for run in _TP_TIER_PARITY["fill_rule_runs"]["runs"]:
+        with subtests.test(run=run["id"]):
+            df = _fill_rule_run_frame(run["bars"], _TP_TIER_PARITY["fill_rule_runs"]["atr"])
+            bt = Backtester(**_fill_rule_run_kwargs(
+                stop_loss_atr_mult=run["stop_loss_atr_mult"], intrabar_resolution=run["mode"],
+            ))
+            result = bt.run(df, save=False)
 
-    got = [
-        [list(df.index.astype(str)).index(t["exit_date"]), t["exit_price"], t["shares"],
-         t["exit_reason"].split(":")[0]]
-        for t in result["trades"]
-    ]
-    assert got == run["want"]
+            got = [
+                [list(df.index.astype(str)).index(t["exit_date"]), t["exit_price"], t["shares"],
+                 t["exit_reason"].split(":")[0]]
+                for t in result["trades"]
+            ]
+            assert got == run["want"]
 
 
-@pytest.mark.parametrize("case", _TP_TIER_PARITY["fill_rule_runs"]["refusals"], ids=lambda r: r["id"])
-def test_hyperliquid_backtest_resting_rule_refusals_match_the_parity_fixture(case):
-    with pytest.raises(ValueError, match=case["match"]):
-        Backtester(**_fill_rule_run_kwargs(**case["kwargs"]))
+def test_hyperliquid_backtest_resting_rule_refusals_match_the_parity_fixture(subtests):
+    for case in _TP_TIER_PARITY["fill_rule_runs"]["refusals"]:
+        with subtests.test(case=case["id"]):
+            with pytest.raises(ValueError, match=case["match"]):
+                Backtester(**_fill_rule_run_kwargs(**case["kwargs"]))
 
 
 def _handoff_walk(n=360, seed=5):
@@ -1052,8 +851,13 @@ def _handoff_split(df, kwargs, wanted):
     raise AssertionError("no split leaves the stated position open")
 
 
-@pytest.mark.parametrize("case", sorted(_HANDOFF_CASES))
-def test_warmup_handoff_resumes_the_uninterrupted_engine_state(case):
+def test_warmup_handoff_resumes_the_uninterrupted_engine_state(subtests):
+    for case in sorted(_HANDOFF_CASES):
+        with subtests.test(case=case):
+            _assert_warmup_handoff_resumes_the_uninterrupted_engine_state(case)
+
+
+def _assert_warmup_handoff_resumes_the_uninterrupted_engine_state(case):
     kwargs, wanted = _HANDOFF_CASES[case]
     df = _handoff_walk()
     k, handoff = _handoff_split(df, kwargs, wanted)

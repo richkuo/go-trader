@@ -252,24 +252,25 @@ def _same(a, b):
             assert x == y, (col, x, y)
 
 
-@pytest.mark.parametrize("params", [None, {"fast_period": 13, "slow_period": 100}])
-def test_full_series_prefix_and_bounded_tail_agree(params):
-    df = _market()
-    full = run(df, params)
-    p = {**_FUTURES.STRATEGY_REGISTRY[NAME]["default_params"], **(params or {})}
-    need = p["slow_period"] + HORIZON
-    assert (full["signal"] != 0).sum() > 0
-    for i in range(len(df)):
-        prefix = run(df.iloc[: i + 1], params).iloc[-1]
-        _same(full.iloc[i], prefix)
-        tail = run(df.iloc[max(0, i - 199): i + 1], params).iloc[-1]
-        if i + 1 >= need:
-            _same(full.iloc[i], tail)
-    exact = run(df.iloc[len(df) - need:], params).iloc[-1]
-    _same(full.iloc[-1], exact)
-    too_short = run(df.iloc[len(df) - need + 1:], params).iloc[-1]
-    assert too_short["ao_reason"] == "insufficient_history"
-    assert int(too_short["signal"]) == 0
+def test_full_series_prefix_and_bounded_tail_agree(subtests):
+    for params in [None, {"fast_period": 13, "slow_period": 100}]:
+        with subtests.test(params=params):
+            df = _market()
+            full = run(df, params)
+            p = {**_FUTURES.STRATEGY_REGISTRY[NAME]["default_params"], **(params or {})}
+            need = p["slow_period"] + HORIZON
+            assert (full["signal"] != 0).sum() > 0
+            for i in range(len(df)):
+                prefix = run(df.iloc[: i + 1], params).iloc[-1]
+                _same(full.iloc[i], prefix)
+                tail = run(df.iloc[max(0, i - 199): i + 1], params).iloc[-1]
+                if i + 1 >= need:
+                    _same(full.iloc[i], tail)
+            exact = run(df.iloc[len(df) - need:], params).iloc[-1]
+            _same(full.iloc[-1], exact)
+            too_short = run(df.iloc[len(df) - need + 1:], params).iloc[-1]
+            assert too_short["ao_reason"] == "insufficient_history"
+            assert int(too_short["signal"]) == 0
 
 
 def test_every_entry_is_reproducible_from_recorded_columns():

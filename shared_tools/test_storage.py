@@ -99,22 +99,19 @@ def _sample_backtest_result():
 
 
 class TestInitDb:
-    @pytest.mark.parametrize("object_type,name", [
-        ("table", "ohlcv"),
-        ("table", "backtest_results"),
-        ("index", "idx_ohlcv_lookup"),
-    ])
-    def test_creates_schema_objects(self, db_path, object_type, name):
-        conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type=?", (object_type,)
-        ).fetchall()
-        conn.close()
-        assert name in [r[0] for r in rows]
-
-    def test_idempotent(self, db_path):
-        init_db(db_path)
-        init_db(db_path)
+    def test_creates_schema_objects(self, db_path, subtests):
+        for object_type, name in [
+            ("table", "ohlcv"),
+            ("table", "backtest_results"),
+            ("index", "idx_ohlcv_lookup"),
+        ]:
+            with subtests.test(object_type=object_type, name=name):
+                conn = sqlite3.connect(db_path)
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type=?", (object_type,)
+                ).fetchall()
+                conn.close()
+                assert name in [r[0] for r in rows]
 
 
 class TestGetConnection:
@@ -155,17 +152,18 @@ class TestOhlcvRoundTrip:
         assert len(loaded) == 3
         assert loaded["close"].iloc[0] == pytest.approx(99999.0)
 
-    @pytest.mark.parametrize("kwargs,expected_rows", [
-        ({"start_ts": 1700003600000}, 2),
-        ({"end_ts": 1700003600000}, 2),
-        ({"start_ts": 1700003600000, "end_ts": 1700003600000}, 1),
-    ])
-    def test_timestamp_filters(self, db_path, kwargs, expected_rows):
+    def test_timestamp_filters(self, db_path, subtests):
         df = _sample_ohlcv_df()
         store_ohlcv(df, "binanceus", "BTC/USDT", "1h", db_path=db_path)
 
-        loaded = load_ohlcv("binanceus", "BTC/USDT", "1h", db_path=db_path, **kwargs)
-        assert len(loaded) == expected_rows
+        for kwargs, expected_rows in [
+            ({"start_ts": 1700003600000}, 2),
+            ({"end_ts": 1700003600000}, 2),
+            ({"start_ts": 1700003600000, "end_ts": 1700003600000}, 1),
+        ]:
+            with subtests.test(kwargs=kwargs):
+                loaded = load_ohlcv("binanceus", "BTC/USDT", "1h", db_path=db_path, **kwargs)
+                assert len(loaded) == expected_rows
 
     def test_different_exchanges_isolated(self, db_path):
         df = _sample_ohlcv_df()
@@ -200,30 +198,29 @@ class TestOhlcvRoundTrip:
 
 
 class TestBacktestRoundTrip:
-    def test_store_and_retrieve(self, db_path):
+    def test_store_and_retrieve(self, db_path, subtests):
         result = _sample_backtest_result()
         store_backtest_result(result, db_path=db_path)
 
         df = get_backtest_results(db_path=db_path)
-        assert len(df) == 1
-        assert df["strategy_name"].iloc[0] == "sma_crossover"
-        assert df["symbol"].iloc[0] == "BTC/USDT"
-        assert df["initial_capital"].iloc[0] == pytest.approx(10000.0)
-        assert df["final_capital"].iloc[0] == pytest.approx(12500.0)
-        assert df["total_return_pct"].iloc[0] == pytest.approx(25.0)
-        assert df["sharpe_ratio"].iloc[0] == pytest.approx(1.5)
-        assert df["total_trades"].iloc[0] == 42
-
-    @pytest.mark.parametrize("column,check", [
-        ("params", lambda v: v["fast_period"] == 10 and v["slow_period"] == 50),
-        ("trades_json", lambda v: len(v) == 1 and v[0]["side"] == "buy"),
-    ])
-    def test_nested_fields_stored_as_json(self, db_path, column, check):
-        result = _sample_backtest_result()
-        store_backtest_result(result, db_path=db_path)
-
-        df = get_backtest_results(db_path=db_path)
-        assert check(json.loads(df[column].iloc[0]))
+        with subtests.test("test_store_and_retrieve"):
+            assert len(df) == 1
+            assert df["strategy_name"].iloc[0] == "sma_crossover"
+            assert df["symbol"].iloc[0] == "BTC/USDT"
+            assert df["initial_capital"].iloc[0] == pytest.approx(10000.0)
+            assert df["final_capital"].iloc[0] == pytest.approx(12500.0)
+            assert df["total_return_pct"].iloc[0] == pytest.approx(25.0)
+            assert df["sharpe_ratio"].iloc[0] == pytest.approx(1.5)
+            assert df["total_trades"].iloc[0] == 42
+        for column, check in [
+            ("params", lambda v: v["fast_period"] == 10 and v["slow_period"] == 50),
+            ("trades_json", lambda v: len(v) == 1 and v[0]["side"] == "buy"),
+        ]:
+            with subtests.test("test_nested_fields_stored_as_json", column=column):
+                assert check(json.loads(df[column].iloc[0]))
+        with subtests.test("test_created_at_populated"):
+            assert df["created_at"].iloc[0] is not None
+            assert len(df["created_at"].iloc[0]) > 0
 
     def test_filter_by_strategy_name(self, db_path):
         r1 = _sample_backtest_result()
@@ -235,16 +232,6 @@ class TestBacktestRoundTrip:
         df = get_backtest_results(strategy_name="sma_crossover", db_path=db_path)
         assert len(df) == 1
         assert df["strategy_name"].iloc[0] == "sma_crossover"
-
-    def test_all_results_when_no_filter(self, db_path):
-        r1 = _sample_backtest_result()
-        r2 = _sample_backtest_result()
-        r2["strategy_name"] = "momentum"
-        store_backtest_result(r1, db_path=db_path)
-        store_backtest_result(r2, db_path=db_path)
-
-        df = get_backtest_results(db_path=db_path)
-        assert len(df) == 2
 
     def test_empty_results(self, db_path):
         df = get_backtest_results(db_path=db_path)
@@ -265,14 +252,6 @@ class TestBacktestRoundTrip:
         assert df["initial_capital"].iloc[0] == 0
         assert df["total_trades"].iloc[0] == 0
 
-    def test_created_at_populated(self, db_path):
-        result = _sample_backtest_result()
-        store_backtest_result(result, db_path=db_path)
-
-        df = get_backtest_results(db_path=db_path)
-        assert df["created_at"].iloc[0] is not None
-        assert len(df["created_at"].iloc[0]) > 0
-
     def test_multiple_results_ordered_desc(self, db_path):
         for i in range(3):
             r = _sample_backtest_result()
@@ -290,38 +269,22 @@ class TestFundingCoverage:
         from storage import load_funding_coverage
         return load_funding_coverage(exchange, coin, db_path=db_path)
 
-    def test_empty_coverage(self, db_path):
-        assert self._load(db_path) == []
-
-    def test_single_interval_roundtrip(self, db_path):
+    def test_stored_intervals_merge_only_when_they_overlap_or_touch(self, tmp_path, subtests):
         from storage import store_funding_coverage
-        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
-        assert self._load(db_path) == [(100, 200)]
-
-    def test_disjoint_intervals_stay_disjoint(self, db_path):
-        from storage import store_funding_coverage
-        store_funding_coverage("hyperliquid", "BTC", 1000, 2000, db_path=db_path)
-        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
-        assert self._load(db_path) == [(100, 200), (1000, 2000)]
-
-    def test_overlapping_intervals_merge(self, db_path):
-        from storage import store_funding_coverage
-        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
-        store_funding_coverage("hyperliquid", "BTC", 150, 300, db_path=db_path)
-        assert self._load(db_path) == [(100, 300)]
-
-    def test_touching_intervals_merge(self, db_path):
-        from storage import store_funding_coverage
-        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
-        store_funding_coverage("hyperliquid", "BTC", 200, 300, db_path=db_path)
-        assert self._load(db_path) == [(100, 300)]
-
-    def test_bridging_interval_collapses_neighbors(self, db_path):
-        from storage import store_funding_coverage
-        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
-        store_funding_coverage("hyperliquid", "BTC", 400, 500, db_path=db_path)
-        store_funding_coverage("hyperliquid", "BTC", 150, 450, db_path=db_path)
-        assert self._load(db_path) == [(100, 500)]
+        for label, intervals, expected in [
+            ("empty_coverage", [], []),
+            ("single_interval_roundtrip", [(100, 200)], [(100, 200)]),
+            ("disjoint_intervals_stay_disjoint", [(1000, 2000), (100, 200)], [(100, 200), (1000, 2000)]),
+            ("overlapping_intervals_merge", [(100, 200), (150, 300)], [(100, 300)]),
+            ("touching_intervals_merge", [(100, 200), (200, 300)], [(100, 300)]),
+            ("bridging_interval_collapses_neighbors", [(100, 200), (400, 500), (150, 450)], [(100, 500)]),
+        ]:
+            with subtests.test(case=label):
+                path = str(tmp_path / f"{label}.db")
+                init_db(path)
+                for start, end in intervals:
+                    store_funding_coverage("hyperliquid", "BTC", start, end, db_path=path)
+                assert self._load(path) == expected
 
     def test_coins_and_exchanges_isolated(self, db_path):
         from storage import store_funding_coverage

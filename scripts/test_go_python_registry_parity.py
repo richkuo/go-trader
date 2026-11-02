@@ -136,19 +136,20 @@ def test_go_no_edge_metadata_equals_python_registry():
         assert os.path.isfile(os.path.join(REPO, ref)), ref
 
 
-@pytest.mark.parametrize("side", ["go", "python"])
-def test_metadata_parity_detects_a_removed_name_or_changed_field(side):
+def test_metadata_parity_detects_a_removed_name_or_changed_field(subtests):
     go, py = go_no_edge_metadata(), python_no_edge_metadata()
-    target = go if side == "go" else py
-    removed = copy.deepcopy(target)
-    removed.pop("awesome_oscillator")
-    changed = copy.deepcopy(target)
-    changed["rsi"] = ("unvalidated", changed["rsi"][1])
-    moved = copy.deepcopy(target)
-    moved["vortex_trend"] = (moved["vortex_trend"][0], "docs/research/fee-audit-m5.md")
-    for mutated in (removed, changed, moved):
-        pair = (mutated, py) if side == "go" else (go, mutated)
-        assert len(mapping_mismatches(*pair)) == 1
+    for side in ("go", "python"):
+        with subtests.test(side=side):
+            target = go if side == "go" else py
+            removed = copy.deepcopy(target)
+            removed.pop("awesome_oscillator")
+            changed = copy.deepcopy(target)
+            changed["rsi"] = ("unvalidated", changed["rsi"][1])
+            moved = copy.deepcopy(target)
+            moved["vortex_trend"] = (moved["vortex_trend"][0], "docs/research/fee-audit-m5.md")
+            for mutated in (removed, changed, moved):
+                pair = (mutated, py) if side == "go" else (go, mutated)
+                assert len(mapping_mismatches(*pair)) == 1
 
 
 def go_production_refused():
@@ -248,21 +249,21 @@ def test_go_bidirectional_perps_equal_python_short_entries():
     assert "order_book_imbalance" in py and "order_book_imbalance" not in go
 
 
-@pytest.mark.parametrize("side", ["go", "python"])
-def test_short_entry_parity_detects_a_removed_name(side):
+def test_short_entry_parity_detects_a_removed_name(subtests):
     go, py = go_bidirectional_perps(), python_short_entries()
-    target = go if side == "go" else py
-    removed = copy.deepcopy(target)
-    removed.pop("awesome_oscillator")
-    pair = (removed, py) if side == "go" else (go, removed)
-    assert unpromoted_absence(mapping_mismatches(*pair), refused_in_both_languages()) == [
-        "awesome_oscillator: in Python, missing from Go" if side == "go"
-        else "awesome_oscillator: in Go, missing from Python"
-    ]
+    for side in ("go", "python"):
+        with subtests.test(side=side):
+            target = go if side == "go" else py
+            removed = copy.deepcopy(target)
+            removed.pop("awesome_oscillator")
+            pair = (removed, py) if side == "go" else (go, removed)
+            assert unpromoted_absence(mapping_mismatches(*pair), refused_in_both_languages()) == [
+                "awesome_oscillator: in Python, missing from Go" if side == "go"
+                else "awesome_oscillator: in Go, missing from Python"
+            ]
 
 
-@pytest.fixture
-def scratch_registry():
+def _scratch_registry():
     return _load("_parity_scratch_open_registry", "shared_strategies", "open", "registry.py")
 
 
@@ -270,34 +271,40 @@ def _noop(df):
     return df
 
 
-@pytest.mark.parametrize("value", ["missing", 1, 0, None, "true"])
-def test_register_requires_bool_short_entries(scratch_registry, value):
-    kwargs = {} if value == "missing" else {"short_entries": value}
-    before = set(scratch_registry.STRATEGIES)
-    with pytest.raises((TypeError, ValueError), match="short_entries"):
-        scratch_registry.register("_scratch", "scratch", {}, **kwargs)(_noop)
-    assert set(scratch_registry.STRATEGIES) == before
+def test_register_requires_bool_short_entries(subtests):
+    for value in ["missing", 1, 0, None, "true"]:
+        with subtests.test(value=value):
+            scratch_registry = _scratch_registry()
+            kwargs = {} if value == "missing" else {"short_entries": value}
+            before = set(scratch_registry.STRATEGIES)
+            with pytest.raises((TypeError, ValueError), match="short_entries"):
+                scratch_registry.register("_scratch", "scratch", {}, **kwargs)(_noop)
+            assert set(scratch_registry.STRATEGIES) == before
 
 
-@pytest.mark.parametrize("kwargs", [
-    {"platforms": ("spot",), "short_entries": True},
-    {"default_params": {"allow_short": True}, "short_entries": False},
-    {"variants": {"futures": {"default_params": {"allow_short": True}}}, "short_entries": False},
-])
-def test_register_rejects_inconsistent_short_entries(scratch_registry, kwargs):
-    kwargs = {"default_params": {"allow_short": False}, **kwargs}
-    before = set(scratch_registry.STRATEGIES)
-    with pytest.raises(ValueError, match="short_entries"):
-        scratch_registry.register("_scratch", "scratch", **kwargs)(_noop)
-    assert set(scratch_registry.STRATEGIES) == before
+def test_register_rejects_inconsistent_short_entries(subtests):
+    for index, case in enumerate([
+        {"platforms": ("spot",), "short_entries": True},
+        {"default_params": {"allow_short": True}, "short_entries": False},
+        {"variants": {"futures": {"default_params": {"allow_short": True}}}, "short_entries": False},
+    ]):
+        with subtests.test(case=f"kwargs{index}"):
+            scratch_registry = _scratch_registry()
+            kwargs = {"default_params": {"allow_short": False}, **case}
+            before = set(scratch_registry.STRATEGIES)
+            with pytest.raises(ValueError, match="short_entries"):
+                scratch_registry.register("_scratch", "scratch", **kwargs)(_noop)
+            assert set(scratch_registry.STRATEGIES) == before
 
 
-@pytest.mark.parametrize("short_entries", [True, False])
-def test_register_stores_declared_short_entries(scratch_registry, short_entries):
-    scratch_registry.register("_scratch", "scratch", {"allow_short": short_entries},
-                              short_entries=short_entries)(_noop)
-    assert scratch_registry.STRATEGIES["_scratch"]["short_entries"] is short_entries
-    assert ("_scratch" in scratch_registry.short_entry_strategies()) is short_entries
+def test_register_stores_declared_short_entries(subtests):
+    for short_entries in [True, False]:
+        with subtests.test(short_entries=short_entries):
+            scratch_registry = _scratch_registry()
+            scratch_registry.register("_scratch", "scratch", {"allow_short": short_entries},
+                                      short_entries=short_entries)(_noop)
+            assert scratch_registry.STRATEGIES["_scratch"]["short_entries"] is short_entries
+            assert ("_scratch" in scratch_registry.short_entry_strategies()) is short_entries
 
 
 def test_go_registered_platforms_equal_python_registry():
@@ -411,25 +418,28 @@ def test_quote_capabilities_refuse_every_scalar_path():
                                                   composition.Acknowledgement(None, None), lambda _n: entry)
 
 
-@pytest.mark.parametrize("kwargs, match", [
-    ({"quote": {"input": "deadline_book_evidence"}}, "quote must be exactly"),
-    ({"quote_spec": {}}, "quote_spec applies only"),
-    ({"platforms": ("spot", "futures")}, "platforms"),
-    ({"production_refused": False, "edge_status": None, "edge_source": None, "edge_ref": None}, "production_refused"),
-    ({"param_validator": None}, "param_validator"),
-])
-def test_register_rejects_malformed_quote_metadata(scratch_registry, kwargs, match):
-    base = {"default_params": {}, "short_entries": False, "platforms": ("futures",), "edge_status": "no_edge",
-            "edge_source": "unvalidated", "edge_ref": "x.md", "production_refused": True,
-            "param_validator": lambda p: None, "quote": dict(OPEN_REGISTRY.QUOTE_CONTRACT),
-            "quote_spec": {"strategy": "_scratch_quote"}}
-    if "quote_spec" in kwargs and kwargs["quote_spec"] == {}:
-        base.pop("quote")
-    kwargs = {**base, **kwargs}
-    before = set(scratch_registry.STRATEGIES)
-    with pytest.raises(ValueError, match=match):
-        scratch_registry.register("_scratch_quote", "scratch", **kwargs)(_noop)
-    assert set(scratch_registry.STRATEGIES) == before
+def test_register_rejects_malformed_quote_metadata(subtests):
+    for index, (case, match) in enumerate([
+        ({"quote": {"input": "deadline_book_evidence"}}, "quote must be exactly"),
+        ({"quote_spec": {}}, "quote_spec applies only"),
+        ({"platforms": ("spot", "futures")}, "platforms"),
+        ({"production_refused": False, "edge_status": None, "edge_source": None, "edge_ref": None},
+         "production_refused"),
+        ({"param_validator": None}, "param_validator"),
+    ]):
+        with subtests.test(case=f"kwargs{index}", match=match):
+            scratch_registry = _scratch_registry()
+            base = {"default_params": {}, "short_entries": False, "platforms": ("futures",),
+                    "edge_status": "no_edge", "edge_source": "unvalidated", "edge_ref": "x.md",
+                    "production_refused": True, "param_validator": lambda p: None,
+                    "quote": dict(OPEN_REGISTRY.QUOTE_CONTRACT), "quote_spec": {"strategy": "_scratch_quote"}}
+            if "quote_spec" in case and case["quote_spec"] == {}:
+                base.pop("quote")
+            kwargs = {**base, **case}
+            before = set(scratch_registry.STRATEGIES)
+            with pytest.raises(ValueError, match=match):
+                scratch_registry.register("_scratch_quote", "scratch", **kwargs)(_noop)
+            assert set(scratch_registry.STRATEGIES) == before
 
 
 def go_basket_rankers():
@@ -485,21 +495,24 @@ def test_basket_rankers_stay_out_of_every_single_symbol_registry():
         OPEN_REGISTRY.get_basket_ranker("sma_crossover")
 
 
-@pytest.mark.parametrize("kwargs, match", [
-    ({"basket": {"input": "closed_bar_frames"}}, "basket must be exactly"),
-    ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("spot", "futures")}, "platforms"),
-    ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("futures",),
-      "short_entries": True, "default_params": {"allow_short": True}}, "short_entries"),
-    ({"basket_preflight": lambda params, context: None}, "basket_preflight applies only to a basket evaluator"),
-    ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("futures",),
-      "basket_preflight": "not callable"}, "basket_preflight must be callable"),
-])
-def test_register_rejects_malformed_basket_metadata(scratch_registry, kwargs, match):
-    kwargs = {"default_params": {}, "short_entries": False, **kwargs}
-    before = set(scratch_registry.STRATEGIES)
-    with pytest.raises(ValueError, match=match):
-        scratch_registry.register("_scratch_basket", "scratch", **kwargs)(_noop)
-    assert set(scratch_registry.STRATEGIES) == before
+def test_register_rejects_malformed_basket_metadata(subtests):
+    for index, (case, match) in enumerate([
+        ({"basket": {"input": "closed_bar_frames"}}, "basket must be exactly"),
+        ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("spot", "futures")},
+         "platforms"),
+        ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("futures",),
+          "short_entries": True, "default_params": {"allow_short": True}}, "short_entries"),
+        ({"basket_preflight": lambda params, context: None}, "basket_preflight applies only to a basket evaluator"),
+        ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("futures",),
+          "basket_preflight": "not callable"}, "basket_preflight must be callable"),
+    ]):
+        with subtests.test(case=f"kwargs{index}", match=match):
+            scratch_registry = _scratch_registry()
+            kwargs = {"default_params": {}, "short_entries": False, **case}
+            before = set(scratch_registry.STRATEGIES)
+            with pytest.raises(ValueError, match=match):
+                scratch_registry.register("_scratch_basket", "scratch", **kwargs)(_noop)
+            assert set(scratch_registry.STRATEGIES) == before
 
 
 def go_pair_policies():
@@ -575,30 +588,34 @@ def test_pair_policies_refuse_every_single_symbol_path():
         assert name not in OPEN_REGISTRY.pair_evaluators()
 
 
-@pytest.mark.parametrize("kwargs, match", [
-    ({"pair": {"input": "pair_policy_request_v2"}}, "pair must be exactly"),
-    ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}}, "carries no basket metadata"),
-    ({"quote": {"input": "deadline_book_evidence"}}, "carries no quote metadata"),
-    ({"quote_spec": {"strategy": "cross_exchange_perp_arbitrage"}}, "carries no quote metadata"),
-    ({"edge_source": "study_fail"}, "differs from the pair_registry descriptor"),
-    ({"edge_ref": "x.md"}, "differs from the pair_registry descriptor"),
-    ({"platforms": ("spot", "futures")}, "differs from the pair_registry descriptor"),
-    ({"default_params": {"entry_threshold_bps": 5}}, "no single-symbol default_params"),
-    ({"param_validator": lambda p: None}, "no single-symbol default_params"),
-    ({"name": "_scratch_pair"}, "needs a descriptor"),
-])
-def test_register_rejects_malformed_pair_metadata(scratch_registry, kwargs, match):
-    name = kwargs.pop("name", "cross_exchange_perp_arbitrage")
-    descriptor = scratch_registry.pair_registry.pair_descriptor("cross_exchange_perp_arbitrage")
-    scratch_registry.STRATEGIES.pop("cross_exchange_perp_arbitrage")
-    base = {"description": descriptor["description"], "default_params": {}, "platforms": descriptor["platforms"],
-            "edge_status": descriptor["edge_status"], "edge_source": descriptor["edge_source"],
-            "edge_ref": descriptor["edge_ref"], "short_entries": False, "production_refused": True,
-            "pair": dict(scratch_registry.PAIR_CONTRACT)}
-    kwargs = {**base, **kwargs}
-    before = dict(scratch_registry.STRATEGIES)
-    with pytest.raises(ValueError, match=match):
-        scratch_registry.register(name, **kwargs)(_noop)
-    assert scratch_registry.STRATEGIES == before
-    scratch_registry.register("cross_exchange_perp_arbitrage", **base)(_noop)
-    assert scratch_registry.pair_evaluators() == frozenset({"cross_exchange_perp_arbitrage"})
+def test_register_rejects_malformed_pair_metadata(subtests):
+    for index, (case, match) in enumerate([
+        ({"pair": {"input": "pair_policy_request_v2"}}, "pair must be exactly"),
+        ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}}, "carries no basket metadata"),
+        ({"quote": {"input": "deadline_book_evidence"}}, "carries no quote metadata"),
+        ({"quote_spec": {"strategy": "cross_exchange_perp_arbitrage"}}, "carries no quote metadata"),
+        ({"edge_source": "study_fail"}, "differs from the pair_registry descriptor"),
+        ({"edge_ref": "x.md"}, "differs from the pair_registry descriptor"),
+        ({"platforms": ("spot", "futures")}, "differs from the pair_registry descriptor"),
+        ({"default_params": {"entry_threshold_bps": 5}}, "no single-symbol default_params"),
+        ({"param_validator": lambda p: None}, "no single-symbol default_params"),
+        ({"name": "_scratch_pair"}, "needs a descriptor"),
+    ]):
+        with subtests.test(case=f"kwargs{index}", match=match):
+            scratch_registry = _scratch_registry()
+            kwargs = dict(case)
+            name = kwargs.pop("name", "cross_exchange_perp_arbitrage")
+            descriptor = scratch_registry.pair_registry.pair_descriptor("cross_exchange_perp_arbitrage")
+            scratch_registry.STRATEGIES.pop("cross_exchange_perp_arbitrage")
+            base = {"description": descriptor["description"], "default_params": {},
+                    "platforms": descriptor["platforms"], "edge_status": descriptor["edge_status"],
+                    "edge_source": descriptor["edge_source"], "edge_ref": descriptor["edge_ref"],
+                    "short_entries": False, "production_refused": True,
+                    "pair": dict(scratch_registry.PAIR_CONTRACT)}
+            kwargs = {**base, **kwargs}
+            before = dict(scratch_registry.STRATEGIES)
+            with pytest.raises(ValueError, match=match):
+                scratch_registry.register(name, **kwargs)(_noop)
+            assert scratch_registry.STRATEGIES == before
+            scratch_registry.register("cross_exchange_perp_arbitrage", **base)(_noop)
+            assert scratch_registry.pair_evaluators() == frozenset({"cross_exchange_perp_arbitrage"})

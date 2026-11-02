@@ -39,14 +39,31 @@ def _bt(policy=None, allowed=("trending_up",)):
     return Backtester(**kwargs)
 
 
-def test_all_empty_regime_bars_hold_entry_under_default_open():
+def test_gate_on_failure_policy_holds_entries_never_closes(subtests):
+    with subtests.test(case="all_empty_regime_bars_hold_entry_under_default_open"):
+        _assert_all_empty_regime_bars_hold_entry_under_default_open()
+    with subtests.test(case="all_empty_regime_bars_block_entry_under_closed"):
+        _assert_all_empty_regime_bars_block_entry_under_closed()
+    with subtests.test(case="mid_series_gap_at_decision_bar_respects_policy"):
+        _assert_mid_series_gap_at_decision_bar_respects_policy()
+    with subtests.test(case="known_label_decided_by_membership_under_both_policies"):
+        _assert_known_label_decided_by_membership_under_both_policies()
+    with subtests.test(case="closes_never_gated_under_closed"):
+        _assert_closes_never_gated_under_closed()
+    with subtests.test(case="default_open_is_byte_identical_to_omitted"):
+        _assert_default_open_is_byte_identical_to_omitted()
+    with subtests.test(case="unknown_policy_rejected_at_construction"):
+        _assert_unknown_policy_rejected_at_construction()
+
+
+def _assert_all_empty_regime_bars_hold_entry_under_default_open():
     df = _df_with_signal()
     df["regime"] = ""
     result = _bt().run(with_regime_readiness(df), save=False)
     assert result["total_trades"] == 0
 
 
-def test_all_empty_regime_bars_block_entry_under_closed():
+def _assert_all_empty_regime_bars_block_entry_under_closed():
     df = _df_with_signal()
     df["regime"] = ""
     result = _bt("closed").run(with_regime_readiness(df), save=False)
@@ -55,7 +72,7 @@ def test_all_empty_regime_bars_block_entry_under_closed():
     )
 
 
-def test_mid_series_gap_at_decision_bar_respects_policy():
+def _assert_mid_series_gap_at_decision_bar_respects_policy():
     df = _df_with_signal(buy_at=50)
     df["regime"] = "trending_up"
     df.iloc[50, df.columns.get_loc("regime")] = ""
@@ -63,7 +80,7 @@ def test_mid_series_gap_at_decision_bar_respects_policy():
     assert _bt("closed").run(with_regime_readiness(df), save=False)["total_trades"] == 0
 
 
-def test_known_label_decided_by_membership_under_both_policies():
+def _assert_known_label_decided_by_membership_under_both_policies():
     df = _df_with_signal()
     df["regime"] = "trending_up"
     assert _bt("closed").run(with_regime_readiness(df), save=False)["total_trades"] >= 1, (
@@ -75,7 +92,7 @@ def test_known_label_decided_by_membership_under_both_policies():
     )
 
 
-def test_closes_never_gated_under_closed():
+def _assert_closes_never_gated_under_closed():
     df = _df_with_signal(buy_at=30, sell_at=60)
     df["regime"] = ""
     df.iloc[30, df.columns.get_loc("regime")] = "trending_up"
@@ -86,7 +103,7 @@ def test_closes_never_gated_under_closed():
         [t["exit_date"] for t in res_open["trades"]]
 
 
-def test_default_open_is_byte_identical_to_omitted():
+def _assert_default_open_is_byte_identical_to_omitted():
     df = _df_with_signal()
     df["regime"] = ""
     res_omitted = _bt().run(with_regime_readiness(df), save=False)
@@ -95,7 +112,7 @@ def test_default_open_is_byte_identical_to_omitted():
     assert res_omitted["total_return_pct"] == res_open["total_return_pct"]
 
 
-def test_unknown_policy_rejected_at_construction():
+def _assert_unknown_policy_rejected_at_construction():
     with pytest.raises(ValueError, match="regime_gate_on_failure"):
         _bt("fail-closed")
 
@@ -127,19 +144,38 @@ def _write_config(tmp_path, strategy_extra=None, regime_extra=None):
     return str(p)
 
 
-def test_load_strategy_config_defaults_gate_policy_open(tmp_path):
+def test_load_strategy_config_resolves_gate_policy(tmp_path, subtests):
+    with subtests.test(case="load_strategy_config_defaults_gate_policy_open"):
+        _assert_load_strategy_config_defaults_gate_policy_open(tmp_path)
+    with subtests.test(case="load_strategy_config_reads_strategy_gate_policy"):
+        _assert_load_strategy_config_reads_strategy_gate_policy(tmp_path)
+    with subtests.test(case="load_strategy_config_strategy_overrides_global_gate_policy"):
+        _assert_load_strategy_config_strategy_overrides_global_gate_policy(tmp_path)
+    with subtests.test(case="load_strategy_config_global_gate_policy_applies"):
+        _assert_load_strategy_config_global_gate_policy_applies(tmp_path)
+    with subtests.test(case="load_strategy_config_rejects_unknown_gate_policy"):
+        _assert_load_strategy_config_rejects_unknown_gate_policy(tmp_path)
+    with subtests.test(case="load_strategy_config_rejects_unknown_global_gate_policy"):
+        _assert_load_strategy_config_rejects_unknown_global_gate_policy(tmp_path)
+    with subtests.test(case="load_strategy_config_rejects_unknown_global_gate_policy_even_with_valid_strategy_override"):
+        _assert_load_strategy_config_rejects_unknown_global_gate_policy_even_with_valid_strategy_override(tmp_path)
+    with subtests.test(case="backtester_accepts_load_strategy_config_kwargs"):
+        _assert_backtester_accepts_load_strategy_config_kwargs(tmp_path)
+
+
+def _assert_load_strategy_config_defaults_gate_policy_open(tmp_path):
     path = _write_config(tmp_path)
     kwargs = run_backtest.load_strategy_config(path, "hl-x")
     assert kwargs["regime_gate_on_failure"] == "open"
 
 
-def test_load_strategy_config_reads_strategy_gate_policy(tmp_path):
+def _assert_load_strategy_config_reads_strategy_gate_policy(tmp_path):
     path = _write_config(tmp_path, strategy_extra={"regime_gate_on_failure": "closed"})
     kwargs = run_backtest.load_strategy_config(path, "hl-x")
     assert kwargs["regime_gate_on_failure"] == "closed"
 
 
-def test_load_strategy_config_strategy_overrides_global_gate_policy(tmp_path):
+def _assert_load_strategy_config_strategy_overrides_global_gate_policy(tmp_path):
     path = _write_config(
         tmp_path,
         strategy_extra={"regime_gate_on_failure": "open"},
@@ -149,25 +185,25 @@ def test_load_strategy_config_strategy_overrides_global_gate_policy(tmp_path):
     assert kwargs["regime_gate_on_failure"] == "open"
 
 
-def test_load_strategy_config_global_gate_policy_applies(tmp_path):
+def _assert_load_strategy_config_global_gate_policy_applies(tmp_path):
     path = _write_config(tmp_path, regime_extra={"gate_on_failure": "closed"})
     kwargs = run_backtest.load_strategy_config(path, "hl-x")
     assert kwargs["regime_gate_on_failure"] == "closed"
 
 
-def test_load_strategy_config_rejects_unknown_gate_policy(tmp_path):
+def _assert_load_strategy_config_rejects_unknown_gate_policy(tmp_path):
     path = _write_config(tmp_path, strategy_extra={"regime_gate_on_failure": "fail-closed"})
     with pytest.raises(ValueError, match="regime_gate_on_failure"):
         run_backtest.load_strategy_config(path, "hl-x")
 
 
-def test_load_strategy_config_rejects_unknown_global_gate_policy(tmp_path):
+def _assert_load_strategy_config_rejects_unknown_global_gate_policy(tmp_path):
     path = _write_config(tmp_path, regime_extra={"gate_on_failure": "garbage"})
     with pytest.raises(ValueError, match="regime.gate_on_failure"):
         run_backtest.load_strategy_config(path, "hl-x")
 
 
-def test_load_strategy_config_rejects_unknown_global_gate_policy_even_with_valid_strategy_override(tmp_path):
+def _assert_load_strategy_config_rejects_unknown_global_gate_policy_even_with_valid_strategy_override(tmp_path):
     path = _write_config(
         tmp_path,
         strategy_extra={"regime_gate_on_failure": "closed"},
@@ -177,7 +213,7 @@ def test_load_strategy_config_rejects_unknown_global_gate_policy_even_with_valid
         run_backtest.load_strategy_config(path, "hl-x")
 
 
-def test_backtester_accepts_load_strategy_config_kwargs(tmp_path):
+def _assert_backtester_accepts_load_strategy_config_kwargs(tmp_path):
     path = _write_config(tmp_path, strategy_extra={"regime_gate_on_failure": "closed"})
     kwargs = run_backtest.load_strategy_config(path, "hl-x")
     open_name = kwargs.pop("open_strategy")["name"]

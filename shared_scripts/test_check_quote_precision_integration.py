@@ -62,25 +62,28 @@ CHECK_CASES = {
 
 
 @pytest.mark.parametrize("quote", QUOTES)
-@pytest.mark.parametrize("case", sorted(CHECK_CASES))
-def test_non_option_checks_emit_the_selected_quote_exactly(case, quote, tmp_path):
-    script, argv, source, extra = CHECK_CASES[case]
-    env = {"QP_SHAPE": "cross_up"}
-    if source == "quote":
-        env["QP_CLOSE"] = 0.5
-        env["QP_QUOTE"] = repr(quote)
-    else:
-        env["QP_CLOSE"] = repr(quote)
-    env.update(extra)
-    proc = _run(script, argv, env, tmp_path=tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    out = _single_document(proc)
-    assert not out.get("error"), out
-    assert out["signal"] == 1, out
-    assert isinstance(out["price"], float)
-    assert out["price"] == quote
-    if script == CHECK_TOPSTEP:
-        assert out["market_open"] is True
+def test_non_option_checks_emit_the_selected_quote_exactly(quote, tmp_path, subtests):
+    for case in sorted(CHECK_CASES):
+        with subtests.test(case=case):
+            home = tmp_path / case
+            home.mkdir()
+            script, argv, source, extra = CHECK_CASES[case]
+            env = {"QP_SHAPE": "cross_up"}
+            if source == "quote":
+                env["QP_CLOSE"] = 0.5
+                env["QP_QUOTE"] = repr(quote)
+            else:
+                env["QP_CLOSE"] = repr(quote)
+            env.update(extra)
+            proc = _run(script, argv, env, tmp_path=home)
+            assert proc.returncode == 0, proc.stderr
+            out = _single_document(proc)
+            assert not out.get("error"), out
+            assert out["signal"] == 1, out
+            assert isinstance(out["price"], float)
+            assert out["price"] == quote
+            if script == CHECK_TOPSTEP:
+                assert out["market_open"] is True
 
 
 def test_topstep_closed_market_keeps_its_refusal(tmp_path):
@@ -127,15 +130,18 @@ def test_check_price_without_symbols_emits_an_empty_map(tmp_path):
     assert _single_document(proc) == {}
 
 
-@pytest.mark.parametrize("quote", QUOTES)
-def test_check_options_preserves_the_spot_price(quote, tmp_path):
-    proc = _run(CHECK_OPTIONS, ["vol_mean_reversion", "BTC", "--platform=deribit"],
-                {"QP_QUOTE": repr(quote), "QP_CLOSE": repr(quote)}, stdin="[]", tmp_path=tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    out = _single_document(proc)
-    assert not out.get("error"), out
-    assert isinstance(out["spot_price"], float)
-    assert out["spot_price"] == quote
+def test_check_options_preserves_the_spot_price(tmp_path, subtests):
+    for i, quote in enumerate(QUOTES):
+        with subtests.test(quote=quote):
+            home = tmp_path / f"quote-{i}"
+            home.mkdir()
+            proc = _run(CHECK_OPTIONS, ["vol_mean_reversion", "BTC", "--platform=deribit"],
+                        {"QP_QUOTE": repr(quote), "QP_CLOSE": repr(quote)}, stdin="[]", tmp_path=home)
+            assert proc.returncode == 0, proc.stderr
+            out = _single_document(proc)
+            assert not out.get("error"), out
+            assert isinstance(out["spot_price"], float)
+            assert out["spot_price"] == quote
 
 
 def test_check_options_without_a_spot_quote_keeps_its_error(tmp_path):

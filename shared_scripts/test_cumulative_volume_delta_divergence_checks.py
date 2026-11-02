@@ -3,7 +3,6 @@ import os
 import subprocess
 import sys
 
-import pytest
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 SCRIPTS = os.path.join(REPO, "shared_scripts")
@@ -68,36 +67,37 @@ def _assert_refused(proc, role, name=NAME):
     assert "Fetching" not in proc.stderr
 
 
-@pytest.mark.parametrize("name", REFUSED_NAMES)
-def test_every_solo_and_batch_check_refuses_the_candidate_in_any_mode_and_reference_and_keeps_batch_peers(name):
-    NAME = name
-    envelope = {"v": 2, "market": _market()}
-    cases = [
-        ([NAME, "BTC", "5m", "--mode=paper", "--market-stdin"], "open"),
-        ([NAME, "BTC", "5m", "--mode", "paper", "--market-stdin"], "open"),
-        ([NAME, "BTC", "5m", "--mode=live", "--allow-no-edge", "--market-stdin"], "open"),
-        ([NAME, "BTC", "5m", "--market-stdin"], "open"),
-        (["breakout", "BTC", "5m", "--mode=paper", "--market-stdin",
-          "--strategy-refs", json.dumps({"open": {"name": NAME}, "closes": []})], "open"),
-        ([NAME, "BTC", "5m", "--mode=paper", "--market-stdin",
-          "--strategy-refs", json.dumps({"open": {"name": "breakout"}, "closes": []})], "open"),
-        (["breakout", "BTC", "5m", "--mode=live", "--allow-no-edge", "--market-stdin",
-          "--strategy-refs", json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME}]})], "close"),
-    ]
-    for argv, role in cases:
-        _assert_refused(_run("check_hyperliquid.py", argv, envelope), role, NAME)
-    proc = _run("check_okx.py", [NAME, "BTC", "5m", "--inst-type=swap", "--mode=paper"])
-    assert proc.returncode == 1 and REFUSED in _payload(proc)["error"], proc.stdout[-2000:] + proc.stderr[-2000:]
-    assert "Fetching" not in proc.stderr
-    slots = [
-        {"id": "paper", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"]},
-        {"id": "acked", "strategy": NAME, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True},
-        {"id": "peer", "strategy": "breakout", "mode": "paper"},
-    ]
-    proc = _run("check_hyperliquid.py", ["--batch-check", "--symbol=BTC", "--timeframe=5m", "--market-stdin"],
-                {"v": 2, "slots": slots, "market": _market()})
-    results = {r["id"]: r for r in _payload(proc)["results"]}
-    for slot in ("paper", "acked"):
-        assert f"open strategy '{NAME}' {REFUSED}" in results[slot]["error"], f"batch_slots_refuse[{name}] {slot}"
-        assert results[slot].get("signal", 0) == 0, f"batch_slots_refuse[{name}] {slot}"
-    assert not results["peer"].get("error"), f"batch_slots_refuse[{name}] peer"
+def test_every_solo_and_batch_check_refuses_the_candidate_in_any_mode_and_reference_and_keeps_batch_peers(subtests):
+    for name in REFUSED_NAMES:
+        with subtests.test(name=name):
+            NAME = name
+            envelope = {"v": 2, "market": _market()}
+            cases = [
+                ([NAME, "BTC", "5m", "--mode=paper", "--market-stdin"], "open"),
+                ([NAME, "BTC", "5m", "--mode", "paper", "--market-stdin"], "open"),
+                ([NAME, "BTC", "5m", "--mode=live", "--allow-no-edge", "--market-stdin"], "open"),
+                ([NAME, "BTC", "5m", "--market-stdin"], "open"),
+                (["breakout", "BTC", "5m", "--mode=paper", "--market-stdin",
+                  "--strategy-refs", json.dumps({"open": {"name": NAME}, "closes": []})], "open"),
+                ([NAME, "BTC", "5m", "--mode=paper", "--market-stdin",
+                  "--strategy-refs", json.dumps({"open": {"name": "breakout"}, "closes": []})], "open"),
+                (["breakout", "BTC", "5m", "--mode=live", "--allow-no-edge", "--market-stdin",
+                  "--strategy-refs", json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME}]})], "close"),
+            ]
+            for argv, role in cases:
+                _assert_refused(_run("check_hyperliquid.py", argv, envelope), role, NAME)
+            proc = _run("check_okx.py", [NAME, "BTC", "5m", "--inst-type=swap", "--mode=paper"])
+            assert proc.returncode == 1 and REFUSED in _payload(proc)["error"], proc.stdout[-2000:] + proc.stderr[-2000:]
+            assert "Fetching" not in proc.stderr
+            slots = [
+                {"id": "paper", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"]},
+                {"id": "acked", "strategy": NAME, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True},
+                {"id": "peer", "strategy": "breakout", "mode": "paper"},
+            ]
+            proc = _run("check_hyperliquid.py", ["--batch-check", "--symbol=BTC", "--timeframe=5m", "--market-stdin"],
+                        {"v": 2, "slots": slots, "market": _market()})
+            results = {r["id"]: r for r in _payload(proc)["results"]}
+            for slot in ("paper", "acked"):
+                assert f"open strategy '{NAME}' {REFUSED}" in results[slot]["error"], f"batch_slots_refuse[{name}] {slot}"
+                assert results[slot].get("signal", 0) == 0, f"batch_slots_refuse[{name}] {slot}"
+            assert not results["peer"].get("error"), f"batch_slots_refuse[{name}] peer"

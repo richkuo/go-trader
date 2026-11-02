@@ -43,7 +43,16 @@ def _race_long_df():
     )
 
 
-def test_same_bar_race_long_adverse_first_stops_out_at_trigger():
+def test_same_bar_race_adverse_first_stops_out_and_legacy_reproduces_tp_credit(subtests):
+    with subtests.test(case="same_bar_race_long_adverse_first_stops_out_at_trigger"):
+        _assert_same_bar_race_long_adverse_first_stops_out_at_trigger()
+    with subtests.test(case="same_bar_race_long_legacy_flag_reproduces_tp_credit"):
+        _assert_same_bar_race_long_legacy_flag_reproduces_tp_credit()
+    with subtests.test(case="same_bar_race_short_adverse_first_stops_out_at_trigger"):
+        _assert_same_bar_race_short_adverse_first_stops_out_at_trigger()
+
+
+def _assert_same_bar_race_long_adverse_first_stops_out_at_trigger():
     res = _run(_race_long_df(), close_strategies=TP_5PCT_FULL,
                stop_loss_pct=0.03)
     assert res["total_trades"] == 1
@@ -54,7 +63,7 @@ def test_same_bar_race_long_adverse_first_stops_out_at_trigger():
     assert res["final_capital"] == pytest.approx(9700.0, rel=1e-9)
 
 
-def test_same_bar_race_long_legacy_flag_reproduces_tp_credit():
+def _assert_same_bar_race_long_legacy_flag_reproduces_tp_credit():
     res = _run(_race_long_df(), close_strategies=TP_5PCT_FULL,
                stop_loss_pct=0.03, intrabar_resolution="bar_close")
     assert res["total_trades"] == 1
@@ -64,7 +73,7 @@ def test_same_bar_race_long_legacy_flag_reproduces_tp_credit():
     assert res["final_capital"] == pytest.approx(10600.0, rel=1e-9)
 
 
-def test_same_bar_race_short_adverse_first_stops_out_at_trigger():
+def _assert_same_bar_race_short_adverse_first_stops_out_at_trigger():
     df = _df(
         opens=[100, 100, 100, 94, 94],
         highs=[101, 101, 104, 95, 95],
@@ -88,19 +97,27 @@ def test_same_bar_race_short_adverse_first_stops_out_at_trigger():
     assert legacy["final_capital"] == pytest.approx(10600.0, rel=1e-9)
 
 
-@pytest.mark.parametrize(
-    "opens,highs,lows,closes,signals,direction,expected_exit",
-    [
-        ([100, 100, 95, 94, 94], [101, 101, 96, 95, 95],
-         [99, 99, 94, 93, 93], [100, 100, 95, 94, 94],
-         [1, 0, 0, 0, 0], "long", 95.0),
-        ([100, 100, 105, 106, 106], [101, 101, 106, 107, 107],
-         [99, 99, 104, 105, 105], [100, 100, 105, 106, 106],
-         [-1, 0, 0, 0, 0], "short", 105.0),
-    ],
-)
-def test_gap_through_sl_fills_at_open_not_trigger(
-        opens, highs, lows, closes, signals, direction, expected_exit):
+def test_gap_through_sl_or_tp_fills_at_open(subtests):
+    with subtests.test(case="gap_through_sl_fills_at_open_not_trigger_grid"):
+        _assert_gap_through_sl_fills_at_open_not_trigger_grid(subtests)
+    with subtests.test(case="gap_through_tp_fills_at_open_both_modes"):
+        _assert_gap_through_tp_fills_at_open_both_modes()
+
+
+def _assert_gap_through_sl_fills_at_open_not_trigger_grid(subtests):
+    for opens, highs, lows, closes, signals, direction, expected_exit in [
+            ([100, 100, 95, 94, 94], [101, 101, 96, 95, 95],
+             [99, 99, 94, 93, 93], [100, 100, 95, 94, 94],
+             [1, 0, 0, 0, 0], "long", 95.0),
+            ([100, 100, 105, 106, 106], [101, 101, 106, 107, 107],
+             [99, 99, 104, 105, 105], [100, 100, 105, 106, 106],
+             [-1, 0, 0, 0, 0], "short", 105.0),
+        ]:
+        with subtests.test(case=direction):
+            _assert_gap_through_sl_fills_at_open_not_trigger(opens, highs, lows, closes, signals, direction, expected_exit)
+
+
+def _assert_gap_through_sl_fills_at_open_not_trigger(opens, highs, lows, closes, signals, direction, expected_exit):
     df = _df(opens, highs, lows, closes, signals)
     res = _run(df, close_strategies=TP_5PCT_FULL, stop_loss_pct=0.03,
                direction=direction)
@@ -111,7 +128,7 @@ def test_gap_through_sl_fills_at_open_not_trigger(
     assert trade["exit_date"] == str(df.index[2])
 
 
-def test_gap_through_tp_fills_at_open_both_modes():
+def _assert_gap_through_tp_fills_at_open_both_modes():
     df = _df(
         opens=[100, 100, 100, 110, 110],
         highs=[101, 101, 107, 111, 111],
@@ -189,7 +206,14 @@ def test_no_race_run_identical_across_modes():
     assert walk == legacy
 
 
-def test_entry_bar_trailing_seed_is_not_pierce_eligible():
+def test_trailing_trigger_pierce_eligibility(subtests):
+    with subtests.test(case="entry_bar_trailing_seed_is_not_pierce_eligible"):
+        _assert_entry_bar_trailing_seed_is_not_pierce_eligible()
+    with subtests.test(case="carried_trailing_trigger_is_pierce_eligible_next_bar"):
+        _assert_carried_trailing_trigger_is_pierce_eligible_next_bar()
+
+
+def _assert_entry_bar_trailing_seed_is_not_pierce_eligible():
     df = _df(
         opens=[100, 100, 110, 110, 110],
         highs=[101, 110, 111, 111, 111],
@@ -205,7 +229,7 @@ def test_entry_bar_trailing_seed_is_not_pierce_eligible():
     assert res["final_capital"] > 10500.0
 
 
-def test_carried_trailing_trigger_is_pierce_eligible_next_bar():
+def _assert_carried_trailing_trigger_is_pierce_eligible_next_bar():
     df = _df(
         opens=[100, 100, 110, 110, 112, 112],
         highs=[101, 110, 111, 111, 112, 112],
@@ -222,11 +246,16 @@ def test_carried_trailing_trigger_is_pierce_eligible_next_bar():
     assert trade["exit_date"] == str(df.index[3])
 
 
-@pytest.mark.parametrize("platform,tp_bar,sl_bar", [
-    ("binanceus", 3, 4),
-    ("hyperliquid", 2, 3),
-])
-def test_sl_after_bump_bar_suppresses_pierce_until_next_bar(platform, tp_bar, sl_bar):
+def test_sl_after_bump_bar_suppresses_pierce_until_next_bar(subtests):
+    for platform, tp_bar, sl_bar in [
+        ("binanceus", 3, 4),
+        ("hyperliquid", 2, 3),
+    ]:
+        with subtests.test(case=platform):
+            _assert_sl_after_bump_bar_suppresses_pierce_until_next_bar(platform, tp_bar, sl_bar)
+
+
+def _assert_sl_after_bump_bar_suppresses_pierce_until_next_bar(platform, tp_bar, sl_bar):
     idx = pd.date_range("2024-01-01", periods=5, freq="D")
     df = pd.DataFrame(
         {
@@ -274,7 +303,16 @@ FEE = 0.001
 FULL_ENTRY_FEE = 10.0
 
 
-def test_intrabar_stop_full_position_charges_full_entry_fee():
+def test_intrabar_stop_entry_fees_prorate_to_one_fee(subtests):
+    with subtests.test(case="intrabar_stop_full_position_charges_full_entry_fee"):
+        _assert_intrabar_stop_full_position_charges_full_entry_fee()
+    with subtests.test(case="partial_tp_then_intrabar_stop_entry_fees_sum_to_one_fee"):
+        _assert_partial_tp_then_intrabar_stop_entry_fees_sum_to_one_fee()
+    with subtests.test(case="three_way_split_entry_fees_prorate_by_initial_quantity"):
+        _assert_three_way_split_entry_fees_prorate_by_initial_quantity()
+
+
+def _assert_intrabar_stop_full_position_charges_full_entry_fee():
     df = _df(
         opens=[100, 100, 100, 100],
         highs=[101, 101, 101, 101],
@@ -290,7 +328,7 @@ def test_intrabar_stop_full_position_charges_full_entry_fee():
     assert trade["entry_fee"] == pytest.approx(FULL_ENTRY_FEE, rel=1e-9)
 
 
-def test_partial_tp_then_intrabar_stop_entry_fees_sum_to_one_fee():
+def _assert_partial_tp_then_intrabar_stop_entry_fees_sum_to_one_fee():
     close_refs = [{
         "name": "tiered_tp_pct",
         "params": {"tp_tiers": [{"profit_pct": 0.05, "close_fraction": 0.5}]},
@@ -311,7 +349,7 @@ def test_partial_tp_then_intrabar_stop_entry_fees_sum_to_one_fee():
     assert sl_leg["entry_fee"] == pytest.approx(FULL_ENTRY_FEE / 2, rel=1e-9)
 
 
-def test_three_way_split_entry_fees_prorate_by_initial_quantity():
+def _assert_three_way_split_entry_fees_prorate_by_initial_quantity():
     close_refs = [{
         "name": "tiered_tp_pct",
         "params": {"tp_tiers": [

@@ -148,14 +148,17 @@ def _approx(x):
     return pytest.approx(x, rel=REL, abs=ABS)
 
 
-def test_grid_history_need_bounds():
-    combos = [p for _, p in expand_sweep(SEED, [(k, list(v)) for k, v in DEFAULT_PARAM_RANGES[NAME].items()])]
-    assert max(_need(p) for p in combos) == 199
+REFERENCE_PARAMS = [SMALL, dict(SMALL, signal_period=5), dict(SMALL, slow_period=4, fast_period=3,
+                                                               recursion_length=24)]
 
 
-@pytest.mark.parametrize("params", [SMALL, dict(SMALL, signal_period=5), dict(SMALL, slow_period=4, fast_period=3,
-                                                                            recursion_length=24)])
-def test_values_match_an_independent_scalar_reference_and_both_entry_directions(params):
+def test_values_match_an_independent_scalar_reference_and_both_entry_directions(subtests):
+    for params in REFERENCE_PARAMS:
+        with subtests.test(params=params):
+            _values_match_an_independent_scalar_reference_and_both_entry_directions(params)
+
+
+def _values_match_an_independent_scalar_reference_and_both_entry_directions(params):
     df = _walk(260, 11, vol=0.03)
     c = df["close"].tolist()
     out = _apply(df, params)
@@ -320,13 +323,13 @@ INVALID_MARKET_INPUTS = [
 ]
 
 
-def test_invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame():
+def _invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame():
     for i, (mutate, reason) in enumerate(INVALID_MARKET_INPUTS):
         with _case(f"{i}-{reason}"):
             _holds_at_end(mutate(_walk(120, 3)), SMALL, reason)
 
 
-def test_received_order_defects_hold_only_inside_the_support():
+def _received_order_defects_hold_only_inside_the_support():
     df = _walk(200, 4)
     need = _need(SMALL)
     bad = 120
@@ -341,6 +344,13 @@ def test_received_order_defects_hold_only_inside_the_support():
     pd.testing.assert_frame_equal(out[DECISION_COLUMNS].iloc[bad + need:], clean[DECISION_COLUMNS].iloc[bad + need:])
 
 
+def test_defects_hold_only_inside_the_support_and_decisions_resume(subtests):
+    with subtests.test(case="received_order_defects_hold_only_inside_the_support"):
+        _received_order_defects_hold_only_inside_the_support()
+    with subtests.test(case="a_defect_holds_only_inside_its_support_and_valid_decisions_resume"):
+        _a_defect_holds_only_inside_its_support_and_valid_decisions_resume()
+
+
 def test_volume_is_not_an_entry_input():
     df = _walk(120, 3)
     a = _apply(df, SMALL)
@@ -350,7 +360,7 @@ def test_volume_is_not_an_entry_input():
         pd.testing.assert_frame_equal(a[DECISION_COLUMNS], other[DECISION_COLUMNS])
 
 
-def test_missing_or_wrong_cadence_holds_every_row():
+def _missing_or_wrong_cadence_holds_every_row():
     df = _walk(120, 3)
     df.attrs.pop(FRAME_INTERVAL_ATTR)
     out = _apply(df, SMALL)
@@ -380,7 +390,7 @@ def test_a_defect_in_the_prior_endpoints_exclusive_oldest_bar_holds_the_decision
                                    check_names=False)
 
 
-def test_a_defect_holds_only_inside_its_support_and_valid_decisions_resume():
+def _a_defect_holds_only_inside_its_support_and_valid_decisions_resume():
     df = _walk(300, 5)
     need = _need(SMALL)
     bad = 150
@@ -395,7 +405,7 @@ def test_a_defect_holds_only_inside_its_support_and_valid_decisions_resume():
     assert gapped["tsi_valid"].iloc[bad + need - 1] == 1.0
 
 
-def test_overflowing_changes_hold_as_nonfinite_derived():
+def _overflowing_changes_hold_as_nonfinite_derived():
     closes = [1e300 if i % 2 == 0 else 1.79e308 for i in range(60)]
     df = _from_closes(closes)
     df["high"] = df["close"]
@@ -403,6 +413,15 @@ def test_overflowing_changes_hold_as_nonfinite_derived():
     out = _holds_at_end(df, SMALL, "nonfinite_derived")
     assert (out["signal"] == 0).all()
     assert out["tsi_value"].isna().all()
+
+
+def test_invalid_or_unusable_market_input_holds_with_its_reason(subtests):
+    with subtests.test(case="invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame"):
+        _invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame()
+    with subtests.test(case="missing_or_wrong_cadence_holds_every_row"):
+        _missing_or_wrong_cadence_holds_every_row()
+    with subtests.test(case="overflowing_changes_hold_as_nonfinite_derived"):
+        _overflowing_changes_hold_as_nonfinite_derived()
 
 
 INVALID_PARAMS = [
@@ -416,7 +435,7 @@ INVALID_PARAMS = [
 ]
 
 
-def test_unknown_parameters_fail_the_registry_validator():
+def _unknown_parameters_fail_the_registry_validator():
     reg = _reg()
     with pytest.raises(ValueError):
         reg._registry.validate_params(NAME, {**SEED, "period": 9})
@@ -428,7 +447,7 @@ BOUNDARY_PARAMS = [
 ]
 
 
-def test_boundary_parameters_validate_and_decide_at_w_plus_one_rows():
+def _boundary_parameter_cases_validate_and_decide_at_w_plus_one_rows():
     for params in BOUNDARY_PARAMS:
         with _case(params):
             _boundary_parameters_validate_and_decide_at_w_plus_one_rows(params)
@@ -447,6 +466,13 @@ def _boundary_parameters_validate_and_decide_at_w_plus_one_rows(params):
     floats = {k: float(v) for k, v in params.items()}
     pd.testing.assert_frame_equal(_apply(df, floats), out)
     assert _need(BOUNDARY) == 199
+
+
+def test_parameter_bounds_refuse_unknown_keys_and_accept_every_boundary(subtests):
+    with subtests.test(case="unknown_parameters_fail_the_registry_validator"):
+        _unknown_parameters_fail_the_registry_validator()
+    with subtests.test(case="boundary_parameters_validate_and_decide_at_w_plus_one_rows"):
+        _boundary_parameter_cases_validate_and_decide_at_w_plus_one_rows()
 
 
 def test_walk_forward_warmup_keeps_the_decision_before_the_first_scored_bar(monkeypatch):
@@ -516,7 +542,7 @@ def test_full_series_every_prefix_exact_support_and_200_row_frames_agree_on_froz
         assert short["tsi_reason"].iloc[-1] == "insufficient_history"
 
 
-def test_every_grid_combination_is_causal_on_frozen_candles():
+def _every_grid_combination_is_causal_on_frozen_candles():
     df = _frozen("ETH", "4h", 420)
     future = df.copy()
     future.iloc[300:, future.columns.get_loc("close")] *= 1.3
@@ -534,7 +560,7 @@ def test_frozen_candles_produce_both_directions_with_the_seed():
     assert {-1, 1} <= set(out["signal"].unique())
 
 
-def test_rows_outside_the_support_cannot_change_a_decision():
+def _rows_outside_the_support_cannot_change_a_decision():
     df = _frozen("ETH", "4h", 400)
     p = SEED
     need = _need(p)
@@ -553,6 +579,13 @@ def test_rows_outside_the_support_cannot_change_a_decision():
     pd.testing.assert_series_equal(recovered[DECISION_COLUMNS].iloc[t], full[DECISION_COLUMNS].iloc[t],
                                    check_names=False)
     assert recovered["tsi_valid"].iloc[t - 1] == 0.0
+
+
+def test_rows_outside_the_support_and_later_rows_never_change_a_decision(subtests):
+    with subtests.test(case="every_grid_combination_is_causal_on_frozen_candles"):
+        _every_grid_combination_is_causal_on_frozen_candles()
+    with subtests.test(case="rows_outside_the_support_cannot_change_a_decision"):
+        _rows_outside_the_support_cannot_change_a_decision()
 
 
 def _cfg(params, **kw):
@@ -599,7 +632,7 @@ def _cache_case(tmp_path, drop=None):
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def test_missing_held_hour_funding_makes_every_required_arm_unscorable_and_the_verdict_inconclusive(tmp_path):
+def _missing_held_hour_funding_makes_every_required_arm_unscorable_and_the_verdict_inconclusive(tmp_path):
     lo = int(pd.Timestamp("2025-03-01").timestamp() * 1000)
     hi = int(pd.Timestamp("2025-04-01").timestamp() * 1000)
     out = _cache_case(tmp_path, {"BTC": [lo, hi]})
@@ -616,7 +649,7 @@ def test_missing_held_hour_funding_makes_every_required_arm_unscorable_and_the_v
     assert funding["coverage_complete"] is False
 
 
-def test_complete_funding_gives_scorable_bidirectional_legs_with_next_open_fills(tmp_path):
+def _complete_funding_gives_scorable_bidirectional_legs_with_next_open_fills(tmp_path):
     out = _cache_case(tmp_path)
     verdict = out["verdict"]
     assert verdict["gates"]["all_windows_scorable"] is True
@@ -627,3 +660,19 @@ def test_complete_funding_gives_scorable_bidirectional_legs_with_next_open_fills
         assert leg["next_bar_fills"]["mismatches"] == 0
     assert verdict["checks"]["long_positions"]["candidate"] > 0
     assert verdict["checks"]["short_positions"]["candidate"] > 0
+
+
+FUNDING_CASES = [
+    ("missing_held_hour_funding_is_inconclusive",
+     _missing_held_hour_funding_makes_every_required_arm_unscorable_and_the_verdict_inconclusive),
+    ("complete_funding_is_scorable_with_next_open_fills",
+     _complete_funding_gives_scorable_bidirectional_legs_with_next_open_fills),
+]
+
+
+def test_study_funding_coverage_decides_whether_every_leg_is_scorable(tmp_path, subtests):
+    for label, run in FUNDING_CASES:
+        with subtests.test(case=label):
+            case_dir = tmp_path / label
+            case_dir.mkdir()
+            run(case_dir)

@@ -490,13 +490,18 @@ class Defect:
     name: str
     mutate: Callable
     expect: Dict[bool, Dict[str, Any]]
+    cutoff: Optional[Callable] = None
+    check: Optional[Callable] = None
 
 
 @dataclasses.dataclass(frozen=True)
 class Held:
-    args: Tuple[str, ...]
+    args: Any
     close_signal: int
     mid: Optional[Callable] = None
+
+    def argv(self, bars):
+        return list(self.args(bars) if callable(self.args) else self.args)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -535,9 +540,20 @@ class Case:
     stale_holds: bool = False
     cadence_gap_holds: bool = False
     time_stop_hold: bool = False
+    entry_params: Optional[Dict[str, Any]] = None
+    eval_tp: Optional[Dict[str, Any]] = None
+    batch_entry: Optional[Callable] = None
+    batch_check: Optional[Callable] = None
+    cutoff_check: Optional[Callable] = None
 
     def reason(self):
         return f"{self.prefix}_reason"
+
+    def closed_params(self):
+        return self.params if self.entry_params is None else self.entry_params
+
+    def admission_tp(self):
+        return self.tp if self.eval_tp is None else self.eval_tp
 
 
 J_CUTOFFS = ((-1, 1, 0, None), (0, 0, 1, None), (1, 0, 1, None))
@@ -599,7 +615,7 @@ def _bars_minus_2_close(bars):
 def _walk_entry_index(name, side):
     case = CASES[name]
     bars = case.walk(1200, H)
-    out = strategies().apply_strategy(name, frame_df(rows_of(bars), "1h", NATIVE_CLOSE), case.params)
+    out = strategies().apply_strategy(name, frame_df(rows_of(bars), "1h", NATIVE_CLOSE), case.closed_params())
     sig = out["signal"].to_numpy()
     return next(int(i) for i in np.flatnonzero(sig == side) if i >= 260 and sig[i - 1] == 0)
 
@@ -859,32 +875,415 @@ CASE_LIST = [
         cadence_gap_holds=True, fallback_with_params=False,
     ),
 ]
-CASES = {case.name: case for case in CASE_LIST}
+
+
+LEGACY_T0 = 1_700_000_000_000
+
+
+def legacy_solo(step=FOUR_H, key="BTC|4h", snapshot_id="14400s/1"):
+    rows = []
+    price = 100.0
+    for i in range(220):
+        drift = 0.9 if (i // 25) % 2 == 0 else -0.8
+        price = max(price + drift + (1.4 if i % 5 == 0 else -0.6), 5.0)
+        rows.append([LEGACY_T0 + i * step, price - 0.4, price + 1.5, price - 1.5, price, 1000.0 + i])
+    frames = {key: {"rows": rows, "required": 200, "bars": len(rows), "coverage_short": False,
+                    "first_open_ms": rows[0][0], "last_open_ms": rows[-1][0], "last_close_ms": rows[-1][0],
+                    "last_recv_at_ms": rows[-1][0], "source": "ws", "ready": True, "forming_bar_included": True}}
+    mids = {"BTC": {"px": rows[-1][4], "recv_at_ms": rows[-1][0], "source": "ws", "age_ms": 0, "stale": False,
+                    "confirmed": True}}
+    return {"v": 2, "market": {"version": 4, "snapshot_id": snapshot_id, "generation": 1,
+                               "sealed_at_ms": rows[-1][0], "frames": frames, "mids": mids, "feed_complete": True}}
+
+
+def legacy_hourly_solo():
+    return legacy_solo(H, "BTC|1h", "3600s/1")
+
+
+def hour_bar(i, o, h, low, c, v):
+    return {"t": T0 + i * H, "T": T0 + (i + 1) * H - 1, "o": o, "h": h, "l": low, "c": c, "v": v}
+
+
+def mark_held(side):
+    def args(bars):
+        return held(side, bars[-1]["c"] * (0.9 if side == "long" else 1.1))
+    return args
+
+
+def mark(bars):
+    return bars[-1]["c"]
+
+
+MARK_HELDS = (Held(mark_held("long"), -1, mark), Held(mark_held("short"), 1, mark))
+
+
+OBV_PARAMS = {"left_span": 2, "right_span": 2, "min_separation": 3, "max_separation": 20,
+              "volume_threshold": 0.1, "setup_expiry": 5, "volume_test": True}
+OBV_CLOSES = ([100.0] * 103 + [100.0, 97.0, 91.0, 97.0, 100.0, 100.0, 100.0]
+              + [99.0, 98.0, 96.0, 98.0, 100.0, 101.0, 100.0, 98.0, 96.0, 95.0, 97.0, 98.0, 98.5, 100.0]
+              + [100.5, 101.0, 101.5, 102.0])
+OBV_ENTRY = 123
+TP_2PCT = {"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}
+
+
+def obv_bars(last, *, bad_volume_at=None):
+    out = []
+    prev = None
+    for i, c in enumerate(OBV_CLOSES[:last + 1]):
+        v = 5.0 if prev is None or c == prev else (10.0 if c > prev else 1.0)
+        if bad_volume_at is not None and i == bad_volume_at:
+            v = -1.0
+        out.append(hour_bar(i, c, c + 1.0, c - 1.0, c, v))
+        prev = c
+    return out
+
+
+def obv_closed_entry(case, bars, offset, out):
+    if offset != 5_000:
+        return
+    assert out["open_action"] == "long"
+    assert out["indicators"]["obvd_long_reclaim"] == 99.0
+    untimed = check(case, bars, closed=False)
+    assert out["indicators"]["obvd_long_divergence"] == untimed["indicators"]["obvd_long_divergence"]
+    direct = strategies().apply_strategy(case.name, frame_df(rows_of(bars)), case.closed_params())
+    assert int(direct["signal"].iloc[-1]) == 1
+    assert out["indicators"]["obvd_support_start_ts_ms"] == float(direct["obvd_support_start_ts_ms"].iloc[-1])
+
+
+def cmo_bars(closes):
+    out = []
+    prev = closes[0]
+    for i, c in enumerate(closes):
+        out.append(hour_bar(i, prev, max(prev, c) + 0.5, min(prev, c) - 0.5, c, 1000.0 + i))
+        prev = c
+    return out
+
+
+def cmo_gapped(_bars):
+    bars = cmo_bars([100.0] * 60 + [101.0, 102.0, 103.0])
+    return bars[:-3] + [dict(b, t=b["t"] + H, T=b["T"] + H) for b in bars[-3:]]
+
+
+def cmo_held(bars):
+    return held("long", 100 if bars[-1]["c"] >= 103.0 else 50)
+
+
+def zigzag_bars(n):
+    out = []
+    price = 100.0
+    for i in range(n):
+        price = price + (0.4 if i % 2 == 0 else -0.35)
+        out.append(hour_bar(i, price - 0.1, price + 0.5, price - 0.5, price, 1000.0 + i))
+    return out
+
+
+def set_bar(bar, price, volume):
+    return dict(bar, o=price + 0.1, h=price + 0.5, l=price - 0.5, c=price, v=volume)
+
+
+MFI_ADMISSION = {"lookback": 14, "oversold": 20.0, "overbought": 80.0}
+MFI_PARAMS = {"lookback": 2, "oversold": 30.0, "overbought": 70.0}
+
+
+def mfi_bars(side=1):
+    bars = zigzag_bars(240)
+    base = bars[-5]["c"]
+    bars[-4] = set_bar(bars[-4], base - 2.0, 1000.0)
+    bars[-3] = set_bar(bars[-3], base - 4.0, 1000.0)
+    bars[-2] = set_bar(bars[-2], base - 6.0, 1000.0)
+    bars[-1] = set_bar(bars[-1], base - 1.0, 50_000.0)
+    return bars
+
+
+def mfi_calm_forming_bar(bars):
+    out = [dict(b) for b in bars]
+    out[-1] = set_bar(out[-1], bars[-2]["c"], 1.0)
+    return out
+
+
+def mfi_volumes(case, bars, enabled, untimed):
+    assert enabled["indicators"]["mfi_volume"] == bars[-2]["v"]
+    assert untimed["indicators"]["mfi_volume"] == bars[-1]["v"]
+
+
+EOM_PARAMS = {"eom_period": 3, "breakout_window": 4}
+EOM_LABELS = ("no_breakout", "breakout_continuation", "entry_long", "entry_short", "indicator_disagrees",
+              "zero_indicator")
+
+
+def eom_bars(side=1, *, zero_volume_at=None):
+    rows = [(100.0, 101.0, 99.0, 100.0, 1000.0)] * 60 + [(100.0, 104.0, 100.0, 103.5, 1000.0)]
+    out = []
+    for i, (o, h, low, c, v) in enumerate(rows):
+        out.append(hour_bar(i, o, h, low, c, 0.0 if i == zero_volume_at else v))
+    return out
+
+
+def eom_closed_entry(case, bars, enabled, untimed):
+    closed = check(case, bars, closed=True, cutoff=bars[-1]["t"] + H + 5_000)
+    assert closed["closed_bar_decision"]["forming_rows_dropped"] == 0
+    assert closed["signal"] == 1 and closed["open_action"] == "long"
+    assert closed["indicators"]["eom_eval_ts_ms"] == bars[-1]["t"]
+    assert closed["indicator_labels"]["eom_reason"] == "entry_long"
+    df = frame_df(rows_of(bars))
+    df.attrs["bar_interval_ms"] = H
+    direct = strategies().apply_strategy(case.name, df, case.closed_params())
+    assert int(direct["signal"].iloc[-1]) == 1
+    assert closed["indicators"]["eom_smoothed"] == float(direct["eom_smoothed"].iloc[-1])
+    assert closed["indicators"]["eom_raw"] == float(direct["eom_raw"].iloc[-1])
+    for values in ((103.5, 140.0, 103.0, 139.0, 50.0), (103.5, 104.0, 60.0, 61.0, 0.0),
+                   (103.5, 103.6, 103.4, 103.5, 9_000.0)):
+        extended = bars + [hour_bar(len(bars), *values)]
+        out = check(case, extended, closed=True, cutoff=extended[-1]["t"] + H // 3)
+        assert out["closed_bar_decision"]["forming_rows_dropped"] == 1, values
+        assert out["signal"] == closed["signal"] == 1, values
+        assert out["indicators"] == closed["indicators"], values
+        assert out["indicator_labels"] == closed["indicator_labels"], values
+
+
+AROON_PARAMS = {"period": 25, "strength": 70.0}
+
+
+def aroon_bars(n, *, spike_at=None, flat=False, bad_at=None):
+    out = []
+    price = 200.0
+    for i in range(n):
+        if not flat:
+            price -= 0.5
+        o, h, low, c = price + 0.2, price + 0.4, price - 0.4, price
+        if spike_at is not None and i == spike_at:
+            o, h, low, c = price + 0.3, price + 150.0, price + 0.2, price + 149.0
+        if flat:
+            o = h = low = c = price
+        if bad_at is not None and i == bad_at:
+            h, low = low, h
+        out.append(hour_bar(i, o, h, low, c, 1000.0))
+    return out
+
+
+RCR_ADMISSION = {"fit_window": 50, "band_multiplier": 2.0, "slope_ceiling": 0.10, "min_residual_std": 0.0}
+RCR_PARAMS = dict(RCR_ADMISSION, fit_window=8)
+RCR_PATTERN = (0.5, -0.5, -0.5, 0.5)
+
+
+def rcr_bars(n, *, closes=None, flat=False, bad_at=None):
+    out = []
+    for i in range(n):
+        c = 100.0 if flat else 100.0 + RCR_PATTERN[i % 4]
+        if closes and i in closes:
+            c = closes[i]
+        o, h, low = c, c + 0.6, c - 0.6
+        if bad_at is not None and i == bad_at:
+            c = o = low = 0.0
+        out.append(hour_bar(i, o, h, low, c, 1000.0))
+    return out
+
+
+def rcr_untimed_row(case, bars, enabled, untimed):
+    assert untimed["indicators"]["rcr_row_ts_ms"] == bars[-1]["T"]
+
+
+def rcr_batch_labels(clean, mixed):
+    assert clean["off"]["indicator_labels"]["rcr_reason"] == "no_reentry"
+    assert "fit_window" in mixed["bad-params"]["error"]
+
+
+WR_TP = {"name": "tiered_tp_atr", "params": {"tp_tiers": [{"atr_multiple": 2.0, "close_fraction": 1.0}]}}
+
+
+def wr_zigzag(n, start=100.0):
+    out = []
+    price = start
+    for i in range(n):
+        price += 0.4 if i % 2 == 0 else -0.35
+        out.append((price - 0.1, price + 0.5, price - 0.5, price))
+    return out
+
+
+def wr_long_cross(n):
+    bars = wr_zigzag(n - 6)
+    px = bars[-1][3]
+    for _ in range(5):
+        px -= 1.5
+        bars.append((px + 1.5, px + 1.5, px, px))
+    bars.append((px, px + 3.0, px, px + 2.9))
+    return bars
+
+
+def wr_bars(tuples):
+    return [hour_bar(i, o, h, low, c, 1000.0 + i) for i, (o, h, low, c) in enumerate(tuples)]
+
+
+def wr_solo():
+    bars = wr_bars(wr_zigzag(80))
+    return {"v": 2, "market": {"version": 4, "snapshot_id": "test/1", "generation": 1, "sealed_at_ms": T0,
+                               "frames": {"BTC|1h": frame(bars, H)}, "feed_complete": True}}
+
+
+def wr_defect(name, mutate, reason, code):
+    def bars(_bars):
+        return wr_bars(mutate(wr_long_cross(120)))
+
+    def direct(case, bars):
+        res = strategies().apply_strategy(case.name, frame_df(rows_of(bars)), case.closed_params())
+        assert res["wr_reason"].iloc[-1] == reason
+        assert int(res["signal"].iloc[-1]) == 0
+    return Defect(name, bars, {False: {"indicators": {"wr_reason_code": code}, "absent": ("wr",)}}, check=direct)
+
+
+WR_DEFECTS = (
+    wr_defect("nonfinite_input", lambda b: b[:-3] + [(b[-3][0], b[-3][1], b[-3][2], float("nan"))] + b[-2:],
+              "nonfinite_input", 11),
+    wr_defect("inconsistent_hlc", lambda b: b[:-3] + [(b[-3][0], b[-3][2] - 1.0, b[-3][1], b[-3][3])] + b[-2:],
+              "inconsistent_hlc", 13),
+    wr_defect("nonpositive_price", lambda b: b[:-2] + [(0.0, 0.0, 0.0, 0.0)] + b[-1:], "nonpositive_price", 12),
+    wr_defect("zero_range_window", lambda b: b[:-20] + [(100.0, 100.0, 100.0, 100.0)] * 20, "zero_range_window", 16),
+)
+
+
+def _plain_forming(**kw):
+    out = {"calms": (), "drop_reference": True, "reason_code": None, "closed_df": (None, None), "labels": {},
+           "labels_exact": False, "eval_ts": None}
+    out.update(kw)
+    return out
+
+
+FOLDED_CASES = [
+    Case(
+        name="aroon_trend", prefix="aroon", params=AROON_PARAMS, tf="4h",
+        ref="backtest/candidates/aroon_trend_1643/REPORT.md", solo=legacy_solo,
+        entry=lambda side=1: aroon_bars(61, spike_at=59), tp=TP_3PCT, default_closes=(TP_3PCT,), helds=MARK_HELDS,
+        defects=(
+            Defect("flat", lambda bars: aroon_bars(61, flat=True),
+                   {closed: {"indicators": {"aroon_reason_code": 14.0, "aroon_valid": 0.0}} for closed in (True, False)}),
+            Defect("bad", lambda bars: aroon_bars(61, bad_at=59),
+                   {True: {"held": True, "empty": True},
+                    False: {"indicators": {"aroon_reason_code": 12.0, "aroon_valid": 0.0}}}),
+        ),
+        invalid=(({"period": True}, "period"), ({"period": 2.5}, "period must be an integer"), ({"period": 1}, "period"),
+                 ({"period": 199}, "period"), ({"period": "25"}, "period"),
+                 ({"strength": None}, "strength must be a number"), ({"strength": 100.5}, "strength"),
+                 ({"strength": "70"}, "strength must be a number")),
+        eval_spec={"closed": False, "indicators": {"aroon_valid": 1.0},
+                   "indicators_in": {"aroon_reason_code": (-1, 0, 1, 2)}},
+        batch_peer="breakout", batch_bad=({"period": 2.5}, "period must be an integer"), batch_signals=(1, -1),
+        forming=_plain_forming(bars=lambda side=1: aroon_bars(60, spike_at=59),
+                               reason_code=("aroon_reason_code", 0.0), closed_indicators={"aroon_down": 100.0},
+                               untimed={"signal": 1, "indicators": {"aroon_reason_code": 1.0}}),
+    ),
+    Case(
+        name="chande_momentum", prefix="cmo", params={}, tf="1h",
+        ref="backtest/candidates/chande_momentum_1661/REPORT.md", solo=legacy_hourly_solo,
+        entry=lambda side=1: cmo_bars([100.0] * 220 + [101.0, 96.0]), tp=TP_3PCT,
+        helds=(Held(cmo_held, -1, lambda bars: 104.0),),
+        defects=(Defect("gap", cmo_gapped,
+                        {True: {"held": False, "indicators": {"cmo_valid": 0.0, "cmo_reason_code": 16.0}},
+                         False: {"indicators": {"cmo_valid": 0.0, "cmo_reason_code": 16.0}}}),),
+        eval_spec={"closed": False, "indicators": {"cmo_valid": 1.0},
+                   "present": ("cmo", "cmo_prev", "cmo_gain_sum", "cmo_loss_sum", "cmo_close", "cmo_eval_ts_ms",
+                               "cmo_valid", "cmo_reason_code")},
+        batch_signals=(1, -1),
+    ),
+    Case(
+        name="ease_of_movement_breakout", prefix="eom", params={}, entry_params=EOM_PARAMS, tf="4h",
+        ref="backtest/candidates/ease_of_movement_1671/REPORT.md", solo=legacy_solo, entry=eom_bars,
+        tp=TP_2PCT, eval_tp={"name": "tiered_tp_atr"}, helds=(Held(tuple(HELD_LONG_90), -1),),
+        defects=(Defect("zero_volume", lambda bars: eom_bars(zero_volume_at=60),
+                        {closed: {"labels": {"eom_reason": "invalid_volume"}} for closed in (True, False)},
+                        cutoff=lambda bars: bars[-1]["t"] + H + 5_000),),
+        eval_spec={"closed": False, "indicators": {"eom_interval_ms": 14_400_000.0, "eom_valid": 1.0},
+                   "absent": ("eom_eval_ts_ms",), "labels_in": {"eom_reason": EOM_LABELS}},
+        batch_peer="breakout", batch_signals=(0, 1),
+        forming=_plain_forming(labels={"eom_reason": "no_breakout"}, eval_ts=("eom_eval_ts_ms", "t"),
+                               untimed={"signal": 1, "open_action": "long", "absent": ("eom_eval_ts_ms",)},
+                               check=eom_closed_entry),
+    ),
+    Case(
+        name="money_flow_index_reversal", prefix="mfi", params=MFI_ADMISSION, entry_params=MFI_PARAMS, tf="4h",
+        ref="backtest/candidates/money_flow_index_reversal_1658/REPORT.md", solo=legacy_solo, entry=mfi_bars,
+        tp=TP_EMPTY, eval_tp={"name": "tiered_tp_atr", "params": {}}, helds=(Held(tuple(HELD_LONG), -1),),
+        defects=(_negative_volume_defect("mfi", 15.0),),
+        eval_spec={"closed": False, "indicators": {"mfi_lookback": 14.0}, "indicators_in": {"mfi_valid": (0.0, 1.0)}},
+        batch_signals=(0, 1),
+        forming=_plain_forming(calms=(mfi_calm_forming_bar,), reason_code=("mfi_reason_code", 0.0),
+                               closed_columns=("mfi_value", "mfi_prev_value", "mfi_positive_total"),
+                               eval_ts=("mfi_eval_ts_ms", "T"), untimed={"signal": 1, "open_action": "long"},
+                               check=mfi_volumes),
+    ),
+    Case(
+        name="on_balance_volume_divergence", prefix="obvd", params={}, entry_params=OBV_PARAMS, tf="4h",
+        ref="backtest/candidates/on_balance_volume_divergence_1657/REPORT.md", solo=legacy_solo,
+        entry=lambda side=1: obv_bars(OBV_ENTRY), tp=TP_2PCT, eval_tp={"name": "tiered_tp_pct"},
+        helds=(Held(tuple(HELD_LONG_90), -1),),
+        defects=(Defect("negative_volume", lambda bars: obv_bars(OBV_ENTRY + 1, bad_volume_at=OBV_ENTRY),
+                        {True: {"held": True, "hold_reason": "volume", "empty": True},
+                         False: {"indicators": {"obvd_reason_code": 16.0}}}),),
+        eval_spec={"closed": False, "indicators": {"obvd_support_bars": 59.0}},
+        batch_peer="breakout", batch_signals=(0, 1),
+        cutoffs=((-1, 1, 0, None), (0, 0, 1, None), (1, 0, 1, None), (5_000, 0, 1, None)),
+        cutoff_check=obv_closed_entry,
+        forming=_plain_forming(reason_code=("obvd_reason_code", 3.0), untimed={"signal": 1, "open_action": "long"}),
+    ),
+    Case(
+        name="regression_channel_reversion", prefix="rcr", params=RCR_ADMISSION, entry_params=RCR_PARAMS, tf="4h",
+        ref="backtest/candidates/regression_channel_reversion_1644/REPORT.md", solo=legacy_solo,
+        entry=lambda side=1: rcr_bars(40, closes={38: 97.5, 39: 100.0}), tp=TP_3PCT, default_closes=(TP_3PCT,),
+        helds=MARK_HELDS,
+        defects=(
+            Defect("flat", lambda bars: rcr_bars(41, flat=True),
+                   {closed: {"indicators": {"rcr_reason_code": 17.0, "rcr_valid": 0.0},
+                             "labels": {"rcr_reason": "degenerate_fit"}} for closed in (True, False)}),
+            Defect("bad", lambda bars: rcr_bars(41, bad_at=38),
+                   {True: {"held": True, "empty": True},
+                    False: {"indicators": {"rcr_reason_code": 16.0, "rcr_valid": 0.0},
+                            "labels": {"rcr_reason": "nonpositive_price"}}}),
+        ),
+        invalid=(({"fit_window": True}, "fit_window"), ({"fit_window": 2.5}, "fit_window must be an integer"),
+                 ({"fit_window": 1}, "fit_window"), ({"fit_window": 198}, "fit_window"),
+                 ({"fit_window": "50"}, "fit_window must be an integer"), ({"band_multiplier": 0}, "band_multiplier"),
+                 ({"band_multiplier": None}, "band_multiplier must be a number"),
+                 ({"slope_ceiling": -0.1}, "slope_ceiling"),
+                 ({"min_residual_std": "1"}, "min_residual_std must be a number")),
+        eval_spec={"closed": False, "indicators": {"rcr_fit_window": 50.0, "rcr_interval_ms": 14_400_000.0},
+                   "indicators_in": {"rcr_reason_code": (-1, 0, 1, 2, 3, 17)}, "label_present": True},
+        batch_peer="breakout", batch_bad=({"fit_window": 2.5}, "fit_window must be an integer"),
+        batch_entry=lambda side=1: rcr_bars(40, closes={37: 97.5, 38: 100.0}), batch_signals=(1, 0),
+        batch_check=rcr_batch_labels, cutoffs=((-1, 1, 0, None), (0, 0, 1, None)), eval_ts=("rcr_eval_ts_ms", "t"),
+        forming=_plain_forming(labels={"rcr_reason": "no_reentry"}, eval_ts=("rcr_eval_ts_ms", "t"),
+                               untimed={"signal": 1, "labels": {"rcr_reason": "entry_long"},
+                                        "absent": ("rcr_eval_ts_ms",)},
+                               check=rcr_untimed_row),
+    ),
+    Case(
+        name="ultimate_oscillator", prefix="uo", params={}, tf="4h",
+        ref="backtest/candidates/ultimate_oscillator_1664/REPORT.md", solo=legacy_solo,
+        entry=lambda side=1: flat_bars(260, H), tp=TP_3PCT, helds=(Held(tuple(HELD_LONG), -1),), defects=(),
+        eval_spec={"closed": False, "indicators": {}, "present": ("uo_reason_code",)},
+    ),
+    Case(
+        name="williams_r_reversal", prefix="wr", params={}, tf="1h",
+        ref="backtest/candidates/williams_r_reversal_1650/REPORT.md", solo=wr_solo,
+        entry=lambda side=1: wr_bars(wr_long_cross(130)), tp=WR_TP,
+        helds=(Held(tuple(held("long", 50) + ["--position-entry-atr=2"]), -1, lambda bars: 100.0),),
+        defects=WR_DEFECTS, closed_flags=(False,),
+        invalid=(({"lookback": 2.5}, None), ({"lookback": "14"}, None), ({"lookback": True}, None),
+                 ({"oversold": -10.0, "overbought": -20.0}, None), ({"overbought": 1.0}, None)),
+        eval_spec={"closed": False, "indicators": {}}, batch_bad=({"lookback": 7.5}, None),
+        cutoffs=((-1, 1, 0, None), (0, 0, 1, None), (1, 0, 1, None)),
+    ),
+]
+CASES = {case.name: case for case in CASE_LIST + FOLDED_CASES}
 CASE_NAMES = sorted(CASES)
 
 EXEMPT = {
-    "aroon_trend": "check-script admission and closed-bar tests live in its own sections of "
-                   "test_no_edge_admission.py and test_closed_bar_decisions.py",
     "awesome_oscillator": "no check-script contract tests yet; only the backtest harness test covers it",
     "chaikin_money_flow_breakout": "no check-script contract tests yet; only the backtest harness test covers it",
-    "chande_momentum": "check-script admission and closed-bar tests live in its own sections of "
-                       "test_no_edge_admission.py and test_closed_bar_decisions.py",
     "commodity_channel_trend": "no check-script contract tests yet; only the backtest harness test covers it",
     "connors_rsi_reversion": "no check-script contract tests yet; only the backtest harness test covers it",
     "dual_thrust": "no check-script contract tests yet; only the backtest harness test covers it",
-    "ease_of_movement_breakout": "check-script admission and closed-bar tests live in its own sections of "
-                                 "test_no_edge_admission.py and test_closed_bar_decisions.py",
-    "money_flow_index_reversal": "check-script admission and closed-bar tests live in its own sections of "
-                                 "test_no_edge_admission.py and test_closed_bar_decisions.py",
-    "on_balance_volume_divergence": "check-script admission and closed-bar tests live in its own sections of "
-                                    "test_no_edge_admission.py and test_closed_bar_decisions.py",
     "open_interest_breakout": "no check-script contract tests yet; only the backtest harness tests cover it",
-    "regression_channel_reversion": "check-script admission and closed-bar tests live in its own sections of "
-                                    "test_no_edge_admission.py and test_closed_bar_decisions.py",
     "relative_vigor_index": "no check-script contract tests yet; only the backtest harness test covers it",
-    "ultimate_oscillator": "check-script admission tests live in its own section of test_no_edge_admission.py",
     "vortex_trend": "check-script admission tests use it as the generic no-edge solo in test_no_edge_admission.py",
-    "williams_r_reversal": "check-script tests live in test_williams_r_integration.py",
 }
 
 
@@ -923,6 +1322,10 @@ def refs(case, closes=DEFAULT, params=None):
     return json.dumps(out)
 
 
+def erefs(case, closes=DEFAULT, params=None):
+    return refs(case, closes=closes, params=case.closed_params() if params is None else params)
+
+
 def fallback_refs(case, params=None):
     close = {"name": case.name}
     if params is not None:
@@ -933,7 +1336,7 @@ def fallback_refs(case, params=None):
 def check(case, bars, *, closed, extra=(), timing=True, cutoff=None, mid=None, limit=None, rows=None,
           strategy_refs=None):
     argv = [case.name, "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", str(limit or case.limit),
-            "--strategy-refs", refs(case) if strategy_refs is None else strategy_refs, *extra]
+            "--strategy-refs", erefs(case) if strategy_refs is None else strategy_refs, *extra]
     if closed:
         argv.append("--closed-bar-decisions")
     stdin = envelope(bars, H, "BTC|1h", cutoff=cutoff, mid=mid, snapshot_id=case.snapshot_id, timing=timing,
@@ -970,6 +1373,8 @@ def assert_expect(out, expect, where):
         assert out["indicator_labels"][key] == value, (where, key)
     for key, value in expect.get("indicators", {}).items():
         assert out["indicators"][key] == value, (where, key)
+    for key in expect.get("absent", ()):
+        assert key not in out["indicators"], (where, key)
 
 
 def test_every_registered_study_candidate_has_a_case_or_a_recorded_exemption():
@@ -996,10 +1401,13 @@ def test_effective_open_and_close_fallback_are_gated(name):
     opened = f"open strategy '{name}' is edge_status=no_edge"
     closed = f"close strategy '{name}' is edge_status=no_edge"
     sealed = ["--market-stdin"]
+    source = f"source {strategies()._registry.STRATEGIES[name]['edge_source']}"
     variants = [
-        ("positional_missing_fetch", [name, "BTC", case.tf], None, (opened, case.ref, "missing mode")),
+        ("positional_missing_fetch", [name, "BTC", case.tf], None, (opened, source, case.ref, "missing mode")),
         ("fallback_missing_fetch", ["breakout", "BTC", case.tf, "--strategy-refs", fallback_refs(case)], None,
          (closed, "missing mode")),
+        ("fallback_live_fetch", ["breakout", "BTC", case.tf, "--strategy-refs", fallback_refs(case), "--mode=live"],
+         None, (closed, "explicit live mode")),
         ("open_live", ["breakout", "BTC", case.tf, "--strategy-refs", open_refs, *sealed, "--mode=live"], solo,
          (opened, "explicit live mode")),
         ("open_missing", ["breakout", "BTC", case.tf, "--strategy-refs", open_refs, *sealed], solo,
@@ -1022,6 +1430,8 @@ def test_effective_open_and_close_fallback_are_gated(name):
             assert out["strategy"] == name, variant
         for needle in needles:
             assert needle in out["error"], (variant, needle, out["error"])
+        if stdin is None:
+            assert "Fetching" not in proc.stderr, variant
 
 
 @pytest.mark.parametrize("name", cases_with("fallback_evaluates"))
@@ -1045,6 +1455,7 @@ def test_invalid_parameters_fail_preflight_before_market_input_is_read(name):
         strategy_refs = refs(case, params=params)
         forms = [
             ("open_fetch", [name, "BTC", case.tf, "--mode=paper", "--strategy-refs", strategy_refs], None, "open"),
+            ("params_flag_fetch", [name, "BTC", case.tf, "--mode=paper", "--params", json.dumps(params)], None, "open"),
             ("open_sealed", [name, "BTC", case.tf, "--mode=paper", "--strategy-refs", strategy_refs,
                              "--market-stdin"], eth_envelope(case), "open"),
             ("fallback_fetch", ["breakout", "BTC", case.tf, "--mode=paper", "--strategy-refs",
@@ -1070,7 +1481,8 @@ def test_invalid_parameters_fail_preflight_before_market_input_is_read(name):
 def test_paper_or_acknowledged_evaluation_runs_on_sealed_input_without_orders(name):
     case = CASES[name]
     spec = case.eval_spec
-    strategy_refs = refs(case, closes=[case.tp])
+    tp = case.admission_tp()
+    strategy_refs = refs(case, closes=[tp])
     flags = ["--closed-bar-decisions"] if spec["closed"] else []
     outs = []
     for extra in EVAL_EXTRAS:
@@ -1079,11 +1491,18 @@ def test_paper_or_acknowledged_evaluation_runs_on_sealed_input_without_orders(na
         assert proc.returncode == 0, (extra, proc.stderr[-2000:])
         out = payload(proc)
         assert not out.get("error"), extra
-        assert out["open_strategy"] == name and out["close_strategies"] == ["tiered_tp_pct"], extra
+        assert out["strategy"] == name and out["signal"] in (-1, 0, 1), extra
+        assert out["open_strategy"] == name and out["close_strategies"] == [tp["name"]], extra
         for key, value in spec["indicators"].items():
             assert out["indicators"][key] == value, (extra, key)
         for key, allowed in spec.get("indicators_in", {}).items():
             assert out["indicators"][key] in allowed, (extra, key)
+        for key in spec.get("present", ()):
+            assert key in out["indicators"], (extra, key)
+        for key in spec.get("absent", ()):
+            assert key not in out["indicators"], (extra, key)
+        for key, allowed in spec.get("labels_in", {}).items():
+            assert out["indicator_labels"][key] in allowed, (extra, key)
         for key, value in spec.get("labels", {}).items():
             assert out["indicator_labels"][key] == value, (extra, key)
         if spec.get("label_present"):
@@ -1094,6 +1513,8 @@ def test_paper_or_acknowledged_evaluation_runs_on_sealed_input_without_orders(na
         outs.append(out)
     for out in outs[1:]:
         assert out["indicators"] == outs[0]["indicators"]
+    if spec.get("check"):
+        spec["check"](outs[0])
     if case.solo_short is not None:
         short = payload(run([name, "BTC", case.tf, "--strategy-refs", strategy_refs, "--market-stdin",
                              "--mode=paper"] + flags, case.solo_short()))
@@ -1118,18 +1539,32 @@ def batch(case, slots, stdin):
 @pytest.mark.parametrize("name", cases_with("eval_spec"))
 def test_batch_slots_apply_the_same_admission_and_match_solo(name):
     case = CASES[name]
-    strategy_refs = json.loads(refs(case, closes=[case.tp]))
+    strategy_refs = json.loads(refs(case, closes=[case.admission_tp()]))
     fallback = json.loads(fallback_refs(case))
+    keyed = {"strategy": "breakout", "open_strategy": "breakout"}
     slots = [
         {"id": "paper", "strategy": name, "mode": "paper", "mode_args": ["--mode=paper"],
+         "strategy_refs": strategy_refs},
+        {"id": "paper-space", "strategy": name, "mode": "paper", "mode_args": ["--mode", "paper"],
          "strategy_refs": strategy_refs},
         {"id": "acked", "strategy": name, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True,
          "strategy_refs": strategy_refs},
         {"id": "unacked-live", "strategy": name, "mode": "live", "mode_args": ["--mode=live"],
          "strategy_refs": strategy_refs},
+        {"id": "false-live", "strategy": name, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": False,
+         "strategy_refs": strategy_refs},
         {"id": "missing", "strategy": name, "mode": "paper", "strategy_refs": strategy_refs},
         {"id": "repeated", "strategy": name, "mode": "paper", "mode_args": ["--mode=paper", "--mode=paper"],
          "strategy_refs": strategy_refs},
+        {"id": "repeated-mixed", "strategy": name, "mode": "paper", "mode_args": ["--mode=paper", "--mode=live"],
+         "strategy_refs": strategy_refs},
+        dict(keyed, id="keys-list-paper", close_strategies=[name], mode="paper", mode_args=["--mode=paper"]),
+        dict(keyed, id="keys-list-acked", close_strategies=[name], mode="live", mode_args=["--mode=live"],
+             allow_no_edge=True),
+        dict(keyed, id="keys-list-live", close_strategies=[name], mode="live", mode_args=["--mode=live"]),
+        dict(keyed, id="keys-list-missing", close_strategies=[name], mode="paper"),
+        dict(keyed, id="keys-str-paper", close_strategies=name, mode="paper", mode_args=["--mode=paper"]),
+        dict(keyed, id="keys-str-live", close_strategies=name, mode="live", mode_args=["--mode=live"]),
         {"id": "fallback-live", "strategy": "breakout", "mode": "live", "mode_args": ["--mode=live"],
          "strategy_refs": fallback},
         {"id": "fallback-missing", "strategy": "breakout", "mode": "paper", "strategy_refs": fallback},
@@ -1138,14 +1573,21 @@ def test_batch_slots_apply_the_same_admission_and_match_solo(name):
         {"id": "fallback-acked", "strategy": "breakout", "mode": "live", "mode_args": ["--mode=live"],
          "allow_no_edge": True, "strategy_refs": fallback},
     ]
-    oks = ["paper", "acked", "fallback-paper", "fallback-acked"]
-    refused = {"unacked-live": "explicit live mode", "missing": "missing mode", "repeated": "invalid mode input",
-               "fallback-live": f"close strategy '{name}' is edge_status=no_edge", "fallback-missing": "missing mode"}
+    oks = ["paper", "paper-space", "acked", "fallback-paper", "fallback-acked", "keys-list-paper", "keys-list-acked",
+           "keys-str-paper"]
+    closed_gate = f"close strategy '{name}' is edge_status=no_edge"
+    refused = {"unacked-live": "explicit live mode", "false-live": "explicit live mode", "missing": "missing mode",
+               "repeated": "invalid mode input", "repeated-mixed": "invalid mode input",
+               "fallback-live": closed_gate, "fallback-missing": "missing mode", "keys-list-live": closed_gate,
+               "keys-list-missing": "missing mode", "keys-str-live": closed_gate}
     if case.batch_bad is not None:
         bad_params, bad_needle = case.batch_bad
         slots.append({"id": "bad-params", "strategy": name, "mode": "paper", "mode_args": ["--mode=paper"],
-                      "strategy_refs": json.loads(refs(case, closes=[case.tp], params=bad_params))})
-        refused["bad-params"] = "has invalid parameters"
+                      "strategy_refs": json.loads(refs(case, closes=[case.admission_tp()], params=bad_params))})
+        slots.append({"id": "bad-fallback-params", "strategy": "breakout", "mode": "paper",
+                      "mode_args": ["--mode=paper"], "strategy_refs": json.loads(fallback_refs(case, bad_params))})
+        refused["bad-params"] = f"open strategy '{name}' has invalid parameters"
+        refused["bad-fallback-params"] = f"close strategy '{name}' has invalid parameters"
     if case.batch_peer:
         slots.append({"id": "peer", "strategy": case.batch_peer, "mode": "paper", "mode_args": ["--mode=paper"]})
         oks.append("peer")
@@ -1160,7 +1602,10 @@ def test_batch_slots_apply_the_same_admission_and_match_solo(name):
         assert results[slot_id]["signal"] == 0 and not results[slot_id].get("indicators"), slot_id
     if case.batch_bad is not None and case.batch_bad[1]:
         assert case.batch_bad[1] in results["bad-params"]["error"]
-    assert "explicit live mode" in results["fallback-live"]["error"]
+    for slot_id in ("fallback-live", "keys-list-live", "keys-str-live"):
+        assert "explicit live mode" in results[slot_id]["error"], slot_id
+    for slot_id in ("keys-list-paper", "keys-list-acked", "keys-str-paper"):
+        assert results[slot_id]["close_strategies"] == [name], slot_id
     solo = payload(run([name, "BTC", case.tf, "--mode=paper", "--ohlcv-limit", str(case.limit), "--strategy-refs",
                         json.dumps(strategy_refs), "--market-stdin"], stdin))
     if case.solo_signal is not None:
@@ -1196,18 +1641,22 @@ def test_cutoff_boundaries_select_and_age_the_decision_bar(name):
         if offset == 0 and case.eval_ts:
             key, stamp = case.eval_ts
             assert out["indicators"][key] == float(bars[-1][stamp]), offset
+        if case.cutoff_check is not None:
+            case.cutoff_check(case, bars, offset, out)
 
 
 @pytest.mark.parametrize("name", cases_with("forming"))
 def test_a_forming_bar_cannot_create_a_closed_bar_entry(name):
     case = CASES[name]
     spec = case.forming
-    bars = case.entry(1)
+    bars = spec.get("bars", case.entry)(1)
     cutoff = bars[-1]["t"] + H // 2
     enabled = check(case, bars, closed=True, cutoff=cutoff)
     meta = enabled["closed_bar_decision"]
     assert meta["forming_rows_dropped"] == 1 and meta["held"] is False
     assert enabled["signal"] == 0 and enabled["open_action"] == "none"
+    for key, value in spec.get("closed_indicators", {}).items():
+        assert enabled["indicators"][key] == value, key
     references = [build(bars) for build in spec["calms"]]
     if spec["drop_reference"]:
         references.append(bars[:-1])
@@ -1224,18 +1673,28 @@ def test_a_forming_bar_cannot_create_a_closed_bar_entry(name):
     if spec["reason_code"]:
         key, code = spec["reason_code"]
         timeframe, kind = spec["closed_df"]
-        closed_df = strategies().apply_strategy(name, frame_df(rows_of(bars[:-1]), timeframe, kind), case.params)
+        closed_df = strategies().apply_strategy(name, frame_df(rows_of(bars[:-1]), timeframe, kind),
+                                                case.closed_params())
         assert enabled["indicators"][key] == float(closed_df[key].iloc[-1]) == code
+        for col in spec.get("closed_columns", ()):
+            assert enabled["indicators"][col] == float(closed_df[col].iloc[-1]), col
     if spec["eval_ts"]:
         key, stamp = spec["eval_ts"]
         assert enabled["indicators"][key] == float(bars[-2][stamp])
     untimed = check(case, bars, closed=False)
     expect = spec["untimed"]
     assert untimed["signal"] == expect["signal"]
+    assert "closed_bar_decision" not in untimed
     if "open_action" in expect:
         assert untimed["open_action"] == expect["open_action"]
     for key, value in expect.get("labels", {}).items():
         assert untimed["indicator_labels"][key] == value, key
+    for key, value in expect.get("indicators", {}).items():
+        assert untimed["indicators"][key] == value, key
+    for key in expect.get("absent", ()):
+        assert key not in untimed["indicators"], key
+    if spec.get("check"):
+        spec["check"](case, bars, enabled, untimed)
 
 
 def evaluator_params():
@@ -1252,13 +1711,13 @@ def test_check_decision_matches_the_evaluator_at_full_precision(name, side):
     spec = case.evaluator
     bars = spec["bars"](side)
     out = check(case, bars, closed=False)
-    df = strategies().apply_strategy(name, frame_df(rows_of(bars[-200:]), spec["timeframe"]), case.params)
+    df = strategies().apply_strategy(name, frame_df(rows_of(bars[-200:]), spec["timeframe"]), case.closed_params())
     last = df.iloc[-1]
     assert out["signal"] == int(last["signal"]) == side
     assert out["open_action"] == ("long" if side == 1 else "short")
     full = None
     if spec["full"]:
-        full = strategies().apply_strategy(name, frame_df(rows_of(bars), spec["timeframe"]), case.params)
+        full = strategies().apply_strategy(name, frame_df(rows_of(bars), spec["timeframe"]), case.closed_params())
     for col in spec["columns"]:
         want = round(float(last[col]), 6) if spec["round"] else float(last[col])
         assert out["indicators"][col] == want, col
@@ -1275,10 +1734,10 @@ def test_check_decision_matches_the_evaluator_at_full_precision(name, side):
 @pytest.mark.parametrize("name", cases_with("batch_signals"))
 def test_closed_bar_batch_matches_individual_checks(name):
     case = CASES[name]
-    bars = case.entry(1)
+    bars = (case.batch_entry or case.entry)(1)
     cutoff = boundary(bars) if case.boundary_cutoff else bars[-1]["t"] + H // 2
     stdin = {"v": 2, "market": market({"BTC|1h": frame(bars, H)}, cutoff_ms=cutoff, mid=bars[-1]["c"])}
-    strategy_refs = json.loads(refs(case))
+    strategy_refs = json.loads(erefs(case))
     valid = [
         {"id": "on", "strategy": name, "mode": "paper", "mode_args": ["--mode=paper"],
          "strategy_refs": strategy_refs, "closed_bar_decisions": True},
@@ -1292,7 +1751,7 @@ def test_closed_bar_batch_matches_individual_checks(name):
                 "strategy_refs": strategy_refs, "closed_bar_decisions": True}]
     if case.batch_bad is not None:
         failing.append({"id": "bad-params", "strategy": name, "mode": "paper", "mode_args": ["--mode=paper"],
-                        "strategy_refs": json.loads(refs(case, params=case.batch_bad[0])),
+                        "strategy_refs": json.loads(erefs(case, params=case.batch_bad[0])),
                         "closed_bar_decisions": True})
     argv = ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "200", "--atr-method=simple",
             "--market-stdin"]
@@ -1307,7 +1766,7 @@ def test_closed_bar_batch_matches_individual_checks(name):
         assert not mixed["bad-params"].get("indicators")
     for slot_id, closed in (("on", True), ("off", False)):
         argv_single = [name, "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200",
-                       "--atr-method=simple", "--strategy-refs", refs(case)]
+                       "--atr-method=simple", "--strategy-refs", erefs(case)]
         if closed:
             argv_single.append("--closed-bar-decisions")
         single = run(argv_single, stdin)
@@ -1322,17 +1781,19 @@ def test_closed_bar_batch_matches_individual_checks(name):
         assert case.reconstruct(clean["on"]["indicators"]) == want_on
     if case.batch_peer:
         assert not clean["peer"].get("error") and not mixed["peer"].get("error")
+    if case.batch_check is not None:
+        case.batch_check(clean, mixed)
 
 
 @pytest.mark.parametrize("name", cases_with("opposite_entry_closes"))
 def test_closed_bar_close_fallback_closes_on_an_opposite_entry(name):
     case = CASES[name]
-    long_held, short_held = (list(h.args) for h in case.helds)
-    for entry_side, held_args, close_signal, same_side in ((-1, long_held, -1, short_held),
-                                                           (1, short_held, 1, long_held)):
+    for entry_side, held_index, close_signal in ((-1, 0, -1), (1, 1, 1)):
         bars = case.entry(entry_side)
+        held_args = case.helds[held_index].argv(bars)
+        same_side = case.helds[1 - held_index].argv(bars)
         argv = ["breakout", "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200",
-                "--closed-bar-decisions", "--strategy-refs", fallback_refs(case, case.params)]
+                "--closed-bar-decisions", "--strategy-refs", fallback_refs(case, case.closed_params())]
         stdin = envelope(bars, H, "BTC|1h", cutoff=boundary(bars))
         proc = run(argv + held_args, stdin)
         assert proc.returncode == 0, proc.stderr + proc.stdout
@@ -1348,20 +1809,23 @@ def test_closed_bar_close_fallback_closes_on_an_opposite_entry(name):
 @pytest.mark.parametrize("name,closed", case_closed_params("defects"))
 def test_invalid_entry_data_holds_the_entry_and_keeps_protection(name, closed):
     case = CASES[name]
-    strategy_refs = refs(case, closes=[case.tp])
+    strategy_refs = erefs(case, closes=[case.tp])
     for defect in case.defects:
         bars = defect.mutate(case.entry(1))
-        cutoff = decision_cutoff(case, bars)
+        cutoff = defect.cutoff(bars) if defect.cutoff else decision_cutoff(case, bars)
         expect = defect.expect[closed]
+        if defect.check is not None:
+            defect.check(case, bars)
         for position in case.helds:
-            where = (defect.name, position.args[1])
+            args = position.argv(bars)
+            where = (defect.name, args[1])
             mid = position.mid(bars) if position.mid else None
-            out = check(case, bars, closed=closed, extra=list(position.args), cutoff=cutoff, mid=mid,
-                        strategy_refs=strategy_refs)
+            out = check(case, bars, closed=closed, extra=args, cutoff=cutoff, mid=mid, strategy_refs=strategy_refs)
             assert_expect(out, expect, where)
             assert out["open_action"] == "none", where
-            assert out["close_strategy"] == "tiered_tp_pct" and out["close_fraction"] == 1.0, where
+            assert out["close_strategy"] == case.tp["name"] and out["close_fraction"] == 1.0, where
             assert out["signal"] == position.close_signal, where
+            assert out["price"] == (bars[-1]["c"] if mid is None else mid), where
         flat = check(case, bars, closed=closed, cutoff=cutoff, strategy_refs=strategy_refs)
         assert_expect(flat, expect, (defect.name, "flat"))
         assert flat["signal"] == 0 and flat["open_action"] == "none", (defect.name, "flat")
@@ -1369,7 +1833,7 @@ def test_invalid_entry_data_holds_the_entry_and_keeps_protection(name, closed):
             stop_flat = check(case, bars, closed=closed, cutoff=cutoff)
             assert_expect(stop_flat, expect, (defect.name, "time_stop_flat"))
             assert stop_flat["signal"] == 0 and stop_flat["open_action"] == "none"
-            stop_held = check(case, bars, closed=closed, extra=list(case.helds[0].args), cutoff=cutoff)
+            stop_held = check(case, bars, closed=closed, extra=case.helds[0].argv(bars), cutoff=cutoff)
             assert stop_held["close_strategy"] in ("", "time_stop")
             assert stop_held["close_fraction"] == 0.0 and stop_held["signal"] == 0
 
@@ -1378,18 +1842,23 @@ def test_invalid_entry_data_holds_the_entry_and_keeps_protection(name, closed):
 def test_missing_timing_holds_the_closed_bar_decision_and_keeps_protection(name):
     case = CASES[name]
     bars = case.entry(1)
-    strategy_refs = refs(case, closes=[case.tp])
+    strategy_refs = erefs(case, closes=[case.tp])
     cutoff = decision_cutoff(case, bars)
     position = case.helds[0]
     mid = position.mid(bars) if position.mid else None
-    out = check(case, bars, closed=True, extra=list(position.args), timing=False, cutoff=cutoff, mid=mid,
+    out = check(case, bars, closed=True, extra=position.argv(bars), timing=False, cutoff=cutoff, mid=mid,
                 strategy_refs=strategy_refs)
     assert out["closed_bar_decision"]["held"] is True
+    assert "timing" in out["closed_bar_decision"]["hold_reason"]
     assert out["indicators"] == {}
     assert out["open_action"] == "none"
     assert out["close_fraction"] == 1.0 and out["signal"] == position.close_signal
     flat = check(case, bars, closed=True, timing=False, cutoff=cutoff, strategy_refs=strategy_refs)
     assert flat["signal"] == 0 and flat["closed_bar_decision"]["held"] is True
+    bare = check(case, bars, closed=True, timing=False, cutoff=cutoff)
+    assert bare["closed_bar_decision"]["held"] is True
+    assert "timing" in bare["closed_bar_decision"]["hold_reason"]
+    assert bare["signal"] == 0 and bare["indicators"] == {}
 
 
 @pytest.mark.parametrize("name", cases_with("cadence_gap_holds"))
@@ -1397,12 +1866,13 @@ def test_cadence_gap_holds_the_entry_and_keeps_protection(name):
     case = CASES[name]
     bars = case.entry(1)
     del bars[-10]
-    strategy_refs = refs(case, closes=[case.tp])
+    strategy_refs = erefs(case, closes=[case.tp])
     for position in case.helds:
-        out = check(case, bars, closed=False, extra=list(position.args), timing=False, strategy_refs=strategy_refs)
-        assert out["indicator_labels"][case.reason()] == "cadence_gap", position.args[1]
-        assert out["open_action"] == "none" and out["close_fraction"] == 1.0, position.args[1]
-        assert out["signal"] == position.close_signal, position.args[1]
+        args = position.argv(bars)
+        out = check(case, bars, closed=False, extra=args, timing=False, strategy_refs=strategy_refs)
+        assert out["indicator_labels"][case.reason()] == "cadence_gap", args[1]
+        assert out["open_action"] == "none" and out["close_fraction"] == 1.0, args[1]
+        assert out["signal"] == position.close_signal, args[1]
     flat = check(case, bars, closed=False, timing=False, strategy_refs=strategy_refs)
     assert flat["signal"] == 0 and flat["indicator_labels"][case.reason()] == "cadence_gap"
 
@@ -1411,9 +1881,9 @@ def test_cadence_gap_holds_the_entry_and_keeps_protection(name):
 def test_stale_closed_bar_holds_the_entry_and_keeps_protection(name):
     case = CASES[name]
     bars = case.entry(1)
-    strategy_refs = refs(case, closes=[case.tp])
+    strategy_refs = erefs(case, closes=[case.tp])
     stale = boundary(bars) + 3 * H
-    out = check(case, bars, closed=True, extra=list(case.helds[0].args), cutoff=stale, strategy_refs=strategy_refs)
+    out = check(case, bars, closed=True, extra=case.helds[0].argv(bars), cutoff=stale, strategy_refs=strategy_refs)
     assert out["closed_bar_decision"]["held"] is False
     assert out["indicator_labels"][case.reason()] == "decision_bar_stale"
     assert out["close_fraction"] == 1.0 and out["signal"] == -1
@@ -1426,7 +1896,7 @@ def test_missing_decision_frame_is_an_error_without_a_private_fetch(name, closed
     case = CASES[name]
     bars = case.entry(1)
     argv = [name, "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", str(case.limit),
-            "--strategy-refs", refs(case)]
+            "--strategy-refs", erefs(case)]
     if closed:
         argv.append("--closed-bar-decisions")
     cutoff = boundary(bars) if case.boundary_cutoff else bars[-1]["t"] + H // 2

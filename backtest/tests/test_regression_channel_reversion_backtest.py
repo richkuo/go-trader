@@ -1,5 +1,3 @@
-import contextlib
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -17,19 +15,6 @@ SMALL = {"fit_window": 8, "band_multiplier": 2.0, "slope_ceiling": 0.10, "min_re
 FIT_FIELDS = ("rcr_slope", "rcr_intercept", "rcr_fit_mean", "rcr_resid_std", "rcr_slope_norm",
               "rcr_forecast", "rcr_lower", "rcr_upper")
 REG = load_registry("futures")
-
-
-@contextlib.contextmanager
-def _case(label):
-    try:
-        yield
-    except AssertionError as exc:
-        raise AssertionError(f"case {label}: {exc}") from exc
-    except pytest.fail.Exception as exc:
-        pytest.fail(f"case {label}: {exc}")
-    except Exception as exc:
-        exc.add_note(f"case {label}")
-        raise
 
 
 def _frame(closes, freq="4h", kind="open", declare=True, start="2026-01-01"):
@@ -76,7 +61,15 @@ def _symmetric(n_blocks, d=0.5, base=100.0):
     return [base + d, base - d, base - d, base + d] * n_blocks
 
 
-def test_grid_fits_the_closed_window():
+def test_grid_and_boundary_fit_windows_need_exactly_fit_window_plus_two_rows(subtests):
+    with subtests.test(case="grid_fits_the_closed_window"):
+        _grid_fits_the_closed_window()
+    for w in (2, 3, 197):
+        with subtests.test(case=f"w={w}"):
+            _boundary_fit_window_needs_exactly_fit_window_plus_two_rows(w)
+
+
+def _grid_fits_the_closed_window():
     grid = DEFAULT_PARAM_RANGES[NAME]
     df = _market(260)
     for w in grid["fit_window"]:
@@ -106,9 +99,17 @@ INVALID_PARAMS = [
 ]
 
 
-@pytest.mark.parametrize("params", [SEED, dict(SEED, fit_window=20, band_multiplier=1.5, slope_ceiling=1.0),
-                                    dict(SEED, fit_window=197, band_multiplier=3.0, slope_ceiling=0.2)])
-def test_frozen_fit_matches_an_independent_least_squares_reference(params):
+REFERENCE_PARAMS = [SEED, dict(SEED, fit_window=20, band_multiplier=1.5, slope_ceiling=1.0),
+                    dict(SEED, fit_window=197, band_multiplier=3.0, slope_ceiling=0.2)]
+
+
+def test_frozen_fit_matches_an_independent_least_squares_reference(subtests):
+    for i, params in enumerate(REFERENCE_PARAMS):
+        with subtests.test(case=f"params{i}"):
+            _frozen_fit_matches_an_independent_least_squares_reference(params)
+
+
+def _frozen_fit_matches_an_independent_least_squares_reference(params):
     df = _market(420)
     out = _apply(df, params)
     w, k = params["fit_window"], params["band_multiplier"]
@@ -140,7 +141,19 @@ def _dip(closes, depth):
     return closes + [closes[-1] - depth]
 
 
-def test_long_and_short_reentries_fire_only_on_the_reentry_bar():
+def test_reentry_entry_rule_band_inequalities_and_gates(subtests):
+    with subtests.test(case="long_and_short_reentries"):
+        _long_and_short_reentries_fire_only_on_the_reentry_bar()
+    with subtests.test(case="band_boundaries"):
+        _band_boundaries_follow_the_declared_inequalities()
+    with subtests.test(case="slope_and_deviation_gates"):
+        _slope_and_deviation_gates_hold_with_reasons_at_inclusive_bounds()
+    for step, start in ((1.5, 100.0), (-1.5, 250.0)):
+        with subtests.test(case=f"steep_channel step={step} start={start}"):
+            _steep_channel_is_slope_gated(step, start)
+
+
+def _long_and_short_reentries_fire_only_on_the_reentry_bar():
     base = _symmetric(4)
     long_rows = _dip(base, 3.0) + [100.0]
     out = _apply(_frame(long_rows), SMALL)
@@ -166,7 +179,7 @@ def test_long_and_short_reentries_fire_only_on_the_reentry_bar():
     assert stays_out["signal"] == 0 and stays_out["rcr_reason"] == "no_reentry"
 
 
-def test_band_boundaries_follow_the_declared_inequalities():
+def _band_boundaries_follow_the_declared_inequalities():
     rows = _dip(_symmetric(4), 3.0) + [100.0]
     base = _apply(_frame(rows), SMALL)
     lower, upper = float(base["rcr_lower"].iloc[-1]), float(base["rcr_upper"].iloc[-1])
@@ -186,7 +199,7 @@ def test_band_boundaries_follow_the_declared_inequalities():
     assert prev_inside["signal"] == 0 and prev_inside["rcr_reason"] == "no_reentry"
 
 
-def test_slope_and_deviation_gates_hold_with_reasons_at_inclusive_bounds():
+def _slope_and_deviation_gates_hold_with_reasons_at_inclusive_bounds():
     rows = _dip(_symmetric(4), 3.0) + [100.0]
     ref = _apply(_frame(rows), SMALL).iloc[-1]
     assert ref["signal"] == 1
@@ -206,12 +219,6 @@ def test_slope_and_deviation_gates_hold_with_reasons_at_inclusive_bounds():
     assert exact["signal"] == 1
 
 
-def test_steep_rising_and_falling_channels_are_slope_gated():
-    for step, start in ((1.5, 100.0), (-1.5, 250.0)):
-        with _case(f"step={step} start={start}"):
-            _steep_channel_is_slope_gated(step, start)
-
-
 def _steep_channel_is_slope_gated(step, start):
     closes = [start + step * i + (0.4 if i % 2 else -0.4) for i in range(80)]
     for i in range(14, 80, 15):
@@ -227,7 +234,21 @@ def _steep_channel_is_slope_gated(step, start):
     assert (ungated["signal"] != 0).sum() == (out["rcr_reason"] == "slope_gate").sum()
 
 
-def test_constant_prices_and_exact_lines_hold_as_degenerate_fits():
+def test_degenerate_fits_and_input_defects_hold_with_reasons_then_recover(subtests):
+    with subtests.test(case="degenerate_fits"):
+        _constant_prices_and_exact_lines_hold_as_degenerate_fits()
+    with subtests.test(case="missing_columns_cadence_and_timestamps"):
+        _missing_columns_cadence_and_timestamps_hold_every_row()
+    for value, reason, code in BAD_PRICES:
+        with subtests.test(case=f"bad_price {value}-{reason}-{code}"):
+            _a_bad_price_holds_its_whole_dependency_span_then_recovers(value, reason, code)
+    for mutate, reason, last_held in (("gap", "cadence_gap", 10), ("duplicate", "timestamp_order", 11),
+                                      ("reverse", "timestamp_order", 11)):
+        with subtests.test(case=f"timestamp {mutate}-{reason}-{last_held}"):
+            _timestamp_and_cadence_defects_hold_the_span_then_recover(mutate, reason, last_held)
+
+
+def _constant_prices_and_exact_lines_hold_as_degenerate_fits():
     out = _apply(_frame([100.0] * 40), SMALL)
     assert (out["signal"] == 0).all()
     assert set(out["rcr_reason"].iloc[9:]) == {"degenerate_fit"}
@@ -242,7 +263,7 @@ def test_constant_prices_and_exact_lines_hold_as_degenerate_fits():
     assert set(two["rcr_reason"].iloc[3:]) == {"degenerate_fit"}
 
 
-def test_missing_columns_cadence_and_timestamps_hold_every_row():
+def _missing_columns_cadence_and_timestamps_hold_every_row():
     df = _frame(_symmetric(5)).drop(columns=["close"])
     out = _apply(df, SMALL)
     assert set(out["rcr_reason"]) == {"missing_columns:close"} and (out["rcr_reason_code"] == 19).all()
@@ -261,12 +282,6 @@ BAD_PRICES = [
 ]
 
 
-def test_a_bad_price_holds_its_whole_dependency_span_then_recovers():
-    for value, reason, code in BAD_PRICES:
-        with _case(f"{value}-{reason}-{code}"):
-            _a_bad_price_holds_its_whole_dependency_span_then_recovers(value, reason, code)
-
-
 def _a_bad_price_holds_its_whole_dependency_span_then_recovers(value, reason, code):
     w = 10
     df = _market(80)
@@ -278,13 +293,6 @@ def _a_bad_price_holds_its_whole_dependency_span_then_recovers(value, reason, co
     assert not held["rcr_valid"].any() and (held["signal"] == 0).all()
     assert held["rcr_prev_lower"].isna().all()
     assert bool(out["rcr_valid"].iloc[bad + w + 2])
-
-
-def test_timestamp_and_cadence_defects_hold_the_span_then_recover():
-    for mutate, reason, last_held in (("gap", "cadence_gap", 10), ("duplicate", "timestamp_order", 11),
-                                      ("reverse", "timestamp_order", 11)):
-        with _case(f"{mutate}-{reason}-{last_held}"):
-            _timestamp_and_cadence_defects_hold_the_span_then_recover(mutate, reason, last_held)
 
 
 def _timestamp_and_cadence_defects_hold_the_span_then_recover(mutate, reason, last_held):
@@ -320,12 +328,6 @@ def test_native_close_timestamps_report_the_bar_opening_time():
     assert row["rcr_interval_ms"] == 3_600_000.0
 
 
-def test_boundary_fit_windows_need_exactly_fit_window_plus_two_rows():
-    for w in (2, 3, 197):
-        with _case(f"w={w}"):
-            _boundary_fit_window_needs_exactly_fit_window_plus_two_rows(w)
-
-
 def _boundary_fit_window_needs_exactly_fit_window_plus_two_rows(w):
     need = w + 2
     params = dict(SEED, fit_window=w, slope_ceiling=1.0)
@@ -339,11 +341,18 @@ def _boundary_fit_window_needs_exactly_fit_window_plus_two_rows(w):
         assert exact["rcr_valid"].tolist() == [False] * (need - 1) + [True]
 
 
-@pytest.mark.parametrize("params", [SEED, dict(SEED, fit_window=20, band_multiplier=1.5, slope_ceiling=1.0),
-                                    dict(SEED, fit_window=197, band_multiplier=3.0, slope_ceiling=0.2,
-                                         min_residual_std=0.1),
-                                    dict(SEED, fit_window=3, band_multiplier=2.5, slope_ceiling=0.05)])
-def test_every_prefix_and_bounded_tail_repeat_the_full_series_decision(params):
+PREFIX_PARAMS = [SEED, dict(SEED, fit_window=20, band_multiplier=1.5, slope_ceiling=1.0),
+                 dict(SEED, fit_window=197, band_multiplier=3.0, slope_ceiling=0.2, min_residual_std=0.1),
+                 dict(SEED, fit_window=3, band_multiplier=2.5, slope_ceiling=0.05)]
+
+
+def test_every_prefix_and_bounded_tail_repeat_the_full_series_decision(subtests):
+    for i, params in enumerate(PREFIX_PARAMS):
+        with subtests.test(case=f"params{i}"):
+            _every_prefix_and_bounded_tail_repeat_the_full_series_decision(params)
+
+
+def _every_prefix_and_bounded_tail_repeat_the_full_series_decision(params):
     df = _market(420)
     full = _apply(df, params)
     need = params["fit_window"] + 2

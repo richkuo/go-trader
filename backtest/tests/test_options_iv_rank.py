@@ -21,7 +21,16 @@ def _path_from_vol_schedule(vol_per_day: list, seed: int = 0) -> list:
     return closes
 
 
-def test_degenerate_history_returns_neutral_50():
+def test_iv_rank_neutral_on_degenerate_history_and_banded_otherwise(subtests):
+    with subtests.test(case="degenerate_history_returns_neutral_50"):
+        _assert_degenerate_history_returns_neutral_50()
+    with subtests.test(case="boundary_exact_minimum_computes_rank"):
+        _assert_boundary_exact_minimum_computes_rank()
+    with subtests.test(case="rank_lands_in_expected_band"):
+        _assert_rank_lands_in_expected_band()
+
+
+def _assert_degenerate_history_returns_neutral_50():
     for case_id, closes in [
         ("history_too_short", [100.0 + i for i in range(50)]),
         ("one_below_minimum", [100.0 + i for i in range(74)]),
@@ -31,7 +40,7 @@ def test_degenerate_history_returns_neutral_50():
             f"test_degenerate_history_returns_neutral_50[{case_id}]"
 
 
-def test_boundary_exact_minimum_computes_rank():
+def _assert_boundary_exact_minimum_computes_rank():
     closes = _path_from_vol_schedule([0.02] * 74, seed=11)
     assert len(closes) == 75
     rank = calc_iv_rank(closes, recent_window=RECENT, lookback_days=LOOKBACK)
@@ -39,7 +48,7 @@ def test_boundary_exact_minimum_computes_rank():
     assert rank != 50.0
 
 
-def test_rank_lands_in_expected_band():
+def _assert_rank_lands_in_expected_band():
     for case_id, (schedule, seed, lo, hi, strict_lo, strict_hi) in {
         "recent_spike": ([0.005] * 76 + [0.08] * 14, 1, 90.0, 100.0, True, False),
         "recent_calm": ([0.08] * 76 + [0.001] * 14, 2, 0.0, 10.0, False, True),

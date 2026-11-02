@@ -76,7 +76,7 @@ def assert_quote_capacity(res, quotes):
         assert total <= d(shown[key]), key
 
 
-def test_a_partial_first_exit_window_keeps_its_fill_and_closes_the_rest_from_a_later_quote():
+def _check_a_partial_first_exit_window_keeps_its_fill_and_closes_the_rest_from_a_later_quote():
     quotes = [q(T + 1_000, 99_990, 0, 100_000, 1), q(T + 61_000, 100_100, 0.004, 100_110, 0),
               q(T + 81_000, 100_200, 1, 100_210, 0)]
     res = replay(quotes, [decision(T)])
@@ -93,7 +93,7 @@ def test_a_partial_first_exit_window_keeps_its_fill_and_closes_the_rest_from_a_l
     assert_quantity_conserved(t)
 
 
-def test_exits_cross_more_than_two_windows_and_an_empty_window_does_not_stop_the_search():
+def _check_exits_cross_more_than_two_windows_and_an_empty_window_does_not_stop_the_search():
     for side in ("long", "short"):
         with _case(side):
             _exits_cross_more_than_two_windows_and_an_empty_window_does_not_stop_the_search(side)
@@ -273,3 +273,12 @@ def test_study_aggregation_report_and_verdict_keep_an_open_position_and_refuse_a
     assert "| test | x1 | no | 2 |" in lines and "| test | x2 | no | 2 |" in lines
     for p in held["x1"]["open_positions"]:
         assert f"| test | x1 | {p['coin']} | long |" in lines
+
+
+def test_exits_fill_across_later_windows_and_a_partial_window_keeps_its_fill(subtests):
+    for check in (
+            _check_a_partial_first_exit_window_keeps_its_fill_and_closes_the_rest_from_a_later_quote,
+            _check_exits_cross_more_than_two_windows_and_an_empty_window_does_not_stop_the_search,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()

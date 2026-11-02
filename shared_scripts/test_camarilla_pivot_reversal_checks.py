@@ -3,7 +3,6 @@ import json
 import os
 import sys
 
-import pytest
 
 _NAME = "_strategy_check_contract_for_camarilla_pivot_reversal"
 _SPEC = importlib.util.spec_from_file_location(
@@ -85,21 +84,22 @@ def test_a_stale_closed_bar_holds_and_a_forming_crossing_waits_for_its_close():
     assert closed["signal"] == 1 and closed["indicators"]["cpr_eval_ts_ms"] == float(bars[-1]["t"])
 
 
-@pytest.mark.parametrize("timeframe,params,needle", [
-    ("4h", {"expected_interval_ms": H}, "does not match timeframe '4h'"),
-    ("4h", None, "registry default expected_interval_ms=3600000"),
-    ("5m", {"expected_interval_ms": 300_000}, "expected_interval_ms >= 900000"),
-    ("6h", {"expected_interval_ms": 21_600_000}, "not a supported interval"),
-    ("1h", {"expected_interval_ms": True}, "expected_interval_ms"),
-])
-def test_cadence_errors_are_refused_before_any_candle_fetch(timeframe, params, needle):
-    strategy_refs = json.dumps({"open": {"name": NAME, "params": params or {}}, "closes": [TP]})
-    proc = C.run([NAME, "BTC", timeframe, "--mode=paper", "--strategy-refs", strategy_refs])
-    assert proc.returncode == 1
-    out = C.payload(proc)
-    assert out["signal"] == 0 and needle in out["error"]
-    assert f"open strategy '{NAME}' has invalid parameters" in out["error"]
-    assert "Fetching BTC" not in proc.stderr
+def test_cadence_errors_are_refused_before_any_candle_fetch(subtests):
+    for timeframe, params, needle in [
+            ("4h", {"expected_interval_ms": H}, "does not match timeframe '4h'"),
+            ("4h", None, "registry default expected_interval_ms=3600000"),
+            ("5m", {"expected_interval_ms": 300_000}, "expected_interval_ms >= 900000"),
+            ("6h", {"expected_interval_ms": 21_600_000}, "not a supported interval"),
+            ("1h", {"expected_interval_ms": True}, "expected_interval_ms"),
+        ]:
+        with subtests.test(timeframe=timeframe, params=params, needle=needle):
+            strategy_refs = json.dumps({"open": {"name": NAME, "params": params or {}}, "closes": [TP]})
+            proc = C.run([NAME, "BTC", timeframe, "--mode=paper", "--strategy-refs", strategy_refs])
+            assert proc.returncode == 1
+            out = C.payload(proc)
+            assert out["signal"] == 0 and needle in out["error"]
+            assert f"open strategy '{NAME}' has invalid parameters" in out["error"]
+            assert "Fetching BTC" not in proc.stderr
 
 
 def test_a_batch_with_only_invalid_slots_refuses_every_slot_without_building_shared_state():

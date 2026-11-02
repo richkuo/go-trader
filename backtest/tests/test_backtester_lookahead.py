@@ -38,7 +38,16 @@ def _step_up_df(n: int = 20, jump_bar: int = 10, jump_pct: float = 0.10) -> pd.D
     )
 
 
-def test_signal_at_bar_k_fills_at_bar_k_plus_1_open():
+def test_signal_at_bar_k_fills_at_bar_k_plus_1_open(subtests):
+    with subtests.test(case="signal_at_bar_k_fills_at_bar_k_plus_1_open"):
+        _assert_signal_at_bar_k_fills_at_bar_k_plus_1_open()
+    with subtests.test(case="intra_bar_jump_captured_at_next_bar_open_documents_limit"):
+        _assert_intra_bar_jump_captured_at_next_bar_open_documents_limit()
+    with subtests.test(case="shift_moves_signal_by_exactly_one_row"):
+        _assert_shift_moves_signal_by_exactly_one_row()
+
+
+def _assert_signal_at_bar_k_fills_at_bar_k_plus_1_open():
     df = _step_up_df(n=20, jump_bar=10, jump_pct=0.10)
     df["signal"] = 0
     df.iloc[9, df.columns.get_loc("signal")] = 1
@@ -57,7 +66,7 @@ def test_signal_at_bar_k_fills_at_bar_k_plus_1_open():
     assert entry_price == 100.0, f"Expected entry at bar 10's open=100, got {entry_price}"
 
 
-def test_intra_bar_jump_captured_at_next_bar_open_documents_limit():
+def _assert_intra_bar_jump_captured_at_next_bar_open_documents_limit():
     df = _step_up_df(n=20, jump_bar=10, jump_pct=0.20)
     df["signal"] = 0
     df.iloc[9, df.columns.get_loc("signal")] = 1
@@ -72,7 +81,18 @@ def test_intra_bar_jump_captured_at_next_bar_open_documents_limit():
     )
 
 
-def test_regime_gate_uses_prior_bar_regime_not_current():
+def test_regime_consumers_read_prior_bar_regime_not_current(subtests):
+    with subtests.test(case="regime_gate_uses_prior_bar_regime_not_current"):
+        _assert_regime_gate_uses_prior_bar_regime_not_current()
+    with subtests.test(case="regime_gate_blocks_when_prior_bar_regime_disallows"):
+        _assert_regime_gate_blocks_when_prior_bar_regime_disallows()
+    with subtests.test(case="regime_directional_policy_uses_prior_bar_regime_not_current"):
+        _assert_regime_directional_policy_uses_prior_bar_regime_not_current()
+    with subtests.test(case="regime_tp_tier_resolution_reads_prior_bar_regime_not_current"):
+        _assert_regime_tp_tier_resolution_reads_prior_bar_regime_not_current()
+
+
+def _assert_regime_gate_uses_prior_bar_regime_not_current():
     df = _step_up_df(n=20, jump_bar=15)
     df["signal"] = 0
     df.iloc[9, df.columns.get_loc("signal")] = 1
@@ -92,7 +112,7 @@ def test_regime_gate_uses_prior_bar_regime_not_current():
     )
 
 
-def test_regime_gate_blocks_when_prior_bar_regime_disallows():
+def _assert_regime_gate_blocks_when_prior_bar_regime_disallows():
     df = _step_up_df(n=20, jump_bar=15)
     df["signal"] = 0
     df.iloc[9, df.columns.get_loc("signal")] = 1
@@ -112,7 +132,7 @@ def test_regime_gate_blocks_when_prior_bar_regime_disallows():
     )
 
 
-def test_regime_directional_policy_uses_prior_bar_regime_not_current():
+def _assert_regime_directional_policy_uses_prior_bar_regime_not_current():
     df = _step_up_df(n=20, jump_bar=15)
     df["signal"] = 0
     df.iloc[9, df.columns.get_loc("signal")] = 1
@@ -167,7 +187,7 @@ def test_forward_peek_signal_documents_caller_responsibility():
     )
 
 
-def test_shift_moves_signal_by_exactly_one_row():
+def _assert_shift_moves_signal_by_exactly_one_row():
     df = _step_up_df(n=20, jump_bar=15)
     df["signal"] = 0
     df.iloc[5, df.columns.get_loc("signal")] = 1
@@ -228,7 +248,16 @@ def _avwap_mixed_fixture() -> pd.DataFrame:
     )
 
 
-def test_anchored_vwap_no_lookahead():
+def test_anchored_vwap_family_no_lookahead(subtests):
+    with subtests.test(case="anchored_vwap_no_lookahead"):
+        _assert_anchored_vwap_no_lookahead()
+    with subtests.test(case="anchored_vwap_channel_no_lookahead"):
+        _assert_anchored_vwap_channel_no_lookahead()
+    with subtests.test(case="anchored_vwap_reversion_no_lookahead"):
+        _assert_anchored_vwap_reversion_no_lookahead()
+
+
+def _assert_anchored_vwap_no_lookahead():
     df = _avwap_mixed_fixture()
     cut = 20
 
@@ -278,7 +307,7 @@ def _avwap_channel_mixed_fixture() -> pd.DataFrame:
     )
 
 
-def test_anchored_vwap_channel_no_lookahead():
+def _assert_anchored_vwap_channel_no_lookahead():
     df = _avwap_channel_mixed_fixture()
     cut = 17
 
@@ -330,7 +359,7 @@ def _avwap_reversion_mixed_fixture() -> pd.DataFrame:
     )
 
 
-def test_anchored_vwap_reversion_no_lookahead():
+def _assert_anchored_vwap_reversion_no_lookahead():
     df = _avwap_reversion_mixed_fixture()
     cut = 17
 
@@ -359,7 +388,14 @@ def test_anchored_vwap_reversion_no_lookahead():
         "is not sensitive to look-ahead")
 
 
-def test_entry_atr_stamped_from_bar_before_fill():
+def test_entry_atr_stamped_from_bar_before_fill(subtests):
+    with subtests.test(case="entry_atr_stamped_from_bar_before_fill"):
+        _assert_entry_atr_stamped_from_bar_before_fill()
+    with subtests.test(case="entry_atr_stamp_no_prior_bar_returns_zero"):
+        _assert_entry_atr_stamp_no_prior_bar_returns_zero()
+
+
+def _assert_entry_atr_stamped_from_bar_before_fill():
     idx = pd.date_range("2024-01-01", periods=5, freq="D")
     df = pd.DataFrame({
         "open": [100, 100, 100, 110, 110],
@@ -379,7 +415,7 @@ def test_entry_atr_stamped_from_bar_before_fill():
     assert result["trades"][0]["exit_date"] == str(idx[3])
 
 
-def test_entry_atr_stamp_no_prior_bar_returns_zero():
+def _assert_entry_atr_stamp_no_prior_bar_returns_zero():
     bt = Backtester(initial_capital=1000, commission_pct=0, slippage_pct=0)
     idx = pd.date_range("2024-01-01", periods=3, freq="D")
     atr = pd.Series([5.0, 6.0, 7.0], index=idx)
@@ -387,7 +423,16 @@ def test_entry_atr_stamp_no_prior_bar_returns_zero():
     assert bt._stamp_entry_atr(atr, idx[2], 100.0) == 6.0
 
 
-def test_scale_in_add_fills_at_next_bar_open():
+def test_scale_in_decides_on_signal_bar_and_fills_next_open(subtests):
+    with subtests.test(case="scale_in_add_fills_at_next_bar_open"):
+        _assert_scale_in_add_fills_at_next_bar_open()
+    with subtests.test(case="scale_in_decision_ignores_fill_bar_range"):
+        _assert_scale_in_decision_ignores_fill_bar_range()
+    with subtests.test(case="scale_in_spacing_gate_reads_signal_bar_close"):
+        _assert_scale_in_spacing_gate_reads_signal_bar_close()
+
+
+def _assert_scale_in_add_fills_at_next_bar_open():
     idx = pd.date_range("2024-01-01", periods=6, freq="D")
     df = pd.DataFrame({
         "open": [100.0, 100.0, 100.0, 108.0, 108.0, 108.0],
@@ -407,7 +452,7 @@ def test_scale_in_add_fills_at_next_bar_open():
     assert trade["entry_price"] == pytest.approx(blend)
 
 
-def test_scale_in_decision_ignores_fill_bar_range():
+def _assert_scale_in_decision_ignores_fill_bar_range():
     def _res(fill_bar_close, fill_bar_high):
         idx = pd.date_range("2024-01-01", periods=6, freq="D")
         df = pd.DataFrame({
@@ -429,7 +474,7 @@ def test_scale_in_decision_ignores_fill_bar_range():
             == pytest.approx(perturbed["trades"][0]["shares"]))
 
 
-def test_scale_in_spacing_gate_reads_signal_bar_close():
+def _assert_scale_in_spacing_gate_reads_signal_bar_close():
     idx = pd.date_range("2024-01-01", periods=6, freq="D")
     df = pd.DataFrame({
         "open": [100.0, 100.0, 100.0, 104.0, 104.0, 104.0],
@@ -445,7 +490,7 @@ def test_scale_in_spacing_gate_reads_signal_bar_close():
     assert result["scale_in_adds"] == 0
 
 
-def test_regime_tp_tier_resolution_reads_prior_bar_regime_not_current():
+def _assert_regime_tp_tier_resolution_reads_prior_bar_regime_not_current():
     idx = pd.date_range("2024-01-01", periods=6, freq="D")
     df = pd.DataFrame(
         {

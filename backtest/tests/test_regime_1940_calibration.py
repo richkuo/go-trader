@@ -130,23 +130,27 @@ def test_support_stays_inside_the_split_and_2025h1_drops_the_is_overlap():
     assert np.array_equal(np.isfinite(fwd[:190]), np.isfinite(fwd_changed[:190]))
 
 
-def test_held_out_rows_do_not_change_the_training_winner():
-    incumbent = _row("inc", h=10, p=0.01, transition=0.2, support="s")
-    candidate = _row("cand", h=12, p=0.01, transition=0.1, support="s")
-    oos = _row("cand", h=1, p=0.5, transition=0.5, support="s", split="oos", horizon=4)
-    first = study.select_winners([incumbent, candidate, oos], {"adx": "inc"})
-    oos["kruskal_h"] = 999
-    second = study.select_winners([incumbent, candidate, oos], {"adx": "inc"})
-    assert first == second
-    assert first[0]["setting_id"] == "cand"
-
-
-def test_tie_breaks_on_the_setting_identifier():
-    incumbent = _row("inc", h=10, p=0.01, transition=0.4, support="s")
-    low = _row("b", h=20, p=0.01, transition=0.1, support="s")
-    high = _row("a", h=20, p=0.01, transition=0.1, support="s")
-    winners = study.select_winners([incumbent, low, high], {"adx": "inc"})
-    assert winners[0]["setting_id"] == "a"
+def test_held_out_rows_do_not_change_the_training_winner(subtests):
+    with subtests.test("test_held_out_rows_do_not_change_the_training_winner"):
+        incumbent = _row("inc", h=10, p=0.01, transition=0.2, support="s")
+        candidate = _row("cand", h=12, p=0.01, transition=0.1, support="s")
+        oos = _row("cand", h=1, p=0.5, transition=0.5, support="s", split="oos", horizon=4)
+        first = study.select_winners([incumbent, candidate, oos], {"adx": "inc"})
+        oos["kruskal_h"] = 999
+        second = study.select_winners([incumbent, candidate, oos], {"adx": "inc"})
+        assert first == second
+        assert first[0]["setting_id"] == "cand"
+    with subtests.test("test_degenerate_label_stream_is_not_selected"):
+        incumbent = _row("inc", h=10, p=0.01, transition=0.2, support="s")
+        degenerate = _row("one", h=0, p=1, transition=0.0, support="s")
+        winners = study.select_winners([incumbent, degenerate], {"adx": "inc"})
+        assert winners[0]["setting_id"] is None
+    with subtests.test("test_tie_breaks_on_the_setting_identifier"):
+        incumbent = _row("inc", h=10, p=0.01, transition=0.4, support="s")
+        low = _row("b", h=20, p=0.01, transition=0.1, support="s")
+        high = _row("a", h=20, p=0.01, transition=0.1, support="s")
+        winners = study.select_winners([incumbent, low, high], {"adx": "inc"})
+        assert winners[0]["setting_id"] == "a"
 
 
 def test_raw_pass_with_corrected_failure_is_not_suggested():
@@ -194,13 +198,6 @@ def test_exact_half_and_empty_held_out_are_refused_and_a_strict_majority_passes(
     )
     assert empty[0]["suggested"] is False
     assert empty[0]["reason"] == "no training winner"
-
-
-def test_degenerate_label_stream_is_not_selected():
-    incumbent = _row("inc", h=10, p=0.01, transition=0.2, support="s")
-    degenerate = _row("one", h=0, p=1, transition=0.0, support="s")
-    winners = study.select_winners([incumbent, degenerate], {"adx": "inc"})
-    assert winners[0]["setting_id"] is None
 
 
 def test_adjusted_p_values_match_the_helper_and_an_unresolved_limit_keeps_units_apart():

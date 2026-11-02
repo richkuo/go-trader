@@ -160,7 +160,7 @@ def _with_index(df, idx):
     return out
 
 
-def test_evaluator_reports_the_required_history():
+def _check_evaluator_reports_the_required_history():
     out = _apply(_frame(_pullback()))
     assert out["efp_required_history"].iloc[0] == NEED
 
@@ -207,7 +207,7 @@ def test_every_bar_matches_an_independent_sequential_reference_in_both_weighting
         assert {"entry_long", "entry_short", "no_cross", "trend_unconfirmed"} <= reasons, reasons
 
 
-def test_pullback_recovery_gives_mirrored_entries_on_the_strict_crossing_bar():
+def _check_pullback_recovery_gives_mirrored_entries_on_the_strict_crossing_bar():
     for sign, signal, reason in ((1, 1, "entry_long"), (-1, -1, "entry_short")):
         for flag in (1, 0):
             out = _apply(_frame(_pullback(sign)), volume_weighting=flag)
@@ -222,7 +222,7 @@ def test_pullback_recovery_gives_mirrored_entries_on_the_strict_crossing_bar():
             assert out["efp_reason"].iloc[FIRST_PULLBACK + 1] == "trend_unconfirmed"
 
 
-def test_seed_force_and_weight_diagnostics_follow_the_contract():
+def _check_seed_force_and_weight_diagnostics_follow_the_contract():
     df = _frame(_pullback())
     out = _apply(df)
     rec = out.iloc[CROSS_AT]
@@ -235,7 +235,7 @@ def test_seed_force_and_weight_diagnostics_follow_the_contract():
     assert rec["efp_interval_ms"] == 3_600_000.0
 
 
-def test_exact_zero_and_constant_closes_never_trigger():
+def _check_exact_zero_and_constant_closes_never_trigger():
     flat = _apply(_frame(np.full(260, 150.0)))
     valid = flat["efp_valid"] == 1.0
     assert valid.any() and set(flat.loc[valid, "efp_reason"]) == {"zero_force"}
@@ -250,7 +250,7 @@ def test_exact_zero_and_constant_closes_never_trigger():
     assert out["efp_reason"].iloc[300] == "zero_force" and int(out["signal"].iloc[300]) == 0
 
 
-def test_zero_volume_eligibility_is_identical_in_both_weightings():
+def _check_zero_volume_eligibility_is_identical_in_both_weightings():
     df = _frame(_pullback())
     for pos in (CROSS_AT, CROSS_AT - 1):
         zeroed = _set(df, pos, "volume", 0.0)
@@ -269,7 +269,7 @@ def test_zero_volume_eligibility_is_identical_in_both_weightings():
     assert int(ablation["signal"].iloc[CROSS_AT]) == 1
 
 
-def test_trend_needs_both_candles():
+def _check_trend_needs_both_candles():
     df = _walk(900, seed=3)
     out = _apply(df)
     one_bar = ((out["efp_cross"] == 1.0) & (out["efp_uptrend"] == 1.0) & (out["efp_prev_uptrend"] == 0.0)) | (
@@ -277,6 +277,18 @@ def test_trend_needs_both_candles():
     assert one_bar.any()
     assert set(out.loc[one_bar, "efp_reason"]) == {"trend_unconfirmed"}
     assert (out.loc[one_bar, "signal"] == 0).all()
+
+
+def test_entry_rule_cases_and_diagnostics_follow_the_contract(subtests):
+    for label, check in (
+        ("pullback_recovery_gives_mirrored_entries_on_the_strict_crossing_bar", _check_pullback_recovery_gives_mirrored_entries_on_the_strict_crossing_bar),
+        ("seed_force_and_weight_diagnostics_follow_the_contract", _check_seed_force_and_weight_diagnostics_follow_the_contract),
+        ("exact_zero_and_constant_closes_never_trigger", _check_exact_zero_and_constant_closes_never_trigger),
+        ("zero_volume_eligibility_is_identical_in_both_weightings", _check_zero_volume_eligibility_is_identical_in_both_weightings),
+        ("trend_needs_both_candles", _check_trend_needs_both_candles),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 INVALID_PARAMS = [
@@ -300,12 +312,21 @@ INVALID_PARAMS = [
 ]
 
 
-def test_the_largest_allowed_history_is_199_rows():
+def _check_the_largest_allowed_history_is_199_rows():
     for over in ({"recursion_length": 197}, {"trend_period": 190, "slope_span": 8},
                  {"force_period": 19, "recursion_length": 190}):
         _reg()._registry.validate_params(NAME, over)
     assert _apply(_frame(_pullback()), recursion_length=197)["efp_required_history"].iloc[0] == 199.0
     assert _apply(_frame(_pullback()), trend_period=190, slope_span=8)["efp_required_history"].iloc[0] == 199.0
+
+
+def test_required_history_is_reported_and_bounded_at_199_rows(subtests):
+    for label, check in (
+        ("evaluator_reports_the_required_history", _check_evaluator_reports_the_required_history),
+        ("the_largest_allowed_history_is_199_rows", _check_the_largest_allowed_history_is_199_rows),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 DEFECT_AT = CROSS_AT - 40
@@ -331,7 +352,7 @@ WINDOW_DEFECTS = [
 ]
 
 
-def test_defects_inside_the_required_window_hold_and_recover_after_a_clean_window():
+def _check_defects_inside_the_required_window_hold_and_recover_after_a_clean_window():
     for i, (mutate, reason, at) in enumerate(WINDOW_DEFECTS):
         with _case(f"{i}-{reason}-{at}"):
             _defects_inside_the_required_window_hold_and_recover_after_a_clean_window(mutate, reason, at)
@@ -349,7 +370,7 @@ def _defects_inside_the_required_window_hold_and_recover_after_a_clean_window(mu
     assert out["efp_valid"].iloc[DEFECT_AT + NEED + 2] == 1.0
 
 
-def test_received_order_defects_hold_like_a_sort_repair():
+def _check_received_order_defects_hold_like_a_sort_repair():
     clean = _frame(_pullback())
     flagged = _copy(clean)
     flagged.attrs[FRAME_RECEIVED_ORDER_DEFECTS_ATTR] = [int(clean.index[DEFECT_AT].value // 1_000_000)]
@@ -357,7 +378,7 @@ def test_received_order_defects_hold_like_a_sort_repair():
     assert out["efp_reason"].iloc[CROSS_AT] == "timestamp_order" and int(out["signal"].abs().sum()) == 0
 
 
-def test_defects_outside_the_required_window_never_change_the_decision():
+def _check_defects_outside_the_required_window_never_change_the_decision():
     clean = _frame(_pullback())
     base = _apply(clean)
     first = CROSS_AT - NEED + 1
@@ -372,7 +393,7 @@ def test_defects_outside_the_required_window_never_change_the_decision():
     assert _apply(edge)["efp_reason"].iloc[CROSS_AT] == "cadence_gap"
 
 
-def test_insufficient_history_and_frame_level_holds():
+def _check_insufficient_history_and_frame_level_holds():
     df = _frame(_pullback())
     tail = df.iloc[CROSS_AT - NEED + 1:CROSS_AT + 1].copy()
     tail.attrs = dict(df.attrs)
@@ -391,7 +412,7 @@ def test_insufficient_history_and_frame_level_holds():
     assert set(_apply(df.reset_index(drop=True))["efp_reason"]) == {"missing_timestamps"}
 
 
-def test_derived_overflow_holds_and_recovers():
+def _check_derived_overflow_holds_and_recovers():
     df = _frame(_pullback(n=420))
     huge = _set(df, FIRST_PULLBACK, "volume", 1e308)
     out = _apply(huge)
@@ -401,6 +422,17 @@ def test_derived_overflow_holds_and_recovers():
     first_clean = FIRST_PULLBACK + SEED["recursion_length"] + 1
     assert out["efp_valid"].iloc[first_clean - 1] == 0.0 and out["efp_valid"].iloc[first_clean] == 1.0
     assert _apply(_frame(_pullback(n=420)))["efp_valid"].iloc[FIRST_PULLBACK] == 1.0
+
+
+def test_input_defects_hold_with_a_reason_and_recover(subtests):
+    for label, check in (
+        ("defects_inside_the_required_window_hold_and_recover_after_a_clean_window", _check_defects_inside_the_required_window_hold_and_recover_after_a_clean_window),
+        ("received_order_defects_hold_like_a_sort_repair", _check_received_order_defects_hold_like_a_sort_repair),
+        ("insufficient_history_and_frame_level_holds", _check_insufficient_history_and_frame_level_holds),
+        ("derived_overflow_holds_and_recovers", _check_derived_overflow_holds_and_recovers),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 def test_native_close_and_timezone_inputs_decide_the_same():
@@ -417,7 +449,7 @@ def test_native_close_and_timezone_inputs_decide_the_same():
             assert all(_same(a, b) for a, b in zip(got[col], base[col])), col
 
 
-def test_full_series_every_prefix_and_bounded_tails_agree():
+def _check_full_series_every_prefix_and_bounded_tails_agree():
     df = _walk(520, seed=11)
     for flag in (1, 0):
         full = _apply(df, volume_weighting=flag)
@@ -435,6 +467,15 @@ def test_full_series_every_prefix_and_bounded_tails_agree():
                     assert _same(got[col], full[col].iloc[i]), (flag, i, len(frame), col)
 
 
+def test_decisions_depend_only_on_the_required_window(subtests):
+    for label, check in (
+        ("defects_outside_the_required_window_never_change_the_decision", _check_defects_outside_the_required_window_never_change_the_decision),
+        ("full_series_every_prefix_and_bounded_tails_agree", _check_full_series_every_prefix_and_bounded_tails_agree),
+    ):
+        with subtests.test(case=label):
+            check()
+
+
 def test_finite_average_stays_within_the_frozen_sensitivity_tolerance():
     study = _study()
     df = _walk(900, seed=21)
@@ -446,7 +487,7 @@ def test_finite_average_stays_within_the_frozen_sensitivity_tolerance():
         assert cell["max_normalized_difference"] <= 1e-8
 
 
-def test_check_preflight_refuses_invalid_open_and_close_fallback_parameters():
+def _check_check_preflight_refuses_invalid_open_and_close_fallback_parameters():
     reg = _reg()
     refs = [StrategyReference("open", "breakout"), StrategyReference("close", NAME)]
     preflight_reference_params(refs, {}, {NAME: {}}, reg.get_strategy, reg.validate_params, timeframe="1h")
@@ -459,7 +500,7 @@ def test_check_preflight_refuses_invalid_open_and_close_fallback_parameters():
         preflight_reference_params(open_refs, {"volume_weighting": True}, {}, reg.get_strategy, reg.validate_params)
 
 
-def test_research_legs_refuse_invalid_parameters_before_loading_candles(monkeypatch):
+def _check_research_legs_refuse_invalid_parameters_before_loading_candles(monkeypatch):
     import data_fetcher
 
     def refuse(*_a, **_k):
@@ -468,6 +509,15 @@ def test_research_legs_refuse_invalid_parameters_before_loading_candles(monkeypa
     monkeypatch.setattr(data_fetcher, "load_cached_data", refuse)
     with pytest.raises(ValueError, match="recursion_length"):
         eval_windows.run_leg(_reg(), NAME, {"recursion_length": 40}, "BTC/USDT", "4h", ("2026-01-01", "2026-02-01"))
+
+
+def test_invalid_parameters_are_refused_before_evaluation_or_candle_load(subtests, monkeypatch):
+    for label, check in (
+        ("check_preflight_refuses_invalid_open_and_close_fallback_parameters", _check_check_preflight_refuses_invalid_open_and_close_fallback_parameters),
+        ("research_legs_refuse_invalid_parameters_before_loading_candles", lambda: _check_research_legs_refuse_invalid_parameters_before_loading_candles(monkeypatch)),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 def _cfg(**kw):
@@ -518,7 +568,7 @@ def _train_run(runs, df, bar, recursion_length):
                 and r["params"]["recursion_length"] == recursion_length)
 
 
-def test_walk_forward_warmup_covers_the_largest_required_history_of_the_grid():
+def _check_walk_forward_warmup_covers_the_largest_required_history_of_the_grid():
     grid = generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
     assert max(p["recursion_length"] for p in grid) == 197
     assert strategy_warmup_bars(NAME, grid, DEFAULT_PARAM_RANGES[NAME]) == 199
@@ -526,7 +576,7 @@ def test_walk_forward_warmup_covers_the_largest_required_history_of_the_grid():
                                 dict(WF_RANGES, recursion_length=[150])) == NEED
 
 
-def test_walk_forward_scores_the_first_bar_of_a_later_fold_with_full_history(monkeypatch):
+def _check_walk_forward_scores_the_first_bar_of_a_later_fold_with_full_history(monkeypatch):
     df = _walk(2400, seed=0).iloc[111:]
     start, boundary = _fold_geometry(df, 1)
     deep = dict(SEED, recursion_length=197)
@@ -551,8 +601,7 @@ def test_walk_forward_scores_the_first_bar_of_a_later_fold_with_full_history(mon
         assert _same_column(fold0[col], _apply(df.iloc[:first_boundary])[col]), col
 
 
-@pytest.mark.parametrize("trim,case", [(111, "long_reaches_the_last_tier"), (250, "long_then_short")])
-def test_walk_forward_folds_start_flat_whatever_the_prefix_left_open(monkeypatch, trim, case):
+def _check_walk_forward_folds_start_flat_whatever_the_prefix_left_open(monkeypatch, trim, case):
     df = _walk(2400, seed=0).iloc[trim:]
     start, _ = _fold_geometry(df, 1)
     warmup = strategy_warmup_bars(NAME, generate_param_grid(WF_RANGES), WF_RANGES)
@@ -566,6 +615,22 @@ def test_walk_forward_folds_start_flat_whatever_the_prefix_left_open(monkeypatch
     _, runs = _walk_forward_capture(monkeypatch, df)
     assert all(r["seed"] is None for r in runs)
     assert _train_run(runs, df, start - 1, 150)["seed"] is None
+
+
+def test_walk_forward_warmup_scores_later_folds_with_full_history_and_starts_them_flat(subtests, monkeypatch):
+    for label, check in (
+        ("walk_forward_warmup_covers_the_largest_required_history_of_the_grid",
+         _check_walk_forward_warmup_covers_the_largest_required_history_of_the_grid),
+        ("walk_forward_scores_the_first_bar_of_a_later_fold_with_full_history",
+         lambda: _check_walk_forward_scores_the_first_bar_of_a_later_fold_with_full_history(monkeypatch)),
+        ("walk_forward_folds_start_flat_whatever_the_prefix_left_open[111-long_reaches_the_last_tier]",
+         lambda: _check_walk_forward_folds_start_flat_whatever_the_prefix_left_open(
+             monkeypatch, 111, "long_reaches_the_last_tier")),
+        ("walk_forward_folds_start_flat_whatever_the_prefix_left_open[250-long_then_short]",
+         lambda: _check_walk_forward_folds_start_flat_whatever_the_prefix_left_open(monkeypatch, 250, "long_then_short")),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 def _load(name):

@@ -12,7 +12,14 @@ def _numpy_vol(closes, window):
     return float(np.std(log_returns, ddof=0) * math.sqrt(365))
 
 
-def test_vol_matches_numpy_reference_for_random_walk_trend_and_exact_minimum():
+def test_historical_vol_matches_reference_and_defaults(subtests):
+    with subtests.test(case="vol_matches_numpy_reference_for_random_walk_trend_and_exact_minimum"):
+        _assert_vol_matches_numpy_reference_for_random_walk_trend_and_exact_minimum()
+    with subtests.test(case="too_little_history_returns_default_and_flat_prices_give_zero_vol"):
+        _assert_too_little_history_returns_default_and_flat_prices_give_zero_vol()
+
+
+def _assert_vol_matches_numpy_reference_for_random_walk_trend_and_exact_minimum():
     case = "test_matches_numpy_for_random_walk"
     rng = np.random.default_rng(42)
     log_returns = rng.normal(loc=0.0005, scale=0.03, size=120)
@@ -47,7 +54,7 @@ def test_vol_matches_numpy_reference_for_random_walk_trend_and_exact_minimum():
     assert got != 0.5, case
 
 
-def test_too_little_history_returns_default_and_flat_prices_give_zero_vol():
+def _assert_too_little_history_returns_default_and_flat_prices_give_zero_vol():
     for case_id, closes, window in [
         ("short_history", [100.0, 101.0, 102.0], 14),
         ("one_below_minimum", [100.0 + i for i in range(14)], 14),

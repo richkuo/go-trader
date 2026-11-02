@@ -216,10 +216,39 @@ class RefusalGridScanner:
             return 0
         return sum(1 for case in values.elts if self.is_refusal_case(values_module, case, argcount, values_before))
 
+    def loop_refusal_cases(self, module, func):
+        local = {}
+        for node in ast.walk(func):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                local.setdefault(node.targets[0].id, []).append(node.value)
+        counted = set()
+        total = 0
+        for node in ast.walk(func):
+            if not isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                continue
+            source = node.iter
+            if isinstance(source, ast.Name) and source.id in local:
+                bound = [v for v in local[source.id] if isinstance(v, (ast.List, ast.Tuple))]
+                if not bound:
+                    continue
+                values_module, values, values_before = module, bound[-1], func.lineno
+            else:
+                values_module, values, values_before = self.resolve(module, source, func.lineno)
+            if not isinstance(values, (ast.List, ast.Tuple)) or id(values) in counted:
+                continue
+            counted.add(id(values))
+            for case in values.elts:
+                _, case_node, _ = self.resolve(values_module, case, values_before)
+                argcount = len(case_node.elts) if isinstance(case_node, ast.Tuple) else 1
+                if self.is_refusal_case(values_module, case, argcount, values_before):
+                    total += 1
+        return total
+
     def scan(self, module):
         hits = []
         for owner, func in _test_functions(module.tree):
-            if any(self.refusal_cases(module, dec) >= REFUSAL_GRID_MIN_CASES for dec in func.decorator_list):
+            if (any(self.refusal_cases(module, dec) >= REFUSAL_GRID_MIN_CASES for dec in func.decorator_list)
+                    or self.loop_refusal_cases(module, func) >= REFUSAL_GRID_MIN_CASES):
                 parts = [str(module.path.relative_to(ROOT))] + owner + [func.name]
                 hits.append("::".join(parts))
         return hits

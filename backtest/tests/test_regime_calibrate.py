@@ -16,7 +16,7 @@ def _report(kw_h, transition_rate, p_value=0.005, target=None):
     return r
 
 
-@pytest.mark.parametrize("hr,md,expected", [
+_GATE_VERDICT_CASES = [
     pytest.param(
         (10.0, 0.40), (9.6, 0.25),
         {"ship": True, "separation_ok": True, "stability_ok": True},
@@ -95,8 +95,13 @@ def _report(kw_h, transition_rate, p_value=0.005, target=None):
         {"incumbent_trustworthy": True, "stability_ok": True,
          "model_separation_real": False, "separation_ok": False, "ship": False},
         id="engaged_blocks_model_p_one_ulp_above_alpha"),
-])
-def test_gate_verdict(hr, md, expected):
-    v = gate_verdict(_report(*hr), _report(*md))
-    for key, want in expected.items():
-        assert v[key] == want, key
+]
+
+
+def test_gate_verdict(subtests):
+    for case in _GATE_VERDICT_CASES:
+        hr, md, expected = case.values
+        with subtests.test(case=case.id):
+            v = gate_verdict(_report(*hr), _report(*md))
+            for key, want in expected.items():
+                assert v[key] == want, key

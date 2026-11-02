@@ -53,7 +53,7 @@ _M6_VARIANT = {"key": "v",
                                     "params": {"atr_mult": 2}}]}
 
 
-@pytest.mark.parametrize("overrides,match", [
+_LOAD_SPEC_REJECTS_INVALID_SPEC_CASES = [
     (dict(harnesses=["m1", "m9"]), "unknown harnesses"),
     (dict(windows=["is", "nope"]), "unknown windows"),
     (dict(registry="options"), "registry must be"),
@@ -95,10 +95,14 @@ _M6_VARIANT = {"key": "v",
     (dict(mc={"strategy_id": "x"}), "go together"),
     (dict(mc={"schemes": ["permute"]}), "unknown mc keys"),
     (dict(mc={"n_paths": 0}), "n_paths"),
-])
-def test_load_spec_rejects_invalid_spec(overrides, match):
-    with pytest.raises(ValueError, match=match):
-        asug.load_spec(_base_spec(**overrides), _STUDY_DIR)
+]
+
+
+def test_load_spec_rejects_invalid_spec(subtests):
+    for i, (overrides, match) in enumerate(_LOAD_SPEC_REJECTS_INVALID_SPEC_CASES):
+        with subtests.test(case=i, overrides=overrides, match=match):
+            with pytest.raises(ValueError, match=match):
+                asug.load_spec(_base_spec(**overrides), _STUDY_DIR)
 
 
 def test_expand_sweep_and_gate_variants_cartesian_deterministic():
@@ -123,71 +127,67 @@ def test_expand_sweep_and_gate_variants_cartesian_deterministic():
     assert up["candidate"]["params"]["kc_mult"] == 1.3
 
 
-def test_expand_rejects_duplicate_keys():
-    spec = asug.load_spec(_base_spec(candidates=[
-        {"key": "dup", "candidate": {"name": "squeeze_momentum"}},
-        {"key": "dup", "candidate": {"name": "squeeze_momentum"}},
-    ]), _STUDY_DIR)
-    with pytest.raises(ValueError, match="duplicate candidate key"):
-        asug.expand_candidates(spec)
+def test_expand_rejects_duplicate_keys(subtests):
+    with subtests.test(case="test_expand_rejects_duplicate_keys"):
+        spec = asug.load_spec(_base_spec(candidates=[
+            {"key": "dup", "candidate": {"name": "squeeze_momentum"}},
+            {"key": "dup", "candidate": {"name": "squeeze_momentum"}},
+        ]), _STUDY_DIR)
+        with pytest.raises(ValueError, match="duplicate candidate key"):
+            asug.expand_candidates(spec)
+
+    with subtests.test(case="test_expand_sweep_requires_base"):
+        spec = asug.load_spec(_base_spec(candidates=[], sweep={"kc_mult": [1.3]}), _STUDY_DIR)
+        with pytest.raises(ValueError, match="require a 'base'"):
+            asug.expand_candidates(spec)
 
 
-def test_expand_sweep_requires_base():
-    spec = asug.load_spec(_base_spec(candidates=[], sweep={"kc_mult": [1.3]}), _STUDY_DIR)
-    with pytest.raises(ValueError, match="require a 'base'"):
-        asug.expand_candidates(spec)
+def test_non_replayable_m6_close_excluded(subtests):
+    with subtests.test(case="test_non_replayable_m6_close_excluded"):
+        spec = asug.load_spec(_base_spec(candidates=[], base=None, m6={
+            "baseline_config": "cfg.json", "strategy_id": "s",
+            "candidate_close_variants": [
+                {"key": "bad", "candidate_close": [{"name": "tiered_tp_atr_live_regime_dynamic"}]},
+                {"key": "good", "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]},
+            ]}), _STUDY_DIR)
+        entries = {e["key"]: e for e in asug.expand_candidates(spec)}
+        assert entries["m6.bad"]["precondition_errors"] == ["close_capability_refused:LIVE_ONLY_CLOSE"]
+        assert entries["m6.good"]["precondition_errors"] == []
 
+    with subtests.test(case="test_m6_incumbent_close_only_spec_loads"):
+        spec = asug.load_spec(_base_spec(candidates=[], m6={
+            "strategy_id": "squeeze_momentum",
+            "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
+            "candidate_close_variants": [
+                {"key": "v", "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}]},
+        ), _STUDY_DIR)
+        entries = asug.expand_candidates(spec)
+        ab = [e for e in entries if e["kind"] == "exit_ab"]
+        assert len(ab) == 1 and ab[0]["precondition_errors"] == []
+        assert ab[0]["candidate"]["baseline_config"] is None
 
-def test_close_stack_specs_round_trip_through_optimizer_grid():
-    from optimizer import generate_close_stack_grid
-    stack_specs = [{"close": {"name": "atr_stop", "params": {"atr_mult": [2.0, 2.5]}}}]
-    expected = len(generate_close_stack_grid(stack_specs))
-    spec = asug.load_spec(_base_spec(
-        candidates=[],
-        m6={"baseline_config": "cfg.json", "strategy_id": "s",
-            "close_stack_specs": stack_specs},
-    ), _STUDY_DIR)
-    entries = asug.expand_candidates(spec)
-    ab = [e for e in entries if e["kind"] == "exit_ab"]
-    assert len(ab) == expected
+    with subtests.test(case="test_m6_per_variant_strategy_id_override_loads_without_m6_default"):
+        spec = asug.load_spec(_base_spec(candidates=[], m6={
+            "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
+            "candidate_close_variants": [
+                {"key": "v", "strategy_id": "squeeze_momentum",
+                 "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}]},
+        ), _STUDY_DIR)
+        ab = [e for e in asug.expand_candidates(spec) if e["kind"] == "exit_ab"]
+        assert len(ab) == 1 and ab[0]["candidate"]["strategy_id"] == "squeeze_momentum"
 
-
-def test_non_replayable_m6_close_excluded():
-    spec = asug.load_spec(_base_spec(candidates=[], base=None, m6={
-        "baseline_config": "cfg.json", "strategy_id": "s",
-        "candidate_close_variants": [
-            {"key": "bad", "candidate_close": [{"name": "tiered_tp_atr_live_regime_dynamic"}]},
-            {"key": "good", "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]},
-        ]}), _STUDY_DIR)
-    entries = {e["key"]: e for e in asug.expand_candidates(spec)}
-    assert entries["m6.bad"]["precondition_errors"] == ["close_capability_refused:LIVE_ONLY_CLOSE"]
-    assert entries["m6.good"]["precondition_errors"] == []
-
-
-def test_m6_incumbent_close_only_spec_loads():
-    spec = asug.load_spec(_base_spec(candidates=[], m6={
-        "strategy_id": "squeeze_momentum",
-        "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
-        "candidate_close_variants": [
-            {"key": "v", "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}]},
-    ), _STUDY_DIR)
-    entries = asug.expand_candidates(spec)
-    ab = [e for e in entries if e["kind"] == "exit_ab"]
-    assert len(ab) == 1 and ab[0]["precondition_errors"] == []
-    assert ab[0]["candidate"]["baseline_config"] is None
-
-
-def test_m6_per_variant_strategy_id_override_loads_without_m6_default():
-    spec = asug.load_spec(_base_spec(candidates=[], m6={
-        "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
-        "candidate_close_variants": [
-            {"key": "v", "strategy_id": "squeeze_momentum",
-             "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}]},
-    ), _STUDY_DIR)
-    ab = [e for e in asug.expand_candidates(spec) if e["kind"] == "exit_ab"]
-    assert len(ab) == 1 and ab[0]["candidate"]["strategy_id"] == "squeeze_momentum"
-
-
+    with subtests.test(case="test_close_stack_specs_round_trip_through_optimizer_grid"):
+        from optimizer import generate_close_stack_grid
+        stack_specs = [{"close": {"name": "atr_stop", "params": {"atr_mult": [2.0, 2.5]}}}]
+        expected = len(generate_close_stack_grid(stack_specs))
+        spec = asug.load_spec(_base_spec(
+            candidates=[],
+            m6={"baseline_config": "cfg.json", "strategy_id": "s",
+                "close_stack_specs": stack_specs},
+        ), _STUDY_DIR)
+        entries = asug.expand_candidates(spec)
+        ab = [e for e in entries if e["kind"] == "exit_ab"]
+        assert len(ab) == expected
 
 
 def test_m5_params_limitation_flagged():
@@ -217,32 +217,29 @@ def test_noise_argv_tail_threads_seed_and_direction():
     assert "--params" in tail
 
 
-def test_m6_argv_tail_repeats_allowed_regimes():
-    m6c = {"baseline_config": "/cfg", "strategy_id": "s",
-           "candidate_close": [{"name": "atr_stop"}], "candidate_stops": "inherit",
-           "allowed_regimes": ["ranging_quiet", "ranging_volatile"]}
-    tail = asug.m6_argv_tail(m6c, "futures", ["is", "oos"], None, 10000, 1066, "/t/m6.json")
-    assert tail.count("--allowed-regimes") == 2
-    assert "--bootstrap-resamples" in tail and "10000" in tail
-    assert "--candidate-stops" in tail and "inherit" in tail
-
-
-def test_m6_argv_tail_baseline_config_path():
-    m6c = {"baseline_config": "/cfg.json", "strategy_id": "s",
-           "candidate_close": [{"name": "atr_stop"}]}
-    tail = asug.m6_argv_tail(m6c, "spot", ["oos"], None, 100, 1066, "/t/m6.json")
-    assert "--baseline-config" in tail and "/cfg.json" in tail
-    assert "--incumbent-close" not in tail
-
-
-def test_m6_argv_tail_incumbent_close_path_omits_baseline():
-    m6c = {"strategy_id": "squeeze_momentum",
-           "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
-           "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}
-    tail = asug.m6_argv_tail(m6c, "spot", ["oos"], None, 100, 1066, "/t/m6.json")
-    assert "--baseline-config" not in tail
-    assert "--incumbent-close" in tail
-    assert "--strategy" in tail and "squeeze_momentum" in tail
+def test_m6_argv_tail_repeats_allowed_regimes(subtests):
+    with subtests.test("test_m6_argv_tail_repeats_allowed_regimes"):
+        m6c = {"baseline_config": "/cfg", "strategy_id": "s",
+               "candidate_close": [{"name": "atr_stop"}], "candidate_stops": "inherit",
+               "allowed_regimes": ["ranging_quiet", "ranging_volatile"]}
+        tail = asug.m6_argv_tail(m6c, "futures", ["is", "oos"], None, 10000, 1066, "/t/m6.json")
+        assert tail.count("--allowed-regimes") == 2
+        assert "--bootstrap-resamples" in tail and "10000" in tail
+        assert "--candidate-stops" in tail and "inherit" in tail
+    with subtests.test("test_m6_argv_tail_baseline_config_path"):
+        m6c = {"baseline_config": "/cfg.json", "strategy_id": "s",
+               "candidate_close": [{"name": "atr_stop"}]}
+        tail = asug.m6_argv_tail(m6c, "spot", ["oos"], None, 100, 1066, "/t/m6.json")
+        assert "--baseline-config" in tail and "/cfg.json" in tail
+        assert "--incumbent-close" not in tail
+    with subtests.test("test_m6_argv_tail_incumbent_close_path_omits_baseline"):
+        m6c = {"strategy_id": "squeeze_momentum",
+               "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
+               "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}
+        tail = asug.m6_argv_tail(m6c, "spot", ["oos"], None, 100, 1066, "/t/m6.json")
+        assert "--baseline-config" not in tail
+        assert "--incumbent-close" in tail
+        assert "--strategy" in tail and "squeeze_momentum" in tail
 
 
 def test_m5_argv_tail():
@@ -313,57 +310,55 @@ def test_extract_m5_matches_strategy_row():
     assert out["fee_drag_pp"] == 0.3
 
 
-def test_apply_correction_matches_direct_bh_and_handles_empty_and_family_size():
-    tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
-             for p in [0.001, 0.02, 0.04, 0.5]]
-    corr = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05)
-    mask = benjamini_hochberg([t["p"] for t in tests], 0.05)
-    stamped = asug.apply_family_correction(tests, 0.05) and [t["bh_pass"] for t in tests]
-    assert stamped == mask
-    assert corr["m"] == 4
-    assert corr["bonferroni_threshold"] == pytest.approx(0.05 / 4)
-    if any(mask):
-        assert corr["effective_threshold"] == max(p for p, ok in
-                                                   zip([t["p"] for t in tests], mask) if ok)
+def test_apply_correction_matches_direct_bh_and_handles_empty_and_family_size(subtests):
+    with subtests.test("test_apply_correction_matches_direct_bh_and_handles_empty_and_family_size"):
+        tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
+                 for p in [0.001, 0.02, 0.04, 0.5]]
+        corr = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05)
+        mask = benjamini_hochberg([t["p"] for t in tests], 0.05)
+        stamped = asug.apply_family_correction(tests, 0.05) and [t["bh_pass"] for t in tests]
+        assert stamped == mask
+        assert corr["m"] == 4
+        assert corr["bonferroni_threshold"] == pytest.approx(0.05 / 4)
+        if any(mask):
+            assert corr["effective_threshold"] == max(p for p, ok in
+                                                       zip([t["p"] for t in tests], mask) if ok)
 
-    case = "test_correction_empty_family"
-    corr = asug.apply_family_correction([], alpha=0.05)
-    assert corr["m"] == 0, case
-    assert corr["effective_threshold"] is None, case
-    assert corr["n_survivors"] == 0, case
+        case = "test_correction_empty_family"
+        corr = asug.apply_family_correction([], alpha=0.05)
+        assert corr["m"] == 0, case
+        assert corr["effective_threshold"] is None, case
+        assert corr["n_survivors"] == 0, case
 
-    case = "test_apply_correction_family_size_reports_m_and_tests_run"
-    tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
-             for p in [0.001, 0.02]]
-    corr = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
-                                        family_size=8)
-    assert corr["m"] == 8, case
-    assert corr["tests_run"] == 2, case
-    assert corr["bonferroni_threshold"] == pytest.approx(0.05 / 8), case
-    strict = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
-                                          family_size=8)
-    loose = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05)
-    assert strict["n_survivors"] <= loose["n_survivors"], case
-
-
-def test_bh_family_size_widens_denominator_and_is_stricter():
-    pvals = [0.01, 0.04]
-    assert benjamini_hochberg(pvals, 0.05) == [True, True]
-    assert benjamini_hochberg(pvals, 0.05, family_size=10) == [False, False]
-    assert (benjamini_hochberg(pvals, 0.05, family_size=2)
-            == benjamini_hochberg(pvals, 0.05))
+        case = "test_apply_correction_family_size_reports_m_and_tests_run"
+        tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
+                 for p in [0.001, 0.02]]
+        corr = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
+                                            family_size=8)
+        assert corr["m"] == 8, case
+        assert corr["tests_run"] == 2, case
+        assert corr["bonferroni_threshold"] == pytest.approx(0.05 / 8), case
+        strict = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
+                                              family_size=8)
+        loose = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05)
+        assert strict["n_survivors"] <= loose["n_survivors"], case
+    with subtests.test("test_apply_correction_family_size_below_produced_count_raises"):
+        tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
+                 for p in [0.001, 0.02, 0.04]]
+        with pytest.raises(ValueError, match="family_size"):
+            asug.apply_family_correction(tests, alpha=0.05, family_size=2)
 
 
-def test_bh_family_size_below_test_count_raises():
-    with pytest.raises(ValueError, match="family_size"):
-        benjamini_hochberg([0.01, 0.04], 0.05, family_size=1)
-
-
-def test_apply_correction_family_size_below_produced_count_raises():
-    tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
-             for p in [0.001, 0.02, 0.04]]
-    with pytest.raises(ValueError, match="family_size"):
-        asug.apply_family_correction(tests, alpha=0.05, family_size=2)
+def test_bh_family_size_widens_denominator_and_is_stricter(subtests):
+    with subtests.test("test_bh_family_size_widens_denominator_and_is_stricter"):
+        pvals = [0.01, 0.04]
+        assert benjamini_hochberg(pvals, 0.05) == [True, True]
+        assert benjamini_hochberg(pvals, 0.05, family_size=10) == [False, False]
+        assert (benjamini_hochberg(pvals, 0.05, family_size=2)
+                == benjamini_hochberg(pvals, 0.05))
+    with subtests.test("test_bh_family_size_below_test_count_raises"):
+        with pytest.raises(ValueError, match="family_size"):
+            benjamini_hochberg([0.01, 0.04], 0.05, family_size=1)
 
 
 def test_load_spec_accepts_positive_family_size():
@@ -543,99 +538,81 @@ def _family_tests(entry):
     return tests
 
 
-def test_mc_absent_present_and_failed_all_yield_the_same_verdict():
-    absent = _survivor_entry()
-    present = _survivor_entry(mc=_mc_ok_run())
-    failed = _survivor_entry(mc={"status": "failed", "argv_tail": ["--json", "x"]})
+def test_gate_relevant_results_drops_only_advisory_harnesses(subtests):
+    with subtests.test(case="test_gate_relevant_results_drops_only_advisory_harnesses"):
+        entry = _survivor_entry(mc={"status": "failed"},
+                                m5={"status": "ok", "data": {}})
+        gate = asug.gate_relevant_results(entry)
+        assert set(gate) == {"m1_noise", "m1", "m5"}
+        assert "mc" not in gate
+        assert asug.candidate_verdict(
+            _survivor_entry(m5={"status": "failed"}), []) == "run_failed"
 
-    verdicts = {name: asug.candidate_verdict(e, _family_tests(e))
-                for name, e in (("absent", absent), ("present", present),
-                                ("failed", failed))}
-    assert verdicts == {"absent": "survivor", "present": "survivor",
-                        "failed": "survivor"}
+    with subtests.test(case="test_mc_absent_present_and_failed_all_yield_the_same_verdict"):
+        absent = _survivor_entry()
+        present = _survivor_entry(mc=_mc_ok_run())
+        failed = _survivor_entry(mc={"status": "failed", "argv_tail": ["--json", "x"]})
 
+        verdicts = {name: asug.candidate_verdict(e, _family_tests(e))
+                    for name, e in (("absent", absent), ("present", present),
+                                    ("failed", failed))}
+        assert verdicts == {"absent": "survivor", "present": "survivor",
+                            "failed": "survivor"}
 
-def test_gate_relevant_results_drops_only_advisory_harnesses():
-    entry = _survivor_entry(mc={"status": "failed"},
-                            m5={"status": "ok", "data": {}})
-    gate = asug.gate_relevant_results(entry)
-    assert set(gate) == {"m1_noise", "m1", "m5"}
-    assert "mc" not in gate
-    assert asug.candidate_verdict(
-        _survivor_entry(m5={"status": "failed"}), []) == "run_failed"
+    with subtests.test(case="test_mc_only_failure_does_not_flip_the_process_exit_code"):
+        mc_failed = _survivor_entry(mc={"status": "failed"})
+        assert asug.any_gate_failure([mc_failed]) is False
+        gate_failed = _survivor_entry(m3={"status": "failed"})
+        assert asug.any_gate_failure([gate_failed]) is True
 
+    with subtests.test(case="test_mc_failure_surfaces_as_a_limitation_not_a_verdict"):
+        entry = _survivor_entry(mc={"status": "failed"})
+        assert asug.advisory_failures(entry) == ["mc"]
+        assert asug.advisory_failures(_survivor_entry(mc=_mc_ok_run())) == []
+        assert asug.advisory_failures(_survivor_entry(m1={"status": "failed"})) == []
 
-def test_failed_gate_harness_still_yields_run_failed():
-    entry = _survivor_entry(m1={"status": "failed"})
-    assert asug.candidate_verdict(entry, []) == "run_failed"
-
-
-def test_mc_only_failure_does_not_flip_the_process_exit_code():
-    mc_failed = _survivor_entry(mc={"status": "failed"})
-    assert asug.any_gate_failure([mc_failed]) is False
-    gate_failed = _survivor_entry(m3={"status": "failed"})
-    assert asug.any_gate_failure([gate_failed]) is True
-
-
-def test_mc_failure_surfaces_as_a_limitation_not_a_verdict():
-    entry = _survivor_entry(mc={"status": "failed"})
-    assert asug.advisory_failures(entry) == ["mc"]
-    assert asug.advisory_failures(_survivor_entry(mc=_mc_ok_run())) == []
-    assert asug.advisory_failures(_survivor_entry(m1={"status": "failed"})) == []
-
-
-def test_mc_contributes_no_pvalue_and_leaves_bh_family_size_unchanged():
-    without = asug.collect_family_pvalues([_survivor_entry()])
-    with_mc = asug.collect_family_pvalues([_survivor_entry(mc=_mc_ok_run())])
-    assert [t["p"] for t in without] == [t["p"] for t in with_mc]
-    assert asug.apply_family_correction(with_mc, 0.05)["m"] == \
-        asug.apply_family_correction(without, 0.05)["m"]
-    assert all(t["harness"] != "mc" for t in with_mc)
+    with subtests.test(case="test_mc_contributes_no_pvalue_and_leaves_bh_family_size_unchanged"):
+        without = asug.collect_family_pvalues([_survivor_entry()])
+        with_mc = asug.collect_family_pvalues([_survivor_entry(mc=_mc_ok_run())])
+        assert [t["p"] for t in without] == [t["p"] for t in with_mc]
+        assert asug.apply_family_correction(with_mc, 0.05)["m"] == \
+            asug.apply_family_correction(without, 0.05)["m"]
+        assert all(t["harness"] != "mc" for t in with_mc)
 
 
-def test_mc_argv_tail_threads_the_candidate_json_and_exclusive_threshold_sources():
-    tail = asug.mc_argv_tail("/t/c.json", "spot", ["is", "oos"],
-                             ["BTC/USDT:1h"], 500, 7, {}, "/t/o.json")
-    assert tail[:2] == ["--candidate-json", "/t/c.json"]
-    assert "--strategy" not in tail
-    assert "--windows" in tail and tail[tail.index("--windows") + 1] == "is,oos"
-    assert tail[tail.index("--datasets") + 1] == "BTC/USDT:1h"
-    assert tail[tail.index("--n-paths") + 1] == "500"
-    assert tail[tail.index("--seed") + 1] == "7"
+def test_mc_argv_tail_threads_the_candidate_json_and_exclusive_threshold_sources(subtests):
+    with subtests.test("test_mc_argv_tail_threads_the_candidate_json_and_exclusive_threshold_sources"):
+        tail = asug.mc_argv_tail("/t/c.json", "spot", ["is", "oos"],
+                                 ["BTC/USDT:1h"], 500, 7, {}, "/t/o.json")
+        assert tail[:2] == ["--candidate-json", "/t/c.json"]
+        assert "--strategy" not in tail
+        assert "--windows" in tail and tail[tail.index("--windows") + 1] == "is,oos"
+        assert tail[tail.index("--datasets") + 1] == "BTC/USDT:1h"
+        assert tail[tail.index("--n-paths") + 1] == "500"
+        assert tail[tail.index("--seed") + 1] == "7"
 
-    case = "test_mc_argv_tail_threshold_sources_are_exclusive"
-    explicit = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
-                                 {"kill_switch_pct": 30}, "/o")
-    assert explicit[explicit.index("--kill-switch-pct") + 1] == "30", case
-    assert "--config" not in explicit, case
+        case = "test_mc_argv_tail_threshold_sources_are_exclusive"
+        explicit = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
+                                     {"kill_switch_pct": 30}, "/o")
+        assert explicit[explicit.index("--kill-switch-pct") + 1] == "30", case
+        assert "--config" not in explicit, case
 
-    from_cfg = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
-                                 {"config": "/cfg.json", "strategy_id": "hl-x"},
-                                 "/o")
-    assert from_cfg[from_cfg.index("--config") + 1] == "/cfg.json", case
-    assert from_cfg[from_cfg.index("--strategy-id") + 1] == "hl-x", case
-    assert "--kill-switch-pct" not in from_cfg, case
-
-
-def test_mc_argv_tail_omits_datasets_when_none_and_threshold_when_default():
-    tail = asug.mc_argv_tail("/t/c.json", "spot", ["is"], None, 10, 1, {}, "/o")
-    assert "--datasets" not in tail
-    assert "--kill-switch-pct" not in tail and "--config" not in tail
+        from_cfg = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
+                                     {"config": "/cfg.json", "strategy_id": "hl-x"},
+                                     "/o")
+        assert from_cfg[from_cfg.index("--config") + 1] == "/cfg.json", case
+        assert from_cfg[from_cfg.index("--strategy-id") + 1] == "hl-x", case
+        assert "--kill-switch-pct" not in from_cfg, case
+    with subtests.test("test_mc_argv_tail_omits_datasets_when_none_and_threshold_when_default"):
+        tail = asug.mc_argv_tail("/t/c.json", "spot", ["is"], None, 10, 1, {}, "/o")
+        assert "--datasets" not in tail
+        assert "--kill-switch-pct" not in tail and "--config" not in tail
 
 
 def test_load_spec_resolves_mc_config_against_the_spec_dir():
     spec = asug.load_spec(_base_spec(mc={"config": "cfg.json",
                                          "strategy_id": "hl-x"}), _STUDY_DIR)
     assert spec["mc"]["config"] == os.path.join(_STUDY_DIR, "cfg.json")
-
-
-def test_mc_is_opt_in_not_a_default_harness():
-    assert "mc" not in asug.DEFAULT_HARNESSES and "mc" in asug.OPEN_HARNESSES
-    spec = asug.load_spec(_base_spec(harnesses=None), _STUDY_DIR)
-    entry = asug.expand_candidates(spec)[0]
-    assert "mc" not in entry["harnesses"]
-    spec = asug.load_spec(_base_spec(harnesses=["m1", "mc"]), _STUDY_DIR)
-    assert "mc" in asug.expand_candidates(spec)[0]["harnesses"]
 
 
 def _mc_payload():
@@ -713,29 +690,22 @@ def _capture_candidate(monkeypatch, harness_flag):
     return seen
 
 
-def test_candidate_json_is_rewritten_over_a_stale_file_from_a_prior_run(monkeypatch, tmp_path):
-    spec = _open_spec(["m1"])
-    entry = asug.expand_candidates(spec)[0]
-    stale = tmp_path / f"{entry['key']}.candidate.json"
-    stale.write_text(json.dumps({"name": "STALE_STRATEGY",
-                                 "allowed_regimes": ["stale_gate"]}))
+def test_candidate_json_is_rewritten_over_a_stale_file_from_a_prior_run(monkeypatch, tmp_path, subtests):
+    for harness in ("m1", "mc"):
+        with subtests.test(harness=harness):
+            out_dir = tmp_path / harness
+            out_dir.mkdir()
+            spec = _open_spec([harness])
+            entry = asug.expand_candidates(spec)[0]
+            stale = out_dir / f"{entry['key']}.candidate.json"
+            stale.write_text(json.dumps({"name": "STALE_STRATEGY",
+                                         "allowed_regimes": ["stale_gate"]}))
 
-    seen = _capture_candidate(monkeypatch, "--candidate-json")
-    asug.run_open_entry(entry, spec, str(tmp_path), {}, {})
-    assert seen["m1"]["name"] == "squeeze_momentum"
-    assert "allowed_regimes" not in seen["m1"]
-    assert json.loads(stale.read_text())["name"] == "squeeze_momentum"
-
-
-def test_mc_also_reads_a_freshly_written_candidate_not_a_stale_one(monkeypatch, tmp_path):
-    spec = _open_spec(["mc"])
-    entry = asug.expand_candidates(spec)[0]
-    (tmp_path / f"{entry['key']}.candidate.json").write_text(
-        json.dumps({"name": "STALE_STRATEGY"}))
-
-    seen = _capture_candidate(monkeypatch, "--candidate-json")
-    asug.run_open_entry(entry, spec, str(tmp_path), {}, {})
-    assert seen["mc"]["name"] == "squeeze_momentum"
+            seen = _capture_candidate(monkeypatch, "--candidate-json")
+            asug.run_open_entry(entry, spec, str(out_dir), {}, {})
+            assert seen[harness]["name"] == "squeeze_momentum"
+            assert "allowed_regimes" not in seen[harness]
+            assert json.loads(stale.read_text())["name"] == "squeeze_momentum"
 
 
 def test_candidate_json_is_written_once_per_run_and_shared_by_m1_and_mc(monkeypatch, tmp_path):

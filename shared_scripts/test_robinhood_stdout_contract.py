@@ -50,13 +50,6 @@ ORDER_CASES = [
     ("close_no_holding", CLOSE_ETH, "order_accepted", 0, None, "already_flat"),
 ]
 
-PARAMS = [
-    pytest.param(case, mode, id=f"{case[0]}-{mode}")
-    for case in CASES
-    for mode in MODES
-]
-
-
 def _refuse_constant(name):
     raise ValueError(f"non-finite JSON constant {name} on stdout")
 
@@ -82,74 +75,81 @@ def _offline_env(home, mode, noise):
     return env
 
 
-@pytest.mark.parametrize("case,mode", PARAMS)
-def test_robinhood_script_writes_one_json_document(case, mode, tmp_path):
-    _case_id, script, args, stdin_text, script_guard, call_after_login = case
-    kwargs = {"input": stdin_text} if stdin_text is not None else {"stdin": subprocess.DEVNULL}
-    proc = subprocess.run(
-        [sys.executable, str(SCRIPTS / script), *args],
-        cwd=str(REPO_ROOT),
-        env=_offline_env(tmp_path, mode, script_guard),
-        capture_output=True,
-        text=True,
-        timeout=180,
-        **kwargs,
-    )
-    detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+def test_robinhood_script_writes_one_json_document(tmp_path, subtests):
+    for case in CASES:
+        for mode in MODES:
+            with subtests.test(case=case[0], mode=mode):
+                _case_id, script, args, stdin_text, script_guard, call_after_login = case
+                home = tmp_path / f"{_case_id}-{mode}"
+                home.mkdir()
+                kwargs = {"input": stdin_text} if stdin_text is not None else {"stdin": subprocess.DEVNULL}
+                proc = subprocess.run(
+                    [sys.executable, str(SCRIPTS / script), *args],
+                    cwd=str(REPO_ROOT),
+                    env=_offline_env(home, mode, script_guard),
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    **kwargs,
+                )
+                detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
 
-    assert proc.returncode in (0, 1), detail
-    doc = json.loads(proc.stdout, parse_constant=_refuse_constant)
-    assert isinstance(doc, dict), detail
+                assert proc.returncode in (0, 1), detail
+                doc = json.loads(proc.stdout, parse_constant=_refuse_constant)
+                assert isinstance(doc, dict), detail
 
-    assert f"robinhood offline stub active: {mode}" in proc.stderr, detail
-    assert "Starting login process..." in proc.stderr, detail
-    assert "Login failed" not in proc.stderr, detail
-    assert ("503 Server Error" in proc.stderr) is call_after_login, detail
-    if _case_id.startswith("execute_"):
-        assert "HTTP status 503" in proc.stderr, detail
-    if script_guard:
-        assert NOISE_MARKER in proc.stderr, detail
-    if _case_id in READS_FAIL_CLOSED:
-        assert proc.returncode == 1, detail
-        assert doc.get("error"), detail
-        assert not (doc.get("close") or {}).get("already_flat"), detail
+                assert f"robinhood offline stub active: {mode}" in proc.stderr, detail
+                assert "Starting login process..." in proc.stderr, detail
+                assert "Login failed" not in proc.stderr, detail
+                assert ("503 Server Error" in proc.stderr) is call_after_login, detail
+                if _case_id.startswith("execute_"):
+                    assert "HTTP status 503" in proc.stderr, detail
+                if script_guard:
+                    assert NOISE_MARKER in proc.stderr, detail
+                if _case_id in READS_FAIL_CLOSED:
+                    assert proc.returncode == 1, detail
+                    assert doc.get("error"), detail
+                    assert not (doc.get("close") or {}).get("already_flat"), detail
 
 
-@pytest.mark.parametrize("label,argv,mode,want_exit,want_error,want_outcome", ORDER_CASES, ids=[c[0] for c in ORDER_CASES])
-def test_robinhood_order_response_decides_exit(label, argv, mode, want_exit, want_error, want_outcome, tmp_path):
-    script, *args = argv
-    proc = subprocess.run(
-        [sys.executable, str(SCRIPTS / script), *args],
-        cwd=str(REPO_ROOT),
-        env=_offline_env(tmp_path, mode, True),
-        capture_output=True,
-        text=True,
-        timeout=180,
-        stdin=subprocess.DEVNULL,
-    )
-    detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+def test_robinhood_order_response_decides_exit(tmp_path, subtests):
+    for label, argv, mode, want_exit, want_error, want_outcome in ORDER_CASES:
+        with subtests.test(case=label):
+            script, *args = argv
+            home = tmp_path / label
+            home.mkdir()
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPTS / script), *args],
+                cwd=str(REPO_ROOT),
+                env=_offline_env(home, mode, True),
+                capture_output=True,
+                text=True,
+                timeout=180,
+                stdin=subprocess.DEVNULL,
+            )
+            detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
 
-    doc = _refuse_constant_doc(proc.stdout)
-    assert isinstance(doc, dict), detail
-    assert f"robinhood offline stub active: {mode}" in proc.stderr, detail
-    assert "Starting login process..." in proc.stderr, detail
-    assert NOISE_MARKER in proc.stderr, detail
-    assert proc.returncode == want_exit, detail
-    assert doc.get("order_outcome") == want_outcome, detail
-    if want_error is None:
-        assert "error" not in doc, detail
-    else:
-        assert want_error in (doc.get("error") or ""), detail
-        assert "fill" not in (doc.get("execution") or {}), detail
-        assert "fill" not in (doc.get("close") or {}), detail
-    if label == "close_accepted":
-        assert doc["order"].get("id") == "offline-order-1", detail
-        assert not doc["close"].get("already_flat"), detail
-    if label == "close_no_holding":
-        assert doc["close"].get("already_flat") is True, detail
-    if label in ("buy_accepted", "sell_accepted"):
-        assert doc["order"].get("id") == "offline-order-1", detail
-        assert doc["cancel"]["requested"] is True, detail
+            doc = _refuse_constant_doc(proc.stdout)
+            assert isinstance(doc, dict), detail
+            assert f"robinhood offline stub active: {mode}" in proc.stderr, detail
+            assert "Starting login process..." in proc.stderr, detail
+            assert NOISE_MARKER in proc.stderr, detail
+            assert proc.returncode == want_exit, detail
+            assert doc.get("order_outcome") == want_outcome, detail
+            if want_error is None:
+                assert "error" not in doc, detail
+            else:
+                assert want_error in (doc.get("error") or ""), detail
+                assert "fill" not in (doc.get("execution") or {}), detail
+                assert "fill" not in (doc.get("close") or {}), detail
+            if label == "close_accepted":
+                assert doc["order"].get("id") == "offline-order-1", detail
+                assert not doc["close"].get("already_flat"), detail
+            if label == "close_no_holding":
+                assert doc["close"].get("already_flat") is True, detail
+            if label in ("buy_accepted", "sell_accepted"):
+                assert doc["order"].get("id") == "offline-order-1", detail
+                assert doc["cancel"]["requested"] is True, detail
 
 
 FAILED_LOGIN_MODES = (
@@ -187,12 +187,6 @@ ONE_DOCUMENT_LOGIN_STDERR = {
     "transport_error": ("Error in request_post:", "Login failed."),
 }
 
-FAILED_LOGIN_PARAMS = [
-    pytest.param(case, mode, id=f"{case[0]}-{mode}")
-    for case in CASES
-    for mode in FAILED_LOGIN_MODES
-]
-
 
 def _run_logged(case, mode, tmp_path):
     _case_id, script, args, stdin_text, script_guard, _call_after_login = case
@@ -223,8 +217,16 @@ def _login_reason(doc, stderr):
     return lines[-1][len("[robinhood] "):] if lines else ""
 
 
-@pytest.mark.parametrize("case,mode", FAILED_LOGIN_PARAMS)
-def test_failed_login_writes_one_json_document_refuses_live_work_and_keeps_paper_logged_out(case, mode, tmp_path):
+@pytest.mark.parametrize("mode", FAILED_LOGIN_MODES)
+def test_failed_login_writes_one_json_document_refuses_live_work_and_keeps_paper_logged_out(mode, tmp_path, subtests):
+    for case in CASES:
+        with subtests.test(case=case[0]):
+            run_dir = tmp_path / case[0]
+            run_dir.mkdir()
+            _assert_failed_login(case, mode, run_dir)
+
+
+def _assert_failed_login(case, mode, tmp_path):
     case_id = case[0]
     proc, made = _run_logged(case, mode, tmp_path)
     detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}\nrequests:\n{made}"

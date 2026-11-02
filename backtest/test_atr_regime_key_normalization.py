@@ -33,43 +33,41 @@ BLOCK_A = {"trending_up": 2.0}
 BLOCK_B = {"trending_up": 4.0}
 
 
-def test_single_legacy_spelling_renames_to_canonical():
-    out = rb._normalize_atr_regime_keys({"strategies": [{TRAIL_V18: BLOCK_A}]})
-    assert out["strategies"][0] == {TRAIL_CANON: BLOCK_A}
+def test_single_legacy_spelling_renames_to_canonical(subtests):
+    with subtests.test("test_single_legacy_spelling_renames_to_canonical"):
+        out = rb._normalize_atr_regime_keys({"strategies": [{TRAIL_V18: BLOCK_A}]})
+        assert out["strategies"][0] == {TRAIL_CANON: BLOCK_A}
 
-    out = rb._normalize_atr_regime_keys({"strategies": [{TRAIL_V17: BLOCK_A}]})
-    assert out["strategies"][0] == {TRAIL_CANON: BLOCK_A}
+        out = rb._normalize_atr_regime_keys({"strategies": [{TRAIL_V17: BLOCK_A}]})
+        assert out["strategies"][0] == {TRAIL_CANON: BLOCK_A}
 
-    out = rb._normalize_atr_regime_keys({SL_LEGACY: BLOCK_A})
-    assert out == {SL_CANON: BLOCK_A}
-
-
-def test_two_legacy_spellings_with_equal_values_merge_regardless_of_order():
-    for block in ({TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_A},
-                  {TRAIL_V18: BLOCK_A, TRAIL_V17: BLOCK_A}):
-        assert rb._normalize_atr_regime_keys(block) == {TRAIL_CANON: BLOCK_A}, (
-            f"test_two_legacy_spellings_with_equal_values_merge_regardless_of_order[{list(block)}]")
-
-
-def test_differing_legacy_spellings_or_legacy_against_canonical_raise():
-    for block in ({TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_B},
-                  {TRAIL_V18: BLOCK_B, TRAIL_V17: BLOCK_A},
-                  {TRAIL_V17: BLOCK_A, TRAIL_CANON: BLOCK_B},
-                  {TRAIL_V18: BLOCK_A, TRAIL_CANON: BLOCK_B}):
-        try:
-            rb._normalize_atr_regime_keys(block)
-        except rb.AtrRegimeKeyConflict:
-            continue
-        pytest.fail(f"AtrRegimeKeyConflict not raised for {list(block)}: "
-                    "test_two_legacy_spellings_with_differing_values_raise / "
-                    "test_legacy_conflicting_with_canonical_raises")
+        out = rb._normalize_atr_regime_keys({SL_LEGACY: BLOCK_A})
+        assert out == {SL_CANON: BLOCK_A}
+    with subtests.test("test_two_legacy_spellings_with_equal_values_merge_regardless_of_order"):
+        for block in ({TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_A},
+                      {TRAIL_V18: BLOCK_A, TRAIL_V17: BLOCK_A}):
+            assert rb._normalize_atr_regime_keys(block) == {TRAIL_CANON: BLOCK_A}, (
+                f"test_two_legacy_spellings_with_equal_values_merge_regardless_of_order[{list(block)}]")
 
 
-def test_conflict_is_detected_when_nested_in_lists_and_dicts():
-    cfg = {"user_defaults": {"close": {"trailing_tp_ratchet_regime": {
-        TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_B}}}}
-    with pytest.raises(rb.AtrRegimeKeyConflict):
-        rb._normalize_atr_regime_keys(cfg)
+def test_differing_legacy_spellings_or_legacy_against_canonical_raise(subtests):
+    with subtests.test("test_differing_legacy_spellings_or_legacy_against_canonical_raise"):
+        for block in ({TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_B},
+                      {TRAIL_V18: BLOCK_B, TRAIL_V17: BLOCK_A},
+                      {TRAIL_V17: BLOCK_A, TRAIL_CANON: BLOCK_B},
+                      {TRAIL_V18: BLOCK_A, TRAIL_CANON: BLOCK_B}):
+            try:
+                rb._normalize_atr_regime_keys(block)
+            except rb.AtrRegimeKeyConflict:
+                continue
+            pytest.fail(f"AtrRegimeKeyConflict not raised for {list(block)}: "
+                        "test_two_legacy_spellings_with_differing_values_raise / "
+                        "test_legacy_conflicting_with_canonical_raises")
+    with subtests.test("test_conflict_is_detected_when_nested_in_lists_and_dicts"):
+        cfg = {"user_defaults": {"close": {"trailing_tp_ratchet_regime": {
+            TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_B}}}}
+        with pytest.raises(rb.AtrRegimeKeyConflict):
+            rb._normalize_atr_regime_keys(cfg)
 
 
 def _run_preflight(tmp_path, strategy_block):
@@ -90,13 +88,16 @@ def _run_preflight(tmp_path, strategy_block):
         capture_output=True, text=True)
 
 
-def test_preflight_fails_closed_on_conflicting_legacy_spellings(tmp_path):
-    res = _run_preflight(tmp_path, {TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_B})
-    assert res.returncode == 1
-    assert "cannot verify: conflict:" in res.stdout
-
-
-def test_preflight_passes_when_legacy_spellings_agree(tmp_path):
-    res = _run_preflight(tmp_path, {TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_A})
-    assert res.returncode == 0, res.stdout
-    assert "VERDICT: OK" in res.stdout
+def test_preflight_fails_closed_on_conflicting_legacy_spellings(tmp_path, subtests):
+    with subtests.test("test_preflight_fails_closed_on_conflicting_legacy_spellings"):
+        case_path = tmp_path / "test_preflight_fails_closed_on_conflicting_legacy_spellings"
+        case_path.mkdir()
+        res = _run_preflight(case_path, {TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_B})
+        assert res.returncode == 1
+        assert "cannot verify: conflict:" in res.stdout
+    with subtests.test("test_preflight_passes_when_legacy_spellings_agree"):
+        case_path = tmp_path / "test_preflight_passes_when_legacy_spellings_agree"
+        case_path.mkdir()
+        res = _run_preflight(case_path, {TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_A})
+        assert res.returncode == 0, res.stdout
+        assert "VERDICT: OK" in res.stdout

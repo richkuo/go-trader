@@ -123,7 +123,7 @@ def _ref_signal(c, t, p):
     return 0, a, b, r
 
 
-def test_grid_history_need_bounds():
+def _check_grid_history_need_bounds():
     combos = [p for _, p in expand_sweep(SEED, [(k, list(v)) for k, v in DEFAULT_PARAM_RANGES[NAME].items()])]
     assert max(_need(p) for p in combos) == 185 and _need(SEED) == 133
 
@@ -155,7 +155,7 @@ def test_values_match_an_independent_scalar_reference_and_both_entry_directions(
     assert seen == {-1, 0, 1}
 
 
-def test_previous_equality_qualifies_and_current_equality_or_flat_slope_does_not():
+def _check_previous_equality_qualifies_and_current_equality_or_flat_slope_does_not():
     p = SMALL
     flat = [100.0] * 80
     up = _apply(_from_closes(flat + [101.0]), p).iloc[-1]
@@ -230,13 +230,13 @@ INVALID_MARKET_INPUTS = [
 ]
 
 
-def test_invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame():
+def _check_invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame():
     for i, (mutate, reason) in enumerate(INVALID_MARKET_INPUTS):
         with _case(f"{i}-{reason}"):
             _holds_at_end(mutate(_walk(120, 3)), SMALL, reason)
 
 
-def test_missing_or_wrong_cadence_holds_every_row():
+def _check_missing_or_wrong_cadence_holds_every_row():
     df = _walk(120, 3)
     df.attrs.pop(FRAME_INTERVAL_ATTR)
     out = _apply(df, SMALL)
@@ -248,7 +248,7 @@ def test_missing_or_wrong_cadence_holds_every_row():
     assert set(out["ama_reason"].iloc[_need(SMALL) - 1:]) == {"cadence_gap"}
 
 
-def test_overflowing_prices_hold_as_nonfinite_derived():
+def _check_overflowing_prices_hold_as_nonfinite_derived():
     closes = [1e308 if i % 2 == 0 else 1.7e308 for i in range(120)]
     df = _from_closes(closes)
     df["high"] = df["close"]
@@ -257,7 +257,7 @@ def test_overflowing_prices_hold_as_nonfinite_derived():
     assert (out["signal"] == 0).all()
 
 
-def test_constant_prices_never_enter_and_report_finite_values():
+def _check_constant_prices_never_enter_and_report_finite_values():
     out = _apply(_from_closes([250.0] * 200), SEED)
     assert (out["signal"] == 0).all()
     valid = out[out["ama_valid"] == 1.0]
@@ -266,7 +266,7 @@ def test_constant_prices_never_enter_and_report_finite_values():
     assert (valid["ama_value"] == 250.0).all() and (valid["ama_efficiency"] == 0.0).all()
 
 
-def test_a_defect_holds_only_inside_its_dependency_window():
+def _check_a_defect_holds_only_inside_its_dependency_window():
     df = _walk(300, 5)
     need = _need(SMALL)
     bad = 150
@@ -294,7 +294,7 @@ INVALID_PARAMS = [
 ]
 
 
-def test_boundary_history_of_199_rows_and_integral_floats():
+def _check_boundary_history_of_199_rows_and_integral_floats():
     df = _walk(260, 2)
     out = _apply(df, BOUNDARY)
     assert _need(BOUNDARY) == 199
@@ -332,7 +332,7 @@ def _grid_edges():
                              "recursion_length": 160}, dict(SEED, slope_span=1)]
 
 
-def test_full_series_every_prefix_and_every_200_row_frame_agree_on_frozen_candles():
+def _check_full_series_every_prefix_and_every_200_row_frame_agree_on_frozen_candles():
     df = _frozen("BTC", "1h", 520)
     for p in _grid_edges():
         need = _need(p)
@@ -351,7 +351,7 @@ def test_full_series_every_prefix_and_every_200_row_frame_agree_on_frozen_candle
         assert {-1, 1} <= set(full["signal"].unique()) or p is BOUNDARY
 
 
-def test_rows_outside_the_dependency_window_cannot_change_a_decision():
+def _check_rows_outside_the_dependency_window_cannot_change_a_decision():
     df = _frozen("ETH", "4h", 400)
     p = SEED
     need = _need(p)
@@ -490,3 +490,41 @@ def test_missing_held_hour_funding_makes_every_arm_unscorable_and_the_verdict_in
     assert funding["priced_hours"] == funding["present_hours"] - funding["venue_absent_hours"]
     assert 0 <= funding["priced_hours"] < funding["expected_hours"]
     assert funding["coverage_complete"] is False
+
+
+def test_history_need_bounds_and_integral_float_parameters(subtests):
+    for check in (
+            _check_grid_history_need_bounds,
+            _check_boundary_history_of_199_rows_and_integral_floats,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()
+
+
+def test_entry_rule_boundaries_and_constant_prices(subtests):
+    for check in (
+            _check_previous_equality_qualifies_and_current_equality_or_flat_slope_does_not,
+            _check_constant_prices_never_enter_and_report_finite_values,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()
+
+
+def test_input_defects_hold_with_a_reason_inside_their_dependency_window(subtests):
+    for check in (
+            _check_invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame,
+            _check_missing_or_wrong_cadence_holds_every_row,
+            _check_overflowing_prices_hold_as_nonfinite_derived,
+            _check_a_defect_holds_only_inside_its_dependency_window,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()
+
+
+def test_decisions_depend_only_on_rows_inside_the_dependency_window(subtests):
+    for check in (
+            _check_full_series_every_prefix_and_every_200_row_frame_agree_on_frozen_candles,
+            _check_rows_outside_the_dependency_window_cannot_change_a_decision,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()
