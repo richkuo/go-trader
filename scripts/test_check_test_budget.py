@@ -174,6 +174,25 @@ PLANTED = {
         '    refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": "new"}]})',
         '    assert run(["--strategy-refs", refs] + extra) == reason',
     ],
+    "subtest_loop": [
+        "from test_no_edge_admission import REFUSAL_CLASS_INPUTS",
+        "",
+        "",
+        "def test_new_strategy_is_refused(subtests):",
+        "    for extra, reason in REFUSAL_CLASS_INPUTS:",
+        '        with subtests.test(extra=" ".join(extra)):',
+        "            assert run(extra) == reason",
+    ],
+    "comprehension_over_imported": [
+        "from test_no_edge_admission import REFUSED_INPUTS",
+        "",
+        "",
+        "def test_new_strategy_is_refused(subtests):",
+        '    cases = [("new", extra, reason) for extra, reason in REFUSED_INPUTS]',
+        "    for name, extra, reason in cases:",
+        "        with subtests.test(name=name):",
+        "            assert run(extra) == reason",
+    ],
 }
 PERMITTED = {
     "admitted_and_acknowledged": [
@@ -239,6 +258,15 @@ PERMITTED = {
         '@pytest.mark.parametrize("extra,reason", [(["--mode=live"], "explicit live mode"), ([], "missing mode")])',
         "def test_close_fallback_is_refused(extra, reason):",
         "    assert run(extra) == reason",
+    ],
+    "non_refusal_loop": [
+        "def test_new_strategy_runs_when_admitted(subtests):",
+        '    for extra in (["--mode=paper"], ["--mode=live", "--allow-no-edge"]):',
+        '        with subtests.test(extra=" ".join(extra)):',
+        "            assert run(extra) is None",
+        '    for extra, outcome in [(["--mode=paper"], "admitted"), (["--mode=live", "--allow-no-edge"], "acked")]:',
+        "        with subtests.test(outcome=outcome):",
+        "            assert run(extra) == outcome",
     ],
 }
 
@@ -315,7 +343,7 @@ def test_cli_rejects_a_planted_refusal_matrix_copy_and_passes_once_it_is_removed
             proc = _cli(root)
             assert proc.returncode == 1
             owner = "TestNewStrategy::" if kind == "pytest_param_with_missing_mode" else ""
-            assert f"  new: {rel}::{owner}test_new_strategy_is_refused" in proc.stderr.splitlines()
+            assert proc.stderr.splitlines().count(f"  new: {rel}::{owner}test_new_strategy_is_refused") == 1
             assert "test budget exceeded (refusal_grid_tests)" in proc.stderr and SECTION in proc.stderr
             (root / rel).unlink()
             clean = _cli(root)
