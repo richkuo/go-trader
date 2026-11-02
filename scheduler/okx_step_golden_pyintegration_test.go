@@ -938,7 +938,7 @@ func okxGoldenCompare(got, want []byte, dates okxGoldenDates) string {
 }
 
 func TestOKXSharedStepOrdinaryGolden(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	schedDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)

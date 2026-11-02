@@ -341,13 +341,13 @@ func TestQuoteReplayCoverageAndTimingRefusals(t *testing.T) {
 		m.tradeGaps = [][2]int64{{quoteReplayTestStart + 3*60_000 + 100, quoteReplayTestStart + 3*60_000 + 40_000}}
 		spec := quoteReplayTestSpec(t, quoteReplayTempDir(t), m, func(s *quoteReplaySpec) { s.Window.LastDeadlineMs = s.Window.FirstDeadlineMs + 5*60_000 })
 		out, code := runQuoteReplayForTest(t, spec)
-		if code != 0 || out.Status != basketReplayStatusStopped || out.Scored || !strings.Contains(out.Stopped, "raw-trade coverage broke") {
+		if code != 0 || out.Status != replayStatusStopped || out.Scored || !strings.Contains(out.Stopped, "raw-trade coverage broke") {
 			t.Fatalf("exit %d status %s scored %v stopped %q", code, out.Status, out.Scored, out.Stopped)
 		}
 		quoteReplayCheckInvariants(t, spec, out)
-		spec.Mode = basketReplayModeResume
+		spec.Mode = replayModeResume
 		again, code := runQuoteReplayForTest(t, spec)
-		if code != 0 || again.Status != basketReplayStatusStopped || again.Scored || again.CursorMs != out.CursorMs || len(again.Decisions) != len(out.Decisions) {
+		if code != 0 || again.Status != replayStatusStopped || again.Scored || again.CursorMs != out.CursorMs || len(again.Decisions) != len(out.Decisions) {
 			t.Fatalf("a resume after the window ended must stop at the same cursor: exit %d status %s cursor %d/%d decisions %d/%d refusal %+v",
 				code, again.Status, again.CursorMs, out.CursorMs, len(again.Decisions), len(out.Decisions), again.Refusal)
 		}
@@ -360,12 +360,12 @@ func TestQuoteReplayCoverageAndTimingRefusals(t *testing.T) {
 			s.TradeCov = []quoteReplayRangeSpec{}
 		})
 		first, code := runQuoteReplayForTest(t, spec, "--max-deadlines", "3")
-		if code != 0 || first.Status != basketReplayStatusStopped {
+		if code != 0 || first.Status != replayStatusStopped {
 			t.Fatalf("exit %d status %s", code, first.Status)
 		}
-		spec.Mode = basketReplayModeResume
+		spec.Mode = replayModeResume
 		out, code := runQuoteReplayForTest(t, spec)
-		if code != 0 || out.Scored || out.Status != basketReplayStatusComplete {
+		if code != 0 || out.Scored || out.Status != replayStatusComplete {
 			t.Fatalf("a resumed book-only run stays unscored: exit %d status %s scored %v", code, out.Status, out.Scored)
 		}
 		for _, rec := range quoteReplayDecisionRecords(t, out) {
@@ -381,24 +381,24 @@ func TestQuoteReplayCoverageAndTimingRefusals(t *testing.T) {
 			s.Quote.RequestExpiryMs = 6000
 		})
 		out, code := runQuoteReplayForTest(t, spec)
-		if code != basketReplayExitRefused || out.Refusal == nil || out.Refusal.Reason != "timing_refused" {
+		if code != replayExitRefused || out.Refusal == nil || out.Refusal.Reason != "timing_refused" {
 			t.Fatalf("exit %d refusal %+v", code, out.Refusal)
 		}
-		spec.Mode = basketReplayModeResume
+		spec.Mode = replayModeResume
 		again, code := runQuoteReplayForTest(t, spec)
-		if code != basketReplayExitRefused || again.Refusal == nil || !strings.Contains(strings.Join(again.Refusal.Detail, " "), "refused terminally") {
+		if code != replayExitRefused || again.Refusal == nil || !strings.Contains(strings.Join(again.Refusal.Detail, " "), "refused terminally") {
 			t.Fatalf("a resume after a timing refusal must stay refused: exit %d refusal %+v", code, again.Refusal)
 		}
 	})
 	t.Run("a callback fault that settles without progress refuses resume", func(t *testing.T) {
 		spec := quoteReplayTestSpec(t, quoteReplayTempDir(t), quoteReplayMarketFor(2), func(s *quoteReplaySpec) { s.Window.LastDeadlineMs = s.Window.FirstDeadlineMs + 2*60_000 })
 		out, code := runQuoteReplayForTest(t, spec, "--fault", "decide-error:12")
-		if code == 0 || out.Status != basketReplayStatusError {
+		if code == 0 || out.Status != replayStatusError {
 			t.Fatalf("exit %d status %s", code, out.Status)
 		}
-		spec.Mode = basketReplayModeResume
+		spec.Mode = replayModeResume
 		out, code = runQuoteReplayForTest(t, spec)
-		if code != basketReplayExitRefused || out.Refusal == nil || !strings.Contains(strings.Join(out.Refusal.Detail, " "), "moved ahead of its audited progress") {
+		if code != replayExitRefused || out.Refusal == nil || !strings.Contains(strings.Join(out.Refusal.Detail, " "), "moved ahead of its audited progress") {
 			t.Fatalf("resume after a callback fault: exit %d refusal %+v", code, out.Refusal)
 		}
 	})

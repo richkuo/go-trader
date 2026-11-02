@@ -190,22 +190,22 @@ func runBasketReplayPaperWith(args []string, stdin io.Reader, out io.Writer, egr
 	fs.Var(&faultRaws, "fault", "controlled fault for restart tests: a version-2 replay kind or exit-after-call-start|exit-after-input-commit|fail-record-append:<n>; given twice, one of each")
 	seal := fs.Bool("seal", false, "seal the finished run and export it for offline version-2 reproduction")
 	if err := fs.Parse(args); err != nil {
-		return basketReplayExitUsage
+		return replayExitUsage
 	}
 	if fs.NArg() > 0 || *specPath == "" || *maxSteps < 0 || *configPath == "" {
 		fmt.Fprintln(os.Stderr, "usage: go-trader basket-replay-paper --spec <v2.json|-> --config <absolute research egress file> [--max-steps N] [--fault kind:N] [--seal]")
-		return basketReplayExitUsage
+		return replayExitUsage
 	}
 	f, rf, err := parsePairPaperFaults(faultRaws)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return basketReplayExitUsage
+		return replayExitUsage
 	}
 	emit := func(v pairReplayOutput, code int) int {
 		enc := json.NewEncoder(out)
 		if err := enc.Encode(v); err != nil {
 			fmt.Fprintf(os.Stderr, "[basket-replay-paper] could not write the result: %v\n", err)
-			return basketReplayExitError
+			return replayExitError
 		}
 		return code
 	}
@@ -259,9 +259,9 @@ func runBasketReplayPaperWith(args []string, stdin io.Reader, out io.Writer, egr
 		return fail(err)
 	}
 	if res.MechanicallyComplete && (!rt.paper.seal || rt.paper.sealResult != nil && rt.paper.sealResult.Sealed) {
-		return emit(res, basketReplayExitOK)
+		return emit(res, replayExitOK)
 	}
-	return emit(res, basketReplayExitError)
+	return emit(res, replayExitError)
 }
 
 func pairPaperRuntimeFiles(spec *pairPaperSpec) error {
@@ -567,13 +567,13 @@ func openPairPaper(spec *pairPaperSpec, raw []byte, lt pairReplayLifetime, opts 
 		}
 	}()
 	stateDir := spec.Run.StateDir
-	if err := basketReplayPathAllowed(stateDir); err != nil {
+	if err := replayPathAllowed(stateDir); err != nil {
 		return nil, refuseReplay("state_dir_refused", err.Error())
 	}
 	if _, err := basketReplayRealParent(stateDir); err != nil {
 		return nil, refuseReplay("state_dir_refused", err.Error())
 	}
-	resume := spec.Mode == basketReplayModeResume
+	resume := spec.Mode == replayModeResume
 	if !resume {
 		if _, err := os.Lstat(stateDir); err == nil {
 			return nil, refuseReplay("state_exists", fmt.Sprintf("new-run mode refuses the existing path %q; a new run claims its own directory", stateDir))
@@ -611,7 +611,7 @@ func openPairPaper(spec *pairPaperSpec, raw []byte, lt pairReplayLifetime, opts 
 		return nil, err
 	}
 	r.interval = int64(shape.IntervalSeconds) * 1000
-	r.fp = basketReplayFingerprints{Protocol: fmt.Sprintf("%s/%d", pairPaperProtocolLabel, pairReplayProtocolVersion), Source: basketReplaySourceFingerprint(spec.Run.Source), Input: identity, Config: sha256Hex(portable)}
+	r.fp = basketReplayFingerprints{Protocol: fmt.Sprintf("%s/%d", pairPaperProtocolLabel, pairReplayProtocolVersion), Source: replaySourceFingerprint(spec.Run.Source), Input: identity, Config: sha256Hex(portable)}
 	runBlob, _ := json.Marshal([]string{r.fp.Protocol, spec.Run.RunID, r.fp.Source, r.fp.Input, r.fp.Config})
 	r.fp.Run = sha256Hex(runBlob)
 	var egressCfg *EgressConfig

@@ -660,7 +660,7 @@ func TestBasketPairSettlementMigratesAndInspectsReadOnly(t *testing.T) {
 		}
 	}
 	raw.Close()
-	before := pairFileDigest(t, path)
+	before := missingOrFileDigest(t, path)
 	ro, err := openStateDBReadOnly(path)
 	if err != nil {
 		t.Fatal(err)
@@ -694,7 +694,7 @@ func TestBasketPairSettlementMigratesAndInspectsReadOnly(t *testing.T) {
 		t.Fatal("the replay reader must project the same safe defaults")
 	}
 	ro.Close()
-	if pairFileDigest(t, path) != before {
+	if missingOrFileDigest(t, path) != before {
 		t.Fatal("read-only inspection changed the unmigrated file")
 	}
 	e.store = openSourceStore(t, e.cfg)

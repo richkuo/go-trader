@@ -1509,7 +1509,7 @@ func (a *pairResearchAdmission) checkStateDir(cfg *Config) error {
 		}
 		return nil
 	}
-	if err := basketReplayPathAllowed(a.stateDir); err != nil {
+	if err := replayPathAllowed(a.stateDir); err != nil {
 		return fmt.Errorf("pair research state directory refused: %w", err)
 	}
 	blob, err := json.Marshal(pairResearchManifest{Owner: pairResearchManifestOwner, RunID: a.runID, PairID: a.pair.ID, ContractFP: a.contract, PairVersion: pairContractVersion, EvidenceDigest: a.admittedEvidence().Digest(), UID: os.Getuid(), FundingBinding: json.RawMessage(a.fundingBinding)})

@@ -53,7 +53,7 @@ func TestOKXSharedStepRefusesUnknownTypesAndMissingOwners(t *testing.T) {
 }
 
 func TestOKXSharedStepSimulatedClockDrivesAdmissionBookingAndReminder(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	sim := time.Date(2026, 3, 2, 10, 20, 0, 0, time.UTC)
 	clock := &simulatedClock{}
 	if err := clock.Set(sim); err != nil {
@@ -149,7 +149,7 @@ func TestOKXSharedStepSimulatedClockDrivesAdmissionBookingAndReminder(t *testing
 }
 
 func TestOKXSharedStepSplitLayoutRoutesEachPartitionToItsOwnFile(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	okxGoldenResetTrackers(t)
 	t.Setenv("OKX_API_KEY", "synthetic-okx-step-fixture-key")
 	t.Chdir(root)

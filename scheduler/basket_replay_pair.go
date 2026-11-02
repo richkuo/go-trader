@@ -184,7 +184,7 @@ func (r *pairReplayRuntime) fault(kind string) {
 	r.faultCount[kind]++
 	if r.faultCount[kind] == r.opts.Fault.N {
 		pairReplayFaultMessage(kind, r.opts.Fault.N)
-		os.Exit(basketReplayExitFault)
+		os.Exit(replayExitFault)
 	}
 }
 
@@ -200,13 +200,13 @@ func openPairReplay(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, opt
 		}
 	}()
 	stateDir := spec.Run.StateDir
-	if err := basketReplayPathAllowed(stateDir); err != nil {
+	if err := replayPathAllowed(stateDir); err != nil {
 		return nil, refuseReplay("state_dir_refused", err.Error())
 	}
 	if _, err := basketReplayRealParent(stateDir); err != nil {
 		return nil, refuseReplay("state_dir_refused", err.Error())
 	}
-	if spec.Mode == basketReplayModeNew {
+	if spec.Mode == replayModeNew {
 		if _, err := os.Lstat(stateDir); err == nil {
 			return nil, refuseReplay("state_exists", fmt.Sprintf("new-run mode refuses the existing path %q; a new run claims its own directory", stateDir))
 		}
@@ -239,7 +239,7 @@ func openPairReplay(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, opt
 		return nil, refuseReplay("config_refused", "research_config needs a positive interval_seconds: it is the member management cadence")
 	}
 	r.interval = int64(shape.IntervalSeconds) * 1000
-	r.fp = basketReplayFingerprints{Protocol: fmt.Sprintf("%s/%d", basketReplayProtocolName, pairReplayProtocolVersion), Source: basketReplaySourceFingerprint(spec.Run.Source), Input: inputFP, Config: sha256Hex(portable)}
+	r.fp = basketReplayFingerprints{Protocol: fmt.Sprintf("%s/%d", basketReplayProtocolName, pairReplayProtocolVersion), Source: replaySourceFingerprint(spec.Run.Source), Input: inputFP, Config: sha256Hex(portable)}
 	runBlob, _ := json.Marshal([]string{r.fp.Protocol, spec.Run.RunID, r.fp.Source, r.fp.Input, r.fp.Config})
 	r.fp.Run = sha256Hex(runBlob)
 
@@ -307,7 +307,7 @@ func openPairReplay(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, opt
 		EvidenceDigest: evidence.Digest(), FundingDigest: sha256Hex(in.funding), Objects: pairReplayObjectsWithTotals(in), Lifetime: lt, Scenario: spec.Scenario,
 		EventOrder: pairReplayEventOrder, AdministrativeFields: pairReplayAdministrativeFields, TargetInputSHA: pairTargetInputSHA(spec.TargetInput), UID: os.Getuid()}
 	var saved pairReplayManifest
-	if spec.Mode == basketReplayModeResume {
+	if spec.Mode == replayModeResume {
 		saved, err = readPairReplayManifest(stateDir)
 		if err != nil {
 			return nil, err
@@ -335,7 +335,7 @@ func openPairReplay(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, opt
 	paperFundingClock = func() time.Time { return tradingNow().UTC() }
 	r.cleanups = append(r.cleanups, func() { paperFundingClock = prevFundingClock })
 
-	adm, cfg, err := newPairResearchAdmission(cfgJSON, spec.Run.RunID, stateDir, spec.Mode == basketReplayModeResume, pairResearchDeps{VenueFor: venueFor, Evidence: evidence, Quotes: r.quotes, Funding: funding})
+	adm, cfg, err := newPairResearchAdmission(cfgJSON, spec.Run.RunID, stateDir, spec.Mode == replayModeResume, pairResearchDeps{VenueFor: venueFor, Evidence: evidence, Quotes: r.quotes, Funding: funding})
 	if err != nil {
 		return nil, refuseReplay("admission_refused", err.Error())
 	}
@@ -344,7 +344,7 @@ func openPairReplay(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, opt
 	r.fp.Contract = adm.contract
 	r.manifest.Fingerprints.Contract = adm.contract
 	r.manifest.FundingBinding = json.RawMessage(adm.fundingBinding)
-	if spec.Mode == basketReplayModeResume {
+	if spec.Mode == replayModeResume {
 		if err := comparePairReplayManifest(saved, r.manifest, true); err != nil {
 			return nil, err
 		}
@@ -398,7 +398,7 @@ func openPairReplay(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, opt
 	if err := r.file.ensureBasketReplaySchema(); err != nil {
 		return nil, err
 	}
-	if spec.Mode == basketReplayModeNew {
+	if spec.Mode == replayModeNew {
 		if err := r.file.insertPairReplayRun(r.manifest, r.manifest.Objects, in.recordTotal); err != nil {
 			return nil, err
 		}
@@ -414,7 +414,7 @@ func openPairReplay(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, opt
 	if err := r.loadState(); err != nil {
 		return nil, err
 	}
-	if spec.Mode == basketReplayModeNew {
+	if spec.Mode == replayModeNew {
 		if err := r.startupCommit(); err != nil {
 			return nil, err
 		}
@@ -545,7 +545,7 @@ func (r *pairReplayRuntime) loadState() error {
 	for id := range state.Strategies {
 		persisted[id] = true
 	}
-	if r.spec.Mode == basketReplayModeNew && len(persisted) > 0 {
+	if r.spec.Mode == replayModeNew && len(persisted) > 0 {
 		return refuseReplay("state_exists", "a new run state file already holds strategy books")
 	}
 	for i := range cfg.Strategies {

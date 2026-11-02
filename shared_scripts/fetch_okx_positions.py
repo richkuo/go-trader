@@ -11,6 +11,18 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "platforms", "okx"))
 
 
+def _okx_account_key_module():
+    name = "go_trader_okx_account_key"
+    mod = sys.modules.get(name)
+    if mod is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared_tools", "okx_account_key.py")
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
 def _pair_orders():
     name = "go_trader_pair_orders"
     mod = sys.modules.get(name)
@@ -43,7 +55,7 @@ def main():
         _emit_error(str(e))
         return
 
-    account = _pair_orders().okx_account_key("swap")
+    account = _okx_account_key_module().okx_account_key("swap")
     positions = []
     for p in raw or []:
         try:

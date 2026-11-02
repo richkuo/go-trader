@@ -222,7 +222,7 @@ func TestBasketPairLiveShapedFactoryRefusesUncontrolledDependencies(t *testing.T
 		if _, _, err := newPairLiveShapedAdmission(t, doc, dir, deps); err == nil {
 			t.Fatalf("the live-shaped fixture opened a pair without its controlled %s dependency", name)
 		}
-		if pairFileDigest(t, filepath.Join(dir, pairResearchManifestName)) != "missing" {
+		if missingOrFileDigest(t, filepath.Join(dir, pairResearchManifestName)) != "missing" {
 			t.Fatalf("a refused fixture wrote state for the missing %s dependency", name)
 		}
 	}
@@ -864,7 +864,7 @@ func TestBasketPairOrdinaryRecoveryAndReleaseRefusePairIntents(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := state.Strategies[pairTestOKX].EntryGuard.Intents[a.EntryIntentID]
-	if in == nil || !in.pairOwned() {
+	if in == nil || !in.researchGroupOwned() {
 		t.Fatalf("the saved owner must survive without the in-memory group link: %+v", in)
 	}
 	recoverEntryIntents(&orphanCfg, state, e.store, e.mu, nil, nil, far)

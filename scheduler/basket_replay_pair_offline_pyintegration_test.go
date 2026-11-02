@@ -102,7 +102,7 @@ func pairOfflineCandles(t0 int64) [][]float64 {
 
 func newPairOfflineFixture(t *testing.T, o pairOfflineOptions) *pairOfflineFixture {
 	t.Helper()
-	repo := basketPyRoot(t)
+	repo := pyRepoRoot(t)
 	f := &pairOfflineFixture{t: t, repo: repo, inputs: pairOfflineRealPath(t, t.TempDir()), parent: pairOfflineRealPath(t, t.TempDir()), runID: o.runID}
 	if f.runID == "" {
 		f.runID = "pair-run-1"
@@ -183,7 +183,7 @@ func newPairOfflineFixture(t *testing.T, o pairOfflineOptions) *pairOfflineFixtu
 
 func (f *pairOfflineFixture) spec(mode, stateDir string) *pairReplaySpec {
 	return &pairReplaySpec{Protocol: basketReplayProtocolName, Version: pairReplayProtocolVersion, Mode: mode,
-		Run:            basketReplayRunSpec{RunID: f.runID, StateDir: stateDir, Source: map[string]string{"quotes": "fixture recorded books", "evidence": "fixture schedule"}},
+		Run:            replayRunSpec{RunID: f.runID, StateDir: stateDir, Source: map[string]string{"quotes": "fixture recorded books", "evidence": "fixture schedule"}},
 		ResearchConfig: json.RawMessage(f.doc), InputManifest: pairReplayInputManifest{Root: f.inputs, Objects: f.objects}, Scenario: f.scenario,
 		Bounds: pairReplayBounds{Start: time.UnixMilli(f.t0).UTC().Format(time.RFC3339Nano), End: time.UnixMilli(f.end).UTC().Format(time.RFC3339Nano), MaxSteps: f.maxSteps}}
 }
@@ -223,7 +223,7 @@ func runPairReplayAdapter(t *testing.T, root string, spec interface{}, env []str
 	} else if err != nil {
 		t.Fatalf("adapter did not run: %v", err)
 	}
-	if p.Code != basketReplayExitFault && p.Code != basketReplayExitUsage {
+	if p.Code != replayExitFault && p.Code != replayExitUsage {
 		dec := json.NewDecoder(bytes.NewReader(p.Raw))
 		if err := dec.Decode(&p.Out); err != nil {
 			t.Fatalf("adapter stdout is not one protocol JSON document (exit %d): %v\nstdout=%s\nstderr tail=%s", p.Code, err, p.Raw, tail(p.Stderr, 6000))
@@ -237,7 +237,7 @@ func runPairReplayAdapter(t *testing.T, root string, spec interface{}, env []str
 
 func pairOfflineRequireComplete(t *testing.T, label string, p pairReplayProc) {
 	t.Helper()
-	if p.Code != 0 || !p.Out.MechanicallyComplete || p.Out.Status != basketReplayStatusComplete || p.Out.Scored || p.Out.PromotionEligible || p.Out.Comparison == nil || !p.Out.Comparison.Eligible {
+	if p.Code != 0 || !p.Out.MechanicallyComplete || p.Out.Status != replayStatusComplete || p.Out.Scored || p.Out.PromotionEligible || p.Out.Comparison == nil || !p.Out.Comparison.Eligible {
 		t.Fatalf("%s: want a mechanically complete pair run with exit 0 and both flags false, got exit %d status %s complete=%v reasons=%v refusal=%+v error=%q comparison=%+v\nstderr tail=%s",
 			label, p.Code, p.Out.Status, p.Out.MechanicallyComplete, p.Out.IncompleteReasons, p.Out.Refusal, p.Out.Error, p.Out.Comparison, tail(p.Stderr, 6000))
 	}
@@ -321,7 +321,7 @@ func pairOfflineSteps(t *testing.T, out pairReplayOutput) []pairReplayStepRecord
 
 func TestBasketReplayPairOfflineRunsTheRealOwnersToAMatchedSpreadAndBack(t *testing.T) {
 	f := newPairOfflineFixture(t, pairOfflineOptions{})
-	p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("run")), nil)
+	p := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, f.stateDir("run")), nil)
 	pairOfflineRequireComplete(t, "uninterrupted run", p)
 	actions := pairOfflineSection(t, p.Out, "basket_member_actions")
 	purposes := map[string]int{}
@@ -405,16 +405,16 @@ func TestBasketReplayPairOfflineRunsTheRealOwnersToAMatchedSpreadAndBack(t *test
 
 func TestBasketReplayPairOfflineFaultsResumeToEqualResults(t *testing.T) {
 	f := newPairOfflineFixture(t, pairOfflineOptions{})
-	base := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("base")), nil)
+	base := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, f.stateDir("base")), nil)
 	pairOfflineRequireComplete(t, "uninterrupted run", base)
 	for i, fault := range []string{"exit-after-collection:1", "exit-after-envelope-freeze:2", "exit-after-acceptance:1", "exit-after-acceptance:2", "exit-after-book-write:40", "exit-after-book-commit:3", "exit-after-management:2"} {
 		t.Run(fault, func(t *testing.T) {
 			dir := f.stateDir(fmt.Sprintf("fault-%d", i))
-			crash := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, dir), nil, "--fault", fault)
-			if crash.Code != basketReplayExitFault || !strings.Contains(crash.Stderr, "fault "+fault+"\n") {
+			crash := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, dir), nil, "--fault", fault)
+			if crash.Code != replayExitFault || !strings.Contains(crash.Stderr, "fault "+fault+"\n") {
 				t.Fatalf("the fault must exit 75 at its boundary and print it, got exit %d, stderr tail %s", crash.Code, tail(crash.Stderr, 3000))
 			}
-			resumed := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeResume, dir), nil)
+			resumed := runPairReplayAdapter(t, f.repo, f.spec(replayModeResume, dir), nil)
 			pairOfflineRequireComplete(t, "resumed run", resumed)
 			if !resumed.Out.Run.Resumed {
 				t.Fatal("the second process must report a resume")
@@ -439,14 +439,14 @@ func TestBasketReplayPairOfflineFaultsResumeToEqualResults(t *testing.T) {
 
 func TestBasketReplayPairOfflineSealedFeedResumesFromASavedCollection(t *testing.T) {
 	f := newPairOfflineFixture(t, pairOfflineOptions{sealed: true})
-	base := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("base")), nil)
+	base := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, f.stateDir("base")), nil)
 	pairOfflineRequireComplete(t, "sealed uninterrupted run", base)
 	dir := f.stateDir("crash")
-	crash := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, dir), nil, "--fault", "exit-after-collection:2")
-	if crash.Code != basketReplayExitFault {
+	crash := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, dir), nil, "--fault", "exit-after-collection:2")
+	if crash.Code != replayExitFault {
 		t.Fatalf("want exit 75, got %d", crash.Code)
 	}
-	resumed := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeResume, dir), nil)
+	resumed := runPairReplayAdapter(t, f.repo, f.spec(replayModeResume, dir), nil)
 	pairOfflineRequireComplete(t, "sealed resumed run", resumed)
 	if resumed.Out.Comparison.Hash != base.Out.Comparison.Hash {
 		t.Fatalf("the sealed resume differs:\n%s", pairOfflineDiff(t, base.Out, resumed.Out))
@@ -462,7 +462,7 @@ func TestBasketReplayPairOfflineEconomicHoldIsComplete(t *testing.T) {
 	f := newPairOfflineFixture(t, pairOfflineOptions{runID: "pair-hold", mutate: func(root map[string]interface{}) {
 		pairTestPair(root)["params"].(map[string]interface{})["entry_threshold_bps"] = 9000
 	}})
-	p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("hold")), nil)
+	p := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, f.stateDir("hold")), nil)
 	pairOfflineRequireComplete(t, "economic hold run", p)
 	if n := len(pairOfflineSection(t, p.Out, "basket_member_actions")); n != 0 {
 		t.Fatalf("a policy that always holds sends nothing, got %d actions", n)
@@ -495,12 +495,12 @@ func TestBasketReplayPairOfflineProcessFailuresStayIncompleteAfterResume(t *test
 			}
 			f := newPairOfflineFixture(t, pairOfflineOptions{failures: []pairReplayFailureScript{tc.failure}})
 			dir := f.stateDir("run")
-			first := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, dir), nil, "--max-steps", "120")
-			if first.Code != basketReplayExitError || first.Out.MechanicallyComplete || first.Out.Status != basketReplayStatusStopped {
+			first := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, dir), nil, "--max-steps", "120")
+			if first.Code != replayExitError || first.Out.MechanicallyComplete || first.Out.Status != replayStatusStopped {
 				t.Fatalf("a stopped run is never complete, got exit %d status %s", first.Code, first.Out.Status)
 			}
-			resumed := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeResume, dir), nil)
-			if resumed.Code != basketReplayExitError || resumed.Out.MechanicallyComplete || resumed.Out.Status != basketReplayStatusIncomplete || resumed.Out.Comparison.Eligible {
+			resumed := runPairReplayAdapter(t, f.repo, f.spec(replayModeResume, dir), nil)
+			if resumed.Code != replayExitError || resumed.Out.MechanicallyComplete || resumed.Out.Status != replayStatusIncomplete || resumed.Out.Comparison.Eligible {
 				t.Fatalf("a %s process failure must keep the finished run incomplete after the resume, got exit %d status %s reasons %v", tc.name, resumed.Code, resumed.Out.Status, resumed.Out.IncompleteReasons)
 			}
 			found := false
@@ -529,7 +529,7 @@ func TestBasketReplayPairOfflineScriptedManagementFailureFiresOnceAcrossARestart
 		}
 		return n
 	}
-	base := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("base")), nil)
+	base := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, f.stateDir("base")), nil)
 	if base.Out.MechanicallyComplete || scripted(base) != 1 {
 		t.Fatalf("an uninterrupted run must record the scripted management failure once and stay incomplete, got complete=%v failures=%+v", base.Out.MechanicallyComplete, base.Out.Failures)
 	}
@@ -554,11 +554,11 @@ func TestBasketReplayPairOfflineScriptedManagementFailureFiresOnceAcrossARestart
 	}
 	dir := f.stateDir("crash")
 	fault := fmt.Sprintf("exit-after-management:%d", injectedPass)
-	crash := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, dir), nil, "--fault", fault)
-	if crash.Code != basketReplayExitFault || !strings.Contains(crash.Stderr, "fault "+fault+"\n") {
+	crash := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, dir), nil, "--fault", fault)
+	if crash.Code != replayExitFault || !strings.Contains(crash.Stderr, "fault "+fault+"\n") {
 		t.Fatalf("the fault must stop the process after the scripted management pass, got exit %d, stderr tail %s", crash.Code, tail(crash.Stderr, 3000))
 	}
-	resumed := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeResume, dir), nil)
+	resumed := runPairReplayAdapter(t, f.repo, f.spec(replayModeResume, dir), nil)
 	if !resumed.Out.Run.Resumed || resumed.Out.MechanicallyComplete || scripted(resumed) != 1 {
 		t.Fatalf("the resume reruns the management pass, so the scripted failure must not fire again: resumed=%v complete=%v failures=%+v", resumed.Out.Run.Resumed, resumed.Out.MechanicallyComplete, resumed.Out.Failures)
 	}
@@ -590,7 +590,7 @@ func TestBasketReplayPairOfflineUnappliedScriptedFailuresAreReported(t *testing.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPairOfflineFixture(t, pairOfflineOptions{failures: []pairReplayFailureScript{tc.failure}})
-			p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("run")), nil)
+			p := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, f.stateDir("run")), nil)
 			if !p.Out.Run.Finished {
 				t.Fatalf("the run must finish so the scripted failure is judged, got stop reason %q", p.Out.Run.StopReason)
 			}
@@ -619,7 +619,7 @@ func TestBasketReplayPairOfflineUnappliedScriptedFailuresAreReported(t *testing.
 				}
 				return
 			}
-			if p.Out.MechanicallyComplete || p.Code != basketReplayExitError || len(unapplied) != 1 || !strings.Contains(unapplied[0], "scenario.venue_failures[0] "+tc.failure.Kind) {
+			if p.Out.MechanicallyComplete || p.Code != replayExitError || len(unapplied) != 1 || !strings.Contains(unapplied[0], "scenario.venue_failures[0] "+tc.failure.Kind) {
 				t.Fatalf("a scripted failure that never fired must keep the finished run incomplete with one unapplied reason, got exit %d complete=%v reasons=%v", p.Code, p.Out.MechanicallyComplete, p.Out.IncompleteReasons)
 			}
 		})
@@ -630,42 +630,42 @@ func TestBasketReplayPairOfflineMissingEvidenceIsNeverMechanicalSuccess(t *testi
 	t.Run("quotes end while the spread is matched", func(t *testing.T) {
 		t0 := pairTestStart().Add(-2 * time.Minute).UnixMilli()
 		f := newPairOfflineFixture(t, pairOfflineOptions{runID: "pair-stale", quoteEnd: t0 + 100_000})
-		p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("stale")), nil)
-		if p.Code != basketReplayExitError || p.Out.MechanicallyComplete || len(p.Out.IncompleteReasons) == 0 {
+		p := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, f.stateDir("stale")), nil)
+		if p.Code != replayExitError || p.Out.MechanicallyComplete || len(p.Out.IncompleteReasons) == 0 {
 			t.Fatalf("an incomplete valuation or unfinished exit at the declared end must not succeed, got exit %d %v", p.Code, p.Out.IncompleteReasons)
 		}
 	})
 	t.Run("funding coverage is missing while a member holds a position", func(t *testing.T) {
 		f := newPairOfflineFixture(t, pairOfflineOptions{runID: "pair-gap", noHLFund: true})
-		p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("gap")), nil)
+		p := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, f.stateDir("gap")), nil)
 		gap := false
 		for _, why := range p.Out.IncompleteReasons {
 			gap = gap || strings.Contains(why, "funding")
 		}
-		if p.Code != basketReplayExitError || p.Out.MechanicallyComplete || !gap {
+		if p.Code != replayExitError || p.Out.MechanicallyComplete || !gap {
 			t.Fatalf("missing funding coverage is never settled as zero and never mechanical success, got exit %d %v", p.Code, p.Out.IncompleteReasons)
 		}
 	})
 	t.Run("the step budget runs out", func(t *testing.T) {
 		f := newPairOfflineFixture(t, pairOfflineOptions{runID: "pair-budget"})
 		f.maxSteps = 30
-		p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("budget")), nil)
-		if p.Code != basketReplayExitError || p.Out.MechanicallyComplete || p.Out.Run.Finished {
+		p := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, f.stateDir("budget")), nil)
+		if p.Code != replayExitError || p.Out.MechanicallyComplete || p.Out.Run.Finished {
 			t.Fatalf("an exhausted step budget is an unfinished bounded run, got exit %d finished %v", p.Code, p.Out.Run.Finished)
 		}
 	})
 	t.Run("a failed required save", func(t *testing.T) {
 		probe := newPairOfflineFixture(t, pairOfflineOptions{})
-		base := runPairReplayAdapter(t, probe.repo, probe.spec(basketReplayModeNew, probe.stateDir("base")), nil)
+		base := runPairReplayAdapter(t, probe.repo, probe.spec(replayModeNew, probe.stateDir("base")), nil)
 		pairOfflineRequireComplete(t, "baseline", base)
 		at := time.UnixMilli(probe.t0 + 60_000).UTC().Format(time.RFC3339Nano)
 		f := newPairOfflineFixture(t, pairOfflineOptions{failures: []pairReplayFailureScript{{Kind: pairReplayFailSave, At: at}}})
 		dir := f.stateDir("save")
-		p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, dir), nil)
-		if p.Code != basketReplayExitError || p.Out.MechanicallyComplete || !strings.Contains(p.Out.Run.StopReason, "required state save") {
+		p := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, dir), nil)
+		if p.Code != replayExitError || p.Out.MechanicallyComplete || !strings.Contains(p.Out.Run.StopReason, "required state save") {
 			t.Fatalf("a failed final save stops the run incomplete, got exit %d stop %q", p.Code, p.Out.Run.StopReason)
 		}
-		resumed := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeResume, dir), nil)
+		resumed := runPairReplayAdapter(t, f.repo, f.spec(replayModeResume, dir), nil)
 		pairOfflineRequireComplete(t, "resume after the failed save", resumed)
 		if resumed.Out.Export == nil || len(pairOfflineSection(t, resumed.Out, "basket_member_actions")) != len(pairOfflineSection(t, base.Out, "basket_member_actions")) {
 			t.Fatal("the resumed run must reach the same actions as an uninterrupted run")
@@ -698,8 +698,8 @@ func TestBasketReplayPairOfflineFutureInputsCannotChangeEarlierDecisions(t *test
 		ref := pairOfflineWrite(t, b.inputs, o.Path, doc)
 		b.objects[i].SHA256, b.objects[i].SizeBytes = ref.SHA256, ref.SizeBytes
 	}
-	pa := runPairReplayAdapter(t, a.repo, a.spec(basketReplayModeNew, a.stateDir("a")), nil)
-	pb := runPairReplayAdapter(t, b.repo, b.spec(basketReplayModeNew, b.stateDir("b")), nil)
+	pa := runPairReplayAdapter(t, a.repo, a.spec(replayModeNew, a.stateDir("a")), nil)
+	pb := runPairReplayAdapter(t, b.repo, b.spec(replayModeNew, b.stateDir("b")), nil)
 	if pa.Out.Run == nil || pb.Out.Run == nil {
 		t.Fatalf("both runs must produce a result: %+v %+v", pa.Out.Refusal, pb.Out.Refusal)
 	}
@@ -736,18 +736,18 @@ func TestBasketReplayPairOfflineFutureInputsCannotChangeEarlierDecisions(t *test
 func TestBasketReplayPairOfflineUsageRefusalsAndBlockedNetwork(t *testing.T) {
 	f := newPairOfflineFixture(t, pairOfflineOptions{runID: "pair-net"})
 	dir := f.stateDir("usage")
-	if p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, dir), nil, "--fault", "exit-after-submit:1"); p.Code != basketReplayExitUsage {
+	if p := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, dir), nil, "--fault", "exit-after-submit:1"); p.Code != replayExitUsage {
 		t.Fatalf("a version-1 fault on a version-2 specification is a usage error, got %d", p.Code)
 	}
-	if p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, dir), nil, "--fault", "exit-after-nothing:1"); p.Code != basketReplayExitUsage {
+	if p := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, dir), nil, "--fault", "exit-after-nothing:1"); p.Code != replayExitUsage {
 		t.Fatalf("an unknown fault is a usage error, got %d", p.Code)
 	}
-	if p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeResume, dir), nil); p.Code != basketReplayExitRefused || p.Out.Refusal == nil {
+	if p := runPairReplayAdapter(t, f.repo, f.spec(replayModeResume, dir), nil); p.Code != replayExitRefused || p.Out.Refusal == nil {
 		t.Fatalf("resuming a run that never started is refused, got %d", p.Code)
 	}
-	bad := f.spec(basketReplayModeNew, dir)
+	bad := f.spec(replayModeNew, dir)
 	bad.Bounds.MaxSteps = 0
-	if p := runPairReplayAdapter(t, f.repo, bad, nil); p.Code != basketReplayExitRefused || p.Out.Refusal == nil || p.Out.Refusal.Reason != "spec_invalid" {
+	if p := runPairReplayAdapter(t, f.repo, bad, nil); p.Code != replayExitRefused || p.Out.Refusal == nil || p.Out.Refusal.Reason != "spec_invalid" {
 		t.Fatalf("an invalid specification is refused, got %d %+v", p.Code, p.Out.Refusal)
 	}
 	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
@@ -757,11 +757,11 @@ func TestBasketReplayPairOfflineUsageRefusalsAndBlockedNetwork(t *testing.T) {
 	if err := os.Mkdir(empty, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, empty), nil); p.Code != basketReplayExitRefused || p.Out.Refusal.Reason != "state_exists" {
+	if p := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, empty), nil); p.Code != replayExitRefused || p.Out.Refusal.Reason != "state_exists" {
 		t.Fatalf("a new run refuses an existing empty directory, got %d %+v", p.Code, p.Out.Refusal)
 	}
 	blocked := []string{"GO_TRADER_EGRESS_PROXY=http://127.0.0.1:9", "HTTPS_PROXY=http://127.0.0.1:9", "HTTP_PROXY=http://127.0.0.1:9", "ALL_PROXY=http://127.0.0.1:9", "NO_PROXY=", "no_proxy="}
-	p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("offline")), blocked)
+	p := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, f.stateDir("offline")), blocked)
 	pairOfflineRequireComplete(t, "run with every exchange route blocked and no deployed configuration", p)
 	cmd := exec.Command(filepath.Join(f.repo, ".venv", "bin", "python3"), "-c", "import urllib.request; urllib.request.urlopen('https://api.hyperliquid.xyz/info', timeout=5)")
 	cmd.Env = append(os.Environ(), blocked...)
@@ -786,7 +786,7 @@ func TestBasketReplayPairOfflineDriverReportsAMechanicalResult(t *testing.T) {
 	}
 	plan := map[string]interface{}{"plan": "go-trader.basket-replay-plan", "version": 2, "run_id": f.runID, "state_dir": f.stateDir("driver"),
 		"source": map[string]string{"quotes": "fixture"}, "research_config": map[string]string{"path": "research-config.json", "sha256": sha256Hex(f.doc)},
-		"objects": objs, "scenario": f.scenario, "bounds": f.spec(basketReplayModeNew, "/x").Bounds}
+		"objects": objs, "scenario": f.scenario, "bounds": f.spec(replayModeNew, "/x").Bounds}
 	blob, _ := json.Marshal(plan)
 	planPath := filepath.Join(f.inputs, "plan.json")
 	if err := os.WriteFile(planPath, blob, 0o600); err != nil {
@@ -813,7 +813,7 @@ func TestBasketReplayPairOfflineDriverReportsAMechanicalResult(t *testing.T) {
 }
 
 func TestBasketReplayPairOfflineDriverRefusalKeepsThePlanVersion(t *testing.T) {
-	repo := basketPyRoot(t)
+	repo := pyRepoRoot(t)
 	pairPlan := func(path string) map[string]interface{} {
 		return map[string]interface{}{"plan": "go-trader.basket-replay-plan", "version": 2, "run_id": "pair-refused", "state_dir": filepath.Join(t.TempDir(), "state"),
 			"source": map[string]string{"quotes": "fixture"}, "research_config": map[string]string{"path": "research-config.json", "sha256": sha256Hex([]byte("{}"))},
@@ -866,7 +866,7 @@ func TestBasketReplayPairOfflineKillSwitchClosesEachMemberAtItsOwnMark(t *testin
 	f := newPairOfflineFixture(t, pairOfflineOptions{runID: "pair-kill", mutate: func(root map[string]interface{}) {
 		root["portfolio_risk"] = map[string]interface{}{"max_drawdown_pct": 0.03}
 	}})
-	p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("kill")), nil)
+	p := runPairReplayAdapter(t, f.repo, f.spec(replayModeNew, f.stateDir("kill")), nil)
 	if p.Out.Run == nil || p.Out.Scored || p.Out.PromotionEligible {
 		t.Fatalf("the run must report a pair result with both flags false: %+v", p.Out)
 	}

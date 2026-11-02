@@ -367,7 +367,7 @@ func resolveEntryAttemptByOperator(deps entryOperatorDeps, operatorID, strategyI
 			return refuse("attempt %s cannot be read for strategy %s: %v.", intentID, sc.ID, rerr)
 		case disk.Status == entryIntentNoFill || disk.Status == entryIntentCommitted:
 			return entryOperatorOutcome{Message: fmt.Sprintf("Attempt %s of %s is already resolved (%s); no change was made.", intentID, sc.ID, disk.Status)}
-		case disk.pairOwned():
+		case disk.researchGroupOwned():
 			return refuse("attempt %s is owned by pair %s in the saved record; only the pair coordinator resolves it by its saved identity.", intentID, disk.OwnerGroupID)
 		}
 		return refuse("attempt %s is %s in the state file but is not held in memory; a restart reloads it.", intentID, disk.Status)
@@ -378,7 +378,7 @@ func resolveEntryAttemptByOperator(deps entryOperatorDeps, operatorID, strategyI
 	if why := entryOperatorRowMismatch(&snap, disk); why != "" {
 		return refuse("the held attempt and the state file disagree (%s).", why)
 	}
-	if snap.pairOwned() || disk.pairOwned() {
+	if snap.researchGroupOwned() || disk.researchGroupOwned() {
 		return refuse("attempt %s is owned by pair %s in the saved record; only the pair coordinator resolves it by its saved identity.", intentID, firstNonEmpty(disk.OwnerGroupID, snap.OwnerGroupID))
 	}
 	if snap.StrategyID != sc.ID || snap.Partition != part || snap.Provider != provider {

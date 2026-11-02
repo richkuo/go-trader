@@ -69,7 +69,7 @@ func requireExpiryAnchors(t *testing.T, out basketReplayOutput, horizon int64) i
 }
 
 func TestBasketReplayReversalExpiryScenariosMatchThePaperCoordinator(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	fx := loadReplayFixture(t)
 	const hourMs = int64(3_600_000)
 	const rebalanceMs = 4 * hourMs
@@ -278,26 +278,26 @@ func TestBasketReplayReversalExpiryScenariosMatchThePaperCoordinator(t *testing.
 			dir := filepath.Join(realTempDir(t), "run")
 			var out basketReplayOutput
 			if tc.restart > 0 {
-				a := runReplayAdapter(t, root, sc.spec(t, fx, dir, basketReplayModeNew), "--max-steps", strconv.Itoa(tc.restart))
-				if a.Code != 0 || a.Out.Status != basketReplayStatusStopped {
+				a := runReplayAdapter(t, root, sc.spec(t, fx, dir, replayModeNew), "--max-steps", strconv.Itoa(tc.restart))
+				if a.Code != 0 || a.Out.Status != replayStatusStopped {
 					t.Fatalf("bounded run: exit %d status %s %s", a.Code, a.Out.Status, tail(a.Stderr, 4000))
 				}
-				b := runReplayAdapter(t, root, sc.spec(t, fx, dir, basketReplayModeResume))
+				b := runReplayAdapter(t, root, sc.spec(t, fx, dir, replayModeResume))
 				if b.Code != 0 {
 					t.Fatalf("resume: exit %d %s", b.Code, tail(b.Stderr, 4000))
 				}
 				out = b.Out
 			} else {
-				p := runReplayAdapter(t, root, sc.spec(t, fx, dir, basketReplayModeNew))
+				p := runReplayAdapter(t, root, sc.spec(t, fx, dir, replayModeNew))
 				if p.Code != 0 {
 					t.Fatalf("exit %d %s", p.Code, tail(p.Stderr, 4000))
 				}
 				out = p.Out
 			}
-			if out.Status != basketReplayStatusComplete || len(out.Steps) != len(sc.spec(t, fx, dir, basketReplayModeNew).Steps) {
+			if out.Status != replayStatusComplete || len(out.Steps) != len(sc.spec(t, fx, dir, replayModeNew).Steps) {
 				t.Fatalf("status %s with %d steps, coverage %+v", out.Status, len(out.Steps), out.Coverage)
 			}
-			ref := newReplayReference(t, sc.spec(t, fx, filepath.Join(realTempDir(t), "ref"), basketReplayModeNew), out.Cost.Applied)
+			ref := newReplayReference(t, sc.spec(t, fx, filepath.Join(realTempDir(t), "ref"), replayModeNew), out.Cost.Applied)
 			for i := range ref.spec.Steps {
 				if tc.restart > 0 && i == tc.restart {
 					ref.restart()

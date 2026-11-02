@@ -203,7 +203,7 @@ func xsmomAssertNoTrades(t *testing.T, env *basketTestEnv) {
 }
 
 func TestBasketRealRankerMomentumFreezesCappedInverseVolatilityTargets(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	useXSMomMembers(t)
 	deadline := basketPyDeadline()
 	delisted := deadline.Add(-time.Hour).UTC().Format(time.RFC3339)
@@ -299,7 +299,7 @@ func TestBasketRealRankerMomentumFreezesCappedInverseVolatilityTargets(t *testin
 }
 
 func TestBasketRealRankerMomentumHoldsTheWholeSetOnBadInputs(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	useXSMomMembers(t)
 	deadline := basketPyDeadline()
 	recent := deadline.Add(-20 * time.Hour).UTC().Format(time.RFC3339)
@@ -366,7 +366,7 @@ func xsmomRecordingRanker(edit func(req map[string]interface{}), out *[]byte) ba
 }
 
 func TestBasketRealRankerMomentumRefusesInvalidConfigurationBeforeMemberData(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	useXSMomMembers(t)
 	deadline := basketPyDeadline()
 	delisted := deadline.Add(-time.Hour).UTC().Format(time.RFC3339)
@@ -437,7 +437,7 @@ func TestBasketRealRankerMomentumRefusesInvalidConfigurationBeforeMemberData(t *
 }
 
 func TestBasketRealRankerMomentumIgnoresBarsAfterTheDeadline(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	useXSMomMembers(t)
 	deadline := basketPyDeadline()
 	type frozen struct {

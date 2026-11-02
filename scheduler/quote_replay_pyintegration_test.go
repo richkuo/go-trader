@@ -110,10 +110,10 @@ func TestQuoteReplayPythonLedger(t *testing.T) {
 			t.Run(fault, func(t *testing.T) {
 				spec := quoteReplayShortSpec(t, quoteReplayTempDir(t))
 				_, code, _ := runQuoteReplaySubprocess(t, spec, "--fault", fault)
-				if code != basketReplayExitFault {
+				if code != replayExitFault {
 					t.Fatalf("fault %s exited %d", fault, code)
 				}
-				spec.Mode = basketReplayModeResume
+				spec.Mode = replayModeResume
 				out, code := runQuoteReplayForTest(t, spec)
 				quoteReplayMustComplete(t, out, code)
 				if v := quoteReplayPythonVerify(t, spec, out); !v.OK {

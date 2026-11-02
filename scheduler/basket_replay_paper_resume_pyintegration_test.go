@@ -59,7 +59,7 @@ func pairPaperApplied(rows []pairPaperFundingRow, memberID string, eventMs int64
 
 func pairPaperRequireResumed(t *testing.T, label string, p pairPaperProc) {
 	t.Helper()
-	if p.Code == basketReplayExitRefused || p.Code == basketReplayExitFault || p.Out.Run == nil || !p.Out.Run.Resumed || p.Out.Refusal != nil {
+	if p.Code == replayExitRefused || p.Code == replayExitFault || p.Out.Run == nil || !p.Out.Run.Resumed || p.Out.Refusal != nil {
 		t.Fatalf("%s: the resume must admit and run, got exit %d status %s refusal %+v error %q run %+v\nstderr tail=%s", label, p.Code, p.Out.Status, p.Out.Refusal, p.Out.Error, p.Out.Run, tail(p.Stderr, 6000))
 	}
 	if p.Out.Comparison != nil {
@@ -127,7 +127,7 @@ func TestBasketReplayPairPaperResumesAnAppliedOKXFundingEventFromItsRecordedEvid
 			okx = sc
 		}
 	}
-	first := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false), "--max-steps", "4", "--seal")
+	first := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), f.env(false), "--max-steps", "4", "--seal")
 	if first.Out.Run == nil || first.Out.Run.Finished || first.Out.Refusal != nil {
 		t.Fatalf("the first chunk stops resumable, got exit %d run %+v refusal %+v\nstderr tail=%s", first.Code, first.Out.Run, first.Out.Refusal, tail(first.Stderr, 4000))
 	}
@@ -135,15 +135,15 @@ func TestBasketReplayPairPaperResumesAnAppliedOKXFundingEventFromItsRecordedEvid
 	var last pairPaperProc
 	for chunk := 0; chunk < 60; chunk++ {
 		if appliedSeen && !crashed {
-			crash := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--fault", "exit-after-book-commit:1")
-			if crash.Code != basketReplayExitFault || !strings.Contains(crash.Stderr, "fault exit-after-book-commit:1\n") {
+			crash := runPairPaperAdapter(t, f, f.spec(replayModeResume, dir), f.env(false), "--fault", "exit-after-book-commit:1")
+			if crash.Code != replayExitFault || !strings.Contains(crash.Stderr, "fault exit-after-book-commit:1\n") {
 				t.Fatalf("a resume after the applied OKX funding event must admit and reach the book commit fault, got exit %d refusal %+v error %q\nstderr tail=%s", crash.Code, crash.Out.Refusal, crash.Out.Error, tail(crash.Stderr, 6000))
 			}
 			crashed = true
 			resumesAfterApplied++
 			continue
 		}
-		last = runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--max-steps", "4", "--seal")
+		last = runPairPaperAdapter(t, f, f.spec(replayModeResume, dir), f.env(false), "--max-steps", "4", "--seal")
 		pairPaperRequireResumed(t, fmt.Sprintf("chunk %d", chunk), last)
 		if appliedSeen {
 			resumesAfterApplied++
@@ -216,8 +216,8 @@ func TestBasketReplayPairPaperFundingCrashResumeConsumesTheCommittedTail(t *test
 			pairPaperWriteJSON(t, f.fixture, fx)
 			f.scenario.PaperFundingPollMs = 10000
 			dir := filepath.Join(f.parent, "paper")
-			crash := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false), "--fault", "exit-after-management:2")
-			if crash.Code != basketReplayExitFault || !strings.Contains(crash.Stderr, "fault exit-after-management:2\n") {
+			crash := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), f.env(false), "--fault", "exit-after-management:2")
+			if crash.Code != replayExitFault || !strings.Contains(crash.Stderr, "fault exit-after-management:2\n") {
 				t.Fatalf("the fault must exit 75 after the second management cycle, got exit %d\nstderr tail=%s", crash.Code, tail(crash.Stderr, 4000))
 			}
 			before := pairPaperLogRows(t, dir, f.runID)
@@ -238,7 +238,7 @@ func TestBasketReplayPairPaperFundingCrashResumeConsumesTheCommittedTail(t *test
 			if len(members) != 2 {
 				t.Fatalf("the crashed step %s must hold committed funding reads for both members before the crash at input %d, got %v", stepID, last.Seq, members)
 			}
-			resumed := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--seal")
+			resumed := runPairPaperAdapter(t, f, f.spec(replayModeResume, dir), f.env(false), "--seal")
 			pairPaperRequireResumed(t, "resume", resumed)
 			if !resumed.Out.Run.Finished || resumed.Out.Recording == nil || resumed.Out.Recording.Seal == nil || !resumed.Out.Recording.Seal.Sealed {
 				t.Fatalf("the resumed run finishes and seals, got run %+v recording %+v reasons %v", resumed.Out.Run, resumed.Out.Recording, resumed.Out.IncompleteReasons)
@@ -282,7 +282,7 @@ func TestBasketReplayPairPaperBarrierCursorSurvivesLaterCrashes(t *testing.T) {
 		defer func() { <-slots }()
 		f := newPairPaperFixture(t, pairPaperOptions2{runID: "paper-barrier-chunk", collectS: 30, drainS: 20, convergeS: 16})
 		dir := filepath.Join(f.parent, "paper")
-		first := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false), "--fault", "fail-record-append:80", "--max-steps", "10")
+		first := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), f.env(false), "--fault", "fail-record-append:80", "--max-steps", "10")
 		if first.Out.Recording == nil || !first.Out.Recording.BarrierSet || first.Out.Run == nil || first.Out.Run.Finished || first.Out.Run.StepsApplied != 10 {
 			t.Fatalf("the chunk ends with the barrier set and the run resumable, got exit %d run %+v recording %+v\nstderr tail=%s", first.Code, first.Out.Run, first.Out.Recording, tail(first.Stderr, 4000))
 		}
@@ -301,11 +301,11 @@ func TestBasketReplayPairPaperBarrierCursorSurvivesLaterCrashes(t *testing.T) {
 		if got := pairPaperSavedCursor(t, dir, f.runID); got != stream {
 			t.Fatalf("the saved recording cursor must count committed stream rows only: saved %d, committed %d", got, stream)
 		}
-		crash := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--fault", "exit-after-call-start:20")
-		if crash.Code != basketReplayExitFault || !strings.Contains(crash.Stderr, "fault exit-after-call-start:20\n") {
+		crash := runPairPaperAdapter(t, f, f.spec(replayModeResume, dir), f.env(false), "--fault", "exit-after-call-start:20")
+		if crash.Code != replayExitFault || !strings.Contains(crash.Stderr, "fault exit-after-call-start:20\n") {
 			t.Fatalf("the resume clears the barrier and reaches the call start fault, got exit %d refusal %+v\nstderr tail=%s", crash.Code, crash.Out.Refusal, tail(crash.Stderr, 4000))
 		}
-		final := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--seal")
+		final := runPairPaperAdapter(t, f, f.spec(replayModeResume, dir), f.env(false), "--seal")
 		pairPaperRequireResumed(t, "final resume", final)
 		if !final.Out.Run.Finished || final.Out.Recording == nil || final.Out.Recording.BarrierSet || final.Out.Recording.Seal == nil || !final.Out.Recording.Seal.Sealed {
 			t.Fatalf("the run finishes and seals after both restarts, got run %+v recording %+v reasons %v", final.Out.Run, final.Out.Recording, final.Out.IncompleteReasons)
@@ -320,17 +320,17 @@ func TestBasketReplayPairPaperBarrierCursorSurvivesLaterCrashes(t *testing.T) {
 		defer func() { <-slots }()
 		f := newPairPaperFixture(t, pairPaperOptions2{runID: "paper-barrier-pending", collectS: 30, drainS: 20, convergeS: 16})
 		dir := filepath.Join(f.parent, "paper")
-		first := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false), "--fault", "fail-record-append:80", "--fault", "exit-after-management:3")
+		first := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), f.env(false), "--fault", "fail-record-append:80", "--fault", "exit-after-management:3")
 		critical := strings.Index(first.Stderr, "CRITICAL: the recording append failed")
 		fault := strings.Index(first.Stderr, "fault exit-after-management:3\n")
-		if first.Code != basketReplayExitFault || critical < 0 || fault < critical {
+		if first.Code != replayExitFault || critical < 0 || fault < critical {
 			t.Fatalf("the process stops inside a step while the barrier holds, got exit %d\nstderr tail=%s", first.Code, tail(first.Stderr, 4000))
 		}
-		second := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--fault", "exit-after-management:2")
-		if second.Code != basketReplayExitFault || !strings.Contains(second.Stderr, "fault exit-after-management:2\n") {
+		second := runPairPaperAdapter(t, f, f.spec(replayModeResume, dir), f.env(false), "--fault", "exit-after-management:2")
+		if second.Code != replayExitFault || !strings.Contains(second.Stderr, "fault exit-after-management:2\n") {
 			t.Fatalf("the resume clears the barrier, finishes the pending step and stops in a later step, got exit %d refusal %+v\nstderr tail=%s", second.Code, second.Out.Refusal, tail(second.Stderr, 4000))
 		}
-		final := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--seal")
+		final := runPairPaperAdapter(t, f, f.spec(replayModeResume, dir), f.env(false), "--seal")
 		pairPaperRequireResumed(t, "final resume", final)
 		if !final.Out.Run.Finished || final.Out.Recording == nil || final.Out.Recording.BarrierSet || final.Out.Recording.Seal == nil || !final.Out.Recording.Seal.Sealed {
 			t.Fatalf("the run finishes and seals, got run %+v recording %+v reasons %v", final.Out.Run, final.Out.Recording, final.Out.IncompleteReasons)
@@ -397,7 +397,7 @@ func pairPaperResearchOracleFaultCounts(t *testing.T, opts pairPaperResearchOpti
 	opts.runID = "paper-research-dry"
 	f, _ := newPairPaperResearchFixture(t, opts)
 	dir := filepath.Join(f.parent, "dry")
-	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false))
+	p := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), f.env(false))
 	if p.Out.Run == nil || !p.Out.Run.Finished {
 		t.Fatalf("the dry research run finishes, got exit %d %+v\nstderr tail=%s", p.Code, p.Out.Refusal, tail(p.Stderr, 4000))
 	}
@@ -448,8 +448,8 @@ func TestBasketReplayPairPaperResearchOracleResume(t *testing.T) {
 	slots := make(chan struct{}, 3)
 	crash := func(t *testing.T, f *pairPaperFixture, dir, fault string) []pairRecRow {
 		t.Helper()
-		p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false), "--fault", fault)
-		if p.Code != basketReplayExitFault || !strings.Contains(p.Stderr, "fault "+fault+"\n") {
+		p := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), f.env(false), "--fault", fault)
+		if p.Code != replayExitFault || !strings.Contains(p.Stderr, "fault "+fault+"\n") {
 			t.Fatalf("the fault %s exits 75 at its boundary, got exit %d\nstderr tail=%s", fault, p.Code, tail(p.Stderr, 4000))
 		}
 		return pairPaperLogRows(t, dir, f.runID)
@@ -464,7 +464,7 @@ func TestBasketReplayPairPaperResearchOracleResume(t *testing.T) {
 		if last := before[len(before)-1]; last.Kind != pairRecEventStart || last.Event.Start.Kind != pairRecKindFundingOracle {
 			t.Fatalf("the crash leaves the oracle start as the last committed row, got %s", last.Kind)
 		}
-		resumed := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--seal")
+		resumed := runPairPaperAdapter(t, f, f.spec(replayModeResume, dir), f.env(false), "--seal")
 		pairPaperRequireResumed(t, "start-only resume", resumed)
 		after := pairPaperLogRows(t, dir, f.runID)
 		if s, e, rcv := pairPaperOracleRows(after); s != 1 || e != 0 || rcv != 1 {
@@ -506,7 +506,7 @@ func TestBasketReplayPairPaperResearchOracleResume(t *testing.T) {
 		reads := pairPaperMetaReads(f)
 		chunk := filepath.Join(f.parent, "chunk")
 		_ = exec.Command("cp", "-R", dir, chunk).Run()
-		resumed := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--seal")
+		resumed := runPairPaperAdapter(t, f, f.spec(replayModeResume, dir), f.env(false), "--seal")
 		pairPaperRequireResumed(t, "terminal resume", resumed)
 		pairPaperRequireComplete(t, "terminal resume", resumed)
 		after := pairPaperLogRows(t, dir, f.runID)
@@ -528,7 +528,7 @@ func TestBasketReplayPairPaperResearchOracleResume(t *testing.T) {
 		if playback.Out.Comparison == nil || playback.Out.Comparison.Hash != resumed.Out.Comparison.Hash || !playback.Out.Comparison.Eligible {
 			t.Fatalf("the offline reproduction of the resumed research recording equals it, got paper %+v playback %+v\n%s", resumed.Out.Comparison, playback.Out.Comparison, pairOfflineDiff(t, resumed.Out, playback.Out))
 		}
-		mid := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, chunk), f.env(false), "--max-steps", "4")
+		mid := runPairPaperAdapter(t, f, f.spec(replayModeResume, chunk), f.env(false), "--max-steps", "4")
 		pairPaperRequireResumed(t, "chunked terminal resume", mid)
 		db, err := OpenStateDB(filepath.Join(chunk, basketReplayDBName))
 		if err != nil {
@@ -546,8 +546,8 @@ func TestBasketReplayPairPaperResearchOracleResume(t *testing.T) {
 			t.Fatal(err)
 		}
 		db.Close()
-		refused := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, chunk), f.env(false), "--max-steps", "4")
-		if refused.Code != basketReplayExitRefused {
+		refused := runPairPaperAdapter(t, f, f.spec(replayModeResume, chunk), f.env(false), "--max-steps", "4")
+		if refused.Code != replayExitRefused {
 			t.Fatalf("a saved chain row the recording no longer proves refuses the resume, got exit %d %+v", refused.Code, refused.Out.Refusal)
 		}
 	})
@@ -559,7 +559,7 @@ func TestBasketReplayPairPaperResearchOracleResume(t *testing.T) {
 		f, _ := newPairPaperResearchFixture(t, late)
 		dir := filepath.Join(f.parent, "paper")
 		crash(t, f, dir, fmt.Sprintf("exit-after-input-commit:%d", lateCounts.inputEnd))
-		resumed := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--seal")
+		resumed := runPairPaperAdapter(t, f, f.spec(replayModeResume, dir), f.env(false), "--seal")
 		pairPaperRequireResumed(t, "refused terminal resume", resumed)
 		o := pairPaperOracleOutcomeOf(t, dir, f.runID)
 		if len(o.starts) != 1 || len(o.refusedSeq) != 1 || o.refusedSeq[0] != 0 || len(o.admitted) != 0 {
@@ -601,8 +601,8 @@ func TestBasketReplayPairPaperResearchOracleBarrierDecidesFromTheSameWake(t *tes
 	deadline, _ := pairFundingOracleDeadline(policy, target)
 	clearFrom := prepare + 10000
 	dir := filepath.Join(f.parent, "paper")
-	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), pairPaperAppendFaultEnv(f, prepare, clearFrom), "--seal")
-	if p.Code == basketReplayExitRefused || p.Out.Run == nil || !p.Out.Run.Finished || p.Out.Comparison == nil || p.Out.Recording == nil || p.Out.Recording.BarrierSet || p.Out.Recording.Seal == nil || !p.Out.Recording.Seal.Sealed {
+	p := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), pairPaperAppendFaultEnv(f, prepare, clearFrom), "--seal")
+	if p.Code == replayExitRefused || p.Out.Run == nil || !p.Out.Run.Finished || p.Out.Comparison == nil || p.Out.Recording == nil || p.Out.Recording.BarrierSet || p.Out.Recording.Seal == nil || !p.Out.Recording.Seal.Sealed {
 		t.Fatalf("a barrier that clears in the same process lets the run finish and seal, got exit %d recording %+v reasons %v refusal %+v\nstderr tail=%s", p.Code, p.Out.Recording, p.Out.IncompleteReasons, p.Out.Refusal, tail(p.Stderr, 6000))
 	}
 	rows := pairPaperLogRows(t, dir, f.runID)
@@ -660,7 +660,7 @@ func TestBasketReplayPairPaperResearchOracleBarrierDecidesFromTheSameWake(t *tes
 		t.Fatalf("the paper run reads metaAndAssetCtxs once, got %d", reads)
 	}
 	playback := pairPaperReproduce(t, f, dir, "reproduction")
-	if playback.Code == basketReplayExitRefused || playback.Out.Refusal != nil || playback.Out.Comparison == nil || playback.Code != p.Code || playback.Out.MechanicallyComplete != p.Out.MechanicallyComplete {
+	if playback.Code == replayExitRefused || playback.Out.Refusal != nil || playback.Out.Comparison == nil || playback.Code != p.Code || playback.Out.MechanicallyComplete != p.Out.MechanicallyComplete {
 		t.Fatalf("the sealed playback with every network route blocked ends like the live run, got exit %d (live %d) refusal %+v reasons %v\nstderr tail=%s", playback.Code, p.Code, playback.Out.Refusal, playback.Out.IncompleteReasons, tail(playback.Stderr, 6000))
 	}
 	for _, r := range append(append([]string{}, playback.Out.IncompleteReasons...), playback.Out.Comparison.Reasons...) {
@@ -685,8 +685,8 @@ func TestBasketReplayPairPaperResearchOracleBarrierRestartReadsTheHeldHourOnce(t
 	policy := *f.scenario.FundingPolicy
 	prepare, _ := pairPaperOraclePrepareAt(target, policy)
 	dir := filepath.Join(f.parent, "paper")
-	first := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), pairPaperAppendFaultEnv(f, prepare, f.drain+3600000), "--max-steps", "21")
-	if first.Code == basketReplayExitRefused || first.Out.Recording == nil || !first.Out.Recording.BarrierSet {
+	first := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), pairPaperAppendFaultEnv(f, prepare, f.drain+3600000), "--max-steps", "21")
+	if first.Code == replayExitRefused || first.Out.Recording == nil || !first.Out.Recording.BarrierSet {
 		t.Fatalf("the first process stops while the barrier holds, got exit %d recording %+v refusal %+v\nstderr tail=%s", first.Code, first.Out.Recording, first.Out.Refusal, tail(first.Stderr, 6000))
 	}
 	held := false
@@ -700,7 +700,7 @@ func TestBasketReplayPairPaperResearchOracleBarrierRestartReadsTheHeldHourOnce(t
 	if !held || pairPaperMetaReads(f) != 0 {
 		t.Fatalf("the held process refuses the oracle call before any read, got held=%v reads=%d", held, pairPaperMetaReads(f))
 	}
-	resumed := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false))
+	resumed := runPairPaperAdapter(t, f, f.spec(replayModeResume, dir), f.env(false))
 	pairPaperRequireResumed(t, "restart after a held oracle hour", resumed)
 	rows := pairPaperLogRows(t, dir, f.runID)
 	if s, _, _ := pairPaperOracleRows(rows); s != 1 || pairPaperMetaReads(f) != 1 || pairPaperOracleFailureRows(rows) != 0 {
@@ -714,8 +714,8 @@ func TestBasketReplayPairPaperResearchOracleBarrierOutsidePreparationAddsNoOracl
 	policy := *f.scenario.FundingPolicy
 	prepare, _ := pairPaperOraclePrepareAt(target, policy)
 	dir := filepath.Join(f.parent, "paper")
-	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), pairPaperAppendFaultEnv(f, prepare-16000, prepare-6000), "--seal")
-	if p.Code == basketReplayExitRefused || p.Out.Run == nil || !p.Out.Run.Finished || p.Out.Recording == nil || p.Out.Recording.BarrierSet {
+	p := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), pairPaperAppendFaultEnv(f, prepare-16000, prepare-6000), "--seal")
+	if p.Code == replayExitRefused || p.Out.Run == nil || !p.Out.Run.Finished || p.Out.Recording == nil || p.Out.Recording.BarrierSet {
 		t.Fatalf("a barrier before preparation clears in process and the run finishes, got exit %d recording %+v refusal %+v\nstderr tail=%s", p.Code, p.Out.Recording, p.Out.Refusal, tail(p.Stderr, 6000))
 	}
 	rows := pairPaperLogRows(t, dir, f.runID)

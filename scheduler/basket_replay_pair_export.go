@@ -18,7 +18,7 @@ func runPairReplayWith(raw []byte, opts basketReplayOptions, out io.Writer) int 
 		enc := json.NewEncoder(out)
 		if err := enc.Encode(v); err != nil {
 			fmt.Fprintf(os.Stderr, "[basket-replay] could not write the result: %v\n", err)
-			return basketReplayExitError
+			return replayExitError
 		}
 		return code
 	}
@@ -53,20 +53,20 @@ func runPairReplayWith(raw []byte, opts basketReplayOptions, out io.Writer) int 
 		return fail(err)
 	}
 	if res.MechanicallyComplete {
-		return emit(res, basketReplayExitOK)
+		return emit(res, replayExitOK)
 	}
-	return emit(res, basketReplayExitError)
+	return emit(res, replayExitError)
 }
 
 func pairReplayErrorOutput(err error) (pairReplayOutput, int) {
 	out := pairReplayOutput{Protocol: basketReplayProtocolName, Version: pairReplayProtocolVersion}
-	var refusal *basketReplayRefusal
+	var refusal *replayRefusal
 	if errors.As(err, &refusal) {
-		out.Status, out.Refusal = basketReplayStatusRefused, refusal
-		return out, basketReplayExitRefused
+		out.Status, out.Refusal = replayStatusRefused, refusal
+		return out, replayExitRefused
 	}
-	out.Status, out.Error = basketReplayStatusError, err.Error()
-	return out, basketReplayExitError
+	out.Status, out.Error = replayStatusError, err.Error()
+	return out, replayExitError
 }
 
 func pairReplayRuntimeChecks(spec *pairReplaySpec) error {
@@ -680,11 +680,11 @@ func (r *pairReplayRuntime) output() (pairReplayOutput, error) {
 	out.Comparison = cmp
 	switch {
 	case !r.finished:
-		out.Status = basketReplayStatusStopped
+		out.Status = replayStatusStopped
 	case out.MechanicallyComplete:
-		out.Status = basketReplayStatusComplete
+		out.Status = replayStatusComplete
 	default:
-		out.Status = basketReplayStatusIncomplete
+		out.Status = replayStatusIncomplete
 	}
 	return out, nil
 }

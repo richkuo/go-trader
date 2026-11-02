@@ -72,7 +72,7 @@ func applyStudyFixtureWindows(proto map[string]interface{}, basketID string) {
 
 func newMomentumStudy(t *testing.T, mutate func(map[string]interface{}), frames string) *momentumStudy {
 	t.Helper()
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	base := realTempDir(t)
 	s := &momentumStudy{t: t, root: root, dir: filepath.Join(base, "study"), bin: pyintegrationBinary(t)}
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
@@ -568,7 +568,7 @@ func fileSHA256(t *testing.T, path string) string {
 
 func newReversalStudy(t *testing.T, mutate func(map[string]interface{}), frames string) *reversalStudy {
 	t.Helper()
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	base := realTempDir(t)
 	inputs := &momentumStudy{t: t, root: root, dir: filepath.Join(base, "inputs"), bin: pyintegrationBinary(t)}
 	if err := os.MkdirAll(inputs.dir, 0o755); err != nil {
@@ -1058,7 +1058,7 @@ func TestBasketReplayReversalStudyRefusesChangedInputsBeforeAnyReplay(t *testing
 		{name: "signal-spec-changed-after-lock", reason: "lock_mismatch", mutate: func(p map[string]interface{}) {
 			spec := p["signal_spec"].(map[string]interface{})
 			copyPath := filepath.Join(realTempDir(t), "SIGNAL_SPEC.md")
-			blob, err := os.ReadFile(filepath.Join(basketPyRoot(t), spec["path"].(string)))
+			blob, err := os.ReadFile(filepath.Join(pyRepoRoot(t), spec["path"].(string)))
 			if err != nil {
 				t.Fatal(err)
 			}

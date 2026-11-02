@@ -50,7 +50,7 @@ type pairQuotePyResult struct {
 
 func pairRunQuotePy(t *testing.T, cases []map[string]interface{}) []pairQuotePyResult {
 	t.Helper()
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	driver := filepath.Join(t.TempDir(), "pair_quote_driver.py")
 	if err := os.WriteFile(driver, []byte(pairQuotePyDriver), 0o600); err != nil {
 		t.Fatal(err)
@@ -301,7 +301,7 @@ type pairQuoteFixture struct {
 
 func newPairQuoteFixture(t *testing.T) *pairQuoteFixture {
 	t.Helper()
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	dir := t.TempDir()
 	driver := filepath.Join(dir, "quote_driver.py")
 	if err := os.WriteFile(driver, []byte(pairQuoteFakeDriver), 0o600); err != nil {
@@ -496,7 +496,7 @@ print(json.dumps({"ok": True}))
 
 func pairPrepareArchive(t *testing.T) string {
 	t.Helper()
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	dir := t.TempDir()
 	driver := filepath.Join(dir, "prep.py")
 	if err := os.WriteFile(driver, []byte(pairArchivePrepDriver), 0o600); err != nil {
@@ -517,7 +517,7 @@ func TestBasketPairQuoteArchiveAppliesDelayOnce(t *testing.T) {
 	m, _ := contract.pairMember(pairTestHL)
 	need := contract.Pair.BookNeed
 	dir := pairPrepareArchive(t)
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	t.Chdir(root)
 	const delay = int64(1000)
 	t0 := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC).UnixMilli()

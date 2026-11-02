@@ -305,7 +305,7 @@ func recoverEntryIntents(cfg *Config, state *AppState, store *StateStore, mu *sy
 		}
 		s := state.Strategies[id]
 		for _, intentID := range s.EntryGuard.sortedIntentIDs() {
-			if s.EntryGuard.Intents[intentID].pairOwned() {
+			if s.EntryGuard.Intents[intentID].researchGroupOwned() {
 				continue
 			}
 			pending = append(pending, pendingRecovery{sc: sc, state: s, intentID: intentID})
@@ -323,7 +323,7 @@ func recoverEntryIntents(cfg *Config, state *AppState, store *StateStore, mu *sy
 		var job *entryRecoveryJob
 		mu.RLock()
 		if state.Strategies[p.sc.ID] == p.state && p.state.EntryGuard != nil {
-			if in := p.state.EntryGuard.Intents[p.intentID]; in != nil && !in.pairOwned() {
+			if in := p.state.EntryGuard.Intents[p.intentID]; in != nil && !in.researchGroupOwned() {
 				job = &entryRecoveryJob{app: state, sc: p.sc, state: p.state, intent: in, snap: *in}
 			}
 		}

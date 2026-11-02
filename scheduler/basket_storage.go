@@ -1069,11 +1069,11 @@ func (sdb *StateDB) loadBasketRecords() (*basketFileRecords, error) {
 	if err != nil || !exists {
 		return out, err
 	}
-	actionProj, err := sdb.basketProjection("basket_member_actions", basketActionProjectedColumns())
+	actionProj, err := sdb.columnProjection("basket_member_actions", basketActionProjectedColumns())
 	if err != nil {
 		return nil, err
 	}
-	stateProj, err := sdb.basketProjection("basket_member_state", basketMemberStateLifecycleColumns)
+	stateProj, err := sdb.columnProjection("basket_member_state", basketMemberStateLifecycleColumns)
 	if err != nil {
 		return nil, err
 	}
@@ -1485,7 +1485,7 @@ func inspectBasketRows(db *StateDB, fi *storageFileInspection, ident storageIden
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	actionProj, err := db.basketProjection("basket_member_actions", basketActionProjectedColumns())
+	actionProj, err := db.columnProjection("basket_member_actions", basketActionProjectedColumns())
 	if err != nil {
 		return nil, err
 	}

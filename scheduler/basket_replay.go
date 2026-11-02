@@ -106,7 +106,7 @@ func openBasketReplay(spec *basketReplaySpec, raw []byte, opts basketReplayOptio
 	r.cfg, r.cfgJSON = cfg, cfgJSON
 	r.fp = basketReplayFingerprints{
 		Protocol: basketReplayProtocolFingerprint(),
-		Source:   basketReplaySourceFingerprint(spec.Run.Source),
+		Source:   replaySourceFingerprint(spec.Run.Source),
 		Contract: contract.Fingerprint(),
 		Input:    inputFP,
 	}
@@ -128,7 +128,7 @@ func openBasketReplay(spec *basketReplaySpec, raw []byte, opts basketReplayOptio
 	r.cost = cost
 	r.manifest = basketReplayManifest{Owner: basketReplayOwnerMarker, RunID: spec.Run.RunID, Fingerprints: r.fp, CostPolicyID: cost.PolicyID, CostVersion: cost.ModelVersion, StepsTotal: len(spec.Steps), UID: os.Getuid()}
 	start := spec.parsedSteps[0]
-	if spec.Mode == basketReplayModeResume {
+	if spec.Mode == replayModeResume {
 		saved, err := readBasketReplayManifest(stateDir)
 		if err != nil {
 			return nil, err
@@ -174,7 +174,7 @@ func openBasketReplay(spec *basketReplaySpec, raw []byte, opts basketReplayOptio
 	paperFundingClock = func() time.Time { return tradingNow().UTC() }
 	r.cleanups = append(r.cleanups, func() { paperFundingClock = prevFundingClock })
 
-	if spec.Mode == basketReplayModeNew {
+	if spec.Mode == replayModeNew {
 		r.manifest.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 		if err := createBasketReplayStateDir(stateDir, r.manifest); err != nil {
 			return nil, err
@@ -213,7 +213,7 @@ func openBasketReplay(spec *basketReplaySpec, raw []byte, opts basketReplayOptio
 	if err := r.file.ensureBasketReplaySchema(); err != nil {
 		return nil, err
 	}
-	if spec.Mode == basketReplayModeNew {
+	if spec.Mode == replayModeNew {
 		if err := r.file.insertBasketReplayRun(r.manifest, cost); err != nil {
 			return nil, err
 		}
@@ -326,7 +326,7 @@ func (r *basketReplayRuntime) loadState() error {
 	for id := range state.Strategies {
 		persisted[id] = true
 	}
-	if r.spec.Mode == basketReplayModeNew && len(persisted) > 0 {
+	if r.spec.Mode == replayModeNew && len(persisted) > 0 {
 		return refuseReplay("state_exists", "a new run state file already holds strategy books")
 	}
 	for i := range cfg.Strategies {
@@ -805,7 +805,7 @@ func (v *basketReplayVenue) Submit(a *basketAction) (basketVenueOutcome, error) 
 	v.submits++
 	if v.r.opts.Fault.ExitAfterSubmit > 0 && v.submits == v.r.opts.Fault.ExitAfterSubmit {
 		fmt.Fprintf(os.Stderr, "[basket-replay] fault injection: exiting after submit %d (client %s)\n", v.submits, a.ClientOrderID)
-		os.Exit(basketReplayExitFault)
+		os.Exit(replayExitFault)
 	}
 	if transport != nil {
 		return basketVenueOutcome{}, transport
@@ -1327,7 +1327,7 @@ type basketReplayOutput struct {
 	Protocol     string                         `json:"protocol"`
 	Version      int                            `json:"version"`
 	Status       string                         `json:"status"`
-	Refusal      *basketReplayRefusal           `json:"refusal,omitempty"`
+	Refusal      *replayRefusal                 `json:"refusal,omitempty"`
 	Error        string                         `json:"error,omitempty"`
 	Run          *basketReplayRunInfo           `json:"run,omitempty"`
 	CapitalModel string                         `json:"capital_model,omitempty"`
@@ -1341,14 +1341,6 @@ type basketReplayOutput struct {
 	Coverage     *basketReplayCoverage          `json:"coverage,omitempty"`
 	LotFetches   int                            `json:"lot_metadata_fetch_refusals"`
 }
-
-const (
-	basketReplayStatusComplete   = "complete"
-	basketReplayStatusIncomplete = "incomplete"
-	basketReplayStatusStopped    = "stopped"
-	basketReplayStatusRefused    = "refused"
-	basketReplayStatusError      = "error"
-)
 
 func (r *basketReplayRuntime) output() (basketReplayOutput, error) {
 	out := basketReplayOutput{Protocol: basketReplayProtocolName, Version: basketReplayProtocolVersion, CapitalModel: basketReplayCapitalNote, ClockModel: basketReplayClockNote, EventOrder: basketReplayEventOrder, TargetInput: r.spec.TargetInput.Mode}
@@ -1425,24 +1417,24 @@ func (r *basketReplayRuntime) output() (basketReplayOutput, error) {
 	out.Coverage = &basketReplayCoverage{Complete: len(gaps) == 0, Gaps: gaps}
 	switch {
 	case r.progress.StepsApplied < len(r.spec.Steps):
-		out.Status = basketReplayStatusStopped
+		out.Status = replayStatusStopped
 	case len(gaps) > 0:
-		out.Status = basketReplayStatusIncomplete
+		out.Status = replayStatusIncomplete
 	default:
-		out.Status = basketReplayStatusComplete
+		out.Status = replayStatusComplete
 	}
 	return out, nil
 }
 
 func basketReplayErrorOutput(err error) (basketReplayOutput, int) {
 	out := basketReplayOutput{Protocol: basketReplayProtocolName, Version: basketReplayProtocolVersion}
-	var refusal *basketReplayRefusal
+	var refusal *replayRefusal
 	if errors.As(err, &refusal) {
-		out.Status = basketReplayStatusRefused
+		out.Status = replayStatusRefused
 		out.Refusal = refusal
-		return out, basketReplayExitRefused
+		return out, replayExitRefused
 	}
-	out.Status = basketReplayStatusError
+	out.Status = replayStatusError
 	out.Error = err.Error()
-	return out, basketReplayExitError
+	return out, replayExitError
 }

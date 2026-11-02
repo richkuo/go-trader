@@ -96,7 +96,7 @@ func TestPairOrdinaryLoadRefusesResearchRecords(t *testing.T) {
 	e.slotStep(0)
 	e.store.Close()
 	dbPath := e.cfg.DBFile
-	before := pairFileDigest(t, dbPath)
+	before := missingOrFileDigest(t, dbPath)
 	ordinary := loadBasketTestConfig(t, func(root map[string]interface{}) {
 		root["db_file"] = dbPath
 		delete(root, "baskets")

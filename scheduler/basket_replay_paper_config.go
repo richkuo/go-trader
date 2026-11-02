@@ -77,7 +77,7 @@ func admitResearchEgressConfig(args []string) (*pairResearchEgress, error) {
 	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return nil, fmt.Errorf("--config %q must be an absolute, clean path", path)
 	}
-	for _, p := range basketReplayDeployedPrefixes {
+	for _, p := range replayDeployedPrefixes {
 		if path == p || strings.HasPrefix(path, p+string(os.PathSeparator)) {
 			return nil, fmt.Errorf("--config %q is inside the deployed path %s; isolated paper never reads deployed configuration", path, p)
 		}

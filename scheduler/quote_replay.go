@@ -51,7 +51,7 @@ type quoteReplaySpec struct {
 	Protocol  string                  `json:"protocol"`
 	Version   int                     `json:"version"`
 	Mode      string                  `json:"mode"`
-	Run       basketReplayRunSpec     `json:"run"`
+	Run       replayRunSpec           `json:"run"`
 	Coin      string                  `json:"coin"`
 	Window    quoteReplayWindow       `json:"window"`
 	Params    map[string]interface{}  `json:"params"`
@@ -226,10 +226,10 @@ func validateQuoteReplaySpec(spec *quoteReplaySpec) error {
 	if spec.Protocol != quoteReplayProtocolName || spec.Version != quoteReplayProtocolVersion {
 		add("protocol must be %s version %d, got %q version %d", quoteReplayProtocolName, quoteReplayProtocolVersion, spec.Protocol, spec.Version)
 	}
-	if spec.Mode != basketReplayModeNew && spec.Mode != basketReplayModeResume {
+	if spec.Mode != replayModeNew && spec.Mode != replayModeResume {
 		add("mode must be new or resume, got %q", spec.Mode)
 	}
-	if !basketReplayRunIDPattern.MatchString(spec.Run.RunID) {
+	if !replayRunIDPattern.MatchString(spec.Run.RunID) {
 		add("run.run_id %q is not a valid identifier", spec.Run.RunID)
 	}
 	if !filepath.IsAbs(spec.Run.StateDir) {
@@ -502,7 +502,7 @@ func (spec *quoteReplaySpec) fingerprints(policyFP string) (quoteReplayFingerpri
 		Spec    string            `json:"policy_spec_sha256"`
 		Notes   map[string]string `json:"model_notes"`
 	}{quoteReplayProtocolName, quoteReplayProtocolVersion, quotePolicySpecSHA256(), quoteReplayModelNotes})
-	fp.Source = basketReplaySourceFingerprint(spec.Run.Source)
+	fp.Source = replaySourceFingerprint(spec.Run.Source)
 	fp.Data = quoteReplayCanonical(struct {
 		Coin     string                 `json:"coin"`
 		Books    []quoteReplayBookSpec  `json:"books"`
@@ -685,7 +685,7 @@ func openQuoteReplay(spec *quoteReplaySpec, opts quoteReplayOptions) (*quoteRepl
 	r.manifest = quoteReplayManifest{Owner: quoteReplayOwnerMarker, RunID: spec.Run.RunID, Fingerprints: fp, OwnerStrategy: quoteReplayOwnerID,
 		FirstDeadlineMs: spec.Window.FirstDeadlineMs, LastDeadlineMs: spec.Window.LastDeadlineMs, UID: os.Getuid()}
 	dbPath := filepath.Join(stateDir, quoteReplayDBName)
-	if spec.Mode == basketReplayModeResume {
+	if spec.Mode == replayModeResume {
 		saved, err := readQuoteReplayManifest(stateDir)
 		if err != nil {
 			return nil, err
@@ -731,8 +731,8 @@ func openQuoteReplay(spec *quoteReplaySpec, opts quoteReplayOptions) (*quoteRepl
 	}
 	r.owner = owned
 	r.cleanups = append(r.cleanups, func() { owned.Release() })
-	if spec.Mode == basketReplayModeResume {
-		if err := checkQuoteReplayStateDir(basketReplayModeResume, stateDir); err != nil {
+	if spec.Mode == replayModeResume {
+		if err := checkQuoteReplayStateDir(replayModeResume, stateDir); err != nil {
 			return nil, err
 		}
 		stored, err := verifyQuoteReplayDBReadOnly(dbPath, r.manifest)
@@ -755,10 +755,10 @@ func openQuoteReplay(spec *quoteReplaySpec, opts quoteReplayOptions) (*quoteRepl
 		return nil, fmt.Errorf("no state file owns the %s partition", partitionLabel(part))
 	}
 	storageID, _ := ident.storageFor(sc.ID)
-	if err := r.file.ensureQuoteReplaySchema(r.manifest, storageID.StorageID, spec.Mode == basketReplayModeNew); err != nil {
+	if err := r.file.ensureQuoteReplaySchema(r.manifest, storageID.StorageID, spec.Mode == replayModeNew); err != nil {
 		return nil, err
 	}
-	if spec.Mode == basketReplayModeResume {
+	if spec.Mode == replayModeResume {
 		if _, err := readQuoteReplayRun(r.file, r.manifest); err != nil {
 			return nil, err
 		}
@@ -1348,7 +1348,7 @@ func (f *quoteReplayFaultState) hit(point string) {
 	f.mu.Unlock()
 	if fire {
 		fmt.Fprintf(os.Stderr, "[quote-replay] fault injection: exiting at %s occurrence %d\n", point, f.target)
-		f.exit(basketReplayExitFault)
+		f.exit(replayExitFault)
 	}
 }
 

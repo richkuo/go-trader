@@ -39,19 +39,19 @@ func init() {
 	blob, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "the paper test clock %s is unreadable: %v\n", path, err)
-		os.Exit(basketReplayExitError)
+		os.Exit(replayExitError)
 	}
 	ms, err := strconv.ParseInt(strings.TrimSpace(string(blob)), 10, 64)
 	if err != nil || ms <= 0 {
 		fmt.Fprintf(os.Stderr, "the paper test clock %s holds no positive millisecond time: %q\n", path, blob)
-		os.Exit(basketReplayExitError)
+		os.Exit(replayExitError)
 	}
 	wall := &pairPaperTestWall{path: path, ms: ms}
 	if raw := os.Getenv("GO_TRADER_PAPER_TEST_ORACLE_COMPLETION_MS"); raw != "" {
 		completion, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || completion <= ms {
 			fmt.Fprintf(os.Stderr, "the paper test oracle completion %q must be after the initial clock\n", raw)
-			os.Exit(basketReplayExitError)
+			os.Exit(replayExitError)
 		}
 		wall.oracleCompletionMs = completion
 	}
@@ -60,7 +60,7 @@ func init() {
 		stallFrom, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || stallFrom <= 0 {
 			fmt.Fprintf(os.Stderr, "the paper test book stall %q is not a positive millisecond time\n", raw)
-			os.Exit(basketReplayExitError)
+			os.Exit(replayExitError)
 		}
 		var stalled atomic.Bool
 		gate := pairPaperBookReceiptGate
@@ -82,7 +82,7 @@ func init() {
 	toMs, terr := strconv.ParseInt(to, 10, 64)
 	if !ok || ferr != nil || terr != nil || toMs <= fromMs {
 		fmt.Fprintf(os.Stderr, "the paper test append fault %q is not <from_ms>:<to_ms>\n", window)
-		os.Exit(basketReplayExitError)
+		os.Exit(replayExitError)
 	}
 	pairRecTestAppendFault = func() error {
 		if now := wall.Now().UnixMilli(); now >= fromMs && now < toMs {
@@ -96,12 +96,12 @@ func (w *pairPaperTestWall) reloadLocked() {
 	blob, err := os.ReadFile(w.path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "the paper test clock could not reload: %v\n", err)
-		os.Exit(basketReplayExitError)
+		os.Exit(replayExitError)
 	}
 	ms, err := strconv.ParseInt(strings.TrimSpace(string(blob)), 10, 64)
 	if err != nil || ms <= 0 {
 		fmt.Fprintf(os.Stderr, "the paper test clock holds no positive millisecond time: %q\n", blob)
-		os.Exit(basketReplayExitError)
+		os.Exit(replayExitError)
 	}
 	w.ms = ms
 }
@@ -131,11 +131,11 @@ func (w *pairPaperTestWall) writeLocked(ms int64) {
 	tmp := w.path + ".next"
 	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(w.ms, 10)), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "the paper test clock could not advance: %v\n", err)
-		os.Exit(basketReplayExitError)
+		os.Exit(replayExitError)
 	}
 	if err := os.Rename(tmp, w.path); err != nil {
 		fmt.Fprintf(os.Stderr, "the paper test clock could not advance: %v\n", err)
-		os.Exit(basketReplayExitError)
+		os.Exit(replayExitError)
 	}
 }
 
@@ -159,7 +159,7 @@ func (w *pairPaperTestWall) advance(d time.Duration) {
 	for {
 		if time.Now().After(deadline) {
 			fmt.Fprintf(os.Stderr, "paper clock gate watchdog expired\n")
-			os.Exit(basketReplayExitError)
+			os.Exit(replayExitError)
 		}
 		now := w.current()
 		if w.oracleCompletionMs > 0 && now >= w.oracleCompletionMs && !w.oracleCompleted.Load() {

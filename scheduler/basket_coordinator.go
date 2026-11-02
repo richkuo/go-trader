@@ -864,13 +864,6 @@ func (bc *basketCoordinator) collectRank(rt *basketRuntime, in basketCycleInputs
 	bc.persistProgress(rt)
 }
 
-func shortFingerprint(fp string) string {
-	if len(fp) > 12 {
-		return fp[:12]
-	}
-	return fp
-}
-
 func (bc *basketCoordinator) marks(rt *basketRuntime, in basketCycleInputs) (map[string]float64, []string) {
 	out := make(map[string]float64, len(rt.Contract.Members))
 	var missing []string

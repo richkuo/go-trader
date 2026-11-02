@@ -259,7 +259,7 @@ func TestBasketPairContractRawBytesAreRefusedBeforeEvidence(t *testing.T) {
 		if err == nil {
 			t.Fatal("the live-shaped fixture admitted a duplicate-key contract")
 		}
-		if !strings.Contains(err.Error(), "duplicate object key") || pairFileDigest(t, filepath.Join(dir, pairResearchManifestName)) != "missing" {
+		if !strings.Contains(err.Error(), "duplicate object key") || missingOrFileDigest(t, filepath.Join(dir, pairResearchManifestName)) != "missing" {
 			t.Fatalf("the live-shaped refusal must name the duplicate key and write nothing: %v", err)
 		}
 	})
@@ -618,11 +618,11 @@ func TestBasketPairContractVersionOneAndEvidenceDigestResume(t *testing.T) {
 		t.Fatalf("the version-2 manifest must pass admission: %v", err)
 	}
 	t.Cleanup(adm.release)
-	before = pairFileDigest(t, cfg.DBFile)
+	before = missingOrFileDigest(t, cfg.DBFile)
 	if err := pairLoadBaskets(t, cfg); err == nil || !strings.Contains(err.Error(), "saved pair contract version 1 is not supported by this build (version 2)") {
 		t.Fatalf("a saved version-1 pair contract must be refused at storage load, got %v", err)
 	}
-	if pairFileDigest(t, cfg.DBFile) != before {
+	if missingOrFileDigest(t, cfg.DBFile) != before {
 		t.Fatal("the refused version-1 storage load changed the state file")
 	}
 	pairRewriteSavedContract(t, cfg.DBFile, func(s string) string { return strings.Replace(s, `"pair_v":1`, `"pair_v":2,"bogus":1`, 1) })

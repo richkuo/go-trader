@@ -11,18 +11,6 @@ import (
 	"time"
 )
 
-func basketPyRoot(t *testing.T) string {
-	t.Helper()
-	root, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(root, ".venv", "bin", "python3")); err != nil {
-		t.Skipf("repository virtualenv missing (%v); run uv sync", err)
-	}
-	return root
-}
-
 func basketPyConfig(t *testing.T, params map[string]interface{}, timeout int) *Config {
 	t.Helper()
 	return loadBasketTestConfig(t, func(root map[string]interface{}) {
@@ -43,7 +31,7 @@ func basketPyDeadline() time.Time {
 
 func TestBasketRealRankerSubprocess(t *testing.T) {
 	t.Run("drives_a_paper_rebalance", func(t *testing.T) {
-		root := basketPyRoot(t)
+		root := pyRepoRoot(t)
 		cfg := basketPyConfig(t, nil, 60)
 		t.Chdir(root)
 		env := newBasketTestEnv(t, cfg, nil, nil)
@@ -65,7 +53,7 @@ func TestBasketRealRankerSubprocess(t *testing.T) {
 		}
 	})
 	t.Run("failures_hold_the_deadline", func(t *testing.T) {
-		root := basketPyRoot(t)
+		root := pyRepoRoot(t)
 		cases := []struct {
 			name    string
 			params  map[string]interface{}
@@ -97,7 +85,7 @@ func TestBasketRealRankerSubprocess(t *testing.T) {
 		}
 	})
 	t.Run("excludes_a_delisted_member_with_no_frame_or_mark", func(t *testing.T) {
-		root := basketPyRoot(t)
+		root := pyRepoRoot(t)
 		deadline := basketPyDeadline()
 		delisted := deadline.Add(-time.Hour).UTC().Format(time.RFC3339)
 		cfg := loadBasketTestConfig(t, func(r map[string]interface{}) {
@@ -142,7 +130,7 @@ func TestBasketRealRankerSubprocess(t *testing.T) {
 
 func TestBasketMemberRealCheckStaysManagementOnly(t *testing.T) {
 	t.Run("real_check_is_management_only", func(t *testing.T) {
-		root := basketPyRoot(t)
+		root := pyRepoRoot(t)
 		cfg := loadBasketTestConfig(t, nil)
 		t.Chdir(root)
 		feedReq, err := deriveFeedRequirements(cfg)
@@ -182,7 +170,7 @@ func TestBasketMemberRealCheckStaysManagementOnly(t *testing.T) {
 		}
 	})
 	t.Run("batched_with_a_non_member_stays_management_only", func(t *testing.T) {
-		root := basketPyRoot(t)
+		root := pyRepoRoot(t)
 		cfg := basketBatchPeerConfig(t)
 		t.Chdir(root)
 		member, peer, _, _ := basketBatchRun(t, cfg, nil)
@@ -197,7 +185,7 @@ func TestBasketMemberRealCheckStaysManagementOnly(t *testing.T) {
 		}
 	})
 	t.Run("batched_native_close_books", func(t *testing.T) {
-		root := basketPyRoot(t)
+		root := pyRepoRoot(t)
 		cfg := basketBatchPeerConfig(t)
 		t.Chdir(root)
 		pos := &Position{Symbol: "BTC", Quantity: 0.01, InitialQuantity: 0.01, AvgCost: 30000, Side: "long", Multiplier: 1}
@@ -220,7 +208,7 @@ func TestBasketMemberRealCheckStaysManagementOnly(t *testing.T) {
 		}
 	})
 	t.Run("batched_native_close_clears_the_expiry_lifecycle", func(t *testing.T) {
-		root := basketPyRoot(t)
+		root := pyRepoRoot(t)
 		cfg := loadBasketTestConfig(t, func(r map[string]interface{}) {
 			r["paper_sources"] = []interface{}{map[string]interface{}{"id": "alt", "db_file": filepath.Join(t.TempDir(), "alt.db")}}
 			r["strategies"] = append(r["strategies"].([]interface{}), map[string]interface{}{

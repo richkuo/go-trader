@@ -58,7 +58,7 @@ func pairInsertAction(db *sql.DB, id, group, purpose, basket, sid, provider, acc
 
 func TestBasketPairStorageMigratesOldSchemasTwice(t *testing.T) {
 	path := pairOldSchemaFile(t)
-	before := pairFileDigest(t, path)
+	before := missingOrFileDigest(t, path)
 	ro, err := openStateDBReadOnly(path)
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestBasketPairStorageMigratesOldSchemasTwice(t *testing.T) {
 		t.Fatalf("an unmigrated intent must project its saved owner: %+v %v", in, err)
 	}
 	ro.Close()
-	if after := pairFileDigest(t, path); after != before {
+	if after := missingOrFileDigest(t, path); after != before {
 		t.Fatal("read-only inspection changed the unmigrated file")
 	}
 	for run := 1; run <= 2; run++ {

@@ -799,8 +799,21 @@ OKX_FILLS_PAGE_LIMIT = 100
 OKX_FILLS_MAX_PAGES = 50
 
 
+def _okx_account_key_module():
+    import importlib.util
+    name = "go_trader_okx_account_key"
+    mod = sys.modules.get(name)
+    if mod is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared_tools", "okx_account_key.py")
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
 def okx_account_key(inst_type):
-    return _pair_orders().okx_account_key(inst_type)
+    return _okx_account_key_module().okx_account_key(inst_type)
 
 
 def scan_okx_client_fills(adapter, inst_type, client_order_id, since_ms, now_ms, until_ms=0, rows=None):

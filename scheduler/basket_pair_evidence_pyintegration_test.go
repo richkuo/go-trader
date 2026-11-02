@@ -61,7 +61,7 @@ type pairPyResult struct {
 
 func pairRunPyCases(t *testing.T, cases []map[string]interface{}) []pairPyResult {
 	t.Helper()
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	driver := filepath.Join(t.TempDir(), "pair_evidence_driver.py")
 	if err := os.WriteFile(driver, []byte(pairEvidencePyDriver), 0o600); err != nil {
 		t.Fatal(err)
@@ -494,7 +494,7 @@ type pairReaderFixture struct {
 
 func newPairReaderFixture(t *testing.T) *pairReaderFixture {
 	t.Helper()
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	dir := t.TempDir()
 	driver := filepath.Join(dir, "reader_driver.py")
 	if err := os.WriteFile(driver, []byte(pairReaderFakeDriver), 0o600); err != nil {

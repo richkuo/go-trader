@@ -131,8 +131,8 @@ func quoteReplayTestSpec(t *testing.T, dir string, m quoteReplayMarket, mutate f
 	t.Helper()
 	books, trades, gaps, cov := m.build()
 	spec := &quoteReplaySpec{
-		Protocol: quoteReplayProtocolName, Version: quoteReplayProtocolVersion, Mode: basketReplayModeNew,
-		Run:     basketReplayRunSpec{RunID: "qr-test", StateDir: filepath.Join(dir, "run"), Source: map[string]string{"fixture": "synthetic market for integration tests"}},
+		Protocol: quoteReplayProtocolName, Version: quoteReplayProtocolVersion, Mode: replayModeNew,
+		Run:     replayRunSpec{RunID: "qr-test", StateDir: filepath.Join(dir, "run"), Source: map[string]string{"fixture": "synthetic market for integration tests"}},
 		Coin:    "BTC",
 		Window:  quoteReplayWindow{FirstDeadlineMs: quoteReplayTestStart, LastDeadlineMs: quoteReplayTestStart + 15*60_000, Label: "fixture", MaxDeadlines: 1000},
 		Params:  quoteReplayTestParams(),

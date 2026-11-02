@@ -89,11 +89,16 @@ const (
 	entryDecisionKindQuote  = "quote"
 )
 
-func (in *entryIntent) pairOwned() bool {
+const (
+	entryOwnerModePair   = "pair"
+	entryOwnerModeBasket = "basket"
+)
+
+func (in *entryIntent) researchGroupOwned() bool {
 	if in == nil {
 		return false
 	}
-	return in.OwnerMode == pairGroupMode || in.DecisionKind == entryDecisionKindQuote || strings.HasPrefix(entryIntentRequestKind(in), "pair:")
+	return in.OwnerMode == entryOwnerModePair || in.DecisionKind == entryDecisionKindQuote || strings.HasPrefix(entryIntentRequestKind(in), "pair:")
 }
 
 func entryIntentRequestKind(in *entryIntent) string {

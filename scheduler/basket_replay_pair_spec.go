@@ -62,7 +62,7 @@ type pairReplaySpec struct {
 	Protocol       string                  `json:"protocol"`
 	Version        int                     `json:"version"`
 	Mode           string                  `json:"mode"`
-	Run            basketReplayRunSpec     `json:"run"`
+	Run            replayRunSpec           `json:"run"`
 	ResearchConfig json.RawMessage         `json:"research_config"`
 	InputManifest  pairReplayInputManifest `json:"input_manifest"`
 	Scenario       pairReplayScenario      `json:"scenario"`
@@ -227,11 +227,11 @@ func validatePairReplaySpec(spec *pairReplaySpec) (pairReplayLifetime, error) {
 	if spec.Protocol != basketReplayProtocolName || spec.Version != pairReplayProtocolVersion {
 		return lt, refuseReplay("protocol_unsupported", fmt.Sprintf("the specification names protocol %q version %d; the pair replay reads %q version %d", spec.Protocol, spec.Version, basketReplayProtocolName, pairReplayProtocolVersion))
 	}
-	if spec.Mode != basketReplayModeNew && spec.Mode != basketReplayModeResume {
-		add("mode %q must be %q or %q", spec.Mode, basketReplayModeNew, basketReplayModeResume)
+	if spec.Mode != replayModeNew && spec.Mode != replayModeResume {
+		add("mode %q must be %q or %q", spec.Mode, replayModeNew, replayModeResume)
 	}
-	if !basketReplayRunIDPattern.MatchString(spec.Run.RunID) {
-		add("run.run_id %q must match %s", spec.Run.RunID, basketReplayRunIDPattern.String())
+	if !replayRunIDPattern.MatchString(spec.Run.RunID) {
+		add("run.run_id %q must match %s", spec.Run.RunID, replayRunIDPattern.String())
 	}
 	if strings.TrimSpace(spec.Run.StateDir) == "" || !filepath.IsAbs(spec.Run.StateDir) || filepath.Clean(spec.Run.StateDir) != spec.Run.StateDir {
 		add("run.state_dir %q must be an absolute, clean path", spec.Run.StateDir)

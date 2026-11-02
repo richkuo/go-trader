@@ -11,17 +11,7 @@ import (
 	"strings"
 )
 
-const (
-	basketReplayExitOK      = 0
-	basketReplayExitError   = 1
-	basketReplayExitUsage   = 2
-	basketReplayExitRefused = 3
-	basketReplayExitFault   = 75
-)
-
 var basketReplayScrubbedEnvPrefixes = []string{"HYPERLIQUID_", "OKX_", "DISCORD_", "TELEGRAM_", "ROBINHOOD_", "TOPSTEP_", "DERIBIT_", "IBKR_", "BINANCE_", "LUNO_", "ANTHROPIC_", "OPENAI_", "SLACK_"}
-
-var basketReplayScrubbedEnvWords = []string{"SECRET", "TOKEN", "PRIVATE", "PASSWORD", "API_KEY", "WALLET", "MNEMONIC", "WEBHOOK"}
 
 func scrubBasketReplayEnvironment() []string {
 	var removed []string
@@ -37,7 +27,7 @@ func scrubBasketReplayEnvironment() []string {
 				drop = true
 			}
 		}
-		for _, w := range basketReplayScrubbedEnvWords {
+		for _, w := range replayScrubbedEnvWords {
 			if strings.Contains(upper, w) {
 				drop = true
 			}
@@ -101,22 +91,22 @@ func runBasketReplayWith(args []string, stdin io.Reader, out io.Writer) int {
 	maxSteps := fs.Int("max-steps", 0, "apply at most this many further steps, then stop with the run resumable (0 = all)")
 	faultRaw := fs.String("fault", "", "controlled fault for restart tests: exit-after-submit:<n> (version 1) or exit-after-collection|exit-after-management|exit-after-envelope-freeze|exit-after-acceptance|exit-after-book-write|exit-after-book-commit:<n> (version 2)")
 	if err := fs.Parse(args); err != nil {
-		return basketReplayExitUsage
+		return replayExitUsage
 	}
 	if fs.NArg() > 0 || *specPath == "" || *maxSteps < 0 {
 		fmt.Fprintln(os.Stderr, "usage: go-trader basket-replay --spec <step-script.json|-> [--max-steps N] [--fault <kind>:N]")
-		return basketReplayExitUsage
+		return replayExitUsage
 	}
 	fault, err := parseBasketReplayFault(*faultRaw)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return basketReplayExitUsage
+		return replayExitUsage
 	}
 	emit := func(v basketReplayOutput, code int) int {
 		enc := json.NewEncoder(out)
 		if err := enc.Encode(v); err != nil {
 			fmt.Fprintf(os.Stderr, "[basket-replay] could not write the result: %v\n", err)
-			return basketReplayExitError
+			return replayExitError
 		}
 		return code
 	}
@@ -138,13 +128,13 @@ func runBasketReplayWith(args []string, stdin io.Reader, out io.Writer) int {
 	if _, version, err := pairReplayPeekVersion(raw); err == nil && version == pairReplayProtocolVersion {
 		if err := basketReplayFaultVersionError(fault, version); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return basketReplayExitUsage
+			return replayExitUsage
 		}
 		return runPairReplayWith(raw, basketReplayOptions{MaxSteps: *maxSteps, Fault: fault}, out)
 	}
 	if err := basketReplayFaultVersionError(fault, basketReplayProtocolVersion); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return basketReplayExitUsage
+		return replayExitUsage
 	}
 	spec, raw, err := decodeBasketReplaySpec(bytes.NewReader(raw))
 	if err != nil {
@@ -180,5 +170,5 @@ func runBasketReplayWith(args []string, stdin io.Reader, out io.Writer) int {
 		o, code := basketReplayErrorOutput(err)
 		return emit(o, code)
 	}
-	return emit(result, basketReplayExitOK)
+	return emit(result, replayExitOK)
 }

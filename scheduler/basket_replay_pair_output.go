@@ -261,7 +261,7 @@ type pairReplayOutput struct {
 	Protocol             string                     `json:"protocol"`
 	Version              int                        `json:"version"`
 	Status               string                     `json:"status"`
-	Refusal              *basketReplayRefusal       `json:"refusal,omitempty"`
+	Refusal              *replayRefusal             `json:"refusal,omitempty"`
 	Error                string                     `json:"error,omitempty"`
 	Run                  *pairReplayRunInfo         `json:"run,omitempty"`
 	ClockModel           string                     `json:"clock_model,omitempty"`

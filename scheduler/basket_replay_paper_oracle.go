@@ -941,7 +941,7 @@ func pairPaperGateWaitAck(deadline time.Time, served pairPaperClockRequest) {
 		}
 		if time.Now().After(deadline) {
 			fmt.Fprintf(os.Stderr, "paper clock gate watchdog expired while waiting for the oracle reader\n")
-			os.Exit(basketReplayExitError)
+			os.Exit(replayExitError)
 		}
 		time.Sleep(2 * time.Millisecond)
 	}

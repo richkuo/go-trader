@@ -635,7 +635,7 @@ func TestBasketPairFundingStorageOwnershipAndMigration(t *testing.T) {
 	cfg.pairAdmission = nil
 	e.store.Close()
 	manifest := filepath.Join(e.dir, pairResearchManifestName)
-	stateDigest, manifestDigest := pairFileDigest(t, e.cfg.DBFile), pairFileDigest(t, manifest)
+	stateDigest, manifestDigest := missingOrFileDigest(t, e.cfg.DBFile), missingOrFileDigest(t, manifest)
 	si, err := inspectStorageLayoutForConfig(&cfg, false)
 	if err != nil {
 		t.Fatal(err)
@@ -644,7 +644,7 @@ func TestBasketPairFundingStorageOwnershipAndMigration(t *testing.T) {
 	if !strings.Contains(text, "PENDING PAIR FUNDING") || !strings.Contains(text, "pair funding events: 1 (0 applied)") {
 		t.Fatalf("read-only inspection must report the stored pair funding:\n%s", text)
 	}
-	if pairFileDigest(t, e.cfg.DBFile) != stateDigest || pairFileDigest(t, manifest) != manifestDigest {
+	if missingOrFileDigest(t, e.cfg.DBFile) != stateDigest || missingOrFileDigest(t, manifest) != manifestDigest {
 		t.Fatal("read-only inspection changed the state file or the run manifest")
 	}
 	e.store = openSourceStore(t, e.cfg)
@@ -653,11 +653,11 @@ func TestBasketPairFundingStorageOwnershipAndMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.store.Close()
-	fileDigest := pairFileDigest(t, e.cfg.DBFile)
+	fileDigest := missingOrFileDigest(t, e.cfg.DBFile)
 	if err := pairLoadBaskets(t, e.cfg); err == nil || !strings.Contains(err.Error(), "ghost-member") {
 		t.Fatalf("funding rows for an unknown owner must be refused before any change, got %v", err)
 	}
-	if pairFileDigest(t, e.cfg.DBFile) != fileDigest {
+	if missingOrFileDigest(t, e.cfg.DBFile) != fileDigest {
 		t.Fatal("the refused load changed the state file")
 	}
 }
@@ -687,12 +687,12 @@ func TestBasketPairFundingWrongFileIsRefused(t *testing.T) {
 	}
 	primary.Close()
 	paperPath := filepath.Join(dir, "paper.db")
-	primaryDigest, paperDigest := pairFileDigest(t, cfg.DBFile), pairFileDigest(t, paperPath)
+	primaryDigest, paperDigest := missingOrFileDigest(t, cfg.DBFile), missingOrFileDigest(t, paperPath)
 	err = pairLoadBaskets(t, cfg)
 	if err == nil || !strings.Contains(err.Error(), "primary state file") || !strings.Contains(err.Error(), "funding") {
 		t.Fatalf("funding evidence in a file that does not own the members must be refused, got %v", err)
 	}
-	if pairFileDigest(t, cfg.DBFile) != primaryDigest || pairFileDigest(t, paperPath) != paperDigest {
+	if missingOrFileDigest(t, cfg.DBFile) != primaryDigest || missingOrFileDigest(t, paperPath) != paperDigest {
 		t.Fatal("the wrong-file refusal changed a state file")
 	}
 }
@@ -865,11 +865,11 @@ func TestBasketPairFundingInputIsBoundBeforeAnyWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
-	before := pairFileDigest(t, cfg.DBFile)
+	before := missingOrFileDigest(t, cfg.DBFile)
 	if err := pairLoadBaskets(t, cfg); err == nil || !strings.Contains(err.Error(), "no funding binding") {
 		t.Fatalf("saved pair state without a funding binding must be refused at load, got %v", err)
 	}
-	if pairFileDigest(t, cfg.DBFile) != before {
+	if missingOrFileDigest(t, cfg.DBFile) != before {
 		t.Fatal("the refused load changed the state file")
 	}
 }

@@ -82,17 +82,6 @@ type basketReplayManifest struct {
 	CreatedAt    string                   `json:"created_at"`
 }
 
-var basketReplayDeployedPrefixes = []string{"/var/lib/go-trader", "/opt/go-trader", "/etc/go-trader", "/etc/systemd"}
-
-func basketReplayPathAllowed(dir string) error {
-	for _, p := range basketReplayDeployedPrefixes {
-		if dir == p || strings.HasPrefix(dir, p+string(os.PathSeparator)) {
-			return fmt.Errorf("run.state_dir %q is inside the deployed path %s; a replay never opens deployed state", dir, p)
-		}
-	}
-	return nil
-}
-
 func basketReplayRealParent(dir string) (string, error) {
 	parent := filepath.Dir(dir)
 	real, err := filepath.EvalSymlinks(parent)
@@ -121,7 +110,7 @@ var basketReplayAllowedEntries = map[string]bool{
 }
 
 func checkBasketReplayStateDir(mode, dir string) error {
-	if err := basketReplayPathAllowed(dir); err != nil {
+	if err := replayPathAllowed(dir); err != nil {
 		return refuseReplay("state_dir_refused", err.Error())
 	}
 	if _, err := basketReplayRealParent(dir); err != nil {
@@ -129,7 +118,7 @@ func checkBasketReplayStateDir(mode, dir string) error {
 	}
 	info, err := os.Lstat(dir)
 	switch mode {
-	case basketReplayModeNew:
+	case replayModeNew:
 		if err == nil {
 			return refuseReplay("state_exists", fmt.Sprintf("new-run mode refuses the existing path %q; a new run creates its own empty state directory", dir))
 		}
@@ -137,7 +126,7 @@ func checkBasketReplayStateDir(mode, dir string) error {
 			return refuseReplay("state_dir_refused", err.Error())
 		}
 		return nil
-	case basketReplayModeResume:
+	case replayModeResume:
 		if err != nil {
 			return refuseReplay("state_missing", fmt.Sprintf("resume mode needs the adapter-created state directory %q: %v", dir, err))
 		}
@@ -589,7 +578,7 @@ func (sdb *StateDB) basketReplayTouchedRows(atMs int64) (map[basketKey]map[int64
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
-	proj, err := sdb.basketProjection("basket_member_actions", basketActionProjectedColumns())
+	proj, err := sdb.columnProjection("basket_member_actions", basketActionProjectedColumns())
 	if err != nil {
 		return nil, nil, err
 	}

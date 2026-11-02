@@ -381,7 +381,7 @@ func TestBasketPairCostTransportIdentityIsFrozen(t *testing.T) {
 			adm.release()
 			t.Fatalf("%s: the admission accepted a transport that does not match its frozen identity", name)
 		}
-		if pairFileDigest(t, filepath.Join(dir, pairResearchManifestName)) != "missing" {
+		if missingOrFileDigest(t, filepath.Join(dir, pairResearchManifestName)) != "missing" {
 			t.Fatalf("%s: a refused admission wrote state", name)
 		}
 	}

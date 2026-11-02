@@ -17,19 +17,15 @@ const (
 	basketReplayProtocolVersion = 1
 	basketReplayMaxSpecBytes    = 1 << 30
 	basketReplayMaxSteps        = 200000
-	basketReplayModeNew         = "new"
-	basketReplayModeResume      = "resume"
 	basketReplayTargetsRanker   = "ranker"
 	basketReplayTargetsBaseline = "baseline"
 )
-
-var basketReplayRunIDPattern = basketIDPattern
 
 type basketReplaySpec struct {
 	Protocol      string                         `json:"protocol"`
 	Version       int                            `json:"version"`
 	Mode          string                         `json:"mode"`
-	Run           basketReplayRunSpec            `json:"run"`
+	Run           replayRunSpec                  `json:"run"`
 	Basket        BasketConfig                   `json:"basket"`
 	Members       []basketReplayMemberSpec       `json:"members"`
 	PortfolioRisk *PortfolioRiskConfig           `json:"portfolio_risk,omitempty"`
@@ -44,12 +40,6 @@ type basketReplaySpec struct {
 	baseline      map[int64]map[string]float64
 	funding       map[string]feedFundingCoverage
 	memberMeta    map[string]basketReplayMemberSpec
-}
-
-type basketReplayRunSpec struct {
-	RunID    string            `json:"run_id"`
-	StateDir string            `json:"state_dir"`
-	Source   map[string]string `json:"source"`
 }
 
 type basketReplayMemberSpec struct {
@@ -120,19 +110,6 @@ var basketReplayMemberConfigKeys = map[string]bool{
 	"resting_tp_trade_through":        true,
 }
 
-type basketReplayRefusal struct {
-	Reason string   `json:"reason"`
-	Detail []string `json:"detail"`
-}
-
-func (r *basketReplayRefusal) Error() string {
-	return r.Reason + ": " + strings.Join(r.Detail, "; ")
-}
-
-func refuseReplay(reason string, detail ...string) *basketReplayRefusal {
-	return &basketReplayRefusal{Reason: reason, Detail: detail}
-}
-
 func decodeBasketReplaySpec(r io.Reader) (*basketReplaySpec, []byte, error) {
 	raw, err := io.ReadAll(io.LimitReader(r, basketReplayMaxSpecBytes+1))
 	if err != nil {
@@ -160,11 +137,11 @@ func validateBasketReplaySpec(spec *basketReplaySpec) error {
 	if spec.Protocol != basketReplayProtocolName || spec.Version != basketReplayProtocolVersion {
 		return refuseReplay("protocol_unsupported", fmt.Sprintf("the step script names protocol %q version %d; this adapter reads %q version %d", spec.Protocol, spec.Version, basketReplayProtocolName, basketReplayProtocolVersion))
 	}
-	if spec.Mode != basketReplayModeNew && spec.Mode != basketReplayModeResume {
-		add("mode %q must be %q or %q", spec.Mode, basketReplayModeNew, basketReplayModeResume)
+	if spec.Mode != replayModeNew && spec.Mode != replayModeResume {
+		add("mode %q must be %q or %q", spec.Mode, replayModeNew, replayModeResume)
 	}
-	if !basketReplayRunIDPattern.MatchString(spec.Run.RunID) {
-		add("run.run_id %q must match %s", spec.Run.RunID, basketReplayRunIDPattern.String())
+	if !replayRunIDPattern.MatchString(spec.Run.RunID) {
+		add("run.run_id %q must match %s", spec.Run.RunID, replayRunIDPattern.String())
 	}
 	if strings.TrimSpace(spec.Run.StateDir) == "" || !filepath.IsAbs(spec.Run.StateDir) || filepath.Clean(spec.Run.StateDir) != spec.Run.StateDir {
 		add("run.state_dir %q must be an absolute, clean path", spec.Run.StateDir)
@@ -466,15 +443,6 @@ func basketReplayInputFingerprint(raw []byte) (string, error) {
 		return "", err
 	}
 	return sha256Hex(canon), nil
-}
-
-func basketReplaySourceFingerprint(source map[string]string) string {
-	blob, _ := json.Marshal(struct {
-		Source       map[string]string `json:"source"`
-		Version      string            `json:"adapter_version"`
-		SourceCommit string            `json:"adapter_source_commit"`
-	}{source, Version, SourceCommit})
-	return sha256Hex(blob)
 }
 
 func basketReplayProtocolFingerprint() string {

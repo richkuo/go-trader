@@ -54,7 +54,7 @@ func xsrevExpectedWeights(series map[string]xsmomSeries, longs, shorts, middle [
 }
 
 func TestBasketRealRankerReversalFreezesBottomLongTopShortTargets(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	useXSMomMembers(t)
 	deadline := basketPyDeadline()
 	delisted := deadline.Add(-time.Hour).UTC().Format(time.RFC3339)
@@ -147,7 +147,7 @@ func TestBasketRealRankerReversalFreezesBottomLongTopShortTargets(t *testing.T) 
 }
 
 func TestBasketRealRankerReversalHoldsTheWholeSetOnBadInputs(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	useXSMomMembers(t)
 	deadline := basketPyDeadline()
 	recent := deadline.Add(-20 * time.Hour).UTC().Format(time.RFC3339)
@@ -216,7 +216,7 @@ func TestBasketRealRankerReversalHoldsTheWholeSetOnBadInputs(t *testing.T) {
 }
 
 func TestBasketRealRankerReversalRefusesInvalidConfigurationBeforeMemberData(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	useXSMomMembers(t)
 	deadline := basketPyDeadline()
 	delisted := deadline.Add(-time.Hour).UTC().Format(time.RFC3339)
@@ -290,7 +290,7 @@ func TestBasketRealRankerReversalRefusesInvalidConfigurationBeforeMemberData(t *
 }
 
 func TestBasketRealRankerReversalIgnoresBarsAfterTheDeadline(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	useXSMomMembers(t)
 	deadline := basketPyDeadline()
 	type frozen struct {
@@ -362,7 +362,7 @@ func xsrevActions(t *testing.T, env *basketTestEnv, deadline time.Time) []xsrevA
 }
 
 func TestBasketRealRankerReversalSecondDeadlineExitsMiddleMembersAndFlattensBeforeReversing(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	useXSMomMembers(t)
 	first := basketPyDeadline()
 	second := first.Add(2 * time.Hour)

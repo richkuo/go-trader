@@ -466,7 +466,7 @@ func (r *pairReplayRuntime) buildExport(l *pairRecLog) (map[string][]byte, pairR
 	}
 	files[pairRecordingManifestName] = append(mb, '\n')
 	repro := map[string]interface{}{
-		"protocol": basketReplayProtocolName, "version": pairReplayProtocolVersion, "mode": basketReplayModeNew,
+		"protocol": basketReplayProtocolName, "version": pairReplayProtocolVersion, "mode": replayModeNew,
 		"run":             map[string]interface{}{"run_id": r.spec.Run.RunID, "state_dir": filepath.Join(filepath.Dir(r.spec.Run.StateDir), r.spec.Run.RunID+"-reproduction"), "source": map[string]string{"recording": "sealed paper recording " + head.Prefix}},
 		"research_config": json.RawMessage(r.spec.ResearchConfig),
 		"input_manifest":  map[string]interface{}{"root": filepath.Join(r.spec.Run.StateDir, pairPaperExportDirName), "objects": objects},
@@ -617,13 +617,13 @@ func openPairPlayback(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, o
 		}
 	}()
 	stateDir := spec.Run.StateDir
-	if err := basketReplayPathAllowed(stateDir); err != nil {
+	if err := replayPathAllowed(stateDir); err != nil {
 		return nil, refuseReplay("state_dir_refused", err.Error())
 	}
 	if _, err := basketReplayRealParent(stateDir); err != nil {
 		return nil, refuseReplay("state_dir_refused", err.Error())
 	}
-	resume := spec.Mode == basketReplayModeResume
+	resume := spec.Mode == replayModeResume
 	if !resume {
 		if _, err := os.Lstat(stateDir); err == nil {
 			return nil, refuseReplay("state_exists", fmt.Sprintf("new-run mode refuses the existing path %q; a new run claims its own directory", stateDir))
@@ -660,7 +660,7 @@ func openPairPlayback(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, o
 		return nil, err
 	}
 	r.interval = int64(shape.IntervalSeconds) * 1000
-	r.fp = basketReplayFingerprints{Protocol: fmt.Sprintf("%s/%d", basketReplayProtocolName, pairReplayProtocolVersion), Source: basketReplaySourceFingerprint(spec.Run.Source), Input: inputFP, Config: sha256Hex(portable)}
+	r.fp = basketReplayFingerprints{Protocol: fmt.Sprintf("%s/%d", basketReplayProtocolName, pairReplayProtocolVersion), Source: replaySourceFingerprint(spec.Run.Source), Input: inputFP, Config: sha256Hex(portable)}
 	runBlob, _ := json.Marshal([]string{r.fp.Protocol, spec.Run.RunID, r.fp.Source, r.fp.Input, r.fp.Config})
 	r.fp.Run = sha256Hex(runBlob)
 	venues, err := r.buildRecordedSources(pairRecordedSetup{runID: spec.Run.RunID, stateDir: stateDir, resume: resume, shape: shape, seed: pb.seed, seedDigest: man.Seed.SHA256,

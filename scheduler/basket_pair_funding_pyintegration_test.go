@@ -90,7 +90,7 @@ type pairFundingPyResult struct {
 
 func pairFundingRunPy(t *testing.T, cases []map[string]interface{}) []pairFundingPyResult {
 	t.Helper()
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	driver := filepath.Join(t.TempDir(), "pair_funding_driver.py")
 	if err := os.WriteFile(driver, []byte(pairFundingPyDriver), 0o600); err != nil {
 		t.Fatal(err)
@@ -288,7 +288,7 @@ func TestBasketPairFundingPythonLegacyCanonicalGoldens(t *testing.T) {
 		}
 		return
 	}
-	dir := filepath.Join(basketPyRoot(t), "scheduler", "testdata", "pair_funding_legacy")
+	dir := filepath.Join(pyRepoRoot(t), "scheduler", "testdata", "pair_funding_legacy")
 	for _, name := range []string{"rules-digest.txt", "binding-v1.json", "document-v1.json", "batch-v1.json", "event-v2.json", "hashes.json"} {
 		raw, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
@@ -689,7 +689,7 @@ type pairOracleReaderRun struct {
 
 func pairOracleReaderRunWith(t *testing.T, fx map[string]interface{}, startMs int64, ctxTimeout time.Duration) pairOracleReaderRun {
 	t.Helper()
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	t.Chdir(root)
 	dir := t.TempDir()
 	target := (startMs/3600000 + 1) * 3600000
@@ -835,7 +835,7 @@ func TestBasketPairFundingPythonPublicOracleReader(t *testing.T) {
 		})
 	}
 	t.Run("credentials and testnet are refused when set", func(t *testing.T) {
-		root := basketPyRoot(t)
+		root := pyRepoRoot(t)
 		args := append([]string{}, pairHistoryHLOracleProbeArgv[:len(pairHistoryHLOracleProbeArgv)-1]...)
 		for _, env := range []string{"HYPERLIQUID_SECRET_KEY=0xabc", "HYPERLIQUID_TESTNET=1", "OKX_API_KEY=k"} {
 			cmd := exec.Command(filepath.Join(root, ".venv", "bin", "python3"), append([]string{filepath.Join(root, pairHistoryReaderScript)}, args...)...)

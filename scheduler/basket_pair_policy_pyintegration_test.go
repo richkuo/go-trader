@@ -109,7 +109,7 @@ func pairPolicyDoc(t *testing.T, dir string, f pairPolicyFixture) []byte {
 
 func newPairPolicyEnv(t *testing.T, f pairPolicyFixture) (*pairTestEnv, *pairPolicyCapture, string) {
 	t.Helper()
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	t.Chdir(root)
 	dir := filepath.Join(t.TempDir(), "run")
 	doc := pairPolicyDoc(t, dir, f)

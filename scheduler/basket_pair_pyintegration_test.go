@@ -16,7 +16,7 @@ import (
 
 func pairPyEnv(t *testing.T, mutate func(root map[string]interface{})) (*pairTestEnv, string) {
 	t.Helper()
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	e := newPairTestEnv(t, func(r map[string]interface{}) {
 		r["market_feed"] = "websocket"
 		if mutate != nil {
@@ -313,7 +313,7 @@ func TestBasketPairMemberRealBatchedSlotStaysManagementOnly(t *testing.T) {
 }
 
 func TestBasketPairProbeArgvsParseInEveryStrictCheck(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	t.Chdir(root)
 	for name, argv := range map[string][]string{"oracle": pairHistoryHLOracleProbeArgv, "research Hyperliquid funding": pairHistoryHLResearchFundingProbeArgv, "research OKX funding": pairHistoryOKXResearchFundingProbeArgv} {
 		if err := probeOneCheckScript(pairHistoryReaderScript, argv); err != nil {

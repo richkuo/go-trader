@@ -88,7 +88,7 @@ func TestBasketReplayPairPaperBooksProcessSealsAndReproduces(t *testing.T) {
 	endpoint, connections := pairPaperBookServer(t, f)
 	dir := filepath.Join(f.parent, "paper-books")
 	env := append(f.env(false), "GO_TRADER_PAPER_TEST_BOOK_ENDPOINT="+endpoint)
-	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), env, "--seal")
+	p := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), env, "--seal")
 	if p.Out.Recording == nil || p.Out.Recording.Seal == nil || !p.Out.Recording.Seal.Sealed {
 		t.Fatalf("book stream must seal: exit %d reasons %v seal %+v stderr %s", p.Code, p.Out.IncompleteReasons, p.Out.Recording, tail(p.Stderr, 5000))
 	}
@@ -138,10 +138,10 @@ func TestBasketReplayPairPaperBooksProcessSealsAndReproduces(t *testing.T) {
 	delete(standalone, "recording")
 	standalone["run"].(map[string]interface{})["state_dir"] = filepath.Join(f.parent, "standalone-books")
 	plain := runPairReplayAdapter(t, f.repo, standalone, f.env(true), "--max-steps", "1")
-	if plain.Code == basketReplayExitRefused || plain.Code == basketReplayExitUsage || plain.Out.Refusal != nil {
+	if plain.Code == replayExitRefused || plain.Code == replayExitUsage || plain.Out.Refusal != nil {
 		t.Fatalf("standalone version-2 replay must admit exported books: exit %d %+v", plain.Code, plain.Out.Refusal)
 	}
-	if p.Code != basketReplayExitOK {
+	if p.Code != replayExitOK {
 		t.Fatalf("positive sealed run must complete: %s", p.Raw)
 	}
 	purposes := pairPaperPurposes(t, p.Out)
@@ -163,8 +163,8 @@ func TestBasketReplayPairPaperBooksProcessProxyRefusalOpensNoSocket(t *testing.T
 		t.Fatal(err)
 	}
 	env := append(f.env(false), "GO_TRADER_PAPER_TEST_BOOK_ENDPOINT="+endpoint)
-	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, filepath.Join(f.parent, "refused")), env)
-	if p.Code != basketReplayExitRefused || connections.Load() != 0 {
+	p := runPairPaperAdapter(t, f, f.spec(replayModeNew, filepath.Join(f.parent, "refused")), env)
+	if p.Code != replayExitRefused || connections.Load() != 0 {
 		t.Fatalf("proxy refusal must open no direct book socket: exit %d connections %d stderr %s", p.Code, connections.Load(), tail(p.Stderr, 1000))
 	}
 }
@@ -185,11 +185,11 @@ func TestBasketReplayPairPaperBooksProcessResumesCommittedInput(t *testing.T) {
 			} else if mode == "receiver commit fault" {
 				args = []string{"--fault", "exit-after-book-input-commit:1"}
 			}
-			first := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), env, args...)
-			if mode != "chunk" && first.Code != basketReplayExitFault {
+			first := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), env, args...)
+			if mode != "chunk" && first.Code != replayExitFault {
 				t.Fatalf("expected recorded crash: %d %s", first.Code, tail(first.Stderr, 2000))
 			}
-			resumed := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), env, "--seal")
+			resumed := runPairPaperAdapter(t, f, f.spec(replayModeResume, dir), env, "--seal")
 			if resumed.Out.Recording == nil || resumed.Out.Recording.Seal == nil || !resumed.Out.Recording.Seal.Sealed {
 				t.Fatalf("resume must seal: exit %d refusal %+v reasons %v stderr %s", resumed.Code, resumed.Out.Refusal, resumed.Out.IncompleteReasons, tail(resumed.Stderr, 3000))
 			}
@@ -222,8 +222,8 @@ func TestBasketReplayPairPaperBooksProcessFundingPolicyAdmission(t *testing.T) {
 	}})
 	endpoint, _ := pairPaperBookServer(t, f)
 	dir := filepath.Join(f.parent, "book-funding")
-	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), append(f.env(false), "GO_TRADER_PAPER_TEST_BOOK_ENDPOINT="+endpoint), "--max-steps", "1")
-	if p.Code == basketReplayExitRefused || p.Code == basketReplayExitUsage || p.Out.Refusal != nil {
+	p := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), append(f.env(false), "GO_TRADER_PAPER_TEST_BOOK_ENDPOINT="+endpoint), "--max-steps", "1")
+	if p.Code == replayExitRefused || p.Code == replayExitUsage || p.Out.Refusal != nil {
 		t.Fatalf("family 4 must admit the optional funding policy: %d %+v %s", p.Code, p.Out.Refusal, tail(p.Stderr, 2000))
 	}
 	man, err := readPairPaperManifest(dir)
@@ -243,7 +243,7 @@ func TestBasketReplayPairPaperBooksProcessFailedAuxiliaryReadReproduces(t *testi
 	}})
 	endpoint, connections := pairPaperBookServer(t, f)
 	dir := filepath.Join(f.parent, "empty-aux")
-	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), append(f.env(false), "GO_TRADER_PAPER_TEST_BOOK_ENDPOINT="+endpoint), "--seal")
+	p := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), append(f.env(false), "GO_TRADER_PAPER_TEST_BOOK_ENDPOINT="+endpoint), "--seal")
 	if p.Out.Recording == nil || p.Out.Recording.Seal == nil || !p.Out.Recording.Seal.Sealed || p.Out.MechanicallyComplete {
 		t.Fatalf("failed auxiliary reads must seal a reproducible incomplete recording: exit %d %+v reasons %v", p.Code, p.Out.Recording, p.Out.IncompleteReasons)
 	}
@@ -263,7 +263,7 @@ func TestBasketReplayPairPaperBooksProcessFailedAuxiliaryReadReproduces(t *testi
 	delete(spec, "recording")
 	spec["run"].(map[string]interface{})["state_dir"] = filepath.Join(f.parent, "empty-aux-standalone")
 	plain := runPairReplayAdapter(t, f.repo, spec, f.env(true), "--max-steps", "1")
-	if plain.Code != basketReplayExitRefused || plain.Out.Refusal == nil {
+	if plain.Code != replayExitRefused || plain.Out.Refusal == nil {
 		t.Fatalf("standalone replay must retain empty-candle refusal: %d", plain.Code)
 	}
 }
@@ -303,9 +303,9 @@ func TestBasketReplayPairPaperBooksProcessManagesOpenSealedPositionAfterAppendFa
 		return f, []string{"GO_TRADER_PAPER_TEST_BOOK_ENDPOINT=" + endpoint}
 	}
 	bf, benv := fixture("paper-books-open")
-	base := runPairPaperAdapter(t, bf, bf.spec(basketReplayModeNew, filepath.Join(bf.parent, "baseline")), append(bf.env(false), benv...), "--seal")
+	base := runPairPaperAdapter(t, bf, bf.spec(replayModeNew, filepath.Join(bf.parent, "baseline")), append(bf.env(false), benv...), "--seal")
 	open := pairPaperOpenSealedChecks(t, pairPaperLogRows(t, filepath.Join(bf.parent, "baseline"), bf.runID))
-	if base.Code == basketReplayExitRefused || base.Code == basketReplayExitUsage || len(open) < 3 {
+	if base.Code == replayExitRefused || base.Code == replayExitUsage || len(open) < 3 {
 		t.Fatalf("the baseline must manage an open sealed position on at least 3 cycles: exit %d checks %d refusal %+v stderr %s", base.Code, len(open), base.Out.Refusal, tail(base.Stderr, 3000))
 	}
 	f, fenv := fixture("paper-books-fault")
@@ -313,7 +313,7 @@ func TestBasketReplayPairPaperBooksProcessManagesOpenSealedPositionAfterAppendFa
 	to := from + 40
 	dir := filepath.Join(f.parent, "fault")
 	env := append(append(pairPaperAppendFaultEnv(f, from, to), fenv...), pairPaperTestBookStallEnv+"="+strconv.FormatInt(from, 10))
-	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), env)
+	p := runPairPaperAdapter(t, f, f.spec(replayModeNew, dir), env)
 	rows := pairPaperLogRows(t, dir, f.runID)
 	var clearSeq, lostSeq, restartEpoch, restartSeq int64
 	for _, row := range rows {

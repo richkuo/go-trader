@@ -166,7 +166,7 @@ func (rec *pairRecorder) fault(kind string) {
 		if rec.beforeExit != nil {
 			rec.beforeExit()
 		}
-		os.Exit(basketReplayExitFault)
+		os.Exit(replayExitFault)
 	}
 }
 

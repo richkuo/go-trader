@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"sync"
 	"testing"
@@ -180,7 +179,7 @@ func (sc replayScenario) spec(t *testing.T, fx replayFixture, stateDir, mode str
 	}
 	return &basketReplaySpec{
 		Protocol: basketReplayProtocolName, Version: basketReplayProtocolVersion, Mode: mode,
-		Run: basketReplayRunSpec{RunID: runID, StateDir: stateDir, Source: map[string]string{"frames": "scheduler/testdata/basket_replay_recorded_frames.json"}},
+		Run: replayRunSpec{RunID: runID, StateDir: stateDir, Source: map[string]string{"frames": "scheduler/testdata/basket_replay_recorded_frames.json"}},
 		Basket: BasketConfig{
 			ID: "xs-replay", Ranker: ranker, Params: params, Members: ids,
 			RebalanceIntervalSeconds: rebalance, EvaluationWindowSeconds: 3600, RankerTimeoutSeconds: 60, LookbackBars: 48,
@@ -210,43 +209,6 @@ func writeReplaySpec(t *testing.T, spec *basketReplaySpec) string {
 	return f.Name()
 }
 
-var (
-	pyintegrationBinOnce sync.Once
-	pyintegrationBinPath string
-	pyintegrationBinErr  error
-)
-
-func pyintegrationBinary(t *testing.T) string {
-	t.Helper()
-	pyintegrationBinOnce.Do(func() {
-		_, thisFile, _, ok := runtime.Caller(0)
-		if !ok {
-			pyintegrationBinErr = fmt.Errorf("runtime.Caller failed")
-			return
-		}
-		dir, err := os.MkdirTemp("", "pyintegration-bin-")
-		if err != nil {
-			pyintegrationBinErr = err
-			return
-		}
-		pyintegrationBinPath = filepath.Join(dir, "go-trader")
-		args := []string{"build", "-tags", "pyintegration", "-o", pyintegrationBinPath, "."}
-		if pairPaperRaceEnabled {
-			args = []string{"build", "-race", "-tags", "pyintegration", "-o", pyintegrationBinPath, "."}
-		}
-		cmd := exec.Command("go", args...)
-		cmd.Dir = filepath.Dir(thisFile)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			pyintegrationBinErr = fmt.Errorf("go build: %v: %s", err, out)
-		}
-	})
-	if pyintegrationBinErr != nil {
-		t.Fatal(pyintegrationBinErr)
-	}
-	return pyintegrationBinPath
-}
-
 type replayProcess struct {
 	Out    basketReplayOutput
 	Raw    []byte
@@ -270,7 +232,7 @@ func runReplayAdapter(t *testing.T, root string, spec *basketReplaySpec, args ..
 	} else if err != nil {
 		t.Fatalf("adapter did not run: %v", err)
 	}
-	if p.Code != basketReplayExitFault {
+	if p.Code != replayExitFault {
 		dec := json.NewDecoder(bytes.NewReader(p.Raw))
 		if err := dec.Decode(&p.Out); err != nil {
 			t.Fatalf("adapter stdout is not one protocol JSON document (exit %d): %v\nstdout=%s\nstderr tail=%s", p.Code, err, p.Raw, tail(p.Stderr, 4000))

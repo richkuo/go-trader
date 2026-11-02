@@ -33,12 +33,7 @@ var basketLifecycleMigrations = []string{
 	"ALTER TABLE basket_member_actions ADD COLUMN lifecycle_attempt INTEGER NOT NULL DEFAULT 0",
 }
 
-type basketColumnDefault struct {
-	Name    string
-	Default string
-}
-
-var basketMemberStateLifecycleColumns = []basketColumnDefault{
+var basketMemberStateLifecycleColumns = []columnDefault{
 	{"position_id", "''"},
 	{"entry_ms", "0"},
 	{"expiry_ms", "0"},
@@ -50,7 +45,7 @@ var basketMemberStateLifecycleColumns = []basketColumnDefault{
 	{"suppress_through_ms", "0"},
 }
 
-var basketActionLifecycleColumns = []basketColumnDefault{
+var basketActionLifecycleColumns = []columnDefault{
 	{"purpose", "'rebalance'"},
 	{"lifecycle_position_id", "''"},
 	{"expiry_ms", "0"},
@@ -180,22 +175,6 @@ func (sdb *StateDB) migrateBasketLifecycleColumns() error {
 		}
 	}
 	return nil
-}
-
-func (sdb *StateDB) basketProjection(table string, cols []basketColumnDefault) (string, error) {
-	parts := make([]string, 0, len(cols))
-	for _, c := range cols {
-		has, err := sdb.tableHasColumn(table, c.Name)
-		if err != nil {
-			return "", fmt.Errorf("introspect %s columns in the %s state file: %w", table, sdb.storageRoleOf(), err)
-		}
-		if has {
-			parts = append(parts, c.Name)
-		} else {
-			parts = append(parts, c.Default+" AS "+c.Name)
-		}
-	}
-	return strings.Join(parts, ", "), nil
 }
 
 const basketMemberStateBaseColumns = `scope, source, basket_id, strategy_id, expected_qty`
@@ -425,7 +404,7 @@ func inspectBasketLifecycleRows(db *StateDB, fi *storageFileInspection, ident st
 	if err != nil || !exists {
 		return nil, err
 	}
-	proj, err := db.basketProjection("basket_member_state", basketMemberStateLifecycleColumns)
+	proj, err := db.columnProjection("basket_member_state", basketMemberStateLifecycleColumns)
 	if err != nil {
 		return nil, err
 	}

@@ -70,7 +70,7 @@ func pairStudyPurposes(t *testing.T, out pairReplayOutput) map[string]int {
 
 func TestBasketReplayPairStudyRefusesTargetInputBeforeClaim(t *testing.T) {
 	f := newPairOfflineFixture(t, pairOfflineOptions{runID: "pair-study-refuse", durationS: 30})
-	base := f.spec(basketReplayModeNew, f.stateDir("unused"))
+	base := f.spec(replayModeNew, f.stateDir("unused"))
 	refuse := func(t *testing.T, name string, spec interface{}, raw []byte, want string) {
 		t.Helper()
 		dir := f.stateDir(name)
@@ -104,7 +104,7 @@ func TestBasketReplayPairStudyRefusesTargetInputBeforeClaim(t *testing.T) {
 			}
 			p = runPairReplayAdapter(t, f.repo, specValue, nil)
 		}
-		if p.Code != basketReplayExitRefused || p.Out.Refusal == nil || !strings.Contains(strings.Join(p.Out.Refusal.Detail, "\n")+p.Out.Refusal.Reason, want) {
+		if p.Code != replayExitRefused || p.Out.Refusal == nil || !strings.Contains(strings.Join(p.Out.Refusal.Detail, "\n")+p.Out.Refusal.Reason, want) {
 			t.Fatalf("want a refusal containing %q, got exit %d %+v\nstderr %s", want, p.Code, p.Out.Refusal, tail(p.Stderr, 2000))
 		}
 		pairStudyAbsent(t, dir)
@@ -120,34 +120,34 @@ func TestBasketReplayPairStudyRefusesTargetInputBeforeClaim(t *testing.T) {
 		refuse(t, "duplicate", nil, raw, "duplicate")
 	})
 	t.Run("unknown mode", func(t *testing.T) {
-		spec := f.spec(basketReplayModeNew, f.stateDir("mode"))
+		spec := f.spec(replayModeNew, f.stateDir("mode"))
 		spec.TargetInput = pairStudyInput("later", nil)
 		refuse(t, "mode", spec, nil, "frozen_schedule")
 	})
 	t.Run("policy with schedule", func(t *testing.T) {
-		spec := f.spec(basketReplayModeNew, f.stateDir("policy-schedule"))
+		spec := f.spec(replayModeNew, f.stateDir("policy-schedule"))
 		spec.TargetInput = pairStudyInput(pairTargetModePolicy, json.RawMessage(`{}`))
 		refuse(t, "policy-schedule", spec, nil, "carries no schedule")
 	})
 	t.Run("unknown member", func(t *testing.T) {
-		spec := f.spec(basketReplayModeNew, f.stateDir("member"))
+		spec := f.spec(replayModeNew, f.stateDir("member"))
 		slot := strconv.FormatInt(f.t0, 10)
 		spec.TargetInput = pairStudyInput(pairTargetModeFrozen, json.RawMessage(`{"`+slot+`":{"`+pairTestHL+`":{"target_base_qty":0.06,"price_bound":60400},"other":{"target_base_qty":-0.06,"price_bound":59700}}}`))
 		refuse(t, "member", spec, nil, "unknown member")
 	})
 	t.Run("bad slot", func(t *testing.T) {
-		spec := f.spec(basketReplayModeNew, f.stateDir("slot"))
+		spec := f.spec(replayModeNew, f.stateDir("slot"))
 		spec.TargetInput = pairStudyInput(pairTargetModeFrozen, json.RawMessage(`{"001":{"`+pairTestHL+`":{"target_base_qty":0.06,"price_bound":60400},"`+pairTestOKX+`":{"target_base_qty":-0.06,"price_bound":59700}}}`))
 		refuse(t, "slot", spec, nil, "canonical")
 	})
 	t.Run("nonpositive bound", func(t *testing.T) {
-		spec := f.spec(basketReplayModeNew, f.stateDir("bound"))
+		spec := f.spec(replayModeNew, f.stateDir("bound"))
 		slot := strconv.FormatInt(f.t0, 10)
 		spec.TargetInput = pairStudyInput(pairTargetModeFrozen, json.RawMessage(`{"`+slot+`":{"`+pairTestHL+`":{"target_base_qty":0.06,"price_bound":0},"`+pairTestOKX+`":{"target_base_qty":-0.06,"price_bound":59700}}}`))
 		refuse(t, "bound", spec, nil, "above zero")
 	})
 	t.Run("recording", func(t *testing.T) {
-		spec := f.spec(basketReplayModeNew, f.stateDir("recording"))
+		spec := f.spec(replayModeNew, f.stateDir("recording"))
 		spec.TargetInput = pairStudyInput(pairTargetModeNoTrade, nil)
 		spec.Recording = &pairReplayRecordingRef{Version: 1, Path: "recording-manifest.json", SHA256: strings.Repeat("ab", 32), SizeBytes: 10}
 		spec.Scenario.VenueFailures = []pairReplayFailureScript{}
@@ -156,7 +156,7 @@ func TestBasketReplayPairStudyRefusesTargetInputBeforeClaim(t *testing.T) {
 	t.Run("paper", func(t *testing.T) {
 		paper := newPairPaperFixture(t, pairPaperOptions2{runID: "pair-study-paper"})
 		dir := filepath.Join(paper.parent, "paper-target")
-		spec := paper.spec(basketReplayModeNew, dir)
+		spec := paper.spec(replayModeNew, dir)
 		blob, err := json.Marshal(spec)
 		if err != nil {
 			t.Fatal(err)
@@ -181,7 +181,7 @@ func TestBasketReplayPairStudyRefusesTargetInputBeforeClaim(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out pairReplayOutput
-		if json.Unmarshal(stdout.Bytes(), &out) != nil || code != basketReplayExitRefused || out.Refusal == nil {
+		if json.Unmarshal(stdout.Bytes(), &out) != nil || code != replayExitRefused || out.Refusal == nil {
 			t.Fatalf("paper must refuse target_input, got exit %d stdout %s stderr %s", code, stdout.String(), tail(stderr.String(), 2000))
 		}
 		pairStudyAbsent(t, dir)
@@ -229,7 +229,7 @@ func TestBasketReplayPairStudyOmissionKeepsTheFingerprint(t *testing.T) {
 		pairTestPair(root)["params"].(map[string]interface{})["entry_threshold_bps"] = 9000
 	}})
 	dir := f.stateDir("omit")
-	spec := f.spec(basketReplayModeNew, dir)
+	spec := f.spec(replayModeNew, dir)
 	blob, err := json.Marshal(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -245,7 +245,7 @@ func TestBasketReplayPairStudyOmissionKeepsTheFingerprint(t *testing.T) {
 	if p.Out.Run == nil || p.Out.Run.Fingerprints.Input != want || p.Out.Refusal != nil {
 		t.Fatalf("the omitted specification fingerprint must pass through unchanged, got %+v refusal %+v", p.Out.Run, p.Out.Refusal)
 	}
-	explicit := f.spec(basketReplayModeNew, f.stateDir("policy"))
+	explicit := f.spec(replayModeNew, f.stateDir("policy"))
 	explicit.TargetInput = pairStudyInput(pairTargetModePolicy, nil)
 	blob, _ = json.Marshal(explicit)
 	other, err := pairReplayInputFingerprint(blob)
@@ -264,7 +264,7 @@ func TestBasketReplayPairStudyOmissionKeepsTheFingerprint(t *testing.T) {
 func TestBasketReplayPairStudyNoTradeHoldsAndResumes(t *testing.T) {
 	f := newPairOfflineFixture(t, pairOfflineOptions{runID: "pair-study-none", durationS: 90})
 	specFor := func(dir string) *pairReplaySpec {
-		spec := f.spec(basketReplayModeNew, dir)
+		spec := f.spec(replayModeNew, dir)
 		spec.TargetInput = pairStudyInput(pairTargetModeNoTrade, nil)
 		return spec
 	}
@@ -275,11 +275,11 @@ func TestBasketReplayPairStudyNoTradeHoldsAndResumes(t *testing.T) {
 	}
 	dir := f.stateDir("fault")
 	crash := runPairReplayAdapter(t, f.repo, specFor(dir), nil, "--fault", "exit-after-book-commit:2")
-	if crash.Code != basketReplayExitFault {
+	if crash.Code != replayExitFault {
 		t.Fatalf("the fault must exit 75, got %d", crash.Code)
 	}
 	resumedSpec := specFor(dir)
-	resumedSpec.Mode = basketReplayModeResume
+	resumedSpec.Mode = replayModeResume
 	resumed := runPairReplayAdapter(t, f.repo, resumedSpec, nil)
 	pairOfflineRequireComplete(t, "resumed no trade", resumed)
 	if resumed.Out.Comparison.Hash != base.Out.Comparison.Hash || !resumed.Out.Comparison.Eligible {
@@ -288,10 +288,10 @@ func TestBasketReplayPairStudyNoTradeHoldsAndResumes(t *testing.T) {
 	changedDir := f.stateDir("changed")
 	runPairReplayAdapter(t, f.repo, specFor(changedDir), nil, "--max-steps", "2")
 	changed := specFor(changedDir)
-	changed.Mode = basketReplayModeResume
+	changed.Mode = replayModeResume
 	changed.TargetInput = pairStudyInput(pairTargetModePolicy, nil)
 	refused := runPairReplayAdapter(t, f.repo, changed, nil)
-	if refused.Code != basketReplayExitRefused || refused.Out.Refusal == nil || !strings.Contains(strings.Join(refused.Out.Refusal.Detail, "\n"), "input") {
+	if refused.Code != replayExitRefused || refused.Out.Refusal == nil || !strings.Contains(strings.Join(refused.Out.Refusal.Detail, "\n"), "input") {
 		t.Fatalf("a changed target input must refuse resume before trading, got %d %+v", refused.Code, refused.Out.Refusal)
 	}
 }
@@ -314,7 +314,7 @@ func TestBasketReplayPairStudyFrozenScheduleKeepsTheGates(t *testing.T) {
 			slots[slot+120000] = pairStudyLegs(hl*2, okx*2, hlPx, okxPx)
 			slots[slot+180000] = pairStudyLegs(0, 0, exitHL, exitOKX)
 		}
-		spec := f.spec(basketReplayModeNew, f.stateDir(name))
+		spec := f.spec(replayModeNew, f.stateDir(name))
 		spec.TargetInput = pairStudyInput(pairTargetModeFrozen, pairStudySchedule(slots))
 		p := runPairReplayAdapter(t, f.repo, spec, nil)
 		return p, slot
@@ -356,7 +356,7 @@ func TestBasketReplayPairStudyFrozenScheduleKeepsTheGates(t *testing.T) {
 	})
 	t.Run("rounded bound", func(t *testing.T) {
 		f := newPairOfflineFixture(t, pairOfflineOptions{runID: "pair-study-round", durationS: 90})
-		spec := f.spec(basketReplayModeNew, f.stateDir("round"))
+		spec := f.spec(replayModeNew, f.stateDir("round"))
 		spec.TargetInput = pairStudyInput(pairTargetModeFrozen, pairStudySchedule(map[int64]map[string]pairPolicyMemberTarget{
 			f.t0: pairStudyLegs(0.06, -0.06, 1, 1),
 		}))
@@ -400,7 +400,7 @@ func pairStudyRun(t *testing.T, repo, study string, args ...string) (int, string
 }
 
 func TestBasketReplayPairStudyRunnerLocksAnInconclusiveReport(t *testing.T) {
-	repo := basketPyRoot(t)
+	repo := pyRepoRoot(t)
 	src := filepath.Join(repo, "backtest", "candidates", "cross_exchange_perp_arbitrage_1655")
 	bin := pyintegrationBinary(t)
 	study := pairStudyCopy(t, repo)
@@ -581,7 +581,7 @@ func TestBasketReplayPairStudyRunnerReplaysAFixture(t *testing.T) {
 		"plan": "go-trader.basket-replay-plan", "version": 2, "run_id": f.runID, "state_dir": "RUNTIME",
 		"source":          map[string]string{"quotes": "mechanical fixture"},
 		"research_config": map[string]string{"path": "research-config.json", "sha256": sha256Hex(f.doc)},
-		"objects":         objs, "scenario": f.scenario, "bounds": f.spec(basketReplayModeNew, "/x").Bounds,
+		"objects":         objs, "scenario": f.scenario, "bounds": f.spec(replayModeNew, "/x").Bounds,
 		"target_input": map[string]string{"mode": "no_trade"},
 	}
 	blob, _ := json.Marshal(plan)
@@ -629,7 +629,7 @@ func TestBasketReplayPairStudyRunnerReplaysAFixture(t *testing.T) {
 }
 
 func TestBasketReplayPairStudyProtocolRejectsAMissingRule(t *testing.T) {
-	repo := basketPyRoot(t)
+	repo := pyRepoRoot(t)
 	study := filepath.Join(t.TempDir(), "study")
 	if out, err := exec.Command("cp", "-R", filepath.Join(repo, "backtest", "candidates", "cross_exchange_perp_arbitrage_1655"), study).CombinedOutput(); err != nil {
 		t.Fatalf("copy: %v\n%s", err, out)
@@ -654,7 +654,7 @@ func TestBasketReplayPairStudyProtocolRejectsAMissingRule(t *testing.T) {
 }
 
 func TestBasketReplayPairStudyCopyLockIgnoresBytecode(t *testing.T) {
-	repo := basketPyRoot(t)
+	repo := pyRepoRoot(t)
 	study := pairStudyCopy(t, repo)
 	bin := pyintegrationBinary(t)
 	if code, out := pairStudyRun(t, repo, study, "lock", "--binary", bin, "--allow-dirty"); code != 0 {
@@ -678,7 +678,7 @@ func TestBasketReplayPairStudyCopyLockIgnoresBytecode(t *testing.T) {
 }
 
 func TestBasketReplayPairStudySymlinkedRepository(t *testing.T) {
-	repo := basketPyRoot(t)
+	repo := pyRepoRoot(t)
 	root := t.TempDir()
 	clone := filepath.Join(root, "checkout")
 	cmd := exec.Command("git", "clone", "--shared", "--quiet", repo, clone)
@@ -744,7 +744,7 @@ func TestBasketReplayPairStudySymlinkedRepository(t *testing.T) {
 }
 
 func TestBasketReplayPairStudyRunnerRefusesAnUnscoredClassification(t *testing.T) {
-	repo := basketPyRoot(t)
+	repo := pyRepoRoot(t)
 	study := pairStudyCopy(t, repo)
 	path := filepath.Join(study, "data_manifest.json")
 	manifest := map[string]interface{}{}
@@ -813,7 +813,7 @@ func TestBasketReplayPairStudyRunnerReconcilesBookedTrades(t *testing.T) {
 		"plan": "go-trader.basket-replay-plan", "version": 2, "run_id": f.runID, "state_dir": "RUNTIME",
 		"source":          map[string]string{"quotes": "mechanical fixture"},
 		"research_config": map[string]string{"path": "research-config.json", "sha256": sha256Hex(f.doc)},
-		"objects":         objs, "scenario": f.scenario, "bounds": f.spec(basketReplayModeNew, "/x").Bounds,
+		"objects":         objs, "scenario": f.scenario, "bounds": f.spec(replayModeNew, "/x").Bounds,
 		"target_input": map[string]interface{}{"mode": "frozen_schedule", "schedule": sched},
 	}
 	blob, _ := json.Marshal(plan)
