@@ -28,7 +28,8 @@ def _run(script, argv, env_extra, stdin=None, tmp_path=None):
     env = dict(os.environ)
     for key in CREDENTIALS:
         env.pop(key, None)
-    for key in ("QP_CLOSE", "QP_QUOTE", "QP_SHAPE", "QP_NOW", "QP_TICKERS", "QP_CLOSES", "QP_CANDLES", "QP_OKX_FILL"):
+    for key in ("QP_CLOSE", "QP_QUOTE", "QP_SHAPE", "QP_NOW", "QP_TICKERS", "QP_CLOSES", "QP_CANDLES", "QP_OKX_FILL",
+                "QP_DAILY", "QP_OPTION_QUOTE", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER", "QP_OKX_OPTIONS", "QP_STDOUT_NOISE"):
         env.pop(key, None)
     env["QP_STUB"] = "1"
     env["PYTHONPATH"] = STUB_DIR

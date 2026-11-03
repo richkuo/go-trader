@@ -2,6 +2,18 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 1920: options entries refuse missing market data
+
+Runtime behavior changes for every `type: options` strategy; there is no opt-out and no config change.
+The six `get_vol_metrics` implementations (BinanceUS, Deribit, IBKR, Luno, OKX, Robinhood) used to return a default volatility (0.30 on Robinhood, 0.60 elsewhere) and a rank of 50 for a failed or short daily read, and rank 50 for a flat volatility range; rank 50 passed `butterfly`.
+They now raise `OptionDataUnavailable` from `shared_tools/option_data.py`; a flat range or exactly 15 closes keeps the measured volatility and marks only the rank unavailable. Valid history gives the same rounded values as before.
+Entry pricing no longer substitutes: Deribit lost its Black-Scholes and 5%-of-spot fallbacks, OKX lost its Black-Scholes attempt (which passed `option_type` as the risk-free rate and returned zero), logged-in Robinhood lost its model fallback after a failed quote, and IBKR and logged-out Robinhood lost their default volatility (0.80 and 0.30).
+`check_options.py` now writes one JSON document through `json_stdout()`, exits 1 with `signal` 0 and no actions for every handled error (including unknown strategy, unsupported platform, invalid positions, zero or non-finite spot and missing momentum bars, which exited 0 or held before), and validates arguments and positions before the 4-position cap.
+Stable error reasons keep an upstream 429 or 5xx as `(upstream status <code>)`, so the transient alert policy (15 failures or 75 minutes) applies; other failures use the ordinary policy (3 consecutive failures). A Python-side request timeout stays ordinary because the classifier recognizes only the Go subprocess timeout text.
+The scheduler now runs eligible theta harvest once per options cycle after a failed or unspawned entry check, and harvest-only trades reach trade alerts and channel totals. `EncodeAllPositionsJSON` returns its encoding error; the scheduler records it as a script failure and starts no check.
+`OptionsResult.iv_rank` is nullable and the new `vol_metrics_error` field makes the signal log show `IV rank=unavailable` and the trade summary `IV=unavailable`.
+Known limits: harvest still uses the previous cycle's stored marks and DTE; mark sources, freshness, expiry, settlement, contract multipliers and atomic multi-leg booking are unchanged (issues 1912, 1911 and 1919).
+Deploy Go and Python together with `bash scripts/update.sh --restart`.
 ### Issue 1908: one Robinhood coin identity
 
 Runtime behavior changes for every Robinhood spot strategy, with a one-time startup state migration.

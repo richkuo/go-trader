@@ -12,6 +12,7 @@ if _SHARED_TOOLS not in sys.path:
     sys.path.append(_SHARED_TOOLS)
 
 import egress_policy
+import option_data
 
 DERIBIT_API_BASE = "https://www.deribit.com/api/v2"
 
@@ -120,36 +121,38 @@ def find_closest_strike(underlying: str, expiry_str: str, option_type: str, targ
     return min(strikes, key=lambda s: abs(s - target_strike))
 
 
-def get_live_quote(underlying: str, option_type: str, strike: float, expiry_str: str) -> Optional[Dict[str, Any]]:
+def get_live_quote(underlying: str, option_type: str, strike: float, expiry_str: str) -> Dict[str, Any]:
     try:
         instrument = _format_instrument(underlying, option_type, strike, expiry_str)
         url = f"{DERIBIT_API_BASE}/public/ticker?instrument_name={instrument}"
         resp = requests.get(url, timeout=10, proxies=egress_policy.requests_proxies())
         resp.raise_for_status()
         data = resp.json()
-        result = data.get("result", {})
-        mark_price = result.get("mark_price")
-        if mark_price is None or mark_price <= 0:
-            return None
-        greeks = result.get("greeks") or {}
-        return {
-            "mark_price": float(mark_price),
-            "underlying_price": float(result.get("underlying_price") or 0),
-            "greeks": {
-                "delta": float(greeks.get("delta", 0)),
-                "gamma": float(greeks.get("gamma", 0)),
-                "theta": float(greeks.get("theta", 0)),
-                "vega": float(greeks.get("vega", 0)),
-            },
-        }
     except Exception as e:
         print(f"Failed to fetch live quote for {underlying} {option_type} {strike} {expiry_str}: {e}", file=sys.stderr)
-        return None
+        raise option_data.unavailable("option quote unavailable: deribit ticker read failed", e) from e
+    result = data.get("result") if isinstance(data, dict) else None
+    if not isinstance(result, dict):
+        raise option_data.OptionDataUnavailable("option quote unavailable: deribit ticker has no result")
+    mark_price = option_data.require_finite_positive(result.get("mark_price"), "option quote unavailable: deribit mark is not positive")
+    greeks = result.get("greeks") or {}
+    return {
+        "mark_price": mark_price,
+        "underlying_price": float(result.get("underlying_price") or 0),
+        "greeks": {
+            "delta": float(greeks.get("delta", 0)),
+            "gamma": float(greeks.get("gamma", 0)),
+            "theta": float(greeks.get("theta", 0)),
+            "vega": float(greeks.get("vega", 0)),
+        },
+    }
 
 
 def get_live_premium(underlying: str, option_type: str, strike: float, expiry_str: str) -> Optional[float]:
-    quote = get_live_quote(underlying, option_type, strike, expiry_str)
-    return quote["mark_price"] if quote else None
+    try:
+        return get_live_quote(underlying, option_type, strike, expiry_str)["mark_price"]
+    except option_data.OptionDataUnavailable:
+        return None
 
 
 if __name__ == "__main__":

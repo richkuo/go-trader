@@ -1,5 +1,5 @@
 
-from typing import Protocol, Tuple
+from typing import Optional, Protocol, Tuple
 
 
 class ExchangeAdapter(Protocol):
@@ -20,7 +20,7 @@ class ExchangeAdapter(Protocol):
 
     def get_premium_and_greeks(self, underlying: str, option_type: str,
                                 strike: float, expiry: str,
-                                dte: float, spot: float, vol: float) -> Tuple[float, float, dict]:
+                                dte: float, spot: float, vol: Optional[float] = None) -> Tuple[float, float, dict]:
         ...
 
     def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:

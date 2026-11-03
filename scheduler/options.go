@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -43,15 +44,23 @@ type OptionsAction struct {
 }
 
 type OptionsResult struct {
-	Strategy   string          `json:"strategy"`
-	Underlying string          `json:"underlying"`
-	Signal     int             `json:"signal"`
-	SpotPrice  float64         `json:"spot_price"`
-	Actions    []OptionsAction `json:"actions"`
-	IVRank     float64         `json:"iv_rank"`
-	Regime     string          `json:"regime,omitempty"`
-	Timestamp  string          `json:"timestamp"`
-	Error      string          `json:"error,omitempty"`
+	Strategy        string          `json:"strategy"`
+	Underlying      string          `json:"underlying"`
+	Signal          int             `json:"signal"`
+	SpotPrice       float64         `json:"spot_price"`
+	Actions         []OptionsAction `json:"actions"`
+	IVRank          *float64        `json:"iv_rank"`
+	VolMetricsError string          `json:"vol_metrics_error,omitempty"`
+	Regime          string          `json:"regime,omitempty"`
+	Timestamp       string          `json:"timestamp"`
+	Error           string          `json:"error,omitempty"`
+}
+
+func formatOptionsIVRank(result *OptionsResult) string {
+	if result == nil || result.VolMetricsError != "" || result.IVRank == nil {
+		return "unavailable"
+	}
+	return fmt.Sprintf("%.1f", *result.IVRank)
 }
 
 func ExecuteOptionsSignal(s *StrategyState, result *OptionsResult, logger *StrategyLogger) (int, error) {
@@ -305,7 +314,7 @@ func EncodePositionsJSON(positions map[string]*OptionPosition) string {
 	return string(b)
 }
 
-func EncodeAllPositionsJSON(optPos map[string]*OptionPosition, spotPos map[string]*Position) string {
+func EncodeAllPositionsJSON(optPos map[string]*OptionPosition, spotPos map[string]*Position) (string, error) {
 	type optEntry struct {
 		OptionType string  `json:"option_type"`
 		Strike     float64 `json:"strike"`
@@ -351,10 +360,101 @@ func EncodeAllPositionsJSON(optPos map[string]*OptionPosition, spotPos map[strin
 		})
 	}
 	if len(out) == 0 {
-		return "[]"
+		return "[]", nil
 	}
-	b, _ := json.Marshal(out)
-	return string(b)
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "", fmt.Errorf("options positions encoding failed: %w", err)
+	}
+	return string(b), nil
+}
+
+type optionsDispatch struct {
+	SC              StrategyConfig
+	State           *StrategyState
+	PositionsJSON   string
+	PositionsErr    error
+	Risk            *scopeCycleRisk
+	PersistenceHold bool
+	Scope           PortfolioScope
+	Regime          *RegimeConfig
+	Mu              *sync.RWMutex
+	Notifier        *MultiNotifier
+	Logger          *StrategyLogger
+}
+
+func runOptionsDispatch(d optionsDispatch) (int, []string) {
+	sc, logger := d.SC, d.Logger
+	var result *OptionsResult
+	var signalStr string
+	if d.PositionsErr != nil {
+		logger.Error("Options check skipped: %v", d.PositionsErr)
+		notifyScriptFailure(d.Notifier, sc, scriptFailureError, d.PositionsErr.Error())
+	} else if r, sig, ok := runOptionsCheck(sc, d.PositionsJSON, d.Notifier, logger); ok {
+		result, signalStr = r, sig
+		filterOptionsEntryActions(d, result)
+	}
+	optionsRegime := globalRegimeStore.PayloadForStrategy(sc, d.Regime)
+	d.Mu.Lock()
+	defer d.Mu.Unlock()
+	d.State.Regime = optionsRegime.PrimaryLabel(nil)
+	return executeOptionsCycleLocked(sc, d.State, result, signalStr, logger)
+}
+
+func filterOptionsEntryActions(d optionsDispatch, result *OptionsResult) {
+	sc, logger, sr := d.SC, d.Logger, d.Risk
+	if sc.Paused {
+		kept, dropped := pausedOptionsActions(result.Actions)
+		if dropped > 0 {
+			logger.Info("Paused: %d option open action(s) dropped — close actions still execute (#1150)", dropped)
+		}
+		result.Actions = kept
+	}
+	if sr.DailyLossEntriesHeld {
+		kept, dropped := pausedOptionsActions(result.Actions)
+		if dropped > 0 {
+			logger.Info("Daily loss limit: %d option open action(s) dropped — entries held until UTC rollover (#1269)", dropped)
+		}
+		result.Actions = kept
+	}
+	if sr.NotionalBlocked {
+		kept, dropped := pausedOptionsActions(result.Actions)
+		if dropped > 0 {
+			logger.Warn("Notional cap: %d option open action(s) dropped — new opens blocked, exits continue (#1344)", dropped)
+		}
+		result.Actions = kept
+	}
+	if d.PersistenceHold {
+		kept, dropped := pausedOptionsActions(result.Actions)
+		if dropped > 0 {
+			logger.Warn("Persistence hold: %d option open action(s) dropped — the %s scope has an unacknowledged state save failure, so no new exposure is taken; closes continue (#1523)", dropped, scopeLabel(d.Scope))
+		}
+		result.Actions = kept
+	}
+	if kept, dropped, capWhy := exposureCapOptionsActions(sr.ExposureCapStatus, extractAsset(sc), result.Actions); dropped > 0 {
+		logger.Warn("Exposure cap: %d option open action(s) dropped — %s (#1270)", dropped, capWhy)
+		result.Actions = kept
+	}
+}
+
+func executeOptionsCycleLocked(sc StrategyConfig, s *StrategyState, result *OptionsResult, signalStr string, logger *StrategyLogger) (int, []string) {
+	trades := 0
+	var lines []string
+	if result != nil {
+		entryTrades, err := ExecuteOptionsSignal(s, result, logger)
+		if err != nil {
+			logger.Error("Options execution failed: %v", err)
+		} else if entryTrades > 0 {
+			trades += entryTrades
+			lines = append(lines, fmt.Sprintf("[%s] %s %s spot=$%s IV=%s", sc.ID, signalStr, result.Underlying, formatSignalPrice(result.SpotPrice), formatOptionsIVRank(result)))
+		}
+	}
+	if sc.ThetaHarvest != nil {
+		harvestTrades, harvestDetails := CheckThetaHarvest(s, sc.ThetaHarvest, logger)
+		trades += harvestTrades
+		lines = append(lines, harvestDetails...)
+	}
+	return trades, lines
 }
 
 func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *StrategyLogger) (int, []string) {

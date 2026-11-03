@@ -1,13 +1,13 @@
 
 import sys
 import os as _os
-import math
 from datetime import datetime, timezone, timedelta
-from typing import Tuple
+from typing import Optional, Tuple
 
 sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
 import egress_policy
+import option_data
 from pricing import bs_price_and_greeks
 
 CME_SPECS = {
@@ -36,34 +36,9 @@ def _calc_vol_and_iv_rank(underlying: str) -> Tuple[float, float]:
         import ccxt
         exchange = egress_policy.pin_ccxt(ccxt.binanceus({"enableRateLimit": True}))
         ohlcv = exchange.fetch_ohlcv(underlying + "/USDT", "1d", limit=90)
-        if not ohlcv or len(ohlcv) < 15:
-            return 0.60, 50.0
-        closes = [c[4] for c in ohlcv]
-        returns = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
-        if len(returns) < 14:
-            return 0.60, 50.0
-        w = 14
-        mean = sum(returns[-w:]) / w
-        variance = sum((r - mean) ** 2 for r in returns[-w:]) / w
-        vol = math.sqrt(variance) * math.sqrt(365)
-
-        hvs = []
-        for i in range(len(returns) - w + 1):
-            chunk = returns[i:i + w]
-            m = sum(chunk) / w
-            v = sum((r - m) ** 2 for r in chunk) / w
-            hvs.append(math.sqrt(v) * math.sqrt(365) * 100)
-        current_hv = vol * 100
-        hv_min, hv_max = min(hvs), max(hvs)
-        if hv_max > hv_min:
-            iv_rank = (current_hv - hv_min) / (hv_max - hv_min) * 100
-            iv_rank = round(min(max(iv_rank, 0.0), 100.0), 1)
-        else:
-            iv_rank = 50.0
-
-        return round(vol, 4), iv_rank
-    except Exception:
-        return 0.60, 50.0
+    except Exception as e:
+        raise option_data.unavailable("volatility unavailable: daily history read failed", e) from e
+    return option_data.realized_vol_metrics(option_data.daily_closes(ohlcv), 365)
 
 
 class IBKRExchangeAdapter:
@@ -90,11 +65,10 @@ class IBKRExchangeAdapter:
 
     def get_premium_and_greeks(self, underlying: str, option_type: str,
                                 strike: float, expiry: str, dte: float,
-                                spot: float, vol: float) -> Tuple[float, float, dict]:
-        if vol <= 0:
-            vol = 0.80
+                                spot: float, vol: Optional[float] = None) -> Tuple[float, float, dict]:
+        spot, strike, dte, vol = option_data.require_model_inputs(spot, strike, dte, vol)
         price_usd, greeks = bs_price_and_greeks(spot, strike, dte, vol, option_type=option_type)
-        mark_pct = (price_usd / spot) if spot > 0 else 0.0
+        mark_pct = price_usd / spot
         return round(mark_pct, 6), round(price_usd, 2), greeks
 
     def get_multiplier(self, underlying: str) -> float:
