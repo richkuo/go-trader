@@ -60,6 +60,7 @@ def _parse_args(argv):
     parser.add_argument("--mode", default="live")
     parser.add_argument("--quantity", default=None)
     parser.add_argument("--ref-id", default="")
+    parser.add_argument("--expected-account-id", default="")
     parser.add_argument("--budget-ms", type=int, default=_DEFAULT_BUDGET_MS)
     parser.add_argument("--probe-only", action="store_true")
     return parser.parse_args(argv)
@@ -106,6 +107,11 @@ def main():
             _emit(emit, args.symbol, {"outcome": "not_sent", "detail": "--mode=live required for emergency close"})
             return
 
+        expected_account_id = args.expected_account_id.strip()
+        if not expected_account_id:
+            _emit(emit, args.symbol, {"outcome": "not_sent", "detail": "--expected-account-id is required: the emergency close sells only from the account that owns the go-trader book"})
+            return
+
         if args.budget_ms < _BUDGET_MIN_MS or args.budget_ms > _BUDGET_MAX_MS:
             _emit(emit, args.symbol, {"outcome": "not_sent", "detail": f"--budget-ms must be from {_BUDGET_MIN_MS} to {_BUDGET_MAX_MS}"})
             return
@@ -116,6 +122,7 @@ def main():
             adapter = RobinhoodExchangeAdapter(mode="live", login_deadline=deadline)
             if not adapter.is_live:
                 raise RuntimeError("Robinhood adapter not live — set ROBINHOOD_USERNAME / ROBINHOOD_PASSWORD / ROBINHOOD_TOTP_SECRET")
+            adapter.crypto_account_id(deadline, expected_account_id)
             holding = adapter.holding_quantities(args.symbol, deadline)
             held, available = holding["quantity"], holding["available"]
         except Exception as e:
@@ -134,6 +141,7 @@ def main():
         try:
             result = adapter.place_market_order(
                 args.symbol, "sell", ref_id=args.ref_id, deadline=deadline, quantity=float(asked),
+                expected_account_id=expected_account_id,
                 sell_policy={"asked": asked, "close_kind": _CLOSE_KIND_EMERGENCY, "sole_owner": False},
             )
         except Exception as e:

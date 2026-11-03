@@ -665,36 +665,54 @@ func stubRHLiveCloser(errs map[string]error) (RobinhoodLiveCloser, *[]string) {
 	return closer, &calls
 }
 
+const (
+	stubRHUsername = "stub-user"
+	stubRHVenueID  = "acct-stub"
+)
+
+var stubRHAccountKey = robinhoodAccountKeyFor(stubRHUsername)
+
+func useStubRHAccount(t *testing.T) {
+	t.Helper()
+	prev := robinhoodUsername
+	robinhoodUsername = func() string { return stubRHUsername }
+	t.Cleanup(func() { robinhoodUsername = prev })
+}
+
+func stubRHBookSnapshotOf(targets map[string]float64, heldElsewhere ...string) robinhoodBookSnapshot {
+	snap := robinhoodBookSnapshot{CurrentKey: stubRHAccountKey, Books: map[string][]robinhoodBookEntry{}, Held: map[string]bool{}}
+	for _, coin := range heldElsewhere {
+		snap.Held[coin] = true
+	}
+	for coin, qty := range targets {
+		snap.Books[coin] = append(snap.Books[coin], robinhoodBookEntry{StrategyID: "stub-" + coin, PositionID: "pos-" + coin, Side: "long", Quantity: qty, AccountKey: stubRHAccountKey, VenueAccountID: stubRHVenueID})
+		snap.Held[coin] = true
+	}
+	return snap
+}
+
 func stubRHBookSnapshot(targets map[string]float64, heldElsewhere ...string) func() robinhoodBookSnapshot {
 	calls := 0
 	return func() robinhoodBookSnapshot {
 		calls++
-		snap := robinhoodBookSnapshot{Targets: map[string]float64{}, Held: map[string]bool{}}
-		for _, coin := range heldElsewhere {
-			snap.Held[coin] = true
-		}
 		if calls > 1 {
-			return snap
+			return stubRHBookSnapshotOf(nil, heldElsewhere...)
 		}
-		for coin, qty := range targets {
-			snap.Targets[coin] = qty
-			snap.Held[coin] = true
-		}
-		return snap
+		return stubRHBookSnapshotOf(targets, heldElsewhere...)
 	}
 }
 
 func stubRHPositionsFetcher(positions []RobinhoodPosition, err error) (RobinhoodPositionsFetcher, *int) {
 	var calls int
-	fetcher := func() ([]RobinhoodPosition, error) {
+	fetcher := func() (RobinhoodHoldings, error) {
 		calls++
 		if err != nil {
-			return nil, err
+			return RobinhoodHoldings{}, err
 		}
 		if calls > 1 {
-			return nil, nil
+			return RobinhoodHoldings{AccountID: stubRHVenueID}, nil
 		}
-		return positions, nil
+		return RobinhoodHoldings{AccountID: stubRHVenueID, Positions: positions}, nil
 	}
 	return fetcher, &calls
 }

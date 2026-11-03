@@ -387,13 +387,46 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("deribit_keeps_its_uncovered_call_policy", func(t *testing.T) {
-		s := &StrategyState{ID: "deribit-expiry", Type: "options", Platform: "deribit", Cash: 1000, Positions: map[string]*Position{},
-			OptionPositions: map[string]*OptionPosition{"leg": {ID: "leg", Underlying: "BTC", OptionType: "call", Strike: 50000, Expiry: "2020-01-17", Action: "sell", Quantity: 1}}}
-		logger, _ := ocLogger(s.ID)
-		ocMarkCycle(s, ocPricer{expirySpot: 51000}, logger)
-		if s.Cash != 1000+50000 {
-			t.Fatalf("cash = %v, want the existing full strike proceeds", s.Cash)
+	t.Run("deribit_call_assignment_settles_only_held_units", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			held      float64
+			wantCash  float64
+			wantTrade int
+		}{
+			{name: "uncovered_call_settles_intrinsic", wantCash: 0},
+			{name: "covered_call_delivers_held_units", held: 1, wantCash: 51000, wantTrade: 1},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				sc := ocSC("deribit-opt-expiry", "deribit", "BTC")
+				env := ocEnv(t, sc)
+				s := env.strat(sc.ID)
+				s.Cash = 1000
+				if tc.held > 0 {
+					s.Positions["BTC"] = &Position{Symbol: "BTC", Side: "long", Quantity: tc.held, AvgCost: 40000, OwnerStrategyID: sc.ID}
+				}
+				s.OptionPositions["leg"] = ocExpiredLeg("leg", "call", "sell", 50000, 1)
+				s.OptionPositions["leg"].Underlying = "BTC"
+				logger, _ := ocLogger(sc.ID)
+				ocMarkCycle(s, ocPricer{expirySpot: 51000}, logger)
+				if !ocNear(s.Cash, tc.wantCash) {
+					t.Fatalf("cash = %v, want %v", s.Cash, tc.wantCash)
+				}
+				if p := s.Positions["BTC"]; tc.held > 0 && p != nil {
+					t.Fatalf("covered units remain after assignment: %+v", p)
+				}
+				trades := ocStoredTrades(t, env, sc.ID)
+				if len(trades) != tc.wantTrade {
+					t.Fatalf("assignment trades = %+v, want %d", trades, tc.wantTrade)
+				}
+				if tc.wantTrade == 1 && (trades[0].tradeType != "assignment" || trades[0].qty != 1) {
+					t.Fatalf("assignment trade = %+v, want quantity 1", trades[0])
+				}
+				ocMarkCycle(s, ocPricer{expirySpot: 51000}, logger)
+				if !ocNear(s.Cash, tc.wantCash) {
+					t.Fatalf("repeated mark cash = %v, want %v", s.Cash, tc.wantCash)
+				}
+			})
 		}
 	})
 

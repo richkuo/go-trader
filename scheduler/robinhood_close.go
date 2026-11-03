@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -21,33 +22,50 @@ var robinhoodLiveCloseScript = "shared_scripts/close_robinhood_position.py"
 var robinhoodFetchPositionsScript = "shared_scripts/fetch_robinhood_positions.py"
 
 type RobinhoodCloseRequest struct {
-	Symbol   string
-	Quantity float64
+	Symbol            string
+	Quantity          float64
+	ExpectedAccountID string
 }
 
 type RobinhoodLiveCloser func(req RobinhoodCloseRequest) (*RobinhoodCloseResult, error)
 
 var robinhoodCloseFn = RunRobinhoodClose
 
-type RobinhoodPositionsFetcher func() ([]RobinhoodPosition, error)
+type RobinhoodHoldings struct {
+	AccountID string
+	Positions []RobinhoodPosition
+}
 
-func defaultRobinhoodPositionsFetcher() ([]RobinhoodPosition, error) {
+type RobinhoodPositionsFetcher func() (RobinhoodHoldings, error)
+
+func defaultRobinhoodPositionsFetcher() (RobinhoodHoldings, error) {
 	result, stderr, err := RunRobinhoodFetchPositions(robinhoodFetchPositionsScript)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "[rh-close] fetch_positions stderr: %s\n", stderr)
 	}
 	if err != nil {
-		return nil, err
+		return RobinhoodHoldings{}, err
+	}
+	return robinhoodHoldingsFromResult(result)
+}
+
+func robinhoodHoldingsFromResult(result *RobinhoodPositionsResult) (RobinhoodHoldings, error) {
+	if result == nil {
+		return RobinhoodHoldings{}, fmt.Errorf("robinhood holdings read returned no result")
+	}
+	accountID := strings.TrimSpace(result.AccountID)
+	if accountID == "" || accountID != result.AccountID {
+		return RobinhoodHoldings{}, fmt.Errorf("robinhood holdings read carries no usable crypto account id; refusing the whole read (#1921)")
 	}
 	positions := make([]RobinhoodPosition, 0, len(result.Positions))
 	seen := make(map[string]string, len(result.Positions))
 	for _, p := range result.Positions {
 		coin := canonicalRobinhoodCoin(p.Coin)
 		if coin == "" {
-			return nil, fmt.Errorf("robinhood holdings read returned a holding with an empty coin; refusing the whole read (#1908)")
+			return RobinhoodHoldings{}, fmt.Errorf("robinhood holdings read returned a holding with an empty coin; refusing the whole read (#1908)")
 		}
 		if prev, dup := seen[coin]; dup {
-			return nil, fmt.Errorf("robinhood holdings read returned %q and %q, which are one coin %s; refusing the whole read (#1908)", prev, p.Coin, coin)
+			return RobinhoodHoldings{}, fmt.Errorf("robinhood holdings read returned %q and %q, which are one coin %s; refusing the whole read (#1908)", prev, p.Coin, coin)
 		}
 		seen[coin] = p.Coin
 		positions = append(positions, RobinhoodPosition{
@@ -56,7 +74,7 @@ func defaultRobinhoodPositionsFetcher() ([]RobinhoodPosition, error) {
 			AvgPrice: p.AvgPrice,
 		})
 	}
-	return positions, nil
+	return RobinhoodHoldings{AccountID: accountID, Positions: positions}, nil
 }
 
 type RobinhoodLiveCloseReport struct {
@@ -67,16 +85,19 @@ type RobinhoodLiveCloseReport struct {
 	Residue      []RobinhoodPosition
 	Errors       map[string]error
 	Fills        map[string]RobinhoodCloseFill
+	FlatProofs   robinhoodFlatProofs
 }
 
-func (r RobinhoodLiveCloseReport) VerifiedFlatCoins() map[string]bool {
-	out := map[string]bool{}
+func (r RobinhoodLiveCloseReport) VerifiedFlatCoins() robinhoodFlatProofs {
+	var coins []string
 	for _, list := range [][]string{r.ClosedCoins, r.AlreadyFlat, r.BookFlat} {
-		for _, c := range list {
-			out[c] = true
-		}
+		coins = append(coins, list...)
 	}
-	return out
+	return r.FlatProofs.only(coins)
+}
+
+func (r RobinhoodLiveCloseReport) ClosedCoinProofs() robinhoodFlatProofs {
+	return r.FlatProofs.only(r.ClosedCoins)
 }
 
 func (r RobinhoodLiveCloseReport) ConfirmedFlat() bool {
@@ -128,12 +149,13 @@ func robinhoodFlatReadLags(coin string, readQty float64, freshLongs map[string]f
 }
 
 type robinhoodBookSnapshot struct {
-	Targets map[string]float64
-	Held    map[string]bool
+	CurrentKey string
+	Books      map[string][]robinhoodBookEntry
+	Held       map[string]bool
 }
 
 func robinhoodBookSnapshotLocked(state *AppState, cfgs []StrategyConfig) robinhoodBookSnapshot {
-	out := robinhoodBookSnapshot{Targets: map[string]float64{}, Held: map[string]bool{}}
+	out := robinhoodBookSnapshot{CurrentKey: robinhoodAccountKey(), Books: map[string][]robinhoodBookEntry{}, Held: map[string]bool{}}
 	if state == nil {
 		return out
 	}
@@ -157,12 +179,16 @@ func robinhoodBookSnapshotLocked(state *AppState, cfgs []StrategyConfig) robinho
 		case ok && isRobinhoodLiveSpot(sc):
 			markHeld(s)
 			coin := robinhoodSymbol(sc.Args)
-			if pos := s.Positions[coin]; pos != nil && pos.Side == "long" && pos.Quantity > 0 && robinhoodFinite(pos.Quantity) {
-				out.Targets[coin] += pos.Quantity
+			if pos := s.Positions[coin]; pos != nil {
+				out.Books[coin] = append(out.Books[coin], robinhoodBookEntryOf(id, pos))
 			}
 		case !ok && s.Platform == "robinhood" && s.Type == "spot":
 			markHeld(s)
 		}
+	}
+	for coin := range out.Books {
+		books := out.Books[coin]
+		sort.Slice(books, func(i, j int) bool { return books[i].StrategyID < books[j].StrategyID })
 	}
 	return out
 }
@@ -201,8 +227,11 @@ func robinhoodUnsoldReason(coin string, remaining, held float64, res *RobinhoodC
 	return fmt.Sprintf("the go-trader book keeps %.10g %s unsold while the account holds %.10g (%s); it retries next cycle and never sells above the book", remaining, coin, held, why)
 }
 
-func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition, rhLiveCrypto []StrategyConfig, deps robinhoodKillSwitchCloseDeps) RobinhoodLiveCloseReport {
-	report := RobinhoodLiveCloseReport{Errors: make(map[string]error), Fills: make(map[string]RobinhoodCloseFill)}
+func forceCloseRobinhoodLive(ctx context.Context, holdings RobinhoodHoldings, rhLiveCrypto []StrategyConfig, deps robinhoodKillSwitchCloseDeps) RobinhoodLiveCloseReport {
+	report := RobinhoodLiveCloseReport{Errors: make(map[string]error), Fills: make(map[string]RobinhoodCloseFill), FlatProofs: robinhoodFlatProofs{}}
+	readID := holdings.AccountID
+	positions := holdings.Positions
+	noteRobinhoodVenueRead(deps.Book.CurrentKey, readID)
 
 	tradedCoins := make(map[string]bool)
 	for _, sc := range rhLiveCrypto {
@@ -235,6 +264,7 @@ func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition,
 		coin string
 		sold bool
 		res  *RobinhoodCloseResult
+		hold error
 	}
 	var candidates []candidate
 	for _, coin := range coins {
@@ -254,9 +284,20 @@ func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition,
 			report.Errors[coin] = fmt.Errorf("an unresolved Robinhood order holds this coin: %v", err)
 			continue
 		}
-		book := deps.Book.Targets[coin]
+		if strings.TrimSpace(readID) == "" {
+			report.Errors[coin] = fmt.Errorf("the holdings read names no Robinhood crypto account, so no book can be matched to it (#1921)")
+			continue
+		}
+		eligible, holdBooks := deps.Book.split(coin, readID)
+		holdErr := robinhoodAccountHoldError(coin, holdBooks, deps.Book.CurrentKey, readID)
+		book := robinhoodEntriesLongQty(eligible)
 		if robinhoodBookFlat(book) {
+			if holdErr != nil {
+				report.Errors[coin] = holdErr
+				continue
+			}
 			report.BookFlat = append(report.BookFlat, coin)
+			report.FlatProofs[coin] = robinhoodProofFor(coin, readID, deps.Book.CurrentKey, eligible)
 			if size > 0 {
 				report.Residue = append(report.Residue, RobinhoodPosition{Coin: coin, Size: size})
 			}
@@ -267,7 +308,7 @@ func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition,
 				report.Errors[coin] = err
 				continue
 			}
-			candidates = append(candidates, candidate{coin: coin})
+			candidates = append(candidates, candidate{coin: coin, hold: holdErr})
 			continue
 		}
 		if err := ctx.Err(); err != nil {
@@ -278,7 +319,7 @@ func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition,
 			report.Errors[coin] = fmt.Errorf("no Robinhood closer wired")
 			continue
 		}
-		result, err := deps.Closer(RobinhoodCloseRequest{Symbol: coin, Quantity: book})
+		result, err := deps.Closer(RobinhoodCloseRequest{Symbol: coin, Quantity: book, ExpectedAccountID: readID})
 		if result != nil && result.Close != nil && result.Close.Fill != nil && result.Close.Fill.TotalSz > 0 && result.Close.Fill.AvgPx > 0 {
 			report.Fills[coin] = *result.Close.Fill
 		}
@@ -287,7 +328,12 @@ func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition,
 			continue
 		}
 		if result != nil && result.NoBook {
+			if holdErr != nil {
+				report.Errors[coin] = holdErr
+				continue
+			}
 			report.BookFlat = append(report.BookFlat, coin)
+			report.FlatProofs[coin] = robinhoodProofFor(coin, readID, deps.Book.CurrentKey, nil)
 			report.Residue = append(report.Residue, RobinhoodPosition{Coin: coin, Size: size})
 			continue
 		}
@@ -296,40 +342,48 @@ func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition,
 				report.Errors[coin] = err
 				continue
 			}
-			candidates = append(candidates, candidate{coin: coin, res: result})
+			candidates = append(candidates, candidate{coin: coin, res: result, hold: holdErr})
 			continue
 		}
-		candidates = append(candidates, candidate{coin: coin, sold: true, res: result})
+		candidates = append(candidates, candidate{coin: coin, sold: true, res: result, hold: holdErr})
 	}
 
 	if len(candidates) == 0 {
 		return report
 	}
-	var post []RobinhoodPosition
+	outcome := robinhoodSettleOutcome{SaveErr: fmt.Errorf("no durable settlement is wired, so the remaining book cannot be proven")}
+	if deps.Settle != nil {
+		outcome = deps.Settle()
+	}
+	var before, after robinhoodBookSnapshot
+	if deps.BookAfter != nil {
+		before = deps.BookAfter()
+	} else if outcome.SaveErr == nil {
+		outcome.SaveErr = fmt.Errorf("no book snapshot is wired, so the remaining book cannot be proven")
+	}
+	var post RobinhoodHoldings
 	var verifyErr error
 	if deps.Fetcher == nil {
 		verifyErr = fmt.Errorf("no strict holdings fetcher is wired, so flat cannot be verified")
 	} else {
 		post, verifyErr = deps.Fetcher()
 	}
-	outcome := robinhoodSettleOutcome{SaveErr: fmt.Errorf("no durable settlement is wired, so the remaining book cannot be proven")}
-	if deps.Settle != nil {
-		outcome = deps.Settle()
+	if verifyErr == nil && post.AccountID != readID {
+		verifyErr = fmt.Errorf("the post-close read used venue account %s, and the first read used %s; flat is not proven for either (#1921)", robinhoodVenueFingerprint(post.AccountID), robinhoodVenueFingerprint(readID))
 	}
-	var after robinhoodBookSnapshot
 	if deps.BookAfter != nil {
 		after = deps.BookAfter()
-	} else if outcome.SaveErr == nil {
-		outcome.SaveErr = fmt.Errorf("no book snapshot is wired, so the remaining book cannot be proven")
 	}
 	stillHeld := make(map[string]float64)
-	for _, p := range post {
+	for _, p := range post.Positions {
 		if p.Size > stillHeld[p.Coin] {
 			stillHeld[p.Coin] = p.Size
 		}
 	}
 	for _, c := range candidates {
-		remaining, q := after.Targets[c.coin], stillHeld[c.coin]
+		eligBefore, _ := before.split(c.coin, readID)
+		eligAfter, heldAfter := after.split(c.coin, readID)
+		remaining, q := robinhoodEntriesLongQty(eligAfter), stillHeld[c.coin]
 		switch {
 		case verifyErr != nil:
 			report.Errors[c.coin] = fmt.Errorf("post-close holdings read failed: %v", verifyErr)
@@ -340,8 +394,18 @@ func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition,
 		case outcome.Unresolved[c.coin] != nil:
 			report.Errors[c.coin] = fmt.Errorf("an order for this coin is still unresolved after settlement: %v", outcome.Unresolved[c.coin])
 			continue
+		case c.hold != nil:
+			report.Errors[c.coin] = c.hold
+			continue
+		case len(heldAfter) > 0:
+			report.Errors[c.coin] = robinhoodAccountHoldError(c.coin, heldAfter, after.CurrentKey, readID)
+			continue
 		case robinhoodBookFlat(remaining):
 		case q <= 0:
+			if !robinhoodEntriesEqual(eligBefore, eligAfter) {
+				report.Errors[c.coin] = fmt.Errorf("the %s book changed while the holdings were read; flat waits for a new read (#1921)", c.coin)
+				continue
+			}
 			if err := robinhoodFlatReadLags(c.coin, q, deps.FreshLongs); err != nil {
 				report.Errors[c.coin] = err
 				continue
@@ -350,6 +414,15 @@ func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition,
 			report.Errors[c.coin] = fmt.Errorf("%s", robinhoodUnsoldReason(c.coin, remaining, q, c.res))
 			continue
 		}
+		var proven []robinhoodBookEntry
+		for _, e := range eligAfter {
+			for _, b := range eligBefore {
+				if b.StrategyID == e.StrategyID && robinhoodEntriesEqual([]robinhoodBookEntry{b}, []robinhoodBookEntry{e}) {
+					proven = append(proven, e)
+				}
+			}
+		}
+		report.FlatProofs[c.coin] = robinhoodProofFor(c.coin, post.AccountID, after.CurrentKey, proven)
 		if c.sold {
 			report.ClosedCoins = append(report.ClosedCoins, c.coin)
 		} else {
@@ -387,7 +460,7 @@ func newRobinhoodEmergencyCloser(d robinhoodEmergencyDeps, origin string) Robinh
 			return nil, fmt.Errorf("another Robinhood order for %s is being resolved; no order was sent", symbol)
 		}
 		defer release()
-		a, req, err := reserveRobinhoodEmergencyAttempt(d.store, d.state, owners, d.mu, symbol, origin, cr.Quantity, time.Now())
+		a, req, err := reserveRobinhoodEmergencyAttempt(d.store, d.state, owners, d.mu, symbol, origin, cr.Quantity, cr.ExpectedAccountID, time.Now())
 		if errors.Is(err, errRobinhoodNoBookToSell) {
 			return &RobinhoodCloseResult{Close: &RobinhoodClose{Symbol: symbol}, NoBook: true}, nil
 		}
@@ -397,7 +470,7 @@ func newRobinhoodEmergencyCloser(d robinhoodEmergencyDeps, origin string) Robinh
 		d.mu.RLock()
 		s := d.state.Strategies[a.StrategyID]
 		d.mu.RUnlock()
-		res, stderr, err := robinhoodCloseFn(robinhoodLiveCloseScript, symbol, a.RefID, req.Quantity)
+		res, stderr, err := robinhoodCloseFn(robinhoodLiveCloseScript, symbol, a.RefID, req.Quantity, req.ExpectedAccountID)
 		if stderr != "" {
 			fmt.Fprintf(os.Stderr, "[rh-close] %s stderr: %s\n", symbol, stderr)
 		}

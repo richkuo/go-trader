@@ -37,9 +37,9 @@ func TestRunPendingRobinhoodCircuitCloses(t *testing.T) {
 			context.Background(),
 			state,
 			cfg,
-			[]RobinhoodPosition{{Coin: "BTC", Size: 0.02, AvgPrice: 42000}},
+			RobinhoodHoldings{AccountID: stubRHVenueID, Positions: []RobinhoodPosition{{Coin: "BTC", Size: 0.02, AvgPrice: 42000}}},
 			true,
-			func() ([]RobinhoodPosition, error) { return nil, nil },
+			func() (RobinhoodHoldings, error) { return RobinhoodHoldings{AccountID: stubRHVenueID}, nil },
 			closer,
 			nil,
 			30*time.Second,
@@ -55,11 +55,12 @@ func TestRunPendingRobinhoodCircuitCloses(t *testing.T) {
 		}
 	})
 	t.Run("SubmitErrorRetainsPending", func(t *testing.T) {
+		useStubRHAccount(t)
 		state := &AppState{
 			Strategies: map[string]*StrategyState{
 				"rh-sma-btc": {
 					ID:        "rh-sma-btc",
-					Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 0.02, Side: "long", TradePositionID: "rh-sma-btc:BTC:1"}},
+					Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 0.02, Side: "long", TradePositionID: "rh-sma-btc:BTC:1", AccountKey: stubRHAccountKey, VenueAccountID: stubRHVenueID}},
 					RiskState: RiskState{
 						PendingCircuitCloses: map[string]*PendingCircuitClose{
 							PlatformPendingCloseRobinhood: {
@@ -84,7 +85,7 @@ func TestRunPendingRobinhoodCircuitCloses(t *testing.T) {
 			context.Background(),
 			state,
 			cfg,
-			[]RobinhoodPosition{{Coin: "BTC", Size: 0.02}},
+			RobinhoodHoldings{AccountID: stubRHVenueID, Positions: []RobinhoodPosition{{Coin: "BTC", Size: 0.02}}},
 			true,
 			nil,
 			closer,

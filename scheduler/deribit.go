@@ -469,24 +469,16 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 
 	case "call":
 		now := time.Now().UTC()
-		requireCover := false
-		if spec, err := lookupOptionContractSpec(optionOwnerPlatform(s), r.AssignUnderlying); err == nil {
-			requireCover = spec.RequireCoveredCalls
-		}
 		existing, held := s.Positions[symbol]
 		if held && existing.Side != "long" {
 			existing, held = nil, false
 		}
-		delivered := r.AssignQuantity
-		uncovered := 0.0
-		if requireCover {
-			heldQty := 0.0
-			if held && existing.Quantity > 0 {
-				heldQty = existing.Quantity
-			}
-			delivered = math.Min(heldQty, r.AssignQuantity)
-			uncovered = r.AssignQuantity - delivered
+		heldQty := 0.0
+		if held && existing.Quantity > 0 {
+			heldQty = existing.Quantity
 		}
+		delivered := math.Min(heldQty, r.AssignQuantity)
+		uncovered := r.AssignQuantity - delivered
 		if uncovered > 0 {
 			intrinsic := math.Max(r.AssignSpotPrice-r.AssignStrike, 0)
 			settlement := intrinsic * uncovered

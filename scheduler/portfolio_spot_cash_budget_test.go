@@ -291,6 +291,10 @@ func TestExecuteOrderCashReconcileGate(t *testing.T) {
 			store := openSplitStore(t, cfg)
 			state := NewAppState()
 			state.Strategies[sc.ID] = NewStrategyState(sc)
+			if posQty > 0 {
+				state.Strategies[sc.ID].Positions["BTC"] = &Position{Symbol: "BTC", Quantity: posQty, AvgCost: 100, Side: posSide, TradePositionID: "rh-btc:BTC:1",
+					AccountKey: robinhoodAccountKey(), VenueAccountID: "acct-1", AccountBindingSource: robinhoodBindingSourceSettlement}
+			}
 			if err := store.LoadRobinhoodOrderGuards(state, cfg.Strategies); err != nil {
 				t.Fatalf("load guards: %v", err)
 			}
