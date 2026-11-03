@@ -48,9 +48,19 @@ func robinhoodResolveRequestFor(a *robinhoodOrderAttempt, orderID string, cancel
 		RequestedQuantity: robinhoodVenueOrderQty(a),
 		SubmittedAfterMs:  a.CreatedAtMs,
 		SubmittedBeforeMs: a.CreatedAtMs + budget + robinhoodSubmitWindowMargin.Milliseconds(),
-		ExpectedAccountID: a.VenueAccountID,
+		ExpectedAccountID: robinhoodAttemptExpectedAccountID(a),
 		CancelOpen:        cancelOpen,
 	}
+}
+
+func robinhoodAttemptExpectedAccountID(a *robinhoodOrderAttempt) string {
+	if a.VenueAccountID != "" {
+		return a.VenueAccountID
+	}
+	if req, err := parseRobinhoodOrderRequest(a); err == nil {
+		return req.ExpectedAccountID
+	}
+	return ""
 }
 
 func resolveOneRobinhoodAttempt(d robinhoodEmergencyDeps, strategyID, attemptID, orderID string, cancelOpen bool, now time.Time) robinhoodResolveVerdict {

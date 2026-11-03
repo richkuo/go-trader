@@ -234,7 +234,7 @@ var robinhoodExecuteProbeArgv = []string{
 var robinhoodExecuteSellProbeArgv = []string{
 	"--execute", "--symbol=BTC", "--side=sell", "--mode=live",
 	"--ref-id=00000000-0000-4000-8000-000000000000", "--budget-ms=50000",
-	"--quantity=1", "--close-kind=whole", "--sole-owner", "--probe-only",
+	"--quantity=1", "--close-kind=whole", "--sole-owner", "--expected-account-id=probe", "--probe-only",
 }
 
 var robinhoodResolveProbeArgv = []string{
@@ -247,7 +247,7 @@ var robinhoodResolveProbeArgv = []string{
 
 var robinhoodCloseProbeArgv = []string{
 	"--symbol=BTC", "--mode=live", "--quantity=1", "--budget-ms=50000",
-	"--ref-id=00000000-0000-4000-8000-000000000000", "--probe-only",
+	"--ref-id=00000000-0000-4000-8000-000000000000", "--expected-account-id=probe", "--probe-only",
 }
 
 const probeTimeout = 15 * time.Second

@@ -20,6 +20,7 @@ TOTP = "JBSWY3DPEHPK3PXP"
 TOKEN_URL = "https://api.robinhood.com/oauth2/token/"
 POSITIONS_CHECK = "https://api.robinhood.com/positions/?nonzero=true"
 HOLDINGS = "https://nummus.robinhood.com/holdings/"
+ACCOUNTS = "https://nummus.robinhood.com/accounts/"
 PATHFINDER = "https://api.robinhood.com/pathfinder/"
 MACHINE = PATHFINDER + "user_machine/"
 INQUIRY = PATHFINDER + "inquiries/machine-1/user_view/"
@@ -45,7 +46,7 @@ EMPTY_PAGE = {"status": 200, "json": {"next": None, "results": []}}
 FETCH = ["fetch_robinhood_positions.py"]
 SIX_SCRIPTS = [
     pytest.param(["check_robinhood.py", "momentum_pro", "BTC", "1h", "--mode=live"], None, id="check_live"),
-    pytest.param(["close_robinhood_position.py", "--symbol=BTC", "--mode=live", "--quantity=0.5"], None, id="close"),
+    pytest.param(["close_robinhood_position.py", "--symbol=BTC", "--mode=live", "--quantity=0.5", "--expected-account-id=acct-1"], None, id="close"),
     pytest.param(FETCH, None, id="positions"),
     pytest.param(["check_options.py", "vol_mean_reversion", "BTC", "--platform=robinhood"], "[]", id="options"),
     pytest.param(["check_balance.py", "--platform=robinhood"], None, id="balance"),
@@ -69,6 +70,7 @@ class Box:
         self.set_routes({})
 
     def set_routes(self, routes):
+        routes = dict({"GET " + ACCOUNTS: [{"status": 200, "json": {"next": None, "results": [{"id": "acct-1"}]}}]}, **routes)
         self.routes.write_text(json.dumps(routes))
 
     def file(self, suffix, username=USERNAME):
@@ -594,7 +596,7 @@ def test_a_stalled_lock_holder_is_bounded_by_its_budget(tmp_path):
     box = Box(tmp_path)
     box.seed_session()
     box.set_routes({"GET " + POSITIONS_CHECK: [dict(EMPTY_PAGE, sleep_s=10)]})
-    first = _run(box, ["close_robinhood_position.py", "--symbol=BTC", "--mode=live", "--quantity=0.5", "--budget-ms=3000"])
+    first = _run(box, ["close_robinhood_position.py", "--symbol=BTC", "--mode=live", "--quantity=0.5", "--budget-ms=3000", "--expected-account-id=acct-1"])
     detail = _detail(first, box)
     assert first.returncode == 1, detail
     assert first.elapsed < 5, detail

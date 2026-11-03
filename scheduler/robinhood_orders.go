@@ -147,26 +147,27 @@ func (g *robinhoodOrderGuard) sortedAttemptIDs() []string {
 }
 
 type robinhoodOrderRequest struct {
-	Version        int               `json:"version"`
-	Origin         string            `json:"origin"`
-	Side           string            `json:"side"`
-	Signal         int               `json:"signal,omitempty"`
-	SignalStr      string            `json:"signal_str,omitempty"`
-	CloseFraction  float64           `json:"close_fraction,omitempty"`
-	AmountUSD      float64           `json:"amount_usd,omitempty"`
-	Quantity       float64           `json:"quantity,omitempty"`
-	Price          float64           `json:"price,omitempty"`
-	PrevPositionID string            `json:"prev_position_id,omitempty"`
-	PrevPosSide    string            `json:"prev_pos_side,omitempty"`
-	PrevPosQty     float64           `json:"prev_pos_qty,omitempty"`
-	CloseKind      string            `json:"close_kind,omitempty"`
-	SoleOwner      bool              `json:"sole_owner,omitempty"`
-	Result         json.RawMessage   `json:"result,omitempty"`
-	Hurst          HurstGateDecision `json:"hurst"`
-	Peers          []string          `json:"peers,omitempty"`
-	BudgetMs       int64             `json:"budget_ms"`
-	SpawnedAtMs    int64             `json:"spawned_at_ms,omitempty"`
-	Script         string            `json:"script"`
+	Version           int               `json:"version"`
+	Origin            string            `json:"origin"`
+	Side              string            `json:"side"`
+	Signal            int               `json:"signal,omitempty"`
+	SignalStr         string            `json:"signal_str,omitempty"`
+	CloseFraction     float64           `json:"close_fraction,omitempty"`
+	AmountUSD         float64           `json:"amount_usd,omitempty"`
+	Quantity          float64           `json:"quantity,omitempty"`
+	Price             float64           `json:"price,omitempty"`
+	PrevPositionID    string            `json:"prev_position_id,omitempty"`
+	PrevPosSide       string            `json:"prev_pos_side,omitempty"`
+	PrevPosQty        float64           `json:"prev_pos_qty,omitempty"`
+	ExpectedAccountID string            `json:"expected_account_id,omitempty"`
+	CloseKind         string            `json:"close_kind,omitempty"`
+	SoleOwner         bool              `json:"sole_owner,omitempty"`
+	Result            json.RawMessage   `json:"result,omitempty"`
+	Hurst             HurstGateDecision `json:"hurst"`
+	Peers             []string          `json:"peers,omitempty"`
+	BudgetMs          int64             `json:"budget_ms"`
+	SpawnedAtMs       int64             `json:"spawned_at_ms,omitempty"`
+	Script            string            `json:"script"`
 }
 
 type robinhoodOrderEvidenceRecord struct {
@@ -335,7 +336,11 @@ var robinhoodUsername = func() string {
 }
 
 func robinhoodAccountKey() string {
-	user := strings.ToLower(strings.TrimSpace(robinhoodUsername()))
+	return robinhoodAccountKeyFor(robinhoodUsername())
+}
+
+func robinhoodAccountKeyFor(username string) string {
+	user := strings.ToLower(strings.TrimSpace(username))
 	if user == "" {
 		return ""
 	}
@@ -497,6 +502,9 @@ func classifyRobinhoodOrderOutcome(res *RobinhoodExecuteResult, runErr error, a 
 		if a.VenueAccountID != "" && res.AccountID != "" && res.AccountID != a.VenueAccountID {
 			return robinhoodOrderUnknown, "the venue account differs from the attempt's account"
 		}
+		if req, err := parseRobinhoodOrderRequest(a); err == nil && req.ExpectedAccountID != "" && res.AccountID != "" && res.AccountID != req.ExpectedAccountID {
+			return robinhoodOrderUnknown, "the venue account differs from the account the attempt was frozen for"
+		}
 	}
 	sizedSell := robinhoodIsSizedSell(a)
 	detail := strings.TrimSpace(res.Error)
@@ -595,6 +603,10 @@ func robinhoodVenueOrderQty(a *robinhoodOrderAttempt) float64 {
 }
 
 func reserveRobinhoodAttempt(store *StateStore, state *AppState, s *StrategyState, mu *sync.RWMutex, symbol, origin, side string, req robinhoodOrderRequest, now time.Time) (*robinhoodOrderAttempt, error) {
+	return reserveRobinhoodAttemptChecked(store, state, s, mu, symbol, origin, side, req, now, nil)
+}
+
+func reserveRobinhoodAttemptChecked(store *StateStore, state *AppState, s *StrategyState, mu *sync.RWMutex, symbol, origin, side string, req robinhoodOrderRequest, now time.Time, recheck func() error) (*robinhoodOrderAttempt, error) {
 	if store == nil {
 		return nil, fmt.Errorf("state store unavailable")
 	}
@@ -611,6 +623,11 @@ func reserveRobinhoodAttempt(store *StateStore, state *AppState, s *StrategyStat
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	if recheck != nil {
+		if err := recheck(); err != nil {
+			return nil, err
+		}
+	}
 	if err := persistRobinhoodAttemptLocked(store, state, s, a); err != nil {
 		return nil, err
 	}
@@ -679,24 +696,31 @@ func robinhoodBookFlat(qty float64) bool {
 	return !(qty > robinhoodQtyTolerance)
 }
 
-func robinhoodLongBookLocked(state *AppState, owners []StrategyConfig, coin string) float64 {
+func robinhoodEligibleLongBooksLocked(state *AppState, owners []StrategyConfig, coin, currentKey, readAccountID string) ([]StrategyConfig, float64) {
+	var eligible []StrategyConfig
 	total := 0.0
 	if state == nil {
-		return 0
+		return nil, 0
 	}
 	for _, sc := range owners {
 		s := state.Strategies[sc.ID]
 		if s == nil {
 			continue
 		}
-		if pos := s.Positions[coin]; pos != nil && pos.Side == "long" && pos.Quantity > 0 && robinhoodFinite(pos.Quantity) {
-			total += pos.Quantity
+		pos := s.Positions[coin]
+		if pos == nil || pos.Side != "long" || !(pos.Quantity > 0) || !robinhoodFinite(pos.Quantity) {
+			continue
 		}
+		if robinhoodBookAccountState(pos, currentKey, readAccountID) != robinhoodAccountCurrent {
+			continue
+		}
+		eligible = append(eligible, sc)
+		total += pos.Quantity
 	}
-	return total
+	return eligible, total
 }
 
-func reserveRobinhoodEmergencyAttempt(store *StateStore, state *AppState, owners []StrategyConfig, mu *sync.RWMutex, symbol, origin string, requested float64, now time.Time) (*robinhoodOrderAttempt, robinhoodOrderRequest, error) {
+func reserveRobinhoodEmergencyAttempt(store *StateStore, state *AppState, owners []StrategyConfig, mu *sync.RWMutex, symbol, origin string, requested float64, expectedAccountID string, now time.Time) (*robinhoodOrderAttempt, robinhoodOrderRequest, error) {
 	var req robinhoodOrderRequest
 	if store == nil {
 		return nil, req, fmt.Errorf("state store unavailable")
@@ -704,27 +728,32 @@ func reserveRobinhoodEmergencyAttempt(store *StateStore, state *AppState, owners
 	if len(owners) == 0 {
 		return nil, req, fmt.Errorf("no configured live Robinhood strategy owns %s", symbol)
 	}
+	if strings.TrimSpace(expectedAccountID) == "" {
+		return nil, req, fmt.Errorf("the emergency close of %s names no venue account, so no book can be matched to it (#1921)", symbol)
+	}
 	if !(requested > 0) || !robinhoodFinite(requested) {
 		return nil, req, errRobinhoodNoBookToSell
 	}
+	currentKey := robinhoodAccountKey()
 	mu.Lock()
 	defer mu.Unlock()
-	s := state.Strategies[owners[0].ID]
-	if s == nil {
-		return nil, req, fmt.Errorf("strategy %s has no state", owners[0].ID)
-	}
 	if prev := robinhoodUnresolvedForCoinLocked(state, "", symbol); prev != nil {
 		return nil, req, fmt.Errorf("Robinhood attempt %s for %s is unresolved", prev.AttemptID, symbol)
 	}
-	asked := math.Min(requested, robinhoodLongBookLocked(state, owners, symbol))
+	eligible, total := robinhoodEligibleLongBooksLocked(state, owners, symbol, currentKey, expectedAccountID)
+	asked := math.Min(requested, total)
 	if robinhoodBookFlat(asked) {
 		return nil, req, errRobinhoodNoBookToSell
 	}
-	peers := make([]string, 0, len(owners))
-	for _, o := range owners {
+	s := state.Strategies[eligible[0].ID]
+	if s == nil {
+		return nil, req, fmt.Errorf("strategy %s has no state", eligible[0].ID)
+	}
+	peers := make([]string, 0, len(eligible))
+	for _, o := range eligible {
 		peers = append(peers, o.ID)
 	}
-	frozen := robinhoodOrderRequest{Quantity: asked, CloseKind: robinhoodCloseKindEmergency, Peers: peers, Script: robinhoodLiveCloseScript}
+	frozen := robinhoodOrderRequest{Quantity: asked, CloseKind: robinhoodCloseKindEmergency, Peers: peers, ExpectedAccountID: expectedAccountID, Script: robinhoodLiveCloseScript}
 	a, err := newRobinhoodAttemptRecord(s, symbol, origin, "sell", robinhoodEmergencySellRequestVersion, frozen, now)
 	if err != nil {
 		return nil, req, err
@@ -985,6 +1014,10 @@ func settleRobinhoodSignalAttemptLocked(store *StateStore, sc StrategyConfig, s 
 	if duplicate || robinhoodTradeHasOrderID(s, a.VenueOrderID) {
 		return hold(fmt.Sprintf("a trade with venue order %s is already booked; refusing a second booking", a.VenueOrderID))
 	}
+	currentKey := robinhoodAccountKey()
+	if why := robinhoodAttemptAccountHold(a, currentKey); why != "" {
+		return hold(why)
+	}
 	req, err := parseRobinhoodOrderRequest(a)
 	if err != nil {
 		return hold(err.Error())
@@ -1006,6 +1039,9 @@ func settleRobinhoodSignalAttemptLocked(store *StateStore, sc StrategyConfig, s 
 	case "sell":
 		result.Signal = -1
 		pos := s.Positions[a.Symbol]
+		if why := robinhoodSellBookAccountHold(pos, a, currentKey); why != "" {
+			return hold(why)
+		}
 		var sizing *RobinhoodSellSizing
 		if req.Version == robinhoodSizedSellRequestVersion {
 			if saved := robinhoodEvidenceSizing(a); saved != nil {
@@ -1055,6 +1091,16 @@ func settleRobinhoodSignalAttemptLocked(store *StateStore, sc StrategyConfig, s 
 	if trades <= 0 || len(s.TradeHistory) == before {
 		return hold("the confirmed fill booked no trade")
 	}
+	if a.Side == "buy" {
+		if pos := s.Positions[a.Symbol]; pos != nil && pos.AccountKey == "" && pos.VenueAccountID == "" {
+			pos.AccountKey = a.AccountKey
+			pos.VenueAccountID = a.VenueAccountID
+			pos.AccountBindingSource = robinhoodBindingSourceSettlement
+			if a.VenueAccountID == "" && logger != nil {
+				logger.Error("CRITICAL: Robinhood attempt %s bought %s with no venue account id in its evidence; the new book stays held until the owner binds it (#1921)", a.AttemptID, a.Symbol)
+			}
+		}
+	}
 	now := time.Now()
 	a.Status = robinhoodAttemptSettled
 	a.HoldReason = ""
@@ -1076,6 +1122,34 @@ func settleRobinhoodSignalAttemptLocked(store *StateStore, sc StrategyConfig, s 
 		logger.Info("Robinhood attempt %s settled: %s %.10g %s at $%.6f (order %s) (#1815)", a.AttemptID, a.Side, fill.Quantity, a.Symbol, fill.AvgPx, a.VenueOrderID)
 	}
 	return out
+}
+
+func robinhoodAttemptAccountHold(a *robinhoodOrderAttempt, currentKey string) string {
+	switch {
+	case currentKey == "":
+		return "ROBINHOOD_USERNAME is not set, so the confirmed fill cannot be matched to an account; it waits with its evidence (#1921)"
+	case a.AccountKey == "":
+		return "the attempt carries no account key; it waits with its evidence (#1921)"
+	case a.AccountKey != currentKey:
+		return fmt.Sprintf("the attempt was sent from account %s, and the configured account is %s; it waits with its evidence until the original account is configured (#1921)", robinhoodKeyFingerprint(a.AccountKey), robinhoodKeyFingerprint(currentKey))
+	}
+	return ""
+}
+
+func robinhoodSellBookAccountHold(pos *Position, a *robinhoodOrderAttempt, currentKey string) string {
+	if pos == nil {
+		return ""
+	}
+	state := robinhoodBookAccountState(pos, currentKey, a.VenueAccountID)
+	switch {
+	case state != robinhoodAccountCurrent:
+		return fmt.Sprintf("the book is %s: %s (#1921)", state, robinhoodAccountHoldReason(state, pos.AccountKey, pos.VenueAccountID, currentKey, a.VenueAccountID))
+	case a.VenueAccountID == "":
+		return "the confirmed sale names no venue account, so the book cannot be proven to own it (#1921)"
+	case pos.AccountKey != a.AccountKey || pos.VenueAccountID != a.VenueAccountID:
+		return "the book and the sale name different accounts (#1921)"
+	}
+	return ""
 }
 
 func robinhoodLiveOwnersForCoin(coin string, cfgs []StrategyConfig) []StrategyConfig {
@@ -1131,8 +1205,19 @@ func settleRobinhoodEmergencyAttemptsLocked(state *AppState, cfgs []StrategyConf
 			fmt.Println(line)
 		}
 	}
+	currentKey := robinhoodAccountKey()
 	for _, a := range robinhoodUnresolvedAttemptsLocked(state) {
 		if a.Origin == robinhoodOriginSignal || a.Status != robinhoodAttemptSettling || a.SettlementSeq > 0 {
+			continue
+		}
+		if why := robinhoodAttemptAccountHold(a, currentKey); why != "" {
+			a.HoldReason = why
+			logf("[CRITICAL] rh-settle: attempt %s holds: %s", a.AttemptID, why)
+			continue
+		}
+		if a.VenueAccountID == "" {
+			a.HoldReason = "the confirmed sale names no venue account, so no book can be proven to own it (#1921)"
+			logf("[CRITICAL] rh-settle: attempt %s holds: %s", a.AttemptID, a.HoldReason)
 			continue
 		}
 		owners := robinhoodLiveOwnersForCoin(a.Symbol, cfgs)
@@ -1154,6 +1239,7 @@ func settleRobinhoodEmergencyAttemptsLocked(state *AppState, cfgs []StrategyConf
 		}
 		var books []share
 		total := 0.0
+		heldQty := 0.0
 		for _, sc := range owners {
 			s := state.Strategies[sc.ID]
 			if s == nil {
@@ -1166,11 +1252,20 @@ func settleRobinhoodEmergencyAttemptsLocked(state *AppState, cfgs []StrategyConf
 			if pos == nil || pos.Side != "long" || !(pos.Quantity > 0) {
 				continue
 			}
+			if robinhoodBookAccountState(pos, currentKey, a.VenueAccountID) != robinhoodAccountCurrent || pos.AccountKey != a.AccountKey || pos.VenueAccountID != a.VenueAccountID {
+				heldQty += pos.Quantity
+				continue
+			}
 			books = append(books, share{sc: sc, s: s, qty: pos.Quantity})
 			total += pos.Quantity
 		}
 		if dup {
 			a.HoldReason = fmt.Sprintf("a trade with venue order %s is already booked; refusing a second booking", a.VenueOrderID)
+			logf("[CRITICAL] rh-settle: attempt %s holds: %s", a.AttemptID, a.HoldReason)
+			continue
+		}
+		if heldQty > 0 && fill.Quantity > total*(1+robinhoodQtyTolerance) {
+			a.HoldReason = fmt.Sprintf("the confirmed sale of %.10g %s is above the %.10g in books bound to its account, and %.10g %s sits in books whose account is not proven; it waits for the owner to bind or release those books (#1921)", fill.Quantity, a.Symbol, total, heldQty, a.Symbol)
 			logf("[CRITICAL] rh-settle: attempt %s holds: %s", a.AttemptID, a.HoldReason)
 			continue
 		}

@@ -1912,4 +1912,54 @@ assert_eq "$(update_directional_cert_path_from_show 'OTHER=1' "$cert_test/missin
     "" "cert path: a unit with no override leaves the probe on the default artifact"
 rm -rf "$cert_test"
 
+rb_test=$(mktemp -d)
+rb_seed() {
+    python3 -I - "$rb_test/state.db" "$1" "$2" "$3" "$4" <<'PY'
+import sqlite3, sys
+path, columns, sid, qty, key = sys.argv[1:6]
+con = sqlite3.connect(path)
+con.execute("DROP TABLE IF EXISTS positions")
+if columns == "new":
+    con.execute("CREATE TABLE positions (strategy_id TEXT, symbol TEXT, side TEXT, quantity REAL, account_key TEXT NOT NULL DEFAULT '', venue_account_id TEXT NOT NULL DEFAULT '', account_binding_source TEXT NOT NULL DEFAULT '')")
+    con.execute("INSERT INTO positions (strategy_id, symbol, side, quantity, account_key, venue_account_id) VALUES (?, ?, ?, ?, ?, ?)", (sid, "btc", "long", float(qty), key, "acct-1" if key else ""))
+else:
+    con.execute("CREATE TABLE positions (strategy_id TEXT, symbol TEXT, side TEXT, quantity REAL)")
+    con.execute("INSERT INTO positions VALUES (?, ?, ?, ?)", (sid, "btc", "long", float(qty)))
+con.commit()
+PY
+}
+rb_config() {
+    printf '{"db_file": "%s", "strategies": [{"id": "rh-btc", "storage_strategy_id": "rh-btc-store", "type": "spot", "args": ["momentum_pro", "BTC", "1h", "--mode=%s"]}, {"id": "hl-eth", "type": "perps", "args": ["x", "eth", "1h"]}]}\n' "$rb_test/state.db" "${1:-live}" >"$rb_test/config.json"
+}
+printf 'old go-trader build %s\n' "$UPDATE_RH_IDENTITY_CAPABILITY" >"$rb_test/go-trader-pre1921"
+printf 'new go-trader build %s %s tail\n' "$UPDATE_RH_IDENTITY_CAPABILITY" "$UPDATE_RH_BINDING_CAPABILITY" >"$rb_test/go-trader-1921"
+rb_check() {
+    GO_TRADER_UPDATE_CONFIG="$rb_test/config.json" update_robinhood_binding_rollback_check "${1:-$rb_test/go-trader-pre1921}" 2>"$rb_test/err" && printf 'ok' || printf 'blocked'
+}
+grep -qF "const robinhoodAccountBindingCapability = \"$UPDATE_RH_BINDING_CAPABILITY\"" "$(dirname "$0")/../scheduler/robinhood_account_binding.go" || { echo "FAIL: rh binding: update_helpers.sh capability marker differs from scheduler/robinhood_account_binding.go" >&2; exit 1; }
+rb_config live; rb_seed new rh-btc-store 0.5 robinhood:user-1
+assert_eq "$(rb_check)" "blocked" "rh binding: an open bound live book blocks a restored binary without the account binding"
+grep -q "rh-btc: .* holds an open BTC book of 0.5 (bound)" "$rb_test/err" || { echo "FAIL: rh binding blocker names the strategy and book" >&2; cat "$rb_test/err" >&2; exit 1; }
+grep -q "predates the Robinhood account binding" "$rb_test/err" || { echo "FAIL: rh binding: the block names the old binary" >&2; cat "$rb_test/err" >&2; exit 1; }
+rb_seed new rh-btc-store 0.5 ""
+assert_eq "$(rb_check)" "blocked" "rh binding: an open book with empty binding values still blocks"
+assert_eq "$(rb_check "$rb_test/go-trader-1921")" "ok" "rh binding: a restored binary with the account binding starts"
+grep -q "enforces the account binding" "$rb_test/err" || { echo "FAIL: rh binding: a compatible start logs why it does not block" >&2; cat "$rb_test/err" >&2; exit 1; }
+assert_eq "$(rb_check "$rb_test/missing-go-trader")" "blocked" "rh binding: an unreadable restored binary blocks"
+rb_seed new rh-btc-store 0 robinhood:user-1
+assert_eq "$(rb_check)" "ok" "rh binding: a flat book never blocks"
+rb_seed new rh-btc 0.5 robinhood:user-1
+assert_eq "$(rb_check)" "ok" "rh binding: only the configured storage id is owned"
+rb_seed old rh-btc-store 0.5 ""
+assert_eq "$(rb_check)" "ok" "rh binding: a state file without binding columns never ran the feature"
+rb_seed new rh-btc-store 0.5 robinhood:user-1
+rb_config paper
+assert_eq "$(rb_check)" "ok" "rh binding: a paper Robinhood strategy never blocks"
+rb_config live
+printf 'not a database' >"$rb_test/state.db"
+assert_eq "$(rb_check)" "blocked" "rh binding: an unreadable state file fails closed"
+assert_eq "$(rb_check "$rb_test/go-trader-1921")" "blocked" "rh binding: an unreadable state file fails closed for a compatible binary too"
+grep -q "could not read the config or a state file" "$rb_test/err" || { echo "FAIL: rh binding: an unreadable state block says so" >&2; cat "$rb_test/err" >&2; exit 1; }
+rm -rf "$rb_test"
+
 echo "OK: update_helpers tests passed"

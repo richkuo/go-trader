@@ -150,6 +150,9 @@ func (e *rhLiveEnv) setRoutes(routes rhRoutes) {
 	if _, ok := routes["GET "+rhTestSession]; !ok {
 		routes = rhWith(routes, rhRoutes{"GET " + rhTestSession: {rhHoldings()}})
 	}
+	if _, ok := routes["GET "+rhTestAccounts]; !ok {
+		routes = rhWith(routes, rhRoutes{"GET " + rhTestAccounts: {rhAccountRoute(rhTestAccount)}})
+	}
 	b, err := json.Marshal(routes)
 	if err != nil {
 		e.t.Fatal(err)
@@ -222,7 +225,8 @@ func (e *rhLiveEnv) setPosition(id, coin string, qty, avgCost float64) {
 	e.t.Helper()
 	e.mu.Lock()
 	s := e.state.Strategies[id]
-	s.Positions[coin] = &Position{Symbol: coin, Quantity: qty, InitialQuantity: qty, AvgCost: avgCost, Side: "long", OwnerStrategyID: id, TradePositionID: id + ":" + coin + ":seed", OpenedAt: time.Now().UTC()}
+	s.Positions[coin] = &Position{Symbol: coin, Quantity: qty, InitialQuantity: qty, AvgCost: avgCost, Side: "long", OwnerStrategyID: id, TradePositionID: id + ":" + coin + ":seed", OpenedAt: time.Now().UTC(),
+		AccountKey: robinhoodAccountKey(), VenueAccountID: rhTestAccount, AccountBindingSource: robinhoodBindingSourceSettlement}
 	err := e.store.SaveStrategyBook(s)
 	e.mu.Unlock()
 	if err != nil {
@@ -342,6 +346,10 @@ func rhPrepRoutes() rhRoutes {
 		"GET " + rhTestAccounts: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{map[string]interface{}{"id": rhTestAccount}}}}},
 		"GET " + rhTestQuote:    {{"status": 200, "json": map[string]interface{}{"ask_price": "100.00", "bid_price": "99.00"}}},
 	}
+}
+
+func rhAccountRoute(id string) rhRoute {
+	return rhRoute{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{map[string]interface{}{"id": id}}}}
 }
 
 func rhOrderBody(id, state, side, cumulative string, average interface{}, refID string) map[string]interface{} {
@@ -1009,7 +1017,7 @@ func (e *rhLiveEnv) killSwitchInputs(phases ...rhRoutes) KillSwitchCloseInputs {
 		}
 	}
 	calls := 0
-	fetcher := func() ([]RobinhoodPosition, error) {
+	fetcher := func() (RobinhoodHoldings, error) {
 		if calls < len(phases) {
 			e.setRoutes(phases[calls])
 		}
@@ -1348,7 +1356,7 @@ func TestRobinhoodLiveOrderKillSwitch(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
 		e.setPosition("rh-btc", "BTC", 0.5, 90)
 		e.setRoutes(rhClosePhase(rhSellPartial("0.2", "98"), "0.5", "0.5"))
-		if _, err := newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginKillSwitch)(RobinhoodCloseRequest{Symbol: "BTC", Quantity: 0.5}); err != nil {
+		if _, err := newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginKillSwitch)(RobinhoodCloseRequest{Symbol: "BTC", Quantity: 0.5, ExpectedAccountID: rhTestAccount}); err != nil {
 			t.Fatalf("seed close: %v", err)
 		}
 		row := e.onlyAttempt()
@@ -1421,14 +1429,14 @@ func (e *rhLiveEnv) latchCB(id string) {
 }
 
 func (e *rhLiveEnv) runCB(fetcher RobinhoodPositionsFetcher) {
-	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, nil, false, fetcher,
+	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, RobinhoodHoldings{}, false, fetcher,
 		newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginCircuitBreaker), nil, 2*time.Minute, &e.mu,
 		robinhoodCircuitCloseDeps{store: e.store, prices: map[string]float64{"BTC": 50}, resolve: robinhoodEmergencyResolver(e.deps(), e.cfg, nil)})
 }
 
 func (e *rhLiveEnv) phasedFetcher(phases ...rhRoutes) RobinhoodPositionsFetcher {
 	calls := 0
-	return func() ([]RobinhoodPosition, error) {
+	return func() (RobinhoodHoldings, error) {
 		if calls < len(phases) {
 			e.setRoutes(phases[calls])
 		}
@@ -1529,7 +1537,7 @@ func TestRobinhoodLiveOrderCircuitBreaker(t *testing.T) {
 			e.mu.Unlock()
 			closePhase := rhWith(rhSellFilled("0.5", "97"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}})
 			closer := e.phaseCloser(closePhase, newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginCircuitBreaker))
-			runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, true, nil,
+			runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, RobinhoodHoldings{AccountID: rhTestAccount, Positions: []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}}, true, nil,
 				closer, nil, 2*time.Minute, &e.mu, robinhoodCircuitCloseDeps{store: e.store, prices: map[string]float64{"BTC": 50}})
 			if e.state.Strategies["rh-btc"].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil {
 				t.Fatal("pending close must be kept with no post-close fetcher")
@@ -1741,7 +1749,7 @@ func TestRobinhoodLiveOrderCircuitBreaker(t *testing.T) {
 			if req, err := parseRobinhoodOrderRequest(a); err != nil || req.Version != robinhoodOrderRequestVersion {
 				t.Fatalf("seed request = %+v %v, want a legacy version 1 request", req, err)
 			}
-			res := &RobinhoodExecuteResult{OrderOutcome: "filled", RefID: a.RefID, Order: RobinhoodOrderEvidence{ID: "ord-legacy"}, Execution: &RobinhoodExecution{Fill: &RobinhoodFill{AvgPx: 98, Quantity: 1.0, OID: "ord-legacy"}}}
+			res := &RobinhoodExecuteResult{OrderOutcome: "filled", RefID: a.RefID, AccountID: rhTestAccount, Order: RobinhoodOrderEvidence{ID: "ord-legacy"}, Execution: &RobinhoodExecution{Fill: &RobinhoodFill{AvgPx: 98, Quantity: 1.0, OID: "ord-legacy"}}}
 			e.mu.Lock()
 			err = recordRobinhoodOrderOutcomeLocked(e.store, s, a, res, robinhoodOrderConfirmed, "", nil, time.Now())
 			e.mu.Unlock()
@@ -1975,7 +1983,7 @@ func TestRobinhoodLiveOrderCircuitBreaker(t *testing.T) {
 
 func runPendingRobinhoodCircuitClosesWithCloser(e *rhLiveEnv, fetcher RobinhoodPositionsFetcher, closePhase rhRoutes) {
 	closer := e.phaseCloser(closePhase, newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginCircuitBreaker))
-	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, nil, false, fetcher,
+	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, RobinhoodHoldings{}, false, fetcher,
 		closer, nil, 2*time.Minute, &e.mu,
 		robinhoodCircuitCloseDeps{store: e.store, prices: map[string]float64{"BTC": 50}, resolve: robinhoodEmergencyResolver(e.deps(), e.cfg, nil)})
 }
@@ -2085,7 +2093,7 @@ func (e *rhLiveEnv) seedSharedSettlingClose() rhAttemptRow {
 	e.setPosition("rh-a", "BTC", 0.1, 90)
 	e.setPosition("rh-b", "BTC", 0.3, 90)
 	e.setRoutes(rhWith(rhSellFilled("0.4", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.4", "0.4"))}}))
-	if _, err := newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginKillSwitch)(RobinhoodCloseRequest{Symbol: "BTC", Quantity: 0.4}); err != nil {
+	if _, err := newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginKillSwitch)(RobinhoodCloseRequest{Symbol: "BTC", Quantity: 0.4, ExpectedAccountID: rhTestAccount}); err != nil {
 		e.t.Fatalf("seed close: %v", err)
 	}
 	row := e.onlyAttempt()
@@ -2157,7 +2165,7 @@ func (e *rhLiveEnv) resetSent() {
 
 func (e *rhLiveEnv) runCBPhases(closePhase rhRoutes, fetchPhases ...rhRoutes) {
 	closer := e.phaseCloser(closePhase, newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginCircuitBreaker))
-	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, nil, false, e.phasedFetcher(fetchPhases...),
+	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, RobinhoodHoldings{}, false, e.phasedFetcher(fetchPhases...),
 		closer, e.notifier.SendOwnerDM, 2*time.Minute, &e.mu,
 		robinhoodCircuitCloseDeps{store: e.store, prices: map[string]float64{"BTC": 50}, resolve: robinhoodEmergencyResolver(e.deps(), e.cfg, nil), settle: robinhoodDurableSettler(e.deps(), e.cfg, nil)})
 }
@@ -2252,7 +2260,7 @@ func (e *rhLiveEnv) runCBSharedCycle(holdings rhRoutes) {
 		e.t.Errorf("no close may run for a shared coin, got %+v", req)
 		return nil, fmt.Errorf("unexpected close")
 	}
-	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, nil, false, e.phasedFetcher(holdings),
+	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, RobinhoodHoldings{}, false, e.phasedFetcher(holdings),
 		closer, dm, 2*time.Minute, &e.mu,
 		robinhoodCircuitCloseDeps{store: e.store, prices: map[string]float64{"BTC": 50}, resolve: robinhoodEmergencyResolver(e.deps(), e.cfg, nil), settle: robinhoodDurableSettler(e.deps(), e.cfg, nil)})
 }

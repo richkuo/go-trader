@@ -992,3 +992,50 @@ func subcommandOptions(data discordgo.ApplicationCommandInteractionData) (string
 	}
 	return "", data.Options
 }
+
+func (d *DiscordNotifier) handleResolveRobinhoodAccount(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+	deferAck(s, i)
+	followupText(s, i, d.resolveRobinhoodAccountCommand(interactionUserID(i), i.GuildID, opts))
+}
+
+var robinhoodAccountFetcher RobinhoodPositionsFetcher = defaultRobinhoodPositionsFetcher
+
+var robinhoodAccountMark = defaultRobinhoodReleaseMark
+
+func (d *DiscordNotifier) robinhoodAccountResolveDeps() (robinhoodAccountResolveDeps, bool) {
+	if d.ss == nil || d.ss.state == nil || d.ss.mu == nil || d.ss.stateDB == nil {
+		return robinhoodAccountResolveDeps{}, false
+	}
+	ss := d.ss
+	return robinhoodAccountResolveDeps{
+		store:  ss.stateDB,
+		state:  ss.state,
+		mu:     ss.mu,
+		lookup: ss.strategyConfig,
+		cfgs: func() []StrategyConfig {
+			ss.strategiesMu.RLock()
+			defer ss.strategiesMu.RUnlock()
+			return append([]StrategyConfig(nil), ss.strategies...)
+		},
+		fetcher: robinhoodAccountFetcher,
+		mark:    robinhoodAccountMark,
+	}, true
+}
+
+func (d *DiscordNotifier) resolveRobinhoodAccountCommand(invokerID, guildID string, opts []*discordgo.ApplicationCommandInteractionDataOption) string {
+	if ok, reason := authorizeCommand(robinhoodAccountCommandName, invokerID, guildID, d.ownerID); !ok {
+		return reason
+	}
+	deps, ok := d.robinhoodAccountResolveDeps()
+	if !ok {
+		return "status server not ready"
+	}
+	res, prompt := prepareRobinhoodAccountResolution(deps, optionString(opts, "strategy", ""), optionString(opts, "action", ""))
+	if res == nil {
+		return prompt
+	}
+	if !d.confirmDestructive(invokerID, prompt) {
+		return "Cancelled: no confirmation received. The book stays held."
+	}
+	return applyRobinhoodAccountResolution(deps, invokerID, *res, time.Now())
+}

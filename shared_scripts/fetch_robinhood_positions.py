@@ -3,6 +3,7 @@
 import math
 import os
 import sys
+import time
 import traceback
 from datetime import datetime, timezone
 
@@ -11,6 +12,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "platforms", "r
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
 from stdout_contract import json_stdout
+
+_READ_BUDGET_S = 30.0
 
 
 def main():
@@ -21,10 +24,16 @@ def main():
             if not adapter.is_live:
                 _emit_error(emit, "Robinhood adapter not live — set ROBINHOOD_USERNAME / ROBINHOOD_PASSWORD / ROBINHOOD_TOTP_SECRET")
                 return
-            raw = adapter.get_crypto_positions_strict()
+            deadline = time.monotonic() + _READ_BUDGET_S
+            account_id = adapter.crypto_account_id(deadline)
+            raw = adapter.get_crypto_positions_strict(deadline)
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
             _emit_error(emit, str(e))
+            return
+
+        if not isinstance(account_id, str) or not account_id.strip():
+            _emit_error(emit, "Robinhood crypto account read returned no account id")
             return
 
         if not isinstance(raw, list):
@@ -58,6 +67,7 @@ def main():
 
         emit({
             "positions": positions,
+            "account_id": account_id.strip(),
             "platform": "robinhood",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })

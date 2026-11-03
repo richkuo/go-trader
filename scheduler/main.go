@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -346,8 +347,11 @@ func main() {
 	}
 	rebuildReplayLiveSources(cfg)
 
-	state, storageOrphans, identityLines, err := prepareStartupState(cfg, store, !readOnlyReport)
+	state, storageOrphans, identityLines, bindingLines, err := prepareStartupStateReport(cfg, store, !readOnlyReport)
 	for _, line := range identityLines {
+		fmt.Println(line)
+	}
+	for _, line := range bindingLines {
 		fmt.Println(line)
 	}
 	if err != nil {
@@ -356,6 +360,14 @@ func main() {
 			msg := fmt.Sprintf("%v (exit %d)", identityErr.err, ExitStorageOwnership)
 			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: refusing to start: %s\n", msg)
 			sendStartupRefusalDM(notifier, "Robinhood coin identity", msg)
+			cleanupNotifier()
+			os.Exit(ExitStorageOwnership)
+		}
+		var bindingErr *robinhoodBindingStartupError
+		if errors.As(err, &bindingErr) {
+			msg := fmt.Sprintf("%v (exit %d)", bindingErr.err, ExitStorageOwnership)
+			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: refusing to start: %s\n", msg)
+			sendStartupRefusalDM(notifier, "Robinhood account binding", msg)
 			cleanupNotifier()
 			os.Exit(ExitStorageOwnership)
 		}
@@ -474,6 +486,7 @@ func main() {
 		for _, line := range robinhoodOrderStartupLines(state) {
 			fmt.Println(line)
 		}
+		notifyRobinhoodHeldBooks(state, cfg.Strategies, &sync.RWMutex{}, notifier, time.Now())
 	}
 
 	if !readOnlyReport {
@@ -973,6 +986,7 @@ func main() {
 
 		recoverEntryIntents(cfg, state, store, &mu, notifier, logMgr, time.Now())
 		recoverRobinhoodOrders(cfg, state, store, &mu, notifier, logMgr, time.Now())
+		notifyRobinhoodHeldBooks(state, cfg.Strategies, &mu, notifier, time.Now())
 
 		resolveCapitalPct(cfg.Strategies)
 
@@ -1617,14 +1631,23 @@ func main() {
 			if liveKillSwitchFired && plan.OnChainConfirmedFlat {
 				liveSR := scopeRisk[livePartition]
 				mu.Lock()
-				rhFlatCoins := plan.RHCloseReport.VerifiedFlatCoins()
+				rhFlatProofs := plan.RHCloseReport.VerifiedFlatCoins()
+				var rhBooksKept []string
 				for _, sc := range strategiesInScope(cfg.Strategies, ScopeLive) {
 					if s, ok := state.Strategies[sc.ID]; ok {
-						forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlKillSwitchAll, hlVirtualQty, rhFlatCoins, nil)
+						for _, coin := range forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlKillSwitchAll, hlVirtualQty, rhFlatProofs, nil) {
+							rhBooksKept = append(rhBooksKept, sc.ID+" "+coin)
+						}
 					}
 				}
+				if len(rhBooksKept) > 0 {
+					sort.Strings(rhBooksKept)
+					fmt.Printf("[CRITICAL] Portfolio kill switch: Robinhood books %v stay open without fresh account-qualified flat proof; the latch cannot auto-reset this cycle (#1921)\n", rhBooksKept)
+				}
 				if !notifier.HasOwner() {
-					if plan.CanAutoResetWithoutOwner() {
+					if len(rhBooksKept) > 0 {
+						fmt.Println("[CRITICAL] Portfolio kill switch auto-reset suppressed: Robinhood books stay open without flat proof")
+					} else if plan.CanAutoResetWithoutOwner() {
 						peakRebaselineAvailable := liveSR.PeakRebaselineAvailable
 						killSwitchAutoReset = AutoResetConfirmedFlatKillSwitch(state.partitionRisk(livePartition), liveSR.TotalPV,
 							peakRebaselineAvailable,
@@ -1899,7 +1922,7 @@ func main() {
 						shutdownSideEffectCtx,
 						state,
 						cfg.Strategies,
-						nil,
+						RobinhoodHoldings{},
 						false,
 						defaultRobinhoodPositionsFetcher,
 						newRobinhoodEmergencyCloser(rhEmergencyDeps, robinhoodOriginCircuitBreaker),
@@ -4382,11 +4405,47 @@ func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMut
 	prev := robinhoodUnresolvedForCoinLocked(state, accountKey, result.Symbol)
 	var prevPositionID string
 	var prevQty float64
+	var bookSnap *robinhoodBookEntry
+	accountState := robinhoodAccountCurrent
 	if pos := s.Positions[result.Symbol]; pos != nil {
 		prevPositionID = pos.TradePositionID
 		prevQty = pos.Quantity
+		entry := robinhoodBookEntryOf(s.ID, pos)
+		bookSnap = &entry
+		if robinhoodPositionHeld(pos) {
+			accountState = robinhoodBookAccountState(pos, accountKey, "")
+		}
 	}
 	mu.RUnlock()
+	if accountState != robinhoodAccountCurrent {
+		why := robinhoodAccountHoldReason(accountState, bookSnap.AccountKey, bookSnap.VenueAccountID, accountKey, "")
+		logger.Error("CRITICAL: live %s %s held: the %.10g %s book is %s (%s); no Robinhood order is reserved or sent until the owner runs /%s%s (#1921)", side, result.Symbol, bookSnap.Quantity, result.Symbol, accountState, why, commandPrefix, robinhoodAccountCommandName)
+		return nil, false
+	}
+	expectedAccountID := ""
+	if side == "sell" {
+		if bookSnap == nil || bookSnap.VenueAccountID == "" {
+			logger.Error("CRITICAL: live sell %s held: the book has no venue account binding (#1921)", result.Symbol)
+			return nil, false
+		}
+		expectedAccountID = bookSnap.VenueAccountID
+		sellArgs.ExpectedAccountID = expectedAccountID
+	}
+	recheck := func() error {
+		if robinhoodAccountKey() != accountKey {
+			return fmt.Errorf("the configured Robinhood account changed before the order was saved")
+		}
+		pos := s.Positions[result.Symbol]
+		switch {
+		case bookSnap == nil && pos != nil:
+			return fmt.Errorf("a %s book appeared before the order was saved", result.Symbol)
+		case bookSnap != nil && !bookSnap.matches(pos):
+			return fmt.Errorf("the %s book, its quantity or its account binding changed before the order was saved", result.Symbol)
+		case pos != nil && robinhoodPositionHeld(pos) && robinhoodBookAccountState(pos, accountKey, "") != robinhoodAccountCurrent:
+			return fmt.Errorf("the %s book is not bound to the configured account", result.Symbol)
+		}
+		return nil
+	}
 	if prev != nil {
 		logger.Error("CRITICAL: live %s %s held: Robinhood attempt %s is unresolved (#1815)", side, result.Symbol, prev.AttemptID)
 		notifyRobinhoodOrderHold(notifier, prev.StrategyID, prev, fmt.Sprintf("a new %s from %s was refused while this attempt is unresolved", side, sc.ID), now)
@@ -4400,22 +4459,23 @@ func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMut
 		return nil, false
 	}
 	req := robinhoodOrderRequest{
-		Signal:         result.Signal,
-		SignalStr:      signalStr,
-		CloseFraction:  result.CloseFraction,
-		AmountUSD:      amountUSD,
-		Quantity:       quantity,
-		Price:          price,
-		PrevPositionID: prevPositionID,
-		PrevPosSide:    posSide,
-		PrevPosQty:     prevQty,
-		CloseKind:      sellArgs.CloseKind,
-		SoleOwner:      sellArgs.SoleOwner,
-		Result:         frozen,
-		Hurst:          hurst,
-		Script:         sc.Script,
+		Signal:            result.Signal,
+		SignalStr:         signalStr,
+		CloseFraction:     result.CloseFraction,
+		AmountUSD:         amountUSD,
+		Quantity:          quantity,
+		Price:             price,
+		PrevPositionID:    prevPositionID,
+		PrevPosSide:       posSide,
+		PrevPosQty:        prevQty,
+		ExpectedAccountID: expectedAccountID,
+		CloseKind:         sellArgs.CloseKind,
+		SoleOwner:         sellArgs.SoleOwner,
+		Result:            frozen,
+		Hurst:             hurst,
+		Script:            sc.Script,
 	}
-	a, err := reserveRobinhoodAttempt(store, state, s, mu, result.Symbol, robinhoodOriginSignal, side, req, now)
+	a, err := reserveRobinhoodAttemptChecked(store, state, s, mu, result.Symbol, robinhoodOriginSignal, side, req, now, recheck)
 	if err != nil {
 		logger.Error("Live %s %s held: the attempt could not be saved before sending, so nothing was sent: %v (#1815)", side, result.Symbol, err)
 		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, fmt.Sprintf("the attempt could not be saved before sending; no order was sent: %v", err))

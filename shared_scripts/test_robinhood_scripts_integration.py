@@ -207,6 +207,7 @@ def _run(tmp_path, script, args, routes, login=LOGIN_OK):
     site.mkdir()
     (site / "sitecustomize.py").write_text(SITECUSTOMIZE)
     fixture = run_dir / "routes.json"
+    routes = dict({"GET " + ACCOUNTS: [_page([{"id": "acct-1"}])]}, **routes)
     fixture.write_text(json.dumps(dict(routes, **{"POST " + TOKEN_URL: login})))
     log = run_dir / "requests.jsonl"
     log.write_text("")
@@ -252,7 +253,7 @@ def test_failed_holdings_read_fails_fetch_script(tmp_path, subtests):
 def test_failed_holdings_read_fails_close_script(tmp_path, subtests):
     for shape in sorted(FAILED_READS):
         with subtests.test(shape=shape):
-            code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5"], FAILED_READS[shape])
+            code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--expected-account-id=acct-1"], FAILED_READS[shape])
             assert code == 1
             assert isinstance(payload.get("error"), str) and payload["error"]
             assert payload["close"].get("already_flat") is None
@@ -300,7 +301,7 @@ def test_unusable_cost_basis_gives_zero_avg_price(tmp_path, subtests):
 def test_close_reports_already_flat_only_after_complete_read(tmp_path, subtests):
     with subtests.test(case="two_page_read"):
         routes = {"GET " + HOLDINGS: [_page([ETH], PAGE2)], "GET " + PAGE2: [_page([])]}
-        code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5"], routes)
+        code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--expected-account-id=acct-1"], routes)
         assert code == 0
         assert payload.get("error") is None
         assert payload["close"]["already_flat"] is True
@@ -322,7 +323,7 @@ def test_close_sells_holding_found_on_later_page(tmp_path):
         "GET " + PAGE2: [_page([BTC_SELLABLE])],
         "GET " + CURRENCY_PAIRS: [{"raise": "connection"}],
     }
-    code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--ref-id=" + REF_ID], routes)
+    code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--ref-id=" + REF_ID, "--expected-account-id=acct-1"], routes)
     assert code == 1
     assert isinstance(payload.get("error"), str) and payload["error"]
     assert payload["close"].get("already_flat") is None
@@ -372,7 +373,7 @@ def _buy(budget_ms=6000):
 
 def _sell(quantity="0.5", budget_ms=6000):
     return ["--execute", "--symbol=BTC", "--side=sell", f"--quantity={quantity}", "--mode=live",
-            "--ref-id=" + REF_ID, f"--budget-ms={budget_ms}"]
+            "--ref-id=" + REF_ID, f"--budget-ms={budget_ms}", "--expected-account-id=acct-1"]
 
 
 def _posts(made):
@@ -832,7 +833,7 @@ def test_execute_sell_refusals_send_no_order(tmp_path, subtests):
 
 
 def _close(budget_ms=6000, quantity="0.5"):
-    return ["--symbol=BTC", "--mode=live", "--quantity=" + quantity, "--ref-id=" + REF_ID, f"--budget-ms={budget_ms}"]
+    return ["--symbol=BTC", "--mode=live", "--quantity=" + quantity, "--ref-id=" + REF_ID, f"--budget-ms={budget_ms}", "--expected-account-id=acct-1"]
 
 
 def test_close_reports_the_polled_fill_and_not_the_held_quantity(tmp_path):
@@ -985,7 +986,7 @@ LOGIN_FAILURES = {
         "go-trader robinhood-login --config",
     ),
 }
-SCRIPTS = {"fetch": (FETCH, []), "close": (CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5"])}
+SCRIPTS = {"fetch": (FETCH, []), "close": (CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--expected-account-id=acct-1"])}
 
 
 def _default_session(run_dir):
@@ -1003,6 +1004,7 @@ def _run_capture(tmp_path, script, args, routes, login=LOGIN_OK, home=None, sess
     else:
         home_dir = home(run_dir)
     fixture = run_dir / "routes.json"
+    routes = dict({"GET " + ACCOUNTS: [_page([{"id": "acct-1"}])]}, **routes)
     fixture.write_text(json.dumps(dict(routes, **{"POST " + TOKEN_URL: login})))
     log = run_dir / "requests.jsonl"
     log.write_text("")
