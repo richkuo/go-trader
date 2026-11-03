@@ -1066,6 +1066,7 @@ def test_execute_buy_refusals_send_no_order(tmp_path, subtests):
             assert payload["order_outcome"] == "not_sent"
             assert len(_posts(made)) == 0
             assert "fill" not in payload["execution"]
+            assert "buy_sizing" not in payload
             assert isinstance(payload.get("error"), str) and payload["error"]
             _assert_finite_document(payload)
     with subtests.test(case="too_little_time_after_the_reads"):
@@ -1075,6 +1076,7 @@ def test_execute_buy_refusals_send_no_order(tmp_path, subtests):
         assert code == 1
         assert payload["order_outcome"] == "not_sent"
         assert len(_posts(made)) == 0
+        assert payload["buy_sizing"]["sent_quantity"] == 0.09950248
 
 
 def test_execute_buy_limit_partial_and_open_outcomes(tmp_path, subtests):
