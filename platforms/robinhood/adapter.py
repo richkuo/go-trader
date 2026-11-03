@@ -20,7 +20,7 @@ import types
 import uuid
 from collections import namedtuple
 from datetime import datetime, timezone, timedelta
-from decimal import Context, Decimal, DivisionByZero, Inexact, InvalidOperation, Overflow, localcontext
+from decimal import ROUND_FLOOR, Context, Decimal, DivisionByZero, Inexact, InvalidOperation, Overflow, localcontext
 from typing import Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -270,6 +270,21 @@ _DECIMAL_MIN_EXPONENT = -30
 _DECIMAL_MAX_ADJUSTED = 15
 _SIZING_PRECISION = 100
 _FLOOR_QUOTIENT_CAP = Decimal(10) ** 36
+_BUY_LIMIT_HEADROOM = Decimal("0.005")
+_SELL_ONE_STEP = Decimal("0.000001")
+_WIRE_STEP_CAP = 64
+SELL_PRICE_RULE_FLOOR_INCREMENT = "floor_increment"
+SELL_PRICE_RULE_FLOOR_DECIMALS = "floor_decimals"
+SELL_PRICE_RULE_ROUND_FALLBACK = "round_fallback"
+SELL_PRICE_RULE_ONE_STEP = "one_step"
+SELL_PRICE_RULE_WIRE_FLOOR = "wire_floor"
+SELL_PRICE_RULES = (
+    SELL_PRICE_RULE_FLOOR_INCREMENT,
+    SELL_PRICE_RULE_FLOOR_DECIMALS,
+    SELL_PRICE_RULE_ROUND_FALLBACK,
+    SELL_PRICE_RULE_ONE_STEP,
+    SELL_PRICE_RULE_WIRE_FLOOR,
+)
 CLOSE_KIND_WHOLE = "whole"
 CLOSE_KIND_PARTIAL = "partial"
 CLOSE_KIND_EMERGENCY = "emergency"
@@ -329,6 +344,10 @@ class _OrderEvidenceError(RuntimeError):
 
 
 class _SellSizingRefusal(_OrderPrepError):
+    pass
+
+
+class _BuyPrepError(_OrderPrepError):
     pass
 
 
@@ -644,6 +663,236 @@ def plan_sized_sell(asked, available, rules, close_kind, sole_owner):
         "residue_quantity": float(residue),
     }
 
+
+
+def _pair_price_increment(row):
+    try:
+        if not isinstance(row, dict):
+            return None, "the pair row is not an object"
+        raw = row.get("min_order_price_increment")
+        if raw is None:
+            return None, "the pair has no min_order_price_increment"
+        value = _parse_exact_decimal(raw)
+        if value is None:
+            return None, f"the pair min_order_price_increment {raw!r} is not a bounded finite decimal"
+        if value <= 0:
+            return None, f"the pair min_order_price_increment {raw!r} is not positive"
+        return value, None
+    except Exception as e:
+        return None, f"the pair min_order_price_increment is unreadable ({type(e).__name__})"
+
+
+def _plan_text(value):
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    return "none" if value is None else repr(value)
+
+
+def _finite_decimal(value):
+    return isinstance(value, Decimal) and value.is_finite()
+
+
+def _exact_wire(value):
+    wire = float(value)
+    if not math.isfinite(wire) or Decimal(repr(wire)) != value:
+        return None
+    return wire
+
+
+def plan_sized_buy(budget, ask, rules, headroom):
+    rules = rules if isinstance(rules, dict) else {}
+    minimum = rules.get("min")
+    increment = rules.get("increment")
+    maximum = rules.get("max")
+    price_increment = rules.get("price_increment")
+    plan = {"limit": None, "sent": None}
+
+    def refuse(reason):
+        raise _BuyPrepError(
+            f"buy refused before sending: {reason} (budget B={_plan_text(budget)}, ask a={_plan_text(ask)}, "
+            f"price_increment P={_plan_text(price_increment)}, quantity increment I={_plan_text(increment)}, "
+            f"min_order_size M={_plan_text(minimum)}, max_order_size X={_plan_text(maximum)}, "
+            f"headroom H={_plan_text(headroom)}, limit L={_plan_text(plan['limit'])}, quantity Q={_plan_text(plan['sent'])})"
+        )
+
+    for name, value in (("budget", budget), ("ask", ask), ("price increment", price_increment),
+                        ("quantity increment", increment), ("minimum", minimum), ("headroom", headroom)):
+        if not _finite_decimal(value):
+            refuse(f"the {name} is not a finite decimal")
+    if maximum is not None and not _finite_decimal(maximum):
+        refuse("the maximum is not a finite decimal")
+    if headroom < 0:
+        refuse("the headroom is negative")
+    if budget <= 0:
+        refuse("the budget is not positive")
+    if ask <= 0:
+        refuse("the ask is not positive")
+    if price_increment <= 0:
+        refuse("the price increment is not positive")
+    if increment <= 0:
+        refuse("the quantity increment is not positive")
+    if minimum < 0:
+        refuse("the minimum is negative")
+    if maximum is not None and maximum <= 0:
+        refuse("the maximum is not positive")
+    capped = False
+    try:
+        with localcontext() as ctx:
+            ctx.prec = _SIZING_PRECISION
+            ctx.traps[InvalidOperation] = True
+            ctx.traps[DivisionByZero] = True
+            ctx.traps[Overflow] = True
+            ctx.traps[Inexact] = True
+            target = ask * (1 + headroom)
+            steps, rest = divmod(target, price_increment)
+            if steps > _FLOOR_QUOTIENT_CAP:
+                refuse("the limit is too many price increments to round exactly")
+            if rest > 0:
+                steps += 1
+            limit = steps * price_increment
+            plan["limit"] = limit
+            unit_cost = limit * increment
+            units = budget // unit_cost
+            if units > _FLOOR_QUOTIENT_CAP:
+                refuse("the quantity is too many increments to floor exactly")
+            sent = units * increment
+            plan["sent"] = sent
+            if maximum is not None and sent > maximum:
+                max_units = maximum // increment
+                if max_units > _FLOOR_QUOTIENT_CAP:
+                    refuse("the maximum is too many increments to floor exactly")
+                sent = max_units * increment
+                plan["sent"] = sent
+                capped = True
+            cost = sent * limit
+    except (InvalidOperation, DivisionByZero, Overflow, Inexact) as e:
+        refuse(f"exact decimal sizing failed ({type(e).__name__})")
+    if limit < ask:
+        refuse("the limit is below the ask")
+    if sent <= 0:
+        refuse("the budget floors to zero quantity at the pair increment")
+    if sent < minimum:
+        refuse("the quantity is below the venue minimum")
+    if cost > budget:
+        refuse("the order notional is above the budget")
+    wire_quantity = _exact_wire(sent)
+    if wire_quantity is None:
+        refuse("the floored quantity has no exact JSON number form")
+    wire_limit = _exact_wire(limit)
+    if wire_limit is None:
+        refuse("the limit price has no exact JSON number form")
+    max_cost = float(cost)
+    if not math.isfinite(max_cost):
+        refuse("the order notional is not finite")
+    return {
+        "budget_usd": float(budget),
+        "ask_price": float(ask),
+        "limit_price": wire_limit,
+        "price_increment": float(price_increment),
+        "headroom": float(headroom),
+        "sent_quantity": wire_quantity,
+        "min_order_size": float(minimum),
+        "quantity_increment": float(increment),
+        "max_order_size": None if maximum is None else float(maximum),
+        "max_cost_usd": max_cost,
+        "capped_by_max": capped,
+    }
+
+
+def _sell_price_decimals(bid):
+    if bid <= Decimal("0.01"):
+        return 6
+    if bid < 1:
+        return 4
+    return 2
+
+
+def _wire_at_or_below(limit):
+    wire = float(limit)
+    steps = 0
+    while not math.isfinite(wire) or Decimal(repr(wire)) > limit:
+        if steps >= _WIRE_STEP_CAP:
+            return None
+        wire = math.nextafter(wire, 0.0) if math.isfinite(wire) else sys.float_info.max
+        steps += 1
+    if not math.isfinite(wire) or wire <= 0:
+        return None
+    return wire
+
+
+def plan_sell_price(bid_raw, bid_float, increment, increment_problem, today_price):
+    valid_increment = increment if _finite_decimal(increment) and increment > 0 else None
+    today = today_price if isinstance(today_price, float) and math.isfinite(today_price) and today_price > 0 else 0.0
+    out = {"bid_price": bid_float, "sent_price": None, "price_decimals": None, "rule": None, "today_price": today}
+    if valid_increment is not None:
+        out["price_increment"] = float(valid_increment)
+    else:
+        out["price_increment_problem"] = increment_problem or "the pair price increment is missing or invalid"
+    bid = None
+    try:
+        try:
+            bid = _parse_exact_decimal(bid_raw)
+        except Exception:
+            bid = None
+        if bid is None or bid <= 0:
+            bid = Decimal(repr(bid_float))
+        decimals = _sell_price_decimals(bid)
+        out["price_decimals"] = decimals
+        today_exact = Decimal(repr(today)) if today > 0 else None
+        with localcontext() as ctx:
+            ctx.prec = _SIZING_PRECISION
+            ctx.traps[InvalidOperation] = True
+            ctx.traps[DivisionByZero] = True
+            ctx.traps[Overflow] = True
+            ctx.traps[Inexact] = False
+            floored = bid.quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_FLOOR)
+            ctx.traps[Inexact] = True
+            if valid_increment is not None:
+                units = floored // valid_increment
+                if units > _FLOOR_QUOTIENT_CAP:
+                    raise ValueError("the price is too many increments to floor exactly")
+                candidate = units * valid_increment
+                rule = SELL_PRICE_RULE_FLOOR_INCREMENT
+            else:
+                candidate = floored
+                rule = SELL_PRICE_RULE_FLOOR_DECIMALS
+            if candidate <= 0:
+                if today_exact is not None:
+                    candidate = today_exact
+                    cap = today_exact
+                    rule = SELL_PRICE_RULE_ROUND_FALLBACK
+                else:
+                    candidate = valid_increment if valid_increment is not None else _SELL_ONE_STEP
+                    cap = candidate
+                    rule = SELL_PRICE_RULE_ONE_STEP
+            else:
+                cap = min(candidate, bid) if today_exact is None else min(candidate, bid, today_exact)
+        wire = _wire_at_or_below(cap)
+        if wire is None:
+            raise ValueError("the price has no finite positive JSON number form")
+        if rule in (SELL_PRICE_RULE_FLOOR_INCREMENT, SELL_PRICE_RULE_FLOOR_DECIMALS) and Decimal(repr(wire)) != candidate:
+            rule = SELL_PRICE_RULE_WIRE_FLOOR
+        out["sent_price"] = wire
+        out["rule"] = rule
+    except Exception as e:
+        out["fallback_reason"] = f"{type(e).__name__}: {e}"
+        if out["price_decimals"] is None:
+            out["price_decimals"] = 6 if bid_float <= 0.01 else 4 if bid_float < 1 else 2
+        wire = None
+        try:
+            limits = [Decimal(repr(bid_float))]
+            if bid is not None and bid > 0:
+                limits.append(bid)
+            if today > 0:
+                limits.append(Decimal(repr(today)))
+            wire = _wire_at_or_below(min(limits))
+        except Exception:
+            wire = None
+        if wire is None:
+            wire = bid_float if today <= 0 else min(bid_float, today)
+        out["sent_price"] = wire
+        out["rule"] = SELL_PRICE_RULE_WIRE_FLOOR
+    return out
 
 def _holding_avg_price(row, quantity):
     cost_bases = row.get("cost_bases")
@@ -1886,10 +2135,11 @@ class RobinhoodExchangeAdapter:
     def _quote_price(self, session, urls, pair_id, side, deadline):
         body = self._read_json_dict(session, urls.crypto_quote_url(pair_id), deadline, "crypto quote")
         key = "ask_price" if side == "buy" else "bid_price"
-        price = _parse_decimal(body.get(key))
+        raw = body.get(key)
+        price = _parse_decimal(raw)
         if price is None or price <= 0:
-            raise _OrderPrepError(f"crypto quote: {key} {body.get(key)!r} is not a finite positive number")
-        return price
+            raise _OrderPrepError(f"crypto quote: {key} {raw!r} is not a finite positive number")
+        return price, raw
 
     def _poll_order(self, session, urls, order_id, ref_id, side, deadline):
         import requests
@@ -2058,26 +2308,49 @@ class RobinhoodExchangeAdapter:
         result["account_id"] = account_id
         with robinhood_library() as rh:
             round_price = rh.helper.round_price
-        price = round_price(self._quote_price(session, urls, pair_id, side, deadline))
-        sizing = None
-        if sell_policy is not None:
-            rules = _pair_quantity_rules(pair_row, symbol)
-            holding = self.holding_quantities(symbol, deadline)
-            sizing = plan_sized_sell(sell_policy["asked"], holding["available"], rules,
-                                     sell_policy["close_kind"], sell_policy.get("sole_owner") is True)
-            sizing["account_quantity"] = float(holding["quantity"])
+        quote, raw_quote = self._quote_price(session, urls, pair_id, side, deadline)
+        price_increment, increment_problem = _pair_price_increment(pair_row)
+        if side == "buy":
+            budget = _parse_exact_decimal(size)
+            if budget is None or budget <= 0:
+                raise _BuyPrepError(f"buy refused before sending: the budget {size!r} is not a bounded finite positive decimal")
+            ask = _parse_exact_decimal(raw_quote)
+            if ask is None or ask <= 0:
+                raise _BuyPrepError(f"buy refused before sending: the ask_price {raw_quote!r} is not a bounded finite positive decimal")
+            if price_increment is None:
+                raise _BuyPrepError(f"buy refused before sending: currency pairs: {increment_problem}")
+            rules = dict(_pair_quantity_rules(pair_row, symbol))
+            rules["price_increment"] = price_increment
+            buy_sizing = plan_sized_buy(budget, ask, rules, _BUY_LIMIT_HEADROOM)
+            result["buy_sizing"] = buy_sizing
+            order_type = "limit"
+            price = buy_sizing["limit_price"]
+            order_quantity = buy_sizing["sent_quantity"]
+        else:
+            sell_price = plan_sell_price(raw_quote, quote, price_increment, increment_problem, round_price(quote))
+            result["sell_price"] = sell_price
+            order_type = "market"
+            price = sell_price["sent_price"]
+            if sell_policy is not None:
+                rules = _pair_quantity_rules(pair_row, symbol)
+                holding = self.holding_quantities(symbol, deadline)
+                sizing = plan_sized_sell(sell_policy["asked"], holding["available"], rules,
+                                         sell_policy["close_kind"], sell_policy.get("sole_owner") is True)
+                sizing["account_quantity"] = float(holding["quantity"])
+                order_quantity = sizing["sent_quantity"]
+            else:
+                order_quantity = size
+        if side == "buy" or sell_policy is not None:
             remaining = deadline - time.monotonic()
             reserve = min(_CANCEL_RESERVE_S, max(remaining, 0.0) * _CANCEL_RESERVE_SHARE)
             if remaining - reserve < _POLL_INTERVAL_START_S:
                 raise _OrderPrepError(f"too little of the time budget is left after the account reads ({remaining:.2f}s); no order was sent")
+        if sell_policy is not None:
             result["sizing"] = sizing
-            order_quantity = sizing["sent_quantity"]
-        elif side == "sell":
-            order_quantity = size
-        else:
-            order_quantity = round_price(size / price)
         if not math.isfinite(order_quantity) or order_quantity <= 0:
             raise _OrderPrepError(f"order quantity {order_quantity!r} is not a finite positive number")
+        if not isinstance(price, float) or not math.isfinite(price) or price <= 0:
+            raise _OrderPrepError(f"order price {price!r} is not a finite positive number")
         result["requested_quantity"] = order_quantity
         payload = {
             "account_id": account_id,
@@ -2087,7 +2360,7 @@ class RobinhoodExchangeAdapter:
             "ref_id": ref_id,
             "side": side,
             "time_in_force": "gtc",
-            "type": "market",
+            "type": order_type,
         }
         response = None
         last_pre_send = None

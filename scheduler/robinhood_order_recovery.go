@@ -516,11 +516,14 @@ func releaseRobinhoodAttemptByAttestation(d robinhoodEmergencyDeps, operatorID, 
 		d.mu.Unlock()
 		return fmt.Sprintf("refused: attempt %s changed while you were confirming; nothing was released. Run the command again.", attemptID)
 	}
+	priorBuySizing, priorSellPrice := robinhoodEvidencePricing(current)
 	ev := robinhoodOrderEvidenceRecord{
 		Outcome:           robinhoodOutcomeOperatorAttested,
 		Detail:            fmt.Sprintf("operator %s attested that the Robinhood order history shows no %s %s order for ref_id %s in the submit window %s to %s", operatorID, current.Side, current.Symbol, current.RefID, time.UnixMilli(req.SubmittedAfterMs).UTC().Format(time.RFC3339), time.UnixMilli(req.SubmittedBeforeMs).UTC().Format(time.RFC3339)),
 		RequestedQuantity: robinhoodVenueOrderQty(current),
 		Sizing:            robinhoodEvidenceSizing(current),
+		BuySizing:         priorBuySizing,
+		SellPrice:         priorSellPrice,
 		ObservedAtMs:      now.UnixMilli(),
 		Operator: &robinhoodOperatorAttestation{
 			OperatorID:      operatorID,
