@@ -84,13 +84,14 @@ type UIStrategyStatus struct {
 	Paused                bool                       `json:"paused,omitempty"`
 	CashReconcileRequired bool                       `json:"cash_reconcile_required,omitempty"`
 
-	EffectiveDirection             string              `json:"effective_direction,omitempty"`
-	EffectiveInvertSignal          bool                `json:"effective_invert_signal,omitempty"`
-	RegimeDirectionalPolicy        bool                `json:"regime_directional_policy,omitempty"`
-	EffectivePolicyRegime          string              `json:"effective_policy_regime,omitempty"`
-	DirectionalCertificationStatus string              `json:"directional_certification_status,omitempty"`
-	DirectionalCertificationCell   string              `json:"directional_certification_cell,omitempty"`
-	RegimeProfile                  *RegimeProfileState `json:"regime_profile,omitempty"`
+	EffectiveDirection             string                `json:"effective_direction,omitempty"`
+	EffectiveInvertSignal          bool                  `json:"effective_invert_signal,omitempty"`
+	RegimeDirectionalPolicy        bool                  `json:"regime_directional_policy,omitempty"`
+	EffectivePolicyRegime          string                `json:"effective_policy_regime,omitempty"`
+	DirectionalCertificationStatus string                `json:"directional_certification_status,omitempty"`
+	DirectionalCertificationCell   string                `json:"directional_certification_cell,omitempty"`
+	RegimeProfile                  *RegimeProfileState   `json:"regime_profile,omitempty"`
+	RegimeSide                     *regimeSideResolution `json:"regime_side,omitempty"`
 }
 
 type UIEquityPoint struct {
@@ -611,6 +612,7 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 	resp.EffectivePolicyRegime = dirView.EffectivePolicyRegime
 	resp.DirectionalCertificationStatus = dirView.CertStatus
 	resp.DirectionalCertificationCell = dirView.CertCell
+	resp.RegimeSide = regimeSideStatusForState(sc, &snapshot, ss.regime)
 	writeJSON(w, resp)
 }
 

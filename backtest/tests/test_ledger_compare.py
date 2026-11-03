@@ -2735,3 +2735,120 @@ def test_paper_replay_cost_model_rows_refuse_instead_of_default_costs(tmp_path):
         assert "paper_cost_model_replay_unsupported" in reasons
         assert "paper_cost_model_unknown" not in reasons
         assert rep["simulation"].get("cost_model") is None
+
+
+def _regime_side_segment(fx, **extra):
+    cin, seg = _segment(fx)
+    _use_regime_market(cin, fx)
+    seg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 20, "windows": REGIME_WINDOWS}
+    seg["strategy"]["direction"] = "both"
+    seg["strategy"]["regime_side"] = True
+    seg["strategy"]["regime_directional_window"] = "short"
+    seg["strategy"].update(extra)
+    return cin, seg
+
+
+def _regime_side_evidence(fx, cin, seg, cert=None):
+    rel, digest = _write_json(fx, "regime_labels.json", {"values_and_timing": True})
+    evidence = cin.setdefault("capability_evidence", {})
+    evidence["regime_labels"] = _verified_evidence(_binding(seg), artifact={"path": rel, "sha256": digest})
+    evidence["regime_feature_timing"] = _verified_evidence(
+        _binding(seg), features={"directional": "unshifted_closed_candle"})
+    if cert is not None:
+        cert_rel, cert_sha = _write_json(fx, "cert.json", cert)
+        evidence["directional_certification"] = _verified_evidence(
+            _binding(seg), reloads="none", artifact={"path": cert_rel, "sha256": cert_sha})
+    _dump(fx / "comparison_input.json", cin)
+
+
+def _opened_sides(rep):
+    return sorted({p["side"] for p in rep["simulated"]["positions"]})
+
+
+def test_regime_side_live_comparison_keeps_its_certification_context(tmp_path):
+    fx = _copy(tmp_path)
+    cin, seg = _regime_side_segment(fx)
+    _regime_side_evidence(fx, cin, seg)
+    rc, rep = _run(fx, tmp_path, name="side_no_cert.json")
+    assert rc == 1
+    assert ("directional_certification_unverified", "regime_side") in _codes(rep)
+    assert rep["simulation"]["status"] == "not_run"
+
+    _, approx = _run(fx, tmp_path, mode="approximate", name="side_no_cert_approx.json")
+    assert approx["simulation"]["status"] == "run", approx["eligibility"]["refusals"]
+    assert approx["simulated"]["positions"] == []
+
+    fx = _copy(tmp_path / "ack")
+    cin, seg = _regime_side_segment(fx, allow_uncertified_regime_side=True)
+    _regime_side_evidence(fx, cin, seg)
+    _, ack = _run(fx, tmp_path, name="side_ack.json")
+    assert ack["simulation"]["status"] == "run", ack["eligibility"]["refusals"]
+    rows = {(r["field"], r["category"]): r for r in ack["eligibility"]["capability_matrix"]}
+    assert rows[("regime_side", "regime")]["decision"] == "modeled"
+    assert rows[("allow_uncertified_regime_side", "regime")]["decision"] == "modeled"
+    ack_positions = ack["simulated"]["positions"]
+    assert len(ack_positions) >= 1
+
+    fx = _copy(tmp_path / "certified")
+    cin, seg = _regime_side_segment(fx)
+    _regime_side_evidence(fx, cin, seg, cert=_cert_artifact(
+        {"trending_up": "long", "trending_down": "short"}, expires_at="2026-02-01T00:00:00Z"))
+    _, certified = _run(fx, tmp_path, name="side_certified.json")
+    assert certified["simulation"]["status"] == "run", certified["eligibility"]["refusals"]
+    assert certified["eligibility"]["regime"]["certification"]["status"] == "verified"
+    assert [(p["side"], p["opened_qty"]) for p in certified["simulated"]["positions"]] == [
+        (p["side"], p["opened_qty"]) for p in ack_positions]
+
+    fx = _copy(tmp_path / "wrong")
+    cin, seg = _regime_side_segment(fx)
+    _regime_side_evidence(fx, cin, seg, cert=_cert_artifact(
+        {"trending_up": "short", "trending_down": "long", "ranging": "long"}))
+    _, wrong = _run(fx, tmp_path, name="side_wrong.json")
+    assert wrong["simulation"]["status"] == "run", wrong["eligibility"]["refusals"]
+    assert wrong["simulated"]["positions"] == []
+
+
+def test_regime_side_paper_needs_no_certification_and_conflicts_refuse(tmp_path):
+    fx = _copy(tmp_path / "paper")
+    cin = _load(fx / "comparison_input_paper.json")
+    seg = cin["historical_configuration"]["timeline"][0]
+    _use_regime_market(cin, fx)
+    seg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 20, "windows": REGIME_WINDOWS}
+    seg["strategy"].update(direction="both", regime_side=True, regime_directional_window="short")
+    binding = dict(_binding(seg), partition="paper")
+    rel, digest = _write_json(fx, "regime_labels.json", {"values_and_timing": True})
+    cin["capability_evidence"] = dict(cin.get("capability_evidence") or {}, **{
+        "regime_labels": _verified_evidence(binding, artifact={"path": rel, "sha256": digest}),
+        "regime_feature_timing": _verified_evidence(binding, features={"directional": "unshifted_closed_candle"}),
+    })
+    _dump(fx / "comparison_input_paper.json", cin)
+    _, paper = _run(fx, tmp_path, export="export_paper.json", mode="approximate", name="side_paper.json")
+    rows = {(r["field"], r["category"]): r for r in paper["eligibility"]["capability_matrix"]}
+    assert rows[("regime_side", "regime")]["decision"] == "modeled"
+    assert not any(field == "regime_side" for _, field in _codes(paper))
+    assert paper["simulation"]["status"] == "run", paper["eligibility"]["refusals"]
+    assert len(paper["simulated"]["positions"]) >= 1
+
+    fx = _copy(tmp_path)
+    cin, seg = _regime_side_segment(fx, invert_signal=True)
+    _regime_side_evidence(fx, cin, seg)
+    rc, rep = _run(fx, tmp_path, name="side_invert.json")
+    assert rc == 1
+    assert ("regime_side_invalid", "regime_side") in _codes(rep)
+    assert rep["simulation"]["status"] == "not_run"
+
+    fx = _copy(tmp_path / "ack_only")
+    cin, seg = _segment(fx)
+    seg["strategy"]["allow_uncertified_regime_side"] = True
+    _dump(fx / "comparison_input.json", cin)
+    rc, rep = _run(fx, tmp_path, name="side_ack_only.json")
+    assert rc == 1
+    assert ("regime_side_invalid", "allow_uncertified_regime_side") in _codes(rep)
+
+    fx = _copy(tmp_path / "timeframe")
+    cin, seg = _regime_side_segment(fx)
+    seg["regime"]["timeframe"] = "4h"
+    _regime_side_evidence(fx, cin, seg)
+    rc, rep = _run(fx, tmp_path, mode="approximate", name="side_timeframe.json")
+    assert rc == 1
+    assert ("regime_timeframe_unprepared", "regime_side") in _codes(rep)

@@ -21,6 +21,7 @@ type StrategyDecisionFields struct {
 	CloseOwner          string             `json:"close_owner,omitempty"`
 	CloseTierFillPrice  float64            `json:"close_tier_fill_price,omitempty"`
 	OpenSignalInverted  bool               `json:"open_signal_inverted,omitempty"`
+	OpenSideApplied     *string            `json:"open_side_applied,omitempty"`
 	Regime              *RegimePayload     `json:"regime,omitempty"`
 	ClosedBar           *ClosedBarDecision `json:"closed_bar_decision,omitempty"`
 	DecisionRegime      *RegimePayload     `json:"decision_regime,omitempty"`
@@ -110,6 +111,16 @@ func sendsStrategyRefs(sc StrategyConfig) bool {
 }
 
 func buildStrategyRefsArg(sc StrategyConfig, closeOwner string, invertOpen bool) ([]string, error) {
+	return buildStrategyRefsArgWithSide(sc, closeOwner, invertOpen, "")
+}
+
+func buildStrategyRefsArgWithSide(sc StrategyConfig, closeOwner string, invertOpen bool, openSide string) ([]string, error) {
+	if openSide != "" && !validRegimeSideRequest(openSide) {
+		return nil, fmt.Errorf("open_side %q must be %q, %q or %q", openSide, regimeSideLong, regimeSideShort, regimeSideNone)
+	}
+	if openSide != "" && sc.Platform != "hyperliquid" {
+		return nil, fmt.Errorf("open_side is only sent to hyperliquid checks (platform %q)", sc.Platform)
+	}
 	openName := effectiveOpenStrategy(sc)
 	if !sendsStrategyRefs(sc) {
 		return nil, nil
@@ -126,6 +137,9 @@ func buildStrategyRefsArg(sc StrategyConfig, closeOwner string, invertOpen bool)
 	}
 	if invertOpen {
 		payload["invert_open_signal"] = true
+	}
+	if openSide != "" {
+		payload["open_side"] = openSide
 	}
 	blob, err := json.Marshal(payload)
 	if err != nil {

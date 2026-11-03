@@ -2055,6 +2055,18 @@
     return dir + (cert ? " (certified)" : "");
   }
 
+  function regimeSideCell(side) {
+    if (!side || !side.enabled) {
+      return null;
+    }
+    const label = (side.window || "-") + "=" + (side.label || "?");
+    const req = side.requested_side || "none";
+    if (side.hold_reason) {
+      return label + " → " + req + " (held: " + side.hold_reason + ")";
+    }
+    return label + " → " + req;
+  }
+
   async function refreshStatus() {
     if (!state.activeID) return;
     const status = await getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/status");
@@ -2087,6 +2099,10 @@
     const dirCell = directionCell(status);
     if (dirCell) {
       fields.push(["Direction", dirCell]);
+    }
+    const sideCell = regimeSideCell(status.regime_side);
+    if (sideCell) {
+      fields.push(["Regime side", sideCell]);
     }
     if (status.regime_profile && status.regime_profile.active_profile) {
       let profile = status.regime_profile.active_profile;

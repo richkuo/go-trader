@@ -150,7 +150,7 @@ PORTFOLIO_CONTROL_FIELDS = (
 REGIME_FIELDS = (
     "allowed_regimes", "regime_gate_on_failure", "regime_gate_window",
     "regime_directional_window", "regime_atr_window", "regime_directional_policy", "regime_window_divergence",
-    "regime_profile_allocation",
+    "regime_profile_allocation", "regime_side", "allow_uncertified_regime_side",
 )
 UNSUPPORTED_FEATURE_FIELDS = {
     "hurst_gate": "hurst_gate",
@@ -2986,7 +2986,8 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
     if "dataset" in market and not manual and not signal_refused and open_name:
         try:
             strategy_checks = market_strategy_checks(
-                market, open_name, open_ref.get("params") or {}, direction, invert,
+                market, open_name, open_ref.get("params") or {},
+                "both" if strategy.get("regime_side") is True else direction, invert,
                 open_name in market_ctx["observation_input_strategies"], has_close,
                 atr_method=atr_method,
                 stop_needs_atr=stop_verdict.get("owner") in STOP_OWNERS_NEEDING_ATR,

@@ -257,6 +257,8 @@ def unsupported_reason(resolution: dict) -> str | None:
         return "unsupported_profile_allocation"
     if resolution.get("invert_signal"):
         return "unsupported_invert_signal"
+    if resolution.get("regime_side"):
+        return "unsupported_regime_side"
     if resolution.get("risk_per_trade_pct") is not None:
         return "unsupported_risk_per_trade_pct"
     if resolution.get("allow_scale_in"):

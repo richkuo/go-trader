@@ -16,6 +16,7 @@ CLOSE_OWNER_ON_CHAIN_TP = "on_chain_tp"
 VALID_CLOSE_OWNERS = {CLOSE_OWNER_ON_CHAIN_TP}
 VALID_POSITION_SIDES = {"", "long", "short"}
 VALID_OPEN_ACTIONS = {"long", "short", "none"}
+VALID_OPEN_SIDES = ("long", "short", "none")
 POSITION_CONTEXT_PARAM_KEYS = {
     "side", "avg_cost", "current_quantity", "initial_quantity", "entry_atr", "regime",
     "risk_anchor_price", "tp_model",
@@ -40,7 +41,7 @@ class OpenCloseEvaluation:
     close_owner: Optional[str] = None
 
 
-def parse_strategy_refs_arg(raw: Optional[str]) -> Optional[dict]:
+def parse_strategy_refs_arg(raw: Optional[str], validate_open_side: bool = True) -> Optional[dict]:
     if not raw:
         return None
     import json
@@ -70,7 +71,22 @@ def parse_strategy_refs_arg(raw: Optional[str]) -> Optional[dict]:
     }
     if "invert_open_signal" in payload:
         parsed["invert_open_signal"] = payload.get("invert_open_signal")
+    if "open_side" in payload:
+        parsed["open_side"] = parse_open_side(payload["open_side"]) if validate_open_side else payload["open_side"]
     return parsed
+
+
+def parse_open_side(value) -> str:
+    if not isinstance(value, str) or value not in VALID_OPEN_SIDES:
+        raise ValueError(f"open_side must be one of {list(VALID_OPEN_SIDES)}, got {value!r}")
+    return value
+
+
+def apply_open_side(raw_signal, open_side: str) -> int:
+    side = parse_open_side(open_side)
+    if normalize_signal(raw_signal) == 0 or side == "none":
+        return 0
+    return 1 if side == "long" else -1
 
 
 def parse_invert_open_signal(value) -> bool:

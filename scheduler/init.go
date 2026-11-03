@@ -520,6 +520,7 @@ type InitOptions struct {
 	AllowNoEdge                 bool    `json:"allowNoEdge,omitempty"`
 	ClosedBarDecisions          bool    `json:"closedBarDecisions,omitempty"`
 	RestingTPTradeThrough       bool    `json:"restingTPTradeThrough,omitempty"`
+	RegimeSide                  bool    `json:"regimeSide,omitempty"`
 	DiscordEnabled              bool
 	DiscordOwnerID              string
 	SpotChannelID               string
@@ -943,7 +944,47 @@ func generateConfig(opts InitOptions) *Config {
 		}
 	}
 
+	if opts.RegimeSide {
+		applyInitRegimeSide(cfg)
+	}
+
 	return cfg
+}
+
+func applyInitRegimeSide(cfg *Config) {
+	for i := range cfg.Strategies {
+		candidate := cfg.Strategies[i]
+		inferStrategyPlatform(&candidate)
+		if candidate.Platform != "hyperliquid" || candidate.Type != "perps" || portfolioScopeFor(candidate) == ScopeLive {
+			continue
+		}
+		candidate.RegimeSide = true
+		if candidate.CloseStrategy == nil {
+			candidate.CloseStrategy = &StrategyRef{Name: "tiered_tp_atr_live"}
+		}
+		probe := *cfg
+		if probe.Regime == nil || !probe.Regime.Enabled {
+			probe.Regime = initRegimeSideRegime()
+		}
+		probe.Strategies = []StrategyConfig{candidate}
+		if len(regimeSideConfigErrors(&probe)) > 0 {
+			continue
+		}
+		cfg.Regime = probe.Regime
+		cfg.Strategies[i].RegimeSide = true
+		cfg.Strategies[i].CloseStrategy = candidate.CloseStrategy
+	}
+}
+
+func initRegimeSideRegime() *RegimeConfig {
+	return &RegimeConfig{
+		Enabled:      true,
+		Period:       14,
+		ADXThreshold: 20.0,
+		Windows: RegimeWindowsMap{
+			"medium": {Classifier: regimeClassifierComposite, Period: 20},
+		},
+	}
 }
 
 func stratShortName(strats []stratDef, stratID string) string {
@@ -1490,6 +1531,11 @@ func runInit(args []string) int {
 	fmt.Println("Live trading is unchanged. Supported: paper Hyperliquid perps strategies with a tier take-profit close and a check interval at or below the bar.")
 	restingTPTradeThrough := p.YesNo("Enable resting_tp_trade_through on supported paper strategies?", false)
 
+	fmt.Println("\nregime_side opens on the side the directional regime window selects; the strategy signal is only the entry trigger.")
+	fmt.Println("Applied to paper Hyperliquid perps only (live needs certified evidence or allow_uncertified_regime_side). Research #1076 found no supported forward-direction edge.")
+	fmt.Println("The base direction still applies: set direction to both to trade both sides. A separate close strategy is set when none is configured.")
+	regimeSide := p.YesNo("Enable regime_side on paper Hyperliquid perps strategies?", false)
+
 	perpsStratIDs := make([]string, len(perpsStrategies))
 	for i, s := range perpsStrategies {
 		perpsStratIDs[i] = s.ID
@@ -1577,6 +1623,7 @@ func runInit(args []string) int {
 		HTFFilter:                 htfFilter,
 		ClosedBarDecisions:        closedBarDecisions,
 		RestingTPTradeThrough:     restingTPTradeThrough,
+		RegimeSide:                regimeSide,
 		EnableManual:              enableManual,
 		ManualSymbol:              manualSymbol,
 		ManualTimeframe:           manualTimeframe,

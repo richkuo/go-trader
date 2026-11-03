@@ -77,6 +77,8 @@ def warmup_exit_long_entry(warmup_with_signal: pd.DataFrame,
 
 
 def scored_engine_can_open_short(engine: Backtester, scored: pd.DataFrame) -> bool:
+    if getattr(engine, "regime_side", False):
+        return engine.direction != "long"
     policy = engine.regime_directional_policy
     if policy and any(entry.get("direction") in ("short", "both") for entry in policy.values()):
         return True

@@ -196,7 +196,8 @@ func main() {
 	setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
 		fmt.Fprintf(os.Stderr, f+"\n", a...)
 	}))
-	directionalCertSummaryLines := directionalCertStartupSummary(cfg)
+	installRegimeSideEvidence(startupRegimeSideEvidence(cfg))
+	directionalCertSummaryLines := append(directionalCertStartupSummary(cfg), regimeSideStartupLines(cfg)...)
 	for _, line := range directionalCertSummaryLines {
 		fmt.Println(line)
 	}
@@ -837,6 +838,7 @@ func main() {
 
 	reloadConfig := func() {
 		fmt.Printf("[reload] SIGHUP received; reloading config from %s\n", *configPath)
+		reloadSideEvidence := refreshRegimeSideEvidenceForReload()
 		if data, readErr := os.ReadFile(*configPath); readErr == nil {
 			mu.RLock()
 			preErr := reloadNoEdgeAcknowledgementPreflight(cfg, data)
@@ -846,7 +848,7 @@ func main() {
 				return
 			}
 		}
-		nextCfg, err := LoadConfig(*configPath)
+		nextCfg, err := LoadConfigWithRegimeSideEvidence(*configPath, reloadSideEvidence)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[reload] ERROR: reload failed; keeping previous config: %v\n", err)
 			return
@@ -893,7 +895,7 @@ func main() {
 		setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
 			fmt.Fprintf(os.Stderr, "[reload] "+f+"\n", a...)
 		}))
-		reloadCertLines := directionalCertStartupSummary(cfg)
+		reloadCertLines := append(directionalCertStartupSummary(cfg), regimeSideStartupLines(cfg)...)
 		for _, line := range reloadCertLines {
 			fmt.Printf("[reload] %s\n", line)
 		}
@@ -3377,6 +3379,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	}
 	closeOwner := hlCloseOwnerForCheck(*sc, posCtx)
 	sentInvert := hlInvertOpenSignalForCheck(*sc, posCtx, regime)
+	sentSide := regimeSideRequestForCheck(*sc, posCtx, regime)
 	if closeStrategySuppressedByOnChainProtection(*sc) {
 		if closeOwner == "" && posCtx.Quantity > 0 {
 			notifyHLOnChainTPUnplaceable(notifier, logger, *sc, hyperliquidSymbol(sc.Args), posCtx.OnChainTPBlocked)
@@ -3385,8 +3388,8 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		}
 	}
 	if outcome, ok := batch.lookup(sc.ID); ok {
-		fp, fpErr := hyperliquidBatchSlotFingerprint(*sc, posCtx, regime)
-		if fpErr == nil && fp == outcome.Fingerprint {
+		fp, fpErr := hyperliquidBatchSlotFingerprintWithSide(*sc, posCtx, regime, sentSide)
+		if fpErr == nil && fp == outcome.Fingerprint && outcome.RegimeSide == sentSide {
 			result := outcome.Result
 			if result != nil {
 				res := *result
@@ -3400,8 +3403,8 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 			if outcome.Err == "" && result != nil && result.Degraded == "" && feed.covers(*sc) {
 				feed.clearDegradedFor(notifier, sc.ID)
 			}
-			return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger,
-				result, outcome.Stderr, outcome.Err, outcome.Mode, sentInvert)
+			return finishHyperliquidCheckWithSide(sc, prices, posCtx, regime, notifier, logger,
+				result, outcome.Stderr, outcome.Err, outcome.Mode, sentInvert, outcome.RegimeSide)
 		}
 		logger.Warn("Batched check inputs changed since the pre-pass snapshot; running this strategy's own check (#1442)")
 	}
@@ -3428,7 +3431,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 				return nil, "", 0, false
 			}
 			result := degradedHyperliquidResult(*sc, hyperliquidSymbol(sc.Args), hyperliquidModeFromArgs(sc.Args), degradedReason, price)
-			return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, "", "", scriptFailureError, sentInvert)
+			return finishHyperliquidCheckWithSide(sc, prices, posCtx, regime, notifier, logger, result, "", "", scriptFailureError, sentInvert, sentSide)
 		}
 		feed.clearDegradedFor(notifier, sc.ID)
 	}
@@ -3448,7 +3451,11 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		return nil, "", 0, false
 	}
 	args = withRule
-	if refsArgs, err := buildStrategyRefsArg(*sc, closeOwner, sentInvert); err != nil {
+	if refsArgs, err := buildStrategyRefsArgWithSide(*sc, closeOwner, sentInvert, sentSide.sentSide()); err != nil {
+		if sc.RegimeSide {
+			logger.Error("Strategy refs with the regime_side request could not be encoded: %v - skipping this strategy this cycle", err)
+			return nil, "", 0, false
+		}
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
@@ -3484,10 +3491,14 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	if errMsg != "" {
 		logger.RunningOnFailure(sc.Script, args)
 	}
-	return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, stderr, errMsg, mode, sentInvert)
+	return finishHyperliquidCheckWithSide(sc, prices, posCtx, regime, notifier, logger, result, stderr, errMsg, mode, sentInvert, sentSide)
 }
 
 func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode, sentInvert bool) (*HyperliquidResult, string, float64, bool) {
+	return finishHyperliquidCheckWithSide(sc, prices, posCtx, regime, notifier, logger, result, stderr, errMsg, mode, sentInvert, regimeSideResolution{})
+}
+
+func finishHyperliquidCheckWithSide(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode, sentInvert bool, sentSide regimeSideResolution) (*HyperliquidResult, string, float64, bool) {
 	if result != nil && errMsg == "" && result.Degraded == "" {
 		if want := hlCloseOwnerForCheck(*sc, posCtx); want != "" && result.CloseOwner != want {
 			errMsg = fmt.Sprintf("close-owner contract mismatch: sent close_owner=%q but the check returned close_owner=%q; holding this signal because the check script may have evaluated a close the on-chain take-profit owns (redeploy with scripts/update.sh so Go and Python match)", want, result.CloseOwner)
@@ -3506,6 +3517,10 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 			mode = scriptFailureError
 			result = nil
 		} else if msg := htfFilterContractError(*sc, result.StrategyDecisionFields, htfFilterContext{}); msg != "" {
+			errMsg = msg
+			mode = scriptFailureError
+			result = nil
+		} else if msg := regimeSideContractError(*sc, sentSide, result.StrategyDecisionFields); msg != "" {
 			errMsg = msg
 			mode = scriptFailureError
 			result = nil
@@ -3563,6 +3578,21 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 				divResult.ShortLabel, divResult.MediumLabel)
 		} else {
 			logger.Changed("divergence", "none")
+		}
+	}
+	result.RegimeSide = sentSide
+	if sentSide.Enabled && result.Degraded == "" {
+		recomputed := resolveRegimeSide(*sc, posCtx.Quantity, regimePayloadValue(result.Regime), regime, currentRegimeSideEvidence(), time.Now().UTC())
+		if posCtx.Quantity <= 0 && recomputed.Side != sentSide.Side {
+			if result.Signal != 0 {
+				logger.Warn("Regime side: the check returned regime evidence that selects %q (%s) but %q was sent; holding the entry this cycle", recomputed.Side, recomputed.HoldReason, sentSide.Side)
+			}
+			result.Signal = 0
+		}
+		if sentSide.Side == regimeSideNone && sentSide.HoldReason != "" {
+			logger.InfoOnChange("regime-side", sentSide.HoldReason, "Regime side: entries held — %s", sentSide.HoldReason)
+		} else {
+			logger.InfoOnChange("regime-side", sentSide.Window+"|"+sentSide.Label+"|"+sentSide.Side, "Regime side: window %s label %s -> %s (%s)", sentSide.Window, sentSide.Label, sentSide.Side, sentSide.Evidence)
 		}
 	}
 	if effective := sc.Type != "manual" && sc.InvertSignal; effective != sentInvert {
@@ -3898,6 +3928,9 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		}
 	}
 	openTrade := exec.OpenTrade
+	if openTrade != nil {
+		openTrade.RegimeSideNote = formatRegimeSideNote(result.RegimeSide)
+	}
 	closedBarStampEntryATR(sc, s, result.Symbol, openTrade != nil, result.StrategyDecisionFields, result.Indicators)
 	if exec.OpenTrade != nil {
 		stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)

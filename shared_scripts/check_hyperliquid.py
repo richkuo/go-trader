@@ -191,6 +191,8 @@ def _signal_check_deps():
         normalize_signal,
         parse_close_strategies,
         parse_invert_open_signal,
+        parse_open_side,
+        apply_open_side,
         admit_configured_strategies,
         parse_allow_no_edge_value,
         parse_raw_gate_mode,
@@ -208,6 +210,8 @@ def _signal_check_deps():
         evaluate_open_close=evaluate_open_close,
         finalize_decision=finalize_decision,
         parse_invert_open_signal=parse_invert_open_signal,
+        parse_open_side=parse_open_side,
+        apply_open_side=apply_open_side,
         normalize_signal=normalize_signal,
         parse_close_strategies=parse_close_strategies,
         admit_configured_strategies=admit_configured_strategies,
@@ -917,6 +921,12 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
     regime_atr_window = slot.get("regime_atr_window") or ""
     invert_present = "invert_open_signal" in slot
     invert_open_signal = deps.parse_invert_open_signal(slot.get("invert_open_signal")) if invert_present else False
+    open_side_present = "open_side" in slot
+    open_side = deps.parse_open_side(slot.get("open_side")) if open_side_present else None
+    if open_side_present and invert_present:
+        raise ValueError("open_side cannot be combined with invert_open_signal")
+    if open_side_present and slot.get("closed_bar_decisions") is True:
+        raise ValueError("open_side cannot be combined with closed_bar_decisions")
 
     _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission,
                                   strategy_params_override, close_params_by_name, shared.get("timeframe"))
@@ -933,7 +943,7 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
     atr_method = shared["atr_method"]
     df = shared["df"].copy()
 
-    open_close_enabled = bool(open_strategy or close_strategies or close_owner or invert_present)
+    open_close_enabled = bool(open_strategy or close_strategies or close_owner or invert_present or open_side_present)
     funding_aware_name = open_strategy or strategy_name
     closed_bar = slot.get("closed_bar_decisions") is True
     if closed_bar:
@@ -1097,6 +1107,9 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
     else:
         price = float(last["close"])
 
+    if open_side_present:
+        signal = deps.apply_open_side(signal, open_side)
+
     htf_indicators = {}
     if decision_df is not None and htf_applies and htf_block is None:
         if closed_bar:
@@ -1176,6 +1189,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         output["indicator_labels"] = indicator_labels
     if decision:
         output.update(decision)
+    if open_side_present:
+        output["open_side_applied"] = open_side
     if htf_block is not None:
         output["htf_filter"] = htf_block
     if resting_request is not None:
@@ -1199,6 +1214,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      market=None,
                      close_owner=None,
                      invert_open_signal=None,
+                     open_side=None,
                      mode_args=None,
                      closed_bar=False,
                      decision_regime_timeframe="",
@@ -1247,6 +1263,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         }
         if invert_open_signal is not None:
             slot["invert_open_signal"] = invert_open_signal
+        if open_side is not None:
+            slot["open_side"] = open_side
         if closed_bar:
             slot["closed_bar_decisions"] = True
         if resting_tp_rule is not None:
@@ -1345,7 +1363,7 @@ def parse_batch_request(raw_stdin):
         refs = slot.get("strategy_refs")
         if refs:
             from strategy_composition import parse_strategy_refs_arg
-            parsed = parse_strategy_refs_arg(refs if isinstance(refs, str) else json.dumps(refs))
+            parsed = parse_strategy_refs_arg(refs if isinstance(refs, str) else json.dumps(refs), validate_open_side=False)
             if parsed:
                 slot = dict(slot)
                 slot["open_strategy"] = parsed["open_name"]
@@ -1355,6 +1373,8 @@ def parse_batch_request(raw_stdin):
                 slot["close_owner"] = parsed["close_owner"]
                 if "invert_open_signal" in parsed:
                     slot["invert_open_signal"] = parsed["invert_open_signal"]
+                if "open_side" in parsed:
+                    slot["open_side"] = parsed["open_side"]
         if not str(slot.get("strategy") or "").strip():
             raise ValueError(f"slot {slot_id!r} is missing 'strategy'")
         out.append(slot)
@@ -4065,6 +4085,12 @@ def main():
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
         if args.probe_only:
+            from strategy_composition import parse_strategy_refs_arg
+            try:
+                parse_strategy_refs_arg(args.strategy_refs)
+            except ValueError as e:
+                print(f"invalid --strategy-refs: {e}", file=sys.stderr)
+                sys.exit(2)
             sys.exit(0)
         market = None
         if args.market_stdin:
@@ -4087,7 +4113,23 @@ def main():
                 }, cls=SafeEncoder))
                 sys.exit(1)
         from strategy_composition import parse_strategy_refs_arg
-        refs = parse_strategy_refs_arg(args.strategy_refs)
+        try:
+            refs = parse_strategy_refs_arg(args.strategy_refs)
+        except ValueError as e:
+            print(json.dumps({
+                "strategy": args.strategy,
+                "symbol": args.symbol,
+                "timeframe": args.timeframe,
+                "signal": 0,
+                "price": 0,
+                "indicators": {},
+                "regime": None,
+                "mode": args.mode,
+                "platform": "hyperliquid",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": f"invalid --strategy-refs: {e}",
+            }, cls=SafeEncoder))
+            sys.exit(1)
         open_strategy_name = refs["open_name"] if refs else args.open_strategy
         close_strategies_arg = refs["close_csv"] if refs else args.close_strategies
         params_override = refs["open_params"] if refs else (json.loads(args.params) if args.params else None)
@@ -4131,6 +4173,7 @@ def main():
             market=market,
             close_owner=refs["close_owner"] if refs else None,
             invert_open_signal=refs.get("invert_open_signal") if refs and "invert_open_signal" in refs else None,
+            open_side=refs.get("open_side") if refs and "open_side" in refs else None,
             mode_args=sys.argv[1:],
             closed_bar=args.closed_bar_decisions,
             decision_regime_timeframe=args.decision_regime_timeframe,

@@ -1899,4 +1899,17 @@ printf '{"db_file": "%s", "strategies": [{"id": "hl-eth", "type": "perps", "args
 assert_eq "$(rh_check)" "ok" "rh identity: a roster with no Robinhood spot strategy never opens the state files"
 rm -rf "$rh_test"
 
+cert_test=$(mktemp -d)
+printf 'FOO=1\nGO_TRADER_DIRECTIONAL_CERT_PATH=/srv/file-certs.json\n' >"$cert_test/a.env"
+printf 'GO_TRADER_DIRECTIONAL_CERT_PATH=/srv/later-certs.json\n' >"$cert_test/b.env"
+assert_eq "$(update_directional_cert_path_from_show 'GO_TRADER_DIRECTIONAL_CERT_PATH=/srv/inline.json' '')" \
+    "SET /srv/inline.json" "cert path: an inline Environment= override reaches the probe"
+assert_eq "$(update_directional_cert_path_from_show 'GO_TRADER_DIRECTIONAL_CERT_PATH=/srv/inline.json' "$cert_test/a.env (ignore_errors=no)")" \
+    "SET /srv/file-certs.json" "cert path: an EnvironmentFile value overrides Environment= as systemd does"
+assert_eq "$(update_directional_cert_path_from_show '' "$(printf '%s\n%s' "$cert_test/a.env (ignore_errors=no)" "$cert_test/b.env (ignore_errors=yes)")")" \
+    "SET /srv/later-certs.json" "cert path: the later EnvironmentFile wins"
+assert_eq "$(update_directional_cert_path_from_show 'OTHER=1' "$cert_test/missing.env (ignore_errors=yes)")" \
+    "" "cert path: a unit with no override leaves the probe on the default artifact"
+rm -rf "$cert_test"
+
 echo "OK: update_helpers tests passed"

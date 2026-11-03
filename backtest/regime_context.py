@@ -31,6 +31,7 @@ REGIME_FIELDS = (
     "allowed_regimes", "regime_gate_on_failure", "regime_gate_window",
     "regime_directional_window", "regime_directional_policy",
     "regime_window_divergence", "regime_profile_allocation",
+    "regime_side", "allow_uncertified_regime_side",
 )
 
 SIZING_REASON_CODES = {
@@ -464,6 +465,34 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
     else:
         gate_state = None
 
+    side_on = strategy.get("regime_side") is True
+    side_ack = strategy.get("allow_uncertified_regime_side") is True
+    side_live = binding.get("partition") == "live"
+    side_state = None
+    side_errors = []
+    if side_on or "regime_side" in strategy or "allow_uncertified_regime_side" in strategy:
+        from backtester import regime_side_config_errors
+        from regime import valid_labels_for_classifier
+        vocab = None
+        if enabled and dir_selector is None:
+            dkey = resolve_strategy_regime_window(strategy, "directional", regime)
+            vocab = sorted(valid_labels_for_classifier(
+                classifier_for_window(regime if _multi(regime) else {}, dkey)))
+        side_errors = regime_side_config_errors(strategy, regime, directional_labels=vocab)
+    if side_errors:
+        side_state = ("refused", "regime_side_invalid", False, "; ".join(side_errors))
+    elif not side_on:
+        side_state = ("inactive", "regime_selector_no_consumer", False, "regime_side is off")
+    elif dir_selector:
+        side_state = ("refused", dir_selector["reason_code"], False, dir_selector["detail"])
+    elif side_live and not side_ack and cert.get("status") == "unverified":
+        side_state = ("refused", cert["reason_code"], True,
+                      "regime_side live entries need exact-label certification evidence; "
+                      + cert["assumption"] + ", so every flat entry holds")
+    elif side_live and not side_ack and cert.get("status") == "refused":
+        side_state = ("refused", cert["reason_code"], cert.get("approximable", False),
+                      cert.get("detail") or cert["reason_code"])
+
     dir_active = policy_set and cert.get("status") == "verified" and bool(honored)
     if dir_selector and (_named(strategy.get("regime_directional_window")) or dir_active):
         dir_state = ("refused", dir_selector["reason_code"], False, dir_selector["detail"])
@@ -488,7 +517,8 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
     consumers = []
     if gate_state is None:
         consumers.append("gate")
-    if dir_state is None:
+    side_consumes = side_on and not side_errors and not dir_selector
+    if dir_state is None or side_consumes:
         consumers.append("directional")
     if stop_needs_labels:
         consumers.append("atr")
@@ -499,7 +529,7 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
     lookback_blocks = (warmup is None or int(warmup) < limit) and bool(
         [c for c in consumers if c in ("gate", "directional", "protection")])
 
-    def _feature_block(feature: str):
+    def _feature_block(feature: str, consumer: str = "directional policy"):
         if timeframe_blocks and feature in consumers:
             return ("refused", "regime_timeframe_unprepared", False,
                     "regime labels from another timeframe are not prepared by the frozen comparison")
@@ -511,7 +541,7 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
             if block:
                 return block
         if feature == "directional":
-            block = _payload_block(payload, needs_attestation=True, consumer="directional policy")
+            block = _payload_block(payload, needs_attestation=True, consumer=consumer)
             if block:
                 return block
         if feature in ("gate", "directional") and labels.get("status") != "verified":
@@ -530,6 +560,18 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
             "modeled", "regime_directional_modeled", False,
             "the directional policy reads the result.Regime label of its window on the unshifted "
             "closed-candle row; an open position keeps the stamp from entry")
+
+    side_block = _feature_block("directional", "regime_side flat decision") if side_consumes else None
+    if side_state is not None and side_block is not None and not side_block[2]:
+        side_state = side_block
+    if side_state is None:
+        side_state = side_block or (
+            "modeled", "regime_side_modeled", False,
+            "a flat decision maps a non-zero trigger to the side the result.Regime label of the "
+            "directional window selects; "
+            + ("paper needs no certification" if not side_live else
+               "acknowledged live entries need no certification evidence" if side_ack else
+               "live entries need the exact label certified for that side in the bound evidence"))
 
     payload_row = payload["row"] if payload_attested else "decision_bar"
     row_name = PAYLOAD_ROW_NAMES[payload_row] if payload["status"] != "conflict" else None
@@ -559,6 +601,11 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
 
     if dir_selector and _named(strategy.get("regime_directional_window")):
         dir_window_decision = ("refused", dir_selector["reason_code"], False, dir_selector["detail"])
+    elif dir_state[0] == "inactive" and side_state[0] == "modeled":
+        dir_window_decision = ("modeled", "regime_directional_modeled", False,
+                               "directional window selector read by regime_side")
+    elif dir_state[0] == "inactive" and side_state[0] == "refused":
+        dir_window_decision = side_state
     elif dir_state[0] == "inactive":
         dir_window_decision = ("inactive", "regime_selector_no_consumer", False,
                                "selector with no active consumer")
@@ -589,6 +636,19 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
     add("regime_atr_window", strategy.get("regime_atr_window"), *atr_decision)
     add("regime_directional_window", strategy.get("regime_directional_window"), *dir_window_decision)
     add("regime_directional_policy", policy, *dir_state)
+    add("regime_side", strategy.get("regime_side"), *side_state)
+    if side_state[0] == "modeled" and side_ack and side_live:
+        ack_state = ("modeled", "regime_side_acknowledged", False,
+                     "live entries need no certification evidence; readiness, labels, base direction "
+                     "and the other entry gates still apply")
+    elif side_state[0] == "modeled" and side_ack:
+        ack_state = ("informational", "regime_side_acknowledgment_paper", False,
+                     "paper needs no certification, so the acknowledgment has no effect")
+    elif side_ack and side_state[0] == "refused":
+        ack_state = side_state
+    else:
+        ack_state = ("inactive", "regime_selector_no_consumer", False, "not configured")
+    add("allow_uncertified_regime_side", strategy.get("allow_uncertified_regime_side"), *ack_state)
 
     div = strategy.get("regime_window_divergence")
     div_configured = (
@@ -613,11 +673,12 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
     modeled = [r for r in rows if r["decision"] == "modeled"]
     refused_consumers = [r for r in rows if r["decision"] == "refused" and r["field"] in (
         "allowed_regimes", "regime_directional_policy", "regime_window_divergence",
-        "regime_profile_allocation")]
+        "regime_profile_allocation", "regime_side")]
     if not enabled:
         add("regime.enabled", regime.get("enabled"), "inactive", "regime_enabled_inactive", False,
             "regime disabled")
-    elif refused_consumers and not any(r["field"] in ("allowed_regimes", "regime_directional_policy")
+    elif refused_consumers and not any(r["field"] in ("allowed_regimes", "regime_directional_policy",
+                                                      "regime_side")
                                        and r["decision"] == "modeled" for r in rows) and not stop_needs_labels:
         sample = refused_consumers[0]
         add("regime.enabled", True, "refused", sample["reason_code"], sample["approximable"],
@@ -653,13 +714,14 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
 
     use_gate = _usable("allowed_regimes")
     use_dir = _usable("regime_directional_policy")
+    use_side = _usable("regime_side")
     use_stop_columns = bool(
         stop_reads_columns and not lookback_blocks and not timeframe_blocks
         and (stop_block is None or (mode == "approximate" and stop_block[2])))
 
     prepare = None
     engine = None
-    if (use_gate or use_dir or use_stop_columns) and not lookback_blocks and not timeframe_blocks:
+    if (use_gate or use_dir or use_side or use_stop_columns) and not lookback_blocks and not timeframe_blocks:
         gate_key = resolve_strategy_regime_window(strategy, "gate", regime)
         dir_key = resolve_strategy_regime_window(strategy, "directional", regime)
         columns = {}
@@ -705,6 +767,22 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         elif policy_set and cert.get("status") == "verified" and not honored:
             engine["regime_directional_policy"] = policy
             engine["regime_directional_certified_states"] = {}
+        if use_side:
+            engine["regime_side"] = True
+            engine["allow_uncertified_regime_side"] = side_ack
+            if not side_live:
+                engine["regime_side_certification"] = {"context": "paper", "source": "paper partition"}
+            else:
+                verified = cert.get("status") == "verified"
+                engine["regime_side_certification"] = {
+                    "context": "live",
+                    "states": dict(cert.get("states") or {}) if verified else {},
+                    "active_from": binding.get("interval_start") if verified else None,
+                    "expires_at": None,
+                    "cell": (identity or {}).get("key") or "",
+                    "source": ("bound certification evidence for the whole interval" if verified
+                               else "no verified certification evidence"),
+                }
 
     protection_row = row_name if stop_reads_payload else None
     window_report = []
@@ -722,6 +800,7 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         "consumers": {
             "gate": next(r["decision"] for r in rows if r["field"] == "allowed_regimes"),
             "directional": next(r["decision"] for r in rows if r["field"] == "regime_directional_policy"),
+            "regime_side": next(r["decision"] for r in rows if r["field"] == "regime_side"),
             "atr": (protection_row or "refused") if stop_needs_labels else "inactive",
         },
         "timing": {

@@ -1415,6 +1415,49 @@ update_give_tree() {
     return 0
 }
 
+UPDATE_DIRECTIONAL_CERT_PY='
+import importlib.util, os, shlex, sys
+spec = importlib.util.spec_from_file_location("migrate_service_layout", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+key = "GO_TRADER_DIRECTIONAL_CERT_PATH"
+found = None
+for k, v in mod.parse_env_assignments(sys.argv[2]) or []:
+    if k == key:
+        found = v
+for entry in sys.argv[3].splitlines():
+    path = entry.split(" (ignore_errors=")[0].strip()
+    if not path.startswith("/") or not os.path.isfile(path):
+        continue
+    for k, v in mod.parse_env_file(path):
+        if k == key:
+            found = v
+if found is not None:
+    print("SET " + found)
+'
+
+update_directional_cert_path_from_show() {
+    local env_text="$1" files_text="$2" dir out entry path mentioned=0
+    [[ "$env_text" == *GO_TRADER_DIRECTIONAL_CERT_PATH* ]] && mentioned=1
+    while IFS= read -r entry || [[ -n "$entry" ]]; do
+        path="${entry%% (ignore_errors=*}"
+        [[ "$path" == /* && -f "$path" ]] || continue
+        grep -q GO_TRADER_DIRECTIONAL_CERT_PATH "$path" 2>/dev/null && mentioned=1
+    done <<<"$files_text"
+    [[ "$mentioned" == 1 ]] || return 0
+    dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    out=$(python3 -I -c "$UPDATE_DIRECTIONAL_CERT_PY" "$dir/migrate-service-layout.py" "$env_text" "$files_text") || return 1
+    printf '%s' "$out"
+}
+
+update_unit_directional_cert_path() {
+    local unit="$1" env_text files_text
+    command -v systemctl >/dev/null 2>&1 || return 0
+    env_text=$(systemctl show -p Environment --value "$unit" 2>/dev/null || true)
+    files_text=$(systemctl show -p EnvironmentFiles --value "$unit" 2>/dev/null || true)
+    update_directional_cert_path_from_show "$env_text" "$files_text"
+}
+
 update_probe_as_owner() {
     local tree="$1" owner="$2" binary="$3" config="$4" p
     local -a rw=() args=() extra=("${@:5}")

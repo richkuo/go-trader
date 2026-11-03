@@ -24,6 +24,7 @@ from directional_certification import (
     is_directional_certified,
     certified_states,
     backtest_classifier,
+    regime_side_certification_context,
 )
 
 FUNDING_COLUMN_STRATEGIES = {"funding_skew", "delta_neutral_funding"}
@@ -103,7 +104,8 @@ from backtester import (Backtester, CapabilityContext, CloseCapabilityError,
                         STOP_UNITS_PREVIEW, _finite_number, _unified_close_params,
                         aggregate_close_validations, build_stop_capability_context,
                         format_close_validation, format_results, leverage_evidence,
-                        stop_raw_fields, validate_close_capabilities)
+                        regime_side_config_errors, stop_raw_fields,
+                        validate_close_capabilities)
 from optimizer import (walk_forward_optimize, DEFAULT_PARAM_RANGES,
                        DEFAULT_CLOSE_STACK_SPECS, generate_close_stack_grid)
 from reporter import (
@@ -1511,6 +1513,14 @@ def load_strategy_config(config_path: str, strategy_id: str,
         label_plan = resolve_feature_windows(
             sc, regime_cfg, label=f"{config_path}: strategy {strategy_id!r}")
         prepared = prepared_window_keys(label_plan) if regime_cfg.get("enabled") else None
+        side_errs = regime_side_config_errors(
+            {**sc, "platform": live_strategy_platform(sc), "type": str(sc.get("type") or "")},
+            regime_cfg,
+            directional_labels=(label_plan["vocabularies"]["directional"]
+                                if regime_cfg.get("enabled") else None))
+        if side_errs:
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} " + "; ".join(side_errs))
         stops = resolve_live_strategy_stops(
             cfg, sc, user_defaults, inject_user_defaults=inject_user_defaults,
             label=f"{config_path}: strategy {strategy_id!r}",
@@ -1721,6 +1731,14 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 _certs, cert_symbol, cert_timeframe, _clf,
             )
             regime_directional_certified = regime_directional_certified_states is not None
+        regime_side = bool(sc.get("regime_side"))
+        if regime_side and not close_refs:
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} regime_side requires an explicit "
+                f"close_strategy after defaults resolve")
+        regime_side_certification = (
+            regime_side_certification_context(sc, regime_cfg, live=_args_mode(cfg_args) == "live")
+            if regime_side else None)
         refuse_live_isolated_bankruptcy(sc, close_refs)
         perps_sizing = resolve_perps_sizing(cfg, sc)
         out = {
@@ -1737,6 +1755,9 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "regime_directional_policy": regime_directional_policy,
             "regime_directional_certified": regime_directional_certified,
             "regime_directional_certified_states": regime_directional_certified_states,
+            "regime_side": regime_side,
+            "allow_uncertified_regime_side": bool(sc.get("allow_uncertified_regime_side")),
+            "regime_side_certification": regime_side_certification,
             "regime_enabled": bool(regime_cfg.get("enabled")),
             "regime_period": int(regime_cfg.get("period", 14) or 14),
             "regime_adx_threshold": float(regime_cfg.get("adx_threshold", 20.0) or 20.0),
@@ -1819,6 +1840,9 @@ def run_single_backtest(
     venue_margin: Optional[dict] = None,
     regime_label_plan: Optional[dict] = None,
     resting_tp_trade_through: bool = False,
+    regime_side: bool = False,
+    allow_uncertified_regime_side: bool = False,
+    regime_side_certification: Optional[dict] = None,
 ) -> Optional[dict]:
     if strategy_name in BOOK_INPUT_STRATEGIES:
         try:
@@ -1829,6 +1853,10 @@ def run_single_backtest(
         raise SystemExit(
             "the resting take-profit trade-through rule needs --manifest (the tick grid "
             "comes from the manifest execution spec)")
+    if regime_side and not (regime_enabled and regime_label_plan):
+        raise SystemExit(
+            "regime_side needs the live config's regime label plan (use --config); the side "
+            "is read from the directional window column, never the primary label")
     manifest = None
     manifest_dataset_entry = None
     if manifest_path:
@@ -2034,7 +2062,11 @@ def run_single_backtest(
         if close_strategies:
             df_signals = ensure_atr_indicator(df_signals, method=atr_method)
 
-    if htf_filter:
+    if htf_filter and regime_side:
+        df_signals = df_signals.copy()
+        df_signals["htf_trend"] = _htf_trend_series(symbol, timeframe, df_signals.index).values
+        print(f"  HTF filter: applied to the regime_side mapped side (HTF={get_default_htf(timeframe)})")
+    elif htf_filter:
         df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe)
         print(f"  HTF filter: applied (HTF={get_default_htf(timeframe)})")
 
@@ -2149,8 +2181,17 @@ def run_single_backtest(
         venue_margin=venue_margin,
         resting_tp_trade_through=resting_tp_trade_through,
         regime_label_columns=label_columns,
+        regime_side=bool(regime_side),
+        allow_uncertified_regime_side=bool(allow_uncertified_regime_side),
+        regime_side_certification=regime_side_certification if regime_side else None,
+        htf_filter=bool(htf_filter and regime_side),
         **(feature_label_kwargs(regime_label_plan) if label_columns else {}),
     )
+    if regime_side:
+        cert = bt._regime_side_certification
+        print(f"  Regime side: context={cert['context']} "
+              f"acknowledged_uncertified={bool(allow_uncertified_regime_side)} "
+              f"cell={cert.get('cell') or '-'} source={cert.get('source') or '-'}")
     print(f"  Fee model: platform={platform} commission_pct={bt.commission_pct} "
           f"slippage_pct={bt.slippage_pct}")
     if manifest is None:
@@ -2798,6 +2839,9 @@ def _main():
             "regime_directional_policy",
             "regime_directional_certified",
             "regime_directional_certified_states",
+            "regime_side",
+            "allow_uncertified_regime_side",
+            "regime_side_certification",
             "regime_gate_on_failure",
             "profile_allocation",
             "regime_timeframe",

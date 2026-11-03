@@ -115,8 +115,9 @@ def parse_certifications_strict(data: dict) -> dict:
         if not asset or not timeframe or not classifier:
             raise CertificationInvalid(
                 f"certified[{i}] missing asset/timeframe/classifier")
+        generated = None
         if "generated_at" in entry and entry["generated_at"] is not None:
-            _require_cert_time(entry["generated_at"], f"certified[{i}].generated_at")
+            generated = _require_cert_time(entry["generated_at"], f"certified[{i}].generated_at")
         expires = None
         if "expires_at" in entry and entry["expires_at"] is not None:
             expires = _require_cert_time(entry["expires_at"], f"certified[{i}].expires_at")
@@ -137,6 +138,7 @@ def parse_certifications_strict(data: dict) -> dict:
             "timeframe": timeframe,
             "classifier": classifier,
             "expires_at": expires.isoformat().replace("+00:00", "Z") if expires else "",
+            "generated_at": generated.isoformat().replace("+00:00", "Z") if generated else "",
             "states": clean,
         }
     return out
@@ -283,3 +285,48 @@ def directional_cert_identity(strategy: Optional[dict], regime: Optional[dict]) 
         return None
     return {"asset": asset, "timeframe": timeframe, "classifier": classifier,
             "key": _cert_key(asset, timeframe, classifier)}
+
+
+def load_regime_side_artifact(path: Optional[str] = None) -> dict:
+    p = cert_path(path)
+    out = {"path": p, "state": "loaded", "detail": "", "table": {}, "generated_at": ""}
+    try:
+        with open(p, "rb") as fh:
+            text = fh.read().decode("utf-8")
+    except FileNotFoundError:
+        out["state"] = "missing"
+        return out
+    except (OSError, UnicodeError) as exc:
+        out["state"] = "unreadable"
+        out["detail"] = str(exc)
+        return out
+    try:
+        data = json.loads(text)
+        out["table"] = parse_certifications_strict(data)
+    except (ValueError, CertificationInvalid) as exc:
+        out["state"] = "malformed"
+        out["detail"] = str(exc)
+        out["table"] = {}
+        return out
+    out["generated_at"] = str(data.get("generated_at") or "")
+    return out
+
+
+def regime_side_certification_context(strategy: Optional[dict], regime: Optional[dict], *,
+                                      live: bool, artifact: Optional[dict] = None) -> dict:
+    if not live:
+        return {"context": "paper", "source": "paper"}
+    identity = directional_cert_identity(strategy, regime)
+    art = artifact if artifact is not None else load_regime_side_artifact()
+    out = {"context": "live", "states": {}, "active_from": None, "expires_at": None,
+           "cell": identity["key"] if identity else "",
+           "source": f"{art.get('path')}:{art.get('state')}"}
+    if identity is None:
+        return out
+    entry = (art.get("table") or {}).get(identity["key"])
+    if not entry:
+        return out
+    out["states"] = dict(entry.get("states") or {})
+    out["expires_at"] = entry.get("expires_at") or None
+    out["active_from"] = entry.get("generated_at") or art.get("generated_at") or None
+    return out
