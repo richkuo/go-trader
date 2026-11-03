@@ -122,14 +122,15 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 				if opt.Action == "sell" {
 					sign = -1.0
 				}
+				units := opt.Quantity * optionRiskMultiplier(optionOwnerPlatform(ss), opt)
 				if opt.Greeks.Delta != 0 {
-					deltaUSD += sign * opt.Greeks.Delta * opt.Quantity * spotPrice
+					deltaUSD += sign * opt.Greeks.Delta * units * spotPrice
 				} else {
 					coarseDelta := 1.0
 					if opt.OptionType == "put" {
 						coarseDelta = -1.0
 					}
-					deltaUSD += sign * coarseDelta * opt.Quantity * spotPrice
+					deltaUSD += sign * coarseDelta * units * spotPrice
 				}
 			}
 		}

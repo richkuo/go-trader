@@ -2036,7 +2036,7 @@ func main() {
 				var posJSON string
 				var posJSONErr error
 				if sc.Type == "options" {
-					posJSON, posJSONErr = EncodeAllPositionsJSON(stratState.OptionPositions, stratState.Positions)
+					posJSON, posJSONErr = EncodeAllPositionsJSON(stratState.Platform, stratState.OptionPositions, stratState.Positions)
 				}
 				var spotPosCtx PositionCtx
 				if sc.Type == "spot" && sc.Platform != "okx" && sc.Platform != "robinhood" {
@@ -3219,6 +3219,12 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier,
 		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script returned error: %s", result.Error)
 		notifyScriptFailure(notifier, sc, scriptFailureError, result.Error)
+		return nil, "", false
+	}
+	if err := optionsResultContractError(sc.Platform, result); err != nil {
+		logger.RunningOnFailure(sc.Script, args)
+		logger.Error("Script contract failure: %v", err)
+		notifyScriptFailure(notifier, sc, scriptFailureError, err.Error())
 		return nil, "", false
 	}
 	clearScriptFailure(notifier, sc)

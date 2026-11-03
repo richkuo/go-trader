@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -260,6 +261,7 @@ type markRequest struct {
 	Strike     float64
 	DTE        float64
 	Quantity   float64
+	Multiplier float64
 	Expired    bool
 }
 
@@ -280,9 +282,15 @@ type markResult struct {
 
 func collectMarkRequests(s *StrategyState) []markRequest {
 	var reqs []markRequest
-	for id, pos := range s.OptionPositions {
+	for _, id := range sortedOptionLegKeys(s.OptionPositions) {
+		pos := s.OptionPositions[id]
 		expiry, err := time.Parse("2006-01-02", pos.Expiry)
 		if err != nil {
+			continue
+		}
+		multiplier, err := strategyOptionMultiplier(s, id, pos)
+		if err != nil {
+			fmt.Printf("[WARN] option mark skipped: %v\n", err)
 			continue
 		}
 		dte := expiry.UTC().Sub(time.Now().UTC()).Hours() / 24
@@ -295,6 +303,7 @@ func collectMarkRequests(s *StrategyState) []markRequest {
 			Strike:     pos.Strike,
 			DTE:        dte,
 			Quantity:   pos.Quantity,
+			Multiplier: multiplier,
 			Expired:    dte <= 0,
 		})
 	}
@@ -304,16 +313,21 @@ func collectMarkRequests(s *StrategyState) []markRequest {
 func fetchMarkPrices(requests []markRequest, pricer OptionPricer, logger *StrategyLogger) []markResult {
 	var results []markResult
 	for _, req := range requests {
+		units, unitsErr := optionContractValueUSD(1, req.Multiplier, req.Quantity)
+		if unitsErr != nil {
+			logger.Warn("Skipping mark for %s: %v", req.ID, unitsErr)
+			continue
+		}
 		if req.Expired {
 			spotPrice, spotErr := pricer.FetchSpotPrice(req.Underlying)
 			intrinsic := 0.0
 			itm := false
 			if spotErr == nil && spotPrice > 0 {
 				if req.OptionType == "put" && spotPrice < req.Strike {
-					intrinsic = (req.Strike - spotPrice) * req.Quantity
+					intrinsic = (req.Strike - spotPrice) * units
 					itm = true
 				} else if req.OptionType == "call" && spotPrice > req.Strike {
-					intrinsic = (spotPrice - req.Strike) * req.Quantity
+					intrinsic = (spotPrice - req.Strike) * units
 					itm = true
 				}
 			}
@@ -333,7 +347,7 @@ func fetchMarkPrices(requests []markRequest, pricer OptionPricer, logger *Strate
 				res.AssignOptionType = req.OptionType
 				res.AssignStrike = req.Strike
 				res.AssignSpotPrice = spotPrice
-				res.AssignQuantity = req.Quantity
+				res.AssignQuantity = units
 			}
 			assignedStr := ""
 			if res.Assigned {
@@ -350,7 +364,11 @@ func fetchMarkPrices(requests []markRequest, pricer OptionPricer, logger *Strate
 			continue
 		}
 
-		priceUSD := markPrice * spotPrice
+		priceUSD, valueErr := optionContractValueUSD(markPrice*spotPrice, req.Multiplier, req.Quantity)
+		if valueErr != nil {
+			logger.Warn("Failed to value mark for %s: %v", req.ID, valueErr)
+			continue
+		}
 		currentValue := priceUSD
 		if req.Action == "sell" {
 			currentValue = -priceUSD
@@ -451,17 +469,45 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 
 	case "call":
 		now := time.Now().UTC()
-		proceeds := r.AssignStrike * r.AssignQuantity
+		requireCover := false
+		if spec, err := lookupOptionContractSpec(optionOwnerPlatform(s), r.AssignUnderlying); err == nil {
+			requireCover = spec.RequireCoveredCalls
+		}
+		existing, held := s.Positions[symbol]
+		if held && existing.Side != "long" {
+			existing, held = nil, false
+		}
+		delivered := r.AssignQuantity
+		uncovered := 0.0
+		if requireCover {
+			heldQty := 0.0
+			if held && existing.Quantity > 0 {
+				heldQty = existing.Quantity
+			}
+			delivered = math.Min(heldQty, r.AssignQuantity)
+			uncovered = r.AssignQuantity - delivered
+		}
+		if uncovered > 0 {
+			intrinsic := math.Max(r.AssignSpotPrice-r.AssignStrike, 0)
+			settlement := intrinsic * uncovered
+			s.Cash -= settlement
+			logger.Warn("UNCOVERED CALL ASSIGNMENT: sold call %s-%.0f expired ITM (spot=$%.2f) with %.4f of %.4f %s shares held; cash-settled %.4f uncovered shares for $%.2f intrinsic, no strike proceeds for missing shares",
+				r.AssignUnderlying, r.AssignStrike, r.AssignSpotPrice, delivered, r.AssignQuantity, symbol, uncovered, settlement)
+		}
+		if delivered <= 0 {
+			return
+		}
+		proceeds := r.AssignStrike * delivered
 		s.Cash += proceeds
 		pnl := 0.0
 		var positionID string
 		var posEntryATR, posStopLossTriggerPx float64
-		if existing, ok := s.Positions[symbol]; ok && existing.Side == "long" {
+		if held {
 			positionID = ensurePositionTradeID(s.ID, symbol, existing)
-			pnl = (r.AssignStrike - existing.AvgCost) * r.AssignQuantity
+			pnl = (r.AssignStrike - existing.AvgCost) * delivered
 			posEntryATR = existing.EntryATR
 			posStopLossTriggerPx = existing.StopLossTriggerPx
-			newQty := existing.Quantity - r.AssignQuantity
+			newQty := existing.Quantity - delivered
 			if newQty <= 0 {
 				recordClosedPosition(s, existing, r.AssignStrike, pnl, "assignment", now)
 				delete(s.Positions, symbol)
@@ -476,12 +522,12 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 			Symbol:     symbol,
 			PositionID: positionID,
 			Side:       "sell",
-			Quantity:   r.AssignQuantity,
+			Quantity:   delivered,
 			Price:      r.AssignStrike,
 			Value:      proceeds,
 			TradeType:  "assignment",
 			Details: fmt.Sprintf("Wheel call-away: sold call expired ITM (spot=$%.2f), sold %.4f %s @ $%.0f PnL=$%.2f",
-				r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, pnl),
+				r.AssignSpotPrice, delivered, symbol, r.AssignStrike, pnl),
 			IsClose:           true,
 			RealizedPnL:       pnl,
 			PnLGross:          true,
@@ -490,6 +536,6 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 			StopLossTriggerPx: posStopLossTriggerPx,
 		})
 		logger.Info("CALL-AWAY: sold call %s-%.0f expired ITM (spot=$%.2f), sold %.4f %s @ $%.0f (proceeds=$%.2f, PnL=$%.2f)",
-			r.AssignUnderlying, r.AssignStrike, r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, proceeds, pnl)
+			r.AssignUnderlying, r.AssignStrike, r.AssignSpotPrice, delivered, symbol, r.AssignStrike, proceeds, pnl)
 	}
 }

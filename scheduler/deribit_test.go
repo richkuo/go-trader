@@ -166,6 +166,7 @@ func TestDeribitMarkPricing(t *testing.T) {
 						Strike:     50000,
 						Action:     "sell",
 						Quantity:   1,
+						Multiplier: 1,
 						DTE:        -1,
 						Expired:    true,
 					},

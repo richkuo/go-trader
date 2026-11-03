@@ -1643,7 +1643,7 @@ func TestClosedPositionPersistence(t *testing.T) {
 		lm, _ := NewLogManager("")
 		logger, _ := lm.GetStrategyLogger("test")
 		result := &OptionsResult{
-			Underlying: "BTC", SpotPrice: 60000, Signal: -1,
+			Underlying: "BTC", SpotPrice: 60000, Signal: -1, Platform: "deribit", PremiumUnit: optionPremiumUnitUnderlying,
 			Actions: []OptionsAction{{Action: "close", OptionType: "call", Strike: 55000, PremiumUSD: 2500}},
 		}
 		if _, err := ExecuteOptionsSignal(s, result, logger); err != nil {
@@ -2297,9 +2297,11 @@ func TestLifetimeTradeStatsAll(t *testing.T) {
 			TradeHistory:    []Trade{},
 		}
 		openResult := &OptionsResult{
-			Signal:     1,
-			Underlying: "BTC",
-			SpotPrice:  60000,
+			Signal:      1,
+			Underlying:  "BTC",
+			Platform:    "deribit",
+			PremiumUnit: optionPremiumUnitUnderlying,
+			SpotPrice:   60000,
 			Actions: []OptionsAction{{
 				Action:     "buy",
 				OptionType: "call",
@@ -2311,9 +2313,11 @@ func TestLifetimeTradeStatsAll(t *testing.T) {
 			}},
 		}
 		closeResult := &OptionsResult{
-			Signal:     -1,
-			Underlying: "BTC",
-			SpotPrice:  60000,
+			Signal:      -1,
+			Underlying:  "BTC",
+			Platform:    "deribit",
+			PremiumUnit: optionPremiumUnitUnderlying,
+			SpotPrice:   60000,
 			Actions: []OptionsAction{{
 				Action:     "close",
 				OptionType: "call",

@@ -154,6 +154,13 @@ func loadStateWithStore(cfg *Config, store *StateStore, deferPersist bool) (*App
 	if !found {
 		return NewAppState(), nil, false, nil
 	}
+	stamped, err := stampLoadedOptionContractMultipliers(state, cfg)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("sqlite load: %w", err)
+	}
+	if stamped > 0 {
+		fmt.Printf("[state] Stamped %d legacy option leg contract size(s) from their strategy platform\n", stamped)
+	}
 
 	moved := false
 	for _, row := range legacy {

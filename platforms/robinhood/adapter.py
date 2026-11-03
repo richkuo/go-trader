@@ -1627,9 +1627,8 @@ class RobinhoodExchangeAdapter:
         from pricing import bs_price_and_greeks
         spot, strike, dte, vol = option_data.require_model_inputs(spot, strike, dte, vol)
         price_usd, greeks = bs_price_and_greeks(spot, strike, dte, vol, option_type=option_type)
-        premium_usd = price_usd * 100
         mark_pct = price_usd / spot
-        return round(mark_pct, 6), round(premium_usd, 2), greeks
+        return round(mark_pct, 6), price_usd, greeks
 
     def _venue_option_premium(self, underlying: str, option_type: str, strike: float,
                               expiry: str, spot: float) -> Tuple[float, float, dict]:
@@ -1673,9 +1672,8 @@ class RobinhoodExchangeAdapter:
         except (TypeError, ValueError):
             raise option_data.OptionDataUnavailable("option quote unavailable: robinhood option market data malformed") from None
         option_data.require_finite_positive(mark, "option quote unavailable: robinhood mark is not positive")
-        premium_usd = mark * 100
         mark_pct = (mark / spot) if spot > 0 else 0.0
-        return round(mark_pct, 6), round(premium_usd, 2), greeks
+        return round(mark_pct, 6), mark, greeks
 
 
     def _get_yahoo_price(self, symbol: str) -> float:
