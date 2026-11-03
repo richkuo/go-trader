@@ -502,7 +502,7 @@ def _float_ask(quantity_text):
     return value if math.isfinite(value) else None
 
 
-def run_execute(symbol, side, amount_usd, quantity_text, mode, ref_id=None, budget_ms=None, close_kind="partial", sole_owner=False):
+def run_execute(symbol, side, amount_usd, quantity_text, mode, ref_id=None, budget_ms=None, close_kind="partial", sole_owner=False, expected_account_id=""):
     with json_stdout() as emit:
         action = (side or "").lower()
         quantity = _float_ask(quantity_text) if action == "sell" else None
@@ -516,6 +516,10 @@ def run_execute(symbol, side, amount_usd, quantity_text, mode, ref_id=None, budg
         if mode != "live":
             _emit_order(emit, _order_envelope(_not_sent("--execute requires --mode=live", ref_id), action, symbol, amount_usd, quantity))
             return
+        expected_account_id = (expected_account_id or "").strip()
+        if action == "sell" and not expected_account_id:
+            _emit_order(emit, _order_envelope(_not_sent("--expected-account-id is required for a sell: a live sell is sent only from the account that owns the go-trader book", ref_id), action, symbol, amount_usd, quantity))
+            return
         try:
             deadline = _budget_deadline(budget_ms)
             if not ref_id:
@@ -527,10 +531,12 @@ def run_execute(symbol, side, amount_usd, quantity_text, mode, ref_id=None, budg
             return
         try:
             if action == "buy":
-                result = adapter.place_market_order(symbol, "buy", ref_id=ref_id, deadline=deadline, amount_usd=amount_usd)
+                result = adapter.place_market_order(symbol, "buy", ref_id=ref_id, deadline=deadline, amount_usd=amount_usd,
+                                                    expected_account_id=expected_account_id or None)
             else:
                 result = adapter.place_market_order(
                     symbol, "sell", ref_id=ref_id, deadline=deadline, quantity=float(asked),
+                    expected_account_id=expected_account_id,
                     sell_policy={"asked": asked, "close_kind": close_kind, "sole_owner": sole_owner is True},
                 )
         except Exception as e:
@@ -603,6 +609,7 @@ def main():
             parser.add_argument("--quantity", type=str, default="0")
             parser.add_argument("--close-kind", choices=["whole", "partial"], default="partial")
             parser.add_argument("--sole-owner", action="store_true")
+            parser.add_argument("--expected-account-id", default="")
             parser.add_argument("--mode", default="live")
             parser.add_argument("--ref-id", required=True)
             parser.add_argument("--budget-ms", type=int, required=True)
@@ -611,7 +618,7 @@ def main():
             if args.probe_only:
                 sys.exit(0)
             run_execute(args.symbol, args.side, args.amount_usd, args.quantity, args.mode, args.ref_id, args.budget_ms,
-                        close_kind=args.close_kind, sole_owner=args.sole_owner)
+                        close_kind=args.close_kind, sole_owner=args.sole_owner, expected_account_id=args.expected_account_id)
         else:
             import argparse
             parser = argparse.ArgumentParser()

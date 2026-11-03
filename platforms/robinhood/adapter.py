@@ -2272,6 +2272,12 @@ class RobinhoodExchangeAdapter:
         if row_account is not None and row_account != account_id:
             raise _OrderEvidenceError(f"order belongs to account {row_account!r}, not the logged-in crypto account")
 
+    def crypto_account_id(self, deadline=None, expected_account_id=None):
+        session, urls = self._logged_in_session(_OrderPrepError)
+        own_deadline = time.monotonic() + _HOLDINGS_TOTAL_DEADLINE_S
+        deadline = own_deadline if deadline is None else min(own_deadline, deadline)
+        return self._crypto_account_id(session, urls, deadline, expected_account_id)
+
     def get_crypto_positions_strict(self, deadline=None) -> list:
         try:
             return self._read_crypto_holdings(deadline)

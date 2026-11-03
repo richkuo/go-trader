@@ -17,8 +17,8 @@ CASES = [
     ("check_paper", "check_robinhood.py", ["momentum_pro", "BTC", "1h", "--mode=paper"], None, True, True),
     ("check_live", "check_robinhood.py", ["momentum_pro", "BTC", "1h", "--mode=live"], None, True, True),
     ("execute_buy", "check_robinhood.py", ["--execute", "--symbol=BTC", "--side=buy", "--amount_usd=10", "--mode=live", "--ref-id=" + REF_ID, "--budget-ms=3000"], None, True, False),
-    ("execute_sell", "check_robinhood.py", ["--execute", "--symbol=BTC", "--side=sell", "--quantity=0.001", "--mode=live", "--ref-id=" + REF_ID, "--budget-ms=3000"], None, True, False),
-    ("close", "close_robinhood_position.py", ["--symbol=BTC", "--mode=live", "--quantity=0.5"], None, True, False),
+    ("execute_sell", "check_robinhood.py", ["--execute", "--symbol=BTC", "--side=sell", "--quantity=0.001", "--mode=live", "--ref-id=" + REF_ID, "--budget-ms=3000", "--expected-account-id=offline-account"], None, True, False),
+    ("close", "close_robinhood_position.py", ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--expected-account-id=offline-account"], None, True, False),
     ("positions", "fetch_robinhood_positions.py", [], None, True, False),
     ("options", "check_options.py", ["vol_mean_reversion", "BTC", "--platform=robinhood"], "[]", True, True),
     ("balance", "check_balance.py", ["--platform=robinhood"], None, True, True),
@@ -30,9 +30,9 @@ READS_FAIL_CLOSED = ("close", "positions")
 
 BUDGET = "--budget-ms=3000"
 EXECUTE_BUY = ["check_robinhood.py", "--execute", "--symbol=BTC", "--side=buy", "--amount_usd=10", "--mode=live", "--ref-id=" + REF_ID, BUDGET]
-EXECUTE_SELL = ["check_robinhood.py", "--execute", "--symbol=BTC", "--side=sell", "--quantity=0.1", "--mode=live", "--ref-id=" + REF_ID, BUDGET]
-CLOSE_BTC = ["close_robinhood_position.py", "--symbol=BTC", "--mode=live", "--quantity=0.5", "--ref-id=" + REF_ID, BUDGET]
-CLOSE_ETH = ["close_robinhood_position.py", "--symbol=ETH", "--mode=live", "--quantity=0.5", "--ref-id=" + REF_ID, BUDGET]
+EXECUTE_SELL = ["check_robinhood.py", "--execute", "--symbol=BTC", "--side=sell", "--quantity=0.1", "--mode=live", "--ref-id=" + REF_ID, BUDGET, "--expected-account-id=offline-account"]
+CLOSE_BTC = ["close_robinhood_position.py", "--symbol=BTC", "--mode=live", "--quantity=0.5", "--ref-id=" + REF_ID, BUDGET, "--expected-account-id=offline-account"]
+CLOSE_ETH = ["close_robinhood_position.py", "--symbol=ETH", "--mode=live", "--quantity=0.5", "--ref-id=" + REF_ID, BUDGET, "--expected-account-id=offline-account"]
 REFUSED = "Robinhood refused the order"
 UNKNOWN = "the outcome is unknown"
 UNCONFIRMED = "state is unreadable"

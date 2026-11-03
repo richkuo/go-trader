@@ -802,6 +802,7 @@ update_exit_coordinator() {
     local stage_recovery_probe="skipped"
     local stage_recovery_service="skipped"
     local stage_rh_identity="skipped"
+    local stage_rh_binding="skipped"
 
     if [[ "$restart_attempted" == "1" ]]; then
         if restart_uses_signal_pid; then
@@ -922,6 +923,11 @@ update_exit_coordinator() {
             else
                 stage_rh_identity="blocked"
             fi
+            if update_robinhood_binding_rollback_check "$repo_root/go-trader"; then
+                stage_rh_binding="ok"
+            else
+                stage_rh_binding="blocked"
+            fi
         fi
 
         if [[ "$stage_recovery_probe" == "failed" || "$stage_restore_ownership" == "failed" ]]; then
@@ -930,6 +936,9 @@ update_exit_coordinator() {
         elif [[ "$stage_rh_identity" == "blocked" ]]; then
             stage_recovery_service="blocked"
             echo "[update] recovery: service=blocked (Robinhood coin spelling in the config differs from the state files and the restored binary does not prove the #1908 coin identity rule)" >&2
+        elif [[ "$stage_rh_binding" == "blocked" ]]; then
+            stage_recovery_service="blocked"
+            echo "[update] recovery: service=blocked (open live Robinhood books carry account binding columns and the restored binary does not prove the #1921 account binding, or the check could not read the state)" >&2
         elif [[ "$restart_attempted" == "1" ]]; then
             if start_and_verify_recovered_service; then
                 stage_recovery_service="ok"
@@ -951,7 +960,7 @@ update_exit_coordinator() {
         fi
     fi
 
-    local stages_summary="stop_service=$stage_stop_service files=$stage_restore_files venv=$stage_restore_venv binaries=$stage_restore_binaries external=$stage_restore_external ownership=$stage_restore_ownership venv_owner=$venv_owner_status probe=$stage_recovery_probe rh_identity=$stage_rh_identity service=$stage_recovery_service"
+    local stages_summary="stop_service=$stage_stop_service files=$stage_restore_files venv=$stage_restore_venv binaries=$stage_restore_binaries external=$stage_restore_external ownership=$stage_restore_ownership venv_owner=$venv_owner_status probe=$stage_recovery_probe rh_identity=$stage_rh_identity rh_binding=$stage_rh_binding service=$stage_recovery_service"
     local any_failed=0
     case " $stages_summary " in
         *"=failed "*|*"=blocked "*) any_failed=1 ;;

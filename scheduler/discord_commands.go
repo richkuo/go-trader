@@ -30,20 +30,21 @@ var readOnlyCommandNames = map[string]bool{
 }
 
 var opsCommandNames = map[string]bool{
-	"restart":                 true,
-	"backtest":                true,
-	"logs":                    true,
-	"report-an-issue":         true,
-	"config":                  true,
-	"add-strategy":            true,
-	"remove-strategy":         true,
-	"add-platform":            true,
-	"paper-to-live":           true,
-	"apply-regime-gate":       true,
-	"clear-cash-reconcile":    true,
-	"clear-operator-close":    true,
-	"resolve-entry":           true,
-	"resolve-robinhood-order": true,
+	"restart":                   true,
+	"backtest":                  true,
+	"logs":                      true,
+	"report-an-issue":           true,
+	"config":                    true,
+	"add-strategy":              true,
+	"remove-strategy":           true,
+	"add-platform":              true,
+	"paper-to-live":             true,
+	"apply-regime-gate":         true,
+	"clear-cash-reconcile":      true,
+	"clear-operator-close":      true,
+	"resolve-entry":             true,
+	"resolve-robinhood-order":   true,
+	robinhoodAccountCommandName: true,
 }
 
 func authorizeCommand(name, invokerID, guildID, ownerID string) (bool, string) {
@@ -493,6 +494,13 @@ func slashCommands() []*discordgo.ApplicationCommand {
 				{Name: robinhoodAttestReleaseChoice, Value: robinhoodAttestReleaseChoice},
 			}},
 		}},
+		{Name: commandPrefix + robinhoodAccountCommandName, Description: "Resolve a Robinhood book held for account identity (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID of the held book", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "action", Description: "bind-current: coins are on this account; release-book: coins are outside every managed account", Required: true, Choices: []*discordgo.ApplicationCommandOptionChoice{
+				{Name: robinhoodAccountActionBind, Value: robinhoodAccountActionBind},
+				{Name: robinhoodAccountActionRelease, Value: robinhoodAccountActionRelease},
+			}},
+		}},
 	}
 }
 
@@ -628,6 +636,8 @@ func (d *DiscordNotifier) interactionCreate(s discordTransport, i *discordgo.Int
 		d.handleResolveEntry(s, i, data.Options)
 	case "resolve-robinhood-order":
 		d.handleResolveRobinhoodOrder(s, i, data.Options)
+	case robinhoodAccountCommandName:
+		d.handleResolveRobinhoodAccount(s, i, data.Options)
 	default:
 		respondEphemeral(s, i, "unknown command")
 	}

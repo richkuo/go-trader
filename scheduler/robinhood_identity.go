@@ -606,21 +606,31 @@ func (e *robinhoodIdentityStartupError) Error() string { return e.err.Error() }
 func (e *robinhoodIdentityStartupError) Unwrap() error { return e.err }
 
 func prepareStartupState(cfg *Config, store *StateStore, writable bool) (*AppState, []storageOrphan, []string, error) {
+	state, orphans, lines, _, err := prepareStartupStateReport(cfg, store, writable)
+	return state, orphans, lines, err
+}
+
+func prepareStartupStateReport(cfg *Config, store *StateStore, writable bool) (*AppState, []storageOrphan, []string, []string, error) {
 	state, orphans, legacyPending, err := loadStateWithStore(cfg, store, writable)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	if !writable {
-		return state, orphans, nil, nil
+		return state, orphans, nil, nil, nil
 	}
 	lines, err := migrateRobinhoodCoinIdentity(cfg, store, state)
 	if err != nil {
-		return nil, nil, lines, &robinhoodIdentityStartupError{err: err}
+		return nil, nil, lines, nil, &robinhoodIdentityStartupError{err: err}
 	}
+	bindingLines, err := backfillRobinhoodAccountBindings(cfg, store, state)
+	if err != nil {
+		return nil, nil, lines, bindingLines, &robinhoodBindingStartupError{err: err}
+	}
+	bindingLines = append(bindingLines, robinhoodAccountReportLines(state, cfg.Strategies)...)
 	if legacyPending {
 		if err := persistLegacyPortfolioPlacement(state, store); err != nil {
-			return nil, nil, lines, err
+			return nil, nil, lines, bindingLines, err
 		}
 	}
-	return state, orphans, lines, nil
+	return state, orphans, lines, bindingLines, nil
 }

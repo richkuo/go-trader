@@ -281,7 +281,7 @@ func applyKillSwitchSettledLegsWhileLatched(strategies map[string]*StrategyState
 			applyHyperliquidKillSwitchCloseFill(s, sc, plan.CloseReport.Fills, hlRoster, virtualQty)
 			applyHyperliquidKillSwitchHedgeFill(s, sc, plan.CloseReport.Fills)
 		}
-		forceCloseSettledPositions(s, sc, prices, settled, logger)
+		forceCloseSettledPositions(s, sc, prices, settled, plan.RHCloseReport.ClosedCoinProofs(), logger)
 	}
 }
 
@@ -458,14 +458,14 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 			rhFreshLongs = in.RHFreshLongs()
 		}
 		rhBook := in.RHBookSnapshot()
-		rhPositions, err := in.RHFetcher()
+		rhHoldings, err := in.RHFetcher()
 		if err != nil {
 			plan.LogLines = append(plan.LogLines,
 				fmt.Sprintf("[CRITICAL] rh-close: kill switch unable to fetch Robinhood positions: %v — cannot confirm flat", err))
 			plan.OnChainConfirmedFlat = false
 		} else {
 			ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.RHCloseTimeout))
-			plan.RHCloseReport = forceCloseRobinhoodLive(ctx, rhPositions, in.RHLiveCrypto, robinhoodKillSwitchCloseDeps{
+			plan.RHCloseReport = forceCloseRobinhoodLive(ctx, rhHoldings, in.RHLiveCrypto, robinhoodKillSwitchCloseDeps{
 				Closer:     in.RHCloser,
 				Fetcher:    in.RHFetcher,
 				Unresolved: rhUnresolved,

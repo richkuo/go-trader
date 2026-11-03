@@ -29,7 +29,7 @@ func runVersion(args []string) int {
 		Version      string   `json:"version"`
 		SourceCommit string   `json:"source_commit"`
 		Capabilities []string `json:"capabilities"`
-	}{Version, SourceCommit, []string{robinhoodCoinIdentityCapability}})
+	}{Version, SourceCommit, []string{robinhoodCoinIdentityCapability, robinhoodAccountBindingCapability}})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "version: %v\n", err)
 		return 1

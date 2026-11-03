@@ -1355,8 +1355,9 @@ const (
 )
 
 type RobinhoodSellArgs struct {
-	CloseKind string
-	SoleOwner bool
+	CloseKind         string
+	SoleOwner         bool
+	ExpectedAccountID string
 }
 
 func RunRobinhoodCheck(script string, args []string) (*RobinhoodResult, string, error) {
@@ -1433,6 +1434,9 @@ func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float6
 		if sell.SoleOwner {
 			args = append(args, "--sole-owner")
 		}
+	}
+	if sell.ExpectedAccountID != "" {
+		args = append(args, "--expected-account-id="+sell.ExpectedAccountID)
 	}
 	stdout, stderr, runErr := runPythonSideEffectWithTimeout(script, args, robinhoodOrderScriptTimeout)
 	return parseRobinhoodOrderOutput(stdout, string(stderr), runErr)
@@ -1805,9 +1809,12 @@ type RobinhoodCloseResult struct {
 	NoBook            bool                   `json:"-"`
 }
 
-func RunRobinhoodClose(script, symbol, refID string, quantity float64) (*RobinhoodCloseResult, string, error) {
+func RunRobinhoodClose(script, symbol, refID string, quantity float64, expectedAccountID string) (*RobinhoodCloseResult, string, error) {
 	if !(quantity > 0) || math.IsInf(quantity, 0) {
 		return nil, "", fmt.Errorf("the close quantity %v is not a finite positive number; no order was sent", quantity)
+	}
+	if strings.TrimSpace(expectedAccountID) == "" {
+		return nil, "", fmt.Errorf("the close has no expected Robinhood account id; no order was sent")
 	}
 	args := []string{
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -1818,6 +1825,7 @@ func RunRobinhoodClose(script, symbol, refID string, quantity float64) (*Robinho
 	if refID != "" {
 		args = append(args, "--ref-id="+refID)
 	}
+	args = append(args, "--expected-account-id="+expectedAccountID)
 	stdout, stderr, runErr := runPythonSideEffectWithTimeout(script, args, robinhoodOrderScriptTimeout)
 	result, stderrStr, err := parseRobinhoodCloseOutput(stdout, string(stderr), runErr)
 	if result != nil {
@@ -1879,6 +1887,7 @@ func robinhoodCloseAsOrderResult(res *RobinhoodCloseResult) *RobinhoodExecuteRes
 
 type RobinhoodPositionsResult struct {
 	Positions []RobinhoodPositionJSON `json:"positions"`
+	AccountID string                  `json:"account_id"`
 	Platform  string                  `json:"platform"`
 	Timestamp string                  `json:"timestamp"`
 	Error     string                  `json:"error,omitempty"`

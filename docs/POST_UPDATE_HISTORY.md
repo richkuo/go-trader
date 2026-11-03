@@ -2,6 +2,18 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 1921: Robinhood books bound to their account
+
+Runtime behavior changes for every live Robinhood spot strategy, with a startup backfill; there is no opt-out and no config change.
+Before this change an open live Robinhood book had no account binding. After an operator changed `ROBINHOOD_USERNAME`, the kill switch and the circuit breaker could close the old book at mark with no sale when the new account held none of the coin, and could sell the new account's coins into the old book when it did.
+Each live book now stores `account_key`, `venue_account_id` and `account_binding_source` in `positions` (idempotent migration, empty defaults). A confirmed buy binds the new book from its attempt; startup binds an existing book only from one opening trade with a venue order id and exactly one matching settled signal buy (`backfill`); anything else stays unbound.
+Unbound and foreign books are held: signal orders reserve nothing, settlement keeps a different-account attempt `settling`, the kill switch sells only bound books and keeps a held coin unconfirmed, and both circuit-breaker loops keep the pending close. Every automatic model-only close needs a fresh holdings read that names the venue account and a matching position snapshot.
+The holdings script now emits `account_id`; `check_robinhood.py --execute --side=sell` and `close_robinhood_position.py` need `--expected-account-id` and refuse a different account before any order or `already_flat`.
+The owner resolves a held book with `/go-trader-resolve-rh-account <strategy> bind-current|release-book`; both need a fresh read of the configured account and a DM confirm, and neither sends an order.
+`storage-inspect` reports each open live book's binding without a venue read. `go-trader version --json` adds `go-trader-capability:robinhood-account-binding-v1`, and `update.sh` recovery refuses to start a restored binary without it while an open live Robinhood book sits in a state file with the binding columns (`rh_binding=blocked`).
+The first deployment runs the previous `update.sh`, which has no such check: keep the original Robinhood credentials until it succeeds, and flatten and confirm the old account before any later account change.
+Deploy Go and Python together with `bash scripts/update.sh --restart`.
+
 ### Issue 1920: options entries refuse missing market data
 
 Runtime behavior changes for every `type: options` strategy; there is no opt-out and no config change.

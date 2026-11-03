@@ -636,6 +636,125 @@ update_robinhood_identity_rollback_check() {
     return 1
 }
 
+UPDATE_RH_BINDING_PY='
+import json, os, sqlite3, sys, urllib.parse
+
+def canonical(raw):
+    return raw.strip().upper() if isinstance(raw, str) else ""
+
+def live(args):
+    for i, a in enumerate(args):
+        if a == "--mode=live":
+            return True
+        if a == "--mode" and i + 1 < len(args) and args[i + 1] == "live":
+            return True
+    return False
+
+cfg_path = sys.argv[1]
+db_paths = sys.argv[2:]
+try:
+    cfg = json.load(open(cfg_path))
+except Exception as exc:
+    print("cannot read config %s: %s" % (cfg_path, exc))
+    sys.exit(2)
+owners = []
+for sc in cfg.get("strategies") or []:
+    if not isinstance(sc, dict):
+        continue
+    sid = sc.get("id") if isinstance(sc.get("id"), str) else ""
+    platform = sc.get("platform") if isinstance(sc.get("platform"), str) else ""
+    if not platform and sid.startswith("rh-"):
+        platform = "robinhood"
+    args = sc.get("args") if isinstance(sc.get("args"), list) else []
+    if platform != "robinhood" or sc.get("type") != "spot" or len(args) < 2 or not isinstance(args[1], str):
+        continue
+    if not live([a for a in args if isinstance(a, str)]):
+        continue
+    storage = sc.get("storage_strategy_id")
+    storage = storage.strip() if isinstance(storage, str) and storage.strip() else sid
+    owners.append((sid, storage, canonical(args[1])))
+if not owners:
+    sys.exit(0)
+blockers = []
+for path in db_paths:
+    if not path or not os.path.exists(path):
+        continue
+    uri = "file:%s?mode=ro" % urllib.parse.quote(os.path.abspath(path))
+    try:
+        con = sqlite3.connect(uri, uri=True, timeout=10)
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = ?", ("table",))}
+        if "positions" not in tables:
+            con.close()
+            continue
+        cols = {r[1] for r in con.execute("PRAGMA table_info(positions)")}
+        if "account_key" not in cols:
+            con.close()
+            continue
+        for sid, storage, canon in owners:
+            for sym, qty, key, venue in con.execute(
+                    "SELECT symbol, quantity, account_key, venue_account_id FROM positions WHERE strategy_id = ? AND side = ?",
+                    (storage, "long")):
+                if canonical(sym) == canon and isinstance(qty, (int, float)) and qty > 0:
+                    state = "bound" if key and venue else "unbound"
+                    blockers.append("%s: %s holds an open %s book of %.10g (%s) in a state file with Robinhood account binding columns" % (sid, path, canon, qty, state))
+        con.close()
+    except Exception as exc:
+        print("cannot read state file %s: %s" % (path, exc))
+        sys.exit(2)
+for line in sorted(set(blockers)):
+    print(line)
+sys.exit(1 if blockers else 0)
+'
+
+UPDATE_RH_BINDING_CAPABILITY="go-trader-capability:robinhood-account-binding-v1"
+
+update_robinhood_binding_binary_capability() {
+    local bin_path="$1" grep_rc=0
+    [[ -n "$bin_path" && -f "$bin_path" && -r "$bin_path" ]] || return 2
+    LC_ALL=C grep -aqF -- "$UPDATE_RH_BINDING_CAPABILITY" "$bin_path" || grep_rc=$?
+    case "$grep_rc" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
+update_robinhood_binding_rollback_check() {
+    local bin_path="${1:-}"
+    local cfg_path="${GO_TRADER_UPDATE_CONFIG:-scheduler/config.json}"
+    local -a db_paths=()
+    local line out rc=0 cap_rc=0
+    [[ -f "$cfg_path" ]] || return 0
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && db_paths+=("$line")
+    done < <(update_resolve_db_exclude)
+    out=$(python3 -I -c "$UPDATE_RH_BINDING_PY" "$cfg_path" "${db_paths[@]}" 2>&1) || rc=$?
+    if [[ "$rc" == "0" ]]; then
+        return 0
+    fi
+    if [[ "$rc" == "1" ]]; then
+        update_robinhood_binding_binary_capability "$bin_path" || cap_rc=$?
+        if [[ "$cap_rc" == "0" ]]; then
+            echo "[update] recovery: Robinhood account binding: the restored binary ${bin_path} enforces the account binding of live Robinhood books (#1921), so the open books below do not block the start" >&2
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && echo "[update] recovery: Robinhood account binding (not blocking): $line" >&2
+            done <<<"$out"
+            return 0
+        fi
+    fi
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && echo "[update] recovery: Robinhood account binding: $line" >&2
+    done <<<"$out"
+    if [[ "$rc" == "1" && "$cap_rc" == "1" ]]; then
+        echo "[update] recovery: ACTION REQUIRED: the restored binary ${bin_path} predates the Robinhood account binding (#1921). It would sell and reconcile the open live Robinhood books above without checking which account owns them. Keep the service stopped; update again to a build with the account binding, or flatten and confirm each named book by hand first (#1921)" >&2
+    elif [[ "$rc" == "1" ]]; then
+        echo "[update] recovery: ACTION REQUIRED: could not read the restored binary ${bin_path:-<none>} to confirm that it enforces the Robinhood account binding (#1921). Keep the service stopped until a build with the account binding is in place (#1921)" >&2
+    else
+        echo "[update] recovery: ACTION REQUIRED: the Robinhood account binding check could not read the config or a state file; check them by hand before starting the previous binary (#1921)" >&2
+    fi
+    return 1
+}
+
 update_canonical_db_path() {
     python3 -c '
 import os, sys
