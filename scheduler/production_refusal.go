@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -39,15 +38,4 @@ func productionRefusedReferences(sc StrategyConfig) []edgeReference {
 		}
 	}
 	return out
-}
-
-func productionRefusedAdmissionErrors(strategies []StrategyConfig) []string {
-	var errs []string
-	for _, sc := range strategies {
-		for _, ref := range productionRefusedReferences(sc) {
-			errs = append(errs, fmt.Sprintf("strategy %s: %s strategy %q is production_refused (research-only, evidence %s): every config is refused in any mode, with or without allow_no_edge, until a separate reviewed promotion",
-				sc.ID, ref.Role, ref.Name, productionRefusedStrategies[ref.Name]))
-		}
-	}
-	return errs
 }

@@ -239,13 +239,18 @@ def unpromoted_absence(problems, names):
     return [p for p in problems if not any(p == f"{n}: in Python, missing from Go" for n in names)]
 
 
+def research_scalar_names():
+    return {name for name in OPEN_REGISTRY.production_refused_strategies()
+            if not OPEN_REGISTRY.STRATEGIES[name].get("quote")}
+
+
 def test_go_bidirectional_perps_equal_python_short_entries():
     go, py = go_bidirectional_perps(), python_short_entries()
     assert py
-    assert unpromoted_absence(mapping_mismatches(go, py), refused_in_both_languages()) == []
-    assert "bitcoin_lead_lag" in py and "bitcoin_lead_lag" not in go
-    assert "volume_profile_reclaim" in py and "volume_profile_reclaim" not in go
-    assert "order_book_imbalance" in py and "order_book_imbalance" not in go
+    assert mapping_mismatches(go, py) == []
+    assert research_scalar_names() and research_scalar_names() <= set(go)
+    for name in OPEN_REGISTRY.quote_capabilities():
+        assert name not in go and name not in py
 
 
 def test_short_entry_parity_detects_a_removed_name(subtests):
@@ -314,12 +319,44 @@ def test_go_registered_platforms_equal_python_registry():
 
 def test_every_registered_open_strategy_has_a_unique_short_name():
     short = go_short_names()
-    assert set(OPEN_REGISTRY.STRATEGIES) - set(short) <= refused_in_both_languages()
-    assert "bitcoin_lead_lag" not in short and "cumulative_volume_delta_divergence" in short
-    assert "volume_profile_reclaim" not in short
-    assert "order_book_imbalance" not in short
+    assert set(OPEN_REGISTRY.STRATEGIES) <= set(short)
     values = list(short.values())
     assert len(values) == len(set(values))
+
+
+def go_research_paper_route():
+    source = _go_source("research_admission.go")
+    consts = {}
+    for text in (_go_source("hl_batch.go"), source):
+        consts.update(re.findall(r'^\s*(?:const\s+)?(\w+)\s*=\s*"([^"]*)"\s*$', text, re.M))
+    block = _go_block(source, "var researchPaperRouteStrategies = map[string]bool{")
+    names = set()
+    for line in block.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r'^"(\w+)":\s*true,$', line)
+        assert m, f"unparsed line in researchPaperRouteStrategies: {line!r}"
+        names.add(m.group(1))
+    script = re.search(r"^\s*researchRouteScript\s*=\s*(\w+|\"[^\"]*\")\s*$", source, re.M)
+    assert script, "researchRouteScript is not declared as a constant"
+    script_value = script.group(1).strip('"') if script.group(1).startswith('"') else consts[script.group(1)]
+    feeds = re.search(r"^var researchRouteMarketFeeds = \[\]string\{([^}]*)\}$", source, re.M)
+    assert feeds, "researchRouteMarketFeeds is not declared as a string slice"
+    route = {"platform": consts["researchRoutePlatform"], "type": consts["researchRouteType"],
+             "script": script_value, "market_feeds": re.findall(r'"(\w+)"', feeds.group(1))}
+    hold = {"reason": consts["quoteEngineHoldReason"], "tracking_url": consts["quoteEngineHoldTrackingURL"]}
+    return names, route, hold
+
+
+def test_go_research_paper_route_and_quote_engine_hold_equal_python_registry():
+    names, route, hold = go_research_paper_route()
+    py = {name for name, entry in OPEN_REGISTRY.STRATEGIES.items() if entry.get("paper_route")}
+    assert names == py == set(OPEN_REGISTRY.production_refused_strategies())
+    assert route == OPEN_REGISTRY.RESEARCH_PAPER_ROUTE
+    for name in py:
+        assert OPEN_REGISTRY.research_paper_route(name) == route
+    assert hold == OPEN_REGISTRY.QUOTE_ENGINE_HOLD
 
 
 def test_go_native_close_names_mirror_python_close_registry():

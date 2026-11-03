@@ -522,11 +522,11 @@ func TestBitcoinLeadLagRegistrationTables(t *testing.T) {
 	if !reflect.DeepEqual(productionRefusedStrategies, want) {
 		t.Fatalf("production-refused table = %v", productionRefusedStrategies)
 	}
-	if _, short := knownShortNames[name]; short {
-		t.Fatal("a production-refused candidate gets no scheduler short name before its promotion")
+	if knownShortNames[name] != "btclag" {
+		t.Fatalf("the explicit-paper research candidate needs its scheduler short name, got %q", knownShortNames[name])
 	}
-	if isBidirectionalPerpsStrategy(name) {
-		t.Fatal("a production-refused candidate stays out of the bidirectional map before its promotion")
+	if !isBidirectionalPerpsStrategy(name) {
+		t.Fatal("the explicit-paper research candidate registers its short entries in the bidirectional map")
 	}
 	if _, frozen := v20StampEligibleStrategies[name]; frozen {
 		t.Fatal("the candidate must not join the frozen v20 auto-acknowledgement set")
@@ -534,7 +534,10 @@ func TestBitcoinLeadLagRegistrationTables(t *testing.T) {
 	if fixedIntervalStrategyDefaults[name] != bllHourMs {
 		t.Fatalf("fixed interval default = %d", fixedIntervalStrategyDefaults[name])
 	}
-	if _, _, err := buildAddStrategyEntry(name, "hyperliquid", "eth"); err == nil {
-		t.Fatal("the add-strategy command must refuse the candidate")
+	if id, _, err := buildAddStrategyEntry(name, "hyperliquid", "eth"); err != nil || id != "hl-btclag-eth" {
+		t.Fatalf("the add-strategy command builds the explicit-paper candidate: %q, %v", id, err)
+	}
+	if _, _, err := buildAddStrategyEntry(name, "binanceus", "eth"); err == nil {
+		t.Fatal("the add-strategy command must refuse the candidate off the Hyperliquid perps paper route")
 	}
 }

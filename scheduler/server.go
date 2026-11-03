@@ -250,6 +250,7 @@ func (ss *StatusServer) Start(host string, port int) {
 	mux.HandleFunc("/api/config/notifications", ss.handleAPIConfigNotifications)
 	mux.HandleFunc("/api/confirm", ss.handleAPIConfirm)
 	mux.HandleFunc("/api/config/add-strategy", ss.handleAPIAddStrategy)
+	mux.HandleFunc("/api/config/add-quote-owner", ss.handleAPIAddQuoteOwner)
 	mux.HandleFunc("/api/quotes", ss.handleAPIQuotes)
 	mux.HandleFunc("/api/quotes/cancel", ss.handleAPIQuoteCancel)
 	mux.HandleFunc("/api/quotes/hold", ss.handleAPIQuoteHold)
@@ -356,6 +357,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Hedge                          *HedgeStatus               `json:"hedge,omitempty"`
 		Partition                      string                     `json:"partition,omitempty"`
 		PaperSource                    string                     `json:"paper_source,omitempty"`
+		EngineHold                     *engineHoldView            `json:"engine_hold,omitempty"`
 	}
 
 	type PaperSourceStatus struct {
@@ -523,6 +525,11 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			Hedge:                          buildHedgeStatus(sc, s),
 			Partition:                      partitionText,
 			PaperSource:                    sc.PaperSource,
+		}
+		if configured {
+			st := resp.Strategies[id]
+			st.EngineHold = engineHoldViewFor(sc)
+			resp.Strategies[id] = st
 		}
 	}
 

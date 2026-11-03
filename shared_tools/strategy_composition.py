@@ -256,6 +256,24 @@ def _canonical_production_refused_entry(name: str) -> Optional[dict]:
     return None
 
 
+_CLOSE_REGISTRY_LOADER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "close_registry_loader.py")
+
+
+def _close_registry_loader():
+    loaded = sys.modules.get("close_registry_loader")
+    if loaded is not None and os.path.realpath(getattr(loaded, "__file__", "") or "") == os.path.realpath(
+            _CLOSE_REGISTRY_LOADER_PATH):
+        return loaded
+    spec = importlib.util.spec_from_file_location("_go_trader_composer_close_loader", _CLOSE_REGISTRY_LOADER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _research_only_close_names() -> frozenset:
+    return frozenset(_close_registry_loader().research_only_strategy_names())
+
+
 def _strategy_or_production_refused(get_strategy: Callable[[str], object], name: str) -> object:
     try:
         return get_strategy(name)
@@ -326,6 +344,11 @@ class GateMode:
 class Acknowledgement:
     value: bool
     error: str = ""
+
+
+NATIVE_CLOSE_ROLE = "native_close"
+RESEARCH_ROUTE_TEXT = "Hyperliquid perps check_hyperliquid.py route with a sealed shared or websocket market feed (--market-stdin)"
+RESEARCH_PAPER_ONLY_HINT = "research-only: explicit paper mode only; live is refused until a separate reviewed promotion"
 
 
 @dataclass(frozen=True)
@@ -403,6 +426,9 @@ def resolve_strategy_references(
     refs = [StrategyReference("open", open_name)] if open_name else []
     for name in parse_close_strategies(close_strategies):
         resolved = canonical_close_name(name)
+        if resolved in _research_only_close_names():
+            refs.append(StrategyReference(NATIVE_CLOSE_ROLE, resolved))
+            continue
         try:
             get_close_strategy(resolved)
             continue
@@ -423,22 +449,56 @@ def resolve_strategy_references(
     return refs
 
 
+def _research_mode_text(gate_mode: GateMode) -> str:
+    if gate_mode.kind == GATE_MODE_LIVE:
+        return "explicit live mode"
+    if gate_mode.kind == GATE_MODE_MISSING:
+        return "missing mode"
+    return f"invalid mode ({gate_mode.detail})"
+
+
 def admit_strategy_references(
     references: Iterable[StrategyReference],
     gate_mode: GateMode,
     acknowledgement: Acknowledgement,
     get_strategy: Callable[[str], object],
+    open_name: Optional[str] = None,
+    research_route: bool = False,
 ) -> None:
     references = list(references)
     for ref in references:
-        entry = _strategy_or_production_refused(get_strategy, ref.name)
-        if isinstance(entry, dict) and entry.get("production_refused"):
+        if ref.role == NATIVE_CLOSE_ROLE:
             raise ValueError(
-                f"{ref.role} strategy '{ref.name}' is production_refused: it is research-only "
-                f"(evidence {entry.get('edge_ref') or 'unknown'}) and every production check refuses it in any "
-                f"mode, with or without allow_no_edge, until a separate reviewed promotion")
+                f"close strategy '{ref.name}' is quote-owned and research-only: only the quote coordinator runs it, "
+                "and every scalar, batch and fallback check refuses it in any mode")
+    if open_name is None:
+        open_name = next((ref.name for ref in reversed(references) if ref.role == "open"), "")
+    open_name = (open_name or "").strip()
     for ref in references:
-        entry = get_strategy(ref.name)
+        entry = _strategy_or_production_refused(get_strategy, ref.name)
+        if not (isinstance(entry, dict) and entry.get("production_refused")):
+            continue
+        evidence = entry.get("edge_ref") or "unknown"
+        if gate_mode.kind != GATE_MODE_PAPER:
+            raise ValueError(
+                f"{ref.role} strategy '{ref.name}' is production_refused (evidence {evidence}): "
+                f"{_research_mode_text(gate_mode)} is refused with or without allow_no_edge; "
+                f"{RESEARCH_PAPER_ONLY_HINT}")
+        if entry.get("quote"):
+            raise ValueError(
+                f"{ref.role} strategy '{ref.name}' is production_refused and is a quote capability (evidence {evidence}): "
+                "it has no scalar signal and only the admitted quote coordinator runs it, in every mode")
+        if not research_route:
+            raise ValueError(
+                f"{ref.role} strategy '{ref.name}' is production_refused (evidence {evidence}): explicit paper "
+                f"evaluation runs only on the {RESEARCH_ROUTE_TEXT}, whose sealed market payload carries its inputs")
+        if ref.role == "close" and ref.name != open_name:
+            raise ValueError(
+                f"close strategy '{ref.name}' is production_refused (evidence {evidence}) and the open strategy is "
+                f"'{open_name}': a research close evaluates only when it equals the effective open strategy, because "
+                "sealed inputs attach only to the open strategy")
+    for ref in references:
+        entry = _strategy_or_production_refused(get_strategy, ref.name)
         if isinstance(entry, dict) and entry.get("quote"):
             raise ValueError(
                 f"{ref.role} strategy '{ref.name}' is a quote capability; "
@@ -473,6 +533,7 @@ def admit_configured_strategies(
     get_close_strategy: Callable[[str], object],
     list_open_strategies: Optional[Callable[[], Iterable[str]]] = None,
     list_close_strategies: Optional[Callable[[], Iterable[str]]] = None,
+    research_route: bool = False,
 ) -> list[StrategyReference]:
     references = resolve_strategy_references(
         positional_strategy,
@@ -492,7 +553,9 @@ def admit_configured_strategies(
             entry = _canonical_production_refused_entry(positional)
         if isinstance(entry, dict) and entry.get("production_refused"):
             extra.append(StrategyReference("open", positional))
-    admit_strategy_references(extra + references, gate_mode, acknowledgement, get_open_strategy)
+    open_name = (open_strategy or positional_strategy or "").strip()
+    admit_strategy_references(extra + references, gate_mode, acknowledgement, get_open_strategy, open_name=open_name,
+                              research_route=research_route)
     return references
 
 

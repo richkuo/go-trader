@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -94,6 +95,31 @@ type addStrategyEntryOnlyCandidate struct {
 	CloseParams        func() map[string]interface{}
 	ClosedBarDecisions bool
 	StopLossATRMult    float64
+	Timeframe          string
+	IntervalSeconds    int
+	RequiredParams     []string
+}
+
+func researchTPPct() map[string]interface{} {
+	return map[string]interface{}{"tp_tiers": []interface{}{map[string]interface{}{"profit_pct": 0.02, "close_fraction": 1.0}}}
+}
+
+var addStrategyResearchCandidates = map[string]addStrategyEntryOnlyCandidate{
+	cumulativeVolumeDeltaStrategyName: {CloseStrategy: "tiered_tp_pct", CloseParams: researchTPPct, StopLossATRMult: 1.0, Timeframe: "5m", IntervalSeconds: 300},
+	macroEventBreakoutStrategyName: {
+		CloseStrategy: "time_stop",
+		CloseParams: func() map[string]interface{} {
+			return map[string]interface{}{"max_bars": 12}
+		},
+		StopLossATRMult: 1.0,
+		Timeframe:       "1h",
+		IntervalSeconds: 3600,
+		RequiredParams:  []string{"calendar_path", "calendar_sha256", "quote_path", "quote_sha256"},
+	},
+	bitcoinLeadLagStrategyName:       {CloseStrategy: "tiered_tp_pct", CloseParams: researchTPPct, StopLossATRMult: 1.0, Timeframe: "1h", IntervalSeconds: 3600},
+	volumeProfileReclaimStrategyName: {CloseStrategy: "tiered_tp_pct", CloseParams: researchTPPct, StopLossATRMult: 1.0, Timeframe: "15m", IntervalSeconds: 900},
+	perpetualPremiumStrategyName:     {CloseStrategy: "tiered_tp_pct", CloseParams: researchTPPct, StopLossATRMult: 1.0, Timeframe: "1m", IntervalSeconds: 60},
+	orderBookImbalanceStrategyName:   {CloseStrategy: "tiered_tp_pct", CloseParams: researchTPPct, StopLossATRMult: 1.0, Timeframe: "1m", IntervalSeconds: 60},
 }
 
 var addStrategyEntryOnlyCandidates = map[string]addStrategyEntryOnlyCandidate{
@@ -190,17 +216,39 @@ var addStrategyEntryOnlyCandidates = map[string]addStrategyEntryOnlyCandidate{
 }
 
 func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessage, error) {
+	return buildAddStrategyEntryWithParams(name, platform, asset, nil)
+}
+
+func buildAddStrategyEntryWithParams(name, platform, asset string, openParams map[string]interface{}) (string, json.RawMessage, error) {
 	name = strings.TrimSpace(name)
 	asset = strings.ToUpper(strings.TrimSpace(asset))
 	platform = strings.ToLower(strings.TrimSpace(platform))
 	if name == "" || asset == "" {
 		return "", nil, fmt.Errorf("name and asset are required")
 	}
-	if evidence, refused := productionRefusedStrategies[name]; refused {
-		return "", nil, fmt.Errorf("strategy %q is production_refused (research-only, evidence %s); no config may reference it until a separate reviewed promotion", name, evidence)
-	}
 	if _, quote := quoteCapabilityStrategies[name]; quote || researchOnlyCloseStrategies[name] {
-		return "", nil, fmt.Errorf("strategy %q is quote-owned and research-only; operator routes cannot add it", name)
+		return "", nil, fmt.Errorf("strategy %q is quote-owned and research-only; the scalar add route cannot add it — use the typed quote_owner setup (add-quote-owner), which adds a held quote owner", name)
+	}
+	research, isResearch := addStrategyResearchCandidates[name]
+	if _, refused := productionRefusedStrategies[name]; refused && !isResearch {
+		return "", nil, fmt.Errorf("strategy %q is production_refused (research-only, evidence %s) and has no supported scalar paper route", name, productionRefusedStrategies[name])
+	}
+	if isResearch && platform != researchRoutePlatform {
+		return "", nil, fmt.Errorf("strategy %q is research-only and runs only on the Hyperliquid perps paper route; use platform %q (got %q)", name, researchRoutePlatform, platform)
+	}
+	if len(openParams) > 0 && !isResearch {
+		return "", nil, fmt.Errorf("open_params are accepted only for research strategies that require them")
+	}
+	if isResearch {
+		var missing []string
+		for _, key := range research.RequiredParams {
+			if v, ok := openParams[key]; !ok || v == nil || v == "" {
+				missing = append(missing, key)
+			}
+		}
+		if len(missing) > 0 {
+			return "", nil, fmt.Errorf("strategy %q needs open_params %s (absolute hash-pinned calendar and quote artifacts); nothing was added", name, strings.Join(missing, ", "))
+		}
 	}
 	registryPlatform := ""
 	switch platform {
@@ -221,6 +269,9 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 	if !isSimpleAssetToken(asset) {
 		return "", nil, fmt.Errorf("asset %q must be a plain ticker like BTC/ETH/SOL", asset)
 	}
+	if name == bitcoinLeadLagStrategyName && asset == bitcoinLeadLagLeaderCoin {
+		return "", nil, fmt.Errorf("strategy %q follows the %s leader, so its asset cannot be %s (it would hold every bar); choose another coin; nothing was added", name, bitcoinLeadLagLeaderCoin, bitcoinLeadLagLeaderCoin)
+	}
 	short := deriveShortName(name)
 	var id string
 	var obj map[string]interface{}
@@ -231,20 +282,28 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 		if isBidirectionalPerpsStrategy(name) {
 			direction = DirectionBoth
 		}
+		timeframe, interval := "1h", 3600
+		if isResearch {
+			timeframe, interval = research.Timeframe, research.IntervalSeconds
+		}
 		obj = map[string]interface{}{
 			"id":               id,
 			"type":             "perps",
 			"platform":         "hyperliquid",
 			"script":           "shared_scripts/check_hyperliquid.py",
-			"args":             []string{name, asset, "1h", "--mode=paper"},
+			"args":             []string{name, asset, timeframe, "--mode=paper"},
 			"capital":          100.0,
 			"max_drawdown_pct": 10.0,
-			"interval_seconds": 3600,
+			"interval_seconds": interval,
 			"leverage":         1.0,
 			"direction":        direction,
 			"margin_mode":      "isolated",
 		}
-		if candidate, ok := addStrategyEntryOnlyCandidates[name]; ok {
+		candidate, ok := addStrategyEntryOnlyCandidates[name]
+		if isResearch {
+			candidate, ok = research, true
+		}
+		if ok {
 			closeRef := map[string]interface{}{"name": candidate.CloseStrategy}
 			if candidate.CloseParams != nil {
 				closeRef["params"] = candidate.CloseParams()
@@ -256,6 +315,13 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 			if candidate.StopLossATRMult > 0 {
 				obj["stop_loss_atr_mult"] = candidate.StopLossATRMult
 			}
+		}
+		if isResearch && len(openParams) > 0 {
+			params := make(map[string]interface{}, len(openParams))
+			for k, v := range openParams {
+				params[k] = v
+			}
+			obj["open_strategy"] = map[string]interface{}{"name": name, "params": params}
 		}
 	case "binanceus":
 		id = fmt.Sprintf("%s-%s", short, strings.ToLower(asset))
@@ -279,6 +345,29 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 	return id, b, nil
 }
 
+func researchAddFeedRefusal(root map[string]json.RawMessage, name string) error {
+	if _, ok := addStrategyResearchCandidates[strings.TrimSpace(name)]; !ok {
+		return nil
+	}
+	mode := marketFeedREST
+	if raw, ok := root["market_feed"]; ok {
+		var v string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return fmt.Errorf("market_feed is unreadable: %w", err)
+		}
+		if strings.TrimSpace(v) != "" {
+			mode = strings.TrimSpace(v)
+		}
+	}
+	for _, m := range researchRouteMarketFeeds {
+		if mode == m {
+			return nil
+		}
+	}
+	return fmt.Errorf("strategy %q reads its side inputs only from the sealed market snapshot; the config's root \"market_feed\" is %q and must be %q — an add never changes root settings, so set it by hand (restart required) and retry; nothing was added",
+		name, mode, strings.Join(researchRouteMarketFeeds, "\" or \""))
+}
+
 func isSimpleAssetToken(s string) bool {
 	if s == "" {
 		return false
@@ -293,8 +382,15 @@ func isSimpleAssetToken(s string) bool {
 }
 
 func addStrategyToRoot(root map[string]json.RawMessage, name, platform, asset string) (string, error) {
-	id, entry, err := buildAddStrategyEntry(name, platform, asset)
+	return addStrategyToRootWithParams(root, name, platform, asset, nil)
+}
+
+func addStrategyToRootWithParams(root map[string]json.RawMessage, name, platform, asset string, openParams map[string]interface{}) (string, error) {
+	id, entry, err := buildAddStrategyEntryWithParams(name, platform, asset, openParams)
 	if err != nil {
+		return "", err
+	}
+	if err := researchAddFeedRefusal(root, name); err != nil {
 		return "", err
 	}
 	list, err := configStrategies(root)
@@ -664,8 +760,12 @@ func followupText(s discordTransport, i *discordgo.InteractionCreate, content st
 func (d *DiscordNotifier) applyConfigChange(s discordTransport, i *discordgo.InteractionCreate, restartRequired bool, doneMsg string) {
 	if restartRequired {
 		followupText(s, i, doneMsg+"\nApplying via **service restart** — this instance briefly goes offline; the new one resumes the cycle.")
+		restart := restartSelf
+		if d.ss != nil && d.ss.restartFn != nil {
+			restart = d.ss.restartFn
+		}
 		go func() {
-			_ = restartSelf()
+			_ = restart()
 		}()
 		return
 	}
@@ -782,9 +882,20 @@ func (d *DiscordNotifier) handleAddStrategy(s discordTransport, i *discordgo.Int
 	name := optionString(opts, "name", "")
 	platform := optionString(opts, "platform", "")
 	asset := optionString(opts, "asset", "")
+	var openParams map[string]interface{}
+	if raw := optionString(opts, "open_params", ""); raw != "" {
+		if err := jsonDuplicateKeyError([]byte(raw)); err != nil {
+			followupText(s, i, "add-strategy failed: open_params is not strict JSON: "+err.Error())
+			return
+		}
+		if err := json.Unmarshal([]byte(raw), &openParams); err != nil || openParams == nil {
+			followupText(s, i, "add-strategy failed: open_params must be a JSON object")
+			return
+		}
+	}
 	var newID string
 	wErr := d.mutateConfig(path, func(root map[string]json.RawMessage) error {
-		id, e := addStrategyToRoot(root, name, platform, asset)
+		id, e := addStrategyToRootWithParams(root, name, platform, asset, openParams)
 		newID = id
 		return e
 	})
@@ -793,6 +904,64 @@ func (d *DiscordNotifier) handleAddStrategy(s discordTransport, i *discordgo.Int
 		return
 	}
 	d.applyConfigChange(s, i, true, fmt.Sprintf("Added strategy `%s` (paper mode).", newID))
+}
+
+var quoteSetupHTTPClient = func() *http.Client { return egressHTTPClient(quoteSetupFetchTimeout) }
+
+func (d *DiscordNotifier) handleAddQuoteOwner(s discordTransport, i *discordgo.InteractionCreate, data discordgo.ApplicationCommandInteractionData) {
+	deferAck(s, i)
+	path, err := d.configOpsReady()
+	if err != nil {
+		followupText(s, i, err.Error())
+		return
+	}
+	var attID string
+	for _, o := range data.Options {
+		if o.Name == "fragment" && o.Type == discordgo.ApplicationCommandOptionAttachment {
+			if v, ok := o.Value.(string); ok {
+				attID = v
+			}
+		}
+	}
+	var att *discordgo.MessageAttachment
+	if data.Resolved != nil && attID != "" {
+		att = data.Resolved.Attachments[attID]
+	}
+	if att == nil || att.ID != attID {
+		followupText(s, i, "add-quote-owner failed: the interaction carries no matching attachment; nothing changed")
+		return
+	}
+	ct := strings.ToLower(strings.TrimSpace(strings.SplitN(att.ContentType, ";", 2)[0]))
+	if ct != "application/json" && ct != "text/plain" {
+		followupText(s, i, fmt.Sprintf("add-quote-owner failed: attachment content type %q is not JSON; nothing changed", att.ContentType))
+		return
+	}
+	body, err := fetchQuoteSetupAttachment(quoteSetupHTTPClient(), att.URL, att.Size)
+	if err != nil {
+		followupText(s, i, "add-quote-owner failed: "+err.Error()+"; nothing changed")
+		return
+	}
+	setup, err := parseQuoteOwnerSetup(body)
+	if err != nil {
+		followupText(s, i, "add-quote-owner failed: "+err.Error())
+		return
+	}
+	if _, exists := d.ss.strategyConfig(setup.Strategy.ID); exists {
+		followupText(s, i, fmt.Sprintf("add-quote-owner failed: strategy %q already exists; nothing changed", setup.Strategy.ID))
+		return
+	}
+	if !d.confirmDestructive(interactionUserID(i), setup.description()) {
+		followupText(s, i, "Cancelled — no confirmation received; nothing changed.")
+		return
+	}
+	wErr := d.mutateConfig(path, func(root map[string]json.RawMessage) error {
+		return addQuoteOwnerToRoot(root, setup)
+	})
+	if wErr != nil {
+		followupText(s, i, "add-quote-owner failed: "+wErr.Error())
+		return
+	}
+	d.applyConfigChange(s, i, true, fmt.Sprintf("Added held quote owner `%s` (paper, sha256 %s, %s).", setup.Strategy.ID, setup.Digest, quoteEngineHoldReason))
 }
 
 func (d *DiscordNotifier) handleRemoveStrategy(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {

@@ -67,37 +67,78 @@ def _assert_refused(proc, role, name=NAME):
     assert "Fetching" not in proc.stderr
 
 
+def _quote_capability(name):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_quote_registry", os.path.join(REPO, "shared_strategies", "open", "registry.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return bool(mod.STRATEGIES[name].get("quote"))
+
+
+def _assert_admitted(proc, name):
+    payload = _payload(proc)
+    assert REFUSED not in (payload.get("error") or ""), payload.get("error")
+    assert "Fetching" not in proc.stderr
+
+
 def test_every_solo_and_batch_check_refuses_the_candidate_in_any_mode_and_reference_and_keeps_batch_peers(subtests):
     for name in REFUSED_NAMES:
         with subtests.test(name=name):
             NAME = name
+            quote = _quote_capability(NAME)
             envelope = {"v": 2, "market": _market()}
-            cases = [
-                ([NAME, "BTC", "5m", "--mode=paper", "--market-stdin"], "open"),
-                ([NAME, "BTC", "5m", "--mode", "paper", "--market-stdin"], "open"),
+            paper = [
+                [NAME, "BTC", "5m", "--mode=paper", "--market-stdin"],
+                [NAME, "BTC", "5m", "--mode", "paper", "--market-stdin"],
+                ["breakout", "BTC", "5m", "--mode=paper", "--market-stdin",
+                 "--strategy-refs", json.dumps({"open": {"name": NAME}, "closes": []})],
+                [NAME, "BTC", "5m", "--mode=paper", "--market-stdin",
+                 "--strategy-refs", json.dumps({"open": {"name": NAME}, "closes": [{"name": NAME}]})],
+            ]
+            refused = [
                 ([NAME, "BTC", "5m", "--mode=live", "--allow-no-edge", "--market-stdin"], "open"),
+                ([NAME, "BTC", "5m", "--mode=live", "--market-stdin"], "open"),
+                ([NAME, "BTC", "5m", "--allow-no-edge", "--market-stdin"], "open"),
                 ([NAME, "BTC", "5m", "--market-stdin"], "open"),
-                (["breakout", "BTC", "5m", "--mode=paper", "--market-stdin",
-                  "--strategy-refs", json.dumps({"open": {"name": NAME}, "closes": []})], "open"),
-                ([NAME, "BTC", "5m", "--mode=paper", "--market-stdin",
-                  "--strategy-refs", json.dumps({"open": {"name": "breakout"}, "closes": []})], "open"),
+                ([NAME, "BTC", "5m", "--mode=bogus", "--market-stdin"], "open"),
+                ([NAME, "BTC", "5m", "--mode=paper", "--mode=paper", "--market-stdin"], "open"),
                 (["breakout", "BTC", "5m", "--mode=live", "--allow-no-edge", "--market-stdin",
                   "--strategy-refs", json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME}]})], "close"),
+                (["breakout", "BTC", "5m", "--mode=paper", "--market-stdin",
+                  "--strategy-refs", json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME}]})], "close"),
             ]
-            for argv, role in cases:
+            if quote:
+                refused += [(argv, "open") for argv in paper]
+            for argv, role in refused:
                 _assert_refused(_run("check_hyperliquid.py", argv, envelope), role, NAME)
+            for argv in ([] if quote else paper):
+                _assert_admitted(_run("check_hyperliquid.py", argv, envelope), NAME)
+            proc = _run("check_hyperliquid.py", [NAME, "BTC", "5m", "--mode=paper"])
+            assert proc.returncode == 1 and REFUSED in _payload(proc)["error"], proc.stdout[-2000:]
+            assert "Fetching" not in proc.stderr
             proc = _run("check_okx.py", [NAME, "BTC", "5m", "--inst-type=swap", "--mode=paper"])
             assert proc.returncode == 1 and REFUSED in _payload(proc)["error"], proc.stdout[-2000:] + proc.stderr[-2000:]
             assert "Fetching" not in proc.stderr
             slots = [
                 {"id": "paper", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"]},
                 {"id": "acked", "strategy": NAME, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True},
+                {"id": "missing", "strategy": NAME, "mode": "paper", "allow_no_edge": True},
                 {"id": "peer", "strategy": "breakout", "mode": "paper"},
             ]
             proc = _run("check_hyperliquid.py", ["--batch-check", "--symbol=BTC", "--timeframe=5m", "--market-stdin"],
                         {"v": 2, "slots": slots, "market": _market()})
             results = {r["id"]: r for r in _payload(proc)["results"]}
-            for slot in ("paper", "acked"):
+            for slot in ("acked", "missing") + (("paper",) if quote else ()):
                 assert f"open strategy '{NAME}' {REFUSED}" in results[slot]["error"], f"batch_slots_refuse[{name}] {slot}"
                 assert results[slot].get("signal", 0) == 0, f"batch_slots_refuse[{name}] {slot}"
+            if not quote:
+                assert REFUSED not in (results["paper"].get("error") or ""), f"batch_slots_admit[{name}] paper"
             assert not results["peer"].get("error"), f"batch_slots_refuse[{name}] peer"
+    envelope = {"v": 2, "market": _market()}
+    refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": "inventory_quote_exit"}]})
+    for mode in (["--mode=paper"], ["--mode=live", "--allow-no-edge"], []):
+        proc = _run("check_hyperliquid.py", ["breakout", "BTC", "5m", *mode, "--market-stdin", "--strategy-refs", refs], envelope)
+        assert proc.returncode == 1, proc.stderr[-2000:]
+        error = _payload(proc)["error"]
+        assert "close strategy 'inventory_quote_exit' is quote-owned and research-only" in error, error
+        assert "Unknown close strategy" not in error, error

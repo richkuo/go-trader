@@ -127,6 +127,38 @@ VALID_EDGE_SOURCES: Tuple[str, ...] = (
 )
 
 
+RESEARCH_PAPER_ROUTE: Dict[str, Any] = {
+    "platform": "hyperliquid",
+    "type": "perps",
+    "script": "shared_scripts/check_hyperliquid.py",
+    "market_feeds": ["shared", "websocket"],
+}
+
+QUOTE_ENGINE_HOLD: Dict[str, str] = {
+    "reason": "quote_engine_unavailable",
+    "tracking_url": "https://github.com/richkuo/go-trader/issues/1923",
+}
+
+
+def research_paper_route(name: str) -> Optional[Dict[str, Any]]:
+    entry = STRATEGIES.get(name)
+    if entry is None or not entry.get("paper_route"):
+        return None
+    route = entry["paper_route"]
+    return {**route, "market_feeds": list(route["market_feeds"])}
+
+
+def _validate_paper_route(name: str, paper_route, production_refused: bool) -> None:
+    if paper_route is None:
+        if production_refused:
+            raise ValueError(f"{name}: a production_refused strategy needs paper_route=RESEARCH_PAPER_ROUTE")
+        return
+    if not production_refused:
+        raise ValueError(f"{name}: paper_route applies only to a production_refused strategy")
+    if paper_route != RESEARCH_PAPER_ROUTE:
+        raise ValueError(f"{name}: paper_route must equal {RESEARCH_PAPER_ROUTE!r}, got {paper_route!r}")
+
+
 SINGLE_VALUE_VALIDATED_STRATEGIES: Tuple[str, ...] = ("aroon_trend", "regression_channel_reversion")
 
 def quote_capabilities() -> Dict[str, Dict[str, Any]]:
@@ -374,6 +406,7 @@ def register(
     production_refused: bool = False,
     quote=None,
     quote_spec=None,
+    paper_route=None,
 ):
     if name in STRATEGIES:
         raise ValueError(f"Strategy '{name}' is already registered")
@@ -384,6 +417,7 @@ def register(
         raise ValueError(f"{name}: production_refused=True requires edge_status={EDGE_STATUS_NO_EDGE!r}")
     platforms = tuple(platforms)
     _validate_quote(name, quote, quote_spec, platforms, short_entries, production_refused, param_validator)
+    _validate_paper_route(name, paper_route, production_refused)
     if not platforms:
         raise ValueError(f"{name}: platforms must be non-empty")
     bad = set(platforms) - set(VALID_PLATFORMS)
@@ -432,6 +466,7 @@ def register(
             "production_refused": production_refused,
             "quote": dict(quote) if quote else None,
             "quote_spec": quote_spec if quote else None,
+            "paper_route": {**paper_route, "market_feeds": list(paper_route["market_feeds"])} if paper_route else None,
         }
         return fn
 
@@ -2725,7 +2760,7 @@ def hold_strategy(df: pd.DataFrame) -> pd.DataFrame:
 
 @register(
     "cumulative_volume_delta_divergence",
-    "RESEARCH, production-refused (#1638) \u2014 cumulative volume delta divergence on closed candles: signed executed volume (aggressor buys minus sells, base units) from supplied Hyperliquid trade-flow aggregates (trade_flow_observations) accumulates from each UTC session start (session_hours); strict price pivots (left_span/right_span) become usable only at their confirmation bar; a lower pivot low whose pivot-to-pivot delta change, divided by the observed total volume after the earlier pivot through the later pivot, is strictly above delta_threshold arms a long, and the mirror higher high with a falling delta arms a short; a later close strictly beyond the confirmation bar high (long) or low (short) within setup_expiry bars enters once. Every used bar needs complete, unrevoked trade intervals known by the decision deadline whose total equals the candle volume, else the entry holds with a reason. delta_confirmation=false is the price-only baseline with identical data eligibility. Entry-only; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    "RESEARCH, production-refused (#1638) \u2014 cumulative volume delta divergence on closed candles: signed executed volume (aggressor buys minus sells, base units) from supplied Hyperliquid trade-flow aggregates (trade_flow_observations) accumulates from each UTC session start (session_hours); strict price pivots (left_span/right_span) become usable only at their confirmation bar; a lower pivot low whose pivot-to-pivot delta change, divided by the observed total volume after the earlier pivot through the later pivot, is strictly above delta_threshold arms a long, and the mirror higher high with a falling delta arms a short; a later close strictly beyond the confirmation bar high (long) or low (short) within setup_expiry bars enters once. Every used bar needs complete, unrevoked trade intervals known by the decision deadline whose total equals the candle volume, else the entry holds with a reason. delta_confirmation=false is the price-only baseline with identical data eligibility. Entry-only; research use only: paper evaluation needs exactly one explicit --mode=paper on the Hyperliquid perps shared or websocket feed route, and live use is refused with or without allow_no_edge until a separate reviewed promotion",
     dict(DEFAULT_CVD_PARAMS),
     platforms=("futures",),
     constraints=[
@@ -2751,6 +2786,7 @@ def hold_strategy(df: pd.DataFrame) -> pd.DataFrame:
     short_entries=True,
     param_validator=cvd_param_validator,
     production_refused=True,
+    paper_route=RESEARCH_PAPER_ROUTE,
 )
 def cumulative_volume_delta_divergence_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return cumulative_volume_delta_divergence_core(df, **params)
@@ -2758,7 +2794,7 @@ def cumulative_volume_delta_divergence_strategy(df: pd.DataFrame, **params) -> p
 
 @register(
     "macro_event_breakout",
-    "RESEARCH, production-refused (#1654) \u2014 scheduled US central-bank rate statement breakout on closed candles: for each statement in a hash-pinned, point-in-time calendar artifact (event_records, only versions known by each decision deadline and published before the release), the range_bars completed candles that close at or before the scheduled release freeze a high/low range; a long needs confirm_bars consecutive closes strictly above it, and a short the mirror below, inside the post_window_bars window that starts at the first bar opening at or after the release; one entry per event, cooldown_bars between entries; with spread_gate the decision also needs a supplied bid/ask quote (spread_records) received by the bar close, at most max_quote_age_ms old, whose (ask - bid) / midpoint is within max_spread_frac. Postponed, cancelled, conflicting or revised schedules, missing coverage and missing or invalid quotes hold the entry with a reason. Entry-only; exits belong to time_stop with max_bars = holding_bars. Research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    "RESEARCH, production-refused (#1654) \u2014 scheduled US central-bank rate statement breakout on closed candles: for each statement in a hash-pinned, point-in-time calendar artifact (event_records, only versions known by each decision deadline and published before the release), the range_bars completed candles that close at or before the scheduled release freeze a high/low range; a long needs confirm_bars consecutive closes strictly above it, and a short the mirror below, inside the post_window_bars window that starts at the first bar opening at or after the release; one entry per event, cooldown_bars between entries; with spread_gate the decision also needs a supplied bid/ask quote (spread_records) received by the bar close, at most max_quote_age_ms old, whose (ask - bid) / midpoint is within max_spread_frac. Postponed, cancelled, conflicting or revised schedules, missing coverage and missing or invalid quotes hold the entry with a reason. Entry-only; exits belong to time_stop with max_bars = holding_bars. Research use only: paper evaluation needs exactly one explicit --mode=paper on the Hyperliquid perps shared or websocket feed route, and live use is refused with or without allow_no_edge until a separate reviewed promotion",
     dict(DEFAULT_MACRO_EVENT_PARAMS),
     platforms=("futures",),
     constraints=[
@@ -2786,6 +2822,7 @@ def cumulative_volume_delta_divergence_strategy(df: pd.DataFrame, **params) -> p
     short_entries=True,
     param_validator=macro_param_validator,
     production_refused=True,
+    paper_route=RESEARCH_PAPER_ROUTE,
 )
 def macro_event_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return macro_event_breakout_core(df, **params)
@@ -2793,7 +2830,7 @@ def macro_event_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 @register(
     "bitcoin_lead_lag",
-    "RESEARCH, production-refused, frozen study FAIL (#1640: net negative on the 1h held-out window at base and stress cost) \u2014 Bitcoin lead-lag entries on closed bars: the BTC perpetual on the follower's own timeframe is the leader; a trailing intercept-and-slope regression of the follower's log return over horizon_bars, starting lag_bars after a BTC bar, on that BTC bar's log return is refitted at every decision from training_bars past pairs whose forecast window closed at or before the decision. A BTC return at least impulse_z standard deviations of the training BTC returns is an impulse event; at the first decision in its forecast window where the slope and both training-half slopes are positive, R-squared is at least min_r2 and the signed forecast minus the follower move already completed exceeds cost_bps + min_edge_bps, it enters once in the impulse direction (mirrored shorts); later decisions, restarts and stop-outs never re-enter from the same impulse. Leader rows come only from a supplied leader_context (same sealed deadline and closed-bar cutoff, or a pinned historical series); missing, stale, duplicate, reordered or unmatched leader data holds the entry with a reason. signal_mode follower_momentum and btc_trend_filter are the frozen study baselines. Entry-only; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    "RESEARCH, production-refused, frozen study FAIL (#1640: net negative on the 1h held-out window at base and stress cost) \u2014 Bitcoin lead-lag entries on closed bars: the BTC perpetual on the follower's own timeframe is the leader; a trailing intercept-and-slope regression of the follower's log return over horizon_bars, starting lag_bars after a BTC bar, on that BTC bar's log return is refitted at every decision from training_bars past pairs whose forecast window closed at or before the decision. A BTC return at least impulse_z standard deviations of the training BTC returns is an impulse event; at the first decision in its forecast window where the slope and both training-half slopes are positive, R-squared is at least min_r2 and the signed forecast minus the follower move already completed exceeds cost_bps + min_edge_bps, it enters once in the impulse direction (mirrored shorts); later decisions, restarts and stop-outs never re-enter from the same impulse. Leader rows come only from a supplied leader_context (same sealed deadline and closed-bar cutoff, or a pinned historical series); missing, stale, duplicate, reordered or unmatched leader data holds the entry with a reason. signal_mode follower_momentum and btc_trend_filter are the frozen study baselines. Entry-only; research use only: paper evaluation needs exactly one explicit --mode=paper on the Hyperliquid perps shared or websocket feed route, and live use is refused with or without allow_no_edge until a separate reviewed promotion",
     dict(DEFAULT_LEAD_LAG_PARAMS),
     platforms=("futures",),
     constraints=[
@@ -2822,6 +2859,7 @@ def macro_event_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     short_entries=True,
     param_validator=lead_lag_param_validator,
     production_refused=True,
+    paper_route=RESEARCH_PAPER_ROUTE,
 )
 def bitcoin_lead_lag_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return bitcoin_lead_lag_core(df, **params)
@@ -2829,7 +2867,7 @@ def bitcoin_lead_lag_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 @register(
     "volume_profile_reclaim",
-    "RESEARCH, production-refused, frozen study INCONCLUSIVE (#1665: the only executed-trade recording holds no complete UTC session) \u2014 volume-profile value-area reclaim on closed candles: the exact executed-trade profile of the previous complete UTC day (base-asset size per canonical price from supplied Hyperliquid trades, volume_profile_observations) is frozen for the whole following day; equal-width bins over that session's price range (profile_bins, the session maximum in the last bin, half-open elsewhere) pick the point of control (lower bin on a tie) and expand to the adjacent bin with more volume (lower side on a tie) until value_area_fraction of session volume is included. A long needs the previous closed candle of the same session to close below the value-area low and the current consecutive closed candle to close strictly inside the value area; a short is the mirror from above the value-area high. Both decision deadlines must see the same complete, unrevoked profile; boundary touches, opposite-boundary overshoots, the first candle of a session, gaps and a missing, pending, revoked or malformed profile hold the entry with a reason. session_bounds=true is the ablation that uses the session low and high instead of the value area. Entry-only; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    "RESEARCH, production-refused, frozen study INCONCLUSIVE (#1665: the only executed-trade recording holds no complete UTC session) \u2014 volume-profile value-area reclaim on closed candles: the exact executed-trade profile of the previous complete UTC day (base-asset size per canonical price from supplied Hyperliquid trades, volume_profile_observations) is frozen for the whole following day; equal-width bins over that session's price range (profile_bins, the session maximum in the last bin, half-open elsewhere) pick the point of control (lower bin on a tie) and expand to the adjacent bin with more volume (lower side on a tie) until value_area_fraction of session volume is included. A long needs the previous closed candle of the same session to close below the value-area low and the current consecutive closed candle to close strictly inside the value area; a short is the mirror from above the value-area high. Both decision deadlines must see the same complete, unrevoked profile; boundary touches, opposite-boundary overshoots, the first candle of a session, gaps and a missing, pending, revoked or malformed profile hold the entry with a reason. session_bounds=true is the ablation that uses the session low and high instead of the value area. Entry-only; research use only: paper evaluation needs exactly one explicit --mode=paper on the Hyperliquid perps shared or websocket feed route, and live use is refused with or without allow_no_edge until a separate reviewed promotion",
     dict(DEFAULT_VPR_PARAMS),
     platforms=("futures",),
     constraints=[
@@ -2846,6 +2884,7 @@ def bitcoin_lead_lag_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     short_entries=True,
     param_validator=vpr_param_validator,
     production_refused=True,
+    paper_route=RESEARCH_PAPER_ROUTE,
 )
 def volume_profile_reclaim_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return volume_profile_reclaim_core(df, **params)
@@ -2853,7 +2892,7 @@ def volume_profile_reclaim_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 @register(
     "perpetual_premium_reversion",
-    "RESEARCH, production-refused, frozen study INCONCLUSIVE (#1639: 9 held-out event-replay positions in a 10.8 h recording, under the 30-position floor; net negative on both windows) \u2014 perpetual premium mean reversion on closed bars: premium is the executable bid/ask midpoint divided by the time-aligned oracle price minus one, from supplied synchronized Hyperliquid quote/oracle samples on a fixed 60 s grid (premium_observations; each sample holds the latest bbo and asset context received at or before its grid time). At each bar close the mean and population deviation come from the lookback_samples samples strictly before the current sample; a positive premium whose z-score turn_span samples earlier was strictly above entry_z and whose distance to that mean then fell strictly at every step while staying above it enters short, and the negative mirror enters long. Every sample in the window must be sampled, unrevoked by the decision time, in one socket session, with quote age, observed oracle receipt age and quote/context skew within bounds, spread at most max_spread_bps and premium and mark dislocation within bounds; the variance must be strictly above variance_floor, else the entry holds with a reason. Oracle freshness is receipt age only; the venue context has no source time. Entry-only; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    "RESEARCH, production-refused, frozen study INCONCLUSIVE (#1639: 9 held-out event-replay positions in a 10.8 h recording, under the 30-position floor; net negative on both windows) \u2014 perpetual premium mean reversion on closed bars: premium is the executable bid/ask midpoint divided by the time-aligned oracle price minus one, from supplied synchronized Hyperliquid quote/oracle samples on a fixed 60 s grid (premium_observations; each sample holds the latest bbo and asset context received at or before its grid time). At each bar close the mean and population deviation come from the lookback_samples samples strictly before the current sample; a positive premium whose z-score turn_span samples earlier was strictly above entry_z and whose distance to that mean then fell strictly at every step while staying above it enters short, and the negative mirror enters long. Every sample in the window must be sampled, unrevoked by the decision time, in one socket session, with quote age, observed oracle receipt age and quote/context skew within bounds, spread at most max_spread_bps and premium and mark dislocation within bounds; the variance must be strictly above variance_floor, else the entry holds with a reason. Oracle freshness is receipt age only; the venue context has no source time. Entry-only; research use only: paper evaluation needs exactly one explicit --mode=paper on the Hyperliquid perps shared or websocket feed route, and live use is refused with or without allow_no_edge until a separate reviewed promotion",
     dict(DEFAULT_PREMIUM_PARAMS),
     platforms=("futures",),
     constraints=[
@@ -2887,6 +2926,7 @@ def volume_profile_reclaim_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     short_entries=True,
     param_validator=premium_param_validator,
     production_refused=True,
+    paper_route=RESEARCH_PAPER_ROUTE,
 )
 def perpetual_premium_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return perpetual_premium_reversion_core(df, **params)
@@ -2894,7 +2934,7 @@ def perpetual_premium_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataF
 
 @register(
     "order_book_imbalance",
-    "RESEARCH, production-refused, frozen study FAIL (#1635: on 59 days of the public Hyperliquid l2Book archive every one of 972 variants lost money after costs on train and held-out, the selected variant lost 1000.33 on 5271 held-out positions against 418.67 for donchian_breakout, and the bootstrap lower bound of the improvement was -1105.59) \u2014 order-book imbalance on supplied Hyperliquid l2Book snapshots (l2_book_observations, the Delivery 1 l2_book contract): for the first depth_levels levels per side, B = sum(bid px x sz), A = sum(ask px x sz), I = (B - A) / (B + A) and spread_bps = 10000 x (ask - bid) / mid, all in exact rational arithmetic. A book qualifies long when I > entry_threshold and short when I < -entry_threshold (strict; equality is neutral) with spread_bps <= max_spread_bps and B + A >= min_combined_depth_usd. An episode is a same-direction run of distinct qualifying books after a retained boundary (a reset marker, a non-qualifying book or the last book of the opposite run) inside the 60000 ms evidence window; the confirmation_observations-th book is the crossing, and its sole decision deadline is the next UTC whole second at or above max(event, receipt). The entry fires only at that deadline, only if the run is still active and the crossing book's event and receipt are each at most max_snapshot_age_ms old; later deadlines return consumed, a missing boundary returns evidence_truncated, and missing or malformed books hold with a reason. Entry-only; the closed-bar branch is unsupported; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    "RESEARCH, production-refused, frozen study FAIL (#1635: on 59 days of the public Hyperliquid l2Book archive every one of 972 variants lost money after costs on train and held-out, the selected variant lost 1000.33 on 5271 held-out positions against 418.67 for donchian_breakout, and the bootstrap lower bound of the improvement was -1105.59) \u2014 order-book imbalance on supplied Hyperliquid l2Book snapshots (l2_book_observations, the Delivery 1 l2_book contract): for the first depth_levels levels per side, B = sum(bid px x sz), A = sum(ask px x sz), I = (B - A) / (B + A) and spread_bps = 10000 x (ask - bid) / mid, all in exact rational arithmetic. A book qualifies long when I > entry_threshold and short when I < -entry_threshold (strict; equality is neutral) with spread_bps <= max_spread_bps and B + A >= min_combined_depth_usd. An episode is a same-direction run of distinct qualifying books after a retained boundary (a reset marker, a non-qualifying book or the last book of the opposite run) inside the 60000 ms evidence window; the confirmation_observations-th book is the crossing, and its sole decision deadline is the next UTC whole second at or above max(event, receipt). The entry fires only at that deadline, only if the run is still active and the crossing book's event and receipt are each at most max_snapshot_age_ms old; later deadlines return consumed, a missing boundary returns evidence_truncated, and missing or malformed books hold with a reason. Entry-only; the closed-bar branch is unsupported; research use only: paper evaluation needs exactly one explicit --mode=paper on the Hyperliquid perps shared or websocket feed route, and live use is refused with or without allow_no_edge until a separate reviewed promotion",
     dict(DEFAULT_OBI_PARAMS),
     platforms=("futures",),
     constraints=[
@@ -2917,6 +2957,7 @@ def perpetual_premium_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataF
     short_entries=True,
     param_validator=obi_param_validator,
     production_refused=True,
+    paper_route=RESEARCH_PAPER_ROUTE,
 )
 def order_book_imbalance_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return order_book_imbalance_core(df, **params)
@@ -2924,7 +2965,7 @@ def order_book_imbalance_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 @register(
     "inventory_market_making",
-    "RESEARCH, production-refused quote capability (#1861, parent #1636): inventory-aware two-sided post-only market making on Hyperliquid perps. At each due deadline the pure Go quote policy (scheduler/quote_policy.go) reads the frozen deadline book evidence and the settled quote snapshot: normalized inventory x = clamp((q x m - target) / cap, -1, 1), per-second log-return variance over the volatility window, s = sqrt(v x max(lifetime, cycle)), skew a = clamp(risk_aversion x x x s, +/- max_skew), reservation r = m x (1 - a), half-spread h = max(min_spread / 2, fee and reserve floor, volatility_multiplier x s); quotes r -/+ m x h rounded to the native grid, the inventory-increasing side tapered near the cap and held above half the maximum spread, the reducing side reduce-only, and an inventory-age exit through inventory_quote_exit. It has no scalar candle signal: scalar checks, candle backtests, the optimizer and parity runs refuse it, and only the internally admitted quote-replay runner evaluates it; every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    "RESEARCH, production-refused quote capability (#1861, parent #1636): inventory-aware two-sided post-only market making on Hyperliquid perps. At each due deadline the pure Go quote policy (scheduler/quote_policy.go) reads the frozen deadline book evidence and the settled quote snapshot: normalized inventory x = clamp((q x m - target) / cap, -1, 1), per-second log-return variance over the volatility window, s = sqrt(v x max(lifetime, cycle)), skew a = clamp(risk_aversion x x x s, +/- max_skew), reservation r = m x (1 - a), half-spread h = max(min_spread / 2, fee and reserve floor, volatility_multiplier x s); quotes r -/+ m x h rounded to the native grid, the inventory-increasing side tapered near the cap and held above half the maximum spread, the reducing side reduce-only, and an inventory-age exit through inventory_quote_exit. It has no scalar candle signal: scalar checks, candle backtests, the optimizer and parity runs refuse it, and only the internally admitted quote-replay runner evaluates it; a configured explicit-paper quote owner loads under a scheduler engine hold (quote_engine_unavailable) until a forward paper quote engine exists, and live use is refused until a separate reviewed promotion",
     inventory_market_making_default_params(),
     platforms=("futures",),
     edge_status="no_edge",
@@ -2933,6 +2974,7 @@ def order_book_imbalance_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     short_entries=False,
     param_validator=inventory_market_making_param_validator,
     production_refused=True,
+    paper_route=RESEARCH_PAPER_ROUTE,
     quote=dict(QUOTE_CONTRACT),
     quote_spec=QUOTE_POLICY_SPEC,
 )

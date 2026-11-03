@@ -232,6 +232,11 @@
     addStratRestart: document.getElementById("add-strat-restart"),
     addStratButton: document.getElementById("add-strat-button"),
     addStratMessage: document.getElementById("add-strat-message"),
+    addStratOpenParams: document.getElementById("add-strat-open-params"),
+    addQuoteFile: document.getElementById("add-quote-file"),
+    addQuoteRestart: document.getElementById("add-quote-restart"),
+    addQuoteButton: document.getElementById("add-quote-button"),
+    addQuoteMessage: document.getElementById("add-quote-message"),
     leaderboardBody: document.getElementById("leaderboard-body"),
     leaderboardEmpty: document.getElementById("leaderboard-empty"),
     diagnosticsBody: document.getElementById("diagnostics-body"),
@@ -1214,9 +1219,12 @@
           '<canvas class="strategy-sparkline" width="48" height="28" aria-hidden="true"></canvas>' +
           '<span class="strategy-symbol"></span>' +
           '<span class="strategy-meta"></span>';
-        button.querySelector(".strategy-id").textContent = (strategy.paused ? "⏸ " : "") + strategy.id;
+        button.querySelector(".strategy-id").textContent = (strategy.engine_hold ? "[held] " : "") + (strategy.paused ? "⏸ " : "") + strategy.id;
         if (strategy.paused) {
           button.title = "Paused — position-increasing signals held";
+        }
+        if (strategy.engine_hold) {
+          button.title = "Held (" + strategy.engine_hold.reason + "): " + strategy.engine_hold.text + " — " + strategy.engine_hold.tracking_url;
         }
         button.querySelector(".strategy-symbol").textContent = strategy.symbol || "-";
         button.querySelector(".strategy-meta").textContent =
@@ -1722,10 +1730,49 @@
       return Promise.resolve();
     }
     const params = { name: name, platform: platform, asset: asset };
+    const openParamsText = (els.addStratOpenParams && els.addStratOpenParams.value || "").trim();
+    if (openParamsText) {
+      let parsed;
+      try {
+        parsed = JSON.parse(openParamsText);
+      } catch (err) {
+        setStructuralMessage("Open params must be a JSON object: " + err.message, els.addStratMessage);
+        return Promise.resolve();
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        setStructuralMessage("Open params must be a JSON object.", els.addStratMessage);
+        return Promise.resolve();
+      }
+      params.open_params = parsed;
+    }
     if (els.addStratRestart && els.addStratRestart.checked) {
       params.restart = true;
     }
     return confirmStructuralAction("add-strategy", "", params, "/api/config/add-strategy", els.addStratMessage);
+  }
+
+  async function structuralAddQuoteOwner() {
+    const file = els.addQuoteFile && els.addQuoteFile.files && els.addQuoteFile.files[0];
+    if (!file) {
+      setStructuralMessage("Choose a quote_owner JSON file.", els.addQuoteMessage);
+      return;
+    }
+    if (file.size > 1048576) {
+      setStructuralMessage("The quote_owner file exceeds 1 MiB.", els.addQuoteMessage);
+      return;
+    }
+    let text;
+    try {
+      text = await file.text();
+    } catch (err) {
+      setStructuralMessage("The quote_owner file could not be read: " + err.message, els.addQuoteMessage);
+      return;
+    }
+    const params = { fragment_text: text };
+    if (els.addQuoteRestart && els.addQuoteRestart.checked) {
+      params.restart = true;
+    }
+    return confirmStructuralAction("add-quote-owner", "", params, "/api/config/add-quote-owner", els.addQuoteMessage);
   }
 
   function structuralPerStrategy(action) {
@@ -2205,7 +2252,7 @@
     els.overviewBody.innerHTML = rows.map(function (row) {
       const pnlClassName = row.pnl_pct > 0 ? "pnl-pos" : row.pnl_pct < 0 ? "pnl-neg" : "";
       return '<tr class="overview-row' + (row.id === state.activeID ? " active" : "") + '" data-id="' + escapeHTML(row.id) + '">' +
-        "<td>" + (row.paused ? '<span title="Paused">⏸</span> ' : "") + escapeHTML(row.id) + "</td>" +
+        "<td>" + (row.engine_hold ? '<span title="' + escapeHTML("Held (" + row.engine_hold.reason + "): " + row.engine_hold.text + " — " + row.engine_hold.tracking_url) + '">[held]</span> ' : "") + (row.paused ? '<span title="Paused">⏸</span> ' : "") + escapeHTML(row.id) + "</td>" +
         "<td>" + escapeHTML(row.platform || "-") + "</td>" +
         "<td>" + escapeHTML(row.symbol || "-") + "</td>" +
         "<td>" + escapeHTML(row.mode || "-") + "</td>" +
@@ -2742,6 +2789,11 @@
   if (els.addStratButton) {
     els.addStratButton.addEventListener("click", function () {
       structuralAddStrategy().catch(handleRefreshError);
+    });
+  }
+  if (els.addQuoteButton) {
+    els.addQuoteButton.addEventListener("click", function () {
+      structuralAddQuoteOwner().catch(handleRefreshError);
     });
   }
   if (els.removeStrategyButton) {

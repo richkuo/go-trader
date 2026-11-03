@@ -606,8 +606,27 @@ func TestQuoteReplayStaysOutsideProduction(t *testing.T) {
 		}
 		setNoEdgeLiveCredentials(t)
 		for name, load := range map[string]func(string) (*Config, error){"LoadConfig": LoadConfig, "LoadConfigForProbe": LoadConfigForProbe, "LoadConfigReadOnly": LoadConfigReadOnly} {
-			if _, err := load(path); err == nil || !strings.Contains(err.Error(), "production_refused") {
-				t.Fatalf("%s accepted the replay run document: %v", name, err)
+			cfg, err := load(path)
+			if err != nil {
+				t.Fatalf("%s must admit the explicit-paper quote owner as an engine-held owner: %v", name, err)
+			}
+			if cfg.quoteLoad != nil {
+				t.Fatalf("%s bound a quote admission outside the runner", name)
+			}
+			for _, sc := range cfg.Strategies {
+				if h, held := engineHoldFor(sc); !held || h.Reason != quoteEngineHoldReason {
+					t.Fatalf("%s: strategy %s must be engine-held outside the runner", name, sc.ID)
+				}
+			}
+		}
+		live := strings.Replace(string(doc), `"--mode=paper"`, `"--mode=live"`, 1)
+		livePath := filepath.Join(dir, "run-document-live.json")
+		if err := os.WriteFile(livePath, []byte(live), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for name, load := range map[string]func(string) (*Config, error){"LoadConfig": LoadConfig, "LoadConfigForProbe": LoadConfigForProbe, "LoadConfigReadOnly": LoadConfigReadOnly} {
+			if _, err := load(livePath); err == nil || !strings.Contains(err.Error(), "production_refused") {
+				t.Fatalf("%s accepted a live replay run document: %v", name, err)
 			}
 		}
 		if _, err := os.Stat(filepath.Join(dir, "run")); !os.IsNotExist(err) {

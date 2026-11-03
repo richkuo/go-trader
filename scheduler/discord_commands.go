@@ -36,6 +36,7 @@ var opsCommandNames = map[string]bool{
 	"report-an-issue":           true,
 	"config":                    true,
 	"add-strategy":              true,
+	quoteOwnerSetupAction:       true,
 	"remove-strategy":           true,
 	"add-platform":              true,
 	"paper-to-live":             true,
@@ -459,6 +460,10 @@ func slashCommands() []*discordgo.ApplicationCommand {
 			{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Strategy name, e.g. momentum", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "platform", Description: "hyperliquid or binanceus", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "asset", Description: "Ticker, e.g. BTC", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "open_params", Description: "JSON object of required research params, e.g. a hash-pinned calendar"},
+		}},
+		{Name: commandPrefix + quoteOwnerSetupAction, Description: "Add a held paper quote owner from a quote_owner JSON file (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionAttachment, Name: "fragment", Description: "quote_owner setup JSON file (at most 1 MiB)", Required: true},
 		}},
 		{Name: commandPrefix + "remove-strategy", Description: "Remove a strategy from the config (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "id", Description: "Strategy ID to remove", Required: true},
@@ -620,6 +625,8 @@ func (d *DiscordNotifier) interactionCreate(s discordTransport, i *discordgo.Int
 		}
 	case "add-strategy":
 		d.handleAddStrategy(s, i, data.Options)
+	case quoteOwnerSetupAction:
+		d.handleAddQuoteOwner(s, i, data)
 	case "remove-strategy":
 		d.handleRemoveStrategy(s, i, data.Options)
 	case "add-platform":
