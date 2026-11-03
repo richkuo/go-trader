@@ -128,7 +128,8 @@ FULL_PRECISION_INDICATOR_PREFIXES = ("eom_", "mfi_", "ama_", "dt_", "erp_", "stc
 
 TEXT_INDICATOR_COLUMNS = ("eom_reason", "ama_reason", "dt_reason", "erp_reason", "stc_reason", "rcr_reason",
                           "trix_reason", "cpr_reason", "mir_reason", "cce_reason", "smi_reason", "efp_reason",
-                          "tsi_reason", "klinger_reason")
+                          "tsi_reason", "klinger_reason", "cvd_reason", "meb_reason", "bll_reason", "vpr_reason",
+                          "ppr_reason", "obi_reason")
 
 BATCH_PROTOCOL_VERSION = 1
 
@@ -318,7 +319,7 @@ def slot_admission(slot, deps):
 
 
 def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission,
-                                  params=None, close_params_by_name=None, timeframe=None):
+                                  params=None, close_params_by_name=None, timeframe=None, research_route=False):
     gate_mode, acknowledgement = admission
     references = deps.admit_configured_strategies(
         strategy_name,
@@ -330,12 +331,13 @@ def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_stra
         deps.get_close_strategy,
         deps.list_strategies,
         deps.list_close_strategies,
+        research_route=research_route,
     )
     deps.preflight_reference_params(
         references, params, close_params_by_name, deps.get_strategy, deps.validate_params, timeframe=timeframe)
 
 
-def preflight_signal_slot(slot, deps, timeframe=None):
+def preflight_signal_slot(slot, deps, timeframe=None, research_route=False):
     _validate_slot_strategy_names(
         deps,
         slot["strategy"],
@@ -345,6 +347,7 @@ def preflight_signal_slot(slot, deps, timeframe=None):
         slot.get("params") or None,
         slot.get("close_params_by_name") or None,
         timeframe,
+        research_route=research_route,
     )
 
 
@@ -573,6 +576,18 @@ def _shared_macro_inputs(shared, symbol, params):
                 "spread_records": {"kind": "macro_quotes", "available": False, "reason": reason}}
     return {"event_records": market_macro_events(market, calendar_sha, MarketPayloadError),
             "spread_records": market_macro_quotes(market, symbol, quote_sha, MarketPayloadError)}
+
+
+def _sealed_protection_inputs(shared, symbol, name, params):
+    if name == TRADE_FLOW_STRATEGY:
+        return {"trade_flow_observations": _shared_trade_flow(shared, symbol)}
+    if name == VOLUME_PROFILE_STRATEGY:
+        return {"volume_profile_observations": _shared_volume_profile(shared, symbol)}
+    if name == PREMIUM_STRATEGY:
+        return {"premium_observations": _shared_premium(shared, symbol)}
+    if name == MACRO_EVENT_STRATEGY:
+        return _shared_macro_inputs(shared, symbol, params)
+    return {}
 
 
 def _shared_lead_lag_inputs(shared, symbol, get_strategy, params=None):
@@ -929,7 +944,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         raise ValueError("open_side cannot be combined with closed_bar_decisions")
 
     _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission,
-                                  strategy_params_override, close_params_by_name, shared.get("timeframe"))
+                                  strategy_params_override, close_params_by_name, shared.get("timeframe"),
+                                  research_route=shared.get("market") is not None)
     resting_request = parse_resting_rule_request(slot.get("resting_tp_rule"))
     if resting_request is not None:
         refusal = _resting_rule_refusal(mode, deps.parse_close_strategies(close_strategies))
@@ -1006,6 +1022,7 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         protection_params = {"regime": strategy_regime}
         if strategy_params_override:
             protection_params = {**strategy_params_override, **protection_params}
+        protection_params.update(_sealed_protection_inputs(shared, symbol, funding_aware_name, strategy_params_override))
         if hold:
             closed_meta = hold_metadata(hold, shared["closed"]["cutoff_ms"])
             decision_regime_payload = None
@@ -1224,7 +1241,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         from strategy_composition import parse_allow_no_edge_tokens
         admission = (deps.parse_raw_gate_mode(mode_args), parse_allow_no_edge_tokens(mode_args))
         _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission,
-                                      strategy_params_override, close_params_by_name, timeframe)
+                                      strategy_params_override, close_params_by_name, timeframe,
+                                      research_route=market is not None)
 
         adapter = None
         if market is None:
@@ -1422,7 +1440,7 @@ def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_met
     preflight_errors = {}
     for idx, slot in enumerate(slots):
         try:
-            preflight_signal_slot(slot, deps, timeframe)
+            preflight_signal_slot(slot, deps, timeframe, research_route=market is not None)
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
             preflight_errors[idx] = str(e)

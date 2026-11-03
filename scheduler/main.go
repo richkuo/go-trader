@@ -211,6 +211,9 @@ func main() {
 	for _, msg := range noEdgeWarnings {
 		fmt.Fprintln(os.Stderr, "[config] "+msg)
 	}
+	for _, line := range engineHoldStartupLines(cfg.Strategies) {
+		fmt.Println(line)
+	}
 	if line := dailyLossStartupSummaryLine(cfg.PortfolioRisk); line != "" {
 		fmt.Println(line)
 	}
@@ -929,6 +932,10 @@ func main() {
 				fmt.Printf("[reload]   %s\n", change)
 			}
 		}
+		globalRunEvidence.retainEngineHolds(engineHeldStrategyIDs(cfg.Strategies))
+		for _, line := range engineHoldStartupLines(cfg.Strategies) {
+			fmt.Println("[reload] " + line)
+		}
 		fmt.Printf("[reload] Tick interval now %ds\n", tickSeconds)
 	}
 	processConfigReloads := func() {
@@ -1016,13 +1023,17 @@ func main() {
 				fmt.Printf("[feed] shared cycle key=%d: %d strategies on a later deadline run in their own cycle next\n", sharedDeadline.Unix(), deferred)
 			}
 		}
+		var engineHeldDue []StrategyConfig
+		dueStrategies, engineHeldDue = splitEngineHeldDue(dueStrategies)
+		reportEngineHeldDue(engineHeldDue, deadlineFeed, evaluationMarks, lastRun, lastEvaluated, time.Now())
+
 		for _, line := range feedCycleEvaluationSummary(evaluationMarks) {
 			fmt.Println(line)
 		}
 
 		dueStrategies = orderReplaySourcesBeforeMirrors(dueStrategies)
 
-		if len(dueStrategies) == 0 {
+		if len(dueStrategies) == 0 && len(engineHeldDue) == 0 {
 			if audSec := liquidationAuditIntervalSeconds(cfg.Strategies, intervals); audSec > 0 && os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
 				now := time.Now().UTC()
 				if lastLiquidationAudit.IsZero() || now.Sub(lastLiquidationAudit) >= time.Duration(audSec)*time.Second {

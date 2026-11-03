@@ -49,6 +49,7 @@ type storageFileInspection struct {
 	QuoteReplayRuns []string             `json:"quote_replay_runs,omitempty"`
 	QuoteOwners     int                  `json:"quote_owner_contracts"`
 	QuotePending    []string             `json:"pending_quote_recovery"`
+	EngineHeld      []string             `json:"engine_held_strategies,omitempty"`
 }
 
 type storageInspection struct {
@@ -73,6 +74,8 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 	if cfg != nil && cfg.quoteLoad != nil {
 		admittedQuote[cfg.quoteLoad.ownerID] = true
 	}
+	held, heldRejections := engineHeldStorageIdentities(cfg, ident, admittedQuote)
+	out.Rejections = append(out.Rejections, heldRejections...)
 	if cfg != nil {
 		for _, sc := range cfg.Strategies {
 			if isRobinhoodLiveSpot(sc) {
@@ -111,6 +114,11 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 			return storageInspection{}, fmt.Errorf("read-only open of the %s state file %q: %w", spec.Role, spec.Path, err)
 		}
 		rejections, err := inspectOneStorageFile(db, &fi, layout, ident, hasLive, liveRH, admittedQuote)
+		if err == nil {
+			var heldRej []string
+			heldRej, err = inspectEngineHeldRows(db, &fi, held)
+			rejections = append(rejections, heldRej...)
+		}
 		if err == nil {
 			err = inspectRobinhoodAccountBindings(db, &fi, ident, liveRHCoin)
 		}

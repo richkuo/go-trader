@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -119,6 +121,11 @@ var knownShortNames = map[string]string{
 
 	"cumulative_volume_delta_divergence": "cvddiv",
 	"macro_event_breakout":               "macrobrk",
+	"bitcoin_lead_lag":                   "btclag",
+	"volume_profile_reclaim":             "vpreclaim",
+	"perpetual_premium_reversion":        "premrev",
+	"order_book_imbalance":               "obimb",
+	"inventory_market_making":            "invmm",
 }
 
 var registeredOpenStrategyPlatforms = map[string][]string{
@@ -274,6 +281,10 @@ var bidirectionalPerpsStrategies = map[string]bool{
 
 	"cumulative_volume_delta_divergence": true,
 	"macro_event_breakout":               true,
+	"bitcoin_lead_lag":                   true,
+	"volume_profile_reclaim":             true,
+	"perpetual_premium_reversion":        true,
+	"order_book_imbalance":               true,
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {
@@ -392,30 +403,63 @@ func discoverPythonStrategies(script string) []stratDef {
 	return strats
 }
 
-func discoverStrategies() {
+var (
+	researchPerpsStrategies []stratDef
+	strategyCatalogEntries  []catalogEntry
+	strategyCatalogNote     string
+)
+
+func discoverStrategies() error {
 	spotStrategies = defaultSpotStrategies
 	optionsStrategies = defaultOptionsStrategies
 	perpsStrategies = defaultPerpsStrategies
+	futuresStrategies = defaultFuturesStrategies
+	researchPerpsStrategies = nil
+	strategyCatalogEntries = nil
+	strategyCatalogNote = ""
 
-	if discovered := discoverPythonStrategies("shared_strategies/open/spot/strategies.py"); len(discovered) > 0 {
-		var filtered []stratDef
-		for _, s := range discovered {
-			if s.ID != "pairs_spread" {
-				filtered = append(filtered, s)
-			}
-		}
-		if len(filtered) > 0 {
-			spotStrategies = filtered
-		}
-	}
 	if discovered := discoverPythonStrategies("shared_strategies/options/strategies.py"); len(discovered) > 0 {
 		optionsStrategies = discovered
 	}
-	futuresStrategies = defaultFuturesStrategies
-	if discovered := discoverPythonStrategies("shared_strategies/open/futures/strategies.py"); len(discovered) > 0 {
-		futuresStrategies = discovered
-		perpsStrategies = discovered
+	entries, err := fetchStrategyCatalog("open")
+	if err != nil {
+		if errors.Is(err, errStrategyCatalogEnvironment) {
+			strategyCatalogNote = "strategy catalog unavailable (" + err.Error() + "); using the built-in default strategy lists"
+			fmt.Fprintln(os.Stderr, "[init] "+strategyCatalogNote)
+			return nil
+		}
+		return fmt.Errorf("canonical strategy catalog: %w", err)
 	}
+	strategyCatalogEntries = entries
+	discoverable := func(e catalogEntry) bool {
+		return e.Role == catalogRoleScalarOpen && e.EdgeStatus != edgeStatusNoEdge
+	}
+	if spot := catalogStratDefs(entries, "spot", func(e catalogEntry) bool { return discoverable(e) && e.ID != "pairs_spread" }); len(spot) > 0 {
+		spotStrategies = spot
+	}
+	if fut := catalogStratDefs(entries, "futures", discoverable); len(fut) > 0 {
+		futuresStrategies = fut
+		perpsStrategies = fut
+	}
+	researchPerpsStrategies = catalogStratDefs(entries, "futures", func(e catalogEntry) bool {
+		if e.Role != catalogRoleScalarOpen || !e.ProductionRefused || e.PaperExecution.Status != "available" {
+			return false
+		}
+		_, ok := addStrategyResearchCandidates[e.ID]
+		return ok
+	})
+	return nil
+}
+
+func catalogChoiceLabel(id string) string {
+	for _, e := range strategyCatalogEntries {
+		if e.ID == id && e.Kind == "open" {
+			if l := e.labels(); len(l) > 0 {
+				return id + " [" + strings.Join(l, ", ") + "]"
+			}
+		}
+	}
+	return id
 }
 
 func hasAnyEnabledStrategyType(opts InitOptions) bool {
@@ -536,6 +580,9 @@ type InitOptions struct {
 	ManualCapital               float64
 	ManualDrawdown              float64
 	ManualLeverage              float64
+	ResearchStrategies          []string                          `json:"researchStrategies,omitempty"`
+	ResearchOpenParams          map[string]map[string]interface{} `json:"researchOpenParams,omitempty"`
+	QuoteOwnerFile              string                            `json:"quoteOwnerFile,omitempty"`
 }
 
 func initOptionsSelectionError(opts InitOptions) error {
@@ -994,7 +1041,106 @@ func generateConfig(opts InitOptions) *Config {
 		applyInitRegimeSide(cfg)
 	}
 
+	research, _ := initResearchEntries(opts)
+	if len(research) > 0 {
+		cfg.Strategies = append(cfg.Strategies, research...)
+		if strings.TrimSpace(cfg.MarketFeed) == "" {
+			cfg.MarketFeed = marketFeedWebsocket
+		}
+	}
+
 	return cfg
+}
+
+func initResearchEntries(opts InitOptions) ([]StrategyConfig, error) {
+	var out []StrategyConfig
+	names := append([]string(nil), opts.ResearchStrategies...)
+	sort.Strings(names)
+	for _, name := range names {
+		if _, ok := addStrategyResearchCandidates[name]; !ok {
+			return nil, fmt.Errorf("researchStrategies: %q is not a scalar research strategy with an explicit-paper Hyperliquid perps route", name)
+		}
+		for _, assetName := range opts.Assets {
+			_, raw, err := buildAddStrategyEntryWithParams(name, "hyperliquid", assetName, opts.ResearchOpenParams[name])
+			if err != nil {
+				return nil, fmt.Errorf("researchStrategies: %w", err)
+			}
+			var sc StrategyConfig
+			if err := json.Unmarshal(raw, &sc); err != nil {
+				return nil, err
+			}
+			if opts.EnablePerps && opts.PerpsLeverage > 0 {
+				sc.Leverage = opts.PerpsLeverage
+			}
+			out = append(out, sc)
+		}
+	}
+	for name := range opts.ResearchOpenParams {
+		found := false
+		for _, n := range names {
+			found = found || n == name
+		}
+		if !found {
+			return nil, fmt.Errorf("researchOpenParams names %q, which is not in researchStrategies", name)
+		}
+	}
+	if path := strings.TrimSpace(opts.QuoteOwnerFile); path != "" {
+		data, err := readQuoteOwnerFile(path)
+		if err != nil {
+			return nil, err
+		}
+		setup, err := parseQuoteOwnerSetup(data)
+		if err != nil {
+			return nil, err
+		}
+		var sc StrategyConfig
+		if err := json.Unmarshal(setup.Entry, &sc); err != nil {
+			return nil, err
+		}
+		out = append(out, sc)
+	}
+	return out, nil
+}
+
+func validateInitResearchConfig(cfg *Config, opts InitOptions) error {
+	if len(opts.ResearchStrategies) == 0 && strings.TrimSpace(opts.QuoteOwnerFile) == "" {
+		return nil
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if _, err := loadConfigDataOpts("", data, true, true, configLoadOptions{skipRegimeSideArtifact: true}); err != nil {
+		return fmt.Errorf("the generated config with research or quote-owner entries does not validate; nothing was written: %w", err)
+	}
+	return nil
+}
+
+func readQuoteOwnerFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("quoteOwnerFile: %w", err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("quoteOwnerFile: %w", err)
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("quoteOwnerFile %q is not a regular file", path)
+	}
+	if st.Size() > quoteOwnerSetupMaxBytes {
+		return nil, fmt.Errorf("quoteOwnerFile %q is %d bytes; the ceiling is %d", path, st.Size(), quoteOwnerSetupMaxBytes)
+	}
+	buf := make([]byte, st.Size()+1)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, fmt.Errorf("quoteOwnerFile: %w", err)
+	}
+	if int64(n) != st.Size() {
+		return nil, fmt.Errorf("quoteOwnerFile %q changed size while being read", path)
+	}
+	return buf[:n], nil
 }
 
 func applyInitRegimeSide(cfg *Config) {
@@ -1053,7 +1199,10 @@ func makePairs(assets []string) [][2]string {
 }
 
 func runInitFromJSON(jsonStr string, outputPath string) int {
-	discoverStrategies()
+	if err := discoverStrategies(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
 
 	var opts InitOptions
 	if err := json.Unmarshal([]byte(jsonStr), &opts); err != nil {
@@ -1077,6 +1226,10 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 	}
 	if !hasAnyEnabledStrategyType(opts) {
 		fmt.Fprintln(os.Stderr, "Error: at least one strategy type must be enabled")
+		return 1
+	}
+	if _, err := initResearchEntries(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
 	if opts.EnableSpot && len(opts.SpotStrategies) == 0 && !opts.IncludePairs {
@@ -1221,6 +1374,10 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
+	if err := validateInitResearchConfig(cfg, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
 	for _, note := range initOptionsNotes(opts) {
 		fmt.Fprintln(os.Stderr, note)
 	}
@@ -1263,7 +1420,10 @@ func runInit(args []string) int {
 		return runInitFromJSON(*jsonFlag, *outputFlag)
 	}
 
-	discoverStrategies()
+	if err := discoverStrategies(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
 
 	p := NewPrompter()
 
@@ -1595,6 +1755,31 @@ func runInit(args []string) int {
 		perpsStratIDs[i] = s.ID
 	}
 
+	var researchStratIDs []string
+	researchOpenParams := map[string]map[string]interface{}{}
+	quoteOwnerFile := ""
+	if len(researchPerpsStrategies) > 0 {
+		fmt.Println("\nResearch strategies run only on Hyperliquid perps in explicit paper mode (live is refused), whatever the perps mode above. They need market_feed websocket or shared; the wizard sets websocket when none is set.")
+		labels := make([]string, len(researchPerpsStrategies))
+		for i, s := range researchPerpsStrategies {
+			labels[i] = catalogChoiceLabel(s.ID)
+		}
+		for _, idx := range p.MultiSelectWithDefaults("Add explicit-paper research strategies (none by default):", labels, nil) {
+			id := researchPerpsStrategies[idx].ID
+			cand := addStrategyResearchCandidates[id]
+			if len(cand.RequiredParams) > 0 {
+				params := map[string]interface{}{}
+				for _, key := range cand.RequiredParams {
+					params[key] = p.String(fmt.Sprintf("  %s %s:", id, key), "")
+				}
+				researchOpenParams[id] = params
+			}
+			researchStratIDs = append(researchStratIDs, id)
+		}
+		fmt.Println("\nA quote owner (inventory_market_making) is added only from a typed quote_owner JSON file. It loads in paper and stays held (quote_engine_unavailable) until a forward paper quote engine exists.")
+		quoteOwnerFile = strings.TrimSpace(p.String("Path to a quote_owner JSON file (blank to skip):", ""))
+	}
+
 	futuresStratIDs := selectedFuturesStrats
 	if enableFutures && len(futuresStratIDs) == 0 {
 		for _, s := range futuresStrategies {
@@ -1629,7 +1814,13 @@ func runInit(args []string) int {
 		}
 	}
 
+	if len(researchOpenParams) == 0 {
+		researchOpenParams = nil
+	}
 	opts := InitOptions{
+		ResearchStrategies:        researchStratIDs,
+		ResearchOpenParams:        researchOpenParams,
+		QuoteOwnerFile:            quoteOwnerFile,
 		OutputPath:                outputPath,
 		Assets:                    selectedAssets,
 		EnableSpot:                enableSpot,
@@ -1700,8 +1891,16 @@ func runInit(args []string) int {
 		return 1
 	}
 
+	if _, err := initResearchEntries(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
 	cfg := generateConfig(opts)
 	if err := applyContainerInitPolicy(cfg, outputPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	if err := validateInitResearchConfig(cfg, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}

@@ -12,6 +12,7 @@ import (
 
 var uiStructuralActions = map[string]bool{
 	"add-strategy":      true,
+	"add-quote-owner":   true,
 	"remove-strategy":   true,
 	"paper-to-live":     true,
 	"apply-regime-gate": true,
@@ -44,11 +45,13 @@ func (ss *StatusServer) mutateConfigRoot(fn func(root map[string]json.RawMessage
 }
 
 type structuralParams struct {
-	Name     string `json:"name"`
-	Platform string `json:"platform"`
-	Asset    string `json:"asset"`
-	Gate     string `json:"gate"`
-	Restart  bool   `json:"restart"`
+	Name       string                 `json:"name"`
+	Platform   string                 `json:"platform"`
+	Asset      string                 `json:"asset"`
+	Gate       string                 `json:"gate"`
+	Restart    bool                   `json:"restart"`
+	OpenParams map[string]interface{} `json:"open_params"`
+	Fragment   json.RawMessage        `json:"fragment"`
 }
 
 func decodeStructuralParams(raw json.RawMessage) (structuralParams, error) {
@@ -106,16 +109,31 @@ func (ss *StatusServer) confirmStructuralAction(action, strategyID string, param
 	}
 	switch action {
 	case "add-strategy":
-		newID, _, berr := buildAddStrategyEntry(p.Name, p.Platform, p.Asset)
+		newID, _, berr := buildAddStrategyEntryWithParams(p.Name, p.Platform, p.Asset, p.OpenParams)
 		if berr != nil {
 			return "", "", "", berr
 		}
 		if _, exists := ss.strategyConfig(newID); exists {
 			return "", "", "", fmt.Errorf("strategy %q already exists", newID)
 		}
+		if err := ss.researchAddFeedRefusalOnDisk(p.Name); err != nil {
+			return "", "", "", err
+		}
 		desc := fmt.Sprintf("add-strategy: create %s (%s on %s, asset %s) in PAPER mode. %s",
 			newID, p.Name, p.Platform, strings.ToUpper(strings.TrimSpace(p.Asset)), structuralApplyMessage(p.Restart))
+		if _, research := addStrategyResearchCandidates[strings.TrimSpace(p.Name)]; research {
+			desc += " It is a research-only strategy: explicit paper only, live refused, labelled no_edge."
+		}
 		return newID, desc, "", nil
+	case quoteOwnerSetupAction:
+		setup, perr := parseQuoteOwnerSetup(p.Fragment)
+		if perr != nil {
+			return "", "", "", perr
+		}
+		if _, exists := ss.strategyConfig(setup.Strategy.ID); exists {
+			return "", "", "", fmt.Errorf("strategy %q already exists; the quote_owner setup never changes an existing entry", setup.Strategy.ID)
+		}
+		return setup.Strategy.ID, setup.description() + " " + structuralApplyMessage(p.Restart), setup.Digest, nil
 	case "remove-strategy":
 		sc, ok := ss.strategyConfig(strategyID)
 		if !ok {
@@ -242,7 +260,7 @@ func (ss *StatusServer) handleAPIAddStrategy(w http.ResponseWriter, r *http.Requ
 	}
 	var newID string
 	err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
-		id, e := addStrategyToRoot(root, p.Name, p.Platform, p.Asset)
+		id, e := addStrategyToRootWithParams(root, p.Name, p.Platform, p.Asset, p.OpenParams)
 		newID = id
 		return e
 	})
@@ -251,6 +269,46 @@ func (ss *StatusServer) handleAPIAddStrategy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, uiMutationResponse{OK: true, Message: fmt.Sprintf("Added strategy %s (paper mode). %s", newID, structuralApplyMessage(p.Restart))})
+	ss.maybeRestart(p.Restart)
+}
+
+func (ss *StatusServer) researchAddFeedRefusalOnDisk(name string) error {
+	raw, err := os.ReadFile(ss.configPath)
+	if err != nil {
+		return err
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	return researchAddFeedRefusal(root, name)
+}
+
+func (ss *StatusServer) handleAPIAddQuoteOwner(w http.ResponseWriter, r *http.Request) {
+	if !ss.uiStructuralGuards(w, r) {
+		return
+	}
+	p, payload, ok := ss.readStructuralRequest(w, r, quoteOwnerSetupAction, "")
+	if !ok {
+		return
+	}
+	setup, perr := parseQuoteOwnerSetup(p.Fragment)
+	if perr != nil {
+		writeJSONError(w, http.StatusBadRequest, perr.Error())
+		return
+	}
+	if setup.Digest != payload {
+		writeJSONError(w, http.StatusConflict, "add-quote-owner failed: the fragment differs from the confirmed fragment; nothing changed — request a new confirmation")
+		return
+	}
+	err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
+		return addQuoteOwnerToRoot(root, setup)
+	})
+	if err != nil {
+		writeJSONError(w, http.StatusConflict, "add-quote-owner failed: "+err.Error())
+		return
+	}
+	writeJSON(w, uiMutationResponse{OK: true, Message: fmt.Sprintf("Added held quote owner %s (paper, %s). %s", setup.Strategy.ID, quoteEngineHoldReason, structuralApplyMessage(p.Restart))})
 	ss.maybeRestart(p.Restart)
 }
 
@@ -293,6 +351,10 @@ func (ss *StatusServer) paperToLiveBlockedReason(id string, afterConfirm bool) s
 			ss.strategiesMu.RUnlock()
 			return fmt.Sprintf("strategy %q is quote-owned — production and live quote dispatch are refused until a separate reviewed promotion", id)
 		}
+		if sc.ID == id && hasResearchReferences(sc) {
+			ss.strategiesMu.RUnlock()
+			return researchPromotionRefusal(sc)
+		}
 		if sc.ID == id && sc.Type == "options" {
 			ss.strategiesMu.RUnlock()
 			return fmt.Sprintf("strategy %q: %s; paper-to-live is refused", id, optionsPaperOnlyReason(sc.Platform))
@@ -314,6 +376,9 @@ func (ss *StatusServer) executePaperToLive(id string) (string, error) {
 	}
 	var after []string
 	err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
+		if err := diskStrategyPromotionRefusal(root, id); err != nil {
+			return err
+		}
 		_, a, e := flipStrategyToLive(root, id)
 		after = a
 		return e

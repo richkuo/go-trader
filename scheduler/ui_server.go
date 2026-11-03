@@ -27,8 +27,9 @@ type UIStrategy struct {
 	Direction string `json:"direction,omitempty"`
 	Paused    bool   `json:"paused,omitempty"`
 
-	Partition   string `json:"partition"`
-	PaperSource string `json:"paper_source,omitempty"`
+	Partition   string          `json:"partition"`
+	PaperSource string          `json:"paper_source,omitempty"`
+	EngineHold  *engineHoldView `json:"engine_hold,omitempty"`
 }
 
 type UIStrategyOverview struct {
@@ -52,8 +53,9 @@ type UIStrategyOverview struct {
 	RegimeGateFailClosed  bool                   `json:"regime_gate_fail_closed,omitempty"`
 	CashReconcileRequired bool                   `json:"cash_reconcile_required,omitempty"`
 
-	Partition   string `json:"partition"`
-	PaperSource string `json:"paper_source,omitempty"`
+	Partition   string          `json:"partition"`
+	PaperSource string          `json:"paper_source,omitempty"`
+	EngineHold  *engineHoldView `json:"engine_hold,omitempty"`
 }
 
 type UIStrategyStatus struct {
@@ -351,6 +353,7 @@ func uiStrategyFromConfig(sc StrategyConfig) UIStrategy {
 
 		Partition:   partitionFor(sc).String(),
 		PaperSource: partitionFor(sc).Source,
+		EngineHold:  engineHoldViewFor(sc),
 	}
 }
 
@@ -545,6 +548,7 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 
 		Partition:   partitionFor(sc).String(),
 		PaperSource: partitionFor(sc).Source,
+		EngineHold:  engineHoldViewFor(sc),
 	}, lifetime, true
 }
 
