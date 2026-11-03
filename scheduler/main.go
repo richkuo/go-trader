@@ -188,6 +188,9 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
+	for _, line := range robinhoodCoinRewriteWarnings(cfg) {
+		fmt.Fprintln(os.Stderr, line)
+	}
 	fmt.Println(logLevelStartupLine())
 
 	setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
@@ -342,8 +345,19 @@ func main() {
 	}
 	rebuildReplayLiveSources(cfg)
 
-	state, storageOrphans, err := LoadStateWithStore(cfg, store)
+	state, storageOrphans, identityLines, err := prepareStartupState(cfg, store, !readOnlyReport)
+	for _, line := range identityLines {
+		fmt.Println(line)
+	}
 	if err != nil {
+		var identityErr *robinhoodIdentityStartupError
+		if errors.As(err, &identityErr) {
+			msg := fmt.Sprintf("%v (exit %d)", identityErr.err, ExitStorageOwnership)
+			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: refusing to start: %s\n", msg)
+			sendStartupRefusalDM(notifier, "Robinhood coin identity", msg)
+			cleanupNotifier()
+			os.Exit(ExitStorageOwnership)
+		}
 		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
 		os.Exit(1)
 	}
@@ -4286,6 +4300,13 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 		return nil, "", 0, false
 	}
 	if msg := htfFilterContractError(sc, result.StrategyDecisionFields, htfFilterContext{}); msg != "" {
+		logger.RunningOnFailure(sc.Script, args)
+		logger.Error("Script returned error: %s", msg)
+		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
+		return nil, "", 0, false
+	}
+	if want := robinhoodSymbol(sc.Args); result.Symbol != want {
+		msg := fmt.Sprintf("robinhood check returned symbol %q, but the configured coin is %q; the order path uses one canonical coin identity (#1908)", result.Symbol, want)
 		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script returned error: %s", msg)
 		notifyScriptFailure(notifier, sc, scriptFailureError, msg)

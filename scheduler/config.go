@@ -294,6 +294,7 @@ func (lc LeaderboardSummaryConfig) Key() string {
 
 type Config struct {
 	regimeTimeframeRaw       string
+	robinhoodCoinRewrites    []robinhoodCoinRewrite
 	ConfigVersion            int                        `json:"config_version,omitempty"`
 	IntervalSeconds          int                        `json:"interval_seconds"`
 	LogDir                   string                     `json:"log_dir"`
@@ -1194,6 +1195,10 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 			}
 			fmt.Printf("[INFO] %s: no theta_harvest config, applying defaults (profit=60%%, stop=200%%, dte=3)\n", cfg.Strategies[i].ID)
 		}
+	}
+
+	if errs := normalizeRobinhoodSpotCoins(&cfg); len(errs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
 	}
 
 	applyUserCloseDefaultRatchetRegimeTrails(&cfg)

@@ -444,7 +444,7 @@ docker compose run --rm cli version --json
 docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' ghcr.io/richkuo/go-trader:<tag>
 ```
 
-`version --json` prints the release (`version`) and the source commit (`source_commit`) that were built into the binary. The image label shows the same commit. The release workflow checks that both match before it publishes an image.
+`version --json` prints the release (`version`) and the source commit (`source_commit`) that were built into the binary, and `capabilities`. The image label shows the same commit. The release workflow checks that both match before it publishes an image.
 `--version` alone prints only the release.
 
 ## Volume permissions

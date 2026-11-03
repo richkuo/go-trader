@@ -37,8 +37,22 @@ func legacyPartitionTargetForRole(cfg *Config, layout storageLayout, role storag
 // LoadStateWithStore assembles the process state from every owned file. Paper
 // scope loading never depends on the primary file's process metadata row.
 func LoadStateWithStore(cfg *Config, store *StateStore) (*AppState, []storageOrphan, error) {
+	state, orphans, _, err := loadStateWithStore(cfg, store, false)
+	return state, orphans, err
+}
+
+func persistLegacyPortfolioPlacement(state *AppState, store *StateStore) error {
+	for part, err := range store.SaveAll(state) {
+		if err != nil {
+			return fmt.Errorf("persist legacy portfolio partition placement (%s): %w", partitionLabel(part), err)
+		}
+	}
+	return nil
+}
+
+func loadStateWithStore(cfg *Config, store *StateStore, deferPersist bool) (*AppState, []storageOrphan, bool, error) {
 	if store == nil {
-		return nil, nil, fmt.Errorf("state store unavailable")
+		return nil, nil, false, fmt.Errorf("state store unavailable")
 	}
 	state := NewAppState()
 	var orphans []storageOrphan
@@ -49,13 +63,13 @@ func LoadStateWithStore(cfg *Config, store *StateStore) (*AppState, []storageOrp
 	metaFound := false
 	if primary == nil || primary.db == nil {
 		if !store.readOnly() {
-			return nil, nil, fmt.Errorf("primary state file %q does not exist yet", cfg.DBFile)
+			return nil, nil, false, fmt.Errorf("primary state file %q does not exist yet", cfg.DBFile)
 		}
 	} else {
 		var err error
 		meta, metaFound, err = primary.loadProcessMeta()
 		if err != nil {
-			return nil, nil, fmt.Errorf("sqlite load: %w", err)
+			return nil, nil, false, fmt.Errorf("sqlite load: %w", err)
 		}
 	}
 	if metaFound {
@@ -81,7 +95,7 @@ func LoadStateWithStore(cfg *Config, store *StateStore) (*AppState, []storageOrp
 			// The paper file's own process metadata is read once and unioned
 			// with primary precedence; the primary owns it from then on.
 			if paperMeta, ok, err := db.loadProcessMeta(); err != nil {
-				return nil, nil, fmt.Errorf("sqlite load (%s): %w", role, err)
+				return nil, nil, false, fmt.Errorf("sqlite load (%s): %w", role, err)
 			} else if ok {
 				found = true
 				unionTimeMapInto(state.LastSummaryPost, paperMeta.LastSummaryPost)
@@ -90,7 +104,7 @@ func LoadStateWithStore(cfg *Config, store *StateStore) (*AppState, []storageOrp
 		}
 		books, err := db.loadScopeBooks(store.layout.scopesForRole(role))
 		if err != nil {
-			return nil, nil, fmt.Errorf("sqlite load (%s): %w", role, err)
+			return nil, nil, false, fmt.Errorf("sqlite load (%s): %w", role, err)
 		}
 		if len(books.Strategies) > 0 || len(books.PortfolioRisk) > 0 || len(books.Orphans) > 0 {
 			found = true
@@ -109,7 +123,7 @@ func LoadStateWithStore(cfg *Config, store *StateStore) (*AppState, []storageOrp
 			}
 			part, ok := store.layout.partitionForRoleScope(role, scope)
 			if !ok {
-				return nil, nil, fmt.Errorf("the %s state file holds a %s portfolio risk row it does not own", role, scopeLabel(scope))
+				return nil, nil, false, fmt.Errorf("the %s state file holds a %s portfolio risk row it does not own", role, scopeLabel(scope))
 			}
 			for i := range prs.Events {
 				prs.Events[i].Partition = part
@@ -123,14 +137,14 @@ func LoadStateWithStore(cfg *Config, store *StateStore) (*AppState, []storageOrp
 			}
 			part, ok := store.layout.partitionForRoleScope(role, scope)
 			if !ok {
-				return nil, nil, fmt.Errorf("the %s state file holds a %s correlation snapshot it does not own", role, scopeLabel(scope))
+				return nil, nil, false, fmt.Errorf("the %s state file holds a %s correlation snapshot it does not own", role, scopeLabel(scope))
 			}
 			state.setPartitionCorrelation(part, snap)
 		}
 		if row.risk != nil || row.snap != nil {
 			target, err := legacyPartitionTargetForRole(cfg, store.layout, role)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			row.part = target
 			legacy = append(legacy, row)
@@ -138,7 +152,7 @@ func LoadStateWithStore(cfg *Config, store *StateStore) (*AppState, []storageOrp
 	}
 
 	if !found {
-		return NewAppState(), nil, nil
+		return NewAppState(), nil, false, nil
 	}
 
 	moved := false
@@ -147,14 +161,16 @@ func LoadStateWithStore(cfg *Config, store *StateStore) (*AppState, []storageOrp
 		fmt.Printf("[state] Legacy unscoped portfolio risk row in the %s state file placed in the %s partition\n", row.role, partitionLabel(row.part))
 		moved = true
 	}
+	pending := false
 	if moved {
-		if store.readOnly() {
+		switch {
+		case store.readOnly():
 			fmt.Fprintln(os.Stderr, "[state] WARN: legacy portfolio risk placement was applied in memory only; the state files are open read-only")
-		} else {
-			for part, err := range store.SaveAll(state) {
-				if err != nil {
-					return nil, nil, fmt.Errorf("persist legacy portfolio partition placement (%s): %w", partitionLabel(part), err)
-				}
+		case deferPersist:
+			pending = true
+		default:
+			if err := persistLegacyPortfolioPlacement(state, store); err != nil {
+				return nil, nil, false, err
 			}
 		}
 	}
@@ -162,7 +178,7 @@ func LoadStateWithStore(cfg *Config, store *StateStore) (*AppState, []storageOrp
 		fmt.Printf("[state] Migrated %d legacy perps position multiplier(s) to 1\n", migrated)
 	}
 	fmt.Println("[state] Loaded from SQLite")
-	return state, orphans, nil
+	return state, orphans, pending, nil
 }
 
 func unionTimeMapInto(dst, src map[string]time.Time) {
