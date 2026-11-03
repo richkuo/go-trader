@@ -421,6 +421,9 @@ func ValidateState(state *AppState, strategies []StrategyConfig) {
 			}
 		}
 	}
+	for _, w := range legacyCashSettledUnderlyingWarnings(state, strategies) {
+		fmt.Printf("[WARN] state: %s\n", w)
+	}
 }
 
 func migrateLegacyPerpsPositionMultipliers(state *AppState, cfg *Config) int {

@@ -463,15 +463,13 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("deribit_call_assignment_settles_only_held_units", func(t *testing.T) {
+	t.Run("deribit_call_settles_in_cash_and_keeps_held_units", func(t *testing.T) {
 		for _, tc := range []struct {
-			name      string
-			held      float64
-			wantCash  float64
-			wantTrade int
+			name string
+			held float64
 		}{
-			{name: "uncovered_call_settles_intrinsic", wantCash: 0},
-			{name: "covered_call_delivers_held_units", held: 1, wantCash: 51000, wantTrade: 1},
+			{name: "no_held_units"},
+			{name: "held_units_stay", held: 1},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				sc := ocSC("deribit-opt-expiry", "deribit", "BTC")
@@ -485,23 +483,21 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 				s.OptionPositions["leg"].Underlying = "BTC"
 				logger, _ := ocLogger(sc.ID)
 				ocMarkCycle(s, ocPricer{expirySpot: 51000}, logger)
-				if !ocNear(s.Cash, tc.wantCash) {
-					t.Fatalf("cash = %v, want %v", s.Cash, tc.wantCash)
+				if !ocNear(s.Cash, 0) {
+					t.Fatalf("cash = %v, want 0 (1000 minus intrinsic 1000)", s.Cash)
 				}
 				env.saveAll()
-				if p := s.Positions["BTC"]; tc.held > 0 && p != nil {
-					t.Fatalf("covered units remain after assignment: %+v", p)
+				p := s.Positions["BTC"]
+				if tc.held > 0 && (p == nil || p.Quantity != tc.held || p.AvgCost != 40000) || tc.held == 0 && p != nil {
+					t.Fatalf("a cash-settled call changed the BTC position: %+v", p)
 				}
 				trades := ocStoredTrades(t, env, sc.ID)
-				if len(trades) != tc.wantTrade {
-					t.Fatalf("assignment trades = %+v, want %d", trades, tc.wantTrade)
-				}
-				if tc.wantTrade == 1 && (trades[0].tradeType != "assignment" || trades[0].qty != 1) {
-					t.Fatalf("assignment trade = %+v, want quantity 1", trades[0])
+				if len(trades) != 1 || trades[0].tradeType != "options" || trades[0].side != "buy" || trades[0].qty != 1 || trades[0].value != 1000 {
+					t.Fatalf("stored trades = %+v, want one option close row of 1 contract for $1000", trades)
 				}
 				ocMarkCycle(s, ocPricer{expirySpot: 51000}, logger)
-				if !ocNear(s.Cash, tc.wantCash) {
-					t.Fatalf("repeated mark cash = %v, want %v", s.Cash, tc.wantCash)
+				if !ocNear(s.Cash, 0) {
+					t.Fatalf("repeated mark cash = %v, want 0", s.Cash)
 				}
 			})
 		}

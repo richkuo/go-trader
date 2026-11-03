@@ -9,17 +9,37 @@ import (
 
 const optionPremiumUnitUnderlying = "underlying_unit"
 
+const (
+	optionSettlementCash     = "cash"
+	optionSettlementPhysical = "physical"
+)
+
 type optionContractSpec struct {
 	Platform            string
 	Multiplier          float64
 	RequireCoveredCalls bool
+	Settlement          string
 }
 
 var optionContractSpecs = map[string]optionContractSpec{
-	"robinhood": {Platform: "robinhood", Multiplier: 100, RequireCoveredCalls: true},
-	"deribit":   {Platform: "deribit", Multiplier: 1},
-	"okx":       {Platform: "okx", Multiplier: 1},
-	"ibkr":      {Platform: "ibkr", Multiplier: 1},
+	"robinhood": {Platform: "robinhood", Multiplier: 100, RequireCoveredCalls: true, Settlement: optionSettlementPhysical},
+	"deribit":   {Platform: "deribit", Multiplier: 1, Settlement: optionSettlementCash},
+	"okx":       {Platform: "okx", Multiplier: 1, Settlement: optionSettlementCash},
+	"ibkr":      {Platform: "ibkr", Multiplier: 1, Settlement: optionSettlementCash},
+}
+
+func optionSettlementStyle(platform string) (string, error) {
+	spec, ok := optionContractSpecs[platform]
+	if !ok {
+		return "", fmt.Errorf("no option settlement style for platform %q", platform)
+	}
+	switch spec.Settlement {
+	case optionSettlementCash, optionSettlementPhysical:
+		return spec.Settlement, nil
+	case "":
+		return "", fmt.Errorf("option settlement style for platform %q is not set", platform)
+	}
+	return "", fmt.Errorf("option settlement style %q for platform %q is not cash or physical", spec.Settlement, platform)
 }
 
 var optionContractUnderlyingMultipliers = map[string]map[string]float64{}
@@ -267,6 +287,47 @@ func heldLongUnderlyingShares(s *StrategyState, underlying string) float64 {
 		return 0
 	}
 	return pos.Quantity
+}
+
+func legacyCashSettledUnderlyingWarnings(state *AppState, strategies []StrategyConfig) []string {
+	if state == nil {
+		return nil
+	}
+	type hit struct {
+		id, platform, symbol string
+		pos                  *Position
+	}
+	var hits []hit
+	for _, sc := range strategies {
+		if sc.Type != "options" {
+			continue
+		}
+		c := sc
+		inferStrategyPlatform(&c)
+		if style, err := optionSettlementStyle(c.Platform); err != nil || style != optionSettlementCash {
+			continue
+		}
+		symbol := optionsConfigUnderlying(sc.Args)
+		s := state.Strategies[sc.ID]
+		if symbol == "" || s == nil {
+			continue
+		}
+		if pos := s.Positions[symbol]; pos != nil && pos.Side == "long" && pos.Quantity > 0 {
+			hits = append(hits, hit{id: sc.ID, platform: c.Platform, symbol: symbol, pos: pos})
+		}
+	}
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].id != hits[j].id {
+			return hits[i].id < hits[j].id
+		}
+		return hits[i].symbol < hits[j].symbol
+	})
+	out := make([]string, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, fmt.Sprintf("options strategy %s on %s settles expiry in cash but holds a legacy long %s quantity=%g cost_basis=%g from an earlier physical assignment; it is kept and not repriced, and a cycle with no %s price key values it at cost basis (#1917)",
+			h.id, h.platform, h.symbol, h.pos.Quantity, h.pos.AvgCost, h.symbol))
+	}
+	return out
 }
 
 func optionsResultContractError(platform string, result *OptionsResult) error {
