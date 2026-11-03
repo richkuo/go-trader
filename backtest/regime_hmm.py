@@ -59,16 +59,9 @@ def _logsumexp(v: np.ndarray) -> float:
     return m + float(np.log(np.exp(v - m).sum()))
 
 
-def forward_filter_labels(features: np.ndarray, model: dict):
-    features = np.asarray(features, dtype=float)
-    n = len(features)
+def _filter_decoder(model: dict) -> dict:
     states = list(model["states"])
     k = len(states)
-    mean = np.asarray(model["feature_means"], dtype=float)
-    std = np.asarray(model["feature_stds"], dtype=float)
-    em_mean = np.array([e["mean"] for e in model["emissions"]], dtype=float)
-    em_var = np.array([e["var"] for e in model["emissions"]], dtype=float)
-    log_init = np.log(np.asarray(model["init"], dtype=float) + 1e-300)
     A = np.asarray(model["transition"], dtype=float)
     stickiness = float(model.get(DECODE_STICKINESS_KEY) or 0.0)
     if stickiness < 0:
@@ -77,29 +70,84 @@ def forward_filter_labels(features: np.ndarray, model: dict):
         A = A + stickiness * np.eye(k)
         A = A / A.sum(1, keepdims=True)
     log_A = np.log(A + 1e-300)
-    w = int(model["filter_window"])
     min_dwell = int(model.get(DECODE_MIN_DWELL_KEY) or 0)
     if min_dwell < 0:
         raise ValueError(f"{DECODE_MIN_DWELL_KEY} must be >= 0")
+    return {
+        "states": states,
+        "mean": np.asarray(model["feature_means"], dtype=float),
+        "std": np.asarray(model["feature_stds"], dtype=float),
+        "em_mean": np.array([e["mean"] for e in model["emissions"]], dtype=float),
+        "em_var": np.array([e["var"] for e in model["emissions"]], dtype=float),
+        "log_init": np.log(np.asarray(model["init"], dtype=float) + 1e-300),
+        "log_A_T": np.ascontiguousarray(log_A.T),
+        "w": int(model["filter_window"]),
+        "min_dwell": min_dwell,
+    }
+
+
+def _row_log_emissions(features: np.ndarray, dec: dict, lo: int, hi: int) -> list:
+    mean, std, em_mean, em_var = dec["mean"], dec["std"], dec["em_mean"], dec["em_var"]
+    out = []
+    for t in range(lo, hi):
+        x = features[t]
+        if not np.isfinite(x).all():
+            out.append(None)
+            continue
+        z = (x - mean) / std
+        out.append(-0.5 * (np.log(2 * np.pi * em_var) + (z - em_mean) ** 2 / em_var).sum(1))
+    return out
+
+
+def _filtered_alpha(log_emit: list, base: int, i: int, dec: dict):
+    log_A_T = dec["log_A_T"]
+    alpha = dec["log_init"].copy()
+    seen = False
+    for t in range(max(0, i - dec["w"] + 1), i + 1):
+        M = alpha[None, :] + log_A_T
+        m = np.max(M, axis=1)
+        pred = m + np.log(np.exp(M - m[:, None]).sum(axis=1))
+        e = log_emit[t - base]
+        if e is None:
+            alpha = pred
+            continue
+        alpha = pred + e
+        alpha -= _logsumexp(alpha)
+        seen = True
+    return alpha, seen
+
+
+def last_label_feature_rows(model: dict) -> int | None:
+    dec = _filter_decoder(model)
+    return None if dec["min_dwell"] > 1 else max(1, dec["w"])
+
+
+def forward_filter_last_label(features: np.ndarray, model: dict):
+    features = np.asarray(features, dtype=float)
+    n = len(features)
+    dec = _filter_decoder(model)
+    if n == 0:
+        return None
+    if dec["min_dwell"] > 1:
+        return forward_filter_labels(features, model)[0][-1]
+    lo = max(0, n - dec["w"])
+    alpha, seen = _filtered_alpha(_row_log_emissions(features, dec, lo, n), lo, n - 1, dec)
+    return dec["states"][int(np.argmax(alpha))] if seen else ""
+
+
+def forward_filter_labels(features: np.ndarray, model: dict):
+    features = np.asarray(features, dtype=float)
+    n = len(features)
+    dec = _filter_decoder(model)
+    states = dec["states"]
+    min_dwell = dec["min_dwell"]
+    log_emit = _row_log_emissions(features, dec, 0, n)
 
     labels = np.array([""] * n, dtype=object)
     conf = np.zeros(n, dtype=float)
     held, pending, pending_run = None, None, 0
     for i in range(n):
-        lo = max(0, i - w + 1)
-        alpha = log_init.copy()
-        seen = False
-        for t in range(lo, i + 1):
-            x = features[t]
-            pred = np.array([_logsumexp(alpha + log_A[:, j]) for j in range(k)])
-            if not np.isfinite(x).all():
-                alpha = pred
-                continue
-            z = (x - mean) / std
-            log_emit = -0.5 * (np.log(2 * np.pi * em_var) + (z - em_mean) ** 2 / em_var).sum(1)
-            alpha = pred + log_emit
-            alpha -= _logsumexp(alpha)
-            seen = True
+        alpha, seen = _filtered_alpha(log_emit, 0, i, dec)
         if seen:
             j = int(np.argmax(alpha))
             if min_dwell > 1:

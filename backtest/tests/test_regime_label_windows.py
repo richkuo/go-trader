@@ -1,5 +1,6 @@
 """Live-config regime windows through the real --config single path."""
 
+import dataclasses
 import json
 import sys
 
@@ -404,10 +405,15 @@ def test_parity_refuses_a_regime_timeframe_it_does_not_label(tmp_path):
 
     with pytest.raises(ValueError, match=r"regime\.timeframe '4h'"):
         config_from_live_config(_parity_atr_config(tmp_path, "4h"), "spot-atr")
-    for regime_timeframe in (None, "1h"):
-        cfg = config_from_live_config(
-            _parity_atr_config(tmp_path, regime_timeframe), "spot-atr")
+    cfgs = {tf: config_from_live_config(_parity_atr_config(tmp_path, tf), "spot-atr")
+            for tf in (None, "1h")}
+    for cfg in cfgs.values():
         assert cfg.regime_label_plan["windows"]["atr"] == "fast"
-        frame = compute_parity_frame(_parity_frame_df(320), cfg=cfg,
-                                     window=cfg.regime_label_plan["limit"] + 5)
-        assert len(frame) > 0
+    assert cfgs["1h"].regime_label_plan["timeframe"] == "1h"
+    assert dataclasses.replace(
+        cfgs["1h"], regime_timeframe=None,
+        regime_label_plan={**cfgs["1h"].regime_label_plan, "timeframe": ""}) == cfgs[None]
+    cfg = cfgs["1h"]
+    frame = compute_parity_frame(_parity_frame_df(320), cfg=cfg,
+                                 window=cfg.regime_label_plan["limit"] + 5)
+    assert len(frame) > 0

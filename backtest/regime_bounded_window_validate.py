@@ -22,7 +22,7 @@ from regime import (
 )
 from regime_calibrate import gate_verdict
 from regime_diagnostics import DEFAULT_PERIOD, score_labels
-from regime_hmm import forward_filter_labels
+from regime_hmm import forward_filter_labels, forward_filter_last_label, last_label_feature_rows
 
 DEFAULT_LOOKBACK = 200
 DEFAULT_AGREEMENT_THRESHOLD = 0.95
@@ -113,17 +113,17 @@ def bounded_window_views(df: pd.DataFrame, model, period: int, th: dict,
     hr_labs: list = []
     n = len(df)
     want_model = want_model and model is not None
+    feat_tail = last_label_feature_rows(model) if want_model else 1
     for i in range(eval_start, n):
         lo = max(0, i - lookback + 1)
         w = df.iloc[lo:i + 1]
-        feat_df = composite_feature_matrix(w, period, th)
+        feat_df = composite_feature_matrix(w, period, th, tail=feat_tail)
         feats_rows.append(feat_df.iloc[-1].to_numpy() if len(feat_df) else np.full(4, np.nan))
         if want_handrule:
-            hr = compute_regime_composite(w, period=period, thresholds=th)["regime"]
+            hr = compute_regime_composite(w, period=period, thresholds=th, tail=1)["regime"]
             hr_labs.append(hr.iloc[-1] if len(hr) else None)
         if want_model:
-            seq, _ = forward_filter_labels(feat_df.to_numpy(), model)
-            model_labs.append(seq[-1] if len(seq) else None)
+            model_labs.append(forward_filter_last_label(feat_df.to_numpy(), model))
     feats = np.vstack(feats_rows) if feats_rows else np.empty((0, 4))
     model_arr = np.array(model_labs, dtype=object) if want_model else None
     hr_arr = np.array(hr_labs, dtype=object) if want_handrule else None
