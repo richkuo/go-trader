@@ -19,6 +19,9 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	if err := validateHotReloadStateCompatible(cfg, next, state); err != nil {
 		return nil, err
 	}
+	if errs := regimeSideReloadAdmissionErrors(cfg, next, next.regimeSideEvidence, time.Now().UTC()); len(errs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
+	}
 
 	var changes []string
 	addChange := func(format string, args ...interface{}) {
@@ -180,6 +183,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		if sc.InvertSignal != ns.InvertSignal {
 			addChange("strategy[%s].invert_signal: %t -> %t", sc.ID, sc.InvertSignal, ns.InvertSignal)
 			sc.InvertSignal = ns.InvertSignal
+		}
+		if sc.RegimeSide != ns.RegimeSide {
+			addChange("strategy[%s].regime_side: %t -> %t", sc.ID, sc.RegimeSide, ns.RegimeSide)
+			sc.RegimeSide = ns.RegimeSide
+		}
+		if sc.AllowUncertifiedRegimeSide != ns.AllowUncertifiedRegimeSide {
+			addChange("strategy[%s].allow_uncertified_regime_side: %t -> %t", sc.ID, sc.AllowUncertifiedRegimeSide, ns.AllowUncertifiedRegimeSide)
+			sc.AllowUncertifiedRegimeSide = ns.AllowUncertifiedRegimeSide
 		}
 		if !reflect.DeepEqual(sc.OpenStrategy, ns.OpenStrategy) {
 			addChange("strategy[%s].open_strategy: %s -> %s", sc.ID, formatStrategyRef(sc.OpenStrategy), formatStrategyRef(ns.OpenStrategy))
@@ -591,6 +602,14 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 			errs = append(errs, fmt.Sprintf("strategy[%s] direction changed with open positions (%q -> %q; flatten first or restart after close)",
 				sc.ID, EffectiveDirection(sc), EffectiveDirection(ns)))
 		}
+		if sc.RegimeSide != ns.RegimeSide && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] regime_side changed with open positions (%t -> %t; flatten first or restart after close)",
+				sc.ID, sc.RegimeSide, ns.RegimeSide))
+		}
+		if sc.AllowUncertifiedRegimeSide != ns.AllowUncertifiedRegimeSide && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] allow_uncertified_regime_side changed with open positions (%t -> %t; flatten first or restart after close)",
+				sc.ID, sc.AllowUncertifiedRegimeSide, ns.AllowUncertifiedRegimeSide))
+		}
 		if sc.InvertSignal != ns.InvertSignal && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] invert_signal changed with open positions (%t -> %t; flatten first or restart after close)",
 				sc.ID, sc.InvertSignal, ns.InvertSignal))
@@ -790,6 +809,8 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.Direction = ""
 	sc.AllowShorts = false
 	sc.InvertSignal = false
+	sc.RegimeSide = false
+	sc.AllowUncertifiedRegimeSide = false
 	sc.RegimeDirectionalPolicy = nil
 	sc.RegimeProfileAllocation = nil
 	sc.RegimeGateWindow = ""

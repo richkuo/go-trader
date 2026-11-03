@@ -291,7 +291,10 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             regime_label_plan: Optional[dict] = None,
             regime_gate_on_failure: str = "open",
             funding_mode: str = "charge",
-            warmup_bars: int = 0) -> Optional[dict]:
+            warmup_bars: int = 0,
+            regime_side: bool = False,
+            allow_uncertified_regime_side: bool = False,
+            regime_side_certification: Optional[dict] = None) -> Optional[dict]:
     from atr import ensure_atr_indicator
     import pandas as pd
     from data_fetcher import load_cached_data
@@ -521,7 +524,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
 
     use_regime = (regime_enabled or bool(allowed_regimes)
                   or bool(regime_windows_spec)
-                  or bool(regime_directional_policy))
+                  or bool(regime_directional_policy)
+                  or bool(regime_side))
 
     indicator_frame = None
     if manifest_window is not None or warmup_start is not None:
@@ -566,6 +570,10 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     if regime_directional_policy:
         bt_kwargs["regime_directional_policy"] = regime_directional_policy
         bt_kwargs["regime_directional_certified"] = True
+    if regime_side:
+        bt_kwargs["regime_side"] = True
+        bt_kwargs["allow_uncertified_regime_side"] = bool(allow_uncertified_regime_side)
+        bt_kwargs["regime_side_certification"] = regime_side_certification or {"context": "paper"}
     for key, value in (stop_kwargs or {}).items():
         if key in ("stop_loss_atr_mult", "trailing_stop_atr_mult"):
             if value != bt_kwargs[key]:
@@ -846,6 +854,8 @@ def validate_candidate(candidate: dict) -> dict:
             candidate["regime_directional_policy"] = {
                 "trend_regime": normalized_rdp}
 
+    _validate_candidate_regime_side(candidate, direction, close_refs, ctype)
+
     rp = candidate.get("regime_period")
     rt = candidate.get("regime_adx_threshold")
     if rp is not None or rt is not None:
@@ -855,11 +865,13 @@ def validate_candidate(candidate: dict) -> dict:
                 "regime_windows_spec; the windows spec owns the gate's "
                 "classifier and lookback — drop the legacy fields")
         if not (candidate.get("allowed_regimes")
-                or candidate.get("regime_directional_policy")):
+                or candidate.get("regime_directional_policy")
+                or candidate.get("regime_side")):
             raise ValueError(
                 "candidate sets regime_period/regime_adx_threshold without a "
-                "regime gate consumer (allowed_regimes or "
-                "regime_directional_policy) — they would be a silent no-op")
+                "regime gate consumer (allowed_regimes, "
+                "regime_directional_policy or regime_side) — they would be a "
+                "silent no-op")
         if rp is not None and (isinstance(rp, bool)
                                or not isinstance(rp, int) or rp < 2):
             raise ValueError(
@@ -871,6 +883,45 @@ def validate_candidate(candidate: dict) -> dict:
                 "candidate.regime_adx_threshold must be a positive number, "
                 f"got {rt!r}")
     return candidate
+
+
+def _validate_candidate_regime_side(candidate: dict, direction: str, close_refs, ctype: str) -> None:
+    for key in ("regime_side", "allow_uncertified_regime_side"):
+        if key in candidate and not isinstance(candidate[key], bool):
+            raise ValueError(f"candidate.{key} must be a JSON boolean")
+    if not candidate.get("regime_side"):
+        if candidate.get("allow_uncertified_regime_side"):
+            raise ValueError("candidate.allow_uncertified_regime_side requires regime_side: true")
+        if candidate.get("regime_side_certification") is not None:
+            raise ValueError("candidate.regime_side_certification requires regime_side: true")
+        return
+    if ctype != "perps":
+        raise ValueError(f"candidate.regime_side is perps-only, got type={ctype!r}")
+    conflicts = [k for k in ("invert_signal", "regime_directional_policy", "profile_allocation",
+                             "regime_window_divergence", "closed_bar_decisions")
+                 if candidate.get(k)]
+    if conflicts:
+        raise ValueError("candidate.regime_side cannot be combined with " + ", ".join(conflicts))
+    names = [str((r or {}).get("name") or "").strip() for r in (close_refs or [])]
+    if not names or not all(names):
+        raise ValueError(
+            "candidate.regime_side requires close_strategies separate from the open "
+            "strategy (open-as-close fallback is refused)")
+    if str(candidate.get("name") or "").strip() in names:
+        raise ValueError("candidate.regime_side close strategy is the open strategy")
+    plan = candidate.get("regime_label_windows")
+    if not plan:
+        raise ValueError(
+            "candidate.regime_side needs regime_label_windows (the resolved window plan); "
+            "the side is read from the directional window column")
+    from backtester import normalize_regime_side_certification, regime_side_for_label
+    labels = (plan.get("vocabularies") or {}).get("directional")
+    if labels is not None and not any(regime_side_for_label(l) != "none" for l in labels):
+        raise ValueError("candidate.regime_side directional window has no side-selecting label")
+    cert = candidate.get("regime_side_certification")
+    normalize_regime_side_certification(cert if cert is not None else {"context": "paper"})
+    if direction not in ("long", "short", "both"):
+        raise ValueError(f"candidate.regime_side needs a base direction, got {direction!r}")
 
 
 def candidate_stop_kwargs(candidate: dict) -> Optional[dict]:
@@ -918,6 +969,9 @@ def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
         regime_gate_on_failure=candidate.get("regime_gate_on_failure") or "open",
         funding_mode=funding_mode,
         warmup_bars=warmup_bars,
+        regime_side=bool(candidate.get("regime_side")),
+        allow_uncertified_regime_side=bool(candidate.get("allow_uncertified_regime_side")),
+        regime_side_certification=candidate.get("regime_side_certification"),
     )
 
 

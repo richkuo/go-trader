@@ -453,6 +453,7 @@ type Trade struct {
 	Regime               string `json:"regime,omitempty"`
 	RegimeDivergenceNote string `json:"-"`
 	RegimeProfileNote    string `json:"-"`
+	RegimeSideNote       string `json:"-"`
 
 	EntryATR          float64 `json:"entry_atr,omitempty"`
 	StopLossOID       int64   `json:"stop_loss_oid,omitempty"`

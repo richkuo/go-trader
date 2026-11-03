@@ -336,6 +336,7 @@ type Config struct {
 	migrationBaseVersionSet bool
 	noEdgeMigration         *noEdgeMigrationReport
 	quoteLoad               *quoteLoadAdmission
+	regimeSideEvidence      *regimeSideEvidence
 }
 
 func (c *Config) NoEdgeMigrationReport() *noEdgeMigrationReport {
@@ -666,6 +667,8 @@ type StrategyConfig struct {
 	RestingTPTradeThrough       bool                     `json:"resting_tp_trade_through,omitempty"`
 	ATRMethod                   string                   `json:"atr_method,omitempty"`
 	InvertSignal                bool                     `json:"invert_signal,omitempty"`
+	RegimeSide                  bool                     `json:"regime_side,omitempty"`
+	AllowUncertifiedRegimeSide  bool                     `json:"allow_uncertified_regime_side,omitempty"`
 	AllowShorts                 bool                     `json:"allow_shorts,omitempty"`
 	Direction                   string                   `json:"direction,omitempty"`
 	Leverage                    float64                  `json:"leverage,omitempty"`
@@ -966,16 +969,28 @@ func LoadConfigReadOnly(path string) (*Config, error) {
 	return loadConfig(path, false, true)
 }
 
+func LoadConfigForProbeAdmission(path string, enforceRegimeSide bool) (*Config, error) {
+	return loadConfigOpts(path, true, true, configLoadOptions{enforceRegimeSideAdmission: enforceRegimeSide})
+}
+
 func LoadConfigForLedgerExport(data []byte) (*Config, error) {
-	return loadConfigData("", append([]byte(nil), data...), true, true)
+	return loadConfigDataOpts("", append([]byte(nil), data...), true, true, configLoadOptions{skipRegimeSideArtifact: true})
+}
+
+func LoadConfigWithRegimeSideEvidence(path string, ev *regimeSideEvidence) (*Config, error) {
+	return loadConfigOpts(path, false, false, configLoadOptions{regimeSideEvidence: ev})
 }
 
 func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Config, error) {
+	return loadConfigOpts(path, skipLiveCredentialChecks, readOnly, configLoadOptions{})
+}
+
+func loadConfigOpts(path string, skipLiveCredentialChecks bool, readOnly bool, opts configLoadOptions) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	cfg, err := loadConfigData(path, data, skipLiveCredentialChecks, readOnly)
+	cfg, err := loadConfigDataOpts(path, data, skipLiveCredentialChecks, readOnly, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -1308,6 +1323,18 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 
 	if err := validateConfig(&cfg, skipLiveCredentialChecks); err != nil {
 		return nil, err
+	}
+	if !opts.skipRegimeSideArtifact && configUsesRegimeSide(&cfg) {
+		ev := opts.regimeSideEvidence
+		if ev == nil {
+			ev = readRegimeSideEvidence(directionalCertPath())
+		}
+		if opts.enforceRegimeSideAdmission {
+			if errs := regimeSideAdmissionErrors(&cfg, ev, time.Now().UTC()); len(errs) > 0 {
+				return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
+			}
+		}
+		cfg.regimeSideEvidence = ev
 	}
 	warnHyperliquidTieredATRSourceLive(&cfg)
 	return &cfg, nil
@@ -1868,6 +1895,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	errs = append(errs, validateStorageIdentityConfig(cfg)...)
 
 	errs = append(errs, closedBarDecisionsConfigErrors(cfg)...)
+
+	errs = append(errs, regimeSideConfigErrors(cfg)...)
 
 	errs = append(errs, robinhoodTimeframeConfigErrors(cfg)...)
 

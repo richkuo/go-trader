@@ -611,6 +611,7 @@ run_recovery_probe() {
         echo "[update] recovery: forced restore_probe failure" >&2
         return 1
     fi
+    local -a admission_args=(-E GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off) admission_env=(GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off)
     if [[ -n "$egress_deployment" ]]; then
         local ep_owner="$probe_owner" line
         [[ -n "$ep_owner" ]] || ep_owner=$(update_unit_owner "$service_unit" 2>/dev/null || true)
@@ -619,14 +620,14 @@ run_recovery_probe() {
         while IFS= read -r line; do
             [[ -n "$line" ]] && ep_args+=("$line")
         done < <(update_egress_probe_args "$service_unit" "$egress_deployment")
-        update_probe_as_owner "$repo_root" "$ep_owner" "$repo_root/go-trader" scheduler/config.json "${ep_args[@]}"
+        update_probe_as_owner "$repo_root" "$ep_owner" "$repo_root/go-trader" scheduler/config.json "${ep_args[@]}" "${admission_args[@]}"
         return $?
     fi
     if [[ -n "$probe_owner" ]]; then
-        update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader" scheduler/config.json
+        update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader" scheduler/config.json "${admission_args[@]}"
         return $?
     fi
-    ./go-trader probe
+    env "${admission_env[@]}" ./go-trader probe
 }
 
 verify_recovery_health() {
@@ -1491,6 +1492,14 @@ end_phase
 begin_phase probe
 update_record_intent probe
 give_back_tree_owner "before the probe"
+probe_cert_args=()
+probe_cert_env=()
+probe_cert_resolved=$(update_unit_directional_cert_path "$service_unit") || fail "could not resolve GO_TRADER_DIRECTIONAL_CERT_PATH from $service_unit for the probe"
+if [[ "$probe_cert_resolved" == SET\ * ]]; then
+    probe_cert_args=(-E "GO_TRADER_DIRECTIONAL_CERT_PATH=${probe_cert_resolved#SET }")
+    probe_cert_env=("GO_TRADER_DIRECTIONAL_CERT_PATH=${probe_cert_resolved#SET }")
+    echo "[update] probe: GO_TRADER_DIRECTIONAL_CERT_PATH=${probe_cert_resolved#SET } from $service_unit, so regime_side admission reads the artifact the service reads"
+fi
 if [[ -n "$egress_deployment" ]]; then
     egress_probe_owner="$probe_owner"
     [[ -n "$egress_probe_owner" ]] || egress_probe_owner=$(update_unit_owner "$service_unit") || fail "could not resolve the user of $service_unit for the probe"
@@ -1500,14 +1509,14 @@ if [[ -n "$egress_deployment" ]]; then
         [[ -n "$line" ]] && egress_probe_args+=("$line")
     done < <(update_egress_probe_args "$service_unit" "$egress_deployment")
     probe_ok=0
-    update_probe_as_owner "$repo_root" "$egress_probe_owner" "$repo_root/go-trader.new" scheduler/config.json "${egress_probe_args[@]}" && probe_ok=1
+    update_probe_as_owner "$repo_root" "$egress_probe_owner" "$repo_root/go-trader.new" scheduler/config.json "${egress_probe_args[@]}" ${probe_cert_args[@]+"${probe_cert_args[@]}"} && probe_ok=1
 elif [[ -n "$probe_owner" ]]; then
     echo "[update] probe: runs as $(id -nu "${probe_owner%%:*}" 2>/dev/null || printf 'uid %s' "${probe_owner%%:*}") under the unit sandbox, on a private copy of scheduler/config.json, because that account can change the config and the scripts it names"
     probe_ok=0
-    update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader.new" scheduler/config.json && probe_ok=1
+    update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader.new" scheduler/config.json ${probe_cert_args[@]+"${probe_cert_args[@]}"} && probe_ok=1
 else
     probe_ok=0
-    ./go-trader.new probe && probe_ok=1
+    env -u GO_TRADER_PROBE_REGIME_SIDE_ADMISSION ${probe_cert_env[@]+"${probe_cert_env[@]}"} ./go-trader.new probe && probe_ok=1
 fi
 update_pause_if_requested probe
 if update_should_fail_at probe; then

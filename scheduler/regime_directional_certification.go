@@ -310,7 +310,8 @@ func directionalCertStartupLinesNeedingOwnerDM(lines []string) []string {
 	for _, line := range lines {
 		if strings.Contains(line, "DEFAULT-OFF") ||
 			strings.Contains(line, "EXPIRED") ||
-			strings.Contains(line, "policy inert") {
+			strings.Contains(line, "policy inert") ||
+			len(regimeSideStartupLinesNeedingOwnerDM([]string{line})) > 0 {
 			out = append(out, line)
 		}
 	}

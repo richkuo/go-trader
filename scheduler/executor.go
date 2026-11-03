@@ -69,6 +69,7 @@ type HyperliquidResult struct {
 	SizedClosePreSend               hlCloseView            `json:"-"`
 	PaperPartialCloseHold           string                 `json:"-"`
 	EntrySubmitGate                 hlEntrySubmitGate      `json:"-"`
+	RegimeSide                      regimeSideResolution   `json:"-"`
 }
 
 type hlEntryOrderTags struct {

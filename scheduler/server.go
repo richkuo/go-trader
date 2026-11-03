@@ -351,6 +351,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		DirectionalCertificationCell   string                     `json:"directional_certification_cell,omitempty"`
 		RegimeDivergence               *RegimeDivergenceState     `json:"regime_divergence,omitempty"`
 		RegimeProfile                  *RegimeProfileState        `json:"regime_profile,omitempty"`
+		RegimeSide                     *regimeSideResolution      `json:"regime_side,omitempty"`
 		Paused                         bool                       `json:"paused,omitempty"`
 		Hedge                          *HedgeStatus               `json:"hedge,omitempty"`
 		Partition                      string                     `json:"partition,omitempty"`
@@ -517,6 +518,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			DirectionalCertificationCell:   dirView.CertCell,
 			RegimeDivergence:               s.RegimeDivergence,
 			RegimeProfile:                  s.RegimeProfile,
+			RegimeSide:                     regimeSideStatusForState(sc, s, ss.regime),
 			Paused:                         sc.Paused,
 			Hedge:                          buildHedgeStatus(sc, s),
 			Partition:                      partitionText,

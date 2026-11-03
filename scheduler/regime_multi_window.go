@@ -593,7 +593,7 @@ func regimeDependencyHold(sc StrategyConfig, current, decision RegimePayload, rc
 		if sc.RegimeProfileAllocation.IsConfigured() {
 			deps = append(deps, dependency{"profile", sc.RegimeProfileAllocation.Window, current, true})
 		}
-		if sc.RegimeDirectionalPolicy.IsConfigured() {
+		if sc.RegimeDirectionalPolicy.IsConfigured() || sc.RegimeSide {
 			deps = append(deps, dependency{"directional", resolveStrategyRegimeWindow(sc, "directional", rc), current, true})
 		}
 	}

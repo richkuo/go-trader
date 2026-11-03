@@ -217,6 +217,182 @@ def _signal_from_open_action(action: str) -> int:
     return 0
 
 
+REGIME_SIDE_LONG_LABELS = frozenset((
+    "trending_up_clean", "trending_up_choppy", "ranging_directional_up", "trending_up",
+))
+REGIME_SIDE_SHORT_LABELS = frozenset((
+    "trending_down_clean", "trending_down_choppy", "ranging_directional_down", "trending_down",
+))
+REGIME_SIDE_EXCLUSIVE_FIELDS = (
+    "regime_directional_policy", "regime_window_divergence", "regime_profile_allocation",
+    "invert_signal", "closed_bar_decisions",
+)
+REGIME_SIDE_CONTEXTS = ("paper", "live")
+REGIME_SIDE_HOLD_REASONS = (
+    "position_open", "zero_trigger", "window_unavailable", "window_warming", "no_side_label",
+    "htf_filter", "base_direction", "uncertified", "regime_gate", "entry_blocked",
+)
+
+
+def regime_side_for_label(label) -> str:
+    text = str(label or "").strip()
+    if text in REGIME_SIDE_LONG_LABELS:
+        return "long"
+    if text in REGIME_SIDE_SHORT_LABELS:
+        return "short"
+    return "none"
+
+
+def _regime_side_active(value) -> bool:
+    if isinstance(value, dict):
+        return len(value) > 0
+    return value not in (None, False, "", 0)
+
+
+def regime_side_config_errors(strategy: Mapping, regime: Optional[Mapping], *,
+                              directional_labels=None) -> list:
+    sc = strategy or {}
+    errs = []
+    for key in ("regime_side", "allow_uncertified_regime_side"):
+        if key in sc and not isinstance(sc[key], bool):
+            errs.append(f"{key} must be a JSON boolean")
+    if errs:
+        return errs
+    if not sc.get("regime_side"):
+        if sc.get("allow_uncertified_regime_side"):
+            errs.append("allow_uncertified_regime_side requires regime_side: true")
+        return errs
+    platform = str(sc.get("platform") or "").strip().lower()
+    stype = str(sc.get("type") or "").strip().lower()
+    if platform != "hyperliquid" or stype != "perps":
+        errs.append(f"regime_side is only supported for Hyperliquid perps strategies "
+                    f"(got platform={platform!r} type={stype!r})")
+    if not (regime or {}).get("enabled"):
+        errs.append("regime_side requires regime.enabled=true")
+    elif directional_labels is not None and not any(
+            regime_side_for_label(label) != "none" for label in directional_labels):
+        errs.append("regime_side directional window has no label that selects a side "
+                    f"(labels: {', '.join(sorted(directional_labels))})")
+    for field in REGIME_SIDE_EXCLUSIVE_FIELDS:
+        if _regime_side_active(sc.get(field)):
+            errs.append(f"regime_side cannot be combined with {field}")
+    close_ref = sc.get("close_strategy")
+    close_name = str((close_ref or {}).get("name") or "").strip() if isinstance(close_ref, dict) else ""
+    open_ref = sc.get("open_strategy")
+    open_name = str((open_ref or {}).get("name") or "").strip() if isinstance(open_ref, dict) else ""
+    if not open_name:
+        args = sc.get("args") or []
+        open_name = str(args[0] or "").strip() if isinstance(args, list) and args else ""
+    if not close_name:
+        errs.append("regime_side requires an explicit close_strategy separate from the open "
+                    "strategy (open-as-close fallback is refused)")
+    elif close_name == open_name:
+        errs.append(f"regime_side close_strategy {close_name!r} is the effective open strategy; "
+                    "set a separate close strategy")
+    return errs
+
+
+def regime_side_evidence_hold(certification: Mapping, allow_uncertified: bool,
+                              label: str, side: str, when) -> str:
+    if certification["context"] == "paper" or allow_uncertified:
+        return ""
+    ts = pd.Timestamp(when)
+    ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+    if certification["active_from"] is None or ts < certification["active_from"]:
+        return "uncertified"
+    if certification["expires_at"] is not None and ts >= certification["expires_at"]:
+        return "uncertified"
+    if certification["states"].get(label) != side:
+        return "uncertified"
+    return ""
+
+
+def regime_side_request(*, flat: bool, label: str, ready: bool, direction: Optional[str],
+                        certification: Mapping, allow_uncertified: bool, when) -> tuple:
+    if not flat:
+        return "none", "position_open"
+    if not ready:
+        return "none", ("window_unavailable" if not str(label or "").strip() else "window_warming")
+    side = regime_side_for_label(label)
+    if side == "none":
+        return "none", "no_side_label"
+    if not (direction == "both" or direction == side):
+        return "none", "base_direction"
+    reason = regime_side_evidence_hold(certification, allow_uncertified, label, side, when)
+    if reason:
+        return "none", reason
+    return side, ""
+
+
+def regime_side_decision(trigger: int, *, flat: bool, label: str, ready: bool,
+                         direction: Optional[str], certification: Mapping,
+                         allow_uncertified: bool, when, htf_trend: int = 0) -> dict:
+    requested, reason = regime_side_request(
+        flat=flat, label=label, ready=ready, direction=direction,
+        certification=certification, allow_uncertified=allow_uncertified, when=when)
+    mapped = 0
+    if flat and int(trigger) == 0:
+        reason = "zero_trigger"
+    elif requested != "none":
+        mapped = 1 if requested == "long" else -1
+        if htf_trend != 0 and htf_trend != mapped:
+            mapped = 0
+            reason = "htf_filter"
+    return {"trigger": int(trigger), "label": str(label or ""), "ready": bool(ready),
+            "requested_side": requested, "mapped": mapped, "reason": reason,
+            "htf_trend": int(htf_trend)}
+
+
+def _cert_instant(value, label: str):
+    if value is None or value == "":
+        return None
+    try:
+        ts = pd.Timestamp(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} is not a timestamp: {value!r}") from exc
+    if ts is pd.NaT:
+        raise ValueError(f"{label} is not a timestamp: {value!r}")
+    if ts.tzinfo is None:
+        raise ValueError(f"{label} needs a timezone: {value!r}")
+    return ts.tz_convert("UTC")
+
+
+def normalize_regime_side_certification(cert) -> dict:
+    if not isinstance(cert, Mapping):
+        raise ValueError(
+            "regime_side needs an explicit certification context: "
+            "{'context': 'paper'} for paper research or {'context': 'live', 'states': ..., "
+            "'active_from': ..., 'expires_at': ...} for a live-equivalence run")
+    unknown = sorted(set(cert) - {"context", "states", "active_from", "expires_at", "cell", "source"})
+    if unknown:
+        raise ValueError("unknown regime_side certification keys: " + ", ".join(unknown))
+    context = str(cert.get("context") or "").strip().lower()
+    if context not in REGIME_SIDE_CONTEXTS:
+        raise ValueError(f"regime_side certification context must be one of "
+                         f"{', '.join(REGIME_SIDE_CONTEXTS)}, got {cert.get('context')!r}")
+    out = {"context": context, "cell": str(cert.get("cell") or ""), "source": str(cert.get("source") or "")}
+    if context == "paper":
+        for key in ("states", "active_from", "expires_at"):
+            if cert.get(key) not in (None, "", {}):
+                raise ValueError(f"paper regime_side certification carries {key}; paper needs none")
+        out.update(states={}, active_from=None, expires_at=None)
+        return out
+    states = cert.get("states")
+    if states is None:
+        states = {}
+    if not isinstance(states, Mapping):
+        raise ValueError("regime_side certification states must be an object")
+    clean = {}
+    for label, side in states.items():
+        if side not in ("long", "short"):
+            raise ValueError(f"regime_side certification states[{label!r}] must be 'long' or 'short'")
+        clean[str(label)] = side
+    out["states"] = clean
+    out["active_from"] = _cert_instant(cert.get("active_from"), "regime_side certification active_from")
+    out["expires_at"] = _cert_instant(cert.get("expires_at"), "regime_side certification expires_at")
+    return out
+
+
 def _load_post_tp_sl():
     global _post_tp_sl_module
     if _post_tp_sl_module is not None:
@@ -2440,7 +2616,11 @@ class Backtester:
                  regime_feature_labels: Optional[dict] = None,
                  regime_label_windows=None,
                  resting_tp_trade_through: bool = False,
-                 maker_fee_pct: Optional[float] = None):
+                 maker_fee_pct: Optional[float] = None,
+                 regime_side: bool = False,
+                 allow_uncertified_regime_side: bool = False,
+                 regime_side_certification: Optional[dict] = None,
+                 htf_filter: bool = False):
         # regime_label_windows is the loader's plan. Callers splat
         # load_strategy_config into this constructor; the columns themselves
         # arrive only through regime_label_columns.
@@ -2663,6 +2843,59 @@ class Backtester:
                 "regime_directional_policy requires regime_enabled=True"
             )
         self._profile_alloc = _parse_profile_allocation(profile_allocation)
+        for key, value in (("regime_side", regime_side),
+                           ("allow_uncertified_regime_side", allow_uncertified_regime_side),
+                           ("htf_filter", htf_filter)):
+            if not isinstance(value, bool):
+                raise ValueError(f"{key} must be a boolean, got {value!r}")
+        self.regime_side = regime_side
+        self.allow_uncertified_regime_side = allow_uncertified_regime_side
+        self.htf_filter = htf_filter
+        self._regime_side_certification = None
+        if allow_uncertified_regime_side and not regime_side:
+            raise ValueError("allow_uncertified_regime_side requires regime_side=True")
+        if htf_filter and not regime_side:
+            raise ValueError(
+                "htf_filter on the engine filters the regime_side mapped side only; other "
+                "modes apply the higher-timeframe filter to the signal before the engine")
+        if regime_side_certification is not None and not regime_side:
+            raise ValueError("regime_side_certification requires regime_side=True")
+        if regime_side:
+            conflicts = [name for name, active in (
+                ("invert_signal", self.invert_signal),
+                ("regime_directional_policy", bool(regime_directional_policy)),
+                ("regime_profile_allocation", self._profile_alloc is not None),
+            ) if active]
+            if conflicts:
+                raise ValueError("regime_side cannot be combined with " + ", ".join(conflicts))
+            if not self.regime_enabled:
+                raise ValueError("regime_side requires regime_enabled=True")
+            if str(strategy_type or "").strip().lower() != "perps":
+                raise ValueError(f"regime_side is perps-only, got strategy_type={strategy_type!r}")
+            if self.direction not in ("long", "short", "both"):
+                raise ValueError(
+                    "regime_side needs an explicit base direction (long, short or both); "
+                    f"got {direction!r}")
+            open_name = str((self.open_strategy or {}).get("name") or "").strip()
+            if not self.close_strategies:
+                raise ValueError(
+                    "regime_side requires an explicit close strategy separate from the open "
+                    "strategy (open-as-close fallback is refused)")
+            if open_name and open_name in self.close_strategies:
+                raise ValueError(
+                    f"regime_side close strategy {open_name!r} is the effective open strategy")
+            if not (self._regime_label_columns or {}).get("directional"):
+                raise ValueError(
+                    "regime_side needs a directional regime label column; the side is not "
+                    "read from the gate or primary column")
+            if self._regime_directional_labels is not None and not any(
+                    regime_side_for_label(label) != "none"
+                    for label in self._regime_directional_labels):
+                raise ValueError(
+                    "regime_side directional window vocabulary has no side-selecting label: "
+                    + ", ".join(sorted(self._regime_directional_labels)))
+            self._regime_side_certification = normalize_regime_side_certification(
+                regime_side_certification)
         self.stop_loss_atr_mult_regime = (
             dict(stop_loss_atr_mult_regime) if stop_loss_atr_mult_regime else None
         )
@@ -2895,6 +3128,7 @@ class Backtester:
         return bool(
             self.allowed_regimes
             or self.regime_directional_policy is not None
+            or self.regime_side
             or self._stop_owner in STOP_OWNERS_NEEDING_LABEL
             or self.stop_loss_atr_mult_regime is not None
             or self.trailing_stop_atr_mult_regime is not None
@@ -2930,6 +3164,33 @@ class Backtester:
             "directional": self._stamp_directional,
             "atr": self._stamp_atr,
         })
+
+    def _regime_side_step(self, trigger: int, flat: bool, label: str, ready: bool,
+                          htf_trend: int, when) -> dict:
+        return regime_side_decision(
+            trigger, flat=flat, label=label, ready=ready, direction=self.direction,
+            certification=self._regime_side_certification,
+            allow_uncertified=self.allow_uncertified_regime_side,
+            when=when, htf_trend=htf_trend if self.htf_filter else 0)
+
+    @staticmethod
+    def _regime_side_note(step: dict, idx, decision_idx, entered: bool, regime_blocked: bool,
+                          trace: list, counts: dict) -> None:
+        if step["mapped"] != 0 and entered:
+            outcome = "opened_long" if step["mapped"] > 0 else "opened_short"
+        else:
+            reason = step["reason"]
+            if step["mapped"] != 0:
+                reason = "regime_gate" if regime_blocked else "entry_blocked"
+            outcome = "held:" + (reason or "none")
+        counts[outcome] = counts.get(outcome, 0) + 1
+        if step["trigger"] != 0:
+            trace.append({
+                "bar": str(idx), "decision_bar": None if decision_idx is None else str(decision_idx),
+                "trigger": step["trigger"], "label": step["label"], "ready": step["ready"],
+                "requested_side": step["requested_side"], "htf_trend": step["htf_trend"],
+                "outcome": outcome,
+            })
 
     def _effective_directional_entry(
         self, current_regime: str, position_regime: str, position_qty: float,
@@ -3130,7 +3391,7 @@ class Backtester:
                     f"signal column must be in {{-1, 0, 1}} — got "
                     f"unexpected values {sorted(bad.unique().tolist())}"
                 )
-            if self.regime_directional_policy is None:
+            if self.regime_directional_policy is None and not self.regime_side:
                 sig_int = self._apply_direction_invert(sig_int, uses_open_close)
             signal_for_open = sig_int
             df["signal"] = sig_int.shift(1).fillna(0).astype(int)
@@ -3150,6 +3411,20 @@ class Backtester:
             df["_entry_fraction"] = (
                 _validated_entry_fraction_series(df).shift(1).fillna(1.0)
             )
+
+        if self.regime_side:
+            if not uses_open_close:
+                raise ValueError("regime_side requires the open/close engine path")
+            if self.htf_filter:
+                if "htf_trend" not in df.columns:
+                    raise ValueError(
+                        "regime_side with htf_filter needs an htf_trend column (the aligned "
+                        "higher-timeframe trend per signal bar); the mapped side is filtered, "
+                        "never the raw trigger")
+                trend = df["htf_trend"].fillna(0).astype(float)
+                if not trend.isin([-1.0, 0.0, 1.0]).all():
+                    raise ValueError("htf_trend must be in {-1, 0, 1}")
+                df["_htf_trend"] = trend.astype(int).shift(1).fillna(0).astype(int)
 
         label_columns = self._regime_label_columns or {}
         if label_columns:
@@ -3941,9 +4216,14 @@ class Backtester:
             scale_in_added_notional_total = 0.0
             return snapshot
 
+        regime_side_trace = []
+        regime_side_counts = {}
         for i, (idx, row) in enumerate(df.iterrows()):
             if handoff_at and i == handoff_at:
                 handoff = _take_warmup_handoff(i)
+                regime_side_trace.clear()
+                regime_side_counts.clear()
+            regime_side_flat = position == 0
             decision_idx = df.index[i - 1] if i > 0 else None
             fill_price = row["open"] if has_open else row["close"]
             mark_price = row["close"]
@@ -4127,6 +4407,14 @@ class Backtester:
                             invert_signal=entry_invert,
                         )
                     )
+                regime_side_step = None
+                if self.regime_side:
+                    regime_side_step = self._regime_side_step(
+                        _signal_from_open_action(open_action), regime_side_flat,
+                        _label_at(row, "directional", payload_row),
+                        _ready_at(row, "directional", payload_row),
+                        int(row["_htf_trend"]) if self.htf_filter else 0, idx)
+                    open_action = _open_action_from_signal(regime_side_step["mapped"])
 
                 long_entry_ok = (
                     open_action == "long" and position == 0
@@ -4161,6 +4449,11 @@ class Backtester:
                         long_entry_ok = False
                         short_entry_ok = False
                 cash_before, qty_before, avg_before = cash, position, avg_cost
+                if regime_side_step is not None:
+                    self._regime_side_note(
+                        regime_side_step, idx, decision_idx,
+                        long_entry_ok or short_entry_ok, regime_blocked,
+                        regime_side_trace, regime_side_counts)
                 if long_entry_ok:
                     if spec_fill is not None:
                         effective_price, shares, commission = spec_fill
@@ -5150,6 +5443,18 @@ class Backtester:
         if risk_mode:
             metrics["risk_per_trade_pct"] = self.risk_per_trade_pct
             metrics["risk_sizing_skipped_entries"] = risk_skipped_entries
+        if self.regime_side:
+            cert = self._regime_side_certification
+            metrics["regime_side"] = {
+                "context": cert["context"],
+                "acknowledged_uncertified": self.allow_uncertified_regime_side,
+                "cell": cert.get("cell") or "",
+                "source": cert.get("source") or "",
+                "htf_filter": self.htf_filter,
+                "direction": self.direction,
+                "counts": dict(sorted(regime_side_counts.items())),
+                "decisions": list(regime_side_trace),
+            }
         if self.allow_scale_in:
             metrics["scale_in_adds"] = scale_in_adds_total
             metrics["scale_in_added_notional_usd"] = round(

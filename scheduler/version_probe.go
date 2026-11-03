@@ -297,6 +297,11 @@ func probeCheckScripts(cfg *Config) error {
 			if err := probeOneCheckScriptFn(script, recoverEntryProbeArgv); err != nil {
 				return err
 			}
+			if configUsesRegimeSide(cfg) {
+				if err := probeRegimeSideContract(script); err != nil {
+					return err
+				}
+			}
 			for _, argv := range quoteProbeArgvs {
 				if err := probeOneCheckScriptFn(script, argv); err != nil {
 					return err
@@ -387,6 +392,59 @@ func uniqueCheckScripts(cfg *Config) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func regimeSideProbeArgv(base []string, openSide string) []string {
+	out := append([]string{}, base...)
+	for i := 0; i+1 < len(out); i++ {
+		if out[i] == "--strategy-refs" {
+			out[i+1] = `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}],"open_side":"` + openSide + `"}`
+		}
+	}
+	return out
+}
+
+var probeOneCheckScriptRejectsFn = probeOneCheckScriptRejects
+
+func probeRegimeSideContract(script string) error {
+	for _, base := range [][]string{probeArgv, probeCompositeArgv} {
+		for _, side := range []string{regimeSideLong, regimeSideShort, regimeSideNone} {
+			if err := probeOneCheckScriptFn(script, regimeSideProbeArgv(base, side)); err != nil {
+				return err
+			}
+		}
+		if err := probeOneCheckScriptRejectsFn(script, regimeSideProbeArgv(base, "sideways")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func probeOneCheckScriptRejects(script string, argv []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ".venv/bin/python3", egressPythonArgv(script, argv)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if env := egressChildEnvironment(nil); env != nil {
+		cmd.Env = env
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		if cmd.Process != nil {
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return fmt.Errorf("%s: probe timed out after %s", script, probeTimeout)
+	}
+	if err == nil {
+		return fmt.Errorf("%s accepted an invalid regime_side open_side request under --probe-only (binary/Python version mismatch: the check script does not validate open_side; sync Python with scripts/update.sh)", script)
+	}
+	if !strings.Contains(stderr.String(), "open_side") {
+		return formatProbeFailure(script, err, stderr.String(), stdout.String())
+	}
+	return nil
 }
 
 func probeOneCheckScript(script string, argv []string) error {

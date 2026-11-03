@@ -439,6 +439,7 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 
 	if sc.Type == "perps" || sc.Type == "manual" {
 		appendDirectionInspectLines(&b, sc, explicit, cfg, state)
+		appendRegimeSideInspectLines(&b, sc, cfg, state)
 		fmt.Fprintf(&b, "  leverage:            %g%s\n", EffectiveExchangeLeverage(sc), markIfDefault(explicit, "leverage"))
 		fmt.Fprintf(&b, "  sizing_leverage:     %g%s\n", EffectiveSizingLeverage(sc), sizingLeverageProvenance(sc, explicit))
 		if m := EffectiveMarginPerTradeUSD(sc); m > 0 {
@@ -649,6 +650,9 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		out["regime_directional_window"] = regimeWindowSelectorJSON(sc, "directional", cfg.Regime)
 	}
 	if sc.Type == "perps" || sc.Type == "manual" {
+		if side := regimeSideInspectJSON(sc, cfg, state); side != nil {
+			out["regime_side"] = side
+		}
 		for k, v := range directionInspectJSON(sc, cfg, state) {
 			out[k] = v
 		}

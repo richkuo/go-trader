@@ -205,6 +205,10 @@ func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 		result.RegimeReadinessHold = regimeDependencyHold(sc, storeRegime, decisionGate.Regime, cfg.Regime, false)
 		applyRegimeReadinessHold(result.RegimeReadinessHold, &result.Signal, &result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc), logger)
 		logClosedBarDecision(sc, result.StrategyDecisionFields, logger)
+		if sc.RegimeSide && x.hlPosQty > 0 && result.Signal != 0 && (hlPosQty <= 0 || pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc))) {
+			logger.Info("Regime side: %s signal suppressed — the decision started with an open %s position, so it can close but cannot add, reverse or reopen until a later decision starts flat (#1906)", signalStr, x.hlPosSide)
+			result.Signal = 0
+		}
 		if !decisionGate.Held {
 			if gateRegime, regimeBlocked := applyRegimeGate(sc, decisionGate.Regime, cfg.Regime, hlPosQty); regimeBlocked {
 				logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
