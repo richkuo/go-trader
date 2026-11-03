@@ -571,6 +571,11 @@ func initOptionsNotes(opts InitOptions) []string {
 			note += fmt.Sprintf(" Options capital $%.0f covers one short put only up to strike $%.2f; raise capital on %s strategies that sell puts to at least strike x %g per contract.", opts.OptionsCapital, opts.OptionsCapital/spec.Multiplier, platform, spec.Multiplier)
 		}
 		out = append(out, note)
+		for _, stratID := range opts.OptStrategies {
+			if stratID == "vol_mean_reversion" {
+				out = append(out, fmt.Sprintf("Note: the high-IV side of %s on %s opens nothing without enough held shares to cover its short call; the whole signal is refused rather than booking only its short put.", stratID, platform))
+			}
+		}
 	}
 	return out
 }

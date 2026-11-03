@@ -214,6 +214,53 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("uncovered_short_call_refuses_the_whole_entry_signal", func(t *testing.T) {
+		expiry := "2026-12-18"
+		for _, tc := range []struct {
+			name     string
+			platform string
+			held     float64
+			actions  []OptionsAction
+			want     int
+		}{
+			{name: "robinhood_butterfly", platform: "robinhood", actions: []OptionsAction{
+				{Action: "buy", OptionType: "call", Strike: 570, Expiry: expiry, PremiumUSD: 1},
+				{Action: "sell", OptionType: "call", Strike: 600, Expiry: expiry, PremiumUSD: 1, Quantity: 2},
+				{Action: "buy", OptionType: "call", Strike: 630, Expiry: expiry, PremiumUSD: 1},
+			}},
+			{name: "robinhood_high_iv_strangle", platform: "robinhood", actions: []OptionsAction{
+				{Action: "sell", OptionType: "call", Strike: 660, Expiry: expiry, PremiumUSD: 1},
+				{Action: "sell", OptionType: "put", Strike: 540, Expiry: expiry, PremiumUSD: 1},
+			}},
+			{name: "robinhood_covered_wheel_call", platform: "robinhood", held: 100, want: 1, actions: []OptionsAction{
+				{Action: "sell", OptionType: "call", Strike: 600, Expiry: expiry, PremiumUSD: 1},
+			}},
+			{name: "deribit_butterfly", platform: "deribit", want: 3, actions: []OptionsAction{
+				{Action: "buy", OptionType: "call", Strike: 570, Expiry: expiry, PremiumUSD: 1},
+				{Action: "sell", OptionType: "call", Strike: 600, Expiry: expiry, PremiumUSD: 1, Quantity: 2},
+				{Action: "buy", OptionType: "call", Strike: 630, Expiry: expiry, PremiumUSD: 1},
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				sc := ocSC("opt-atomic-cover", tc.platform, "SPY")
+				env := ocEnv(t, sc)
+				s := env.strat(sc.ID)
+				s.Cash = 80000
+				if tc.held > 0 {
+					s.Positions["SPY"] = &Position{Symbol: "SPY", Side: "long", Quantity: tc.held, AvgCost: 450, OwnerStrategyID: sc.ID}
+				}
+				logger, _ := ocLogger(sc.ID)
+				n, err := ExecuteOptionsSignal(s, ocResult(tc.platform, "SPY", 600, tc.actions...), logger)
+				if err != nil || n != tc.want || len(s.OptionPositions) != tc.want || len(ocStoredTrades(t, env, sc.ID)) != tc.want {
+					t.Fatalf("trades=%d legs=%d err=%v, want %d complete entries", n, len(s.OptionPositions), err, tc.want)
+				}
+				if tc.want == 0 && s.Cash != 80000 {
+					t.Fatalf("refused signal cash = %v, want unchanged 80000", s.Cash)
+				}
+			})
+		}
+	})
+
 	t.Run("contract_fees_and_trade_quantities", func(t *testing.T) {
 		sc := ocSC("rh-opt-qty", "robinhood", "SPY")
 		env := ocEnv(t, sc)

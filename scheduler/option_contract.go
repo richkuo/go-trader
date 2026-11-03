@@ -42,7 +42,7 @@ func lookupOptionContractSpec(platform, underlying string) (optionContractSpec, 
 
 func optionStrategyCannotCoverCalls(strategy, platform string) bool {
 	spec, ok := optionContractSpecs[platform]
-	return ok && spec.RequireCoveredCalls && strategy == "covered_calls"
+	return ok && spec.RequireCoveredCalls && (strategy == "covered_calls" || strategy == "butterfly")
 }
 
 func coveredCallsSharesWarnings(cfg *Config) []string {
@@ -55,7 +55,7 @@ func coveredCallsSharesWarnings(cfg *Config) []string {
 			continue
 		}
 		spec := optionContractSpecs[sc.Platform]
-		out = append(out, fmt.Sprintf("[WARN] %s: covered_calls on %s sells one short call each cycle and never buys shares, but a %s short call needs %g held long shares of the underlying per contract in this same strategy, so it cannot open a leg; use wheel (it gets shares from a put assignment) or remove the strategy", sc.ID, sc.Platform, sc.Platform, spec.Multiplier))
+		out = append(out, fmt.Sprintf("[WARN] %s: %s on %s sells short calls and never buys shares, but a %s short call needs %g held long shares of the underlying per contract in this same strategy, so it cannot open a leg; use wheel (it gets shares from a put assignment) or remove the strategy", sc.ID, sc.Args[0], sc.Platform, sc.Platform, spec.Multiplier))
 	}
 	return out
 }

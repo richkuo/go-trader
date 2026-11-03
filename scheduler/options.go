@@ -75,9 +75,54 @@ func ExecuteOptionsSignal(s *StrategyState, result *OptionsResult, logger *Strat
 		return 0, fmt.Errorf("%w; refusing %d option action(s)", err, len(result.Actions))
 	}
 
+	refuseEntries := false
+	spec, err := lookupOptionContractSpec(s.Platform, result.Underlying)
+	if err != nil {
+		return 0, err
+	}
+	if spec.RequireCoveredCalls {
+		needed := 0.0
+		var firstShortCall *OptionsAction
+		for i := range result.Actions {
+			action := &result.Actions[i]
+			if action.Action != "sell" || action.OptionType != "call" {
+				continue
+			}
+			qty := action.Quantity
+			if qty <= 0 {
+				qty = 1
+			}
+			shares, err := optionContractValueUSD(1, spec.Multiplier, qty)
+			if err != nil {
+				logger.Error("Option signal cover check failed: %v", err)
+				refuseEntries = true
+				break
+			}
+			needed += shares
+			if firstShortCall == nil {
+				firstShortCall = action
+			}
+		}
+		if firstShortCall != nil {
+			held := heldLongUnderlyingShares(s, result.Underlying)
+			reservedShares, err := reservedShortCallShares(s, result.Underlying)
+			if err != nil {
+				logger.Error("Option signal cover check failed: %v", err)
+				refuseEntries = true
+			} else if needed > held-reservedShares {
+				logger.Info("Uncovered short call refused %s strike=%.0f qty=%g: required %g free shares, available %g (held %g - reserved by open short calls %g); refusing every entry action in this signal",
+					result.Underlying, firstShortCall.Strike, max(firstShortCall.Quantity, 1), needed, held-reservedShares, held, reservedShares)
+				refuseEntries = true
+			}
+		}
+	}
+
 	tradesExecuted := 0
 
 	for _, action := range result.Actions {
+		if refuseEntries && (action.Action == "buy" || action.Action == "sell") {
+			continue
+		}
 		switch action.Action {
 		case "buy":
 			trades, err := executeOptionBuy(s, result, &action, logger)
