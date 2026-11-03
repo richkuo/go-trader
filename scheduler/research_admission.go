@@ -50,7 +50,7 @@ func (r researchReference) label() string {
 }
 
 func researchReferences(sc StrategyConfig) []researchReference {
-	if sc.Type == "options" {
+	if sc.Type == "options" && !quoteOwnedStrategy(sc) {
 		return nil
 	}
 	var out []researchReference
@@ -188,6 +188,7 @@ func strategyResearchAdmissionErrors(cfg *Config, sc StrategyConfig) []string {
 			errs = append(errs, researchRouteErrors(cfg, sc, ref)...)
 		}
 	}
+	errs = append(errs, bitcoinLeadLagFollowerErrors(sc)...)
 	return errs
 }
 

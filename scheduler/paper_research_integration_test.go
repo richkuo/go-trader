@@ -210,11 +210,12 @@ func TestPaperResearchSetupBuildersAgree(t *testing.T) {
 	for _, name := range paperResearchNames() {
 		t.Run(name, func(t *testing.T) {
 			params := paperResearchParams(name)
-			wantID, _, err := buildAddStrategyEntryWithParams(name, "hyperliquid", "BTC", params)
+			asset := researchFixtureAsset(name)
+			wantID, _, err := buildAddStrategyEntryWithParams(name, "hyperliquid", asset, params)
 			if err != nil {
 				t.Fatal(err)
 			}
-			webParams := map[string]interface{}{"name": name, "platform": "hyperliquid", "asset": "BTC"}
+			webParams := map[string]interface{}{"name": name, "platform": "hyperliquid", "asset": asset}
 			if params != nil {
 				webParams["open_params"] = params
 			}
@@ -232,7 +233,7 @@ func TestPaperResearchSetupBuildersAgree(t *testing.T) {
 
 			dss, discordPath := paperResearchServer(t, websocket, paperResearchMomentum())
 			d, fake := newPaperResearchDiscord(dss, "confirm")
-			opts := []*discordgo.ApplicationCommandInteractionDataOption{stringOpt("name", name), stringOpt("platform", "hyperliquid"), stringOpt("asset", "BTC")}
+			opts := []*discordgo.ApplicationCommandInteractionDataOption{stringOpt("name", name), stringOpt("platform", "hyperliquid"), stringOpt("asset", asset)}
 			if params != nil {
 				raw, _ := json.Marshal(params)
 				opts = append(opts, stringOpt("open_params", string(raw)))
@@ -244,7 +245,7 @@ func TestPaperResearchSetupBuildersAgree(t *testing.T) {
 			}
 			discord := loadedStrategy(t, discordPath, wantID)
 
-			initOpts := InitOptions{Assets: []string{"BTC"}, EnableSpot: true, SpotStrategies: []string{"sma_crossover"}, SpotCapital: 1000, SpotDrawdown: 5,
+			initOpts := InitOptions{Assets: []string{asset}, EnableSpot: true, SpotStrategies: []string{"sma_crossover"}, SpotCapital: 1000, SpotDrawdown: 5,
 				ResearchStrategies: []string{name}}
 			if params != nil {
 				initOpts.ResearchOpenParams = map[string]map[string]interface{}{name: params}
@@ -272,7 +273,7 @@ func TestPaperResearchSetupBuildersAgree(t *testing.T) {
 			if rawEdgeGateMode(web.Args).Kind != edgeGateModePaper || isLiveArgs(web.Args) {
 				t.Fatalf("research entries are explicit paper: %v", web.Args)
 			}
-			livePerps := InitOptions{Assets: []string{"BTC"}, EnablePerps: true, PerpsMode: "live", PerpsStrategies: []string{"momentum"}, PerpsLeverage: 1,
+			livePerps := InitOptions{Assets: []string{asset}, EnablePerps: true, PerpsMode: "live", PerpsStrategies: []string{"momentum"}, PerpsLeverage: 1,
 				ResearchStrategies: []string{name}, ResearchOpenParams: initOpts.ResearchOpenParams}
 			for _, sc := range generateConfig(livePerps).Strategies {
 				if sc.ID == wantID && rawEdgeGateMode(sc.Args).Kind != edgeGateModePaper {
@@ -294,13 +295,13 @@ func TestPaperResearchSetupFailuresPreserveConfig(t *testing.T) {
 	t.Run("rest_feed_is_refused_and_names_the_setting", func(t *testing.T) {
 		ss, path := paperResearchServer(t, nil, paperResearchMomentum())
 		before := fileSHA(t, path)
-		body := `{"action":"add-strategy","strategy_id":"","params":{"name":"bitcoin_lead_lag","platform":"hyperliquid","asset":"BTC"}}`
+		body := `{"action":"add-strategy","strategy_id":"","params":{"name":"bitcoin_lead_lag","platform":"hyperliquid","asset":"ETH"}}`
 		w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
 		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `market_feed`) {
 			t.Fatalf("confirm on a REST feed: %d %s", w.Code, w.Body.String())
 		}
 		d, fake := newPaperResearchDiscord(ss, "confirm")
-		opts := []*discordgo.ApplicationCommandInteractionDataOption{stringOpt("name", "bitcoin_lead_lag"), stringOpt("platform", "hyperliquid"), stringOpt("asset", "BTC")}
+		opts := []*discordgo.ApplicationCommandInteractionDataOption{stringOpt("name", "bitcoin_lead_lag"), stringOpt("platform", "hyperliquid"), stringOpt("asset", "ETH")}
 		i, _ := discordInteraction("add-strategy", opts...)
 		d.handleAddStrategy(fake, i, opts)
 		if !strings.Contains(fake.last(), "market_feed") {
@@ -599,7 +600,7 @@ func TestPaperResearchPromotionRefusedAtEveryBoundary(t *testing.T) {
 	websocket := map[string]interface{}{"market_feed": "websocket"}
 	research := func() map[string]interface{} {
 		sc := researchScalarFixture(t, bitcoinLeadLagStrategyName)
-		sc["id"] = "hl-btclag-btc"
+		sc["id"] = "hl-btclag-eth"
 		return sc
 	}
 	t.Run("confirmation_refuses_a_research_reference", func(t *testing.T) {
@@ -660,14 +661,14 @@ func TestPaperResearchPromotionRefusedAtEveryBoundary(t *testing.T) {
 		before := fileSHA(t, path)
 		for _, flip := range []func(map[string]json.RawMessage) error{
 			func(root map[string]json.RawMessage) error {
-				_, _, err := flipStrategyToLive(root, "hl-btclag-btc")
+				_, _, err := flipStrategyToLive(root, "hl-btclag-eth")
 				return err
 			},
 			func(root map[string]json.RawMessage) error {
 				list, _ := configStrategies(root)
 				var item map[string]interface{}
 				_ = json.Unmarshal(list[1], &item)
-				item["args"] = []string{"bitcoin_lead_lag", "BTC", "1h"}
+				item["args"] = []string{"bitcoin_lead_lag", "ETH", "1h"}
 				item["allow_no_edge"] = true
 				raw, _ := json.Marshal(item)
 				list[1] = raw
@@ -680,6 +681,202 @@ func TestPaperResearchPromotionRefusedAtEveryBoundary(t *testing.T) {
 		}
 		if fileSHA(t, path) != before {
 			t.Fatal("a refused candidate changed the config")
+		}
+	})
+}
+
+func paperResearchLoadError(t *testing.T, root map[string]interface{}, strategies ...map[string]interface{}) error {
+	t.Helper()
+	dir := t.TempDir()
+	base := map[string]interface{}{
+		"config_version":   CurrentConfigVersion,
+		"interval_seconds": 60,
+		"log_dir":          filepath.Join(dir, "logs"),
+		"db_file":          filepath.Join(dir, "state.db"),
+		"auto_update":      "off",
+		"strategies":       strategies,
+	}
+	for k, v := range root {
+		base[k] = v
+	}
+	data, err := json.MarshalIndent(base, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = LoadConfig(path)
+	return err
+}
+
+func TestPaperResearchOptionsQuoteReferencesAreRefused(t *testing.T) {
+	websocket := map[string]interface{}{"market_feed": "websocket"}
+	options := func() map[string]interface{} {
+		return map[string]interface{}{"id": "deribit-cc-btc", "type": "options", "platform": "deribit", "script": "shared_scripts/check_options.py",
+			"args": []string{"covered_calls", "BTC", "--platform=deribit", "--mode=paper"}, "capital": 1000, "max_drawdown_pct": 40}
+	}
+	if err := paperResearchLoadError(t, websocket, options()); err != nil {
+		t.Fatalf("control: a plain paper options entry must load: %v", err)
+	}
+	quoteBlock := options()
+	quoteBlock["quote"] = map[string]interface{}{"coin": "BTC", "max_inventory_usd": 1000.0, "max_order_qty": 0.01, "request_expiry_ms": 2000}
+	capabilityOpen := options()
+	capabilityOpen["open_strategy"] = map[string]interface{}{"name": inventoryMarketMakingStrategyName}
+	for label, sc := range map[string]map[string]interface{}{"quote block": quoteBlock, "quote capability open": capabilityOpen} {
+		err := paperResearchLoadError(t, websocket, sc)
+		if err == nil {
+			t.Fatalf("%s: a paper options entry with a quote reference must be refused at load", label)
+		}
+		if !strings.Contains(err.Error(), "quote") {
+			t.Fatalf("%s: the refusal must name the quote reference: %v", label, err)
+		}
+		t.Logf("%s refused: %v", label, err)
+	}
+	_, path := paperResearchServer(t, websocket, paperResearchMomentum(), researchQuoteOwnerFixture("--mode=paper"))
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("a complete Hyperliquid perps paper quote owner must still load: %v", err)
+	}
+	if cfg.quoteLoad != nil {
+		t.Fatal("the held quote owner must load with no quote admission")
+	}
+	if _, held := engineHoldFor(loadedStrategy(t, path, "hl-invmm-btc")); !held {
+		t.Fatal("the complete quote owner must stay engine-held")
+	}
+}
+
+func TestPaperResearchBitcoinLeadLagRefusesTheLeaderAsFollower(t *testing.T) {
+	websocket := map[string]interface{}{"market_feed": "websocket"}
+	t.Run("web_and_discord_refuse_btc_and_keep_the_config", func(t *testing.T) {
+		ss, path := paperResearchServer(t, websocket, paperResearchMomentum())
+		before := fileSHA(t, path)
+		body := `{"action":"add-strategy","strategy_id":"","params":{"name":"bitcoin_lead_lag","platform":"hyperliquid","asset":"BTC"}}`
+		w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "follows the BTC leader") {
+			t.Fatalf("web confirm of a BTC follower: %d %s", w.Code, w.Body.String())
+		}
+		d, fake := newPaperResearchDiscord(ss, "confirm")
+		opts := []*discordgo.ApplicationCommandInteractionDataOption{stringOpt("name", "bitcoin_lead_lag"), stringOpt("platform", "hyperliquid"), stringOpt("asset", "BTC")}
+		i, _ := discordInteraction("add-strategy", opts...)
+		d.handleAddStrategy(fake, i, opts)
+		if !strings.Contains(fake.last(), "follows the BTC leader") {
+			t.Fatalf("discord add of a BTC follower: %q", fake.last())
+		}
+		if fileSHA(t, path) != before {
+			t.Fatal("a refused BTC follower add changed the config")
+		}
+	})
+	t.Run("wizard_skips_btc_and_keeps_the_other_followers", func(t *testing.T) {
+		opts := InitOptions{Assets: []string{"BTC", "ETH"}, EnableSpot: true, SpotStrategies: []string{"sma_crossover"}, SpotCapital: 1000, SpotDrawdown: 5,
+			ResearchStrategies: []string{bitcoinLeadLagStrategyName}}
+		entries, err := initResearchEntries(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(entries))
+		for _, sc := range entries {
+			ids = append(ids, sc.ID)
+		}
+		sort.Strings(ids)
+		if strings.Join(ids, ",") != "hl-btclag-eth" {
+			t.Fatalf("the wizard must write only the ETH follower, got %v", ids)
+		}
+		cfg := generateConfig(opts)
+		if err := validateInitResearchConfig(cfg, opts); err != nil {
+			t.Fatalf("wizard output must validate: %v", err)
+		}
+		btcOnly := opts
+		btcOnly.Assets = []string{"BTC"}
+		if _, err := initResearchEntries(btcOnly); err == nil || !strings.Contains(err.Error(), "needs an asset other than BTC") {
+			t.Fatalf("a BTC-only wizard run must refuse the lead-lag research strategy: %v", err)
+		}
+	})
+	t.Run("eth_follower_is_still_added", func(t *testing.T) {
+		ss, path := paperResearchServer(t, websocket, paperResearchMomentum())
+		params := `{"name":"bitcoin_lead_lag","platform":"hyperliquid","asset":"ETH"}`
+		confirm := structuralConfirm(t, ss, "add-strategy", "", params)
+		if w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", fmt.Sprintf(`{"nonce":%q,"params":%s}`, confirm.Nonce, params), nil); w.Code != http.StatusOK {
+			t.Fatalf("an ETH follower add: %d %s", w.Code, w.Body.String())
+		}
+		loadedStrategy(t, path, "hl-btclag-eth")
+	})
+	t.Run("a_hand_written_btc_follower_is_refused_at_load", func(t *testing.T) {
+		sc := researchScalarFixture(t, bitcoinLeadLagStrategyName)
+		sc["id"] = "hl-btclag-btc"
+		sc["args"] = []string{bitcoinLeadLagStrategyName, "BTC", "1h", "--mode=paper"}
+		err := paperResearchLoadError(t, websocket, sc)
+		if err == nil || !strings.Contains(err.Error(), "follower coin cannot be BTC") {
+			t.Fatalf("a BTC follower must be refused at load: %v", err)
+		}
+	})
+}
+
+func TestPaperResearchWebQuoteOwnerUploadParsesTheFileBytes(t *testing.T) {
+	websocket := map[string]interface{}{"market_feed": "websocket"}
+	textParams := func(text string) string {
+		blob, _ := json.Marshal(map[string]interface{}{"fragment_text": text})
+		return string(blob)
+	}
+	t.Run("duplicate_key_inside_quote_is_refused_like_discord", func(t *testing.T) {
+		ss, path := paperResearchServer(t, websocket, paperResearchMomentum())
+		before := fileSHA(t, path)
+		dup := strings.Replace(string(paperResearchQuoteFragment(nil)), `"coin":"BTC"`, `"coin":"ETH","coin":"BTC"`, 1)
+		if dup == string(paperResearchQuoteFragment(nil)) {
+			t.Fatal("fixture: the duplicate key was not inserted")
+		}
+		_, want := parseQuoteOwnerSetup([]byte(dup))
+		if want == nil {
+			t.Fatal("the shared parser must refuse a duplicate key")
+		}
+		body := fmt.Sprintf(`{"action":%q,"strategy_id":"","params":%s}`, quoteOwnerSetupAction, textParams(dup))
+		w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "duplicate key") {
+			t.Fatalf("web confirm of a duplicate-key file: %d %s", w.Code, w.Body.String())
+		}
+		var got map[string]string
+		_ = json.Unmarshal(w.Body.Bytes(), &got)
+		if got["error"] != want.Error() {
+			t.Fatalf("the web refusal must equal the shared parser refusal:\n%s\n%s", got["error"], want.Error())
+		}
+		if fileSHA(t, path) != before {
+			t.Fatal("a refused duplicate-key file changed the config")
+		}
+	})
+	t.Run("valid_file_text_binds_the_same_digest_at_confirm_and_apply", func(t *testing.T) {
+		ss, path := paperResearchServer(t, websocket, paperResearchMomentum())
+		text := string(paperResearchQuoteFragment(nil))
+		params := textParams(text)
+		confirm := structuralConfirm(t, ss, quoteOwnerSetupAction, "", params)
+		setup, err := parseQuoteOwnerSetup([]byte(text))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(confirm.Description, setup.Digest) {
+			t.Fatalf("the confirmation must carry the file digest: %s", confirm.Description)
+		}
+		if w := mutationPost(ss, ss.handleAPIAddQuoteOwner, "/api/config/add-quote-owner", fmt.Sprintf(`{"nonce":%q,"params":%s}`, confirm.Nonce, params), nil); w.Code != http.StatusOK {
+			t.Fatalf("add-quote-owner from file text: %d %s", w.Code, w.Body.String())
+		}
+		if _, held := engineHoldFor(loadedStrategy(t, path, "hl-invmm-btc")); !held {
+			t.Fatal("the web owner must be engine-held")
+		}
+	})
+	t.Run("both_forms_or_an_oversized_text_are_refused", func(t *testing.T) {
+		ss, path := paperResearchServer(t, websocket, paperResearchMomentum())
+		before := fileSHA(t, path)
+		frag := string(paperResearchQuoteFragment(nil))
+		both, _ := json.Marshal(map[string]interface{}{"fragment_text": frag, "fragment": json.RawMessage(frag)})
+		big := strings.Repeat(" ", quoteOwnerSetupMaxBytes+1)
+		for label, params := range map[string]string{"both": string(both), "oversized": textParams(big)} {
+			body := fmt.Sprintf(`{"action":%q,"strategy_id":"","params":%s}`, quoteOwnerSetupAction, params)
+			if w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil); w.Code != http.StatusBadRequest {
+				t.Fatalf("%s: confirm status %d %s", label, w.Code, w.Body.String())
+			}
+		}
+		if fileSHA(t, path) != before {
+			t.Fatal("a refused upload changed the config")
 		}
 	})
 }

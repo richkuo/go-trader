@@ -1761,14 +1761,14 @@
       setStructuralMessage("The quote_owner file exceeds 1 MiB.", els.addQuoteMessage);
       return;
     }
-    let fragment;
+    let text;
     try {
-      fragment = JSON.parse(await file.text());
+      text = await file.text();
     } catch (err) {
-      setStructuralMessage("The quote_owner file is not JSON: " + err.message, els.addQuoteMessage);
+      setStructuralMessage("The quote_owner file could not be read: " + err.message, els.addQuoteMessage);
       return;
     }
-    const params = { fragment: fragment };
+    const params = { fragment_text: text };
     if (els.addQuoteRestart && els.addQuoteRestart.checked) {
       params.restart = true;
     }

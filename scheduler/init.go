@@ -1060,7 +1060,12 @@ func initResearchEntries(opts InitOptions) ([]StrategyConfig, error) {
 		if _, ok := addStrategyResearchCandidates[name]; !ok {
 			return nil, fmt.Errorf("researchStrategies: %q is not a scalar research strategy with an explicit-paper Hyperliquid perps route", name)
 		}
+		added := 0
 		for _, assetName := range opts.Assets {
+			if name == bitcoinLeadLagStrategyName && strings.EqualFold(strings.TrimSpace(assetName), bitcoinLeadLagLeaderCoin) {
+				continue
+			}
+			added++
 			_, raw, err := buildAddStrategyEntryWithParams(name, "hyperliquid", assetName, opts.ResearchOpenParams[name])
 			if err != nil {
 				return nil, fmt.Errorf("researchStrategies: %w", err)
@@ -1073,6 +1078,9 @@ func initResearchEntries(opts InitOptions) ([]StrategyConfig, error) {
 				sc.Leverage = opts.PerpsLeverage
 			}
 			out = append(out, sc)
+		}
+		if added == 0 && name == bitcoinLeadLagStrategyName {
+			return nil, fmt.Errorf("researchStrategies: %q needs an asset other than %s, because it follows the %s leader; add a follower coin to assets", name, bitcoinLeadLagLeaderCoin, bitcoinLeadLagLeaderCoin)
 		}
 	}
 	for name := range opts.ResearchOpenParams {

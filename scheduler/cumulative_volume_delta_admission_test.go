@@ -94,6 +94,13 @@ func researchQuoteOwnerFixture(args ...string) map[string]interface{} {
 	}
 }
 
+func researchFixtureAsset(name string) string {
+	if name == bitcoinLeadLagStrategyName {
+		return "ETH"
+	}
+	return "BTC"
+}
+
 func researchScalarFixture(t *testing.T, name string) map[string]interface{} {
 	t.Helper()
 	var params map[string]interface{}
@@ -101,7 +108,7 @@ func researchScalarFixture(t *testing.T, name string) map[string]interface{} {
 		params = map[string]interface{}{"calendar_path": "/var/lib/go-trader/macro/calendar.json", "calendar_sha256": strings.Repeat("0", 64),
 			"quote_path": "/var/lib/go-trader/macro/quotes.json", "quote_sha256": strings.Repeat("2", 64)}
 	}
-	_, raw, err := buildAddStrategyEntryWithParams(name, "hyperliquid", "BTC", params)
+	_, raw, err := buildAddStrategyEntryWithParams(name, "hyperliquid", researchFixtureAsset(name), params)
 	if err != nil {
 		t.Fatal(err)
 	}

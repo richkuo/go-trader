@@ -45,13 +45,24 @@ func (ss *StatusServer) mutateConfigRoot(fn func(root map[string]json.RawMessage
 }
 
 type structuralParams struct {
-	Name       string                 `json:"name"`
-	Platform   string                 `json:"platform"`
-	Asset      string                 `json:"asset"`
-	Gate       string                 `json:"gate"`
-	Restart    bool                   `json:"restart"`
-	OpenParams map[string]interface{} `json:"open_params"`
-	Fragment   json.RawMessage        `json:"fragment"`
+	Name         string                 `json:"name"`
+	Platform     string                 `json:"platform"`
+	Asset        string                 `json:"asset"`
+	Gate         string                 `json:"gate"`
+	Restart      bool                   `json:"restart"`
+	OpenParams   map[string]interface{} `json:"open_params"`
+	Fragment     json.RawMessage        `json:"fragment"`
+	FragmentText *string                `json:"fragment_text"`
+}
+
+func (p structuralParams) quoteOwnerFragmentBytes() ([]byte, error) {
+	if p.FragmentText != nil {
+		if len(p.Fragment) > 0 {
+			return nil, fmt.Errorf("the quote_owner setup takes exactly one of \"fragment\" or \"fragment_text\"")
+		}
+		return []byte(*p.FragmentText), nil
+	}
+	return p.Fragment, nil
 }
 
 func decodeStructuralParams(raw json.RawMessage) (structuralParams, error) {
@@ -126,7 +137,11 @@ func (ss *StatusServer) confirmStructuralAction(action, strategyID string, param
 		}
 		return newID, desc, "", nil
 	case quoteOwnerSetupAction:
-		setup, perr := parseQuoteOwnerSetup(p.Fragment)
+		data, derr := p.quoteOwnerFragmentBytes()
+		if derr != nil {
+			return "", "", "", derr
+		}
+		setup, perr := parseQuoteOwnerSetup(data)
 		if perr != nil {
 			return "", "", "", perr
 		}
@@ -292,7 +307,12 @@ func (ss *StatusServer) handleAPIAddQuoteOwner(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	setup, perr := parseQuoteOwnerSetup(p.Fragment)
+	data, derr := p.quoteOwnerFragmentBytes()
+	if derr != nil {
+		writeJSONError(w, http.StatusBadRequest, derr.Error())
+		return
+	}
+	setup, perr := parseQuoteOwnerSetup(data)
 	if perr != nil {
 		writeJSONError(w, http.StatusBadRequest, perr.Error())
 		return

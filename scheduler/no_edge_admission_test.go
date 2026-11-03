@@ -878,7 +878,7 @@ func noEdgeCaseNoEdgePaperAddAcceptsEveryRegisteredPlatformName(t *testing.T) {
 	sort.Strings(names)
 	var hl []map[string]interface{}
 	for _, name := range names {
-		id, entry, err := buildAddStrategyEntry(name, "hyperliquid", "BTC")
+		id, entry, err := buildAddStrategyEntry(name, "hyperliquid", researchFixtureAsset(name))
 		if !openStrategyRegisteredFor(name, "futures") {
 			if err == nil {
 				t.Fatalf("%s is not registered for futures but was added to hyperliquid", name)

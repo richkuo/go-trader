@@ -269,6 +269,9 @@ func buildAddStrategyEntryWithParams(name, platform, asset string, openParams ma
 	if !isSimpleAssetToken(asset) {
 		return "", nil, fmt.Errorf("asset %q must be a plain ticker like BTC/ETH/SOL", asset)
 	}
+	if name == bitcoinLeadLagStrategyName && asset == bitcoinLeadLagLeaderCoin {
+		return "", nil, fmt.Errorf("strategy %q follows the %s leader, so its asset cannot be %s (it would hold every bar); choose another coin; nothing was added", name, bitcoinLeadLagLeaderCoin, bitcoinLeadLagLeaderCoin)
+	}
 	short := deriveShortName(name)
 	var id string
 	var obj map[string]interface{}
