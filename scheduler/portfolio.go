@@ -61,6 +61,9 @@ type Position struct {
 	HedgePrimaryQtyBasis            float64                   `json:"hedge_primary_qty_basis,omitempty"`
 	SharedCloseHoldUSD              float64                   `json:"shared_close_hold_usd,omitempty"`
 	SharedCloseHoldReason           string                    `json:"shared_close_hold_reason,omitempty"`
+	AccountKey                      string                    `json:"account_key,omitempty"`
+	VenueAccountID                  string                    `json:"venue_account_id,omitempty"`
+	AccountBindingSource            string                    `json:"account_binding_source,omitempty"`
 }
 
 func (p *Position) isHedgeLeg() bool {

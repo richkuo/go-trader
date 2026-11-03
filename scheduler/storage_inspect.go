@@ -45,6 +45,7 @@ type storageFileInspection struct {
 	EntryHeld       []string             `json:"unresolved_entry_intents"`
 	RobinhoodRows   int                  `json:"robinhood_order_attempt_rows"`
 	RobinhoodHeld   []string             `json:"unresolved_robinhood_order_attempts"`
+	RobinhoodBooks  []string             `json:"robinhood_account_bindings"`
 	QuoteReplayRuns []string             `json:"quote_replay_runs,omitempty"`
 	QuoteOwners     int                  `json:"quote_owner_contracts"`
 	QuotePending    []string             `json:"pending_quote_recovery"`
@@ -67,6 +68,7 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 	out := storageInspection{Split: layout.Split, Layout: layout.describe()}
 	hasLive := cfg != nil && HasLiveStrategy(cfg.Strategies)
 	liveRH := map[string]bool{}
+	liveRHCoin := map[string]string{}
 	admittedQuote := map[string]bool{}
 	if cfg != nil && cfg.quoteLoad != nil {
 		admittedQuote[cfg.quoteLoad.ownerID] = true
@@ -75,6 +77,7 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 		for _, sc := range cfg.Strategies {
 			if isRobinhoodLiveSpot(sc) {
 				liveRH[sc.ID] = true
+				liveRHCoin[sc.ID] = robinhoodSymbol(sc.Args)
 			}
 		}
 	}
@@ -108,6 +111,9 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 			return storageInspection{}, fmt.Errorf("read-only open of the %s state file %q: %w", spec.Role, spec.Path, err)
 		}
 		rejections, err := inspectOneStorageFile(db, &fi, layout, ident, hasLive, liveRH, admittedQuote)
+		if err == nil {
+			err = inspectRobinhoodAccountBindings(db, &fi, ident, liveRHCoin)
+		}
 		db.Close()
 		if err != nil {
 			return storageInspection{}, err
@@ -420,6 +426,9 @@ func formatStorageInspection(si storageInspection) string {
 		for _, line := range fi.RobinhoodHeld {
 			fmt.Fprintf(&b, "    UNRESOLVED ROBINHOOD ORDER %s\n", line)
 		}
+		for _, line := range fi.RobinhoodBooks {
+			fmt.Fprintf(&b, "    ROBINHOOD BOOK %s\n", line)
+		}
 		fmt.Fprintf(&b, "  quote owner contracts: %d\n", fi.QuoteOwners)
 		for _, line := range fi.QuotePending {
 			fmt.Fprintf(&b, "    PENDING QUOTE RECOVERY %s\n", line)
@@ -551,4 +560,58 @@ func inspectRobinhoodOrderRows(db *StateDB, fi *storageFileInspection, ident sto
 		}
 	}
 	return rejections, nil
+}
+
+func inspectRobinhoodAccountBindings(db *StateDB, fi *storageFileInspection, ident storageIdentityMap, liveRHCoin map[string]string) error {
+	if len(liveRHCoin) == 0 {
+		return nil
+	}
+	ok, err := tableExists(db, "positions")
+	if err != nil || !ok {
+		return err
+	}
+	cols := map[string]bool{}
+	for _, c := range []string{"position_id", "account_key", "venue_account_id", "account_binding_source"} {
+		has, err := db.tableHasColumn("positions", c)
+		if err != nil {
+			return fmt.Errorf("read the positions schema in the %s state file: %w", fi.Role, err)
+		}
+		cols[c] = has
+	}
+	pick := func(c string) string {
+		if cols[c] {
+			return c
+		}
+		return "''"
+	}
+	rows, err := db.db.Query("SELECT strategy_id, symbol, side, quantity, " + pick("position_id") + ", " + pick("account_key") + ", " + pick("venue_account_id") + ", " + pick("account_binding_source") + " FROM positions ORDER BY strategy_id, symbol")
+	if err != nil {
+		return fmt.Errorf("read positions in the %s state file: %w", fi.Role, err)
+	}
+	defer rows.Close()
+	currentKey := robinhoodAccountKey()
+	for rows.Next() {
+		var sid, symbol, side string
+		var qty float64
+		var pos Position
+		if err := rows.Scan(&sid, &symbol, &side, &qty, &pos.TradePositionID, &pos.AccountKey, &pos.VenueAccountID, &pos.AccountBindingSource); err != nil {
+			return fmt.Errorf("scan a position in the %s state file: %w", fi.Role, err)
+		}
+		procID, mapped := ident.processFor(fi.Role, sid)
+		coin, live := liveRHCoin[procID]
+		if !mapped || !live || canonicalRobinhoodCoin(symbol) != coin || !(qty > 0) {
+			continue
+		}
+		state := string(robinhoodBookAccountState(&pos, currentKey, ""))
+		if !cols["account_key"] {
+			state = "missing evidence (no binding columns; this state file predates the account binding)"
+		}
+		source := pos.AccountBindingSource
+		if source == "" {
+			source = "none"
+		}
+		fi.RobinhoodBooks = append(fi.RobinhoodBooks, fmt.Sprintf("%s %s %s qty=%.10g position=%s bound_key=%s bound_venue=%s source=%s configured_key=%s local_state=%s (no venue read; the logged-in account is not checked)",
+			procID, symbol, side, qty, pos.TradePositionID, robinhoodKeyFingerprint(pos.AccountKey), robinhoodVenueFingerprint(pos.VenueAccountID), source, robinhoodKeyFingerprint(currentKey), state))
+	}
+	return rows.Err()
 }

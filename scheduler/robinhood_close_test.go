@@ -17,9 +17,9 @@ func TestForceCloseRobinhoodLive(t *testing.T) {
 			return nil, fmt.Errorf("robin_stocks 503")
 		}
 
-		report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, robinhoodKillSwitchCloseDeps{
+		report := forceCloseRobinhoodLive(context.Background(), RobinhoodHoldings{AccountID: stubRHVenueID, Positions: positions}, rhLive, robinhoodKillSwitchCloseDeps{
 			Closer: closer,
-			Book:   robinhoodBookSnapshot{Targets: map[string]float64{"BTC": 0.01}},
+			Book:   stubRHBookSnapshotOf(map[string]float64{"BTC": 0.01}),
 		})
 
 		if report.ConfirmedFlat() {
@@ -44,9 +44,9 @@ func TestForceCloseRobinhoodLive(t *testing.T) {
 			return &RobinhoodCloseResult{}, nil
 		}
 
-		flat := func() ([]RobinhoodPosition, error) { return nil, nil }
-		book := robinhoodBookSnapshot{Targets: map[string]float64{"BTC": 0.01}}
-		report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, robinhoodKillSwitchCloseDeps{
+		flat := func() (RobinhoodHoldings, error) { return RobinhoodHoldings{AccountID: stubRHVenueID}, nil }
+		book := stubRHBookSnapshotOf(map[string]float64{"BTC": 0.01})
+		report := forceCloseRobinhoodLive(context.Background(), RobinhoodHoldings{AccountID: stubRHVenueID, Positions: positions}, rhLive, robinhoodKillSwitchCloseDeps{
 			Closer:    closer,
 			Fetcher:   flat,
 			Book:      book,

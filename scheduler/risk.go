@@ -1264,16 +1264,24 @@ func rolloverDailyPnL(r *RiskState) {
 	}
 }
 
-func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, hlFills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig, hlVirtualQty hlVirtualQuantitySnapshot, rhFlatCoins map[string]bool, logger *StrategyLogger) {
+func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, hlFills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig, hlVirtualQty hlVirtualQuantitySnapshot, rhFlatProofs robinhoodFlatProofs, logger *StrategyLogger) []string {
 	if isRobinhoodLiveSpot(sc) {
-		if len(rhFlatCoins) > 0 {
-			closeRobinhoodBookVerifiedFlat(s, sc, prices, rhFlatCoins, robinhoodVerifiedFlatKillSwitch, logger)
+		var refused []string
+		if len(rhFlatProofs) > 0 {
+			refused = closeRobinhoodBookVerifiedFlat(s, sc, prices, rhFlatProofs, robinhoodVerifiedFlatKillSwitch, logger)
 		}
-		return
+		for sym, pos := range s.Positions {
+			if _, proven := rhFlatProofs[sym]; !proven && robinhoodPositionHeld(pos) {
+				refused = append(refused, sym)
+			}
+		}
+		sort.Strings(refused)
+		return refused
 	}
 	applyHyperliquidKillSwitchCloseFill(s, sc, hlFills, hlLiveAll, hlVirtualQty)
 	applyHyperliquidKillSwitchHedgeFill(s, sc, hlFills)
 	forceCloseAllPositions(s, &sc, prices, logger)
+	return nil
 }
 
 const (
@@ -1281,20 +1289,34 @@ const (
 	robinhoodVerifiedFlatCircuitBreaker = "circuit_breaker_verified_flat"
 )
 
-func closeRobinhoodBookVerifiedFlat(s *StrategyState, sc StrategyConfig, prices map[string]float64, coins map[string]bool, reason string, logger *StrategyLogger) {
+func closeRobinhoodBookVerifiedFlat(s *StrategyState, sc StrategyConfig, prices map[string]float64, proofs robinhoodFlatProofs, reason string, logger *StrategyLogger) []string {
 	if s == nil {
-		return
+		return nil
 	}
 	var syms []string
 	for sym := range s.Positions {
-		if coins == nil || coins[sym] {
+		if _, ok := proofs[sym]; ok {
 			syms = append(syms, sym)
 		}
 	}
 	sort.Strings(syms)
+	currentKey := robinhoodAccountKey()
+	var refused []string
 	for _, sym := range syms {
-		closeVirtualPositionVerifiedFlat(s, &sc, sym, s.Positions[sym], prices, reason, logger)
+		pos := s.Positions[sym]
+		if err := proofs[sym].authorizes(s.ID, pos, currentKey); err != nil {
+			msg := fmt.Sprintf("CRITICAL: Robinhood %s book of %s is not closed as verified flat: %v; the book stays and a new read decides next cycle (#1921)", sym, s.ID, err)
+			if logger != nil {
+				logger.Error("%s", msg)
+			} else {
+				fmt.Printf("[CRITICAL] %s\n", msg)
+			}
+			refused = append(refused, sym)
+			continue
+		}
+		closeVirtualPositionVerifiedFlat(s, &sc, sym, pos, prices, reason, logger)
 	}
+	return refused
 }
 
 func closeVirtualPositionVerifiedFlat(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, reason string, logger *StrategyLogger) {
@@ -1460,13 +1482,18 @@ func bookVirtualClose(s *StrategyState, sc *StrategyConfig, symbol string, pos *
 	clearHLPerpsPositionAlertThrottles(s, symbol)
 }
 
-func forceCloseSettledPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, settled map[string]map[string]bool, logger *StrategyLogger) {
-	coins := settled[sc.Platform]
-	if len(coins) == 0 || s == nil {
+func forceCloseSettledPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, settled map[string]map[string]bool, rhProofs robinhoodFlatProofs, logger *StrategyLogger) {
+	if s == nil {
 		return
 	}
 	if isRobinhoodLiveSpot(sc) {
-		closeRobinhoodBookVerifiedFlat(s, sc, prices, coins, robinhoodVerifiedFlatKillSwitch, logger)
+		if len(rhProofs) > 0 {
+			closeRobinhoodBookVerifiedFlat(s, sc, prices, rhProofs, robinhoodVerifiedFlatKillSwitch, logger)
+		}
+		return
+	}
+	coins := settled[sc.Platform]
+	if len(coins) == 0 {
 		return
 	}
 	var syms []string
