@@ -14,6 +14,19 @@ The scheduler now runs eligible theta harvest once per options cycle after a fai
 `OptionsResult.iv_rank` is nullable and the new `vol_metrics_error` field makes the signal log show `IV rank=unavailable` and the trade summary `IV=unavailable`.
 Known limits: harvest still uses the previous cycle's stored marks and DTE; mark sources, freshness, expiry, settlement, contract multipliers and atomic multi-leg booking are unchanged (issues 1912, 1911 and 1919).
 Deploy Go and Python together with `bash scripts/update.sh --restart`.
+### Issue 1908: one Robinhood coin identity
+
+Runtime behavior changes for every Robinhood spot strategy, with a one-time startup state migration.
+A Robinhood spot `args[1]` is trimmed and uppercased when the config loads, in memory only; the config file is never written, and a coin that is empty after trimming refuses the load.
+Startup prints one `[config] WARN` line per rewritten strategy and asks the operator to write the uppercase spelling into `args[1]`.
+Before this change a lowercase coin such as `btc` kept the book under `btc` while the venue holdings read returned `BTC`, so the kill switch and the circuit-breaker close could report the coin flat and clear a held book with no sale, and mixed-case peers took separate locks and each looked like the sole owner.
+Now the signal result must echo the canonical coin, the holdings read uppercases each coin and fails the whole read on an empty or duplicate coin, and locks, owner lists, unresolved-order checks and books all use one coin.
+Writable startup converts stored aliases before any other state write: the position key and symbol, Robinhood pending circuit-close symbols, the shared-close notice coin, unresolved order attempt symbols and entry decision rows.
+Quantities, position ids, order evidence, frozen request and evidence payloads, trades, closed positions, settled attempts and completed entry intents stay unchanged.
+A conflict (two positions, pending closes or entry decisions that convert to one key, an active entry intent under an alias, or two unresolved attempts for one account and coin) refuses startup with exit 80 before any write and names the rows; review them against the venue and a backup before any manual correction and never delete a row to pass.
+Each changed book commits in its own transaction. A failure rolls that book back; books in other state files that already committed stay canonical, startup stops with exit 80, and the next start finishes the rest.
+An older binary reads books by the exact configured spelling, so after the migration it reads a canonical book as flat under a lowercase config. `update.sh` recovery now refuses to start the previous binary when a configured spelling differs from the stored spelling (`rh_identity=blocked`) and names the strategy to edit, unless the restored binary carries the `go-trader-capability:robinhood-coin-identity-v1` marker (a build with this change, which reads both spellings). An unreadable restored binary blocks. The `update.sh` that first deploys this change is the previous one, so write the uppercase spelling into the config right before that update.
+Deploy with `bash scripts/update.sh --restart`.
 
 ### Issue 1945: command-line regime admission under a sealed feed
 

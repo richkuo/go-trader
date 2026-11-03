@@ -520,6 +520,122 @@ except Exception:
     printf '%s\n' "$db_paths"
 }
 
+UPDATE_RH_IDENTITY_PY='
+import json, os, sqlite3, sys, urllib.parse
+
+def canonical(raw):
+    return raw.strip().upper() if isinstance(raw, str) else ""
+
+cfg_path = sys.argv[1]
+db_paths = sys.argv[2:]
+try:
+    cfg = json.load(open(cfg_path))
+except Exception as exc:
+    print("cannot read config %s: %s" % (cfg_path, exc))
+    sys.exit(2)
+owners = []
+for sc in cfg.get("strategies") or []:
+    if not isinstance(sc, dict):
+        continue
+    sid = sc.get("id") if isinstance(sc.get("id"), str) else ""
+    platform = sc.get("platform") if isinstance(sc.get("platform"), str) else ""
+    if not platform and sid.startswith("rh-"):
+        platform = "robinhood"
+    args = sc.get("args") if isinstance(sc.get("args"), list) else []
+    if platform != "robinhood" or sc.get("type") != "spot" or len(args) < 2 or not isinstance(args[1], str):
+        continue
+    storage = sc.get("storage_strategy_id")
+    storage = storage.strip() if isinstance(storage, str) and storage.strip() else sid
+    owners.append((sid, storage, args[1], canonical(args[1])))
+if not owners:
+    sys.exit(0)
+blockers = []
+for path in db_paths:
+    if not path or not os.path.exists(path):
+        continue
+    uri = "file:%s?mode=ro" % urllib.parse.quote(os.path.abspath(path))
+    try:
+        con = sqlite3.connect(uri, uri=True, timeout=10)
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = ?", ("table",))}
+        for sid, storage, raw, canon in owners:
+            rows = []
+            if "positions" in tables:
+                rows += [("position", r[0]) for r in con.execute("SELECT symbol FROM positions WHERE strategy_id = ?", (storage,))]
+            if "robinhood_order_attempts" in tables:
+                rows += [("unresolved order attempt", r[0]) for r in con.execute(
+                    "SELECT symbol FROM robinhood_order_attempts WHERE strategy_id = ? AND status IN (?, ?, ?, ?)",
+                    (storage, "submitting", "open", "unknown", "settling"))]
+            if "strategies" in tables:
+                for (raw_json,) in con.execute("SELECT risk_pending_circuit_closes_json FROM strategies WHERE id = ?", (storage,)):
+                    try:
+                        pending = json.loads(raw_json) if raw_json else {}
+                    except ValueError:
+                        pending = {}
+                    entry = pending.get("robinhood") if isinstance(pending, dict) else None
+                    for sym in (entry or {}).get("symbols") or []:
+                        if isinstance(sym, dict):
+                            rows.append(("pending circuit close", sym.get("symbol")))
+            for kind, sym in rows:
+                if isinstance(sym, str) and sym != raw and canonical(sym) == canon:
+                    blockers.append("%s: config args[1] is %r but %s holds a %s under %r" % (sid, raw, path, kind, sym))
+        con.close()
+    except Exception as exc:
+        print("cannot read state file %s: %s" % (path, exc))
+        sys.exit(2)
+for line in sorted(set(blockers)):
+    print(line)
+sys.exit(1 if blockers else 0)
+'
+
+UPDATE_RH_IDENTITY_CAPABILITY="go-trader-capability:robinhood-coin-identity-v1"
+
+update_robinhood_identity_binary_capability() {
+    local bin_path="$1" grep_rc=0
+    [[ -n "$bin_path" && -f "$bin_path" && -r "$bin_path" ]] || return 2
+    LC_ALL=C grep -aqF -- "$UPDATE_RH_IDENTITY_CAPABILITY" "$bin_path" || grep_rc=$?
+    case "$grep_rc" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
+update_robinhood_identity_rollback_check() {
+    local bin_path="${1:-}"
+    local cfg_path="${GO_TRADER_UPDATE_CONFIG:-scheduler/config.json}"
+    local -a db_paths=()
+    local line out rc=0 cap_rc=0
+    [[ -f "$cfg_path" ]] || return 0
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && db_paths+=("$line")
+    done < <(update_resolve_db_exclude)
+    out=$(python3 -I -c "$UPDATE_RH_IDENTITY_PY" "$cfg_path" "${db_paths[@]}" 2>&1) || rc=$?
+    if [[ "$rc" == "0" ]]; then
+        return 0
+    fi
+    if [[ "$rc" == "1" ]]; then
+        update_robinhood_identity_binary_capability "$bin_path" || cap_rc=$?
+        if [[ "$cap_rc" == "0" ]]; then
+            echo "[update] recovery: Robinhood coin identity: the restored binary ${bin_path} reads the trimmed uppercase coin identity (#1908), so the spelling differences below do not block the start" >&2
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && echo "[update] recovery: Robinhood coin identity (not blocking): $line" >&2
+            done <<<"$out"
+            return 0
+        fi
+    fi
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && echo "[update] recovery: Robinhood coin identity: $line" >&2
+    done <<<"$out"
+    if [[ "$rc" == "1" && "$cap_rc" == "1" ]]; then
+        echo "[update] recovery: ACTION REQUIRED: the restored binary ${bin_path} predates the Robinhood coin identity rule (#1908) and reads Robinhood books by the exact configured coin spelling, so it would see these held books as flat. Write the uppercase coin shown above into args[1] for each named strategy in the config, then start the service (#1908)" >&2
+    elif [[ "$rc" == "1" ]]; then
+        echo "[update] recovery: ACTION REQUIRED: could not read the restored binary ${bin_path:-<none>} to confirm that it reads the trimmed uppercase Robinhood coin identity (#1908). An older binary reads Robinhood books by the exact configured coin spelling and would see these held books as flat. Write the uppercase coin shown above into args[1] for each named strategy in the config, then start the service (#1908)" >&2
+    else
+        echo "[update] recovery: ACTION REQUIRED: the Robinhood coin identity check could not read the config or a state file; check them by hand before starting the previous binary (#1908)" >&2
+    fi
+    return 1
+}
+
 update_canonical_db_path() {
     python3 -c '
 import os, sys
