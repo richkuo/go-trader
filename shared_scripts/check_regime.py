@@ -25,19 +25,48 @@ from regime import (
 )
 
 
+ROBINHOOD_ASSET_CLASSES = ("crypto", "stock")
+
+
 def _emit_error(args, message: str) -> None:
-    print(json.dumps({
+    doc = {
         "platform": getattr(args, "platform", ""),
         "symbol": getattr(args, "symbol", ""),
         "timeframe": getattr(args, "timeframe", ""),
         "regime": None,
         "error": message,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-    }))
+    }
+    if getattr(args, "asset_class", ""):
+        doc["asset_class"] = args.asset_class
+    print(json.dumps(doc))
     sys.exit(1)
 
 
-def _load_adapter(platform: str):
+def _asset_class_error(args) -> str:
+    platform = args.platform.strip().lower()
+    if platform == "robinhood":
+        if args.asset_class not in ROBINHOOD_ASSET_CLASSES:
+            return (f"--asset-class must be one of {', '.join(ROBINHOOD_ASSET_CLASSES)} for platform robinhood, "
+                    f"got {args.asset_class!r}")
+        return ""
+    if args.asset_class:
+        return f"--asset-class is only for platform robinhood, not {args.platform!r}"
+    return ""
+
+
+def _robinhood_symbol_error(args) -> str:
+    sys.path.insert(0, os.path.join(_REPO_ROOT, "platforms", "robinhood"))
+    from adapter import UnsupportedRobinhoodSymbol, robinhood_yahoo_ticker
+
+    try:
+        robinhood_yahoo_ticker(args.asset_class, args.symbol)
+    except UnsupportedRobinhoodSymbol as e:
+        return str(e)
+    return ""
+
+
+def _load_adapter(platform: str, asset_class: str = ""):
     adapter_path = os.path.join(_REPO_ROOT, "platforms", platform, "adapter.py")
     if not os.path.exists(adapter_path):
         raise ImportError(f"No adapter found for platform '{platform}' at {adapter_path}")
@@ -47,9 +76,10 @@ def _load_adapter(platform: str):
     spec = importlib.util.spec_from_file_location(f"{platform}_adapter", adapter_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    kwargs = {"asset_class": asset_class} if platform == "robinhood" else {}
     for name in dir(module):
         if name.endswith("ExchangeAdapter"):
-            return getattr(module, name)()
+            return getattr(module, name)(**kwargs)
     raise AttributeError(f"No ExchangeAdapter class found in {adapter_path}")
 
 
@@ -70,6 +100,11 @@ def _fetch_dataframe(args):
 
         return fetch_ohlcv(symbol=args.symbol, timeframe=args.timeframe,
                            limit=args.ohlcv_limit, store=False)
+
+    if platform == "robinhood":
+        rows = _load_adapter(platform, args.asset_class).get_ohlcv(
+            args.symbol, interval=args.timeframe, limit=args.ohlcv_limit)
+        return _make_dataframe(rows) if rows else None
 
     rows = None
     adapter_err = None
@@ -143,10 +178,19 @@ def main() -> None:
                         help="options platforms: fall back to BinanceUS <symbol>/USDT when the adapter has no OHLCV")
     parser.add_argument("--market-stdin", action="store_true", default=False,
                         help="#1524: read a sealed market payload from stdin instead of fetching candles")
+    parser.add_argument("--asset-class", default="",
+                        help="#1909: robinhood only and required there: crypto (spot coin) or stock (options underlying)")
     parser.add_argument("--probe-only", action="store_true", default=False)
     args = parser.parse_args()
+    class_error = _asset_class_error(args)
+    if class_error:
+        _emit_error(args, class_error)
     if args.probe_only:
         sys.exit(0)
+    if args.platform.strip().lower() == "robinhood":
+        symbol_error = _robinhood_symbol_error(args)
+        if symbol_error:
+            _emit_error(args, symbol_error)
 
     try:
         windows_spec = parse_regime_windows_spec_json(args.regime_windows_spec_json)
@@ -170,7 +214,7 @@ def main() -> None:
         except Exception:
             bar_time = ""
 
-        print(json.dumps({
+        doc = {
             "platform": args.platform,
             "symbol": args.symbol,
             "timeframe": args.timeframe,
@@ -178,7 +222,10 @@ def main() -> None:
             "regime": bundle["regime"],
             "views": bundle["views"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
-        }))
+        }
+        if args.asset_class:
+            doc["asset_class"] = args.asset_class
+        print(json.dumps(doc))
     except SystemExit:
         raise
     except Exception as e:

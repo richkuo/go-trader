@@ -73,9 +73,9 @@ def _requests(log):
     return [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
 
 
-def _candles(tmp_path, symbol, timeframe, yahoo, limit=200):
+def _candles(tmp_path, symbol, timeframe, yahoo, limit=200, chart_type="spot"):
     fixture, log = _write_fixture(tmp_path, yahoo)
-    proc, out = _run("fetch_candles.py", ["--platform", "robinhood", "--symbol", symbol,
+    proc, out = _run("fetch_candles.py", ["--platform", "robinhood", "--type", chart_type, "--symbol", symbol,
                                           "--timeframe", timeframe, "--limit", str(limit)], fixture)
     return proc, out, _requests(log)
 
@@ -150,14 +150,43 @@ def test_an_interior_off_grid_crypto_row_is_an_error(tmp_path):
     assert "off the 1h grid" in out["error"]
 
 
-def test_resampled_timeframes_serve_only_crypto_pairs(tmp_path):
-    proc, out, requests = _candles(tmp_path, "SPY", "2h", {})
+def test_resampled_timeframes_serve_only_the_crypto_class(tmp_path):
+    proc, out, requests = _candles(tmp_path, "SPY", "2h", {}, chart_type="options")
     assert proc.returncode == 1
-    assert "only for crypto pairs" in out["error"]
+    assert "only for the crypto class" in out["error"]
     assert requests == []
-    proc, out, requests = _candles(tmp_path, "SPY", "4h", {})
+    proc, out, requests = _candles(tmp_path, "SPY", "4h", {}, chart_type="options")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert requests == [["SPY", "4h", "1y"]]
+
+
+def test_a_coin_named_options_underlying_charts_stock_rows(tmp_path):
+    (tmp_path / "stock").mkdir()
+    (tmp_path / "crypto").mkdir()
+    proc, out, requests = _candles(tmp_path / "stock", "LTC", "1h", {}, chart_type="options")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert requests == [["LTC", "1h", "1y"]]
+    proc, out, requests = _candles(tmp_path / "crypto", "LTC", "1h", {})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert requests == [["LTC-USD", "1h", "1mo"]]
+
+
+def test_chart_class_and_symbol_refusals_send_no_yahoo_request(tmp_path, subtests):
+    for i, (chart_type, symbol, want) in enumerate([
+        ("spot", "SPY", "unsupported Robinhood crypto coin 'SPY'"),
+        ("spot", "XRP-USD", "unsupported Robinhood crypto coin 'XRP-USD'"),
+        ("spot", "MATIC", "unsupported Robinhood crypto coin 'MATIC'"),
+        ("options", "XRP-USD", "Robinhood stock underlying 'XRP-USD' is a currency pair"),
+        ("futures", "BTC", "robinhood charts serve type spot (crypto) or options (stock underlying), not 'futures'"),
+    ]):
+        with subtests.test(chart_type=chart_type, symbol=symbol):
+            run_dir = tmp_path / f"refuse-{i}"
+            run_dir.mkdir()
+            proc, out, requests = _candles(run_dir, symbol, "1h", {}, chart_type=chart_type)
+            assert proc.returncode == 1
+            assert want in out["error"]
+            assert out["candles"] == []
+            assert requests == []
 
 
 def test_one_hour_strategy_gets_a_real_four_hour_trend_filter(tmp_path):
@@ -236,10 +265,8 @@ def test_paper_closed_bar_decision_holds_until_yahoo_starts_the_next_bar(tmp_pat
 
 def test_closed_bar_decisions_are_refused_before_any_yahoo_request(tmp_path, subtests):
     for name, symbol, timeframe, mode, wants in [
-        ("paper_symbol_AAPL_is_not_a_yahoo_crypto_pair", "AAPL", "1h", "paper",
-         ('closed_bar_decisions is not supported on robinhood: symbol "AAPL" resolves to Yahoo "AAPL", which is not a Yahoo crypto pair',)),
-        ("paper_symbol_XRP_is_not_a_yahoo_crypto_pair", "XRP", "1h", "paper",
-         ('closed_bar_decisions is not supported on robinhood: symbol "XRP" resolves to Yahoo "XRP", which is not a Yahoo crypto pair',)),
+        ("paper_symbol_AAPL_is_not_a_supported_coin", "AAPL", "1h", "paper",
+         ("unsupported Robinhood crypto coin 'AAPL'",)),
         ("one_minute_with_the_measured_reason", "BTC", "1m", "paper",
          ("closed_bar_decisions does not support 1m on robinhood", "zero-volume placeholder")),
         ("live", "BTC", "1h", "live",
