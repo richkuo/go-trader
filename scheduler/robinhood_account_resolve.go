@@ -114,8 +114,9 @@ func prepareRobinhoodAccountResolution(d robinhoodAccountResolveDeps, strategyID
 	}
 	coin := robinhoodSymbol(sc.Args)
 	state := robinhoodBookAccountState(pos, currentKey, "")
+	reason := robinhoodAccountHoldReason(state, pos.AccountKey, pos.VenueAccountID, currentKey, "")
 	if state == robinhoodAccountCurrent {
-		return nil, fmt.Sprintf("refused: the %s book of %s is already bound to the configured account; nothing to resolve", coin, strategyID)
+		reason = "the stored binding names the configured account; the fresh holdings read decides, and the action is refused if that read names the bound venue account"
 	}
 	allowed, refusal := robinhoodAccountResolutionBlock(d.state, coin, strategyID, pos.TradePositionID, currentKey, action)
 	if refusal != "" {
@@ -130,7 +131,7 @@ func prepareRobinhoodAccountResolution(d robinhoodAccountResolveDeps, strategyID
 		source = "none"
 	}
 	head := fmt.Sprintf("Robinhood book %s %s: position %s, quantity %.10g, state %s (%s).\nBinding: account %s, venue account %s, source %s. Configured account: %s.\n",
-		strategyID, coin, pos.TradePositionID, pos.Quantity, state, robinhoodAccountHoldReason(state, pos.AccountKey, pos.VenueAccountID, currentKey, ""),
+		strategyID, coin, pos.TradePositionID, pos.Quantity, state, reason,
 		robinhoodKeyFingerprint(pos.AccountKey), robinhoodVenueFingerprint(pos.VenueAccountID), source, robinhoodKeyFingerprint(currentKey))
 	switch action {
 	case robinhoodAccountActionBind:
@@ -165,7 +166,7 @@ func robinhoodCurrentPeerQtyLocked(state *AppState, cfgs []StrategyConfig, coin,
 	return total
 }
 
-func (d robinhoodAccountResolveDeps) revalidateLocked(r *robinhoodAccountResolution) (*StrategyState, *Position, *robinhoodOrderAttempt, string) {
+func (d robinhoodAccountResolveDeps) revalidateLocked(r *robinhoodAccountResolution, readID string) (*StrategyState, *Position, *robinhoodOrderAttempt, string) {
 	if robinhoodAccountKey() != r.CurrentKey {
 		return nil, nil, nil, "refused: the configured Robinhood account changed while you were confirming; nothing was changed"
 	}
@@ -176,8 +177,8 @@ func (d robinhoodAccountResolveDeps) revalidateLocked(r *robinhoodAccountResolut
 	if !r.Entry.matches(pos) || pos.AccountBindingSource != r.Source {
 		return nil, nil, nil, fmt.Sprintf("refused: the %s book of %s changed while you were confirming; nothing was changed. Run the command again.", r.Coin, r.StrategyID)
 	}
-	if robinhoodBookAccountState(pos, r.CurrentKey, "") == robinhoodAccountCurrent {
-		return nil, nil, nil, "refused: the book is already bound to the configured account; nothing was changed"
+	if readID != "" && robinhoodBookAccountState(pos, r.CurrentKey, readID) == robinhoodAccountCurrent {
+		return nil, nil, nil, fmt.Sprintf("refused: the book is already bound to the configured account, and the fresh holdings read names its bound venue account %s; nothing was changed", robinhoodVenueFingerprint(readID))
 	}
 	allowed, refusal := robinhoodAccountResolutionBlock(d.state, r.Coin, r.StrategyID, pos.TradePositionID, r.CurrentKey, r.Action)
 	if refusal != "" {
@@ -268,7 +269,7 @@ func applyRobinhoodAccountResolution(d robinhoodAccountResolveDeps, operatorID s
 	defer release()
 
 	d.mu.RLock()
-	_, _, _, refusal := d.revalidateLocked(&r)
+	_, _, _, refusal := d.revalidateLocked(&r, "")
 	d.mu.RUnlock()
 	if refusal != "" {
 		return refusal
@@ -281,6 +282,7 @@ func applyRobinhoodAccountResolution(d robinhoodAccountResolveDeps, operatorID s
 	if strings.TrimSpace(read.AccountID) == "" {
 		return "refused: the fresh holdings read names no crypto account; the book stays held"
 	}
+	noteRobinhoodVenueRead(r.CurrentKey, read.AccountID)
 	held := robinhoodOnAccountSize(r.Coin, read.Positions)
 	mark := 0.0
 	if r.Action == robinhoodAccountActionRelease {
@@ -295,7 +297,7 @@ func applyRobinhoodAccountResolution(d robinhoodAccountResolveDeps, operatorID s
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	s, pos, allowed, refusal := d.revalidateLocked(&r)
+	s, pos, allowed, refusal := d.revalidateLocked(&r, read.AccountID)
 	if refusal != "" {
 		return refusal
 	}

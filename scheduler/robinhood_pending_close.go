@@ -156,6 +156,7 @@ func runPendingRobinhoodCircuitCloses(
 	positions := holdings.Positions
 	readID := holdings.AccountID
 	accountKey := robinhoodAccountKey()
+	noteRobinhoodVenueRead(accountKey, readID)
 
 	if hasStuckCB {
 		recoverOrder := make([]StrategyConfig, len(rhLiveAll))

@@ -244,7 +244,27 @@ type robinhoodHeldBook struct {
 	Reason         string
 }
 
-func robinhoodLiveBooksLocked(state *AppState, cfgs []StrategyConfig, currentKey string) []robinhoodHeldBook {
+var robinhoodVenueReads sync.Map
+
+func noteRobinhoodVenueRead(currentKey, readAccountID string) {
+	if currentKey == "" || strings.TrimSpace(readAccountID) == "" {
+		return
+	}
+	robinhoodVenueReads.Store(currentKey, readAccountID)
+}
+
+func robinhoodObservedVenueRead(currentKey string) string {
+	if currentKey == "" {
+		return ""
+	}
+	if v, ok := robinhoodVenueReads.Load(currentKey); ok {
+		id, _ := v.(string)
+		return id
+	}
+	return ""
+}
+
+func robinhoodLiveBooksLocked(state *AppState, cfgs []StrategyConfig, currentKey, readAccountID string) []robinhoodHeldBook {
 	var out []robinhoodHeldBook
 	if state == nil {
 		return nil
@@ -262,11 +282,11 @@ func robinhoodLiveBooksLocked(state *AppState, cfgs []StrategyConfig, currentKey
 		if !robinhoodPositionHeld(pos) {
 			continue
 		}
-		st := robinhoodBookAccountState(pos, currentKey, "")
+		st := robinhoodBookAccountState(pos, currentKey, readAccountID)
 		out = append(out, robinhoodHeldBook{
 			StrategyID: sc.ID, Coin: coin, PositionID: pos.TradePositionID, Quantity: pos.Quantity,
 			AccountKey: pos.AccountKey, VenueAccountID: pos.VenueAccountID, Source: pos.AccountBindingSource,
-			State: st, Reason: robinhoodAccountHoldReason(st, pos.AccountKey, pos.VenueAccountID, currentKey, ""),
+			State: st, Reason: robinhoodAccountHoldReason(st, pos.AccountKey, pos.VenueAccountID, currentKey, readAccountID),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StrategyID < out[j].StrategyID })
@@ -276,7 +296,7 @@ func robinhoodLiveBooksLocked(state *AppState, cfgs []StrategyConfig, currentKey
 func robinhoodAccountReportLines(state *AppState, cfgs []StrategyConfig) []string {
 	key := robinhoodAccountKey()
 	var lines []string
-	for _, b := range robinhoodLiveBooksLocked(state, cfgs, key) {
+	for _, b := range robinhoodLiveBooksLocked(state, cfgs, key, "") {
 		source := b.Source
 		if source == "" {
 			source = "none"
@@ -312,7 +332,7 @@ func robinhoodHeldBookAlertKey(b robinhoodHeldBook) string {
 func collectRobinhoodHeldBookAlerts(state *AppState, cfgs []StrategyConfig, mu *sync.RWMutex, now time.Time) []string {
 	key := robinhoodAccountKey()
 	mu.RLock()
-	books := robinhoodLiveBooksLocked(state, cfgs, key)
+	books := robinhoodLiveBooksLocked(state, cfgs, key, robinhoodObservedVenueRead(key))
 	mu.RUnlock()
 	interval := effectiveAlertThrottleInterval()
 	var msgs []string

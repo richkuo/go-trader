@@ -481,6 +481,7 @@ func TestRobinhoodAccountBindingScripts(t *testing.T) {
 func TestRobinhoodAccountBindingHeldBookAlerts(t *testing.T) {
 	reset := func() {
 		robinhoodHeldBookAlerts.Range(func(k, _ interface{}) bool { robinhoodHeldBookAlerts.Delete(k); return true })
+		robinhoodVenueReads.Range(func(k, _ interface{}) bool { robinhoodVenueReads.Delete(k); return true })
 	}
 	t.Run("startup_and_first_cycle_send_one_owner_alert", func(t *testing.T) {
 		reset()
@@ -502,6 +503,51 @@ func TestRobinhoodAccountBindingHeldBookAlerts(t *testing.T) {
 		}
 		if strings.Contains(msg, "offline-user") {
 			t.Fatal("alert prints the login name")
+		}
+	})
+	t.Run("kill_switch_read_of_another_venue_alerts_a_configured_key_book", func(t *testing.T) {
+		reset()
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setBoundPosition("rh-btc", "BTC", 0.5, robinhoodAccountKey(), rhOtherVenue)
+		if msgs := collectRobinhoodHeldBookAlerts(e.state, e.cfg.Strategies, &e.mu, time.Now()); len(msgs) != 0 {
+			t.Fatalf("before any read: %q, want no alert", msgs)
+		}
+		plan := planKillSwitchClose(e.killSwitchInputs(rhHoldingsPhase(), rhHoldingsPhase()))
+		if plan.RHCloseReport.Errors["BTC"] == nil || !strings.Contains(plan.RHCloseReport.Errors["BTC"].Error(), "account hold") {
+			t.Fatalf("report = %+v, want BTC held", plan.RHCloseReport)
+		}
+		notifyRobinhoodHeldBooks(e.state, e.cfg.Strategies, &e.mu, e.notifier, time.Now())
+		if n := e.dmCount("ROBINHOOD BOOK HELD"); n != 1 {
+			t.Fatalf("held-book DMs = %d, want one after the kill-switch read", n)
+		}
+		e.mock.mu.Lock()
+		msg := e.mock.dms[len(e.mock.dms)-1].content
+		e.mock.mu.Unlock()
+		for _, want := range []string{"[rh-btc]", "foreign", robinhoodVenueFingerprint(rhOtherVenue), robinhoodVenueFingerprint(rhTestAccount)} {
+			if !strings.Contains(msg, want) {
+				t.Fatalf("alert %q misses %q", msg, want)
+			}
+		}
+		noteRobinhoodVenueRead(robinhoodAccountKey(), rhOtherVenue)
+		if msgs := collectRobinhoodHeldBookAlerts(e.state, e.cfg.Strategies, &e.mu, time.Now().Add(24*time.Hour)); len(msgs) != 0 {
+			t.Fatalf("after a read of the bound venue: %q, want no alert", msgs)
+		}
+	})
+	t.Run("circuit_breaker_read_of_another_venue_alerts_a_configured_key_book", func(t *testing.T) {
+		reset()
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setBoundPosition("rh-btc", "BTC", 0.5, robinhoodAccountKey(), rhOtherVenue)
+		e.latchCB("rh-btc")
+		e.mu.Lock()
+		setRobinhoodCircuitBreakerPending(ptrStrategyConfig(e.sc("rh-btc")), e.state.Strategies["rh-btc"])
+		e.mu.Unlock()
+		e.runCBPhases(rhClosePhase(rhSellFilled("0.5", "97"), "0.5", "0.5"), rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase(rhHeld("BTC", "0.5")))
+		if e.pendingRH("rh-btc") == nil || len(e.allPostQuantities()) != 0 {
+			t.Fatal("want the pending close kept and nothing sold")
+		}
+		msgs := collectRobinhoodHeldBookAlerts(e.state, e.cfg.Strategies, &e.mu, time.Now())
+		if len(msgs) != 1 || !strings.Contains(msgs[0], "foreign") || !strings.Contains(msgs[0], robinhoodVenueFingerprint(rhTestAccount)) {
+			t.Fatalf("alerts = %q, want one foreign alert naming the read venue", msgs)
 		}
 	})
 	t.Run("no_owner_sends_no_dm", func(t *testing.T) {
@@ -551,13 +597,13 @@ func TestRobinhoodAccountBindingOwnerActions(t *testing.T) {
 			t.Fatalf("command name %q is over the 32-character Discord limit", commandPrefix+robinhoodAccountCommandName)
 		}
 	})
-	t.Run("prepare_refuses_a_current_book_and_an_unrelated_unresolved_attempt", func(t *testing.T) {
+	t.Run("prepare_defers_a_stored_current_binding_to_the_read_and_refuses_an_unrelated_unresolved_attempt", func(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
 		e.setBoundPosition("rh-a", "BTC", 0.5, robinhoodAccountKey(), rhTestAccount)
 		e.setBoundPosition("rh-b", "BTC", 0.2, "", "")
 		d := e.resolveDeps(e.holdingsFetcher(), rhMark(50))
-		if res, msg := prepareRobinhoodAccountResolution(d, "rh-a", robinhoodAccountActionBind); res != nil || !strings.Contains(msg, "already bound") {
-			t.Fatalf("current book: %q", msg)
+		if res, msg := prepareRobinhoodAccountResolution(d, "rh-a", robinhoodAccountActionBind); res == nil || !strings.Contains(msg, "the fresh holdings read decides") {
+			t.Fatalf("stored current book: %q, want the decision left to the fresh read", msg)
 		}
 		e.seedSettlingAttempt("rh-a", &robinhoodOrderAttempt{AttemptID: "rh-000000000000000000000004", AccountKey: robinhoodAccountKey(), Symbol: "BTC", Origin: robinhoodOriginSignal, Side: "buy",
 			RefID: "66666666-6666-4666-8666-666666666666", Status: robinhoodAttemptUnknown, RequestJSON: `{"version":1}`, CreatedAtMs: 1, UpdatedAtMs: 1})
@@ -601,6 +647,11 @@ func TestRobinhoodAccountBindingOwnerActions(t *testing.T) {
 		{name: "release_holdings_on_account", rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionRelease, mark: 50, want: "above the"},
 		{name: "release_zero_mark", rows: nil, action: robinhoodAccountActionRelease, mark: 0, want: "no finite positive current mark"},
 		{name: "release_nan_mark", rows: nil, action: robinhoodAccountActionRelease, mark: math.NaN(), want: "no finite positive current mark"},
+		{name: "release_configured_key_other_venue_ok", book: [2]string{"current", rhOtherVenue}, rows: nil, action: robinhoodAccountActionRelease, mark: 50, want: "Released"},
+		{name: "bind_read_names_the_bound_venue", book: [2]string{"current", rhTestAccount}, rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionBind, want: "already bound"},
+		{name: "release_read_names_the_bound_venue", book: [2]string{"current", rhTestAccount}, rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionRelease, mark: 50, want: "already bound"},
+		{name: "release_configured_key_other_venue_holdings_on_account", book: [2]string{"current", rhOtherVenue}, rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionRelease, mark: 50, want: "above the"},
+		{name: "bind_configured_key_other_venue", book: [2]string{"current", rhOtherVenue}, rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionBind, want: "is bound to venue account"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

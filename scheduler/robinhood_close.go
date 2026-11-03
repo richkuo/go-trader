@@ -231,6 +231,7 @@ func forceCloseRobinhoodLive(ctx context.Context, holdings RobinhoodHoldings, rh
 	report := RobinhoodLiveCloseReport{Errors: make(map[string]error), Fills: make(map[string]RobinhoodCloseFill), FlatProofs: robinhoodFlatProofs{}}
 	readID := holdings.AccountID
 	positions := holdings.Positions
+	noteRobinhoodVenueRead(deps.Book.CurrentKey, readID)
 
 	tradedCoins := make(map[string]bool)
 	for _, sc := range rhLiveCrypto {
