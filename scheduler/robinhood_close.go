@@ -513,6 +513,11 @@ func newRobinhoodEmergencyCloser(d robinhoodEmergencyDeps, origin string) Robinh
 				recordRes = &cp
 			}
 		}
+		if res != nil {
+			for _, l := range robinhoodPricingDiagnostics("sell", symbol, a.AttemptID, 0, 0, nil, res.SellPrice, res.EchoProblems) {
+				fmt.Printf("[%s] rh-close: %s\n", l.Level, l.Msg)
+			}
+		}
 		d.mu.Lock()
 		recordErr := recordRobinhoodOrderOutcomeLocked(d.store, s, a, recordRes, class, detail, sizing, time.Now())
 		d.mu.Unlock()

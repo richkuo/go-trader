@@ -334,7 +334,8 @@ def test_close_sells_holding_found_on_later_page(tmp_path):
 PREP = {
     "GET " + CURRENCY_PAIRS: [_page([
         {"id": PAIR_ID, "asset_currency": {"code": "BTC"}, "quote_currency": {"code": "USD"},
-         "min_order_size": "0.000001", "min_order_quantity_increment": "0.00000001", "max_order_size": "20"},
+         "min_order_size": "0.000001", "min_order_quantity_increment": "0.00000001", "max_order_size": "20",
+         "min_order_price_increment": "0.01"},
         {"id": "pair-eth", "asset_currency": {"code": "ETH"}, "quote_currency": {"code": "USD"}},
     ])],
     "GET " + ACCOUNTS: [_page([{"id": "acct-1"}])],
@@ -387,19 +388,19 @@ def _assert_finite_document(payload):
 def test_execute_buy_polls_until_filled_and_reports_the_venue_fill(tmp_path):
     routes = _routes(
         [_accepted()],
-        [_order("queued"), _order("confirmed"), _order("filled", "0.1", "100.5", executions=[{"fees": [{"amount": "0.02"}]}])],
+        [_order("queued"), _order("confirmed"), _order("filled", "0.0995", "100.4", executions=[{"fees": [{"amount": "0.02"}]}])],
     )
     code, payload, made = _run(tmp_path, EXECUTE, _buy(), routes)
     assert code == 0, payload
     assert payload["order_outcome"] == "filled"
-    assert payload["execution"]["fill"] == {"avg_px": 100.5, "quantity": 0.1, "oid": ORDER_ID, "fee": 0.02}
-    assert payload["requested_quantity"] == 0.1
+    assert payload["execution"]["fill"] == {"avg_px": 100.4, "quantity": 0.0995, "oid": ORDER_ID, "fee": 0.02}
+    assert payload["requested_quantity"] == 0.09950248
     assert "error" not in payload
     posts = _posts(made)
     assert len(posts) == 1
     assert posts[0]["body"] == {
-        "account_id": "acct-1", "currency_pair_id": PAIR_ID, "price": 100.0, "quantity": 0.1,
-        "ref_id": REF_ID, "side": "buy", "time_in_force": "gtc", "type": "market",
+        "account_id": "acct-1", "currency_pair_id": PAIR_ID, "price": 100.5, "quantity": 0.09950248,
+        "ref_id": REF_ID, "side": "buy", "time_in_force": "gtc", "type": "limit",
     }
     assert posts[0]["content_type"] == "application/json"
     assert [r for r in made if r["timeout"] is None and "/oauth2/" not in r["url"]] == []
@@ -489,7 +490,7 @@ def test_execute_pre_send_failures_resend_with_the_same_ref_id_then_report_not_s
 
 
 def test_execute_pre_send_failure_then_accept_uses_one_ref_id(tmp_path):
-    routes = _routes([{"raise": "connect_timeout"}, _accepted()], [_order("filled", "0.1", "100")])
+    routes = _routes([{"raise": "connect_timeout"}, _accepted()], [_order("filled", "0.09", "100")])
     code, payload, made = _run(tmp_path, EXECUTE, _buy(), routes)
     assert code == 0, payload
     posts = _posts(made)
@@ -511,7 +512,7 @@ def test_execute_prep_read_failure_sends_nothing(tmp_path, subtests):
 def test_execute_filled_without_usable_average_price_is_unknown(tmp_path, subtests):
     for average in [None, "NaN", "-1", "abc"]:
         with subtests.test(average=average):
-            routes = _routes([_accepted()], [_order("filled", "0.1", average)])
+            routes = _routes([_accepted()], [_order("filled", "0.09", average)])
             code, payload, _ = _run(tmp_path, EXECUTE, _buy(), routes)
             assert code == 1
             assert payload["order_outcome"] == "unknown"
@@ -696,9 +697,10 @@ def test_resolve_operator_order_without_ref_id_must_match_the_attempt_fields(tmp
     assert payload["order_outcome"] == "unknown"
 
 
-def _pairs(min_size="0.000001", increment="0.00000001", max_size="20", drop=()):
+def _pairs(min_size="0.000001", increment="0.00000001", max_size="20", drop=(), price_increment="0.01"):
     row = {"id": PAIR_ID, "asset_currency": {"code": "BTC"}, "quote_currency": {"code": "USD"},
-           "min_order_size": min_size, "min_order_quantity_increment": increment, "max_order_size": max_size}
+           "min_order_size": min_size, "min_order_quantity_increment": increment, "max_order_size": max_size,
+           "min_order_price_increment": price_increment}
     for key in drop:
         row.pop(key, None)
     return {"GET " + CURRENCY_PAIRS: [_page([row])]}
@@ -965,6 +967,224 @@ def test_emergency_close_refuses_a_missing_or_invalid_quantity_before_login(tmp_
             assert isinstance(payload.get("error"), str) and payload["error"]
             assert made == []
 
+
+
+def _quote(ask="100.00", bid="99.00"):
+    return {"GET " + QUOTE: [{"status": 200, "json": {"ask_price": ask, "bid_price": bid}}]}
+
+
+def _buy_budget(amount, budget_ms=6000):
+    args = _buy(budget_ms)
+    args[3] = "--amount_usd=" + amount
+    return args
+
+
+def _expected_buy(budget, ask, price_increment, increment, maximum=None):
+    from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+
+    b, a, p, i = Decimal(budget), Decimal(ask), Decimal(price_increment), Decimal(increment)
+    limit = (a * Decimal("1.005") / p).to_integral_value(rounding=ROUND_CEILING) * p
+    quantity = (b / (limit * i)).to_integral_value(rounding=ROUND_FLOOR) * i
+    if maximum is not None and quantity > Decimal(maximum):
+        quantity = (Decimal(maximum) / i).to_integral_value(rounding=ROUND_FLOOR) * i
+    return limit, quantity
+
+
+BUY_ROWS = {
+    "btc_1000_at_60000": ("1000", "60000", _pairs(), "0.01", "0.00000001", None),
+    "eth_5000_at_3000": ("5000", "3000", _pairs(), "0.01", "0.00000001", None),
+    "sol_250_at_150": ("250", "150", _pairs(), "0.01", "0.00000001", None),
+    "tiny_100_at_0.00001234": ("100", "0.00001234", _pairs(min_size="1", increment="1", price_increment="0.00000001", drop=("max_order_size",)),
+                                "0.00000001", "1", None),
+    "btc_1000_at_60123.45": ("1000", "60123.45", _pairs(), "0.01", "0.00000001", None),
+    "exact_budget_boundary": ("7.035", "100", _pairs(min_size="0.01", increment="0.01"), "0.01", "0.01", None),
+    "just_below_the_boundary": ("7.0349", "100", _pairs(min_size="0.01", increment="0.01"), "0.01", "0.01", None),
+    "capped_by_the_maximum": ("1000", "100", _pairs(max_size="0.05"), "0.01", "0.00000001", "0.05"),
+}
+
+
+def test_execute_buy_sends_a_limit_bounded_by_the_budget(tmp_path, subtests):
+    from decimal import Decimal
+
+    for case in sorted(BUY_ROWS):
+        budget, ask, pairs, price_increment, increment, maximum = BUY_ROWS[case]
+        with subtests.test(case=case):
+            want_limit, want_quantity = _expected_buy(budget, ask, price_increment, increment, maximum)
+            routes = _routes([_accepted()], [_order("filled", format(want_quantity, "f"), format(want_limit, "f"))], **pairs)
+            routes.update(_quote(ask=ask))
+            code, payload, made = _run(tmp_path, EXECUTE, _buy_budget(budget), routes)
+            assert code == 0, payload
+            posts = _posts(made)
+            assert len(posts) == 1
+            body = posts[0]["body"]
+            assert body["type"] == "limit" and body["time_in_force"] == "gtc" and body["side"] == "buy"
+            limit, quantity = Decimal(repr(body["price"])), Decimal(repr(body["quantity"]))
+            assert (limit, quantity) == (want_limit, want_quantity)
+            assert limit >= Decimal(ask)
+            assert limit % Decimal(price_increment) == 0
+            assert quantity % Decimal(increment) == 0
+            assert quantity * limit <= Decimal(budget)
+            assert quantity > 0
+            assert payload["requested_quantity"] == body["quantity"]
+            sizing = payload["buy_sizing"]
+            assert sizing["limit_price"] == body["price"] and sizing["sent_quantity"] == body["quantity"]
+            assert sizing["budget_usd"] == float(budget) and sizing["ask_price"] == float(ask)
+            assert sizing["headroom"] == 0.005
+            assert Decimal(repr(sizing["max_cost_usd"])) == quantity * limit
+            assert sizing["capped_by_max"] is (maximum is not None)
+            assert payload["execution"]["fill"]["quantity"] == body["quantity"]
+            _assert_finite_document(payload)
+            if case == "exact_budget_boundary":
+                assert quantity * limit == Decimal(budget)
+            if case == "just_below_the_boundary":
+                assert quantity == Decimal("0.06")
+
+
+BUY_REFUSALS = {
+    "price_increment_missing": (_pairs(price_increment=None), _quote(), "10"),
+    "price_increment_zero": (_pairs(price_increment="0"), _quote(), "10"),
+    "price_increment_negative": (_pairs(price_increment="-0.01"), _quote(), "10"),
+    "price_increment_text": (_pairs(price_increment="abc"), _quote(), "10"),
+    "quantity_minimum_missing": (_pairs(drop=("min_order_size",)), _quote(), "10"),
+    "quantity_increment_invalid": (_pairs(increment="0"), _quote(), "10"),
+    "ask_text": (_pairs(), _quote(ask="1e2x"), "10"),
+    "ask_outside_exact_bounds": (_pairs(), _quote(ask="1e-40"), "10"),
+    "quantity_below_minimum": (_pairs(min_size="1"), _quote(), "10"),
+    "budget_floors_to_zero": (_pairs(increment="1", min_size="0"), _quote(), "10"),
+    "inexact_limit_wire_number": (_pairs(price_increment="0.00000001234567890123456789"), _quote(), "10"),
+}
+
+
+def test_execute_buy_refusals_send_no_order(tmp_path, subtests):
+    for case in sorted(BUY_REFUSALS):
+        pairs, quote, budget = BUY_REFUSALS[case]
+        with subtests.test(case=case):
+            routes = _routes([_accepted()], [_order("filled", "0.01", "100")], **pairs)
+            routes.update(quote)
+            code, payload, made = _run(tmp_path, EXECUTE, _buy_budget(budget), routes)
+            assert code == 1
+            assert payload["order_outcome"] == "not_sent"
+            assert len(_posts(made)) == 0
+            assert "fill" not in payload["execution"]
+            assert isinstance(payload.get("error"), str) and payload["error"]
+            _assert_finite_document(payload)
+    with subtests.test(case="too_little_time_after_the_reads"):
+        routes = _routes([_accepted()], [_order("filled", "0.01", "100")])
+        routes["GET " + ACCOUNTS] = [dict(_page([{"id": "acct-1"}]), sleep_s=2.2)]
+        code, payload, made = _run(tmp_path, EXECUTE, _buy(budget_ms=3000), routes)
+        assert code == 1
+        assert payload["order_outcome"] == "not_sent"
+        assert len(_posts(made)) == 0
+
+
+def test_execute_buy_limit_partial_and_open_outcomes(tmp_path, subtests):
+    with subtests.test(case="canceled_after_a_partial_fill"):
+        routes = _routes([_accepted()], [_order("confirmed"), _order("canceled", "0.04", "100.5")], [{"status": 200, "json": {}}])
+        code, payload, made = _run(tmp_path, EXECUTE, _buy(budget_ms=4000), routes)
+        assert code == 0, payload
+        assert payload["order_outcome"] == "partially_filled"
+        assert payload["execution"]["fill"]["quantity"] == 0.04
+        assert payload["requested_quantity"] == 0.09950248
+        assert _posts(made)[0]["body"]["type"] == "limit"
+    with subtests.test(case="still_open_after_the_cancel_request"):
+        routes = _routes([_accepted()], [_order("confirmed")], [{"status": 200, "json": {}}])
+        code, payload, made = _run(tmp_path, EXECUTE, _buy(budget_ms=4000), routes)
+        assert code == 1
+        assert payload["order_outcome"] == "open"
+        assert payload["cancel"]["requested"] is True
+        assert "fill" not in payload["execution"]
+        assert payload["buy_sizing"]["sent_quantity"] == 0.09950248
+
+
+SELL_PRICE_ROWS = {
+    "0.00000951": (0.00001, {None: (0.000009, "floor_decimals"), "0.00000001": (0.000009, "floor_increment")}),
+    "0.0000115": (0.000012, {None: (0.000011, "floor_decimals"), "0.00000001": (0.000011, "floor_increment")}),
+    "0.0000125": (0.000013, {None: (0.000012, "floor_decimals"), "0.00000001": (0.000012, "floor_increment")}),
+    "0.00001234": (0.000012, {None: (0.000012, "floor_decimals"), "0.00000001": (0.000012, "floor_increment")}),
+    "0.00000075": (0.000001, {None: (0.000001, "round_fallback"), "0.00000001": (0.000001, "round_fallback")}),
+    "0.0000005": (0.0, {None: (0.000001, "one_step"), "0.00000001": (0.00000001, "one_step")}),
+    "0.0000004": (0.0, {None: (0.000001, "one_step"), "0.00000001": (0.00000001, "one_step")}),
+    "0.99995": (1.0, {None: (0.9999, "floor_decimals"), "0.00000001": (0.9999, "floor_increment")}),
+    "1.4951": (1.5, {None: (1.49, "floor_decimals"), "0.00000001": (1.49, "floor_increment")}),
+    "99.00": (99.0, {None: (99.0, "floor_decimals"), "0.00000001": (99.0, "floor_increment")}),
+}
+ABOVE_BID_RULES = ("round_fallback", "one_step")
+
+
+def _run_priced_sell(tmp_path, script, bid, pairs):
+    routes = _sell_routes("0.5", _holding("0.5", "0.5"), pairs)
+    routes.update(_quote(bid=bid))
+    args = _sized_sell("0.5", "whole", True) if script == EXECUTE else _close()
+    code, payload, made = _run(tmp_path, script, args, routes)
+    assert code == 0, payload
+    posts = _posts(made)
+    assert len(posts) == 1, made
+    _assert_finite_document(payload)
+    return payload, posts[0]["body"]
+
+
+def _assert_sell_price_bounds(payload, body, bid):
+    import math
+    from decimal import Decimal
+
+    price = body["price"]
+    assert body["type"] == "market"
+    assert body["quantity"] == 0.5
+    assert isinstance(price, float) and math.isfinite(price) and price > 0
+    echo = payload["sell_price"]
+    assert echo["sent_price"] == price
+    assert echo["bid_price"] == float(bid)
+    if echo["rule"] not in ABOVE_BID_RULES:
+        assert Decimal(repr(price)) <= Decimal(bid)
+    if echo["today_price"] > 0:
+        assert Decimal(repr(price)) <= Decimal(repr(echo["today_price"]))
+    return echo
+
+
+def test_sell_price_floors_below_the_bid_on_both_sell_scripts(tmp_path, subtests):
+    for script in (EXECUTE, CLOSE):
+        for bid in sorted(SELL_PRICE_ROWS):
+            today, by_increment = SELL_PRICE_ROWS[bid]
+            for increment in (None, "0.00000001"):
+                want_price, want_rule = by_increment[increment]
+                with subtests.test(script=os.path.basename(script), bid=bid, increment=increment):
+                    payload, body = _run_priced_sell(tmp_path, script, bid, _pairs(price_increment=increment))
+                    echo = _assert_sell_price_bounds(payload, body, bid)
+                    assert (body["price"], echo["rule"], echo["today_price"]) == (want_price, want_rule, today)
+                    assert ("price_increment" in echo) is (increment is not None)
+                    assert ("price_increment_problem" in echo) is (increment is None)
+
+
+SELL_PRICE_EDGES = {
+    "increment_missing": ("99.00", _pairs(drop=("min_order_price_increment",)), 99.0, "floor_decimals"),
+    "increment_zero": ("99.00", _pairs(price_increment="0"), 99.0, "floor_decimals"),
+    "increment_text": ("99.00", _pairs(price_increment="abc"), 99.0, "floor_decimals"),
+    "coarse_increment_above_the_floor": ("99.00", _pairs(price_increment="200"), 99.0, "round_fallback"),
+    "irregular_increment_at_a_zero_rounded_bid": ("0.0000004", _pairs(price_increment="0.00000001234567890123456789"), None, "one_step"),
+    "inexact_flooring_candidate": ("1.4951", _pairs(price_increment="0.00000001234567890123456789"), None, "wire_floor"),
+    "raw_bid_below_the_exact_parser_range": ("1e-40", _pairs(price_increment=None), 0.000001, "one_step"),
+    "raw_bid_above_the_exact_parser_range": ("1e20", _pairs(), 1e20, "floor_increment"),
+}
+
+
+def test_sell_price_edge_cases_never_refuse_and_stay_positive(tmp_path, subtests):
+    from decimal import Decimal
+
+    for case in sorted(SELL_PRICE_EDGES):
+        bid, pairs, want_price, want_rule = SELL_PRICE_EDGES[case]
+        for script in (EXECUTE, CLOSE):
+            with subtests.test(case=case, script=os.path.basename(script)):
+                payload, body = _run_priced_sell(tmp_path, script, bid, pairs)
+                echo = _assert_sell_price_bounds(payload, body, bid)
+                assert echo["rule"] == want_rule
+                if want_price is not None:
+                    assert body["price"] == want_price
+                if case.startswith("increment_"):
+                    assert isinstance(echo.get("price_increment_problem"), str) and echo["price_increment_problem"]
+                if case == "irregular_increment_at_a_zero_rounded_bid":
+                    assert 0 < Decimal(repr(body["price"])) <= Decimal("0.00000001234567890123456789")
+                if case == "inexact_flooring_candidate":
+                    assert Decimal(repr(body["price"])) < Decimal("1.49")
 
 LOGIN_FAILED = "Robinhood login failed:"
 PATHFINDER = "https://api.robinhood.com/pathfinder/user_machine/"
