@@ -20,13 +20,14 @@ type UIRegimeWindow struct {
 }
 
 type UIRegimeEntry struct {
-	Error     string                    `json:"error,omitempty"`
-	Platform  string                    `json:"platform"`
-	Symbol    string                    `json:"symbol"`
-	Timeframe string                    `json:"timeframe"`
-	BarTime   string                    `json:"bar_time,omitempty"`
-	Windows   map[string]UIRegimeWindow `json:"windows"`
-	At        time.Time                 `json:"at"`
+	Error      string                    `json:"error,omitempty"`
+	Platform   string                    `json:"platform"`
+	AssetClass string                    `json:"asset_class"`
+	Symbol     string                    `json:"symbol"`
+	Timeframe  string                    `json:"timeframe"`
+	BarTime    string                    `json:"bar_time,omitempty"`
+	Windows    map[string]UIRegimeWindow `json:"windows"`
+	At         time.Time                 `json:"at"`
 }
 
 func uiRegimeEntries(store *RegimeStore) ([]UIRegimeEntry, time.Time) {
@@ -52,13 +53,14 @@ func uiRegimeEntries(store *RegimeStore) ([]UIRegimeEntry, time.Time) {
 			windows[name] = w
 		}
 		out = append(out, UIRegimeEntry{
-			Error:     b.Err,
-			Platform:  b.Key.Platform,
-			Symbol:    b.Key.Symbol,
-			Timeframe: b.Key.Timeframe,
-			BarTime:   b.BarTime,
-			Windows:   windows,
-			At:        b.At,
+			Error:      b.Err,
+			Platform:   b.Key.Platform,
+			AssetClass: b.Key.AssetClass,
+			Symbol:     b.Key.Symbol,
+			Timeframe:  b.Key.Timeframe,
+			BarTime:    b.BarTime,
+			Windows:    windows,
+			At:         b.At,
 		})
 	}
 	return out, builtAt

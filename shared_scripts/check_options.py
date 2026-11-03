@@ -38,7 +38,7 @@ class CheckError(Exception):
         self.reason = reason
 
 
-def _load_adapter(platform: str):
+def _load_adapter(platform: str, underlying: str = ""):
     adapter_path = os.path.join(_REPO_ROOT, "platforms", platform, "adapter.py")
     if not os.path.exists(adapter_path):
         raise ImportError(f"No adapter found for platform '{platform}' at {adapter_path}")
@@ -48,13 +48,20 @@ def _load_adapter(platform: str):
     spec = importlib.util.spec_from_file_location(f"{platform}_adapter", adapter_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    kwargs = {}
+    if platform == "robinhood":
+        try:
+            module.robinhood_stock_yahoo_ticker(underlying)
+        except module.UnsupportedRobinhoodSymbol as e:
+            raise CheckError(f"unsupported basis: {e}") from None
+        kwargs["asset_class"] = module.ASSET_CLASS_STOCK
     for name in dir(module):
         if name.endswith("ExchangeAdapter"):
-            return getattr(module, name)()
+            return getattr(module, name)(**kwargs)
     raise AttributeError(f"No ExchangeAdapter class found in {adapter_path}")
 
 
-def _fetch_ohlcv_df(underlying, timeframe, limit, min_len, adapter=None, errors=None):
+def _fetch_ohlcv_df(underlying, timeframe, limit, min_len, adapter=None, errors=None, platform=""):
     rows = None
     if adapter is not None:
         ohlcv_fn = getattr(adapter, "get_ohlcv", None)
@@ -66,6 +73,8 @@ def _fetch_ohlcv_df(underlying, timeframe, limit, min_len, adapter=None, errors=
                 if errors is not None:
                     errors.append(e)
                 rows = None
+    if not rows and platform == "robinhood":
+        return None
     if not rows:
         try:
             import ccxt
@@ -258,7 +267,8 @@ def select_structures(structures, existing_positions, spot_price,
 def evaluate_momentum_options(underlying, spot_price, vol_annual, iv_rank,
                                existing_positions, spot_positions, adapter):
     fetch_errors = []
-    df = _fetch_ohlcv_df(underlying, "4h", 100, 30, adapter=adapter, errors=fetch_errors)
+    df = _fetch_ohlcv_df(underlying, "4h", 100, 30, adapter=adapter, errors=fetch_errors,
+                         platform=getattr(adapter, "name", ""))
     if df is None:
         cause = next((e for e in reversed(fetch_errors) if option_data.upstream_status(e) is not None), None)
         raise option_data.unavailable("momentum bars unavailable", cause)
@@ -556,7 +566,7 @@ def _evaluate(ctx, args):
     if len(existing_positions) >= MAX_POSITIONS_PER_STRATEGY:
         return _result(ctx, skip_reason=f"Max positions reached ({len(existing_positions)}/{MAX_POSITIONS_PER_STRATEGY})")
 
-    adapter = _load_adapter(platform)
+    adapter = _load_adapter(platform, underlying)
 
     spot_price = option_data.require_finite_positive(adapter.get_spot_price(underlying), "Could not fetch spot price")
 
@@ -567,7 +577,7 @@ def _evaluate(ctx, args):
         regime_label = str(regime_snap.get("regime") or "") or None
     else:
         regime_df = _fetch_ohlcv_df(underlying, REGIME_TIMEFRAME, REGIME_LIMIT,
-                                    REGIME_MIN_BARS, adapter=adapter)
+                                    REGIME_MIN_BARS, adapter=adapter, platform=platform)
         regime_label = _regime_label_from_df(regime_df)
 
     if strategy_name in RANK_STRATEGIES and iv_rank is None:

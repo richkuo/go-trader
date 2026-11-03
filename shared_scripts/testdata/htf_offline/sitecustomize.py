@@ -74,6 +74,9 @@ def _patch_yfinance(module):
         data = _load()
         sym = getattr(self, "ticker", None) or getattr(self, "symbol", "")
         if period == "1d" and interval == "1d" and sym in data.get("yahoo_price", {}):
+            if data.get("yahoo_price_log"):
+                with open(data["yahoo_price_log"], "a") as fh:
+                    fh.write(json.dumps([sym, interval, period]) + "\n")
             px = float(data["yahoo_price"][sym])
             idx = pd.DatetimeIndex([pd.Timestamp("2026-10-01", tz="UTC")])
             return pd.DataFrame({"Open": [px], "High": [px], "Low": [px], "Close": [px], "Volume": [0.0]}, index=idx)

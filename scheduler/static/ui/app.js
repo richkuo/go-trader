@@ -2386,6 +2386,12 @@
     return snap.ready ? snap.regime : "warming (" + snap.bars + "/" + snap.need + ")";
   }
 
+  function regimeIdentityLabel(platform, assetClass) {
+    if (assetClass) return platform + ":" + assetClass;
+    if (platform === "robinhood") return platform + ":unclassified";
+    return platform || "";
+  }
+
   async function refreshRegimeStorePanel() {
     if (!els.regimeStoreContent) return;
     try {
@@ -2396,8 +2402,9 @@
         return;
       }
       els.regimeStoreContent.innerHTML = entries.map(function (entry) {
+        const identity = regimeIdentityLabel(entry.platform, entry.asset_class);
         const title = [entry.symbol, entry.timeframe].filter(Boolean).join(" ") +
-          (entry.platform ? " (" + entry.platform + ")" : "");
+          (identity ? " (" + identity + ")" : "");
         const windows = entry.windows || {};
         const windowRows = Object.keys(windows).sort().map(function (name) {
           const win = windows[name] || {};
@@ -2431,7 +2438,9 @@
         const when = row.ts ? new Date(row.ts).toLocaleString(undefined, {
           month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
         }) : "-";
-        const scope = [row.symbol, row.timeframe, row.window].filter(Boolean).join(" ");
+        const classed = row.asset_class || row.platform === "robinhood";
+        const scope = [row.symbol, row.timeframe, row.window].filter(Boolean).join(" ") +
+          (classed ? " (" + regimeIdentityLabel(row.platform, row.asset_class) + ")" : "");
         return '<div class="panel-row"><span class="panel-muted">' + escapeHTML(when) + "</span> " +
           escapeHTML(scope) + ": " + escapeHTML(humanizeRegimeLabel(row.old_label || "-")) +
           " → <strong>" + escapeHTML(humanizeRegimeLabel(row.new_label || "-")) + "</strong>" +

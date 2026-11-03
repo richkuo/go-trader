@@ -72,17 +72,18 @@ func validateRegimeTransitionsConfig(cfg *Config) []string {
 }
 
 type RegimeWindowTransitionRow struct {
-	ID        int64  `json:"id"`
-	Platform  string `json:"platform"`
-	Symbol    string `json:"symbol"`
-	Timeframe string `json:"timeframe"`
-	SpecJSON  string `json:"-"`
-	Window    string `json:"window"`
-	OldLabel  string `json:"old_label"`
-	NewLabel  string `json:"new_label"`
-	BarTime   string `json:"bar_time,omitempty"`
-	TS        string `json:"ts"`
-	AlertedAt string `json:"alerted_at,omitempty"`
+	ID         int64  `json:"id"`
+	Platform   string `json:"platform"`
+	AssetClass string `json:"asset_class"`
+	Symbol     string `json:"symbol"`
+	Timeframe  string `json:"timeframe"`
+	SpecJSON   string `json:"-"`
+	Window     string `json:"window"`
+	OldLabel   string `json:"old_label"`
+	NewLabel   string `json:"new_label"`
+	BarTime    string `json:"bar_time,omitempty"`
+	TS         string `json:"ts"`
+	AlertedAt  string `json:"alerted_at,omitempty"`
 
 	// SourceRole names the file a combined read took the row from. New writes
 	// always go to the primary; a paper file's pre-split history stays where it
@@ -97,9 +98,9 @@ type RegimeWindowHistoryEntry struct {
 
 func (sdb *StateDB) RegimeWindowTrailing(key regimeBundleKey, window string, limit int) ([]RegimeWindowHistoryEntry, error) {
 	rows, err := sdb.db.Query(`SELECT label, bar_time FROM regime_window_history
-		WHERE platform = ? AND symbol = ? AND timeframe = ? AND spec_json = ? AND window = ?
+		WHERE platform = ? AND asset_class = ? AND symbol = ? AND timeframe = ? AND spec_json = ? AND window = ?
 		ORDER BY id DESC LIMIT ?`,
-		key.Platform, key.Symbol, key.Timeframe, key.SpecJSON, window, limit)
+		key.Platform, key.AssetClass, key.Symbol, key.Timeframe, key.SpecJSON, window, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -129,25 +130,25 @@ func (sdb *StateDB) RegimeWindowTrailingLabels(key regimeBundleKey, window strin
 
 func (sdb *StateDB) InsertRegimeWindowHistoryRow(key regimeBundleKey, window, label, barTime, ts string) error {
 	_, err := sdb.db.Exec(`INSERT INTO regime_window_history
-		(platform, symbol, timeframe, spec_json, window, label, bar_time, ts)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		key.Platform, key.Symbol, key.Timeframe, key.SpecJSON, window, label, barTime, ts)
+		(platform, asset_class, symbol, timeframe, spec_json, window, label, bar_time, ts)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		key.Platform, key.AssetClass, key.Symbol, key.Timeframe, key.SpecJSON, window, label, barTime, ts)
 	return err
 }
 
 func (sdb *StateDB) InsertRegimeWindowTransition(key regimeBundleKey, window, oldLabel, newLabel, barTime, ts string) error {
 	_, err := sdb.db.Exec(`INSERT INTO regime_window_transitions
-		(platform, symbol, timeframe, spec_json, window, old_label, new_label, bar_time, ts, alerted_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
-		key.Platform, key.Symbol, key.Timeframe, key.SpecJSON, window, oldLabel, newLabel, barTime, ts)
+		(platform, asset_class, symbol, timeframe, spec_json, window, old_label, new_label, bar_time, ts, alerted_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
+		key.Platform, key.AssetClass, key.Symbol, key.Timeframe, key.SpecJSON, window, oldLabel, newLabel, barTime, ts)
 	return err
 }
 
 func (sdb *StateDB) UnalertedRegimeWindowTransitions(key regimeBundleKey, window string) ([]RegimeWindowTransitionRow, error) {
 	rows, err := sdb.db.Query(`SELECT id, old_label, new_label, bar_time, ts FROM regime_window_transitions
-		WHERE platform = ? AND symbol = ? AND timeframe = ? AND spec_json = ? AND window = ? AND alerted_at = ''
+		WHERE platform = ? AND asset_class = ? AND symbol = ? AND timeframe = ? AND spec_json = ? AND window = ? AND alerted_at = ''
 		ORDER BY id ASC`,
-		key.Platform, key.Symbol, key.Timeframe, key.SpecJSON, window)
+		key.Platform, key.AssetClass, key.Symbol, key.Timeframe, key.SpecJSON, window)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +156,7 @@ func (sdb *StateDB) UnalertedRegimeWindowTransitions(key regimeBundleKey, window
 	var out []RegimeWindowTransitionRow
 	for rows.Next() {
 		r := RegimeWindowTransitionRow{
-			Platform: key.Platform, Symbol: key.Symbol, Timeframe: key.Timeframe,
+			Platform: key.Platform, AssetClass: key.AssetClass, Symbol: key.Symbol, Timeframe: key.Timeframe,
 			SpecJSON: key.SpecJSON, Window: window,
 		}
 		if err := rows.Scan(&r.ID, &r.OldLabel, &r.NewLabel, &r.BarTime, &r.TS); err != nil {
@@ -176,7 +177,15 @@ func (sdb *StateDB) MarkRegimeWindowTransitionsAlerted(ids []int64, ts string) e
 }
 
 func (sdb *StateDB) RecentRegimeWindowTransitions(limit int) ([]RegimeWindowTransitionRow, error) {
-	rows, err := sdb.db.Query(`SELECT id, platform, symbol, timeframe, spec_json, window, old_label, new_label, bar_time, ts, alerted_at
+	hasClass, err := sdb.tableHasColumn("regime_window_transitions", "asset_class")
+	if err != nil {
+		return nil, err
+	}
+	classColumn := "''"
+	if hasClass {
+		classColumn = "asset_class"
+	}
+	rows, err := sdb.db.Query(`SELECT id, platform, `+classColumn+`, symbol, timeframe, spec_json, window, old_label, new_label, bar_time, ts, alerted_at
 		FROM regime_window_transitions ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -185,7 +194,7 @@ func (sdb *StateDB) RecentRegimeWindowTransitions(limit int) ([]RegimeWindowTran
 	var out []RegimeWindowTransitionRow
 	for rows.Next() {
 		var r RegimeWindowTransitionRow
-		if err := rows.Scan(&r.ID, &r.Platform, &r.Symbol, &r.Timeframe, &r.SpecJSON, &r.Window,
+		if err := rows.Scan(&r.ID, &r.Platform, &r.AssetClass, &r.Symbol, &r.Timeframe, &r.SpecJSON, &r.Window,
 			&r.OldLabel, &r.NewLabel, &r.BarTime, &r.TS, &r.AlertedAt); err != nil {
 			return nil, err
 		}
@@ -206,8 +215,8 @@ func (sdb *StateDB) PruneRegimeWindowRows(cutoffTS string) error {
 func (sdb *StateDB) RegimeReversalSignature(key regimeBundleKey) (string, error) {
 	var sig string
 	err := sdb.db.QueryRow(`SELECT signature FROM regime_reversal_alerts
-		WHERE platform = ? AND symbol = ? AND timeframe = ? AND spec_json = ?`,
-		key.Platform, key.Symbol, key.Timeframe, key.SpecJSON).Scan(&sig)
+		WHERE platform = ? AND asset_class = ? AND symbol = ? AND timeframe = ? AND spec_json = ?`,
+		key.Platform, key.AssetClass, key.Symbol, key.Timeframe, key.SpecJSON).Scan(&sig)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -215,17 +224,17 @@ func (sdb *StateDB) RegimeReversalSignature(key regimeBundleKey) (string, error)
 }
 
 func (sdb *StateDB) SetRegimeReversalSignature(key regimeBundleKey, sig, ts string) error {
-	_, err := sdb.db.Exec(`INSERT INTO regime_reversal_alerts (platform, symbol, timeframe, spec_json, signature, alerted_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(platform, symbol, timeframe, spec_json) DO UPDATE SET signature = excluded.signature, alerted_at = excluded.alerted_at`,
-		key.Platform, key.Symbol, key.Timeframe, key.SpecJSON, sig, ts)
+	_, err := sdb.db.Exec(`INSERT INTO regime_reversal_alerts (platform, asset_class, symbol, timeframe, spec_json, signature, alerted_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(platform, asset_class, symbol, timeframe, spec_json) DO UPDATE SET signature = excluded.signature, alerted_at = excluded.alerted_at`,
+		key.Platform, key.AssetClass, key.Symbol, key.Timeframe, key.SpecJSON, sig, ts)
 	return err
 }
 
 func (sdb *StateDB) ClearRegimeReversalSignature(key regimeBundleKey) error {
 	_, err := sdb.db.Exec(`DELETE FROM regime_reversal_alerts
-		WHERE platform = ? AND symbol = ? AND timeframe = ? AND spec_json = ?`,
-		key.Platform, key.Symbol, key.Timeframe, key.SpecJSON)
+		WHERE platform = ? AND asset_class = ? AND symbol = ? AND timeframe = ? AND spec_json = ?`,
+		key.Platform, key.AssetClass, key.Symbol, key.Timeframe, key.SpecJSON)
 	return err
 }
 
@@ -526,7 +535,7 @@ func recentRegimeTransitionsNote(sdb *StateStore, rc *RegimeConfig, now time.Tim
 		if r.TS < cutoff {
 			continue
 		}
-		line := fmt.Sprintf("  %s/%s/%s %s: %s → %s", r.Platform, r.Symbol, r.Timeframe, r.Window, r.OldLabel, r.NewLabel)
+		line := fmt.Sprintf("  %s/%s/%s %s: %s → %s", regimeIdentityLabel(r.Platform, r.AssetClass), r.Symbol, r.Timeframe, r.Window, r.OldLabel, r.NewLabel)
 		if r.BarTime != "" {
 			line += " @ " + r.BarTime
 		}

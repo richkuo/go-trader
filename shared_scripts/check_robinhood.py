@@ -121,7 +121,13 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      closed_bar=False, decision_regime_timeframe=""):
     with json_stdout() as emit:
         try:
-            from adapter import ROBINHOOD_CLOSED_BAR_REFUSED, RobinhoodExchangeAdapter, robinhood_session_closed_bar_refusal
+            from adapter import (
+                ASSET_CLASS_CRYPTO,
+                ROBINHOOD_CLOSED_BAR_REFUSED,
+                RobinhoodExchangeAdapter,
+                robinhood_crypto_yahoo_ticker,
+            )
+            robinhood_crypto_yahoo_ticker(symbol)
             from strategies import apply_strategy, get_strategy, list_strategies
             from close_registry_loader import (
                 evaluate as close_evaluate,
@@ -155,9 +161,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             if closed_bar:
                 if mode == "live":
                     raise ValueError(LIVE_CLOSED_BAR_REFUSAL)
-                session_refusal = robinhood_session_closed_bar_refusal(symbol)
-                if session_refusal:
-                    raise ValueError(f"closed_bar_decisions is not supported on robinhood: {session_refusal}")
                 for name in (strategy_name, open_strategy or strategy_name):
                     why = unsupported_open_strategy_reason(name)
                     if why:
@@ -167,7 +170,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 if timeframe in ROBINHOOD_CLOSED_BAR_REFUSED:
                     raise ValueError(f"closed_bar_decisions does not support {timeframe} on robinhood: {ROBINHOOD_CLOSED_BAR_REFUSED[timeframe]}")
 
-            adapter = RobinhoodExchangeAdapter(mode=mode)
+            adapter = RobinhoodExchangeAdapter(mode=mode, asset_class=ASSET_CLASS_CRYPTO)
 
             print(f"Fetching {symbol} {timeframe} from Robinhood/yfinance ({mode})...", file=sys.stderr)
             cutoff_ms = 0

@@ -58,7 +58,13 @@ def _install():
     import requests.models
     import yfinance
 
+    yahoo_log = os.environ.get("RH_OFFLINE_STUB_YAHOO_LOG", "")
+
     def stub_history(self, *args, **kwargs):
+        if yahoo_log:
+            with open(yahoo_log, "a") as f:
+                f.write(json.dumps({"yahoo": getattr(self, "ticker", ""), "period": kwargs.get("period"),
+                                    "interval": kwargs.get("interval")}) + "\n")
         if kwargs.get("interval") == "1d" and os.environ.get("RH_OFFLINE_STUB_DAILY") == "error":
             raise RuntimeError("robinhood offline stub: daily history failure")
         n = 260

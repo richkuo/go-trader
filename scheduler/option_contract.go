@@ -84,8 +84,8 @@ func optionPricingPolicyError(platform, underlying string) error {
 			return fmt.Errorf("%s options price only the inverse BTC and ETH option families (instrument UNDERLYING-DDMONYY-STRIKE-C|P); underlying %q is outside that local naming path", platform, underlying)
 		}
 	case "robinhood":
-		if u == "" || robinhoodYahooCryptoPair(u) {
-			return fmt.Errorf("robinhood options price only listed equity and ETF underlyings; %q resolves to the Yahoo crypto pair %s, which has no listed option to mark or settle", underlying, robinhoodYahooSymbol(u))
+		if why := robinhoodStockUnderlyingError(underlying); why != "" {
+			return fmt.Errorf("%s", why)
 		}
 	}
 	return nil
