@@ -88,6 +88,17 @@ func TestOptionExpiredLegLeavesOnlyThroughSettlementIntegration(t *testing.T) {
 		if s.OptionPositions[pendingKey] == nil || s.Cash != 200000 || len(s.TradeHistory) != trades || len(s.ClosedOptionPositions) != 0 {
 			t.Fatalf("circuit breaker booked a pending leg: legs=%d cash=%v trades=%d closed=%d", len(s.OptionPositions), s.Cash, len(s.TradeHistory), len(s.ClosedOptionPositions))
 		}
+		s.OptionPositions[pendingKey].markVerifiedAt = afterReady
+		harvest := &ThetaHarvestConfig{Enabled: true, ProfitTargetPct: 1, StopLossPct: 1, MinDTEClose: 30}
+		if n, _ := CheckThetaHarvest(s, harvest, optionHarvestClock{Now: afterReady, MaxMarkAge: time.Hour}, logger); n != 0 || s.OptionPositions[pendingKey] == nil || s.Cash != 200000 || len(s.TradeHistory) != trades {
+			t.Fatalf("theta harvest closed a pending leg: trades=%d cash=%v", n, s.Cash)
+		}
+		s.OptionPositions[pendingKey].MarkError = ""
+		if n, _ := CheckThetaHarvest(s, harvest, optionHarvestClock{Now: afterReady, MaxMarkAge: time.Hour}, logger); n != 0 || s.OptionPositions[pendingKey] == nil || s.RiskState.ConsecutiveLosses != 0 {
+			t.Fatalf("theta harvest closed a leg past its cutoff: trades=%d", n)
+		}
+		s.OptionPositions[pendingKey].MarkError = optionSettlementPendingPrefix + "test"
+		s.OptionPositions[pendingKey].markVerifiedAt = time.Time{}
 		env.saveAll()
 		if a, c, l := lcRows(t, env, sc.ID); a != 0 || c != 0 || l != 1 {
 			t.Fatalf("after the trip: assignments=%d closed=%d legs=%d", a, c, l)
@@ -99,9 +110,15 @@ func TestOptionExpiredLegLeavesOnlyThroughSettlementIntegration(t *testing.T) {
 			t.Fatalf("settle: %+v", res)
 		}
 		env.saveAll()
-		rows, reason, _ := elClosedRows(t, env, sc.ID)
-		if a, _, l := lcRows(t, env, sc.ID); a != 1 || rows != 1 || reason != "expired_itm" || l != 0 || s.Cash != 200000-800*100 {
-			t.Fatalf("settlement: assignments=%d closed=%d reason=%q legs=%d cash=%v", a, rows, reason, l, s.Cash)
+		rows, reason, pnl := elClosedRows(t, env, sc.ID)
+		if a, _, l := lcRows(t, env, sc.ID); a != 1 || rows != 1 || reason != "expired_itm" || l != 0 || s.Cash != 200000-800*100 || !ocNear(pnl, 300-(800-755.72)*100) {
+			t.Fatalf("settlement: assignments=%d closed=%d reason=%q pnl=%v legs=%d cash=%v", a, rows, reason, pnl, l, s.Cash)
+		}
+		if p := s.Positions["SPY"]; p == nil || p.Quantity != 100 || !ocNear(p.AvgCost, 755.72) {
+			t.Fatalf("assigned shares = %+v, want 100 at the 755.72 settlement price", p)
+		}
+		if n := lcCount(t, env, sc.ID, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND trade_type = 'options' AND is_close = 1`); n != 1 {
+			t.Fatalf("option close rows = %d, want 1", n)
 		}
 	})
 

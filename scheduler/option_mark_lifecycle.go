@@ -66,14 +66,6 @@ type optionLegReply struct {
 	Err        string
 }
 
-type optionAssignment struct {
-	AssignUnderlying string
-	AssignOptionType string
-	AssignStrike     float64
-	AssignSpotPrice  float64
-	AssignQuantity   float64
-}
-
 type optionHarvestClock struct {
 	Now        time.Time
 	MaxMarkAge time.Duration
@@ -368,7 +360,7 @@ func applyOptionLegReplies(s *StrategyState, platform string, reqs []optionLegRe
 			if r.Err == "" && r.Pending == "" && r.Settlement != nil {
 				if err := optionSettlementError(platform, pos, r.Settlement); err != nil {
 					r.Err = err.Error()
-				} else if err := settleExpiredOptionLeg(s, req.Key, pos, req.Multiplier, *r.Settlement, refreshAt, logger); err != nil {
+				} else if err := settleExpiredOptionLeg(s, platform, req.Key, pos, req.Multiplier, *r.Settlement, refreshAt, logger); err != nil {
 					r.Err = err.Error()
 				} else {
 					res.Settled++
@@ -420,7 +412,93 @@ func applyOptionLegReplies(s *StrategyState, platform string, reqs []optionLegRe
 	return res
 }
 
-func settleExpiredOptionLeg(s *StrategyState, key string, pos *OptionPosition, multiplier float64, st optionLegSettlement, refreshAt time.Time, logger *StrategyLogger) error {
+type optionPhysicalTransfer struct {
+	Symbol      string
+	Side        string
+	Units       float64
+	Price       float64
+	Value       float64
+	Existing    *Position
+	NewQuantity float64
+	NewAvgCost  float64
+	PnL         float64
+}
+
+func finiteAmount(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0)
+}
+
+func optionHeldLongCover(pos *Position) bool {
+	return pos != nil && pos.Side == "long" && finitePositive(pos.Quantity) && finitePositive(pos.AvgCost)
+}
+
+func planOptionPhysicalTransfer(s *StrategyState, key string, pos *OptionPosition, units, settlePx float64) (*optionPhysicalTransfer, []string, error) {
+	symbol := strings.ToUpper(pos.Underlying)
+	existing := s.Positions[symbol]
+	switch pos.OptionType {
+	case "put":
+		if existing != nil && !optionHeldLongCover(existing) {
+			return nil, []string{fmt.Sprintf("PUT ASSIGNMENT NOT DELIVERED: sold put %s expired in the money, but %s already holds a %s position qty=%g avg_cost=%g that is not a usable long; the position is kept, no units are delivered and the option settles in cash at its intrinsic only",
+				key, symbol, existing.Side, existing.Quantity, existing.AvgCost)}, nil
+		}
+		cost := settlePx * units
+		if !finitePositive(cost) {
+			return nil, nil, fmt.Errorf("put delivery cost %v x %v is not a finite positive amount", settlePx, units)
+		}
+		t := &optionPhysicalTransfer{Symbol: symbol, Side: "buy", Units: units, Price: settlePx, Value: cost, Existing: existing, NewQuantity: units, NewAvgCost: settlePx}
+		if existing != nil {
+			t.NewQuantity = existing.Quantity + units
+			t.NewAvgCost = (existing.AvgCost*existing.Quantity + cost) / t.NewQuantity
+			if !finitePositive(t.NewQuantity) || !finitePositive(t.NewAvgCost) {
+				return nil, nil, fmt.Errorf("put delivery into %s overflows (qty %v + %v)", symbol, existing.Quantity, units)
+			}
+		}
+		return t, nil, nil
+	case "call":
+		var warns []string
+		held := 0.0
+		if optionHeldLongCover(existing) {
+			held = existing.Quantity
+		} else if existing != nil && existing.Side == "long" {
+			warns = append(warns, fmt.Sprintf("CORRUPT CALL COVER: sold call %s expired in the money and %s long qty=%g avg_cost=%g is corrupt, so it is not cover; the row is kept and the option settles in cash at its intrinsic",
+				key, symbol, existing.Quantity, existing.AvgCost))
+		}
+		covered := math.Min(units, held)
+		if uncovered := units - covered; uncovered > 0 {
+			warns = append(warns, fmt.Sprintf("UNCOVERED CALL ASSIGNMENT: sold call %s expired in the money (settlement $%s) with %g of %g %s units held; %g uncovered units get no delivery and no strike proceeds, and their intrinsic is in the option settlement",
+				key, formatSignalPrice(settlePx), covered, units, symbol, uncovered))
+		}
+		if covered <= 0 {
+			return nil, warns, nil
+		}
+		proceeds := settlePx * covered
+		pnl := (settlePx - existing.AvgCost) * covered
+		if !finitePositive(proceeds) || !finiteAmount(pnl) {
+			return nil, nil, fmt.Errorf("call delivery of %v %s at %v overflows", covered, symbol, settlePx)
+		}
+		return &optionPhysicalTransfer{Symbol: symbol, Side: "sell", Units: covered, Price: settlePx, Value: proceeds, Existing: existing,
+			NewQuantity: existing.Quantity - covered, NewAvgCost: existing.AvgCost, PnL: pnl}, warns, nil
+	}
+	return nil, nil, fmt.Errorf("option type %q is not call or put", pos.OptionType)
+}
+
+func settleExpiredOptionLeg(s *StrategyState, platform, key string, pos *OptionPosition, multiplier float64, st optionLegSettlement, refreshAt time.Time, logger *StrategyLogger) error {
+	style, err := optionSettlementStyle(platform)
+	if err != nil {
+		return err
+	}
+	if !finitePositive(st.Price) {
+		return fmt.Errorf("settlement price %v is not positive", st.Price)
+	}
+	if !finitePositive(pos.Strike) {
+		return fmt.Errorf("strike %v is not positive", pos.Strike)
+	}
+	if !finiteAmount(pos.EntryPremiumUSD) {
+		return fmt.Errorf("entry premium %v is not finite", pos.EntryPremiumUSD)
+	}
+	if pos.Action != "buy" && pos.Action != "sell" {
+		return fmt.Errorf("action %q is not buy or sell", pos.Action)
+	}
 	var unit float64
 	switch pos.OptionType {
 	case "call":
@@ -438,52 +516,141 @@ func settleExpiredOptionLeg(s *StrategyState, key string, pos *OptionPosition, m
 	if err != nil {
 		return fmt.Errorf("settlement units: %w", err)
 	}
-	assigned := pos.Action == "sell" && unit > 0
+	cashDelta, pnl := -intrinsic, pos.EntryPremiumUSD-intrinsic
+	if pos.Action == "buy" {
+		cashDelta, pnl = intrinsic, intrinsic-pos.EntryPremiumUSD
+	}
+	var transfer *optionPhysicalTransfer
+	var warns []string
+	if pos.Action == "sell" && unit > 0 && style == optionSettlementPhysical {
+		if transfer, warns, err = planOptionPhysicalTransfer(s, key, pos, units, st.Price); err != nil {
+			return err
+		}
+	}
+	finalCash := s.Cash + cashDelta
+	if transfer != nil {
+		if transfer.Side == "buy" {
+			finalCash -= transfer.Value
+		} else {
+			finalCash += transfer.Value
+		}
+	}
+	if !finiteAmount(pnl) || !finiteAmount(finalCash) {
+		return fmt.Errorf("settlement cash or PnL overflows (cash %v, intrinsic %v, premium %v)", s.Cash, intrinsic, pos.EntryPremiumUSD)
+	}
 
 	prevDefer := s.deferTradePersist
 	s.deferTradePersist = true
 	defer func() { s.deferTradePersist = prevDefer }()
 
-	var pnl float64
-	if pos.Action == "buy" {
-		pnl = intrinsic - pos.EntryPremiumUSD
-		s.Cash += intrinsic
-		pos.CurrentValueUSD = intrinsic
-	} else {
-		pnl = pos.EntryPremiumUSD - intrinsic
-		pos.CurrentValueUSD = -intrinsic
-	}
-	pos.DTE = 0
 	reason := "expired_worthless"
-	if assigned {
+	if intrinsic > 0 {
 		reason = "expired_itm"
 	}
 	label := fmt.Sprintf("%s %s %s $%s", st.Source, st.Basis, st.Date, formatSignalPrice(st.Price))
+	positionID := ensureOptionTradeID(s.ID, pos)
+	s.Cash += cashDelta
+	pos.CurrentValueUSD = cashDelta
+	pos.DTE = 0
+	RecordTrade(s, Trade{
+		Timestamp:   refreshAt,
+		StrategyID:  s.ID,
+		Symbol:      pos.ID,
+		PositionID:  positionID,
+		Side:        optionCloseTradeSide(pos.Action),
+		Quantity:    pos.Quantity,
+		Price:       intrinsic,
+		Value:       intrinsic,
+		TradeType:   "options",
+		Details:     fmt.Sprintf("Expiry settlement %s %s (%s settlement) intrinsic=$%.2f PnL=$%.2f [settlement %s]", pos.ID, reason, style, intrinsic, pnl, label),
+		IsClose:     true,
+		RealizedPnL: pnl,
+		PnLGross:    true,
+		Regime:      s.Regime,
+	})
+	RecordTradeResult(&s.RiskState, pnl)
 	recordClosedOptionPosition(s, pos, intrinsic, pnl, reason, refreshAt)
 	delete(s.OptionPositions, key)
-	assignedStr := ""
-	if assigned {
-		assignedStr = " [ASSIGNED]"
+	logger.Info("Position %s expired (%s), settlement=%s, %s settlement, intrinsic=$%.2f, PnL=$%.2f", key, reason, label, style, intrinsic, pnl)
+	for _, w := range warns {
+		logger.Warn("%s", w)
 	}
-	logger.Info("Position %s expired, settlement=%s, intrinsic=$%.2f%s", key, label, intrinsic, assignedStr)
-	if !assigned {
-		logger.Info("Removed expired position %s (%s)", key, reason)
-		return nil
-	}
-	from := len(s.TradeHistory)
-	applyAssignment(s, optionAssignment{
-		AssignUnderlying: pos.Underlying,
-		AssignOptionType: pos.OptionType,
-		AssignStrike:     pos.Strike,
-		AssignSpotPrice:  st.Price,
-		AssignQuantity:   units,
-	}, logger)
-	for i := from; i < len(s.TradeHistory); i++ {
-		if s.TradeHistory[i].TradeType == "assignment" {
-			s.TradeHistory[i].Details += " [settlement " + label + "]"
-		}
+	if transfer != nil {
+		bookOptionPhysicalTransfer(s, key, pos, transfer, label, refreshAt, logger)
 	}
 	return nil
+}
+
+func bookOptionPhysicalTransfer(s *StrategyState, key string, pos *OptionPosition, t *optionPhysicalTransfer, label string, at time.Time, logger *StrategyLogger) {
+	suffix := " [settlement " + label + "]"
+	if t.Side == "buy" {
+		s.Cash -= t.Value
+		var positionID string
+		if t.Existing != nil {
+			t.Existing.Quantity = t.NewQuantity
+			t.Existing.AvgCost = t.NewAvgCost
+			positionID = ensurePositionTradeID(s.ID, t.Symbol, t.Existing)
+		} else {
+			positionID = newTradePositionID(s.ID, t.Symbol, at)
+			s.Positions[t.Symbol] = &Position{
+				Symbol:          t.Symbol,
+				TradePositionID: positionID,
+				Quantity:        t.Units,
+				InitialQuantity: t.Units,
+				AvgCost:         t.Price,
+				Side:            "long",
+				OwnerStrategyID: s.ID,
+				OpenedAt:        at,
+			}
+		}
+		RecordTrade(s, Trade{
+			Timestamp:  at,
+			StrategyID: s.ID,
+			Symbol:     t.Symbol,
+			PositionID: positionID,
+			Side:       "buy",
+			Quantity:   t.Units,
+			Price:      t.Price,
+			Value:      t.Value,
+			TradeType:  "assignment",
+			Details: fmt.Sprintf("Wheel assignment: sold put %s (strike $%.2f) expired in the money, bought %g %s @ settlement $%.2f",
+				key, pos.Strike, t.Units, t.Symbol, t.Price) + suffix,
+			Regime: s.Regime,
+		})
+		logger.Info("ASSIGNMENT: sold put %s expired in the money, bought %g %s @ settlement $%.2f (cash debit=$%.2f)", key, t.Units, t.Symbol, t.Price, t.Value)
+		return
+	}
+	existing := t.Existing
+	s.Cash += t.Value
+	positionID := ensurePositionTradeID(s.ID, t.Symbol, existing)
+	entryATR, stopPx := existing.EntryATR, existing.StopLossTriggerPx
+	if t.NewQuantity <= 0 {
+		recordClosedPosition(s, existing, t.Price, t.PnL, "assignment", at)
+		delete(s.Positions, t.Symbol)
+	} else {
+		existing.Quantity = t.NewQuantity
+	}
+	RecordTradeResult(&s.RiskState, t.PnL)
+	RecordTrade(s, Trade{
+		Timestamp:  at,
+		StrategyID: s.ID,
+		Symbol:     t.Symbol,
+		PositionID: positionID,
+		Side:       "sell",
+		Quantity:   t.Units,
+		Price:      t.Price,
+		Value:      t.Value,
+		TradeType:  "assignment",
+		Details: fmt.Sprintf("Wheel call-away: sold call %s (strike $%.2f) expired in the money, sold %g %s @ settlement $%.2f PnL=$%.2f",
+			key, pos.Strike, t.Units, t.Symbol, t.Price, t.PnL) + suffix,
+		IsClose:           true,
+		RealizedPnL:       t.PnL,
+		PnLGross:          true,
+		Regime:            s.Regime,
+		EntryATR:          entryATR,
+		StopLossTriggerPx: stopPx,
+	})
+	logger.Info("CALL-AWAY: sold call %s expired in the money, sold %g %s @ settlement $%.2f (proceeds=$%.2f, PnL=$%.2f)", key, t.Units, t.Symbol, t.Price, t.Value, t.PnL)
 }
 
 type optionSettlementAlertThrottle struct {
