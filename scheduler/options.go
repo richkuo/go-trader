@@ -366,6 +366,10 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 	for _, id := range sortedOptionLegKeys(s.OptionPositions) {
 		pos := s.OptionPositions[id]
 		if pos.Underlying == result.Underlying && pos.Strike == action.Strike && pos.OptionType == action.OptionType {
+			if optionLegAwaitingSettlement(s.Platform, pos, tradingNow().UTC()) {
+				logger.Warn("Option close skipped for %s: at or past its expiry cutoff; settlement books it", id)
+				continue
+			}
 			pnl := 0.0
 			var closePriceUSD float64
 			if pos.Action == "buy" {

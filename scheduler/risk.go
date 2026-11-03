@@ -1352,7 +1352,17 @@ func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[str
 	}
 	now := tradingNow().UTC()
 
-	for id, pos := range s.OptionPositions {
+	for _, id := range sortedOptionLegKeys(s.OptionPositions) {
+		pos := s.OptionPositions[id]
+		if pos == nil {
+			continue
+		}
+		if optionLegAwaitingSettlement(s.Platform, pos, now) {
+			if logger != nil {
+				logger.Warn("Circuit breaker: %s is at or past its expiry cutoff and stays open until settlement books it", id)
+			}
+			continue
+		}
 		var pnl, closePrice float64
 		if pos.Action == "buy" {
 			pnl = pos.CurrentValueUSD - pos.EntryPremiumUSD

@@ -125,6 +125,17 @@ func optionGoExpirySchedule(platform, expiry string) (time.Time, time.Time, bool
 	return time.Time{}, time.Time{}, false, nil
 }
 
+func optionLegAwaitingSettlement(platform string, pos *OptionPosition, now time.Time) bool {
+	if !pos.ExpiryCutoffAt.IsZero() {
+		return !now.Before(pos.ExpiryCutoffAt)
+	}
+	if cutoff, _, ok, err := optionGoExpirySchedule(platform, pos.Expiry); err == nil && ok {
+		return !now.Before(cutoff)
+	}
+	day, err := time.Parse("2006-01-02", pos.Expiry)
+	return err == nil && !now.Before(day)
+}
+
 func collectOptionLegRequests(s *StrategyState, platform string, refreshAt time.Time) []optionLegRequest {
 	if s == nil {
 		return nil
@@ -436,6 +447,7 @@ func settleExpiredOptionLeg(s *StrategyState, key string, pos *OptionPosition, m
 	var pnl float64
 	if pos.Action == "buy" {
 		pnl = intrinsic - pos.EntryPremiumUSD
+		s.Cash += intrinsic
 		pos.CurrentValueUSD = intrinsic
 	} else {
 		pnl = pos.EntryPremiumUSD - intrinsic

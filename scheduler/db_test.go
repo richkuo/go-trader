@@ -1628,9 +1628,10 @@ func TestClosedPositionPersistence(t *testing.T) {
 	})
 	t.Run("RecordClosedOptionPosition_ExecuteClose", func(t *testing.T) {
 		openedAt := time.Now().UTC().Add(-3 * time.Hour)
+		expiry := time.Now().UTC().AddDate(0, 1, 0).Format("2006-01-02")
 		pos := &OptionPosition{
-			ID: "BTC-call-buy-55000-2026-05-01", Underlying: "BTC", OptionType: "call",
-			Strike: 55000, Expiry: "2026-05-01", Action: "buy", Quantity: 1,
+			ID: "BTC-call-buy-55000-" + expiry, Underlying: "BTC", OptionType: "call",
+			Strike: 55000, Expiry: expiry, Action: "buy", Quantity: 1,
 			EntryPremium: 0.04, EntryPremiumUSD: 2000, CurrentValueUSD: 2500,
 			OpenedAt: openedAt,
 		}
