@@ -1,6 +1,6 @@
 # go-trader
 
-Guardrails only; mechanism: SKILL.md, docs/POST_UPDATE_HISTORY.md. CI fails at 17,000 B, target 16,500; one root file+`AGENTS.md` symlink. Shorten, drop no guardrail.
+Guardrails only; mechanism: SKILL.md, docs/POST_UPDATE_HISTORY.md. <17,000 B (target 16,500), one root file+`AGENTS.md` symlink. Shorten, drop no guardrail.
 
 ## Env
 - Go 1.26.2. Python: `uv run --no-sync python`; scheduler `.venv/bin/python3`; `uv sync`/worktree. systemd: `ProtectSystem=strict`, no `PATH`/`UV_CACHE_DIR` injected, secrets `/opt/go-trader/.env`, config `/var/lib/go-trader[/<instance>]/config.json`; `scheduler/config.json`=transition symlink.
@@ -46,7 +46,7 @@ Guardrails only; mechanism: SKILL.md, docs/POST_UPDATE_HISTORY.md. CI fails at 1
 - `ledger_compare.py`: sim tier close needs winning `resting_fill`; same costs.
 
 ## Patterns
-- Git from repo root; `go -C scheduler build .`, no `cd scheduler &&`.
+- Git from repo root; `go -C scheduler build .`, no `cd scheduler`.
 - New platform: SKILL.md Custom Platform Integration touchpoints; check scripts use public methods.
 - Subprocess: stdout JSON, exit 1 on error; Go parses anyway.
 - `egress*.go`: proxy mode attests first, no direct fallback, no creds in output.
@@ -59,7 +59,7 @@ Guardrails only; mechanism: SKILL.md, docs/POST_UPDATE_HISTORY.md. CI fails at 1
 - Registries: every SKILL.md Add Or Change Strategies step; `no_edge`: one `--mode=paper`, else `allow_no_edge:true`; snapshot `--list-json` first.
 - CB disable suppresses new fires only; latched HL-perps manage-only (`Signal=0`, not `continue`).
 - HL stops (`EffectiveStopLossPct`): 7 exclusive owners (none=`DefaultStopLossATRMult=1.0`); scalar-regime swap blocked while open. `risk_per_trade_pct`: unresolvable stop=fail-closed, exclusive vs sizing_leverage/margin/scale_in. Trailing SL replace only past `TrailingStopMinMovePct`; `stop/TP Q=hlOwnStopShare`; snapshot=full protection surface. Peers share `margin_mode`+`leverage`; `update_leverage` if flat.
-- SIGHUP `validateHotReloadCompatible` blocks add/remove, script/args/type/platform/HTFFilter, kill-switch identity, `db_file`/`paper_db_file`/`paper_source(s)`, effective `storage_strategy_id`, `max_notional_usd` (per partition), `market_feed`, `egress`, live `allow_no_edge`.
+- SIGHUP `validateHotReloadCompatible` blocks add/remove, script/args/type/platform/HTFFilter, kill-switch identity, `(paper_)db_file`/`paper_source(s)`, effective `storage_strategy_id`, `max_notional_usd`/partition, `market_feed`, `egress`, live `allow_no_edge`.
 - New per-strategy flag: every SKILL.md Implementation Patterns touchpoint.
 - `SendToPartitionChannels`: live=`SendToAllChannels`; paper=own roster (`resolveTradeChannel`, rebuilt on `ReloadConfig`), never suffix scan, `SendToAllChannels` only if empty.
 
@@ -87,6 +87,6 @@ Guardrails only; mechanism: SKILL.md, docs/POST_UPDATE_HISTORY.md. CI fails at 1
 ## Testing
 - **Unit tests only** if no run proves it or regression silent: rare venue states (partial/rejected/unknown), money math (sizing/PnL/fees), paper/live parity, DB migrations, large refactors. Else run real binaries/scripts (build/`probe`/`--once`); PR lists commands+log lines/criterion.
 - Kept test edit/removal: Outdated/Wrong/Obsolete+checkable ground, disclosed in commit+PR; no ground=fix code.
-- Kept suites pass: `go -C scheduler test ./...` (`-tags pyintegration`=SOLE Python-spawning tests), pytest `shared_strategies/ shared_tools/ backtest/`, `shared_scripts/test_*.py` by path. CI `-n auto`: never bare-`import` ambiguous name.
+- Kept suites+`bash scripts/check_pre_pr.sh` pass: `go -C scheduler test ./...` (`-tags pyintegration`=SOLE Python-spawning tests), pytest `shared_{strategies,tools}/ backtest/`, `shared_scripts/test_*.py` by path. CI `-n auto`: never bare-`import` ambiguous name.
 - Tabbed Go: Python `replace(old,new,1)`.
 - `tiered_tp_atr`/`trailing_stop_atr_mult` need `Position.EntryATR`; `*_live` recompute via `atr_source`; `avwap_stop`=virtual exit only.
