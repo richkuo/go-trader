@@ -26,6 +26,7 @@ REGIME_LIMIT = 100
 REGIME_MIN_BARS = required_regime_bars(14)
 SUPPORTED_PLATFORMS = ("deribit", "ibkr", "okx", "robinhood")
 RANK_STRATEGIES = ("butterfly", "vol_mean_reversion")
+PREMIUM_UNIT = "underlying_unit"
 
 
 class CheckError(Exception):
@@ -488,6 +489,7 @@ def _result(ctx, **fields):
         "iv_rank": None,
         "regime": None,
         "platform": ctx["platform"],
+        "premium_unit": PREMIUM_UNIT,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     doc.update(fields)

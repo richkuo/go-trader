@@ -364,12 +364,16 @@ func sharedWalletPoolTransitionBlockers(strategies []StrategyConfig, state *AppS
 func ValidateState(state *AppState, strategies []StrategyConfig) {
 	configuredPoolIDs := make(map[string]bool)
 	paperFundingIDs := make(map[string]bool)
+	paperOptionsIDs := make(map[string]bool)
 	for _, sc := range strategies {
 		if usesSharedWalletPoolBudget(sc) {
 			configuredPoolIDs[sc.ID] = true
 		}
 		if paperFundingEligible(sc) {
 			paperFundingIDs[sc.ID] = true
+		}
+		if sc.Type == "options" && !partitionFor(sc).IsLive() {
+			paperOptionsIDs[sc.ID] = true
 		}
 	}
 	for id, s := range state.Strategies {
@@ -380,6 +384,8 @@ func ValidateState(state *AppState, strategies []StrategyConfig) {
 		if s.Cash < 0 && !s.SharedWalletPoolBudget && !configuredPoolIDs[id] {
 			if paperFundingIDs[id] {
 				fmt.Printf("[INFO] state: paper strategy %s keeps negative cash=%g (paper funding debits are booked cash)\n", id, s.Cash)
+			} else if paperOptionsIDs[id] {
+				fmt.Printf("[INFO] state: paper options strategy %s keeps negative cash=%g (option settlement debt is booked cash)\n", id, s.Cash)
 			} else {
 				fmt.Printf("[WARN] state: strategy %s has negative cash=%g, clamping to 0\n", id, s.Cash)
 				s.Cash = 0
@@ -602,6 +608,13 @@ func LoadStateWithDB(cfg *Config, sdb *StateDB) (*AppState, error) {
 		return nil, fmt.Errorf("sqlite load: %w", err)
 	}
 	if state != nil {
+		stamped, err := stampLoadedOptionContractMultipliers(state, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite load: %w", err)
+		}
+		if stamped > 0 {
+			fmt.Printf("[state] Stamped %d legacy option leg contract size(s) from their strategy platform\n", stamped)
+		}
 		if target, moved := assignLegacyPortfolioScope(state, cfg); moved {
 			fmt.Printf("[state] Legacy unscoped portfolio risk row placed in the %s scope\n", partitionLabel(target))
 			if err := sdb.SaveState(state); err != nil {

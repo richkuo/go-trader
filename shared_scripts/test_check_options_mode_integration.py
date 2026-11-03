@@ -57,7 +57,9 @@ def _run(argv, tmp_path, stdin, extra=None, script=None):
 def _single_document(proc):
     lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
     assert len(lines) == 1, f"stdout must be one JSON document:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-    return json.loads(lines[0])
+    doc = json.loads(lines[0])
+    assert doc.get("premium_unit") == "underlying_unit", doc
+    return doc
 
 
 PAPER_ARGVS = {
@@ -200,7 +202,7 @@ MODEL_CASES = {
     "ibkr": (["BTC", "put", 88000.0, "2026-12-18", 45, 100000.0, 0.5432],
              [0.02531, 2531.03, {"delta": -0.2125, "gamma": 1.5e-05, "theta": -58.24, "vega": 101.89}]),
     "robinhood": (["SPY", "call", 670.0, "2026-12-18", 21, 600.0, 0.2345],
-                  [0.000638, 38.28, {"delta": 0.0299, "gamma": 0.002009, "theta": -0.06, "vega": 0.1}]),
+                  [0.000638, 0.3827645713633103, {"delta": 0.0299, "gamma": 0.002009, "theta": -0.06, "vega": 0.1}]),
 }
 
 
@@ -220,7 +222,14 @@ def test_model_pricing_keeps_its_baseline_and_needs_measured_inputs(tmp_path, su
                 run_dir = tmp_path / f"{platform}-{name}"
                 run_dir.mkdir()
                 out = _driver(run_dir, {}, platform, args[0], "premium", json.dumps(call_args))
-                assert {k: out.get(k) for k in want} == want, out
+                if "premium" in want:
+                    got = out.get("premium")
+                    assert isinstance(got, list) and len(got) == 3, out
+                    assert got[0] == want["premium"][0], out
+                    assert math.isclose(got[1], want["premium"][1], rel_tol=1e-12, abs_tol=0.0), out
+                    assert got[2] == want["premium"][2], out
+                else:
+                    assert {k: out.get(k) for k in want} == want, out
 
 
 def _handled_error(proc, want_error=None):
@@ -477,6 +486,7 @@ RH_LISTED = {"status": 200, "json": {"next": None, "results": [{"id": "opt-1", "
 RH_QUOTE_CASES = {
     "venue_quote_without_volatility": (_rh_routes(RH_LISTED, _rh_market("1.25")), {"RH_OFFLINE_STUB_DAILY": "error"}, None),
     "venue_quote_with_metrics": (_rh_routes(RH_LISTED, _rh_market("1.25")), {}, None),
+    "sub_cent_venue_quote": (_rh_routes(RH_LISTED, _rh_market("0.0137")), {}, None),
     "quote_server_error": (_rh_routes(RH_LISTED, {"status": 503, "json": {"detail": "busy"}}), {},
                            "option quote unavailable: robinhood option market data missing (upstream status 503)"),
     "quote_rate_limited": (_rh_routes(RH_LISTED, {"status": 429, "json": {"detail": "slow down"}}), {},
@@ -517,8 +527,10 @@ def test_authenticated_robinhood_prices_only_from_a_venue_quote(tmp_path, subtes
             assert proc.returncode == 0, proc.stderr
             out = _single_document(proc)
             leg = out["actions"][0]
-            assert leg["premium_usd"] == 125.0
-            assert leg["premium"] == round(1.25 / out["spot_price"], 6)
+            mark = float(routes["GET https://api.robinhood.com/marketdata/options/?*"][0]["json"]["results"][0]["adjusted_mark_price"])
+            assert out["platform"] == "robinhood"
+            assert leg["premium_usd"] == mark
+            assert leg["premium"] == round(mark / out["spot_price"], 6)
             assert leg["greeks"] == {"delta": -0.2, "gamma": 0.01, "theta": -0.05, "vega": 0.3}
             if extra:
                 assert out["iv_rank"] is None and out["vol_metrics_error"] == READ_FAILED

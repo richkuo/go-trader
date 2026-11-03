@@ -538,6 +538,49 @@ type InitOptions struct {
 	ManualLeverage              float64
 }
 
+func initOptionsSelectionError(opts InitOptions) error {
+	if !opts.EnableOptions {
+		return nil
+	}
+	for _, stratID := range opts.OptStrategies {
+		for _, platform := range opts.OptionPlatforms {
+			if !optionStrategyCannotCoverCalls(stratID, platform) {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("options enabled but no selected options strategy can open on the selected platforms (%s on %s needs held shares and is not generated)", strings.Join(opts.OptStrategies, ", "), strings.Join(opts.OptionPlatforms, ", "))
+}
+
+func initOptionsNotes(opts InitOptions) []string {
+	if !opts.EnableOptions {
+		return nil
+	}
+	var out []string
+	for _, platform := range opts.OptionPlatforms {
+		spec, ok := optionContractSpecs[platform]
+		if !ok || !spec.RequireCoveredCalls {
+			continue
+		}
+		for _, stratID := range opts.OptStrategies {
+			if optionStrategyCannotCoverCalls(stratID, platform) {
+				out = append(out, fmt.Sprintf("Note: %s is not generated for %s: a %s short call needs %g held shares of the underlying per contract in the same strategy, and %s never buys shares. Use wheel, which gets shares from a put assignment.", stratID, platform, platform, spec.Multiplier, stratID))
+			}
+		}
+		note := fmt.Sprintf("Note: a %s short put reserves strike x %g of cash per contract (a strike-500 put needs $%.0f).", platform, spec.Multiplier, 500*spec.Multiplier)
+		if opts.OptionsCapital > 0 {
+			note += fmt.Sprintf(" Options capital $%.0f covers one short put only up to strike $%.2f; raise capital on %s strategies that sell puts to at least strike x %g per contract.", opts.OptionsCapital, opts.OptionsCapital/spec.Multiplier, platform, spec.Multiplier)
+		}
+		out = append(out, note)
+		for _, stratID := range opts.OptStrategies {
+			if stratID == "vol_mean_reversion" {
+				out = append(out, fmt.Sprintf("Note: the high-IV side of %s on %s opens nothing without enough held shares to cover its short call; the whole signal is refused rather than booking only its short put.", stratID, platform))
+			}
+		}
+	}
+	return out
+}
+
 func generateConfig(opts InitOptions) *Config {
 	portfolioMaxDD := opts.PortfolioMaxDrawdownPct
 	if portfolioMaxDD <= 0 {
@@ -634,6 +677,9 @@ func generateConfig(opts InitOptions) *Config {
 							symbols = append(symbols, a)
 						}
 					}
+				}
+				if optionStrategyCannotCoverCalls(stratID, platform) {
+					continue
 				}
 				for _, assetName := range symbols {
 					prefix := platform
@@ -1165,10 +1211,18 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		}
 	}
 
+	if err := initOptionsSelectionError(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+
 	cfg := generateConfig(opts)
 	if err := applyContainerInitPolicy(cfg, opts.OutputPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
+	}
+	for _, note := range initOptionsNotes(opts) {
+		fmt.Fprintln(os.Stderr, note)
 	}
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -1641,6 +1695,11 @@ func runInit(args []string) int {
 		AutoUpdate:                autoUpdate,
 	}
 
+	if err := initOptionsSelectionError(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+
 	cfg := generateConfig(opts)
 	if err := applyContainerInitPolicy(cfg, outputPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1653,6 +1712,9 @@ func runInit(args []string) int {
 	fmt.Printf("Strategies: %d\n", len(cfg.Strategies))
 	for _, s := range cfg.Strategies {
 		fmt.Printf("  - %-35s (%s, $%.0f)\n", s.ID, s.Type, s.Capital)
+	}
+	for _, note := range initOptionsNotes(opts) {
+		fmt.Println(note)
 	}
 
 	if !p.YesNo("\nWrite config?", true) {

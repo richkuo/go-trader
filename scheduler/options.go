@@ -3,25 +3,27 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
 
 type OptionPosition struct {
-	ID              string    `json:"id"`
-	TradePositionID string    `json:"position_id,omitempty"`
-	Underlying      string    `json:"underlying"`
-	OptionType      string    `json:"option_type"`
-	Strike          float64   `json:"strike"`
-	Expiry          string    `json:"expiry"`
-	DTE             float64   `json:"dte"`
-	Action          string    `json:"action"`
-	Quantity        float64   `json:"quantity"`
-	EntryPremium    float64   `json:"entry_premium"`
-	EntryPremiumUSD float64   `json:"entry_premium_usd"`
-	CurrentValueUSD float64   `json:"current_value_usd"`
-	Greeks          OptGreeks `json:"greeks"`
-	OpenedAt        time.Time `json:"opened_at"`
+	ID                 string    `json:"id"`
+	TradePositionID    string    `json:"position_id,omitempty"`
+	Underlying         string    `json:"underlying"`
+	OptionType         string    `json:"option_type"`
+	Strike             float64   `json:"strike"`
+	Expiry             string    `json:"expiry"`
+	DTE                float64   `json:"dte"`
+	Action             string    `json:"action"`
+	Quantity           float64   `json:"quantity"`
+	ContractMultiplier float64   `json:"contract_multiplier,omitempty"`
+	EntryPremium       float64   `json:"entry_premium"`
+	EntryPremiumUSD    float64   `json:"entry_premium_usd"`
+	CurrentValueUSD    float64   `json:"current_value_usd"`
+	Greeks             OptGreeks `json:"greeks"`
+	OpenedAt           time.Time `json:"opened_at"`
 }
 
 type OptGreeks struct {
@@ -46,6 +48,8 @@ type OptionsAction struct {
 type OptionsResult struct {
 	Strategy        string          `json:"strategy"`
 	Underlying      string          `json:"underlying"`
+	Platform        string          `json:"platform"`
+	PremiumUnit     string          `json:"premium_unit"`
 	Signal          int             `json:"signal"`
 	SpotPrice       float64         `json:"spot_price"`
 	Actions         []OptionsAction `json:"actions"`
@@ -67,10 +71,58 @@ func ExecuteOptionsSignal(s *StrategyState, result *OptionsResult, logger *Strat
 	if result.Signal == 0 || len(result.Actions) == 0 {
 		return 0, nil
 	}
+	if err := optionsResultContractError(s.Platform, result); err != nil {
+		return 0, fmt.Errorf("%w; refusing %d option action(s)", err, len(result.Actions))
+	}
+
+	refuseEntries := false
+	spec, err := lookupOptionContractSpec(s.Platform, result.Underlying)
+	if err != nil {
+		return 0, err
+	}
+	if spec.RequireCoveredCalls {
+		needed := 0.0
+		var firstShortCall *OptionsAction
+		for i := range result.Actions {
+			action := &result.Actions[i]
+			if action.Action != "sell" || action.OptionType != "call" {
+				continue
+			}
+			qty := action.Quantity
+			if qty <= 0 {
+				qty = 1
+			}
+			shares, err := optionContractValueUSD(1, spec.Multiplier, qty)
+			if err != nil {
+				logger.Error("Option signal cover check failed: %v", err)
+				refuseEntries = true
+				break
+			}
+			needed += shares
+			if firstShortCall == nil {
+				firstShortCall = action
+			}
+		}
+		if firstShortCall != nil {
+			held := heldLongUnderlyingShares(s, result.Underlying)
+			reservedShares, err := reservedShortCallShares(s, result.Underlying)
+			if err != nil {
+				logger.Error("Option signal cover check failed: %v", err)
+				refuseEntries = true
+			} else if needed > held-reservedShares {
+				logger.Info("Uncovered short call refused %s strike=%.0f qty=%g: required %g free shares, available %g (held %g - reserved by open short calls %g); refusing every entry action in this signal",
+					result.Underlying, firstShortCall.Strike, max(firstShortCall.Quantity, 1), needed, held-reservedShares, held, reservedShares)
+				refuseEntries = true
+			}
+		}
+	}
 
 	tradesExecuted := 0
 
 	for _, action := range result.Actions {
+		if refuseEntries && (action.Action == "buy" || action.Action == "sell") {
+			continue
+		}
 		switch action.Action {
 		case "buy":
 			trades, err := executeOptionBuy(s, result, &action, logger)
@@ -104,26 +156,48 @@ func ExecuteOptionsSignal(s *StrategyState, result *OptionsResult, logger *Strat
 	return tradesExecuted, nil
 }
 
+func optionActionUnitPremiumUSD(result *OptionsResult, action *OptionsAction) float64 {
+	unit := action.PremiumUSD
+	if unit <= 0 {
+		unit = action.Premium * result.SpotPrice
+	}
+	return unit
+}
+
 func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAction, logger *StrategyLogger) (int, error) {
 	qty := action.Quantity
 	if qty <= 0 {
 		qty = 1.0
 	}
-	cost := action.PremiumUSD
-	if cost <= 0 {
-		cost = action.Premium * result.SpotPrice
+	spec, err := lookupOptionContractSpec(s.Platform, result.Underlying)
+	if err != nil {
+		return 0, err
 	}
-	cost *= qty
+	unit := optionActionUnitPremiumUSD(result, action)
+	if unit <= 0 {
+		logger.Info("Zero premium, skipping option buy")
+		return 0, nil
+	}
+	cost, err := optionContractValueUSD(unit, spec.Multiplier, qty)
+	if err != nil {
+		return 0, fmt.Errorf("buy %s %s strike=%.0f: %w", result.Underlying, action.OptionType, action.Strike, err)
+	}
 	if cost <= 0 {
 		logger.Info("Zero premium, skipping option buy")
 		return 0, nil
 	}
 
-	fee := CalculateOptionFee(s.Platform, cost, 1.0)
+	fee := CalculateOptionFee(s.Platform, cost, qty)
+	reserve, err := reservedShortPutCollateralUSD(s)
+	if err != nil {
+		return 0, err
+	}
 
 	totalCost := cost + fee
-	if totalCost > s.Cash {
-		logger.Info("Insufficient cash ($%.2f) for option buy ($%.2f + $%.2f fee)", s.Cash, cost, fee)
+	available := s.Cash - reserve
+	if totalCost > available {
+		logger.Info("Insufficient free cash for option buy %s %s strike=%.0f: required $%.2f (premium $%.2f + fee $%.2f), available $%.2f (cash $%.2f - reserved put collateral $%.2f)",
+			result.Underlying, action.OptionType, action.Strike, totalCost, cost, fee, available, s.Cash, reserve)
 		return 0, nil
 	}
 
@@ -134,20 +208,21 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 	positionID := newTradePositionID(s.ID, posID, now)
 	s.Cash -= totalCost
 	s.OptionPositions[posID] = &OptionPosition{
-		ID:              posID,
-		TradePositionID: positionID,
-		Underlying:      result.Underlying,
-		OptionType:      action.OptionType,
-		Strike:          action.Strike,
-		Expiry:          action.Expiry,
-		DTE:             action.DTE,
-		Action:          "buy",
-		Quantity:        qty,
-		EntryPremium:    action.Premium,
-		EntryPremiumUSD: cost,
-		CurrentValueUSD: cost,
-		Greeks:          action.Greeks,
-		OpenedAt:        now,
+		ID:                 posID,
+		TradePositionID:    positionID,
+		Underlying:         result.Underlying,
+		OptionType:         action.OptionType,
+		Strike:             action.Strike,
+		Expiry:             action.Expiry,
+		DTE:                action.DTE,
+		Action:             "buy",
+		Quantity:           qty,
+		ContractMultiplier: spec.Multiplier,
+		EntryPremium:       action.Premium,
+		EntryPremiumUSD:    cost,
+		CurrentValueUSD:    cost,
+		Greeks:             action.Greeks,
+		OpenedAt:           now,
 	}
 
 	trade := Trade{
@@ -156,15 +231,15 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 		Symbol:     fmt.Sprintf("%s-%s-%.0f-%s", result.Underlying, action.OptionType, action.Strike, action.Expiry),
 		PositionID: positionID,
 		Side:       "buy",
-		Quantity:   1.0,
+		Quantity:   qty,
 		Price:      cost,
 		Value:      totalCost,
 		TradeType:  "options",
-		Details:    fmt.Sprintf("Buy %s %s strike=%.0f exp=%s premium=$%.2f fee=$%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, cost, fee),
+		Details:    fmt.Sprintf("Buy %s %s strike=%.0f exp=%s qty=%g premium=$%.2f fee=$%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, qty, cost, fee),
 	}
 	trade.Regime = s.Regime
 	RecordTrade(s, trade)
-	logger.Info("BUY OPTION %s %s strike=%.0f exp=%s | $%.2f (fee $%.2f)", result.Underlying, action.OptionType, action.Strike, action.Expiry, cost, fee)
+	logger.Info("BUY OPTION %s %s strike=%.0f exp=%s qty=%g | $%.2f (fee $%.2f)", result.Underlying, action.OptionType, action.Strike, action.Expiry, qty, cost, fee)
 
 	return 1, nil
 }
@@ -174,24 +249,68 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 	if qty <= 0 {
 		qty = 1.0
 	}
-	premium := action.PremiumUSD
-	if premium <= 0 {
-		premium = action.Premium * result.SpotPrice
+	spec, err := lookupOptionContractSpec(s.Platform, result.Underlying)
+	if err != nil {
+		return 0, err
 	}
-	premium *= qty
+	unit := optionActionUnitPremiumUSD(result, action)
+	if unit <= 0 {
+		logger.Info("Zero premium, skipping option sell")
+		return 0, nil
+	}
+	premium, err := optionContractValueUSD(unit, spec.Multiplier, qty)
+	if err != nil {
+		return 0, fmt.Errorf("sell %s %s strike=%.0f: %w", result.Underlying, action.OptionType, action.Strike, err)
+	}
 	if premium <= 0 {
 		logger.Info("Zero premium, skipping option sell")
 		return 0, nil
 	}
 
-	if action.OptionType == "put" && action.Strike*qty > s.Cash {
-		logger.Info("Insufficient collateral for naked put: strike*qty=$%.2f > cash=$%.2f", action.Strike*qty, s.Cash)
-		return 0, nil
+	reserve, err := reservedShortPutCollateralUSD(s)
+	if err != nil {
+		return 0, err
+	}
+	newCollateral := 0.0
+	if action.OptionType == "put" {
+		newCollateral, err = optionContractValueUSD(action.Strike, spec.Multiplier, qty)
+		if err != nil {
+			return 0, fmt.Errorf("sell %s put strike=%.0f collateral: %w", result.Underlying, action.Strike, err)
+		}
+		if reserve+newCollateral > s.Cash {
+			logger.Info("Insufficient collateral for short put %s strike=%.0f qty=%g: required $%.2f (new $%.2f + reserved $%.2f), available cash $%.2f",
+				result.Underlying, action.Strike, qty, reserve+newCollateral, newCollateral, reserve, s.Cash)
+			return 0, nil
+		}
+	}
+	if action.OptionType == "call" && spec.RequireCoveredCalls {
+		need, err := optionContractValueUSD(1, spec.Multiplier, qty)
+		if err != nil {
+			return 0, fmt.Errorf("sell %s call strike=%.0f cover: %w", result.Underlying, action.Strike, err)
+		}
+		held := heldLongUnderlyingShares(s, result.Underlying)
+		reservedShares, err := reservedShortCallShares(s, result.Underlying)
+		if err != nil {
+			return 0, err
+		}
+		free := held - reservedShares
+		if need > free {
+			logger.Info("Uncovered short call refused %s strike=%.0f qty=%g: required %g free shares, available %g (held %g - reserved by open short calls %g)",
+				result.Underlying, action.Strike, qty, need, free, held, reservedShares)
+			return 0, nil
+		}
 	}
 
-	fee := CalculateOptionFee(s.Platform, premium, 1.0)
+	fee := CalculateOptionFee(s.Platform, premium, qty)
 
 	netPremium := premium - fee
+	resultingCash := s.Cash + netPremium
+	resultingReserve := reserve + newCollateral
+	if resultingCash < resultingReserve {
+		logger.Info("Option sell %s %s strike=%.0f would leave cash below reserved put collateral: required $%.2f, available $%.2f after premium $%.2f and fee $%.2f",
+			result.Underlying, action.OptionType, action.Strike, resultingReserve, resultingCash, premium, fee)
+		return 0, nil
+	}
 
 	posID := fmt.Sprintf("%s-%s-%s-%.0f-%s",
 		result.Underlying, action.OptionType, action.Action, action.Strike, action.Expiry)
@@ -200,20 +319,21 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 	positionID := newTradePositionID(s.ID, posID, now)
 	s.Cash += netPremium
 	s.OptionPositions[posID] = &OptionPosition{
-		ID:              posID,
-		TradePositionID: positionID,
-		Underlying:      result.Underlying,
-		OptionType:      action.OptionType,
-		Strike:          action.Strike,
-		Expiry:          action.Expiry,
-		DTE:             action.DTE,
-		Action:          "sell",
-		Quantity:        qty,
-		EntryPremium:    action.Premium,
-		EntryPremiumUSD: netPremium,
-		CurrentValueUSD: -netPremium,
-		Greeks:          action.Greeks,
-		OpenedAt:        now,
+		ID:                 posID,
+		TradePositionID:    positionID,
+		Underlying:         result.Underlying,
+		OptionType:         action.OptionType,
+		Strike:             action.Strike,
+		Expiry:             action.Expiry,
+		DTE:                action.DTE,
+		Action:             "sell",
+		Quantity:           qty,
+		ContractMultiplier: spec.Multiplier,
+		EntryPremium:       action.Premium,
+		EntryPremiumUSD:    netPremium,
+		CurrentValueUSD:    -netPremium,
+		Greeks:             action.Greeks,
+		OpenedAt:           now,
 	}
 
 	trade := Trade{
@@ -222,22 +342,23 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 		Symbol:     fmt.Sprintf("%s-%s-%.0f-%s", result.Underlying, action.OptionType, action.Strike, action.Expiry),
 		PositionID: positionID,
 		Side:       "sell",
-		Quantity:   1.0,
+		Quantity:   qty,
 		Price:      premium,
 		Value:      netPremium,
 		TradeType:  "options",
-		Details:    fmt.Sprintf("Sell %s %s strike=%.0f exp=%s premium=$%.2f fee=$%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, premium, fee),
+		Details:    fmt.Sprintf("Sell %s %s strike=%.0f exp=%s qty=%g premium=$%.2f fee=$%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, qty, premium, fee),
 	}
 	trade.Regime = s.Regime
 	RecordTrade(s, trade)
-	logger.Info("SELL OPTION %s %s strike=%.0f exp=%s | +$%.2f (fee $%.2f)", result.Underlying, action.OptionType, action.Strike, action.Expiry, premium, fee)
+	logger.Info("SELL OPTION %s %s strike=%.0f exp=%s qty=%g | +$%.2f (fee $%.2f)", result.Underlying, action.OptionType, action.Strike, action.Expiry, qty, premium, fee)
 
 	return 1, nil
 }
 
 func executeOptionClose(s *StrategyState, result *OptionsResult, action *OptionsAction, logger *StrategyLogger) (int, error) {
 	closed := 0
-	for id, pos := range s.OptionPositions {
+	for _, id := range sortedOptionLegKeys(s.OptionPositions) {
+		pos := s.OptionPositions[id]
 		if pos.Underlying == result.Underlying && pos.Strike == action.Strike && pos.OptionType == action.OptionType {
 			pnl := 0.0
 			var closePriceUSD float64
@@ -246,9 +367,23 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 				s.Cash += pos.CurrentValueUSD
 				closePriceUSD = pos.CurrentValueUSD
 			} else {
-				pnl = pos.EntryPremiumUSD - action.PremiumUSD
-				s.Cash -= action.PremiumUSD
-				closePriceUSD = action.PremiumUSD
+				m, err := strategyOptionMultiplier(s, id, pos)
+				if err != nil {
+					logger.Error("Option close skipped: %v", err)
+					continue
+				}
+				unit := optionActionUnitPremiumUSD(result, action)
+				if unit < 0 {
+					unit = 0
+				}
+				debit, err := optionContractValueUSD(unit, m, pos.Quantity)
+				if err != nil {
+					logger.Error("Option close skipped for %s: %v", id, err)
+					continue
+				}
+				pnl = pos.EntryPremiumUSD - debit
+				s.Cash -= debit
+				closePriceUSD = debit
 			}
 			now := time.Now().UTC()
 			positionID := ensureOptionTradeID(s.ID, pos)
@@ -259,8 +394,8 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 				PositionID:  positionID,
 				Side:        optionCloseTradeSide(pos.Action),
 				Quantity:    pos.Quantity,
-				Price:       action.PremiumUSD,
-				Value:       action.PremiumUSD,
+				Price:       closePriceUSD,
+				Value:       closePriceUSD,
 				TradeType:   "options",
 				Details:     fmt.Sprintf("Close %s PnL=$%.2f", pos.ID, pnl),
 				IsClose:     true,
@@ -279,54 +414,69 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 	return closed, nil
 }
 
-func EncodePositionsJSON(positions map[string]*OptionPosition) string {
-	if len(positions) == 0 {
-		return "[]"
+func optionUnitEntryPremiumUSD(platform, key string, p *OptionPosition) (float64, error) {
+	m, err := optionPositionMultiplier(platform, p)
+	if err != nil {
+		return 0, fmt.Errorf("option leg %s: %w", key, err)
 	}
-	type posInfo struct {
-		OptionType string  `json:"option_type"`
-		Strike     float64 `json:"strike"`
-		Expiry     string  `json:"expiry"`
-		DTE        float64 `json:"dte"`
-		Action     string  `json:"action"`
-		Premium    float64 `json:"entry_premium_usd"`
-		Delta      float64 `json:"delta"`
-		Gamma      float64 `json:"gamma"`
-		Theta      float64 `json:"theta"`
-		Vega       float64 `json:"vega"`
+	if !finitePositive(p.Quantity) {
+		return 0, fmt.Errorf("option leg %s: quantity %v is not positive", key, p.Quantity)
 	}
-	var out []posInfo
-	for _, p := range positions {
-		out = append(out, posInfo{
-			OptionType: p.OptionType,
-			Strike:     p.Strike,
-			Expiry:     p.Expiry,
-			DTE:        p.DTE,
-			Action:     p.Action,
-			Premium:    p.EntryPremiumUSD,
-			Delta:      p.Greeks.Delta,
-			Gamma:      p.Greeks.Gamma,
-			Theta:      p.Greeks.Theta,
-			Vega:       p.Greeks.Vega,
-		})
-	}
-	b, _ := json.Marshal(out)
-	return string(b)
+	return p.EntryPremiumUSD / (p.Quantity * m), nil
 }
 
-func EncodeAllPositionsJSON(optPos map[string]*OptionPosition, spotPos map[string]*Position) (string, error) {
-	type optEntry struct {
-		OptionType string  `json:"option_type"`
-		Strike     float64 `json:"strike"`
-		Expiry     string  `json:"expiry"`
-		DTE        float64 `json:"dte"`
-		Action     string  `json:"action"`
-		Premium    float64 `json:"entry_premium_usd"`
-		Delta      float64 `json:"delta"`
-		Gamma      float64 `json:"gamma"`
-		Theta      float64 `json:"theta"`
-		Vega       float64 `json:"vega"`
+type encodedOptionPosition struct {
+	OptionType string  `json:"option_type"`
+	Strike     float64 `json:"strike"`
+	Expiry     string  `json:"expiry"`
+	DTE        float64 `json:"dte"`
+	Action     string  `json:"action"`
+	Premium    float64 `json:"entry_premium_usd"`
+	Delta      float64 `json:"delta"`
+	Gamma      float64 `json:"gamma"`
+	Theta      float64 `json:"theta"`
+	Vega       float64 `json:"vega"`
+}
+
+func encodeOptionPosition(platform, key string, p *OptionPosition) (encodedOptionPosition, error) {
+	unit, err := optionUnitEntryPremiumUSD(platform, key, p)
+	if err != nil {
+		return encodedOptionPosition{}, err
 	}
+	return encodedOptionPosition{
+		OptionType: p.OptionType,
+		Strike:     p.Strike,
+		Expiry:     p.Expiry,
+		DTE:        p.DTE,
+		Action:     p.Action,
+		Premium:    unit,
+		Delta:      p.Greeks.Delta,
+		Gamma:      p.Greeks.Gamma,
+		Theta:      p.Greeks.Theta,
+		Vega:       p.Greeks.Vega,
+	}, nil
+}
+
+func EncodePositionsJSON(platform string, positions map[string]*OptionPosition) (string, error) {
+	if len(positions) == 0 {
+		return "[]", nil
+	}
+	var out []encodedOptionPosition
+	for _, key := range sortedOptionLegKeys(positions) {
+		e, err := encodeOptionPosition(platform, key, positions[key])
+		if err != nil {
+			return "", fmt.Errorf("options positions encoding failed: %w", err)
+		}
+		out = append(out, e)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "", fmt.Errorf("options positions encoding failed: %w", err)
+	}
+	return string(b), nil
+}
+
+func EncodeAllPositionsJSON(platform string, optPos map[string]*OptionPosition, spotPos map[string]*Position) (string, error) {
 	type spotEntry struct {
 		PositionType string  `json:"position_type"`
 		Symbol       string  `json:"symbol"`
@@ -336,21 +486,20 @@ func EncodeAllPositionsJSON(optPos map[string]*OptionPosition, spotPos map[strin
 	}
 
 	var out []interface{}
-	for _, p := range optPos {
-		out = append(out, optEntry{
-			OptionType: p.OptionType,
-			Strike:     p.Strike,
-			Expiry:     p.Expiry,
-			DTE:        p.DTE,
-			Action:     p.Action,
-			Premium:    p.EntryPremiumUSD,
-			Delta:      p.Greeks.Delta,
-			Gamma:      p.Greeks.Gamma,
-			Theta:      p.Greeks.Theta,
-			Vega:       p.Greeks.Vega,
-		})
+	for _, key := range sortedOptionLegKeys(optPos) {
+		e, err := encodeOptionPosition(platform, key, optPos[key])
+		if err != nil {
+			return "", fmt.Errorf("options positions encoding failed: %w", err)
+		}
+		out = append(out, e)
 	}
-	for _, p := range spotPos {
+	spotKeys := make([]string, 0, len(spotPos))
+	for k := range spotPos {
+		spotKeys = append(spotKeys, k)
+	}
+	sort.Strings(spotKeys)
+	for _, k := range spotKeys {
+		p := spotPos[k]
 		out = append(out, spotEntry{
 			PositionType: "spot",
 			Symbol:       p.Symbol,

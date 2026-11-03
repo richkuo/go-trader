@@ -1469,6 +1469,7 @@ func TestCheckQuotePrecision(t *testing.T) {
 		{"OptionsEncodingFailureSpawnsNoCheck", qpCaseCheckQuotePrecisionOptionsEncodingFailureSpawnsNoCheck},
 		{"OptionsFailureAlertThresholds", qpCaseCheckQuotePrecisionOptionsFailureAlertThresholds},
 		{"OptionsSchedulerHarvestsDuringEntryOutage", qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage},
+		{"OptionsResultContractRefusesMismatchedUnitsAndPlatforms", qpCaseCheckQuotePrecisionOptionsResultContract},
 	} {
 		t.Run(tc.name, tc.run)
 	}
@@ -1513,7 +1514,7 @@ func qpOptionLegs() []qpOptionLeg {
 }
 
 const (
-	qpOptionsSeedCash    = 1350.0
+	qpOptionsSeedCash    = 5350.0
 	qpOptionsHarvestCost = 30.0 + 350.0 + 90.0
 )
 
@@ -1568,7 +1569,7 @@ func qpCountRows(t *testing.T, db *sql.DB, query string, args ...interface{}) in
 func qpOptionsDispatch(env *entryTestEnv, sc StrategyConfig, notifier *MultiNotifier, logger *StrategyLogger) (int, []string) {
 	s := env.strat(sc.ID)
 	env.mu.RLock()
-	posJSON, posErr := EncodeAllPositionsJSON(s.OptionPositions, s.Positions)
+	posJSON, posErr := EncodeAllPositionsJSON(s.Platform, s.OptionPositions, s.Positions)
 	env.mu.RUnlock()
 	return runOptionsDispatch(optionsDispatch{SC: sc, State: s, PositionsJSON: posJSON, PositionsErr: posErr,
 		Risk: &scopeCycleRisk{Partition: partitionFor(sc)}, Scope: partitionFor(sc).Scope, Mu: &env.mu, Notifier: notifier, Logger: logger})
@@ -1696,7 +1697,7 @@ func qpCaseCheckQuotePrecisionOptionsEncodingFailureSpawnsNoCheck(t *testing.T) 
 	logPath := filepath.Join(t.TempDir(), "qp.log")
 	qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": qpOptionsDaily(qpOptionsBaselineDaily), "QP_LOG": logPath})
 
-	if got, err := EncodeAllPositionsJSON(map[string]*OptionPosition{}, map[string]*Position{}); err != nil || got != "[]" {
+	if got, err := EncodeAllPositionsJSON(sc.Platform, map[string]*OptionPosition{}, map[string]*Position{}); err != nil || got != "[]" {
 		t.Fatalf("empty book encodes as %q, %v; want [] and no error", got, err)
 	}
 
@@ -1867,5 +1868,118 @@ func qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage(t *testi
 	}
 	if n := qpCountRows(t, db, `SELECT COUNT(*) FROM option_positions WHERE strategy_id = ?`, sc.ID); n != 0 {
 		t.Fatalf("stored option legs = %d, want none", n)
+	}
+}
+
+const qpOptionsUnitWrapper = `import json, os, sys
+sys.path.insert(0, os.path.join(os.environ["QP_OC_ROOT"], "shared_scripts"))
+import check_options
+unit = os.environ.get("QP_OC_UNIT", "")
+def emit(doc):
+    if unit:
+        doc["premium_unit"] = unit
+    else:
+        doc.pop("premium_unit", None)
+    sys.stdout.write(json.dumps(doc) + "\n")
+sys.exit(check_options._run(sys.argv[1:], emit))
+`
+
+func qpScriptFailureCount(id string) int {
+	scriptFailureTracker.mu.Lock()
+	defer scriptFailureTracker.mu.Unlock()
+	if e := scriptFailureTracker.entries[id]; e != nil {
+		return e.count
+	}
+	return 0
+}
+
+func qpCaseCheckQuotePrecisionOptionsResultContract(t *testing.T) {
+	root := qpRoot(t)
+	fourLegs := `[{"option_type":"call","strike":500,"expiry":"2026-12-18"},{"option_type":"call","strike":510,"expiry":"2026-12-18"},{"option_type":"put","strike":450,"expiry":"2026-12-18"},{"option_type":"put","strike":440,"expiry":"2026-12-18"}]`
+
+	t.Run("check_platform_must_match_the_strategy_platform", func(t *testing.T) {
+		qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000"})
+		for _, tc := range []struct{ cfgPlatform, argPlatform string }{
+			{"deribit", "robinhood"},
+			{"robinhood", "deribit"},
+			{"robinhood", "robinhood"},
+		} {
+			t.Run(tc.cfgPlatform+"_config_"+tc.argPlatform+"_check", func(t *testing.T) {
+				sc := StrategyConfig{ID: "qp-opt-contract-" + tc.cfgPlatform + "-" + tc.argPlatform, Type: "options", Platform: tc.cfgPlatform,
+					Script: "shared_scripts/check_options.py", Args: []string{"covered_calls", "SPY", "--platform=" + tc.argPlatform}, Capital: 1000}
+				qpResetScriptFailures(t, sc.ID)
+				notifier, _ := qpOptionsNotifier()
+				logger, buf := qpLogger(sc.ID)
+				result, _, ok := runOptionsCheck(sc, fourLegs, notifier, logger)
+				if tc.cfgPlatform == tc.argPlatform {
+					if !ok || result.Platform != tc.argPlatform || result.PremiumUnit != optionPremiumUnitUnderlying || qpScriptFailureCount(sc.ID) != 0 {
+						t.Fatalf("matching platforms must pass: ok=%t result=%+v; log:\n%s", ok, result, buf.String())
+					}
+					return
+				}
+				want := fmt.Sprintf("Script contract failure: options result contract: check priced on platform %q but the strategy platform is %q", tc.argPlatform, tc.cfgPlatform)
+				if ok || !strings.Contains(buf.String(), want) || qpScriptFailureCount(sc.ID) != 1 {
+					t.Fatalf("mismatch must fail the check: ok=%t failures=%d; log:\n%s", ok, qpScriptFailureCount(sc.ID), buf.String())
+				}
+			})
+		}
+	})
+
+	wrapper := filepath.Join(t.TempDir(), "unit_wrapper.py")
+	if err := os.WriteFile(wrapper, []byte(qpOptionsUnitWrapper), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, unit, script, argPlatform string
+		wantFailure                     string
+		entries                         int
+	}{
+		{name: "missing_unit", script: wrapper, argPlatform: "ibkr", wantFailure: `premium_unit "", want "underlying_unit"`},
+		{name: "other_unit", unit: "contract", script: wrapper, argPlatform: "ibkr", wantFailure: `premium_unit "contract", want "underlying_unit"`},
+		{name: "other_platform", script: "shared_scripts/check_options.py", argPlatform: "deribit", wantFailure: `check priced on platform "deribit" but the strategy platform is "ibkr"`},
+		{name: "valid_result", unit: optionPremiumUnitUnderlying, script: wrapper, argPlatform: "ibkr", entries: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := qpOptionsHarvestSC("qp-opt-contract-harvest")
+			sc.Script = tc.script
+			sc.Args = []string{"vol_mean_reversion", "BTC", "--platform=" + tc.argPlatform}
+			qpResetScriptFailures(t, sc.ID)
+			qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": qpOptionsDaily(qpOptionsBaselineDaily),
+				"QP_OC_ROOT": root, "QP_OC_UNIT": tc.unit})
+			env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
+			useEntryTradeRecorder(t, env.store)
+			qpSeedOptionLegs(env.strat(sc.ID), time.Now().UTC())
+			notifier, _ := qpOptionsNotifier()
+			logger, buf := qpLogger(sc.ID)
+			trades, lines := qpOptionsDispatch(env, sc, notifier, logger)
+			if trades != tc.entries+3 {
+				t.Fatalf("trades=%d lines=%q, want %d entries plus 3 harvest closes; log:\n%s", trades, lines, tc.entries, buf.String())
+			}
+			s := env.strat(sc.ID)
+			if len(s.OptionPositions) != tc.entries {
+				t.Fatalf("option legs = %d, want %d", len(s.OptionPositions), tc.entries)
+			}
+			db := env.fileFor(sc.ID).db
+			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND is_close = 0`, sc.ID); n != tc.entries {
+				t.Fatalf("entry trade rows = %d, want %d", n, tc.entries)
+			}
+			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND is_close = 1`, sc.ID); n != 3 {
+				t.Fatalf("harvest close rows = %d, want 3 (harvest runs once)", n)
+			}
+			if tc.wantFailure == "" {
+				if qpScriptFailureCount(sc.ID) != 0 {
+					t.Fatalf("a valid result must clear the failure state; log:\n%s", buf.String())
+				}
+				for _, leg := range s.OptionPositions {
+					if leg.ContractMultiplier != 1 {
+						t.Fatalf("ibkr leg %s stamped %v, want 1", leg.ID, leg.ContractMultiplier)
+					}
+				}
+				return
+			}
+			if !strings.Contains(buf.String(), "Script contract failure: options result contract: "+tc.wantFailure) || qpScriptFailureCount(sc.ID) != 1 {
+				t.Fatalf("contract failure not reported once (failures=%d); log:\n%s", qpScriptFailureCount(sc.ID), buf.String())
+			}
+		})
 	}
 }

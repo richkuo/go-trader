@@ -838,7 +838,7 @@ func portfolioNotional(strategies map[string]*StrategyState, prices map[string]f
 		}
 		for _, opt := range s.OptionPositions {
 			if opt.Action == "sell" {
-				total += opt.Strike * opt.Quantity
+				total += opt.Strike * opt.Quantity * optionRiskMultiplier(optionOwnerPlatform(s), opt)
 			} else if opt.CurrentValueUSD > 0 {
 				total += opt.CurrentValueUSD
 			}

@@ -178,6 +178,7 @@ CREATE TABLE IF NOT EXISTS option_positions (
     theta REAL NOT NULL DEFAULT 0,
     vega REAL NOT NULL DEFAULT 0,
     opened_at TEXT NOT NULL DEFAULT '',
+    contract_multiplier REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (strategy_id, id)
 );
 
@@ -587,6 +588,7 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE trades ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE option_positions ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE option_positions ADD COLUMN contract_multiplier REAL NOT NULL DEFAULT 0",
 		"CREATE INDEX IF NOT EXISTS idx_trades_strategy_position ON trades(strategy_id, position_id)",
 		"ALTER TABLE positions ADD COLUMN initial_quantity REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN entry_atr REAL NOT NULL DEFAULT 0",
@@ -1542,8 +1544,8 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 
 	stmtOpt, err := tx.Prepare(`INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte,
 		action, quantity, entry_premium, entry_premium_usd, current_value_usd,
-		delta, gamma, theta, vega, opened_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		delta, gamma, theta, vega, opened_at, contract_multiplier)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare option_position insert: %w", err)
 	}
@@ -1617,12 +1619,15 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 
 		for _, key := range sortedOptionKeys(s.OptionPositions) {
 			opt := s.OptionPositions[key]
+			if err := validStoredOptionMultiplier(s.ID, key, opt.ContractMultiplier); err != nil {
+				return fmt.Errorf("insert option_position: %w", err)
+			}
 			positionID := ensureOptionTradeID(s.ID, opt)
 			if _, err := stmtOpt.Exec(
 				sid, key, positionID, opt.Underlying, opt.OptionType, opt.Strike, opt.Expiry, opt.DTE,
 				opt.Action, opt.Quantity, opt.EntryPremium, opt.EntryPremiumUSD, opt.CurrentValueUSD,
 				opt.Greeks.Delta, opt.Greeks.Gamma, opt.Greeks.Theta, opt.Greeks.Vega,
-				formatTime(opt.OpenedAt),
+				formatTime(opt.OpenedAt), opt.ContractMultiplier,
 			); err != nil {
 				return fmt.Errorf("insert option_position %s/%s: %w", s.ID, key, err)
 			}
@@ -2103,20 +2108,23 @@ func (sdb *StateDB) writeOneStrategyBookTx(tx *sql.Tx, s *StrategyState, sid str
 	if len(s.OptionPositions) > 0 {
 		stmtOpt, err := tx.Prepare(`INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte,
 			action, quantity, entry_premium, entry_premium_usd, current_value_usd,
-			delta, gamma, theta, vega, opened_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			delta, gamma, theta, vega, opened_at, contract_multiplier)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return nil, nil, fmt.Errorf("prepare option_position insert: %w", err)
 		}
 		defer stmtOpt.Close()
 		for _, key := range sortedOptionKeys(s.OptionPositions) {
 			opt := s.OptionPositions[key]
+			if err := validStoredOptionMultiplier(s.ID, key, opt.ContractMultiplier); err != nil {
+				return nil, nil, fmt.Errorf("insert option_position: %w", err)
+			}
 			positionID := ensureOptionTradeID(s.ID, opt)
 			if _, err := stmtOpt.Exec(
 				sid, key, positionID, opt.Underlying, opt.OptionType, opt.Strike, opt.Expiry, opt.DTE,
 				opt.Action, opt.Quantity, opt.EntryPremium, opt.EntryPremiumUSD, opt.CurrentValueUSD,
 				opt.Greeks.Delta, opt.Greeks.Gamma, opt.Greeks.Theta, opt.Greeks.Vega,
-				formatTime(opt.OpenedAt),
+				formatTime(opt.OpenedAt), opt.ContractMultiplier,
 			); err != nil {
 				return nil, nil, fmt.Errorf("insert option_position %s/%s: %w", s.ID, key, err)
 			}
@@ -2560,9 +2568,17 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		return nil, fmt.Errorf("iterate positions: %w", err)
 	}
 
+	hasContractMultiplier, err := sdb.tableHasColumn("option_positions", "contract_multiplier")
+	if err != nil {
+		return nil, fmt.Errorf("introspect option_positions columns: %w", err)
+	}
+	contractMultiplierSelect := "0 AS contract_multiplier"
+	if hasContractMultiplier {
+		contractMultiplierSelect = "contract_multiplier"
+	}
 	optRows, err := sdb.db.Query(`SELECT strategy_id, id, COALESCE(position_id, '') AS position_id, underlying, option_type, strike, expiry, dte,
 		action, quantity, entry_premium, entry_premium_usd, current_value_usd,
-		delta, gamma, theta, vega, opened_at FROM option_positions`)
+		delta, gamma, theta, vega, opened_at, ` + contractMultiplierSelect + ` FROM option_positions`)
 	if err != nil {
 		return nil, fmt.Errorf("load option_positions: %w", err)
 	}
@@ -2575,7 +2591,7 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 			&storedID, &opt.ID, &opt.TradePositionID, &opt.Underlying, &opt.OptionType, &opt.Strike, &opt.Expiry, &opt.DTE,
 			&opt.Action, &opt.Quantity, &opt.EntryPremium, &opt.EntryPremiumUSD, &opt.CurrentValueUSD,
 			&opt.Greeks.Delta, &opt.Greeks.Gamma, &opt.Greeks.Theta, &opt.Greeks.Vega,
-			&openedAtStr,
+			&openedAtStr, &opt.ContractMultiplier,
 		); err != nil {
 			return nil, fmt.Errorf("scan option_position: %w", err)
 		}
@@ -2587,6 +2603,9 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 			continue
 		}
 		opt.OpenedAt = parseTime(openedAtStr)
+		if err := validStoredOptionMultiplier(procID, opt.ID, opt.ContractMultiplier); err != nil {
+			return nil, fmt.Errorf("load option_positions: %w", err)
+		}
 		if s, ok := out.Strategies[procID]; ok {
 			s.OptionPositions[opt.ID] = &opt
 		}
