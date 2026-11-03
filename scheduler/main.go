@@ -1702,6 +1702,9 @@ func main() {
 				if paperKillSwitch.CloseApplied {
 					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: force-closed %d paper strategy book(s) at mark\n", partitionLabel(part), len(paperKillSwitch.Closed))
 				}
+				if len(paperKillSwitch.Kept) > 0 {
+					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: %d option leg(s) at or past their expiry cutoff stay open until settlement books them: %s\n", partitionLabel(part), len(paperKillSwitch.Kept), strings.Join(paperKillSwitch.Kept, ", "))
+				}
 				if paperKillSwitch.AutoReset {
 					fmt.Printf("[CRITICAL] Portfolio kill switch [%s] auto-reset after the virtual close (no owner configured, peak re-baselined to $%.2f)\n", partitionLabel(part), paperSR.TotalPV)
 				}

@@ -173,6 +173,65 @@ func TestOptionExpiredLegLeavesOnlyThroughSettlementIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("paper_kill_switch_message_names_every_leg_it_keeps", func(t *testing.T) {
+		fire := func(env *entryTestEnv, sc StrategyConfig, hasOwner bool) paperKillSwitchOutcome {
+			part := partitionFor(sc)
+			env.state.partitionRisk(part).KillSwitchActive = true
+			return applyPaperKillSwitchCycle(env.state, env.cfg, nil, &scopeCycleRisk{
+				Partition: part, KillSwitchFired: true, Reason: "paper drawdown 90.0% exceeds limit 25.0%", TotalPV: 20000, PeakRebaselineAvailable: true,
+			}, hasOwner)
+		}
+		keptLine := "Option legs at or past their expiry cutoff stay open until settlement books them: "
+
+		sc := lcSC("rh-el-only", "")
+		env := ocEnv(t, sc)
+		s := env.strat(sc.ID)
+		s.Cash = 200000
+		seedPending(s)
+		notifier, _ := lcNotifier(env.cfg)
+		lcRefresh(env, sc, pending, notifier, newOptionSettlementAlertThrottle(), afterReady)
+		elBindClock(t, afterReady)
+		out := fire(env, sc, true)
+		if len(out.Closed) != 0 || s.OptionPositions[pendingKey] == nil || strings.Contains(out.Message, "force-closed at mark:") ||
+			!strings.Contains(out.Message, "No paper book was force-closed. "+keptLine+"rh-el-only "+pendingKey+".") ||
+			strings.Join(out.Kept, ",") != "rh-el-only "+pendingKey {
+			t.Fatalf("pending-only book: closed=%v kept=%v message=%q", out.Closed, out.Kept, out.Message)
+		}
+
+		sc = lcSC("rh-el-mixed", "")
+		env = ocEnv(t, sc)
+		s = env.strat(sc.ID)
+		s.Cash = 200000
+		seedPending(s)
+		s.OptionPositions["SPY-call-buy-900-2026-12-18"] = &OptionPosition{ID: "SPY-call-buy-900-2026-12-18", TradePositionID: "pos-900",
+			Underlying: "SPY", OptionType: "call", Strike: 900, Expiry: "2026-12-18", Action: "buy", Quantity: 1, ContractMultiplier: 100,
+			EntryPremiumUSD: 400, CurrentValueUSD: 500, ExpiryCutoffAt: time.Date(2026, 12, 18, 21, 0, 0, 0, time.UTC),
+			OpenedAt: time.Date(2026, 10, 1, 15, 0, 0, 0, time.UTC)}
+		s.OptionPositions[pendingKey].MarkError = optionSettlementPendingPrefix + " test"
+		out = fire(env, sc, true)
+		if strings.Join(out.Closed, ",") != "rh-el-mixed" || s.OptionPositions[pendingKey] == nil || len(s.OptionPositions) != 1 ||
+			!strings.Contains(out.Message, "Paper books force-closed at mark: rh-el-mixed "+keptLine+"rh-el-mixed "+pendingKey+".") {
+			t.Fatalf("mixed book: closed=%v legs=%v message=%q", out.Closed, sortedOptionLegKeys(s.OptionPositions), out.Message)
+		}
+
+		deribitCutoff := time.Date(2026, 6, 26, 8, 0, 0, 0, time.UTC)
+		dsc := ocSC("deribit-el-ks", "deribit", "BTC")
+		env = ocEnv(t, dsc)
+		s = env.strat(dsc.ID)
+		s.Cash = 100000
+		legID := "BTC-put-sell-60000-2026-06-26"
+		s.OptionPositions[legID] = &OptionPosition{ID: legID, TradePositionID: "pos-btc", Underlying: "BTC", OptionType: "put",
+			Strike: 60000, Expiry: "2026-06-26", Action: "sell", Quantity: 1, EntryPremiumUSD: 900, CurrentValueUSD: -1200,
+			MarkUpdatedAt: deribitCutoff.Add(-10 * time.Minute), MarkSource: "deribit_mark"}
+		unbindTradingClock("expired-leg-test-" + t.Name())
+		elBindClock(t, deribitCutoff.Add(5*time.Minute))
+		out = fire(env, dsc, false)
+		if !out.AutoReset || len(out.Closed) != 0 || s.OptionPositions[legID] == nil ||
+			!strings.Contains(out.Message, keptLine+"deribit-el-ks "+legID+".") || !strings.Contains(out.Message, paperKillSwitchAutoResetLine) {
+			t.Fatalf("deribit auto-reset: reset=%v closed=%v message=%q", out.AutoReset, out.Closed, out.Message)
+		}
+	})
+
 	t.Run("bought_leg_in_the_money_credits_its_intrinsic_to_cash", func(t *testing.T) {
 		sc := lcSC("rh-el-long", "")
 		env := ocEnv(t, sc)

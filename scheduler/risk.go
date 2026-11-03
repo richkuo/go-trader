@@ -1346,7 +1346,8 @@ func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 	return "spot"
 }
 
-func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[string]float64, logger *StrategyLogger) {
+func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[string]float64, logger *StrategyLogger) []string {
+	var kept []string
 	for symbol, pos := range s.Positions {
 		closeVirtualPositionAtMark(s, sc, symbol, pos, prices, logger)
 	}
@@ -1361,6 +1362,7 @@ func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[str
 			if logger != nil {
 				logger.Warn("Circuit breaker: %s is at or past its expiry cutoff and stays open until settlement books it", id)
 			}
+			kept = append(kept, id)
 			continue
 		}
 		var pnl, closePrice float64
@@ -1400,6 +1402,7 @@ func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[str
 		recordClosedOptionPosition(s, pos, closePrice, pnl, "circuit_breaker", now)
 		delete(s.OptionPositions, id)
 	}
+	return kept
 }
 
 func closeVirtualPositionAtMark(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, logger *StrategyLogger) {
@@ -1725,12 +1728,42 @@ func forceClosePaperScopePositions(state *AppState, cfg *Config, part RiskPartit
 		if len(s.Positions) == 0 && len(s.OptionPositions) == 0 {
 			continue
 		}
+		hadPositions := len(s.Positions) > 0
+		legs := 0
+		for _, leg := range s.OptionPositions {
+			if leg != nil {
+				legs++
+			}
+		}
 		scCopy := sc
-		forceCloseAllPositions(s, &scCopy, prices, nil)
-		closed = append(closed, sc.ID)
+		kept := forceCloseAllPositions(s, &scCopy, prices, nil)
+		if hadPositions || legs > len(kept) {
+			closed = append(closed, sc.ID)
+		}
 	}
 	sort.Strings(closed)
 	return closed
+}
+
+func paperPartitionLegsAwaitingSettlement(state *AppState, cfg *Config, part RiskPartition) []string {
+	if state == nil || cfg == nil {
+		return nil
+	}
+	now := tradingNow().UTC()
+	var kept []string
+	for _, sc := range strategiesInPartition(cfg.Strategies, part) {
+		s, ok := state.Strategies[sc.ID]
+		if !ok || s == nil || quoteFundingOwned(sc, s) {
+			continue
+		}
+		for _, id := range sortedOptionLegKeys(s.OptionPositions) {
+			if leg := s.OptionPositions[id]; leg != nil && optionLegAwaitingSettlement(s.Platform, leg, now) {
+				kept = append(kept, sc.ID+" "+id)
+			}
+		}
+	}
+	sort.Strings(kept)
+	return kept
 }
 
 // paperKillSwitchHeader names the partition that fired, so an operator reading
@@ -1750,9 +1783,18 @@ func paperKillSwitchManualResetLine(part RiskPartition) string {
 const paperKillSwitchAutoResetLine = "Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle."
 
 func formatPaperKillSwitchMessage(part RiskPartition, reason string, closed []string) string {
+	return formatPaperKillSwitchMessageWithKept(part, reason, closed, nil)
+}
+
+func formatPaperKillSwitchMessageWithKept(part RiskPartition, reason string, closed, kept []string) string {
 	detail := "No open paper books to close."
 	if len(closed) > 0 {
 		detail = fmt.Sprintf("Paper books force-closed at mark: %s", strings.Join(closed, ", "))
+	} else if len(kept) > 0 {
+		detail = "No paper book was force-closed."
+	}
+	if len(kept) > 0 {
+		detail = fmt.Sprintf("%s Option legs at or past their expiry cutoff stay open until settlement books them: %s.", detail, strings.Join(kept, ", "))
 	}
 	return fmt.Sprintf("%s\n%s\n%s No exchange order was sent. Live strategies are unaffected. %s",
 		paperKillSwitchHeader(part), reason, detail, paperKillSwitchManualResetLine(part))
@@ -1769,6 +1811,7 @@ func formatPaperKillSwitchAutoResetMessage(part RiskPartition, msg string) strin
 
 type paperKillSwitchOutcome struct {
 	Closed       []string
+	Kept         []string
 	CloseApplied bool
 	AutoReset    bool
 	Message      string
@@ -1786,7 +1829,8 @@ func applyPaperKillSwitchCycle(state *AppState, cfg *Config, prices map[string]f
 		out.Closed = forceClosePaperScopePositions(state, cfg, paperSR.Partition, prices)
 		prs.KillSwitchCloseApplied = true
 		out.CloseApplied = true
-		out.Message = formatPaperKillSwitchMessage(paperSR.Partition, paperSR.Reason, out.Closed)
+		out.Kept = paperPartitionLegsAwaitingSettlement(state, cfg, paperSR.Partition)
+		out.Message = formatPaperKillSwitchMessageWithKept(paperSR.Partition, paperSR.Reason, out.Closed, out.Kept)
 	}
 	if hasOwner || !prs.KillSwitchActive {
 		return out
@@ -1795,13 +1839,19 @@ func applyPaperKillSwitchCycle(state *AppState, cfg *Config, prices map[string]f
 		fmt.Printf("[CRITICAL] Portfolio kill switch [%s] auto-reset suppressed: GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH=1 is set; this is for the migrate fixture only\n", partitionLabel(paperSR.Partition))
 		return out
 	}
-	out.AutoReset = AutoResetConfirmedFlatKillSwitch(prs, paperSR.TotalPV, paperSR.PeakRebaselineAvailable,
-		"paper books closed at mark after portfolio kill-switch; no DM owner configured, paper latch auto-cleared")
+	if !out.CloseApplied {
+		out.Kept = paperPartitionLegsAwaitingSettlement(state, cfg, paperSR.Partition)
+	}
+	details := "paper books closed at mark after portfolio kill-switch; no DM owner configured, paper latch auto-cleared"
+	if len(out.Kept) > 0 {
+		details = fmt.Sprintf("%s; option legs kept open for settlement: %s", details, strings.Join(out.Kept, ", "))
+	}
+	out.AutoReset = AutoResetConfirmedFlatKillSwitch(prs, paperSR.TotalPV, paperSR.PeakRebaselineAvailable, details)
 	if !out.AutoReset {
 		return out
 	}
 	if out.Message == "" {
-		out.Message = formatPaperKillSwitchMessage(paperSR.Partition, paperSR.Reason, nil)
+		out.Message = formatPaperKillSwitchMessageWithKept(paperSR.Partition, paperSR.Reason, nil, out.Kept)
 	}
 	out.Message = formatPaperKillSwitchAutoResetMessage(paperSR.Partition, out.Message)
 	return out
