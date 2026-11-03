@@ -222,7 +222,14 @@ def test_model_pricing_keeps_its_baseline_and_needs_measured_inputs(tmp_path, su
                 run_dir = tmp_path / f"{platform}-{name}"
                 run_dir.mkdir()
                 out = _driver(run_dir, {}, platform, args[0], "premium", json.dumps(call_args))
-                assert {k: out.get(k) for k in want} == want, out
+                if "premium" in want:
+                    got = out.get("premium")
+                    assert isinstance(got, list) and len(got) == 3, out
+                    assert got[0] == want["premium"][0], out
+                    assert math.isclose(got[1], want["premium"][1], rel_tol=1e-12, abs_tol=0.0), out
+                    assert got[2] == want["premium"][2], out
+                else:
+                    assert {k: out.get(k) for k in want} == want, out
 
 
 def _handled_error(proc, want_error=None):

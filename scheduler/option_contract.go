@@ -40,6 +40,26 @@ func lookupOptionContractSpec(platform, underlying string) (optionContractSpec, 
 	return spec, nil
 }
 
+func optionStrategyCannotCoverCalls(strategy, platform string) bool {
+	spec, ok := optionContractSpecs[platform]
+	return ok && spec.RequireCoveredCalls && strategy == "covered_calls"
+}
+
+func coveredCallsSharesWarnings(cfg *Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	var out []string
+	for _, sc := range cfg.Strategies {
+		if sc.Type != "options" || len(sc.Args) == 0 || !optionStrategyCannotCoverCalls(sc.Args[0], sc.Platform) {
+			continue
+		}
+		spec := optionContractSpecs[sc.Platform]
+		out = append(out, fmt.Sprintf("[WARN] %s: covered_calls on %s sells one short call each cycle and never buys shares, but a %s short call needs %g held long shares of the underlying per contract in this same strategy, so it cannot open a leg; use wheel (it gets shares from a put assignment) or remove the strategy", sc.ID, sc.Platform, sc.Platform, spec.Multiplier))
+	}
+	return out
+}
+
 func maxOptionContractMultiplier() float64 {
 	max := 1.0
 	for _, spec := range optionContractSpecs {

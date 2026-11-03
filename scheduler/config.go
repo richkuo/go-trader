@@ -2479,6 +2479,10 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		fmt.Println(w)
 	}
 
+	for _, w := range coveredCallsSharesWarnings(cfg) {
+		fmt.Println(w)
+	}
+
 	knownPlatforms := make(map[string]bool)
 	for _, sc := range cfg.Strategies {
 		if p := strings.TrimSpace(sc.Platform); p != "" {
