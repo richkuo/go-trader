@@ -536,3 +536,85 @@ def test_authenticated_robinhood_prices_only_from_a_venue_quote(tmp_path, subtes
                 assert out["iv_rank"] is None and out["vol_metrics_error"] == READ_FAILED
             else:
                 assert isinstance(out["iv_rank"], float) and "vol_metrics_error" not in out
+
+
+STRUCTURE_CONTRACT = "options_structures_v1"
+
+
+def _far_rows(n, expiry="2027-06-25"):
+    rows = [
+        {"option_type": "put", "action": "sell", "strike": 50000, "expiry": expiry, "delta": 0},
+        {"option_type": "call", "action": "buy", "strike": 150000, "expiry": expiry, "delta": 0},
+        {"option_type": "call", "action": "buy", "strike": 160000, "expiry": expiry, "delta": 0},
+    ]
+    return json.dumps(rows[:n])
+
+
+def test_every_document_carries_the_structure_contract(tmp_path, subtests):
+    cases = {
+        "entry": (["butterfly", "BTC", "--platform=deribit"], "[]", {"QP_QUOTE": 100000, "QP_DAILY": json.dumps(MID_RANK_CLOSES)}, 0),
+        "early_cap_hold": (["covered_calls", "SPY", "--platform=deribit"], FOUR_POSITIONS, {}, 0),
+        "error": (["protective_puts", "BTC", "--platform=deribit"], "[]", {"QP_QUOTE": 0}, 1),
+    }
+    for case in sorted(cases):
+        argv, stdin, extra, code = cases[case]
+        with subtests.test(case=case):
+            run_dir = tmp_path / case
+            run_dir.mkdir()
+            proc, _ = _run(argv, run_dir, stdin, extra=extra)
+            assert proc.returncode == code, proc.stderr
+            out = _single_document(proc)
+            assert out["structure_contract"] == STRUCTURE_CONTRACT, out
+
+
+def test_a_passing_structure_keeps_every_leg_with_its_metadata(tmp_path):
+    proc, _ = _run(["butterfly", "BTC", "--platform=deribit"], tmp_path, "[]",
+                   extra={"QP_QUOTE": 100000, "QP_DAILY": json.dumps(MID_RANK_CLOSES)})
+    assert proc.returncode == 0, proc.stderr
+    out = _single_document(proc)
+    assert out["signal"] == 1
+    assert [(a["action"], a["strike"]) for a in out["actions"]] == [("buy", 95000.0), ("sell", 100000.0), ("buy", 105000.0)]
+    assert {(a["structure_id"], a["structure_legs"]) for a in out["actions"]} == {("butterfly-1", 3)}
+    assert all("score" in a and "score_reason" in a for a in out["actions"])
+
+
+def test_a_structure_whose_minimum_leg_score_fails_emits_no_leg(tmp_path):
+    extra = {"QP_QUOTE": 100000, "QP_DAILY": json.dumps(MID_RANK_CLOSES)}
+    control = tmp_path / "control"
+    control.mkdir()
+    proc, _ = _run(["butterfly", "BTC", "--platform=deribit"], control, "[]", extra=extra)
+    expiry = _single_document(proc)["actions"][0]["expiry"]
+    held = json.dumps([{"option_type": "call", "action": "buy", "strike": 106000, "expiry": expiry, "delta": 0}])
+    run_dir = tmp_path / "held"
+    run_dir.mkdir()
+    proc, _ = _run(["butterfly", "BTC", "--platform=deribit"], run_dir, held, extra=extra)
+    assert proc.returncode == 0, proc.stderr
+    out = _single_document(proc)
+    assert out["actions"] == [] and out["signal"] == 0, out
+    assert "Skipping structure butterfly-1: minimum leg score 0.1 < 0.3" in proc.stderr
+    assert "buy call strike=95000.0 score=0.8" in proc.stderr
+    assert "sell call strike=100000.0 score=0.6" in proc.stderr
+    assert "buy call strike=105000.0 score=0.1" in proc.stderr
+
+
+def test_the_row_cap_counts_the_proposed_structure(tmp_path, subtests):
+    base = {"QP_QUOTE": 100000, "QP_DAILY": json.dumps(BASE_CLOSES)}
+    cases = {
+        "two_rows_on_three_open": (["vol_mean_reversion", "BTC", "--platform=deribit"], 3, 0),
+        "two_rows_on_two_open": (["vol_mean_reversion", "BTC", "--platform=deribit"], 2, 2),
+        "one_row_on_three_open": (["protective_puts", "BTC", "--platform=deribit"], 3, 1),
+    }
+    for case in sorted(cases):
+        argv, held, want = cases[case]
+        with subtests.test(case=case):
+            run_dir = tmp_path / case
+            run_dir.mkdir()
+            proc, _ = _run(argv, run_dir, _far_rows(held), extra=base)
+            assert proc.returncode == 0, proc.stderr
+            out = _single_document(proc)
+            assert len(out["actions"]) == want, (out, proc.stderr)
+            if want == 0:
+                assert out["signal"] == 0
+                assert "3 open + 0 selected + 2 new option rows exceed the cap of 4" in proc.stderr
+            else:
+                assert {a["structure_legs"] for a in out["actions"]} == {want}

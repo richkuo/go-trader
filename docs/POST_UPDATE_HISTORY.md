@@ -2,6 +2,15 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 1919: options entries book whole structures
+
+Runtime behavior changes for every `type: options` strategy; there is no opt-out, no config change and no schema change.
+Before this change `executeOptionBuy` and `executeOptionSell` changed cash and then wrote the leg to a key that rounded the strike with `%.0f`, without checking the key: a repeated entry could replace an open leg (a short entry credited a second premium and dropped the earlier liability), and 101.5 and 102.5 shared a key. Python kept or dropped each leg by its own score, Go continued after a refused leg, and the exposure cap filtered single legs, so a butterfly or strangle could book only some legs. Python's 4-row cap counted existing rows only, and Go had no cap.
+Now each evaluator result is one structure with `structure_id` and `structure_legs`, and every document carries `structure_contract: "options_structures_v1"`. Python keeps a structure only when its minimum leg score passes and the rows after it stay at or under 4. Go validates the groups before any filter, drops whole structures at the exposure cap, runs explicit closes first, then plans each structure on a copy of the book and books it only when every leg passes; the aggregate Robinhood cover preflight is unchanged. Accepted legs, cash and trades are written by the owning file's next state save in one transaction.
+Keys keep the exact strike. On load, a legacy fractional-strike key is renamed only when the complete mapping keeps every row; duplicates and collision chains keep their stored ids with a `[state] WARN`, and the matching operator-required Robinhood options pending-close symbol follows a rename.
+Operator action: none. Expect fewer option entries: repeats, partial structures and structures above the cap are refused, and a legacy book with 4 or more rows takes no new entry until rows close or expire. Results before and after this change are not directly comparable. The options backtester keeps its separate implementation; no parity is claimed.
+Deploy Go and Python together with `bash scripts/update.sh --restart`; a Go-only rebuild leaves the old Python tree without the marker, so every entry is refused with a script-failure alert.
+
 ### Issue 1917: option expiry trade rows, risk results and settlement styles
 
 Runtime behavior changes for every `type: options` strategy; there is no opt-out, no config change and no schema change.

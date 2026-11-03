@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"math"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -393,4 +395,169 @@ func validStoredOptionMultiplier(strategyID, key string, m float64) error {
 		return fmt.Errorf("strategy %s option leg %s: invalid contract multiplier %v", strategyID, key, m)
 	}
 	return nil
+}
+
+const maxOptionPositionsPerStrategy = 4
+
+func optionStrikeText(strike float64) string {
+	return strconv.FormatFloat(strike, 'f', -1, 64)
+}
+
+func optionContractKey(underlying, optionType, action string, strike float64, expiry string) string {
+	return fmt.Sprintf("%s-%s-%s-%s-%s", underlying, optionType, action, optionStrikeText(strike), expiry)
+}
+
+func legacyOptionContractKey(underlying, optionType, action string, strike float64, expiry string) string {
+	return fmt.Sprintf("%s-%s-%s-%.0f-%s", underlying, optionType, action, strike, expiry)
+}
+
+type optionContractIdentity struct {
+	Underlying string
+	OptionType string
+	Action     string
+	Strike     float64
+	Expiry     string
+}
+
+func optionLegIdentity(p *OptionPosition) optionContractIdentity {
+	return optionContractIdentity{Underlying: strings.ToUpper(p.Underlying), OptionType: p.OptionType, Action: p.Action, Strike: p.Strike, Expiry: p.Expiry}
+}
+
+func optionIdentityKeyable(p *OptionPosition) error {
+	switch {
+	case p == nil:
+		return fmt.Errorf("missing leg")
+	case strings.TrimSpace(p.Underlying) == "":
+		return fmt.Errorf("underlying is empty")
+	case p.OptionType != "call" && p.OptionType != "put":
+		return fmt.Errorf("option type %q is not call or put", p.OptionType)
+	case p.Action != "buy" && p.Action != "sell":
+		return fmt.Errorf("action %q is not buy or sell", p.Action)
+	case !finitePositive(p.Strike):
+		return fmt.Errorf("strike %v is not a finite positive number", p.Strike)
+	case strings.TrimSpace(p.Expiry) == "":
+		return fmt.Errorf("expiry is empty")
+	}
+	return nil
+}
+
+type optionKeyNormalization struct {
+	Renamed  map[string]string
+	Warnings []string
+}
+
+func planOptionKeyNormalization(legs map[string]*OptionPosition) optionKeyNormalization {
+	out := optionKeyNormalization{Renamed: map[string]string{}}
+	ids := sortedOptionLegKeys(legs)
+	byIdentity := make(map[optionContractIdentity][]string)
+	keyable := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		leg := legs[id]
+		if err := optionIdentityKeyable(leg); err != nil {
+			if leg != nil {
+				out.Warnings = append(out.Warnings, fmt.Sprintf("option leg %s keeps its stored id: %v", id, err))
+			}
+			continue
+		}
+		keyable[id] = true
+		ident := optionLegIdentity(leg)
+		byIdentity[ident] = append(byIdentity[ident], id)
+	}
+	retained := make(map[string]bool)
+	var dupGroups []string
+	for _, group := range byIdentity {
+		if len(group) < 2 {
+			continue
+		}
+		sort.Strings(group)
+		for _, id := range group {
+			retained[id] = true
+		}
+		dupGroups = append(dupGroups, strings.Join(group, ", "))
+	}
+	sort.Strings(dupGroups)
+	for _, g := range dupGroups {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("option legs [%s] hold the same contract; each keeps its stored id", g))
+	}
+	for _, id := range ids {
+		if !keyable[id] || retained[id] {
+			continue
+		}
+		leg := legs[id]
+		canonical := optionContractKey(leg.Underlying, leg.OptionType, leg.Action, leg.Strike, leg.Expiry)
+		if canonical == id || legacyOptionContractKey(leg.Underlying, leg.OptionType, leg.Action, leg.Strike, leg.Expiry) != id {
+			continue
+		}
+		out.Renamed[id] = canonical
+	}
+	for {
+		owners := make(map[string][]string, len(ids))
+		for _, id := range ids {
+			final := id
+			if dest, ok := out.Renamed[id]; ok {
+				final = dest
+			}
+			owners[final] = append(owners[final], id)
+		}
+		finals := make([]string, 0, len(owners))
+		for f := range owners {
+			finals = append(finals, f)
+		}
+		sort.Strings(finals)
+		changed := false
+		for _, f := range finals {
+			if len(owners[f]) < 2 {
+				continue
+			}
+			for _, id := range owners[f] {
+				if _, ok := out.Renamed[id]; ok {
+					delete(out.Renamed, id)
+					out.Warnings = append(out.Warnings, fmt.Sprintf("option leg %s keeps its stored id: its canonical key %s collides with another leg", id, f))
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	return out
+}
+
+func normalizeLoadedOptionKeys(s *StrategyState) optionKeyNormalization {
+	if s == nil || len(s.OptionPositions) == 0 {
+		return optionKeyNormalization{}
+	}
+	plan := planOptionKeyNormalization(s.OptionPositions)
+	if len(plan.Renamed) > 0 {
+		next := make(map[string]*OptionPosition, len(s.OptionPositions))
+		for id, leg := range s.OptionPositions {
+			if dest, ok := plan.Renamed[id]; ok {
+				leg.ID = dest
+				next[dest] = leg
+				continue
+			}
+			next[id] = leg
+		}
+		s.OptionPositions = next
+		if pending := s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhoodOptions); pending != nil {
+			for i := range pending.Symbols {
+				if dest, ok := plan.Renamed[pending.Symbols[i].Symbol]; ok {
+					pending.Symbols[i].Symbol = dest
+				}
+			}
+		}
+	}
+	renamed := make([]string, 0, len(plan.Renamed))
+	for old := range plan.Renamed {
+		renamed = append(renamed, old)
+	}
+	sort.Strings(renamed)
+	for _, old := range renamed {
+		fmt.Fprintf(os.Stderr, "[state] strategy %s option leg %s renamed to %s (lossless strike key)\n", s.ID, old, plan.Renamed[old])
+	}
+	for _, w := range plan.Warnings {
+		fmt.Fprintf(os.Stderr, "[state] WARN: strategy %s %s\n", s.ID, w)
+	}
+	return plan
 }

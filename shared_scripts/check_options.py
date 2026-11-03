@@ -27,6 +27,8 @@ REGIME_MIN_BARS = required_regime_bars(14)
 SUPPORTED_PLATFORMS = ("deribit", "ibkr", "okx", "robinhood")
 RANK_STRATEGIES = ("butterfly", "vol_mean_reversion")
 PREMIUM_UNIT = "underlying_unit"
+STRUCTURE_CONTRACT = "options_structures_v1"
+ENTRY_ACTIONS = ("buy", "sell")
 
 
 class CheckError(Exception):
@@ -204,6 +206,53 @@ def score_new_trade(proposed_action, existing_positions, spot_price):
                 reasons.append("better premium")
 
     return round(score, 2), "; ".join(reasons) if reasons else "default"
+
+
+def stamp_structures(strategy_name, action_groups):
+    structures = []
+    for index, group in enumerate(action_groups, start=1):
+        entries = [a for a in group if a.get("action") in ENTRY_ACTIONS]
+        structure_id = f"{strategy_name}-{index}"
+        for action in entries:
+            action["structure_id"] = structure_id
+            action["structure_legs"] = len(entries)
+        structures.append(group)
+    return structures
+
+
+def select_structures(structures, existing_positions, spot_price,
+                      max_positions=MAX_POSITIONS_PER_STRATEGY, min_score=MIN_SCORE_THRESHOLD):
+    selected = []
+    selected_rows = 0
+    for group in structures:
+        entries = [a for a in group if a.get("action") in ENTRY_ACTIONS]
+        others = [a for a in group if a.get("action") not in ENTRY_ACTIONS]
+        selected.extend(others)
+        if not entries:
+            continue
+        for action in entries:
+            score, reason = score_new_trade(action, existing_positions, spot_price)
+            action["score"] = score
+            action["score_reason"] = reason
+        structure_id = entries[0].get("structure_id")
+        legs_text = ", ".join(
+            f"{a.get('action')} {a.get('option_type')} strike={a.get('strike')} score={a['score']} ({a['score_reason']})"
+            for a in entries
+        )
+        structure_score = min(a["score"] for a in entries)
+        if structure_score < min_score:
+            print(f"Skipping structure {structure_id}: minimum leg score {structure_score} < {min_score}; legs: {legs_text}",
+                  file=sys.stderr)
+            continue
+        rows_after = len(existing_positions) + selected_rows + len(entries)
+        if rows_after > max_positions:
+            print(f"Skipping structure {structure_id}: {len(existing_positions)} open + {selected_rows} selected + "
+                  f"{len(entries)} new option rows exceed the cap of {max_positions}; legs: {legs_text}",
+                  file=sys.stderr)
+            continue
+        selected.extend(entries)
+        selected_rows += len(entries)
+    return selected
 
 
 def evaluate_momentum_options(underlying, spot_price, vol_annual, iv_rank,
@@ -476,6 +525,7 @@ def _result(ctx, **fields):
         "regime": None,
         "platform": ctx["platform"],
         "premium_unit": PREMIUM_UNIT,
+        "structure_contract": STRUCTURE_CONTRACT,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     doc.update(fields)
@@ -534,17 +584,8 @@ def _evaluate(ctx, args):
             raise CheckError(f"{e.reason}: {vol_metrics_error}") from e
         raise
 
-    scored_actions = []
-    for action in actions:
-        score, reason = score_new_trade(action, existing_positions, spot_price)
-        action["score"] = score
-        action["score_reason"] = reason
-        if score >= MIN_SCORE_THRESHOLD:
-            scored_actions.append(action)
-        else:
-            print(f"Skipping {action.get('action')} {action.get('option_type')} "
-                  f"strike={action.get('strike')}: score={score} ({reason})",
-                  file=sys.stderr)
+    structures = stamp_structures(strategy_name, [actions])
+    scored_actions = select_structures(structures, existing_positions, spot_price)
 
     if actions and not scored_actions:
         signal = 0

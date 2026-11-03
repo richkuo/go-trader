@@ -1025,10 +1025,13 @@ func qpCaseCheckQuotePrecisionOptionsSpotAndPremiumPrecedence(t *testing.T) {
 			}
 			s := NewStrategyState(sc)
 			result.Signal = 1
+			if result.StructureContract != optionsStructureContractV1 {
+				t.Fatalf("structure_contract = %q, want %q", result.StructureContract, optionsStructureContractV1)
+			}
 			result.Actions = []OptionsAction{
-				{Action: "buy", OptionType: "call", Strike: 1, Expiry: "2026-12-25", Premium: 0.05, Quantity: 2},
-				{Action: "sell", OptionType: "call", Strike: 2, Expiry: "2026-12-25", Premium: 0.03, PremiumUSD: -1, Quantity: 1},
-				{Action: "buy", OptionType: "put", Strike: 3, Expiry: "2026-12-25", Premium: 0.05, PremiumUSD: 3.5, Quantity: 1},
+				{Action: "buy", OptionType: "call", Strike: 1, Expiry: "2026-12-25", Premium: 0.05, Quantity: 2, StructureID: "qp-1", StructureLegs: 3},
+				{Action: "sell", OptionType: "call", Strike: 2, Expiry: "2026-12-25", Premium: 0.03, PremiumUSD: -1, Quantity: 1, StructureID: "qp-1", StructureLegs: 3},
+				{Action: "buy", OptionType: "put", Strike: 3, Expiry: "2026-12-25", Premium: 0.05, PremiumUSD: 3.5, Quantity: 1, StructureID: "qp-1", StructureLegs: 3},
 			}
 			n, err := ExecuteOptionsSignal(s, result, logger)
 			if err != nil || n != 3 {
@@ -1470,6 +1473,7 @@ func TestCheckQuotePrecision(t *testing.T) {
 		{"OptionsFailureAlertThresholds", qpCaseCheckQuotePrecisionOptionsFailureAlertThresholds},
 		{"OptionsSchedulerHarvestsDuringEntryOutage", qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage},
 		{"OptionsResultContractRefusesMismatchedUnitsAndPlatforms", qpCaseCheckQuotePrecisionOptionsResultContract},
+		{"OptionsStructureContractBooksWholeStructures", qpCaseCheckQuotePrecisionOptionsStructureContract},
 	} {
 		t.Run(tc.name, tc.run)
 	}
@@ -1519,8 +1523,12 @@ const (
 )
 
 func qpSeedOptionLegs(s *StrategyState, now time.Time) {
+	qpSeedOptionLegsN(s, now, len(qpOptionLegs()))
+}
+
+func qpSeedOptionLegsN(s *StrategyState, now time.Time, n int) {
 	s.Cash = qpOptionsSeedCash
-	for i, leg := range qpOptionLegs() {
+	for i, leg := range qpOptionLegs()[:n] {
 		expiry := now.AddDate(0, 0, int(leg.dte)).Format("2006-01-02")
 		s.OptionPositions[leg.id] = &OptionPosition{ID: leg.id, Underlying: "BTC", OptionType: leg.optionType, Strike: float64(3000 + 100*i),
 			Expiry: expiry, DTE: leg.dte, Action: leg.action, Quantity: 1, EntryPremium: 0.1, EntryPremiumUSD: leg.entryUSD,
@@ -1597,7 +1605,7 @@ func qpRefreshSeededOptionMarks(t *testing.T, env *entryTestEnv, sc StrategyConf
 	}
 	res := runOptionMarkRefresh(optionMarkRefresh{SC: sc, State: env.strat(sc.ID), Pricer: qpSeededValuePricer{values: values},
 		Mu: &env.mu, Logger: silentStrategyLogger(sc.ID), RefreshAt: time.Now().UTC()})
-	if res.Marked != len(qpOptionLegs()) || len(res.Failures) != 0 {
+	if res.Marked != len(env.strat(sc.ID).OptionPositions) || len(res.Failures) != 0 {
 		t.Fatalf("seeded mark refresh = %+v, want every leg marked", res)
 	}
 }
@@ -1608,10 +1616,11 @@ func qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting(t *testing.T
 		name      string
 		daily     string
 		entries   int
+		legs      int
 		wantError bool
 	}{
-		{name: "entry_check_fails", daily: "error", wantError: true},
-		{name: "entry_check_succeeds", daily: qpOptionsBaselineDaily, entries: 2},
+		{name: "entry_check_fails", daily: "error", legs: 3, wantError: true},
+		{name: "entry_check_succeeds", daily: qpOptionsBaselineDaily, entries: 2, legs: 2},
 	}
 	t.Run("ineligible_legs_stay_open_after_a_failed_check", func(t *testing.T) {
 		sc := qpOptionsHarvestSC("qp-opt-harvest-off")
@@ -1635,12 +1644,12 @@ func qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting(t *testing.T
 			qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": qpOptionsDaily(tc.daily)})
 			env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
 			useEntryTradeRecorder(t, env.store)
-			qpSeedOptionLegs(env.strat(sc.ID), time.Now().UTC())
+			qpSeedOptionLegsN(env.strat(sc.ID), time.Now().UTC(), tc.legs)
 			env.saveAll()
 			env = env.restart()
 			useEntryTradeRecorder(t, env.store)
-			if got := len(env.strat(sc.ID).OptionPositions); got != len(qpOptionLegs()) {
-				t.Fatalf("reloaded %d option legs, want %d", got, len(qpOptionLegs()))
+			if got := len(env.strat(sc.ID).OptionPositions); got != tc.legs {
+				t.Fatalf("reloaded %d option legs, want %d", got, tc.legs)
 			}
 			qpRefreshSeededOptionMarks(t, env, sc)
 			notifier, backend := qpOptionsNotifier()
@@ -1650,8 +1659,8 @@ func qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting(t *testing.T
 			if tc.wantError != strings.Contains(buf.String(), "Script returned error: vol_mean_reversion needs iv rank: volatility unavailable: daily history read failed") {
 				t.Fatalf("entry check error presence = %t; log:\n%s", !tc.wantError, buf.String())
 			}
-			if trades != tc.entries+3 || len(lines) != 3+boolInt(tc.entries > 0) {
-				t.Fatalf("trades=%d lines=%q, want %d trades; log:\n%s", trades, lines, tc.entries+3, buf.String())
+			if trades != tc.entries+tc.legs || len(lines) != tc.legs+boolInt(tc.entries > 0) {
+				t.Fatalf("trades=%d lines=%q, want %d trades; log:\n%s", trades, lines, tc.entries+tc.legs, buf.String())
 			}
 			harvestLines := lines
 			if tc.entries > 0 {
@@ -1660,7 +1669,7 @@ func qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting(t *testing.T
 				}
 				harvestLines = lines[1:]
 			}
-			for _, leg := range qpOptionLegs() {
+			for _, leg := range qpOptionLegs()[:tc.legs] {
 				n := 0
 				for _, line := range harvestLines {
 					if strings.Contains(line, "CLOSE "+leg.id+" ") {
@@ -1678,7 +1687,7 @@ func qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting(t *testing.T
 			if len(s.OptionPositions) != tc.entries {
 				t.Fatalf("option positions = %v, want only the %d new entries", s.OptionPositions, tc.entries)
 			}
-			for _, leg := range qpOptionLegs() {
+			for _, leg := range qpOptionLegs()[:tc.legs] {
 				if _, ok := s.OptionPositions[leg.id]; ok == leg.closes {
 					t.Fatalf("leg %s open=%t after harvest", leg.id, ok)
 				}
@@ -1702,11 +1711,11 @@ func qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting(t *testing.T
 
 			env.saveAll()
 			db := env.fileFor(sc.ID).db
-			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM closed_option_positions WHERE strategy_id = ? AND close_reason = 'theta_harvest'`, sc.ID); n != 3 {
-				t.Fatalf("closed theta-harvest rows = %d, want 3 (harvest runs once)", n)
+			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM closed_option_positions WHERE strategy_id = ? AND close_reason = 'theta_harvest'`, sc.ID); n != tc.legs {
+				t.Fatalf("closed theta-harvest rows = %d, want %d (harvest runs once)", n, tc.legs)
 			}
-			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND is_close = 1`, sc.ID); n != 3 {
-				t.Fatalf("close trade rows = %d, want 3", n)
+			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND is_close = 1`, sc.ID); n != tc.legs {
+				t.Fatalf("close trade rows = %d, want %d", n, tc.legs)
 			}
 			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND is_close = 0`, sc.ID); n != tc.entries {
 				t.Fatalf("entry trade rows = %d, want %d", n, tc.entries)
@@ -2003,12 +2012,12 @@ func qpCaseCheckQuotePrecisionOptionsResultContract(t *testing.T) {
 	for _, tc := range []struct {
 		name, unit, script, argPlatform string
 		wantFailure                     string
-		entries                         int
+		entries, legs                   int
 	}{
-		{name: "missing_unit", script: wrapper, argPlatform: "ibkr", wantFailure: `premium_unit "", want "underlying_unit"`},
-		{name: "other_unit", unit: "contract", script: wrapper, argPlatform: "ibkr", wantFailure: `premium_unit "contract", want "underlying_unit"`},
-		{name: "other_platform", script: "shared_scripts/check_options.py", argPlatform: "deribit", wantFailure: `check priced on platform "deribit" but the strategy platform is "ibkr"`},
-		{name: "valid_result", unit: optionPremiumUnitUnderlying, script: wrapper, argPlatform: "ibkr", entries: 2},
+		{name: "missing_unit", script: wrapper, argPlatform: "ibkr", legs: 3, wantFailure: `premium_unit "", want "underlying_unit"`},
+		{name: "other_unit", unit: "contract", script: wrapper, argPlatform: "ibkr", legs: 3, wantFailure: `premium_unit "contract", want "underlying_unit"`},
+		{name: "other_platform", script: "shared_scripts/check_options.py", argPlatform: "deribit", legs: 3, wantFailure: `check priced on platform "deribit" but the strategy platform is "ibkr"`},
+		{name: "valid_result", unit: optionPremiumUnitUnderlying, script: wrapper, argPlatform: "ibkr", entries: 2, legs: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sc := qpOptionsHarvestSC("qp-opt-contract-harvest")
@@ -2019,24 +2028,25 @@ func qpCaseCheckQuotePrecisionOptionsResultContract(t *testing.T) {
 				"QP_OC_ROOT": root, "QP_OC_UNIT": tc.unit})
 			env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
 			useEntryTradeRecorder(t, env.store)
-			qpSeedOptionLegs(env.strat(sc.ID), time.Now().UTC())
+			qpSeedOptionLegsN(env.strat(sc.ID), time.Now().UTC(), tc.legs)
 			qpRefreshSeededOptionMarks(t, env, sc)
 			notifier, _ := qpOptionsNotifier()
 			logger, buf := qpLogger(sc.ID)
 			trades, lines := qpOptionsDispatch(env, sc, notifier, logger)
-			if trades != tc.entries+3 {
-				t.Fatalf("trades=%d lines=%q, want %d entries plus 3 harvest closes; log:\n%s", trades, lines, tc.entries, buf.String())
+			if trades != tc.entries+tc.legs {
+				t.Fatalf("trades=%d lines=%q, want %d entries plus %d harvest closes; log:\n%s", trades, lines, tc.entries, tc.legs, buf.String())
 			}
 			s := env.strat(sc.ID)
 			if len(s.OptionPositions) != tc.entries {
 				t.Fatalf("option legs = %d, want %d", len(s.OptionPositions), tc.entries)
 			}
 			db := env.fileFor(sc.ID).db
+			env.saveAll()
 			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND is_close = 0`, sc.ID); n != tc.entries {
 				t.Fatalf("entry trade rows = %d, want %d", n, tc.entries)
 			}
-			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND is_close = 1`, sc.ID); n != 3 {
-				t.Fatalf("harvest close rows = %d, want 3 (harvest runs once)", n)
+			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND is_close = 1`, sc.ID); n != tc.legs {
+				t.Fatalf("harvest close rows = %d, want %d (harvest runs once)", n, tc.legs)
 			}
 			if tc.wantFailure == "" {
 				if qpScriptFailureCount(sc.ID) != 0 {
@@ -2051,6 +2061,151 @@ func qpCaseCheckQuotePrecisionOptionsResultContract(t *testing.T) {
 			}
 			if !strings.Contains(buf.String(), "Script contract failure: options result contract: "+tc.wantFailure) || qpScriptFailureCount(sc.ID) != 1 {
 				t.Fatalf("contract failure not reported once (failures=%d); log:\n%s", qpScriptFailureCount(sc.ID), buf.String())
+			}
+		})
+	}
+}
+
+const qpOptionsStructureWrapper = `import json, os, sys
+sys.path.insert(0, os.path.join(os.environ["QP_OC_ROOT"], "shared_scripts"))
+import check_options
+mode = os.environ.get("QP_OC_MUTATE", "")
+extra = os.environ.get("QP_OC_CLOSE", "")
+def emit(doc):
+    entries = [a for a in doc.get("actions", []) if a.get("action") in ("buy", "sell")]
+    if mode == "drop_marker":
+        doc.pop("structure_contract", None)
+    elif mode == "wrong_marker":
+        doc["structure_contract"] = "options_structures_v0"
+    elif mode == "string_legs":
+        entries[0]["structure_legs"] = str(entries[0]["structure_legs"])
+    elif mode == "fraction_legs":
+        entries[0]["structure_legs"] = 1.5
+    elif mode == "truncate":
+        doc["actions"].remove(entries[-1])
+    elif mode == "unknown_action":
+        entries[0]["action"] = "roll"
+    elif mode == "bad_type":
+        entries[0]["option_type"] = "straddle"
+    elif mode == "empty_id":
+        entries[0]["structure_id"] = ""
+    if extra:
+        doc["actions"].append(json.loads(extra))
+    sys.stdout.write(json.dumps(doc) + "\n")
+sys.exit(check_options._run(sys.argv[1:], emit))
+`
+
+func qpMidRankDaily() string {
+	closes := make([]float64, 80)
+	for i := range closes {
+		x := 100 * math.Exp(0.01*math.Sin(float64(i)*1.7)+0.01*math.Cos(float64(i)*0.37))
+		closes[i] = math.Round(x*1e6) / 1e6
+	}
+	raw, err := json.Marshal(closes)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
+func qpCaseCheckQuotePrecisionOptionsStructureContract(t *testing.T) {
+	root := qpRoot(t)
+
+	t.Run("real_butterfly_books_whole_and_commits_with_the_save", func(t *testing.T) {
+		sc := StrategyConfig{ID: "qp-opt-fly", Type: "options", Platform: "deribit", Script: "shared_scripts/check_options.py",
+			Args: []string{"butterfly", "BTC", "--platform=deribit"}, Capital: 100000, MaxDrawdownPct: 50}
+		qpResetScriptFailures(t, sc.ID)
+		qpEnv(t, root, map[string]string{"QP_QUOTE": "100000", "QP_CLOSE": "100000", "QP_DAILY": qpMidRankDaily()})
+		env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
+		useEntryTradeRecorder(t, env.store)
+		env.saveAll()
+		notifier, _ := qpOptionsNotifier()
+		logger, buf := qpLogger(sc.ID)
+		trades, _ := qpOptionsDispatch(env, sc, notifier, logger)
+		s := env.strat(sc.ID)
+		if trades != 3 || len(s.OptionPositions) != 3 || qpScriptFailureCount(sc.ID) != 0 {
+			t.Fatalf("trades=%d legs=%v failures=%d; log:\n%s", trades, sortedOptionLegKeys(s.OptionPositions), qpScriptFailureCount(sc.ID), buf.String())
+		}
+		for _, leg := range s.OptionPositions {
+			if leg.ID != optionContractKey("BTC", leg.OptionType, leg.Action, leg.Strike, leg.Expiry) {
+				t.Fatalf("leg key %s does not match its contract", leg.ID)
+			}
+		}
+		db := env.fileFor(sc.ID).db
+		if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ?`, sc.ID); n != 0 {
+			t.Fatalf("entry trades persisted before the save: %d", n)
+		}
+		env.saveAll()
+		if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ?`, sc.ID); n != 3 {
+			t.Fatalf("entry trade rows after save = %d, want 3", n)
+		}
+		if n := qpCountRows(t, db, `SELECT COUNT(*) FROM option_positions WHERE strategy_id = ?`, sc.ID); n != 3 {
+			t.Fatalf("stored option rows after save = %d, want 3", n)
+		}
+	})
+
+	wrapper := filepath.Join(t.TempDir(), "structure_wrapper.py")
+	if err := os.WriteFile(wrapper, []byte(qpOptionsStructureWrapper), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	closeJSON := `{"action":"close","option_type":"put","strike":2500,"premium_usd":0.5}`
+	for _, tc := range []struct {
+		mode, want string
+		entries    int
+	}{
+		{mode: "", entries: 2},
+		{mode: "drop_marker", want: `structure_contract "", want "options_structures_v1"`},
+		{mode: "wrong_marker", want: `structure_contract "options_structures_v0"`},
+		{mode: "string_legs", want: "structure_legs is not a JSON number"},
+		{mode: "fraction_legs", want: "structure_legs 1.5 is not a whole positive number"},
+		{mode: "truncate", want: "structure_legs 2 does not match its 1 member(s)"},
+		{mode: "unknown_action", want: `("roll") is not buy, sell or close`},
+		{mode: "bad_type", want: `option_type "straddle" is not call or put`},
+		{mode: "empty_id", want: "structure_id is empty, so no group can be identified"},
+	} {
+		name := tc.mode
+		if name == "" {
+			name = "valid_control"
+		}
+		t.Run(name, func(t *testing.T) {
+			sc := qpOptionsHarvestSC("qp-opt-structure")
+			sc.Script = wrapper
+			qpResetScriptFailures(t, sc.ID)
+			qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": qpOptionsDaily(qpOptionsBaselineDaily),
+				"QP_OC_ROOT": root, "QP_OC_MUTATE": tc.mode, "QP_OC_CLOSE": closeJSON})
+			env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
+			useEntryTradeRecorder(t, env.store)
+			s := env.strat(sc.ID)
+			now := time.Now().UTC()
+			qpSeedOptionLegsN(s, now, 1)
+			qpRefreshSeededOptionMarks(t, env, sc)
+			s.OptionPositions["BTC-put-sell-2500-target"] = &OptionPosition{ID: "BTC-put-sell-2500-target", Underlying: "BTC", OptionType: "put", Strike: 2500,
+				Expiry: now.AddDate(0, 0, 20).Format("2006-01-02"), DTE: 20, Action: "sell", Quantity: 1, ContractMultiplier: 1, EntryPremiumUSD: 60, CurrentValueUSD: -50, OpenedAt: now.Add(-time.Hour)}
+			notifier, _ := qpOptionsNotifier()
+			logger, buf := qpLogger(sc.ID)
+			trades, _ := qpOptionsDispatch(env, sc, notifier, logger)
+			if s.OptionPositions["BTC-put-sell-2500-target"] != nil || s.OptionPositions[qpOptionLegs()[0].id] != nil {
+				t.Fatalf("the explicit close and the harvest must run: legs=%v; log:\n%s", sortedOptionLegKeys(s.OptionPositions), buf.String())
+			}
+			if trades != tc.entries+2 || len(s.OptionPositions) != tc.entries {
+				t.Fatalf("trades=%d legs=%v, want %d entries plus one close and one harvest; log:\n%s", trades, sortedOptionLegKeys(s.OptionPositions), tc.entries, buf.String())
+			}
+			env.saveAll()
+			db := env.fileFor(sc.ID).db
+			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND is_close = 0`, sc.ID); n != tc.entries {
+				t.Fatalf("entry trade rows = %d, want %d", n, tc.entries)
+			}
+			if n := qpCountRows(t, db, `SELECT COUNT(*) FROM closed_option_positions WHERE strategy_id = ? AND close_reason = 'theta_harvest'`, sc.ID); n != 1 {
+				t.Fatalf("theta harvest closes = %d, want 1 (harvest runs once)", n)
+			}
+			if tc.want == "" {
+				if qpScriptFailureCount(sc.ID) != 0 {
+					t.Fatalf("a valid structure result must clear the failure state; log:\n%s", buf.String())
+				}
+				return
+			}
+			if qpScriptFailureCount(sc.ID) != 1 || !strings.Contains(buf.String(), "Script structure failure: options structure contract: ") || !strings.Contains(buf.String(), tc.want) {
+				t.Fatalf("structure failure not reported once with %q (failures=%d); log:\n%s", tc.want, qpScriptFailureCount(sc.ID), buf.String())
 			}
 		})
 	}
