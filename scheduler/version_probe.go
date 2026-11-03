@@ -221,6 +221,30 @@ var checkRegimeMarketProbeArgv = []string{
 	"--probe-only",
 }
 
+var checkRegimeRobinhoodCryptoProbeArgv = []string{
+	"--platform=robinhood", "--symbol=BTC", "--timeframe=1h",
+	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
+	"--ohlcv-limit", "200", "--min-bars", "30",
+	"--asset-class", robinhoodAssetClassCrypto,
+	"--probe-only",
+}
+
+var checkRegimeRobinhoodStockProbeArgv = []string{
+	"--platform=robinhood", "--symbol=SPY", "--timeframe=" + optionsRegimeTimeframe,
+	"--regime-windows-spec-json", optionsRegimeWindowsSpecJSON,
+	"--ohlcv-limit", "100", "--min-bars", "30",
+	"--asset-class", robinhoodAssetClassStock,
+	"--probe-only",
+}
+
+var fetchCandlesRobinhoodCryptoProbeArgv = []string{
+	"--platform=robinhood", "--type=spot", "--symbol=BTC", "--timeframe=1h", "--limit=1", "--probe-only",
+}
+
+var fetchCandlesRobinhoodStockProbeArgv = []string{
+	"--platform=robinhood", "--type=options", "--symbol=SPY", "--timeframe=1d", "--limit=1", "--probe-only",
+}
+
 var strategyTunerSchemaProbeArgv = []string{
 	"--type=spot", "--strategy=sma", "--probe-only",
 }
@@ -369,6 +393,22 @@ func probeCheckScripts(cfg *Config) error {
 		if err := probeOneCheckScriptFn(regimeCheckScript, checkRegimeMarketProbeArgv); err != nil {
 			return err
 		}
+		if anyRobinhoodSpot(cfg) {
+			if err := probeOneCheckScriptFn(regimeCheckScript, checkRegimeRobinhoodCryptoProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn("shared_scripts/fetch_candles.py", fetchCandlesRobinhoodCryptoProbeArgv); err != nil {
+				return err
+			}
+		}
+		if anyRobinhoodOptions(cfg) {
+			if err := probeOneCheckScriptFn(regimeCheckScript, checkRegimeRobinhoodStockProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn("shared_scripts/fetch_candles.py", fetchCandlesRobinhoodStockProbeArgv); err != nil {
+				return err
+			}
+		}
 		if err := probeOneCheckScriptFn("shared_scripts/simulate_strategy.py", simulateStrategyProbeArgv); err != nil {
 			return err
 		}
@@ -484,6 +524,15 @@ func probeOneCheckScript(script string, argv []string) error {
 var robinhoodOptionMarksProbeArgv = []string{"--platform=robinhood", "--probe-only"}
 
 var probeOneScriptContractFn = probeOneScriptContract
+
+func anyRobinhoodSpot(cfg *Config) bool {
+	for _, sc := range cfg.Strategies {
+		if sc.Type == "spot" && sc.Platform == "robinhood" {
+			return true
+		}
+	}
+	return false
+}
 
 func anyRobinhoodOptions(cfg *Config) bool {
 	for _, sc := range cfg.Strategies {

@@ -460,7 +460,6 @@ CREATE TABLE IF NOT EXISTS regime_window_history (
     ts TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_regime_hist_key ON regime_window_history(platform, symbol, timeframe, spec_json, window, id);
 CREATE INDEX IF NOT EXISTS idx_regime_hist_ts ON regime_window_history(ts);
 
 -- #1224 per-window label transitions (old -> new). alerted_at is the
@@ -479,7 +478,6 @@ CREATE TABLE IF NOT EXISTS regime_window_transitions (
     alerted_at TEXT NOT NULL DEFAULT ''
 );
 
-CREATE INDEX IF NOT EXISTS idx_regime_trans_key ON regime_window_transitions(platform, symbol, timeframe, spec_json, window, id);
 CREATE INDEX IF NOT EXISTS idx_regime_trans_ts ON regime_window_transitions(ts);
 
 -- #1224 last-alerted reversal-pattern signature per bundle key (DM dedupe).
@@ -711,7 +709,97 @@ func (sdb *StateDB) migrateSchema() error {
 	if err := sdb.migrateQuoteSchema(); err != nil {
 		return err
 	}
+	if err := sdb.migrateRegimeAssetClassSchema(); err != nil {
+		return err
+	}
 	return sdb.backfillTradeCloseFlags()
+}
+
+const regimeReversalAlertsClassDDL = `CREATE TABLE regime_reversal_alerts_v2 (
+    platform TEXT NOT NULL,
+    asset_class TEXT NOT NULL DEFAULT '',
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    spec_json TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    alerted_at TEXT NOT NULL,
+    PRIMARY KEY (platform, asset_class, symbol, timeframe, spec_json)
+)`
+
+const regimeReversalAlertsClassCopySQL = `INSERT INTO regime_reversal_alerts_v2
+    (platform, asset_class, symbol, timeframe, spec_json, signature, alerted_at)
+    SELECT platform, '', symbol, timeframe, spec_json, signature, alerted_at FROM regime_reversal_alerts`
+
+var regimeAssetClassIndexDDL = []string{
+	"DROP INDEX IF EXISTS idx_regime_hist_key",
+	"DROP INDEX IF EXISTS idx_regime_trans_key",
+	"CREATE INDEX IF NOT EXISTS idx_regime_hist_class_key ON regime_window_history(platform, asset_class, symbol, timeframe, spec_json, window, id)",
+	"CREATE INDEX IF NOT EXISTS idx_regime_trans_class_key ON regime_window_transitions(platform, asset_class, symbol, timeframe, spec_json, window, id)",
+}
+
+func txTableHasColumn(tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			found = true
+		}
+	}
+	return found, rows.Err()
+}
+
+func (sdb *StateDB) migrateRegimeAssetClassSchema() error {
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range []string{"regime_window_history", "regime_window_transitions"} {
+		has, err := txTableHasColumn(tx, table, "asset_class")
+		if err != nil {
+			return fmt.Errorf("introspect %s columns: %w", table, err)
+		}
+		if has {
+			continue
+		}
+		if _, err := tx.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN asset_class TEXT NOT NULL DEFAULT ''", table)); err != nil {
+			return fmt.Errorf("add %s.asset_class: %w", table, err)
+		}
+	}
+	has, err := txTableHasColumn(tx, "regime_reversal_alerts", "asset_class")
+	if err != nil {
+		return fmt.Errorf("introspect regime_reversal_alerts columns: %w", err)
+	}
+	if !has {
+		for _, stmt := range []string{
+			"DROP TABLE IF EXISTS regime_reversal_alerts_v2",
+			regimeReversalAlertsClassDDL,
+			regimeReversalAlertsClassCopySQL,
+			"DROP TABLE regime_reversal_alerts",
+			"ALTER TABLE regime_reversal_alerts_v2 RENAME TO regime_reversal_alerts",
+		} {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("migrate regime_reversal_alerts to the asset-class key: %w", err)
+			}
+		}
+	}
+	for _, stmt := range regimeAssetClassIndexDDL {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("migrate regime key indexes to the asset-class key: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 func firstTwoTPOIDs(oids []int64) (int64, int64) {

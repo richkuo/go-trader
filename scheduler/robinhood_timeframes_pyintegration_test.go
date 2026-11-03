@@ -15,14 +15,21 @@ import (
 const robinhoodTimeframeParityScript = `import json, sys
 sys.path.insert(0, "platforms/robinhood")
 sys.path.insert(0, "shared_tools")
-from adapter import ROBINHOOD_CLOSED_BAR_REFUSED, ROBINHOOD_TIMEFRAMES, YAHOO_CRYPTO_MAP, robinhood_session_closed_bar_refusal
+from adapter import ROBINHOOD_CLOSED_BAR_REFUSED, ROBINHOOD_TIMEFRAMES, YAHOO_CRYPTO_MAP, UnsupportedRobinhoodSymbol, robinhood_yahoo_ticker
 from htf_filter import get_default_htf
 from closed_bar import FIXED_DURATION_MS
+def resolve(asset_class, symbol):
+    try:
+        return robinhood_yahoo_ticker(asset_class, symbol)
+    except UnsupportedRobinhoodSymbol:
+        return ""
+probes = json.loads(sys.argv[1])
 print(json.dumps({
     "table": {k: v.yahoo_interval for k, v in ROBINHOOD_TIMEFRAMES.items()},
     "session": {k: v.session_interval for k, v in ROBINHOOD_TIMEFRAMES.items()},
     "crypto": YAHOO_CRYPTO_MAP,
-    "session_refusal": {s: robinhood_session_closed_bar_refusal(s) for s in ("AAPL", "XRP", "xrp-usd", "btc", "SPY")},
+    "crypto_resolver": {s: resolve("crypto", s) for s in probes},
+    "stock_resolver": {s: resolve("stock", s) for s in probes},
     "htf": {k: get_default_htf(k) for k in ROBINHOOD_TIMEFRAMES},
     "fixed": FIXED_DURATION_MS,
     "refused": ROBINHOOD_CLOSED_BAR_REFUSED,
@@ -31,7 +38,22 @@ print(json.dumps({
 
 func TestRobinhoodTimeframeTablesMatchThePythonAdapter(t *testing.T) {
 	root := htfITRoot(t)
-	cmd := exec.Command(filepath.Join(root, ".venv", "bin", "python3"), "-c", robinhoodTimeframeParityScript)
+	probes := []string{"AAPL", "SPY", "BRK.B", "BRK-B", "XRP", "xrp", "XRP-USD", "xrp-usd", "BTC/USD", "ETH-USDT", "SOL-USDC", "btc", "BTC", "LTC", "UNI", "PEPE", "MATIC", "POL", "1SPY", "", " LTC ", "TOOLONGX"}
+	seen := map[string]bool{}
+	for _, sym := range probes {
+		seen[sym] = true
+	}
+	for sym := range robinhoodYahooCryptoMap {
+		if !seen[sym] {
+			probes = append(probes, sym)
+		}
+	}
+	sort.Strings(probes)
+	probeJSON, err := json.Marshal(probes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join(root, ".venv", "bin", "python3"), "-c", robinhoodTimeframeParityScript, string(probeJSON))
 	cmd.Dir = root
 	out, err := cmd.Output()
 	if err != nil {
@@ -41,7 +63,8 @@ func TestRobinhoodTimeframeTablesMatchThePythonAdapter(t *testing.T) {
 		Table          map[string]string `json:"table"`
 		Session        map[string]string `json:"session"`
 		Crypto         map[string]string `json:"crypto"`
-		SessionRefusal map[string]string `json:"session_refusal"`
+		CryptoResolver map[string]string `json:"crypto_resolver"`
+		StockResolver  map[string]string `json:"stock_resolver"`
 		HTF            map[string]string `json:"htf"`
 		Fixed          map[string]int64  `json:"fixed"`
 		Refused        map[string]string `json:"refused"`
@@ -73,13 +96,27 @@ func TestRobinhoodTimeframeTablesMatchThePythonAdapter(t *testing.T) {
 			t.Errorf("crypto symbol %q: Python Yahoo pair %q, Go %q", sym, got.Crypto[sym], yahoo)
 		}
 	}
-	for _, sym := range keys(got.SessionRefusal) {
-		goWhy := ""
-		if !robinhoodYahooCryptoPair(sym) {
-			goWhy = robinhoodSessionClosedBarRefusal(sym)
+	if len(got.CryptoResolver) != len(probes) || len(got.StockResolver) != len(probes) {
+		t.Fatalf("Python resolved %d crypto and %d stock probes, want %d each", len(got.CryptoResolver), len(got.StockResolver), len(probes))
+	}
+	for _, sym := range probes {
+		if pyOK, goOK := got.CryptoResolver[sym] != "", robinhoodCryptoCoinSupported(sym); pyOK != goOK {
+			t.Errorf("crypto admission for %q: Python accepts=%v, Go accepts=%v", sym, pyOK, goOK)
+		} else if goOK && got.CryptoResolver[sym] != robinhoodYahooCryptoMap[sym] {
+			t.Errorf("crypto ticker for %q: Python %q, Go %q", sym, got.CryptoResolver[sym], robinhoodYahooCryptoMap[sym])
 		}
-		if got.SessionRefusal[sym] != goWhy {
-			t.Errorf("closed-bar session refusal for %q: Python %q, Go %q", sym, got.SessionRefusal[sym], goWhy)
+		if pyOK, goOK := got.StockResolver[sym] != "", robinhoodStockUnderlyingError(sym) == ""; pyOK != goOK {
+			t.Errorf("stock admission for %q: Python accepts=%v, Go accepts=%v", sym, pyOK, goOK)
+		}
+	}
+	for _, sym := range []string{"LTC", "BTC", "XRP"} {
+		if got.StockResolver[sym] != sym || got.CryptoResolver[sym] == "" {
+			t.Errorf("collision symbol %q must resolve to stock %q and to its crypto ticker, got stock %q crypto %q", sym, sym, got.StockResolver[sym], got.CryptoResolver[sym])
+		}
+	}
+	for _, sym := range []string{"AAPL", "XRP-USD", "MATIC", "xrp"} {
+		if got.CryptoResolver[sym] != "" {
+			t.Errorf("crypto resolver accepted %q as %q", sym, got.CryptoResolver[sym])
 		}
 	}
 	if strings.Join(keys(got.Refused), ",") != strings.Join(keys(robinhoodClosedBarRefusedTimeframes), ",") {
@@ -171,12 +208,6 @@ func TestRobinhoodTimeframeRealBinary(t *testing.T) {
 				`strategy[rh-tf]: closed_bar_decisions does not support timeframe "1m" (fixed-duration intervals only: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d); on Robinhood Yahoo's newest closed 1m row was a flat zero-volume placeholder`},
 			{"paper-closed-bar-60m", map[string]any{"args": []string{"atr_breakout", "BTC", "60m", "--mode=paper"}, "closed_bar_decisions": true}, nil,
 				`strategy[rh-tf]: closed_bar_decisions does not support timeframe "60m"`},
-			{"args-2h-non-crypto", map[string]any{"args": []string{"atr_breakout", "XRP", "2h", "--mode=paper"}}, nil,
-				`strategy[rh-tf]: robinhood args timeframe "2h" is built from Yahoo 1h rows only for crypto pairs, and symbol "XRP" resolves to Yahoo "XRP", which is not one (Yahoo crypto pairs: ADA, AVAX, BTC, DOGE, DOT, ETH, LINK, MATIC, SHIB, SOL, or a symbol ending in -USD)`},
-			{"regime-12h-non-crypto", map[string]any{"args": []string{"atr_breakout", "AAPL", "1h", "--mode=paper"}}, map[string]any{"enabled": true, "timeframe": "12h"},
-				`strategy[rh-tf]: robinhood regime.timeframe "12h" is built from Yahoo 1h rows only for crypto pairs, and symbol "AAPL" resolves to Yahoo "AAPL"`},
-			{"paper-closed-bar-non-crypto", map[string]any{"args": []string{"atr_breakout", "AAPL", "1h", "--mode=paper"}, "closed_bar_decisions": true}, nil,
-				`strategy[rh-tf]: closed_bar_decisions is not supported: symbol "AAPL" resolves to Yahoo "AAPL", which is not a Yahoo crypto pair`},
 		}
 		for _, c := range cases {
 			t.Run(c.name, func(t *testing.T) {
@@ -196,6 +227,21 @@ func TestRobinhoodTimeframeRealBinary(t *testing.T) {
 					t.Fatalf("a strategy cycle ran before the config error\n%s", log)
 				}
 			})
+		}
+	})
+	t.Run("AcceptsAResampledPaperClosedBarStrategyOnAFormerlyUnmappedCoin", func(t *testing.T) {
+		root := htfITRoot(t)
+		bin := robinhoodTimeframeITBinary(t, root)
+		dir := t.TempDir()
+		cfg := robinhoodTimeframeITConfig(t, dir, "paper-xrp-2h", map[string]any{
+			"args": []string{"atr_breakout", " xrp ", "2h", "--mode=paper"}, "closed_bar_decisions": true,
+		}, map[string]any{"enabled": true, "timeframe": "12h"})
+		cmd := exec.Command(bin, "probe", "--config", cfg)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "ROBINHOOD_USERNAME=", "DISCORD_BOT_TOKEN=", "TELEGRAM_BOT_TOKEN=")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("probe refused a normalized supported coin on a resampled paper closed-bar config: %v\n%s", err, out)
 		}
 	})
 	t.Run("AcceptsAResampledPaperClosedBarStrategy", func(t *testing.T) {

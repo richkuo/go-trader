@@ -24,14 +24,51 @@ const (
 )
 
 type regimeBundleKey struct {
-	Platform  string
-	Symbol    string
-	Timeframe string
-	SpecJSON  string
+	Platform   string
+	AssetClass string
+	Symbol     string
+	Timeframe  string
+	SpecJSON   string
 }
 
 func (k regimeBundleKey) String() string {
-	return k.Platform + "/" + k.Symbol + "/" + k.Timeframe
+	return regimeIdentityLabel(k.Platform, k.AssetClass) + "/" + k.Symbol + "/" + k.Timeframe
+}
+
+func regimeIdentityLabel(platform, assetClass string) string {
+	if assetClass != "" {
+		return platform + ":" + assetClass
+	}
+	if platform == "robinhood" {
+		return platform + ":unclassified"
+	}
+	return platform
+}
+
+func regimeBundleKeyLess(a, b regimeBundleKey) bool {
+	if a.Platform != b.Platform {
+		return a.Platform < b.Platform
+	}
+	if a.AssetClass != b.AssetClass {
+		return a.AssetClass < b.AssetClass
+	}
+	if a.Symbol != b.Symbol {
+		return a.Symbol < b.Symbol
+	}
+	if a.Timeframe != b.Timeframe {
+		return a.Timeframe < b.Timeframe
+	}
+	return a.SpecJSON < b.SpecJSON
+}
+
+func strategyRegimeAssetClass(sc StrategyConfig, platform string) string {
+	if platform != "robinhood" {
+		return ""
+	}
+	if sc.Type == "options" {
+		return robinhoodAssetClassStock
+	}
+	return robinhoodAssetClassCrypto
 }
 
 type regimeBundleRequest struct {
@@ -57,13 +94,14 @@ type RegimeBundle struct {
 }
 
 type regimeBundleOutput struct {
-	Platform  string                       `json:"platform"`
-	Symbol    string                       `json:"symbol"`
-	Timeframe string                       `json:"timeframe"`
-	BarTime   string                       `json:"bar_time"`
-	Regime    json.RawMessage              `json:"regime"`
-	Views     map[string]RegimeBundleViews `json:"views"`
-	Error     string                       `json:"error"`
+	Platform   string                       `json:"platform"`
+	AssetClass string                       `json:"asset_class"`
+	Symbol     string                       `json:"symbol"`
+	Timeframe  string                       `json:"timeframe"`
+	BarTime    string                       `json:"bar_time"`
+	Regime     json.RawMessage              `json:"regime"`
+	Views      map[string]RegimeBundleViews `json:"views"`
+	Error      string                       `json:"error"`
 }
 
 var regimeStorePhaseBudget = scriptTimeout + 15*time.Second
@@ -219,19 +257,7 @@ func (s *RegimeStore) Snapshot() ([]*RegimeBundle, time.Time) {
 	for _, b := range s.entries {
 		out = append(out, b)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i].Key, out[j].Key
-		if a.Platform != b.Platform {
-			return a.Platform < b.Platform
-		}
-		if a.Symbol != b.Symbol {
-			return a.Symbol < b.Symbol
-		}
-		if a.Timeframe != b.Timeframe {
-			return a.Timeframe < b.Timeframe
-		}
-		return a.SpecJSON < b.SpecJSON
-	})
+	sort.Slice(out, func(i, j int) bool { return regimeBundleKeyLess(out[i].Key, out[j].Key) })
 	return out, s.builtAt
 }
 
@@ -296,16 +322,18 @@ func strategyRegimeBundleRequest(sc StrategyConfig, rc *RegimeConfig) (regimeBun
 		if underlying == "" || strings.HasPrefix(underlying, "-") {
 			return regimeBundleRequest{}, false
 		}
+		assetClass := strategyRegimeAssetClass(sc, platform)
 		return regimeBundleRequest{
 			Key: regimeBundleKey{
-				Platform:  platform,
-				Symbol:    strings.ToUpper(underlying),
-				Timeframe: optionsRegimeTimeframe,
-				SpecJSON:  optionsRegimeWindowsSpecJSON,
+				Platform:   platform,
+				AssetClass: assetClass,
+				Symbol:     strings.ToUpper(underlying),
+				Timeframe:  optionsRegimeTimeframe,
+				SpecJSON:   optionsRegimeWindowsSpecJSON,
 			},
 			OhlcvLimit:        optionsRegimeOhlcvLimit,
 			MinBars:           optionsRegimeMinBars,
-			AllowSpotFallback: true,
+			AllowSpotFallback: assetClass == "",
 		}, true
 	}
 	if rc == nil || !rc.Enabled {
@@ -325,10 +353,11 @@ func strategyRegimeBundleRequest(sc StrategyConfig, rc *RegimeConfig) (regimeBun
 	}
 	return regimeBundleRequest{
 		Key: regimeBundleKey{
-			Platform:  platform,
-			Symbol:    symbol,
-			Timeframe: timeframe,
-			SpecJSON:  specJSON,
+			Platform:   platform,
+			AssetClass: strategyRegimeAssetClass(sc, platform),
+			Symbol:     symbol,
+			Timeframe:  timeframe,
+			SpecJSON:   specJSON,
 		},
 		OhlcvLimit: regimeRequiredOhlcvLimit(rc),
 		MinBars:    regimeBundleMinBars,
@@ -346,19 +375,7 @@ func collectRegimeBundleRequests(due []StrategyConfig, rc *RegimeConfig) []regim
 		seen[req.Key] = true
 		out = append(out, req)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i].Key, out[j].Key
-		if a.Platform != b.Platform {
-			return a.Platform < b.Platform
-		}
-		if a.Symbol != b.Symbol {
-			return a.Symbol < b.Symbol
-		}
-		if a.Timeframe != b.Timeframe {
-			return a.Timeframe < b.Timeframe
-		}
-		return a.SpecJSON < b.SpecJSON
-	})
+	sort.Slice(out, func(i, j int) bool { return regimeBundleKeyLess(out[i].Key, out[j].Key) })
 	return out
 }
 
@@ -370,6 +387,9 @@ func regimeBundleCheckArgs(req regimeBundleRequest) []string {
 		"--regime-windows-spec-json", req.Key.SpecJSON,
 		"--ohlcv-limit", strconv.Itoa(req.OhlcvLimit),
 		"--min-bars", strconv.Itoa(req.MinBars),
+	}
+	if req.Key.AssetClass != "" {
+		args = append(args, "--asset-class", req.Key.AssetClass)
 	}
 	if req.AllowSpotFallback {
 		args = append(args, "--allow-spot-fallback")
@@ -384,6 +404,9 @@ func parseRegimeBundleOutput(key regimeBundleKey, data []byte, now time.Time) (*
 	}
 	if out.Error != "" {
 		return nil, fmt.Errorf("regime bundle %s: %s", key, out.Error)
+	}
+	if out.AssetClass != key.AssetClass {
+		return nil, fmt.Errorf("regime bundle %s: worker reported asset class %q, want %q (binary/Python version mismatch; sync Python with scripts/update.sh)", key, out.AssetClass, key.AssetClass)
 	}
 	if len(out.Regime) == 0 || string(out.Regime) == "null" {
 		return nil, fmt.Errorf("regime bundle %s: missing regime payload", key)

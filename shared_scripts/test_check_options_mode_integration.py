@@ -125,7 +125,7 @@ sys.path.insert(0, os.path.join(os.getcwd(), "shared_scripts"))
 import check_options
 import option_data
 platform, underlying, call = sys.argv[1:4]
-adapter = check_options._load_adapter(platform)
+adapter = check_options._load_adapter(platform, underlying)
 try:
     if call == "vol":
         vol, rank = adapter.get_vol_metrics(underlying)

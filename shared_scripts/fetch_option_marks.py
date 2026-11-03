@@ -59,9 +59,10 @@ def _load_adapter(platform):
     spec = importlib.util.spec_from_file_location(f"{platform}_adapter", adapter_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    kwargs = {"asset_class": module.ASSET_CLASS_STOCK} if platform == "robinhood" else {}
     for name in dir(module):
         if name.endswith("ExchangeAdapter"):
-            return getattr(module, name)()
+            return getattr(module, name)(**kwargs)
     raise AttributeError(f"No ExchangeAdapter class found in {adapter_path}")
 
 
@@ -192,6 +193,7 @@ def _evaluate_leg(leg, refresh_at, reader):
     out.update({k: session[k] for k in ("session_date", "cutoff_utc", "settlement_ready_utc", "calendar", "non_session_mapped")})
     cutoff, ready = session["cutoff"], session["ready"]
     try:
+        reader.adapter().require_stock_underlying(underlying)
         if refresh_at < cutoff:
             adapter = reader.adapter()
             spot = reader.spot(underlying)

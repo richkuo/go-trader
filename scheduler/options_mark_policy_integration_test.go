@@ -27,7 +27,9 @@ func TestOptionPricingPolicyThroughConfigLoaders(t *testing.T) {
 		{"unsupported_platform", "opt-binanceus", "binanceus", "BTC", `options platform "binanceus" has no option pricer (supported: deribit, ibkr, okx, robinhood)`},
 		{"deribit_sol", "deribit-sol", "deribit", "SOL", `deribit options price only the inverse BTC and ETH option families`},
 		{"okx_hype", "okx-hype", "okx", "HYPE", `okx options price only the inverse BTC and ETH option families`},
-		{"robinhood_crypto", "rh-btc", "robinhood", "BTC", `robinhood options price only listed equity and ETF underlyings; "BTC" resolves to the Yahoo crypto pair BTC-USD`},
+		{"robinhood_dash_pair", "rh-btc-usd", "robinhood", "BTC-USD", `robinhood options underlying "BTC-USD" is a currency pair`},
+		{"robinhood_slash_pair", "rh-xrp-usdt", "robinhood", "XRP/USDT", `robinhood options underlying "XRP/USDT" is a currency pair`},
+		{"robinhood_not_a_ticker", "rh-digit", "robinhood", "1SPY", `robinhood options underlying "1SPY" is not a stock or ETF ticker`},
 		{"prefixless_options_default_deribit", "opt-noprefix", "", "SOL", `deribit options price only the inverse BTC and ETH option families`},
 	}
 	for _, tc := range refused {
@@ -52,6 +54,9 @@ func TestOptionPricingPolicyThroughConfigLoaders(t *testing.T) {
 		{"deribit-eth", "deribit", "ETH", "deribit"},
 		{"okx-eth", "okx", "ETH", "okx"},
 		{"rh-spy", "robinhood", "SPY", "robinhood"},
+		{"rh-ltc-stock", "robinhood", "LTC", "robinhood"},
+		{"rh-btc-stock", "robinhood", "BTC", "robinhood"},
+		{"rh-brk-b", "robinhood", "BRK.B", "robinhood"},
 		{"ibkr-btc", "ibkr", "BTC", "ibkr"},
 		{"opt-prefixless", "", "BTC", "deribit"},
 	}

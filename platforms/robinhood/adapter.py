@@ -30,16 +30,65 @@ import egress_policy
 import option_data
 
 YAHOO_CRYPTO_MAP = {
-    "BTC": "BTC-USD",
-    "ETH": "ETH-USD",
-    "SOL": "SOL-USD",
-    "DOGE": "DOGE-USD",
-    "AVAX": "AVAX-USD",
-    "LINK": "LINK-USD",
+    "AAVE": "AAVE-USD",
     "ADA": "ADA-USD",
+    "ALGO": "ALGO-USD",
+    "ATOM": "ATOM-USD",
+    "AVAX": "AVAX-USD",
+    "AVNT": "AVNT-USD",
+    "AXS": "AXS-USD",
+    "BAT": "BAT-USD",
+    "BCH": "BCH-USD",
+    "BNB": "BNB-USD",
+    "BONK": "BONK-USD",
+    "BTC": "BTC-USD",
+    "CASHCAT": "CASHCAT-USD",
+    "DOGE": "DOGE-USD",
     "DOT": "DOT-USD",
-    "MATIC": "MATIC-USD",
+    "ENA": "ENA-USD",
+    "ETC": "ETC-USD",
+    "ETH": "ETH-USD",
+    "FLR": "FLR-USD",
+    "HBAR": "HBAR-USD",
+    "HYPE": "HYPE32196-USD",
+    "INJ": "INJ-USD",
+    "JTO": "JTO-USD",
+    "LDO": "LDO-USD",
+    "LINK": "LINK-USD",
+    "LTC": "LTC-USD",
+    "MEW": "MEW30126-USD",
+    "MORPHO": "MORPHO34104-USD",
+    "NEAR": "NEAR-USD",
+    "ONDO": "ONDO-USD",
+    "OP": "OP-USD",
+    "ORCA": "ORCA-USD",
+    "PAXG": "PAXG-USD",
+    "PEPE": "PEPE24478-USD",
+    "PNUT": "PNUT-USD",
+    "PYTH": "PYTH-USD",
+    "QNT": "QNT-USD",
+    "RAY": "RAY-USD",
+    "RE": "RE-USD",
+    "RENDER": "RENDER-USD",
+    "SEI": "SEI-USD",
     "SHIB": "SHIB-USD",
+    "SNX": "SNX-USD",
+    "SOL": "SOL-USD",
+    "SUI": "SUI20947-USD",
+    "SYRUP": "SYRUP-USD",
+    "UNI": "UNI7083-USD",
+    "USDC": "USDC-USD",
+    "VIRTUAL": "VIRTUAL-USD",
+    "W": "W-USD",
+    "WIF": "WIF-USD",
+    "WLD": "WLD-USD",
+    "WLFI": "WLFI33251-USD",
+    "XDC": "XDC-USD",
+    "XPL": "XPL-USD",
+    "XRP": "XRP-USD",
+    "XTZ": "XTZ-USD",
+    "ZEC": "ZEC-USD",
+    "ZORA": "ZORA35931-USD",
 }
 
 _HOUR_MS = 3_600_000
@@ -137,23 +186,62 @@ def robinhood_timeframe(name):
     return entry
 
 
-def _is_yahoo_crypto_pair(yahoo_symbol):
-    return yahoo_symbol.endswith("-USD")
+ASSET_CLASS_CRYPTO = "crypto"
+ASSET_CLASS_STOCK = "stock"
+ROBINHOOD_ASSET_CLASSES = (ASSET_CLASS_CRYPTO, ASSET_CLASS_STOCK)
+
+_STOCK_TICKER_RE = re.compile(r"[A-Z][A-Z0-9]{0,5}(?:[.-][A-Z]{1,2})?")
+_CURRENCY_PAIR_RE = re.compile(r".+-(?:USD|USDT|USDC)")
 
 
-def robinhood_yahoo_symbol(symbol):
-    return YAHOO_CRYPTO_MAP.get(symbol.upper(), symbol.upper())
+class UnsupportedRobinhoodSymbol(ValueError):
+    pass
 
 
-def robinhood_session_closed_bar_refusal(symbol):
-    yahoo_sym = robinhood_yahoo_symbol(symbol)
-    if _is_yahoo_crypto_pair(yahoo_sym):
+def robinhood_supported_crypto_coins():
+    return sorted(YAHOO_CRYPTO_MAP)
+
+
+def robinhood_asset_class(value):
+    if value is None or value == "":
         return ""
-    return (
-        f"symbol {json.dumps(symbol)} resolves to Yahoo {json.dumps(yahoo_sym)}, which is not a Yahoo crypto pair: its Yahoo rows follow "
-        "exchange trading sessions (no rows outside session hours, and hourly and longer rows open at session times "
-        "off the UTC interval grid), so the newest closed bar at the cutoff cannot be proven "
-        f"(Yahoo crypto pairs: {', '.join(sorted(YAHOO_CRYPTO_MAP))}, or a symbol ending in -USD)")
+    if value not in ROBINHOOD_ASSET_CLASSES:
+        raise ValueError(
+            f"invalid Robinhood asset class {value!r}: use {ASSET_CLASS_CRYPTO!r} for a crypto coin "
+            f"or {ASSET_CLASS_STOCK!r} for a stock or ETF underlying")
+    return value
+
+
+def robinhood_crypto_yahoo_ticker(symbol):
+    ticker = YAHOO_CRYPTO_MAP.get(symbol) if isinstance(symbol, str) else None
+    if ticker is None:
+        raise UnsupportedRobinhoodSymbol(
+            f"unsupported Robinhood crypto coin {symbol!r}: write one bare upper-case coin code from the "
+            f"verified table ({', '.join(robinhood_supported_crypto_coins())}); a stock or ETF underlying "
+            f"runs only as a Robinhood type \"options\" strategy")
+    return ticker
+
+
+def robinhood_stock_yahoo_ticker(symbol):
+    text = symbol.strip().upper() if isinstance(symbol, str) else ""
+    if "/" in text or _CURRENCY_PAIR_RE.fullmatch(text):
+        raise UnsupportedRobinhoodSymbol(
+            f"Robinhood stock underlying {symbol!r} is a currency pair: stock data needs a stock or ETF ticker")
+    if not _STOCK_TICKER_RE.fullmatch(text):
+        raise UnsupportedRobinhoodSymbol(
+            f"Robinhood stock underlying {symbol!r} is not a stock or ETF ticker "
+            f"(1 to 6 letters or digits, starting with a letter, with an optional .X or -X share class)")
+    return text
+
+
+def robinhood_yahoo_ticker(asset_class, symbol):
+    if asset_class == ASSET_CLASS_CRYPTO:
+        return robinhood_crypto_yahoo_ticker(symbol)
+    if asset_class == ASSET_CLASS_STOCK:
+        return robinhood_stock_yahoo_ticker(symbol)
+    raise ValueError(
+        "Robinhood market data needs an asset class: construct the adapter with "
+        f"asset_class={ASSET_CLASS_CRYPTO!r} or asset_class={ASSET_CLASS_STOCK!r}")
 
 
 def _yahoo_period_for(yahoo_interval, bars, crypto):
@@ -1723,7 +1811,8 @@ class RobinhoodExchangeAdapter:
 
     OHLCV_TIMESTAMP_KIND = "open"
 
-    def __init__(self, mode="paper", login_deadline=None):
+    def __init__(self, mode="paper", login_deadline=None, asset_class=None):
+        self._asset_class = robinhood_asset_class(asset_class)
         self._mode = mode
         self._logged_in = False
         self._login_deadline = login_deadline
@@ -1774,25 +1863,39 @@ class RobinhoodExchangeAdapter:
     def name(self) -> str:
         return "robinhood"
 
+    @property
+    def asset_class(self) -> str:
+        return self._asset_class
 
     def _resolve_yahoo_symbol(self, symbol: str) -> str:
-        return robinhood_yahoo_symbol(symbol)
+        return robinhood_yahoo_ticker(self._asset_class, symbol)
+
+    def require_stock_underlying(self, symbol: str, what: str = "option data") -> str:
+        if self._asset_class != ASSET_CLASS_STOCK:
+            raise option_data.OptionDataUnavailable(
+                f"unsupported basis: {what} for {symbol} needs a Robinhood adapter with asset_class="
+                f"{ASSET_CLASS_STOCK!r}, not {self._asset_class or 'unset'!r}")
+        try:
+            return robinhood_stock_yahoo_ticker(symbol)
+        except UnsupportedRobinhoodSymbol as e:
+            raise option_data.OptionDataUnavailable(f"unsupported basis: {e}") from None
 
     def get_price(self, symbol: str) -> float:
+        yahoo_sym = self._resolve_yahoo_symbol(symbol)
         if self._logged_in:
             try:
                 with robinhood_library() as rh:
-                    if symbol.upper() in YAHOO_CRYPTO_MAP:
+                    if self._asset_class == ASSET_CLASS_CRYPTO:
                         quote = rh.crypto.get_crypto_quote(symbol)
                         if quote and quote.get("mark_price"):
                             return float(quote["mark_price"])
                     else:
-                        prices = rh.stocks.get_latest_price(symbol)
+                        prices = rh.stocks.get_latest_price(yahoo_sym)
                         if prices and prices[0]:
                             return float(prices[0])
             except Exception as e:
                 print(f"[robinhood] robin_stocks price error for {symbol}: {e}", file=sys.stderr)
-        return self._get_yahoo_price(symbol)
+        return self._get_yahoo_price(symbol, yahoo_sym)
 
     def get_spot_price(self, symbol: str) -> float:
         return self.get_price(symbol)
@@ -1808,10 +1911,10 @@ class RobinhoodExchangeAdapter:
 
 
     def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:
+        yahoo_sym = self.require_stock_underlying(underlying, "volatility")
         try:
             import yfinance as yf
             egress_policy.pin_yfinance()
-            yahoo_sym = self._resolve_yahoo_symbol(underlying)
             ticker = yf.Ticker(yahoo_sym)
             hist = ticker.history(period="90d", interval="1d")
             closes = [] if hist.empty else hist["Close"].tolist()
@@ -1821,6 +1924,7 @@ class RobinhoodExchangeAdapter:
         return option_data.realized_vol_metrics(closes, 252)
 
     def get_real_expiry(self, underlying: str, target_dte: int) -> Tuple[str, int]:
+        self.require_stock_underlying(underlying, "option expiry")
         if self._logged_in:
             try:
                 with robinhood_library() as rh:
@@ -1847,6 +1951,7 @@ class RobinhoodExchangeAdapter:
 
     def get_real_strike(self, underlying: str, expiry: str,
                         option_type: str, target_strike: float) -> float:
+        self.require_stock_underlying(underlying, "option strike")
         if self._logged_in:
             try:
                 with robinhood_library() as rh:
@@ -1875,6 +1980,7 @@ class RobinhoodExchangeAdapter:
     def get_premium_and_greeks(self, underlying: str, option_type: str,
                                 strike: float, expiry: str, dte: float,
                                 spot: float, vol: Optional[float] = None) -> Tuple[float, float, dict]:
+        self.require_stock_underlying(underlying, "option premium")
         if self._logged_in:
             return self._venue_option_premium(underlying, option_type, strike, expiry, spot)
         from pricing import bs_price_and_greeks
@@ -1937,9 +2043,7 @@ class RobinhoodExchangeAdapter:
 
     def get_option_mark(self, underlying: str, option_type: str, strike: float, expiry: str,
                         dte: float, spot: float, vol: Optional[float] = None) -> Tuple[float, dict, str]:
-        if _is_yahoo_crypto_pair(robinhood_yahoo_symbol(underlying)):
-            raise option_data.OptionDataUnavailable(
-                f"unsupported basis: {underlying} resolves to a Yahoo crypto pair with no listed robinhood option")
+        self.require_stock_underlying(underlying, "option mark")
         if self._logged_in:
             md = self._venue_option_market_data(underlying, option_type, strike, expiry)
             raw = md.get("adjusted_mark_price")
@@ -1966,13 +2070,10 @@ class RobinhoodExchangeAdapter:
         return float(price_usd), greeks, "robinhood_black_scholes"
 
     def get_settlement_close(self, symbol: str, session_date: str, refresh_at: datetime) -> Tuple[Optional[float], str]:
-        if _is_yahoo_crypto_pair(robinhood_yahoo_symbol(symbol)):
-            raise option_data.OptionDataUnavailable(
-                f"unsupported basis: {symbol} resolves to a Yahoo crypto pair with no listed robinhood option")
+        yahoo_sym = self.require_stock_underlying(symbol, "settlement close")
         session = datetime.strptime(session_date, "%Y-%m-%d").date()
         start = session - timedelta(days=7)
         end = max(refresh_at.astimezone(timezone.utc).date(), session) + timedelta(days=1)
-        yahoo_sym = self._resolve_yahoo_symbol(symbol)
         try:
             import yfinance as yf
             egress_policy.pin_yfinance()
@@ -2005,8 +2106,7 @@ class RobinhoodExchangeAdapter:
         return close, ""
 
 
-    def _get_yahoo_price(self, symbol: str) -> float:
-        yahoo_sym = self._resolve_yahoo_symbol(symbol)
+    def _get_yahoo_price(self, symbol: str, yahoo_sym: str) -> float:
         try:
             import yfinance as yf
             egress_policy.pin_yfinance()
@@ -2025,13 +2125,13 @@ class RobinhoodExchangeAdapter:
     def _get_yahoo_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
         entry = robinhood_timeframe(interval)
         yahoo_sym = self._resolve_yahoo_symbol(symbol)
-        crypto = _is_yahoo_crypto_pair(yahoo_sym)
+        crypto = self._asset_class == ASSET_CLASS_CRYPTO
         hours = entry.resample_hours if crypto else 0
         yf_interval = entry.yahoo_interval if crypto else entry.session_interval
         if not yf_interval:
             raise UnsupportedRobinhoodTimeframe(
-                f"Robinhood timeframe {interval!r} is resampled from Yahoo 1h rows only for crypto pairs; "
-                f"{yahoo_sym} is not a Yahoo crypto pair")
+                f"Robinhood timeframe {interval!r} is resampled from Yahoo 1h rows only for the crypto class; "
+                f"stock data for {yahoo_sym} serves only session intervals")
         bars = int(limit) + 2
         if hours:
             bars = (bars + 1) * hours
