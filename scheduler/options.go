@@ -24,6 +24,12 @@ type OptionPosition struct {
 	CurrentValueUSD    float64   `json:"current_value_usd"`
 	Greeks             OptGreeks `json:"greeks"`
 	OpenedAt           time.Time `json:"opened_at"`
+	MarkUpdatedAt      time.Time `json:"mark_updated_at,omitzero"`
+	MarkError          string    `json:"mark_error,omitempty"`
+	MarkSource         string    `json:"mark_source,omitempty"`
+	ExpiryCutoffAt     time.Time `json:"expiry_cutoff_at,omitzero"`
+	SettlementReadyAt  time.Time `json:"settlement_ready_at,omitzero"`
+	markVerifiedAt     time.Time
 }
 
 type OptGreeks struct {
@@ -519,17 +525,19 @@ func EncodeAllPositionsJSON(platform string, optPos map[string]*OptionPosition, 
 }
 
 type optionsDispatch struct {
-	SC              StrategyConfig
-	State           *StrategyState
-	PositionsJSON   string
-	PositionsErr    error
-	Risk            *scopeCycleRisk
-	PersistenceHold bool
-	Scope           PortfolioScope
-	Regime          *RegimeConfig
-	Mu              *sync.RWMutex
-	Notifier        *MultiNotifier
-	Logger          *StrategyLogger
+	SC                    StrategyConfig
+	GlobalIntervalSeconds int
+	Now                   time.Time
+	State                 *StrategyState
+	PositionsJSON         string
+	PositionsErr          error
+	Risk                  *scopeCycleRisk
+	PersistenceHold       bool
+	Scope                 PortfolioScope
+	Regime                *RegimeConfig
+	Mu                    *sync.RWMutex
+	Notifier              *MultiNotifier
+	Logger                *StrategyLogger
 }
 
 func runOptionsDispatch(d optionsDispatch) (int, []string) {
@@ -547,7 +555,11 @@ func runOptionsDispatch(d optionsDispatch) (int, []string) {
 	d.Mu.Lock()
 	defer d.Mu.Unlock()
 	d.State.Regime = optionsRegime.PrimaryLabel(nil)
-	return executeOptionsCycleLocked(sc, d.State, result, signalStr, logger)
+	now := d.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return executeOptionsCycleLocked(sc, d.State, result, signalStr, newOptionHarvestClock(sc, d.GlobalIntervalSeconds, now), logger)
 }
 
 func filterOptionsEntryActions(d optionsDispatch, result *OptionsResult) {
@@ -586,7 +598,7 @@ func filterOptionsEntryActions(d optionsDispatch, result *OptionsResult) {
 	}
 }
 
-func executeOptionsCycleLocked(sc StrategyConfig, s *StrategyState, result *OptionsResult, signalStr string, logger *StrategyLogger) (int, []string) {
+func executeOptionsCycleLocked(sc StrategyConfig, s *StrategyState, result *OptionsResult, signalStr string, clock optionHarvestClock, logger *StrategyLogger) (int, []string) {
 	trades := 0
 	var lines []string
 	if result != nil {
@@ -599,14 +611,14 @@ func executeOptionsCycleLocked(sc StrategyConfig, s *StrategyState, result *Opti
 		}
 	}
 	if sc.ThetaHarvest != nil {
-		harvestTrades, harvestDetails := CheckThetaHarvest(s, sc.ThetaHarvest, logger)
+		harvestTrades, harvestDetails := CheckThetaHarvest(s, sc.ThetaHarvest, clock, logger)
 		trades += harvestTrades
 		lines = append(lines, harvestDetails...)
 	}
 	return trades, lines
 }
 
-func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *StrategyLogger) (int, []string) {
+func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, clock optionHarvestClock, logger *StrategyLogger) (int, []string) {
 	if cfg == nil || !cfg.Enabled {
 		return 0, nil
 	}
@@ -620,10 +632,17 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 	}
 	var toClose []closeAction
 
-	for id, pos := range s.OptionPositions {
-		if pos.Action != "sell" {
+	for _, id := range sortedOptionLegKeys(s.OptionPositions) {
+		pos := s.OptionPositions[id]
+		if pos == nil || pos.Action != "sell" {
 			continue
 		}
+		dte, why := optionHarvestEligibility(pos, clock)
+		if why != "" {
+			logger.InfoOnChange("harvest-eligibility:"+id, why, "Theta harvest holds %s: %s", id, why)
+			continue
+		}
+		logger.Changed("harvest-eligibility:"+id, "")
 
 		entryPremium := pos.EntryPremiumUSD
 		if entryPremium <= 0 {
@@ -657,10 +676,10 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 			}
 		}
 
-		if cfg.MinDTEClose > 0 && pos.DTE > 0 && pos.DTE <= cfg.MinDTEClose {
+		if cfg.MinDTEClose > 0 && dte > 0 && dte <= cfg.MinDTEClose {
 			toClose = append(toClose, closeAction{
 				id:     id,
-				reason: fmt.Sprintf("⏰ DTE exit: %.1f days to expiry (min: %.0f)", pos.DTE, cfg.MinDTEClose),
+				reason: fmt.Sprintf("⏰ DTE exit: %.1f days to expiry (min: %.0f)", dte, cfg.MinDTEClose),
 			})
 			continue
 		}

@@ -6,32 +6,43 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
 const deribitAPIBase = "https://www.deribit.com/api/v2"
 
-type DeribitTickerResponse struct {
-	Result struct {
-		InstrumentName  string  `json:"instrument_name"`
-		MarkPrice       float64 `json:"mark_price"`
-		UnderlyingPrice float64 `json:"underlying_price"`
-		Bid             float64 `json:"best_bid_price"`
-		Ask             float64 `json:"best_ask_price"`
-		Greeks          struct {
-			Delta float64 `json:"delta"`
-			Gamma float64 `json:"gamma"`
-			Theta float64 `json:"theta"`
-			Vega  float64 `json:"vega"`
-		} `json:"greeks"`
-	} `json:"result"`
+type deribitTickerResult struct {
+	InstrumentName  string   `json:"instrument_name"`
+	MarkPrice       *float64 `json:"mark_price"`
+	UnderlyingPrice *float64 `json:"underlying_price"`
+	Greeks          *struct {
+		Delta *float64 `json:"delta"`
+		Gamma *float64 `json:"gamma"`
+		Theta *float64 `json:"theta"`
+		Vega  *float64 `json:"vega"`
+	} `json:"greeks"`
+}
+
+type deribitRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
 }
 
 type DeribitPricer struct {
 	client  *http.Client
 	baseURL string
 }
+
+const (
+	deribitMarkSource             = "deribit_ticker"
+	deribitSettlementSource       = "deribit_delivery_price"
+	okxDeribitProxySource         = "deribit_proxy"
+	deribitDeliveryPageSize       = 100
+	deribitDeliveryMaxPages       = 40
+	deribitDeliveryIndexUSDSuffix = "_usd"
+)
 
 func NewDeribitPricer() *DeribitPricer {
 	return &DeribitPricer{
@@ -46,183 +57,208 @@ func (d *DeribitPricer) apiBase() string {
 	return deribitAPIBase
 }
 
-func (d *DeribitPricer) GetOptionPrice(underlying, optionType string, strike float64, expiry string) (float64, float64, error) {
-	instrument := d.formatInstrument(underlying, optionType, strike, expiry)
-	if instrument == "" {
-		return 0, 0, fmt.Errorf("invalid instrument format")
-	}
-
-	markPrice, spotPrice, err := d.fetchTicker(instrument)
-	if err == nil {
-		return markPrice, spotPrice, nil
-	}
-
-	nearestInstrument, findErr := d.findNearestExpiry(underlying, optionType, strike, expiry)
-	if findErr != nil {
-		return 0, 0, fmt.Errorf("exact match failed: %w, nearest search failed: %w", err, findErr)
-	}
-
-	markPrice, spotPrice, err = d.fetchTicker(nearestInstrument)
+func (d *DeribitPricer) getJSON(path string, out interface{}) error {
+	resp, err := d.client.Get(d.apiBase() + path)
 	if err != nil {
-		return 0, 0, fmt.Errorf("nearest expiry %s failed: %w", nearestInstrument, err)
-	}
-
-	return markPrice, spotPrice, nil
-}
-
-func (d *DeribitPricer) fetchTickerFull(instrument string) (*DeribitTickerResponse, error) {
-	url := fmt.Sprintf("%s/public/ticker?instrument_name=%s", d.apiBase(), instrument)
-	resp, err := d.client.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("deribit API error: %w", err)
+		return fmt.Errorf("deribit API error: %w", err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("deribit API status %d: %s", resp.StatusCode, string(body))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return fmt.Errorf("deribit API read: %w", err)
 	}
-
-	var ticker DeribitTickerResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ticker); err != nil {
-		return nil, fmt.Errorf("decode error: %w", err)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("deribit API status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("deribit decode error: %w", err)
+	}
+	return nil
+}
 
-	return &ticker, nil
+func (d *DeribitPricer) fetchTickerFull(instrument string) (*deribitTickerResult, error) {
+	var env struct {
+		Result *deribitTickerResult `json:"result"`
+		Error  *deribitRPCError     `json:"error"`
+	}
+	if err := d.getJSON("/public/ticker?instrument_name="+url.QueryEscape(instrument), &env); err != nil {
+		return nil, err
+	}
+	if env.Error != nil {
+		return nil, fmt.Errorf("deribit ticker %s: %s (code %d)", instrument, env.Error.Message, env.Error.Code)
+	}
+	if env.Result == nil {
+		return nil, fmt.Errorf("deribit ticker %s: no result", instrument)
+	}
+	return env.Result, nil
 }
 
 func (d *DeribitPricer) Name() string { return "deribit" }
 
-func (d *DeribitPricer) FetchSpotPrice(underlying string) (float64, error) {
-	ticker, err := d.fetchTickerFull(strings.ToUpper(underlying) + "-PERPETUAL")
-	if err != nil {
-		return 0, err
-	}
-	return ticker.Result.UnderlyingPrice, nil
+func (d *DeribitPricer) Refresh(reqs []optionLegRequest, refreshAt time.Time) []optionLegReply {
+	return d.refreshFor("deribit", reqs, refreshAt)
 }
 
-func (d *DeribitPricer) GetOptionPriceFull(underlying, optionType string, strike float64, expiry string) (float64, float64, OptGreeks, error) {
-	instrument := d.formatInstrument(underlying, optionType, strike, expiry)
+type okxDeribitProxyPricer struct{ d *DeribitPricer }
+
+func (d *DeribitPricer) OKXProxy() OptionPricer { return okxDeribitProxyPricer{d: d} }
+
+func (p okxDeribitProxyPricer) Name() string { return "okx(deribit_proxy)" }
+
+func (p okxDeribitProxyPricer) Refresh(reqs []optionLegRequest, refreshAt time.Time) []optionLegReply {
+	return p.d.refreshFor("okx", reqs, refreshAt)
+}
+
+type deribitDeliveryLookup struct {
+	price float64
+	found bool
+	err   error
+}
+
+func (d *DeribitPricer) refreshFor(platform string, reqs []optionLegRequest, refreshAt time.Time) []optionLegReply {
+	markSource, settleSource := deribitMarkSource, deribitSettlementSource
+	if platform == "okx" {
+		markSource, settleSource = okxDeribitProxySource, okxDeribitProxySource
+	}
+	deliveries := map[string]deribitDeliveryLookup{}
+	out := make([]optionLegReply, 0, len(reqs))
+	for _, req := range reqs {
+		reply := optionLegReply{Key: req.Key}
+		cutoff, ready, ok, err := optionGoExpirySchedule(platform, req.Expiry)
+		if err != nil || !ok {
+			reply.Err = fmt.Sprintf("no %s expiry schedule for %q", platform, req.Expiry)
+			if err != nil {
+				reply.Err = err.Error()
+			}
+			out = append(out, reply)
+			continue
+		}
+		reply.CutoffAt, reply.ReadyAt = cutoff, ready
+		if err := optionPricingPolicyError(platform, req.Underlying); err != nil {
+			reply.Err = err.Error()
+			out = append(out, reply)
+			continue
+		}
+		if !refreshAt.Before(cutoff) {
+			index := strings.ToLower(strings.TrimSpace(req.Underlying)) + deribitDeliveryIndexUSDSuffix
+			cacheKey := index + "|" + req.Expiry
+			lookup, seen := deliveries[cacheKey]
+			if !seen {
+				lookup.price, lookup.found, lookup.err = d.deliveryPrice(index, req.Expiry)
+				deliveries[cacheKey] = lookup
+			}
+			switch {
+			case lookup.err != nil:
+				reply.Err = lookup.err.Error()
+			case !lookup.found:
+				reply.Pending = fmt.Sprintf("%s delivery price for %s %s is not published yet", settleSource, index, req.Expiry)
+			default:
+				reply.Settlement = &optionLegSettlement{Price: lookup.price, Basis: optionSettlementBasisDelivery, Date: req.Expiry, Source: settleSource}
+			}
+			out = append(out, reply)
+			continue
+		}
+		mark, err := d.exactMark(req, markSource)
+		if err != nil {
+			reply.Err = err.Error()
+		} else {
+			reply.Mark = mark
+		}
+		out = append(out, reply)
+	}
+	return out
+}
+
+func deribitFinite(v *float64) bool {
+	return v != nil && !math.IsNaN(*v) && !math.IsInf(*v, 0)
+}
+
+func (d *DeribitPricer) exactMark(req optionLegRequest, source string) (*optionLegMark, error) {
+	instrument := d.formatInstrument(req.Underlying, req.OptionType, req.Strike, req.Expiry)
 	if instrument == "" {
-		return 0, 0, OptGreeks{}, fmt.Errorf("invalid instrument format")
+		return nil, fmt.Errorf("invalid instrument for expiry %q", req.Expiry)
 	}
-
-	ticker, err := d.fetchTickerFull(instrument)
-	if err == nil {
-		g := OptGreeks{
-			Delta: ticker.Result.Greeks.Delta,
-			Gamma: ticker.Result.Greeks.Gamma,
-			Theta: ticker.Result.Greeks.Theta,
-			Vega:  ticker.Result.Greeks.Vega,
-		}
-		return ticker.Result.MarkPrice, ticker.Result.UnderlyingPrice, g, nil
-	}
-
-	nearestInstrument, findErr := d.findNearestExpiry(underlying, optionType, strike, expiry)
-	if findErr != nil {
-		return 0, 0, OptGreeks{}, fmt.Errorf("exact match failed: %w, nearest search failed: %w", err, findErr)
-	}
-
-	ticker, err = d.fetchTickerFull(nearestInstrument)
+	t, err := d.fetchTickerFull(instrument)
 	if err != nil {
-		return 0, 0, OptGreeks{}, fmt.Errorf("nearest expiry %s failed: %w", nearestInstrument, err)
+		return nil, err
 	}
-
-	g := OptGreeks{
-		Delta: ticker.Result.Greeks.Delta,
-		Gamma: ticker.Result.Greeks.Gamma,
-		Theta: ticker.Result.Greeks.Theta,
-		Vega:  ticker.Result.Greeks.Vega,
+	if t.InstrumentName != "" && t.InstrumentName != instrument {
+		return nil, fmt.Errorf("deribit ticker answered %s for %s", t.InstrumentName, instrument)
 	}
-	return ticker.Result.MarkPrice, ticker.Result.UnderlyingPrice, g, nil
+	if !deribitFinite(t.MarkPrice) || *t.MarkPrice < 0 {
+		return nil, fmt.Errorf("deribit ticker %s: mark_price missing or invalid", instrument)
+	}
+	if !deribitFinite(t.UnderlyingPrice) || *t.UnderlyingPrice <= 0 {
+		return nil, fmt.Errorf("deribit ticker %s: underlying_price missing or not positive", instrument)
+	}
+	if t.Greeks == nil || !deribitFinite(t.Greeks.Delta) || !deribitFinite(t.Greeks.Gamma) || !deribitFinite(t.Greeks.Theta) || !deribitFinite(t.Greeks.Vega) {
+		return nil, fmt.Errorf("deribit ticker %s: greeks missing or not finite", instrument)
+	}
+	perUnit := *t.MarkPrice * *t.UnderlyingPrice
+	if math.IsNaN(perUnit) || math.IsInf(perUnit, 0) {
+		return nil, fmt.Errorf("deribit ticker %s: mark value overflows", instrument)
+	}
+	return &optionLegMark{
+		PerUnitUSD: perUnit,
+		Spot:       *t.UnderlyingPrice,
+		Greeks:     OptGreeks{Delta: *t.Greeks.Delta, Gamma: *t.Greeks.Gamma, Theta: *t.Greeks.Theta, Vega: *t.Greeks.Vega},
+		Source:     source,
+	}, nil
 }
 
-func (d *DeribitPricer) fetchTicker(instrument string) (float64, float64, error) {
-	url := fmt.Sprintf("%s/public/ticker?instrument_name=%s", d.apiBase(), instrument)
-	resp, err := d.client.Get(url)
+func (d *DeribitPricer) deliveryPrice(index, date string) (float64, bool, error) {
+	target, err := time.Parse("2006-01-02", date)
 	if err != nil {
-		return 0, 0, fmt.Errorf("deribit API error: %w", err)
+		return 0, false, fmt.Errorf("invalid delivery date %q", date)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return 0, 0, fmt.Errorf("deribit API status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var ticker DeribitTickerResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ticker); err != nil {
-		return 0, 0, fmt.Errorf("decode error: %w", err)
-	}
-
-	return ticker.Result.MarkPrice, ticker.Result.UnderlyingPrice, nil
-}
-
-func (d *DeribitPricer) findNearestExpiry(underlying, optionType string, strike float64, targetExpiry string) (string, error) {
-	targetTime, err := time.Parse("2006-01-02", targetExpiry)
-	if err != nil {
-		return "", fmt.Errorf("invalid target expiry: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/public/get_instruments?currency=%s&kind=option&expired=false", d.apiBase(), underlying)
-	resp, err := d.client.Get(url)
-	if err != nil {
-		return "", fmt.Errorf("instruments API error: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []struct {
-			InstrumentName string  `json:"instrument_name"`
-			Strike         float64 `json:"strike"`
-			ExpirationTS   int64   `json:"expiration_timestamp"`
-		} `json:"result"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode instruments error: %w", err)
-	}
-
-	optType := "C"
-	if strings.ToLower(optionType) == "put" {
-		optType = "P"
-	}
-
-	var bestInstrument string
-	var minDiff int64 = 1<<63 - 1
-
-	for _, inst := range result.Result {
-		if inst.Strike != strike {
-			continue
+	var last time.Time
+	for page := 0; page < deribitDeliveryMaxPages; page++ {
+		offset := page * deribitDeliveryPageSize
+		var env struct {
+			Result *struct {
+				Data []struct {
+					Date          string   `json:"date"`
+					DeliveryPrice *float64 `json:"delivery_price"`
+				} `json:"data"`
+				RecordsTotal *int `json:"records_total"`
+			} `json:"result"`
+			Error *deribitRPCError `json:"error"`
 		}
-		if !strings.HasSuffix(inst.InstrumentName, "-"+optType) {
-			continue
+		path := fmt.Sprintf("/public/get_delivery_prices?index_name=%s&offset=%d&count=%d", url.QueryEscape(index), offset, deribitDeliveryPageSize)
+		if err := d.getJSON(path, &env); err != nil {
+			return 0, false, err
 		}
-
-		expTime := time.Unix(inst.ExpirationTS/1000, 0)
-		diff := expTime.Sub(targetTime)
-		if diff < 0 {
-			diff = -diff
+		if env.Error != nil {
+			return 0, false, fmt.Errorf("deribit delivery prices %s: %s (code %d)", index, env.Error.Message, env.Error.Code)
 		}
-
-		diffSeconds := int64(diff.Seconds())
-		if diffSeconds < minDiff {
-			minDiff = diffSeconds
-			bestInstrument = inst.InstrumentName
+		if env.Result == nil || env.Result.RecordsTotal == nil {
+			return 0, false, fmt.Errorf("deribit delivery prices %s: response has no result or records_total", index)
+		}
+		rows := env.Result.Data
+		for _, row := range rows {
+			day, err := time.Parse("2006-01-02", row.Date)
+			if err != nil {
+				return 0, false, fmt.Errorf("deribit delivery prices %s: invalid date %q", index, row.Date)
+			}
+			if !last.IsZero() && !day.Before(last) {
+				return 0, false, fmt.Errorf("deribit delivery prices %s: dates are not strictly descending at %s", index, row.Date)
+			}
+			last = day
+			if day.Equal(target) {
+				if row.DeliveryPrice == nil || !finitePositive(*row.DeliveryPrice) {
+					return 0, false, fmt.Errorf("deribit delivery price %s %s is missing or not positive", index, date)
+				}
+				return *row.DeliveryPrice, true, nil
+			}
+			if day.Before(target) {
+				return 0, false, nil
+			}
+		}
+		if len(rows) == 0 || offset+len(rows) >= *env.Result.RecordsTotal {
+			return 0, false, nil
 		}
 	}
-
-	if bestInstrument == "" {
-		return "", fmt.Errorf("no matching strike %.0f found", strike)
-	}
-
-	const maxToleranceSeconds = 7 * 24 * 3600
-	if minDiff > maxToleranceSeconds {
-		return "", fmt.Errorf("nearest expiry %s is %.1f days away, too far from target %s",
-			bestInstrument, float64(minDiff)/86400, targetExpiry)
-	}
-
-	return bestInstrument, nil
+	return 0, false, fmt.Errorf("deribit delivery prices %s: %s is older than the %d-row search limit", index, date, deribitDeliveryPageSize*deribitDeliveryMaxPages)
 }
 
 func (d *DeribitPricer) formatInstrument(underlying, optionType string, strike float64, expiry string) string {
@@ -252,180 +288,7 @@ func (d *DeribitPricer) formatInstrument(underlying, optionType string, strike f
 	return instrument
 }
 
-type markRequest struct {
-	ID         string
-	Underlying string
-	OptionType string
-	Expiry     string
-	Action     string
-	Strike     float64
-	DTE        float64
-	Quantity   float64
-	Multiplier float64
-	Expired    bool
-}
-
-type markResult struct {
-	ID               string
-	DTE              float64
-	CurrentValueUSD  float64
-	Greeks           OptGreeks
-	Expired          bool
-	Fetched          bool
-	Assigned         bool
-	AssignUnderlying string
-	AssignOptionType string
-	AssignStrike     float64
-	AssignSpotPrice  float64
-	AssignQuantity   float64
-}
-
-func collectMarkRequests(s *StrategyState) []markRequest {
-	var reqs []markRequest
-	for _, id := range sortedOptionLegKeys(s.OptionPositions) {
-		pos := s.OptionPositions[id]
-		expiry, err := time.Parse("2006-01-02", pos.Expiry)
-		if err != nil {
-			continue
-		}
-		multiplier, err := strategyOptionMultiplier(s, id, pos)
-		if err != nil {
-			fmt.Printf("[WARN] option mark skipped: %v\n", err)
-			continue
-		}
-		dte := expiry.UTC().Sub(time.Now().UTC()).Hours() / 24
-		reqs = append(reqs, markRequest{
-			ID:         id,
-			Underlying: pos.Underlying,
-			OptionType: pos.OptionType,
-			Expiry:     pos.Expiry,
-			Action:     pos.Action,
-			Strike:     pos.Strike,
-			DTE:        dte,
-			Quantity:   pos.Quantity,
-			Multiplier: multiplier,
-			Expired:    dte <= 0,
-		})
-	}
-	return reqs
-}
-
-func fetchMarkPrices(requests []markRequest, pricer OptionPricer, logger *StrategyLogger) []markResult {
-	var results []markResult
-	for _, req := range requests {
-		units, unitsErr := optionContractValueUSD(1, req.Multiplier, req.Quantity)
-		if unitsErr != nil {
-			logger.Warn("Skipping mark for %s: %v", req.ID, unitsErr)
-			continue
-		}
-		if req.Expired {
-			spotPrice, spotErr := pricer.FetchSpotPrice(req.Underlying)
-			intrinsic := 0.0
-			itm := false
-			if spotErr == nil && spotPrice > 0 {
-				if req.OptionType == "put" && spotPrice < req.Strike {
-					intrinsic = (req.Strike - spotPrice) * units
-					itm = true
-				} else if req.OptionType == "call" && spotPrice > req.Strike {
-					intrinsic = (spotPrice - req.Strike) * units
-					itm = true
-				}
-			}
-			currentValue := intrinsic
-			if req.Action == "sell" {
-				currentValue = -intrinsic
-			}
-			res := markResult{
-				ID:              req.ID,
-				DTE:             req.DTE,
-				CurrentValueUSD: currentValue,
-				Expired:         true,
-			}
-			if req.Action == "sell" && itm {
-				res.Assigned = true
-				res.AssignUnderlying = req.Underlying
-				res.AssignOptionType = req.OptionType
-				res.AssignStrike = req.Strike
-				res.AssignSpotPrice = spotPrice
-				res.AssignQuantity = units
-			}
-			assignedStr := ""
-			if res.Assigned {
-				assignedStr = " [ASSIGNED]"
-			}
-			logger.Info("Position %s expired (DTE=%.1f), intrinsic=$%.2f%s, scheduling removal", req.ID, req.DTE, intrinsic, assignedStr)
-			results = append(results, res)
-			continue
-		}
-
-		markPrice, spotPrice, greeks, err := pricer.GetOptionPriceFull(req.Underlying, req.OptionType, req.Strike, req.Expiry)
-		if err != nil {
-			logger.Warn("Failed to fetch price for %s: %v", req.ID, err)
-			continue
-		}
-
-		priceUSD, valueErr := optionContractValueUSD(markPrice*spotPrice, req.Multiplier, req.Quantity)
-		if valueErr != nil {
-			logger.Warn("Failed to value mark for %s: %v", req.ID, valueErr)
-			continue
-		}
-		currentValue := priceUSD
-		if req.Action == "sell" {
-			currentValue = -priceUSD
-		}
-		results = append(results, markResult{
-			ID:              req.ID,
-			DTE:             req.DTE,
-			CurrentValueUSD: currentValue,
-			Greeks:          greeks,
-			Fetched:         true,
-		})
-	}
-	return results
-}
-
-func applyMarkResults(s *StrategyState, results []markResult, logger *StrategyLogger) {
-	now := time.Now().UTC()
-	for _, r := range results {
-		pos, ok := s.OptionPositions[r.ID]
-		if !ok {
-			continue
-		}
-		pos.DTE = r.DTE
-		if r.Expired {
-			pos.CurrentValueUSD = r.CurrentValueUSD
-			var pnl, closePriceUSD float64
-			intrinsic := r.CurrentValueUSD
-			if pos.Action == "sell" {
-				intrinsic = -intrinsic
-			}
-			if pos.Action == "buy" {
-				pnl = intrinsic - pos.EntryPremiumUSD
-			} else {
-				pnl = pos.EntryPremiumUSD - intrinsic
-			}
-			closePriceUSD = intrinsic
-			reason := "expired_worthless"
-			if r.Assigned {
-				reason = "expired_itm"
-			}
-			recordClosedOptionPosition(s, pos, closePriceUSD, pnl, reason, now)
-			delete(s.OptionPositions, r.ID)
-			if r.Assigned {
-				applyAssignment(s, r, logger)
-			} else {
-				logger.Info("Removed expired position %s (OTM, worthless)", r.ID)
-			}
-			continue
-		}
-		if r.Fetched {
-			pos.CurrentValueUSD = r.CurrentValueUSD
-			pos.Greeks = r.Greeks
-		}
-	}
-}
-
-func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
+func applyAssignment(s *StrategyState, r optionAssignment, logger *StrategyLogger) {
 	symbol := strings.ToUpper(r.AssignUnderlying)
 	switch r.AssignOptionType {
 	case "put":

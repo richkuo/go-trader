@@ -64,21 +64,45 @@ func ocEnv(t *testing.T, scs ...StrategyConfig) *entryTestEnv {
 }
 
 type ocPricer struct {
+	platform   string
 	mark, spot float64
 	expirySpot float64
 }
 
-func (p ocPricer) GetOptionPriceFull(underlying, optionType string, strike float64, expiry string) (float64, float64, OptGreeks, error) {
-	return p.mark, p.spot, OptGreeks{Delta: 0.3}, nil
+func (p ocPricer) Refresh(reqs []optionLegRequest, refreshAt time.Time) []optionLegReply {
+	var out []optionLegReply
+	for _, req := range reqs {
+		r := optionLegReply{Key: req.Key}
+		cutoff, ready, ok, _ := optionGoExpirySchedule(p.platform, req.Expiry)
+		if !ok {
+			day, _ := time.Parse("2006-01-02", req.Expiry)
+			cutoff, ready = day.Add(21*time.Hour), day.Add(22*time.Hour)
+		}
+		r.CutoffAt, r.ReadyAt = cutoff, ready
+		if refreshAt.Before(cutoff) {
+			r.Mark = &optionLegMark{PerUnitUSD: p.mark * p.spot, Spot: p.spot, Greeks: OptGreeks{Delta: 0.3}, Source: "contract-test"}
+		} else {
+			basis := optionSettlementBasisDelivery
+			switch p.platform {
+			case "robinhood":
+				basis = optionSettlementBasisRawClose
+			case "ibkr":
+				basis = optionSettlementBasisIBKR
+			}
+			r.Settlement = &optionLegSettlement{Price: p.expirySpot, Basis: basis, Date: req.Expiry, Source: "contract-test"}
+		}
+		out = append(out, r)
+	}
+	return out
 }
-
-func (p ocPricer) FetchSpotPrice(underlying string) (float64, error) { return p.expirySpot, nil }
 
 func (p ocPricer) Name() string { return "contract-test" }
 
-func ocMarkCycle(s *StrategyState, pricer OptionPricer, logger *StrategyLogger) {
-	reqs := collectMarkRequests(s)
-	applyMarkResults(s, fetchMarkPrices(reqs, pricer, logger), logger)
+func ocMarkCycle(s *StrategyState, pricer ocPricer, logger *StrategyLogger) {
+	pricer.platform = s.Platform
+	now := time.Now().UTC()
+	reqs := collectOptionLegRequests(s, s.Platform, now)
+	applyOptionLegReplies(s, s.Platform, reqs, refreshOptionLegs(pricer, reqs, now), now, logger)
 }
 
 func ocExpiredLeg(id, optionType, action string, strike, qty float64) *OptionPosition {
@@ -345,8 +369,12 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 	t.Run("marks_scale_by_contract_size_and_quantity", func(t *testing.T) {
 		logger, _ := ocLogger("marks")
 		mk := func(platform string, qty float64, action string) *StrategyState {
+			underlying := "SPY"
+			if platform == "deribit" {
+				underlying = "BTC"
+			}
 			return &StrategyState{ID: platform + "-marks", Type: "options", Platform: platform, Positions: map[string]*Position{},
-				OptionPositions: map[string]*OptionPosition{"leg": {ID: "leg", Underlying: "SPY", OptionType: "call", Strike: 500,
+				OptionPositions: map[string]*OptionPosition{"leg": {ID: "leg", Underlying: underlying, OptionType: "call", Strike: 500,
 					Expiry: "2099-01-16", Action: action, Quantity: qty}}}
 		}
 		for _, tc := range []struct {
@@ -404,6 +432,7 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 				if len(s.OptionPositions) != 0 {
 					t.Fatalf("the expired leg must settle once")
 				}
+				env.saveAll()
 				if !ocNear(s.Cash, tc.wantCash) {
 					t.Fatalf("cash = %v, want %v; log:\n%s", s.Cash, tc.wantCash, buf.String())
 				}
@@ -459,6 +488,7 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 				if !ocNear(s.Cash, tc.wantCash) {
 					t.Fatalf("cash = %v, want %v", s.Cash, tc.wantCash)
 				}
+				env.saveAll()
 				if p := s.Positions["BTC"]; tc.held > 0 && p != nil {
 					t.Fatalf("covered units remain after assignment: %+v", p)
 				}

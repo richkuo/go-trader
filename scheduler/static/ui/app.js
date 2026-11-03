@@ -2135,8 +2135,7 @@
       rows.push(positionRow(symbol, pos.side || "long", pos.quantity, pos.avg_cost, pos.stop_loss_trigger_px));
     });
     Object.keys(optionPositions).sort().forEach(function (symbol) {
-      const pos = optionPositions[symbol];
-      rows.push(positionRow(symbol, pos.action || "", pos.quantity, pos.entry_premium_usd, 0));
+      rows.push(optionPositionRow(symbol, optionPositions[symbol]));
     });
     els.positions.innerHTML = rows.length ? rows.join("") : '<div class="position-row"><span>Flat</span><span>-</span></div>';
   }
@@ -2144,6 +2143,38 @@
   function positionRow(symbol, side, qty, price, sl) {
     const klass = side === "short" || side === "sell" ? "pos-short" : "pos-long";
     const detail = "Qty " + fmtNumber(qty) + " @ " + fmtMoney(price) + (sl ? " / SL " + fmtMoney(sl) : "");
+    return '<div class="position-row"><strong>' + escapeHTML(symbol) + '</strong><span class="' + klass + '">' +
+      escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span>' + positionActionButtons() + '</span></div>';
+  }
+
+  function optionMarkAge(updatedAt) {
+    const ms = Date.parse(updatedAt || "");
+    if (!Number.isFinite(ms) || ms <= 0) {
+      return "";
+    }
+    const minutes = Math.max(0, Math.round((Date.now() - ms) / 60000));
+    if (minutes < 1) {
+      return "<1m";
+    }
+    const hours = Math.floor(minutes / 60);
+    if (hours >= 48) {
+      return Math.floor(hours / 24) + "d" + (hours % 24) + "h";
+    }
+    return hours > 0 ? hours + "h" + (minutes % 60) + "m" : minutes + "m";
+  }
+
+  function optionPositionRow(symbol, pos) {
+    const side = pos.action || "";
+    const klass = side === "sell" ? "pos-short" : "pos-long";
+    const age = optionMarkAge(pos.mark_updated_at);
+    let mark = "mark unknown";
+    if (age) {
+      mark = "mark " + fmtMoney(pos.current_value_usd) + " " + age + " ago (" + (pos.mark_source || "unknown source") + ")";
+    }
+    let detail = "Qty " + fmtNumber(pos.quantity) + " @ " + fmtMoney(pos.entry_premium_usd) + " / " + mark;
+    if (pos.mark_error) {
+      detail += " / " + pos.mark_error;
+    }
     return '<div class="position-row"><strong>' + escapeHTML(symbol) + '</strong><span class="' + klass + '">' +
       escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span>' + positionActionButtons() + '</span></div>';
   }

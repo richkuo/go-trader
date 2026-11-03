@@ -1,5 +1,6 @@
 import math
 import re
+import sys
 
 VOL_WINDOW = 14
 MODEL_NEEDS_VOLATILITY = "volatility unavailable: model pricing needs measured volatility"
@@ -122,3 +123,17 @@ def require_model_inputs(spot, strike, dte, vol):
     strike = require_finite_positive(strike, "option model unavailable: strike is not positive")
     dte = require_finite_positive(dte, "option model unavailable: days to expiry are not positive")
     return spot, strike, dte, vol
+
+
+def measured_vol_metrics(adapter, underlying):
+    try:
+        vol_annual, iv_rank = adapter.get_vol_metrics(underlying)
+    except OptionDataUnavailable as e:
+        print(f"volatility metrics unavailable for {underlying}: {e.reason}", file=sys.stderr)
+        vol = e.vol_annual if is_finite_positive(e.vol_annual) else None
+        return vol, None, e.reason
+    if not is_finite_positive(vol_annual):
+        return None, None, "volatility unavailable: adapter returned an invalid volatility"
+    if isinstance(iv_rank, bool) or not isinstance(iv_rank, (int, float)) or not math.isfinite(iv_rank) or not 0 <= iv_rank <= 100:
+        return vol_annual, None, "iv rank unavailable: adapter returned an invalid rank"
+    return vol_annual, iv_rank, None

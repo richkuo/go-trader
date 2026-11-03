@@ -1970,6 +1970,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		if sc.Type == "options" && isLiveArgs(sc.Args) {
 			errs = append(errs, fmt.Sprintf("%s: %s", prefix, optionsLiveModeConfigError(sc.Platform)))
 		}
+		if err := optionsConfigPolicyError(sc); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v; remove the strategy, or close or migrate its open option legs first (#1912)", prefix, err))
+		}
 
 		if _, err := parseRegimeGateOnFailure(sc.RegimeGateOnFailure); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", prefix, err))
