@@ -2572,6 +2572,8 @@ class RobinhoodExchangeAdapter:
                 if next_url is None:
                     complete = True
                     break
+                if by_ref:
+                    break
         except _OrderPrepError as e:
             return self._finish_clean(result, OUTCOME_UNKNOWN, f"order list read failed: {e}")
         matches = by_ref if by_ref else by_fields

@@ -697,6 +697,214 @@ def test_resolve_operator_order_without_ref_id_must_match_the_attempt_fields(tmp
     assert payload["order_outcome"] == "unknown"
 
 
+LONG_LIST_PAGES = 21
+OTHER_REF = "22222222-2222-4222-8222-222222222222"
+
+
+def _orders_page_url(k):
+    return ORDERS if k == 1 else f"{ORDERS}?cursor={k}"
+
+
+def _long_order_list(rows_by_page=None, pages=LONG_LIST_PAGES):
+    rows_by_page = rows_by_page or {}
+    return {"GET " + _orders_page_url(k): [_page(rows_by_page.get(k, []), _orders_page_url(k + 1))]
+            for k in range(1, pages + 1)}
+
+
+def _gets(made, url):
+    return sum(1 for r in made if r["method"] == "GET" and r["url"] == url)
+
+
+def _page_tally(made, pages=LONG_LIST_PAGES):
+    return [_gets(made, _orders_page_url(k)) for k in range(1, pages + 1)]
+
+
+def _poll_url(order_id):
+    return ORDERS + order_id + "/"
+
+
+def _attempt_rows(now_ms):
+    return {
+        "exact": _list_row(ORDER_ID, now_ms - 40000),
+        "field_only": _list_row("ord-f", now_ms - 40000, ref_id=None),
+        "other_ref": _list_row("ord-o", now_ms - 40000, ref_id=OTHER_REF),
+    }
+
+
+def test_resolve_ref_id_match_on_a_long_list_stops_after_the_matching_page(tmp_path, subtests):
+    now_ms = int(time.time() * 1000)
+    rows = _attempt_rows(now_ms)
+    for match_page in (1, 3, 20):
+        with subtests.test(match_page=match_page):
+            routes = dict(PREP)
+            routes.update(_long_order_list({match_page: [rows["field_only"], rows["other_ref"], rows["exact"]]}))
+            routes["GET " + ORDER] = [_order("filled", "0.1", "100.5")]
+            code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+            assert code == 0, payload
+            assert payload["order_outcome"] == "filled"
+            assert payload["execution"]["fill"] == {"avg_px": 100.5, "quantity": 0.1, "oid": ORDER_ID}
+            assert _page_tally(made) == [1] * match_page + [0] * (LONG_LIST_PAGES - match_page)
+            assert _gets(made, ORDER) == 1
+            assert _gets(made, _poll_url("ord-f")) == 0
+            assert _count(made, ORDERS, "POST") == 0
+
+
+def test_resolve_long_list_without_a_reachable_ref_id_match_holds(tmp_path, subtests):
+    now_ms = int(time.time() * 1000)
+    rows = _attempt_rows(now_ms)
+    cases = {
+        "ref_id_only_on_page_21": {21: [rows["exact"]]},
+        "other_ref_ids_within_the_cap": {1: [rows["other_ref"]], 20: [rows["other_ref"]]},
+        "unique_field_match_on_page_1": {1: [rows["field_only"]]},
+    }
+    for case in sorted(cases):
+        with subtests.test(case=case):
+            routes = dict(PREP)
+            routes.update(_long_order_list(cases[case]))
+            routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+            routes["GET " + _poll_url("ord-f")] = [_order("filled", "0.1", "100", order_id="ord-f")]
+            code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+            assert code == 1
+            assert payload["order_outcome"] == "unknown"
+            assert "fill" not in payload["execution"]
+            assert _page_tally(made) == [1] * 20 + [0]
+            assert _gets(made, ORDER) == 0
+            assert _gets(made, _poll_url("ord-f")) == 0
+
+
+def test_resolve_two_ref_id_matches_on_the_matching_page_are_ambiguous(tmp_path):
+    now_ms = int(time.time() * 1000)
+    rows = _attempt_rows(now_ms)
+    second = _list_row("ord-2", now_ms - 39000)
+    routes = dict(PREP)
+    routes.update(_long_order_list({2: [rows["exact"], rows["other_ref"], second]}))
+    routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+    routes["GET " + _poll_url("ord-2")] = [_order("filled", "0.1", "100", order_id="ord-2")]
+    code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+    assert code == 1
+    assert payload["order_outcome"] == "unknown"
+    assert "fill" not in payload["execution"]
+    assert _page_tally(made) == [1, 1] + [0] * (LONG_LIST_PAGES - 2)
+    assert _gets(made, ORDER) == 0
+    assert _gets(made, _poll_url("ord-2")) == 0
+
+
+def test_resolve_later_page_duplicate_ref_id_is_not_read_and_the_first_match_is_polled(tmp_path):
+    now_ms = int(time.time() * 1000)
+    rows = _attempt_rows(now_ms)
+    routes = dict(PREP)
+    routes.update(_long_order_list({1: [rows["exact"]], 2: [_list_row("ord-2", now_ms - 39000)]}))
+    routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+    routes["GET " + _poll_url("ord-2")] = [_order("filled", "0.1", "100", order_id="ord-2")]
+    code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+    assert code == 0, payload
+    assert payload["order_outcome"] == "filled"
+    assert payload["execution"]["fill"] == {"avg_px": 100.0, "quantity": 0.1, "oid": ORDER_ID}
+    assert _page_tally(made) == [1] + [0] * (LONG_LIST_PAGES - 1)
+    assert _gets(made, _poll_url("ord-2")) == 0
+
+
+def test_resolve_ref_id_match_whose_next_repeats_the_first_page_resolves_without_a_second_list_read(tmp_path):
+    now_ms = int(time.time() * 1000)
+    routes = dict(PREP)
+    routes["GET " + ORDERS] = [_page([_attempt_rows(now_ms)["exact"]], ORDERS)]
+    routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+    code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+    assert code == 0, payload
+    assert payload["order_outcome"] == "filled"
+    assert payload["execution"]["fill"] == {"avg_px": 100.0, "quantity": 0.1, "oid": ORDER_ID}
+    assert _gets(made, ORDERS) == 1
+    assert _gets(made, ORDER) == 1
+
+
+def test_resolve_invalid_list_page_holds_even_with_a_ref_id_match(tmp_path, subtests):
+    now_ms = int(time.time() * 1000)
+    exact = _attempt_rows(now_ms)["exact"]
+    page2 = _orders_page_url(2)
+    page3 = _orders_page_url(3)
+    matching_page_shapes = {
+        "matching_page_without_next_key": {"status": 200, "json": {"results": [exact]}},
+        "matching_page_next_not_string": _page([exact], 2),
+        "matching_page_next_http_scheme": _page([exact], "http://nummus.robinhood.com/orders/?cursor=2"),
+        "matching_page_next_other_host": _page([exact], "https://orders.example.com/orders/?cursor=2"),
+    }
+    before_match_shapes = {
+        "page2_without_results": {"status": 200, "json": {"next": page3}},
+        "page2_transport_error": {"raise": "connection"},
+        "page2_next_repeats_page1": _page([], ORDERS),
+    }
+    for case in sorted(matching_page_shapes):
+        with subtests.test(case=case):
+            routes = dict(PREP)
+            routes.update(_long_order_list())
+            routes["GET " + ORDERS] = [matching_page_shapes[case]]
+            routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+            code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+            assert code == 1
+            assert payload["order_outcome"] == "unknown"
+            assert "fill" not in payload["execution"]
+            assert _page_tally(made) == [1] + [0] * (LONG_LIST_PAGES - 1)
+            assert _gets(made, ORDER) == 0
+    for case in sorted(before_match_shapes):
+        with subtests.test(case=case):
+            routes = dict(PREP)
+            routes.update(_long_order_list({3: [exact]}))
+            routes["GET " + page2] = [before_match_shapes[case]]
+            routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+            code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+            assert code == 1
+            assert payload["order_outcome"] == "unknown"
+            assert "fill" not in payload["execution"]
+            assert _page_tally(made) == [1, 1] + [0] * (LONG_LIST_PAGES - 2)
+            assert _gets(made, ORDER) == 0
+
+
+def test_resolve_ref_id_match_with_unusable_order_evidence_books_no_fill(tmp_path, subtests):
+    now_ms = int(time.time() * 1000)
+    exact = _attempt_rows(now_ms)["exact"]
+    polls = {
+        "poll_http_500": ({"status": 500, "json": {"detail": "down"}}, "unknown"),
+        "poll_invalid_json": ({"status": 200, "text": "{not json"}, "unknown"),
+        "poll_other_order_id": (_order("filled", "0.1", "100", order_id="ord-other"), "unknown"),
+        "poll_other_ref_id": (_order("filled", "0.1", "100", ref_id=OTHER_REF), "unknown"),
+        "poll_other_side": (_order("filled", "0.1", "100", side="sell"), "unknown"),
+        "poll_other_account": (_order("filled", "0.1", "100", account_id="acct-other"), "unknown"),
+        "filled_without_average_price": (_order("filled", "0.1", None), "unknown"),
+        "filled_with_unreadable_quantity": (_order("filled", "abc", "100"), "unknown"),
+        "filled_above_the_requested_quantity": (_order("filled", "0.5", "100"), "inconsistent"),
+    }
+    cases = {name: (exact, poll, outcome) for name, (poll, outcome) in polls.items()}
+    cases["matching_row_without_id"] = (dict(exact, id=None), _order("filled", "0.1", "100"), "unknown")
+    for case in sorted(cases):
+        row, poll, outcome = cases[case]
+        with subtests.test(case=case):
+            routes = dict(PREP)
+            routes.update(_long_order_list({1: [row]}))
+            routes["GET " + ORDER] = [poll]
+            code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+            assert code == 1
+            assert payload["order_outcome"] == outcome
+            assert "fill" not in payload["execution"]
+            assert _page_tally(made) == [1] + [0] * (LONG_LIST_PAGES - 1)
+            assert _gets(made, ORDER) == (0 if case == "matching_row_without_id" else 1)
+            assert _count(made, CANCEL, "POST") == 0
+
+
+def test_resolve_ref_id_match_with_a_hung_poll_stays_unknown_inside_the_budget(tmp_path):
+    now_ms = int(time.time() * 1000)
+    routes = dict(PREP)
+    routes.update(_long_order_list({1: [_attempt_rows(now_ms)["exact"]]}))
+    routes["GET " + ORDER] = [{"sleep_s": 30, "status": 200, "json": {}}]
+    started = time.monotonic()
+    code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+    elapsed = time.monotonic() - started
+    assert code == 1
+    assert payload["order_outcome"] == "unknown"
+    assert "fill" not in payload["execution"]
+    assert _page_tally(made) == [1] + [0] * (LONG_LIST_PAGES - 1)
+    assert elapsed < 6 + 15
+
+
 def _pairs(min_size="0.000001", increment="0.00000001", max_size="20", drop=(), price_increment="0.01"):
     row = {"id": PAIR_ID, "asset_currency": {"code": "BTC"}, "quote_currency": {"code": "USD"},
            "min_order_size": min_size, "min_order_quantity_increment": increment, "max_order_size": max_size,

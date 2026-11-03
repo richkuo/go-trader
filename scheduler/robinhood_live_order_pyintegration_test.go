@@ -772,6 +772,107 @@ func TestRobinhoodLiveOrderHeldAttemptResolution(t *testing.T) {
 			t.Fatalf("db trades = %+v", dbt)
 		}
 	})
+	t.Run("ReferenceMatchOnALongOrderListStopsPaging", func(t *testing.T) {
+		requireSettledLongListBuy := func(t *testing.T, e *rhLiveEnv, recoveryCalls int) {
+			t.Helper()
+			got := e.onlyAttempt()
+			if got.Status != robinhoodAttemptSettled || got.VenueOrderID != "ord-long" || got.SettlementSeq != 1 || got.AppliedQty != 9.5 || got.ConfirmedQty != 9.5 {
+				t.Fatalf("attempt after %d recovery calls = %+v, want settled once by ord-long", recoveryCalls, got)
+			}
+			dbt := e.dbTrades("rh-btc")
+			if len(dbt) != 1 || dbt[0].Price != 100.5 || dbt[0].Quantity != 9.5 || dbt[0].ExchangeOrderID != "ord-long" || dbt[0].IsClose {
+				t.Fatalf("db trades = %+v, want one 9.5 buy at 100.5 by ord-long", dbt)
+			}
+			s := e.state.Strategies["rh-btc"]
+			pos := s.Positions["BTC"]
+			if pos == nil || pos.Quantity != 9.5 || pos.AvgCost != 100.5 {
+				t.Fatalf("position = %+v, want 9.5 @ 100.5", pos)
+			}
+			if want := 1000 - 9.5*100.5; math.Abs(s.Cash-want) > 1e-6 {
+				t.Fatalf("cash = %v, want %v", s.Cash, want)
+			}
+		}
+		longList := func(refID string) rhRoutes {
+			pages := rhOrderPages(rhOrderPageCap + 1)
+			pages["GET "+rhTestOrders] = []rhRoute{{"status": 200, "json": map[string]interface{}{"next": rhTestOrders + "?cursor=1", "results": []interface{}{
+				map[string]interface{}{"id": "ord-long", "ref_id": refID, "state": "filled", "side": "buy", "currency_pair_id": "pair-btc", "quantity": "9.5", "created_at": time.Now().UTC().Format(time.RFC3339)},
+			}}}}
+			return rhWith(rhPrepRoutes(), rhWith(pages, rhRoutes{
+				"GET " + rhOrderURL("ord-long"): {{"status": 200, "json": rhOrderBody("ord-long", "filled", "buy", "9.5", "100.5", refID)}},
+			}))
+		}
+		gets := func(e *rhLiveEnv, url string) int {
+			n := 0
+			for _, r := range e.requests() {
+				if r.Method == "GET" && r.URL == url {
+					n++
+				}
+			}
+			return n
+		}
+		requireOnePageRead := func(t *testing.T, e *rhLiveEnv) {
+			t.Helper()
+			if first, second := gets(e, rhTestOrders), gets(e, rhTestOrders+"?cursor=1"); first != 1 || second != 0 {
+				t.Fatalf("order list page reads: page 1 = %d, page 2 = %d, want 1 and 0", first, second)
+			}
+			if polls := gets(e, rhOrderURL("ord-long")); polls != 1 {
+				t.Fatalf("order polls = %d, want 1", polls)
+			}
+			if posts := e.orderPosts(); len(posts) != 0 {
+				t.Fatalf("recovery sent order POSTs %+v, want none", posts)
+			}
+		}
+		t.Run("automatic_recovery_settles_in_one_call", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			row := e.seedHeldBuy()
+			if row.VenueOrderID != "" {
+				t.Fatalf("seeded attempt = %+v, want no venue order id", row)
+			}
+			e.setRoutes(longList(row.RefID))
+			if posts := e.orderPosts(); len(posts) != 0 {
+				t.Fatalf("order POSTs before recovery = %+v, want none", posts)
+			}
+			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+			requireOnePageRead(t, e)
+			requireSettledLongListBuy(t, e, 1)
+			e.setRoutes(longList(row.RefID))
+			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+			if reqs := e.requests(); len(reqs) != 0 {
+				t.Fatalf("a second recovery of a settled attempt made venue calls %+v", reqs)
+			}
+			requireSettledLongListBuy(t, e, 2)
+		})
+		t.Run("operator_resolution_settles_on_the_next_recovery", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			row := e.seedHeldBuy()
+			lookup := func(id string) (StrategyConfig, bool) {
+				for _, sc := range e.cfg.Strategies {
+					if sc.ID == id {
+						return sc, true
+					}
+				}
+				return StrategyConfig{}, false
+			}
+			e.setRoutes(longList(row.RefID))
+			resolveRobinhoodAttemptByOperator(e.deps(), lookup, "rh-btc", row.ID, "", time.Now())
+			requireOnePageRead(t, e)
+			got := e.onlyAttempt()
+			if got.Status != robinhoodAttemptSettling || got.VenueOrderID != "ord-long" || got.ConfirmedQty != 9.5 || got.AppliedQty != 0 || got.SettlementSeq != 0 {
+				t.Fatalf("attempt after operator resolution = %+v, want settling with nothing applied", got)
+			}
+			if s := e.state.Strategies["rh-btc"]; s.Cash != 1000 || len(s.Positions) != 0 || len(e.dbTrades("rh-btc")) != 0 {
+				t.Fatalf("operator resolution changed the book: cash=%v positions=%v", s.Cash, s.Positions)
+			}
+			e.setRoutes(rhPrepRoutes())
+			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+			if posts := e.orderPosts(); len(posts) != 0 {
+				t.Fatalf("settlement sent order POSTs %+v, want none", posts)
+			}
+			requireSettledLongListBuy(t, e, 1)
+			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+			requireSettledLongListBuy(t, e, 2)
+		})
+	})
 	t.Run("OperatorAttestedReleaseOfAnUnsentOrder", func(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
 		row := e.seedHeldBuy()
