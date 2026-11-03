@@ -3717,8 +3717,8 @@
     },
     "collect_positions": {
       "deribit-opt": [
-        "deribit-opt OPT BTC-C-70000 ($750.00)",
-        "deribit-opt OPT BTC-P-55000 ($-700.00)"
+        "deribit-opt OPT BTC-C-70000 ($750.00) mark unknown",
+        "deribit-opt OPT BTC-P-55000 ($-700.00) mark unknown"
       ],
       "hl-corrupt": [
         "hl-corrupt LONG AVAX x0.000 @ $0.00 (+$0.00) | 2x ($0 margin)"

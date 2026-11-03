@@ -341,7 +341,24 @@ def _install():
     if frozen_now:
         _install_frozen_topstep_clock(frozen_now)
 
+    def dated_history(self, interval, kwargs):
+        _log({"call": "yahoo_history_window", "symbol": getattr(self, "ticker", ""), "interval": interval,
+              "start": kwargs.get("start"), "end": kwargs.get("end"), "auto_adjust": kwargs.get("auto_adjust"),
+              "back_adjust": kwargs.get("back_adjust"), "actions": kwargs.get("actions")})
+        raw = os.environ.get("QP_DAILY_BARS", "")
+        if raw == "error":
+            raise RuntimeError("503 Server Error: Service Unavailable for url: https://stub.invalid/yahoo/chart")
+        start, end = pd.Timestamp(kwargs["start"]), pd.Timestamp(kwargs["end"])
+        rows = [b for b in (json.loads(raw) if raw else []) if start <= pd.Timestamp(b["date"]) < end]
+        index = pd.DatetimeIndex([pd.Timestamp(b["date"]).tz_localize("America/New_York") for b in rows])
+        closes = [float(b["close"]) for b in rows]
+        return pd.DataFrame({"Open": closes, "High": closes, "Low": closes, "Close": closes, "Volume": [1.0] * len(rows),
+                             "Dividends": [0.0] * len(rows), "Stock Splits": [float(b.get("split", 0)) for b in rows]},
+                            index=index)
+
     def history(self, period=None, interval=None, *args, **kwargs):
+        if "start" in kwargs or "end" in kwargs:
+            return dated_history(self, interval, kwargs)
         _log({"call": "yahoo_history", "symbol": getattr(self, "ticker", ""), "period": period, "interval": interval})
         if period == "1d" and interval is None:
             mode, value = _quote_mode()

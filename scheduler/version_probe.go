@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -339,6 +341,11 @@ func probeCheckScripts(cfg *Config) error {
 			return err
 		}
 	}
+	if anyRobinhoodOptions(cfg) {
+		if err := probeOneScriptContractFn(robinhoodOptionMarksScript, robinhoodOptionMarksProbeArgv, optionMarksContract); err != nil {
+			return err
+		}
+	}
 	if anyHLLiveReconcilable(cfg) {
 		if err := probeOneCheckScriptFn(hyperliquidLiveCloseScript, sizedCloseProbeArgv); err != nil {
 			return err
@@ -470,6 +477,58 @@ func probeOneCheckScript(script string, argv []string) error {
 	}
 	if err != nil {
 		return formatProbeFailure(script, err, stderr.String(), stdout.String())
+	}
+	return nil
+}
+
+var robinhoodOptionMarksProbeArgv = []string{"--platform=robinhood", "--probe-only"}
+
+var probeOneScriptContractFn = probeOneScriptContract
+
+func anyRobinhoodOptions(cfg *Config) bool {
+	for _, sc := range cfg.Strategies {
+		if sc.Type == "options" && sc.Platform == "robinhood" {
+			return true
+		}
+	}
+	return false
+}
+
+func probeOneScriptContract(script string, argv []string, contract string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ".venv/bin/python3", egressPythonArgv(script, argv)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if env := egressChildEnvironment(nil); env != nil {
+		cmd.Env = env
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		if cmd.Process != nil {
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return fmt.Errorf("%s: probe timed out after %s", script, probeTimeout)
+	}
+	if err != nil {
+		return formatProbeFailure(script, err, stderr.String(), stdout.String())
+	}
+	dec := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
+	var doc struct {
+		Contract string `json:"contract"`
+		Probe    bool   `json:"probe"`
+	}
+	if derr := dec.Decode(&doc); derr != nil {
+		return fmt.Errorf("%s --probe-only wrote no %s document (binary/Python version mismatch; sync Python with scripts/update.sh): %v; stdout: %s", script, contract, derr, strings.TrimSpace(stdout.String()))
+	}
+	var extra json.RawMessage
+	if derr := dec.Decode(&extra); derr != io.EOF {
+		return fmt.Errorf("%s --probe-only wrote more than one JSON document (binary/Python version mismatch)", script)
+	}
+	if doc.Contract != contract || !doc.Probe {
+		return fmt.Errorf("%s --probe-only reports contract %q, want %q (binary/Python version mismatch; sync Python with scripts/update.sh)", script, doc.Contract, contract)
 	}
 	return nil
 }

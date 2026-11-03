@@ -1767,6 +1767,10 @@ class RobinhoodExchangeAdapter:
         return self._mode
 
     @property
+    def quotes_authenticated(self) -> bool:
+        return self._logged_in
+
+    @property
     def name(self) -> str:
         return "robinhood"
 
@@ -1879,8 +1883,7 @@ class RobinhoodExchangeAdapter:
         mark_pct = price_usd / spot
         return round(mark_pct, 6), price_usd, greeks
 
-    def _venue_option_premium(self, underlying: str, option_type: str, strike: float,
-                              expiry: str, spot: float) -> Tuple[float, float, dict]:
+    def _venue_option_market_data(self, underlying: str, option_type: str, strike: float, expiry: str) -> dict:
         library_output = io.StringIO()
         try:
             with robinhood_library() as rh:
@@ -1909,20 +1912,97 @@ class RobinhoodExchangeAdapter:
         if not (market_data and isinstance(market_data, list) and isinstance(market_data[0], dict)):
             raise option_data.unavailable("option quote unavailable: robinhood option market data missing",
                                           text=library_output.getvalue())
-        md = market_data[0]
+        return market_data[0]
+
+    @staticmethod
+    def _quote_greeks(md: dict) -> dict:
+        return {
+            "delta": float(md.get("delta", 0) or 0),
+            "gamma": float(md.get("gamma", 0) or 0),
+            "theta": float(md.get("theta", 0) or 0),
+            "vega": float(md.get("vega", 0) or 0),
+        }
+
+    def _venue_option_premium(self, underlying: str, option_type: str, strike: float,
+                              expiry: str, spot: float) -> Tuple[float, float, dict]:
+        md = self._venue_option_market_data(underlying, option_type, strike, expiry)
         try:
             mark = float(md.get("adjusted_mark_price", 0) or 0)
-            greeks = {
-                "delta": float(md.get("delta", 0) or 0),
-                "gamma": float(md.get("gamma", 0) or 0),
-                "theta": float(md.get("theta", 0) or 0),
-                "vega": float(md.get("vega", 0) or 0),
-            }
+            greeks = self._quote_greeks(md)
         except (TypeError, ValueError):
             raise option_data.OptionDataUnavailable("option quote unavailable: robinhood option market data malformed") from None
         option_data.require_finite_positive(mark, "option quote unavailable: robinhood mark is not positive")
         mark_pct = (mark / spot) if spot > 0 else 0.0
         return round(mark_pct, 6), mark, greeks
+
+    def get_option_mark(self, underlying: str, option_type: str, strike: float, expiry: str,
+                        dte: float, spot: float, vol: Optional[float] = None) -> Tuple[float, dict, str]:
+        if _is_yahoo_crypto_pair(robinhood_yahoo_symbol(underlying)):
+            raise option_data.OptionDataUnavailable(
+                f"unsupported basis: {underlying} resolves to a Yahoo crypto pair with no listed robinhood option")
+        if self._logged_in:
+            md = self._venue_option_market_data(underlying, option_type, strike, expiry)
+            raw = md.get("adjusted_mark_price")
+            if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+                raise option_data.OptionDataUnavailable("option quote unavailable: robinhood mark field missing")
+            try:
+                mark = float(raw)
+                greeks = self._quote_greeks(md)
+            except (TypeError, ValueError):
+                raise option_data.OptionDataUnavailable("option quote unavailable: robinhood option market data malformed") from None
+            if not math.isfinite(mark) or mark < 0:
+                raise option_data.OptionDataUnavailable("option quote unavailable: robinhood mark is not a finite non-negative price")
+            if not all(math.isfinite(v) for v in greeks.values()):
+                raise option_data.OptionDataUnavailable("option quote unavailable: robinhood greeks are not finite")
+            return mark, greeks, "robinhood_quote"
+        from pricing import bs_price_and_greeks
+        spot, strike, dte, vol = option_data.require_model_inputs(spot, strike, dte, vol)
+        price_usd, greeks = bs_price_and_greeks(spot, strike, dte, vol, option_type=option_type)
+        if not isinstance(price_usd, (int, float)) or not math.isfinite(price_usd) or price_usd <= 0:
+            raise option_data.OptionDataUnavailable("option model unavailable: black-scholes price is not positive")
+        greeks = {k: float(greeks.get(k, 0) or 0) for k in ("delta", "gamma", "theta", "vega")}
+        if not all(math.isfinite(v) for v in greeks.values()):
+            raise option_data.OptionDataUnavailable("option model unavailable: black-scholes greeks are not finite")
+        return float(price_usd), greeks, "robinhood_black_scholes"
+
+    def get_settlement_close(self, symbol: str, session_date: str, refresh_at: datetime) -> Tuple[Optional[float], str]:
+        if _is_yahoo_crypto_pair(robinhood_yahoo_symbol(symbol)):
+            raise option_data.OptionDataUnavailable(
+                f"unsupported basis: {symbol} resolves to a Yahoo crypto pair with no listed robinhood option")
+        session = datetime.strptime(session_date, "%Y-%m-%d").date()
+        start = session - timedelta(days=7)
+        end = max(refresh_at.astimezone(timezone.utc).date(), session) + timedelta(days=1)
+        yahoo_sym = self._resolve_yahoo_symbol(symbol)
+        try:
+            import yfinance as yf
+            egress_policy.pin_yfinance()
+            hist = yf.Ticker(yahoo_sym).history(start=start.isoformat(), end=end.isoformat(), interval="1d",
+                                                auto_adjust=False, back_adjust=False, actions=True)
+        except Exception as e:
+            print(f"[robinhood] settlement close read error for {symbol} {session_date}: {e}", file=sys.stderr)
+            raise option_data.unavailable("settlement close unavailable: daily history read failed", e) from e
+        if hist is None or hist.empty:
+            return None, f"no daily bar for {yahoo_sym} on expected session {session_date} (no rows in {start.isoformat()}..{end.isoformat()})"
+        close = None
+        for idx, row in hist.iterrows():
+            day = idx.date()
+            splits = row.get("Stock Splits", 0)
+            try:
+                split = float(splits or 0)
+            except (TypeError, ValueError):
+                raise option_data.OptionDataUnavailable("settlement close unavailable: malformed split field") from None
+            if day > session and split not in (0.0, 1.0):
+                return None, f"split after expiry: {yahoo_sym} split {split:g} on {day.isoformat()} changes the close basis"
+            if day == session:
+                try:
+                    close = float(row["Close"])
+                except (TypeError, ValueError, KeyError):
+                    raise option_data.OptionDataUnavailable("settlement close unavailable: malformed close") from None
+        if close is None:
+            return None, f"no daily bar for {yahoo_sym} on expected session {session_date}"
+        if not math.isfinite(close) or close <= 0:
+            raise option_data.OptionDataUnavailable(f"settlement close unavailable: close {close} on {session_date} is not positive")
+        return close, ""
 
 
     def _get_yahoo_price(self, symbol: str) -> float:

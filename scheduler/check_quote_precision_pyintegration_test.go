@@ -1571,8 +1571,35 @@ func qpOptionsDispatch(env *entryTestEnv, sc StrategyConfig, notifier *MultiNoti
 	env.mu.RLock()
 	posJSON, posErr := EncodeAllPositionsJSON(s.Platform, s.OptionPositions, s.Positions)
 	env.mu.RUnlock()
-	return runOptionsDispatch(optionsDispatch{SC: sc, State: s, PositionsJSON: posJSON, PositionsErr: posErr,
+	return runOptionsDispatch(optionsDispatch{SC: sc, GlobalIntervalSeconds: env.cfg.IntervalSeconds, State: s, PositionsJSON: posJSON, PositionsErr: posErr,
 		Risk: &scopeCycleRisk{Partition: partitionFor(sc)}, Scope: partitionFor(sc).Scope, Mu: &env.mu, Notifier: notifier, Logger: logger})
+}
+
+type qpSeededValuePricer struct{ values map[string]float64 }
+
+func (p qpSeededValuePricer) Name() string { return "qp-seeded-values" }
+
+func (p qpSeededValuePricer) Refresh(reqs []optionLegRequest, refreshAt time.Time) []optionLegReply {
+	var out []optionLegReply
+	for _, req := range reqs {
+		cutoff, ready, _, _ := optionGoExpirySchedule("ibkr", req.Expiry)
+		out = append(out, optionLegReply{Key: req.Key, CutoffAt: cutoff, ReadyAt: ready,
+			Mark: &optionLegMark{PerUnitUSD: math.Abs(p.values[req.Key]) / (req.Multiplier * req.Quantity), Spot: 1000, Source: "qp-seeded-values"}})
+	}
+	return out
+}
+
+func qpRefreshSeededOptionMarks(t *testing.T, env *entryTestEnv, sc StrategyConfig) {
+	t.Helper()
+	values := map[string]float64{}
+	for _, leg := range qpOptionLegs() {
+		values[leg.id] = leg.value
+	}
+	res := runOptionMarkRefresh(optionMarkRefresh{SC: sc, State: env.strat(sc.ID), Pricer: qpSeededValuePricer{values: values},
+		Mu: &env.mu, Logger: silentStrategyLogger(sc.ID), RefreshAt: time.Now().UTC()})
+	if res.Marked != len(qpOptionLegs()) || len(res.Failures) != 0 {
+		t.Fatalf("seeded mark refresh = %+v, want every leg marked", res)
+	}
 }
 
 func qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting(t *testing.T) {
@@ -1615,6 +1642,7 @@ func qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting(t *testing.T
 			if got := len(env.strat(sc.ID).OptionPositions); got != len(qpOptionLegs()) {
 				t.Fatalf("reloaded %d option legs, want %d", got, len(qpOptionLegs()))
 			}
+			qpRefreshSeededOptionMarks(t, env, sc)
 			notifier, backend := qpOptionsNotifier()
 			logger, buf := qpLogger(sc.ID)
 			trades, lines := qpOptionsDispatch(env, sc, notifier, logger)
@@ -1712,6 +1740,8 @@ func qpCaseCheckQuotePrecisionOptionsEncodingFailureSpawnsNoCheck(t *testing.T) 
 	if d := env.strat(sc.ID).OptionPositions["BTC-put-sell-stop"].Greeks.Delta; !math.IsInf(d, 1) {
 		t.Fatalf("the real store returned delta %v, want +Inf", d)
 	}
+	qpRefreshSeededOptionMarks(t, env, sc)
+	env.strat(sc.ID).OptionPositions["BTC-put-sell-stop"].Greeks.Delta = math.Inf(1)
 
 	notifier, _ := qpOptionsNotifier()
 	logger, buf := qpLogger(sc.ID)
@@ -1818,13 +1848,32 @@ func qpCaseCheckQuotePrecisionOptionsFailureAlertThresholds(t *testing.T) {
 	})
 }
 
+type qpSchedOptionLeg struct {
+	id, optionType string
+	strike         float64
+	days           int
+	entryUSD       float64
+	reason         string
+}
+
+func qpSchedOptionLegs() []qpSchedOptionLeg {
+	return []qpSchedOptionLeg{
+		{id: "BTC-call-sell-profit", optionType: "call", strike: 3000, days: 20, entryUSD: 100, reason: "Theta harvest:"},
+		{id: "BTC-put-sell-stop", optionType: "put", strike: 1350, days: 20, entryUSD: 100, reason: "Stop loss:"},
+		{id: "BTC-call-sell-dte", optionType: "call", strike: 1000, days: 2, entryUSD: 30, reason: "DTE exit:"},
+	}
+}
+
 func qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage(t *testing.T) {
 	t.Parallel()
 	root := robinhoodStdoutPyRoot(t)
 	sched := qpBuildScheduler(t, root)
 	sc := qpOptionsHarvestSC("qp-opt-sched")
+	sc.IntervalSeconds = 60
+	spot := qpSpotSC("qp-opt-sched-spot", "BTC/USDT")
+	spot.IntervalSeconds = 60
 	sched.env = qpChildEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": "error"})
-	cfg := sched.config([]StrategyConfig{sc})
+	cfg := sched.config([]StrategyConfig{sc, spot})
 	sched.run(cfg, "Cycle 1 complete", nil)
 
 	db, err := sql.Open("sqlite", filepath.Join(sched.dir, "state.db"))
@@ -1833,29 +1882,51 @@ func qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage(t *testi
 	}
 	defer db.Close()
 	now := time.Now().UTC()
-	for i, leg := range qpOptionLegs() {
+	for _, leg := range qpSchedOptionLegs() {
 		qpExec(t, db, `INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte, action, quantity, entry_premium, entry_premium_usd, current_value_usd, opened_at)
-			VALUES (?, ?, '', 'BTC', ?, ?, ?, ?, ?, 1, 0.1, ?, ?, ?)`,
-			sc.ID, leg.id, leg.optionType, float64(3000+100*i), now.AddDate(0, 0, int(leg.dte)).Format("2006-01-02"), leg.dte, leg.action, leg.entryUSD, leg.value, now.Add(-time.Hour).Format(time.RFC3339))
+			VALUES (?, ?, '', 'BTC', ?, ?, ?, ?, 'sell', 1, 0.1, ?, ?, ?)`,
+			sc.ID, leg.id, leg.optionType, leg.strike, now.AddDate(0, 0, leg.days).Format("2006-01-02"), float64(leg.days), leg.entryUSD, -leg.entryUSD, now.Add(-time.Hour).Format(time.RFC3339))
 	}
 	qpExec(t, db, `UPDATE strategies SET cash = ? WHERE id = ?`, qpOptionsSeedCash, sc.ID)
 
-	out := sched.run(cfg, "Cycle 2 complete", nil)
-	if !strings.Contains(out, "Script returned error: vol_mean_reversion needs iv rank: volatility unavailable: daily history read failed") {
-		t.Fatalf("the entry check must fail this cycle:\n%s", out)
+	out := sched.run(cfg, "Cycle 4 complete", nil)
+	firstCycle, _, ok := strings.Cut(out, "Cycle 2 complete")
+	if !ok {
+		t.Fatalf("the process never finished its first cycle:\n%s", out)
 	}
-	for _, leg := range qpOptionLegs() {
+	if n := strings.Count(out, "Script returned error: vol_mean_reversion needs iv rank: volatility unavailable: daily history read failed"); n < 2 {
+		t.Fatalf("the entry check must fail in both cycles (%d failures):\n%s", n, out)
+	}
+	for _, leg := range qpSchedOptionLegs() {
+		if strings.Contains(firstCycle, "| "+leg.id+" | PnL:") {
+			t.Fatalf("leg %s harvested in the first cycle after a restart, before any successful mark:\n%s", leg.id, firstCycle)
+		}
+		if !strings.Contains(firstCycle, "Theta harvest holds "+leg.id+": no successful mark refresh in this process yet") {
+			t.Fatalf("leg %s first-cycle hold reason missing:\n%s", leg.id, firstCycle)
+		}
 		n := strings.Count(out, "| "+leg.id+" | PnL:")
-		if (leg.closes && n != 1) || (!leg.closes && n != 0) {
-			t.Fatalf("leg %s harvested %d time(s):\n%s", leg.id, n, out)
+		if n != 1 {
+			t.Fatalf("leg %s harvested %d time(s), want once in the second cycle:\n%s", leg.id, n, out)
+		}
+		line := ""
+		for _, l := range strings.Split(out, "\n") {
+			if strings.Contains(l, "| "+leg.id+" | PnL:") {
+				line = l
+			}
+		}
+		if !strings.Contains(line, leg.reason) {
+			t.Fatalf("leg %s closed by %q, want %q", leg.id, line, leg.reason)
 		}
 	}
-	var cash float64
+	var cash, closeTotal float64
 	if err := db.QueryRow(`SELECT cash FROM strategies WHERE id = ?`, sc.ID).Scan(&cash); err != nil {
 		t.Fatal(err)
 	}
-	if !qpClose(cash, qpOptionsSeedCash-qpOptionsHarvestCost) {
-		t.Fatalf("cash = %v, want %v", cash, qpOptionsSeedCash-qpOptionsHarvestCost)
+	if err := db.QueryRow(`SELECT COALESCE(SUM(close_price_usd), 0) FROM closed_option_positions WHERE strategy_id = ? AND close_reason = 'theta_harvest'`, sc.ID).Scan(&closeTotal); err != nil {
+		t.Fatal(err)
+	}
+	if closeTotal <= 0 || !qpClose(cash, qpOptionsSeedCash-closeTotal) {
+		t.Fatalf("cash = %v, want seed %v minus the booked buybacks %v", cash, qpOptionsSeedCash, closeTotal)
 	}
 	if n := qpCountRows(t, db, `SELECT COUNT(*) FROM closed_option_positions WHERE strategy_id = ? AND close_reason = 'theta_harvest'`, sc.ID); n != 3 {
 		t.Fatalf("closed theta-harvest rows = %d, want 3", n)
@@ -1949,6 +2020,7 @@ func qpCaseCheckQuotePrecisionOptionsResultContract(t *testing.T) {
 			env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
 			useEntryTradeRecorder(t, env.store)
 			qpSeedOptionLegs(env.strat(sc.ID), time.Now().UTC())
+			qpRefreshSeededOptionMarks(t, env, sc)
 			notifier, _ := qpOptionsNotifier()
 			logger, buf := qpLogger(sc.ID)
 			trades, lines := qpOptionsDispatch(env, sc, notifier, logger)

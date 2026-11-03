@@ -345,6 +345,8 @@ Per-strategy `params` merges under built-in defaults (config wins; runtime data 
 
 `profit_target_pct` (% premium captured), `stop_loss_pct` (% premium lost), `min_dte_close` (force-close inside N days).
 
+Harvest acts only on a leg with a successful mark in the running process that is at most 1.5 strategy intervals old and before the expiry cutoff, so the first options cycle after a restart closes nothing. Marks come from the strategy's platform: Robinhood from `shared_scripts/fetch_option_marks.py` (venue quote when logged in, Black-Scholes on measured inputs when logged out), Deribit from the exact instrument, OKX from the Deribit source labelled `deribit_proxy`, IBKR from its legacy model. An expired leg with no valid settlement price stays open as `settlement pending` and books nothing until the price arrives (SKILL.md § Option marks and settlement).
+
 ```json
 { "theta_harvest": { "enabled": true, "profit_target_pct": 60, "stop_loss_pct": 200, "min_dte_close": 3 } }
 ```

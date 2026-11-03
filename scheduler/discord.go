@@ -1165,12 +1165,17 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 		}
 		lines = append(lines, fmt.Sprintf("%s %s %s x%.3f @ $%s (%s$%s)%s%s", sc.ID, strings.ToUpper(pos.Side), sym, pos.Quantity, fmtComma2(pos.AvgCost), sign, fmtComma2(absPnl), extras, dateStr))
 	}
-	for key, opt := range ss.OptionPositions {
+	now := time.Now().UTC()
+	for _, key := range sortedOptionLegKeys(ss.OptionPositions) {
+		opt := ss.OptionPositions[key]
+		if opt == nil {
+			continue
+		}
 		dateStr := ""
 		if !opt.OpenedAt.IsZero() {
 			dateStr = fmt.Sprintf(" [%s]", opt.OpenedAt.Format("Jan 02 15:04"))
 		}
-		lines = append(lines, fmt.Sprintf("%s OPT %s ($%s)%s", sc.ID, key, fmtComma2(opt.CurrentValueUSD), dateStr))
+		lines = append(lines, fmt.Sprintf("%s OPT %s ($%s) %s%s", sc.ID, key, fmtComma2(opt.CurrentValueUSD), optionMarkStatusText(opt, now), dateStr))
 	}
 	return lines
 }

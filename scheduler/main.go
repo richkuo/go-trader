@@ -786,8 +786,9 @@ func main() {
 		checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, store)
 	}
 
-	deribitPricer := NewDeribitPricer()
-	fmt.Println("Option pricers ready (deribit: live API, ibkr: Black-Scholes)")
+	sharedOptionPricers := newOptionPricers()
+	optionSettlementAlerts := newOptionSettlementAlertThrottle()
+	fmt.Println("Option pricers ready (deribit: exact ticker + delivery price, okx: deribit_proxy, ibkr: Black-Scholes legacy model, robinhood: " + robinhoodOptionMarksScript + ")")
 
 	websocketFeed := cfg.marketFeedWebsocketEnabled()
 	sharedFeed := cfg.marketFeedSharedEnabled()
@@ -1701,6 +1702,9 @@ func main() {
 				if paperKillSwitch.CloseApplied {
 					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: force-closed %d paper strategy book(s) at mark\n", partitionLabel(part), len(paperKillSwitch.Closed))
 				}
+				if len(paperKillSwitch.Kept) > 0 {
+					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: %d option leg(s) at or past their expiry cutoff stay open until settlement books them: %s\n", partitionLabel(part), len(paperKillSwitch.Kept), strings.Join(paperKillSwitch.Kept, ", "))
+				}
 				if paperKillSwitch.AutoReset {
 					fmt.Printf("[CRITICAL] Portfolio kill switch [%s] auto-reset after the virtual close (no owner configured, peak re-baselined to $%.2f)\n", partitionLabel(part), paperSR.TotalPV)
 				}
@@ -2414,7 +2418,7 @@ func main() {
 					}
 				case "options":
 					trades, detailLines = runOptionsDispatch(optionsDispatch{
-						SC: sc, State: stratState, PositionsJSON: posJSON, PositionsErr: posJSONErr,
+						SC: sc, GlobalIntervalSeconds: cfg.IntervalSeconds, State: stratState, PositionsJSON: posJSON, PositionsErr: posJSONErr,
 						Risk: sr, PersistenceHold: persistenceHold, Scope: stratScope, Regime: cfg.Regime,
 						Mu: &mu, Notifier: notifier, Logger: logger,
 					})
@@ -2723,21 +2727,10 @@ func main() {
 
 				totalTrades += trades
 
-				mu.RLock()
-				markReqs := collectMarkRequests(stratState)
-				mu.RUnlock()
-				if len(markReqs) > 0 {
-					var pricer OptionPricer
-					if sc.Platform == "ibkr" {
-						pricer = NewIBKRPricer(prices)
-					} else {
-						pricer = deribitPricer
-					}
-					markResults := fetchMarkPrices(markReqs, pricer, logger)
-					mu.Lock()
-					applyMarkResults(stratState, markResults, logger)
-					mu.Unlock()
-				}
+				runOptionMarkRefresh(optionMarkRefresh{
+					SC: sc, State: stratState, Pricer: optionPricerFor(sc.Platform, prices, sharedOptionPricers),
+					Mu: &mu, Notifier: notifier, Throttle: optionSettlementAlerts, Logger: logger, RefreshAt: time.Now().UTC(),
+				})
 
 				mu.RLock()
 				pv = displayStrategyValue(stratState, prices)

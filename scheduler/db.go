@@ -179,6 +179,11 @@ CREATE TABLE IF NOT EXISTS option_positions (
     vega REAL NOT NULL DEFAULT 0,
     opened_at TEXT NOT NULL DEFAULT '',
     contract_multiplier REAL NOT NULL DEFAULT 0,
+    mark_updated_at TEXT NOT NULL DEFAULT '',
+    mark_error TEXT NOT NULL DEFAULT '',
+    mark_source TEXT NOT NULL DEFAULT '',
+    expiry_cutoff_at TEXT NOT NULL DEFAULT '',
+    settlement_ready_at TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (strategy_id, id)
 );
 
@@ -589,6 +594,11 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE positions ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE option_positions ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE option_positions ADD COLUMN contract_multiplier REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE option_positions ADD COLUMN mark_updated_at TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE option_positions ADD COLUMN mark_error TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE option_positions ADD COLUMN mark_source TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE option_positions ADD COLUMN expiry_cutoff_at TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE option_positions ADD COLUMN settlement_ready_at TEXT NOT NULL DEFAULT ''",
 		"CREATE INDEX IF NOT EXISTS idx_trades_strategy_position ON trades(strategy_id, position_id)",
 		"ALTER TABLE positions ADD COLUMN initial_quantity REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN entry_atr REAL NOT NULL DEFAULT 0",
@@ -1544,8 +1554,9 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 
 	stmtOpt, err := tx.Prepare(`INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte,
 		action, quantity, entry_premium, entry_premium_usd, current_value_usd,
-		delta, gamma, theta, vega, opened_at, contract_multiplier)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		delta, gamma, theta, vega, opened_at, contract_multiplier,
+		mark_updated_at, mark_error, mark_source, expiry_cutoff_at, settlement_ready_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare option_position insert: %w", err)
 	}
@@ -1628,6 +1639,7 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 				opt.Action, opt.Quantity, opt.EntryPremium, opt.EntryPremiumUSD, opt.CurrentValueUSD,
 				opt.Greeks.Delta, opt.Greeks.Gamma, opt.Greeks.Theta, opt.Greeks.Vega,
 				formatTime(opt.OpenedAt), opt.ContractMultiplier,
+				formatTime(opt.MarkUpdatedAt), opt.MarkError, opt.MarkSource, formatTime(opt.ExpiryCutoffAt), formatTime(opt.SettlementReadyAt),
 			); err != nil {
 				return fmt.Errorf("insert option_position %s/%s: %w", s.ID, key, err)
 			}
@@ -2108,8 +2120,9 @@ func (sdb *StateDB) writeOneStrategyBookTx(tx *sql.Tx, s *StrategyState, sid str
 	if len(s.OptionPositions) > 0 {
 		stmtOpt, err := tx.Prepare(`INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte,
 			action, quantity, entry_premium, entry_premium_usd, current_value_usd,
-			delta, gamma, theta, vega, opened_at, contract_multiplier)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			delta, gamma, theta, vega, opened_at, contract_multiplier,
+			mark_updated_at, mark_error, mark_source, expiry_cutoff_at, settlement_ready_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return nil, nil, fmt.Errorf("prepare option_position insert: %w", err)
 		}
@@ -2125,6 +2138,7 @@ func (sdb *StateDB) writeOneStrategyBookTx(tx *sql.Tx, s *StrategyState, sid str
 				opt.Action, opt.Quantity, opt.EntryPremium, opt.EntryPremiumUSD, opt.CurrentValueUSD,
 				opt.Greeks.Delta, opt.Greeks.Gamma, opt.Greeks.Theta, opt.Greeks.Vega,
 				formatTime(opt.OpenedAt), opt.ContractMultiplier,
+				formatTime(opt.MarkUpdatedAt), opt.MarkError, opt.MarkSource, formatTime(opt.ExpiryCutoffAt), formatTime(opt.SettlementReadyAt),
 			); err != nil {
 				return nil, nil, fmt.Errorf("insert option_position %s/%s: %w", s.ID, key, err)
 			}
@@ -2576,9 +2590,21 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 	if hasContractMultiplier {
 		contractMultiplierSelect = "contract_multiplier"
 	}
+	markSelects := make([]string, 0, 5)
+	for _, col := range []string{"mark_updated_at", "mark_error", "mark_source", "expiry_cutoff_at", "settlement_ready_at"} {
+		has, err := sdb.tableHasColumn("option_positions", col)
+		if err != nil {
+			return nil, fmt.Errorf("introspect option_positions columns: %w", err)
+		}
+		if has {
+			markSelects = append(markSelects, "COALESCE("+col+", '') AS "+col)
+		} else {
+			markSelects = append(markSelects, "'' AS "+col)
+		}
+	}
 	optRows, err := sdb.db.Query(`SELECT strategy_id, id, COALESCE(position_id, '') AS position_id, underlying, option_type, strike, expiry, dte,
 		action, quantity, entry_premium, entry_premium_usd, current_value_usd,
-		delta, gamma, theta, vega, opened_at, ` + contractMultiplierSelect + ` FROM option_positions`)
+		delta, gamma, theta, vega, opened_at, ` + contractMultiplierSelect + `, ` + strings.Join(markSelects, ", ") + ` FROM option_positions`)
 	if err != nil {
 		return nil, fmt.Errorf("load option_positions: %w", err)
 	}
@@ -2586,15 +2612,19 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 	for optRows.Next() {
 		var storedID string
 		var opt OptionPosition
-		var openedAtStr string
+		var openedAtStr, markUpdatedAtStr, cutoffAtStr, readyAtStr string
 		if err := optRows.Scan(
 			&storedID, &opt.ID, &opt.TradePositionID, &opt.Underlying, &opt.OptionType, &opt.Strike, &opt.Expiry, &opt.DTE,
 			&opt.Action, &opt.Quantity, &opt.EntryPremium, &opt.EntryPremiumUSD, &opt.CurrentValueUSD,
 			&opt.Greeks.Delta, &opt.Greeks.Gamma, &opt.Greeks.Theta, &opt.Greeks.Vega,
 			&openedAtStr, &opt.ContractMultiplier,
+			&markUpdatedAtStr, &opt.MarkError, &opt.MarkSource, &cutoffAtStr, &readyAtStr,
 		); err != nil {
 			return nil, fmt.Errorf("scan option_position: %w", err)
 		}
+		opt.MarkUpdatedAt = parseTime(markUpdatedAtStr)
+		opt.ExpiryCutoffAt = parseTime(cutoffAtStr)
+		opt.SettlementReadyAt = parseTime(readyAtStr)
 		procID, mapped := loaded[storedID]
 		if !mapped {
 			if _, isOrphan := orphanPositions[storedID]; isOrphan {

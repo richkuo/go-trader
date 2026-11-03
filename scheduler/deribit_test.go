@@ -1,9 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,8 +35,10 @@ func TestFormatInstrument(t *testing.T) {
 }
 
 func TestDeribitMarkPricing(t *testing.T) {
+	refreshAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	t.Run("CollectMarkRequests", func(t *testing.T) {
 		s := &StrategyState{
+			Platform: "deribit",
 			OptionPositions: map[string]*OptionPosition{
 				"BTC-call-buy-60000-2027-12-31": {
 					ID:         "BTC-call-buy-60000-2027-12-31",
@@ -63,26 +65,30 @@ func TestDeribitMarkPricing(t *testing.T) {
 			},
 		}
 
-		reqs := collectMarkRequests(s)
+		reqs := collectOptionLegRequests(s, "deribit", refreshAt)
 
-		if len(reqs) != 2 {
-			t.Fatalf("len(reqs) = %d, want 2", len(reqs))
+		if len(reqs) != 3 {
+			t.Fatalf("len(reqs) = %d, want 3 (every leg yields a request)", len(reqs))
 		}
 
 		found := false
 		for _, r := range reqs {
-			if r.ID == "ETH-put-sell-3000-2020-01-01" {
+			switch r.Key {
+			case "ETH-put-sell-3000-2020-01-01":
 				found = true
-				if !r.Expired {
-					t.Error("ETH position should be marked as expired")
+				if r.Op != optionLegOpSettle {
+					t.Errorf("ETH position op = %q, want settle", r.Op)
 				}
-				if r.DTE >= 0 {
-					t.Errorf("DTE should be negative for expired, got %g", r.DTE)
+				if want := time.Date(2020, 1, 1, 8, 0, 0, 0, time.UTC); !r.KnownCutoff.Equal(want) {
+					t.Errorf("ETH cutoff = %s, want %s", r.KnownCutoff, want)
 				}
-			}
-			if r.ID == "BTC-call-buy-60000-2027-12-31" {
-				if r.Expired {
-					t.Error("BTC position should not be expired")
+			case "BTC-call-buy-60000-2027-12-31":
+				if r.Op != optionLegOpMark || r.PreError != "" {
+					t.Errorf("BTC position op=%q preErr=%q, want mark", r.Op, r.PreError)
+				}
+			case "BAD-expiry":
+				if r.PreError == "" || r.Op != optionLegOpResolve {
+					t.Errorf("BAD-expiry must carry a pre-error and stay unresolved: %+v", r)
 				}
 			}
 		}
@@ -92,16 +98,26 @@ func TestDeribitMarkPricing(t *testing.T) {
 	})
 	t.Run("ApplyMarkResults", func(t *testing.T) {
 		s := &StrategyState{
-			Cash: 1000,
+			Cash:     1000,
+			Platform: "deribit",
 			OptionPositions: map[string]*OptionPosition{
 				"pos1": {
 					ID:              "pos1",
+					Underlying:      "BTC",
+					OptionType:      "call",
+					Expiry:          "2026-07-01",
 					Action:          "buy",
+					Quantity:        1,
 					CurrentValueUSD: 100,
 				},
 				"pos2": {
 					ID:              "pos2",
+					Underlying:      "BTC",
+					OptionType:      "call",
+					Strike:          50000,
+					Expiry:          "2026-05-01",
 					Action:          "buy",
+					Quantity:        1,
 					CurrentValueUSD: 200,
 				},
 			},
@@ -113,12 +129,13 @@ func TestDeribitMarkPricing(t *testing.T) {
 		logger, _ := lm.GetStrategyLogger("test")
 		defer logger.Close()
 
-		results := []markResult{
-			{ID: "pos1", DTE: 30, CurrentValueUSD: 150, Fetched: true, Greeks: OptGreeks{Delta: 0.5}},
-			{ID: "pos2", DTE: 0, CurrentValueUSD: 0, Expired: true},
+		reqs := collectOptionLegRequests(s, "deribit", refreshAt)
+		replies := []optionLegReply{
+			{Key: "pos1", Mark: &optionLegMark{PerUnitUSD: 150, Spot: 60000, Greeks: OptGreeks{Delta: 0.5}, Source: deribitMarkSource}},
+			{Key: "pos2", Settlement: &optionLegSettlement{Price: 40000, Basis: optionSettlementBasisDelivery, Date: "2026-05-01", Source: deribitSettlementSource}},
 		}
 
-		applyMarkResults(s, results, logger)
+		applyOptionLegReplies(s, "deribit", reqs, replies, refreshAt, logger)
 
 		if pos, ok := s.OptionPositions["pos1"]; ok {
 			if pos.CurrentValueUSD != 150 {
@@ -127,8 +144,8 @@ func TestDeribitMarkPricing(t *testing.T) {
 			if pos.Greeks.Delta != 0.5 {
 				t.Errorf("pos1 Delta = %g, want 0.5", pos.Greeks.Delta)
 			}
-			if pos.DTE != 30 {
-				t.Errorf("pos1 DTE = %g, want 30", pos.DTE)
+			if want := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC).Sub(refreshAt).Hours() / 24; pos.DTE != want {
+				t.Errorf("pos1 DTE = %g, want %g", pos.DTE, want)
 			}
 		} else {
 			t.Error("pos1 should still exist")
@@ -144,10 +161,11 @@ func TestDeribitMarkPricing(t *testing.T) {
 			spot         float64
 			id           string
 			wantAssigned bool
-			wantValue    float64
+			wantCash     float64
 		}{
-			{name: "expired OTM sold put", spot: 60000, id: "expired-otm-put", wantAssigned: false, wantValue: 0},
-			{name: "expired ITM sold put", spot: 45000, id: "expired-itm-put", wantAssigned: true, wantValue: -5000.0},
+			{name: "expired OTM sold put", spot: 60000, id: "expired-otm-put", wantAssigned: false, wantCash: 100000},
+			{name: "expired ITM sold put", spot: 45000, id: "expired-itm-put", wantAssigned: true, wantCash: 100000 - 50000},
+			{name: "expired sold put with no spot is held", spot: 0, id: "expired-held-put", wantCash: 100000},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -158,37 +176,25 @@ func TestDeribitMarkPricing(t *testing.T) {
 				logger, _ := lm.GetStrategyLogger("test")
 				defer logger.Close()
 
-				requests := []markRequest{
-					{
-						ID:         tc.id,
-						Underlying: "BTC",
-						OptionType: "put",
-						Strike:     50000,
-						Action:     "sell",
-						Quantity:   1,
-						Multiplier: 1,
-						DTE:        -1,
-						Expired:    true,
-					},
-				}
+				s := &StrategyState{ID: "ibkr-opt", Platform: "ibkr", Cash: 100000, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{
+					tc.id: {ID: tc.id, Underlying: "BTC", OptionType: "put", Strike: 50000, Expiry: "2020-01-01", Action: "sell", Quantity: 1, ContractMultiplier: 1, EntryPremiumUSD: 100},
+				}}
+				reqs := collectOptionLegRequests(s, "ibkr", refreshAt)
+				applyOptionLegReplies(s, "ibkr", reqs, refreshOptionLegs(pricer, reqs, refreshAt), refreshAt, logger)
 
-				results := fetchMarkPrices(requests, pricer, logger)
-				if len(results) != 1 {
-					t.Fatalf("%s: len(results) = %d, want 1", tc.name, len(results))
+				_, open := s.OptionPositions[tc.id]
+				if open != (tc.spot == 0) {
+					t.Fatalf("%s: leg open = %t", tc.name, open)
 				}
-
-				r := results[0]
-				if !r.Expired {
-					t.Errorf("%s: should be expired", tc.name)
+				assigned := s.Positions["BTC"] != nil
+				if assigned != tc.wantAssigned {
+					t.Errorf("%s: assigned = %v, want %v", tc.name, assigned, tc.wantAssigned)
 				}
-				if r.Assigned != tc.wantAssigned {
-					t.Errorf("%s: Assigned = %v, want %v", tc.name, r.Assigned, tc.wantAssigned)
+				if s.Cash != tc.wantCash {
+					t.Errorf("%s: cash = %g, want %g", tc.name, s.Cash, tc.wantCash)
 				}
-				if tc.wantAssigned && r.AssignOptionType != "put" {
-					t.Errorf("%s: should be put assignment, got %q", tc.name, r.AssignOptionType)
-				}
-				if r.CurrentValueUSD != tc.wantValue {
-					t.Errorf("%s: CurrentValueUSD = %g, want %g", tc.name, r.CurrentValueUSD, tc.wantValue)
+				if tc.spot == 0 && !strings.HasPrefix(s.OptionPositions[tc.id].MarkError, optionSettlementPendingPrefix) {
+					t.Errorf("%s: held leg mark error = %q", tc.name, s.OptionPositions[tc.id].MarkError)
 				}
 			})
 		}
@@ -210,8 +216,7 @@ func TestDeribitApplyAssignment(t *testing.T) {
 		logger, _ := lm.GetStrategyLogger("test")
 		defer logger.Close()
 
-		r := markResult{
-			Assigned:         true,
+		r := optionAssignment{
 			AssignUnderlying: "BTC",
 			AssignOptionType: "put",
 			AssignStrike:     50000,
@@ -263,8 +268,7 @@ func TestDeribitApplyAssignment(t *testing.T) {
 		logger, _ := lm.GetStrategyLogger("test")
 		defer logger.Close()
 
-		r := markResult{
-			Assigned:         true,
+		r := optionAssignment{
 			AssignUnderlying: "BTC",
 			AssignOptionType: "call",
 			AssignStrike:     55000,
@@ -311,8 +315,7 @@ func TestDeribitApplyAssignment(t *testing.T) {
 		logger, _ := lm.GetStrategyLogger("test")
 		defer logger.Close()
 
-		r := markResult{
-			Assigned:         true,
+		r := optionAssignment{
 			AssignUnderlying: "BTC",
 			AssignOptionType: "call",
 			AssignStrike:     55000,
@@ -342,27 +345,28 @@ func TestDeribitApplyAssignment(t *testing.T) {
 
 var _ OptionPricer = (*DeribitPricer)(nil)
 
+var _ OptionPricer = (*IBKRPricer)(nil)
+
+var _ OptionPricer = (*RobinhoodOptionPricer)(nil)
+
 func TestDeribitFetchTicker(t *testing.T) {
 	t.Run("Mocked", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			resp := DeribitTickerResponse{}
-			resp.Result.MarkPrice = 0.05
-			resp.Result.UnderlyingPrice = 60000
-			json.NewEncoder(w).Encode(resp)
+			w.Write([]byte(`{"result":{"instrument_name":"BTC-PERPETUAL","mark_price":0.05,"underlying_price":60000}}`))
 		}))
 		defer server.Close()
 
 		d := &DeribitPricer{client: server.Client(), baseURL: server.URL}
 
-		mark, spot, err := d.fetchTicker("BTC-PERPETUAL")
+		ticker, err := d.fetchTickerFull("BTC-PERPETUAL")
 		if err != nil {
-			t.Fatalf("fetchTicker failed: %v", err)
+			t.Fatalf("fetchTickerFull failed: %v", err)
 		}
-		if mark != 0.05 {
-			t.Errorf("mark = %g, want 0.05", mark)
+		if *ticker.MarkPrice != 0.05 {
+			t.Errorf("mark = %g, want 0.05", *ticker.MarkPrice)
 		}
-		if spot != 60000 {
-			t.Errorf("spot = %g, want 60000", spot)
+		if *ticker.UnderlyingPrice != 60000 {
+			t.Errorf("spot = %g, want 60000", *ticker.UnderlyingPrice)
 		}
 	})
 	t.Run("Error", func(t *testing.T) {
@@ -373,7 +377,7 @@ func TestDeribitFetchTicker(t *testing.T) {
 		defer server.Close()
 
 		d := &DeribitPricer{client: server.Client(), baseURL: server.URL}
-		_, _, err := d.fetchTicker("BTC-PERPETUAL")
+		_, err := d.fetchTickerFull("BTC-PERPETUAL")
 		if err == nil {
 			t.Error("expected error for 404 response")
 		}

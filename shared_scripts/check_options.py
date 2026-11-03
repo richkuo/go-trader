@@ -457,20 +457,6 @@ def _read_positions(remaining):
     return positions
 
 
-def _measured_vol_metrics(adapter, underlying):
-    try:
-        vol_annual, iv_rank = adapter.get_vol_metrics(underlying)
-    except OptionDataUnavailable as e:
-        print(f"volatility metrics unavailable for {underlying}: {e.reason}", file=sys.stderr)
-        vol = e.vol_annual if option_data.is_finite_positive(e.vol_annual) else None
-        return vol, None, e.reason
-    if not option_data.is_finite_positive(vol_annual):
-        return None, None, "volatility unavailable: adapter returned an invalid volatility"
-    if not _is_finite_number(iv_rank) or not 0 <= iv_rank <= 100:
-        return vol_annual, None, "iv rank unavailable: adapter returned an invalid rank"
-    return vol_annual, iv_rank, None
-
-
 def _stable_reason(exc):
     if isinstance(exc, (CheckError, OptionDataUnavailable)):
         return exc.reason
@@ -524,7 +510,7 @@ def _evaluate(ctx, args):
 
     spot_price = option_data.require_finite_positive(adapter.get_spot_price(underlying), "Could not fetch spot price")
 
-    vol_annual, iv_rank, vol_metrics_error = _measured_vol_metrics(adapter, underlying)
+    vol_annual, iv_rank, vol_metrics_error = option_data.measured_vol_metrics(adapter, underlying)
 
     if regime_payload_json is not None:
         _, _, regime_snap = regime_from_injected_payload(regime_payload_json, windows_spec={"default": {"classifier": "adx", "period": 14}})

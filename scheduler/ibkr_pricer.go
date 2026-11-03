@@ -20,47 +20,71 @@ func (p *IBKRPricer) Name() string { return "ibkr" }
 func (p *IBKRPricer) FetchSpotPrice(underlying string) (float64, error) {
 	upper := strings.ToUpper(underlying)
 	for _, suffix := range []string{"/USD", "/USDT", "/USDC"} {
-		if price, ok := p.spotPrices[upper+suffix]; ok && price > 0 {
+		if price, ok := p.spotPrices[upper+suffix]; ok && finitePositive(price) {
 			return price, nil
 		}
 	}
 	return 0, fmt.Errorf("no spot price cached for %s", underlying)
 }
 
-func (p *IBKRPricer) GetOptionPriceFull(underlying, optionType string, strike float64, expiry string) (float64, float64, OptGreeks, error) {
-	spot, err := p.FetchSpotPrice(underlying)
-	if err != nil {
-		return 0, 0, OptGreeks{}, err
+const (
+	ibkrMarkSource       = "ibkr_black_scholes_legacy_model"
+	ibkrSettlementSource = "ibkr_cycle_price_legacy_model"
+	ibkrModelVolatility  = 0.80
+	ibkrModelRate        = 0.05
+)
+
+func (p *IBKRPricer) Refresh(reqs []optionLegRequest, refreshAt time.Time) []optionLegReply {
+	out := make([]optionLegReply, 0, len(reqs))
+	for _, req := range reqs {
+		reply := optionLegReply{Key: req.Key}
+		cutoff, ready, ok, err := optionGoExpirySchedule("ibkr", req.Expiry)
+		if err != nil || !ok {
+			reply.Err = fmt.Sprintf("invalid expiry %q", req.Expiry)
+			out = append(out, reply)
+			continue
+		}
+		reply.CutoffAt, reply.ReadyAt = cutoff, ready
+		spot, spotErr := p.FetchSpotPrice(req.Underlying)
+		if !refreshAt.Before(cutoff) {
+			if spotErr != nil {
+				reply.Pending = fmt.Sprintf("%s: %v", ibkrSettlementSource, spotErr)
+			} else {
+				reply.Settlement = &optionLegSettlement{Price: spot, Basis: optionSettlementBasisIBKR, Date: refreshAt.UTC().Format("2006-01-02"), Source: ibkrSettlementSource}
+			}
+			out = append(out, reply)
+			continue
+		}
+		if spotErr != nil {
+			reply.Err = spotErr.Error()
+			out = append(out, reply)
+			continue
+		}
+		mark, err := p.markAt(req.OptionType, req.Strike, spot, cutoff.Sub(refreshAt).Hours()/24)
+		if err != nil {
+			reply.Err = err.Error()
+		} else {
+			reply.Mark = mark
+		}
+		out = append(out, reply)
 	}
+	return out
+}
 
-	t, err := time.Parse("2006-01-02", expiry)
-	if err != nil {
-		return 0, 0, OptGreeks{}, fmt.Errorf("invalid expiry %q: %w", expiry, err)
+func (p *IBKRPricer) markAt(optionType string, strike, spot, dte float64) (*optionLegMark, error) {
+	if !finitePositive(dte) {
+		return nil, fmt.Errorf("days to expiry %v are not positive", dte)
 	}
-	dte := t.UTC().Sub(time.Now().UTC()).Hours() / 24
-	if dte <= 0 {
-		return 0, spot, OptGreeks{}, nil
+	price, delta, gamma, vega, theta := bsPrice(spot, strike, dte/365.0, ibkrModelRate, ibkrModelVolatility, strings.ToLower(optionType))
+	for _, v := range []float64{price, delta, gamma, vega, theta} {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil, fmt.Errorf("black-scholes result is not finite")
+		}
 	}
-	T := dte / 365.0
-
-	const vol = 0.80
-	const r = 0.05
-
-	price, delta, gamma, vega, theta := bsPrice(spot, strike, T, r, vol, strings.ToLower(optionType))
-
-	greeks := OptGreeks{
-		Delta: delta,
-		Gamma: gamma,
-		Theta: theta,
-		Vega:  vega,
+	if price < 0 {
+		price = 0
 	}
-
-	markPrice := 0.0
-	if spot > 0 {
-		markPrice = price / spot
-	}
-
-	return markPrice, spot, greeks, nil
+	return &optionLegMark{PerUnitUSD: price, Spot: spot, Greeks: OptGreeks{Delta: delta, Gamma: gamma, Theta: theta, Vega: vega}, Source: ibkrMarkSource}, nil
 }
 
 func bsPrice(S, K, T, r, sigma float64, optionType string) (price, delta, gamma, vega, theta float64) {

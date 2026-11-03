@@ -40,6 +40,69 @@ func lookupOptionContractSpec(platform, underlying string) (optionContractSpec, 
 	return spec, nil
 }
 
+var optionInverseFamilyUnderlyings = map[string]bool{"BTC": true, "ETH": true}
+
+func supportedOptionPlatforms() []string {
+	out := make([]string, 0, len(optionContractSpecs))
+	for p := range optionContractSpecs {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func optionPricingPolicyError(platform, underlying string) error {
+	if _, ok := optionContractSpecs[platform]; !ok {
+		return fmt.Errorf("options platform %q has no option pricer (supported: %s)", platform, strings.Join(supportedOptionPlatforms(), ", "))
+	}
+	u := strings.ToUpper(strings.TrimSpace(underlying))
+	switch platform {
+	case "deribit", "okx":
+		if !optionInverseFamilyUnderlyings[u] {
+			return fmt.Errorf("%s options price only the inverse BTC and ETH option families (instrument UNDERLYING-DDMONYY-STRIKE-C|P); underlying %q is outside that local naming path", platform, underlying)
+		}
+	case "robinhood":
+		if u == "" || robinhoodYahooCryptoPair(u) {
+			return fmt.Errorf("robinhood options price only listed equity and ETF underlyings; %q resolves to the Yahoo crypto pair %s, which has no listed option to mark or settle", underlying, robinhoodYahooSymbol(u))
+		}
+	}
+	return nil
+}
+
+func optionsConfigUnderlying(args []string) string {
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case strings.HasPrefix(a, "--mode="), strings.HasPrefix(a, "--platform="), strings.HasPrefix(a, "--regime-payload-json"):
+		case a == "--mode":
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+				i++
+			}
+		default:
+			positional = append(positional, a)
+		}
+	}
+	if len(positional) < 2 {
+		return ""
+	}
+	return strings.ToUpper(positional[1])
+}
+
+func optionsConfigPolicyError(sc StrategyConfig) error {
+	if sc.Type != "options" {
+		return nil
+	}
+	if _, ok := optionContractSpecs[sc.Platform]; !ok {
+		return optionPricingPolicyError(sc.Platform, "")
+	}
+	u := optionsConfigUnderlying(sc.Args)
+	if u == "" {
+		return nil
+	}
+	return optionPricingPolicyError(sc.Platform, u)
+}
+
 func optionStrategyCannotCoverCalls(strategy, platform string) bool {
 	spec, ok := optionContractSpecs[platform]
 	return ok && spec.RequireCoveredCalls && (strategy == "covered_calls" || strategy == "butterfly")
