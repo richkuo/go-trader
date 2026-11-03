@@ -17,7 +17,7 @@ func runProbe(args []string) int {
 		return runFeedProbe(*configPath)
 	}
 
-	cfg, err := LoadConfigForProbe(*configPath)
+	cfg, err := LoadConfigForProbeAdmission(*configPath, regimeSideProbeAdmissionEnforced())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "probe: failed to load config %s: %v\n", *configPath, err)
 		return 1

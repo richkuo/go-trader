@@ -611,13 +611,7 @@ run_recovery_probe() {
         echo "[update] recovery: forced restore_probe failure" >&2
         return 1
     fi
-    local cert_resolved
-    local -a cert_args=() cert_env=()
-    cert_resolved=$(update_unit_directional_cert_path "$service_unit") || return 1
-    if [[ "$cert_resolved" == SET\ * ]]; then
-        cert_args=(-E "GO_TRADER_DIRECTIONAL_CERT_PATH=${cert_resolved#SET }")
-        cert_env=("GO_TRADER_DIRECTIONAL_CERT_PATH=${cert_resolved#SET }")
-    fi
+    local -a admission_args=(-E GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off) admission_env=(GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off)
     if [[ -n "$egress_deployment" ]]; then
         local ep_owner="$probe_owner" line
         [[ -n "$ep_owner" ]] || ep_owner=$(update_unit_owner "$service_unit" 2>/dev/null || true)
@@ -626,14 +620,14 @@ run_recovery_probe() {
         while IFS= read -r line; do
             [[ -n "$line" ]] && ep_args+=("$line")
         done < <(update_egress_probe_args "$service_unit" "$egress_deployment")
-        update_probe_as_owner "$repo_root" "$ep_owner" "$repo_root/go-trader" scheduler/config.json "${ep_args[@]}" ${cert_args[@]+"${cert_args[@]}"}
+        update_probe_as_owner "$repo_root" "$ep_owner" "$repo_root/go-trader" scheduler/config.json "${ep_args[@]}" "${admission_args[@]}"
         return $?
     fi
     if [[ -n "$probe_owner" ]]; then
-        update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader" scheduler/config.json ${cert_args[@]+"${cert_args[@]}"}
+        update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader" scheduler/config.json "${admission_args[@]}"
         return $?
     fi
-    env ${cert_env[@]+"${cert_env[@]}"} ./go-trader probe
+    env "${admission_env[@]}" ./go-trader probe
 }
 
 verify_recovery_health() {
@@ -1513,7 +1507,7 @@ elif [[ -n "$probe_owner" ]]; then
     update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader.new" scheduler/config.json ${probe_cert_args[@]+"${probe_cert_args[@]}"} && probe_ok=1
 else
     probe_ok=0
-    env ${probe_cert_env[@]+"${probe_cert_env[@]}"} ./go-trader.new probe && probe_ok=1
+    env -u GO_TRADER_PROBE_REGIME_SIDE_ADMISSION ${probe_cert_env[@]+"${probe_cert_env[@]}"} ./go-trader.new probe && probe_ok=1
 fi
 update_pause_if_requested probe
 if update_should_fail_at probe; then

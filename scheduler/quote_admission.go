@@ -81,9 +81,10 @@ func newQuoteLoadAdmission(kind quoteAdmissionKind, ownerID, stateDir string, co
 }
 
 type configLoadOptions struct {
-	quoteLoad              *quoteLoadAdmission
-	regimeSideEvidence     *regimeSideEvidence
-	skipRegimeSideArtifact bool
+	quoteLoad                  *quoteLoadAdmission
+	regimeSideEvidence         *regimeSideEvidence
+	skipRegimeSideArtifact     bool
+	enforceRegimeSideAdmission bool
 }
 
 func loadQuoteAdmittedConfigData(data []byte, adm *quoteLoadAdmission) (*Config, error) {

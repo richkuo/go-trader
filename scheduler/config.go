@@ -969,6 +969,10 @@ func LoadConfigReadOnly(path string) (*Config, error) {
 	return loadConfig(path, false, true)
 }
 
+func LoadConfigForProbeAdmission(path string, enforceRegimeSide bool) (*Config, error) {
+	return loadConfigOpts(path, true, true, configLoadOptions{enforceRegimeSideAdmission: enforceRegimeSide})
+}
+
 func LoadConfigForLedgerExport(data []byte) (*Config, error) {
 	return loadConfigDataOpts("", append([]byte(nil), data...), true, true, configLoadOptions{skipRegimeSideArtifact: true})
 }
@@ -1325,8 +1329,10 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 		if ev == nil {
 			ev = readRegimeSideEvidence(directionalCertPath())
 		}
-		if errs := regimeSideAdmissionErrors(&cfg, ev, time.Now().UTC()); len(errs) > 0 {
-			return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
+		if opts.enforceRegimeSideAdmission {
+			if errs := regimeSideAdmissionErrors(&cfg, ev, time.Now().UTC()); len(errs) > 0 {
+				return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
+			}
 		}
 		cfg.regimeSideEvidence = ev
 	}

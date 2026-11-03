@@ -19,6 +19,9 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	if err := validateHotReloadStateCompatible(cfg, next, state); err != nil {
 		return nil, err
 	}
+	if errs := regimeSideReloadAdmissionErrors(cfg, next, next.regimeSideEvidence, time.Now().UTC()); len(errs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
+	}
 
 	var changes []string
 	addChange := func(format string, args ...interface{}) {

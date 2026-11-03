@@ -504,7 +504,7 @@ func TestRegimeSideCertificationIntegration(t *testing.T) {
 	bin := pyintegrationBinary(t)
 	future := time.Now().Add(30 * 24 * time.Hour)
 
-	t.Run("LiveAdmissionNeedsMatchingEvidenceAtProbeAndStartup", func(t *testing.T) {
+	t.Run("LiveAdmissionNeedsMatchingEvidenceAtProbe", func(t *testing.T) {
 		dir := t.TempDir()
 		cfgPath := rsITWriteConfigFile(t, dir, rsITStrategy("rs-live", "live", "both", false, nil))
 		ackPath := rsITWriteConfigFile(t, t.TempDir(), rsITStrategy("rs-ack", "live", "both", false, map[string]any{"allow_uncertified_regime_side": true}))
@@ -561,8 +561,26 @@ func TestRegimeSideCertificationIntegration(t *testing.T) {
 				t.Fatalf("%s: probe must refuse with the artifact path and reason %q, exit=%d\n%s", tc.name, tc.reason, code, out)
 			}
 		}
-		if code, out := run(cfgPath, expired, "--config", cfgPath, "--once"); code != 1 || !strings.Contains(out, "live admission refused") || strings.Contains(out, "Loaded config") {
-			t.Fatalf("startup must refuse an unadmitted live regime_side config before loading, exit=%d\n%s", code, out)
+		recovery := func(cfg, artifact string) (int, string) {
+			cmd := exec.Command(bin, "probe", "--config", cfg)
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "GO_TRADER_DIRECTIONAL_CERT_PATH="+artifact, "HYPERLIQUID_SECRET_KEY=0x"+strings.Repeat("1", 64), "GO_TRADER_HL_BATCH=0", "GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off")
+			out, err := cmd.CombinedOutput()
+			if ee, ok := err.(*exec.ExitError); ok {
+				return ee.ExitCode(), string(out)
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			return 0, string(out)
+		}
+		if code, out := recovery(cfgPath, expired); code != 0 || !strings.Contains(out, "probe: OK") {
+			t.Fatalf("the update recovery probe must not refuse the restored config on certification evidence, exit=%d\n%s", code, out)
+		}
+		if code, out := run(cfgPath, expired, "inspect", "--config", cfgPath, "rs-live"); code != 0 || !strings.Contains(out, "entries held") || !strings.Contains(out, "has an expired cell") {
+			t.Fatalf("inspect must load an expired-evidence config and report the held entries, exit=%d\n%s", code, out)
+		}
+		if code, out := run(cfgPath, opposite, "inspect", "--config", cfgPath, "rs-live"); code != 0 || !strings.Contains(out, "entries held") || !strings.Contains(out, "has no exact label certified") {
+			t.Fatalf("inspect must report held entries when the active cell certifies no matching label, exit=%d\n%s", code, out)
 		}
 		if code, out := run(cfgPath, valid, "probe", "--config", cfgPath); code != 0 || !strings.Contains(out, "probe: OK") {
 			t.Fatalf("a matching active cell must admit the live config, exit=%d\n%s", code, out)
@@ -572,6 +590,131 @@ func TestRegimeSideCertificationIntegration(t *testing.T) {
 		}
 		if code, out := run(paperPath, filepath.Join(dir, "absent.json"), "probe", "--config", paperPath); code != 0 {
 			t.Fatalf("paper needs no certification, exit=%d\n%s", code, out)
+		}
+	})
+
+	t.Run("ExpiredEvidenceWithAnOpenPositionLoadsAtStartupAndKeepsCloses", func(t *testing.T) {
+		t.Chdir(root)
+		t.Setenv("HYPERLIQUID_SECRET_KEY", "0x"+strings.Repeat("1", 64))
+		artifact := filepath.Join(t.TempDir(), "certs.json")
+		rsITWriteArtifact(t, artifact, map[string]string{"trending_up_clean": "long"}, time.Now().Add(-time.Hour))
+		t.Setenv("GO_TRADER_DIRECTIONAL_CERT_PATH", artifact)
+		prev := currentRegimeSideEvidence()
+		t.Cleanup(func() { installRegimeSideEvidence(prev) })
+		cfgPath := rsITWriteConfigFile(t, t.TempDir(), rsITStrategy("rs-live", "live", "both", false, nil))
+		cfg, err := LoadConfig(cfgPath)
+		if err != nil {
+			t.Fatalf("startup must load a live regime_side config whose cell expired: %v", err)
+		}
+		installRegimeSideEvidence(startupRegimeSideEvidence(cfg))
+		lines := regimeSideStartupLines(cfg)
+		if len(lines) != 1 || !strings.Contains(lines[0], "rs-live: regime_side live entries HELD") || !strings.Contains(lines[0], "has an expired cell") {
+			t.Fatalf("startup must report the held entries, got %q", lines)
+		}
+		if dm := directionalCertStartupLinesNeedingOwnerDM(lines); len(dm) != 1 {
+			t.Fatalf("the held-entries line must reach the owner DM path, got %q", dm)
+		}
+		rawRegime := rsITSetRegime(t, cfg, "trending_up_clean", true)
+		sc := cfg.Strategies[0]
+		if got := regimeSideRequestForCheck(sc, PositionCtx{}, cfg.Regime); got.Side != "none" || !strings.Contains(got.HoldReason, "expired cell") {
+			t.Fatalf("the next flat decision must hold under the expired cell, got %+v", got)
+		}
+		pos := &Position{Symbol: "BTC", Quantity: 1, AvgCost: 100, EntryATR: 2, Side: "short", OwnerStrategyID: sc.ID}
+		if plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0); !ok || plan.StopLossATRMult <= 0 || plan.Side != "short" {
+			t.Fatalf("the open position's stop plan must still build, ok=%t plan=%+v", ok, plan)
+		}
+		stub := filepath.Join(t.TempDir(), "rs_stub.py")
+		if err := os.WriteFile(stub, []byte(htfITStubScript), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sc.Script = stub
+		closing := map[string]any{"strategy": "breakout", "symbol": "BTC", "timeframe": "1h", "signal": 1, "price": 100, "indicators": map[string]any{},
+			"mode": "live", "platform": "hyperliquid", "close_fraction": 1, "open_side_applied": "none", "regime": json.RawMessage(rawRegime)}
+		blob, _ := json.Marshal(closing)
+		t.Setenv("HTF_IT_STUB_JSON", string(blob))
+		t.Setenv("HTF_IT_STUB_EXIT", "0")
+		var buf bytes.Buffer
+		res, _, _, ok := runHyperliquidCheck(&sc, map[string]float64{"BTC": 100}, PositionCtx{Side: "short", Quantity: 1, AvgCost: 100}, cfg.Regime, "simple", NewMultiNotifier(), &StrategyLogger{stratID: sc.ID, writer: &buf}, nil, nil)
+		if !ok || res == nil || res.CloseFraction != 1 {
+			t.Fatalf("the open position's close must run under the expired cell, ok=%t res=%+v\n%s", ok, res, buf.String())
+		}
+	})
+
+	t.Run("ForceCloseFromAShellWithoutTheUnitCertPathPassesConfigLoad", func(t *testing.T) {
+		dir := t.TempDir()
+		cfgPath := rsITWriteConfigFile(t, dir, rsITStrategy("rs-live", "live", "both", false, nil))
+		var env []string
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, "GO_TRADER_DIRECTIONAL_CERT_PATH=") {
+				env = append(env, kv)
+			}
+		}
+		cmd := exec.Command(bin, "force-close", "--config", cfgPath, "--dry-run", "rs-live")
+		cmd.Dir = root
+		cmd.Env = append(env, "HYPERLIQUID_SECRET_KEY=0x"+strings.Repeat("1", 64), "GO_TRADER_HL_BATCH=0")
+		out, _ := cmd.CombinedOutput()
+		text := string(out)
+		if strings.Contains(text, "live admission refused") || strings.Contains(text, "Failed to load config") || !strings.Contains(text, `strategy state for "rs-live" not found`) {
+			t.Fatalf("force-close must pass config load on the default artifact and reach the close core\n%s", text)
+		}
+	})
+
+	t.Run("ReloadWithAnExpiredCellAppliesUnrelatedChangesAndRefusesNewLiveRegimeSide", func(t *testing.T) {
+		t.Chdir(root)
+		t.Setenv("HYPERLIQUID_SECRET_KEY", "0x"+strings.Repeat("1", 64))
+		artifact := filepath.Join(t.TempDir(), "certs.json")
+		rsITWriteArtifact(t, artifact, map[string]string{"trending_up_clean": "long"}, time.Now().Add(-time.Hour))
+		t.Setenv("GO_TRADER_DIRECTIONAL_CERT_PATH", artifact)
+		prev := currentRegimeSideEvidence()
+		t.Cleanup(func() { installRegimeSideEvidence(prev) })
+		dir := t.TempDir()
+		live := rsITStrategy("rs-live", "live", "both", false, nil)
+		other := func(extra map[string]any) map[string]any {
+			base := map[string]any{"regime_side": false}
+			for k, v := range extra {
+				base[k] = v
+			}
+			return rsITStrategy("rs-other", "live", "both", false, base)
+		}
+		cfgPath := rsITWriteConfigFile(t, dir, live, other(nil))
+		cfg, err := LoadConfig(cfgPath)
+		if err != nil {
+			t.Fatalf("startup must load: %v", err)
+		}
+		installRegimeSideEvidence(startupRegimeSideEvidence(cfg))
+		state := NewAppState()
+		for _, sc := range cfg.Strategies {
+			state.Strategies[sc.ID] = NewStrategyState(sc)
+		}
+		state.Strategies["rs-live"].Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1, AvgCost: 100, Side: "long", OwnerStrategyID: "rs-live"}
+		reload := func(strategies ...map[string]any) ([]string, error) {
+			rsITWriteConfigFile(t, dir, strategies...)
+			ev := refreshRegimeSideEvidenceForReload()
+			next, err := LoadConfigWithRegimeSideEvidence(cfgPath, ev)
+			if err != nil {
+				return nil, err
+			}
+			return applyHotReloadConfig(cfg, next, state, NewMultiNotifier(), nil)
+		}
+		byID := func(id string) StrategyConfig {
+			for _, sc := range cfg.Strategies {
+				if sc.ID == id {
+					return sc
+				}
+			}
+			t.Fatalf("no strategy %s", id)
+			return StrategyConfig{}
+		}
+		changes, err := reload(live, other(map[string]any{"paused": true}))
+		if err != nil || !byID("rs-other").Paused || !strings.Contains(strings.Join(changes, "\n"), "strategy[rs-other].paused: false -> true") {
+			t.Fatalf("an unrelated paused change must apply while the regime_side cell is expired and its position open: err=%v changes=%v", err, changes)
+		}
+		_, err = reload(live, other(map[string]any{"paused": true, "regime_side": true}))
+		if err == nil || !strings.Contains(err.Error(), "strategy[rs-other].regime_side: live admission refused") || !strings.Contains(err.Error(), "has an expired cell") || strings.Contains(err.Error(), "strategy[rs-live]") {
+			t.Fatalf("turning on live regime_side for a flat strategy without evidence must be refused, naming only that strategy, got %v", err)
+		}
+		if byID("rs-other").RegimeSide || !byID("rs-live").RegimeSide {
+			t.Fatalf("a refused reload must keep the previous config, got %+v", cfg.Strategies)
 		}
 	})
 
@@ -617,7 +760,7 @@ func TestRegimeSideCertificationIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("RejectedReloadStillRevokesEvidenceAndKeepsCloses", func(t *testing.T) {
+	t.Run("ReloadThatRevokesEvidenceAppliesHoldsEntriesAndKeepsCloses", func(t *testing.T) {
 		t.Chdir(root)
 		t.Setenv("HYPERLIQUID_SECRET_KEY", "0x"+strings.Repeat("1", 64))
 		artifact := filepath.Join(t.TempDir(), "certs.json")
@@ -638,11 +781,17 @@ func TestRegimeSideCertificationIntegration(t *testing.T) {
 		}
 		rsITWriteArtifact(t, artifact, map[string]string{"trending_down_clean": "long"}, future)
 		ev := refreshRegimeSideEvidenceForReload()
-		if _, err := LoadConfigWithRegimeSideEvidence(cfgPath, ev); err == nil || !strings.Contains(err.Error(), "live admission refused") {
-			t.Fatalf("the reload must be rejected once the label is revoked, got %v", err)
+		next, err := LoadConfigWithRegimeSideEvidence(cfgPath, ev)
+		if err != nil {
+			t.Fatalf("a reload that leaves regime_side unchanged must load under revoked evidence: %v", err)
+		}
+		state := NewAppState()
+		state.Strategies[sc.ID] = NewStrategyState(sc)
+		if _, err := applyHotReloadConfig(cfg, next, state, NewMultiNotifier(), nil); err != nil {
+			t.Fatalf("a reload that leaves regime_side unchanged must apply under revoked evidence: %v", err)
 		}
 		if got := regimeSideRequestForCheck(sc, PositionCtx{}, cfg.Regime); got.Side != "none" || !strings.Contains(got.HoldReason, "does not certify the exact label") {
-			t.Fatalf("the next flat decision must hold under the revoked artifact although the reload was rejected, got %+v", got)
+			t.Fatalf("the next flat decision must hold under the revoked artifact, got %+v", got)
 		}
 		stub := filepath.Join(t.TempDir(), "rs_stub.py")
 		if err := os.WriteFile(stub, []byte(htfITStubScript), 0o600); err != nil {

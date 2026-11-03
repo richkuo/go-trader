@@ -170,6 +170,48 @@ func regimeSideAdmissionErrors(cfg *Config, ev *regimeSideEvidence, now time.Tim
 	return errs
 }
 
+const regimeSideProbeAdmissionEnv = "GO_TRADER_PROBE_REGIME_SIDE_ADMISSION"
+
+func regimeSideProbeAdmissionEnforced() bool {
+	return strings.TrimSpace(os.Getenv(regimeSideProbeAdmissionEnv)) != "off"
+}
+
+func regimeSideAdmissionCell(sc StrategyConfig, rc *RegimeConfig) (string, bool) {
+	if !regimeSideNeedsEvidence(sc) {
+		return "", false
+	}
+	asset, tf, classifier, _ := directionalCertIdentity(sc, rc)
+	return asset + "|" + tf + "|" + classifier, true
+}
+
+func regimeSideReloadAdmissionErrors(cfg, next *Config, ev *regimeSideEvidence, now time.Time) []string {
+	if next == nil {
+		return nil
+	}
+	var prevRegime *RegimeConfig
+	prev := map[string]StrategyConfig{}
+	if cfg != nil {
+		prevRegime = cfg.Regime
+		prev = strategyConfigByID(cfg.Strategies)
+	}
+	var errs []string
+	for _, ns := range next.Strategies {
+		nextCell, needs := regimeSideAdmissionCell(ns, next.Regime)
+		if !needs {
+			continue
+		}
+		if old, ok := prev[ns.ID]; ok {
+			if oldCell, oldNeeds := regimeSideAdmissionCell(old, prevRegime); oldNeeds && oldCell == nextCell {
+				continue
+			}
+		}
+		if msg := regimeSideAdmissionError(ns, next.Regime, ev, now); msg != "" {
+			errs = append(errs, msg)
+		}
+	}
+	return errs
+}
+
 func regimeSideConfigErrors(cfg *Config) []string {
 	if cfg == nil {
 		return nil
@@ -375,7 +417,12 @@ func regimeSideStartupLines(cfg *Config) []string {
 				out = append(out, fmt.Sprintf("[#1906] %s: regime_side live entries HELD — %s", sc.ID, reason))
 				continue
 			}
-			out = append(out, fmt.Sprintf("[#1906] %s: regime_side live on window %s; certified labels in %s: %s", sc.ID, window, cell, strings.Join(regimeSideMatchingCertifiedLabels(states), ", ")))
+			matching := regimeSideMatchingCertifiedLabels(states)
+			if len(matching) == 0 {
+				out = append(out, fmt.Sprintf("[#1906] %s: regime_side live entries HELD — %s cell %s has no exact label certified for the side regime_side would trade", sc.ID, ev.describe(), cell))
+				continue
+			}
+			out = append(out, fmt.Sprintf("[#1906] %s: regime_side live on window %s; certified labels in %s: %s", sc.ID, window, cell, strings.Join(matching, ", ")))
 		}
 	}
 	return out
@@ -442,7 +489,11 @@ func regimeSideInspectEvidence(sc StrategyConfig, cfg *Config) string {
 	if reason != "" {
 		return "live, entries held: " + reason
 	}
-	return fmt.Sprintf("live, certified labels in %s: %s", cell, strings.Join(regimeSideMatchingCertifiedLabels(states), ", "))
+	matching := regimeSideMatchingCertifiedLabels(states)
+	if len(matching) == 0 {
+		return fmt.Sprintf("live, entries held: %s cell %s has no exact label certified for the side regime_side would trade", ev.describe(), cell)
+	}
+	return fmt.Sprintf("live, certified labels in %s: %s", cell, strings.Join(matching, ", "))
 }
 
 func regimeSideInspectPersistedLabel(sc StrategyConfig, cfg *Config, state *AppState) (window, label string) {
