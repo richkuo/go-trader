@@ -4510,6 +4510,9 @@ func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMut
 			}
 		}
 	}
+	if execResult != nil {
+		logRobinhoodPricingDiagnostics(logger, robinhoodPricingDiagnostics(side, result.Symbol, a.AttemptID, amountUSD, execResult.RequestedQuantity, execResult.BuySizing, execResult.SellPrice, execResult.EchoProblems))
+	}
 	mu.Lock()
 	recordErr := recordRobinhoodOrderOutcomeLocked(store, s, a, recordRes, class, detail, sizing, time.Now())
 	mu.Unlock()
@@ -4541,6 +4544,22 @@ func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMut
 	logger.Error("CRITICAL: live %s %s unresolved (%s): %s (#1815)", side, result.Symbol, class, detail)
 	notifyRobinhoodOrderHold(notifier, sc.ID, a, detail, time.Now())
 	return nil, false
+}
+
+func logRobinhoodPricingDiagnostics(logger *StrategyLogger, lines []robinhoodDiagLine) {
+	if logger == nil {
+		return
+	}
+	for _, l := range lines {
+		switch l.Level {
+		case "CRITICAL":
+			logger.Error("CRITICAL: %s", l.Msg)
+		case "WARN":
+			logger.Warn("%s", l.Msg)
+		default:
+			logger.Info("%s", l.Msg)
+		}
+	}
 }
 
 func logRobinhoodSellSizing(logger *StrategyLogger, coin, attemptID string, sz *RobinhoodSellSizing) {

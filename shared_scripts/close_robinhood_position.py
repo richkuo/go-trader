@@ -54,6 +54,27 @@ def _clean_sizing(sizing):
     return clean
 
 
+_SELL_PRICE_NUMBER_KEYS = ("bid_price", "sent_price", "today_price")
+_SELL_PRICE_RULES = ("floor_increment", "floor_decimals", "round_fallback", "one_step", "wire_floor")
+
+
+def _clean_sell_price(sell_price):
+    if not isinstance(sell_price, dict):
+        return None
+    clean = {key: _finite_or_none(sell_price.get(key)) for key in _SELL_PRICE_NUMBER_KEYS}
+    decimals = sell_price.get("price_decimals")
+    clean["price_decimals"] = decimals if type(decimals) is int and decimals in (2, 4, 6) else None
+    increment = _finite_or_none(sell_price.get("price_increment"))
+    if increment is not None:
+        clean["price_increment"] = increment
+    rule = sell_price.get("rule")
+    clean["rule"] = rule if rule in _SELL_PRICE_RULES else None
+    for key in ("price_increment_problem", "fallback_reason"):
+        if isinstance(sell_price.get(key), str):
+            clean[key] = sell_price[key]
+    return clean
+
+
 def _parse_args(argv):
     parser = _Parser()
     parser.add_argument("--symbol", required=True)
@@ -173,6 +194,9 @@ def _emit(emit, symbol, result, held_qty=None, available_qty=None):
     sizing = _clean_sizing(result.get("sizing"))
     if sizing is not None:
         payload["sizing"] = sizing
+    sell_price = _clean_sell_price(result.get("sell_price"))
+    if sell_price is not None:
+        payload["sell_price"] = sell_price
     fill = result.get("fill")
     if outcome == "already_flat":
         close["already_flat"] = True

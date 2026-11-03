@@ -418,14 +418,24 @@ def _composite_ready_need(period: int, adx_period_cap) -> int:
     return max(int(period), 2 * effective + 1)
 
 
+def _composite_tail_start(n: int, tail: int | None) -> int:
+    if tail is None:
+        return 0
+    if isinstance(tail, bool) or not isinstance(tail, int) or tail < 1:
+        raise ValueError(f"tail must be a positive int, got {tail!r}")
+    return max(0, n - tail)
+
+
 def compute_regime_composite(
     df: pd.DataFrame,
     period: int,
     thresholds: dict[str, float] | None = None,
     *,
     adx_period_cap: int | None = COMPOSITE_ADX_PERIOD_CAP,
+    tail: int | None = None,
 ) -> pd.DataFrame:
     th = normalize_composite_thresholds(thresholds)
+    first = _composite_tail_start(len(df), tail)
     result = df.copy()
     n = len(result)
     result["regime"] = ""
@@ -447,7 +457,7 @@ def compute_regime_composite(
     result["minus_di"] = adx_df["minus_di"].values
 
     atr_series = standard_atr(result, period=period, method="simple")
-    for i in range(need - 1, n):
+    for i in range(max(need - 1, first), n):
         window = result.iloc[i - period + 1 : i + 1]
         atr_val = float(atr_series.iloc[i]) if i < len(atr_series) else 0.0
         if not (atr_val > 0):
@@ -458,7 +468,7 @@ def compute_regime_composite(
         label = map_composite_label(eff["return_eff"], adx_val, eff["range_eff"], eff["efficiency"], th)
         result.iat[i, result.columns.get_loc("regime")] = label
         result.iat[i, result.columns.get_loc("regime_score")] = min(adx_val / 100.0, 1.0)
-    return result
+    return result if tail is None else result.iloc[first:]
 
 
 def composite_feature_matrix(
@@ -467,26 +477,28 @@ def composite_feature_matrix(
     thresholds: dict[str, float] | None = None,
     *,
     adx_period_cap: int | None = COMPOSITE_ADX_PERIOD_CAP,
+    tail: int | None = None,
 ) -> pd.DataFrame:
     th = normalize_composite_thresholds(thresholds)
+    first = _composite_tail_start(len(df), tail)
     cols = ["return_eff", "range_eff", "efficiency", "adx"]
-    out = pd.DataFrame(float("nan"), index=df.index, columns=cols)
+    out = pd.DataFrame(float("nan"), index=df.index[first:], columns=cols)
     n = len(df)
     if n == 0:
         return out
     adx_period = _effective_composite_adx_period(period, adx_period_cap)
     adx_df = compute_regime(df, period=adx_period, adx_threshold=th["adx"])
     atr_series = standard_atr(df, period=period, method="simple")
-    for i in range(_composite_ready_need(period, adx_period_cap) - 1, n):
+    for i in range(max(_composite_ready_need(period, adx_period_cap) - 1, first), n):
         window = df.iloc[i - period + 1 : i + 1]
         atr_val = float(atr_series.iloc[i]) if i < len(atr_series) else 0.0
         if not (atr_val > 0):
             continue
         eff = _composite_efficiency_metrics(window, atr_val, period)
-        out.iat[i, 0] = eff["return_eff"]
-        out.iat[i, 1] = eff["range_eff"]
-        out.iat[i, 2] = eff["efficiency"]
-        out.iat[i, 3] = float(adx_df["adx"].iloc[i])
+        out.iat[i - first, 0] = eff["return_eff"]
+        out.iat[i - first, 1] = eff["range_eff"]
+        out.iat[i - first, 2] = eff["efficiency"]
+        out.iat[i - first, 3] = float(adx_df["adx"].iloc[i])
     return out
 
 

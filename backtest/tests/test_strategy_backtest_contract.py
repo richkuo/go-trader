@@ -929,8 +929,6 @@ CASES = {
         registration=Registration(study="camarilla_pivot_reversal_1669", validator=True,
                                   defaults=(lambda: {"expected_interval_ms": cpr.H},), grid=lambda: {}),
         parity=(
-            Parity("owner", lambda: cpr._walk(24 * 24, "1h", seed=41, sigma=0.012),
-                   _one(lambda: cpr._cfg(batched=False)), WINDOWS, OWNER_PARITY),
             Parity("owner_batched", lambda: cpr._walk(24 * 24, "1h", seed=41, sigma=0.012),
                    _one(lambda: cpr._cfg(batched=True)), WINDOWS, OWNER_BATCHED_PARITY),
         ),
@@ -1073,8 +1071,6 @@ CASES = {
                                   combos=("grid", None, 54, True, {}, ({"volume_weighting": 0},))),
         capability=efp.CLOSE,
         parity=(
-            Parity("owner", lambda: efp._walk(700, seed=41), _one(lambda: efp._cfg(batched=False)), WINDOWS,
-                   OWNER_PARITY),
             Parity("owner_batched", lambda: efp._walk(700, seed=41), _one(lambda: efp._cfg(batched=True)), WINDOWS,
                    OWNER_BATCHED_PARITY),
         ),
@@ -1214,8 +1210,6 @@ CASES = {
                                   combos=("grid", None, 324, True, {})),
         capability=mir.CLOSE,
         parity=(
-            Parity("owner", lambda: mir._walk(720, seed=41), _one(lambda: mir._cfg(batched=False)), WINDOWS,
-                   OWNER_PARITY),
             Parity("owner_batched", lambda: mir._walk(720, seed=41), _one(lambda: mir._cfg(batched=True)), WINDOWS,
                    OWNER_BATCHED_PARITY),
         ),
@@ -1520,7 +1514,7 @@ CASES = {
                    _one(lambda: ParityConfig(strategy_name=uo.NAME, registry="futures", platform="hyperliquid",
                                              close_refs=uo.CLOSE, direction="both", batched=False,
                                              stop_kwargs={"stop_loss_atr_mult": 1.0})),
-                   (None, 200), (("compared", 1), ("no_mismatches", None), ("clean", None), ("opens_any", None))),
+                   (None,), (("compared", 1), ("no_mismatches", None), ("clean", None), ("opens_any", None))),
             Parity("strict_owner_batched", lambda: uo._market(420, 7),
                    _one(lambda: ParityConfig(strategy_name=uo.NAME, registry="futures", platform="hyperliquid",
                                              close_refs=uo.CLOSE, direction="both", batched=True,

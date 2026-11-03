@@ -177,6 +177,8 @@ type robinhoodOrderEvidenceRecord struct {
 	Cancel            RobinhoodOrderCancel          `json:"cancel"`
 	RequestedQuantity float64                       `json:"requested_quantity,omitempty"`
 	Sizing            *RobinhoodSellSizing          `json:"sizing,omitempty"`
+	BuySizing         *RobinhoodBuySizing           `json:"buy_sizing,omitempty"`
+	SellPrice         *RobinhoodSellPrice           `json:"sell_price,omitempty"`
 	AccountID         string                        `json:"account_id,omitempty"`
 	ObservedAtMs      int64                         `json:"observed_at_ms"`
 	Operator          *robinhoodOperatorAttestation `json:"operator,omitempty"`
@@ -318,6 +320,14 @@ func robinhoodEvidenceSizing(a *robinhoodOrderAttempt) *RobinhoodSellSizing {
 		return nil
 	}
 	return ev.Sizing
+}
+
+func robinhoodEvidencePricing(a *robinhoodOrderAttempt) (*RobinhoodBuySizing, *RobinhoodSellPrice) {
+	ev, ok := robinhoodEvidenceRecordOf(a)
+	if !ok {
+		return nil, nil
+	}
+	return ev.BuySizing, ev.SellPrice
 }
 
 func sanitizeHurstForJSON(d HurstGateDecision) HurstGateDecision {
@@ -768,8 +778,8 @@ func reserveRobinhoodEmergencyAttempt(store *StateStore, state *AppState, owners
 	return a, req, nil
 }
 
-func robinhoodEvidenceFor(res *RobinhoodExecuteResult, class robinhoodOrderClass, detail string, sizing *RobinhoodSellSizing, now time.Time) string {
-	ev := robinhoodOrderEvidenceRecord{Outcome: class.String(), Detail: detail, Sizing: sizing, ObservedAtMs: now.UnixMilli()}
+func robinhoodEvidenceFor(res *RobinhoodExecuteResult, class robinhoodOrderClass, detail string, sizing *RobinhoodSellSizing, buySizing *RobinhoodBuySizing, sellPrice *RobinhoodSellPrice, now time.Time) string {
+	ev := robinhoodOrderEvidenceRecord{Outcome: class.String(), Detail: detail, Sizing: sizing, BuySizing: buySizing, SellPrice: sellPrice, ObservedAtMs: now.UnixMilli()}
 	if res != nil {
 		if res.OrderOutcome != "" {
 			ev.Outcome = res.OrderOutcome
@@ -796,7 +806,16 @@ func recordRobinhoodOrderOutcomeLocked(store *StateStore, s *StrategyState, a *r
 	if prior := robinhoodEvidenceSizing(a); prior != nil {
 		sizing = prior
 	}
-	next.EvidenceJSON = robinhoodEvidenceFor(res, class, detail, sizing, now)
+	buySizing, sellPrice := robinhoodEvidencePricing(a)
+	if res != nil {
+		if buySizing == nil {
+			buySizing = res.BuySizing
+		}
+		if sellPrice == nil {
+			sellPrice = res.SellPrice
+		}
+	}
+	next.EvidenceJSON = robinhoodEvidenceFor(res, class, detail, sizing, buySizing, sellPrice, now)
 	if res != nil {
 		if res.Order.ID != "" {
 			next.VenueOrderID = res.Order.ID
@@ -840,6 +859,41 @@ func recordRobinhoodOrderOutcomeLocked(store *StateStore, s *StrategyState, a *r
 		delete(s.RobinhoodOrders.Attempts, a.AttemptID)
 	}
 	return nil
+}
+
+type robinhoodDiagLine struct {
+	Level string
+	Msg   string
+}
+
+func robinhoodPricingDiagnostics(side, coin, attemptID string, amountUSD, requestedQty float64, buy *RobinhoodBuySizing, sell *RobinhoodSellPrice, problems []string) []robinhoodDiagLine {
+	var out []robinhoodDiagLine
+	for _, p := range problems {
+		out = append(out, robinhoodDiagLine{"WARN", fmt.Sprintf("Robinhood %s %s: the optional pricing echo was discarded: %s (attempt %s) (#1910)", side, coin, p, attemptID)})
+	}
+	if side == "buy" && buy != nil {
+		cost := buy.SentQuantity * buy.LimitPrice
+		out = append(out, robinhoodDiagLine{"INFO", fmt.Sprintf("Robinhood buy %s limit: budget $%.10g, ask %.10g, limit %.10g, quantity %.10g, max pre-fee notional $%.10g, capped_by_max=%v (attempt %s) (#1910)", coin, buy.BudgetUSD, buy.AskPrice, buy.LimitPrice, buy.SentQuantity, buy.MaxCostUSD, buy.CappedByMax, attemptID)})
+		if amountUSD > 0 && cost > amountUSD*(1+robinhoodQtyTolerance) {
+			out = append(out, robinhoodDiagLine{"CRITICAL", fmt.Sprintf("Robinhood buy %s limit order notional $%.10g (quantity %.10g x limit %.10g) is above the $%.10g budget (attempt %s) (#1910)", coin, cost, buy.SentQuantity, buy.LimitPrice, amountUSD, attemptID)})
+		}
+		if requestedQty > 0 && !robinhoodQtyClose(buy.SentQuantity, requestedQty) {
+			out = append(out, robinhoodDiagLine{"CRITICAL", fmt.Sprintf("Robinhood buy %s sent quantity %.10g differs from the requested quantity %.10g (attempt %s) (#1910)", coin, buy.SentQuantity, requestedQty, attemptID)})
+		}
+	}
+	if side == "sell" && sell != nil {
+		msg := fmt.Sprintf("Robinhood sell %s price: bid %.10g, sent %.10g, rule %s, prior rounded %.10g (attempt %s) (#1910)", coin, sell.BidPrice, sell.SentPrice, sell.Rule, sell.TodayPrice, attemptID)
+		if sell.FallbackReason != "" {
+			msg += "; fallback: " + sell.FallbackReason
+		}
+		switch sell.Rule {
+		case robinhoodSellPriceRoundFallback, robinhoodSellPriceOneStep, robinhoodSellPriceWireFloor:
+			out = append(out, robinhoodDiagLine{"WARN", msg})
+		default:
+			out = append(out, robinhoodDiagLine{"INFO", msg})
+		}
+	}
+	return out
 }
 
 var robinhoodHoldAlerts sync.Map

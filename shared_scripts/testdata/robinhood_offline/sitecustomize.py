@@ -93,7 +93,8 @@ def _install():
         if request.method == "GET" and path == "https://nummus.robinhood.com/currency_pairs/":
             return response(request, 200, {"next": None, "results": [
                 {"id": _PAIR_ID, "symbol": "BTC-USD", "asset_currency": {"code": "BTC"},
-                 "min_order_size": "0.000001", "min_order_quantity_increment": "0.00000001", "max_order_size": "20"},
+                 "min_order_size": "0.000001", "min_order_quantity_increment": "0.00000001", "max_order_size": "20",
+                 "min_order_price_increment": "0.01"},
             ]})
         if request.method == "GET" and path == "https://api.robinhood.com/marketdata/forex/quotes/%s/" % _PAIR_ID:
             return response(request, 200, {"id": _PAIR_ID, "ask_price": "100.00", "bid_price": "99.00", "mark_price": "99.50"})

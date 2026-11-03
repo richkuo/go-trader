@@ -17,6 +17,16 @@ Operator expectations: the first options cycle after every restart harvests noth
 Known limits: bought-leg expiry cash credits, expiry trade rows and loss-streak accounting are unchanged; OKX venue marks and settlement and the IBKR CME cutoff and settlement are separate work; an IBKR book gets a mark only when a spot strategy puts its underlying in the cycle price map; the Robinhood 60-minute and crypto-platform 1-hour read boundaries and the 1.5-interval mark age are labelled model choices.
 Deploy Go and Python together with `bash scripts/update.sh --restart`; with a Robinhood options strategy, a Python tree without the new script or `exchange-calendars` fails the startup probe with exit 78.
 
+### Issue 1910: Robinhood limit buys and floored sell prices
+
+Runtime behavior changes for every live Robinhood spot strategy; there is no opt-out, no config change and no schema change.
+Before this change `_place` rounded the ask and the coin quantity with the robin_stocks nearest-value helper and sent a market buy, so a $1000 budget at an ask of 60000 requested 0.0167 coin (about $1002). A sell sent the nearest-rounded bid as its price, so a bid of 0.0000115 sent 0.000012 and a bid of 0.0000004 sent 0.
+Now a buy reads `min_order_price_increment` from the pair row and sends a `gtc` limit at the ask times 1.005 rounded up to that increment, for the budget divided by the limit floored to the quantity increment and capped at the maximum. The quantity times the limit is at or below the budget before fees in exact decimal math. A missing or invalid increment or quantity rule, an unreadable ask, a quantity below the minimum, an inexact wire number or too little remaining time refuses the buy before the send (`not_sent`, exit 1, **LIVE ORDER FAILED**). The 0.5 percent headroom is a design choice: it does not guarantee a fill, and a limit that rests or partly fills follows the existing open and partial-fill handling.
+Every sell keeps its quantity, market type, account binding and refusals; only its price changes to a floored value at or below the bid and the old rounded price, with labeled `round_fallback` and `one_step` exceptions that can be above the bid and a `wire_floor` move to the next lower float. A missing price increment never refuses a sell.
+The scripts echo optional `buy_sizing` and `sell_price`; Go decodes them apart from the core result, drops a malformed echo with a WARN, keeps the first valid value in the attempt evidence, and logs CRITICAL when the echoed limit notional exceeds the budget. Settlement, the fee debit, the $0.01 cash-latch tolerance and the owner clear command are unchanged.
+Open venue facts: live presence of `min_order_price_increment` (absent means every live buy refuses with an alert), limit enforcement, the meaning of a market sell price, and acceptance of an off-grid fallback price.
+Deploy Go and Python together with `bash scripts/update.sh --restart`.
+
 ### Issue 1911: option contract size, collateral and coverage
 
 Runtime behavior changes for every `type: options` strategy, with an in-memory startup stamp and one new column (`option_positions.contract_multiplier REAL NOT NULL DEFAULT 0`, added by the idempotent migration).
