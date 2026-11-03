@@ -1275,6 +1275,267 @@ FOLDED_CASES = [
 CASES = {case.name: case for case in CASE_LIST + FOLDED_CASES}
 CASE_NAMES = sorted(CASES)
 
+
+def _research_tools():
+    for path in (os.path.join(REPO, "shared_tools"), os.path.join(REPO, "backtest")):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+
+def _research_bars(closes, step, start, spread=None):
+    out = []
+    for i, c in enumerate(closes):
+        o = closes[i - 1] if i else c
+        hi, lo = (max(o, c) + 0.5, min(o, c) - 0.5) if spread is None else (max(o, c) * (1 + spread), min(o, c) * (1 - spread))
+        out.append({"t": start + i * step, "T": start + (i + 1) * step - 1, "o": o, "h": hi, "l": lo, "c": c,
+                    "v": 1.0})
+    return out
+
+
+def _research_market(frames, cutoff, coin, mid, **sections):
+    out = market(frames, cutoff_ms=cutoff, mid=mid)
+    out["mids"] = {coin: dict(out["mids"]["BTC"], px=mid)}
+    out.update(sections)
+    return out
+
+
+def _research_decimal(value, places="0.0001"):
+    from decimal import ROUND_HALF_EVEN, Decimal
+    text = format(Decimal(repr(float(value))).quantize(Decimal(places), rounding=ROUND_HALF_EVEN).normalize(), "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+CVD_STEP = 300_000
+CVD_T0 = 1_767_225_600_000
+CVD_PARAMS = {"left_span": 2, "right_span": 2, "min_separation": 2, "max_separation": 36, "delta_threshold": 0.05,
+              "setup_expiry": 4, "session_hours": 4, "expected_interval_ms": CVD_STEP, "delta_confirmation": True}
+
+
+def cvd_research_market(side_input=True):
+    _research_tools()
+    from trade_flow_replay import CONTRACT, PAYLOAD_CONTRACT_KEYS, payload_from_series
+    n, p1, p2 = 40, 29, 35
+    closes, highs, lows, intervals = [], [], [], []
+    for i in range(n):
+        lo, hi, cl = 100.0, 101.0, 100.5
+        if i == p1:
+            lo, hi, cl = 95.0, 96.0, 95.5
+        if i == p2:
+            lo, hi, cl = 94.0, 95.0, 94.5
+        if i == n - 1:
+            hi, cl = 102.0, 101.5
+        closes.append(cl), highs.append(hi), lows.append(lo)
+        buy = "0.12" if p1 < i <= p2 else "0.1"
+        for k in range(5):
+            s = CVD_T0 + i * CVD_STEP + k * 60_000
+            intervals.append({"start_ms": s, "end_ms": s + 60_000, "buy": buy,
+                              "sell": _research_decimal(0.2 - float(buy)), "total": "0.2", "trades": 3,
+                              "records_hash": f"{s:064x}", "session": 1, "finalized_ms": s + 66_000,
+                              "status": "complete", "invalid_ms": None, "reason": ""})
+    bars = []
+    for i in range(n):
+        o = min(max(closes[i - 1] if i else closes[i], lows[i]), highs[i])
+        bars.append({"t": CVD_T0 + i * CVD_STEP, "T": CVD_T0 + (i + 1) * CVD_STEP - 1, "o": o, "h": highs[i],
+                     "l": lows[i], "c": closes[i], "v": 1.0})
+    series = {"coin": "BTC", **{k: CONTRACT[k] for k in PAYLOAD_CONTRACT_KEYS}, "intervals": intervals,
+              "economic_evidence": True, "refusals": []}
+    flows = {"BTC|trade_flow": {**payload_from_series(series, CVD_STEP), "kind": "trade_flow", "coin": "BTC",
+                                "available": True}} if side_input else {}
+    return _research_market({"BTC|5m": frame(bars, CVD_STEP, timing=False)}, bars[-1]["T"] + 1, "BTC", 101.5,
+                            trade_flows=flows)
+
+
+OBI_PARAMS = {"depth_levels": 5, "entry_threshold": 0.3, "confirmation_observations": 3, "max_spread_bps": 5.0,
+              "min_combined_depth_usd": 100000.0, "max_snapshot_age_ms": 2000}
+
+
+def obi_research_market(side_input=True):
+    _research_tools()
+    import hashlib
+    from book_inputs import CONTRACT
+    base = 1_785_542_410_000
+
+    def book(seq, recv, bid_sz, ask_sz):
+        bids = [[f"{100000 - i}", f"{bid_sz}", 1] for i in range(5)]
+        asks = [[f"{100001 + i}", f"{ask_sz}", 1] for i in range(5)]
+        event = recv - 300
+        return {"seq": seq, "event_ms": event, "recv_ms": recv, "session": 1, "bid_depth": 5, "ask_depth": 5,
+                "identity": hashlib.sha256(f"{seq}/{event}/{bid_sz}/{ask_sz}".encode()).hexdigest(),
+                "bids": bids, "asks": asks}
+
+    books = [book(2, base - 6_000, 1, 1)] + [book(3 + i, base + i * 5_400, 3, 1) for i in range(4)]
+    crossing = books[3]
+    deadline = -(-max(crossing["event_ms"], crossing["recv_ms"]) // 1000) * 1000
+    section = {"kind": "l2_book", "coin": "BTC", **CONTRACT, "window_ms": 60_000, "capacity": 256, "depth": 5,
+               "cutoff_ms": deadline, "retained_from_ms": deadline - 60_000, "prefix_complete": True,
+               "owner_instance": "contract", "snapshot_id": "contract", "available": True,
+               "observations": [b for b in books if deadline - 60_000 <= b["recv_ms"] <= deadline],
+               "markers": [{"seq": 1, "at_ms": base - 9_000, "reason": "subscribed", "session": 1, "detail": ""}]}
+    bars = _research_bars([100000.5] * 40, 60_000, deadline - 40 * 60_000)
+    return _research_market({"BTC|1m": frame(bars, 60_000, timing=False)}, deadline, "BTC", 100000.5,
+                            l2_books={"BTC|l2_book": section} if side_input else {})
+
+
+PPR_PARAMS = {"lookback_samples": 10, "entry_z": 2.0, "turn_span": 1, "variance_floor": 1e-10, "max_spread_bps": 5.0,
+              "max_quote_age_ms": 5_000, "max_oracle_age_ms": 5_000, "max_skew_ms": 3_000, "max_abs_premium": 0.01,
+              "max_mark_dislocation": 0.005, "expected_interval_ms": 60_000}
+
+
+def ppr_research_market(side_input=True):
+    _research_tools()
+    from premium_replay import CONTRACT, PAYLOAD_CONTRACT_KEYS, payload_from_series
+    step, t0, oracle, n = 60_000, 1_767_225_600_000, 100.0, 40
+    premiums = [1e-4 * (k % 3) for k in range(n)]
+    premiums[n - 2], premiums[n - 1] = 8e-4, 4e-4
+    samples = []
+    for i, p in enumerate(premiums):
+        t = t0 + (i + 1) * step
+        mid = oracle * (1.0 + p)
+        half = mid * 0.5 / 10_000
+        samples.append({"t": t, "status": "sampled", "finalized_ms": t + 1, "invalid_ms": None,
+                        "quote": {"bid": _research_decimal(mid - half, "0.000001"), "bid_sz": "1.5", "bid_n": 3,
+                                  "ask": _research_decimal(mid + half, "0.000001"), "ask_sz": "2", "ask_n": 4,
+                                  "event_ms": t - 1_200, "recv_ms": t - 1_000, "session": 1, "seq": t // step},
+                        "context": {"oracle": _research_decimal(oracle), "mark": _research_decimal(mid, "0.000001"),
+                                    "mid": None, "oracle_event_ms": None, "recv_ms": t - 2_000, "session": 1,
+                                    "seq": t // step}})
+    series = {"coin": "BTC", **{k: CONTRACT[k] for k in PAYLOAD_CONTRACT_KEYS}, "samples": samples,
+              "economic_evidence": True, "refusals": []}
+    bars = _research_bars([oracle * (1.0 + p) for p in premiums], step, t0, spread=0.0004)
+    return _research_market({"BTC|1m": frame(bars, step, timing=False)}, bars[-1]["T"] + 1, "BTC", bars[-1]["c"],
+                            perp_premiums={"BTC|perp_premium": payload_from_series(series, step)} if side_input else {})
+
+
+VPR_STEP = 900_000
+VPR_PARAMS = {"profile_bins": 4, "value_area_fraction": 0.6, "session_bounds": False, "expected_interval_ms": VPR_STEP}
+
+
+def vpr_research_market(side_input=True):
+    _research_tools()
+    import copy
+    import hashlib
+    import volume_profile_inputs as vpi
+    from trade_flow_replay import _Interval
+    from volume_profile_replay import (PAYLOAD_KEYS, SERIES_SCHEMA, ProfileReplay, _session_record,
+                                       payload_from_profile_series, sessions_sha256)
+    day = 1_772_409_600_000
+    profile = ProfileReplay("BTC")
+    tid = day // 1000
+    for px, count in (("100", 2), ("101", 1), ("102", 4), ("103", 1), ("104", 2), ("105", 3), ("106", 1), ("108", 2)):
+        for _ in range(count):
+            tid += 1
+            at = day + (tid % vpi.MINUTES) * 60_000
+            profile.add_trade({"coin": "BTC", "tid": tid, "time": at + 10, "side": "B", "px": px, "sz": "0.01",
+                               "units": 1_000_000, "hash": f"{tid:064x}", "buyer": "0xa", "seller": "0xb"},
+                              hashlib.sha256(str(tid).encode()).digest(), at, day + 1)
+    for m in range(vpi.MINUTES):
+        interval = _Interval(day + m * 60_000, 1)
+        interval.status = "complete"
+        profile.finalize_minute(interval, day + vpi.SESSION_MS + 5_000 if m == vpi.MINUTES - 1
+                                else day + (m + 1) * 60_000 + 5_000)
+    sessions = [copy.deepcopy(_session_record(d)) for _, d in sorted(profile.all_days().items())]
+    series = {"series_schema": SERIES_SCHEMA, "kind": "volume_profile", "coin": "BTC",
+              **{k: vpi.CONTRACT[k] for k in PAYLOAD_KEYS}, "sessions": sessions,
+              "sessions_sha256": sessions_sha256(sessions), "economic_evidence": True, "refusals": []}
+    closes = [104.0] * 96 + [104.0, 101.0, 103.0, 104.0]
+    bars = [{"t": day + i * VPR_STEP, "T": day + (i + 1) * VPR_STEP - 1, "o": c, "h": c + 0.2, "l": c - 0.2, "c": c,
+             "v": 10.0} for i, c in enumerate(closes)]
+    cutoff = bars[-1]["t"] + VPR_STEP // 2
+    profiles = {"BTC|volume_profile": payload_from_profile_series(series, VPR_STEP, cutoff)} if side_input else {}
+    return _research_market({"BTC|15m": frame(bars, VPR_STEP)}, cutoff, "BTC", 104.0, volume_profiles=profiles)
+
+
+MEB_CALENDAR_SHA = "1" * 64
+MEB_QUOTE_SHA = "2" * 64
+MEB_PARAMS = {"expected_interval_ms": H, "range_bars": 6, "post_window_bars": 4, "confirm_bars": 1,
+              "max_spread_frac": 0.0005, "max_quote_age_ms": 60_000, "cooldown_bars": 24, "holding_bars": 6,
+              "spread_gate": True, "calendar_sha256": MEB_CALENDAR_SHA, "quote_sha256": MEB_QUOTE_SHA,
+              "calendar_path": "contract/calendar.json", "quote_path": "contract/quotes.json"}
+
+
+def meb_research_market(side_input=True):
+    _research_tools()
+    import macro_event_inputs as mi
+    t0, event_bar = 1_767_571_200_000, 100
+    release = t0 + event_bar * H
+    source = {"source_id": "contract", "publisher": "test", "url": "contract:macro", "retrieved_ms": t0,
+              "sha256": "0" * 64, "published_ms": None, "note": "contract fixture"}
+    event = {"event_id": "contract/fomc", "event_type": mi.EVENT_TYPE_FOMC, "revision": 1, "status": "scheduled",
+             "scheduled_local": pd.Timestamp(release, unit="ms").strftime("%Y-%m-%dT%H:%M:%S"),
+             "source_timezone": "UTC", "known_ms": t0 - 200 * H, "publication_evidence": "contract",
+             "source_id": "contract"}
+    coverage = [{"event_type": mi.EVENT_TYPE_FOMC, "start_ms": t0 - 1000 * H, "end_ms": t0 + 1000 * H}]
+    calendar, _ = mi.import_calendar([event], [source], coverage, "fixture", [mi.EVENT_TYPE_FOMC])
+    n = event_bar + 2
+    quote_rows = [{"event_ms": t0 + i * H - 2_000, "recv_ms": t0 + i * H - 1_500, "bid": "100.000000",
+                   "ask": "100.010000", "source_id": "contract"} for i in range(n + 1)]
+    quotes, _ = mi.import_quotes(quote_rows, [{k: v for k, v in source.items() if k != "published_ms"}], "BTC",
+                                 "fixture")
+    closes = [100.0] * n
+    closes[event_bar], closes[event_bar + 1] = 101.2, 101.5
+    bars = _research_bars(closes, H, t0)
+    cutoff = bars[-1]["t"] + H // 2
+    sections = {"macro_events": {MEB_CALENDAR_SHA: mi.calendar_payload(calendar, MEB_CALENDAR_SHA, cutoff)},
+                "macro_quotes": {f"BTC|{MEB_QUOTE_SHA}": mi.quote_payload(quotes, MEB_QUOTE_SHA, cutoff)}}
+    return _research_market({"BTC|1h": frame(bars, H)}, cutoff, "BTC", 101.5,
+                            **(sections if side_input else dict(sections, macro_quotes={})))
+
+
+BLL_PARAMS = {"training_bars": 48, "lag_bars": 1, "horizon_bars": 2, "impulse_z": 2.0, "min_r2": 0.0,
+              "min_edge_bps": 0.0, "cost_bps": 0.0, "max_data_age_ms": 86_400_000, "expected_interval_ms": H}
+
+
+def bll_research_market(side_input=True):
+    import math
+    rng = random.Random(1640)
+    n, t0 = 120, 1_767_225_600_000
+    leader = [rng.gauss(0, 0.004) for _ in range(n)]
+    for k in range(5, n, 9):
+        leader[k] = 0.02 * (1 if (k // 9) % 2 else -1)
+    follower = [0.7 * sum(leader[k - j] for j in (1, 2) if k - j >= 0) / 2 + rng.gauss(0, 0.0005) for k in range(n)]
+    leader[n - 2] = 0.03
+    btc, eth = [30000.0], [2000.0]
+    for k in range(1, n):
+        btc.append(btc[-1] * math.exp(leader[k]))
+        eth.append(eth[-1] * math.exp(follower[k]))
+    eth_bars, btc_bars = _research_bars(eth, H, t0, spread=0.001), _research_bars(btc, H, t0, spread=0.001)
+    frames = {"ETH|1h": frame(eth_bars, H)}
+    if side_input:
+        frames["BTC|1h"] = frame(btc_bars, H)
+    return _research_market(frames, eth_bars[-1]["t"] + H // 2, "ETH", eth[-1])
+
+
+@dataclasses.dataclass(frozen=True)
+class ResearchCase:
+    name: str
+    prefix: str
+    symbol: str
+    tf: str
+    params: Dict[str, Any]
+    close: Dict[str, Any]
+    market: Callable
+    signal: int
+    reason: str
+    unavailable: str
+    closed: bool = False
+
+
+RESEARCH_CASE_LIST = [
+    ResearchCase("cumulative_volume_delta_divergence", "cvd", "BTC", "5m", CVD_PARAMS, TP_3PCT, cvd_research_market,
+                 1, "entry_long", "trade_flow_unavailable"),
+    ResearchCase("order_book_imbalance", "obi", "BTC", "1m", OBI_PARAMS, TP_3PCT, obi_research_market,
+                 1, "entry_long", "book_unavailable"),
+    ResearchCase("perpetual_premium_reversion", "ppr", "BTC", "1m", PPR_PARAMS, TP_3PCT, ppr_research_market,
+                 -1, "entry_short", "premium_unavailable"),
+    ResearchCase("volume_profile_reclaim", "vpr", "BTC", "15m", VPR_PARAMS, TP_3PCT, vpr_research_market,
+                 1, "entry_long", "profile_input_missing", closed=True),
+    ResearchCase("macro_event_breakout", "meb", "BTC", "1h", MEB_PARAMS, {"name": "time_stop", "params": {"max_bars": 6}},
+                 meb_research_market, 1, "entry_long", "quotes_unavailable", closed=True),
+    ResearchCase("bitcoin_lead_lag", "bll", "ETH", "1h", BLL_PARAMS, TP_3PCT, bll_research_market,
+                 1, "entry_long", "leader_unavailable", closed=True),
+]
+RESEARCH_CASES = {case.name: case for case in RESEARCH_CASE_LIST}
+
 EXEMPT = {
     "awesome_oscillator": "no check-script contract tests yet; only the backtest harness test covers it",
     "chaikin_money_flow_breakout": "no check-script contract tests yet; only the backtest harness test covers it",
@@ -1291,7 +1552,6 @@ def contract_selector(registry):
     return sorted(
         name for name, entry in registry.STRATEGIES.items()
         if entry.get("edge_status") == "no_edge"
-        and not entry.get("production_refused")
         and tuple(entry.get("platforms") or ()) == ("futures",)
         and entry.get("short_entries") is True
         and str(entry.get("edge_ref") or "").startswith("backtest/candidates/")
@@ -1381,9 +1641,11 @@ def test_every_registered_study_candidate_has_a_case_or_a_recorded_exemption():
     registry = strategies()._registry
     selected = contract_selector(registry)
     assert not set(CASES) & set(EXEMPT), sorted(set(CASES) & set(EXEMPT))
-    assert sorted(set(CASES) | set(EXEMPT)) == selected, {
-        "missing_case": sorted(set(selected) - set(CASES) - set(EXEMPT)),
-        "not_selected": sorted((set(CASES) | set(EXEMPT)) - set(selected)),
+    assert not (set(CASES) | set(EXEMPT)) & set(RESEARCH_CASES)
+    assert sorted(set(RESEARCH_CASES)) == sorted(n for n in selected if registry.STRATEGIES[n].get("production_refused"))
+    assert sorted(set(CASES) | set(EXEMPT) | set(RESEARCH_CASES)) == selected, {
+        "missing_case": sorted(set(selected) - set(CASES) - set(EXEMPT) - set(RESEARCH_CASES)),
+        "not_selected": sorted((set(CASES) | set(EXEMPT) | set(RESEARCH_CASES)) - set(selected)),
     }
     for name in CASE_NAMES:
         entry = registry.STRATEGIES[name]
@@ -1391,6 +1653,57 @@ def test_every_registered_study_candidate_has_a_case_or_a_recorded_exemption():
         assert name in registry.no_edge_strategies(), name
     for name, reason in sorted(EXEMPT.items()):
         assert reason.strip(), name
+
+
+def research_refs(case, closes=None):
+    return {"open": {"name": case.name, "params": dict(case.params)},
+            "closes": [dict(case.close)] if closes is None else closes}
+
+
+@pytest.mark.parametrize("name", sorted(RESEARCH_CASES))
+def test_research_explicit_paper_evaluation_runs_on_complete_sealed_input_and_every_other_mode_is_refused(name):
+    case = RESEARCH_CASES[name]
+    label = f"{case.prefix}_reason"
+    stdin = {"v": 2, "market": case.market()}
+    strategy_refs = research_refs(case)
+    base = [case.name, case.symbol, case.tf, "--market-stdin", "--strategy-refs", json.dumps(strategy_refs)]
+    outs = []
+    for extra in (["--mode=paper"], ["--mode", "paper"]) + ((["--mode=paper", "--closed-bar-decisions"],) if case.closed else ()):
+        proc = run(base + extra, stdin)
+        assert proc.returncode == 0, (extra, proc.stderr[-2000:])
+        out = payload(proc)
+        assert not out.get("error"), (extra, out.get("error"))
+        assert out["signal"] == case.signal and out["indicator_labels"][label] == case.reason, (extra, out)
+        assert out["open_strategy"] == case.name and out["close_strategies"] == [case.close["name"]], extra
+        assert "fill" not in out and "order" not in out and "Fetching" not in proc.stderr, extra
+        outs.append(out)
+    assert outs[0]["indicators"] == outs[1]["indicators"]
+    if case.closed:
+        assert outs[2]["closed_bar_decision"]["held"] is False, outs[2]["closed_bar_decision"]
+    for extra in (["--mode=live", "--allow-no-edge"], ["--mode=live"], ["--allow-no-edge"], []):
+        proc = run(base + extra, stdin)
+        assert proc.returncode == 1, extra
+        assert f"open strategy '{case.name}' is production_refused" in payload(proc)["error"], extra
+        assert "Fetching" not in proc.stderr, extra
+    proc = run(base[:3] + ["--market-stdin", "--mode=paper", "--strategy-refs", json.dumps(
+        {"open": {"name": "breakout"}, "closes": [{"name": case.name, "params": dict(case.params)}]})], stdin)
+    assert proc.returncode == 1 and "sealed inputs attach only to the open strategy" in payload(proc)["error"]
+    missing = {"v": 2, "market": case.market(side_input=False)}
+    proc = run(base + ["--mode=paper"], missing)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    held = payload(proc)
+    assert held["signal"] == 0 and held["indicator_labels"][label] == case.unavailable, held
+    assert "Fetching" not in proc.stderr
+    slots = [{"id": "paper", "strategy": case.name, "mode": "paper", "mode_args": ["--mode=paper"],
+              "strategy_refs": strategy_refs},
+             {"id": "acked", "strategy": case.name, "mode": "live", "mode_args": ["--mode=live"],
+              "allow_no_edge": True, "strategy_refs": strategy_refs}]
+    proc = run(["--batch-check", f"--symbol={case.symbol}", f"--timeframe={case.tf}", "--market-stdin"],
+               dict(stdin, slots=slots))
+    results = {r["id"]: r for r in payload(proc)["results"]}
+    for key in ("signal", "open_action", "indicators", "indicator_labels"):
+        assert results["paper"].get(key) == outs[0].get(key), key
+    assert f"open strategy '{case.name}' is production_refused" in results["acked"]["error"]
 
 
 @pytest.mark.parametrize("name", CASE_NAMES)

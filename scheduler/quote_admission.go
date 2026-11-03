@@ -103,8 +103,7 @@ func quoteAdmissionErrors(cfg *Config) []string {
 	}
 	adm := cfg.quoteLoad
 	if adm == nil {
-		errs := productionRefusedAdmissionErrors(cfg.Strategies)
-		return append(errs, quoteProductionRefusalErrors(cfg.Strategies)...)
+		return researchAdmissionErrors(cfg)
 	}
 	var errs []string
 	owners := 0
@@ -140,7 +139,7 @@ func quoteAdmissionErrors(cfg *Config) []string {
 					continue
 				}
 			}
-			errs = append(errs, fmt.Sprintf("strategy %s: %s strategy %q is production_refused (research-only, evidence %s): every config is refused in any mode, with or without allow_no_edge, until a separate reviewed promotion",
+			errs = append(errs, fmt.Sprintf("strategy %s: %s strategy %q is production_refused (research-only, evidence %s): an internal quote admission refuses every research reference outside its owner's quote capability, with or without allow_no_edge",
 				sc.ID, ref.Role, ref.Name, productionRefusedStrategies[ref.Name]))
 		}
 	}
@@ -412,21 +411,5 @@ func bindQuoteAdmission(load *quoteLoadAdmission, cfg *Config, store *StateStore
 }
 
 func (a *quoteAdmission) checkExclusiveOwnership() error {
-	coin := quoteCoinOf(a.sc)
-	for _, other := range a.cfg.Strategies {
-		if other.ID == a.sc.ID {
-			continue
-		}
-		if !strings.EqualFold(strings.TrimSpace(hyperliquidSymbol(other.Args)), coin) || other.Platform != "hyperliquid" {
-			continue
-		}
-		op := partitionFor(other)
-		if a.partition.Scope == ScopeLive && op.Scope == ScopeLive {
-			return fmt.Errorf("quote owner %s needs exclusive ownership of the live %s namespace, but %s also trades it", a.sc.ID, coin, other.ID)
-		}
-		if a.partition.Scope == ScopePaper && op == a.partition {
-			return fmt.Errorf("quote owner %s needs exclusive ownership of %s in the %s partition, but %s also trades it", a.sc.ID, coin, partitionLabel(a.partition), other.ID)
-		}
-	}
-	return nil
+	return quoteExclusiveOwnershipError(a.cfg, a.sc)
 }

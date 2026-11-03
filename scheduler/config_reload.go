@@ -562,6 +562,8 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 		errs = append(errs, restingTPTradeThroughReloadErrors(sc, ns)...)
 	}
 
+	errs = append(errs, engineHoldReloadErrors(cfg, next)...)
+
 	for _, msg := range hyperliquidPeerStrategyErrors(next.Strategies) {
 		errs = append(errs, msg)
 	}

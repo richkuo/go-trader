@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"reflect"
 	"sort"
 	"strings"
@@ -56,85 +57,201 @@ func TestCumulativeVolumeDeltaIsRefusedInEveryModeAndReference(t *testing.T) {
 		refused = append(refused, name)
 	}
 	sort.Strings(refused)
-	fixtures := map[string]struct{ id, coin, tf string }{
-		cumulativeVolumeDeltaStrategyName: {"hl-cvddiv-btc", "BTC", "5m"},
-		bitcoinLeadLagStrategyName:        {"hl-btclag-eth", "ETH", "1h"},
-		macroEventBreakoutStrategyName:    {"hl-macrobrk-btc", "BTC", "1h"},
-		volumeProfileReclaimStrategyName:  {"hl-vpreclaim-btc", "BTC", "15m"},
-		perpetualPremiumStrategyName:      {"hl-ppr-btc", "BTC", "1m"},
-		orderBookImbalanceStrategyName:    {"hl-obi-btc", "BTC", "1m"},
-		inventoryMarketMakingStrategyName: {"hl-imm-btc", "BTC", "1m"},
-	}
 	for _, name := range refused {
-		fx, ok := fixtures[name]
-		if !ok {
-			t.Fatalf("production-refused %s has no admission fixture", name)
-		}
-		t.Run(name, func(t *testing.T) { productionRefusedEveryModeAndReference(t, name, fx.id, fx.coin, fx.tf) })
+		t.Run(name, func(t *testing.T) { productionRefusedEveryModeAndReference(t, name) })
 	}
 }
 
-func productionRefusedEveryModeAndReference(t *testing.T, name, id, coin, tf string) {
-	positional := func(args ...string) map[string]interface{} {
-		return noEdgeHLStrategy(id, append([]string{name, coin, tf}, args...)...)
+var researchRefusedModes = map[string][]string{
+	"explicit live":       {"--mode=live"},
+	"split live":          {"--mode", "live"},
+	"missing mode":        nil,
+	"invalid mode":        {"--mode=bogus"},
+	"dangling mode":       {"--mode"},
+	"duplicate paper":     {"--mode=paper", "--mode=paper"},
+	"paper and live":      {"--mode=paper", "--mode=live"},
+	"split duplicate":     {"--mode", "paper", "--mode=paper"},
+	"empty mode value":    {"--mode="},
+	"uppercase paper":     {"--mode=PAPER"},
+	"live then paper":     {"--mode=live", "--mode", "paper"},
+	"dangling after live": {"--mode=live", "--mode"},
+}
+
+var researchPaperModes = map[string][]string{
+	"explicit paper": {"--mode=paper"},
+	"split paper":    {"--mode", "paper"},
+}
+
+func researchQuoteOwnerFixture(args ...string) map[string]interface{} {
+	return map[string]interface{}{
+		"id": "hl-invmm-btc", "type": "perps", "platform": "hyperliquid", "script": hyperliquidCheckScript,
+		"args":           append([]string{inventoryMarketMakingStrategyName, "BTC", "1m"}, args...),
+		"open_strategy":  map[string]interface{}{"name": inventoryMarketMakingStrategyName},
+		"close_strategy": map[string]interface{}{"name": inventoryQuoteExitCloseName},
+		"capital":        1000.0, "leverage": 1.0, "margin_mode": "isolated", "stop_loss_pct": 2.0, "interval_seconds": 5,
+		"quote": map[string]interface{}{"coin": "BTC", "max_inventory_usd": 1000.0, "max_order_qty": 0.01, "request_expiry_ms": 2000,
+			"fee_reserve_rate": 0.00045, "margin_price_buffer_pct": 1.0},
 	}
-	effective := func(args ...string) map[string]interface{} {
-		sc := noEdgeHLStrategy("hl-bo-btc", append([]string{"breakout", "BTC", tf}, args...)...)
-		sc["open_strategy"] = map[string]interface{}{"name": name}
+}
+
+func researchFixtureAsset(name string) string {
+	if name == bitcoinLeadLagStrategyName {
+		return "ETH"
+	}
+	return "BTC"
+}
+
+func researchScalarFixture(t *testing.T, name string) map[string]interface{} {
+	t.Helper()
+	var params map[string]interface{}
+	if len(addStrategyResearchCandidates[name].RequiredParams) > 0 {
+		params = map[string]interface{}{"calendar_path": "/var/lib/go-trader/macro/calendar.json", "calendar_sha256": strings.Repeat("0", 64),
+			"quote_path": "/var/lib/go-trader/macro/quotes.json", "quote_sha256": strings.Repeat("2", 64)}
+	}
+	_, raw, err := buildAddStrategyEntryWithParams(name, "hyperliquid", researchFixtureAsset(name), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sc map[string]interface{}
+	if err := json.Unmarshal(raw, &sc); err != nil {
+		t.Fatal(err)
+	}
+	return sc
+}
+
+func researchFixtureArgs(sc map[string]interface{}, positional string, mode []string) map[string]interface{} {
+	out := map[string]interface{}{}
+	for k, v := range sc {
+		out[k] = v
+	}
+	args := sc["args"].([]interface{})
+	out["args"] = append([]string{positional, args[1].(string), args[2].(string)}, mode...)
+	return out
+}
+
+func researchLoadAll(t *testing.T, root map[string]interface{}, sc map[string]interface{}) []error {
+	t.Helper()
+	path := writeNoEdgeConfigRoot(t, CurrentConfigVersion, root, sc)
+	_, loadErr := LoadConfig(path)
+	_, probeErr := LoadConfigForProbe(path)
+	_, readErr := LoadConfigReadOnly(path)
+	return []error{loadErr, probeErr, readErr}
+}
+
+func productionRefusedEveryModeAndReference(t *testing.T, name string) {
+	websocket := map[string]interface{}{"market_feed": "websocket"}
+	acks := map[string]interface{}{"absent": nil, "true": true, "false": false}
+	withAck := func(sc map[string]interface{}, ack interface{}) map[string]interface{} {
+		if ack != nil {
+			sc["allow_no_edge"] = ack
+		}
 		return sc
 	}
-	overridden := func(args ...string) map[string]interface{} {
-		sc := positional(args...)
-		sc["open_strategy"] = map[string]interface{}{"name": "breakout"}
-		return sc
+	type role struct {
+		build    func(mode []string) map[string]interface{}
+		admitted bool
 	}
-	fallback := func(args ...string) map[string]interface{} {
-		sc := noEdgeHLStrategy("hl-bo-btc", append([]string{"breakout", "BTC", tf}, args...)...)
-		sc["close_strategy"] = map[string]interface{}{"name": name}
-		return sc
+	roles := map[string]role{}
+	if _, quote := quoteCapabilityStrategies[name]; quote {
+		roles["quote owner"] = role{build: func(mode []string) map[string]interface{} { return researchQuoteOwnerFixture(mode...) }, admitted: true}
+		roles["quote capability on a non-owner"] = role{build: func(mode []string) map[string]interface{} {
+			sc := researchQuoteOwnerFixture(mode...)
+			delete(sc, "quote")
+			return sc
+		}}
+		roles["quote exit close on a scalar strategy"] = role{build: func(mode []string) map[string]interface{} {
+			sc := researchFixtureArgs(researchScalarFixture(t, cumulativeVolumeDeltaStrategyName), cumulativeVolumeDeltaStrategyName, mode)
+			sc["close_strategy"] = map[string]interface{}{"name": inventoryQuoteExitCloseName}
+			return sc
+		}}
+	} else {
+		base := researchScalarFixture(t, name)
+		roles["positional open"] = role{build: func(mode []string) map[string]interface{} { return researchFixtureArgs(base, name, mode) }, admitted: true}
+		roles["effective open"] = role{build: func(mode []string) map[string]interface{} {
+			sc := researchFixtureArgs(base, "breakout", mode)
+			if _, has := sc["open_strategy"]; !has {
+				sc["open_strategy"] = map[string]interface{}{"name": name}
+			}
+			return sc
+		}, admitted: true}
+		roles["positional under an override"] = role{build: func(mode []string) map[string]interface{} {
+			sc := researchFixtureArgs(base, name, mode)
+			sc["open_strategy"] = map[string]interface{}{"name": "breakout"}
+			return sc
+		}, admitted: true}
+		roles["same-name fallback close"] = role{build: func(mode []string) map[string]interface{} {
+			sc := researchFixtureArgs(base, name, mode)
+			sc["close_strategy"] = map[string]interface{}{"name": name}
+			return sc
+		}, admitted: true}
+		roles["fallback close under another open"] = role{build: func(mode []string) map[string]interface{} {
+			sc := researchFixtureArgs(base, "breakout", mode)
+			sc["open_strategy"] = map[string]interface{}{"name": "breakout"}
+			sc["close_strategy"] = map[string]interface{}{"name": name}
+			return sc
+		}}
 	}
-	acked := func(sc map[string]interface{}) map[string]interface{} {
-		sc["allow_no_edge"] = true
-		return sc
+	roleNames := make([]string, 0, len(roles))
+	for k := range roles {
+		roleNames = append(roleNames, k)
 	}
-	cases := map[string]struct {
-		sc   map[string]interface{}
-		role string
-	}{
-		"positional paper":              {positional("--mode=paper"), "open"},
-		"positional split paper":        {positional("--mode", "paper"), "open"},
-		"positional live acknowledged":  {acked(positional("--mode=live")), "open"},
-		"positional missing mode":       {positional(), "open"},
-		"positional missing mode acked": {acked(positional()), "open"},
-		"effective open paper":          {effective("--mode=paper"), "open"},
-		"effective open live acked":     {acked(effective("--mode=live")), "open"},
-		"positional under an override":  {overridden("--mode=paper"), "open"},
-		"close fallback paper":          {fallback("--mode=paper"), "close"},
-		"close fallback live acked":     {acked(fallback("--mode=live")), "close"},
-	}
-	names := make([]string, 0, len(cases))
-	for k := range cases {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-	for _, label := range names {
-		tc := cases[label]
-		for i, err := range cvdLoadAll(t, tc.sc) {
-			want := tc.role + ` strategy "` + name + `" is production_refused`
-			if err == nil || !strings.Contains(err.Error(), want) {
-				t.Fatalf("%s: loader %d must refuse with %q, got %v", label, i, want, err)
+	sort.Strings(roleNames)
+	ackNames := []string{"absent", "false", "true"}
+	for _, rn := range roleNames {
+		r := roles[rn]
+		for modeName, mode := range researchPaperModes {
+			for _, an := range ackNames {
+				for i, err := range researchLoadAll(t, websocket, withAck(r.build(mode), acks[an])) {
+					if r.admitted && err != nil {
+						t.Fatalf("%s %s ack %s: loader %d must admit the explicit-paper reference: %v", rn, modeName, an, i, err)
+					}
+					if !r.admitted && err == nil {
+						t.Fatalf("%s %s ack %s: loader %d must refuse the reference in every mode", rn, modeName, an, i)
+					}
+				}
+			}
+		}
+		for modeName, mode := range researchRefusedModes {
+			for _, an := range ackNames {
+				for i, err := range researchLoadAll(t, websocket, withAck(r.build(mode), acks[an])) {
+					if err == nil || !strings.Contains(err.Error(), "production_refused") && !strings.Contains(err.Error(), "quote-owned") {
+						t.Fatalf("%s %s ack %s: loader %d must refuse every non-paper mode, got %v", rn, modeName, an, i, err)
+					}
+				}
+			}
+		}
+		if r.admitted {
+			for i, err := range researchLoadAll(t, map[string]interface{}{"market_feed": "rest"}, r.build([]string{"--mode=paper"})) {
+				if err == nil || !strings.Contains(err.Error(), `"market_feed"`) && !strings.Contains(err.Error(), "market_feed=") {
+					t.Fatalf("%s: loader %d must refuse the REST feed and name the setting, got %v", rn, i, err)
+				}
 			}
 		}
 	}
-
+	if _, quote := quoteCapabilityStrategies[name]; quote {
+		if _, _, err := buildAddStrategyEntry(name, "hyperliquid", "btc"); err == nil || !strings.Contains(err.Error(), "quote-owned") {
+			t.Fatalf("the scalar add route must refuse the quote capability, got %v", err)
+		}
+	} else {
+		okx := researchFixtureArgs(researchScalarFixture(t, name), name, []string{"--mode=paper"})
+		okx["platform"], okx["script"] = "okx", "shared_scripts/check_okx.py"
+		for i, err := range researchLoadAll(t, websocket, okx) {
+			if err == nil {
+				t.Fatalf("loader %d admitted the research candidate off the Hyperliquid perps route", i)
+			}
+		}
+	}
 	mass := noEdgeHLStrategy("hl-massrev-eth", "mass_index_reversal", "ETH", "1h", "--mode=paper")
-	for i, err := range cvdLoadAll(t, mass) {
+	for i, err := range researchLoadAll(t, nil, mass) {
 		if err != nil {
 			t.Fatalf("an existing no-edge candidate must keep its explicit-paper admission (loader %d): %v", i, err)
 		}
 	}
-	if _, _, err := buildAddStrategyEntry(name, "hyperliquid", "btc"); err == nil || !strings.Contains(err.Error(), "production_refused") {
-		t.Fatalf("the add-strategy command must refuse the candidate, got %v", err)
+	missing := noEdgeHLStrategy("hl-massrev-eth", "mass_index_reversal", "ETH", "1h")
+	for i, err := range researchLoadAll(t, nil, missing) {
+		if err == nil || !strings.Contains(err.Error(), "allow_no_edge") {
+			t.Fatalf("an existing no-edge candidate keeps its missing-mode refusal (loader %d): %v", i, err)
+		}
 	}
 	if id, _, err := buildAddStrategyEntry("mass_index_reversal", "hyperliquid", "sol"); err != nil || id != "hl-massrev-sol" {
 		t.Fatalf("the add-strategy command must keep existing candidates: %q, %v", id, err)

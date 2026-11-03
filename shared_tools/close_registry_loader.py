@@ -64,6 +64,24 @@ def list_strategies_detailed() -> list[dict]:
     ]
 
 
+def research_only_strategy_names() -> set:
+    return {name for name, entry in _load_registry().STRATEGIES.items() if entry.get("research_only")}
+
+
+def list_all_strategies_detailed() -> list[dict]:
+    registry = _load_registry().STRATEGIES
+    return [
+        {
+            "name": name,
+            "description": registry[name]["description"],
+            "default_params": dict(registry[name]["default_params"]),
+            "platforms": list(registry[name]["platforms"]),
+            "research_only": bool(registry[name].get("research_only")),
+        }
+        for name in sorted(registry.keys())
+    ]
+
+
 if __name__ == "__main__":
     import json
     import sys

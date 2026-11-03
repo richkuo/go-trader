@@ -878,7 +878,7 @@ func noEdgeCaseNoEdgePaperAddAcceptsEveryRegisteredPlatformName(t *testing.T) {
 	sort.Strings(names)
 	var hl []map[string]interface{}
 	for _, name := range names {
-		id, entry, err := buildAddStrategyEntry(name, "hyperliquid", "BTC")
+		id, entry, err := buildAddStrategyEntry(name, "hyperliquid", researchFixtureAsset(name))
 		if !openStrategyRegisteredFor(name, "futures") {
 			if err == nil {
 				t.Fatalf("%s is not registered for futures but was added to hyperliquid", name)
@@ -886,10 +886,13 @@ func noEdgeCaseNoEdgePaperAddAcceptsEveryRegisteredPlatformName(t *testing.T) {
 			continue
 		}
 		if _, refused := productionRefusedStrategies[name]; refused {
-			if err == nil || !strings.Contains(err.Error(), "production_refused") {
-				t.Fatalf("%s is production_refused but the add returned %v", name, err)
+			research, scalar := addStrategyResearchCandidates[name]
+			if !scalar || len(research.RequiredParams) > 0 {
+				if err == nil {
+					t.Fatalf("%s is production_refused with no parameter-free scalar paper add, but the add returned nil", name)
+				}
+				continue
 			}
-			continue
 		}
 		if err != nil {
 			t.Fatalf("hyperliquid add refused registered futures strategy %s: %v", name, err)
