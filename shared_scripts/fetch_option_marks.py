@@ -17,7 +17,7 @@ from stdout_contract import json_stdout
 
 CONTRACT = "option_marks_v1"
 PREMIUM_UNIT = "underlying_unit"
-SUPPORTED_PLATFORMS = ("robinhood",)
+SUPPORTED_PLATFORMS = ("ibkr", "robinhood")
 OPERATIONS = ("mark", "settle", "resolve")
 SETTLEMENT_SOURCE = "yahoo_daily_raw_close"
 
@@ -85,16 +85,31 @@ def _nonempty_text(value):
     return isinstance(value, str) and value.strip() != ""
 
 
-def _parse_refresh_at(text):
+def _parse_timestamp(text, name):
     if not _nonempty_text(text):
-        raise BatchError("request refresh_at is missing")
+        raise BatchError(f"request {name} is missing")
     try:
         when = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        raise BatchError(f"request refresh_at {text!r} is not an ISO timestamp") from None
+        raise BatchError(f"request {name} {text!r} is not an ISO timestamp") from None
     if when.tzinfo is None:
-        raise BatchError("request refresh_at has no time zone")
+        raise BatchError(f"request {name} has no time zone")
     return when.astimezone(timezone.utc)
+
+
+def _parse_refresh_at(text):
+    return _parse_timestamp(text, "refresh_at")
+
+
+def _parse_leg_schedule(leg):
+    leg_id = leg["id"]
+    cutoff = _parse_timestamp(leg.get("cutoff_utc"), f"leg {leg_id} cutoff_utc")
+    ready = _parse_timestamp(leg.get("settlement_ready_utc"), f"leg {leg_id} settlement_ready_utc")
+    if ready < cutoff:
+        raise BatchError(f"request leg {leg_id} settlement_ready_utc is before its cutoff_utc")
+    if cutoff.date().isoformat() != leg["expiry"]:
+        raise BatchError(f"request leg {leg_id} cutoff_utc {leg['cutoff_utc']} is not on its expiry date {leg['expiry']}")
+    return cutoff, ready
 
 
 def _read_request(platform):
@@ -130,6 +145,8 @@ def _read_request(platform):
             raise BatchError(f"request leg {leg_id} has an invalid strike or dte")
         if leg.get("operation") not in OPERATIONS:
             raise BatchError(f"request leg {leg_id} has an invalid operation")
+        if platform == "ibkr":
+            leg["_cutoff"], leg["_ready"] = _parse_leg_schedule(leg)
     return refresh_at, legs
 
 
@@ -149,6 +166,7 @@ class _Reader:
         self._adapter = None
         self._spots = {}
         self._vols = {}
+        self._settlements = {}
 
     def adapter(self):
         if self._adapter is None:
@@ -179,8 +197,55 @@ class _Reader:
             raise option_data.OptionDataUnavailable(f"{option_data.MODEL_NEEDS_VOLATILITY}: {error}")
         return vol
 
+    def settlement(self, underlying, expiry, cutoff):
+        key = (underlying, expiry)
+        if key not in self._settlements:
+            try:
+                self._settlements[key] = self.adapter().get_settlement_price(underlying, expiry, cutoff)
+            except Exception as e:
+                traceback.print_exc(file=sys.stderr)
+                self._settlements[key] = (None, _stable_reason(e, "settlement window read failed"))
+        return self._settlements[key]
+
+
+def _evaluate_ibkr_leg(leg, refresh_at, reader):
+    import option_data
+    out = {"id": leg["id"], "cutoff_utc": leg["cutoff_utc"], "settlement_ready_utc": leg["settlement_ready_utc"]}
+    underlying = leg["underlying"].upper()
+    cutoff, ready = leg["_cutoff"], leg["_ready"]
+    try:
+        if refresh_at < cutoff:
+            adapter = reader.adapter()
+            spot = reader.spot(underlying)
+            vol = reader.vol(underlying)
+            dte = (cutoff - refresh_at).total_seconds() / 86400.0
+            value, greeks, source = adapter.get_option_mark(underlying, leg["option_type"], float(leg["strike"]),
+                                                            leg["expiry"], dte, spot, vol)
+            out.update(status="mark", mark={"value_per_unit": value, "spot": spot, "greeks": greeks, "source": source})
+            return out
+        if refresh_at < ready:
+            out.update(status="pending", reason=f"settlement window closed at {leg['cutoff_utc']}; "
+                                                f"it is read at or after {leg['settlement_ready_utc']}")
+            return out
+        price, why = reader.settlement(underlying, leg["expiry"], cutoff)
+        if price is None:
+            out.update(status="pending", reason=why)
+            return out
+        adapter = reader.adapter()
+        out.update(status="settled", settlement={"price": price, "basis": adapter.settlement_basis,
+                                                 "date": leg["expiry"], "source": adapter.settlement_source})
+        return out
+    except option_data.OptionDataUnavailable as e:
+        out.update(status="error", reason=e.reason)
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        out.update(status="error", reason=_stable_reason(e, "option read failed"))
+    return out
+
 
 def _evaluate_leg(leg, refresh_at, reader):
+    if reader.platform == "ibkr":
+        return _evaluate_ibkr_leg(leg, refresh_at, reader)
     import option_data
     import option_sessions
     out = {"id": leg["id"]}
@@ -234,7 +299,7 @@ def _run(platform, emit):
             reader.adapter()
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
-            emit(_doc(platform, error=_stable_reason(e, "robinhood adapter unavailable")))
+            emit(_doc(platform, error=_stable_reason(e, f"{platform} adapter unavailable")))
             return 1
     results = [_evaluate_leg(leg, refresh_at, reader) for leg in legs]
     doc = _doc(platform, legs=results, refresh_at=refresh_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
@@ -248,14 +313,32 @@ def _run(platform, emit):
     return 0
 
 
+def _probe_ibkr():
+    import ccxt
+    import option_data
+    from pricing import bs_price_and_greeks
+    adapter = _load_adapter("ibkr")
+    for name in ("get_option_mark", "get_settlement_price", "get_spot_price", "get_vol_metrics"):
+        if not callable(getattr(adapter, name, None)):
+            raise AttributeError(f"ibkr adapter has no {name}")
+    for name in ("mark_source", "settlement_source", "settlement_basis"):
+        if not _nonempty_text(getattr(adapter, name, None)):
+            raise AttributeError(f"ibkr adapter has no {name}")
+    if not hasattr(ccxt, "binanceus") or not callable(option_data.measured_vol_metrics) or not callable(bs_price_and_greeks):
+        raise AttributeError("ibkr option marks dependencies are incomplete")
+
+
 def main():
     platform, probe, invalid = _parse_args(sys.argv[1:])
     if probe:
         if platform not in SUPPORTED_PLATFORMS or invalid:
             print(f"unsupported option marks probe argv: platform={platform!r} extra={invalid}", file=sys.stderr)
             sys.exit(2)
-        import option_sessions
-        option_sessions.calendar()
+        if platform == "ibkr":
+            _probe_ibkr()
+        else:
+            import option_sessions
+            option_sessions.calendar()
         with json_stdout() as emit:
             emit({"contract": CONTRACT, "platform": platform, "probe": True})
         sys.exit(0)

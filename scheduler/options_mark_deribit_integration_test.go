@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -75,7 +74,7 @@ func TestDeribitDeliveryAndMarkSourceIntegration(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(f.handler))
 		t.Cleanup(srv.Close)
 		d := &DeribitPricer{client: srv.Client(), baseURL: srv.URL}
-		pricer := optionPricerFor(platform, nil, optionPricers{Deribit: d})
+		pricer := optionPricerFor(platform, optionPricers{Deribit: d})
 		return pricer.Refresh(reqs, at)
 	}
 	settleReq := optionLegRequest{Key: "leg", Underlying: "BTC", OptionType: "put", Strike: 60000, Expiry: target, Action: "sell", Quantity: 1, Multiplier: 1}
@@ -168,7 +167,7 @@ func TestDeribitDeliveryAndMarkSourceIntegration(t *testing.T) {
 			}
 		}
 	})
-	t.Run("okx_proxy_and_ibkr_model_labels", func(t *testing.T) {
+	t.Run("okx_proxy_labels_and_ibkr_routing", func(t *testing.T) {
 		f := &deribitFake{rows: deribitDescendingRows(newest, 120, "", func(string) interface{} { return 61000.0 }),
 			tickers: map[string]string{"ETH-31JUL26-3000-C": `{"result":{"mark_price":0.05,"underlying_price":3100,"greeks":{"delta":0.5,"gamma":0.001,"theta":-2,"vega":3}}}`}}
 		okx := run(t, f, "okx", afterBoundary, settleReq)
@@ -179,13 +178,13 @@ func TestDeribitDeliveryAndMarkSourceIntegration(t *testing.T) {
 		if mark[0].Mark == nil || mark[0].Mark.Source != okxDeribitProxySource {
 			t.Fatalf("okx mark = %+v", mark[0])
 		}
-		ibkr := NewIBKRPricer(map[string]float64{"BTC/USDT": 60000}).Refresh([]optionLegRequest{settleReq,
-			{Key: "live", Underlying: "BTC", OptionType: "call", Strike: 70000, Expiry: "2026-12-18", Action: "buy", Quantity: 1, Multiplier: 1}}, afterBoundary)
-		if ibkr[0].Settlement == nil || ibkr[0].Settlement.Source != ibkrSettlementSource || ibkr[1].Mark == nil || ibkr[1].Mark.Source != ibkrMarkSource {
-			t.Fatalf("ibkr replies = %+v", ibkr)
+		shared := newOptionPricers()
+		if got := optionPricerFor("ibkr", shared); got != shared.IBKR || got.Name() != "ibkr" {
+			t.Fatalf("ibkr must route to the shared batch provider, got %#v", got)
 		}
-		if got := fmt.Sprint(ibkr[0].CutoffAt); got != fmt.Sprint(time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)) {
-			t.Fatalf("ibkr cutoff = %s, want midnight UTC legacy model", got)
+		cutoff, ready, ok, err := optionGoExpirySchedule("ibkr", target)
+		if err != nil || !ok || !cutoff.Equal(time.Date(2026, 7, 31, 15, 0, 0, 0, time.UTC)) || !ready.Equal(time.Date(2026, 7, 31, 15, 5, 0, 0, time.UTC)) {
+			t.Fatalf("ibkr schedule = %s %s %v %v, want 16:00 and 16:05 London", cutoff, ready, ok, err)
 		}
 	})
 }

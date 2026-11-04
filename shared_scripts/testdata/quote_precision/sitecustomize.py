@@ -302,9 +302,20 @@ def _install():
             return {"symbol": symbol, "last": value}
         raise ccxt.NetworkError("quote precision stub: no quote for " + symbol)
 
+    minute_bars_raw = os.environ.get("QP_MINUTE_BARS", "")
+    minute_bars = json.loads(minute_bars_raw) if minute_bars_raw else None
+
     def fetch_ohlcv(self, symbol, timeframe="1m", since=None, limit=None, params=None):
-        _log({"call": "fetch_ohlcv", "exchange": self.id, "symbol": symbol, "timeframe": timeframe})
+        _log({"call": "fetch_ohlcv", "exchange": self.id, "symbol": symbol, "timeframe": timeframe, "since": since, "limit": limit})
         _noise()
+        if minute_bars is not None and timeframe == "1m" and since is not None:
+            rows = minute_bars.get(symbol, [])
+            if rows == "error":
+                raise ccxt.NetworkError("quote precision stub: minute candle failure for " + symbol)
+            if rows == "429":
+                raise ccxt.RateLimitExceeded(self.id + " GET https://stub.invalid/klines?interval=1m 429 Too Many Requests")
+            rows = [r for r in rows if r[0] >= since]
+            return rows[:int(limit)] if limit else rows
         if timeframe == "1d":
             mode, daily = _daily_mode()
             if mode == "closes":
