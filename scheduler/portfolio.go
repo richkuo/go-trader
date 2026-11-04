@@ -11,55 +11,59 @@ import (
 )
 
 type Position struct {
-	Symbol                          string            `json:"symbol"`
-	TradePositionID                 string            `json:"position_id,omitempty"`
-	Quantity                        float64           `json:"quantity"`
-	InitialQuantity                 float64           `json:"initial_quantity,omitempty"`
-	AvgCost                         float64           `json:"avg_cost"`
-	EntryATR                        float64           `json:"entry_atr,omitempty"`
-	Side                            string            `json:"side"`
-	Multiplier                      float64           `json:"multiplier,omitempty"`
-	Leverage                        float64           `json:"leverage,omitempty"`
-	OwnerStrategyID                 string            `json:"owner_strategy_id,omitempty"`
-	OpenedAt                        time.Time         `json:"opened_at,omitempty"`
-	StopLossOID                     int64             `json:"stop_loss_oid,omitempty"`
-	StopLossTriggerPx               float64           `json:"stop_loss_trigger_px,omitempty"`
-	StopLossHighWaterPx             float64           `json:"stop_loss_high_water_px,omitempty"`
-	TPOIDs                          []int64           `json:"tp_oids,omitempty"`
-	TPArmedTiers                    []bool            `json:"tp_armed_tiers,omitempty"`
-	StopLossATRMult                 *float64          `json:"stop_loss_atr_mult,omitempty"`
-	TPTiersJSON                     string            `json:"tp_tiers_json,omitempty"`
-	Regime                          string            `json:"regime,omitempty"`
-	RegimeWindows                   map[string]string `json:"regime_windows,omitempty"`
-	OpenProfile                     string            `json:"open_profile,omitempty"`
-	DirectionCertifiedAtOpen        bool              `json:"direction_certified_at_open,omitempty"`
-	DirectionCertifiedStatesAtOpen  map[string]string `json:"direction_certified_states_at_open,omitempty"`
-	RegimePendingLabel              string            `json:"regime_pending_label,omitempty"`
-	RegimePendingCount              int               `json:"regime_pending_count,omitempty"`
-	RegimeAppliedLabel              string            `json:"regime_applied_label,omitempty"`
-	SLAdjustedTiersProcessed        int               `json:"sl_adjusted_tiers_processed,omitempty"`
-	SLAfterMoved                    bool              `json:"sl_after_moved,omitempty"`
-	SLAfterTriggerPx                float64           `json:"sl_after_trigger_px,omitempty"`
-	RestingTPScannedOpenMs          int64             `json:"resting_tp_scanned_open_ms,omitempty"`
-	RestingTPReachPx                float64           `json:"resting_tp_reach_px,omitempty"`
-	RestingTPStopTriggerPx          float64           `json:"resting_tp_stop_trigger_px,omitempty"`
-	TPConsumptions                  []TPConsumption   `json:"tp_consumptions,omitempty"`
-	PostTPTrailingATRMult           *float64          `json:"post_tp_trailing_atr_mult,omitempty"`
-	ScaleInCount                    int               `json:"scale_in_count,omitempty"`
-	LastAddPrice                    float64           `json:"last_add_price,omitempty"`
-	AddedNotionalUSD                float64           `json:"added_notional_usd,omitempty"`
-	RiskAnchorPrice                 float64           `json:"risk_anchor_price,omitempty"`
-	ScaleInResizePending            bool              `json:"-"`
-	RatchetFallbackNormalizePending bool              `json:"-"`
-	LLMAnalysisRequested            bool              `json:"llm_analysis_requested,omitempty"`
-	LLMVerdict                      string            `json:"llm_verdict,omitempty"`
-	ATRMethodAtOpen                 string            `json:"atr_method_at_open,omitempty"`
-	HurstAtOpen                     float64           `json:"hurst_at_open,omitempty"`
-	HurstSizeMult                   float64           `json:"hurst_size_mult,omitempty"`
-	HedgeFor                        string            `json:"hedge_for,omitempty"`
-	HedgePrimaryQtyBasis            float64           `json:"hedge_primary_qty_basis,omitempty"`
-	SharedCloseHoldUSD              float64           `json:"shared_close_hold_usd,omitempty"`
-	SharedCloseHoldReason           string            `json:"shared_close_hold_reason,omitempty"`
+	Symbol                          string                    `json:"symbol"`
+	TradePositionID                 string                    `json:"position_id,omitempty"`
+	Quantity                        float64                   `json:"quantity"`
+	InitialQuantity                 float64                   `json:"initial_quantity,omitempty"`
+	AvgCost                         float64                   `json:"avg_cost"`
+	EntryATR                        float64                   `json:"entry_atr,omitempty"`
+	Side                            string                    `json:"side"`
+	Multiplier                      float64                   `json:"multiplier,omitempty"`
+	Leverage                        float64                   `json:"leverage,omitempty"`
+	OwnerStrategyID                 string                    `json:"owner_strategy_id,omitempty"`
+	OpenedAt                        time.Time                 `json:"opened_at,omitempty"`
+	StopLossOID                     int64                     `json:"stop_loss_oid,omitempty"`
+	StopLossTriggerPx               float64                   `json:"stop_loss_trigger_px,omitempty"`
+	StopLossHighWaterPx             float64                   `json:"stop_loss_high_water_px,omitempty"`
+	TPOIDs                          []int64                   `json:"tp_oids,omitempty"`
+	TPArmedTiers                    []bool                    `json:"tp_armed_tiers,omitempty"`
+	StopLossATRMult                 *float64                  `json:"stop_loss_atr_mult,omitempty"`
+	TPTiersJSON                     string                    `json:"tp_tiers_json,omitempty"`
+	Regime                          string                    `json:"regime,omitempty"`
+	RegimeWindows                   map[string]string         `json:"regime_windows,omitempty"`
+	RegimeSnapshots                 map[string]RegimeSnapshot `json:"regime_snapshots,omitempty"`
+	OpenProfile                     string                    `json:"open_profile,omitempty"`
+	DirectionCertifiedAtOpen        bool                      `json:"direction_certified_at_open,omitempty"`
+	DirectionCertifiedStatesAtOpen  map[string]string         `json:"direction_certified_states_at_open,omitempty"`
+	RegimePendingLabel              string                    `json:"regime_pending_label,omitempty"`
+	RegimePendingCount              int                       `json:"regime_pending_count,omitempty"`
+	RegimeAppliedLabel              string                    `json:"regime_applied_label,omitempty"`
+	SLAdjustedTiersProcessed        int                       `json:"sl_adjusted_tiers_processed,omitempty"`
+	SLAfterMoved                    bool                      `json:"sl_after_moved,omitempty"`
+	SLAfterTriggerPx                float64                   `json:"sl_after_trigger_px,omitempty"`
+	RestingTPScannedOpenMs          int64                     `json:"resting_tp_scanned_open_ms,omitempty"`
+	RestingTPReachPx                float64                   `json:"resting_tp_reach_px,omitempty"`
+	RestingTPStopTriggerPx          float64                   `json:"resting_tp_stop_trigger_px,omitempty"`
+	TPConsumptions                  []TPConsumption           `json:"tp_consumptions,omitempty"`
+	PostTPTrailingATRMult           *float64                  `json:"post_tp_trailing_atr_mult,omitempty"`
+	ScaleInCount                    int                       `json:"scale_in_count,omitempty"`
+	LastAddPrice                    float64                   `json:"last_add_price,omitempty"`
+	AddedNotionalUSD                float64                   `json:"added_notional_usd,omitempty"`
+	RiskAnchorPrice                 float64                   `json:"risk_anchor_price,omitempty"`
+	ScaleInResizePending            bool                      `json:"-"`
+	RatchetFallbackNormalizePending bool                      `json:"-"`
+	LLMAnalysisRequested            bool                      `json:"llm_analysis_requested,omitempty"`
+	LLMVerdict                      string                    `json:"llm_verdict,omitempty"`
+	ATRMethodAtOpen                 string                    `json:"atr_method_at_open,omitempty"`
+	HurstAtOpen                     float64                   `json:"hurst_at_open,omitempty"`
+	HurstSizeMult                   float64                   `json:"hurst_size_mult,omitempty"`
+	HedgeFor                        string                    `json:"hedge_for,omitempty"`
+	HedgePrimaryQtyBasis            float64                   `json:"hedge_primary_qty_basis,omitempty"`
+	SharedCloseHoldUSD              float64                   `json:"shared_close_hold_usd,omitempty"`
+	SharedCloseHoldReason           string                    `json:"shared_close_hold_reason,omitempty"`
+	AccountKey                      string                    `json:"account_key,omitempty"`
+	VenueAccountID                  string                    `json:"venue_account_id,omitempty"`
+	AccountBindingSource            string                    `json:"account_binding_source,omitempty"`
 }
 
 func (p *Position) isHedgeLeg() bool {
@@ -148,14 +152,9 @@ func bookPerpsClose(s *StrategyState, symbol string, closePx float64, reason, de
 
 func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason, detailsPrefix, logPrefix string, logger *StrategyLogger) bool {
 	var booked bool
-	if err := withStrategyCostScope(s, func() {
-		mutatePaperPerpsBook(s, symbol, func() {
-			booked = bookPerpsCloseWithFillFeeInner(s, symbol, closePx, fillFee, useFillFee, exchangeOrderID, reason, detailsPrefix, logPrefix, logger)
-		})
-	}); err != nil {
-		logStrategyCostRefusal(logger, logPrefix, symbol, err)
-		return false
-	}
+	mutatePaperPerpsBook(s, symbol, func() {
+		booked = bookPerpsCloseWithFillFeeInner(s, symbol, closePx, fillFee, useFillFee, exchangeOrderID, reason, detailsPrefix, logPrefix, logger)
+	})
 	return booked
 }
 
@@ -222,7 +221,7 @@ func bookPerpsCloseWithFillFeeInner(s *StrategyState, symbol string, closePx, fi
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
 	}
-	fee := strategyPlatformFee(s, feePlatform, qty*closePx)
+	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
 	feeSource := FeeSourceModeled
 	if useFillFee {
 		fee = fillFee
@@ -269,14 +268,9 @@ func bookPerpsCloseWithFillFeeInner(s *StrategyState, symbol string, closePx, fi
 
 func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason, detailsPrefix, logPrefix string, logger *StrategyLogger) bool {
 	var booked bool
-	if err := withStrategyCostScope(s, func() {
-		mutatePaperPerpsBook(s, symbol, func() {
-			booked = bookPerpsPartialCloseWithFillFeeInner(s, symbol, closeQty, closePx, fillFee, useFillFee, exchangeOrderID, reason, detailsPrefix, logPrefix, logger)
-		})
-	}); err != nil {
-		logStrategyCostRefusal(logger, logPrefix, symbol, err)
-		return false
-	}
+	mutatePaperPerpsBook(s, symbol, func() {
+		booked = bookPerpsPartialCloseWithFillFeeInner(s, symbol, closeQty, closePx, fillFee, useFillFee, exchangeOrderID, reason, detailsPrefix, logPrefix, logger)
+	})
 	return booked
 }
 
@@ -311,7 +305,7 @@ func bookPerpsPartialCloseWithFillFeeInner(s *StrategyState, symbol string, clos
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
 	}
-	fee := strategyPlatformFee(s, feePlatform, qty*closePx)
+	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
 	feeSource := FeeSourceModeled
 	if useFillFee {
 		fee = fillFee
@@ -459,6 +453,7 @@ type Trade struct {
 	Regime               string `json:"regime,omitempty"`
 	RegimeDivergenceNote string `json:"-"`
 	RegimeProfileNote    string `json:"-"`
+	RegimeSideNote       string `json:"-"`
 
 	EntryATR          float64 `json:"entry_atr,omitempty"`
 	StopLossOID       int64   `json:"stop_loss_oid,omitempty"`
@@ -588,19 +583,9 @@ func formatStatusLine(cash float64, posCount int, value float64, trades int, reg
 }
 
 func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
-	v, _ := portfolioValueMarked(s, prices, nil)
-	return v
-}
-
-func portfolioValueMarked(s *StrategyState, prices map[string]float64, pm *pairMarks) (float64, pairValueStatus) {
-	var st pairValueStatus
 	total := s.Cash
 	for sym, pos := range s.Positions {
 		price, ok := prices[sym]
-		if mark, state, why, pair := pm.markFor(s, sym); pair {
-			st.note(s.ID, state, why)
-			price, ok = pairConservativePx(pos, state, mark), true
-		}
 		if !ok {
 			price = pos.AvgCost
 		}
@@ -619,7 +604,7 @@ func portfolioValueMarked(s *StrategyState, prices map[string]float64, pm *pairM
 	for _, opt := range s.OptionPositions {
 		total += opt.CurrentValueUSD
 	}
-	return total, st
+	return total
 }
 
 func PerpsOrderSkipReason(signal int, posSide, direction string) string {
@@ -960,21 +945,9 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		hold   string
 		err    error
 	)
-	if scopeErr := withStrategyCostScope(s, func() {
-		record := recordOpen
-		if s != nil && s.costScope != nil && recordOpen != nil {
-			policy := *s.costScope
-			record = func(t Trade) {
-				t.CostModelVersion, t.CostPolicyID = policy.ModelVersion, policy.PolicyID
-				recordOpen(t)
-			}
-		}
-		mutatePaperPerpsBook(s, symbol, func() {
-			trades, hold, err = executePerpsSignalWithLeverageInner(s, signal, symbol, price, sizing, fillQty, fillOID, fillFee, direction, closeFraction, logger, record, lot)
-		})
-	}); scopeErr != nil {
-		return 0, "", fmt.Errorf("the member cost binding refused the %s booking before any book change: %w", symbol, scopeErr)
-	}
+	mutatePaperPerpsBook(s, symbol, func() {
+		trades, hold, err = executePerpsSignalWithLeverageInner(s, signal, symbol, price, sizing, fillQty, fillOID, fillFee, direction, closeFraction, logger, recordOpen, lot)
+	})
 	return trades, hold, err
 }
 
@@ -1043,7 +1016,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			if fillQty > 0 {
 				execPrice = price
 			} else {
-				execPrice = strategyAdverseSlippage(s, price, true)
+				execPrice = ApplyAdverseSlippage(price, true)
 			}
 			pnl := closeQty * (pos.AvgCost - execPrice)
 			terminalClose := closeOnlyAction || !allowsLong
@@ -1052,7 +1025,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			if flipCloseQty > 0 && !terminalClose && fillQty > 0 {
 				legFillFee = flipFeeShare(fillFee, closeQty, fillQty)
 			}
-			fee := strategyExecutionFee(s, strategyPlatformFee(s, feePlatform, closeQty*execPrice), legFillFee, useFillFee)
+			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), legFillFee, useFillFee)
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
@@ -1079,7 +1052,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 				Details:         details,
 				ExchangeOrderID: closeOID,
 				ExchangeFee:     fee,
-				FeeSource:       strategyExecutionFeeSource(s, legFillFee, useFillFee),
+				FeeSource:       executionFeeSource(legFillFee, useFillFee),
 				IsClose:         true,
 				RealizedPnL:     grossPnL,
 				PnLGross:        true,
@@ -1127,7 +1100,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 				return tradesExecuted, "", nil
 			}
 		} else {
-			execPrice = strategyAdverseSlippage(s, price, true)
+			execPrice = ApplyAdverseSlippage(price, true)
 			if execPrice <= 0 {
 				return tradesExecuted, "", nil
 			}
@@ -1153,7 +1126,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			useFillFee = true
 			legFillFee = flipFeeShare(fillFee, qty, fillQty)
 		}
-		fee := strategyExecutionFee(s, strategyPlatformFee(s, feePlatform, notional), legFillFee, useFillFee)
+		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), legFillFee, useFillFee)
 		s.Cash -= fee
 		now := strategyBookNow(s)
 		positionID := newTradePositionID(s.ID, symbol, now)
@@ -1186,7 +1159,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			Details:         fmt.Sprintf("Open long %.6f @ $%s (%s, fee $%.2f)", qty, formatSignalPrice(execPrice), leverageLabel, fee),
 			ExchangeOrderID: openOID,
 			ExchangeFee:     fee,
-			FeeSource:       strategyExecutionFeeSource(s, legFillFee, useFillFee),
+			FeeSource:       executionFeeSource(legFillFee, useFillFee),
 			PnLGross:        true,
 		}
 		trade.Regime = s.Regime
@@ -1232,7 +1205,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			if fillQty > 0 {
 				execPrice = price
 			} else {
-				execPrice = strategyAdverseSlippage(s, price, false)
+				execPrice = ApplyAdverseSlippage(price, false)
 			}
 			pnl := closeQty * (execPrice - pos.AvgCost)
 			terminalClose := closeOnlyAction || !allowsShort
@@ -1241,7 +1214,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			if flipCloseQty > 0 && !terminalClose && fillQty > 0 {
 				legFillFee = flipFeeShare(fillFee, closeQty, fillQty)
 			}
-			fee := strategyExecutionFee(s, strategyPlatformFee(s, feePlatform, closeQty*execPrice), legFillFee, useFillFee)
+			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), legFillFee, useFillFee)
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
@@ -1268,7 +1241,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 				Details:         details,
 				ExchangeOrderID: closeOID,
 				ExchangeFee:     fee,
-				FeeSource:       strategyExecutionFeeSource(s, legFillFee, useFillFee),
+				FeeSource:       executionFeeSource(legFillFee, useFillFee),
 				IsClose:         true,
 				RealizedPnL:     grossPnL,
 				PnLGross:        true,
@@ -1316,7 +1289,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 				return tradesExecuted, "", nil
 			}
 		} else {
-			execPrice = strategyAdverseSlippage(s, price, false)
+			execPrice = ApplyAdverseSlippage(price, false)
 			if execPrice <= 0 {
 				return tradesExecuted, "", nil
 			}
@@ -1342,7 +1315,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			useFillFee = true
 			legFillFee = flipFeeShare(fillFee, qty, fillQty)
 		}
-		fee := strategyExecutionFee(s, strategyPlatformFee(s, feePlatform, notional), legFillFee, useFillFee)
+		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), legFillFee, useFillFee)
 		s.Cash -= fee
 		now := strategyBookNow(s)
 		positionID := newTradePositionID(s.ID, symbol, now)
@@ -1375,7 +1348,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			Details:         fmt.Sprintf("Open short %.6f @ $%s (%s, fee $%.2f)", qty, formatSignalPrice(execPrice), leverageLabel, fee),
 			ExchangeOrderID: openOID,
 			ExchangeFee:     fee,
-			FeeSource:       strategyExecutionFeeSource(s, legFillFee, useFillFee),
+			FeeSource:       executionFeeSource(legFillFee, useFillFee),
 			PnLGross:        true,
 		}
 		trade.Regime = s.Regime

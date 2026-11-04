@@ -10,7 +10,7 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
-from registry_loader import load_registry, refuse_pair_evaluator, refuse_quote_capability
+from registry_loader import load_registry, refuse_quote_capability
 from backtester import (STOP_OWNERS_NEEDING_ATR, Backtester, CloseCapabilityError,
                         _close_fraction_columns, aggregate_close_validations,
                         charge_funding_rejected)
@@ -77,6 +77,8 @@ def warmup_exit_long_entry(warmup_with_signal: pd.DataFrame,
 
 
 def scored_engine_can_open_short(engine: Backtester, scored: pd.DataFrame) -> bool:
+    if getattr(engine, "regime_side", False):
+        return engine.direction != "long"
     policy = engine.regime_directional_policy
     if policy and any(entry.get("direction") in ("short", "both") for entry in policy.values()):
         return True
@@ -356,7 +358,6 @@ def walk_forward_optimize(
     regime_gate_on_failure: str = "open",
     regime_label_plan: Optional[dict] = None,
 ) -> dict:
-    refuse_pair_evaluator(load_registry(registry), strategy_name)
     from book_inputs import refuse_book_input_strategy
     refuse_book_input_strategy(strategy_name, "walk-forward optimization")
     total_len = len(df)

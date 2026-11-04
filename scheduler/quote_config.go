@@ -192,16 +192,6 @@ func quoteDispatchRefusal(sc StrategyConfig) string {
 	return fmt.Sprintf("strategy %s: %s is quote-owned; scalar, batch, fallback, composer and live dispatch refuse it in every mode (only the admitted quote coordinator runs it)", sc.ID, strings.Join(refs, ", "))
 }
 
-func quoteProductionRefusalErrors(strategies []StrategyConfig) []string {
-	var errs []string
-	for _, sc := range strategies {
-		for _, ref := range strategyQuoteReferences(sc) {
-			errs = append(errs, fmt.Sprintf("strategy %s: %s is quote-owned (research-only, issue 1860): production initialization refuses it in every mode, with or without allow_no_edge, until a separate reviewed promotion", sc.ID, ref))
-		}
-	}
-	return errs
-}
-
 func quoteOwnerConfigErrors(sc StrategyConfig) []string {
 	var errs []string
 	add := func(format string, args ...interface{}) {
@@ -292,9 +282,6 @@ func quoteOwnerConfigErrors(sc StrategyConfig) []string {
 	}
 	if HedgeEnabled(sc) || sc.Hedge != nil {
 		add("hedge is refused for a quote owner")
-	}
-	if strings.TrimSpace(sc.BasketID) != "" {
-		add("basket ownership is refused for a quote owner")
 	}
 	if sc.RegimeProfileAllocation != nil || sc.RegimeDirectionalPolicy != nil || sc.RegimeWindowDivergence != nil {
 		add("regime close and allocation features are refused for a quote owner")

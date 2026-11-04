@@ -31,26 +31,51 @@ def test_load_missing_or_malformed_is_failclosed_empty(tmp_path):
     assert load_certifications(str(p)) == {}, "test_load_malformed_is_failclosed_empty: schema 2"
 
 
-def test_is_directional_certified_active_expired_never(tmp_path):
-    now = datetime(2026, 6, 19, tzinfo=timezone.utc)
-    future = (now + timedelta(days=2)).isoformat().replace("+00:00", "Z")
-    past = (now - timedelta(days=2)).isoformat().replace("+00:00", "Z")
-    p = tmp_path / "cert.json"
-    p.write_text(json.dumps({
-        "schema_version": 1,
-        "certified": [
-            {"asset": "BTC/USDT", "timeframe": "1h", "classifier": "composite",
-             "expires_at": future, "states": {"trending_up": "long"}},
-            {"asset": "ETH", "timeframe": "4h", "classifier": "adx",
-             "expires_at": past, "states": {"trending_down": "short"}},
-        ],
-    }))
-    certs = load_certifications(str(p))
-    assert is_directional_certified(certs, "BTC", "1h", "composite", now)
-    assert not is_directional_certified(certs, "ETH", "4h", "adx", now)
-    assert not is_directional_certified(certs, "SOL", "1h", "composite", now)
-    assert not is_directional_certified(certs, "BTC", "1h", "adx", now)
-    assert not is_directional_certified(certs, "BTC", "4h", "composite", now)
+def test_is_directional_certified_active_expired_never(tmp_path, subtests):
+    with subtests.test("test_is_directional_certified_active_expired_never"):
+        case_dir = tmp_path / "test_is_directional_certified_active_expired_never"
+        case_dir.mkdir()
+        now = datetime(2026, 6, 19, tzinfo=timezone.utc)
+        future = (now + timedelta(days=2)).isoformat().replace("+00:00", "Z")
+        past = (now - timedelta(days=2)).isoformat().replace("+00:00", "Z")
+        p = case_dir / "cert.json"
+        p.write_text(json.dumps({
+            "schema_version": 1,
+            "certified": [
+                {"asset": "BTC/USDT", "timeframe": "1h", "classifier": "composite",
+                 "expires_at": future, "states": {"trending_up": "long"}},
+                {"asset": "ETH", "timeframe": "4h", "classifier": "adx",
+                 "expires_at": past, "states": {"trending_down": "short"}},
+            ],
+        }))
+        certs = load_certifications(str(p))
+        assert is_directional_certified(certs, "BTC", "1h", "composite", now)
+        assert not is_directional_certified(certs, "ETH", "4h", "adx", now)
+        assert not is_directional_certified(certs, "SOL", "1h", "composite", now)
+        assert not is_directional_certified(certs, "BTC", "1h", "adx", now)
+        assert not is_directional_certified(certs, "BTC", "4h", "composite", now)
+    with subtests.test("test_certified_states_active_expired_never"):
+        case_dir = tmp_path / "test_certified_states_active_expired_never"
+        case_dir.mkdir()
+        now = datetime(2026, 6, 19, tzinfo=timezone.utc)
+        future = (now + timedelta(days=2)).isoformat().replace("+00:00", "Z")
+        past = (now - timedelta(days=2)).isoformat().replace("+00:00", "Z")
+        p = case_dir / "cert.json"
+        p.write_text(json.dumps({
+            "schema_version": 1,
+            "certified": [
+                {"asset": "BTC/USDT", "timeframe": "1h", "classifier": "composite",
+                 "expires_at": future,
+                 "states": {"trending_up": "long", "trending_down": "short"}},
+                {"asset": "ETH", "timeframe": "4h", "classifier": "adx",
+                 "expires_at": past, "states": {"trending_down": "short"}},
+            ],
+        }))
+        certs = load_certifications(str(p))
+        assert certified_states(certs, "BTC", "1h", "composite", now) == {
+            "trending_up": "long", "trending_down": "short"}
+        assert certified_states(certs, "ETH", "4h", "adx", now) is None
+        assert certified_states(certs, "SOL", "1h", "composite", now) is None
 
 
 def test_backtest_classifier():
@@ -85,28 +110,6 @@ def test_config_directional_classifier_matches_live_resolution():
     assert config_directional_classifier(rc3, {}) == "adx"
 
 
-def test_certified_states_active_expired_never(tmp_path):
-    now = datetime(2026, 6, 19, tzinfo=timezone.utc)
-    future = (now + timedelta(days=2)).isoformat().replace("+00:00", "Z")
-    past = (now - timedelta(days=2)).isoformat().replace("+00:00", "Z")
-    p = tmp_path / "cert.json"
-    p.write_text(json.dumps({
-        "schema_version": 1,
-        "certified": [
-            {"asset": "BTC/USDT", "timeframe": "1h", "classifier": "composite",
-             "expires_at": future,
-             "states": {"trending_up": "long", "trending_down": "short"}},
-            {"asset": "ETH", "timeframe": "4h", "classifier": "adx",
-             "expires_at": past, "states": {"trending_down": "short"}},
-        ],
-    }))
-    certs = load_certifications(str(p))
-    assert certified_states(certs, "BTC", "1h", "composite", now) == {
-        "trending_up": "long", "trending_down": "short"}
-    assert certified_states(certs, "ETH", "4h", "adx", now) is None
-    assert certified_states(certs, "SOL", "1h", "composite", now) is None
-
-
 def test_gate_directional_policy_by_states_per_state_sign():
     from backtester import _gate_directional_policy_by_states
     policy = {
@@ -136,50 +139,47 @@ def test_repo_artifact_is_empty_and_valid():
     assert certs == {}, "the shipped artifact must certify nothing (#1076)"
 
 
-def test_gate_expands_bare_policy_onto_certified_subs():
-    from backtester import _gate_directional_policy_by_states
-    bare_only = {"ranging_directional": {"direction": "long"}}
-    gated = _gate_directional_policy_by_states(
-        bare_only, {"ranging_directional_up": "long"})
-    assert gated == {"ranging_directional_up": {"direction": "long"}}
-    assert _gate_directional_policy_by_states(
-        bare_only, {"ranging_directional_up": "short"}) == {}
-    mixed = {
-        "ranging_directional": {"direction": "long"},
-        "ranging_directional_up": {"direction": "both"},
-    }
-    gated = _gate_directional_policy_by_states(
-        mixed, {"ranging_directional_up": "short"})
-    assert gated == {"ranging_directional_up": {"direction": "both"}}
-
-
-def test_resolve_directional_entry_is_exact_match_only():
-    from backtester import _resolve_regime_directional_entry
-    bare_only = {"ranging_directional": {"direction": "short"}}
-    assert _resolve_regime_directional_entry(
-        bare_only, "ranging_directional_down") is None
-    assert _resolve_regime_directional_entry(bare_only, "trending_up") is None
-    assert _resolve_regime_directional_entry(
-        bare_only, "ranging_directional") == {"direction": "short"}
-
-
-def test_gate_then_resolve_matches_live_cert_semantics():
-    from backtester import (
-        _gate_directional_policy_by_states,
-        _resolve_regime_directional_entry,
-    )
-    bare_policy = {"ranging_directional": {"direction": "long"}}
-    gated = _gate_directional_policy_by_states(
-        bare_policy, {"ranging_directional": "long"})
-    assert _resolve_regime_directional_entry(
-        gated, "ranging_directional_down") is None
-    assert _resolve_regime_directional_entry(
-        gated, "ranging_directional") == {"direction": "long"}
-    gated = _gate_directional_policy_by_states(
-        bare_policy, {"ranging_directional_up": "long"})
-    assert _resolve_regime_directional_entry(
-        gated, "ranging_directional_up") == {"direction": "long"}
-    gated = _gate_directional_policy_by_states(
-        bare_policy, {"ranging_directional_up": "short"})
-    assert _resolve_regime_directional_entry(
-        gated, "ranging_directional_up") is None
+def test_gate_then_resolve_matches_live_cert_semantics(subtests):
+    with subtests.test("test_gate_then_resolve_matches_live_cert_semantics"):
+        from backtester import (
+            _gate_directional_policy_by_states,
+            _resolve_regime_directional_entry,
+        )
+        bare_policy = {"ranging_directional": {"direction": "long"}}
+        gated = _gate_directional_policy_by_states(
+            bare_policy, {"ranging_directional": "long"})
+        assert _resolve_regime_directional_entry(
+            gated, "ranging_directional_down") is None
+        assert _resolve_regime_directional_entry(
+            gated, "ranging_directional") == {"direction": "long"}
+        gated = _gate_directional_policy_by_states(
+            bare_policy, {"ranging_directional_up": "long"})
+        assert _resolve_regime_directional_entry(
+            gated, "ranging_directional_up") == {"direction": "long"}
+        gated = _gate_directional_policy_by_states(
+            bare_policy, {"ranging_directional_up": "short"})
+        assert _resolve_regime_directional_entry(
+            gated, "ranging_directional_up") is None
+    with subtests.test("test_gate_expands_bare_policy_onto_certified_subs"):
+        from backtester import _gate_directional_policy_by_states
+        bare_only = {"ranging_directional": {"direction": "long"}}
+        gated = _gate_directional_policy_by_states(
+            bare_only, {"ranging_directional_up": "long"})
+        assert gated == {"ranging_directional_up": {"direction": "long"}}
+        assert _gate_directional_policy_by_states(
+            bare_only, {"ranging_directional_up": "short"}) == {}
+        mixed = {
+            "ranging_directional": {"direction": "long"},
+            "ranging_directional_up": {"direction": "both"},
+        }
+        gated = _gate_directional_policy_by_states(
+            mixed, {"ranging_directional_up": "short"})
+        assert gated == {"ranging_directional_up": {"direction": "both"}}
+    with subtests.test("test_resolve_directional_entry_is_exact_match_only"):
+        from backtester import _resolve_regime_directional_entry
+        bare_only = {"ranging_directional": {"direction": "short"}}
+        assert _resolve_regime_directional_entry(
+            bare_only, "ranging_directional_down") is None
+        assert _resolve_regime_directional_entry(bare_only, "trending_up") is None
+        assert _resolve_regime_directional_entry(
+            bare_only, "ranging_directional") == {"direction": "short"}

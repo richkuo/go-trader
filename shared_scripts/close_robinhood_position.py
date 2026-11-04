@@ -54,12 +54,34 @@ def _clean_sizing(sizing):
     return clean
 
 
+_SELL_PRICE_NUMBER_KEYS = ("bid_price", "sent_price", "today_price")
+_SELL_PRICE_RULES = ("floor_increment", "floor_decimals", "round_fallback", "one_step", "wire_floor")
+
+
+def _clean_sell_price(sell_price):
+    if not isinstance(sell_price, dict):
+        return None
+    clean = {key: _finite_or_none(sell_price.get(key)) for key in _SELL_PRICE_NUMBER_KEYS}
+    decimals = sell_price.get("price_decimals")
+    clean["price_decimals"] = decimals if type(decimals) is int and decimals in (2, 4, 6) else None
+    increment = _finite_or_none(sell_price.get("price_increment"))
+    if increment is not None:
+        clean["price_increment"] = increment
+    rule = sell_price.get("rule")
+    clean["rule"] = rule if rule in _SELL_PRICE_RULES else None
+    for key in ("price_increment_problem", "fallback_reason"):
+        if isinstance(sell_price.get(key), str):
+            clean[key] = sell_price[key]
+    return clean
+
+
 def _parse_args(argv):
     parser = _Parser()
     parser.add_argument("--symbol", required=True)
     parser.add_argument("--mode", default="live")
     parser.add_argument("--quantity", default=None)
     parser.add_argument("--ref-id", default="")
+    parser.add_argument("--expected-account-id", default="")
     parser.add_argument("--budget-ms", type=int, default=_DEFAULT_BUDGET_MS)
     parser.add_argument("--probe-only", action="store_true")
     return parser.parse_args(argv)
@@ -106,6 +128,11 @@ def main():
             _emit(emit, args.symbol, {"outcome": "not_sent", "detail": "--mode=live required for emergency close"})
             return
 
+        expected_account_id = args.expected_account_id.strip()
+        if not expected_account_id:
+            _emit(emit, args.symbol, {"outcome": "not_sent", "detail": "--expected-account-id is required: the emergency close sells only from the account that owns the go-trader book"})
+            return
+
         if args.budget_ms < _BUDGET_MIN_MS or args.budget_ms > _BUDGET_MAX_MS:
             _emit(emit, args.symbol, {"outcome": "not_sent", "detail": f"--budget-ms must be from {_BUDGET_MIN_MS} to {_BUDGET_MAX_MS}"})
             return
@@ -116,6 +143,7 @@ def main():
             adapter = RobinhoodExchangeAdapter(mode="live", login_deadline=deadline)
             if not adapter.is_live:
                 raise RuntimeError("Robinhood adapter not live — set ROBINHOOD_USERNAME / ROBINHOOD_PASSWORD / ROBINHOOD_TOTP_SECRET")
+            adapter.crypto_account_id(deadline, expected_account_id)
             holding = adapter.holding_quantities(args.symbol, deadline)
             held, available = holding["quantity"], holding["available"]
         except Exception as e:
@@ -134,6 +162,7 @@ def main():
         try:
             result = adapter.place_market_order(
                 args.symbol, "sell", ref_id=args.ref_id, deadline=deadline, quantity=float(asked),
+                expected_account_id=expected_account_id,
                 sell_policy={"asked": asked, "close_kind": _CLOSE_KIND_EMERGENCY, "sole_owner": False},
             )
         except Exception as e:
@@ -165,6 +194,9 @@ def _emit(emit, symbol, result, held_qty=None, available_qty=None):
     sizing = _clean_sizing(result.get("sizing"))
     if sizing is not None:
         payload["sizing"] = sizing
+    sell_price = _clean_sell_price(result.get("sell_price"))
+    if sell_price is not None:
+        payload["sell_price"] = sell_price
     fill = result.get("fill")
     if outcome == "already_flat":
         close["already_flat"] = True

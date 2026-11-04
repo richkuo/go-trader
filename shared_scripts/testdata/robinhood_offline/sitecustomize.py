@@ -58,7 +58,15 @@ def _install():
     import requests.models
     import yfinance
 
+    yahoo_log = os.environ.get("RH_OFFLINE_STUB_YAHOO_LOG", "")
+
     def stub_history(self, *args, **kwargs):
+        if yahoo_log:
+            with open(yahoo_log, "a") as f:
+                f.write(json.dumps({"yahoo": getattr(self, "ticker", ""), "period": kwargs.get("period"),
+                                    "interval": kwargs.get("interval")}) + "\n")
+        if kwargs.get("interval") == "1d" and os.environ.get("RH_OFFLINE_STUB_DAILY") == "error":
+            raise RuntimeError("robinhood offline stub: daily history failure")
         n = 260
         index = pd.date_range(end=pd.Timestamp("2026-10-01 00:00", tz="UTC"), periods=n, freq="h")
         close = [100.0 + ((i * 7) % 23) - 11 + i * 0.05 for i in range(n)]
@@ -91,7 +99,8 @@ def _install():
         if request.method == "GET" and path == "https://nummus.robinhood.com/currency_pairs/":
             return response(request, 200, {"next": None, "results": [
                 {"id": _PAIR_ID, "symbol": "BTC-USD", "asset_currency": {"code": "BTC"},
-                 "min_order_size": "0.000001", "min_order_quantity_increment": "0.00000001", "max_order_size": "20"},
+                 "min_order_size": "0.000001", "min_order_quantity_increment": "0.00000001", "max_order_size": "20",
+                 "min_order_price_increment": "0.01"},
             ]})
         if request.method == "GET" and path == "https://api.robinhood.com/marketdata/forex/quotes/%s/" % _PAIR_ID:
             return response(request, 200, {"id": _PAIR_ID, "ask_price": "100.00", "bid_price": "99.00", "mark_price": "99.50"})
@@ -163,6 +172,11 @@ def _install():
     def route_answer(request, timeout):
         key = request.method + " " + request.url
         items = routes.get(key)
+        if items is None:
+            for pattern in sorted(routes):
+                if pattern.endswith("*") and key.startswith(pattern[:-1]):
+                    key, items = pattern, routes[pattern]
+                    break
         if items is None and request.method == "POST" and "/oauth2/token/" in request.url:
             log_route_request(request, timeout, True)
             return response(request, 200, {

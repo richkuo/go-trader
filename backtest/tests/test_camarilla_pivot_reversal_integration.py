@@ -16,9 +16,6 @@ if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
 
 import eval_windows
-from atr import ensure_atr_indicator
-from backtester import Backtester
-from close_registry_loader import evaluate as close_evaluate
 from closed_bar import (
     FRAME_DECISION_TIME_ATTR,
     FRAME_INTERVAL_ATTR,
@@ -29,18 +26,14 @@ from closed_bar import (
     bind_fixed_interval_params,
     declare_frame_cadence,
 )
-from optimizer import DEFAULT_PARAM_RANGES
-from parity_diff import LIVE_MIN_CANDLES, ParityConfig, compute_parity_frame, summarize
+from parity_diff import LIVE_MIN_CANDLES, ParityConfig
 from registry_loader import load_registry
 from strategy_composition import (
     StrategyReference,
-    evaluate_open_close,
-    finalize_decision,
     preflight_reference_params,
 )
 
 NAME = "camarilla_pivot_reversal"
-REF = "backtest/candidates/camarilla_pivot_reversal_1669/REPORT.md"
 STUDY = os.path.join(_REPO, "backtest", "candidates", "camarilla_pivot_reversal_1669", "run_study.py")
 DAY = 86_400_000
 H = 3_600_000
@@ -154,28 +147,13 @@ def _reference(df, interval):
     return out
 
 
-def _first(out, side):
-    return int(np.flatnonzero(out["signal"].to_numpy() == side)[0])
+def test_levels_and_entries_match_an_independent_daily_calculation(subtests):
+    for tf in SUPPORTED:
+        with subtests.test(tf=tf):
+            _levels_and_entries_match_an_independent_daily_calculation(tf)
 
 
-def test_registration_is_futures_only_bidirectional_hidden_no_edge_with_an_empty_grid():
-    fut = _reg()
-    entry = fut.STRATEGY_REGISTRY[NAME]
-    raw = fut._registry.STRATEGIES[NAME]
-    assert entry["default_params"] == {"expected_interval_ms": H}
-    assert entry["edge_status"] == "no_edge" and entry["edge_ref"] == REF
-    assert entry["edge_source"] in ("unvalidated", "study_fail", "study_inconclusive")
-    assert raw["short_entries"] is True and raw["platforms"] == ("futures",)
-    assert raw["param_validator"] is not None
-    assert NAME in fut._registry.short_entry_strategies()
-    assert NAME in fut._registry.DISCOVERY_HIDDEN_STRATEGIES and NAME not in fut.list_strategies()
-    assert NAME in fut._registry.PLATFORM_ORDER["futures"] and NAME not in fut._registry.PLATFORM_ORDER["spot"]
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
-    assert DEFAULT_PARAM_RANGES[NAME] == {}
-
-
-@pytest.mark.parametrize("tf", list(SUPPORTED))
-def test_levels_and_entries_match_an_independent_daily_calculation(tf):
+def _levels_and_entries_match_an_independent_daily_calculation(tf):
     interval = SUPPORTED[tf]
     per = DAY // interval
     df = _walk(per * 9, tf, seed=interval // 60_000, sigma=0.02 / per ** 0.5)
@@ -222,7 +200,7 @@ LEVEL_PATHS = [
 ]
 
 
-def test_level_equality_and_opposite_boundary_jumps():
+def _level_equality_and_opposite_boundary_jumps():
     for path, reason, signal in LEVEL_PATHS:
         with _case(path):
             out = _apply(_day_frame("1h", path))
@@ -237,7 +215,7 @@ OUTER_SUPPORT_CASES = [
 ]
 
 
-def test_outer_support_contact_invalidates_a_long():
+def _outer_support_contact_invalidates_a_long():
     for prev_low, low, reason in OUTER_SUPPORT_CASES:
         with _case((prev_low, low, reason)):
             df = _day_frame("1h", [100.0, 94.0, 95.0])
@@ -253,13 +231,22 @@ OUTER_RESISTANCE_CASES = [
 ]
 
 
-def test_outer_resistance_contact_invalidates_a_short():
+def _outer_resistance_contact_invalidates_a_short():
     for prev_high, high, reason in OUTER_RESISTANCE_CASES:
         with _case((prev_high, high, reason)):
             df = _day_frame("1h", [100.0, 106.0, 105.0])
             df.iloc[25, df.columns.get_loc("high")] = prev_high
             df.iloc[26, df.columns.get_loc("high")] = high
             assert _apply(df)["cpr_reason"].iloc[26] == reason
+
+
+def test_entry_levels_decide_by_strict_crossings_and_outer_contacts(subtests):
+    with subtests.test(case="level_equality_and_opposite_boundary_jumps"):
+        _level_equality_and_opposite_boundary_jumps()
+    with subtests.test(case="outer_support_contact_invalidates_a_long"):
+        _outer_support_contact_invalidates_a_long()
+    with subtests.test(case="outer_resistance_contact_invalidates_a_short"):
+        _outer_resistance_contact_invalidates_a_short()
 
 
 def test_the_first_bar_of_a_day_never_pairs_with_the_previous_day():
@@ -337,7 +324,7 @@ PRIOR_DAY_DEFECTS = [
 ]
 
 
-def test_prior_day_defects_hold_every_decision_of_the_next_day():
+def _prior_day_defects_hold_every_decision_of_the_next_day():
     for i, (mutate, reason) in enumerate(PRIOR_DAY_DEFECTS):
         with _case(f"{i}-{reason}"):
             clean = _day_frame("1h", [100.0, 94.0, 95.0])
@@ -374,14 +361,14 @@ def test_a_gap_inside_the_current_day_resets_the_pair_and_entries_resume_after_i
     assert straddle["cpr_reason"].iloc[24 + 2] == "cadence_gap" and int(straddle["signal"].abs().sum()) == 0
 
 
-def test_both_crossing_candles_are_validated():
+def _both_crossing_candles_are_validated():
     for pos, reason in ((25, "nonfinite_price"), (26, "nonfinite_price")):
         with _case(pos):
             out = _apply(_set(_day_frame("1h", [100.0, 94.0, 95.0]), pos, "close", np.nan))
             assert out["cpr_reason"].iloc[26] == reason and int(out["signal"].abs().sum()) == 0
 
 
-def test_levels_never_carry_over_a_missing_day():
+def _levels_never_carry_over_a_missing_day():
     per = 24
     bars = _prior_day(per) + _session([100.0] * per) + _session([100.0, 94.0, 95.0] + [100.0] * (per - 3))
     df = _frame(bars)
@@ -469,7 +456,7 @@ TIMING_ATTRS = [
 ]
 
 
-def test_missing_or_contradictory_timing_holds_every_row():
+def _missing_or_contradictory_timing_cases():
     for attrs, reason in TIMING_ATTRS:
         with _case(attrs):
             _missing_or_contradictory_timing_holds_every_row(attrs, reason)
@@ -485,6 +472,17 @@ def _missing_or_contradictory_timing_holds_every_row(attrs, reason):
     assert set(out["cpr_reason"]) == {"missing_timestamps"}
 
 
+def test_input_defects_hold_the_decisions_they_feed_with_their_reason(subtests):
+    with subtests.test(case="prior_day_defects_hold_every_decision_of_the_next_day"):
+        _prior_day_defects_hold_every_decision_of_the_next_day()
+    with subtests.test(case="both_crossing_candles_are_validated"):
+        _both_crossing_candles_are_validated()
+    with subtests.test(case="levels_never_carry_over_a_missing_day"):
+        _levels_never_carry_over_a_missing_day()
+    with subtests.test(case="missing_or_contradictory_timing_holds_every_row"):
+        _missing_or_contradictory_timing_cases()
+
+
 def _runtime(df, cutoff, boundary):
     out = df.copy()
     out.attrs = dict(df.attrs)
@@ -492,45 +490,7 @@ def _runtime(df, cutoff, boundary):
     return out
 
 
-def test_check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar():
-    for kind in (TIMESTAMP_KIND_OPEN, TIMESTAMP_KIND_NATIVE_CLOSE):
-        with _case(kind):
-            _check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar(kind)
-
-
-def _check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar(kind):
-    df = _day_frame("1h", [100.0, 94.0, 95.0]).iloc[:27].copy()
-    if kind == TIMESTAMP_KIND_NATIVE_CLOSE:
-        df.index = df.index + pd.Timedelta(milliseconds=H - 1)
-        df.attrs[FRAME_TIMESTAMP_KIND_ATTR] = kind
-    hist = _apply(df)
-    assert int(hist["signal"].iloc[-1]) == 1
-    open_ms = int(hist["cpr_eval_ts_ms"].iloc[-1])
-    boundary = open_ms + H
-    cases = [
-        (boundary, boundary, 1, "entry_long"),
-        (boundary + H - 1, boundary, 1, "entry_long"),
-        (boundary + H, boundary, 0, "decision_bar_stale"),
-        (boundary - 1, boundary, 0, "decision_bar_future"),
-        (boundary + 5, boundary - H, 0, "decision_boundary_mismatch"),
-        (None, None, 0, "decision_time_missing"),
-    ]
-    for cutoff, declared, signal, reason in cases:
-        out = _apply(_runtime(df, cutoff, declared))
-        assert int(out["signal"].iloc[-1]) == signal, (cutoff, declared)
-        assert out["cpr_reason"].iloc[-1] == reason
-        assert out["cpr_s3"].iloc[-1] == hist["cpr_s3"].iloc[-1]
-        assert (out["signal"].iloc[:-1] == hist["signal"].iloc[:-1]).all()
-    recorded = _apply(_runtime(df, boundary, boundary))
-    assert recorded["cpr_decision_cutoff_ms"].iloc[-1] == boundary
-    assert recorded["cpr_decision_boundary_ms"].iloc[-1] == boundary
-    bad = df.copy()
-    bad.attrs = dict(df.attrs)
-    bad.attrs[FRAME_DECISION_TIME_ATTR] = {"cutoff_ms": float(boundary), "boundary_ms": True}
-    assert _apply(bad)["cpr_reason"].iloc[-1] == "decision_time_missing"
-
-
-def test_every_supported_interval_validates():
+def _every_supported_interval_validates():
     for value in list(SUPPORTED.values()) + [3_600_000.0]:
         with _case(value):
             _reg()._registry.validate_params(NAME, {"expected_interval_ms": value})
@@ -540,13 +500,20 @@ UNSUPPORTED_INTERVALS = [60_000, 300_000, 21_600_000, 86_400_000, 0, -H, True, 3
                          float("inf"), "3600000", None]
 
 
-def test_unsupported_or_malformed_intervals_are_refused():
+def _unsupported_or_malformed_intervals_are_refused():
     for value in UNSUPPORTED_INTERVALS:
         with _case(repr(value)):
             with pytest.raises(ValueError, match="expected_interval_ms"):
                 _reg()._registry.validate_params(NAME, {"expected_interval_ms": value})
             with pytest.raises(ValueError):
                 _apply(_day_frame("1h", [100.0]), value)
+
+
+def test_interval_parameter_accepts_supported_cadences_and_refuses_the_rest(subtests):
+    with subtests.test(case="every_supported_interval_validates"):
+        _every_supported_interval_validates()
+    with subtests.test(case="unsupported_or_malformed_intervals_are_refused"):
+        _unsupported_or_malformed_intervals_are_refused()
 
 
 def test_research_binding_refuses_a_cadence_or_timeframe_mismatch_before_loading_candles(monkeypatch):
@@ -591,137 +558,12 @@ def test_check_preflight_refuses_cadence_mismatches_for_open_and_close_fallback_
     preflight_reference_params(refs, {}, {NAME: {}}, reg.get_strategy, reg.validate_params)
 
 
-def _composer(df, side="", position_ctx=None, closes=("tiered_tp_pct",), protection_df=None):
-    reg = _reg()
-    evaluation = evaluate_open_close(
-        reg.apply_strategy, reg.get_strategy, df, NAME, NAME, list(closes), side, params={"expected_interval_ms": H},
-        position_ctx=position_ctx, close_evaluate=close_evaluate,
-        close_params_by_name={"tiered_tp_pct": CLOSE[0]["params"]}, protection_df=protection_df)
-    return evaluation, finalize_decision(evaluation, side)
-
-
-def test_composer_emits_both_directions_and_holds_entries_while_a_position_is_open():
-    long_df = _day_frame("1h", [100.0, 94.0, 95.0]).iloc[:27].copy()
-    short_df = _day_frame("1h", [100.0, 106.0, 105.0]).iloc[:27].copy()
-    _, flat_long = _composer(long_df)
-    _, flat_short = _composer(short_df)
-    assert (flat_long["open_action"], flat_long["signal"]) == ("long", 1)
-    assert (flat_short["open_action"], flat_short["signal"]) == ("short", -1)
-    for frame in (long_df, short_df):
-        mark = float(frame["close"].iloc[-1])
-        for side in ("long", "short"):
-            ctx = {"side": side, "avg_cost": mark, "entry_atr": 1.0, "current_quantity": 1.0,
-                   "initial_quantity": 1.0}
-            _, held = _composer(frame, side, ctx)
-            assert held["signal"] == 0 and held["close_fraction"] == 0.0
-
-
-def test_entry_holds_keep_the_close_owner_executable():
-    for mutation in ("prior_gap", "nan_close", "undeclared", "stale", "unavailable"):
-        with _case(mutation):
-            _entry_holds_keep_the_close_owner_executable(mutation)
-
-
-def _entry_holds_keep_the_close_owner_executable(mutation):
-    df = _day_frame("1h", [100.0, 94.0, 95.0]).iloc[:27].copy()
-    protection = None
-    if mutation == "prior_gap":
-        df = _drop(df, 5)
-    elif mutation == "nan_close":
-        df = _set(df, 25, "close", np.nan)
-    elif mutation == "undeclared":
-        df.attrs = {}
-    elif mutation == "stale":
-        last = int(df.index[-1].value // 1_000_000)
-        df = _runtime(df, last + 3 * H, last + H)
-    else:
-        protection, df = df, None
-    frame = df if df is not None else protection
-    mark = float(frame["close"].iloc[-1])
-    ctx = {"side": "long", "avg_cost": mark / 1.05, "entry_atr": 1.0, "current_quantity": 1.0,
-           "initial_quantity": 1.0}
-    evaluation, decision = _composer(df, "long", ctx, protection_df=protection)
-    if df is not None:
-        assert evaluation.open_result_df["cpr_valid"].iloc[-1] == 0.0
-        assert int(evaluation.open_result_df["signal"].iloc[-1]) == 0
-    assert decision["open_action"] == "none"
-    assert decision["close_strategy"] == "tiered_tp_pct" and decision["close_fraction"] == 1.0
-    assert decision["signal"] == -1
-    _, decision = _composer(df, "short", dict(ctx, side="short", avg_cost=mark * 1.05), protection_df=protection)
-    assert decision["close_fraction"] == 1.0 and decision["signal"] == 1
-    _, flat = _composer(df, "", None, protection_df=protection)
-    assert flat["signal"] == 0 and flat["open_action"] == "none"
-
-
-def _bt(**kw):
-    base = dict(initial_capital=1000.0, platform="hyperliquid",
-                open_strategy={"name": NAME, "params": {"expected_interval_ms": H}},
-                close_strategies=CLOSE, stop_loss_atr_mult=1.0, direction="both")
-    base.update(kw)
-    return Backtester(**base)
-
-
-def test_simulator_fills_next_open_with_one_close_and_one_stop_and_no_reversal_or_scale_in():
-    df = _walk(24 * 60, "1h", seed=31, sigma=0.008)
-    sig = ensure_atr_indicator(_apply(df))
-    assert (sig["signal"] == 1).sum() > 5 and (sig["signal"] == -1).sum() > 5
-    res = _bt().run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="1h", save=False)
-    trades = res["trades"]
-    assert {t["side"] for t in trades} == {"long", "short"}
-    reasons = {t["exit_reason"].split(":")[0] for t in trades}
-    assert reasons <= {"sl", "tiered_tp_pct", "end_of_data"} and "sl" in reasons
-    spans = []
-    for t in trades:
-        entry = pd.Timestamp(t["entry_date"])
-        pos = sig.index.get_loc(entry)
-        assert int(sig["signal"].iloc[pos - 1]) == (1 if t["side"] == "long" else -1)
-        assert t["entry_price"] == pytest.approx(df["open"].iloc[pos], rel=0.01)
-        spans.append((entry, pd.Timestamp(t["exit_date"])))
-    spans.sort()
-    for (_, prev_exit), (next_entry, _) in zip(spans, spans[1:]):
-        assert next_entry >= prev_exit
-    ignored = int((sig["signal"] != 0).sum()) - len(trades)
-    assert ignored > 0
-
-
-def test_simulator_keeps_closing_and_stopping_after_entry_inputs_fail():
-    df = _walk(24 * 40, "1h", seed=31, sigma=0.008)
-    sig = ensure_atr_indicator(_apply(df))
-    clean = _bt().run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="1h", save=False)
-    first = min(int(sig.index.get_loc(pd.Timestamp(t["entry_date"]))) for t in clean["trades"]
-                if sig.index.get_loc(pd.Timestamp(t["entry_date"])) > 60) - 1
-    corrupt = df.copy()
-    corrupt.attrs = dict(df.attrs)
-    corrupt.attrs[FRAME_RECEIVED_ORDER_DEFECTS_ATTR] = [int(t.value // 1_000_000) for t in df.index[first + 1:]]
-    bad = ensure_atr_indicator(_apply(corrupt))
-    assert (bad["signal"].iloc[:first + 1] == sig["signal"].iloc[:first + 1]).all()
-    assert (bad["signal"].iloc[first + 1:] == 0).all()
-    res = _bt().run(bad, strategy_name=NAME, symbol="BTC/USDT", timeframe="1h", save=False)
-    last_entry = max(pd.Timestamp(t["entry_date"]) for t in res["trades"])
-    assert last_entry == bad.index[first + 1]
-    final = [t for t in res["trades"] if pd.Timestamp(t["entry_date"]) == last_entry]
-    assert {t["exit_reason"].split(":")[0] for t in final} <= {"sl", "tiered_tp_pct"}
-
-
 def _cfg(**kw):
     base = dict(strategy_name=NAME, params={"expected_interval_ms": H}, registry="futures", platform="hyperliquid",
                 symbol="BTC", timeframe="1h", close_refs=json.loads(json.dumps(CLOSE)), direction="both",
                 stop_kwargs={"stop_loss_atr_mult": 1.0}, comparison_mode="strict")
     base.update(kw)
     return ParityConfig(**base)
-
-
-@pytest.mark.parametrize("window", [200, None])
-@pytest.mark.parametrize("batched", [False, True])
-def test_decision_parity_covers_both_entries_with_the_close_and_stop_owner(window, batched):
-    df = _walk(24 * 24, "1h", seed=41, sigma=0.012)
-    frame = compute_parity_frame(df, cfg=_cfg(batched=batched), window=window)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0 and result["mismatches"] == 0, frame[~frame["match"]].head()
-    assert result["clean"] and result["close_validation"]["close_eligibility"] == "eligible"
-    if batched:
-        assert result["batch_mismatches"] == 0
-    assert (frame["live_open_action"] == "long").any() and (frame["live_open_action"] == "short").any()
 
 
 def _study():

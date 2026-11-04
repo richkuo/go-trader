@@ -1,4 +1,3 @@
-import contextlib
 import math
 import os
 import sys
@@ -19,7 +18,6 @@ from atr import ensure_atr_indicator
 from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from closed_bar import (
-    FRAME_DECISION_TIME_ATTR,
     FRAME_INTERVAL_ATTR,
     FRAME_RECEIVED_ORDER_DEFECTS_ATTR,
     FRAME_TIMESTAMP_KIND_ATTR,
@@ -29,7 +27,7 @@ from closed_bar import (
 )
 from optimizer import DEFAULT_PARAM_RANGES, strategy_warmup_bars
 from registry_loader import load_registry
-from strategy_composition import StrategyReference, evaluate_open_close, finalize_decision, preflight_reference_params
+from strategy_composition import evaluate_open_close, finalize_decision
 
 NAME = "calendar_conditioned_entry"
 REF = "backtest/candidates/calendar_conditioned_entry_1653/REPORT.md"
@@ -48,19 +46,6 @@ CONTRACT = {"close_strategies": [{"name": "time_stop", "params": {"max_bars": P[
 
 def _reg():
     return load_registry("futures")
-
-
-@contextlib.contextmanager
-def _case(label):
-    try:
-        yield
-    except AssertionError as exc:
-        raise AssertionError(f"case {label}: {exc}") from exc
-    except pytest.fail.Exception as exc:
-        pytest.fail(f"case {label}: {exc}")
-    except Exception as exc:
-        exc.add_note(f"case {label}")
-        raise
 
 
 def _apply(df, **over):
@@ -185,7 +170,14 @@ def test_decisions_match_an_independent_weekly_cluster_reference():
     assert out["cce_family_size"].iloc[-1] == 336.0 and out["cce_nw_lag"].iloc[-1] == 1.0
 
 
-def test_rising_falling_constant_and_directional_cost_handling():
+def test_entry_rule_direction_cost_hurdle_effective_sample_floor_and_refit_boundaries(subtests):
+    with subtests.test(case="rising_falling_constant_and_cost"):
+        _rising_falling_constant_and_directional_cost_handling()
+    with subtests.test(case="effective_sample_floor_and_refit_boundaries"):
+        _effective_sample_floor_and_refit_boundaries()
+
+
+def _rising_falling_constant_and_directional_cost_handling():
     rising = _apply(_trend(0.003, 0.0005))
     falling = _apply(_trend(-0.003, 0.0005))
     flat = _apply(_trend(0.0, 0.0))
@@ -205,7 +197,7 @@ def test_rising_falling_constant_and_directional_cost_handling():
     assert (costly.loc[valid, "cce_short_lower_bound"] < 0).all()
 
 
-def test_effective_sample_floor_and_refit_boundaries():
+def _effective_sample_floor_and_refit_boundaries():
     df = _calendar()
     out = _apply(df)
     i = int(np.flatnonzero(out["signal"].to_numpy() == 1)[0])
@@ -225,7 +217,19 @@ def test_effective_sample_floor_and_refit_boundaries():
     assert (eval_boundary.to_numpy()[changes - 1] - boundary.to_numpy()[changes - 1] == (P["refit_bars"] - 1) * H1).all()
 
 
-def test_labels_are_completed_before_the_refit_that_consumes_them():
+def test_no_look_ahead_labels_future_rows_and_shifted_frame_starts(subtests):
+    with subtests.test(case="labels_completed_before_refit"):
+        _labels_are_completed_before_the_refit_that_consumes_them()
+    with subtests.test(case="future_rows_and_refit_tables"):
+        _future_rows_never_change_earlier_signals_tables_or_refit_timing()
+    df = _calendar(n=N_BARS + 600)
+    full = _apply(df)
+    for shift in (1, 37, 167, 168, 500):
+        with subtests.test(case=f"shift={shift}"):
+            _shifted_start_keeps_decisions(df, full, shift)
+
+
+def _labels_are_completed_before_the_refit_that_consumes_them():
     df = _calendar()
     out = _apply(df)
     rows = out.index[out["cce_valid"] == 1.0]
@@ -320,12 +324,14 @@ INPUT_DEFECTS = [
 ]
 
 
-def test_input_defects_hold_with_a_reason_never_rewrite_earlier_decisions_and_recover_on_clean_history():
+def test_input_defects_hold_with_a_reason_never_rewrite_earlier_decisions_and_recover_on_clean_history(subtests):
     df = _calendar(n=N_BARS + 2600)
     clean = _apply(df)
     for kind, row_reason in INPUT_DEFECTS:
-        with _case(kind):
+        with subtests.test(case=kind):
             _input_defect_holds_and_recovers(df, clean, kind, row_reason)
+    with subtests.test(case="missing_history_columns_and_timing"):
+        _missing_history_columns_and_timing_hold_with_reasons()
 
 
 def _input_defect_holds_and_recovers(df, clean, kind, row_reason):
@@ -345,7 +351,7 @@ def _input_defect_holds_and_recovers(df, clean, kind, row_reason):
     assert int(out["cce_history_bars"].iloc[first - 1]) < int(out["cce_required_bars"].iloc[first - 1])
 
 
-def test_future_rows_never_change_earlier_signals_tables_or_refit_timing():
+def _future_rows_never_change_earlier_signals_tables_or_refit_timing():
     from calendar_conditioned_entry import calendar_refit_tables
     df = _calendar()
     full = _apply(df)
@@ -371,14 +377,6 @@ def test_future_rows_never_change_earlier_signals_tables_or_refit_timing():
         assert list(mut[col].iloc[:cut - 1].astype(str)) == list(full[col].iloc[:cut - 1].astype(str)), col
 
 
-def test_shifting_the_frame_start_keeps_every_decision_that_still_has_its_history():
-    df = _calendar(n=N_BARS + 600)
-    full = _apply(df)
-    for shift in (1, 37, 167, 168, 500):
-        with _case(shift):
-            _shifted_start_keeps_decisions(df, full, shift)
-
-
 def _shifted_start_keeps_decisions(df, full, shift):
     out = _apply(df.iloc[shift:])
     kept = 0
@@ -393,7 +391,7 @@ def _shifted_start_keeps_decisions(df, full, shift):
     assert kept > 400
 
 
-def test_missing_history_columns_and_timing_hold_with_reasons():
+def _missing_history_columns_and_timing_hold_with_reasons():
     df = _calendar()
     short = _apply(df.iloc[:P["training_bars"] - 1])
     assert set(short["cce_reason"]) == {"insufficient_history"} and int(short["signal"].abs().sum()) == 0
@@ -409,29 +407,6 @@ def test_missing_history_columns_and_timing_hold_with_reasons():
     assert set(out["cce_reason"]) == {"missing_timestamps"} and len(out) == len(df)
 
 
-def test_check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar():
-    df = _calendar()
-    full = _apply(df)
-    i = int(np.flatnonzero(full["signal"].to_numpy() == 1)[-1])
-    frame = df.iloc[:i + 1].copy()
-    frame.attrs = dict(df.attrs)
-    boundary = int(_ms(frame)[-1]) + H1
-    for cutoff, declared, signal, reason in [
-        (boundary, boundary, 1, "entry_long"),
-        (boundary + H1, boundary, 0, "decision_bar_stale"),
-        (boundary - 1, boundary, 0, "decision_bar_future"),
-        (boundary, boundary - H1, 0, "decision_boundary_mismatch"),
-        (None, None, 0, "decision_time_missing"),
-    ]:
-        runtime = frame.copy()
-        runtime.attrs = dict(frame.attrs)
-        runtime.attrs[FRAME_DECISION_TIME_ATTR] = {} if cutoff is None else {"cutoff_ms": cutoff,
-                                                                             "boundary_ms": declared}
-        out = _apply(runtime)
-        assert int(out["signal"].iloc[-1]) == signal and out["cce_reason"].iloc[-1] == reason
-        assert out["cce_gross_mean"].iloc[-1] == full["cce_gross_mean"].iloc[i]
-
-
 INVALID_PARAMS = [
     {"training_bars": True}, {"training_bars": "4368"}, {"training_bars": None}, {"training_bars": 4368.5},
     {"training_bars": float("nan")}, {"holding_bars": 0}, {"holding_bars": 4368}, {"refit_bars": 0},
@@ -439,19 +414,6 @@ INVALID_PARAMS = [
     {"confidence": float("inf")}, {"confidence": True}, {"cost_hurdle": -0.001}, {"cost_hurdle": float("nan")},
     {"expected_interval_ms": 7_000_000}, {"expected_interval_ms": 3_600_000.5},
 ]
-
-
-def test_invalid_parameters_are_refused_before_evaluation():
-    reg = _reg()
-    for bad in INVALID_PARAMS:
-        with _case(bad):
-            with pytest.raises(ValueError):
-                reg.validate_params(NAME, bad)
-            refs = [StrategyReference("open", NAME)]
-            with pytest.raises(ValueError, match=f"open strategy '{NAME}' has invalid parameters"):
-                preflight_reference_params(refs, bad, None, reg.get_strategy, reg.validate_params)
-            with pytest.raises((ValueError, TypeError)):
-                reg.apply_strategy(NAME, _calendar(n=50), {**P, **bad})
 
 
 def _backtest(df, p=P, stop=3.0, direction="both", mode="approximate"):

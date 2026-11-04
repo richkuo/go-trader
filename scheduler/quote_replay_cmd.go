@@ -54,7 +54,7 @@ func scrubQuoteReplayEnvironment() []string {
 				drop = true
 			}
 		}
-		for _, w := range basketReplayScrubbedEnvWords {
+		for _, w := range replayScrubbedEnvWords {
 			if strings.Contains(upper, w) {
 				drop = true
 			}
@@ -117,7 +117,7 @@ func runQuoteReplayProcess(args []string, stdin io.Reader, out io.Writer) int {
 		if err := quoteReplayCredentialRefusal(); err != nil {
 			o, code := quoteReplayErrorOutput(err)
 			if encErr := json.NewEncoder(out).Encode(o); encErr != nil {
-				return basketReplayExitError
+				return replayExitError
 			}
 			return code
 		}
@@ -131,21 +131,21 @@ func runQuoteReplayWith(args []string, stdin io.Reader, out io.Writer) int {
 		enc := json.NewEncoder(out)
 		if err := enc.Encode(v); err != nil {
 			fmt.Fprintf(os.Stderr, "[quote-replay] could not write the result: %v\n", err)
-			return basketReplayExitError
+			return replayExitError
 		}
 		return code
 	}
 	if len(args) > 0 && args[0] == "discover" {
 		if len(args) != 1 {
 			fmt.Fprintln(os.Stderr, "usage: go-trader quote-replay discover")
-			return basketReplayExitUsage
+			return replayExitUsage
 		}
 		d, err := quoteReplayDiscover()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return basketReplayExitError
+			return replayExitError
 		}
-		return emit(d, basketReplayExitOK)
+		return emit(d, replayExitOK)
 	}
 	fs := flag.NewFlagSet("quote-replay", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -153,16 +153,16 @@ func runQuoteReplayWith(args []string, stdin io.Reader, out io.Writer) int {
 	maxDeadlines := fs.Int("max-deadlines", 0, "run at most this many further deadlines, then stop with the run resumable (0 = all)")
 	faultRaw := fs.String("fault", "", "controlled fault for restart tests: <point>:<occurrence>")
 	if err := fs.Parse(args); err != nil {
-		return basketReplayExitUsage
+		return replayExitUsage
 	}
 	if fs.NArg() > 0 || *specPath == "" || *maxDeadlines < 0 {
 		fmt.Fprintln(os.Stderr, "usage: go-trader quote-replay --spec <plan.json|-> [--max-deadlines N] [--fault <point>:<n>] | go-trader quote-replay discover")
-		return basketReplayExitUsage
+		return replayExitUsage
 	}
 	fault, err := parseQuoteReplayFault(*faultRaw)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return basketReplayExitUsage
+		return replayExitUsage
 	}
 	var src io.Reader = stdin
 	if *specPath != "-" {
@@ -195,13 +195,13 @@ func runQuoteReplayWith(args []string, stdin io.Reader, out io.Writer) int {
 		o, code := quoteReplayErrorOutput(oerr)
 		return emit(o, code)
 	}
-	code := basketReplayExitOK
-	var refusal *basketReplayRefusal
+	code := replayExitOK
+	var refusal *replayRefusal
 	switch {
 	case errors.As(runErr, &refusal):
-		code = basketReplayExitRefused
+		code = replayExitRefused
 	case runErr != nil:
-		code = basketReplayExitError
+		code = replayExitError
 	}
 	return emit(result, code)
 }
@@ -260,7 +260,7 @@ type quoteReplayOutput struct {
 	Protocol        string                        `json:"protocol"`
 	Version         int                           `json:"version"`
 	Status          string                        `json:"status"`
-	Refusal         *basketReplayRefusal          `json:"refusal,omitempty"`
+	Refusal         *replayRefusal                `json:"refusal,omitempty"`
 	Error           string                        `json:"error,omitempty"`
 	RunID           string                        `json:"run_id,omitempty"`
 	Mode            string                        `json:"mode,omitempty"`
@@ -290,15 +290,15 @@ type quoteReplayOutput struct {
 
 func quoteReplayErrorOutput(err error) (quoteReplayOutput, int) {
 	out := quoteReplayOutput{Protocol: quoteReplayProtocolName, Version: quoteReplayProtocolVersion}
-	var refusal *basketReplayRefusal
+	var refusal *replayRefusal
 	if errors.As(err, &refusal) {
-		out.Status = basketReplayStatusRefused
+		out.Status = replayStatusRefused
 		out.Refusal = refusal
-		return out, basketReplayExitRefused
+		return out, replayExitRefused
 	}
-	out.Status = basketReplayStatusError
+	out.Status = replayStatusError
 	out.Error = err.Error()
-	return out, basketReplayExitError
+	return out, replayExitError
 }
 
 func quoteReplayPercentile(sorted []int64, q float64) int64 {
@@ -316,20 +316,20 @@ func (r *quoteReplayRuntime) output(runErr error) (quoteReplayOutput, error) {
 	out := quoteReplayOutput{Protocol: quoteReplayProtocolName, Version: quoteReplayProtocolVersion, RunID: r.spec.Run.RunID, Mode: r.spec.Mode,
 		StateDir: r.spec.Run.StateDir, Fingerprints: &r.fp, PolicySpecHash: quotePolicySpecSHA256(), Window: &r.spec.Window,
 		DeadlinesTotal: len(r.spec.deadlines), CursorMs: r.cursorMs, Resumed: r.resumed, Stopped: r.stopped, ModelNotes: quoteReplayModelNotes}
-	var refusal *basketReplayRefusal
+	var refusal *replayRefusal
 	switch {
 	case errors.As(runErr, &refusal):
-		out.Status = basketReplayStatusRefused
+		out.Status = replayStatusRefused
 		out.Refusal = refusal
 	case runErr != nil:
-		out.Status = basketReplayStatusError
+		out.Status = replayStatusError
 		out.Error = runErr.Error()
 	case r.cursorMs == r.spec.Window.LastDeadlineMs && r.stopped == "":
-		out.Status = basketReplayStatusComplete
+		out.Status = replayStatusComplete
 	case r.stopped != "":
-		out.Status = basketReplayStatusStopped
+		out.Status = replayStatusStopped
 	default:
-		out.Status = basketReplayStatusIncomplete
+		out.Status = replayStatusIncomplete
 	}
 	runID := r.spec.Run.RunID
 	var err error
@@ -435,7 +435,7 @@ func (r *quoteReplayRuntime) output(runErr error) (quoteReplayOutput, error) {
 	for _, l := range r.spec.Scoring.Limits {
 		r.unscored = append(r.unscored, "plan limit: "+l)
 	}
-	if out.Status != basketReplayStatusComplete {
+	if out.Status != replayStatusComplete {
 		r.unscored = append(r.unscored, "the run is "+out.Status)
 	}
 	sort.Strings(r.unscored)

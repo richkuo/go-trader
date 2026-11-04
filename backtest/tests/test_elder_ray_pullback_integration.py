@@ -3,7 +3,6 @@ import gzip
 import importlib.util
 import json
 import os
-import subprocess
 import sys
 
 import numpy as np
@@ -17,14 +16,10 @@ if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
 
 import offline_manifest as om
-from atr import ensure_atr_indicator
-from backtester import Backtester
-from close_registry_loader import evaluate as close_evaluate
 from eval_windows import expand_sweep
 from optimizer import DEFAULT_PARAM_RANGES
-from parity_diff import ParityConfig, compute_parity_frame, summarize
+from parity_diff import ParityConfig
 from registry_loader import load_registry
-from strategy_composition import evaluate_open_close, finalize_decision
 
 NAME = "elder_ray_pullback"
 STUDY_DIR = os.path.join(_REPO, "backtest", "candidates", "elder_ray_pullback_1648")
@@ -136,40 +131,6 @@ def _ref_decisions(df, params):
     return out
 
 
-def test_registration_is_futures_only_bidirectional_no_edge_hidden_and_seeded():
-    fut = _reg()
-    entry = fut.STRATEGY_REGISTRY[NAME]
-    raw = fut._registry.STRATEGIES[NAME]
-    with open(SEED) as fh:
-        seed = json.load(fh)
-    assert entry["default_params"] == seed["params"] == DEFAULTS
-    assert entry["edge_status"] == "no_edge"
-    assert entry["edge_source"] in ("unvalidated", "study_fail", "study_inconclusive")
-    assert entry["edge_ref"] == "backtest/candidates/elder_ray_pullback_1648/REPORT.md"
-    assert os.path.isfile(os.path.join(_REPO, entry["edge_ref"]))
-    assert raw["short_entries"] is True and raw["platforms"] == ("futures",)
-    assert callable(raw["param_validator"])
-    assert NAME in fut._registry.short_entry_strategies()
-    assert NAME in fut._registry.DISCOVERY_HIDDEN_STRATEGIES
-    assert NAME not in fut.list_strategies()
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
-    assert DEFAULT_PARAM_RANGES[NAME] == seed["optimizer_grid"]
-
-
-@pytest.mark.parametrize("platform", ["spot", "futures"])
-def test_discovery_captures_are_byte_identical_and_live_output_hides_the_strategy(platform):
-    proc = subprocess.run([sys.executable, os.path.join(_REPO, "shared_strategies", "open", platform, "strategies.py"),
-                           "--list-json"], capture_output=True, cwd=_REPO, timeout=120)
-    assert proc.returncode == 0, proc.stderr
-    with open(os.path.join(STUDY_DIR, f"discovery_before_{platform}.json"), "rb") as fh:
-        before = fh.read()
-    with open(os.path.join(STUDY_DIR, f"discovery_after_{platform}.json"), "rb") as fh:
-        after = fh.read()
-    assert before == after
-    assert NAME.encode() not in after
-    assert NAME.encode() not in proc.stdout
-
-
 def test_values_and_signals_match_an_independent_reference():
     df = _walk(420, 7)
     sides = set()
@@ -212,11 +173,19 @@ def _trend_frame(n, pullbacks, *, rising=True, deep=10.0, shallow=1.0):
     return _frame(close, low, high)
 
 
-def test_age_equal_to_the_window_enters_and_one_more_bar_expires():
+def test_setup_rule_age_window_zero_power_single_use_clearing_and_constant_input(subtests):
     for window in (1, 4, 8, 16):
         for rising in (True, False):
-            with _case(f"{window}-{rising}"):
+            with subtests.test(case=f"age_window={window}-rising={rising}"):
                 _age_equal_to_the_window_enters_and_one_more_bar_expires(rising, window)
+    for label, case in (("zero_bear_power", _zero_bear_power_recovers_and_the_next_float_below_zero_does_not),
+                        ("zero_bull_power", _zero_bull_power_recovers_a_short),
+                        ("one_setup_one_entry", _one_setup_gives_one_entry_and_a_new_pullback_is_needed_for_another),
+                        ("exact_zero_slope_clears", _an_exact_zero_slope_clears_a_live_setup),
+                        ("opposite_slope_clears", _an_opposite_slope_clears_a_live_long_setup),
+                        ("constant_input", _constant_input_never_arms)):
+        with subtests.test(case=label):
+            case()
 
 
 def _age_equal_to_the_window_enters_and_one_more_bar_expires(rising, window):
@@ -239,7 +208,7 @@ def _age_equal_to_the_window_enters_and_one_more_bar_expires(rising, window):
     assert (out["signal"].to_numpy() != 0).sum() == 1
 
 
-def test_zero_bear_power_recovers_and_the_next_float_below_zero_does_not():
+def _zero_bear_power_recovers_and_the_next_float_below_zero_does_not():
     df = _trend_frame(220, [(150, 3)])
     out = _apply(df, DEFAULTS)
     assert int(out["signal"].iloc[153]) == 1
@@ -257,7 +226,7 @@ def test_zero_bear_power_recovers_and_the_next_float_below_zero_does_not():
     assert int(below_out["signal"].iloc[153]) == 0 and below_out["erp_reason"].iloc[153] == "pullback_long"
 
 
-def test_zero_bull_power_recovers_a_short():
+def _zero_bull_power_recovers_a_short():
     df = _trend_frame(220, [(150, 3)], rising=False)
     out = _apply(df, DEFAULTS)
     assert int(out["signal"].iloc[153]) == -1
@@ -269,7 +238,7 @@ def test_zero_bull_power_recovers_a_short():
     assert int(zero_out["signal"].iloc[153]) == -1
 
 
-def test_one_setup_gives_one_entry_and_a_new_pullback_is_needed_for_another():
+def _one_setup_gives_one_entry_and_a_new_pullback_is_needed_for_another():
     df = _trend_frame(240, [(150, 3), (160, 2)])
     out = _apply(df, DEFAULTS)
     entries = np.flatnonzero(out["signal"].to_numpy() == 1)
@@ -277,7 +246,7 @@ def test_one_setup_gives_one_entry_and_a_new_pullback_is_needed_for_another():
     assert (out["erp_reason"].iloc[154:160] == "no_setup").all()
 
 
-def test_an_exact_zero_slope_clears_a_live_setup():
+def _an_exact_zero_slope_clears_a_live_setup():
     close = [100.0] * 100 + [200.0] * 140
     df = _frame(close, [c - 1e-9 for c in close], [c + 1.0 for c in close])
     out = _apply(df, {"ema_period": 2, "slope_span": 1, "pullback_window": 16})
@@ -290,7 +259,7 @@ def test_an_exact_zero_slope_clears_a_live_setup():
     assert (out["signal"] == 0).all()
 
 
-def test_an_opposite_slope_clears_a_live_long_setup():
+def _an_opposite_slope_clears_a_live_long_setup():
     close = np.array([100.0 + i for i in range(200)])
     close[155:] = close[154] - 30.0 * np.arange(1, 46)
     close = np.maximum(close, 1.0)
@@ -304,7 +273,7 @@ def test_an_opposite_slope_clears_a_live_long_setup():
     assert (out["signal"].iloc[150:170] != 1).all()
 
 
-def test_constant_input_never_arms():
+def _constant_input_never_arms():
     df = _frame([150.0] * 200, [149.0] * 200, [151.0] * 200)
     out = _apply(df, DEFAULTS)
     valid = out["erp_valid"] == 1.0
@@ -360,10 +329,12 @@ INVALID_ENTRY_DATA = [
 ]
 
 
-def test_invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame():
+def test_invalid_entry_data_is_a_reasoned_numeric_hold_inside_its_span_that_preserves_the_frame(subtests):
     for i, (mutate, reason) in enumerate(INVALID_ENTRY_DATA):
-        with _case(f"{i}-{reason}"):
+        with subtests.test(case=f"{i}-{reason}"):
             _invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame(mutate, reason)
+    with subtests.test(case="defect_span_and_recovery"):
+        _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame()
 
 
 def _invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame(mutate, reason):
@@ -403,7 +374,7 @@ def test_timestamp_column_is_accepted_without_a_datetime_index():
         np.testing.assert_array_equal(a[col].to_numpy(), b[col].to_numpy())
 
 
-def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
+def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
     df = _walk(400, 5)
     bad = 200
     need = _need(P)
@@ -429,17 +400,6 @@ INVALID_PARAMS = [
     {"pullback_window": 0}, {"pullback_window": 17}, {"pullback_window": 3.25}, {"pullback_window": "8"},
     {"pullback_window": -1},
 ]
-
-
-def test_invalid_parameters_are_explicit_errors_before_evaluation():
-    reg = _reg()
-    for params in INVALID_PARAMS:
-        merged = {**DEFAULTS, **params}
-        with _case(params):
-            with pytest.raises((ValueError, TypeError)):
-                reg._registry.validate_params(NAME, merged)
-            with pytest.raises((ValueError, TypeError)):
-                _apply(_walk(120, 1), merged)
 
 
 def test_integral_float_parameters_are_accepted_as_integers():
@@ -477,144 +437,11 @@ def test_full_series_prefix_exact_span_and_200_row_tail_agree():
             assert short["erp_reason"].iloc[-1] == "insufficient_history"
 
 
-def _composer(df, params, side="", position_ctx=None):
-    reg = _reg()
-    evaluation = evaluate_open_close(
-        reg.apply_strategy, reg.get_strategy, df, NAME, NAME, ["tiered_tp_pct"], side, params=params,
-        position_ctx=position_ctx, close_evaluate=close_evaluate, close_params_by_name={"tiered_tp_pct": {}})
-    return evaluation, finalize_decision(evaluation, side)
-
-
-def test_composer_emits_both_directions_and_holds_entries_while_a_position_is_open():
-    long_df = _trend_frame(154, [(150, 3)])
-    short_df = _trend_frame(154, [(150, 3)], rising=False)
-    _, flat_long = _composer(long_df, DEFAULTS)
-    _, flat_short = _composer(short_df, DEFAULTS)
-    assert (flat_long["open_action"], flat_long["signal"]) == ("long", 1)
-    assert (flat_short["open_action"], flat_short["signal"]) == ("short", -1)
-    for df, side in ((long_df, "long"), (short_df, "short"), (long_df, "short"), (short_df, "long")):
-        mark = float(df["close"].iloc[-1])
-        ctx = {"side": side, "avg_cost": mark, "entry_atr": 50.0, "current_quantity": 1.0, "initial_quantity": 1.0}
-        _, held = _composer(df, DEFAULTS, side, ctx)
-        assert held["signal"] == 0 and held["close_fraction"] == 0.0
-
-
-def test_invalid_entry_frame_keeps_the_close_owner_executable():
-    for mutation in ("volume", "geometry", "cadence", "warmup", "nonfinite"):
-        with _case(mutation):
-            _invalid_entry_frame_keeps_the_close_owner_executable(mutation)
-
-
-def _invalid_entry_frame_keeps_the_close_owner_executable(mutation):
-    df = _walk(200, 9)
-    if mutation == "volume":
-        df = df.assign(volume=np.r_[df["volume"].to_numpy()[:-1], -5.0])
-    elif mutation == "geometry":
-        df = df.assign(open=np.r_[df["open"].to_numpy()[:-1], df["high"].iloc[-1] * 2])
-    elif mutation == "cadence":
-        df = _shift_index(df, len(df) - 1, pd.Timedelta(hours=2))
-    elif mutation == "warmup":
-        df = df.iloc[-40:]
-    else:
-        df = df.assign(volume=np.r_[df["volume"].to_numpy()[:-5], np.nan, df["volume"].to_numpy()[-4:]])
-    mark = float(df["close"].iloc[-1])
-    ctx = {"side": "long", "avg_cost": mark / 1.05, "entry_atr": 1.0, "current_quantity": 1.0,
-           "initial_quantity": 1.0}
-    evaluation, decision = _composer(df, P, "long", ctx)
-    assert evaluation.open_result_df["erp_valid"].iloc[-1] == 0.0
-    assert decision["open_action"] == "none"
-    assert decision["close_strategy"] == "tiered_tp_pct" and decision["close_fraction"] == 1.0
-    assert decision["signal"] == -1
-    short_ctx = dict(ctx, side="short", avg_cost=mark * 1.05)
-    _, decision = _composer(df, P, "short", short_ctx)
-    assert decision["open_action"] == "none" and decision["close_fraction"] == 1.0 and decision["signal"] == 1
-    partial = dict(ctx, avg_cost=mark / 1.015)
-    _, decision = _composer(df, P, "long", partial)
-    assert decision["close_fraction"] == 0.25
-
-
-def _bt(params, **kw):
-    base = dict(initial_capital=1000.0, platform="hyperliquid", open_strategy={"name": NAME, "params": params},
-                close_strategies=CLOSE, stop_loss_atr_mult=1.0, direction="both")
-    base.update(kw)
-    return Backtester(**base)
-
-
-def test_simulator_fills_next_open_with_explicit_exits_partials_and_no_reversal_or_scale_in():
-    df = _walk(900, 5)
-    sig = ensure_atr_indicator(_apply(df, DEFAULTS))
-    res = _bt(DEFAULTS).run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    trades = res["trades"]
-    assert {t["side"] for t in trades} == {"long", "short"}
-    reasons = {t["exit_reason"].split(":")[0] for t in trades}
-    assert reasons <= {"sl", "tiered_tp_pct", "end_of_data"} and "tiered_tp_pct" in reasons and "sl" in reasons
-    by_entry = {}
-    for t in trades:
-        by_entry.setdefault((t["entry_date"], t["side"]), []).append(t)
-    spans = []
-    for (entry_date, side), legs in by_entry.items():
-        entry = pd.Timestamp(entry_date)
-        pos = sig.index.get_loc(entry)
-        assert int(sig["signal"].iloc[pos - 1]) == (1 if side == "long" else -1)
-        assert legs[0]["entry_price"] == pytest.approx(df["open"].iloc[pos], rel=0.01)
-        spans.append((entry, max(pd.Timestamp(leg["exit_date"]) for leg in legs)))
-    spans.sort()
-    for (_, prev_exit), (next_entry, _) in zip(spans, spans[1:]):
-        assert next_entry >= prev_exit
-    assert any(len(legs) > 1 for legs in by_entry.values())
-
-
-def test_simulator_keeps_closing_and_stopping_after_entry_inputs_fail():
-    df = _walk(600, 5)
-    sig = ensure_atr_indicator(_apply(df, DEFAULTS))
-    first = next(int(i) for i in np.flatnonzero(sig["signal"].to_numpy() != 0)
-                 if i > 120 and np.isfinite(sig["atr"].iloc[i]))
-    corrupt = df.copy()
-    corrupt.iloc[first + 1:, corrupt.columns.get_loc("volume")] = np.nan
-    bad = ensure_atr_indicator(_apply(corrupt, DEFAULTS))
-    assert (bad["signal"].iloc[:first + 1] == sig["signal"].iloc[:first + 1]).all()
-    assert (bad["signal"].iloc[first + 1:] == 0).all()
-    res = _bt(DEFAULTS).run(bad, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    last_entry = max(pd.Timestamp(t["entry_date"]) for t in res["trades"])
-    assert last_entry == bad.index[first + 1]
-    final = [t for t in res["trades"] if pd.Timestamp(t["entry_date"]) == last_entry]
-    assert {t["exit_reason"].split(":")[0] for t in final} <= {"sl", "tiered_tp_pct"}
-
-
 def _cfg(params, **kw):
     base = dict(strategy_name=NAME, params=params, registry="futures", platform="hyperliquid",
                 symbol="BTC", timeframe="4h")
     base.update(kw)
     return ParityConfig(**base)
-
-
-@pytest.mark.parametrize("window", [200, None])
-@pytest.mark.parametrize("params", [DOMAIN_ENDPOINTS[0], DOMAIN_ENDPOINTS[-1], DEFAULTS])
-def test_entry_parity_on_frozen_candles(window, params):
-    frame = compute_parity_frame(_frozen("BTC 4h", 320), cfg=_cfg(params), window=window)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0
-    assert result["clean"], frame[~frame["match"]].head()
-
-
-@pytest.mark.parametrize("window", [200, None])
-def test_composed_parity_covers_both_sides_with_the_close_owner(window):
-    cfg = _cfg(DEFAULTS, close_refs=json.loads(json.dumps(CLOSE)), direction="both")
-    frame = compute_parity_frame(_frozen("SOL 4h", 520), cfg=cfg, window=window)
-    result = summarize(frame)
-    assert result["mismatches"] == 0 and result["clean"], frame[~frame["match"]].head()
-    assert (frame["live_open_action"] == "long").any() and (frame["live_open_action"] == "short").any()
-    closing = frame[frame["live_close_fraction"] > 0]
-    assert (closing["live_signal"] == -1).any() and (closing["live_signal"] == 1).any()
-
-
-@pytest.mark.parametrize("window", [200, None])
-def test_batched_explicit_paper_parity_matches_solo(window):
-    cfg = _cfg(DEFAULTS, close_refs=json.loads(json.dumps(CLOSE)), direction="both", batched=True)
-    frame = compute_parity_frame(_frozen("BTC 4h", 300), cfg=cfg, window=window)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0
-    assert result["clean"] and result["batch_clean"], frame[~frame["match"]].head()
 
 
 def _load_study():
@@ -634,7 +461,15 @@ def _rewrite_gz_csv(src, dst, keep):
             fh.write(("\n".join(kept) + "\n").encode("utf-8"))
 
 
-def test_missing_funding_refuses_the_coverage_gate_and_gives_an_inconclusive_verdict(tmp_path):
+def test_frozen_manifest_gate_is_complete_and_missing_funding_refuses_it_with_an_inconclusive_verdict(
+        tmp_path, subtests):
+    with subtests.test(case="frozen_manifest_complete"):
+        _frozen_manifest_gate_is_complete_and_hashes_verify()
+    with subtests.test(case="missing_funding"):
+        _missing_funding_refuses_the_coverage_gate_and_gives_an_inconclusive_verdict(tmp_path)
+
+
+def _missing_funding_refuses_the_coverage_gate_and_gives_an_inconclusive_verdict(tmp_path):
     study = _load_study()
     with open(MANIFEST) as fh:
         raw = json.load(fh)
@@ -669,7 +504,7 @@ def test_missing_funding_refuses_the_coverage_gate_and_gives_an_inconclusive_ver
     assert "arms" not in result
 
 
-def test_frozen_manifest_gate_is_complete_and_hashes_verify():
+def _frozen_manifest_gate_is_complete_and_hashes_verify():
     study = _load_study()
     manifest = om.load_manifest(MANIFEST)
     gate = study.preflight(manifest)

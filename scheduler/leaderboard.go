@@ -56,22 +56,19 @@ func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]fl
 
 func buildLeaderboardEntries(strategies []StrategyConfig, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats, globalIntervalSeconds int) []LeaderboardEntry {
 	var entries []LeaderboardEntry
-	pm := state.pairMarksLocked()
 	for _, sc := range strategies {
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
 			continue
 		}
-		pv, status := displayStrategyValueMarked(ss, prices, pm)
+		pv := displayStrategyValue(ss, prices)
 		initCap := EffectiveInitialCapital(sc, ss)
 		pnl := pv - initCap
 		pnlPct := 0.0
 		if initCap > 0 {
 			pnlPct = (pnl / initCap) * 100
 		}
-		e := newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, sharpeByStrategy, lifetimeStats, globalIntervalSeconds)
-		e.Incomplete = status.label()
-		entries = append(entries, e)
+		entries = append(entries, newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, sharpeByStrategy, lifetimeStats, globalIntervalSeconds))
 	}
 	return entries
 }
@@ -222,10 +219,7 @@ func leaderboardAdjustedTotal(
 	if len(subset) == 0 {
 		return -1
 	}
-	adj, _, status := computeSubsetDisplayValueMarked(subset, state, prices, walletBalances, accountShared, state.pairMarksLocked())
-	if !status.complete() {
-		return -1
-	}
+	adj, _ := computeSubsetDisplayValue(subset, state, prices, walletBalances, accountShared)
 	return adj
 }
 
@@ -455,7 +449,6 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 
 	var entries []LeaderboardEntry
 	configByID := make(map[string]StrategyConfig)
-	pm := state.pairMarksLocked()
 	for _, sc := range cfg.Strategies {
 		if !strings.EqualFold(sc.Platform, lc.Platform) {
 			continue
@@ -467,16 +460,14 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 		if ss == nil {
 			continue
 		}
-		pv, status := displayStrategyValueMarked(ss, prices, pm)
+		pv := displayStrategyValue(ss, prices)
 		initCap := EffectiveInitialCapital(sc, ss)
 		pnl := pv - initCap
 		pnlPct := 0.0
 		if initCap > 0 {
 			pnlPct = (pnl / initCap) * 100
 		}
-		e := newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, sharpeByStrategy, lifetimeStats, cfg.IntervalSeconds)
-		e.Incomplete = status.label()
-		entries = append(entries, e)
+		entries = append(entries, newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, sharpeByStrategy, lifetimeStats, cfg.IntervalSeconds))
 		configByID[sc.ID] = sc
 	}
 

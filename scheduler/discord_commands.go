@@ -30,21 +30,22 @@ var readOnlyCommandNames = map[string]bool{
 }
 
 var opsCommandNames = map[string]bool{
-	"restart":              true,
-	"backtest":             true,
-	"logs":                 true,
-	"report-an-issue":      true,
-	"config":               true,
-	"add-strategy":         true,
-	"remove-strategy":      true,
-	"add-platform":         true,
-	"paper-to-live":        true,
-	"apply-regime-gate":    true,
-	"clear-cash-reconcile": true,
-	"clear-operator-close": true,
-	"resolve-entry":        true,
-	"resolve-rh-order":     true,
-	pairNativeCommandName:  true,
+	"restart":                   true,
+	"backtest":                  true,
+	"logs":                      true,
+	"report-an-issue":           true,
+	"config":                    true,
+	"add-strategy":              true,
+	quoteOwnerSetupAction:       true,
+	"remove-strategy":           true,
+	"add-platform":              true,
+	"paper-to-live":             true,
+	"apply-regime-gate":         true,
+	"clear-cash-reconcile":      true,
+	"clear-operator-close":      true,
+	"resolve-entry":             true,
+	"resolve-rh-order":          true,
+	robinhoodAccountCommandName: true,
 }
 
 func authorizeCommand(name, invokerID, guildID, ownerID string) (bool, string) {
@@ -132,20 +133,24 @@ func formatStatusResponse(state *AppState, prices map[string]float64) string {
 		cash += s.Cash
 		posCount += len(s.Positions) + len(s.OptionPositions)
 		trades += nonFundingTradeCount(s.TradeHistory)
-		if regime == "" && s.Regime != "" {
-			regime = s.Regime
+		if regime == "" {
+			parts := []string{}
+			for _, key := range sortedRegimeWindowNames(s.RegimeSnapshots) {
+				parts = append(parts, key+"="+s.RegimeSnapshots[key].Display())
+			}
+			regime = strings.Join(parts, "; ")
+			if regime == "" {
+				regime = s.Regime
+			}
 		}
 		if s.CashReconcileRequired {
 			reconcileIDs = append(reconcileIDs, id)
 		}
 	}
-	value, status := latestDisplayTotalMarked(state, prices, state.pairMarksLocked())
+	value := latestDisplayTotal(state, prices)
 	line := formatStatusLine(cash, posCount, value, trades, regime)
 	if len(state.LatestSharedWalletBalances) > 0 {
 		line += "\nℹ️ shared-wallet equity is counted once in value; cash remains the virtual strategy-book sum."
-	}
-	if label := status.label(); label != "" {
-		line += "\nvalue is incomplete (" + label + ")"
 	}
 	if len(reconcileIDs) == 0 {
 		return line
@@ -156,7 +161,6 @@ func formatStatusResponse(state *AppState, prices map[string]float64) string {
 func formatPositionsResponse(state *AppState, prices map[string]float64) string {
 	lines := map[string][]string{}
 	platforms := []string{}
-	pm := state.pairMarksLocked()
 	for _, id := range sortedAppStateIDs(state) {
 		s := state.Strategies[id]
 		syms := make([]string, 0, len(s.Positions))
@@ -170,16 +174,6 @@ func formatPositionsResponse(state *AppState, prices map[string]float64) string 
 				continue
 			}
 			price := prices[sym]
-			mvText := ""
-			if mark, state, _, pair := pm.markFor(s, sym); pair {
-				price = mark
-				if state != "" {
-					mvText = " " + state + " pair mark"
-				}
-				if state == pairMarkUnavailable {
-					mvText = "mv unavailable: no checked pair mark"
-				}
-			}
 			if price == 0 {
 				price = p.AvgCost
 			}
@@ -188,13 +182,8 @@ func formatPositionsResponse(state *AppState, prices map[string]float64) string 
 			if _, ok := lines[plat]; !ok {
 				platforms = append(platforms, plat)
 			}
-			if mvText == "mv unavailable: no checked pair mark" {
-				lines[plat] = append(lines[plat], fmt.Sprintf(
-					"  %s %s %.4f @ $%.2f (%s) [%s]", sym, p.Side, p.Quantity, p.AvgCost, mvText, id))
-				continue
-			}
 			lines[plat] = append(lines[plat], fmt.Sprintf(
-				"  %s %s %.4f @ $%.2f (mv $%.2f%s) [%s]", sym, p.Side, p.Quantity, p.AvgCost, mv, mvText, id))
+				"  %s %s %.4f @ $%.2f (mv $%.2f) [%s]", sym, p.Side, p.Quantity, p.AvgCost, mv, id))
 		}
 	}
 	if len(platforms) == 0 {
@@ -221,12 +210,9 @@ func formatPnLResponse(state *AppState, prices map[string]float64) string {
 	var totPnL, totCap float64
 	var totalIncludesPool bool
 	var perStrat []string
-	pm := state.pairMarksLocked()
-	var incomplete pairValueStatus
 	for _, id := range sortedAppStateIDs(state) {
 		s := state.Strategies[id]
-		pv, status := displayStrategyValueMarked(s, prices, pm)
-		incomplete.merge(status)
+		pv := displayStrategyValue(s, prices)
 		cap := s.InitialCapital
 		poolBudget := s.SharedWalletPoolBudget || s.SharedWalletPerformanceOnly
 		if poolBudget {
@@ -244,24 +230,16 @@ func formatPnLResponse(state *AppState, prices map[string]float64) string {
 		byPlatform[plat].pnl += pnl
 		byPlatform[plat].capital += cap
 		byPlatform[plat].includesPool = byPlatform[plat].includesPool || poolBudget
-		row := fmt.Sprintf("  %s: $%+.2f (%s)", id, pnl, formatPnLPercent(pnl, cap, poolBudget))
-		if label := status.label(); label != "" {
-			row += " [" + label + "]"
-		}
-		perStrat = append(perStrat, row)
+		perStrat = append(perStrat, fmt.Sprintf("  %s: $%+.2f (%s)", id, pnl, formatPnLPercent(pnl, cap, poolBudget)))
 	}
 	sort.Strings(platforms)
 	var sb strings.Builder
 	sb.WriteString("**P&L**\n")
-	totalDisplayValue, totalStatus := latestDisplayTotalMarked(state, prices, pm)
-	incomplete.merge(totalStatus)
+	totalDisplayValue := latestDisplayTotal(state, prices)
 	sb.WriteString(fmt.Sprintf(
 		"Total: $%+.2f (%s) — value $%.2f / capital $%.2f\n",
 		totPnL, formatPnLPercent(totPnL, totCap, totalIncludesPool), totalDisplayValue, totCap,
 	))
-	if label := incomplete.label(); label != "" {
-		sb.WriteString("Total is incomplete (" + label + ")\n")
-	}
 	sb.WriteString("__By platform__\n")
 	for _, plat := range platforms {
 		a := byPlatform[plat]
@@ -482,6 +460,10 @@ func slashCommands() []*discordgo.ApplicationCommand {
 			{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Strategy name, e.g. momentum", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "platform", Description: "hyperliquid or binanceus", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "asset", Description: "Ticker, e.g. BTC", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "open_params", Description: "JSON object of required research params, e.g. a hash-pinned calendar"},
+		}},
+		{Name: commandPrefix + quoteOwnerSetupAction, Description: "Add a held paper quote owner from a quote_owner JSON file (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionAttachment, Name: "fragment", Description: "quote_owner setup JSON file (at most 1 MiB)", Required: true},
 		}},
 		{Name: commandPrefix + "remove-strategy", Description: "Remove a strategy from the config (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "id", Description: "Strategy ID to remove", Required: true},
@@ -517,7 +499,13 @@ func slashCommands() []*discordgo.ApplicationCommand {
 				{Name: robinhoodAttestReleaseChoice, Value: robinhoodAttestReleaseChoice},
 			}},
 		}},
-		pairNativeSlashCommand(),
+		{Name: commandPrefix + robinhoodAccountCommandName, Description: "Resolve a Robinhood book held for account identity (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID of the held book", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "action", Description: "bind-current: coins are on this account; release-book: coins are outside every managed account", Required: true, Choices: []*discordgo.ApplicationCommandOptionChoice{
+				{Name: robinhoodAccountActionBind, Value: robinhoodAccountActionBind},
+				{Name: robinhoodAccountActionRelease, Value: robinhoodAccountActionRelease},
+			}},
+		}},
 	}
 }
 
@@ -637,6 +625,8 @@ func (d *DiscordNotifier) interactionCreate(s discordTransport, i *discordgo.Int
 		}
 	case "add-strategy":
 		d.handleAddStrategy(s, i, data.Options)
+	case quoteOwnerSetupAction:
+		d.handleAddQuoteOwner(s, i, data)
 	case "remove-strategy":
 		d.handleRemoveStrategy(s, i, data.Options)
 	case "add-platform":
@@ -653,8 +643,8 @@ func (d *DiscordNotifier) interactionCreate(s discordTransport, i *discordgo.Int
 		d.handleResolveEntry(s, i, data.Options)
 	case "resolve-rh-order":
 		d.handleResolveRobinhoodOrder(s, i, data.Options)
-	case pairNativeCommandName:
-		d.handleResolvePairNative(s, i, data.Options)
+	case robinhoodAccountCommandName:
+		d.handleResolveRobinhoodAccount(s, i, data.Options)
 	default:
 		respondEphemeral(s, i, "unknown command")
 	}

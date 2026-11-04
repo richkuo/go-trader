@@ -91,12 +91,14 @@ dependency.
    (`regime_store.go`) — must add a `filter_window` term (taking the **max across
    windows**). Without this, live filters over fewer warmed bars than backtest and
    labels diverge.
-4. **Low-ATR / undefined-feature bars are handled identically.** Today both paths
-   degrade to `ranging_quiet` when `atr<=0` (`regime.py` latest + per-bar loop).
-   Inside a filter window such a bar gets a **defined rule: skip its emission
-   update and carry alpha forward** (apply the transition step, no emission),
-   specified identically in the shared helper so both paths behave the same on
-   exactly these bars.
+4. **Readiness and undefined features.** Each snapshot has boolean `ready` and integer `bars` and `need` outside numeric metrics.
+   Average Directional Index (ADX) needs `2 * period + 1` bars; composite needs `max(period, 2 * min(period, 14) + 1)`.
+   A cold prefix has an empty label and cannot provide an emission, transition, confirmation, or dependent entry.
+   The feature matrix leaves ADX undefined until that boundary.
+   Model fitting refuses an all-cold frame; diagnostics return an unavailable result.
+   Excluded gaps cannot create transitions between the surrounding observations.
+   A ready flat-price window can retain the defined low-ATR rule.
+   Live and historical views carry the same readiness, and each comparison classifier has its own need.
 5. **Look-ahead safety.** Filter at bar *t* uses only bars ≤ *t*. Standardization
    `feature_means`/`feature_stds` are **frozen in the model block from the fit
    window and never recomputed** live or in backtest (recompute = fit-apply
@@ -238,6 +240,5 @@ Go:
 - Auto-promoting a fitted model into live defaults — PR2 ships the opt-in path;
   per-strategy adoption is a follow-up gated on the harness result.
 - Online/cross-cycle posterior carry — windowed-from-init makes it unnecessary.
-
 ---
-LLM: Opus 4.8 | high | Harness: Claude Code
+LLM: GPT-6 (exact variant unavailable) | high | Harness: work-on-issue

@@ -256,7 +256,7 @@ Parameters `{"cycle_length": 12, "fast_period": 23, "lower_threshold": 25.0, "sl
 
 ## Decision parity
 
-`backtest/candidates/schaff_trend_cycle_1651/parity_results.json` sha256 `7895bf9ed4db73d5`, clean yes. The last 600 held-out bars of every dataset, a 200-row live window, the selected `schaff_both` parameters and the frozen close owner: the composer mode compares the full-frame decisions with the per-bar live composer; the batched paper mode also compares a solo and a batched explicit-paper `check_hyperliquid.py` slot. Neither mode proves admission or timed closure; those are proved by the subprocess scenarios in `shared_scripts/test_schaff_trend_cycle_checks.py`.
+`backtest/candidates/schaff_trend_cycle_1651/parity_results.json` sha256 `7895bf9ed4db73d5`, clean yes. The last 600 held-out bars of every dataset, a 200-row live window, the selected `schaff_both` parameters and the frozen close owner: the composer mode compares the full-frame decisions with the per-bar live composer; the batched paper mode also compares a solo and a batched explicit-paper `check_hyperliquid.py` slot. Neither mode proves admission or timed closure; those are proved by the subprocess scenarios in the `schaff_trend_cycle` cases of `shared_scripts/test_strategy_check_contract.py`.
 
 ## Full-precision evidence
 

@@ -64,3 +64,16 @@ def make_ohlcv(
 def make_trend(n=100, start=100.0, end=200.0, noise=0.5):
     close = np.linspace(start, end, n)
     return make_ohlcv(close, noise=noise)
+
+
+def with_regime_readiness(frame, need=29):
+    for column in list(frame.columns):
+        if column != "regime" and not (str(column).startswith("regime_w_") and not str(column).endswith(("_ready", "_bars", "_need"))):
+            continue
+        if column + "_ready" in frame.columns:
+            continue
+        ready = frame[column].fillna("").map(lambda value: bool(str(value).strip()))
+        frame[column + "_ready"] = ready
+        frame[column + "_bars"] = [need + i if ok else 0 for i, ok in enumerate(ready)]
+        frame[column + "_need"] = need
+    return frame

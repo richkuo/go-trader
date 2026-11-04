@@ -150,7 +150,7 @@ PORTFOLIO_CONTROL_FIELDS = (
 REGIME_FIELDS = (
     "allowed_regimes", "regime_gate_on_failure", "regime_gate_window",
     "regime_directional_window", "regime_atr_window", "regime_directional_policy", "regime_window_divergence",
-    "regime_profile_allocation",
+    "regime_profile_allocation", "regime_side", "allow_uncertified_regime_side",
 )
 UNSUPPORTED_FEATURE_FIELDS = {
     "hurst_gate": "hurst_gate",
@@ -1444,7 +1444,7 @@ def resolve_comparison_cost_model(doc: dict, start: pd.Timestamp, end: pd.Timest
         source = "booked_rows" if doc["schema_version"] >= 2 else "export_version_1_rows_read_as_0"
     if version in REPLAY_FILL_COST_MODEL_VERSIONS:
         out["refusals"].append({"reason": "paper_cost_model_replay_unsupported", "version": version,
-                                "detail": f"cost model version {version} marks offline basket replay fills booked with "
+                                "detail": f"cost model version {version} marks offline research replay fills booked with "
                                           "a custom replay cost policy; their per-fill policy evidence lives in the "
                                           "replay state file, and this comparison never substitutes the frozen "
                                           "default paper costs for them"})
@@ -1925,29 +1925,7 @@ def _blank_label(value) -> bool:
 
 def _fill_bounded_trim_blanks(scored_full: pd.DataFrame, scored_trim: pd.DataFrame,
                               columns: list, limit: int, warmup: int, trim: int) -> pd.DataFrame:
-    """Ignore bounded-label blanks caused by the trim cutting into the lookback.
-
-    bounded_window_labels leaves a bar blank when fewer than `limit` rows end
-    at it. Removing the first third of a warm-up that already covers the live
-    lookback can blank early scored bars even though those labels depend only
-    on the trailing lookback, not on the trimmed prefix.
-    """
-    if limit < 1 or not columns or len(scored_full) != len(scored_trim):
-        return scored_trim
-    out = scored_trim.copy()
-    first = warmup - trim
-    for col in columns:
-        if col not in out.columns or col not in scored_full.columns:
-            continue
-        loc = out.columns.get_loc(col)
-        full_loc = scored_full.columns.get_loc(col)
-        for k in range(len(out)):
-            if first + k >= limit - 1:
-                continue
-            if not _blank_label(out.iloc[k, loc]):
-                continue
-            out.iloc[k, loc] = scored_full.iloc[k, full_loc]
-    return out
+    return scored_trim
 
 
 def _frames_equal(a: pd.DataFrame, b: pd.DataFrame, cols: list) -> bool:
@@ -2098,7 +2076,7 @@ def market_strategy_checks(market: dict, name: str, params: dict, direction: str
     if labels is not None:
         cols.append("regime")
     if regime_prepare:
-        cols.extend(sorted(regime_prepare["columns"]))
+        cols.extend(sorted(name + suffix for name in regime_prepare["columns"] for suffix in ("", "_ready", "_bars", "_need")))
     stable = True
     if trim > 0:
         trimmed = _with_stop_inputs(reg.apply_strategy(name, frame.iloc[trim:].copy(), p), with_atr,
@@ -2120,8 +2098,7 @@ def market_strategy_checks(market: dict, name: str, params: dict, direction: str
     out["checks"]["indicator_history"] = {
         "ok": bool(stable), "trimmed_warmup_bars": trim, "compared_columns": cols,
         "rule": "scored-window decisions, and the ATR and regime labels a stop owner reads, are identical "
-                "when the first third of warm-up is removed; a bounded regime label left blank because "
-                "that trim cuts into the live lookback is not a difference",
+                "when the first third of warm-up is removed, including readiness and its available history",
     }
     if not stable:
         out["refusals"].append({"reason": "market_indicator_history_insufficient",
@@ -3009,7 +2986,8 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
     if "dataset" in market and not manual and not signal_refused and open_name:
         try:
             strategy_checks = market_strategy_checks(
-                market, open_name, open_ref.get("params") or {}, direction, invert,
+                market, open_name, open_ref.get("params") or {},
+                "both" if strategy.get("regime_side") is True else direction, invert,
                 open_name in market_ctx["observation_input_strategies"], has_close,
                 atr_method=atr_method,
                 stop_needs_atr=stop_verdict.get("owner") in STOP_OWNERS_NEEDING_ATR,

@@ -21,9 +21,11 @@ from regime import normalize_regime_gate_on_failure
 from backtester import Backtester, CloseCapabilityError
 from registry_loader import load_registry, registry_for_strategy_type
 from run_backtest import (SIMULATOR_HTF_TOP_UP_BUDGET_S, _apply_htf_filter_to_df,
-                          _atr_window_evidence, _resolve_regime_windows_spec,
-                          live_stop_engine_inputs, stop_raw_fields)
-from backtester import STOP_FIELD_KEYS, STOP_GEOMETRY_INPUT_KEYS, STOP_UNITS_PREVIEW
+                          _atr_window_evidence, _htf_trend_series,
+                          _resolve_regime_windows_spec, live_stop_engine_inputs,
+                          stop_raw_fields)
+from backtester import (STOP_FIELD_KEYS, STOP_GEOMETRY_INPUT_KEYS, STOP_UNITS_PREVIEW,
+                        normalize_regime_side_certification, regime_side_config_errors)
 
 
 def _fee_platform(platform: str, strategy_type: str) -> str:
@@ -187,6 +189,49 @@ class ArmRefusal(Exception):
         self.reason = reason
 
 
+def _regime_side_preview(cfg: dict) -> dict:
+    for key in ("regime_side", "allow_uncertified_regime_side"):
+        if key in cfg and not isinstance(cfg[key], bool):
+            raise ArmRefusal(f"{key} must be a JSON boolean")
+    if not cfg.get("regime_side"):
+        if cfg.get("allow_uncertified_regime_side"):
+            raise ArmRefusal("allow_uncertified_regime_side requires regime_side: true")
+        if cfg.get("regime_side_certification") is not None:
+            raise ArmRefusal("regime_side_certification requires regime_side: true")
+        return {}
+    regime_cfg = dict(cfg.get("regime") or {})
+    labels = None
+    if regime_cfg.get("enabled"):
+        from regime_label_columns import resolve_feature_windows
+        try:
+            labels = resolve_feature_windows(cfg, regime_cfg)["vocabularies"]["directional"]
+        except ValueError as exc:
+            raise ArmRefusal(f"regime_side cannot be previewed: {exc}") from exc
+    sc = dict(cfg)
+    if not str((sc.get("open_strategy") or {}).get("name") or "").strip():
+        sc["open_strategy"] = {"name": str(cfg.get("strategy") or "")}
+    errs = regime_side_config_errors(sc, regime_cfg, directional_labels=labels)
+    if errs:
+        raise ArmRefusal("regime_side cannot be previewed: " + "; ".join(errs))
+    direction = str(cfg.get("direction") or "").strip().lower()
+    if direction not in ("long", "short", "both"):
+        raise ArmRefusal(
+            "regime_side preview needs the effective base direction (long, short or both) "
+            f"in the payload; got {cfg.get('direction')!r}")
+    try:
+        cert = normalize_regime_side_certification(cfg.get("regime_side_certification"))
+    except ValueError as exc:
+        raise ArmRefusal(f"regime_side cannot be previewed: {exc}") from exc
+    return {
+        "regime_side": True,
+        "allow_uncertified_regime_side": bool(cfg.get("allow_uncertified_regime_side")),
+        "regime_side_certification": cfg.get("regime_side_certification"),
+        "direction": direction,
+        "htf_filter": bool(cfg.get("htf_filter")),
+        "context": cert["context"],
+    }
+
+
 def _preview_stop_kwargs(cfg: dict, prepared_windows=None) -> dict:
     resolved = {k: cfg.get(k) for k in STOP_FIELD_KEYS + STOP_GEOMETRY_INPUT_KEYS}
     resolved["stop_loss_atr_mult_regime"] = _resolve_atr_regime_stop(
@@ -229,6 +274,10 @@ def _preview_stop_kwargs(cfg: dict, prepared_windows=None) -> dict:
 
 
 def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
+    return _simulate_arm(cfg, candles)[0]
+
+
+def _simulate_arm(cfg: dict, candles: List[dict]) -> tuple:
     strategy_type = str(cfg.get("type") or "spot")
     if strategy_type == "options":
         raise ValueError("options strategies are not supported by the tuner preview yet")
@@ -247,12 +296,13 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
 
     df = _candles_to_df(candles)
     if df.empty or len(df) < 3:
-        return []
+        return [], None
 
     params = dict(open_ref.get("params") or {})
     defaults = dict(reg.STRATEGY_REGISTRY[open_name].get("default_params") or {})
     merged_params = {**defaults, **params}
 
+    side_kwargs = _regime_side_preview(cfg)
     df_signals = reg.apply_strategy(open_name, df, merged_params)
     single_close = cfg.get("close_strategy")
     if isinstance(single_close, dict) and single_close.get("name"):
@@ -272,7 +322,12 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
             df_signals, method=str(cfg.get("atr_method") or "simple")
         )
 
-    if cfg.get("htf_filter"):
+    if cfg.get("htf_filter") and side_kwargs:
+        df_signals = df_signals.copy()
+        df_signals["htf_trend"] = _htf_trend_series(
+            symbol, timeframe, df_signals.index,
+            top_up_budget_s=SIMULATOR_HTF_TOP_UP_BUDGET_S).values
+    elif cfg.get("htf_filter"):
         df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe,
                                              top_up_budget_s=SIMULATOR_HTF_TOP_UP_BUDGET_S)
 
@@ -311,6 +366,10 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
         bt_kwargs["regime_directional_policy"] = policy
         bt_kwargs["regime_directional_certified_states"] = dict(
             cfg.get("regime_directional_certified_states") or {})
+    if side_kwargs:
+        bt_kwargs.update({k: side_kwargs[k] for k in (
+            "regime_side", "allow_uncertified_regime_side", "regime_side_certification",
+            "direction", "htf_filter")})
     bt_kwargs.update(feature_labels)
     bt_kwargs.update(_preview_stop_kwargs(cfg, prepared))
     sizing = cfg.get("perps_sizing")
@@ -335,6 +394,8 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
     except ValueError as exc:
         if policy and "regime_directional_policy" in str(exc):
             raise ArmRefusal(f"regime_directional_policy cannot be previewed: {exc}") from exc
+        if side_kwargs and "regime_side" in str(exc):
+            raise ArmRefusal(f"regime_side cannot be previewed: {exc}") from exc
         raise
     plan_tf = str(label_plan.get("timeframe") or "").strip().lower()
     chart_tf = str(timeframe or "").strip().lower()
@@ -360,7 +421,7 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
     for trade in results.get("trades") or []:
         markers.extend(_trade_to_markers(trade))
     markers.sort(key=lambda m: (m.get("time") or 0, m.get("text") or ""))
-    return markers
+    return markers, (results.get("regime_side") if side_kwargs else None)
 
 
 def _run_payload(payload: dict) -> dict:
@@ -373,11 +434,14 @@ def _run_payload(payload: dict) -> dict:
 
     out: Dict[str, List[dict]] = {}
     refusals: Dict[str, str] = {}
+    regime_side: Dict[str, dict] = {}
     for item in configs:
         label = str(item.get("label") or "default")
         cfg = dict(item.get("config") or item)
         try:
-            out[label] = _simulate_one(cfg, candles)
+            out[label], summary = _simulate_arm(cfg, candles)
+            if summary is not None:
+                regime_side[label] = summary
         except ArmRefusal as exc:
             refusals[label] = exc.reason
         except CloseCapabilityError as exc:
@@ -385,9 +449,12 @@ def _run_payload(payload: dict) -> dict:
                     "label": label, "close_capability": exc.to_dict()}
         except Exception as exc:
             return {"error": f"{label}: {exc}", "markers": out}
+    result = {"markers": out}
     if refusals:
-        return {"markers": out, "refusals": refusals}
-    return {"markers": out}
+        result["refusals"] = refusals
+    if regime_side:
+        result["regime_side"] = regime_side
+    return result
 
 
 def main() -> None:

@@ -113,12 +113,6 @@ func newFrozenHLLotMetadataCache(coins map[string]int, logf func(format string, 
 	return c
 }
 
-func (c *hlLotMetadataCache) fetchRefusals() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.refusals
-}
-
 func hlLotMetadataLedgerContext(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()

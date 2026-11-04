@@ -1800,10 +1800,11 @@ def chown_tree(path, uid, gid):
 
 def build_excludes(m):
     ex = ["/scheduler/config.json", "/.env", "/logs/*", "/go-trader.pid", "/go-trader.new", "__pycache__/",
-          "*.db", "*.db-wal", "*.db-shm", "*.db-journal", "*.db.lock", "*.manual-action.lock", "*.service-layout-*"]
+          "*.db", "*.db-wal", "*.db-shm", "*.db-journal", "*.db.lock", "*.manual-action.lock", "*.manual-regime-owner.json",
+          "*.service-layout-*"]
     src = m["source_dir_real"]
     for x in m["dbs"]:
-        for sfx in ("", "-wal", "-shm", "-journal", ".lock", ".manual-action.lock"):
+        for sfx in ("", "-wal", "-shm", "-journal", ".lock", ".manual-action.lock", ".manual-regime-owner.json"):
             for base in (x["source"], x["source_lexical"]):
                 rel = rel_inside(base + sfx, src)
                 if rel:

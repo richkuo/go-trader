@@ -11,21 +11,23 @@ import (
 )
 
 type StrategyDecisionFields struct {
-	OpenStrategy       string             `json:"open_strategy,omitempty"`
-	CloseStrategies    []string           `json:"close_strategies,omitempty"`
-	OpenAction         string             `json:"open_action,omitempty"`
-	CloseFraction      float64            `json:"close_fraction"`
-	CloseStrategy      string             `json:"close_strategy,omitempty"`
-	CloseGate          string             `json:"close_gate,omitempty"`
-	CloseOwner         string             `json:"close_owner,omitempty"`
-	CloseTierFillPrice float64            `json:"close_tier_fill_price,omitempty"`
-	OpenSignalInverted bool               `json:"open_signal_inverted,omitempty"`
-	Regime             *RegimePayload     `json:"regime,omitempty"`
-	ClosedBar          *ClosedBarDecision `json:"closed_bar_decision,omitempty"`
-	DecisionRegime     *RegimePayload     `json:"decision_regime,omitempty"`
-	RestingTPRule      *RestingTPRuleEcho `json:"resting_tp_rule,omitempty"`
-	CloseRestingFill   json.RawMessage    `json:"close_resting_fill,omitempty"`
-	HTFFilter          *HTFFilterEcho     `json:"htf_filter,omitempty"`
+	RegimeReadinessHold string             `json:"-"`
+	OpenStrategy        string             `json:"open_strategy,omitempty"`
+	CloseStrategies     []string           `json:"close_strategies,omitempty"`
+	OpenAction          string             `json:"open_action,omitempty"`
+	CloseFraction       float64            `json:"close_fraction"`
+	CloseStrategy       string             `json:"close_strategy,omitempty"`
+	CloseGate           string             `json:"close_gate,omitempty"`
+	CloseOwner          string             `json:"close_owner,omitempty"`
+	CloseTierFillPrice  float64            `json:"close_tier_fill_price,omitempty"`
+	OpenSignalInverted  bool               `json:"open_signal_inverted,omitempty"`
+	OpenSideApplied     *string            `json:"open_side_applied,omitempty"`
+	Regime              *RegimePayload     `json:"regime,omitempty"`
+	ClosedBar           *ClosedBarDecision `json:"closed_bar_decision,omitempty"`
+	DecisionRegime      *RegimePayload     `json:"decision_regime,omitempty"`
+	RestingTPRule       *RestingTPRuleEcho `json:"resting_tp_rule,omitempty"`
+	CloseRestingFill    json.RawMessage    `json:"close_resting_fill,omitempty"`
+	HTFFilter           *HTFFilterEcho     `json:"htf_filter,omitempty"`
 }
 
 type PositionCtx struct {
@@ -38,6 +40,7 @@ type PositionCtx struct {
 	Regime                          string
 	DirectionalRegime               string
 	RegimeWindows                   map[string]string
+	RegimeSnapshots                 map[string]RegimeSnapshot `json:"regime_snapshots,omitempty"`
 	Profile                         string
 	DirectionCertifiedAtOpen        bool
 	DirectionCertifiedStatesAtOpen  map[string]string
@@ -108,6 +111,16 @@ func sendsStrategyRefs(sc StrategyConfig) bool {
 }
 
 func buildStrategyRefsArg(sc StrategyConfig, closeOwner string, invertOpen bool) ([]string, error) {
+	return buildStrategyRefsArgWithSide(sc, closeOwner, invertOpen, "")
+}
+
+func buildStrategyRefsArgWithSide(sc StrategyConfig, closeOwner string, invertOpen bool, openSide string) ([]string, error) {
+	if openSide != "" && !validRegimeSideRequest(openSide) {
+		return nil, fmt.Errorf("open_side %q must be %q, %q or %q", openSide, regimeSideLong, regimeSideShort, regimeSideNone)
+	}
+	if openSide != "" && sc.Platform != "hyperliquid" {
+		return nil, fmt.Errorf("open_side is only sent to hyperliquid checks (platform %q)", sc.Platform)
+	}
 	openName := effectiveOpenStrategy(sc)
 	if !sendsStrategyRefs(sc) {
 		return nil, nil
@@ -124,6 +137,9 @@ func buildStrategyRefsArg(sc StrategyConfig, closeOwner string, invertOpen bool)
 	}
 	if invertOpen {
 		payload["invert_open_signal"] = true
+	}
+	if openSide != "" {
+		payload["open_side"] = openSide
 	}
 	blob, err := json.Marshal(payload)
 	if err != nil {
@@ -191,6 +207,7 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		Regime:                          pos.Regime,
 		DirectionalRegime:               pos.Regime,
 		RegimeWindows:                   cloneStringMap(pos.RegimeWindows),
+		RegimeSnapshots:                 cloneRegimeSnapshots(pos.RegimeSnapshots),
 		Profile:                         pos.OpenProfile,
 		DirectionCertifiedAtOpen:        pos.DirectionCertifiedAtOpen,
 		DirectionCertifiedStatesAtOpen:  cloneStringMap(pos.DirectionCertifiedStatesAtOpen),

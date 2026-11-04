@@ -19,7 +19,7 @@ func smiHL(id string, args ...string) map[string]interface{} {
 	return sc
 }
 
-func TestStochasticMomentumIndexAdmissionRoutesOpenAndCloseFallbackReferences(t *testing.T) {
+func noEdgeCaseStochasticMomentumIndexAdmissionRoutesOpenAndCloseFallbackReferences(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	fallback := func(args ...string) map[string]interface{} {
 		sc := noEdgeHLStrategy("hl-bo-eth", append([]string{"breakout", "ETH", "4h"}, args...)...)
@@ -62,7 +62,7 @@ func TestStochasticMomentumIndexAdmissionRoutesOpenAndCloseFallbackReferences(t 
 	}
 }
 
-func TestStochasticMomentumIndexRequiresHyperliquidPerpsClosedBarDecisions(t *testing.T) {
+func noEdgeCaseStochasticMomentumIndexRequiresHyperliquidPerpsClosedBarDecisions(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	off := smiHL("hl-smi-eth", "--mode=paper")
 	off["closed_bar_decisions"] = false
@@ -100,7 +100,7 @@ func TestStochasticMomentumIndexRequiresHyperliquidPerpsClosedBarDecisions(t *te
 	}
 }
 
-func TestStochasticMomentumIndexOperatorAddCreatesALoadableExplicitPaperEntry(t *testing.T) {
+func noEdgeCaseStochasticMomentumIndexOperatorAddCreatesALoadableExplicitPaperEntry(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry(smiName, "hyperliquid", "sol")
 	if err != nil || id != "hl-smi-sol" {
@@ -159,7 +159,7 @@ func TestStochasticMomentumIndexOperatorAddCreatesALoadableExplicitPaperEntry(t 
 	}
 }
 
-func TestV20NoEdgeMigrationNeverStampsStochasticMomentumIndex(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationNeverStampsStochasticMomentumIndex(t *testing.T) {
 	open := noEdgeHLStrategy("hl-smi-open", smiName, "ETH", "4h", "--mode=live")
 	fallback := noEdgeHLStrategy("hl-smi-close", "breakout", "ETH", "4h", "--mode=live")
 	fallback["close_strategy"] = map[string]interface{}{"name": smiName}

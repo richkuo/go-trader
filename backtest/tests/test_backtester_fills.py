@@ -19,7 +19,20 @@ def _make_df(opens, highs, lows, closes, signals):
     )
 
 
-def test_fill_uses_next_bar_open_not_signal_bar_close():
+def test_fills_use_next_bar_open_not_signal_bar_close(subtests):
+    with subtests.test(case="fill_uses_next_bar_open_not_signal_bar_close"):
+        _assert_fill_uses_next_bar_open_not_signal_bar_close()
+    with subtests.test(case="exit_uses_next_bar_open_not_signal_bar_close"):
+        _assert_exit_uses_next_bar_open_not_signal_bar_close()
+    with subtests.test(case="falls_back_to_close_when_open_column_missing"):
+        _assert_falls_back_to_close_when_open_column_missing()
+    with subtests.test(case="signal_on_final_bar_never_fills"):
+        _assert_signal_on_final_bar_never_fills()
+    with subtests.test(case="signal_on_bar_zero_fills_on_bar_one"):
+        _assert_signal_on_bar_zero_fills_on_bar_one()
+
+
+def _assert_fill_uses_next_bar_open_not_signal_bar_close():
     opens = [100, 100, 100, 110, 110, 110]
     highs = [101, 101, 101, 111, 111, 111]
     lows = [99, 99, 99, 109, 109, 109]
@@ -42,7 +55,7 @@ def test_fill_uses_next_bar_open_not_signal_bar_close():
     )
 
 
-def test_exit_uses_next_bar_open_not_signal_bar_close():
+def _assert_exit_uses_next_bar_open_not_signal_bar_close():
     opens = [100, 100, 100, 100, 200, 300]
     highs = [101, 101, 101, 101, 201, 301]
     lows = [99, 99, 99, 99, 199, 299]
@@ -66,7 +79,7 @@ def test_exit_uses_next_bar_open_not_signal_bar_close():
     )
 
 
-def test_falls_back_to_close_when_open_column_missing():
+def _assert_falls_back_to_close_when_open_column_missing():
     closes = [100, 100, 100, 110, 110, 110]
     signals = [0, 0, 1, 0, 0, -1]
     idx = pd.date_range("2024-01-01", periods=len(closes), freq="D")
@@ -79,7 +92,7 @@ def test_falls_back_to_close_when_open_column_missing():
     assert results["trades"][0]["entry_price"] == pytest.approx(110.0, rel=1e-9)
 
 
-def test_signal_on_final_bar_never_fills():
+def _assert_signal_on_final_bar_never_fills():
     opens = [100, 100, 100]
     closes = [100, 100, 100]
     signals = [0, 0, 1]
@@ -94,7 +107,7 @@ def test_signal_on_final_bar_never_fills():
     assert results["total_trades"] == 0
 
 
-def test_signal_on_bar_zero_fills_on_bar_one():
+def _assert_signal_on_bar_zero_fills_on_bar_one():
     opens = [100, 200, 200, 200, 200]
     closes = [100, 200, 200, 200, 200]
     signals = [1, 0, 0, 0, -1]
@@ -110,7 +123,14 @@ def test_signal_on_bar_zero_fills_on_bar_one():
     assert results["trades"][0]["entry_price"] == pytest.approx(200.0, rel=1e-9)
 
 
-def test_buy_signal_while_long_is_ignored():
+def test_redundant_signals_are_ignored(subtests):
+    with subtests.test(case="buy_signal_while_long_is_ignored"):
+        _assert_buy_signal_while_long_is_ignored()
+    with subtests.test(case="sell_signal_while_flat_is_ignored"):
+        _assert_sell_signal_while_flat_is_ignored()
+
+
+def _assert_buy_signal_while_long_is_ignored():
     opens = [100, 100, 100, 100, 100, 100]
     closes = [100, 100, 100, 100, 100, 100]
     signals = [0, 1, 1, 0, 0, -1]
@@ -125,7 +145,7 @@ def test_buy_signal_while_long_is_ignored():
     assert results["total_trades"] == 1
 
 
-def test_sell_signal_while_flat_is_ignored():
+def _assert_sell_signal_while_flat_is_ignored():
     opens = [100, 100, 100, 100]
     closes = [100, 100, 100, 100]
     signals = [0, -1, 0, 0]

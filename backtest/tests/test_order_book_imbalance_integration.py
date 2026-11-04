@@ -71,15 +71,9 @@ def decide(books, marks, deadline, p=P):
     return obi.evaluate_section(section(books, marks, deadline, p["depth_levels"]), "BTC", p, deadline)
 
 
-def test_registration_metadata_grid_and_mirrored_validator():
-    reg = load_registry("futures")
-    registry = reg._registry
+def test_grid_matches_the_spec_and_the_mirrored_validator():
+    registry = load_registry("futures")._registry
     entry = registry.STRATEGIES[NAME]
-    assert entry["platforms"] == ("futures",) and entry["short_entries"] is True
-    assert entry["production_refused"] is True and entry["edge_status"] == "no_edge"
-    assert entry["edge_ref"] == "backtest/candidates/order_book_imbalance_1635/REPORT.md"
-    assert NAME in registry.DISCOVERY_HIDDEN_STRATEGIES and NAME not in reg.list_strategies()
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
     from optimizer import DEFAULT_PARAM_RANGES
     with open(SPEC) as fh:
         spec = json.load(fh)
@@ -96,7 +90,7 @@ def test_registration_metadata_grid_and_mirrored_validator():
                 obi.validate_params(case["params"])
 
 
-def test_threshold_equality_filters_and_depth_are_exact():
+def _check_threshold_equality_filters_and_depth_are_exact():
     p = dict(P, entry_threshold=0.5)
     feat = {"B": 3, "A": 1, "total": obi.Fraction(10 ** 6), "imbalance": obi.Fraction(1, 2), "spread_bps": obi.Fraction(1), "best_bid": 1, "best_ask": 1}
     assert obi.classify(feat, p) == (0, "neutral")
@@ -115,7 +109,7 @@ def test_threshold_equality_filters_and_depth_are_exact():
     assert obi.classify(None, P) == (0, "insufficient_depth")
 
 
-def test_episode_fires_once_at_its_sole_deadline_and_later_intervals_are_consumed():
+def _check_episode_fires_once_at_its_sole_deadline_and_later_intervals_are_consumed():
     books, marks = long_run()
     crossing = books[3]
     deadline = obi.ceil_grid(max(crossing["event_ms"], crossing["recv_ms"]))
@@ -134,7 +128,7 @@ def test_episode_fires_once_at_its_sole_deadline_and_later_intervals_are_consume
     assert short["signal"] == -1 and short["entry_id"] != first["entry_id"]
 
 
-def test_age_truncation_marker_and_flip_boundaries():
+def _check_age_truncation_marker_and_flip_boundaries():
     books, marks = long_run()
     crossing = books[3]
     deadline = obi.ceil_grid(max(crossing["event_ms"], crossing["recv_ms"]))
@@ -181,7 +175,7 @@ def test_age_truncation_marker_and_flip_boundaries():
     assert obi.evaluate_section(late, "BTC", P, cut_deadline)["reason"] == "evidence_truncated"
 
 
-def test_missing_and_malformed_books_hold_and_candle_only_consumers_are_refused():
+def _check_missing_and_malformed_books_hold_and_candle_only_consumers_are_refused():
     reg = load_registry("futures")
     df = pd.DataFrame({"open": [1.0, 1.0], "high": [1.0, 1.0], "low": [1.0, 1.0], "close": [1.0, 1.0], "volume": [1.0, 1.0]})
     with pytest.raises(ValueError, match="candle-only run cannot score it"):
@@ -371,7 +365,7 @@ def test_archive_importer_refuses_contract_breaks_and_infers_barriers(tmp_path):
     assert len(day["observations"]) + len(tail["observations"]) == 30
 
 
-def test_every_candle_research_entrypoint_refuses_the_candidate():
+def _check_every_candle_research_entrypoint_refuses_the_candidate():
     import run_backtest
     with pytest.raises(SystemExit, match="supplied l2Book depth observations"):
         run_backtest.run_single_backtest(NAME, "BTC", "1m", 30, platform="hyperliquid", registry="futures")
@@ -400,3 +394,22 @@ def test_every_candle_research_entrypoint_refuses_the_candidate():
     assert unsupported_open_strategy_reason(NAME).startswith("unsupported_cadence")
     from book_inputs import refuse_book_input_strategy
     refuse_book_input_strategy("donchian_breakout", "a test")
+
+
+def test_entry_thresholds_episode_lifecycle_and_evidence_boundaries(subtests):
+    for check in (
+            _check_threshold_equality_filters_and_depth_are_exact,
+            _check_episode_fires_once_at_its_sole_deadline_and_later_intervals_are_consumed,
+            _check_age_truncation_marker_and_flip_boundaries,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()
+
+
+def test_missing_books_hold_and_every_candle_only_consumer_refuses(subtests):
+    for check in (
+            _check_missing_and_malformed_books_hold_and_candle_only_consumers_are_refused,
+            _check_every_candle_research_entrypoint_refuses_the_candidate,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()

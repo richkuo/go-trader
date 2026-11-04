@@ -752,6 +752,12 @@ func simulateConfigPayload(sc StrategyConfig, regime *RegimeConfig) map[string]i
 			payload["regime_directional_certified_states"] = states
 		}
 	}
+	if sc.RegimeSide {
+		payload["regime_side"] = true
+		payload["allow_uncertified_regime_side"] = sc.AllowUncertifiedRegimeSide
+		payload["direction"] = EffectiveDirection(sc)
+		payload["regime_side_certification"] = regimeSidePreviewCertification(sc, regime, currentRegimeSideEvidence(), time.Now().UTC())
+	}
 	if sc.leverageDefaulted {
 		payload["leverage_source"] = "loader_default"
 	}

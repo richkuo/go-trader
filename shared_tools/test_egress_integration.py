@@ -319,227 +319,245 @@ def _assert_routed(proxy, kind, host, minimum=1):
 PROXY_KINDS = ["http", "socks5", "socks5h"]
 
 
-@pytest.mark.parametrize("raw_template,label", [
-    (None, "missing"),
-    ("", "empty"),
-    ("socks5://{user}:{password}@proxy.example:1080/path", "path"),
-    ("http://{user}:{password}@proxy.example", "no-port"),
-    ("ftp://{user}:{password}@proxy.example:21", "scheme"),
-    ("http://{user}:{password}@proxy.example:8080?x=1", "query"),
-    ("http://{user}:{password}@proxy.example:99999", "port-range"),
-    ("{user}:{password}@proxy.example:1080", "no-scheme"),
-    ("socks5://{user}:{password} @proxy.example:1080", "whitespace"),
-])
-def test_invalid_policy_refuses_before_target_runs(tmp_path, raw_template, label):
-    marker = tmp_path / "target-ran"
-    driver = _driver(tmp_path, f"open({str(marker)!r}, 'w').write('ran')\n")
-    env = _base_env(tmp_path)
-    env["GO_TRADER_EGRESS_MODE"] = "proxy"
-    if raw_template is not None:
-        env["GO_TRADER_EGRESS_PROXY"] = raw_template.format(user=SENTINEL_USER, password=SENTINEL_PASS)
-    result = _run(driver, env)
-    assert result.returncode == 1, result.stderr
-    assert not marker.exists()
-    payload = json.loads(result.stdout.strip())
-    assert set(payload) == {"error"}
-    assert payload["error"].startswith("egress policy: ")
-    assert OUTCOME_PREFIX not in result.stderr
-    _assert_no_sentinel(result)
+def test_invalid_policy_refuses_before_target_runs(tmp_path, subtests):
+    for raw_template, label in [
+        (None, "missing"),
+        ("", "empty"),
+        ("socks5://{user}:{password}@proxy.example:1080/path", "path"),
+        ("http://{user}:{password}@proxy.example", "no-port"),
+        ("ftp://{user}:{password}@proxy.example:21", "scheme"),
+        ("http://{user}:{password}@proxy.example:8080?x=1", "query"),
+        ("http://{user}:{password}@proxy.example:99999", "port-range"),
+        ("{user}:{password}@proxy.example:1080", "no-scheme"),
+        ("socks5://{user}:{password} @proxy.example:1080", "whitespace"),
+    ]:
+        with subtests.test(label=label):
+            case_dir = tmp_path / label
+            case_dir.mkdir()
+            marker = case_dir / "target-ran"
+            driver = _driver(case_dir, f"open({str(marker)!r}, 'w').write('ran')\n")
+            env = _base_env(case_dir)
+            env["GO_TRADER_EGRESS_MODE"] = "proxy"
+            if raw_template is not None:
+                env["GO_TRADER_EGRESS_PROXY"] = raw_template.format(user=SENTINEL_USER, password=SENTINEL_PASS)
+            result = _run(driver, env)
+            assert result.returncode == 1, result.stderr
+            assert not marker.exists()
+            payload = json.loads(result.stdout.strip())
+            assert set(payload) == {"error"}
+            assert payload["error"].startswith("egress policy: ")
+            assert OUTCOME_PREFIX not in result.stderr
+            _assert_no_sentinel(result)
 
 
-@pytest.mark.parametrize("kind", PROXY_KINDS)
-def test_ccxt_clients_route_through_proxy(tmp_path, servers, kind):
-    proxy, raw = _start_proxy(servers, kind)
-    driver = _driver(tmp_path, """
-        sys.path.insert(0, os.path.join(REPO, "platforms", "binanceus"))
-        import adapter as binanceus_adapter
-        binanceus = binanceus_adapter._get_ccxt_exchange()
-        RESULTS["binanceus_proxy"] = [mark(binanceus.httpsProxy), mark(binanceus.socksProxy)]
-        RESULTS["binanceus_session"] = session_state(binanceus.session)
-        attempt("binanceus", lambda: binanceus.fetch_ticker("BTC/USDT"))
-        sys.path.remove(os.path.join(REPO, "platforms", "binanceus"))
-        del sys.modules["adapter"]
-        sys.path.insert(0, os.path.join(REPO, "platforms", "okx"))
-        import adapter as okx_adapter
-        okx = okx_adapter.OKXExchangeAdapter()
-        RESULTS["okx_proxy"] = [mark(okx._exchange.httpsProxy), mark(okx._exchange.socksProxy)]
-        attempt("okx", lambda: okx._exchange.fetch_ticker("BTC/USDT"))
-        import ccxt
-        kraken = ccxt.kraken({"enableRateLimit": False})
-        RESULTS["kraken_proxy"] = [mark(kraken.httpsProxy), mark(kraken.socksProxy)]
-        attempt("kraken", lambda: kraken.fetch_ticker("BTC/USD"))
-    """)
-    result = _run(driver, _contract_env(tmp_path, raw))
-    _assert_no_sentinel(result)
-    results = _results(result)
-    expected_pair = [None, "policy-url"] if kind.startswith("socks") else ["policy-url", None]
-    assert results["binanceus_proxy"] == expected_pair
-    assert results["okx_proxy"] == expected_pair
-    assert results["kraken_proxy"] == expected_pair
-    assert results["binanceus_session"] == {"trust_env": False, "proxies": {"http": "policy-url", "https": "policy-url"}}
-    for label in ("binanceus", "okx", "kraken"):
-        assert results[label]["ok"] is False
-    _assert_routed(proxy, kind, "api.binance.us")
-    _assert_routed(proxy, kind, "www.okx.com")
-    _assert_routed(proxy, kind, "api.kraken.com")
-    outcome = _outcome(result)
-    assert outcome["requests"] >= 3
-    assert outcome["proxy_failures"] == outcome["requests"]
-    assert outcome["last_error"]
+def test_ccxt_clients_route_through_proxy(tmp_path, servers, subtests):
+    for kind in PROXY_KINDS:
+        with subtests.test(kind=kind):
+            case_dir = tmp_path / kind
+            case_dir.mkdir()
+            proxy, raw = _start_proxy(servers, kind)
+            driver = _driver(case_dir, """
+                sys.path.insert(0, os.path.join(REPO, "platforms", "binanceus"))
+                import adapter as binanceus_adapter
+                binanceus = binanceus_adapter._get_ccxt_exchange()
+                RESULTS["binanceus_proxy"] = [mark(binanceus.httpsProxy), mark(binanceus.socksProxy)]
+                RESULTS["binanceus_session"] = session_state(binanceus.session)
+                attempt("binanceus", lambda: binanceus.fetch_ticker("BTC/USDT"))
+                sys.path.remove(os.path.join(REPO, "platforms", "binanceus"))
+                del sys.modules["adapter"]
+                sys.path.insert(0, os.path.join(REPO, "platforms", "okx"))
+                import adapter as okx_adapter
+                okx = okx_adapter.OKXExchangeAdapter()
+                RESULTS["okx_proxy"] = [mark(okx._exchange.httpsProxy), mark(okx._exchange.socksProxy)]
+                attempt("okx", lambda: okx._exchange.fetch_ticker("BTC/USDT"))
+                import ccxt
+                kraken = ccxt.kraken({"enableRateLimit": False})
+                RESULTS["kraken_proxy"] = [mark(kraken.httpsProxy), mark(kraken.socksProxy)]
+                attempt("kraken", lambda: kraken.fetch_ticker("BTC/USD"))
+            """)
+            result = _run(driver, _contract_env(case_dir, raw))
+            _assert_no_sentinel(result)
+            results = _results(result)
+            expected_pair = [None, "policy-url"] if kind.startswith("socks") else ["policy-url", None]
+            assert results["binanceus_proxy"] == expected_pair
+            assert results["okx_proxy"] == expected_pair
+            assert results["kraken_proxy"] == expected_pair
+            assert results["binanceus_session"] == {"trust_env": False, "proxies": {"http": "policy-url", "https": "policy-url"}}
+            for label in ("binanceus", "okx", "kraken"):
+                assert results[label]["ok"] is False
+            _assert_routed(proxy, kind, "api.binance.us")
+            _assert_routed(proxy, kind, "www.okx.com")
+            _assert_routed(proxy, kind, "api.kraken.com")
+            outcome = _outcome(result)
+            assert outcome["requests"] >= 3
+            assert outcome["proxy_failures"] == outcome["requests"]
+            assert outcome["last_error"]
 
 
-@pytest.mark.parametrize("kind", PROXY_KINDS)
-def test_requests_clients_route_through_proxy(tmp_path, servers, kind):
-    proxy, raw = _start_proxy(servers, kind)
-    child = tmp_path / "child.py"
-    child.write_text(textwrap.dedent("""
-        import sys
-        import requests
-        assert "egress_policy" not in sys.modules
-        try:
-            requests.get("https://api.hyperliquid-testnet.xyz/info", timeout=20)
-        except requests.RequestException as exc:
-            print(type(exc).__name__)
-    """))
-    driver = _driver(tmp_path, f"""
-        import subprocess
-        import requests
-        sys.path.insert(0, os.path.join(REPO, "platforms", "deribit"))
-        import utils as deribit_utils
-        attempt("deribit", lambda: deribit_utils.fetch_available_expiries("BTC"))
-        attempt("module_get", lambda: requests.get("https://api.coinbase.com/v2/time", timeout=20))
-        attempt("session_get", lambda: requests.Session().get("https://api.gemini.com/v1/symbols", timeout=20))
-        os.environ.update({{"TOPSTEP_API_KEY": "k", "TOPSTEP_API_SECRET": "s", "TOPSTEP_ACCOUNT_ID": "1"}})
-        sys.path.insert(0, os.path.join(REPO, "platforms", "topstep"))
-        del sys.modules["utils"]
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("topstep_adapter", os.path.join(REPO, "platforms", "topstep", "adapter.py"))
-        topstep = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(topstep)
-        live = topstep.TopStepExchangeAdapter(mode="live")
-        RESULTS["topstep_session"] = session_state(live._session)
-        attempt("topstep", live.get_open_positions_raise)
-        os.environ["ANTHROPIC_API_KEY"] = "test-key"
-        spec = importlib.util.spec_from_file_location("llm_review_driver", os.path.join(REPO, "shared_scripts", "llm_review.py"))
-        review = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(review)
-        attempt("advisory", lambda: review.build_llm_call("claude-opus-5-5")("system", "user"))
-        child = subprocess.run([sys.executable, {str(child)!r}], capture_output=True, text=True, timeout=120)
-        RESULTS["child"] = [child.returncode, child.stdout.strip()]
-    """)
-    result = _run(driver, _contract_env(tmp_path, raw))
-    _assert_no_sentinel(result)
-    results = _results(result)
-    assert results["deribit"] == {"ok": True, "value": []}
-    for label in ("module_get", "session_get", "topstep", "advisory"):
-        assert results[label]["ok"] is False, results
-    assert results["topstep_session"] == {"trust_env": False, "proxies": {"http": "policy-url", "https": "policy-url"}}
-    assert results["child"][0] == 0
-    for host in ("www.deribit.com", "api.coinbase.com", "api.gemini.com", "api.topstepx.com", "api.anthropic.com",
-                 "api.hyperliquid-testnet.xyz"):
-        _assert_routed(proxy, kind, host)
-    outcome = _outcome(result)
-    assert outcome["requests"] >= 5
-    assert outcome["proxy_failures"] == outcome["requests"]
+def test_requests_clients_route_through_proxy(tmp_path, servers, subtests):
+    for kind in PROXY_KINDS:
+        with subtests.test(kind=kind):
+            case_dir = tmp_path / kind
+            case_dir.mkdir()
+            proxy, raw = _start_proxy(servers, kind)
+            child = case_dir / "child.py"
+            child.write_text(textwrap.dedent("""
+                import sys
+                import requests
+                assert "egress_policy" not in sys.modules
+                try:
+                    requests.get("https://api.hyperliquid-testnet.xyz/info", timeout=20)
+                except requests.RequestException as exc:
+                    print(type(exc).__name__)
+            """))
+            driver = _driver(case_dir, f"""
+                import subprocess
+                import requests
+                sys.path.insert(0, os.path.join(REPO, "platforms", "deribit"))
+                import utils as deribit_utils
+                attempt("deribit", lambda: deribit_utils.fetch_available_expiries("BTC"))
+                attempt("module_get", lambda: requests.get("https://api.coinbase.com/v2/time", timeout=20))
+                attempt("session_get", lambda: requests.Session().get("https://api.gemini.com/v1/symbols", timeout=20))
+                os.environ.update({{"TOPSTEP_API_KEY": "k", "TOPSTEP_API_SECRET": "s", "TOPSTEP_ACCOUNT_ID": "1"}})
+                sys.path.insert(0, os.path.join(REPO, "platforms", "topstep"))
+                del sys.modules["utils"]
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("topstep_adapter", os.path.join(REPO, "platforms", "topstep", "adapter.py"))
+                topstep = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(topstep)
+                live = topstep.TopStepExchangeAdapter(mode="live")
+                RESULTS["topstep_session"] = session_state(live._session)
+                attempt("topstep", live.get_open_positions_raise)
+                os.environ["ANTHROPIC_API_KEY"] = "test-key"
+                spec = importlib.util.spec_from_file_location("llm_review_driver", os.path.join(REPO, "shared_scripts", "llm_review.py"))
+                review = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(review)
+                attempt("advisory", lambda: review.build_llm_call("claude-opus-5-5")("system", "user"))
+                child = subprocess.run([sys.executable, {str(child)!r}], capture_output=True, text=True, timeout=120)
+                RESULTS["child"] = [child.returncode, child.stdout.strip()]
+            """)
+            result = _run(driver, _contract_env(case_dir, raw))
+            _assert_no_sentinel(result)
+            results = _results(result)
+            assert results["deribit"] == {"ok": True, "value": []}
+            for label in ("module_get", "session_get", "topstep", "advisory"):
+                assert results[label]["ok"] is False, results
+            assert results["topstep_session"] == {"trust_env": False, "proxies": {"http": "policy-url", "https": "policy-url"}}
+            assert results["child"][0] == 0
+            for host in ("www.deribit.com", "api.coinbase.com", "api.gemini.com", "api.topstepx.com", "api.anthropic.com",
+                         "api.hyperliquid-testnet.xyz"):
+                _assert_routed(proxy, kind, host)
+            outcome = _outcome(result)
+            assert outcome["requests"] >= 5
+            assert outcome["proxy_failures"] == outcome["requests"]
 
 
-@pytest.mark.parametrize("kind", PROXY_KINDS)
-def test_hyperliquid_sdk_constructor_branches_route_through_proxy(tmp_path, servers, kind):
-    proxy, raw = _start_proxy(servers, kind)
-    driver = _driver(tmp_path, """
-        sys.path.insert(0, os.path.join(REPO, "platforms", "hyperliquid"))
-        import adapter as hl
-        from hyperliquid.info import Info
-        calls = []
+def test_hyperliquid_sdk_constructor_branches_route_through_proxy(tmp_path, servers, subtests):
+    for kind in PROXY_KINDS:
+        with subtests.test(kind=kind):
+            case_dir = tmp_path / kind
+            case_dir.mkdir()
+            proxy, raw = _start_proxy(servers, kind)
+            driver = _driver(case_dir, """
+                sys.path.insert(0, os.path.join(REPO, "platforms", "hyperliquid"))
+                import adapter as hl
+                from hyperliquid.info import Info
+                calls = []
 
-        def counted(label, fn):
-            calls.append(label)
-            attempt(label, fn)
+                def counted(label, fn):
+                    calls.append(label)
+                    attempt(label, fn)
 
-        counted("raw_meta", lambda: hl._fetch_raw_meta(hl.MAINNET_URL))
-        hl._load_meta_cache = lambda *a, **k: None
-        hl._save_meta_cache = lambda *a, **k: None
-        attempt("cache_miss_adapter", hl.HyperliquidExchangeAdapter)
-        calls.extend(["cache_miss_raw", "cache_miss_fallback"])
-        counted("info_constructor", lambda: Info(hl.MAINNET_URL, skip_ws=True))
-        meta = {"universe": [{"name": "BTC", "szDecimals": 5}]}
-        spot = {"universe": [{"name": "PURR/USDC", "tokens": [0, 1], "index": 0}],
-                "tokens": [{"name": "PURR", "szDecimals": 0, "index": 0}, {"name": "USDC", "szDecimals": 8, "index": 1}]}
-        hl._load_meta_cache = lambda *a, **k: (spot, meta)
-        os.environ["HYPERLIQUID_SECRET_KEY"] = "0x" + "11" * 32
-        adapter = hl.HyperliquidExchangeAdapter()
-        RESULTS["cache_hit_info_session"] = session_state(adapter._info.session)
-        counted("cache_hit_info_post", lambda: adapter._info.post("/info", {"type": "meta"}))
-        exchange = adapter._ensure_exchange()
-        RESULTS["exchange_sessions"] = [session_state(exchange.session), session_state(exchange.info.session)]
-        counted("exchange_post", lambda: exchange.post("/exchange", {}))
-        counted("exchange_info_post", lambda: exchange.info.post("/info", {"type": "meta"}))
-        RESULTS["expected_calls"] = len(calls)
-    """)
-    result = _run(driver, _contract_env(tmp_path, raw))
-    _assert_no_sentinel(result)
-    results = _results(result)
-    pinned = {"trust_env": False, "proxies": {"http": "policy-url", "https": "policy-url"}}
-    assert results["cache_miss_adapter"]["ok"] is False
-    assert results["cache_hit_info_session"] == pinned
-    assert results["exchange_sessions"] == [pinned, pinned]
-    for label in ("raw_meta", "info_constructor", "cache_hit_info_post", "exchange_post", "exchange_info_post"):
-        assert results[label]["ok"] is False, results
-    connects = _assert_routed(proxy, kind, "api.hyperliquid.xyz")
-    assert len(connects) == results["expected_calls"]
-
-
-@pytest.mark.parametrize("kind", PROXY_KINDS)
-def test_robin_stocks_session_routes_before_login(tmp_path, servers, kind):
-    proxy, raw = _start_proxy(servers, kind)
-    driver = _driver(tmp_path, """
-        import robin_stocks.robinhood as rh_direct
-        RESULTS["hook_pinned"] = session_state(rh_direct.helper.SESSION)
-        sys.path.insert(0, os.path.join(REPO, "platforms", "robinhood"))
-        import adapter as robinhood
-        with robinhood.robinhood_library() as rh:
-            session = rh.helper.SESSION
-        RESULTS["adapter_pinned"] = session_state(session)
-        attempt("pre_login", lambda: session.get("https://api.robinhood.com/oauth2/token/", timeout=20))
-    """)
-    result = _run(driver, _contract_env(tmp_path, raw))
-    _assert_no_sentinel(result)
-    results = _results(result)
-    pinned = {"trust_env": False, "proxies": {"http": "policy-url", "https": "policy-url"}}
-    assert results["hook_pinned"] == pinned
-    assert results["adapter_pinned"] == pinned
-    assert results["pre_login"]["ok"] is False
-    _assert_routed(proxy, kind, "api.robinhood.com")
+                counted("raw_meta", lambda: hl._fetch_raw_meta(hl.MAINNET_URL))
+                hl._load_meta_cache = lambda *a, **k: None
+                hl._save_meta_cache = lambda *a, **k: None
+                attempt("cache_miss_adapter", hl.HyperliquidExchangeAdapter)
+                calls.extend(["cache_miss_raw", "cache_miss_fallback"])
+                counted("info_constructor", lambda: Info(hl.MAINNET_URL, skip_ws=True))
+                meta = {"universe": [{"name": "BTC", "szDecimals": 5}]}
+                spot = {"universe": [{"name": "PURR/USDC", "tokens": [0, 1], "index": 0}],
+                        "tokens": [{"name": "PURR", "szDecimals": 0, "index": 0}, {"name": "USDC", "szDecimals": 8, "index": 1}]}
+                hl._load_meta_cache = lambda *a, **k: (spot, meta)
+                os.environ["HYPERLIQUID_SECRET_KEY"] = "0x" + "11" * 32
+                adapter = hl.HyperliquidExchangeAdapter()
+                RESULTS["cache_hit_info_session"] = session_state(adapter._info.session)
+                counted("cache_hit_info_post", lambda: adapter._info.post("/info", {"type": "meta"}))
+                exchange = adapter._ensure_exchange()
+                RESULTS["exchange_sessions"] = [session_state(exchange.session), session_state(exchange.info.session)]
+                counted("exchange_post", lambda: exchange.post("/exchange", {}))
+                counted("exchange_info_post", lambda: exchange.info.post("/info", {"type": "meta"}))
+                RESULTS["expected_calls"] = len(calls)
+            """)
+            result = _run(driver, _contract_env(case_dir, raw))
+            _assert_no_sentinel(result)
+            results = _results(result)
+            pinned = {"trust_env": False, "proxies": {"http": "policy-url", "https": "policy-url"}}
+            assert results["cache_miss_adapter"]["ok"] is False
+            assert results["cache_hit_info_session"] == pinned
+            assert results["exchange_sessions"] == [pinned, pinned]
+            for label in ("raw_meta", "info_constructor", "cache_hit_info_post", "exchange_post", "exchange_info_post"):
+                assert results[label]["ok"] is False, results
+            connects = _assert_routed(proxy, kind, "api.hyperliquid.xyz")
+            assert len(connects) == results["expected_calls"]
 
 
-@pytest.mark.parametrize("kind", PROXY_KINDS)
-def test_yfinance_native_curl_routes_through_proxy(tmp_path, servers, kind):
-    proxy, raw = _start_proxy(servers, kind)
-    driver = _driver(tmp_path, """
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("topstep_adapter", os.path.join(REPO, "platforms", "topstep", "adapter.py"))
-        topstep = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(topstep)
-        RESULTS["price"] = topstep.TopStepExchangeAdapter(mode="paper")._get_yahoo_price("ES")
-        from yfinance.config import YfConfig
-        RESULTS["yf_proxy"] = mark(YfConfig.network.proxy)
-        from curl_cffi import requests as curl_requests
-        attempt("native_curl", lambda: curl_requests.get("https://query2.finance.yahoo.com/v8/finance/chart/NQ=F", timeout=20))
-    """)
-    result = _run(driver, _contract_env(tmp_path, raw))
-    _assert_no_sentinel(result)
-    results = _results(result)
-    assert results["price"] == 0.0
-    assert results["yf_proxy"] == "policy-url"
-    assert results["native_curl"]["ok"] is False
-    yahoo = [e for e in proxy.recorder.snapshot() if e["kind"] == "connect" and e["target"].endswith("yahoo.com:443")]
-    assert len(yahoo) >= 2, proxy.recorder.snapshot()
-    _assert_routed(proxy, kind, "query2.finance.yahoo.com")
-    if kind.startswith("socks"):
-        assert all(e["atyp"] == 3 for e in yahoo)
-    outcome = _outcome(result)
-    assert outcome["requests"] >= 2
-    assert outcome["proxy_failures"] >= 1
+def test_robin_stocks_session_routes_before_login(tmp_path, servers, subtests):
+    for kind in PROXY_KINDS:
+        with subtests.test(kind=kind):
+            case_dir = tmp_path / kind
+            case_dir.mkdir()
+            proxy, raw = _start_proxy(servers, kind)
+            driver = _driver(case_dir, """
+                import robin_stocks.robinhood as rh_direct
+                RESULTS["hook_pinned"] = session_state(rh_direct.helper.SESSION)
+                sys.path.insert(0, os.path.join(REPO, "platforms", "robinhood"))
+                import adapter as robinhood
+                with robinhood.robinhood_library() as rh:
+                    session = rh.helper.SESSION
+                RESULTS["adapter_pinned"] = session_state(session)
+                attempt("pre_login", lambda: session.get("https://api.robinhood.com/oauth2/token/", timeout=20))
+            """)
+            result = _run(driver, _contract_env(case_dir, raw))
+            _assert_no_sentinel(result)
+            results = _results(result)
+            pinned = {"trust_env": False, "proxies": {"http": "policy-url", "https": "policy-url"}}
+            assert results["hook_pinned"] == pinned
+            assert results["adapter_pinned"] == pinned
+            assert results["pre_login"]["ok"] is False
+            _assert_routed(proxy, kind, "api.robinhood.com")
+
+
+def test_yfinance_native_curl_routes_through_proxy(tmp_path, servers, subtests):
+    for kind in PROXY_KINDS:
+        with subtests.test(kind=kind):
+            case_dir = tmp_path / kind
+            case_dir.mkdir()
+            proxy, raw = _start_proxy(servers, kind)
+            driver = _driver(case_dir, """
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("topstep_adapter", os.path.join(REPO, "platforms", "topstep", "adapter.py"))
+                topstep = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(topstep)
+                RESULTS["price"] = topstep.TopStepExchangeAdapter(mode="paper")._get_yahoo_price("ES")
+                from yfinance.config import YfConfig
+                RESULTS["yf_proxy"] = mark(YfConfig.network.proxy)
+                from curl_cffi import requests as curl_requests
+                attempt("native_curl", lambda: curl_requests.get("https://query2.finance.yahoo.com/v8/finance/chart/NQ=F", timeout=20))
+            """)
+            result = _run(driver, _contract_env(case_dir, raw))
+            _assert_no_sentinel(result)
+            results = _results(result)
+            assert results["price"] == 0.0
+            assert results["yf_proxy"] == "policy-url"
+            assert results["native_curl"]["ok"] is False
+            yahoo = [e for e in proxy.recorder.snapshot() if e["kind"] == "connect" and e["target"].endswith("yahoo.com:443")]
+            assert len(yahoo) >= 2, proxy.recorder.snapshot()
+            _assert_routed(proxy, kind, "query2.finance.yahoo.com")
+            if kind.startswith("socks"):
+                assert all(e["atyp"] == 3 for e in yahoo)
+            outcome = _outcome(result)
+            assert outcome["requests"] >= 2
+            assert outcome["proxy_failures"] >= 1
 
 
 def test_overrides_restored_and_no_direct_fallback(tmp_path, servers):
@@ -573,31 +591,34 @@ def test_overrides_restored_and_no_direct_fallback(tmp_path, servers):
     _assert_routed(proxy, "socks5h", "api.hyperliquid.xyz")
 
 
-@pytest.mark.parametrize("kind", ["http", "socks5h"])
-def test_wrong_credentials_fail_without_direct_connection(tmp_path, servers, kind):
-    handler = _socks_handler if kind.startswith("socks") else _http_connect_handler
-    proxy = servers(handler, (SENTINEL_USER, SENTINEL_PASS))
-    direct = servers(_direct_handler)
-    raw = f"{kind}://{SENTINEL_USER}:{WRONG_PASS}@127.0.0.1:{proxy.port}"
-    target = f"https://[::ffff:127.0.0.1]:{direct.port}/"
-    driver = _driver(tmp_path, f"""
-        import requests
-        attempt("module_get", lambda: requests.get({target!r}, timeout=20))
-        attempt("venue_get", lambda: requests.get("https://api.hyperliquid.xyz/info", timeout=20))
-        from curl_cffi import requests as curl_requests
-        attempt("curl_get", lambda: curl_requests.get({target!r}, timeout=20))
-    """)
-    result = _run(driver, _contract_env(tmp_path, raw))
-    _assert_no_sentinel(result)
-    results = _results(result)
-    for label in ("module_get", "venue_get", "curl_get"):
-        assert results[label]["ok"] is False
-    events = proxy.recorder.snapshot()
-    assert events and all(e["kind"] == "auth_failed" for e in events), events
-    assert direct.recorder.snapshot() == []
-    outcome = _outcome(result)
-    assert outcome["proxy_failures"] >= 2
-    assert outcome["last_error"]
+def test_wrong_credentials_fail_without_direct_connection(tmp_path, servers, subtests):
+    for kind in ["http", "socks5h"]:
+        with subtests.test(kind=kind):
+            case_dir = tmp_path / kind
+            case_dir.mkdir()
+            handler = _socks_handler if kind.startswith("socks") else _http_connect_handler
+            proxy = servers(handler, (SENTINEL_USER, SENTINEL_PASS))
+            direct = servers(_direct_handler)
+            raw = f"{kind}://{SENTINEL_USER}:{WRONG_PASS}@127.0.0.1:{proxy.port}"
+            target = f"https://[::ffff:127.0.0.1]:{direct.port}/"
+            driver = _driver(case_dir, f"""
+                import requests
+                attempt("module_get", lambda: requests.get({target!r}, timeout=20))
+                attempt("venue_get", lambda: requests.get("https://api.hyperliquid.xyz/info", timeout=20))
+                from curl_cffi import requests as curl_requests
+                attempt("curl_get", lambda: curl_requests.get({target!r}, timeout=20))
+            """)
+            result = _run(driver, _contract_env(case_dir, raw))
+            _assert_no_sentinel(result)
+            results = _results(result)
+            for label in ("module_get", "venue_get", "curl_get"):
+                assert results[label]["ok"] is False
+            events = proxy.recorder.snapshot()
+            assert events and all(e["kind"] == "auth_failed" for e in events), events
+            assert direct.recorder.snapshot() == []
+            outcome = _outcome(result)
+            assert outcome["proxy_failures"] >= 2
+            assert outcome["last_error"]
 
 
 def test_tls_proxy_trusted_and_untrusted(tmp_path, servers, tls_material):
@@ -737,13 +758,16 @@ def _check(env, *families):
                           capture_output=True, text=True, timeout=240)
 
 
-@pytest.mark.parametrize("kind", ["http", "socks5"])
-def test_check_policy_passes_for_every_family(tmp_path, kind):
-    raw = f"{kind}://{SENTINEL_USER}:{SENTINEL_PASS}@127.0.0.1:1"
-    result = _check(_contract_env(tmp_path, raw), *ALL_FAMILIES)
-    _assert_no_sentinel(result)
-    assert result.returncode == 0, result.stdout + result.stderr[-4000:]
-    assert result.stdout.strip().splitlines() == [json.dumps({"ok": True, "families": ALL_FAMILIES})]
+def test_check_policy_passes_for_every_family(tmp_path, subtests):
+    for kind in ["http", "socks5"]:
+        with subtests.test(kind=kind):
+            case_dir = tmp_path / kind
+            case_dir.mkdir()
+            raw = f"{kind}://{SENTINEL_USER}:{SENTINEL_PASS}@127.0.0.1:1"
+            result = _check(_contract_env(case_dir, raw), *ALL_FAMILIES)
+            _assert_no_sentinel(result)
+            assert result.returncode == 0, result.stdout + result.stderr[-4000:]
+            assert result.stdout.strip().splitlines() == [json.dumps({"ok": True, "families": ALL_FAMILIES})]
 
 
 def test_check_policy_failures(tmp_path):

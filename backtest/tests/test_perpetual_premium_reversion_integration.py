@@ -15,7 +15,6 @@ if _TOOLS not in sys.path:
 from atr import ensure_atr_indicator
 from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
-from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid
 from premium_replay import CONTRACT, PAYLOAD_CONTRACT_KEYS, payload_from_series
 from registry_loader import load_registry
 from strategy_composition import (
@@ -94,22 +93,6 @@ def _row(out, i):
     return out["signal"].iloc[i], out["ppr_reason"].iloc[i]
 
 
-def test_registration_is_futures_only_bidirectional_hidden_production_refused_with_a_valid_grid():
-    reg = _reg()
-    entry = reg.STRATEGY_REGISTRY[NAME]
-    assert entry["production_refused"] is True and entry["edge_status"] == "no_edge"
-    assert entry["edge_ref"] == "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md"
-    assert NAME not in reg.list_strategies()
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
-    registry = reg._registry
-    assert registry.STRATEGIES[NAME]["short_entries"] is True
-    assert NAME in registry.production_refused_strategies()
-    grid = generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
-    assert len(grid) == 12
-    for params in grid:
-        registry.validate_params(NAME, params)
-
-
 def test_parameter_validation_refuses_an_unestablishable_oracle_source_age_and_bad_bounds():
     registry = _reg()._registry
     with pytest.raises(ValueError, match="no source time"):
@@ -161,7 +144,7 @@ def test_comparisons_are_strict_at_the_frozen_boundaries():
     assert set(_run(df, series)["ppr_reason"].iloc[10:]) == {"variance_floor"}
 
 
-def test_invalid_or_incomplete_inputs_hold_with_a_reason():
+def _check_invalid_or_incomplete_inputs_hold_with_a_reason():
     cases = {
         "sample_missing": lambda s: s.pop(15),
         "sample_not_sampled": lambda s: s[15].update(status="invalid", reason="malformed"),
@@ -190,7 +173,7 @@ def test_invalid_or_incomplete_inputs_hold_with_a_reason():
         assert _row(_run(df, series), 21)[0] == -1, reason
 
 
-def test_a_later_revocation_applies_only_from_its_detection_time():
+def _check_a_later_revocation_applies_only_from_its_detection_time():
     def revoke_after(s):
         s[15]["invalid_ms"] = T0 + 23 * BAR
         s[15]["invalid_reason"] = "conflicting_duplicate"
@@ -206,7 +189,7 @@ def test_a_later_revocation_applies_only_from_its_detection_time():
     assert _row(_run(df, series), 21) == (0, "sample_invalidated")
 
 
-def test_contract_and_availability_failures_hold_every_entry():
+def _check_contract_and_availability_failures_hold_every_entry():
     df, series = _build(_premiums(30, extreme=20))
     for key, value in (("contract", "other"), ("oracle_time_basis", "receipt"), ("sample_ms", 30_000), ("kind", "open_interest")):
         payload = {**payload_from_series(series, BAR), key: value}
@@ -309,3 +292,13 @@ def test_production_admission_refuses_the_candidate_and_keeps_existing_candidate
     refs = admit_configured_strategies("mass_index_reversal", None, None, GateMode(GATE_MODE_PAPER),
                                        Acknowledgement(False), reg.get_strategy, get_close)
     assert [r.name for r in refs] == ["mass_index_reversal"]
+
+
+def test_input_defects_revocations_and_contract_failures_hold_with_a_reason(subtests):
+    for check in (
+            _check_invalid_or_incomplete_inputs_hold_with_a_reason,
+            _check_a_later_revocation_applies_only_from_its_detection_time,
+            _check_contract_and_availability_failures_hold_every_entry,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()

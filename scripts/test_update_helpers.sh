@@ -1832,4 +1832,134 @@ UPDATE_UNIT_SUDO="" update_unit_install_with_backup "$rec_test/unit-test/go-trad
 chmod 0700 "$rec_test/unit-test"
 rm -rf "$rec_test"
 
+rh_test=$(mktemp -d)
+rh_seed() {
+    python3 -I - "$rh_test/state.db" "$1" "$2" <<'PY'
+import sqlite3, sys
+path, pos_symbol, attempt_symbol = sys.argv[1:4]
+con = sqlite3.connect(path)
+con.execute("DROP TABLE IF EXISTS positions")
+con.execute("DROP TABLE IF EXISTS robinhood_order_attempts")
+con.execute("DROP TABLE IF EXISTS strategies")
+con.execute("CREATE TABLE positions (strategy_id TEXT, symbol TEXT)")
+con.execute("CREATE TABLE robinhood_order_attempts (strategy_id TEXT, symbol TEXT, status TEXT)")
+con.execute("CREATE TABLE strategies (id TEXT, risk_pending_circuit_closes_json TEXT)")
+if pos_symbol:
+    con.execute("INSERT INTO positions VALUES (?, ?)", ("rh-btc-store", pos_symbol))
+if attempt_symbol:
+    con.execute("INSERT INTO robinhood_order_attempts VALUES (?, ?, ?)", ("rh-btc-store", attempt_symbol, "unknown"))
+    con.execute("INSERT INTO robinhood_order_attempts VALUES (?, ?, ?)", ("rh-btc-store", attempt_symbol.lower(), "settled"))
+con.execute("INSERT INTO strategies VALUES (?, ?)", ("rh-btc-store", None))
+con.commit()
+PY
+}
+rh_config() {
+    printf '{"db_file": "%s", "strategies": [{"id": "rh-btc", "storage_strategy_id": "rh-btc-store", "type": "spot", "args": ["momentum_pro", "%s", "1h", "--mode=live"]}, {"id": "hl-eth", "type": "perps", "args": ["x", "eth", "1h"]}]}\n' "$rh_test/state.db" "$1" >"$rh_test/config.json"
+}
+printf 'old go-trader build\n' >"$rh_test/go-trader-pre1908"
+printf 'new go-trader build %s tail\n' "$UPDATE_RH_IDENTITY_CAPABILITY" >"$rh_test/go-trader-1908"
+rh_check() {
+    GO_TRADER_UPDATE_CONFIG="$rh_test/config.json" update_robinhood_identity_rollback_check "${1:-$rh_test/go-trader-pre1908}" 2>"$rh_test/err" && printf 'ok' || printf 'blocked'
+}
+grep -qF "const robinhoodCoinIdentityCapability = \"$UPDATE_RH_IDENTITY_CAPABILITY\"" "$(dirname "$0")/../scheduler/robinhood_identity.go" || { echo "FAIL: rh identity: update_helpers.sh capability marker differs from scheduler/robinhood_identity.go" >&2; exit 1; }
+rh_config btc; rh_seed BTC ""
+assert_eq "$(rh_check)" "blocked" "rh identity: a lowercase config over a migrated BTC book blocks a restored pre-#1908 binary"
+grep -q "rh-btc: config args\[1\] is 'btc'" "$rh_test/err" || { echo "FAIL: rh identity blocker names the strategy" >&2; cat "$rh_test/err" >&2; exit 1; }
+grep -q "predates the Robinhood coin identity rule" "$rh_test/err" || { echo "FAIL: rh identity: a pre-#1908 binary block names the old binary" >&2; cat "$rh_test/err" >&2; exit 1; }
+assert_eq "$(rh_check "$rh_test/go-trader-1908")" "ok" "rh identity: a lowercase config over a migrated BTC book starts a restored binary that has the #1908 identity rule"
+grep -q "reads the trimmed uppercase coin identity" "$rh_test/err" || { echo "FAIL: rh identity: a #1908 binary start logs why it does not block" >&2; cat "$rh_test/err" >&2; exit 1; }
+assert_eq "$(rh_check "$rh_test/missing-go-trader")" "blocked" "rh identity: a lowercase config over a migrated BTC book blocks when the restored binary cannot be read"
+grep -q "could not read the restored binary" "$rh_test/err" || { echo "FAIL: rh identity: an unknown binary block says the build is unknown" >&2; cat "$rh_test/err" >&2; exit 1; }
+mkdir -p "$rh_test/dir-go-trader"
+assert_eq "$(rh_check "$rh_test/dir-go-trader")" "blocked" "rh identity: a restored binary path that is not a file blocks"
+assert_eq "$(GO_TRADER_UPDATE_CONFIG="$rh_test/config.json" update_robinhood_identity_rollback_check 2>/dev/null && printf ok || printf blocked)" "blocked" "rh identity: no restored binary path blocks"
+rh_config BTC
+assert_eq "$(rh_check)" "ok" "rh identity: a canonical config over a canonical book starts"
+rh_config btc; rh_seed btc ""
+assert_eq "$(rh_check)" "ok" "rh identity: an unmigrated lowercase book with a lowercase config starts"
+rh_config BTC
+assert_eq "$(rh_check)" "blocked" "rh identity: a canonical config over an unmigrated lowercase book blocks"
+rh_config btc; rh_seed "" BTC
+assert_eq "$(rh_check)" "blocked" "rh identity: a migrated unresolved attempt blocks under a lowercase config"
+rh_config BTC
+assert_eq "$(rh_check)" "ok" "rh identity: settled history in another spelling never blocks"
+python3 -I - "$rh_test/state.db" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("DELETE FROM robinhood_order_attempts")
+con.execute("UPDATE strategies SET risk_pending_circuit_closes_json = ?", ('{"robinhood": {"symbols": [{"symbol": "BTC", "size": 0.5}]}}',))
+con.commit()
+PY
+rh_config btc
+assert_eq "$(rh_check)" "blocked" "rh identity: a migrated pending circuit close blocks under a lowercase config"
+printf 'not a database' >"$rh_test/state.db"
+assert_eq "$(rh_check)" "blocked" "rh identity: an unreadable state file fails closed"
+assert_eq "$(rh_check "$rh_test/go-trader-1908")" "blocked" "rh identity: an unreadable state file fails closed for a #1908 binary too"
+printf '{"db_file": "%s", "strategies": [{"id": "hl-eth", "type": "perps", "args": ["x", "eth", "1h"]}]}\n' "$rh_test/state.db" >"$rh_test/config.json"
+assert_eq "$(rh_check)" "ok" "rh identity: a roster with no Robinhood spot strategy never opens the state files"
+rm -rf "$rh_test"
+
+cert_test=$(mktemp -d)
+printf 'FOO=1\nGO_TRADER_DIRECTIONAL_CERT_PATH=/srv/file-certs.json\n' >"$cert_test/a.env"
+printf 'GO_TRADER_DIRECTIONAL_CERT_PATH=/srv/later-certs.json\n' >"$cert_test/b.env"
+assert_eq "$(update_directional_cert_path_from_show 'GO_TRADER_DIRECTIONAL_CERT_PATH=/srv/inline.json' '')" \
+    "SET /srv/inline.json" "cert path: an inline Environment= override reaches the probe"
+assert_eq "$(update_directional_cert_path_from_show 'GO_TRADER_DIRECTIONAL_CERT_PATH=/srv/inline.json' "$cert_test/a.env (ignore_errors=no)")" \
+    "SET /srv/file-certs.json" "cert path: an EnvironmentFile value overrides Environment= as systemd does"
+assert_eq "$(update_directional_cert_path_from_show '' "$(printf '%s\n%s' "$cert_test/a.env (ignore_errors=no)" "$cert_test/b.env (ignore_errors=yes)")")" \
+    "SET /srv/later-certs.json" "cert path: the later EnvironmentFile wins"
+assert_eq "$(update_directional_cert_path_from_show 'OTHER=1' "$cert_test/missing.env (ignore_errors=yes)")" \
+    "" "cert path: a unit with no override leaves the probe on the default artifact"
+rm -rf "$cert_test"
+
+rb_test=$(mktemp -d)
+rb_seed() {
+    python3 -I - "$rb_test/state.db" "$1" "$2" "$3" "$4" <<'PY'
+import sqlite3, sys
+path, columns, sid, qty, key = sys.argv[1:6]
+con = sqlite3.connect(path)
+con.execute("DROP TABLE IF EXISTS positions")
+if columns == "new":
+    con.execute("CREATE TABLE positions (strategy_id TEXT, symbol TEXT, side TEXT, quantity REAL, account_key TEXT NOT NULL DEFAULT '', venue_account_id TEXT NOT NULL DEFAULT '', account_binding_source TEXT NOT NULL DEFAULT '')")
+    con.execute("INSERT INTO positions (strategy_id, symbol, side, quantity, account_key, venue_account_id) VALUES (?, ?, ?, ?, ?, ?)", (sid, "btc", "long", float(qty), key, "acct-1" if key else ""))
+else:
+    con.execute("CREATE TABLE positions (strategy_id TEXT, symbol TEXT, side TEXT, quantity REAL)")
+    con.execute("INSERT INTO positions VALUES (?, ?, ?, ?)", (sid, "btc", "long", float(qty)))
+con.commit()
+PY
+}
+rb_config() {
+    printf '{"db_file": "%s", "strategies": [{"id": "rh-btc", "storage_strategy_id": "rh-btc-store", "type": "spot", "args": ["momentum_pro", "BTC", "1h", "--mode=%s"]}, {"id": "hl-eth", "type": "perps", "args": ["x", "eth", "1h"]}]}\n' "$rb_test/state.db" "${1:-live}" >"$rb_test/config.json"
+}
+printf 'old go-trader build %s\n' "$UPDATE_RH_IDENTITY_CAPABILITY" >"$rb_test/go-trader-pre1921"
+printf 'new go-trader build %s %s tail\n' "$UPDATE_RH_IDENTITY_CAPABILITY" "$UPDATE_RH_BINDING_CAPABILITY" >"$rb_test/go-trader-1921"
+rb_check() {
+    GO_TRADER_UPDATE_CONFIG="$rb_test/config.json" update_robinhood_binding_rollback_check "${1:-$rb_test/go-trader-pre1921}" 2>"$rb_test/err" && printf 'ok' || printf 'blocked'
+}
+grep -qF "const robinhoodAccountBindingCapability = \"$UPDATE_RH_BINDING_CAPABILITY\"" "$(dirname "$0")/../scheduler/robinhood_account_binding.go" || { echo "FAIL: rh binding: update_helpers.sh capability marker differs from scheduler/robinhood_account_binding.go" >&2; exit 1; }
+rb_config live; rb_seed new rh-btc-store 0.5 robinhood:user-1
+assert_eq "$(rb_check)" "blocked" "rh binding: an open bound live book blocks a restored binary without the account binding"
+grep -q "rh-btc: .* holds an open BTC book of 0.5 (bound)" "$rb_test/err" || { echo "FAIL: rh binding blocker names the strategy and book" >&2; cat "$rb_test/err" >&2; exit 1; }
+grep -q "predates the Robinhood account binding" "$rb_test/err" || { echo "FAIL: rh binding: the block names the old binary" >&2; cat "$rb_test/err" >&2; exit 1; }
+rb_seed new rh-btc-store 0.5 ""
+assert_eq "$(rb_check)" "blocked" "rh binding: an open book with empty binding values still blocks"
+assert_eq "$(rb_check "$rb_test/go-trader-1921")" "ok" "rh binding: a restored binary with the account binding starts"
+grep -q "enforces the account binding" "$rb_test/err" || { echo "FAIL: rh binding: a compatible start logs why it does not block" >&2; cat "$rb_test/err" >&2; exit 1; }
+assert_eq "$(rb_check "$rb_test/missing-go-trader")" "blocked" "rh binding: an unreadable restored binary blocks"
+rb_seed new rh-btc-store 0 robinhood:user-1
+assert_eq "$(rb_check)" "ok" "rh binding: a flat book never blocks"
+rb_seed new rh-btc 0.5 robinhood:user-1
+assert_eq "$(rb_check)" "ok" "rh binding: only the configured storage id is owned"
+rb_seed old rh-btc-store 0.5 ""
+assert_eq "$(rb_check)" "ok" "rh binding: a state file without binding columns never ran the feature"
+rb_seed new rh-btc-store 0.5 robinhood:user-1
+rb_config paper
+assert_eq "$(rb_check)" "ok" "rh binding: a paper Robinhood strategy never blocks"
+rb_config live
+printf 'not a database' >"$rb_test/state.db"
+assert_eq "$(rb_check)" "blocked" "rh binding: an unreadable state file fails closed"
+assert_eq "$(rb_check "$rb_test/go-trader-1921")" "blocked" "rh binding: an unreadable state file fails closed for a compatible binary too"
+grep -q "could not read the config or a state file" "$rb_test/err" || { echo "FAIL: rh binding: an unreadable state block says so" >&2; cat "$rb_test/err" >&2; exit 1; }
+rm -rf "$rb_test"
+
 echo "OK: update_helpers tests passed"

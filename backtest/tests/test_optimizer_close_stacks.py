@@ -88,9 +88,7 @@ def test_grid_expands_baseline_dedupes_defaults_and_labels():
     assert grid[0]["label"] == "tiered_tp_atr[0.5x:0.5,1x:1] sl_atr=2", case
 
 
-@pytest.mark.parametrize(
-    "specs,match",
-    [
+_GRID_REJECTS_INVALID_SPECS_CASES = [
         ([{"close": None,
            "stop_loss_atr_mult": [1.5],
            "trailing_stop_atr_mult": [2.0]}], "mutually exclusive"),
@@ -98,13 +96,16 @@ def test_grid_expands_baseline_dedupes_defaults_and_labels():
         ([{"close": {"name": "tiered_tp_atr",
                      "params": {"tp_tiers": TIGHT_LADDER}}}], "non-empty list"),
         ([{"close": {"params": {}}}], "needs a 'name'"),
-    ],
-    ids=["both_stop_owners", "unknown_spec_keys",
-         "non_list_param_candidates", "close_without_name"],
-)
-def test_grid_rejects_invalid_specs(specs, match):
-    with pytest.raises(ValueError, match=match):
-        generate_close_stack_grid(specs)
+    ]
+_GRID_REJECTS_INVALID_SPECS_IDS = ["both_stop_owners", "unknown_spec_keys",
+         "non_list_param_candidates", "close_without_name"]
+
+
+def test_grid_rejects_invalid_specs(subtests):
+    for i, (case_id, (specs, match)) in enumerate(zip(_GRID_REJECTS_INVALID_SPECS_IDS, _GRID_REJECTS_INVALID_SPECS_CASES)):
+        with subtests.test(case=case_id, specs=specs, match=match):
+            with pytest.raises(ValueError, match=match):
+                generate_close_stack_grid(specs)
 
 
 def test_result_metric():
@@ -153,31 +154,29 @@ def test_joint_sweep_reports_best_close_stack():
     assert result["most_common_best_close_stack"] in labels
 
 
-def test_joint_sweep_rejects_fixed_close_kwargs():
+def test_joint_sweep_rejects_fixed_close_kwargs(subtests):
     df = _trending_ohlc()
-    grid = generate_close_stack_grid([{"close": None}])
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        walk_forward_optimize(
-            df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
-            n_splits=2, verbose=False,
-            close_stack_grid=grid,
-            close_strategies=[{"name": "tp_at_pct", "params": {"pct": 0.03}}],
-        )
-
-
-def test_joint_sweep_rejects_invalid_stack_loudly():
-    df = _trending_ohlc()
-    grid = [{
-        "label": "bad ratchet",
-        "close_strategies": [{"name": "trailing_tp_ratchet", "params": {}}],
-        "stop_loss_atr_mult": None,
-        "trailing_stop_atr_mult": None,
-    }]
-    with pytest.raises(ValueError, match="trailing_tp_ratchet"):
-        walk_forward_optimize(
-            df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
-            n_splits=2, verbose=False, close_stack_grid=grid,
-        )
+    cases = [
+        ("fixed_close_kwargs", "mutually exclusive", dict(
+            close_stack_grid=generate_close_stack_grid([{"close": None}]),
+            close_strategies=[{"name": "tp_at_pct", "params": {"pct": 0.03}}])),
+        ("invalid_stack", "trailing_tp_ratchet", dict(close_stack_grid=[{
+            "label": "bad ratchet",
+            "close_strategies": [{"name": "trailing_tp_ratchet", "params": {}}],
+            "stop_loss_atr_mult": None,
+            "trailing_stop_atr_mult": None,
+        }])),
+        ("short_universe_with_no_close_stack", "close evaluator", dict(
+            close_stack_grid=generate_close_stack_grid([{"close": None}]),
+            direction="both")),
+    ]
+    for case_id, match, kwargs in cases:
+        with subtests.test(case=case_id):
+            with pytest.raises(ValueError, match=match):
+                walk_forward_optimize(
+                    df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
+                    n_splits=2, verbose=False, **kwargs,
+                )
 
 
 def test_tiered_tp_atr_actually_fires_in_optimize_path():
@@ -259,56 +258,33 @@ def test_joint_sweep_defaults_to_long_universe():
         f"must not open shorts under the default long entry universe")
 
 
-def test_joint_sweep_rejects_short_universe_with_no_close_stack():
-    df = _trending_ohlc()
-    grid = generate_close_stack_grid([{"close": None}])
-    with pytest.raises(ValueError, match="close evaluator"):
-        walk_forward_optimize(
-            df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
-            n_splits=2, verbose=False, close_stack_grid=grid,
-            direction="both",
-        )
-
-
-def test_optimize_rejects_short_direction_with_no_close_ref():
-    df = _trending_ohlc()
-    with pytest.raises(ValueError, match="warmup seeder"):
-        walk_forward_optimize(
-            df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
-            n_splits=2, verbose=False, direction="short",
-        )
-
-
-def test_optimize_rejects_short_direction_even_with_close_refs():
-    df = _trending_ohlc()
-    with pytest.raises(ValueError, match="warmup seeder"):
-        walk_forward_optimize(
-            df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
-            n_splits=2, verbose=False, direction="short",
-            close_strategies=[{"name": "tiered_tp_atr",
-                               "params": {"tp_tiers": WIDE_LADDER}}],
-        )
-    grid = generate_close_stack_grid([
-        {"close": {"name": "tiered_tp_atr",
-                   "params": {"tp_tiers": [WIDE_LADDER]}}},
-    ])
-    with pytest.raises(ValueError, match="warmup seeder"):
-        walk_forward_optimize(
-            df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
-            n_splits=2, verbose=False, direction="short",
-            close_stack_grid=grid,
-        )
-
-
-def test_optimize_both_direction_with_fixed_close_ref_runs():
-    df = _trending_ohlc()
-    result = walk_forward_optimize(
-        df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
-        n_splits=2, verbose=False, direction="both",
-        close_strategies=[{"name": "tiered_tp_atr",
-                           "params": {"tp_tiers": WIDE_LADDER}}],
-    )
-    assert "window_results" in result, result
+def test_optimize_rejects_short_direction_even_with_close_refs(subtests):
+    with subtests.test("test_optimize_rejects_short_direction_even_with_close_refs"):
+        df = _trending_ohlc()
+        with pytest.raises(ValueError, match="warmup seeder"):
+            walk_forward_optimize(
+                df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
+                n_splits=2, verbose=False, direction="short",
+                close_strategies=[{"name": "tiered_tp_atr",
+                                   "params": {"tp_tiers": WIDE_LADDER}}],
+            )
+        grid = generate_close_stack_grid([
+            {"close": {"name": "tiered_tp_atr",
+                       "params": {"tp_tiers": [WIDE_LADDER]}}},
+        ])
+        with pytest.raises(ValueError, match="warmup seeder"):
+            walk_forward_optimize(
+                df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
+                n_splits=2, verbose=False, direction="short",
+                close_stack_grid=grid,
+            )
+    with subtests.test("test_optimize_rejects_short_direction_with_no_close_ref"):
+        df = _trending_ohlc()
+        with pytest.raises(ValueError, match="warmup seeder"):
+            walk_forward_optimize(
+                df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
+                n_splits=2, verbose=False, direction="short",
+            )
 
 
 def test_optimize_long_direction_with_no_close_ref_runs():

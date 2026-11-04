@@ -118,53 +118,59 @@ def test_the_same_row_from_two_captures_counts_once():
     assert rep["market_fill_slippage"]["excluded"]["log_precision_insufficient"] == 1
 
 
-def test_refuses_the_same_row_with_different_evidence(tmp_path):
-    with open(os.path.join(FIXTURE, "export_live_recapture.json")) as fh:
-        doc = json.load(fh)
-    doc["events"][0]["exchange_fee"]["value"] = 0.5
-    doc["events"][0]["exchange_fee"]["raw_value"] = 0.5
-    bad = tmp_path / "recapture.json"
-    bad.write_text(json.dumps(doc))
-    proc = subprocess.run(
-        [sys.executable, TOOL, "--export", os.path.join(FIXTURE, "export_live.json"), "--export", str(bad)],
-        capture_output=True, text=True, cwd=BACKTEST)
-    assert proc.returncode == 1
-    assert "different evidence" in json.loads(proc.stdout)["error"]
+def test_refuses_the_same_row_with_different_evidence(tmp_path, subtests):
+    with subtests.test(case="test_refuses_the_same_row_with_different_evidence"):
+        case_dir = tmp_path / "case0"
+        case_dir.mkdir()
+        with open(os.path.join(FIXTURE, "export_live_recapture.json")) as fh:
+            doc = json.load(fh)
+        doc["events"][0]["exchange_fee"]["value"] = 0.5
+        doc["events"][0]["exchange_fee"]["raw_value"] = 0.5
+        bad = case_dir / "recapture.json"
+        bad.write_text(json.dumps(doc))
+        proc = subprocess.run(
+            [sys.executable, TOOL, "--export", os.path.join(FIXTURE, "export_live.json"), "--export", str(bad)],
+            capture_output=True, text=True, cwd=BACKTEST)
+        assert proc.returncode == 1
+        assert "different evidence" in json.loads(proc.stdout)["error"]
 
+    with subtests.test(case="test_refuses_a_fill_whose_coin_disagrees_with_the_row"):
+        case_dir = tmp_path / "case1"
+        case_dir.mkdir()
+        with open(os.path.join(FIXTURE, "user_fills.json")) as fh:
+            fills = json.load(fh)
+        fills[3]["coin"] = "BTC"
+        bad = case_dir / "user_fills.json"
+        bad.write_text(json.dumps(fills))
+        code, out, err = _run("--user-fills", str(bad))
+        assert code == 1
+        assert "disagrees" in json.loads(out)["error"]
 
-def test_refuses_a_fill_whose_coin_disagrees_with_the_row(tmp_path):
-    with open(os.path.join(FIXTURE, "user_fills.json")) as fh:
-        fills = json.load(fh)
-    fills[3]["coin"] = "BTC"
-    bad = tmp_path / "user_fills.json"
-    bad.write_text(json.dumps(fills))
-    code, out, err = _run("--user-fills", str(bad))
-    assert code == 1
-    assert "disagrees" in json.loads(out)["error"]
+    with subtests.test(case="test_refuses_an_export_that_fails_ledger_validation"):
+        case_dir = tmp_path / "case2"
+        case_dir.mkdir()
+        with open(os.path.join(FIXTURE, "export_live.json")) as fh:
+            doc = json.load(fh)
+        doc["schema_version"] = 99
+        bad = case_dir / "export.json"
+        bad.write_text(json.dumps(doc))
+        proc = subprocess.run([sys.executable, TOOL, "--export", str(bad)], capture_output=True, text=True,
+                              cwd=BACKTEST)
+        assert proc.returncode == 1
+        assert "version" in json.loads(proc.stdout)["error"]
 
-
-def test_refuses_an_export_that_fails_ledger_validation(tmp_path):
-    with open(os.path.join(FIXTURE, "export_live.json")) as fh:
-        doc = json.load(fh)
-    doc["schema_version"] = 99
-    bad = tmp_path / "export.json"
-    bad.write_text(json.dumps(doc))
-    proc = subprocess.run([sys.executable, TOOL, "--export", str(bad)], capture_output=True, text=True,
-                          cwd=BACKTEST)
-    assert proc.returncode == 1
-    assert "version" in json.loads(proc.stdout)["error"]
-
-
-def test_refuses_an_export_from_another_platform(tmp_path):
-    with open(os.path.join(FIXTURE, "export_live_doge.json")) as fh:
-        doc = json.load(fh)
-    doc["selection"]["platform"] = "okx"
-    bad = tmp_path / "export_okx.json"
-    bad.write_text(json.dumps(doc))
-    proc = subprocess.run(
-        [sys.executable, TOOL, "--export", os.path.join(FIXTURE, "export_live.json"), "--export", str(bad)],
-        capture_output=True, text=True, cwd=BACKTEST)
-    assert proc.returncode == 1
-    out = json.loads(proc.stdout)
-    assert list(out) == ["error"]
-    assert "platform 'okx'" in out["error"]
+    with subtests.test(case="test_refuses_an_export_from_another_platform"):
+        case_dir = tmp_path / "case3"
+        case_dir.mkdir()
+        with open(os.path.join(FIXTURE, "export_live_doge.json")) as fh:
+            doc = json.load(fh)
+        doc["selection"]["platform"] = "okx"
+        bad = case_dir / "export_okx.json"
+        bad.write_text(json.dumps(doc))
+        proc = subprocess.run(
+            [sys.executable, TOOL, "--export", os.path.join(FIXTURE, "export_live.json"), "--export", str(bad)],
+            capture_output=True, text=True, cwd=BACKTEST)
+        assert proc.returncode == 1
+        out = json.loads(proc.stdout)
+        assert list(out) == ["error"]
+        assert "platform 'okx'" in out["error"]

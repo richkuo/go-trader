@@ -100,20 +100,27 @@ def test_family_is_superset_only_for_the_full_default_universe():
             f"test_family_is_superset_false_when_any_axis_is_narrowed[{axis}]")
 
 
-def test_narrowed_run_refuses_to_write_the_repo_artifact():
-    with pytest.raises(SystemExit) as exc:
-        certify_mod.main(["--symbols", "ETH/USDT", "--timeframes", "1h",
-                          "--classifiers", "composite"])
-    assert "narrowed family" in str(exc.value)
-
-
-def test_narrowed_run_refuses_when_only_the_report_targets_the_repo():
-    with pytest.raises(SystemExit) as exc:
-        certify_mod.main(["--symbols", "BTC/USDT", "--timeframes", "1h",
-                          "--classifiers", "composite",
-                          "--out", "/tmp/research_cert.json"])
-    assert "narrowed family" in str(exc.value)
-    assert "regime_1443_run_report.json" in str(exc.value)
+def test_narrowed_run_refuses_to_write_the_repo_artifact(subtests):
+    cases = [
+        ("narrowed_run", ["--symbols", "ETH/USDT", "--timeframes", "1h",
+                          "--classifiers", "composite"],
+         ["narrowed family"]),
+        ("narrowed_run_report_targets_the_repo",
+         ["--symbols", "BTC/USDT", "--timeframes", "1h",
+          "--classifiers", "composite", "--out", "/tmp/research_cert.json"],
+         ["narrowed family", "regime_1443_run_report.json"]),
+        ("repointed_baseline", ["--symbols", "BTC/USDT@kraken,ETH/USDT,SOL/USDT"],
+         ["repointed baseline", "BTC/USDT@kraken"]),
+        ("colliding_assets",
+         ["--symbols", "BTC/USDT,ETH/USDT,SOL/USDT,BTC/USDC:USDC@hyperliquid"],
+         ["normalize to the same certification asset"]),
+    ]
+    for case_id, argv, needles in cases:
+        with subtests.test(case=case_id):
+            with pytest.raises(SystemExit) as exc:
+                certify_mod.main(argv)
+            for needle in needles:
+                assert needle in str(exc.value)
 
 
 def test_baseline_source_violations():
@@ -129,20 +136,6 @@ def test_baseline_source_violations():
     for case_id, sources, expected in cases:
         assert certify_mod.baseline_source_violations(sources, "binanceus") == expected, (
             f"test_baseline_source_violations[{case_id}]")
-
-
-def test_repointed_baseline_refuses_to_write_the_repo_artifact():
-    with pytest.raises(SystemExit) as exc:
-        certify_mod.main(["--symbols", "BTC/USDT@kraken,ETH/USDT,SOL/USDT"])
-    assert "repointed baseline" in str(exc.value)
-    assert "BTC/USDT@kraken" in str(exc.value)
-
-
-def test_colliding_assets_refuse_before_any_data_access():
-    with pytest.raises(SystemExit) as exc:
-        certify_mod.main(["--symbols",
-                          "BTC/USDT,ETH/USDT,SOL/USDT,BTC/USDC:USDC@hyperliquid"])
-    assert "normalize to the same certification asset" in str(exc.value)
 
 
 def test_zero_coverage_run_refuses_and_leaves_the_artifact_untouched(
@@ -241,23 +234,28 @@ def _ohlcv(start, periods, freq="1h"):
                          "volume": 1.0}, index=idx)
 
 
-@pytest.mark.parametrize("window", premise_mod.HELD_OUT_FORWARD)
-def test_load_clips_a_wider_fetch_to_the_held_out_window(window, monkeypatch):
-    start, end = premise_mod.WINDOWS[window]
-    full = _ohlcv(pd.Timestamp(start) - pd.Timedelta(days=120), 24 * 400)
-    monkeypatch.setattr(premise_mod, "load_cached_data",
-                        lambda *a, **k: full.copy())
+_LOAD_CLIPS_A_WIDER_FETCH_TO_THE_HELD_OUT_WINDOW_CASES = premise_mod.HELD_OUT_FORWARD
 
-    d = premise_mod._load("BTC/USDT", "1h", window, "composite",
-                          dict(premise_mod._DEFAULT_COMPOSITE_THRESHOLDS))
 
-    in_window = (full.index >= pd.Timestamp(start))
-    if end is not None:
-        in_window &= (full.index <= pd.Timestamp(end))
-    n_in = int(in_window.sum())
-    assert 0 < n_in < len(full)
-    assert d is not None
-    assert len(d["close"]) == n_in
+def test_load_clips_a_wider_fetch_to_the_held_out_window(monkeypatch, subtests):
+    for i, window in enumerate(_LOAD_CLIPS_A_WIDER_FETCH_TO_THE_HELD_OUT_WINDOW_CASES):
+        with subtests.test(case=i, window=window):
+            with monkeypatch.context() as mp:
+                start, end = premise_mod.WINDOWS[window]
+                full = _ohlcv(pd.Timestamp(start) - pd.Timedelta(days=120), 24 * 400)
+                mp.setattr(premise_mod, "load_cached_data",
+                                    lambda *a, **k: full.copy())
+
+                d = premise_mod._load("BTC/USDT", "1h", window, "composite",
+                                      dict(premise_mod._DEFAULT_COMPOSITE_THRESHOLDS))
+
+                in_window = (full.index >= pd.Timestamp(start))
+                if end is not None:
+                    in_window &= (full.index <= pd.Timestamp(end))
+                n_in = int(in_window.sum())
+                assert 0 < n_in < len(full)
+                assert d is not None
+                assert len(d["close"]) == n_in
 
 
 def test_clip_window_keeps_both_bounds_drops_the_rest_and_refuses_a_non_datetime_index():

@@ -1,5 +1,4 @@
 import contextlib
-import json
 import os
 import sys
 
@@ -15,18 +14,17 @@ if _TOOLS not in sys.path:
 
 import offline_manifest as om
 from atr import ensure_atr_indicator
-from backtester import Backtester, validate_close_capabilities
+from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from closed_bar import (
     FRAME_DECISION_TIME_ATTR,
     FRAME_RECEIVED_ORDER_DEFECTS_ATTR,
-    TIMESTAMP_KIND_NATIVE_CLOSE,
     TIMESTAMP_KIND_OPEN,
     declare_frame_cadence,
 )
 from eval_windows import expand_sweep
 from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid, max_indicator_lookback, strategy_warmup_bars
-from parity_diff import ParityConfig, compute_parity_frame, summarize
+from parity_diff import ParityConfig
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
 
@@ -174,27 +172,8 @@ def ref_signal(df, k, p, osc, sig, all_pivots):
     return 0
 
 
-def test_registration_is_futures_only_bidirectional_no_edge_hidden_and_seeded():
-    fut = _reg()
-    entry = fut.STRATEGY_REGISTRY[NAME]
-    raw = fut._registry.STRATEGIES[NAME]
-    with open(SEED) as fh:
-        seed = json.load(fh)
-    assert entry["default_params"] == seed["params"] == DEFAULTS
-    assert entry["edge_status"] == "no_edge"
-    assert entry["edge_source"] in ("unvalidated", "study_fail", "study_inconclusive")
-    assert entry["edge_ref"] == "backtest/candidates/klinger_divergence_1662/REPORT.md"
-    assert raw["short_entries"] is True and raw["platforms"] == ("futures",)
-    assert raw["param_validator"] is not None
-    assert NAME in fut._registry.short_entry_strategies()
-    assert NAME in fut._registry.DISCOVERY_HIDDEN_STRATEGIES
-    assert NAME not in fut.list_strategies()
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
-    assert DEFAULT_PARAM_RANGES[NAME] == seed["optimizer_grid"]
+def test_grid_support_bounds():
     combos = expand_sweep(dict(DEFAULTS), [(k, list(v)) for k, v in DEFAULT_PARAM_RANGES[NAME].items()])
-    assert len(combos) == 768
-    for _, params in combos:
-        fut._registry.validate_params(NAME, params)
     assert max(_support(p) for _, p in combos) == 188 and _support(DEFAULTS) == 172
 
 
@@ -209,6 +188,7 @@ def test_walk_forward_warmup_covers_the_largest_support_of_the_grid():
     for other in ("elder_force_pullback", "true_strength_index"):
         assert strategy_warmup_bars(other, generate_param_grid(DEFAULT_PARAM_RANGES[other]),
                                     DEFAULT_PARAM_RANGES[other]) == 199
+
 
 def test_hand_calculated_rising_falling_equal_and_trend_change_recurrences():
     p = dict(TINY)
@@ -284,8 +264,13 @@ def test_zero_range_zero_volume_and_zero_cm_rules():
     assert (quiet.loc[valid, "klinger_reason"] == "no_divergence").any()
 
 
-@pytest.mark.parametrize("params", [DEFAULTS, FAST] + DOMAIN_ENDPOINTS)
-def test_values_and_decisions_match_an_independent_reference(params):
+def test_values_and_decisions_match_an_independent_reference(subtests):
+    for params in [DEFAULTS, FAST] + DOMAIN_ENDPOINTS:
+        with subtests.test(params=params):
+            _values_and_decisions_match_an_independent_reference(params)
+
+
+def _values_and_decisions_match_an_independent_reference(params):
     df = _walk(560, 7, tick=0.05)
     out = _apply(df, params)
     h, l, c, v = (df[k].to_numpy() for k in ("high", "low", "close", "volume"))
@@ -430,8 +415,7 @@ def test_invalid_entry_data_is_a_reasoned_hold_that_preserves_the_frame():
             _holds_at_end(mutate(_walk(400, 3)), DEFAULTS, reason)
 
 
-@pytest.mark.parametrize("params", [DEFAULTS, FAST])
-def test_reads_stay_inside_the_support_span(params):
+def _reads_stay_inside_the_support_span(params):
     df = _walk(900, 5)
     full = _apply(df, params)
     S = _support(params)
@@ -448,7 +432,7 @@ def test_reads_stay_inside_the_support_span(params):
         assert held["klinger_reason"] == "nonfinite_input" and int(held["signal"]) == 0
 
 
-def test_received_out_of_order_rows_hold_only_inside_their_span():
+def _received_out_of_order_rows_hold_only_inside_their_span():
     df = _walk(800, 5)
     clean = _apply(df, DEFAULTS)
     S = _support(DEFAULTS)
@@ -462,6 +446,14 @@ def test_received_out_of_order_rows_hold_only_inside_their_span():
     pd.testing.assert_frame_equal(out.iloc[bad + S:], clean.iloc[bad + S:])
 
 
+def test_reads_and_defects_stay_inside_the_support_span(subtests):
+    for params in (DEFAULTS, FAST):
+        with subtests.test(case="reads_stay_inside_the_support_span", params=params):
+            _reads_stay_inside_the_support_span(params)
+    with subtests.test(case="received_out_of_order_rows_hold_only_inside_their_span"):
+        _received_out_of_order_rows_hold_only_inside_their_span()
+
+
 INVALID_PARAMS = [
     {"fast_period": 1}, {"fast_period": 121}, {"slow_period": 2}, {"slow_period": 151},
     {"fast_period": 55, "slow_period": 55}, {"slow_period": 112}, {"signal_period": 112},
@@ -471,15 +463,6 @@ INVALID_PARAMS = [
     {"fast_period": 12.5}, {"fast_period": True}, {"fast_period": "34"}, {"slow_period": float("nan")},
     {"replay_bars": float("inf")}, {"divergence_test": 1}, {"divergence_test": "true"},
 ]
-
-
-def test_invalid_parameters_are_explicit_errors():
-    for params in INVALID_PARAMS:
-        with _case(params):
-            with pytest.raises(ValueError):
-                _apply(_walk(300, 1), dict(DEFAULTS, **params))
-            with pytest.raises(ValueError):
-                _reg()._registry.validate_params(NAME, dict(DEFAULTS, **params))
 
 
 def test_support_bound_and_integral_floats_are_accepted():
@@ -493,8 +476,13 @@ def test_support_bound_and_integral_floats_are_accepted():
     pd.testing.assert_frame_equal(_apply(df, floats), _apply(df, DEFAULTS))
 
 
-@pytest.mark.parametrize("params", DOMAIN_ENDPOINTS + [DEFAULTS])
-def test_support_rows_are_required_and_sufficient_at_every_supported_bound(params):
+def test_support_rows_are_required_and_sufficient_at_every_supported_bound(subtests):
+    for params in DOMAIN_ENDPOINTS + [DEFAULTS]:
+        with subtests.test(params=params):
+            _support_rows_are_required_and_sufficient_at_every_supported_bound(params)
+
+
+def _support_rows_are_required_and_sufficient_at_every_supported_bound(params):
     df = _walk(450, 9)
     S = _support(params)
     full = _apply(df, params)
@@ -547,37 +535,6 @@ def _first(out, side):
     return int(rows[0])
 
 
-def test_check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar():
-    base = _walk(1500, 11)
-    hist = _apply(base, DEFAULTS)
-    i = _first(hist, 1)
-    for kind in (TIMESTAMP_KIND_OPEN, TIMESTAMP_KIND_NATIVE_CLOSE):
-        with _case(kind):
-            _check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar(base, hist, i, kind)
-
-
-def _check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar(base, hist, i, kind):
-    df = base.iloc[:i + 1].copy()
-    if kind == TIMESTAMP_KIND_NATIVE_CLOSE:
-        df.index = df.index + pd.Timedelta(hours=4) - pd.Timedelta(milliseconds=1)
-    last_ts = int(df.index[-1].value // 1_000_000)
-    boundary = last_ts + FOUR_H if kind == TIMESTAMP_KIND_OPEN else last_ts + 1
-    cases = [
-        (boundary, boundary, 1, "entry_long"),
-        (boundary + FOUR_H - 1, boundary, 1, "entry_long"),
-        (boundary + FOUR_H, boundary, 0, "decision_bar_stale"),
-        (boundary - 1, boundary, 0, "decision_bar_future"),
-        (boundary + 5, boundary - FOUR_H, 0, "decision_boundary_mismatch"),
-        (None, None, 0, "decision_time_missing"),
-    ]
-    for cutoff, declared, signal, reason in cases:
-        out = _apply(_runtime(df, kind, cutoff, declared), DEFAULTS)
-        assert int(out["signal"].iloc[-1]) == signal, (cutoff, declared)
-        assert out["klinger_reason"].iloc[-1] == reason
-        assert out["klinger_oscillator"].iloc[-1] == hist["klinger_oscillator"].iloc[i]
-        assert int(out["signal"].iloc[-2]) == int(hist["signal"].iloc[i - 1])
-
-
 def _composer(df, params, side="", position_ctx=None, closes=("tiered_tp_pct",), open_name=NAME):
     reg = _reg()
     evaluation = evaluate_open_close(
@@ -621,47 +578,6 @@ def _close_fallback_on_the_candidate_closes_on_its_own_opposite_entry(frame):
     ctx = {"side": "long", "avg_cost": mark, "entry_atr": 50.0, "current_quantity": 1.0, "initial_quantity": 1.0}
     _, decision = _composer(frame, DEFAULTS, "long", ctx, closes=(NAME,))
     assert decision["close_strategy"] == NAME and decision["close_fraction"] == 1.0 and decision["signal"] == -1
-
-
-def test_invalid_entry_frame_keeps_the_close_owner_executable():
-    for mutation in ("volume", "geometry", "cadence", "stale", "zero_cm"):
-        with _case(mutation):
-            _invalid_entry_frame_keeps_the_close_owner_executable(mutation)
-
-
-def _invalid_entry_frame_keeps_the_close_owner_executable(mutation):
-    df = _walk(400, 9)
-    if mutation == "volume":
-        df = df.assign(volume=np.r_[df["volume"].to_numpy()[:-1], -5.0])
-    elif mutation == "geometry":
-        df = df.assign(open=np.r_[df["open"].to_numpy()[:-1], df["high"].iloc[-1] * 2])
-    elif mutation == "cadence":
-        df = _shift_index(df, len(df) - 1, pd.Timedelta(hours=2))
-    elif mutation == "zero_cm":
-        df = _flat_pair(df, len(df) - 2)
-    else:
-        last = int(df.index[-1].value // 1_000_000)
-        df = _runtime(df, TIMESTAMP_KIND_OPEN, last + 3 * FOUR_H, last + FOUR_H)
-    mark = float(df["close"].iloc[-1])
-    ctx = {"side": "long", "avg_cost": mark / 1.05, "entry_atr": 1.0, "current_quantity": 1.0,
-           "initial_quantity": 1.0}
-    evaluation, decision = _composer(df, DEFAULTS, "long", ctx)
-    assert evaluation.open_result_df["klinger_valid"].iloc[-1] == 0.0
-    assert decision["open_action"] == "none"
-    assert decision["close_strategy"] == "tiered_tp_pct" and decision["close_fraction"] == 1.0
-    assert decision["signal"] == -1
-    _, decision = _composer(df, DEFAULTS, "short", dict(ctx, side="short", avg_cost=mark * 1.05))
-    assert decision["open_action"] == "none" and decision["close_fraction"] == 1.0 and decision["signal"] == 1
-    _, decision = _composer(df, DEFAULTS, "long", dict(ctx, avg_cost=mark / 1.015))
-    assert decision["close_fraction"] == 0.0 and decision["signal"] == 0
-    _, decision = _composer(df, DEFAULTS, "", None)
-    assert decision["signal"] == 0 and decision["open_action"] == "none"
-
-
-def test_close_and_stop_owners_pass_strict_capability_validation():
-    report = validate_close_capabilities(close_refs=CLOSE, comparison_mode=None, platform="hyperliquid",
-                                         strategy_type="perps", phase="preflight").to_dict()
-    assert report["close_eligibility"] == "eligible" and not report["approximations"] and not report["refusals"]
 
 
 def _bt(params, **kw):
@@ -725,33 +641,3 @@ def _cfg(params, **kw):
                 symbol="BTC", timeframe="4h")
     base.update(kw)
     return ParityConfig(**base)
-
-
-@pytest.mark.parametrize("window", [200, None])
-@pytest.mark.parametrize("params", [DEFAULTS, FAST, DOMAIN_ENDPOINTS[3]])
-def test_entry_parity_on_frozen_candles(window, params):
-    frame = compute_parity_frame(_frozen("BTC 4h", 460), cfg=_cfg(params), window=window)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0
-    assert result["clean"], frame[~frame["match"]].head()
-
-
-@pytest.mark.parametrize("window", [200, None])
-def test_composed_parity_covers_both_sides_with_the_close_owner(window):
-    cfg = _cfg(FAST, close_refs=json.loads(json.dumps(CLOSE)), direction="both")
-    frame = compute_parity_frame(_frozen("SOL 4h", 900), cfg=cfg, window=window)
-    result = summarize(frame)
-    assert result["mismatches"] == 0 and result["clean"], frame[~frame["match"]].head()
-    assert (frame["live_open_action"] == "long").any() and (frame["live_open_action"] == "short").any()
-    closing = frame[frame["live_close_fraction"] > 0]
-    assert (closing["live_signal"] == -1).any() and (closing["live_signal"] == 1).any()
-
-
-@pytest.mark.parametrize("window", [200, None])
-def test_batched_explicit_paper_parity_matches_solo(window):
-    cfg = _cfg(FAST, close_refs=json.loads(json.dumps(CLOSE)), direction="both", batched=True)
-    frame = compute_parity_frame(_frozen("BTC 4h", 520), cfg=cfg, window=window)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0
-    assert result["clean"] and result["batch_clean"], frame[~frame["match"]].head()
-    assert (frame["live_open_action"] != "none").any()

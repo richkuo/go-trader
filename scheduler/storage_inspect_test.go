@@ -348,3 +348,38 @@ func TestInspectStorageOwnership(t *testing.T) {
 		}
 	})
 }
+
+func TestStorageInspectionRefusesRetiredReplayState(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{DBFile: filepath.Join(dir, "state.db"), Strategies: []StrategyConfig{{ID: "hl-plain-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"sma_crossover", "BTC", "1h", "--mode=paper"}, Capital: 1000}}}
+	layout, err := resolveStorageLayout(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ident, err := buildStorageIdentityMap(cfg, layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStateStore(layout, ident)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.primary().db.Exec(`CREATE TABLE basket_replay_runs (run_id TEXT PRIMARY KEY, steps_applied INTEGER NOT NULL DEFAULT 0, steps_total INTEGER NOT NULL DEFAULT 0, cursor_ms INTEGER NOT NULL DEFAULT 0, cost_policy_id TEXT NOT NULL DEFAULT '')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.primary().db.Exec(`INSERT INTO basket_replay_runs (run_id, steps_applied, steps_total) VALUES ('inspect', 1, 3)`); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+	si, err := inspectStorageOwnership(layout, ident, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if si.OK() {
+		t.Fatal("the scheduler's storage inspection must refuse a file that holds retired research replay state")
+	}
+	joined := strings.Join(si.Rejections, "\n")
+	if !strings.Contains(joined, "basket_replay_runs") || !strings.Contains(joined, "archive/basket-pair-research") {
+		t.Fatalf("the refusal must name the retired table and the archive tag: %s", joined)
+	}
+}

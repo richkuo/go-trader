@@ -24,6 +24,7 @@ from directional_certification import (
     is_directional_certified,
     certified_states,
     backtest_classifier,
+    regime_side_certification_context,
 )
 
 FUNDING_COLUMN_STRATEGIES = {"funding_skew", "delta_neutral_funding"}
@@ -92,18 +93,19 @@ def _attach_funding_if_needed(df, strategy_name, symbol, since,
                 print(f"  Funding: {have}/{len(out)} bars covered (HL hourly, coin={coin})")
     return out
 from htf_filter import get_default_htf, apply_htf_filter
-from registry_loader import load_registry, refuse_basket_evaluator, refuse_pair_evaluator
+from registry_loader import load_registry, refuse_quote_capability
 from lead_lag_history import (LEADER_INPUT_STRATEGIES, LeaderDataUnavailable, cached_leader_params,
                               manifest_leader_params, refuse_leader_input_strategy)
 from backtester import (Backtester, CapabilityContext, CloseCapabilityError,
-                        FundingIncompleteError, _LABELS_UNSET,
+                        FundingIncompleteError, PLATFORM_FEE_PCT, _LABELS_UNSET,
                         STOP_FIELD_KEYS, STOP_GEOMETRY_INPUT_KEYS,
                         STOP_PERCENT_FIELD_KEYS, STOP_REGIME_FIELD_KEYS,
                         STOP_SCALAR_FIELD_KEYS, STOP_UNITS_LIVE_CONFIG,
                         STOP_UNITS_PREVIEW, _finite_number, _unified_close_params,
                         aggregate_close_validations, build_stop_capability_context,
                         format_close_validation, format_results, leverage_evidence,
-                        stop_raw_fields, validate_close_capabilities)
+                        regime_side_config_errors, stop_raw_fields,
+                        validate_close_capabilities)
 from optimizer import (walk_forward_optimize, DEFAULT_PARAM_RANGES,
                        DEFAULT_CLOSE_STACK_SPECS, generate_close_stack_grid)
 from reporter import (
@@ -319,7 +321,7 @@ def _validate_allowed_regimes_vocabulary(
         sys.exit(1)
 
 
-def _build_profile_label_series(df: pd.DataFrame, window_spec: dict) -> pd.Series:
+def _build_profile_label_frame(df: pd.DataFrame, window_spec: dict) -> pd.DataFrame:
     classifier = window_spec.get("classifier", "adx")
     period = int(window_spec.get("period") or 14)
     if classifier == "composite":
@@ -328,7 +330,11 @@ def _build_profile_label_series(df: pd.DataFrame, window_spec: dict) -> pd.Serie
     else:
         reg = compute_regime(df, period=period,
                              adx_threshold=float(window_spec.get("adx_threshold") or 20.0))
-    return reg["regime"].astype(str)
+    return reg[["regime", "regime_ready", "regime_bars", "regime_need"]]
+
+
+def _build_profile_label_series(df: pd.DataFrame, window_spec: dict) -> pd.Series:
+    return _build_profile_label_frame(df, window_spec)["regime"].astype(str)
 
 
 def _aligned_regime_columns(
@@ -356,7 +362,11 @@ def _aligned_regime_columns(
     aligned = cols.reindex(trade_index, method="ffill")
     aligned["regime"] = aligned["regime"].fillna("").astype(str)
     for col in _REGIME_COLUMNS:
-        if col != "regime":
+        if col == "regime_ready":
+            aligned[col] = aligned[col].fillna(False).astype(bool)
+        elif col in ("regime_bars", "regime_need"):
+            aligned[col] = aligned[col].fillna(0).astype(int)
+        elif col != "regime":
             aligned[col] = aligned[col].fillna(0.0)
     return aligned
 
@@ -400,17 +410,24 @@ def _profile_label_series(
     regime_timeframe: Optional[str],
     since: str,
     window_spec: dict,
-) -> Optional[pd.Series]:
+    *,
+    metadata: bool = False,
+):
     tf = str(regime_timeframe or "").strip().lower()
     trade_tf = str(trade_timeframe or "").strip().lower()
     if not tf or tf == trade_tf:
-        return _build_profile_label_series(df, window_spec)
-    regime_df = load_cached_data(symbol, tf, start_date=since)
-    if regime_df.empty:
-        print(f"No regime profile data available for {symbol} {tf}")
-        return None
-    labels = _build_profile_label_series(regime_df.copy().sort_index(), window_spec).shift(1)
-    return labels.reindex(df.index, method="ffill").fillna("").astype(str)
+        labeled = _build_profile_label_frame(df, window_spec)
+    else:
+        regime_df = load_cached_data(symbol, tf, start_date=since)
+        if regime_df.empty:
+            print(f"No regime profile data available for {symbol} {tf}")
+            return None
+        labeled = _build_profile_label_frame(regime_df.copy().sort_index(), window_spec).shift(1).reindex(df.index, method="ffill")
+    labeled["regime"] = labeled["regime"].fillna("").astype(str)
+    labeled["regime_ready"] = labeled["regime_ready"].fillna(False).astype(bool)
+    for field in ("regime_bars", "regime_need"):
+        labeled[field] = labeled[field].fillna(0).astype(int)
+    return labeled if metadata else labeled["regime"]
 
 
 class HTFCacheError(ValueError):
@@ -983,6 +1000,40 @@ def live_strategy_platform(sc: dict) -> str:
     return "deribit" if str(sc.get("type") or "") == "options" else "binanceus"
 
 
+_FEE_PLATFORM_TYPES = ("spot", "perps", "manual")
+
+
+def backtest_fee_platform(platform: str, strategy_type: str) -> str:
+    plat = str(platform or "").strip().lower()
+    stype = str(strategy_type or "").strip().lower()
+    if stype in _FEE_PLATFORM_TYPES and plat in PLATFORM_FEE_PCT and plat != "okx-perps" \
+            and (stype != "manual" or plat == "hyperliquid"):
+        return "okx-perps" if plat == "okx" and stype == "perps" else plat
+    raise ValueError(
+        f"automatic fee selection does not support platform={plat!r} "
+        f"type={stype!r}: the backtest fee table models spot and perps on "
+        f"binanceus, hyperliquid, robinhood, luno and okx, and manual on "
+        f"hyperliquid only. Pass an explicit --platform to choose a research "
+        f"fee proxy; the proxy also selects funding and Hyperliquid tier "
+        f"behavior, and every other config validation still applies.")
+
+
+def platform_selection_warning(config_platform: str, strategy_type: str,
+                               selected: str) -> Optional[str]:
+    try:
+        auto = backtest_fee_platform(config_platform, strategy_type)
+    except ValueError as exc:
+        return (f"[WARN] platform selection: explicit --platform {selected} is a "
+                f"research proxy for config platform={config_platform!r} "
+                f"type={strategy_type!r}; {exc}")
+    if auto == selected:
+        return None
+    return (f"[WARN] platform selection: explicit --platform {selected} overrides "
+            f"the automatic fee key {auto!r} for config platform="
+            f"{config_platform!r} type={strategy_type!r}; the proxy also selects "
+            f"funding and Hyperliquid tier behavior")
+
+
 def _live_max_drawdown_pct(cfg: dict, sc: dict, platform: str, strategy_type: str) -> float:
     explicit = _finite_number(sc.get("max_drawdown_pct"))
     if explicit is not None and explicit != 0:
@@ -1462,6 +1513,14 @@ def load_strategy_config(config_path: str, strategy_id: str,
         label_plan = resolve_feature_windows(
             sc, regime_cfg, label=f"{config_path}: strategy {strategy_id!r}")
         prepared = prepared_window_keys(label_plan) if regime_cfg.get("enabled") else None
+        side_errs = regime_side_config_errors(
+            {**sc, "platform": live_strategy_platform(sc), "type": str(sc.get("type") or "")},
+            regime_cfg,
+            directional_labels=(label_plan["vocabularies"]["directional"]
+                                if regime_cfg.get("enabled") else None))
+        if side_errs:
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} " + "; ".join(side_errs))
         stops = resolve_live_strategy_stops(
             cfg, sc, user_defaults, inject_user_defaults=inject_user_defaults,
             label=f"{config_path}: strategy {strategy_id!r}",
@@ -1672,6 +1731,14 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 _certs, cert_symbol, cert_timeframe, _clf,
             )
             regime_directional_certified = regime_directional_certified_states is not None
+        regime_side = bool(sc.get("regime_side"))
+        if regime_side and not close_refs:
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} regime_side requires an explicit "
+                f"close_strategy after defaults resolve")
+        regime_side_certification = (
+            regime_side_certification_context(sc, regime_cfg, live=_args_mode(cfg_args) == "live")
+            if regime_side else None)
         refuse_live_isolated_bankruptcy(sc, close_refs)
         perps_sizing = resolve_perps_sizing(cfg, sc)
         out = {
@@ -1688,6 +1755,9 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "regime_directional_policy": regime_directional_policy,
             "regime_directional_certified": regime_directional_certified,
             "regime_directional_certified_states": regime_directional_certified_states,
+            "regime_side": regime_side,
+            "allow_uncertified_regime_side": bool(sc.get("allow_uncertified_regime_side")),
+            "regime_side_certification": regime_side_certification,
             "regime_enabled": bool(regime_cfg.get("enabled")),
             "regime_period": int(regime_cfg.get("period", 14) or 14),
             "regime_adx_threshold": float(regime_cfg.get("adx_threshold", 20.0) or 20.0),
@@ -1770,8 +1840,10 @@ def run_single_backtest(
     venue_margin: Optional[dict] = None,
     regime_label_plan: Optional[dict] = None,
     resting_tp_trade_through: bool = False,
+    regime_side: bool = False,
+    allow_uncertified_regime_side: bool = False,
+    regime_side_certification: Optional[dict] = None,
 ) -> Optional[dict]:
-    refuse_pair_evaluator(load_registry(registry), strategy_name)
     if strategy_name in BOOK_INPUT_STRATEGIES:
         try:
             refuse_book_input_strategy(strategy_name, "run_backtest.py single runs (cached or --manifest)")
@@ -1781,6 +1853,10 @@ def run_single_backtest(
         raise SystemExit(
             "the resting take-profit trade-through rule needs --manifest (the tick grid "
             "comes from the manifest execution spec)")
+    if regime_side and not (regime_enabled and regime_label_plan):
+        raise SystemExit(
+            "regime_side needs the live config's regime label plan (use --config); the side "
+            "is read from the directional window column, never the primary label")
     manifest = None
     manifest_dataset_entry = None
     if manifest_path:
@@ -1854,7 +1930,7 @@ def run_single_backtest(
         phase="preflight",
     )
     reg = load_registry(registry)
-    refuse_basket_evaluator(reg, strategy_name)
+    refuse_quote_capability(reg, strategy_name)
     strat = reg.STRATEGY_REGISTRY.get(strategy_name)
     if not strat:
         print(f"Unknown strategy '{strategy_name}' in '{registry}' registry")
@@ -1970,10 +2046,13 @@ def run_single_backtest(
             regime_timeframe,
             since,
             profile_allocation["window_spec"],
+            metadata=True,
         )
         if profile_labels is None:
             return None
-        df_signals["_profile_label"] = profile_labels.values
+        df_signals["_profile_label"] = profile_labels["regime"].values
+        for field in ("ready", "bars", "need"):
+            df_signals["_profile_label_" + field] = profile_labels["regime_" + field].values
         print(f"  Profile allocation: window={profile_allocation['window']} "
               f"profiles={names} confirm_bars={profile_allocation['confirm_bars']}")
     else:
@@ -1983,7 +2062,11 @@ def run_single_backtest(
         if close_strategies:
             df_signals = ensure_atr_indicator(df_signals, method=atr_method)
 
-    if htf_filter:
+    if htf_filter and regime_side:
+        df_signals = df_signals.copy()
+        df_signals["htf_trend"] = _htf_trend_series(symbol, timeframe, df_signals.index).values
+        print(f"  HTF filter: applied to the regime_side mapped side (HTF={get_default_htf(timeframe)})")
+    elif htf_filter:
         df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe)
         print(f"  HTF filter: applied (HTF={get_default_htf(timeframe)})")
 
@@ -2098,8 +2181,19 @@ def run_single_backtest(
         venue_margin=venue_margin,
         resting_tp_trade_through=resting_tp_trade_through,
         regime_label_columns=label_columns,
+        regime_side=bool(regime_side),
+        allow_uncertified_regime_side=bool(allow_uncertified_regime_side),
+        regime_side_certification=regime_side_certification if regime_side else None,
+        htf_filter=bool(htf_filter and regime_side),
         **(feature_label_kwargs(regime_label_plan) if label_columns else {}),
     )
+    if regime_side:
+        cert = bt._regime_side_certification
+        print(f"  Regime side: context={cert['context']} "
+              f"acknowledged_uncertified={bool(allow_uncertified_regime_side)} "
+              f"cell={cert.get('cell') or '-'} source={cert.get('source') or '-'}")
+    print(f"  Fee model: platform={platform} commission_pct={bt.commission_pct} "
+          f"slippage_pct={bt.slippage_pct}")
     if manifest is None:
         from funding_fetcher import rejoin_funding_columns
         df_signals = rejoin_funding_columns(df_signals, df)
@@ -2327,7 +2421,7 @@ def run_walk_forward(
                                     comparison_mode=comparison_mode,
                                     platform=platform, phase="preflight")
     reg = load_registry(registry)
-    refuse_basket_evaluator(reg, strategy_name)
+    refuse_quote_capability(reg, strategy_name)
     refuse_leader_input_strategy(strategy_name, "walk-forward optimization")
     refuse_book_input_strategy(strategy_name, "walk-forward optimization")
     if strategy_name in VOLUME_PROFILE_INPUT_STRATEGIES:
@@ -2408,8 +2502,16 @@ def _build_parser() -> argparse.ArgumentParser:
                                  "luno", "okx", "okx-perps"],
                         default=None,
                         help="Exchange fee model (matches fees.go). Default: "
-                             "the --config strategy's platform when it is "
-                             "hyperliquid, else binanceus")
+                             "with --config, the strategy's platform and type "
+                             "(okx perps -> okx-perps); options, futures, "
+                             "non-Hyperliquid manual and unknown platforms "
+                             "refuse automatic selection. Without --config, "
+                             "binanceus. An explicit value is a research proxy "
+                             "that also selects funding and Hyperliquid tier "
+                             "behavior and warns when it differs from the "
+                             "automatic key or automatic selection refuses. "
+                             "--manifest ignores it: the manifest "
+                             "venue and execution spec own platform and costs")
     parser.add_argument("--symbol", default="BTC/USDT",
                         help="Trading pair")
     parser.add_argument("--symbols", nargs="+", default=None,
@@ -2675,6 +2777,7 @@ def _main():
     open_params: Optional[dict] = None
     live_stop_kwargs: dict = {}
     config_platform = ""
+    config_type = ""
     try:
         resting_tp_trade_through = resolve_resting_tp_trade_through(
             cli=args.resting_tp_trade_through, config_path=args.config,
@@ -2695,6 +2798,7 @@ def _main():
             print(exc)
             sys.exit(1)
         config_platform = live_kwargs.get("platform", "")
+        config_type = live_kwargs.get("strategy_type", "")
         if close_refs:
             print("--close-strategy is not allowed alongside --config (refs come from the live config)")
             sys.exit(1)
@@ -2735,6 +2839,9 @@ def _main():
             "regime_directional_policy",
             "regime_directional_certified",
             "regime_directional_certified_states",
+            "regime_side",
+            "allow_uncertified_regime_side",
+            "regime_side_certification",
             "regime_gate_on_failure",
             "profile_allocation",
             "regime_timeframe",
@@ -2777,8 +2884,20 @@ def _main():
             _validate_allowed_regimes_vocabulary(
                 args.allowed_regimes, live_kwargs.get("regime_windows_spec"))
 
+    if args.config and not args.manifest:
+        if args.platform is None:
+            try:
+                args.platform = backtest_fee_platform(config_platform, config_type)
+            except ValueError as exc:
+                print(exc)
+                sys.exit(1)
+        else:
+            warning = platform_selection_warning(config_platform, config_type,
+                                                 args.platform)
+            if warning:
+                print(warning)
     if args.platform is None:
-        args.platform = "hyperliquid" if config_platform == "hyperliquid" else "binanceus"
+        args.platform = "binanceus"
 
     if args.stop_loss_atr_mult is not None:
         live_stop_kwargs.setdefault("stop_loss_atr_mult", args.stop_loss_atr_mult)

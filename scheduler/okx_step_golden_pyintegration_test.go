@@ -428,6 +428,9 @@ func (h *okxGoldenHarness) dumpTables(names []string) map[string][]map[string]st
 				default:
 					row[c] = fmt.Sprint(v)
 				}
+				if c == "regime_snapshots_json" && (row[c] == "" || row[c] == "{}") {
+					delete(row, c)
+				}
 			}
 			table = append(table, row)
 		}
@@ -935,7 +938,7 @@ func okxGoldenCompare(got, want []byte, dates okxGoldenDates) string {
 }
 
 func TestOKXSharedStepOrdinaryGolden(t *testing.T) {
-	root := basketPyRoot(t)
+	root := pyRepoRoot(t)
 	schedDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)

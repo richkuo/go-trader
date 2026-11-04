@@ -1,4 +1,5 @@
 from __future__ import annotations
+from shared_tools.conftest import with_regime_readiness
 
 import contextlib
 import copy
@@ -143,7 +144,31 @@ def test_compute_post_tp_stop_loss_trigger():
             assert mode == want_mode, case
 
 
-def test_parse_strategy_tp_sl_after_rules_default_and_per_tier_override():
+def test_parse_strategy_tp_sl_after_rules(subtests):
+    with subtests.test(case="default_and_per_tier_override"):
+        _assert_parse_strategy_tp_sl_after_rules_default_and_per_tier_override()
+    with subtests.test(case="no_tiered_tp"):
+        rules, errs = sl.parse_strategy_tp_sl_after_rules([
+            {"name": "tp_at_pct", "params": {"pct": 0.05}},
+        ])
+        assert errs == [] and not rules.has_any()
+    with subtests.test(case="reports_malformed"):
+        refs = [{
+            "name": "tiered_tp_atr",
+            "params": {
+                "sl_after": "unknown-string",
+                "tp_tiers": [
+                    {"atr_multiple": 2, "close_fraction": 0.5,
+                     "sl_after": {"kind": "weird"}},
+                    {"atr_multiple": 3, "close_fraction": 1.0},
+                ],
+            },
+        }]
+        _, errs = sl.parse_strategy_tp_sl_after_rules(refs)
+        assert len(errs) >= 2
+
+
+def _assert_parse_strategy_tp_sl_after_rules_default_and_per_tier_override():
     refs = [{
         "name": "tiered_tp_atr_live",
         "params": {
@@ -166,29 +191,6 @@ def test_parse_strategy_tp_sl_after_rules_default_and_per_tier_override():
     assert rules.for_tier(0).kind == "breakeven"
     assert rules.for_tier(1).kind == "atr_offset"
     assert rules.for_tier(99).kind == "breakeven"
-
-
-def test_parse_strategy_tp_sl_after_rules_no_tiered_tp():
-    rules, errs = sl.parse_strategy_tp_sl_after_rules([
-        {"name": "tp_at_pct", "params": {"pct": 0.05}},
-    ])
-    assert errs == [] and not rules.has_any()
-
-
-def test_parse_strategy_tp_sl_after_rules_reports_malformed():
-    refs = [{
-        "name": "tiered_tp_atr",
-        "params": {
-            "sl_after": "unknown-string",
-            "tp_tiers": [
-                {"atr_multiple": 2, "close_fraction": 0.5,
-                 "sl_after": {"kind": "weird"}},
-                {"atr_multiple": 3, "close_fraction": 1.0},
-            ],
-        },
-    }]
-    _, errs = sl.parse_strategy_tp_sl_after_rules(refs)
-    assert len(errs) >= 2
 
 
 _TWO_TIERS = [
@@ -450,9 +452,13 @@ _SCENARIOS = {
 }
 
 
-@pytest.mark.parametrize("name", list(_SCENARIOS))
-def test_backtester_sl_after_scenarios(name):
-    spec = _SCENARIOS[name]
+def test_backtester_sl_after_scenarios(subtests):
+    for name, spec in _SCENARIOS.items():
+        with subtests.test(case=name):
+            _assert_backtester_sl_after_scenario(spec)
+
+
+def _assert_backtester_sl_after_scenario(spec):
     n = len(spec["closes"])
     side = spec.get("side", "long")
     df = _df_open_then_hold(
@@ -470,7 +476,7 @@ def test_backtester_sl_after_scenarios(name):
         kwargs["intrabar_resolution"] = spec["intrabar"]
     if "stop_loss_atr_mult" in spec:
         kwargs["stop_loss_atr_mult"] = spec["stop_loss_atr_mult"]
-    result = Backtester(**kwargs).run(df, save=False)
+    result = Backtester(**kwargs).run(with_regime_readiness(df), save=False)
     sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
     for pair in spec["expect"]:
         assert pair in sides_prices, sides_prices
@@ -509,7 +515,7 @@ def test_unified_backtest_moves_stop_on_the_bar_after_the_tier():
                 "ranging": label(),
             }},
         }],
-    ).run(df, save=False)
+    ).run(with_regime_readiness(df), save=False)
     sl_closes = [t for t in result["trades"] if t["exit_price"] == 99.0]
     assert len(sl_closes) == 1, result["trades"]
     assert sl_closes[0]["exit_date"] == "2024-01-05 00:00:00"
@@ -634,7 +640,14 @@ def test_backtester_validation_rejects():
             )
 
 
-def test_backtester_sl_after_idempotent_across_bars():
+def test_backtester_sl_after_idempotent_and_defers_when_sl_unarmed(subtests):
+    with subtests.test(case="idempotent_across_bars"):
+        _assert_backtester_sl_after_idempotent_across_bars()
+    with subtests.test(case="defers_when_sl_unarmed"):
+        _assert_backtester_sl_after_defers_when_sl_unarmed()
+
+
+def _assert_backtester_sl_after_idempotent_across_bars():
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
@@ -679,7 +692,7 @@ def test_backtester_sl_after_idempotent_across_bars():
     assert hwm2 == hwm1
 
 
-def test_backtester_sl_after_defers_when_sl_unarmed():
+def _assert_backtester_sl_after_defers_when_sl_unarmed():
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
@@ -711,8 +724,13 @@ def test_backtester_sl_after_defers_when_sl_unarmed():
     assert hwm == 0.0
 
 
-@pytest.mark.parametrize("platform", ["binanceus", "hyperliquid"])
-def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds(platform):
+def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds(subtests):
+    for platform in ["binanceus", "hyperliquid"]:
+        with subtests.test(platform=platform):
+            _assert_backtester_sl_after_does_not_seed_when_no_tier_thresholds(platform)
+
+
+def _assert_backtester_sl_after_does_not_seed_when_no_tier_thresholds(platform):
     df = _df_open_then_hold(
         opens=[100, 100, 100, 80, 80],
         closes=[100, 100, 80, 80, 80],
@@ -740,7 +758,7 @@ def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds(platform):
         return
     bt = Backtester(**kwargs)
     assert bt._tp_tier_thresholds_static == []
-    result = bt.run(df, save=False)
+    result = bt.run(with_regime_readiness(df), save=False)
     sl_fires = [t for t in result["trades"] if t.get("exit_price") in (90.0, 89.0, 91.0)]
     assert not sl_fires, f"phantom SL fired at {[t['exit_price'] for t in sl_fires]}"
 
@@ -776,20 +794,24 @@ def _paper_parity_open_stamp(mod, refs, regime, labels):
     return rules, thresholds
 
 
-@pytest.mark.parametrize(
-    "case", _PAPER_PARITY["cleared_tier"], ids=[c["name"] for c in _PAPER_PARITY["cleared_tier"]],
-)
-def test_sl_after_paper_parity_cleared_tier(case):
-    refs = _paper_parity_close_refs(case["ladder"], label=case.get("label") or case.get("regime") or "")
-    _, thresholds = _paper_parity_open_stamp(sl, refs, case["regime"], None)
-    got = sl.find_highest_cleared_tier(thresholds, case["closed_ratio"], case["from_idx"])
-    assert got == case["want_idx"]
+def test_sl_after_paper_parity_cleared_tier(subtests):
+    assert _PAPER_PARITY["cleared_tier"]
+    for case in _PAPER_PARITY["cleared_tier"]:
+        with subtests.test(case=case["name"]):
+            refs = _paper_parity_close_refs(case["ladder"], label=case.get("label") or case.get("regime") or "")
+            _, thresholds = _paper_parity_open_stamp(sl, refs, case["regime"], None)
+            got = sl.find_highest_cleared_tier(thresholds, case["closed_ratio"], case["from_idx"])
+            assert got == case["want_idx"]
 
 
-@pytest.mark.parametrize(
-    "case", _PAPER_PARITY["sl_after"], ids=[c["name"] for c in _PAPER_PARITY["sl_after"]],
-)
-def test_sl_after_paper_parity_move(case):
+def test_sl_after_paper_parity_move(subtests):
+    assert _PAPER_PARITY["sl_after"]
+    for case in _PAPER_PARITY["sl_after"]:
+        with subtests.test(case=case["name"]):
+            _assert_sl_after_paper_parity_move(case)
+
+
+def _assert_sl_after_paper_parity_move(case):
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
@@ -850,23 +872,22 @@ def _unified_ref(rule):
     }
 
 
-def test_unified_empty_label_parse_is_empty():
-    ref = _unified_ref("breakeven")
-    rules, errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="")
-    assert errs == []
-    assert not rules.has_any()
-    absent, absent_errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="not_a_label")
-    assert absent_errs == []
-    assert not absent.has_any()
-
-
-def test_unified_label_parse_and_fractions():
-    ref = _unified_ref("breakeven")
-    rules, errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="ranging")
-    assert errs == []
-    assert rules.per_tier[0].kind == "breakeven"
-    assert sl.parse_tp_tier_close_fractions([ref], regime="ranging") == [0.5, 1.0]
-    assert sl.parse_tp_tier_close_fractions([ref], regime="") == []
+def test_unified_label_parse_and_fractions(subtests):
+    with subtests.test("test_unified_empty_label_parse_is_empty"):
+        ref = _unified_ref("breakeven")
+        rules, errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="")
+        assert errs == []
+        assert not rules.has_any()
+        absent, absent_errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="not_a_label")
+        assert absent_errs == []
+        assert not absent.has_any()
+    with subtests.test("test_unified_label_parse_and_fractions"):
+        ref = _unified_ref("breakeven")
+        rules, errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="ranging")
+        assert errs == []
+        assert rules.per_tier[0].kind == "breakeven"
+        assert sl.parse_tp_tier_close_fractions([ref], regime="ranging") == [0.5, 1.0]
+        assert sl.parse_tp_tier_close_fractions([ref], regime="") == []
 
 
 def test_unified_validation_counts_label_stop_and_rejects_manual_trail():

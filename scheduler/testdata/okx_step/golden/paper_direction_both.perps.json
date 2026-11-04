@@ -44,6 +44,8 @@
     ],
     "positions": [
       {
+        "account_binding_source": "",
+        "account_key": "",
         "added_notional_usd": "0",
         "atr_method_at_open": "simple",
         "avg_cost": "96.95150000000001",
@@ -94,7 +96,8 @@
         "tp_armed_tiers_json": "",
         "tp_consumptions_json": "",
         "tp_oids_json": "",
-        "tp_tiers_json": ""
+        "tp_tiers_json": "",
+        "venue_account_id": ""
       }
     ],
     "strategies": [

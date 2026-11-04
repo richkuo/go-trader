@@ -14,16 +14,31 @@ sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, os.path.join(_REPO_ROOT, "shared_tools"))
 
 import egress_policy
-from regime import latest_regime, regime_from_injected_payload
+import option_data
+from option_data import OptionDataUnavailable
+from regime import latest_regime, regime_from_injected_payload, required_regime_bars
+from stdout_contract import json_stdout
 
 MAX_POSITIONS_PER_STRATEGY = 4
 MIN_SCORE_THRESHOLD = 0.3
 REGIME_TIMEFRAME = "4h"
 REGIME_LIMIT = 100
-REGIME_MIN_BARS = 30
+REGIME_MIN_BARS = required_regime_bars(14)
+SUPPORTED_PLATFORMS = ("deribit", "ibkr", "okx", "robinhood")
+RANK_STRATEGIES = ("butterfly", "vol_mean_reversion")
+PREMIUM_UNIT = "underlying_unit"
+STRUCTURE_CONTRACT = "options_structures_v1"
+ENTRY_ACTIONS = ("buy", "sell")
 
 
-def _load_adapter(platform: str):
+class CheckError(Exception):
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _load_adapter(platform: str, underlying: str = ""):
     adapter_path = os.path.join(_REPO_ROOT, "platforms", platform, "adapter.py")
     if not os.path.exists(adapter_path):
         raise ImportError(f"No adapter found for platform '{platform}' at {adapter_path}")
@@ -33,13 +48,20 @@ def _load_adapter(platform: str):
     spec = importlib.util.spec_from_file_location(f"{platform}_adapter", adapter_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    kwargs = {}
+    if platform == "robinhood":
+        try:
+            module.robinhood_stock_yahoo_ticker(underlying)
+        except module.UnsupportedRobinhoodSymbol as e:
+            raise CheckError(f"unsupported basis: {e}") from None
+        kwargs["asset_class"] = module.ASSET_CLASS_STOCK
     for name in dir(module):
         if name.endswith("ExchangeAdapter"):
-            return getattr(module, name)()
+            return getattr(module, name)(**kwargs)
     raise AttributeError(f"No ExchangeAdapter class found in {adapter_path}")
 
 
-def _fetch_ohlcv_df(underlying, timeframe, limit, min_len, adapter=None):
+def _fetch_ohlcv_df(underlying, timeframe, limit, min_len, adapter=None, errors=None, platform=""):
     rows = None
     if adapter is not None:
         ohlcv_fn = getattr(adapter, "get_ohlcv", None)
@@ -48,7 +70,11 @@ def _fetch_ohlcv_df(underlying, timeframe, limit, min_len, adapter=None):
                 rows = ohlcv_fn(underlying, timeframe, limit)
             except Exception as e:
                 print(f"adapter.get_ohlcv failed: {e}", file=sys.stderr)
+                if errors is not None:
+                    errors.append(e)
                 rows = None
+    if not rows and platform == "robinhood":
+        return None
     if not rows:
         try:
             import ccxt
@@ -56,6 +82,8 @@ def _fetch_ohlcv_df(underlying, timeframe, limit, min_len, adapter=None):
             rows = exchange.fetch_ohlcv(f"{underlying}/USDT", timeframe, limit=limit)
         except Exception as e:
             print(f"BinanceUS OHLCV fetch failed: {e}", file=sys.stderr)
+            if errors is not None:
+                errors.append(e)
             return None
     if not rows or len(rows) < min_len:
         return None
@@ -101,12 +129,26 @@ def _build_action(action, option_type, strike, expiry_str, dte,
     return d
 
 
-def _option_leg(underlying, action, option_type, target_strike,
-                expiry_str, dte, fallback_pct, spot, vol, adapter, **extra) -> dict:
-    strike = adapter.get_real_strike(underlying, expiry_str, option_type, target_strike)
+def _priced_leg(adapter, underlying, option_type, strike, expiry_str, dte, spot, vol):
     prem_pct, prem_usd, greeks = adapter.get_premium_and_greeks(
         underlying, option_type, strike, expiry_str, dte, spot, vol
     )
+    if not (_is_finite_number(prem_pct) and _is_finite_number(prem_usd)):
+        raise OptionDataUnavailable("option premium unavailable: entry premium is not finite")
+    amount = prem_usd if prem_usd > 0 else prem_pct * spot
+    if not math.isfinite(amount) or amount <= 0:
+        raise OptionDataUnavailable("option premium unavailable: entry premium is not positive")
+    return prem_pct, prem_usd, greeks
+
+
+def _is_finite_number(value):
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def _option_leg(underlying, action, option_type, target_strike,
+                expiry_str, dte, fallback_pct, spot, vol, adapter, **extra) -> dict:
+    strike = adapter.get_real_strike(underlying, expiry_str, option_type, target_strike)
+    prem_pct, prem_usd, greeks = _priced_leg(adapter, underlying, option_type, strike, expiry_str, dte, spot, vol)
     platform_fields = _platform_extra(adapter, underlying)
     return _build_action(action, option_type, strike, expiry_str, dte,
                          prem_pct, prem_usd, greeks, **platform_fields, **extra)
@@ -175,196 +217,214 @@ def score_new_trade(proposed_action, existing_positions, spot_price):
     return round(score, 2), "; ".join(reasons) if reasons else "default"
 
 
+def stamp_structures(strategy_name, action_groups):
+    structures = []
+    for index, group in enumerate(action_groups, start=1):
+        entries = [a for a in group if a.get("action") in ENTRY_ACTIONS]
+        structure_id = f"{strategy_name}-{index}"
+        for action in entries:
+            action["structure_id"] = structure_id
+            action["structure_legs"] = len(entries)
+        structures.append(group)
+    return structures
+
+
+def select_structures(structures, existing_positions, spot_price,
+                      max_positions=MAX_POSITIONS_PER_STRATEGY, min_score=MIN_SCORE_THRESHOLD):
+    selected = []
+    selected_rows = 0
+    for group in structures:
+        entries = [a for a in group if a.get("action") in ENTRY_ACTIONS]
+        others = [a for a in group if a.get("action") not in ENTRY_ACTIONS]
+        selected.extend(others)
+        if not entries:
+            continue
+        for action in entries:
+            score, reason = score_new_trade(action, existing_positions, spot_price)
+            action["score"] = score
+            action["score_reason"] = reason
+        structure_id = entries[0].get("structure_id")
+        legs_text = ", ".join(
+            f"{a.get('action')} {a.get('option_type')} strike={a.get('strike')} score={a['score']} ({a['score_reason']})"
+            for a in entries
+        )
+        structure_score = min(a["score"] for a in entries)
+        if structure_score < min_score:
+            print(f"Skipping structure {structure_id}: minimum leg score {structure_score} < {min_score}; legs: {legs_text}",
+                  file=sys.stderr)
+            continue
+        rows_after = len(existing_positions) + selected_rows + len(entries)
+        if rows_after > max_positions:
+            print(f"Skipping structure {structure_id}: {len(existing_positions)} open + {selected_rows} selected + "
+                  f"{len(entries)} new option rows exceed the cap of {max_positions}; legs: {legs_text}",
+                  file=sys.stderr)
+            continue
+        selected.extend(entries)
+        selected_rows += len(entries)
+    return selected
+
+
 def evaluate_momentum_options(underlying, spot_price, vol_annual, iv_rank,
                                existing_positions, spot_positions, adapter):
-    try:
-        df = _fetch_ohlcv_df(underlying, "4h", 100, 30, adapter=adapter)
-        if df is None:
-            return 0, [], iv_rank
-        closes = df["close"].tolist()
+    fetch_errors = []
+    df = _fetch_ohlcv_df(underlying, "4h", 100, 30, adapter=adapter, errors=fetch_errors,
+                         platform=getattr(adapter, "name", ""))
+    if df is None:
+        cause = next((e for e in reversed(fetch_errors) if option_data.upstream_status(e) is not None), None)
+        raise option_data.unavailable("momentum bars unavailable", cause)
+    closes = df["close"].tolist()
 
-        roc_period = 14
-        threshold = 5.0
-        current_roc = (closes[-1] - closes[-1 - roc_period]) / closes[-1 - roc_period] * 100
-        prev_roc = (closes[-2] - closes[-2 - roc_period]) / closes[-2 - roc_period] * 100
+    roc_period = 14
+    threshold = 5.0
+    current_roc = (closes[-1] - closes[-1 - roc_period]) / closes[-1 - roc_period] * 100
+    prev_roc = (closes[-2] - closes[-2 - roc_period]) / closes[-2 - roc_period] * 100
 
-        signal = 0
-        if current_roc > threshold and prev_roc <= threshold:
-            signal = 1
-        elif current_roc < -threshold and prev_roc >= -threshold:
-            signal = -1
+    signal = 0
+    if current_roc > threshold and prev_roc <= threshold:
+        signal = 1
+    elif current_roc < -threshold and prev_roc >= -threshold:
+        signal = -1
 
-        actions = []
-        if signal != 0:
-            expiry_str, dte = adapter.get_real_expiry(underlying, 37)
-            if signal == 1:
-                actions.append(_option_leg(
-                    underlying, "buy", "call", spot_price * 1.02,
-                    expiry_str, dte, 0.045, spot_price, vol_annual, adapter,
-                ))
-            else:
-                actions.append(_option_leg(
-                    underlying, "buy", "put", spot_price * 0.98,
-                    expiry_str, dte, 0.040, spot_price, vol_annual, adapter,
-                ))
+    actions = []
+    if signal != 0:
+        expiry_str, dte = adapter.get_real_expiry(underlying, 37)
+        if signal == 1:
+            actions.append(_option_leg(
+                underlying, "buy", "call", spot_price * 1.02,
+                expiry_str, dte, 0.045, spot_price, vol_annual, adapter,
+            ))
+        else:
+            actions.append(_option_leg(
+                underlying, "buy", "put", spot_price * 0.98,
+                expiry_str, dte, 0.040, spot_price, vol_annual, adapter,
+            ))
 
-        return signal, actions, iv_rank
-
-    except Exception as e:
-        print(f"Momentum options evaluation failed: {e}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        return 0, [], iv_rank
+    return signal, actions, iv_rank
 
 
 def evaluate_vol_mean_reversion(underlying, spot_price, vol_annual, iv_rank,
                                  existing_positions, spot_positions, adapter):
-    try:
-        signal = 0
-        actions = []
-        expiry_str, dte = adapter.get_real_expiry(underlying, 30)
-        pf = _platform_extra(adapter, underlying)
+    signal = 0
+    actions = []
+    expiry_str, dte = adapter.get_real_expiry(underlying, 30)
+    pf = _platform_extra(adapter, underlying)
 
-        if iv_rank > 75:
-            signal = -1
-            actions = [
-                _option_leg(underlying, "sell", "call", spot_price * 1.10,
-                            expiry_str, dte, 0.025, spot_price, vol_annual, adapter),
-                _option_leg(underlying, "sell", "put", spot_price * 0.90,
-                            expiry_str, dte, 0.020, spot_price, vol_annual, adapter),
-            ]
-        elif iv_rank < 25:
-            signal = 1
-            atm_strike = adapter.get_real_strike(underlying, expiry_str, "call", spot_price)
-            call_pct, call_usd, call_greeks = adapter.get_premium_and_greeks(
-                underlying, "call", atm_strike, expiry_str, dte, spot_price, vol_annual
-            )
-            put_pct, put_usd, put_greeks = adapter.get_premium_and_greeks(
-                underlying, "put", atm_strike, expiry_str, dte, spot_price, vol_annual
-            )
-            actions = [
-                _build_action("buy", "call", atm_strike, expiry_str, dte,
-                              call_pct, call_usd, call_greeks, **pf),
-                _build_action("buy", "put", atm_strike, expiry_str, dte,
-                              put_pct, put_usd, put_greeks, **pf),
-            ]
+    if iv_rank > 75:
+        signal = -1
+        actions = [
+            _option_leg(underlying, "sell", "call", spot_price * 1.10,
+                        expiry_str, dte, 0.025, spot_price, vol_annual, adapter),
+            _option_leg(underlying, "sell", "put", spot_price * 0.90,
+                        expiry_str, dte, 0.020, spot_price, vol_annual, adapter),
+        ]
+    elif iv_rank < 25:
+        signal = 1
+        atm_strike = adapter.get_real_strike(underlying, expiry_str, "call", spot_price)
+        call_pct, call_usd, call_greeks = _priced_leg(
+            adapter, underlying, "call", atm_strike, expiry_str, dte, spot_price, vol_annual
+        )
+        put_pct, put_usd, put_greeks = _priced_leg(
+            adapter, underlying, "put", atm_strike, expiry_str, dte, spot_price, vol_annual
+        )
+        actions = [
+            _build_action("buy", "call", atm_strike, expiry_str, dte,
+                          call_pct, call_usd, call_greeks, **pf),
+            _build_action("buy", "put", atm_strike, expiry_str, dte,
+                          put_pct, put_usd, put_greeks, **pf),
+        ]
 
-        return signal, actions, iv_rank
-
-    except Exception as e:
-        print(f"Vol mean reversion evaluation failed: {e}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        return 0, [], iv_rank
+    return signal, actions, iv_rank
 
 
 def evaluate_protective_puts(underlying, spot_price, vol_annual, iv_rank,
                               existing_positions, spot_positions, adapter):
-    try:
-        has_protective_put = any(
-            p.get("option_type") == "put" and p.get("action") == "buy"
-            for p in existing_positions
-        )
-        if has_protective_put:
-            return 0, [], iv_rank
-
-        expiry_str, dte = adapter.get_real_expiry(underlying, 45)
-        actions = [
-            _option_leg(underlying, "buy", "put", spot_price * 0.88,
-                        expiry_str, dte, 0.015, spot_price, vol_annual, adapter),
-        ]
-        return 1, actions, iv_rank
-
-    except Exception as e:
-        print(f"Protective puts evaluation failed: {e}", file=sys.stderr)
+    has_protective_put = any(
+        p.get("option_type") == "put" and p.get("action") == "buy"
+        for p in existing_positions
+    )
+    if has_protective_put:
         return 0, [], iv_rank
+
+    expiry_str, dte = adapter.get_real_expiry(underlying, 45)
+    actions = [
+        _option_leg(underlying, "buy", "put", spot_price * 0.88,
+                    expiry_str, dte, 0.015, spot_price, vol_annual, adapter),
+    ]
+    return 1, actions, iv_rank
 
 
 def evaluate_covered_calls(underlying, spot_price, vol_annual, iv_rank,
                             existing_positions, spot_positions, adapter):
-    try:
-        has_covered_call = any(
-            p.get("option_type") == "call" and p.get("action") == "sell"
-            for p in existing_positions
-        )
-        if has_covered_call:
-            return 0, [], iv_rank
-
-        expiry_str, dte = adapter.get_real_expiry(underlying, 21)
-        actions = [
-            _option_leg(underlying, "sell", "call", spot_price * 1.12,
-                        expiry_str, dte, 0.020, spot_price, vol_annual, adapter),
-        ]
-        return -1, actions, iv_rank
-
-    except Exception as e:
-        print(f"Covered calls evaluation failed: {e}", file=sys.stderr)
+    has_covered_call = any(
+        p.get("option_type") == "call" and p.get("action") == "sell"
+        for p in existing_positions
+    )
+    if has_covered_call:
         return 0, [], iv_rank
+
+    expiry_str, dte = adapter.get_real_expiry(underlying, 21)
+    actions = [
+        _option_leg(underlying, "sell", "call", spot_price * 1.12,
+                    expiry_str, dte, 0.020, spot_price, vol_annual, adapter),
+    ]
+    return -1, actions, iv_rank
 
 
 def evaluate_wheel(underlying, spot_price, vol_annual, iv_rank,
                    existing_positions, spot_positions, adapter):
-    try:
-        has_assigned_spot = any(
-            p.get("symbol", "").upper() == underlying.upper()
-            and p.get("side") == "long"
-            and p.get("quantity", 0) > 0
-            for p in spot_positions
+    has_assigned_spot = any(
+        p.get("symbol", "").upper() == underlying.upper()
+        and p.get("side") == "long"
+        and p.get("quantity", 0) > 0
+        for p in spot_positions
+    )
+
+    if has_assigned_spot:
+        has_active_call = any(
+            p.get("option_type") == "call" and p.get("action") == "sell"
+            for p in existing_positions
         )
-
-        if has_assigned_spot:
-            has_active_call = any(
-                p.get("option_type") == "call" and p.get("action") == "sell"
-                for p in existing_positions
-            )
-            if has_active_call:
-                return 0, [], iv_rank
-            expiry_str, dte = adapter.get_real_expiry(underlying, 21)
-            actions = [
-                _option_leg(underlying, "sell", "call", spot_price * 1.10,
-                            expiry_str, dte, 0.020, spot_price, vol_annual, adapter,
-                            wheel_phase=2),
-            ]
-            return -1, actions, iv_rank
-        else:
-            has_wheel_put = any(
-                p.get("option_type") == "put" and p.get("action") == "sell"
-                for p in existing_positions
-            )
-            if has_wheel_put:
-                return 0, [], iv_rank
-            expiry_str, dte = adapter.get_real_expiry(underlying, 37)
-            actions = [
-                _option_leg(underlying, "sell", "put", spot_price * 0.94,
-                            expiry_str, dte, 0.020, spot_price, vol_annual, adapter,
-                            wheel_phase=1),
-            ]
-            return -1, actions, iv_rank
-
-    except Exception as e:
-        print(f"Wheel evaluation failed: {e}", file=sys.stderr)
-        return 0, [], iv_rank
+        if has_active_call:
+            return 0, [], iv_rank
+        expiry_str, dte = adapter.get_real_expiry(underlying, 21)
+        actions = [
+            _option_leg(underlying, "sell", "call", spot_price * 1.10,
+                        expiry_str, dte, 0.020, spot_price, vol_annual, adapter,
+                        wheel_phase=2),
+        ]
+        return -1, actions, iv_rank
+    else:
+        has_wheel_put = any(
+            p.get("option_type") == "put" and p.get("action") == "sell"
+            for p in existing_positions
+        )
+        if has_wheel_put:
+            return 0, [], iv_rank
+        expiry_str, dte = adapter.get_real_expiry(underlying, 37)
+        actions = [
+            _option_leg(underlying, "sell", "put", spot_price * 0.94,
+                        expiry_str, dte, 0.020, spot_price, vol_annual, adapter,
+                        wheel_phase=1),
+        ]
+        return -1, actions, iv_rank
 
 
 def evaluate_butterfly(underlying, spot_price, vol_annual, iv_rank,
                         existing_positions, spot_positions, adapter):
-    try:
-        if iv_rank < 30 or iv_rank > 70:
-            return 0, [], iv_rank
-
-        expiry_str, dte = adapter.get_real_expiry(underlying, 30)
-        actions = [
-            _option_leg(underlying, "buy", "call", spot_price * 0.95,
-                        expiry_str, dte, 0.055, spot_price, vol_annual, adapter),
-            _option_leg(underlying, "sell", "call", spot_price,
-                        expiry_str, dte, 0.035, spot_price, vol_annual, adapter,
-                        quantity=2),
-            _option_leg(underlying, "buy", "call", spot_price * 1.05,
-                        expiry_str, dte, 0.015, spot_price, vol_annual, adapter),
-        ]
-        return 1, actions, iv_rank
-
-    except Exception as e:
-        print(f"Butterfly evaluation failed: {e}", file=sys.stderr)
+    if iv_rank < 30 or iv_rank > 70:
         return 0, [], iv_rank
+
+    expiry_str, dte = adapter.get_real_expiry(underlying, 30)
+    actions = [
+        _option_leg(underlying, "buy", "call", spot_price * 0.95,
+                    expiry_str, dte, 0.055, spot_price, vol_annual, adapter),
+        _option_leg(underlying, "sell", "call", spot_price,
+                    expiry_str, dte, 0.035, spot_price, vol_annual, adapter,
+                    quantity=2),
+        _option_leg(underlying, "buy", "call", spot_price * 1.05,
+                    expiry_str, dte, 0.015, spot_price, vol_annual, adapter),
+    ]
+    return 1, actions, iv_rank
 
 
 STRATEGY_MAP = {
@@ -393,13 +453,15 @@ def _options_live_mode_error(platform):
     )
 
 
-def main():
-    if "--probe-only" in sys.argv:
-        sys.exit(0)
-    args = sys.argv[1:]
+def _usage():
+    return f"Usage: {sys.argv[0]} <strategy> <underlying> [positions_json] [--platform={'|'.join(SUPPORTED_PLATFORMS)}]"
+
+
+def _parse_args(args):
     platform = "deribit"
     regime_payload_json = None
     remaining = []
+    invalid = False
     i = 0
     while i < len(args):
         arg = args[i]
@@ -411,7 +473,7 @@ def main():
         elif arg.startswith("--platform="):
             platform = arg.split("=", 1)[1]
         elif arg.startswith("--platform"):
-            pass
+            invalid = True
         elif arg.startswith("--regime-payload-json="):
             regime_payload_json = arg.split("=", 1)[1]
         elif arg.startswith("--regime-payload-json"):
@@ -419,160 +481,167 @@ def main():
         else:
             remaining.append(arg)
         i += 1
+    return platform, regime_payload_json, remaining, invalid
+
+
+def _reject_constant(name):
+    raise ValueError(f"non-finite JSON constant {name}")
+
+
+def _finite_float(text):
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite JSON number {text}")
+    return value
+
+
+def _read_positions(remaining):
+    if len(remaining) > 2:
+        raw = remaining[2]
+    elif sys.stdin is None or sys.stdin.isatty():
+        return []
+    else:
+        raw = sys.stdin.read()
+    if not raw.strip():
+        return []
+    try:
+        positions = json.loads(raw, parse_constant=_reject_constant, parse_float=_finite_float)
+    except (ValueError, RecursionError) as e:
+        print(f"positions JSON rejected: {e}", file=sys.stderr)
+        raise CheckError("invalid positions JSON") from None
+    if not isinstance(positions, list):
+        raise CheckError("invalid positions payload: expected a JSON list")
+    if any(not isinstance(p, dict) for p in positions):
+        raise CheckError("invalid positions payload: every entry must be a JSON object")
+    return positions
+
+
+def _stable_reason(exc):
+    if isinstance(exc, (CheckError, OptionDataUnavailable)):
+        return exc.reason
+    code = option_data.upstream_status(exc)
+    reason = f"options check failed: {type(exc).__name__}"
+    return f"{reason} (upstream status {code})" if code is not None else reason
+
+
+def _result(ctx, **fields):
+    doc = {
+        "strategy": ctx["strategy"],
+        "underlying": ctx["underlying"],
+        "signal": 0,
+        "spot_price": 0,
+        "actions": [],
+        "iv_rank": None,
+        "regime": None,
+        "platform": ctx["platform"],
+        "premium_unit": PREMIUM_UNIT,
+        "structure_contract": STRUCTURE_CONTRACT,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    doc.update(fields)
+    return doc
+
+
+def _evaluate(ctx, args):
+    platform, regime_payload_json, remaining, invalid_args = _parse_args(args)
+    ctx["platform"] = platform
+    ctx["strategy"] = remaining[0] if remaining else ""
+    ctx["underlying"] = remaining[1].upper() if len(remaining) > 1 else ""
 
     if _is_live_args(args):
-        print(json.dumps({
-            "strategy": remaining[0] if remaining else "",
-            "underlying": remaining[1].upper() if len(remaining) > 1 else "",
-            "signal": 0,
-            "spot_price": 0,
-            "actions": [],
-            "iv_rank": 0,
-            "regime": None,
-            "platform": platform,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "error": _options_live_mode_error(platform),
-        }))
-        sys.exit(1)
+        raise CheckError(_options_live_mode_error(platform))
+    if invalid_args or len(remaining) < 2 or len(remaining) > 3:
+        raise CheckError(_usage())
+    strategy_name = ctx["strategy"]
+    underlying = ctx["underlying"]
+    if strategy_name not in STRATEGY_MAP:
+        raise CheckError(f"Unknown strategy: {strategy_name}. Available: {list(STRATEGY_MAP.keys())}")
+    if platform not in SUPPORTED_PLATFORMS:
+        raise CheckError(
+            f"unsupported options platform: {platform}; options run only on {', '.join(SUPPORTED_PLATFORMS)}"
+        )
 
-    if len(remaining) < 2:
-        print(json.dumps({
-            "error": f"Usage: {sys.argv[0]} <strategy> <underlying> [--platform=deribit|ibkr]"
-        }))
-        sys.exit(1)
-
-    strategy_name = remaining[0]
-    underlying = remaining[1].upper()
-
-    raw_positions = []
-    if len(remaining) > 2:
-        try:
-            raw_positions = json.loads(remaining[2])
-        except (json.JSONDecodeError, ValueError):
-            pass
-    elif not sys.stdin.isatty():
-        try:
-            stdin_data = sys.stdin.read().strip()
-            if stdin_data:
-                raw_positions = json.loads(stdin_data)
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    existing_positions, spot_positions = parse_positions_context(raw_positions)
+    existing_positions, spot_positions = parse_positions_context(_read_positions(remaining))
 
     if len(existing_positions) >= MAX_POSITIONS_PER_STRATEGY:
-        print(json.dumps({
-            "strategy": strategy_name,
-            "underlying": underlying,
-            "signal": 0,
-            "spot_price": 0,
-            "actions": [],
-            "iv_rank": 0,
-            "regime": None,
-            "platform": platform,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "skip_reason": f"Max positions reached ({len(existing_positions)}/{MAX_POSITIONS_PER_STRATEGY})"
-        }))
-        return
+        return _result(ctx, skip_reason=f"Max positions reached ({len(existing_positions)}/{MAX_POSITIONS_PER_STRATEGY})")
 
-    if strategy_name not in STRATEGY_MAP:
-        print(json.dumps({
-            "strategy": strategy_name,
-            "underlying": underlying,
-            "signal": 0,
-            "spot_price": 0,
-            "actions": [],
-            "iv_rank": 0,
-            "regime": None,
-            "platform": platform,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "error": f"Unknown strategy: {strategy_name}. Available: {list(STRATEGY_MAP.keys())}"
-        }))
-        return
+    adapter = _load_adapter(platform, underlying)
 
+    spot_price = option_data.require_finite_positive(adapter.get_spot_price(underlying), "Could not fetch spot price")
+
+    vol_annual, iv_rank, vol_metrics_error = option_data.measured_vol_metrics(adapter, underlying)
+
+    if regime_payload_json is not None:
+        _, _, regime_snap = regime_from_injected_payload(regime_payload_json, windows_spec={"default": {"classifier": "adx", "period": 14}})
+        regime_label = str(regime_snap.get("regime") or "") or None
+    else:
+        regime_df = _fetch_ohlcv_df(underlying, REGIME_TIMEFRAME, REGIME_LIMIT,
+                                    REGIME_MIN_BARS, adapter=adapter, platform=platform)
+        regime_label = _regime_label_from_df(regime_df)
+
+    if strategy_name in RANK_STRATEGIES and iv_rank is None:
+        raise CheckError(f"{strategy_name} needs iv rank: {vol_metrics_error}")
+
+    evaluate_fn = STRATEGY_MAP[strategy_name]
     try:
-        adapter = _load_adapter(platform)
-
-        spot_price = adapter.get_spot_price(underlying)
-        if spot_price <= 0:
-            print(json.dumps({
-                "strategy": strategy_name,
-                "underlying": underlying,
-                "signal": 0,
-                "spot_price": 0,
-                "actions": [],
-                "iv_rank": 0,
-                "regime": None,
-                "platform": platform,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "error": "Could not fetch spot price"
-            }))
-            return
-
-        vol_annual, iv_rank = adapter.get_vol_metrics(underlying)
-
-        if regime_payload_json is not None:
-            _, _, regime_snap = regime_from_injected_payload(regime_payload_json)
-            regime_label = str(regime_snap.get("regime") or "") or None
-        else:
-            regime_df = _fetch_ohlcv_df(underlying, REGIME_TIMEFRAME, REGIME_LIMIT,
-                                        REGIME_MIN_BARS, adapter=adapter)
-            regime_label = _regime_label_from_df(regime_df)
-
-        evaluate_fn = STRATEGY_MAP[strategy_name]
         signal, actions, iv_rank = evaluate_fn(
             underlying, spot_price, vol_annual, iv_rank,
             existing_positions, spot_positions, adapter
         )
+    except OptionDataUnavailable as e:
+        if e.reason == option_data.MODEL_NEEDS_VOLATILITY and vol_metrics_error:
+            raise CheckError(f"{e.reason}: {vol_metrics_error}") from e
+        raise
 
-        scored_actions = []
-        for action in actions:
-            score, reason = score_new_trade(action, existing_positions, spot_price)
-            action["score"] = score
-            action["score_reason"] = reason
-            if score >= MIN_SCORE_THRESHOLD:
-                scored_actions.append(action)
-            else:
-                print(f"Skipping {action.get('action')} {action.get('option_type')} "
-                      f"strike={action.get('strike')}: score={score} ({reason})",
-                      file=sys.stderr)
+    structures = stamp_structures(strategy_name, [actions])
+    scored_actions = select_structures(structures, existing_positions, spot_price)
 
-        if actions and not scored_actions:
-            signal = 0
+    if actions and not scored_actions:
+        signal = 0
 
-        output = {
-            "strategy": strategy_name,
-            "underlying": underlying,
-            "signal": signal,
-            "spot_price": spot_price,
-            "actions": scored_actions,
-            "iv_rank": round(iv_rank, 1),
-            "regime": regime_label,
-            "platform": platform,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        multiplier_fn = getattr(adapter, 'get_multiplier', None)
-        if multiplier_fn is not None:
-            output["multiplier"] = multiplier_fn(underlying)
-            output["contract_type"] = "CME_MICRO"
+    output = _result(
+        ctx,
+        signal=signal,
+        spot_price=spot_price,
+        actions=scored_actions,
+        iv_rank=round(iv_rank, 1) if iv_rank is not None else None,
+        regime=regime_label,
+    )
+    if vol_metrics_error:
+        output["vol_metrics_error"] = vol_metrics_error
+    multiplier_fn = getattr(adapter, 'get_multiplier', None)
+    if multiplier_fn is not None:
+        output["multiplier"] = multiplier_fn(underlying)
+        output["contract_type"] = "CME_MICRO"
+    return output
 
-        print(json.dumps(output))
 
+def _run(args, emit):
+    ctx = {"strategy": "", "underlying": "", "platform": "deribit"}
+    try:
+        output = _evaluate(ctx, args)
     except Exception as e:
-        traceback.print_exc(file=sys.stderr)
-        print(json.dumps({
-            "strategy": strategy_name,
-            "underlying": underlying,
-            "signal": 0,
-            "spot_price": 0,
-            "actions": [],
-            "iv_rank": 0,
-            "regime": None,
-            "platform": platform,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "error": str(e)
-        }))
-        sys.exit(1)
+        if not isinstance(e, CheckError):
+            traceback.print_exc(file=sys.stderr)
+        emit(_result(ctx, error=_stable_reason(e)))
+        return 1
+    try:
+        json.dumps(output, allow_nan=False)
+    except (TypeError, ValueError) as e:
+        print(f"options result rejected: {e}", file=sys.stderr)
+        emit(_result(ctx, error="options result invalid: a value is not finite JSON"))
+        return 1
+    emit(output)
+    return 0
+
+
+def main():
+    if "--probe-only" in sys.argv:
+        sys.exit(0)
+    with json_stdout() as emit:
+        code = _run(sys.argv[1:], emit)
+    sys.exit(code)
 
 
 if __name__ == "__main__":

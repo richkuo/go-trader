@@ -27,8 +27,9 @@ type UIStrategy struct {
 	Direction string `json:"direction,omitempty"`
 	Paused    bool   `json:"paused,omitempty"`
 
-	Partition   string `json:"partition"`
-	PaperSource string `json:"paper_source,omitempty"`
+	Partition   string          `json:"partition"`
+	PaperSource string          `json:"paper_source,omitempty"`
+	EngineHold  *engineHoldView `json:"engine_hold,omitempty"`
 }
 
 type UIStrategyOverview struct {
@@ -52,10 +53,9 @@ type UIStrategyOverview struct {
 	RegimeGateFailClosed  bool                   `json:"regime_gate_fail_closed,omitempty"`
 	CashReconcileRequired bool                   `json:"cash_reconcile_required,omitempty"`
 
-	Partition   string `json:"partition"`
-	PaperSource string `json:"paper_source,omitempty"`
-
-	PairValuation string `json:"pair_valuation,omitempty"`
+	Partition   string          `json:"partition"`
+	PaperSource string          `json:"paper_source,omitempty"`
+	EngineHold  *engineHoldView `json:"engine_hold,omitempty"`
 }
 
 type UIStrategyStatus struct {
@@ -86,13 +86,14 @@ type UIStrategyStatus struct {
 	Paused                bool                       `json:"paused,omitempty"`
 	CashReconcileRequired bool                       `json:"cash_reconcile_required,omitempty"`
 
-	EffectiveDirection             string              `json:"effective_direction,omitempty"`
-	EffectiveInvertSignal          bool                `json:"effective_invert_signal,omitempty"`
-	RegimeDirectionalPolicy        bool                `json:"regime_directional_policy,omitempty"`
-	EffectivePolicyRegime          string              `json:"effective_policy_regime,omitempty"`
-	DirectionalCertificationStatus string              `json:"directional_certification_status,omitempty"`
-	DirectionalCertificationCell   string              `json:"directional_certification_cell,omitempty"`
-	RegimeProfile                  *RegimeProfileState `json:"regime_profile,omitempty"`
+	EffectiveDirection             string                `json:"effective_direction,omitempty"`
+	EffectiveInvertSignal          bool                  `json:"effective_invert_signal,omitempty"`
+	RegimeDirectionalPolicy        bool                  `json:"regime_directional_policy,omitempty"`
+	EffectivePolicyRegime          string                `json:"effective_policy_regime,omitempty"`
+	DirectionalCertificationStatus string                `json:"directional_certification_status,omitempty"`
+	DirectionalCertificationCell   string                `json:"directional_certification_cell,omitempty"`
+	RegimeProfile                  *RegimeProfileState   `json:"regime_profile,omitempty"`
+	RegimeSide                     *regimeSideResolution `json:"regime_side,omitempty"`
 }
 
 type UIEquityPoint struct {
@@ -352,6 +353,7 @@ func uiStrategyFromConfig(sc StrategyConfig) UIStrategy {
 
 		Partition:   partitionFor(sc).String(),
 		PaperSource: partitionFor(sc).Source,
+		EngineHold:  engineHoldViewFor(sc),
 	}
 }
 
@@ -494,14 +496,13 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 		snapshot.Positions = cloneUIPositions(strat.Positions)
 		snapshot.OptionPositions = cloneUIOptionPositions(strat.OptionPositions)
 	}
-	pm := ss.state.pairMarksLocked()
 	ss.mu.RUnlock()
 	if strat == nil {
 		return UIStrategyOverview{}, LifetimeTradeStats{}, false
 	}
 
 	prices := ss.fetchLiveMarkPrices()
-	pv, pvStatus := displayStrategyValueMarked(&snapshot, prices, pm)
+	pv := displayStrategyValue(&snapshot, prices)
 	initCap := EffectiveInitialCapital(sc, &snapshot)
 	pnl := pv - initCap
 	pnlPct := 0.0
@@ -547,8 +548,7 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 
 		Partition:   partitionFor(sc).String(),
 		PaperSource: partitionFor(sc).Source,
-
-		PairValuation: pvStatus.label(),
+		EngineHold:  engineHoldViewFor(sc),
 	}, lifetime, true
 }
 
@@ -616,6 +616,7 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 	resp.EffectivePolicyRegime = dirView.EffectivePolicyRegime
 	resp.DirectionalCertificationStatus = dirView.CertStatus
 	resp.DirectionalCertificationCell = dirView.CertCell
+	resp.RegimeSide = regimeSideStatusForState(sc, &snapshot, ss.regime)
 	writeJSON(w, resp)
 }
 
@@ -634,7 +635,6 @@ func (ss *StatusServer) handleAPIStrategyEquity(w http.ResponseWriter, r *http.R
 		snapshot.Positions = cloneUIPositions(strat.Positions)
 		snapshot.OptionPositions = cloneUIOptionPositions(strat.OptionPositions)
 	}
-	pm := ss.state.pairMarksLocked()
 	ss.mu.RUnlock()
 	if strat == nil {
 		writeJSONError(w, http.StatusNotFound, "strategy state not found")
@@ -642,7 +642,7 @@ func (ss *StatusServer) handleAPIStrategyEquity(w http.ResponseWriter, r *http.R
 	}
 
 	initCap := EffectiveInitialCapital(sc, &snapshot)
-	pv, pvStatus := displayStrategyValueMarked(&snapshot, map[string]float64{}, pm)
+	pv := displayStrategyValue(&snapshot, map[string]float64{})
 
 	var closed []ClosedPosition
 	if ss.stateDB != nil {
@@ -659,9 +659,6 @@ func (ss *StatusServer) handleAPIStrategyEquity(w http.ResponseWriter, r *http.R
 	resp := map[string]interface{}{
 		"strategy_id": id,
 		"points":      points,
-	}
-	if label := pvStatus.label(); label != "" {
-		resp["pair_valuation"] = label
 	}
 	writeJSON(w, resp)
 }

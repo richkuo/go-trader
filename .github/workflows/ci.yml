@@ -7,67 +7,28 @@ on:
     types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
-  docs:
+  changes:
     runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
 
-      - name: Agent instructions size and layout
-        run: |
-          fail=0
-          if [ -L CLAUDE.md ] || [ ! -f CLAUDE.md ]; then
-            echo "::error::CLAUDE.md must be a regular file at the repository root."
-            fail=1
-          fi
-          if [ ! -L AGENTS.md ] || [ "$(readlink AGENTS.md)" != "CLAUDE.md" ]; then
-            echo "::error::AGENTS.md must be a symlink to CLAUDE.md."
-            fail=1
-          fi
-          extra=$(git ls-files | grep -E '(^|/)(CLAUDE(\.local)?\.md|AGENTS\.md)$' | grep -vx -e 'CLAUDE.md' -e 'AGENTS.md' || true)
-          if [ -n "$extra" ]; then
-            echo "::error::Agent instructions stay in one root CLAUDE.md. Remove these files:"
-            echo "$extra"
-            fail=1
-          fi
-          if [ -f CLAUDE.md ] && [ ! -L CLAUDE.md ]; then
-            bytes=$(wc -c < CLAUDE.md | tr -d ' ')
-            echo "CLAUDE.md: $bytes bytes (ceiling 17000, target 16500)"
-            if [ "$bytes" -ge 17000 ]; then
-              echo "::error::CLAUDE.md is $bytes bytes, at or above the 17000-byte ceiling. Move mechanism to SKILL.md, shorten wording, drop no guardrail."
-              echo "Bytes per section:"
-              LC_ALL=C awk 'BEGIN{h="(header)"} /^## /{printf "%6d  %s\n",n,h; h=$0; n=0} {n+=length($0)+1} END{printf "%6d  %s\n",n,h}' CLAUDE.md
-              fail=1
-            elif [ "$bytes" -gt 16500 ]; then
-              echo "::warning::CLAUDE.md is $bytes bytes, above the 16500-byte target. The CI check fails at 17000."
-            fi
-          fi
-          exit $fail
+      - name: Check the change detector and its wiring
+        run: bash scripts/check_ci_code_changed.sh
 
-      - name: SKILL.md and POST_UPDATE_HISTORY.md line length
-        run: |
-          limit=1000
-          LC_ALL=C awk -v limit="$limit" '
-            FNR == 1 { fence = 0 }
-            match($0, /^ *```/) && RLENGTH <= 6 { fence = !fence; next }
-            fence { next }
-            $0 ~ /^[ \t]*\|/ { next }
-            length($0) > limit {
-              printf "::error file=%s,line=%d::line is %d bytes, above the %d-byte limit. Put one sentence per line.\n", FILENAME, FNR, length($0), limit
-              bad = 1
-            }
-            END { exit bad }
-          ' SKILL.md docs/POST_UPDATE_HISTORY.md
-
-      - name: .github/scripts holds only test_workflow_logic.py
-        run: |
-          files=$(git ls-files .github/scripts)
-          if [ "$files" != ".github/scripts/test_workflow_logic.py" ]; then
-            echo "::error::.github/scripts must hold exactly test_workflow_logic.py. Put other scripts under scripts/. Tracked files:"
-            echo "$files"
-            exit 1
-          fi
+      - name: Decide whether the change touches anything a test reads
+        id: diff
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash scripts/ci_code_changed.sh
 
   go:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,7 +42,7 @@ jobs:
         run: cd scheduler && go build -ldflags "-X main.Version=$(git describe --tags --always --dirty=-mod)" .
 
       - name: Remaining Go tests
-        run: cd scheduler && go test -skip '^TestBasket' ./...
+        run: cd scheduler && go test ./...
 
       - name: Format check (every tracked Go file)
         run: |
@@ -93,20 +54,9 @@ jobs:
             exit 1
           fi
 
-  go-basket-safety:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
-      - name: Basket safety checks
-        run: go -C scheduler test -v -count=1 -timeout 10m -run '^TestBasketPair(KillSwitch|NativeEmergency|PaperEmergency|NativeRecovery|NativeOperator|Reduction)' .
-
   go-race-quote:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,6 +72,8 @@ jobs:
         run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestQuote' -skip '^(TestQuoteReplayRunsThePolicyThroughTheRealCoordinator|TestQuoteReplayResumeMatchesAnUninterruptedRun|TestQuoteReplayFaultsRecoverWithTheirStatedClass|TestQuoteReplayRefusesUnsafeStateAndInputs|TestQuoteReplayLaterReceiptsLeaveEarlierDecisionsUnchanged|TestQuoteReplayCoverageAndTimingRefusals|TestQuotePolicyBoundaryCasesThroughTheRealCoordinator)$' .
 
   go-python-integration:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -139,13 +91,15 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryOperatorRealOKXQueryErrorRefusesTheRelease|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestOKXSharedStep[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*)$' -skip '^(TestMergePaperInstance)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryOperatorRealOKXQueryErrorRefusesTheRelease|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRegimeReadinessContractIntegration|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestRegimeSide[A-Za-z]*|TestOKXSharedStep(OrdinaryGolden|RefusesUnknownTypesAndMissingOwners|SimulatedClockDrivesAdmissionBookingAndReminder|SplitLayoutRoutesEachPartitionToItsOwnFile)|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*)$' -skip '^(TestMergePaperInstance|TestRegimeReadinessContractIntegration|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
           fi
 
-  go-python-integration-merge-paper-instance:
+  go-python-integration-regime-readiness:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -153,6 +107,59 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --compile-bytecode
+
+      - name: Python-backed Go integration tests
+        run: |
+          set -o pipefail
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestRegimeReadinessContractIntegration$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
+            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
+            exit 1
+          fi
+
+  go-python-integration-robinhood-quote-precision:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --compile-bytecode
+
+      - name: Python-backed Go integration tests
+        run: |
+          set -o pipefail
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
+            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
+            exit 1
+          fi
+
+  go-python-integration-merge-paper-instance:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
 
       - uses: astral-sh/setup-uv@v6
 
@@ -169,6 +176,8 @@ jobs:
           fi
 
   shell-suites:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -281,6 +290,8 @@ jobs:
             -- sudo env EGRESS_CONTROLLER_BIN="$RUNNER_TEMP/go-trader-egress-controller" EGRESS_FIXTURE_BIN="$RUNNER_TEMP/egress-fixture" EGRESS_TEST_IMAGE=ghcr.io/richkuo/go-trader:egress-ci EGRESS_DOCKER_FIXTURE_REQUIRE_RUN=1 bash scripts/test_egress_docker.sh
 
   shell-suites-migrate-1:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -301,6 +312,8 @@ jobs:
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='update' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
   shell-suites-migrate-2:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -321,6 +334,8 @@ jobs:
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='stages kill refuse plan confirm apply latch conflict resume signal fold newtarget' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
   shell-suites-migrate-3:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -340,8 +355,10 @@ jobs:
             --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='update_recovery' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
-  python-collect:
+  checks:
     runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.python.outputs.result }}
     steps:
       - uses: actions/checkout@v4
 
@@ -351,13 +368,10 @@ jobs:
         run: uv sync
 
       - name: Syntax check
-        run: |
-          find shared_scripts/ platforms/ shared_strategies/ shared_tools/ \
-            -name '*.py' -print0 \
-            | xargs -0 uv run python3 -m py_compile
+        run: bash scripts/check_pre_pr.sh syntax
 
       - name: Test budget
-        run: uv run python3 scripts/check_test_budget.py
+        run: bash scripts/check_pre_pr.sh test-budget
 
       - name: Collect every Python test
         run: |
@@ -371,8 +385,26 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Python checks passed
+        id: python
+        run: echo result=success >> "$GITHUB_OUTPUT"
+
+      - name: Agent instructions size and layout
+        if: ${{ !cancelled() }}
+        run: bash scripts/check_pre_pr.sh agent-docs
+
+      - name: SKILL.md and POST_UPDATE_HISTORY.md line length
+        if: ${{ !cancelled() }}
+        run: bash scripts/check_pre_pr.sh doc-lines
+
+      - name: .github/scripts holds only test_workflow_logic.py
+        if: ${{ !cancelled() }}
+        run: bash scripts/check_pre_pr.sh github-scripts
+
   python-shard:
     name: python-shard (${{ matrix.suite }} ${{ matrix.group }}/${{ matrix.splits }})
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -410,8 +442,8 @@ jobs:
           retention-days: 7
 
   python:
-    needs: [python-collect, python-shard]
-    if: ${{ !cancelled() }}
+    needs: [changes, checks, python-shard]
+    if: ${{ !cancelled() && needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -454,10 +486,10 @@ jobs:
       - name: Every Python job passed
         if: ${{ !cancelled() }}
         env:
-          COLLECT: ${{ needs.python-collect.result }}
+          COLLECT: ${{ needs.checks.outputs.python }}
           SHARDS: ${{ needs.python-shard.result }}
         run: |
-          echo "python-collect: $COLLECT, python-shard: $SHARDS"
+          echo "python checks: ${COLLECT:-not run}, python-shard: $SHARDS"
           if [ "$COLLECT" != success ] || [ "$SHARDS" != success ]; then
             echo "::error::a Python CI job did not succeed"
             exit 1

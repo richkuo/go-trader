@@ -308,7 +308,7 @@ func buildRegimeByBaseAsset(strategies []StrategyConfig, state *AppState, regime
 	out := make(map[string]string)
 	for _, sc := range strategies {
 		ss := state.Strategies[sc.ID]
-		if ss == nil || ss.Regime == "" {
+		if ss == nil || (ss.Regime == "" && len(ss.RegimeSnapshots) == 0) {
 			continue
 		}
 		base := extractAsset(sc)
@@ -498,15 +498,12 @@ func FormatCategorySummary(
 
 	var tableBots []botInfo
 	var totalInitCap, filteredValue float64
-	pm := state.pairMarksLocked()
-	var incomplete pairValueStatus
 	for _, sc := range strategies {
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
 			continue
 		}
-		pv, status := displayStrategyValueMarked(ss, prices, pm)
-		incomplete.merge(status)
+		pv := displayStrategyValue(ss, prices)
 		walletPct := 0.0
 
 		if sc.CapitalPct > 0 && walletCount[sc.Platform] > 1 {
@@ -584,9 +581,6 @@ func FormatCategorySummary(
 	if categorySharpe != 0 {
 		sb.WriteString(fmt.Sprintf("📐 Book Sharpe (realized, annualized): %s\n", fmtSharpe(categorySharpe)))
 	}
-	if label := incomplete.label(); label != "" {
-		sb.WriteString("Values and TOTAL are incomplete (" + label + ")\n")
-	}
 
 	header := sb.String()
 
@@ -612,7 +606,7 @@ func FormatCategorySummary(
 			if ss == nil {
 				continue
 			}
-			posLines = append(posLines, collectPositionsMarked(sc, ss, prices, pm)...)
+			posLines = append(posLines, collectPositions(sc, ss, prices)...)
 		}
 	}
 
@@ -1086,20 +1080,9 @@ func closeStrategySummaryName(sc StrategyConfig) string {
 }
 
 func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]float64) []string {
-	return collectPositionsMarked(sc, ss, prices, nil)
-}
-
-func collectPositionsMarked(sc StrategyConfig, ss *StrategyState, prices map[string]float64, pm *pairMarks) []string {
 	var lines []string
 	for sym, pos := range ss.Positions {
 		currentPrice := prices[sym]
-		markNote := ""
-		if mark, state, _, pair := pm.markFor(ss, sym); pair {
-			currentPrice = mark
-			if state != "" {
-				markNote = " | pair mark " + state
-			}
-		}
 		if currentPrice == 0 {
 			currentPrice = pos.AvgCost
 		}
@@ -1180,14 +1163,19 @@ func collectPositionsMarked(sc StrategyConfig, ss *StrategyState, prices map[str
 			margin := positionMargin(pos.Quantity, pos.AvgCost, pos.Leverage)
 			extras += fmt.Sprintf(" | %gx ($%s margin)", pos.Leverage, fmtComma(math.Round(margin)))
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s x%.3f @ $%s (%s$%s)%s%s%s", sc.ID, strings.ToUpper(pos.Side), sym, pos.Quantity, fmtComma2(pos.AvgCost), sign, fmtComma2(absPnl), markNote, extras, dateStr))
+		lines = append(lines, fmt.Sprintf("%s %s %s x%.3f @ $%s (%s$%s)%s%s", sc.ID, strings.ToUpper(pos.Side), sym, pos.Quantity, fmtComma2(pos.AvgCost), sign, fmtComma2(absPnl), extras, dateStr))
 	}
-	for key, opt := range ss.OptionPositions {
+	now := time.Now().UTC()
+	for _, key := range sortedOptionLegKeys(ss.OptionPositions) {
+		opt := ss.OptionPositions[key]
+		if opt == nil {
+			continue
+		}
 		dateStr := ""
 		if !opt.OpenedAt.IsZero() {
 			dateStr = fmt.Sprintf(" [%s]", opt.OpenedAt.Format("Jan 02 15:04"))
 		}
-		lines = append(lines, fmt.Sprintf("%s OPT %s ($%s)%s", sc.ID, key, fmtComma2(opt.CurrentValueUSD), dateStr))
+		lines = append(lines, fmt.Sprintf("%s OPT %s ($%s) %s%s", sc.ID, key, fmtComma2(opt.CurrentValueUSD), optionMarkStatusText(opt, now), dateStr))
 	}
 	return lines
 }
@@ -1246,6 +1234,9 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool, rc *RegimeCo
 	}
 	if trade.RegimeProfileNote != "" {
 		extras = append(extras, trade.RegimeProfileNote)
+	}
+	if trade.RegimeSideNote != "" {
+		extras = append(extras, trade.RegimeSideNote)
 	}
 	direction := strings.ToLower(tradeDirectionLabel(trade))
 	var tiers []hlProtectionTier

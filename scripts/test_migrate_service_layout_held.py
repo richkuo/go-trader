@@ -16,16 +16,13 @@ def _rev(reason, hold_at, evaluated_at, sid="A"):
     }
 
 
-def test_a_later_evaluation_drops_a_kill_switch_hold():
-    got = mod.held_by_latest_cycle(_rev("portfolio_kill_switch", "2026-10-27T10:00:00Z", "2026-10-27T10:00:01Z"))
-    assert got.get("portfolio_kill_switch", []) == []
-
-
-def test_a_later_kill_switch_hold_stays_in_the_note():
-    got = mod.held_by_latest_cycle(_rev("portfolio_kill_switch", "2026-10-27T10:00:01Z", "2026-10-27T10:00:00Z"))
-    assert got.get("portfolio_kill_switch") == ["A"]
-
-
-def test_a_later_evaluation_drops_a_save_blocked_hold():
-    got = mod.held_by_latest_cycle(_rev("save_blocked", "2026-10-27T10:00:00Z", "2026-10-27T10:00:01Z", sid="B"))
-    assert got == {}
+def test_a_hold_stays_in_the_note_only_when_it_is_the_latest_evidence(subtests):
+    with subtests.test(case="a_later_evaluation_drops_a_kill_switch_hold"):
+        got = mod.held_by_latest_cycle(_rev("portfolio_kill_switch", "2026-10-27T10:00:00Z", "2026-10-27T10:00:01Z"))
+        assert got.get("portfolio_kill_switch", []) == []
+    with subtests.test(case="a_later_kill_switch_hold_stays_in_the_note"):
+        got = mod.held_by_latest_cycle(_rev("portfolio_kill_switch", "2026-10-27T10:00:01Z", "2026-10-27T10:00:00Z"))
+        assert got.get("portfolio_kill_switch") == ["A"]
+    with subtests.test(case="a_later_evaluation_drops_a_save_blocked_hold"):
+        got = mod.held_by_latest_cycle(_rev("save_blocked", "2026-10-27T10:00:00Z", "2026-10-27T10:00:01Z", sid="B"))
+        assert got == {}

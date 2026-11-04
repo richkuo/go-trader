@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestFisherReversalAdmissionThroughRealLoaders(t *testing.T) {
+func noEdgeCaseFisherReversalAdmissionThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const name = "fisher_reversal"
 	const ref = "backtest/candidates/fisher_reversal_1646/REPORT.md"
@@ -88,7 +88,7 @@ func TestFisherReversalAdmissionThroughRealLoaders(t *testing.T) {
 	}
 }
 
-func TestFisherReversalAcknowledgementMustBeABoolean(t *testing.T) {
+func noEdgeCaseFisherReversalAcknowledgementMustBeABoolean(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	for _, raw := range []interface{}{"true", 1, map[string]interface{}{}} {
 		sc := noEdgeHLStrategy("hl-fisher-eth", "fisher_reversal", "ETH", "4h", "--mode=live")
@@ -99,7 +99,7 @@ func TestFisherReversalAcknowledgementMustBeABoolean(t *testing.T) {
 	}
 }
 
-func TestFisherReversalPaperAddThroughTheDiscordBuilder(t *testing.T) {
+func noEdgeCaseFisherReversalPaperAddThroughTheDiscordBuilder(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const name = "fisher_reversal"
 	if knownShortNames[name] != "fisher" || !isBidirectionalPerpsStrategy(name) {
@@ -176,7 +176,7 @@ func TestFisherReversalPaperAddThroughTheDiscordBuilder(t *testing.T) {
 	}
 }
 
-func TestFisherReversalStatusPageAddCreatesExplicitPaper(t *testing.T) {
+func noEdgeCaseFisherReversalStatusPageAddCreatesExplicitPaper(t *testing.T) {
 	ss, path, _ := newStructuralTestServer(t)
 	params := `{"name":"fisher_reversal","platform":"hyperliquid","asset":"BTC"}`
 	confirm := structuralConfirm(t, ss, "add-strategy", "", params)

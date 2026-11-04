@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,8 +38,6 @@ var knownSubcommands = []string{
 	"version",
 	"supervise",
 	"healthcheck",
-	"basket-replay",
-	"basket-replay-paper",
 	"quote-replay",
 	"robinhood-login",
 	"notify-broker",
@@ -118,10 +117,6 @@ func main() {
 			os.Exit(runSupervise(os.Args[2:]))
 		case "healthcheck":
 			os.Exit(runHealthcheck(os.Args[2:]))
-		case "basket-replay":
-			os.Exit(runBasketReplay(os.Args[2:]))
-		case "basket-replay-paper":
-			os.Exit(runBasketReplayPaper(os.Args[2:]))
 		case "quote-replay":
 			os.Exit(runQuoteReplay(os.Args[2:]))
 		case "robinhood-login":
@@ -194,12 +189,16 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
+	for _, line := range robinhoodCoinRewriteWarnings(cfg) {
+		fmt.Fprintln(os.Stderr, line)
+	}
 	fmt.Println(logLevelStartupLine())
 
 	setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
 		fmt.Fprintf(os.Stderr, f+"\n", a...)
 	}))
-	directionalCertSummaryLines := directionalCertStartupSummary(cfg)
+	installRegimeSideEvidence(startupRegimeSideEvidence(cfg))
+	directionalCertSummaryLines := append(directionalCertStartupSummary(cfg), regimeSideStartupLines(cfg)...)
 	for _, line := range directionalCertSummaryLines {
 		fmt.Println(line)
 	}
@@ -211,6 +210,9 @@ func main() {
 	noEdgeWarnings := noEdgeStartupWarnings(cfg.Strategies)
 	for _, msg := range noEdgeWarnings {
 		fmt.Fprintln(os.Stderr, "[config] "+msg)
+	}
+	for _, line := range engineHoldStartupLines(cfg.Strategies) {
+		fmt.Println(line)
 	}
 	if line := dailyLossStartupSummaryLine(cfg.PortfolioRisk); line != "" {
 		fmt.Println(line)
@@ -324,6 +326,13 @@ func main() {
 	}
 	defer store.Close()
 
+	if ownership != nil {
+		if err := globalManualRegimeOwner.publish(storageLayoutCfg); err != nil {
+			fmt.Fprintf(os.Stderr, "[manual-regime] WARN: owner identity publication failed; command-line regime admission stays disabled for this process: %v\n", err)
+		}
+		defer globalManualRegimeOwner.withdraw()
+	}
+
 	tradeRecorder = store.InsertTrade
 	modelOnlyCloseUpdater = store.ReconcileModelOnlyClose
 	modelOnlyCloseBasisLoader = store.LoadModelOnlyCloseBasis
@@ -341,8 +350,30 @@ func main() {
 	}
 	rebuildReplayLiveSources(cfg)
 
-	state, storageOrphans, err := LoadStateWithStore(cfg, store)
+	state, storageOrphans, identityLines, bindingLines, err := prepareStartupStateReport(cfg, store, !readOnlyReport)
+	for _, line := range identityLines {
+		fmt.Println(line)
+	}
+	for _, line := range bindingLines {
+		fmt.Println(line)
+	}
 	if err != nil {
+		var identityErr *robinhoodIdentityStartupError
+		if errors.As(err, &identityErr) {
+			msg := fmt.Sprintf("%v (exit %d)", identityErr.err, ExitStorageOwnership)
+			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: refusing to start: %s\n", msg)
+			sendStartupRefusalDM(notifier, "Robinhood coin identity", msg)
+			cleanupNotifier()
+			os.Exit(ExitStorageOwnership)
+		}
+		var bindingErr *robinhoodBindingStartupError
+		if errors.As(err, &bindingErr) {
+			msg := fmt.Sprintf("%v (exit %d)", bindingErr.err, ExitStorageOwnership)
+			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: refusing to start: %s\n", msg)
+			sendStartupRefusalDM(notifier, "Robinhood account binding", msg)
+			cleanupNotifier()
+			os.Exit(ExitStorageOwnership)
+		}
 		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
 		os.Exit(1)
 	}
@@ -458,27 +489,9 @@ func main() {
 		for _, line := range robinhoodOrderStartupLines(state) {
 			fmt.Println(line)
 		}
+		notifyRobinhoodHeldBooks(state, cfg.Strategies, &sync.RWMutex{}, notifier, time.Now())
 	}
 
-	var basketCoord *basketCoordinator
-	basketExpiryFeedState := &basketExpiryFeed{}
-	if !readOnlyReport && len(cfg.Baskets) > 0 {
-		runtimes, basketErr := store.LoadBaskets(state, cfg)
-		if basketErr == nil {
-			basketCoord = newBasketCoordinator(cfg, state, store, &sync.RWMutex{}, notifier, nil, runtimes)
-			basketErr = basketCoord.startupCheck()
-		}
-		if basketErr != nil {
-			fmt.Fprintf(os.Stderr, "[basket] CRITICAL: refusing to start: %v\n", basketErr)
-			sendStartupRefusalDM(notifier, "Basket recovery", basketErr.Error())
-			cleanupNotifier()
-			os.Exit(1)
-		}
-		for _, line := range basketStartupLines(runtimes) {
-			fmt.Println(line)
-		}
-		basketCoord.recoverInterrupted(time.Now())
-	}
 	if !readOnlyReport {
 		if err := quoteStartupRecoveryFor(shutdownReadOnlyCtx, store); err != nil {
 			fmt.Fprintf(os.Stderr, "[quote] CRITICAL: refusing to start: startup quote recovery failed: %v (exit %d)\n", err, ExitStorageOwnership)
@@ -543,10 +556,6 @@ func main() {
 	defer logMgr.Close()
 
 	var mu sync.RWMutex
-	if basketCoord != nil {
-		basketCoord.mu = &mu
-		basketCoord.logMgr = logMgr
-	}
 
 	initShutdownContexts()
 
@@ -777,8 +786,9 @@ func main() {
 		checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, store)
 	}
 
-	deribitPricer := NewDeribitPricer()
-	fmt.Println("Option pricers ready (deribit: live API, ibkr: Black-Scholes)")
+	sharedOptionPricers := newOptionPricers()
+	optionSettlementAlerts := newOptionSettlementAlertThrottle()
+	fmt.Println("Option pricers ready (deribit: exact ticker + delivery price, okx: deribit_proxy, ibkr: Black-Scholes legacy model, robinhood: " + robinhoodOptionMarksScript + ")")
 
 	websocketFeed := cfg.marketFeedWebsocketEnabled()
 	sharedFeed := cfg.marketFeedSharedEnabled()
@@ -845,6 +855,7 @@ func main() {
 
 	reloadConfig := func() {
 		fmt.Printf("[reload] SIGHUP received; reloading config from %s\n", *configPath)
+		reloadSideEvidence := refreshRegimeSideEvidenceForReload()
 		if data, readErr := os.ReadFile(*configPath); readErr == nil {
 			mu.RLock()
 			preErr := reloadNoEdgeAcknowledgementPreflight(cfg, data)
@@ -854,7 +865,7 @@ func main() {
 				return
 			}
 		}
-		nextCfg, err := LoadConfig(*configPath)
+		nextCfg, err := LoadConfigWithRegimeSideEvidence(*configPath, reloadSideEvidence)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[reload] ERROR: reload failed; keeping previous config: %v\n", err)
 			return
@@ -870,7 +881,6 @@ func main() {
 		tickSeconds = schedulerTickSeconds(cfg)
 		drawdownWarnThresholdPct = configuredDrawdownWarnThresholdPct(cfg)
 		paperFundingSyncLines := syncPaperFundingEligibility(state, cfg.Strategies, paperFundingClock())
-		basketCoord.reload(cfg)
 		mu.Unlock()
 		for _, line := range paperFundingSyncLines {
 			fmt.Println("[reload] " + line)
@@ -902,7 +912,7 @@ func main() {
 		setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
 			fmt.Fprintf(os.Stderr, "[reload] "+f+"\n", a...)
 		}))
-		reloadCertLines := directionalCertStartupSummary(cfg)
+		reloadCertLines := append(directionalCertStartupSummary(cfg), regimeSideStartupLines(cfg)...)
 		for _, line := range reloadCertLines {
 			fmt.Printf("[reload] %s\n", line)
 		}
@@ -922,6 +932,10 @@ func main() {
 			for _, change := range changes {
 				fmt.Printf("[reload]   %s\n", change)
 			}
+		}
+		globalRunEvidence.retainEngineHolds(engineHeldStrategyIDs(cfg.Strategies))
+		for _, line := range engineHoldStartupLines(cfg.Strategies) {
+			fmt.Println("[reload] " + line)
 		}
 		fmt.Printf("[reload] Tick interval now %ds\n", tickSeconds)
 	}
@@ -954,7 +968,6 @@ func main() {
 		processConfigReloads()
 
 		cycleStart := time.Now()
-		basketCoord.beginCycle()
 		mu.Lock()
 		state.CycleCount++
 		cycle := state.CycleCount
@@ -981,6 +994,7 @@ func main() {
 
 		recoverEntryIntents(cfg, state, store, &mu, notifier, logMgr, time.Now())
 		recoverRobinhoodOrders(cfg, state, store, &mu, notifier, logMgr, time.Now())
+		notifyRobinhoodHeldBooks(state, cfg.Strategies, &mu, notifier, time.Now())
 
 		resolveCapitalPct(cfg.Strategies)
 
@@ -1010,16 +1024,17 @@ func main() {
 				fmt.Printf("[feed] shared cycle key=%d: %d strategies on a later deadline run in their own cycle next\n", sharedDeadline.Unix(), deferred)
 			}
 		}
+		var engineHeldDue []StrategyConfig
+		dueStrategies, engineHeldDue = splitEngineHeldDue(dueStrategies)
+		reportEngineHeldDue(engineHeldDue, deadlineFeed, evaluationMarks, lastRun, lastEvaluated, time.Now())
+
 		for _, line := range feedCycleEvaluationSummary(evaluationMarks) {
 			fmt.Println(line)
 		}
 
 		dueStrategies = orderReplaySourcesBeforeMirrors(dueStrategies)
 
-		basketDue := basketCoord.dueDeadlines(time.Now())
-		basketWork := len(basketDue) > 0 || basketCoord.rankReady() || basketCoord.expiryWork(time.Now())
-
-		if len(dueStrategies) == 0 && !basketWork {
+		if len(dueStrategies) == 0 && len(engineHeldDue) == 0 {
 			if audSec := liquidationAuditIntervalSeconds(cfg.Strategies, intervals); audSec > 0 && os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
 				now := time.Now().UTC()
 				if lastLiquidationAudit.IsZero() || now.Sub(lastLiquidationAudit) >= time.Duration(audSec)*time.Second {
@@ -1034,7 +1049,7 @@ func main() {
 					offCycleAuditSaveDirty = flushOffCycleLiquidationAuditState(state, cfg, store, &mu, mutations, offCycleAuditSaveDirty, false)
 					continue
 				}
-				delay := basketCoord.adjustDelay(cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient)), time.Now())
+				delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
 				if wait := time.Until(lastLiquidationAudit.Add(time.Duration(audSec) * time.Second)); wait < delay {
 					delay = wait
 				}
@@ -1057,7 +1072,7 @@ func main() {
 					return
 				}
 			}
-			delay := basketCoord.adjustDelay(cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient)), time.Now())
+			delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
 			armMainLoopDeadline(delay + mainLoopWakeGrace)
 			timer := time.NewTimer(delay)
 			select {
@@ -1085,17 +1100,8 @@ func main() {
 
 		feedCtx := &marketFeedContext{Enabled: deadlineFeed, Requirements: feedReq, Interval: cfg.IntervalSeconds}
 		var cycleFeedReqs cycleMarketRequirements
-		basketDueAtShared := make(map[string]time.Time)
-		for id, d := range basketDue {
-			if d.Equal(sharedDeadline) {
-				basketDueAtShared[id] = d
-			}
-		}
 		if sharedFeed && sharedClient != nil && len(evaluationMarks) > 0 {
 			cycleFeedReqs = cycleRequirementsForDue(dueStrategies, feedReq)
-			if len(basketDueAtShared) > 0 {
-				cycleFeedReqs = mergeCycleRequirements(cycleFeedReqs, basketCoord.cycleRequirements(basketDueAtShared, feedReq))
-			}
 			sharedKey := sharedDeadline.Unix()
 			snap, report := sharedClient.Fetch(shutdownReadOnlyCtx, sharedKey, cycleFeedReqs)
 			feedCtx.Snapshot = snap
@@ -1112,9 +1118,6 @@ func main() {
 		}
 		if websocketFeed && feedOwner != nil {
 			cycleFeedReqs = cycleRequirementsForDue(dueStrategies, feedReq)
-			if len(basketDue) > 0 {
-				cycleFeedReqs = mergeCycleRequirements(cycleFeedReqs, basketCoord.cycleRequirements(basketDue, feedReq))
-			}
 			evalID := cycleEvaluationID(evaluationMarks, cycle)
 			feedCtx.Snapshot = sealCycleMarketSnapshot(feedOwnerCtx, feedOwner, cycleFeedReqs, evalID, time.Now().UTC())
 			globalMarketFeedStatus.setSnapshotID(evalID)
@@ -1227,47 +1230,6 @@ func main() {
 
 		runPaperFundingCycle(shutdownReadOnlyCtx, state, cfg, store, &mu, websocketFeed || sharedFeed, feedCtx.Snapshot, paperFundingMarks, notifier)
 
-		if sharedFeed && feedCtx.Snapshot != nil {
-			if coins := basketCoord.expiryMarkCoins(time.Now()); len(coins) > 0 && snapshotHasFreshMids(feedCtx.Snapshot, coins) {
-				basketCoord.stepExpiry(basketCycleInputs{Now: time.Now(), Snapshot: feedCtx.Snapshot, SaveBlocked: allPartitionsSaveBlocked(store, cfg), Once: *once})
-			}
-		}
-
-		basketSnapshots := make(map[int64]*marketSnapshot)
-		basketSnapshotFor := func(rt *basketRuntime, deadline time.Time) *marketSnapshot {
-			if websocketFeed {
-				return feedCtx.Snapshot
-			}
-			if !sharedFeed || sharedClient == nil {
-				return nil
-			}
-			key := deadline.Unix()
-			if feedCtx.SharedKey == key && feedCtx.Snapshot != nil {
-				return feedCtx.Snapshot
-			}
-			if snap, ok := basketSnapshots[key]; ok {
-				return snap
-			}
-			reqs := basketCoord.cycleRequirements(map[string]time.Time{rt.Contract.BasketID: deadline}, feedReq)
-			snap, report := sharedClient.Fetch(shutdownReadOnlyCtx, key, reqs)
-			fmt.Println(sharedFeedAuditLine(report, 0, feedEffectiveCadences(cfg, intervals)))
-			basketSnapshots[key] = snap
-			return snap
-		}
-		basketMarkSnapshot := func() *marketSnapshot {
-			if feedCtx.Snapshot != nil {
-				return feedCtx.Snapshot
-			}
-			var best *marketSnapshot
-			var bestKey int64
-			for k, snap := range basketSnapshots {
-				if snap != nil && k > bestKey {
-					best, bestKey = snap, k
-				}
-			}
-			return best
-		}
-
 		var totalPV float64
 		sharedWallets := detectSharedWallets(cfg.Strategies)
 		walletBalances := make(map[SharedWalletKey]float64)
@@ -1289,9 +1251,8 @@ func main() {
 			mu.RLock()
 			totalPV, _ = computeTotalPortfolioValue(cfg.Strategies, state, prices, nil, sharedWallets)
 			mu.RUnlock()
-			basketCoord.step(basketCycleInputs{Now: time.Now(), Snapshot: feedCtx.Snapshot, SnapshotFor: basketSnapshotFor, SaveBlocked: true, Once: *once})
 		} else {
-			regimeStoreReady := startRegimeStorePopulation(globalRegimeStore, dueStrategies, cfg.Regime, notifier, feedCtx)
+			regimeStoreReady := startRegimeStorePopulationWithExports(globalRegimeStore, dueStrategies, cfg.Regime, notifier, feedCtx, manualRegimeExportsFor(cfg, store, dueStrategies))
 			cyclePartitions := activePartitions(cfg.Strategies)
 			scopeRisk := make(map[RiskPartition]*scopeCycleRisk, len(cyclePartitions))
 			for _, part := range cyclePartitions {
@@ -1441,19 +1402,15 @@ func main() {
 			}
 
 			sharedWalletRiskGeneration++
-			if basketCoord != nil {
-				basketCoord.preparePairRisk(basketCycleInputs{Now: time.Now().UTC()})
-			}
 			mu.RLock()
-			riskPairMarks := state.pairMarksLocked()
 			riskWalletBalances, usedStaleRiskBalance, pooledEquityComplete := resolveSharedWalletRiskBalances(
 				cfg.Strategies, state.Strategies, sharedWallets, walletBalances,
 				sharedWalletRiskBalances, sharedWalletRiskGeneration)
 			riskOpenSymbols := snapshotOpenSymbolsByStrategy(state)
 			totalPV = 0
 			for _, part := range cyclePartitions {
-				sr := measureScopeCycleRiskMarked(part, scopeRisk[part].Config, cfg.Strategies, state, prices,
-					riskWalletBalances, sharedWallets, pooledEquityComplete, usedStaleRiskBalance, time.Now().UTC(), riskPairMarks)
+				sr := measureScopeCycleRisk(part, scopeRisk[part].Config, cfg.Strategies, state, prices,
+					riskWalletBalances, sharedWallets, pooledEquityComplete, usedStaleRiskBalance, time.Now().UTC())
 				scopeRisk[part] = sr
 				totalPV += sr.TotalPV
 			}
@@ -1599,7 +1556,7 @@ func main() {
 					HLPositions:       hlPositions,
 					HLLiveAll:         hlKillSwitchAll,
 					HLHedgeCoins:      hlHedgeCoins,
-					HLCloser:          basketCoord.pairKillSwitchHLCloser(defaultHyperliquidLiveCloser),
+					HLCloser:          defaultHyperliquidLiveCloser,
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
@@ -1641,7 +1598,7 @@ func main() {
 					HLLimitOrderTimeout: 60 * time.Second,
 					OKXLiveAllPerps:     okxLivePerps,
 					OKXLiveAllSpot:      okxLiveSpot,
-					OKXCloser:           basketCoord.pairKillSwitchOKXCloser(defaultOKXLiveCloser),
+					OKXCloser:           defaultOKXLiveCloser,
 					OKXFetcher:          defaultOKXPositionsFetcher,
 					RHLiveCrypto:        rhLiveCrypto,
 					RHLiveOptions:       rhLiveOptions,
@@ -1686,19 +1643,22 @@ func main() {
 			if liveKillSwitchFired && plan.OnChainConfirmedFlat {
 				liveSR := scopeRisk[livePartition]
 				mu.Lock()
-				rhFlatCoins := plan.RHCloseReport.VerifiedFlatCoins()
+				rhFlatProofs := plan.RHCloseReport.VerifiedFlatCoins()
+				var rhBooksKept []string
 				for _, sc := range strategiesInScope(cfg.Strategies, ScopeLive) {
 					if s, ok := state.Strategies[sc.ID]; ok {
-						forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlKillSwitchAll, hlVirtualQty, rhFlatCoins, nil)
+						for _, coin := range forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlKillSwitchAll, hlVirtualQty, rhFlatProofs, nil) {
+							rhBooksKept = append(rhBooksKept, sc.ID+" "+coin)
+						}
 					}
 				}
-				livePairPending := pairEmergencyPendingFor(state, livePartition)
-				if len(livePairPending) > 0 {
-					plan.DiscordMessage = pairKillSwitchAccountingNote(plan.DiscordMessage, livePairPending)
+				if len(rhBooksKept) > 0 {
+					sort.Strings(rhBooksKept)
+					fmt.Printf("[CRITICAL] Portfolio kill switch: Robinhood books %v stay open without fresh account-qualified flat proof; the latch cannot auto-reset this cycle (#1921)\n", rhBooksKept)
 				}
 				if !notifier.HasOwner() {
-					if len(livePairPending) > 0 {
-						fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset suppressed: pair member accounting is not committed (%s)\n", strings.Join(livePairPending, "; "))
+					if len(rhBooksKept) > 0 {
+						fmt.Println("[CRITICAL] Portfolio kill switch auto-reset suppressed: Robinhood books stay open without flat proof")
 					} else if plan.CanAutoResetWithoutOwner() {
 						peakRebaselineAvailable := liveSR.PeakRebaselineAvailable
 						killSwitchAutoReset = AutoResetConfirmedFlatKillSwitch(state.partitionRisk(livePartition), liveSR.TotalPV,
@@ -1741,6 +1701,9 @@ func main() {
 				mu.Unlock()
 				if paperKillSwitch.CloseApplied {
 					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: force-closed %d paper strategy book(s) at mark\n", partitionLabel(part), len(paperKillSwitch.Closed))
+				}
+				if len(paperKillSwitch.Kept) > 0 {
+					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: %d option leg(s) at or past their expiry cutoff stay open until settlement books them: %s\n", partitionLabel(part), len(paperKillSwitch.Kept), strings.Join(paperKillSwitch.Kept, ", "))
 				}
 				if paperKillSwitch.AutoReset {
 					fmt.Printf("[CRITICAL] Portfolio kill switch [%s] auto-reset after the virtual close (no owner configured, peak re-baselined to $%.2f)\n", partitionLabel(part), paperSR.TotalPV)
@@ -1974,7 +1937,7 @@ func main() {
 						shutdownSideEffectCtx,
 						state,
 						cfg.Strategies,
-						nil,
+						RobinhoodHoldings{},
 						false,
 						defaultRobinhoodPositionsFetcher,
 						newRobinhoodEmergencyCloser(rhEmergencyDeps, robinhoodOriginCircuitBreaker),
@@ -2054,6 +2017,15 @@ func main() {
 			}
 
 			regimeStoreReady()
+			mu.Lock()
+			for _, sc := range dueStrategies {
+				payload := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
+				syncStrategyRegimeState(state.Strategies[sc.ID], payload, cfg.Regime)
+				if backfillPositionStopRegimeEvidence(state.Strategies[sc.ID], sc, payload, cfg.Regime) {
+					fmt.Printf("[INFO] %s %s: recorded the ready regime stop window for a position with no usable entry evidence\n", sc.ID, sc.Symbol)
+				}
+			}
+			mu.Unlock()
 			processRegimeTransitionAlerts(store.primary(), globalRegimeStore, cfg.Regime, notifier, time.Now().UTC())
 			reportLegacyUnifiedSLAfterGaps(cfg, state, &mu, notifier, func(id string) *StrategyLogger {
 				if logMgr == nil {
@@ -2100,10 +2072,11 @@ func main() {
 				tsLiveStrategy := sc.Type == "futures" && sc.Platform == "topstep" && topstepIsLive(sc.Args)
 
 				mu.RLock()
-				pv, _ := portfolioValueMarked(stratState, prices, state.pairMarksLocked())
+				pv := PortfolioValue(stratState, prices)
 				var posJSON string
+				var posJSONErr error
 				if sc.Type == "options" {
-					posJSON = EncodeAllPositionsJSON(stratState.OptionPositions, stratState.Positions)
+					posJSON, posJSONErr = EncodeAllPositionsJSON(stratState.Platform, stratState.OptionPositions, stratState.Positions)
 				}
 				var spotPosCtx PositionCtx
 				if sc.Type == "spot" && sc.Platform != "okx" && sc.Platform != "robinhood" {
@@ -2264,7 +2237,7 @@ func main() {
 					}
 				}
 				mu.Lock()
-				allowed, reason := checkStrategyRiskWithView(&sc, stratState, pv, prices, state.pairMarksLocked(), logger, riskAssist)
+				allowed, reason := CheckRisk(&sc, stratState, pv, prices, logger, riskAssist)
 				cbSnapshot := perStrategyCircuitBreakerSnapshot{}
 				if !allowed && isFreshPerStrategyCircuitBreaker(reason) {
 					cbSnapshot = snapshotPerStrategyCircuitBreaker(stratState, prices)
@@ -2303,12 +2276,13 @@ func main() {
 
 				trades := 0
 				var detail string
+				var detailLines []string
 				var hlStep *hlStepTradeAlerts
 				switch sc.Type {
 				case "spot":
 					if sc.Platform == "okx" {
 						okxOut := runOKXStep(okxStepContext{Cfg: cfg, State: state, StratState: stratState, Store: store, StratDB: stratDB, Mu: &mu, Notifier: notifier, Logger: logger,
-							Prices: prices, Risk: sr, Scope: stratScope, PersistenceHold: persistenceHold, Coord: basketCoord,
+							Prices: prices, Risk: sr, Scope: stratScope, PersistenceHold: persistenceHold,
 							Pos:  okxStepPosition{Ctx: okxPosCtx, Qty: okxPosQty, Side: okxPosSide, AvgCost: okxAvgCost, Leverage: okxPosLeverage},
 							Cash: okxCash, PoolBalanceKnown: okxPoolBalanceKnown, CashReconcile: okxCashReconcile}, sc, okxOrdinaryCheck(prices, cfg, notifier))
 						trades, detail = okxOut.Trades, okxOut.Detail
@@ -2318,6 +2292,8 @@ func main() {
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
+							result.RegimeReadinessHold = regimeDependencyHold(sc, storeRegime, decisionGate.Regime, cfg.Regime, false)
+							applyRegimeReadinessHold(result.RegimeReadinessHold, &result.Signal, &result.CloseFraction, rhPosQty, rhPosSide, true, false, logger)
 							logClosedBarDecision(sc, result.StrategyDecisionFields, logger)
 							if !decisionGate.Held {
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, decisionGate.Regime, cfg.Regime, rhPosQty); regimeBlocked {
@@ -2387,6 +2363,8 @@ func main() {
 						storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 						result.Regime = &storeRegime
 						decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
+						result.RegimeReadinessHold = regimeDependencyHold(sc, storeRegime, decisionGate.Regime, cfg.Regime, false)
+						applyRegimeReadinessHold(result.RegimeReadinessHold, &result.Signal, &result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false, logger)
 						logClosedBarDecision(sc, result.StrategyDecisionFields, logger)
 						if !decisionGate.Held {
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, decisionGate.Regime, cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
@@ -2439,50 +2417,11 @@ func main() {
 						mu.Unlock()
 					}
 				case "options":
-					if result, signalStr, ok := runOptionsCheck(sc, posJSON, notifier, logger); ok {
-						if sc.Paused {
-							kept, dropped := pausedOptionsActions(result.Actions)
-							if dropped > 0 {
-								logger.Info("Paused: %d option open action(s) dropped — close actions still execute (#1150)", dropped)
-							}
-							result.Actions = kept
-						}
-						if sr.DailyLossEntriesHeld {
-							kept, dropped := pausedOptionsActions(result.Actions)
-							if dropped > 0 {
-								logger.Info("Daily loss limit: %d option open action(s) dropped — entries held until UTC rollover (#1269)", dropped)
-							}
-							result.Actions = kept
-						}
-						if sr.NotionalBlocked {
-							kept, dropped := pausedOptionsActions(result.Actions)
-							if dropped > 0 {
-								logger.Warn("Notional cap: %d option open action(s) dropped — new opens blocked, exits continue (#1344)", dropped)
-							}
-							result.Actions = kept
-						}
-						if persistenceHold {
-							kept, dropped := pausedOptionsActions(result.Actions)
-							if dropped > 0 {
-								logger.Warn("Persistence hold: %d option open action(s) dropped — the %s scope has an unacknowledged state save failure, so no new exposure is taken; closes continue (#1523)", dropped, scopeLabel(stratScope))
-							}
-							result.Actions = kept
-						}
-						if kept, dropped, capWhy := exposureCapOptionsActions(sr.ExposureCapStatus, extractAsset(sc), result.Actions); dropped > 0 {
-							logger.Warn("Exposure cap: %d option open action(s) dropped — %s (#1270)", dropped, capWhy)
-							result.Actions = kept
-						}
-						optionsRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
-						mu.Lock()
-						stratState.Regime = optionsRegime.PrimaryLabel(nil)
-						var harvestDetails []string
-						trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
-						mu.Unlock()
-						if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource); chKey != "" {
-							key := chKey + "|" + extractAsset(sc)
-							channelTradeDetails[key] = append(channelTradeDetails[key], harvestDetails...)
-						}
-					}
+					trades, detailLines = runOptionsDispatch(optionsDispatch{
+						SC: sc, GlobalIntervalSeconds: cfg.IntervalSeconds, State: stratState, PositionsJSON: posJSON, PositionsErr: posJSONErr,
+						Risk: sr, PersistenceHold: persistenceHold, Scope: stratScope, Regime: cfg.Regime,
+						Mu: &mu, Notifier: notifier, Logger: logger,
+					})
 				case "perps":
 					var hlProfileNext RegimeProfileState
 					var hlProfileActive string
@@ -2500,7 +2439,7 @@ func main() {
 					}
 					if sc.Platform == "okx" {
 						okxOut := runOKXStep(okxStepContext{Cfg: cfg, State: state, StratState: stratState, Store: store, StratDB: stratDB, Mu: &mu, Notifier: notifier, Logger: logger,
-							Prices: prices, Risk: sr, Scope: stratScope, PersistenceHold: persistenceHold, Coord: basketCoord,
+							Prices: prices, Risk: sr, Scope: stratScope, PersistenceHold: persistenceHold,
 							Pos:  okxStepPosition{Ctx: okxPosCtx, Qty: okxPosQty, Side: okxPosSide, AvgCost: okxAvgCost, Leverage: okxPosLeverage},
 							Cash: okxCash, PoolBalanceKnown: okxPoolBalanceKnown, CashReconcile: okxCashReconcile}, sc, okxOrdinaryCheck(prices, cfg, notifier))
 						trades, detail = okxOut.Trades, okxOut.Detail
@@ -2519,7 +2458,6 @@ func main() {
 							prices:                   prices,
 							feedCtx:                  feedCtx,
 							hlBatchResults:           hlBatchResults,
-							basketCoord:              basketCoord,
 							intervals:                intervals,
 							stratScope:               stratScope,
 							persistenceHold:          persistenceHold,
@@ -2572,6 +2510,8 @@ func main() {
 						storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 						result.Regime = &storeRegime
 						decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
+						result.RegimeReadinessHold = regimeDependencyHold(sc, storeRegime, decisionGate.Regime, cfg.Regime, false)
+						applyRegimeReadinessHold(result.RegimeReadinessHold, &result.Signal, &result.CloseFraction, tsContracts, tsPosSide, true, true, logger)
 						logClosedBarDecision(sc, result.StrategyDecisionFields, logger)
 						if !decisionGate.Held {
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, decisionGate.Regime, cfg.Regime, tsContracts); regimeBlocked {
@@ -2649,7 +2589,6 @@ func main() {
 					if manualOK {
 						mu.Lock()
 						syncStrategyRegimeState(stratState, manualRegime, cfg.Regime)
-						stampPositionRegimeIfOpened(stratState, sc.Symbol, manualRegime, sc, cfg.Regime)
 						mu.Unlock()
 					}
 					mu.RLock()
@@ -2777,20 +2716,10 @@ func main() {
 				default:
 					logger.Error("Unknown strategy type: %s", sc.Type)
 				}
-				var detailLines []string
 				if sc.Type == "manual" && hlStep != nil {
 					trades, detailLines = hlStep.finishLines(&mu, notifier, cfg.Regime, logger)
 				}
-				if trades > 0 && (detail != "" || len(detailLines) > 0) {
-					if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource); chKey != "" {
-						channelTrades[chKey] += trades
-						key := chKey + "|" + extractAsset(sc)
-						if len(detailLines) > 0 {
-							channelTradeDetails[key] = append(channelTradeDetails[key], detailLines...)
-						} else {
-							channelTradeDetails[key] = append(channelTradeDetails[key], detail)
-						}
-					}
+				if routeCycleTrades(sc, trades, detail, detailLines, notifier, channelTrades, channelTradeDetails) {
 					if hlStep == nil {
 						sendTradeAlerts(sc, stratState, trades, &mu, notifier, cfg.Regime)
 					}
@@ -2798,21 +2727,10 @@ func main() {
 
 				totalTrades += trades
 
-				mu.RLock()
-				markReqs := collectMarkRequests(stratState)
-				mu.RUnlock()
-				if len(markReqs) > 0 {
-					var pricer OptionPricer
-					if sc.Platform == "ibkr" {
-						pricer = NewIBKRPricer(prices)
-					} else {
-						pricer = deribitPricer
-					}
-					markResults := fetchMarkPrices(markReqs, pricer, logger)
-					mu.Lock()
-					applyMarkResults(stratState, markResults, logger)
-					mu.Unlock()
-				}
+				runOptionMarkRefresh(optionMarkRefresh{
+					SC: sc, State: stratState, Pricer: optionPricerFor(sc.Platform, prices, sharedOptionPricers),
+					Mu: &mu, Notifier: notifier, Throttle: optionSettlementAlerts, Logger: logger, RefreshAt: time.Now().UTC(),
+				})
 
 				mu.RLock()
 				pv = displayStrategyValue(stratState, prices)
@@ -2848,52 +2766,6 @@ func main() {
 				mu.RUnlock()
 			}
 			setHLActiveCycleShare(nil)
-			if basketCoord.active() {
-				basketIn := basketCycleInputs{Now: time.Now(), Snapshot: feedCtx.Snapshot, SnapshotFor: basketSnapshotFor, ScopeRisk: scopeRisk, Once: *once}
-				if websocketFeed && feedOwner != nil {
-					markReqs := cycleMarketRequirements{Coins: append([]string(nil), feedReq.MidCoins...)}
-					markID := cycleEvaluationID(evaluationMarks, cycle) + "/basket-marks"
-					basketIn.Snapshot = sealCycleMarketSnapshot(feedOwnerCtx, feedOwner, markReqs, markID, time.Now().UTC())
-					for waitUntil := time.Now().Add(20 * time.Second); *once && time.Now().Before(waitUntil) && !snapshotHasFreshMids(basketIn.Snapshot, basketCoord.memberCoins()); {
-						time.Sleep(500 * time.Millisecond)
-						basketIn.Snapshot = sealCycleMarketSnapshot(feedOwnerCtx, feedOwner, markReqs, markID, time.Now().UTC())
-					}
-					basketIn.Now = time.Now()
-				}
-				if basketIn.Snapshot == nil {
-					for _, rt := range basketCoord.runtimes {
-						if d, ok := basketDue[rt.Contract.BasketID]; ok {
-							basketSnapshotFor(rt, d)
-						}
-					}
-					basketIn.Snapshot = basketMarkSnapshot()
-				}
-				if sharedFeed && sharedClient != nil {
-					if coins := basketCoord.expiryMarkCoins(time.Now()); len(coins) > 0 {
-						basketExpiryFeedState.client, basketExpiryFeedState.sched = sharedClient, sharedFeedScheduleFor(cfg, sharedClient)
-						got := basketExpiryFeedState.marks(shutdownReadOnlyCtx, time.Now(), coins, basketIn.Snapshot, feedCtx.SharedKey)
-						if got.Report != nil {
-							fmt.Println(sharedFeedAuditLine(*got.Report, 0, feedEffectiveCadences(cfg, intervals)))
-							for _, alert := range got.Report.Alerts {
-								fmt.Println("[feed] " + alert)
-								if notifier != nil && notifier.HasBackends() {
-									notifier.SendToAllChannels(alert)
-									notifier.SendOwnerDM(alert)
-								}
-							}
-						}
-						if got.Detail != "" {
-							fmt.Printf("[basket] holding-horizon marks for %s: %s\n", strings.Join(coins, ", "), got.Detail)
-						}
-						if got.Snapshot != nil {
-							basketIn.Snapshot = got.Snapshot
-						}
-						basketIn.MarksRetryAt = got.RetryAt
-						basketIn.Now = time.Now()
-					}
-				}
-				basketCoord.step(basketIn)
-			}
 		}
 
 		mu.RLock()
@@ -2981,7 +2853,7 @@ func main() {
 						detailKey = chKey + "|" + assetKeys[0]
 					}
 					chDetails := channelTradeDetails[detailKey]
-					chAdj, _, _ := computeSubsetDisplayValueMarked(chStrats, state, prices, walletBalances, sharedWallets, state.pairMarksLocked())
+					chAdj, _ := computeSubsetDisplayValue(chStrats, state, prices, walletBalances, sharedWallets)
 					chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
 					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chAdj, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats, cfg.Regime)
 					for _, msg := range msgs {
@@ -2991,7 +2863,7 @@ func main() {
 					for _, asset := range assetKeys {
 						assetStrats := assetGroups[asset]
 						assetDetails := channelTradeDetails[chKey+"|"+asset]
-						assetAdj, _, _ := computeSubsetDisplayValueMarked(assetStrats, state, prices, walletBalances, sharedWallets, state.pairMarksLocked())
+						assetAdj, _ := computeSubsetDisplayValue(assetStrats, state, prices, walletBalances, sharedWallets)
 						assetTrades := len(assetDetails)
 						assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
 						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetAdj, prices, assetDetails, assetStrats, state, chKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats, cfg.Regime)
@@ -3096,7 +2968,7 @@ func main() {
 		mu.RLock()
 		endIntervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
-		delay := basketCoord.adjustDelay(cycleSchedulerDelay(cfg, endIntervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient)), time.Now())
+		delay := cycleSchedulerDelay(cfg, endIntervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
 		armMainLoopDeadline(delay + mainLoopWakeGrace)
 		timer := time.NewTimer(delay)
 		select {
@@ -3165,7 +3037,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	lifetimeStats := loadLifetimeStatsBestEffort(sdb, "[summary]")
 	assetGroups, assetKeys := groupByAsset(chStrats)
 	if len(assetKeys) <= 1 {
-		chAdj, _, _ := computeSubsetDisplayValueMarked(chStrats, state, prices, summaryWalletBalances, summaryAccountShared, state.pairMarksLocked())
+		chAdj, _ := computeSubsetDisplayValue(chStrats, state, prices, summaryWalletBalances, summaryAccountShared)
 		chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
 		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chAdj, prices, nil, chStrats, state, channelKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats, cfg.Regime)
 		for _, msg := range msgs {
@@ -3175,7 +3047,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	} else {
 		for _, asset := range assetKeys {
 			assetStrats := assetGroups[asset]
-			assetAdj, _, _ := computeSubsetDisplayValueMarked(assetStrats, state, prices, summaryWalletBalances, summaryAccountShared, state.pairMarksLocked())
+			assetAdj, _ := computeSubsetDisplayValue(assetStrats, state, prices, summaryWalletBalances, summaryAccountShared)
 			assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
 			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetAdj, prices, nil, assetStrats, state, channelKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats, cfg.Regime)
 			for _, msg := range msgs {
@@ -3280,7 +3152,9 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 	}
 	trades := exec.TradesExecuted
 	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.StrategyDecisionFields, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	if exec.OpenTrade != nil {
+		stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	}
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
@@ -3376,7 +3250,21 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier,
 		notifyScriptFailure(notifier, sc, scriptFailureError, result.Error)
 		return nil, "", false
 	}
-	clearScriptFailure(notifier, sc)
+	if err := optionsResultContractError(sc.Platform, result); err != nil {
+		logger.RunningOnFailure(sc.Script, args)
+		logger.Error("Script contract failure: %v", err)
+		notifyScriptFailure(notifier, sc, scriptFailureError, err.Error())
+		return nil, "", false
+	}
+	if check := checkOptionsStructures(result); len(check.Refusals) > 0 {
+		msg := "options structure contract: " + strings.Join(check.Refusals, "; ")
+		logger.RunningOnFailure(sc.Script, args)
+		logger.Error("Script structure failure: %s", msg)
+		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
+		result.Actions = check.Actions
+	} else {
+		clearScriptFailure(notifier, sc)
+	}
 
 	signalStr := "HOLD"
 	if result.Signal == 1 {
@@ -3384,32 +3272,14 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier,
 	} else if result.Signal == -1 {
 		signalStr = "BEARISH"
 	}
-	logger.InfoOrDebug(result.Signal != 0 || len(result.Actions) > 0, "Signal: %s | %s spot=$%s | IV rank=%.1f | %d actions",
-		signalStr, result.Underlying, formatSignalPrice(result.SpotPrice), result.IVRank, len(result.Actions))
+	rank := formatOptionsIVRank(result)
+	if result.VolMetricsError != "" {
+		rank += " (" + result.VolMetricsError + ")"
+	}
+	logger.InfoOrDebug(result.Signal != 0 || len(result.Actions) > 0, "Signal: %s | %s spot=$%s | IV rank=%s | %d actions",
+		signalStr, result.Underlying, formatSignalPrice(result.SpotPrice), rank, len(result.Actions))
 
 	return result, signalStr, true
-}
-
-func executeOptionsResult(sc StrategyConfig, s *StrategyState, result *OptionsResult, signalStr string, logger *StrategyLogger) (int, string, []string) {
-	trades, err := ExecuteOptionsSignal(s, result, logger)
-	if err != nil {
-		logger.Error("Options execution failed: %v", err)
-		return 0, "", nil
-	}
-
-	detail := ""
-	if trades > 0 {
-		detail = fmt.Sprintf("[%s] %s %s spot=$%s IV=%.1f", sc.ID, signalStr, result.Underlying, formatSignalPrice(result.SpotPrice), result.IVRank)
-	}
-
-	var harvestDetails []string
-	if sc.ThetaHarvest != nil {
-		harvestTrades, hDetails := CheckThetaHarvest(s, sc.ThetaHarvest, logger)
-		trades += harvestTrades
-		harvestDetails = hDetails
-	}
-
-	return trades, detail, harvestDetails
 }
 
 func shouldSkipZeroCapital(sc StrategyConfig) bool {
@@ -3450,8 +3320,23 @@ func isFreshPerStrategyCircuitBreaker(reason string) bool {
 		return false
 	}
 	return strings.HasPrefix(reason, RiskReasonMaxDrawdownExceeded) ||
-		strings.HasPrefix(reason, RiskReasonConsecutiveLosses) ||
-		strings.HasPrefix(reason, RiskReasonPairValuationStale)
+		strings.HasPrefix(reason, RiskReasonConsecutiveLosses)
+}
+
+func routeCycleTrades(sc StrategyConfig, trades int, detail string, detailLines []string, notifier *MultiNotifier, channelTrades map[string]int, channelTradeDetails map[string][]string) bool {
+	if trades <= 0 || (detail == "" && len(detailLines) == 0) {
+		return false
+	}
+	if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource); chKey != "" {
+		channelTrades[chKey] += trades
+		key := chKey + "|" + extractAsset(sc)
+		if len(detailLines) > 0 {
+			channelTradeDetails[key] = append(channelTradeDetails[key], detailLines...)
+		} else {
+			channelTradeDetails[key] = append(channelTradeDetails[key], detail)
+		}
+	}
+	return true
 }
 
 func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, mu *sync.RWMutex, notifier tradeAlertRouter, rc *RegimeConfig) {
@@ -3535,6 +3420,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	}
 	closeOwner := hlCloseOwnerForCheck(*sc, posCtx)
 	sentInvert := hlInvertOpenSignalForCheck(*sc, posCtx, regime)
+	sentSide := regimeSideRequestForCheck(*sc, posCtx, regime)
 	if closeStrategySuppressedByOnChainProtection(*sc) {
 		if closeOwner == "" && posCtx.Quantity > 0 {
 			notifyHLOnChainTPUnplaceable(notifier, logger, *sc, hyperliquidSymbol(sc.Args), posCtx.OnChainTPBlocked)
@@ -3543,8 +3429,8 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		}
 	}
 	if outcome, ok := batch.lookup(sc.ID); ok {
-		fp, fpErr := hyperliquidBatchSlotFingerprint(*sc, posCtx, regime)
-		if fpErr == nil && fp == outcome.Fingerprint {
+		fp, fpErr := hyperliquidBatchSlotFingerprintWithSide(*sc, posCtx, regime, sentSide)
+		if fpErr == nil && fp == outcome.Fingerprint && outcome.RegimeSide == sentSide {
 			result := outcome.Result
 			if result != nil {
 				res := *result
@@ -3558,8 +3444,8 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 			if outcome.Err == "" && result != nil && result.Degraded == "" && feed.covers(*sc) {
 				feed.clearDegradedFor(notifier, sc.ID)
 			}
-			return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger,
-				result, outcome.Stderr, outcome.Err, outcome.Mode, sentInvert)
+			return finishHyperliquidCheckWithSide(sc, prices, posCtx, regime, notifier, logger,
+				result, outcome.Stderr, outcome.Err, outcome.Mode, sentInvert, outcome.RegimeSide)
 		}
 		logger.Warn("Batched check inputs changed since the pre-pass snapshot; running this strategy's own check (#1442)")
 	}
@@ -3586,7 +3472,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 				return nil, "", 0, false
 			}
 			result := degradedHyperliquidResult(*sc, hyperliquidSymbol(sc.Args), hyperliquidModeFromArgs(sc.Args), degradedReason, price)
-			return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, "", "", scriptFailureError, sentInvert)
+			return finishHyperliquidCheckWithSide(sc, prices, posCtx, regime, notifier, logger, result, "", "", scriptFailureError, sentInvert, sentSide)
 		}
 		feed.clearDegradedFor(notifier, sc.ID)
 	}
@@ -3606,7 +3492,11 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		return nil, "", 0, false
 	}
 	args = withRule
-	if refsArgs, err := buildStrategyRefsArg(*sc, closeOwner, sentInvert); err != nil {
+	if refsArgs, err := buildStrategyRefsArgWithSide(*sc, closeOwner, sentInvert, sentSide.sentSide()); err != nil {
+		if sc.RegimeSide {
+			logger.Error("Strategy refs with the regime_side request could not be encoded: %v - skipping this strategy this cycle", err)
+			return nil, "", 0, false
+		}
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
@@ -3617,10 +3507,6 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		}
 	}
 	args = appendAllowNoEdgeArg(args, *sc)
-	if isBasketMember(*sc) {
-		args = append(args, basketMemberFlag)
-	}
-	args = appendPairMemberArg(args, *sc)
 	if marketStdin != nil {
 		args = append(args, marketStdinFlag)
 	}
@@ -3646,18 +3532,14 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	if errMsg != "" {
 		logger.RunningOnFailure(sc.Script, args)
 	}
-	return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, stderr, errMsg, mode, sentInvert)
+	return finishHyperliquidCheckWithSide(sc, prices, posCtx, regime, notifier, logger, result, stderr, errMsg, mode, sentInvert, sentSide)
 }
 
 func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode, sentInvert bool) (*HyperliquidResult, string, float64, bool) {
-	if isBasketMember(*sc) && result != nil && errMsg == "" && result.Degraded == "" && !result.BasketMember {
-		errMsg, mode, result = "the basket member check did not echo the management-only contract; no entry evaluator output is trusted (#1781)", scriptFailureError, nil
-	}
-	if isPairMember(*sc) && result != nil && errMsg == "" && result.Degraded == "" {
-		if msg := pairMemberCheckError(*sc, result.PairMember); msg != "" {
-			errMsg, mode, result = msg+" (#1862)", scriptFailureError, nil
-		}
-	}
+	return finishHyperliquidCheckWithSide(sc, prices, posCtx, regime, notifier, logger, result, stderr, errMsg, mode, sentInvert, regimeSideResolution{})
+}
+
+func finishHyperliquidCheckWithSide(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode, sentInvert bool, sentSide regimeSideResolution) (*HyperliquidResult, string, float64, bool) {
 	if result != nil && errMsg == "" && result.Degraded == "" {
 		if want := hlCloseOwnerForCheck(*sc, posCtx); want != "" && result.CloseOwner != want {
 			errMsg = fmt.Sprintf("close-owner contract mismatch: sent close_owner=%q but the check returned close_owner=%q; holding this signal because the check script may have evaluated a close the on-chain take-profit owns (redeploy with scripts/update.sh so Go and Python match)", want, result.CloseOwner)
@@ -3676,6 +3558,10 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 			mode = scriptFailureError
 			result = nil
 		} else if msg := htfFilterContractError(*sc, result.StrategyDecisionFields, htfFilterContext{}); msg != "" {
+			errMsg = msg
+			mode = scriptFailureError
+			result = nil
+		} else if msg := regimeSideContractError(*sc, sentSide, result.StrategyDecisionFields); msg != "" {
 			errMsg = msg
 			mode = scriptFailureError
 			result = nil
@@ -3735,6 +3621,21 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 			logger.Changed("divergence", "none")
 		}
 	}
+	result.RegimeSide = sentSide
+	if sentSide.Enabled && result.Degraded == "" {
+		recomputed := resolveRegimeSide(*sc, posCtx.Quantity, regimePayloadValue(result.Regime), regime, currentRegimeSideEvidence(), time.Now().UTC())
+		if posCtx.Quantity <= 0 && recomputed.Side != sentSide.Side {
+			if result.Signal != 0 {
+				logger.Warn("Regime side: the check returned regime evidence that selects %q (%s) but %q was sent; holding the entry this cycle", recomputed.Side, recomputed.HoldReason, sentSide.Side)
+			}
+			result.Signal = 0
+		}
+		if sentSide.Side == regimeSideNone && sentSide.HoldReason != "" {
+			logger.InfoOnChange("regime-side", sentSide.HoldReason, "Regime side: entries held — %s", sentSide.HoldReason)
+		} else {
+			logger.InfoOnChange("regime-side", sentSide.Window+"|"+sentSide.Label+"|"+sentSide.Side, "Regime side: window %s label %s -> %s (%s)", sentSide.Window, sentSide.Label, sentSide.Side, sentSide.Evidence)
+		}
+	}
 	if effective := sc.Type != "manual" && sc.InvertSignal; effective != sentInvert {
 		logger.Warn("invert_open_signal changed between the check and this result (sent %t, effective %t); holding this signal for one cycle", sentInvert, effective)
 		result.Signal = 0
@@ -3786,6 +3687,9 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 }
 
 func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash float64, poolBalanceKnown bool, posQty float64, posSide string, avgCost, posLeverage float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, closeCtx hlCloseContext, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+	if applyRegimeReadinessHold(result.RegimeReadinessHold, &result.Signal, &result.CloseFraction, posQty, posSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc), logger) {
+		return nil, false
+	}
 	if why := quoteDispatchRefusal(sc); why != "" {
 		logger.Error("%s", why)
 		return nil, false
@@ -3998,22 +3902,6 @@ func paperTierFillQty(pos *Position, closeFraction float64) float64 {
 }
 
 func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
-	var (
-		trades       int
-		detail       string
-		openTrade    *Trade
-		ratchetAlert *RatchetTriggerAlert
-	)
-	if err := withPairDispatchCostScope(sc, s, func() {
-		trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpenScoped(sc, s, result, execResult, signalStr, price, regime, cfg, hurst, logger)
-	}); err != nil {
-		logStrategyCostRefusal(logger, "Hyperliquid "+signalStr, result.Symbol, err)
-		return 0, "", nil, nil
-	}
-	return trades, detail, openTrade, ratchetAlert
-}
-
-func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
 	if execResult != nil {
 		if _, err := confirmHyperliquidExecuteFill(execResult, nil); err != nil {
 			return 0, "", nil, nil
@@ -4026,14 +3914,6 @@ func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategySt
 		fillQty = execResult.Execution.Fill.TotalSz
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
-	if execResult == nil && result.BasketOpenQty > 0 {
-		fillQty = result.BasketOpenQty
-		fillPrice = ApplyAdverseSlippage(price, result.Signal > 0)
-	}
-	if execResult == nil && result.PairFill != nil {
-		fillQty = result.PairFill.Qty
-		fillPrice = result.PairFill.Px
-	}
 
 	sizing := withEntrySizeMult(PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators)), hurst.OpenSizeMult())
 
@@ -4045,10 +3925,6 @@ func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategySt
 			fillOID = fmt.Sprintf("%d", fill.OID)
 		}
 		fillFee = fill.Fee
-	}
-	if execResult == nil && result.PairFill != nil {
-		fillOID = result.PairFill.OID
-		fillFee = result.PairFill.Fee.DeltaUSD
 	}
 
 	bookCloseFraction := result.CloseFraction
@@ -4069,7 +3945,7 @@ func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategySt
 		}
 	}
 
-	lotPolicy := newHLPaperLotPolicy(sc, result.Symbol, price, execResult != nil || result.PairFill != nil)
+	lotPolicy := newHLPaperLotPolicy(sc, result.Symbol, price, execResult != nil)
 	exec, err := executePerpsSignalWithLotPolicyDeferredOpen(s, result.Signal, result.Symbol, bookPrice, sizing, fillQty, fillOID, fillFee, EffectiveDirection(sc), bookCloseFraction, logger, lotPolicy)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
@@ -4093,8 +3969,13 @@ func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategySt
 		}
 	}
 	openTrade := exec.OpenTrade
+	if openTrade != nil {
+		openTrade.RegimeSideNote = formatRegimeSideNote(result.RegimeSide)
+	}
 	closedBarStampEntryATR(sc, s, result.Symbol, openTrade != nil, result.StrategyDecisionFields, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	if exec.OpenTrade != nil {
+		stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	}
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, openTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, openTrade != nil, sc, cfg)
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, openTrade != nil, hurst)
@@ -4122,16 +4003,13 @@ func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategySt
 			if p, ok := s.Positions[result.Symbol]; ok {
 				pos = p
 			}
-			var costErr error
 			if pos != nil {
-				stopPx, costErr = paperStopBookPx(sc, s, pos.Side, stopPx)
+				stopPx = paperStopBookPx(pos.Side, stopPx)
 			}
 			if recordPositionOpen(s, sc, openTrade, pos) {
 				openTrade = nil
 			}
-			if costErr != nil {
-				logStrategyCostRefusal(logger, "open-cycle paper stop", result.Symbol, costErr)
-			} else if recordPerpsStopLossClose(s, result.Symbol, stopPx, stopReason, logger) {
+			if recordPerpsStopLossClose(s, result.Symbol, stopPx, stopReason, logger) {
 				trades++
 			}
 		}
@@ -4371,7 +4249,9 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 	}
 	trades := exec.TradesExecuted
 	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.StrategyDecisionFields, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	if exec.OpenTrade != nil {
+		stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	}
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
@@ -4445,6 +4325,13 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 		return nil, "", 0, false
 	}
 	if msg := htfFilterContractError(sc, result.StrategyDecisionFields, htfFilterContext{}); msg != "" {
+		logger.RunningOnFailure(sc.Script, args)
+		logger.Error("Script returned error: %s", msg)
+		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
+		return nil, "", 0, false
+	}
+	if want := robinhoodSymbol(sc.Args); result.Symbol != want {
+		msg := fmt.Sprintf("robinhood check returned symbol %q, but the configured coin is %q; the order path uses one canonical coin identity (#1908)", result.Symbol, want)
 		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script returned error: %s", msg)
 		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
@@ -4536,11 +4423,47 @@ func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMut
 	prev := robinhoodUnresolvedForCoinLocked(state, accountKey, result.Symbol)
 	var prevPositionID string
 	var prevQty float64
+	var bookSnap *robinhoodBookEntry
+	accountState := robinhoodAccountCurrent
 	if pos := s.Positions[result.Symbol]; pos != nil {
 		prevPositionID = pos.TradePositionID
 		prevQty = pos.Quantity
+		entry := robinhoodBookEntryOf(s.ID, pos)
+		bookSnap = &entry
+		if robinhoodPositionHeld(pos) {
+			accountState = robinhoodBookAccountState(pos, accountKey, "")
+		}
 	}
 	mu.RUnlock()
+	if accountState != robinhoodAccountCurrent {
+		why := robinhoodAccountHoldReason(accountState, bookSnap.AccountKey, bookSnap.VenueAccountID, accountKey, "")
+		logger.Error("CRITICAL: live %s %s held: the %.10g %s book is %s (%s); no Robinhood order is reserved or sent until the owner runs /%s%s (#1921)", side, result.Symbol, bookSnap.Quantity, result.Symbol, accountState, why, commandPrefix, robinhoodAccountCommandName)
+		return nil, false
+	}
+	expectedAccountID := ""
+	if side == "sell" {
+		if bookSnap == nil || bookSnap.VenueAccountID == "" {
+			logger.Error("CRITICAL: live sell %s held: the book has no venue account binding (#1921)", result.Symbol)
+			return nil, false
+		}
+		expectedAccountID = bookSnap.VenueAccountID
+		sellArgs.ExpectedAccountID = expectedAccountID
+	}
+	recheck := func() error {
+		if robinhoodAccountKey() != accountKey {
+			return fmt.Errorf("the configured Robinhood account changed before the order was saved")
+		}
+		pos := s.Positions[result.Symbol]
+		switch {
+		case bookSnap == nil && pos != nil:
+			return fmt.Errorf("a %s book appeared before the order was saved", result.Symbol)
+		case bookSnap != nil && !bookSnap.matches(pos):
+			return fmt.Errorf("the %s book, its quantity or its account binding changed before the order was saved", result.Symbol)
+		case pos != nil && robinhoodPositionHeld(pos) && robinhoodBookAccountState(pos, accountKey, "") != robinhoodAccountCurrent:
+			return fmt.Errorf("the %s book is not bound to the configured account", result.Symbol)
+		}
+		return nil
+	}
 	if prev != nil {
 		logger.Error("CRITICAL: live %s %s held: Robinhood attempt %s is unresolved (#1815)", side, result.Symbol, prev.AttemptID)
 		notifyRobinhoodOrderHold(notifier, prev.StrategyID, prev, fmt.Sprintf("a new %s from %s was refused while this attempt is unresolved", side, sc.ID), now)
@@ -4554,22 +4477,23 @@ func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMut
 		return nil, false
 	}
 	req := robinhoodOrderRequest{
-		Signal:         result.Signal,
-		SignalStr:      signalStr,
-		CloseFraction:  result.CloseFraction,
-		AmountUSD:      amountUSD,
-		Quantity:       quantity,
-		Price:          price,
-		PrevPositionID: prevPositionID,
-		PrevPosSide:    posSide,
-		PrevPosQty:     prevQty,
-		CloseKind:      sellArgs.CloseKind,
-		SoleOwner:      sellArgs.SoleOwner,
-		Result:         frozen,
-		Hurst:          hurst,
-		Script:         sc.Script,
+		Signal:            result.Signal,
+		SignalStr:         signalStr,
+		CloseFraction:     result.CloseFraction,
+		AmountUSD:         amountUSD,
+		Quantity:          quantity,
+		Price:             price,
+		PrevPositionID:    prevPositionID,
+		PrevPosSide:       posSide,
+		PrevPosQty:        prevQty,
+		ExpectedAccountID: expectedAccountID,
+		CloseKind:         sellArgs.CloseKind,
+		SoleOwner:         sellArgs.SoleOwner,
+		Result:            frozen,
+		Hurst:             hurst,
+		Script:            sc.Script,
 	}
-	a, err := reserveRobinhoodAttempt(store, state, s, mu, result.Symbol, robinhoodOriginSignal, side, req, now)
+	a, err := reserveRobinhoodAttemptChecked(store, state, s, mu, result.Symbol, robinhoodOriginSignal, side, req, now, recheck)
 	if err != nil {
 		logger.Error("Live %s %s held: the attempt could not be saved before sending, so nothing was sent: %v (#1815)", side, result.Symbol, err)
 		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, fmt.Sprintf("the attempt could not be saved before sending; no order was sent: %v", err))
@@ -4608,6 +4532,9 @@ func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMut
 			}
 		}
 	}
+	if execResult != nil {
+		logRobinhoodPricingDiagnostics(logger, robinhoodPricingDiagnostics(side, result.Symbol, a.AttemptID, amountUSD, execResult.RequestedQuantity, execResult.BuySizing, execResult.SellPrice, execResult.EchoProblems))
+	}
 	mu.Lock()
 	recordErr := recordRobinhoodOrderOutcomeLocked(store, s, a, recordRes, class, detail, sizing, time.Now())
 	mu.Unlock()
@@ -4639,6 +4566,22 @@ func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMut
 	logger.Error("CRITICAL: live %s %s unresolved (%s): %s (#1815)", side, result.Symbol, class, detail)
 	notifyRobinhoodOrderHold(notifier, sc.ID, a, detail, time.Now())
 	return nil, false
+}
+
+func logRobinhoodPricingDiagnostics(logger *StrategyLogger, lines []robinhoodDiagLine) {
+	if logger == nil {
+		return
+	}
+	for _, l := range lines {
+		switch l.Level {
+		case "CRITICAL":
+			logger.Error("CRITICAL: %s", l.Msg)
+		case "WARN":
+			logger.Warn("%s", l.Msg)
+		default:
+			logger.Info("%s", l.Msg)
+		}
+	}
 }
 
 func logRobinhoodSellSizing(logger *StrategyLogger, coin, attemptID string, sz *RobinhoodSellSizing) {
@@ -4723,7 +4666,9 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	}
 	trades := exec.TradesExecuted
 	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.StrategyDecisionFields, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	if exec.OpenTrade != nil {
+		stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	}
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
@@ -4784,7 +4729,6 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 		args = append(args, refsArgs...)
 	}
 	args = appendAllowNoEdgeArg(args, sc)
-	args = appendPairMemberArg(args, sc)
 	logger.Running(sc.Script, args)
 
 	result, stderr, err := RunOKXCheck(sc.Script, args)
@@ -4816,14 +4760,6 @@ func completeOKXCheck(sc StrategyConfig, args []string, result *OKXResult, stder
 		logger.Error("Script returned error: %s", msg)
 		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
 		return nil, "", 0, false
-	}
-	if isPairMember(sc) {
-		if msg := pairMemberCheckError(sc, result.PairMember); msg != "" {
-			logger.RunningOnFailure(sc.Script, args)
-			logger.Error("Script returned error: %s (#1862)", msg)
-			notifyScriptFailure(notifier, sc, scriptFailureError, msg)
-			return nil, "", 0, false
-		}
 	}
 	if msg := htfFilterContractError(sc, result.StrategyDecisionFields, htfFilterContext{}); msg != "" {
 		logger.RunningOnFailure(sc.Script, args)
@@ -4984,18 +4920,6 @@ func confirmOKXEntryFill(res *OKXExecuteResult) error {
 }
 
 func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {
-	var trades int
-	var detail, cashAlert string
-	if err := withPairDispatchCostScope(sc, s, func() {
-		trades, detail, cashAlert = executeOKXResultScoped(sc, s, db, result, execResult, signalStr, price, regime, cfg, hurst, logger)
-	}); err != nil {
-		logStrategyCostRefusal(logger, "OKX "+signalStr, result.Symbol, err)
-		return 0, "", ""
-	}
-	return trades, detail, cashAlert
-}
-
-func executeOKXResultScoped(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64
@@ -5021,7 +4945,9 @@ func executeOKXResultScoped(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	}
 	trades := exec.TradesExecuted
 	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.StrategyDecisionFields, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	if exec.OpenTrade != nil {
+		stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	}
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)

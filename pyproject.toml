@@ -12,6 +12,7 @@ dependencies = [
     "pyotp>=2.9.0",
     "yfinance>=0.2.0",
     "requests[socks]>=2.34.2",
+    "exchange-calendars>=4.13.1",
 ]
 
 [project.optional-dependencies]

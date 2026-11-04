@@ -90,71 +90,154 @@ func optionsModeLoaders() []optionsModeLoader {
 	}
 }
 
-func TestOptionsLiveModeRefusedOnEveryConfigLoad(t *testing.T) {
-	for _, withCreds := range []bool{true, false} {
-		for _, c := range optionsModeCases() {
-			for _, mode := range [][]string{{"--mode=live"}, {"--mode", "live"}} {
-				name := fmt.Sprintf("creds=%v/%s/explicit=%v/%s", withCreds, c.id, c.explicit, strings.Join(mode, "_"))
-				t.Run(name, func(t *testing.T) {
-					if withCreds {
-						optionsModeSetCredentials(t)
-					} else {
-						for _, v := range []string{"ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET", "OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"} {
-							t.Setenv(v, "")
+func TestOptionsModeGateOnLoadAndPromotion(t *testing.T) {
+	t.Run("LiveModeRefusedOnEveryConfigLoad", func(t *testing.T) {
+		for _, withCreds := range []bool{true, false} {
+			for _, c := range optionsModeCases() {
+				for _, mode := range [][]string{{"--mode=live"}, {"--mode", "live"}} {
+					name := fmt.Sprintf("creds=%v/%s/explicit=%v/%s", withCreds, c.id, c.explicit, strings.Join(mode, "_"))
+					t.Run(name, func(t *testing.T) {
+						if withCreds {
+							optionsModeSetCredentials(t)
+						} else {
+							for _, v := range []string{"ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET", "OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"} {
+								t.Setenv(v, "")
+							}
 						}
-					}
+						dir := t.TempDir()
+						path := writeTestConfig(t, dir, optionsModeConfigJSON(t, dir, c, mode))
+						original := mustReadFile(t, path)
+						want := fmt.Sprintf("strategy[%s]: %s", c.id, optionsLiveModeConfigError(c.platform))
+						for _, l := range optionsModeLoaders() {
+							cfg, err := l.load(path)
+							if cfg != nil {
+								t.Errorf("%s returned a config for a live options strategy", l.name)
+							}
+							if err == nil {
+								t.Fatalf("%s accepted a live options strategy", l.name)
+							}
+							if !strings.Contains(err.Error(), want) {
+								t.Errorf("%s error = %v, want it to hold %q", l.name, err, want)
+							}
+						}
+						if after := mustReadFile(t, path); !bytes.Equal(after, original) {
+							t.Errorf("config file changed during refused loads")
+						}
+					})
+				}
+			}
+		}
+	})
+	t.Run("PaperModesLoadOnEveryConfigLoad", func(t *testing.T) {
+		optionsModeSetCredentials(t)
+		for _, c := range optionsModeCases() {
+			for _, mode := range [][]string{{"--mode=paper"}, {"--mode", "paper"}, nil} {
+				name := fmt.Sprintf("%s/explicit=%v/%s", c.id, c.explicit, strings.Join(mode, "_"))
+				t.Run(name, func(t *testing.T) {
 					dir := t.TempDir()
 					path := writeTestConfig(t, dir, optionsModeConfigJSON(t, dir, c, mode))
-					original := mustReadFile(t, path)
-					want := fmt.Sprintf("strategy[%s]: %s", c.id, optionsLiveModeConfigError(c.platform))
 					for _, l := range optionsModeLoaders() {
 						cfg, err := l.load(path)
-						if cfg != nil {
-							t.Errorf("%s returned a config for a live options strategy", l.name)
+						if err != nil {
+							t.Fatalf("%s refused a paper options strategy: %v", l.name, err)
 						}
-						if err == nil {
-							t.Fatalf("%s accepted a live options strategy", l.name)
+						if len(cfg.Strategies) != 1 {
+							t.Fatalf("%s loaded %d strategies, want 1", l.name, len(cfg.Strategies))
 						}
-						if !strings.Contains(err.Error(), want) {
-							t.Errorf("%s error = %v, want it to hold %q", l.name, err, want)
+						sc := cfg.Strategies[0]
+						if sc.Platform != c.platform {
+							t.Errorf("%s platform = %q, want %q", l.name, sc.Platform, c.platform)
 						}
-					}
-					if after := mustReadFile(t, path); !bytes.Equal(after, original) {
-						t.Errorf("config file changed during refused loads")
+						if p := partitionFor(sc); p != paperSourcePartition("") {
+							t.Errorf("%s partition = %+v, want the default paper partition", l.name, p)
+						}
 					}
 				})
 			}
 		}
-	}
-}
-
-func TestOptionsPaperModesLoadOnEveryConfigLoad(t *testing.T) {
-	optionsModeSetCredentials(t)
-	for _, c := range optionsModeCases() {
-		for _, mode := range [][]string{{"--mode=paper"}, {"--mode", "paper"}, nil} {
-			name := fmt.Sprintf("%s/explicit=%v/%s", c.id, c.explicit, strings.Join(mode, "_"))
-			t.Run(name, func(t *testing.T) {
+	})
+	t.Run("LiveModeRefusedByAdministrativePromotion", func(t *testing.T) {
+		const id = "deribit-calls-btc"
+		for _, mode := range [][]string{{"--mode=paper"}, {"--mode", "paper"}} {
+			t.Run(strings.Join(mode, "_"), func(t *testing.T) {
 				dir := t.TempDir()
-				path := writeTestConfig(t, dir, optionsModeConfigJSON(t, dir, c, mode))
-				for _, l := range optionsModeLoaders() {
-					cfg, err := l.load(path)
-					if err != nil {
-						t.Fatalf("%s refused a paper options strategy: %v", l.name, err)
-					}
-					if len(cfg.Strategies) != 1 {
-						t.Fatalf("%s loaded %d strategies, want 1", l.name, len(cfg.Strategies))
-					}
-					sc := cfg.Strategies[0]
-					if sc.Platform != c.platform {
-						t.Errorf("%s platform = %q, want %q", l.name, sc.Platform, c.platform)
-					}
-					if p := partitionFor(sc); p != paperSourcePartition("") {
-						t.Errorf("%s partition = %+v, want the default paper partition", l.name, p)
-					}
+				path := filepath.Join(dir, "config.json")
+				if err := os.WriteFile(path, []byte(optionsPromotionConfigJSON(t, dir, mode)), 0o600); err != nil {
+					t.Fatalf("write config: %v", err)
+				}
+				original := mustReadFile(t, path)
+				cfg, err := LoadConfigForProbe(path)
+				if err != nil {
+					t.Fatalf("paper options config must load before promotion: %v", err)
+				}
+				ss := NewStatusServer(NewAppState(), &sync.RWMutex{}, "", cfg.Strategies, nil)
+				ss.SetConfigContext(path, &Config{IntervalSeconds: 300})
+				ss.restartFn = func() error {
+					t.Errorf("restart requested by a refused promotion")
+					return nil
+				}
+				wantReason := fmt.Sprintf("strategy %q: %s; paper-to-live is refused", id, optionsPaperOnlyReason("deribit"))
+
+				body := fmt.Sprintf(`{"action":"paper-to-live","strategy_id":%q,"params":{}}`, id)
+				w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
+				if w.Code != http.StatusBadRequest {
+					t.Errorf("confirm status = %d, want 400; body %s", w.Code, w.Body.String())
+				}
+				var confirmErr struct {
+					Error string `json:"error"`
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &confirmErr); err != nil {
+					t.Fatalf("parse confirm body %s: %v", w.Body.String(), err)
+				}
+				if confirmErr.Error != wantReason {
+					t.Errorf("confirm error = %q, want %q", confirmErr.Error, wantReason)
+				}
+
+				msg, err := ss.executePaperToLive(id)
+				if err == nil {
+					t.Fatalf("executePaperToLive succeeded: %s", msg)
+				}
+				if err.Error() != wantReason {
+					t.Errorf("executePaperToLive error = %q, want %q", err.Error(), wantReason)
+				}
+				if after := mustReadFile(t, path); !bytes.Equal(after, original) {
+					t.Fatalf("config changed after a refused paper-to-live")
+				}
+
+				var flipped []string
+				err = ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
+					_, a, e := flipStrategyToLive(root, id)
+					flipped = a
+					return e
+				})
+				if !isLiveArgs(flipped) {
+					t.Fatalf("flipStrategyToLive produced %v, want a live mode", flipped)
+				}
+				if err == nil {
+					t.Fatalf("backstop accepted a flipped live options config")
+				}
+				if !strings.Contains(err.Error(), "patched config invalid") || !strings.Contains(err.Error(), optionsLiveModeConfigError("deribit")) {
+					t.Errorf("backstop error = %v, want the patched-config gate refusal", err)
+				}
+				if after := mustReadFile(t, path); !bytes.Equal(after, original) {
+					t.Fatalf("config changed after the backstop refused the flip")
+				}
+				if left := optionsPromotionTempFiles(t, dir); len(left) != 0 {
+					t.Errorf("temp config files left behind: %v", left)
+				}
+
+				if err := ss.mutateConfigRoot(func(map[string]json.RawMessage) error { return nil }); err != nil {
+					t.Fatalf("control: unchanged config write failed: %v", err)
+				}
+				if _, err := LoadConfigForProbe(path); err != nil {
+					t.Fatalf("control: config no longer loads after unchanged write: %v", err)
+				}
+				if left := optionsPromotionTempFiles(t, dir); len(left) != 0 {
+					t.Errorf("temp config files left behind after control write: %v", left)
 				}
 			})
 		}
-	}
+	})
 }
 
 func optionsPromotionConfigJSON(t *testing.T, dir string, modeTokens []string) string {
@@ -191,87 +274,4 @@ func optionsPromotionTempFiles(t *testing.T, dir string) []string {
 		t.Fatalf("glob: %v", err)
 	}
 	return matches
-}
-
-func TestOptionsLiveModeRefusedByAdministrativePromotion(t *testing.T) {
-	const id = "deribit-calls-btc"
-	for _, mode := range [][]string{{"--mode=paper"}, {"--mode", "paper"}} {
-		t.Run(strings.Join(mode, "_"), func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "config.json")
-			if err := os.WriteFile(path, []byte(optionsPromotionConfigJSON(t, dir, mode)), 0o600); err != nil {
-				t.Fatalf("write config: %v", err)
-			}
-			original := mustReadFile(t, path)
-			cfg, err := LoadConfigForProbe(path)
-			if err != nil {
-				t.Fatalf("paper options config must load before promotion: %v", err)
-			}
-			ss := NewStatusServer(NewAppState(), &sync.RWMutex{}, "", cfg.Strategies, nil)
-			ss.SetConfigContext(path, &Config{IntervalSeconds: 300})
-			ss.restartFn = func() error {
-				t.Errorf("restart requested by a refused promotion")
-				return nil
-			}
-			wantReason := fmt.Sprintf("strategy %q: %s; paper-to-live is refused", id, optionsPaperOnlyReason("deribit"))
-
-			body := fmt.Sprintf(`{"action":"paper-to-live","strategy_id":%q,"params":{}}`, id)
-			w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
-			if w.Code != http.StatusBadRequest {
-				t.Errorf("confirm status = %d, want 400; body %s", w.Code, w.Body.String())
-			}
-			var confirmErr struct {
-				Error string `json:"error"`
-			}
-			if err := json.Unmarshal(w.Body.Bytes(), &confirmErr); err != nil {
-				t.Fatalf("parse confirm body %s: %v", w.Body.String(), err)
-			}
-			if confirmErr.Error != wantReason {
-				t.Errorf("confirm error = %q, want %q", confirmErr.Error, wantReason)
-			}
-
-			msg, err := ss.executePaperToLive(id)
-			if err == nil {
-				t.Fatalf("executePaperToLive succeeded: %s", msg)
-			}
-			if err.Error() != wantReason {
-				t.Errorf("executePaperToLive error = %q, want %q", err.Error(), wantReason)
-			}
-			if after := mustReadFile(t, path); !bytes.Equal(after, original) {
-				t.Fatalf("config changed after a refused paper-to-live")
-			}
-
-			var flipped []string
-			err = ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
-				_, a, e := flipStrategyToLive(root, id)
-				flipped = a
-				return e
-			})
-			if !isLiveArgs(flipped) {
-				t.Fatalf("flipStrategyToLive produced %v, want a live mode", flipped)
-			}
-			if err == nil {
-				t.Fatalf("backstop accepted a flipped live options config")
-			}
-			if !strings.Contains(err.Error(), "patched config invalid") || !strings.Contains(err.Error(), optionsLiveModeConfigError("deribit")) {
-				t.Errorf("backstop error = %v, want the patched-config gate refusal", err)
-			}
-			if after := mustReadFile(t, path); !bytes.Equal(after, original) {
-				t.Fatalf("config changed after the backstop refused the flip")
-			}
-			if left := optionsPromotionTempFiles(t, dir); len(left) != 0 {
-				t.Errorf("temp config files left behind: %v", left)
-			}
-
-			if err := ss.mutateConfigRoot(func(map[string]json.RawMessage) error { return nil }); err != nil {
-				t.Fatalf("control: unchanged config write failed: %v", err)
-			}
-			if _, err := LoadConfigForProbe(path); err != nil {
-				t.Fatalf("control: config no longer loads after unchanged write: %v", err)
-			}
-			if left := optionsPromotionTempFiles(t, dir); len(left) != 0 {
-				t.Errorf("temp config files left behind after control write: %v", left)
-			}
-		})
-	}
 }

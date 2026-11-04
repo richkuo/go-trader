@@ -236,6 +236,7 @@ func (ss *StatusServer) Start(host string, port int) {
 	mux.HandleFunc("/api/strategies", ss.handleAPIStrategies)
 	mux.HandleFunc("/api/strategies/overview", ss.handleAPIStrategiesOverview)
 	mux.HandleFunc("/api/regime", ss.handleAPIRegime)
+	mux.HandleFunc(manualRegimeRoute, ss.handleAPIRegimeManual)
 	mux.HandleFunc("/api/regime/transitions", ss.handleAPIRegimeTransitions)
 	mux.HandleFunc("/api/leaderboard", ss.handleAPILeaderboard)
 	mux.HandleFunc("/api/diagnostics", ss.handleAPIDiagnostics)
@@ -249,6 +250,7 @@ func (ss *StatusServer) Start(host string, port int) {
 	mux.HandleFunc("/api/config/notifications", ss.handleAPIConfigNotifications)
 	mux.HandleFunc("/api/confirm", ss.handleAPIConfirm)
 	mux.HandleFunc("/api/config/add-strategy", ss.handleAPIAddStrategy)
+	mux.HandleFunc("/api/config/add-quote-owner", ss.handleAPIAddQuoteOwner)
 	mux.HandleFunc("/api/quotes", ss.handleAPIQuotes)
 	mux.HandleFunc("/api/quotes/cancel", ss.handleAPIQuoteCancel)
 	mux.HandleFunc("/api/quotes/hold", ss.handleAPIQuoteHold)
@@ -338,6 +340,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PoolBudget                     bool                       `json:"pool_budget,omitempty"`
 		RiskState                      RiskState                  `json:"risk_state"`
 		Regime                         string                     `json:"regime,omitempty"`
+		RegimeSnapshots                map[string]RegimeSnapshot  `json:"regime_snapshots,omitempty"`
 		RegimeGateFailClosed           bool                       `json:"regime_gate_fail_closed,omitempty"`
 		BaseDirection                  string                     `json:"base_direction,omitempty"`
 		BaseInvertSignal               bool                       `json:"base_invert_signal,omitempty"`
@@ -349,11 +352,12 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		DirectionalCertificationCell   string                     `json:"directional_certification_cell,omitempty"`
 		RegimeDivergence               *RegimeDivergenceState     `json:"regime_divergence,omitempty"`
 		RegimeProfile                  *RegimeProfileState        `json:"regime_profile,omitempty"`
+		RegimeSide                     *regimeSideResolution      `json:"regime_side,omitempty"`
 		Paused                         bool                       `json:"paused,omitempty"`
 		Hedge                          *HedgeStatus               `json:"hedge,omitempty"`
 		Partition                      string                     `json:"partition,omitempty"`
 		PaperSource                    string                     `json:"paper_source,omitempty"`
-		PairValuation                  string                     `json:"pair_valuation,omitempty"`
+		EngineHold                     *engineHoldView            `json:"engine_hold,omitempty"`
 	}
 
 	type PaperSourceStatus struct {
@@ -390,9 +394,6 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PaperSources         []PaperSourceStatus             `json:"paper_sources,omitempty"`
 		Partitions           []PartitionStatus               `json:"partitions,omitempty"`
 		Egress               egressStatus                    `json:"egress"`
-		PairValuation        string                          `json:"pair_valuation,omitempty"`
-		PairValuationByScope map[string]string               `json:"pair_valuation_by_scope,omitempty"`
-		PairAccounts         []pairAccountDisplay            `json:"pair_accounts,omitempty"`
 	}
 
 	ss.strategiesMu.RLock()
@@ -403,11 +404,8 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		cfgByID[sc.ID] = sc
 	}
 
-	pm := ss.state.pairMarksLocked()
-	totalValue, totalStatus := latestDisplayTotalMarked(ss.state, prices, pm)
-	totalNotional, notionalStatus := portfolioNotionalMarked(ss.state.Strategies, prices, pm)
-	totalStatus.merge(notionalStatus)
-	pairByScope := map[string]string{}
+	totalValue := latestDisplayTotal(ss.state, prices)
+	totalNotional := portfolioNotional(ss.state.Strategies, prices)
 
 	// Every by-scope map is keyed by partition text, so a folded source's own
 	// risk, value, notional and correlation are distinct from every other's.
@@ -423,13 +421,8 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		} else {
 			riskByScope[key] = PortfolioRiskState{}
 		}
-		var partStatus, partNotionalStatus pairValueStatus
-		valueByScope[key], partStatus = latestDisplayTotalForPartitionMarked(ss.state, cfgStrategies, part, prices, pm)
-		notionalByScope[key], partNotionalStatus = portfolioNotionalMarked(filterStatesByPartition(ss.state.Strategies, cfgStrategies, part), prices, pm)
-		partStatus.merge(partNotionalStatus)
-		if label := partStatus.label(); label != "" {
-			pairByScope[key] = label
-		}
+		valueByScope[key] = latestDisplayTotalForPartition(ss.state, cfgStrategies, part, prices)
+		notionalByScope[key] = portfolioNotional(filterStatesByPartition(ss.state.Strategies, cfgStrategies, part), prices)
 		if snap := ss.state.partitionCorrelation(part); snap != nil {
 			corrByScope[key] = snap
 		}
@@ -453,11 +446,6 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ReconciliationGaps:   ss.state.ReconciliationGaps,
 		MarketFeed:           marketFeedStatusBlock(),
 		Egress:               processEgress.status(),
-		PairValuation:        totalStatus.label(),
-		PairAccounts:         pairAccountDisplays(pm),
-	}
-	if len(pairByScope) > 0 {
-		resp.PairValuationByScope = pairByScope
 	}
 	// Only sources this process actually owns are listed, so the dashboard's
 	// selector can never offer a deployment this process does not read.
@@ -489,7 +477,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp.Correlation = ss.state.partitionCorrelation(legacyScope)
 
 	for id, s := range ss.state.Strategies {
-		pv, pvStatus := displayStrategyValueMarked(s, prices, pm)
+		pv := displayStrategyValue(s, prices)
 		sc, configured := cfgByID[id]
 		// A state row the roster no longer configures has no owning partition,
 		// and naming one would file its alerts under a deployment it may not
@@ -520,6 +508,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			PoolBudget:                     usesSharedWalletPoolBudget(sc),
 			RiskState:                      s.RiskState,
 			Regime:                         strategyDisplayRegimeLabel(s, sc, ss.regime),
+			RegimeSnapshots:                cloneRegimeSnapshots(s.RegimeSnapshots),
 			RegimeGateFailClosed:           regimeGateFailClosedActive(sc, s, ss.regime),
 			BaseDirection:                  dirView.BaseDirection,
 			BaseInvertSignal:               dirView.BaseInvertSignal,
@@ -531,11 +520,16 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			DirectionalCertificationCell:   dirView.CertCell,
 			RegimeDivergence:               s.RegimeDivergence,
 			RegimeProfile:                  s.RegimeProfile,
+			RegimeSide:                     regimeSideStatusForState(sc, s, ss.regime),
 			Paused:                         sc.Paused,
 			Hedge:                          buildHedgeStatus(sc, s),
 			Partition:                      partitionText,
 			PaperSource:                    sc.PaperSource,
-			PairValuation:                  pvStatus.label(),
+		}
+		if configured {
+			st := resp.Strategies[id]
+			st.EngineHold = engineHoldViewFor(sc)
+			resp.Strategies[id] = st
 		}
 	}
 

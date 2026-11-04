@@ -28,9 +28,6 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"aroon_trend":                  {"study_inconclusive", "backtest/candidates/aroon_trend_1643/REPORT.md"},
 	"atr_breakout":                 {"fee_audit_m5", noEdgeRefFeeAudit},
 	"awesome_oscillator":           {"study_fail", "backtest/candidates/awesome_oscillator_1660/REPORT.md"},
-	"basket_scripted_fixture":      {"unvalidated", "SKILL.md"},
-	"cross_sectional_momentum":     {"study_fail", "backtest/candidates/cross_sectional_momentum_1787/REPORT.md"},
-	"cross_sectional_reversal":     {"study_fail", "backtest/candidates/cross_sectional_reversal_1793/REPORT.md"},
 	"bollinger_bands":              {"fee_audit_m5", noEdgeRefFeeAudit},
 	"calendar_conditioned_entry":   {"study_inconclusive", "backtest/candidates/calendar_conditioned_entry_1653/REPORT.md"},
 	"camarilla_pivot_reversal":     {"study_fail", "backtest/candidates/camarilla_pivot_reversal_1669/REPORT.md"},
@@ -95,7 +92,6 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"perpetual_premium_reversion":        {"study_inconclusive", "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md"},
 	"order_book_imbalance":               {"study_fail", "backtest/candidates/order_book_imbalance_1635/REPORT.md"},
 	"inventory_market_making":            {"study_inconclusive", "backtest/candidates/inventory_market_making_1636/REPORT.md"},
-	"cross_exchange_perp_arbitrage":      {"unvalidated", "backtest/candidates/cross_exchange_perp_arbitrage_1655/REPORT.md"},
 }
 
 func noEdgeEvidenceFor(name string) (noEdgeEvidence, bool) {

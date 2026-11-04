@@ -13,6 +13,11 @@ type closeRegistryEntry struct {
 	Description   string                 `json:"description"`
 	DefaultParams map[string]interface{} `json:"default_params"`
 	Platforms     []string               `json:"platforms"`
+	Role          string                 `json:"role,omitempty"`
+	OwnerRole     string                 `json:"owner_role,omitempty"`
+	Labels        []string               `json:"labels,omitempty"`
+	HoldReason    string                 `json:"hold_reason,omitempty"`
+	TrackingURL   string                 `json:"tracking_url,omitempty"`
 }
 
 var (
@@ -26,13 +31,13 @@ func fetchCloseRegistryCatalog() ([]closeRegistryEntry, error) {
 	if closeRegistryCatalog != nil {
 		return closeRegistryCatalog, nil
 	}
-	stdout, stderr, err := runPythonReadOnly("shared_tools/close_registry_loader.py", []string{"--list-json"})
+	catalog, err := fetchStrategyCatalog("close")
 	if err != nil {
-		return nil, fmt.Errorf("close registry dump failed: %w (stderr: %s)", err, strings.TrimSpace(string(stderr)))
+		return nil, fmt.Errorf("close strategy catalog failed: %w", err)
 	}
-	var entries []closeRegistryEntry
-	if jsonErr := json.Unmarshal(stdout, &entries); jsonErr != nil {
-		return nil, fmt.Errorf("close registry dump: invalid JSON: %w", jsonErr)
+	entries := catalogCloseEntries(catalog)
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("close strategy catalog returned no close entries")
 	}
 	closeRegistryCatalog = entries
 	return entries, nil
@@ -68,6 +73,16 @@ func formatClosingStrategiesResponse(cfg *Config, entries []closeRegistryEntry) 
 func formatCloseRegistryEntry(e closeRegistryEntry, userClose CloseDefaultsMap) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "**%s** — %s\n", e.Name, e.Description)
+	if len(e.Labels) > 0 || (e.Role != "" && e.Role != catalogRoleNativeClose) {
+		fmt.Fprintf(&sb, "  role: %s; owner: %s; labels: %s\n", e.Role, e.OwnerRole, strings.Join(e.Labels, ", "))
+	}
+	if e.HoldReason != "" {
+		fmt.Fprintf(&sb, "  held: %s", e.HoldReason)
+		if e.TrackingURL != "" {
+			fmt.Fprintf(&sb, " (tracking %s)", e.TrackingURL)
+		}
+		sb.WriteString("\n")
+	}
 
 	platforms := append([]string(nil), e.Platforms...)
 	sort.Strings(platforms)

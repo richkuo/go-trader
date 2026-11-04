@@ -170,8 +170,6 @@ type hlBatchSlot struct {
 	PositionCtx     map[string]any  `json:"position_ctx,omitempty"`
 	ClosedBar       bool            `json:"closed_bar_decisions,omitempty"`
 	RestingTPRule   json.RawMessage `json:"resting_tp_rule,omitempty"`
-	BasketMember    bool            `json:"basket_member,omitempty"`
-	PairMember      json.RawMessage `json:"pair_member,omitempty"`
 }
 
 type hlBatchRequest struct {
@@ -198,6 +196,10 @@ type HyperliquidBatchResult struct {
 const hlBatchSharedStateScope = "shared_state"
 
 func buildHyperliquidBatchSlot(sc StrategyConfig, posCtx PositionCtx, regime *RegimeConfig) (hlBatchSlot, error) {
+	return buildHyperliquidBatchSlotWithSide(sc, posCtx, regime, regimeSideRequestForCheck(sc, posCtx, regime))
+}
+
+func buildHyperliquidBatchSlotWithSide(sc StrategyConfig, posCtx PositionCtx, regime *RegimeConfig, side regimeSideResolution) (hlBatchSlot, error) {
 	slot := hlBatchSlot{
 		ID:              sc.ID,
 		Strategy:        strategyNameFromArgs(sc.Args),
@@ -207,16 +209,8 @@ func buildHyperliquidBatchSlot(sc StrategyConfig, posCtx PositionCtx, regime *Re
 		HTFFilter:       sc.HTFFilter,
 		RegimeATRWindow: hlBatchRegimeATRWindow(sc, regime),
 		ClosedBar:       sc.ClosedBarDecisions,
-		BasketMember:    isBasketMember(sc),
 	}
-	if isPairMember(sc) {
-		req, ok := pairMemberRequestOf(sc)
-		if !ok {
-			return hlBatchSlot{}, fmt.Errorf("pair member %s has no admitted pair contract", sc.ID)
-		}
-		slot.PairMember = json.RawMessage(req.JSON())
-	}
-	refsArgs, err := buildStrategyRefsArg(sc, hlCloseOwnerForCheck(sc, posCtx), hlInvertOpenSignalForCheck(sc, posCtx, regime))
+	refsArgs, err := buildStrategyRefsArgWithSide(sc, hlCloseOwnerForCheck(sc, posCtx), hlInvertOpenSignalForCheck(sc, posCtx, regime), side.sentSide())
 	if err != nil {
 		return hlBatchSlot{}, fmt.Errorf("marshal strategy refs: %w", err)
 	}
@@ -334,10 +328,18 @@ func parseHyperliquidBatchOutput(stdout []byte) (*HyperliquidBatchResult, error)
 }
 
 func hyperliquidBatchSlotFingerprint(sc StrategyConfig, posCtx PositionCtx, regime *RegimeConfig) (string, error) {
-	slot, err := buildHyperliquidBatchSlot(sc, posCtx, regime)
+	return hyperliquidBatchSlotFingerprintWithSide(sc, posCtx, regime, regimeSideRequestForCheck(sc, posCtx, regime))
+}
+
+func hyperliquidBatchSlotFingerprintWithSide(sc StrategyConfig, posCtx PositionCtx, regime *RegimeConfig, side regimeSideResolution) (string, error) {
+	slot, err := buildHyperliquidBatchSlotWithSide(sc, posCtx, regime, side)
 	if err != nil {
 		return "", err
 	}
+	return hyperliquidBatchSlotFingerprintOf(slot)
+}
+
+func hyperliquidBatchSlotFingerprintOf(slot hlBatchSlot) (string, error) {
 	blob, err := json.Marshal(struct {
 		Slot hlBatchSlot `json:"slot"`
 	}{Slot: slot})
@@ -353,6 +355,7 @@ type hlBatchMemberOutcome struct {
 	Mode        scriptFailureMode
 	Stderr      string
 	Fingerprint string
+	RegimeSide  regimeSideResolution
 }
 
 type hlBatchCycleResults struct {
@@ -509,15 +512,18 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 			req.Version = hlBatchProtocolVersionMarket
 		}
 		fingerprints := make(map[string]string, len(in.Members))
+		sides := make(map[string]regimeSideResolution, len(in.Members))
 		slotErr := false
 		for _, sc := range in.Members {
-			slot, err := buildHyperliquidBatchSlot(sc, in.PosCtx[sc.ID], rc)
+			side := regimeSideRequestForCheck(sc, in.PosCtx[sc.ID], rc)
+			slot, err := buildHyperliquidBatchSlotWithSide(sc, in.PosCtx[sc.ID], rc, side)
 			if err != nil {
 				logf("[WARN] hl-batch %s: slot build failed for %s: %v; falling back to per-strategy checks", in.Key, sc.ID, err)
 				slotErr = true
 				break
 			}
-			fp, err := hyperliquidBatchSlotFingerprint(sc, in.PosCtx[sc.ID], rc)
+			sides[sc.ID] = side
+			fp, err := hyperliquidBatchSlotFingerprintOf(slot)
 			if err != nil {
 				logf("[WARN] hl-batch %s: fingerprint failed for %s: %v; falling back to per-strategy checks", in.Key, sc.ID, err)
 				slotErr = true
@@ -563,7 +569,7 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 			hlBatchApplySharedFailure(in, msg, stderr, notifier, logf)
 			continue
 		}
-		drift := hlBatchApplySlots(results, in, fingerprints, out, stderr, logf)
+		drift := hlBatchApplySlots(results, in, fingerprints, sides, out, stderr, logf)
 		if text, show, _ := scriptStderrLogText(stderr); show {
 			logf("[INFO] hl-batch %s: stderr: %s", in.Key, text)
 		}
@@ -608,7 +614,7 @@ func hlBatchApplySharedFailure(in hlBatchGroupInput, errMsg, stderr string, noti
 	}
 }
 
-func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, fingerprints map[string]string, out *HyperliquidBatchResult, stderr string, logf func(string, ...any)) int {
+func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, fingerprints map[string]string, sides map[string]regimeSideResolution, out *HyperliquidBatchResult, stderr string, logf func(string, ...any)) int {
 	byID := make(map[string]*HyperliquidResult, len(out.Results))
 	dupes := map[string]bool{}
 	for i := range out.Results {
@@ -642,9 +648,10 @@ func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, finge
 				Mode:        scriptFailureError,
 				Stderr:      stderr,
 				Fingerprint: fingerprints[sc.ID],
+				RegimeSide:  sides[sc.ID],
 			})
 		default:
-			results.put(sc.ID, hlBatchMemberOutcome{Result: res, Fingerprint: fingerprints[sc.ID]})
+			results.put(sc.ID, hlBatchMemberOutcome{Result: res, Fingerprint: fingerprints[sc.ID], RegimeSide: sides[sc.ID]})
 		}
 	}
 	for id := range byID {

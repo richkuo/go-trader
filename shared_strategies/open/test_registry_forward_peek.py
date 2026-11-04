@@ -20,12 +20,8 @@ _REGISTRY = _load(
 )
 
 SKIP_STRATEGIES = {
-    "basket_scripted_fixture": "basket evaluator: it ranks a symbol-keyed universe and refuses one-symbol evaluation by contract (#1781)",
-    "cross_sectional_momentum": "basket evaluator: it ranks a symbol-keyed universe and refuses one-symbol evaluation by contract (#1781); its post-deadline invariance runs through the real basket runner (#1787)",
-    "cross_sectional_reversal": "basket evaluator: it ranks a symbol-keyed universe and refuses one-symbol evaluation by contract (#1781); its post-deadline invariance runs through the real basket runner (#1793)",
     "order_book_imbalance": "book evaluator: it decides once, at the deadline of the supplied l2Book section, and never per candle row (#1635); its post-deadline invariance runs through the evaluator and study-path parity in test_order_book_imbalance_integration.py",
     "inventory_market_making": "quote capability: it has no scalar candle signal and refuses scalar evaluation by contract (#1861); its post-deadline invariance runs through the real quote coordinator in the TestQuoteReplay integration cases (later receipts leave past decisions unchanged)",
-    "cross_exchange_perp_arbitrage": "pair policy: it decides one cross-venue pair from a frozen two-venue request and refuses one-symbol evaluation by contract (#1878); its post-deadline invariance runs through the real pair runner in TestBasketPairPolicyRealFrozenRequestIgnoresLaterInputs (identical frozen request bytes give identical output after later quote and account inputs change)",
 }
 
 EXPECTED_ALL_ZERO_SIGNAL = {
@@ -524,6 +520,8 @@ def _prefix_violations(fn, params, df, cache_key):
 def _sweep_cases():
     cases = []
     for name, entry in _REGISTRY.STRATEGIES.items():
+        if name in SKIP_STRATEGIES:
+            continue
         seen = {}
         for platform in entry["platforms"]:
             merged = {
@@ -541,8 +539,6 @@ def _sweep_cases():
 
 @pytest.mark.parametrize("name,params", _sweep_cases())
 def test_registry_strategy_is_truncation_invariant(name, params):
-    if name in SKIP_STRATEGIES:
-        pytest.skip(f"{name}: {SKIP_STRATEGIES[name]}")
     fn = _REGISTRY.STRATEGIES[name]["fn"]
     if name in STRATEGY_INPUTS:
         fn = STRATEGY_INPUTS[name](fn)

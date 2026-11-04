@@ -148,17 +148,21 @@ def test_resolve_overrides_valid_and_freeze():
     assert fr == {"slow_period"}
 
 
-@pytest.mark.parametrize("grids,overrides,known,match", [
+_RESOLVE_OVERRIDES_REFUSES_CASES = [
     ({"nope": [1]}, {}, {"fast_period"}, "unknown param"),
     ({"fast_period": [-3]}, {}, {"fast_period", "slow_period"}, "constraint"),
     ({"fast_period": [10]}, {"s": {"freeze": ["fast_period"]}},
      {"fast_period", "slow_period"}, "both overridden and frozen"),
     ({}, {"s": {"freeze": ["ghost"]}}, {"fast_period"}, "unknown params"),
-])
-def test_resolve_overrides_refuses(grids, overrides, known, match):
-    reg = load_registry("spot")
-    with pytest.raises(ValueError, match=match):
-        tl.resolve_overrides("s", grids, overrides, known, _check_value(reg))
+]
+
+
+def test_resolve_overrides_refuses(subtests):
+    for i, (grids, overrides, known, match) in enumerate(_RESOLVE_OVERRIDES_REFUSES_CASES):
+        with subtests.test(case=i, grids=grids, overrides=overrides, known=known, match=match):
+            reg = load_registry("spot")
+            with pytest.raises(ValueError, match=match):
+                tl.resolve_overrides("s", grids, overrides, known, _check_value(reg))
 
 
 def test_earliest_stage2_start_and_unknown_window():
@@ -180,60 +184,59 @@ def test_param_changes_and_build_patch():
     assert patch["param_changes"] == {"fast_period": 10}
 
 
-def test_build_candidate_carries_close_direction_stops_and_gate_lookback():
-    case = "test_build_candidate_carries_close_direction_stops"
-    resolution = {
-        "strategy_type": "perps", "direction": "both",
-        "close_strategies": [{"name": "tiered_tp_atr", "params": {}}],
-        "stop_loss_atr_mult": 2.0, "regime_enabled": True,
-        "allowed_regimes": ["trending_up"],
-    }
-    cand = tl.build_candidate("tema_cross_bd", {"short_period": 5}, resolution)
-    assert cand["direction"] == "both", case
-    assert cand["type"] == "perps", case
-    assert cand["close_strategies"][0]["name"] == "tiered_tp_atr", case
-    assert cand["stop_loss_atr_mult"] == 2.0, case
-    assert cand["allowed_regimes"] == ["trending_up"], case
-    assert cand["regime_period"] == 14, case
-    assert cand["regime_adx_threshold"] == 20.0, case
+def test_build_candidate_carries_close_direction_stops_and_gate_lookback(subtests):
+    with subtests.test("test_build_candidate_carries_close_direction_stops_and_gate_lookback"):
+        case = "test_build_candidate_carries_close_direction_stops"
+        resolution = {
+            "strategy_type": "perps", "direction": "both",
+            "close_strategies": [{"name": "tiered_tp_atr", "params": {}}],
+            "stop_loss_atr_mult": 2.0, "regime_enabled": True,
+            "allowed_regimes": ["trending_up"],
+        }
+        cand = tl.build_candidate("tema_cross_bd", {"short_period": 5}, resolution)
+        assert cand["direction"] == "both", case
+        assert cand["type"] == "perps", case
+        assert cand["close_strategies"][0]["name"] == "tiered_tp_atr", case
+        assert cand["stop_loss_atr_mult"] == 2.0, case
+        assert cand["allowed_regimes"] == ["trending_up"], case
+        assert cand["regime_period"] == 14, case
+        assert cand["regime_adx_threshold"] == 20.0, case
 
-    case = "test_build_candidate_threads_live_adx_lookback"
-    resolution = {
-        "regime_enabled": True, "allowed_regimes": ["trending_up"],
-        "regime_period": 21, "regime_adx_threshold": 25.0,
-    }
-    cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
-    assert cand["allowed_regimes"] == ["trending_up"], case
-    assert cand["regime_period"] == 21, case
-    assert cand["regime_adx_threshold"] == 25.0, case
-    import eval_windows as ew
-    assert ew.validate_candidate(dict(cand)), case
+        case = "test_build_candidate_threads_live_adx_lookback"
+        resolution = {
+            "regime_enabled": True, "allowed_regimes": ["trending_up"],
+            "regime_period": 21, "regime_adx_threshold": 25.0,
+        }
+        cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
+        assert cand["allowed_regimes"] == ["trending_up"], case
+        assert cand["regime_period"] == 21, case
+        assert cand["regime_adx_threshold"] == 25.0, case
+        import eval_windows as ew
+        assert ew.validate_candidate(dict(cand)), case
 
-    case = "test_build_candidate_composite_gate_owns_lookback"
-    spec = {"primary": {"classifier": "composite", "period": 14}}
-    resolution = {
-        "regime_enabled": True, "allowed_regimes": ["trending_up"],
-        "regime_period": 21, "regime_adx_threshold": 25.0,
-        "regime_windows_spec": spec,
-    }
-    cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
-    assert cand["allowed_regimes"] == ["trending_up"], case
-    assert cand["regime_windows_spec"] == spec, case
-    assert "regime_period" not in cand, case
-    assert "regime_adx_threshold" not in cand, case
-
-
-def test_build_candidate_dormant_gate_not_copied():
-    resolution = {
-        "strategy_type": "perps", "direction": "long",
-        "allowed_regimes": ["trending_up"], "regime_enabled": False,
-        "regime_windows_spec": {"primary": {"classifier": "adx", "period": 14}},
-    }
-    cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
-    assert "allowed_regimes" not in cand
-    assert "regime_windows_spec" not in cand
-    assert "regime_period" not in cand
-    assert "regime_adx_threshold" not in cand
+        case = "test_build_candidate_composite_gate_owns_lookback"
+        spec = {"primary": {"classifier": "composite", "period": 14}}
+        resolution = {
+            "regime_enabled": True, "allowed_regimes": ["trending_up"],
+            "regime_period": 21, "regime_adx_threshold": 25.0,
+            "regime_windows_spec": spec,
+        }
+        cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
+        assert cand["allowed_regimes"] == ["trending_up"], case
+        assert cand["regime_windows_spec"] == spec, case
+        assert "regime_period" not in cand, case
+        assert "regime_adx_threshold" not in cand, case
+    with subtests.test("test_build_candidate_dormant_gate_not_copied"):
+        resolution = {
+            "strategy_type": "perps", "direction": "long",
+            "allowed_regimes": ["trending_up"], "regime_enabled": False,
+            "regime_windows_spec": {"primary": {"classifier": "adx", "period": 14}},
+        }
+        cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
+        assert "allowed_regimes" not in cand
+        assert "regime_windows_spec" not in cand
+        assert "regime_period" not in cand
+        assert "regime_adx_threshold" not in cand
 
 
 def test_unsupported_reason():
@@ -479,33 +482,36 @@ def test_promotion_baseline_presence_matrix(tmp_path):
     assert b["user_close_defaults_present"] is True
 
 
-def test_promotion_baseline_opt_in_spread_contract(tmp_path):
-    from run_backtest import load_strategy_config
-    path = _write_config(tmp_path, _sma_config())
-    kwargs = load_strategy_config(path, "spot-sma-btc")
-    assert "promotion_baseline" not in kwargs
-    kwargs_flag = load_strategy_config(path, "spot-sma-btc",
-                                       include_promotion_baseline=True)
-    assert "promotion_baseline" in kwargs_flag
-    _assert_complete_promotion_baseline(kwargs_flag["promotion_baseline"])
-
-
-def test_promotion_baseline_deepcopy_no_alias(tmp_path):
-    from run_backtest import load_strategy_config
-    path = _write_config(tmp_path, _sma_config(
-        params={"fast_period": 18, "slow_period": 50}))
-    kwargs = load_strategy_config(path, "spot-sma-btc",
-                                  include_promotion_baseline=True)
-    baseline = kwargs["promotion_baseline"]
-    baseline["open_strategy"]["params"]["fast_period"] = 999
-    baseline["open_strategy"]["name"] = "mutated"
-    assert kwargs["open_strategy"]["params"]["fast_period"] == 18
-    assert kwargs["open_strategy"]["name"] == "sma_crossover"
-    res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
-                           load_registry("spot"), _make_args(dry_run=True), {},
-                           str(tmp_path))
-    res["promotion_baseline"]["open_strategy"]["params"]["fast_period"] = 111
-    assert res["baseline_params"]["fast_period"] == 18
+def test_promotion_baseline_deepcopy_no_alias(tmp_path, subtests):
+    with subtests.test("test_promotion_baseline_deepcopy_no_alias"):
+        case_path = tmp_path / "test_promotion_baseline_deepcopy_no_alias"
+        case_path.mkdir()
+        from run_backtest import load_strategy_config
+        path = _write_config(case_path, _sma_config(
+            params={"fast_period": 18, "slow_period": 50}))
+        kwargs = load_strategy_config(path, "spot-sma-btc",
+                                      include_promotion_baseline=True)
+        baseline = kwargs["promotion_baseline"]
+        baseline["open_strategy"]["params"]["fast_period"] = 999
+        baseline["open_strategy"]["name"] = "mutated"
+        assert kwargs["open_strategy"]["params"]["fast_period"] == 18
+        assert kwargs["open_strategy"]["name"] == "sma_crossover"
+        res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
+                               load_registry("spot"), _make_args(dry_run=True), {},
+                               str(case_path))
+        res["promotion_baseline"]["open_strategy"]["params"]["fast_period"] = 111
+        assert res["baseline_params"]["fast_period"] == 18
+    with subtests.test("test_promotion_baseline_opt_in_spread_contract"):
+        case_path = tmp_path / "test_promotion_baseline_opt_in_spread_contract"
+        case_path.mkdir()
+        from run_backtest import load_strategy_config
+        path = _write_config(case_path, _sma_config())
+        kwargs = load_strategy_config(path, "spot-sma-btc")
+        assert "promotion_baseline" not in kwargs
+        kwargs_flag = load_strategy_config(path, "spot-sma-btc",
+                                           include_promotion_baseline=True)
+        assert "promotion_baseline" in kwargs_flag
+        _assert_complete_promotion_baseline(kwargs_flag["promotion_baseline"])
 
 
 def test_dry_run_emits_spec_without_running_stage2(tmp_path, monkeypatch):
@@ -570,54 +576,40 @@ def test_short_direction_skips_stage1(tmp_path, monkeypatch):
     assert not any("constraint-invalid" in n for n in res["notes"])
 
 
-def test_constraint_invalid_combos_dropped_on_skip_path(tmp_path, monkeypatch):
+def test_constraint_invalid_combos_dropped_on_skip_path(tmp_path, monkeypatch, subtests):
     monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
     monkeypatch.setattr(tl, "load_cached_data",
                         lambda *a, **k: (_ for _ in ()).throw(
                             AssertionError("short skips stage 1 — no data fetch")))
-    cfg = {"config_version": 15, "strategies": [{
-        "id": "hl-sma-short", "type": "perps", "platform": "hyperliquid",
-        "args": ["sma_crossover", "BTC/USDT", "1d"], "direction": "short",
-        "open_strategy": {"name": "sma_crossover",
-                          "params": {"fast_period": 18, "slow_period": 50}},
-    }]}
-    path = _write_config(tmp_path, cfg)
-    args = _make_args(param=["fast_period=30,45,60", "slow_period=40,50"])
-    res = tl.tune_strategy(path, "hl-sma-short", "BTC/USDT", "1d", "spot",
-                           load_registry("spot"), args, {}, str(tmp_path))
-    assert res["status"] == "ranked"
-    assert any("3 constraint-invalid" in n for n in res["notes"])
-    assert res["searched_family_size"] == 4
-    assert res["n_candidates"] == 4
-    spec = json.loads((tmp_path / "suggest.hl-sma-short.json").read_text())
-    for c in spec["candidates"]:
-        p = c["candidate"]["params"]
-        assert p["fast_period"] < p["slow_period"]
-
-
-def test_constraint_invalid_combos_dropped_from_auto_neighborhood(tmp_path, monkeypatch):
-    monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
-    monkeypatch.setattr(tl, "load_cached_data",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            AssertionError("short skips stage 1 — no data fetch")))
-    cfg = {"config_version": 15, "strategies": [{
-        "id": "hl-sma-short", "type": "perps", "platform": "hyperliquid",
-        "args": ["sma_crossover", "BTC/USDT", "1d"], "direction": "short",
-        "open_strategy": {"name": "sma_crossover",
-                          "params": {"fast_period": 40, "slow_period": 50}},
-    }]}
-    path = _write_config(tmp_path, cfg)
-    res = tl.tune_strategy(path, "hl-sma-short", "BTC/USDT", "1d", "spot",
-                           load_registry("spot"),
-                           _make_args(neighborhood_steps=1, step_frac=0.25),
-                           {}, str(tmp_path))
-    assert res["status"] == "ranked"
-    assert any("constraint-invalid" in n for n in res["notes"])
-    assert res["n_candidates"] == res["searched_family_size"]
-    spec = json.loads((tmp_path / "suggest.hl-sma-short.json").read_text())
-    for c in spec["candidates"]:
-        p = c["candidate"]["params"]
-        assert p["fast_period"] < p["slow_period"]
+    cases = [
+        ("explicit_grid", {"fast_period": 18, "slow_period": 50},
+         _make_args(param=["fast_period=30,45,60", "slow_period=40,50"]),
+         "3 constraint-invalid", 4),
+        ("auto_neighborhood", {"fast_period": 40, "slow_period": 50},
+         _make_args(neighborhood_steps=1, step_frac=0.25), "constraint-invalid", None),
+    ]
+    for case_id, params, args, note, family in cases:
+        with subtests.test(case=case_id):
+            case_dir = tmp_path / case_id
+            case_dir.mkdir()
+            cfg = {"config_version": 15, "strategies": [{
+                "id": "hl-sma-short", "type": "perps", "platform": "hyperliquid",
+                "args": ["sma_crossover", "BTC/USDT", "1d"], "direction": "short",
+                "open_strategy": {"name": "sma_crossover", "params": params},
+            }]}
+            path = _write_config(case_dir, cfg)
+            res = tl.tune_strategy(path, "hl-sma-short", "BTC/USDT", "1d", "spot",
+                                   load_registry("spot"), args, {}, str(case_dir))
+            assert res["status"] == "ranked"
+            assert any(note in n for n in res["notes"])
+            assert res["n_candidates"] == res["searched_family_size"]
+            if family is not None:
+                assert res["searched_family_size"] == family
+                assert res["n_candidates"] == family
+            spec = json.loads((case_dir / "suggest.hl-sma-short.json").read_text())
+            for c in spec["candidates"]:
+                p = c["candidate"]["params"]
+                assert p["fast_period"] < p["slow_period"]
 
 
 def test_bidirectional_runs_stage1_with_direction_both(tmp_path, monkeypatch):
@@ -803,88 +795,112 @@ def test_main_auto_resolves_mixed_registry_per_strategy(tmp_path, monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("override", ["spot", "futures"])
-def test_main_explicit_registry_overrides_whole_mixed_run(
-        tmp_path, monkeypatch, override):
-    cfg = _sma_config(sid="spot-one")
-    perps = dict(cfg["strategies"][0])
-    perps.update({"id": "perps-one", "type": "perps"})
-    cfg["strategies"].append(perps)
-    path = _write_config(tmp_path, cfg)
-    loaded = []
-    tuned = []
-
-    monkeypatch.setattr(tl, "load_registry", lambda registry: (
-        loaded.append(registry) or types.SimpleNamespace(name=registry)))
-    monkeypatch.setattr(tl, "tune_strategy", lambda config_path, sid, symbol,
-                        timeframe, registry, reg_mod, args, overrides, out_dir: (
-                            tuned.append((sid, registry)) or
-                            {"strategy_id": sid, "status": "dry_run"}))
-
-    rc = tl.main(["--config", path, "--registry", override,
-                  "--out-dir", str(tmp_path),
-                  "--json", str(tmp_path / f"{override}.json"), "--dry-run"])
-
-    assert rc == 0
-    assert loaded == [override]
-    assert tuned == [("spot-one", override), ("perps-one", override)]
+_MAIN_EXPLICIT_REGISTRY_OVERRIDES_WHOLE_MIXED_RUN_CASES = ["spot", "futures"]
 
 
-def test_regime_timeframe_mismatch_skipped_unsupported(tmp_path):
-    cfg = {"config_version": 15,
-           "regime": {"enabled": True, "timeframe": "1d", "period": 14},
-           "strategies": [{"id": "hl-sma", "type": "perps", "platform": "hyperliquid",
-                           "args": ["sma_crossover", "BTC/USDT", "4h"],
-                           "allowed_regimes": ["trending_up"],
-                           "open_strategy": {"name": "sma_crossover", "params": {}}}]}
-    path = _write_config(tmp_path, cfg)
-    res = tl.tune_strategy(path, "hl-sma", "BTC/USDT", "4h", "spot",
-                           load_registry("spot"), _make_args(dry_run=True), {},
-                           str(tmp_path))
-    assert res["status"] == "unsupported"
-    assert res["reason"].startswith("unsupported_regime_timeframe_mismatch")
+def test_main_explicit_registry_overrides_whole_mixed_run(tmp_path, monkeypatch, subtests):
+    for i, override in enumerate(_MAIN_EXPLICIT_REGISTRY_OVERRIDES_WHOLE_MIXED_RUN_CASES):
+        with subtests.test(case=i, override=override):
+            case_dir = tmp_path / f"case{i}"
+            case_dir.mkdir()
+            cfg = _sma_config(sid="spot-one")
+            perps = dict(cfg["strategies"][0])
+            perps.update({"id": "perps-one", "type": "perps"})
+            cfg["strategies"].append(perps)
+            path = _write_config(case_dir, cfg)
+            loaded = []
+            tuned = []
+
+            monkeypatch.setattr(tl, "load_registry", lambda registry: (
+                loaded.append(registry) or types.SimpleNamespace(name=registry)))
+            monkeypatch.setattr(tl, "tune_strategy", lambda config_path, sid, symbol,
+                                timeframe, registry, reg_mod, args, overrides, out_dir: (
+                                    tuned.append((sid, registry)) or
+                                    {"strategy_id": sid, "status": "dry_run"}))
+
+            rc = tl.main(["--config", path, "--registry", override,
+                          "--out-dir", str(case_dir),
+                          "--json", str(case_dir / f"{override}.json"), "--dry-run"])
+
+            assert rc == 0
+            assert loaded == [override]
+            assert tuned == [("spot-one", override), ("perps-one", override)]
 
 
-def test_regime_disabled_stale_timeframe_still_supported(tmp_path):
-    cfg = {"config_version": 15,
-           "regime": {"enabled": False, "timeframe": "1d"},
-           "strategies": [{"id": "s", "type": "spot",
-                           "args": ["sma_crossover", "BTC/USDT", "4h"],
-                           "open_strategy": {"name": "sma_crossover", "params": {}}}]}
-    path = _write_config(tmp_path, cfg)
-    res = tl.tune_strategy(path, "s", "BTC/USDT", "4h", "spot",
-                           load_registry("spot"), _make_args(dry_run=True), {},
-                           str(tmp_path))
-    assert res["status"] == "dry_run"
+def test_unsupported_live_shapes_are_skipped_and_a_dormant_regime_is_not(tmp_path, subtests):
+    cases = [
+        ("regime_timeframe_mismatch", {
+            "config_version": 15,
+            "regime": {"enabled": True, "timeframe": "1d", "period": 14},
+            "strategies": [{"id": "hl-sma", "type": "perps", "platform": "hyperliquid",
+                            "args": ["sma_crossover", "BTC/USDT", "4h"],
+                            "allowed_regimes": ["trending_up"],
+                            "open_strategy": {"name": "sma_crossover", "params": {}}}]},
+         "hl-sma", "4h", "unsupported", "unsupported_regime_timeframe_mismatch", True),
+        ("regime_disabled_stale_timeframe", {
+            "config_version": 15,
+            "regime": {"enabled": False, "timeframe": "1d"},
+            "strategies": [{"id": "s", "type": "spot",
+                            "args": ["sma_crossover", "BTC/USDT", "4h"],
+                            "open_strategy": {"name": "sma_crossover", "params": {}}}]},
+         "s", "4h", "dry_run", None, False),
+        ("wilder_atr_method", {
+            "config_version": 15, "atr_method": "wilder",
+            "strategies": [{"id": "hl-sma", "type": "perps", "platform": "hyperliquid",
+                            "args": ["sma_crossover", "BTC/USDT", "1d"],
+                            "open_strategy": {"name": "sma_crossover", "params": {}}}]},
+         "hl-sma", "1d", "unsupported", "unsupported_atr_method:wilder", False),
+        ("stop_owner", {
+            "config_version": 15,
+            "strategies": [{"id": "hl-sma", "type": "perps", "platform": "hyperliquid",
+                            "args": ["sma_crossover", "BTC/USDT", "1d"],
+                            "open_strategy": {"name": "sma_crossover", "params": {}},
+                            "stop_loss_pct": 0.05}]},
+         "hl-sma", "1d", "unsupported", "unsupported_stop:stop_loss_pct", False),
+    ]
+    for case_id, cfg, sid, tf, status, reason, prefix in cases:
+        with subtests.test(case=case_id):
+            case_dir = tmp_path / case_id
+            case_dir.mkdir()
+            path = _write_config(case_dir, cfg)
+            res = tl.tune_strategy(path, sid, "BTC/USDT", tf, "spot",
+                                   load_registry("spot"), _make_args(dry_run=True), {},
+                                   str(case_dir))
+            assert res["status"] == status
+            if prefix:
+                assert res["reason"].startswith(reason)
+            elif reason is not None:
+                assert res["reason"] == reason
 
 
-def test_wilder_atr_method_skipped_unsupported(tmp_path):
-    cfg = {"config_version": 15, "atr_method": "wilder",
-           "strategies": [{"id": "hl-sma", "type": "perps", "platform": "hyperliquid",
-                           "args": ["sma_crossover", "BTC/USDT", "1d"],
-                           "open_strategy": {"name": "sma_crossover", "params": {}}}]}
-    path = _write_config(tmp_path, cfg)
-    res = tl.tune_strategy(path, "hl-sma", "BTC/USDT", "1d", "spot",
-                           load_registry("spot"), _make_args(dry_run=True), {},
-                           str(tmp_path))
-    assert res["status"] == "unsupported"
-    assert res["reason"] == "unsupported_atr_method:wilder"
-
-
-def test_all_failed_fleet_returns_nonzero(tmp_path):
-    cfg = {"config_version": 13,
-           "strategies": [
-               {"id": "a", "type": "spot", "args": ["sma_crossover", "BTC/USDT", "1d"],
-                "open_strategy": {"name": "sma_crossover", "params": {}}},
-               {"id": "b", "type": "spot", "args": ["ema_crossover", "BTC/USDT", "1d"],
-                "open_strategy": {"name": "ema_crossover", "params": {}}},
-           ]}
-    path = _write_config(tmp_path, cfg)
-    rc = tl.main(["--config", path, "--out-dir", str(tmp_path),
-                  "--json", str(tmp_path / "art.json"), "--dry-run"])
-    assert rc == 1
-    art = json.loads((tmp_path / "art.json").read_text())
-    assert all(s["status"] == "config_error" for s in art["strategies"])
+def test_all_failed_fleet_returns_nonzero(tmp_path, subtests):
+    with subtests.test("test_all_failed_fleet_returns_nonzero"):
+        case_path = tmp_path / "test_all_failed_fleet_returns_nonzero"
+        case_path.mkdir()
+        cfg = {"config_version": 13,
+               "strategies": [
+                   {"id": "a", "type": "spot", "args": ["sma_crossover", "BTC/USDT", "1d"],
+                    "open_strategy": {"name": "sma_crossover", "params": {}}},
+                   {"id": "b", "type": "spot", "args": ["ema_crossover", "BTC/USDT", "1d"],
+                    "open_strategy": {"name": "ema_crossover", "params": {}}},
+               ]}
+        path = _write_config(case_path, cfg)
+        rc = tl.main(["--config", path, "--out-dir", str(case_path),
+                      "--json", str(case_path / "art.json"), "--dry-run"])
+        assert rc == 1
+        art = json.loads((case_path / "art.json").read_text())
+        assert all(s["status"] == "config_error" for s in art["strategies"])
+    with subtests.test("test_all_benign_skip_fleet_returns_zero"):
+        case_path = tmp_path / "test_all_benign_skip_fleet_returns_zero"
+        case_path.mkdir()
+        cfg = {"config_version": 15, "strategies": [{
+            "id": "hl-sma", "type": "perps", "platform": "hyperliquid",
+            "args": ["sma_crossover", "BTC/USDT", "1d"], "stop_loss_pct": 0.05,
+            "open_strategy": {"name": "sma_crossover", "params": {}}}]}
+        path = _write_config(case_path, cfg)
+        rc = tl.main(["--config", path, "--out-dir", str(case_path),
+                      "--json", str(case_path / "art.json"), "--dry-run"])
+        assert rc == 0
 
 
 def test_mixed_fleet_with_one_success_returns_zero(tmp_path, monkeypatch):
@@ -904,32 +920,6 @@ def test_mixed_fleet_with_one_success_returns_zero(tmp_path, monkeypatch):
     art = json.loads((tmp_path / "art.json").read_text())
     by_id = {s["strategy_id"]: s["status"] for s in art["strategies"]}
     assert by_id["good"] == "ranked" and by_id["bad-stop"] == "unsupported"
-
-
-def test_all_benign_skip_fleet_returns_zero(tmp_path):
-    cfg = {"config_version": 15, "strategies": [{
-        "id": "hl-sma", "type": "perps", "platform": "hyperliquid",
-        "args": ["sma_crossover", "BTC/USDT", "1d"], "stop_loss_pct": 0.05,
-        "open_strategy": {"name": "sma_crossover", "params": {}}}]}
-    path = _write_config(tmp_path, cfg)
-    rc = tl.main(["--config", path, "--out-dir", str(tmp_path),
-                  "--json", str(tmp_path / "art.json"), "--dry-run"])
-    assert rc == 0
-
-
-def test_unsupported_stop_owner_skipped(tmp_path):
-    cfg = {"config_version": 15, "strategies": [{
-        "id": "hl-sma", "type": "perps", "platform": "hyperliquid",
-        "args": ["sma_crossover", "BTC/USDT", "1d"],
-        "open_strategy": {"name": "sma_crossover", "params": {}},
-        "stop_loss_pct": 0.05,
-    }]}
-    path = _write_config(tmp_path, cfg)
-    res = tl.tune_strategy(path, "hl-sma", "BTC/USDT", "1d", "spot",
-                           load_registry("spot"), _make_args(dry_run=True), {},
-                           str(tmp_path))
-    assert res["status"] == "unsupported"
-    assert res["reason"] == "unsupported_stop:stop_loss_pct"
 
 
 def test_overrides_unknown_strategy_id_refused(tmp_path):

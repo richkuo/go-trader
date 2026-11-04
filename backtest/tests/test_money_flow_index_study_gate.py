@@ -73,7 +73,7 @@ def _gate_from_repo():
                              om.load_manifest(os.path.join(STUDY_DIR, "study_manifest_fee_x2.json"))])
 
 
-@pytest.mark.parametrize("rel,mutate,window,needle", [
+_COVERAGE_GATE_REFUSES_BEFORE_SELECTION_CASES = [
     ("data/BTC_4h_candles.csv.gz",
      lambda df: df[df["timestamp"] != _ms("2025-10-01 08:00")], "test", "window bars"),
     ("data/ETH_4h_candles.csv.gz",
@@ -88,20 +88,26 @@ def _gate_from_repo():
     ("data/ETH_funding.csv.gz",
      lambda df: df[(df["timestamp"] // HOUR_MS) != _ms("2025-08-31 22:00") // HOUR_MS], "test",
      "right-closed accrual span"),
-])
-def test_coverage_gate_refuses_before_selection(tmp_path, rel, mutate, window, needle):
-    study = _copy_study(tmp_path)
-    _rewrite(study, rel, mutate)
-    gate = _gate(study)
-    assert not gate["complete"]
-    refused = [r for r in gate["refused"] if r["window"] == window]
-    assert refused and any(needle in p for r in refused for p in r["problems"]), gate["refused"]
-    result = DRIVER.run(str(study / "study_manifest.json"), str(study / "study_manifest_fee_x2.json"))
-    assert result["verdict"]["outcome"] == "inconclusive"
-    assert "coverage gate refused" in result["verdict"]["reason"]
-    assert "arms" not in result and "held_out" not in result
-    report = DRIVER.render(result)
-    assert "REFUSED" in report and "No selection or score was computed" in report
+]
+
+
+def test_coverage_gate_refuses_before_selection(tmp_path, subtests):
+    for i, (rel, mutate, window, needle) in enumerate(_COVERAGE_GATE_REFUSES_BEFORE_SELECTION_CASES):
+        with subtests.test(case=i, rel=rel, mutate=mutate, window=window, needle=needle):
+            case_dir = tmp_path / f"case{i}"
+            case_dir.mkdir()
+            study = _copy_study(case_dir)
+            _rewrite(study, rel, mutate)
+            gate = _gate(study)
+            assert not gate["complete"]
+            refused = [r for r in gate["refused"] if r["window"] == window]
+            assert refused and any(needle in p for r in refused for p in r["problems"]), gate["refused"]
+            result = DRIVER.run(str(study / "study_manifest.json"), str(study / "study_manifest_fee_x2.json"))
+            assert result["verdict"]["outcome"] == "inconclusive"
+            assert "coverage gate refused" in result["verdict"]["reason"]
+            assert "arms" not in result and "held_out" not in result
+            report = DRIVER.render(result)
+            assert "REFUSED" in report and "No selection or score was computed" in report
 
 
 def test_a_changed_hash_is_an_explicit_failure(tmp_path, capsys):

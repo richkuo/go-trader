@@ -180,6 +180,52 @@ type manualLimitOpenInputs struct {
 }
 
 func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in manualLimitOpenInputs) int {
+	sealed := sealedManualCommandFeed(cfg)
+	if sealed && manualLimitRequiresATR(sc) {
+		if !validExplicitATR(in.atr) {
+			fmt.Fprintf(os.Stderr, "error: market_feed %q forbids a private candle fetch; this strategy's protection needs a finite, positive --atr for a new limit open\n", cfg.marketFeedMode())
+			return 2
+		}
+		if in.limitPrice > 0 && in.atr > 0.5*in.limitPrice {
+			fmt.Fprintf(os.Stderr, "error: --atr %.4f exceeds 50%% of the limit price %.4f (plausibility guard)\n", in.atr, in.limitPrice)
+			return 1
+		}
+	}
+	resolve := func(sc StrategyConfig) (RegimePayload, error) { return resolveManualRegimePayload(sc, cfg) }
+	confirm := func() error { return nil }
+	if sealed {
+		remote := newManualRegimeRemote(cfg, stateDB)
+		resolve, confirm = remote.resolve, remote.confirm
+	}
+	var entrySnapshots map[string]RegimeSnapshot
+	regimeAdmitted := false
+	if strategyRegimeStopDependent(sc) {
+		payload, err := resolve(sc)
+		if err != nil {
+			if manualRegimeHardRefusal(err) {
+				fmt.Fprintf(os.Stderr, "manual limit-open held: regime stop window refused: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "manual limit-open held: regime stop window unavailable: %v\n", err)
+			}
+			return 1
+		}
+		if why := regimeDependencyHold(sc, payload, payload, cfg.Regime, true); why != "" {
+			fmt.Fprintf(os.Stderr, "manual limit-open held: %s\n", why)
+			return 1
+		}
+		entrySnapshots = entryRegimeSnapshots(payload, cfg.Regime)
+		regimeAdmitted = true
+	}
+	confirmAdmission := func() bool {
+		if !regimeAdmitted {
+			return true
+		}
+		if err := confirm(); err != nil {
+			fmt.Fprintf(os.Stderr, "manual limit-open held: regime stop window refused: %v\n", err)
+			return false
+		}
+		return true
+	}
 	size := resolveManualSize(in.size, in.notional, in.margin, in.limitPrice, sc.Leverage)
 	if size <= 0 {
 		fmt.Fprintf(os.Stderr, "error: resolved size is zero (size=%g notional=%g margin=%g limit=%g leverage=%g)\n",
@@ -188,6 +234,9 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 	}
 
 	if in.dryRun {
+		if !confirmAdmission() {
+			return 1
+		}
 		exp := "none"
 		if in.expireAfter > 0 {
 			exp = in.expireAfter.String()
@@ -236,6 +285,9 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 1
 	}
+	if !confirmAdmission() {
+		return 1
+	}
 
 	res, stderr, err := runHyperliquidLimitOpenFn(sc.Script, sc.Symbol, in.openSide, size, in.limitPrice, in.tif, sc.MarginMode, sc.Leverage, hlExecuteSnapshot{})
 	if stderr != "" {
@@ -263,16 +315,17 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 		expiresAt = time.Now().UTC().Add(in.expireAfter)
 	}
 	row := PendingLimitOrder{
-		StrategyID: in.strategyID,
-		Symbol:     sc.Symbol,
-		Side:       in.side,
-		OrderOID:   res.OrderOID,
-		LimitPrice: in.limitPrice,
-		OrderSize:  size,
-		TIF:        in.tif,
-		EntryATR:   in.atr,
-		ExpiresAt:  expiresAt,
-		CreatedAt:  time.Now().UTC(),
+		RegimeSnapshots: entrySnapshots,
+		StrategyID:      in.strategyID,
+		Symbol:          sc.Symbol,
+		Side:            in.side,
+		OrderOID:        res.OrderOID,
+		LimitPrice:      in.limitPrice,
+		OrderSize:       size,
+		TIF:             in.tif,
+		EntryATR:        in.atr,
+		ExpiresAt:       expiresAt,
+		CreatedAt:       time.Now().UTC(),
 	}
 	if _, err := stateDB.InsertPendingLimitOrder(row); err != nil {
 		fmt.Fprintf(os.Stderr, "CRITICAL: limit order placed (oid=%d) but DB insert failed (%v); attempting cancel...\n", res.OrderOID, err)
@@ -462,8 +515,17 @@ func limitOrderFullyFilled(cumFilled, orderSize float64) bool {
 }
 
 func resolveLimitFillEntryATR(sc StrategyConfig, cfg *Config, rowATR, avgPx float64, notifier *MultiNotifier) float64 {
+	if rowATR > 0 && avgPx > 0 && rowATR > 0.5*avgPx {
+		if sealedManualCommandFeed(cfg) {
+			return recoverSuppliedManualATR("limit-fill", sc.ID, sc.Symbol, rowATR, avgPx, sc.Leverage, notifier)
+		}
+		warnNotifier(notifier, fmt.Sprintf(
+			"[limit-fill] %s %s: supplied ATR %.6f exceeds 50%% of fill price %.4f — discarding it",
+			sc.ID, sc.Symbol, rowATR, avgPx))
+		rowATR = 0
+	}
 	entryATR := rowATR
-	if entryATR == 0 && (effectiveManualSLATRMult(sc) > 0 || strategyUsesTieredTPATRClose(sc)) {
+	if entryATR == 0 && (effectiveManualSLATRMult(sc) > 0 || strategyUsesTieredTPATRClose(sc) || strategyRegimeStopDependent(sc)) {
 		fetched, fetchErr, ok := fetchManualEntryATR(sc, cfg)
 		if ok && !(avgPx > 0 && fetched > 0.5*avgPx) {
 			entryATR = fetched
@@ -538,6 +600,17 @@ func applyLimitFillProgressInner(state *AppState, sc StrategyConfig, o PendingLi
 			OpenedAt:        now,
 			ATRMethodAtOpen: atrMethod,
 		}
+		pos.RegimeSnapshots = cloneRegimeSnapshots(o.RegimeSnapshots)
+		if pos.RegimeSnapshots == nil {
+			pos.RegimeSnapshots = map[string]RegimeSnapshot{}
+		}
+		payload := RegimePayload{MultiMode: true, Windows: pos.RegimeSnapshots}
+		pos.RegimeWindows = payload.WindowLabels()
+		gateKey := normalizeRegimeWindowKey(sc.RegimeGateWindow)
+		if gateKey == "" || gateKey == regimeWindowDefaultKey {
+			gateKey = regimeWindowReservedName
+		}
+		pos.Regime = pos.RegimeSnapshots[gateKey].Regime
 		pos.TradePositionID = newTradePositionID(o.StrategyID, o.Symbol, now)
 		ss.Positions[o.Symbol] = pos
 

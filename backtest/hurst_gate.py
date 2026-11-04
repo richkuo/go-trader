@@ -41,14 +41,9 @@ def _hurst_exponent(close: pd.Series) -> float:
 
 
 def hurst_live_frame_bars(windows_spec: Optional[dict], regime_period: int = 14) -> int:
-    max_period = int(regime_period or 14)
-    for spec in (windows_spec or {}).values():
-        try:
-            period = int((spec or {}).get("period") or 0)
-        except (AttributeError, TypeError, ValueError):
-            period = 0
-        max_period = max(max_period, period)
-    return max(REGIME_OHLCV_BASE_LIMIT, 2 * max_period - 1 + REGIME_OHLCV_MARGIN)
+    from shared_tools.regime import required_ohlcv_limit
+
+    return required_ohlcv_limit(int(regime_period or 14), windows_spec)
 
 
 def normalize_hurst_mode(value) -> str:

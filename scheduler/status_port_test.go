@@ -6,55 +6,55 @@ import (
 	"testing"
 )
 
-func TestBindWithFallback_FirstPortFree(t *testing.T) {
-	probe, err := net.Listen("tcp", "localhost:0")
-	if err != nil {
-		t.Fatalf("probe listen: %v", err)
-	}
-	port := probe.Addr().(*net.TCPAddr).Port
-	probe.Close()
+func TestBindWithFallback(t *testing.T) {
+	t.Run("BindWithFallback_FirstPortFree", func(t *testing.T) {
+		probe, err := net.Listen("tcp", "localhost:0")
+		if err != nil {
+			t.Fatalf("probe listen: %v", err)
+		}
+		port := probe.Addr().(*net.TCPAddr).Port
+		probe.Close()
 
-	listener, bound, err := bindWithFallback(port, statusPortMaxAttempts)
-	if err != nil {
-		t.Fatalf("bindWithFallback: %v", err)
-	}
-	defer listener.Close()
-	if bound != port {
-		t.Fatalf("bound port = %d, want %d (no fallback expected)", bound, port)
-	}
-}
+		listener, bound, err := bindWithFallback(port, statusPortMaxAttempts)
+		if err != nil {
+			t.Fatalf("bindWithFallback: %v", err)
+		}
+		defer listener.Close()
+		if bound != port {
+			t.Fatalf("bound port = %d, want %d (no fallback expected)", bound, port)
+		}
+	})
+	t.Run("BindWithFallback_FallsThrough", func(t *testing.T) {
+		port := findConsecutiveFreePorts(t, 2)
 
-func TestBindWithFallback_FallsThrough(t *testing.T) {
-	port := findConsecutiveFreePorts(t, 2)
+		blocker, err := net.Listen("tcp", statusPortAddr(port))
+		if err != nil {
+			t.Fatalf("blocker listen on %d: %v", port, err)
+		}
+		defer blocker.Close()
 
-	blocker, err := net.Listen("tcp", statusPortAddr(port))
-	if err != nil {
-		t.Fatalf("blocker listen on %d: %v", port, err)
-	}
-	defer blocker.Close()
+		listener, bound, err := bindWithFallback(port, statusPortMaxAttempts)
+		if err != nil {
+			t.Fatalf("bindWithFallback: %v", err)
+		}
+		defer listener.Close()
+		if bound != port+1 {
+			t.Fatalf("bound port = %d, want %d (should skip held port %d)", bound, port+1, port)
+		}
+	})
+	t.Run("BindWithFallback_AllBusy", func(t *testing.T) {
+		blocker, err := net.Listen("tcp", "localhost:0")
+		if err != nil {
+			t.Fatalf("blocker listen: %v", err)
+		}
+		defer blocker.Close()
+		port := blocker.Addr().(*net.TCPAddr).Port
 
-	listener, bound, err := bindWithFallback(port, statusPortMaxAttempts)
-	if err != nil {
-		t.Fatalf("bindWithFallback: %v", err)
-	}
-	defer listener.Close()
-	if bound != port+1 {
-		t.Fatalf("bound port = %d, want %d (should skip held port %d)", bound, port+1, port)
-	}
-}
-
-func TestBindWithFallback_AllBusy(t *testing.T) {
-	blocker, err := net.Listen("tcp", "localhost:0")
-	if err != nil {
-		t.Fatalf("blocker listen: %v", err)
-	}
-	defer blocker.Close()
-	port := blocker.Addr().(*net.TCPAddr).Port
-
-	_, _, err = bindWithFallback(port, 1)
-	if err == nil {
-		t.Fatal("expected error when every bind attempt fails, got nil")
-	}
+		_, _, err = bindWithFallback(port, 1)
+		if err == nil {
+			t.Fatal("expected error when every bind attempt fails, got nil")
+		}
+	})
 }
 
 func statusPortAddr(port int) string {

@@ -304,6 +304,10 @@ func resolveRegimeProfile(alloc *RegimeProfileAllocation, label, barTime string,
 	}
 
 	label = strings.TrimSpace(label)
+	if label == "" {
+		next.PendingProfile = ""
+		next.PendingBarsSeen = 0
+	}
 	desired := ""
 	if label != "" {
 		desired = alloc.Profiles[label]

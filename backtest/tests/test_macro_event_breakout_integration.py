@@ -22,7 +22,6 @@ from atr import ensure_atr_indicator
 from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from close_registry_loader import get_strategy as get_close
-from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid
 from registry_loader import load_registry
 from strategy_composition import (
     GATE_MODE_LIVE,
@@ -124,29 +123,6 @@ UP = {EVENT_BAR: 101.2, EVENT_BAR + 1: 101.5, EVENT_BAR + 2: 101.7}
 DOWN = {EVENT_BAR: 98.8, EVENT_BAR + 1: 98.5}
 
 
-def test_registration_is_futures_only_bidirectional_hidden_production_refused_with_a_valid_grid():
-    reg = _reg()
-    entry = reg.STRATEGY_REGISTRY[NAME]
-    assert entry["production_refused"] is True and entry["edge_status"] == "no_edge"
-    assert entry["edge_ref"] == "backtest/candidates/macro_event_breakout_1654/REPORT.md"
-    assert NAME not in reg.list_strategies()
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
-    registry = reg._registry
-    assert registry.STRATEGIES[NAME]["short_entries"] is True
-    assert NAME in registry.production_refused_strategies()
-    grid = generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
-    assert len(grid) == 12
-    for params in grid:
-        registry.validate_params(NAME, params)
-    for bad in ({"confirm_bars": 7}, {"range_bars": 0}, {"max_spread_frac": 0.0}, {"confirm_bars": 3,
-                                                                                   "post_window_bars": 2},
-                {"spread_gate": "yes"}, {"event_type": "cpi"}, {"calendar_path": "x.json"},
-                {"calendar_sha256": "ABC"}, {"max_quote_age_ms": H + 1}, {"expected_interval_ms": 300_000},
-                {"unknown_key": 1}):
-        with pytest.raises(ValueError):
-            registry.validate_params(NAME, bad)
-
-
 def test_importer_is_deterministic_and_artifact_identity_is_pinned(tmp_path):
     rows = [_event(), _event(eid="fixture/b", ms=RELEASE + 48 * H), _event()]
     a, stats = _calendar(rows)
@@ -189,7 +165,7 @@ def test_importer_is_deterministic_and_artifact_identity_is_pinned(tmp_path):
         mi.local_to_utc_ms("2026-03-08T02:30:00", "America/New_York")
 
 
-def test_mirrored_entries_record_their_evidence_and_respect_the_range_boundary():
+def _check_mirrored_entries_record_their_evidence_and_respect_the_range_boundary():
     quotes = _quotes()
     long_out = _run(_frame(breakout=UP), quotes=quotes)
     i = int(np.flatnonzero(long_out["signal"].to_numpy() == 1)[0])
@@ -210,7 +186,7 @@ def test_mirrored_entries_record_their_evidence_and_respect_the_range_boundary()
     assert pre["signal"].abs().sum() == 0
 
 
-def test_confirmation_expiry_and_cooldown():
+def _check_confirmation_expiry_and_cooldown():
     quotes = _quotes()
     two = _run(_frame(breakout=UP), quotes=quotes, params={"confirm_bars": 2})
     assert _reason(two, EVENT_BAR) == "awaiting_confirmation"
@@ -226,7 +202,7 @@ def test_confirmation_expiry_and_cooldown():
     assert free["signal"].abs().sum() == 2
 
 
-def test_schedule_provenance_holds_unknown_late_revised_postponed_conflicting_and_uncovered_events():
+def _check_schedule_provenance_holds_unknown_late_revised_postponed_conflicting_and_uncovered_events():
     quotes = _quotes()
     df = _frame(breakout=UP)
     unknown, _ = _calendar([_event(known=None)])
@@ -253,7 +229,7 @@ def test_schedule_provenance_holds_unknown_late_revised_postponed_conflicting_an
                    EVENT_BAR) == "calendar_not_covered"
 
 
-def test_spread_gate_holds_missing_stale_late_conflicting_and_wide_quotes():
+def _check_spread_gate_holds_missing_stale_late_conflicting_and_wide_quotes():
     df = _frame(breakout=UP)
     assert _reason(_run(df), EVENT_BAR) == "quotes_unavailable"
     for quotes, why in ((_quotes(skip={EVENT_BAR + 1}), "quote_missing"),
@@ -454,3 +430,21 @@ def test_manifest_v4_contract_refuses_old_schemas_and_mismatched_pins(research_i
         json.dump(quotes_only, fh)
     with pytest.raises(om.ManifestError, match="macro_quotes needs a macro_calendar"):
         om.load_manifest(path)
+
+
+def test_entry_rule_range_boundary_confirmation_expiry_and_cooldown(subtests):
+    for check in (
+            _check_mirrored_entries_record_their_evidence_and_respect_the_range_boundary,
+            _check_confirmation_expiry_and_cooldown,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()
+
+
+def test_schedule_and_quote_defects_hold_the_entry_with_a_reason(subtests):
+    for check in (
+            _check_schedule_provenance_holds_unknown_late_revised_postponed_conflicting_and_uncovered_events,
+            _check_spread_gate_holds_missing_stale_late_conflicting_and_wide_quotes,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()

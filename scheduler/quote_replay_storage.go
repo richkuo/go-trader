@@ -146,7 +146,7 @@ func quoteReplayRealPath(dir string) error {
 	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir {
 		return refuseReplay("state_dir_refused", fmt.Sprintf("run.state_dir %q must be an absolute clean path", dir))
 	}
-	if err := basketReplayPathAllowed(dir); err != nil {
+	if err := replayPathAllowed(dir); err != nil {
 		return refuseReplay("state_dir_refused", err.Error())
 	}
 	parent := filepath.Dir(dir)
@@ -157,7 +157,7 @@ func quoteReplayRealPath(dir string) error {
 	if real != parent {
 		return refuseReplay("state_dir_refused", fmt.Sprintf("run.state_dir parent %q resolves through a symbolic link to %q; give the real path", parent, real))
 	}
-	if err := basketReplayPathAllowed(real); err != nil {
+	if err := replayPathAllowed(real); err != nil {
 		return refuseReplay("state_dir_refused", err.Error())
 	}
 	return nil
@@ -169,7 +169,7 @@ func checkQuoteReplayStateDir(mode, dir string) error {
 	}
 	info, err := os.Lstat(dir)
 	switch mode {
-	case basketReplayModeNew:
+	case replayModeNew:
 		if err == nil {
 			return refuseReplay("state_exists", fmt.Sprintf("new-run mode refuses the existing path %q; a new run creates its own empty state directory", dir))
 		}
@@ -177,7 +177,7 @@ func checkQuoteReplayStateDir(mode, dir string) error {
 			return refuseReplay("state_dir_refused", err.Error())
 		}
 		return nil
-	case basketReplayModeResume:
+	case replayModeResume:
 		if err != nil {
 			return refuseReplay("state_missing", fmt.Sprintf("resume mode needs the runner-created state directory %q: %v", dir, err))
 		}

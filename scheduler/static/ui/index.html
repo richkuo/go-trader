@@ -163,6 +163,10 @@
                   <span>Asset</span>
                   <input id="add-strat-asset" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. BTC">
                 </label>
+                <label class="controls-field">
+                  <span>Open params (JSON, research only)</span>
+                  <input id="add-strat-open-params" type="text" autocomplete="off" spellcheck="false" placeholder='e.g. {"calendar_path": "/abs/path.json", "calendar_sha256": "…"}'>
+                </label>
                 <label class="controls-field controls-field--inline">
                   <input id="add-strat-restart" type="checkbox">
                   <span>Restart daemon after write</span>
@@ -171,6 +175,22 @@
                   <button id="add-strat-button" type="button" class="tuner-button primary">Add strategy…</button>
                 </div>
                 <p id="add-strat-message" class="controls-message" hidden></p>
+              </div>
+              <div class="ops-panel">
+                <h3>Add quote owner</h3>
+                <p class="panel-muted">Upload a quote_owner JSON file. The owner loads in paper and stays held until a forward paper quote engine exists. Restart-required change.</p>
+                <label class="controls-field">
+                  <span>quote_owner file</span>
+                  <input id="add-quote-file" type="file" accept="application/json,.json">
+                </label>
+                <label class="controls-field controls-field--inline">
+                  <input id="add-quote-restart" type="checkbox">
+                  <span>Restart daemon after write</span>
+                </label>
+                <div class="controls-row">
+                  <button id="add-quote-button" type="button" class="tuner-button primary">Add quote owner…</button>
+                </div>
+                <p id="add-quote-message" class="controls-message" hidden></p>
               </div>
             </div>
           </div>

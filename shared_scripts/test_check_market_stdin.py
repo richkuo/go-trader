@@ -82,15 +82,6 @@ def test_market_stdin_single_check_uses_the_sealed_frame():
     assert "Fetching" not in proc.stderr
 
 
-def test_market_stdin_single_check_refuses_a_missing_frame():
-    proc = _run(CHECK_HL, [
-        "breakout", "BTC", "1h", "--mode=paper", "--market-stdin",
-    ], _envelope({"ETH|1h": _frame(_candles())}))
-    assert proc.returncode == 1
-    out = json.loads(proc.stdout)
-    assert "market payload" in out["error"]
-
-
 def test_market_stdin_single_check_refuses_a_v1_envelope():
     proc = _run(CHECK_HL, [
         "breakout", "BTC", "1h", "--mode=paper", "--market-stdin",

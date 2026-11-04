@@ -1,6 +1,7 @@
 
 import os
 import sys
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -52,7 +53,14 @@ def test_window_invariant_strategy_diffs_clean():
     )
 
 
-def test_frame_dependent_strategy_is_caught():
+def test_frame_dependent_strategy_is_caught_with_and_without_close_refs(subtests):
+    with subtests.test(case="frame_dependent_strategy_is_caught"):
+        _assert_frame_dependent_strategy_is_caught()
+    with subtests.test(case="frame_dependent_strategy_caught_with_close_refs_too"):
+        _assert_frame_dependent_strategy_caught_with_close_refs_too()
+
+
+def _assert_frame_dependent_strategy_is_caught():
     reg = load_registry("spot")
 
     def full_frame_mean_strategy(df: pd.DataFrame) -> pd.DataFrame:
@@ -133,7 +141,14 @@ def _trending_ohlcv(n: int = 260, seed: int = 11) -> pd.DataFrame:
     }, index=pd.date_range("2024-01-01", periods=n, freq="1h"))
 
 
-def test_close_evaluator_parity_clean_and_exercised():
+def test_close_evaluator_parity_clean_and_composed_signal_matches(subtests):
+    with subtests.test(case="close_evaluator_parity_clean_and_exercised"):
+        _assert_close_evaluator_parity_clean_and_exercised()
+    with subtests.test(case="composed_signal_with_close_refs_diffs_clean"):
+        _assert_composed_signal_with_close_refs_diffs_clean()
+
+
+def _assert_close_evaluator_parity_clean_and_exercised():
     df = _trending_ohlcv(260)
     frame = compute_parity_frame(
         df, "sma_crossover",
@@ -150,7 +165,7 @@ def test_close_evaluator_parity_clean_and_exercised():
     assert (frame["bt_close_fraction"] > 0).any()
 
 
-def test_composed_signal_with_close_refs_diffs_clean():
+def _assert_composed_signal_with_close_refs_diffs_clean():
     df = _trending_ohlcv(220)
     frame = compute_parity_frame(
         df, "sma_crossover",
@@ -172,6 +187,9 @@ def test_regime_directional_policy_decision_layer_parity(monkeypatch):
     def fake_compute_regime(frame, period=14, adx_threshold=20.0):
         out = frame.copy()
         out["regime"] = frame["_test_regime"].values
+        out["regime_ready"] = True
+        out["regime_bars"] = 29
+        out["regime_need"] = 29
         out["regime_score"] = 1.0
         out["adx"] = 50.0
         out["plus_di"] = 10.0
@@ -180,7 +198,7 @@ def test_regime_directional_policy_decision_layer_parity(monkeypatch):
 
     def fake_prepare_check_regime(window, **kwargs):
         label = str(window["_test_regime"].iloc[-1])
-        snap = {"regime": label, "score": 1.0, "metrics": {}}
+        snap = {"regime": label, "score": 1.0, "metrics": {}, "ready": True, "bars": 29, "need": 29}
         return label, label, snap
 
     monkeypatch.setattr(regime_mod, "compute_regime", fake_compute_regime)
@@ -225,7 +243,7 @@ def test_regime_directional_policy_decision_layer_parity(monkeypatch):
         del reg.STRATEGY_REGISTRY[name]
 
 
-def test_frame_dependent_strategy_caught_with_close_refs_too():
+def _assert_frame_dependent_strategy_caught_with_close_refs_too():
     reg = load_registry("spot")
 
     def full_frame_mean_strategy(df: pd.DataFrame) -> pd.DataFrame:
@@ -250,7 +268,16 @@ def test_frame_dependent_strategy_caught_with_close_refs_too():
         del reg.STRATEGY_REGISTRY[name]
 
 
-def test_config_mode_builds_parity_config(tmp_path):
+def test_config_mode_builds_parity_config(tmp_path, subtests):
+    with subtests.test(case="config_mode_builds_parity_config"):
+        _assert_config_mode_builds_parity_config(tmp_path)
+    with subtests.test(case="config_mode_unknown_strategy_id_raises"):
+        _assert_config_mode_unknown_strategy_id_raises(tmp_path)
+    with subtests.test(case="config_mode_injects_user_close_defaults"):
+        _assert_config_mode_injects_user_close_defaults(tmp_path)
+
+
+def _assert_config_mode_builds_parity_config(tmp_path):
     import json as _json
     cfg_path = tmp_path / "config.json"
     cfg_path.write_text(_json.dumps({
@@ -282,7 +309,7 @@ def test_config_mode_builds_parity_config(tmp_path):
     assert summarize(frame)["bars_compared"] > 50
 
 
-def test_config_mode_unknown_strategy_id_raises(tmp_path):
+def _assert_config_mode_unknown_strategy_id_raises(tmp_path):
     import json as _json
     cfg_path = tmp_path / "config.json"
     cfg_path.write_text(_json.dumps({"config_version": 15, "strategies": []}))
@@ -315,50 +342,78 @@ def test_backtest_effective_columns_are_prior_bar_inputs():
     want = frame["bt_signal"].iloc[:-1].tolist()
     assert got == want
 
-def _live_config_json(stype: str = "perps") -> dict:
-    return {
-        "config_version": 15,
-        "strategies": [{
-            "id": "test-strat",
-            "type": stype,
-            "script": "shared_scripts/check_hyperliquid.py",
-            "args": ["sma_crossover", "BTC/USDT", "1h"],
-            "open_strategy": {
-                "name": "sma_crossover",
-                "params": {"fast_period": 5, "slow_period": 20},
-            },
-        }],
+def _live_config_json(stype: str = "perps", sid: str = "test-strat",
+                      platform: Optional[str] = None, **extra) -> dict:
+    sc = {
+        "id": sid,
+        "type": stype,
+        "script": "shared_scripts/check_hyperliquid.py",
+        "args": ["sma_crossover", "BTC/USDT", "1h"],
+        "open_strategy": {
+            "name": "sma_crossover",
+            "params": {"fast_period": 5, "slow_period": 20},
+        },
     }
+    if platform:
+        sc["platform"] = platform
+    sc.update(extra)
+    return {"config_version": 15, "strategies": [sc]}
 
 
-@pytest.mark.parametrize("stype,want_platform", [
-    ("perps", "hyperliquid"),
-    ("manual", "hyperliquid"),
-    ("futures", "binanceus"),
-    ("spot", "binanceus"),
-])
-def test_config_mode_platform_autodetect(tmp_path, stype, want_platform):
+def _write_live_config(tmp_path, stype="perps", sid="test-strat", platform=None, **extra):
     import json as _json
-    cfg_path = tmp_path / "config.json"
-    cfg_path.write_text(_json.dumps(_live_config_json(stype)))
-    cfg = config_from_live_config(str(cfg_path), "test-strat", platform="")
-    assert cfg.platform == want_platform
+    cfg_path = tmp_path / f"{sid}-{stype}-{platform}.json"
+    cfg_path.write_text(_json.dumps(_live_config_json(stype, sid, platform, **extra)))
+    return str(cfg_path)
 
 
-def test_config_mode_explicit_platform_overrides_autodetect(tmp_path):
-    import json as _json
-    cfg_path = tmp_path / "config.json"
-    cfg_path.write_text(_json.dumps(_live_config_json("spot")))
-    cfg = config_from_live_config(str(cfg_path), "test-strat",
-                                  platform="hyperliquid")
+_CONFIG_AUTOMATIC_PLATFORM_CASES = [
+    ("test-strat", "perps", None, "binanceus"),
+    ("test-strat", "spot", None, "binanceus"),
+    ("test-strat", "perps", "hyperliquid", "hyperliquid"),
+    ("test-strat", "manual", "hyperliquid", "hyperliquid"),
+    ("hl-strat", "perps", None, "hyperliquid"),
+    ("rh-strat", "spot", None, "robinhood"),
+    ("hl-strat", "spot", "robinhood", "robinhood"),
+    ("okx-strat", "perps", None, "okx-perps"),
+    ("okx-strat", "spot", None, "okx"),
+    ("luno-strat", "spot", None, "luno"),
+]
+
+
+def test_config_mode_platform_autodetect_and_explicit_override(tmp_path, capsys, subtests):
+    for sid, stype, platform, want_platform in _CONFIG_AUTOMATIC_PLATFORM_CASES:
+        with subtests.test(sid=sid, stype=stype, platform=platform):
+            path = _write_live_config(tmp_path, stype, sid, platform)
+            cfg = config_from_live_config(path, sid, platform="")
+            assert cfg.platform == want_platform
+            assert "platform selection" not in capsys.readouterr().err
+    for sid, stype, platform in [("test-strat", "futures", None),
+                                 ("test-strat", "manual", None),
+                                 ("deribit-strat", "options", None),
+                                 ("test-strat", "spot", "kraken")]:
+        with subtests.test(sid=sid, stype=stype, platform=platform, refused=True):
+            path = _write_live_config(tmp_path, stype, sid, platform)
+            with pytest.raises(ValueError, match="explicit --platform"):
+                config_from_live_config(path, sid, platform="")
+    with subtests.test(case="explicit_platform_overrides_autodetect"):
+        _assert_config_mode_explicit_platform_overrides_autodetect(tmp_path, capsys)
+
+
+def _assert_config_mode_explicit_platform_overrides_autodetect(tmp_path, capsys):
+    path = _write_live_config(tmp_path, "spot")
+    cfg = config_from_live_config(path, "test-strat", platform="hyperliquid")
     assert cfg.platform == "hyperliquid"
+    warnings = [l for l in capsys.readouterr().err.splitlines()
+                if l.startswith("[WARN] platform selection")]
+    assert len(warnings) == 1
+    assert "'binanceus'" in warnings[0] and "'spot'" in warnings[0]
+    assert "--platform hyperliquid" in warnings[0]
 
 
 def test_main_config_mode_fills_use_autodetected_platform(tmp_path, monkeypatch):
-    import json as _json
     import data_fetcher
-    cfg_path = tmp_path / "config.json"
-    cfg_path.write_text(_json.dumps(_live_config_json("perps")))
+    path = _write_live_config(tmp_path, "perps", platform="hyperliquid")
     monkeypatch.setattr(data_fetcher, "load_cached_data",
                         lambda *a, **k: _trending_ohlcv(200))
     captured = {}
@@ -368,10 +423,139 @@ def test_main_config_mode_fills_use_autodetected_platform(tmp_path, monkeypatch)
         return []
 
     monkeypatch.setattr(parity_diff, "extract_fills", spy_extract_fills)
-    rc = main(["--config", str(cfg_path), "--strategy-id", "test-strat",
+    rc = main(["--config", path, "--strategy-id", "test-strat",
                "--fills", "--window", "60"])
     assert rc in (0, 1)
     assert captured["platform"] == "hyperliquid"
+
+
+def _recording_engine(monkeypatch):
+    seen = []
+
+    class RecordingBacktester(parity_diff.Backtester):
+        def run(self, *a, **k):
+            out = super().run(*a, **k)
+            seen.append((self, out))
+            return out
+
+    monkeypatch.setattr(parity_diff, "Backtester", RecordingBacktester)
+    return seen
+
+
+def _guard_funding(monkeypatch, allow=False):
+    import funding_fetcher
+    calls = []
+
+    def load(*a, **k):
+        calls.append(a)
+        if not allow:
+            raise AssertionError("unexpected funding history request")
+        raise RuntimeError("fixture: funding history unavailable")
+
+    monkeypatch.setattr(funding_fetcher, "load_cached_funding", load)
+    return calls
+
+
+def _assert_parity_engine_costs(df, report, engine, metrics, commission, slippage=0.0005):
+    assert engine.commission_pct == commission
+    assert engine.slippage_pct == slippage
+    trades = metrics["trades"]
+    assert trades, "fixture must produce fills"
+    entries = [f for f in report["fills"] if f["event"] == "entry"]
+    assert [f["fill_px"] for f in entries] == [t["entry_price"] for t in trades]
+    for t in trades:
+        sign = 1 if t["side"] == "long" else -1
+        raw = float(df["open"].loc[pd.Timestamp(t["entry_date"])])
+        assert t["entry_price"] == pytest.approx(raw * (1 + sign * slippage), rel=1e-12)
+        notional = t["shares"] * t["entry_price"]
+        assert t["entry_fee"] in (pytest.approx(notional * commission, abs=2e-6),
+                                  pytest.approx(notional * commission / (1 - commission), abs=2e-6))
+        if t["exit_reason"]:
+            assert t["exit_fee"] == pytest.approx(t["shares"] * t["exit_price"] * commission, abs=2e-6)
+
+
+_PARITY_ENGINE_FEE_CASES = [
+    ("rh-strat", "spot", None, "robinhood", 0.0),
+    ("okx-strat", "perps", None, "okx-perps", 0.0005),
+    ("okx-strat", "spot", None, "okx", 0.001),
+    ("luno-strat", "spot", None, "luno", 0.01),
+    ("hl-strat", "perps", None, "hyperliquid", 0.00045),
+    ("test-strat", "manual", "hyperliquid", "hyperliquid", 0.00045),
+    ("test-strat", "spot", "binanceus", "binanceus", 0.001),
+    ("test-strat", "perps", None, "binanceus", 0.001),
+]
+
+
+def test_config_mode_fills_charge_the_resolved_fee_in_the_real_engine(tmp_path, monkeypatch, subtests):
+    df = _ohlcv(300)
+    for sid, stype, platform, want, commission in _PARITY_ENGINE_FEE_CASES:
+        with subtests.test(sid=sid, stype=stype):
+            with monkeypatch.context() as mp:
+                seen = _recording_engine(mp)
+                _guard_funding(mp)
+                cfg = config_from_live_config(
+                    _write_live_config(tmp_path, stype, sid, platform), sid)
+                cfg.funding_mode = "off"
+                assert cfg.platform == want
+                report = parity_diff.extract_fills_report(df, cfg)
+                engine, metrics = seen[-1]
+                _assert_parity_engine_costs(df, report, engine, metrics, commission)
+
+
+def test_config_mode_platform_scope_and_refusals(tmp_path, monkeypatch, capsys, subtests):
+    df = _ohlcv(300)
+    with subtests.test("automatic okx perps requests no hyperliquid funding"):
+        with monkeypatch.context() as mp:
+            calls = _guard_funding(mp)
+            cfg = config_from_live_config(_write_live_config(tmp_path, "perps", "okx-strat"), "okx-strat")
+            assert cfg.funding_mode == "charge"
+            parity_diff.extract_fills_report(df, cfg)
+            assert calls == []
+    with subtests.test("explicit hyperliquid proxy prices hyperliquid funding"):
+        with monkeypatch.context() as mp:
+            calls = _guard_funding(mp, allow=True)
+            cfg = config_from_live_config(_write_live_config(tmp_path, "perps", "okx-strat"),
+                                          "okx-strat", platform="hyperliquid")
+            assert cfg.stop_kwargs["stop_platform"] == "okx"
+            cfg.funding_mode = "partial"
+            report = parity_diff.extract_fills_report(df, cfg)
+            assert calls
+            assert report["funding"]["available"] is False
+    with subtests.test("explicit okx-perps on okx perps is silent; okx warns"):
+        path = _write_live_config(tmp_path, "perps", "okx-strat")
+        capsys.readouterr()
+        assert config_from_live_config(path, "okx-strat", platform="okx-perps").platform == "okx-perps"
+        assert "platform selection" not in capsys.readouterr().err
+        assert config_from_live_config(path, "okx-strat", platform="okx").platform == "okx"
+        err = capsys.readouterr().err
+        assert err.count("[WARN] platform selection") == 1 and "'okx-perps'" in err
+    with subtests.test("refused automatic selection warns even for an equal explicit key"):
+        path = _write_live_config(tmp_path, "manual")
+        capsys.readouterr()
+        assert config_from_live_config(path, "test-strat", platform="binanceus").platform == "binanceus"
+        err = capsys.readouterr().err
+        assert err.count("[WARN] platform selection") == 1 and "'manual'" in err
+    with subtests.test("config validation still refuses an explicit proxy"):
+        path = _write_live_config(tmp_path, "spot", "rh-hedge",
+                                  hedge={"enabled": True, "symbol": "ETH"})
+        with pytest.raises(ValueError, match="hedge"):
+            config_from_live_config(path, "rh-hedge", platform="robinhood")
+    for sid, stype in [("deribit-strat", "options"), ("test-strat", "futures")]:
+        with subtests.test("main exits 2 on refused automatic selection", stype=stype):
+            with monkeypatch.context() as mp:
+                import data_fetcher
+                mp.setattr(data_fetcher, "load_cached_data",
+                           lambda *a, **k: pytest.fail("data access before the refusal"))
+                rc = main(["--config", _write_live_config(tmp_path, stype, sid),
+                           "--strategy-id", sid])
+                assert rc == 2
+                err = capsys.readouterr().err
+                assert f"type='{stype}'" in err and "explicit --platform" in err
+    with subtests.test("unknown explicit platform fails during argument parsing"):
+        with pytest.raises(SystemExit) as exc:
+            main(["--config", _write_live_config(tmp_path, "spot", "rh-strat"),
+                  "--strategy-id", "rh-strat", "--platform", "kraken"])
+        assert exc.value.code == 2
 
 
 def test_main_zero_bars_compared_is_data_error(monkeypatch):
@@ -382,7 +566,14 @@ def test_main_zero_bars_compared_is_data_error(monkeypatch):
     assert rc == 2
 
 
-def test_out_of_contract_signal_rejected_loudly():
+def test_out_of_contract_signal_rejected_loudly(subtests):
+    with subtests.test(case="out_of_contract_signal_rejected_loudly"):
+        _assert_out_of_contract_signal_rejected_loudly()
+    with subtests.test(case="normalize_signal_contract"):
+        _assert_normalize_signal_contract()
+
+
+def _assert_out_of_contract_signal_rejected_loudly():
     reg = load_registry("spot")
 
     def fractional_signal_strategy(df: pd.DataFrame) -> pd.DataFrame:
@@ -405,7 +596,7 @@ def test_out_of_contract_signal_rejected_loudly():
         del reg.STRATEGY_REGISTRY[name]
 
 
-def test_normalize_signal_contract():
+def _assert_normalize_signal_contract():
     assert parity_diff._normalize_signal(np.float64(1.0)) == 1
     assert parity_diff._normalize_signal(-1) == -1
     assert parity_diff._normalize_signal(0.0) == 0
@@ -416,7 +607,18 @@ def test_normalize_signal_contract():
             parity_diff._normalize_signal(bad)
 
 
-def test_position_context_entry_regime_is_decision_bar_label():
+def test_position_context_matches_the_engine(subtests):
+    with subtests.test(case="position_context_entry_regime_is_decision_bar_label"):
+        _assert_position_context_entry_regime_is_decision_bar_label()
+    with subtests.test(case="entry_atr_plausibility_guard_matches_engine"):
+        _assert_entry_atr_plausibility_guard_matches_engine()
+    with subtests.test(case="position_context_avg_cost_is_fill_bar_open_with_slippage"):
+        _assert_position_context_avg_cost_is_fill_bar_open_with_slippage()
+    with subtests.test(case="registry_close_advances_quantity_ladder"):
+        _assert_registry_close_advances_quantity_ladder()
+
+
+def _assert_position_context_entry_regime_is_decision_bar_label():
     from atr import ensure_atr_indicator
     n = 40
     df = _ohlcv(n)
@@ -480,7 +682,7 @@ def test_non_registry_close_ref_rejected_like_engine():
         )
 
 
-def test_entry_atr_plausibility_guard_matches_engine():
+def _assert_entry_atr_plausibility_guard_matches_engine():
     from atr import ensure_atr_indicator
     n = 40
     rng = np.random.default_rng(3)
@@ -505,7 +707,7 @@ def test_entry_atr_plausibility_guard_matches_engine():
     assert contexts[20] is not None
     assert "entry_atr" not in contexts[20]
 
-def test_position_context_avg_cost_is_fill_bar_open_with_slippage():
+def _assert_position_context_avg_cost_is_fill_bar_open_with_slippage():
     from atr import ensure_atr_indicator
     n = 40
     df = _ohlcv(n)
@@ -527,7 +729,7 @@ def test_position_context_avg_cost_is_fill_bar_open_with_slippage():
         assert contexts[20]["avg_cost"] != pytest.approx(
             float(df["close"].iloc[20]))
 
-def test_registry_close_advances_quantity_ladder():
+def _assert_registry_close_advances_quantity_ladder():
     from atr import ensure_atr_indicator
     n = 60
     close = np.array([100.0] * 30 + [104.0] * 10 + [108.0] * 20)
@@ -559,7 +761,7 @@ def test_registry_close_advances_quantity_ladder():
     assert fracs[41] == pytest.approx(0.0)
 
 
-def test_config_mode_injects_user_close_defaults(tmp_path):
+def _assert_config_mode_injects_user_close_defaults(tmp_path):
     import json as _json
     cfg_path = tmp_path / "config.json"
     ladder = [
@@ -597,7 +799,18 @@ def _batched_cfg(**overrides) -> ParityConfig:
     return cfg
 
 
-def test_batched_dimension_reports_zero_diff():
+def test_batched_dimension_zero_diff_off_by_default_and_catches_divergence(monkeypatch, subtests):
+    with subtests.test(case="batched_dimension_reports_zero_diff"):
+        _assert_batched_dimension_reports_zero_diff()
+    with subtests.test(case="batched_dimension_zero_diff_with_close_refs_and_regime"):
+        _assert_batched_dimension_zero_diff_with_close_refs_and_regime()
+    with subtests.test(case="batched_dimension_is_off_by_default"):
+        _assert_batched_dimension_is_off_by_default()
+    with subtests.test(case="batched_dimension_catches_a_divergent_slot"):
+        _assert_batched_dimension_catches_a_divergent_slot(monkeypatch)
+
+
+def _assert_batched_dimension_reports_zero_diff():
     frame = compute_parity_frame(_ohlcv(140), cfg=_batched_cfg(), window=60, stride=5)
     result = summarize(frame)
     assert result["bars_compared"] > 0
@@ -609,7 +822,7 @@ def test_batched_dimension_reports_zero_diff():
         assert column in frame.columns
 
 
-def test_batched_dimension_zero_diff_with_close_refs_and_regime():
+def _assert_batched_dimension_zero_diff_with_close_refs_and_regime():
     cfg = _batched_cfg(
         close_refs=[{"name": "tiered_tp_pct", "params": {"tp_tiers": [
             {"profit_pct": 0.9, "close_fraction": 1.0},
@@ -661,7 +874,7 @@ def test_batched_close_fraction_can_be_non_zero():
     assert solo["close_fraction"] == batched["close_fraction"]
 
 
-def test_batched_dimension_is_off_by_default():
+def _assert_batched_dimension_is_off_by_default():
     frame = compute_parity_frame(_ohlcv(140), cfg=_batched_cfg(batched=False),
                                  window=60, stride=5)
     for column in ("solo_signal", "batch_signal", "batch_close_fraction"):
@@ -671,7 +884,7 @@ def test_batched_dimension_is_off_by_default():
     assert "batch_clean" not in result
 
 
-def test_batched_dimension_catches_a_divergent_slot(monkeypatch):
+def _assert_batched_dimension_catches_a_divergent_slot(monkeypatch):
     cfg = _batched_cfg()
     real = parity_diff._batched_bar_decisions
 
@@ -772,8 +985,15 @@ def _eom_cfg(batched):
     )
 
 
-@pytest.mark.parametrize("window", [None, 200])
-def test_eom_candidate_full_prefix_window_and_batch_parity(window):
+def test_eom_candidate_window_batch_parity_and_undeclared_cadence_hold(subtests):
+    for window in [None, 200]:
+        with subtests.test(window=window):
+            _assert_eom_candidate_full_prefix_window_and_batch_parity(window)
+    with subtests.test(case="without_declared_cadence_holds_in_both_paths"):
+        _assert_eom_candidate_without_declared_cadence_holds_in_both_paths()
+
+
+def _assert_eom_candidate_full_prefix_window_and_batch_parity(window):
     from closed_bar import declare_frame_cadence
     df = declare_frame_cadence(_ohlcv(330, seed=3), "1h", "open")
     frame = compute_parity_frame(df, cfg=_eom_cfg(True), window=window, stride=1)
@@ -786,7 +1006,7 @@ def test_eom_candidate_full_prefix_window_and_batch_parity(window):
     assert result["batch_mismatches"] == 0 and result["batch_clean"]
 
 
-def test_eom_candidate_without_declared_cadence_holds_in_both_paths():
+def _assert_eom_candidate_without_declared_cadence_holds_in_both_paths():
     frame = compute_parity_frame(_ohlcv(260, seed=3), cfg=_eom_cfg(False), window=200, stride=5)
     assert summarize(frame)["clean"]
     assert (frame["live_signal"] == 0).all() and (frame["bt_signal"] == 0).all()

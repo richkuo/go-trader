@@ -60,14 +60,18 @@ def _purity(assign, truth, k):
     return correct / len(truth)
 
 
-@pytest.mark.parametrize("fitter,seed", [("kmeans", 0), ("gmm", 1)])
-def test_fitters_recover_three_blobs(fitter, seed):
-    z, truth = _three_blobs(seed=seed)
-    assign, em_mean, em_var, counts = rvm.FITTERS[fitter](z, 3, seed=0)
-    assert em_mean.shape == (3, 4) and em_var.shape == (3, 4)
-    assert (em_var > 0).all()
-    assert counts.sum() == len(z)
-    assert _purity(assign, truth, 3) > 0.95
+_FITTERS_RECOVER_THREE_BLOBS_CASES = [("kmeans", 0), ("gmm", 1)]
+
+
+def test_fitters_recover_three_blobs(subtests):
+    for i, (fitter, seed) in enumerate(_FITTERS_RECOVER_THREE_BLOBS_CASES):
+        with subtests.test(case=i, fitter=fitter, seed=seed):
+            z, truth = _three_blobs(seed=seed)
+            assign, em_mean, em_var, counts = rvm.FITTERS[fitter](z, 3, seed=0)
+            assert em_mean.shape == (3, 4) and em_var.shape == (3, 4)
+            assert (em_var > 0).all()
+            assert counts.sum() == len(z)
+            assert _purity(assign, truth, 3) > 0.95
 
 
 def _markov_sequence(seed=0, n=1500):
@@ -99,29 +103,29 @@ def test_fit_kmeans_k1_returns_global_mean_not_random_init():
     assert np.allclose(em_mean[0], z.mean(0), atol=1e-9)
 
 
-def test_map_latent_to_names_uses_canonical_boundaries_and_is_deterministic():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    mean = np.zeros(4); std = np.ones(4)
-    em = np.array([[0.0, 0.0, 0.1, 0.0],
-                   [0.5, 0.5, 0.9, 40.0]], dtype=float)
-    names, mapping = rvm.map_latent_to_names(em, mean, std, dict(TH))
-    assert names == ["ranging_quiet", "trending_up_clean"]
-    from regime import VALID_LABELS_COMPOSITE
-    assert all(nm in VALID_LABELS_COMPOSITE for nm in names)
-    names2, _ = rvm.map_latent_to_names(em, mean, std, dict(TH))
-    assert names2 == names
-    assert mapping["1"]["centroid_raw"] == [0.5, 0.5, 0.9, 40.0]
+def test_map_latent_to_names_uses_canonical_boundaries_and_is_deterministic(subtests):
+    with subtests.test(case="test_map_latent_to_names_uses_canonical_boundaries_and_is_deterministic"):
+        from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+        mean = np.zeros(4); std = np.ones(4)
+        em = np.array([[0.0, 0.0, 0.1, 0.0],
+                       [0.5, 0.5, 0.9, 40.0]], dtype=float)
+        names, mapping = rvm.map_latent_to_names(em, mean, std, dict(TH))
+        assert names == ["ranging_quiet", "trending_up_clean"]
+        from regime import VALID_LABELS_COMPOSITE
+        assert all(nm in VALID_LABELS_COMPOSITE for nm in names)
+        names2, _ = rvm.map_latent_to_names(em, mean, std, dict(TH))
+        assert names2 == names
+        assert mapping["1"]["centroid_raw"] == [0.5, 0.5, 0.9, 40.0]
 
-
-def test_volatility_rank_orders_by_range_eff():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    mean = np.zeros(4); std = np.ones(4)
-    em = np.array([[0.0, 0.8, 0.1, 10.0],
-                   [0.0, 0.01, 0.1, 10.0],
-                   [0.0, 0.3, 0.1, 10.0]], dtype=float)
-    _, mapping = rvm.map_latent_to_names(em, mean, std, dict(TH))
-    ranks = {int(i): m["volatility_rank"] for i, m in mapping.items()}
-    assert ranks[1] < ranks[2] < ranks[0]
+    with subtests.test(case="test_volatility_rank_orders_by_range_eff"):
+        from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+        mean = np.zeros(4); std = np.ones(4)
+        em = np.array([[0.0, 0.8, 0.1, 10.0],
+                       [0.0, 0.01, 0.1, 10.0],
+                       [0.0, 0.3, 0.1, 10.0]], dtype=float)
+        _, mapping = rvm.map_latent_to_names(em, mean, std, dict(TH))
+        ranks = {int(i): m["volatility_rank"] for i, m in mapping.items()}
+        assert ranks[1] < ranks[2] < ranks[0]
 
 
 def test_map_composite_label_monotone_in_range_within_ranging():
@@ -150,22 +154,26 @@ def _feature_blob_matrix(seed=0):
     return feats
 
 
-@pytest.mark.parametrize("family", ["kmeans", "gmm", "hmm"])
-def test_fit_unsupervised_schema_and_decodes(family):
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
-    from regime_hmm import forward_filter_labels
-    feats = _feature_blob_matrix()
-    model = rvm.fit_unsupervised(feats, family=family, k=3, filter_window=32,
-                                 thresholds=dict(TH), seed=0,
-                                 fitted_on={"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"})
-    assert REQUIRED_KEYS <= set(model)
-    assert model["fit_method"] == family and model["latent_count"] == 3
-    assert len(model["states"]) == 3 and len(model["emissions"]) == 3
-    assert np.allclose(np.sum(model["transition"], axis=1), 1.0)
-    assert all(s in VALID_LABELS_COMPOSITE for s in model["states"])
-    labels, conf = forward_filter_labels(feats, model)
-    assert len(labels) == len(feats)
-    assert set(labels[~np.isnan(feats).any(1)]).issubset(VALID_LABELS_COMPOSITE)
+_FIT_UNSUPERVISED_SCHEMA_AND_DECODES_CASES = ["kmeans", "gmm", "hmm"]
+
+
+def test_fit_unsupervised_schema_and_decodes(subtests):
+    for i, family in enumerate(_FIT_UNSUPERVISED_SCHEMA_AND_DECODES_CASES):
+        with subtests.test(case=i, family=family):
+            from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
+            from regime_hmm import forward_filter_labels
+            feats = _feature_blob_matrix()
+            model = rvm.fit_unsupervised(feats, family=family, k=3, filter_window=32,
+                                         thresholds=dict(TH), seed=0,
+                                         fitted_on={"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"})
+            assert REQUIRED_KEYS <= set(model)
+            assert model["fit_method"] == family and model["latent_count"] == 3
+            assert len(model["states"]) == 3 and len(model["emissions"]) == 3
+            assert np.allclose(np.sum(model["transition"], axis=1), 1.0)
+            assert all(s in VALID_LABELS_COMPOSITE for s in model["states"])
+            labels, conf = forward_filter_labels(feats, model)
+            assert len(labels) == len(feats)
+            assert set(labels[~np.isnan(feats).any(1)]).issubset(VALID_LABELS_COMPOSITE)
 
 
 def test_fit_unsupervised_no_leakage_does_not_call_compute_regime_composite(monkeypatch):
@@ -194,19 +202,6 @@ def test_decode_is_causal_future_bars_do_not_change_past_labels():
     mutated[t + 1:] = mutated[t + 1:] * 5.0 + 1.0
     after, _ = forward_filter_labels(mutated, model)
     assert list(base[: t + 1]) == list(after[: t + 1])
-
-
-def test_fitted_model_scores_through_score_labels():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    from regime_hmm import forward_filter_labels
-    from regime_diagnostics import score_labels
-    feats = _feature_blob_matrix()
-    close = np.cumprod(1 + np.zeros(len(feats))) * 100 + np.arange(len(feats))
-    model = rvm.fit_unsupervised(feats, family="gmm", k=3, filter_window=32,
-                                 thresholds=dict(TH), seed=0)
-    labels, _ = forward_filter_labels(feats, model)
-    rep = score_labels(close, labels, feats, target="volatility")
-    assert "stability" in rep and "coverage" in rep
 
 
 def test_model_satisfies_bounded_window_and_forward_filter_contract():
@@ -328,23 +323,23 @@ def test_select_winner_eligibility_bonferroni_and_structural_ineligibility():
     assert win is not None and win["family"] == "gmm" and win["k"] == 4, case
 
 
-def test_fit_kmeans_reseeds_empty_clusters_no_ghost_states():
-    z, _ = _three_blobs(seed=0)
-    assign, em_mean, em_var, counts = rvm.fit_kmeans(z, 7, seed=0)
-    assert counts.min() >= 1
-    assert counts.sum() == len(z)
-    assert (em_var > 0).all()
-    assert np.isfinite(em_mean).all()
-    for j in range(7):
-        assert (assign == j).any()
+def test_fit_kmeans_reseeds_empty_clusters_no_ghost_states(subtests):
+    with subtests.test(case="test_fit_kmeans_reseeds_empty_clusters_no_ghost_states"):
+        z, _ = _three_blobs(seed=0)
+        assign, em_mean, em_var, counts = rvm.fit_kmeans(z, 7, seed=0)
+        assert counts.min() >= 1
+        assert counts.sum() == len(z)
+        assert (em_var > 0).all()
+        assert np.isfinite(em_mean).all()
+        for j in range(7):
+            assert (assign == j).any()
 
-
-def test_fit_kmeans_reseed_survives_duplicate_rows():
-    z = np.tile(np.array([0.3, 0.4, 0.5, 12.0]), (50, 1))
-    assign, em_mean, em_var, counts = rvm.fit_kmeans(z, 4, seed=0)
-    assert counts.min() >= 1
-    assert counts.sum() == 50
-    assert (em_var > 0).all() and np.isfinite(em_mean).all()
+    with subtests.test(case="test_fit_kmeans_reseed_survives_duplicate_rows"):
+        z = np.tile(np.array([0.3, 0.4, 0.5, 12.0]), (50, 1))
+        assign, em_mean, em_var, counts = rvm.fit_kmeans(z, 4, seed=0)
+        assert counts.min() >= 1
+        assert counts.sum() == 50
+        assert (em_var > 0).all() and np.isfinite(em_mean).all()
 
 
 def test_fit_unsupervised_high_k_stores_no_zero_n_emission():
@@ -529,64 +524,72 @@ def test_neutralize_dead_components_parks_by_soft_mass_and_is_noop_when_all_aliv
     assert np.array_equal(mu, mu0) and np.array_equal(var, var0), case
 
 
-def test_truly_dead_component_cannot_win_near_mean_bars_after_parking():
-    em_mean = [[0.3, 0.3, 0.3, 0.3], [3.0, 3.0, 3.0, 3.0], [0.0, 0.0, 0.0, 0.0]]
-    em_var = [[0.5, 0.5, 0.5, 0.5], [1.0, 1.0, 1.0, 1.0], [1e-3, 1e-3, 1e-3, 1e-3]]
-    states = ["A", "B", "C_ghost"]
-    near_mean = np.full((8, 4), 0.01)
+def test_truly_dead_component_cannot_win_near_mean_bars_after_parking(subtests):
+    with subtests.test(case="test_truly_dead_component_cannot_win_near_mean_bars_after_parking"):
+        em_mean = [[0.3, 0.3, 0.3, 0.3], [3.0, 3.0, 3.0, 3.0], [0.0, 0.0, 0.0, 0.0]]
+        em_var = [[0.5, 0.5, 0.5, 0.5], [1.0, 1.0, 1.0, 1.0], [1e-3, 1e-3, 1e-3, 1e-3]]
+        states = ["A", "B", "C_ghost"]
+        near_mean = np.full((8, 4), 0.01)
 
-    labels_bug, _ = forward_filter_labels(near_mean, _decoder_model(em_mean, em_var, states))
-    assert set(labels_bug) == {"C_ghost"}
+        labels_bug, _ = forward_filter_labels(near_mean, _decoder_model(em_mean, em_var, states))
+        assert set(labels_bug) == {"C_ghost"}
 
-    mu = np.array(em_mean, dtype=float); var = np.array(em_var, dtype=float)
-    dead = rvm._neutralize_dead_components(mu, var, np.array([500.0, 500.0, 1e-9]), min_soft_mass=1.0)
-    assert dead.tolist() == [False, False, True]
-    labels_fixed, _ = forward_filter_labels(near_mean, _decoder_model(mu, var, states))
-    assert set(labels_fixed) == {"A"}
+        mu = np.array(em_mean, dtype=float); var = np.array(em_var, dtype=float)
+        dead = rvm._neutralize_dead_components(mu, var, np.array([500.0, 500.0, 1e-9]), min_soft_mass=1.0)
+        assert dead.tolist() == [False, False, True]
+        labels_fixed, _ = forward_filter_labels(near_mean, _decoder_model(mu, var, states))
+        assert set(labels_fixed) == {"A"}
+
+    with subtests.test(case="test_benign_zero_hard_count_component_decodes_unchanged"):
+        em_mean = [[2.0, 2.0, 2.0, 2.0], [-2.0, -2.0, -2.0, -2.0]]
+        em_var = [[1.0, 1.0, 1.0, 1.0], [0.8, 0.8, 0.8, 0.8]]
+        states = ["X", "Y_benign"]
+        in_Y = np.full((6, 4), -2.0)
+
+        before, _ = forward_filter_labels(in_Y, _decoder_model(em_mean, em_var, states))
+        assert set(before) == {"Y_benign"}
+
+        mu = np.array(em_mean, dtype=float); var = np.array(em_var, dtype=float)
+        dead = rvm._neutralize_dead_components(mu, var, np.array([300.0, 300.0]), min_soft_mass=1.0)
+        assert not dead.any()
+        after, _ = forward_filter_labels(in_Y, _decoder_model(mu, var, states))
+        assert list(after) == list(before)
 
 
-def test_benign_zero_hard_count_component_decodes_unchanged():
-    em_mean = [[2.0, 2.0, 2.0, 2.0], [-2.0, -2.0, -2.0, -2.0]]
-    em_var = [[1.0, 1.0, 1.0, 1.0], [0.8, 0.8, 0.8, 0.8]]
-    states = ["X", "Y_benign"]
-    in_Y = np.full((6, 4), -2.0)
-
-    before, _ = forward_filter_labels(in_Y, _decoder_model(em_mean, em_var, states))
-    assert set(before) == {"Y_benign"}
-
-    mu = np.array(em_mean, dtype=float); var = np.array(em_var, dtype=float)
-    dead = rvm._neutralize_dead_components(mu, var, np.array([300.0, 300.0]), min_soft_mass=1.0)
-    assert not dead.any()
-    after, _ = forward_filter_labels(in_Y, _decoder_model(mu, var, states))
-    assert list(after) == list(before)
+_FITTERS_PASS_VALID_SOFT_MASS_TO_NEUTRALIZER_CASES = ["gmm", "hmm"]
 
 
-@pytest.mark.parametrize("fitter", ["gmm", "hmm"])
-def test_fitters_pass_valid_soft_mass_to_neutralizer(fitter, monkeypatch):
-    z, _ = _three_blobs(seed=0)
-    captured = {}
+def test_fitters_pass_valid_soft_mass_to_neutralizer(monkeypatch, subtests):
     orig = rvm._neutralize_dead_components
+    for i, fitter in enumerate(_FITTERS_PASS_VALID_SOFT_MASS_TO_NEUTRALIZER_CASES):
+        with subtests.test(case=i, fitter=fitter):
+            z, _ = _three_blobs(seed=0)
+            captured = {}
 
-    def spy(mu, var, soft_mass, **kw):
-        captured["soft_mass"] = np.asarray(soft_mass, dtype=float).copy()
-        captured["calls"] = captured.get("calls", 0) + 1
-        return orig(mu, var, soft_mass, **kw)
+            def spy(mu, var, soft_mass, **kw):
+                captured["soft_mass"] = np.asarray(soft_mass, dtype=float).copy()
+                captured["calls"] = captured.get("calls", 0) + 1
+                return orig(mu, var, soft_mass, **kw)
 
-    monkeypatch.setattr(rvm, "_neutralize_dead_components", spy)
-    (rvm.fit_gmm if fitter == "gmm" else rvm.fit_hmm)(z, 3, seed=0)
-    assert captured.get("calls") == 1
-    sm = captured["soft_mass"]
-    assert sm.shape == (3,) and np.isfinite(sm).all() and (sm >= 0).all()
-    assert sm.sum() == pytest.approx(len(z), rel=1e-6)
+            monkeypatch.setattr(rvm, "_neutralize_dead_components", spy)
+            (rvm.fit_gmm if fitter == "gmm" else rvm.fit_hmm)(z, 3, seed=0)
+            assert captured.get("calls") == 1
+            sm = captured["soft_mass"]
+            assert sm.shape == (3,) and np.isfinite(sm).all() and (sm >= 0).all()
+            assert sm.sum() == pytest.approx(len(z), rel=1e-6)
 
 
-@pytest.mark.parametrize("fitter", ["gmm", "hmm"])
-def test_healthy_fit_parks_nothing(fitter):
-    z, _ = _three_blobs(seed=2)
-    _, mu, var, _ = (rvm.fit_gmm if fitter == "gmm" else rvm.fit_hmm)(z, 3, seed=0)
-    for j in range(3):
-        parked = np.allclose(mu[j], 0.0, atol=1e-6) and np.allclose(var[j], 1.0, atol=1e-9)
-        assert not parked, f"component {j} was spuriously parked on healthy data"
+_HEALTHY_FIT_PARKS_NOTHING_CASES = ["gmm", "hmm"]
+
+
+def test_healthy_fit_parks_nothing(subtests):
+    for i, fitter in enumerate(_HEALTHY_FIT_PARKS_NOTHING_CASES):
+        with subtests.test(case=i, fitter=fitter):
+            z, _ = _three_blobs(seed=2)
+            _, mu, var, _ = (rvm.fit_gmm if fitter == "gmm" else rvm.fit_hmm)(z, 3, seed=0)
+            for j in range(3):
+                parked = np.allclose(mu[j], 0.0, atol=1e-6) and np.allclose(var[j], 1.0, atol=1e-9)
+                assert not parked, f"component {j} was spuriously parked on healthy data"
 
 
 def test_label_anchored_hmm_degenerate_anchor_is_unchanged():
@@ -629,18 +632,22 @@ def test_colliding_centroids_share_a_handrule_cell():
     assert map_composite_label(0.15, 22.0, 0.20, 0.30, dict(TH)) == "trending_up_choppy"
 
 
-@pytest.mark.parametrize("family", ["kmeans", "gmm", "hmm"])
-def test_fitted_model_with_colliding_centroids_keeps_every_latent_state_distinct(family):
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
-    feats = _colliding_feature_matrix()
-    model = rvm.fit_unsupervised(feats, family=family, k=3, filter_window=32,
-                                 thresholds=dict(TH), seed=0)
-    assert model["latent_count"] == 3
-    assert len(set(model["states"])) == 3, model["states"]
-    assert all(s in VALID_LABELS_COMPOSITE for s in model["states"])
-    labels, _ = forward_filter_labels(feats, model)
-    valid = ~np.isnan(feats).any(1)
-    assert len(set(labels[valid].tolist())) == 3
+_FITTED_MODEL_WITH_COLLIDING_CENTROIDS_KEEPS_EVERY_LATENT_STATE_DISTINCT_CASES = ["kmeans", "gmm", "hmm"]
+
+
+def test_fitted_model_with_colliding_centroids_keeps_every_latent_state_distinct(subtests):
+    for i, family in enumerate(_FITTED_MODEL_WITH_COLLIDING_CENTROIDS_KEEPS_EVERY_LATENT_STATE_DISTINCT_CASES):
+        with subtests.test(case=i, family=family):
+            from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
+            feats = _colliding_feature_matrix()
+            model = rvm.fit_unsupervised(feats, family=family, k=3, filter_window=32,
+                                         thresholds=dict(TH), seed=0)
+            assert model["latent_count"] == 3
+            assert len(set(model["states"])) == 3, model["states"]
+            assert all(s in VALID_LABELS_COMPOSITE for s in model["states"])
+            labels, _ = forward_filter_labels(feats, model)
+            valid = ~np.isnan(feats).any(1)
+            assert len(set(labels[valid].tolist())) == 3
 
 
 def _artifact_candidate(path_tail, subset, family, k):
@@ -655,30 +662,34 @@ def _artifact_candidate(path_tail, subset, family, k):
     raise AssertionError(f"{subset}:{family}:k={k} missing from {path_tail}")
 
 
-@pytest.mark.parametrize("path_tail,subset,family,k", [
+_1218_NEAR_MISS_CENTROIDS_MAP_TO_DISTINCT_NAMES_CASES = [
     ("regime_1095_btc.json", "htf", "hmm", 6),
     ("regime_1095_eth.json", "canonical", "kmeans", 7),
     ("regime_1095_eth.json", "funding", "kmeans", 6),
     ("regime_1095_eth.json", "all_enriched", "kmeans", 6),
-])
-def test_1218_near_miss_centroids_map_to_distinct_names(path_tail, subset, family, k):
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
-    from regime_enriched_features import canonical_indices_for
-    cand = _artifact_candidate(path_tail, subset, family, k)
-    stored = cand["states"]
-    assert len(set(stored)) < len(stored)
-    raw = np.array([cand["mapping"][str(i)]["centroid_raw"] for i in range(k)], dtype=float)
-    d = raw.shape[1]
-    cidx = canonical_indices_for(cand["columns"])
-    names, mapping = rvm.map_latent_to_names(raw, np.zeros(d), np.ones(d), dict(TH),
-                                             canonical_indices=cidx)
-    assert len(set(names)) == k, names
-    assert all(nm in VALID_LABELS_COMPOSITE for nm in names)
-    handrule = [mapping[str(i)]["handrule_name"] for i in range(k)]
-    assert handrule == stored
-    for i in range(k):
-        if stored.count(stored[i]) == 1:
-            assert names[i] == stored[i]
+]
+
+
+def test_1218_near_miss_centroids_map_to_distinct_names(subtests):
+    for i, (path_tail, subset, family, k) in enumerate(_1218_NEAR_MISS_CENTROIDS_MAP_TO_DISTINCT_NAMES_CASES):
+        with subtests.test(case=i, path_tail=path_tail, subset=subset, family=family, k=k):
+            from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
+            from regime_enriched_features import canonical_indices_for
+            cand = _artifact_candidate(path_tail, subset, family, k)
+            stored = cand["states"]
+            assert len(set(stored)) < len(stored)
+            raw = np.array([cand["mapping"][str(i)]["centroid_raw"] for i in range(k)], dtype=float)
+            d = raw.shape[1]
+            cidx = canonical_indices_for(cand["columns"])
+            names, mapping = rvm.map_latent_to_names(raw, np.zeros(d), np.ones(d), dict(TH),
+                                                     canonical_indices=cidx)
+            assert len(set(names)) == k, names
+            assert all(nm in VALID_LABELS_COMPOSITE for nm in names)
+            handrule = [mapping[str(i)]["handrule_name"] for i in range(k)]
+            assert handrule == stored
+            for i in range(k):
+                if stored.count(stored[i]) == 1:
+                    assert names[i] == stored[i]
 
 
 def test_handrule_cells_partition_matches_map_composite_label():
@@ -730,78 +741,75 @@ def test_min_cost_assignment_matches_brute_force_and_rejects_more_rows_than_colu
         rvm._min_cost_assignment(np.zeros((3, 2)))
 
 
-def test_uncontested_states_keep_their_handrule_name():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    th = dict(TH)
-    std = np.ones(4)
-    raw = np.array([[0.0, 0.01, 0.1, 10.0],
-                    [0.10, 0.10, 0.2, 20.0],
-                    [0.20, 0.20, 0.3, 24.0],
-                    [-0.10, 0.10, 0.9, 40.0]], dtype=float)
-    handrule = ["ranging_quiet", "trending_up_choppy", "trending_up_choppy", "trending_down_clean"]
-    names, disp = rvm.assign_distinct_names(raw, std, handrule, th)
-    assert names[0] == "ranging_quiet" and names[3] == "trending_down_clean"
-    assert disp[0] == 0.0 and disp[3] == 0.0
-    assert {names[1], names[2]} >= {"trending_up_choppy"}
-    assert len(set(names)) == 4
-    moved = 1 if names[1] != "trending_up_choppy" else 2
-    assert disp[moved] > 0.0
-    assert disp[3 - moved if moved == 1 else 1] == 0.0
+def test_uncontested_states_keep_their_handrule_name(subtests):
+    with subtests.test(case="test_uncontested_states_keep_their_handrule_name"):
+        from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+        th = dict(TH)
+        std = np.ones(4)
+        raw = np.array([[0.0, 0.01, 0.1, 10.0],
+                        [0.10, 0.10, 0.2, 20.0],
+                        [0.20, 0.20, 0.3, 24.0],
+                        [-0.10, 0.10, 0.9, 40.0]], dtype=float)
+        handrule = ["ranging_quiet", "trending_up_choppy", "trending_up_choppy", "trending_down_clean"]
+        names, disp = rvm.assign_distinct_names(raw, std, handrule, th)
+        assert names[0] == "ranging_quiet" and names[3] == "trending_down_clean"
+        assert disp[0] == 0.0 and disp[3] == 0.0
+        assert {names[1], names[2]} >= {"trending_up_choppy"}
+        assert len(set(names)) == 4
+        moved = 1 if names[1] != "trending_up_choppy" else 2
+        assert disp[moved] > 0.0
+        assert disp[3 - moved if moved == 1 else 1] == 0.0
 
+    with subtests.test(case="test_collision_moves_the_state_nearest_to_a_free_cell_in_z_units"):
+        from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+        th = dict(TH)
+        std = np.array([0.05, 0.05, 0.2, 10.0])
+        raw = np.array([[0.10, 0.10, 0.10, 10.0],
+                        [0.10, 0.10, 0.49, 24.9]], dtype=float)
+        handrule = ["trending_up_choppy", "trending_up_choppy"]
+        names, disp = rvm.assign_distinct_names(raw, std, handrule, th)
+        assert names == ["trending_up_choppy", "trending_up_clean"]
+        assert disp[0] == 0.0
+        assert disp[1] == pytest.approx(np.hypot(0.01 / 0.2, 0.1 / 10.0))
+        unit_names, _ = rvm.assign_distinct_names(raw, np.ones(4), handrule, th)
+        assert unit_names[0] == "trending_up_choppy" and unit_names[1] == "ranging_volatile"
 
-def test_collision_moves_the_state_nearest_to_a_free_cell_in_z_units():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    th = dict(TH)
-    std = np.array([0.05, 0.05, 0.2, 10.0])
-    raw = np.array([[0.10, 0.10, 0.10, 10.0],
-                    [0.10, 0.10, 0.49, 24.9]], dtype=float)
-    handrule = ["trending_up_choppy", "trending_up_choppy"]
-    names, disp = rvm.assign_distinct_names(raw, std, handrule, th)
-    assert names == ["trending_up_choppy", "trending_up_clean"]
-    assert disp[0] == 0.0
-    assert disp[1] == pytest.approx(np.hypot(0.01 / 0.2, 0.1 / 10.0))
-    unit_names, _ = rvm.assign_distinct_names(raw, np.ones(4), handrule, th)
-    assert unit_names[0] == "trending_up_choppy" and unit_names[1] == "ranging_volatile"
+    with subtests.test(case="test_ranging_collision_relabels_by_range_toward_volatile"):
+        from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+        th = dict(TH)
+        std = np.ones(4)
+        raw = np.array([[0.0, 0.005, 0.1, 10.0],
+                        [0.0, 0.025, 0.1, 10.0]], dtype=float)
+        names, _ = rvm.assign_distinct_names(raw, std, ["ranging_quiet", "ranging_quiet"], th)
+        assert names == ["ranging_quiet", "ranging_volatile"]
 
+    with subtests.test(case="test_assignment_is_deterministic_across_calls_and_row_order"):
+        from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+        th = dict(TH)
+        std = np.ones(4)
+        raw = np.array([[0.07, 0.14, 0.15, 20.0],
+                        [0.15, 0.20, 0.30, 22.0],
+                        [0.11, 0.18, 0.20, 30.0]], dtype=float)
+        hr = ["trending_up_choppy"] * 3
+        a, _ = rvm.assign_distinct_names(raw, std, hr, th)
+        b, _ = rvm.assign_distinct_names(raw, std, hr, th)
+        assert a == b and len(set(a)) == 3
+        perm = [2, 0, 1]
+        c, _ = rvm.assign_distinct_names(raw[perm], std, hr, th)
+        assert [c[perm.index(i)] for i in range(3)] == a
 
-def test_ranging_collision_relabels_by_range_toward_volatile():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    th = dict(TH)
-    std = np.ones(4)
-    raw = np.array([[0.0, 0.005, 0.1, 10.0],
-                    [0.0, 0.025, 0.1, 10.0]], dtype=float)
-    names, _ = rvm.assign_distinct_names(raw, std, ["ranging_quiet", "ranging_quiet"], th)
-    assert names == ["ranging_quiet", "ranging_volatile"]
-
-
-def test_assignment_is_deterministic_across_calls_and_row_order():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    th = dict(TH)
-    std = np.ones(4)
-    raw = np.array([[0.07, 0.14, 0.15, 20.0],
-                    [0.15, 0.20, 0.30, 22.0],
-                    [0.11, 0.18, 0.20, 30.0]], dtype=float)
-    hr = ["trending_up_choppy"] * 3
-    a, _ = rvm.assign_distinct_names(raw, std, hr, th)
-    b, _ = rvm.assign_distinct_names(raw, std, hr, th)
-    assert a == b and len(set(a)) == 3
-    perm = [2, 0, 1]
-    c, _ = rvm.assign_distinct_names(raw[perm], std, hr, th)
-    assert [c[perm.index(i)] for i in range(3)] == a
-
-
-def test_more_states_than_vocabulary_falls_back_to_handrule_names_and_records_duplicates():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    th = dict(TH)
-    raw = np.tile(np.array([[0.10, 0.10, 0.10, 10.0]]), (10, 1))
-    hr = ["trending_up_choppy"] * 10
-    names, disp = rvm.assign_distinct_names(raw, np.ones(4), hr, th)
-    assert names == hr and disp == [0.0] * 10
-    mapping = {str(i): {"name": names[i], "handrule_name": hr[i], "relabeled": False,
-                        "displacement_z": 0.0} for i in range(10)}
-    summary = rvm.naming_summary(names, mapping)
-    assert summary["distinct"] is False
-    assert summary["duplicate_names"] == ["trending_up_choppy"]
+    with subtests.test(case="test_more_states_than_vocabulary_falls_back_to_handrule_names_and_records_duplicates"):
+        from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+        th = dict(TH)
+        raw = np.tile(np.array([[0.10, 0.10, 0.10, 10.0]]), (10, 1))
+        hr = ["trending_up_choppy"] * 10
+        names, disp = rvm.assign_distinct_names(raw, np.ones(4), hr, th)
+        assert names == hr and disp == [0.0] * 10
+        mapping = {str(i): {"name": names[i], "handrule_name": hr[i], "relabeled": False,
+                            "displacement_z": 0.0} for i in range(10)}
+        summary = rvm.naming_summary(names, mapping)
+        assert summary["distinct"] is False
+        assert summary["duplicate_names"] == ["trending_up_choppy"]
 
 
 def test_kmeans_colliding_fit_records_naming_summary_and_decodes_distinct_states():

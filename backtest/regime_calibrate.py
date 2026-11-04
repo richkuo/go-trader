@@ -12,6 +12,12 @@ SIGNIFICANCE_ALPHA = 0.05
 
 
 def gate_verdict(handrule_report: dict, model_report: dict, primary: str = "h4") -> dict:
+    if primary not in handrule_report or primary not in model_report:
+        return {"target": model_report.get("target") or handrule_report.get("target"),
+                "ship": False, "separation_ok": False, "stability_ok": False,
+                "model_separation_real": False, "incumbent_trustworthy": False,
+                "status": "unavailable", "detail": {"reason": "no ready regime samples for the primary horizon"}}
+
     hr_h = handrule_report[primary]["separation"]["kruskal_h"]
     md_h = model_report[primary]["separation"]["kruskal_h"]
     hr_p = handrule_report[primary]["significance"]["p_value"]

@@ -41,7 +41,7 @@ def _load(symbol, timeframe, window, thresholds):
     labels = compute_regime_composite(df, period=PERIOD,
                                       thresholds=thresholds)["regime"].to_numpy()
     valid = ~np.isnan(features).any(axis=1)
-    st = stability(labels[valid])
+    st = stability(np.where(valid, labels, ""))
     mean_dwell = (float(np.mean(list(st["mean_dwell"].values())))
                   if st["mean_dwell"] else 1.0)
     return {

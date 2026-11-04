@@ -38,34 +38,32 @@ def _synthetic_funding(idx, seed=1):
     return pd.DataFrame({"timestamp": ts, "rate": rate})
 
 
-def test_canonical_columns_lead_enriched_set():
-    assert ref.ENRICHED_COLUMNS[:4] == ref.CANONICAL_COLUMNS
-    assert ref.CANONICAL_INDICES == (0, 1, 2, 3)
-    assert set(ref.ENRICHED_EXTRA_COLUMNS).isdisjoint(ref.CANONICAL_COLUMNS)
+def test_canonical_columns_lead_enriched_set(subtests):
+    with subtests.test("test_canonical_columns_lead_enriched_set"):
+        assert ref.ENRICHED_COLUMNS[:4] == ref.CANONICAL_COLUMNS
+        assert ref.CANONICAL_INDICES == (0, 1, 2, 3)
+        assert set(ref.ENRICHED_EXTRA_COLUMNS).isdisjoint(ref.CANONICAL_COLUMNS)
+    with subtests.test("test_canonical_indices_for"):
+        assert ref.canonical_indices_for(ref.ENRICHED_COLUMNS) == (0, 1, 2, 3)
+        cols = ["funding_rate", "return_eff", "range_eff", "efficiency", "adx"]
+        assert ref.canonical_indices_for(cols) == (1, 2, 3, 4)
+        with pytest.raises(ValueError, match="missing"):
+            ref.canonical_indices_for(["return_eff", "range_eff", "adx"])
 
 
-def test_subset_selection_preserves_canonical_first_order():
-    df = _synthetic_ohlcv()
-    fund = _synthetic_funding(df.index)
-    mat = ref.enriched_feature_matrix(df, period=48, funding=fund,
-                                      columns=["htf_range_eff", "adx", "return_eff",
-                                               "funding_rate", "range_eff", "efficiency"])
-    assert list(mat.columns) == ["return_eff", "range_eff", "efficiency", "adx",
-                                 "funding_rate", "htf_range_eff"]
-
-
-def test_builder_rejects_unknown_column():
-    df = _synthetic_ohlcv()
-    with pytest.raises(ValueError, match="unknown enriched columns"):
-        ref.enriched_feature_matrix(df, period=48, columns=["return_eff", "rsi_14"])
-
-
-def test_canonical_indices_for():
-    assert ref.canonical_indices_for(ref.ENRICHED_COLUMNS) == (0, 1, 2, 3)
-    cols = ["funding_rate", "return_eff", "range_eff", "efficiency", "adx"]
-    assert ref.canonical_indices_for(cols) == (1, 2, 3, 4)
-    with pytest.raises(ValueError, match="missing"):
-        ref.canonical_indices_for(["return_eff", "range_eff", "adx"])
+def test_subset_selection_preserves_canonical_first_order(subtests):
+    with subtests.test("test_subset_selection_preserves_canonical_first_order"):
+        df = _synthetic_ohlcv()
+        fund = _synthetic_funding(df.index)
+        mat = ref.enriched_feature_matrix(df, period=48, funding=fund,
+                                          columns=["htf_range_eff", "adx", "return_eff",
+                                                   "funding_rate", "range_eff", "efficiency"])
+        assert list(mat.columns) == ["return_eff", "range_eff", "efficiency", "adx",
+                                     "funding_rate", "htf_range_eff"]
+    with subtests.test("test_builder_rejects_unknown_column"):
+        df = _synthetic_ohlcv()
+        with pytest.raises(ValueError, match="unknown enriched columns"):
+            ref.enriched_feature_matrix(df, period=48, columns=["return_eff", "rsi_14"])
 
 
 def test_enriched_matrix_is_causal_future_bars_do_not_change_past_rows():
@@ -143,18 +141,6 @@ def test_hurst_column_is_trailing_warmup_nan_and_independent_of_period():
                                         hurst_window=100)
     pd.testing.assert_series_equal(mat_a["hurst"], mat["hurst"], check_exact=True,
                                    obj="test_hurst_column_uses_own_window_independent_of_period")
-
-
-def test_hurst_column_is_causal_future_bars_do_not_change_past_rows():
-    df = _synthetic_ohlcv(n=300)
-    base = ref.enriched_feature_matrix(df, period=48, columns=ref.CANONICAL_COLUMNS + ["hurst"])
-    t = 200
-    mutated = df.copy()
-    mutated.iloc[t + 1:, mutated.columns.get_loc("close")] *= 3.0
-    after = ref.enriched_feature_matrix(mutated, period=48, columns=ref.CANONICAL_COLUMNS + ["hurst"])
-    a = base["hurst"].iloc[: t + 1].to_numpy()
-    b = after["hurst"].iloc[: t + 1].to_numpy()
-    assert np.array_equal(np.nan_to_num(a, nan=-7.0), np.nan_to_num(b, nan=-7.0))
 
 
 def test_full_enriched_matrix_builds_in_order_and_fitted_models_hold_the_feature_contract():

@@ -15,8 +15,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from atr import ensure_atr_indicator, latest_atr
 from regime import prepare_check_regime
-from registry_loader import load_registry, refuse_basket_evaluator, refuse_pair_evaluator
+from registry_loader import load_registry, refuse_quote_capability
 from strategy_composition import (
+    apply_open_side,
     compose_signal,
     evaluate_open_close,
     finalize_decision,
@@ -38,6 +39,9 @@ from backtester import (
     _resolve_regime_directional_entry,
     _signal_from_open_action,
     fee_pct_for_platform,
+    normalize_regime_side_certification,
+    regime_side_decision,
+    regime_side_request,
 )
 
 LIVE_MIN_CANDLES = 30
@@ -75,11 +79,40 @@ class ParityConfig:
     strategy_type: str = "perps"
     stop_kwargs: dict = field(default_factory=dict)
     funding_mode: str = "charge"
+    regime_side: bool = False
+    allow_uncertified_regime_side: bool = False
+    regime_side_certification: Optional[dict] = None
+    htf_filter: bool = False
 
     def __post_init__(self):
         self.regime_directional_policy = _normalize_regime_directional_policy(
             self.regime_directional_policy,
         )
+        self._regime_side_cert = None
+        if self.regime_side:
+            if not (self.regime_enabled and self.regime_label_plan):
+                raise ValueError(
+                    "regime_side parity needs the live config's regime label plan; the side "
+                    "is read from the directional window, never the primary label")
+            if self.htf_filter:
+                raise ValueError(
+                    "regime_side with htf_filter is refused: parity_diff does not model the "
+                    "higher-timeframe filter on the mapped side")
+            if self.invert_signal or self.regime_directional_policy is not None:
+                raise ValueError(
+                    "regime_side cannot be combined with invert_signal or "
+                    "regime_directional_policy")
+            if not _close_names(self.close_refs):
+                raise ValueError(
+                    "regime_side parity requires an explicit close strategy separate from the "
+                    "open strategy")
+            if self.direction not in ("long", "short", "both"):
+                raise ValueError("regime_side parity needs an explicit base direction")
+            self._regime_side_cert = normalize_regime_side_certification(
+                self.regime_side_certification)
+        elif self.allow_uncertified_regime_side or self.regime_side_certification is not None:
+            raise ValueError("allow_uncertified_regime_side and regime_side_certification "
+                             "require regime_side")
         regime_tf = str(self.regime_timeframe or "").strip().lower()
         chart_tf = str(self.timeframe or "").strip().lower()
         if self.regime_label_plan and regime_tf and regime_tf != chart_tf:
@@ -105,22 +138,37 @@ def _plan_label_series(feature_frame: pd.DataFrame, plan: dict) -> dict:
         return feature_frame[column_name(windows[field])]
 
     gate = col("gate")
+    dcol = column_name(windows["directional"])
+    ready = (feature_frame[dcol + "_ready"].astype(bool)
+             & (feature_frame[dcol + "_need"] > 0)
+             & (feature_frame[dcol + "_bars"] >= feature_frame[dcol + "_need"])
+             & (feature_frame[dcol].fillna("").astype(str).str.strip() != ""))
     return {
         "gate": gate,
         "directional": col("directional"),
+        "directional_ready": ready,
         "atr": col("atr"),
-        "directional_stamp": col("directional") if named.get("directional") else gate,
-        "atr_stamp": col("atr") if named.get("atr") else gate,
+        "directional_stamp": col("directional"),
+        "atr_stamp": col("atr"),
     }
 
 
 def config_from_live_config(config_path: str, strategy_id: str,
                             platform: str = "",
                             comparison_mode: Optional[str] = None) -> ParityConfig:
-    from run_backtest import live_stop_kwargs, load_strategy_config
+    from run_backtest import (backtest_fee_platform, live_stop_kwargs,
+                              load_strategy_config, platform_selection_warning)
     loaded = load_strategy_config(config_path, strategy_id,
                                   inject_user_defaults=True,
                                   comparison_mode=comparison_mode)
+    config_platform = str(loaded.get("platform") or "")
+    config_type = str(loaded.get("strategy_type") or "")
+    if platform:
+        warning = platform_selection_warning(config_platform, config_type, platform)
+        if warning:
+            print(warning, file=sys.stderr)
+    else:
+        platform = backtest_fee_platform(config_platform, config_type)
     with open(config_path) as fh:
         raw = json.load(fh)
     entry = next(
@@ -136,6 +184,10 @@ def config_from_live_config(config_path: str, strategy_id: str,
     timeframe = str(args[2]) if len(args) > 2 else "1h"
     rdp = loaded.get("regime_directional_policy")
     rdp_cert_states = None
+    if loaded.get("regime_side") and entry.get("htf_filter"):
+        raise ValueError(
+            f"strategy {strategy_id!r}: regime_side with htf_filter is refused; parity_diff "
+            "does not model the higher-timeframe filter on the mapped side")
     cert_timeframe = str(loaded.get("regime_timeframe") or timeframe).strip().lower() or timeframe
     if rdp:
         from directional_certification import (
@@ -149,8 +201,7 @@ def config_from_live_config(config_path: str, strategy_id: str,
         strategy_name=open_ref["name"],
         params=dict(open_ref.get("params") or {}),
         registry="futures" if stype in ("perps", "futures", "manual") else "spot",
-        platform=platform or ("hyperliquid" if stype in ("perps", "manual")
-                              else "binanceus"),
+        platform=platform,
         symbol=symbol,
         timeframe=timeframe,
         close_refs=loaded.get("close_strategies") or None,
@@ -173,6 +224,10 @@ def config_from_live_config(config_path: str, strategy_id: str,
         comparison_mode=comparison_mode,
         strategy_type=str(loaded.get("strategy_type") or "perps"),
         stop_kwargs=live_stop_kwargs(loaded),
+        regime_side=bool(loaded.get("regime_side")),
+        allow_uncertified_regime_side=bool(loaded.get("allow_uncertified_regime_side")),
+        regime_side_certification=loaded.get("regime_side_certification"),
+        htf_filter=bool(entry.get("htf_filter")) and bool(loaded.get("regime_side")),
     )
 
 
@@ -249,6 +304,22 @@ def _transform_entry_signal(signal: int, cfg: ParityConfig,
     )
 
 
+def _decision_time(index: pd.Index, i: int):
+    if i + 1 < len(index):
+        return index[i + 1]
+    if i > 0:
+        return index[i] + (index[i] - index[i - 1])
+    return index[i]
+
+
+def _regime_side_live_side(cfg: ParityConfig, label: str, ready: bool, flat: bool, when) -> str:
+    side, _reason = regime_side_request(
+        flat=flat, label=label, ready=ready, direction=cfg.direction,
+        certification=cfg._regime_side_cert,
+        allow_uncertified=cfg.allow_uncertified_regime_side, when=when)
+    return side
+
+
 def _close_params_by_name(close_refs: Optional[list]) -> dict:
     return {str(r["name"]).strip(): dict(r.get("params") or {})
             for r in (close_refs or []) if r.get("name")}
@@ -277,19 +348,15 @@ def _feature_labels_from_prepare(window: pd.DataFrame, cfg: ParityConfig) -> dic
     )
     from regime_label_columns import spec_window_key
 
-    def label(key: str) -> str:
-        if isinstance(payload, dict):
-            entry = payload.get(spec_window_key(spec, key)) or {}
-            if isinstance(entry, dict):
-                return str(entry.get("regime") or "")
-            return str(entry or "")
-        return str(payload or "")
-
-    return {
-        "gate": label(windows.get("gate", "")),
-        "directional": label(windows.get("directional", "")),
-        "atr": label(windows.get("atr", "")),
-    }
+    out = {}
+    for field in ("gate", "directional", "atr"):
+        key = windows.get(field, "")
+        entry = payload.get(spec_window_key(spec, key), {}) if spec else payload
+        if not isinstance(entry, dict): entry = {}
+        out[field] = str(entry.get("regime") or "")
+        for meta in ("ready", "bars", "need"):
+            out[field + "_" + meta] = entry.get(meta, False if meta == "ready" else 0)
+    return out
 
 
 def _full_frame_decisions(result_df: pd.DataFrame) -> pd.DataFrame:
@@ -310,7 +377,8 @@ def _full_frame_decisions(result_df: pd.DataFrame) -> pd.DataFrame:
 
 def _live_bar_decision(window: pd.DataFrame, cfg: ParityConfig, reg,
                        position_side: str = "",
-                       position_ctx: Optional[dict] = None) -> dict:
+                       position_ctx: Optional[dict] = None,
+                       decision_time=None) -> dict:
     regime_src = window
     windows_spec = cfg.regime_windows_spec
     atr_window = ""
@@ -330,17 +398,19 @@ def _live_bar_decision(window: pd.DataFrame, cfg: ParityConfig, reg,
         atr_window=atr_window,
     )
     directional_regime = str(live_regime or "")
+    directional_ready = bool(strategy_regime.get("ready")) if isinstance(strategy_regime, dict) else False
     if cfg.regime_label_plan and isinstance(stdout_regime, dict):
         from regime_label_columns import spec_window_key
         entry = stdout_regime.get(spec_window_key(
             windows_spec, cfg.regime_label_plan["windows"]["directional"])) or {}
         directional_regime = str((entry or {}).get("regime") or "") if isinstance(
             entry, dict) else str(entry or "")
+        directional_ready = bool(entry.get("ready")) if isinstance(entry, dict) else False
     params = dict(cfg.params or {})
     params["regime"] = strategy_regime
 
     close_names = _close_names(cfg.close_refs)
-    decision = {"regime": str(live_regime or "")}
+    decision = {"regime": str(live_regime or ""), **{k: strategy_regime.get(k) for k in ("ready", "bars", "need")}}
     if close_names or cfg.open_close_config:
         market_ctx = {"mark_price": float(window["close"].iloc[-1])}
         atr_now = latest_atr(window)
@@ -366,12 +436,19 @@ def _live_bar_decision(window: pd.DataFrame, cfg: ParityConfig, reg,
             close_params_by_name=_close_params_by_name(cfg.close_refs),
             invert_open_signal=invert,
         )
-        open_signal, invert = _surviving_raw_signal(
-            int(evaluation.open_signal),
-            cfg,
-            directional_regime,
-            position_ctx,
-        )
+        if cfg.regime_side:
+            open_side = _regime_side_live_side(
+                cfg, directional_regime, directional_ready, not position_side, decision_time)
+            decision["open_side"] = open_side
+            open_signal = apply_open_side(int(evaluation.open_signal), open_side)
+            invert = False
+        else:
+            open_signal, invert = _surviving_raw_signal(
+                int(evaluation.open_signal),
+                cfg,
+                directional_regime,
+                position_ctx,
+            )
         final = finalize_decision(
             evaluation, position_side, open_signal, invert_open_signal=invert,
         )
@@ -423,9 +500,11 @@ def _load_hl_batch_module():
 
 
 def _hl_batch_slot(mod, cfg: ParityConfig, slot_id: str, position_side: str,
-                   position_ctx: Optional[dict]) -> dict:
+                   position_ctx: Optional[dict], open_side: Optional[str] = None) -> dict:
     refs = {"open": {"name": cfg.strategy_name,
                      "params": dict(cfg.params or {})}}
+    if open_side is not None:
+        refs["open_side"] = open_side
     if cfg.close_refs:
         refs["closes"] = [
             {"name": ref["name"], "params": dict(ref.get("params") or {})}
@@ -468,12 +547,13 @@ def _hl_decision_fields(result: dict) -> dict:
 
 def _batched_bar_decisions(window: pd.DataFrame, cfg: ParityConfig,
                            position_side: str = "",
-                           position_ctx: Optional[dict] = None) -> tuple:
+                           position_ctx: Optional[dict] = None,
+                           open_side: Optional[str] = None) -> tuple:
     mod = _load_hl_batch_module()
     solo_shared = _hl_shared_state(mod, window, cfg)
     solo = mod.evaluate_signal_slot(
         solo_shared,
-        _hl_batch_slot(mod, cfg, "solo", position_side, position_ctx))
+        _hl_batch_slot(mod, cfg, "solo", position_side, position_ctx, open_side))
 
     batch_shared = _hl_shared_state(mod, window, cfg)
     deps = mod._signal_check_deps()
@@ -481,7 +561,7 @@ def _batched_bar_decisions(window: pd.DataFrame, cfg: ParityConfig,
     for slot_id in ("peer", "batched"):
         out = mod.evaluate_signal_slot(
             batch_shared,
-            _hl_batch_slot(mod, cfg, slot_id, position_side, position_ctx),
+            _hl_batch_slot(mod, cfg, slot_id, position_side, position_ctx, open_side),
             deps=deps,
         )
         if slot_id == "batched":
@@ -546,11 +626,13 @@ def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
     market_full = regime_full
     atr_stamp_full = regime_full
     directional_stamp_full = None
+    directional_ready_full = None
     if label_series:
         directional_full = label_series["directional"]
         market_full = label_series["atr"]
         atr_stamp_full = label_series["atr_stamp"]
         directional_stamp_full = label_series["directional_stamp"]
+        directional_ready_full = label_series.get("directional_ready")
 
     def _label(series: Optional[pd.Series], j: int) -> str:
         if series is None:
@@ -612,7 +694,19 @@ def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
             label = _label(directional_full, i)
             open_as_close = (cfg.open_close_config
                              and not _close_names(cfg.close_refs))
-            if _close_names(cfg.close_refs) or cfg.open_close_config:
+            if cfg.regime_side:
+                step = regime_side_decision(
+                    _signal_from_open_action(bt["open_action"].iloc[i]),
+                    flat=not side, label=label,
+                    ready=bool(directional_ready_full.iloc[i]) if directional_ready_full is not None else False,
+                    direction=cfg.direction, certification=cfg._regime_side_cert,
+                    allow_uncertified=cfg.allow_uncertified_regime_side,
+                    when=_decision_time(df.index, i))
+                if "open_side" not in decisions.columns:
+                    decisions["open_side"] = "none"
+                decisions.iloc[i, decisions.columns.get_loc("open_side")] = step["requested_side"]
+                transformed = step["mapped"]
+            elif _close_names(cfg.close_refs) or cfg.open_close_config:
                 raw_open = _signal_from_open_action(bt["open_action"].iloc[i])
                 if open_as_close:
                     raw_open = int(bt["signal"].iloc[i])
@@ -698,7 +792,7 @@ def compute_parity_frame(
         phase="preflight",
     )
     reg = load_registry(cfg.registry)
-    refuse_basket_evaluator(reg, cfg.strategy_name)
+    refuse_quote_capability(reg, cfg.strategy_name)
     full_result = reg.apply_strategy(
         cfg.strategy_name, df.copy(), dict(cfg.params or {}))
     bt = _full_frame_decisions(full_result)
@@ -716,10 +810,11 @@ def compute_parity_frame(
         regime_full = label_series["gate"]
     elif cfg.regime_enabled:
         from regime import compute_regime
-        regime_full = compute_regime(
+        regime_frame = compute_regime(
             df, period=cfg.regime_period,
             adx_threshold=cfg.regime_adx_threshold,
-        )["regime"]
+        )
+        regime_full = regime_frame["regime"]
 
     has_close_refs = bool(_close_names(cfg.close_refs))
     needs_decision_walk = (
@@ -728,6 +823,7 @@ def compute_parity_frame(
         or bool(cfg.direction)
         or bool(cfg.invert_signal)
         or cfg.regime_directional_policy is not None
+        or cfg.regime_side
     )
     if needs_decision_walk:
         contexts, registry_fracs, bt = _simulate_position_contexts(
@@ -759,7 +855,8 @@ def compute_parity_frame(
         ctx = contexts[i]
         side = str((ctx or {}).get("side", "") or "")
         live = _live_bar_decision(win, cfg, reg,
-                                  position_side=side, position_ctx=ctx)
+                                  position_side=side, position_ctx=ctx,
+                                  decision_time=_decision_time(df.index, i))
 
         bt_close = float(bt["close_fraction"].iloc[i])
         bt_signal = int(bt["signal"].iloc[i])
@@ -787,6 +884,10 @@ def compute_parity_frame(
             and row["bt_open_action"] == row["live_open_action"]
             and abs(row["bt_close_fraction"] - row["live_close_fraction"]) < 1e-9
         )
+        if cfg.regime_side:
+            row["bt_open_side"] = str(bt["open_side"].iloc[i])
+            row["live_open_side"] = str(live.get("open_side", ""))
+            match = match and row["bt_open_side"] == row["live_open_side"]
         if cfg.regime_enabled and cfg.regime_label_plan and i > 0:
             from regime_label_columns import column_name
             plan = cfg.regime_label_plan
@@ -802,13 +903,27 @@ def compute_parity_frame(
                 row[f"bt_{field}_regime"] = bt_label
                 row[f"live_{field}_regime"] = live_features[field]
                 match = match and bt_label == live_features[field]
+                for meta in ("ready", "bars", "need"):
+                    bt_value = feature_frame[col + "_" + meta].iloc[i - 1]
+                    live_value = live_features[field + "_" + meta]
+                    row[f"bt_{field}_{meta}"] = bt_value
+                    row[f"live_{field}_{meta}"] = live_value
+                    match = match and bt_value == live_value
         elif cfg.regime_enabled:
             row["bt_regime"] = str(regime_full.iloc[i])
             row["live_regime"] = str(live["regime"])
             match = match and row["bt_regime"] == row["live_regime"]
+            for meta in ("ready", "bars", "need"):
+                bt_value = regime_frame["regime_" + meta].iloc[i]
+                if meta == "bars" and window is not None:
+                    bt_value = min(int(bt_value), window)
+                row["bt_" + meta] = bt_value
+                row["live_" + meta] = live.get(meta)
+                match = match and bt_value == live.get(meta)
         if cfg.batched:
+            side_kw = {"open_side": live.get("open_side")} if cfg.regime_side else {}
             solo_dec, batch_dec = _batched_bar_decisions(
-                win, cfg, position_side=side, position_ctx=ctx)
+                win, cfg, position_side=side, position_ctx=ctx, **side_kw)
             row["solo_signal"] = solo_dec["signal"]
             row["batch_signal"] = batch_dec["signal"]
             row["solo_open_action"] = solo_dec["open_action"]
@@ -850,7 +965,7 @@ def extract_fills(df: pd.DataFrame, cfg: ParityConfig) -> list:
 
 def extract_fills_report(df: pd.DataFrame, cfg: ParityConfig) -> dict:
     reg = load_registry(cfg.registry)
-    refuse_basket_evaluator(reg, cfg.strategy_name)
+    refuse_quote_capability(reg, cfg.strategy_name)
     funded = df
     hl_perps = (str(cfg.platform or "").strip().lower() == "hyperliquid"
                 and str(cfg.strategy_type or "").strip().lower() == "perps")
@@ -895,6 +1010,9 @@ def extract_fills_report(df: pd.DataFrame, cfg: ParityConfig) -> dict:
         regime_directional_certified_states=cfg.regime_directional_certified_states,
         comparison_mode=cfg.comparison_mode,
         strategy_type=cfg.strategy_type,
+        regime_side=cfg.regime_side,
+        allow_uncertified_regime_side=cfg.allow_uncertified_regime_side,
+        regime_side_certification=cfg.regime_side_certification if cfg.regime_side else None,
         **feature_labels,
         **cfg.stop_kwargs,
     )
@@ -996,9 +1114,18 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--registry", choices=["spot", "futures"],
                         default="spot")
     parser.add_argument("--platform", default=None,
-                        help="Fee platform for --fills (ad-hoc default "
-                             "binanceus; --config mode auto-detects from the "
-                             "strategy type unless explicitly set)")
+                        choices=["binanceus", "hyperliquid", "robinhood",
+                                 "luno", "okx", "okx-perps"],
+                        help="Platform for --config runs and --fills. "
+                             "Ad-hoc default binanceus. --config default: "
+                             "the strategy's "
+                             "platform and type (okx perps -> okx-perps); "
+                             "options, futures, non-Hyperliquid manual and "
+                             "unknown platforms refuse automatic selection "
+                             "(exit 2). An explicit value is a research proxy "
+                             "that also selects funding and Hyperliquid tier "
+                             "behavior and warns when it differs from the "
+                             "automatic key or automatic selection refuses")
     parser.add_argument("--close", action="append", default=[],
                         help="Close ref: name or name:{json params} "
                              "(repeatable; single ref since #842)")
@@ -1106,12 +1233,6 @@ def main(argv: Optional[list] = None) -> int:
         except ValueError as e:
             print(f"parity: {e}", file=sys.stderr)
             return 2
-
-    try:
-        refuse_pair_evaluator(load_registry(cfg.registry), cfg.strategy_name)
-    except ValueError as e:
-        print(f"parity: {e}", file=sys.stderr)
-        return 2
 
     from data_fetcher import load_cached_data
     df = load_cached_data(symbol, timeframe, start_date=args.since)

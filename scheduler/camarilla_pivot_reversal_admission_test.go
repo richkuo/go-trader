@@ -29,7 +29,7 @@ func loadBoth(t *testing.T, sc map[string]interface{}) (*Config, error) {
 	return cfg, loadErr
 }
 
-func TestCamarillaPivotReversalRegistrationTables(t *testing.T) {
+func noEdgeCaseCamarillaPivotReversalRegistrationTables(t *testing.T) {
 	name := camarillaPivotReversalStrategyName
 	if knownShortNames[name] != "cpr" || !isBidirectionalPerpsStrategy(name) {
 		t.Fatalf("short name %q, bidirectional %v", knownShortNames[name], isBidirectionalPerpsStrategy(name))
@@ -78,7 +78,7 @@ func TestCamarillaPivotReversalRegistrationTables(t *testing.T) {
 	}
 }
 
-func TestCamarillaPivotReversalAdmissionRoutesOpenAndCloseFallbackReferences(t *testing.T) {
+func noEdgeCaseCamarillaPivotReversalAdmissionRoutesOpenAndCloseFallbackReferences(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	fallback := func(args ...string) map[string]interface{} {
 		sc := noEdgeHLStrategy("hl-bo-eth", append([]string{"breakout", "ETH", "1h"}, args...)...)
@@ -110,7 +110,7 @@ func TestCamarillaPivotReversalAdmissionRoutesOpenAndCloseFallbackReferences(t *
 	}
 }
 
-func TestCamarillaPivotReversalRequiresHyperliquidPerpsClosedBarDecisions(t *testing.T) {
+func noEdgeCaseCamarillaPivotReversalRequiresHyperliquidPerpsClosedBarDecisions(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	off := camarillaHL("hl-cpr-eth", "1h", "--mode=paper")
 	off["closed_bar_decisions"] = false
@@ -144,7 +144,7 @@ func TestCamarillaPivotReversalRequiresHyperliquidPerpsClosedBarDecisions(t *tes
 	}
 }
 
-func TestCamarillaPivotReversalCadenceMatchesTheTimeframeAndTheSupportedSet(t *testing.T) {
+func noEdgeCaseCamarillaPivotReversalCadenceMatchesTheTimeframeAndTheSupportedSet(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	for tf, ms := range camarillaPivotReversalIntervals {
 		sc := camarillaHL("hl-cpr-eth-"+tf, tf, "--mode=paper")
@@ -191,7 +191,7 @@ func TestCamarillaPivotReversalCadenceMatchesTheTimeframeAndTheSupportedSet(t *t
 	}
 }
 
-func TestCamarillaPivotReversalOperatorAddCreatesALoadableExplicitPaperEntry(t *testing.T) {
+func noEdgeCaseCamarillaPivotReversalOperatorAddCreatesALoadableExplicitPaperEntry(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry(camarillaPivotReversalStrategyName, "hyperliquid", "sol")
 	if err != nil || id != "hl-cpr-sol" {
@@ -239,7 +239,7 @@ func TestCamarillaPivotReversalOperatorAddCreatesALoadableExplicitPaperEntry(t *
 	}
 }
 
-func TestCamarillaPivotReversalStudyParityConfigsLoadAsExplicitPaper(t *testing.T) {
+func noEdgeCaseCamarillaPivotReversalStudyParityConfigsLoadAsExplicitPaper(t *testing.T) {
 	dir := filepath.Join("..", "backtest", "candidates", "camarilla_pivot_reversal_1669")
 	for tf, ms := range camarillaPivotReversalIntervals {
 		data, err := os.ReadFile(filepath.Join(dir, "paper_parity_"+tf+".json"))
@@ -271,7 +271,7 @@ func TestCamarillaPivotReversalStudyParityConfigsLoadAsExplicitPaper(t *testing.
 	}
 }
 
-func TestV20NoEdgeMigrationNeverStampsCamarillaPivotReversal(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationNeverStampsCamarillaPivotReversal(t *testing.T) {
 	open := noEdgeHLStrategy("hl-cpr-open", camarillaPivotReversalStrategyName, "ETH", "1h", "--mode=live")
 	fallback := noEdgeHLStrategy("hl-cpr-close", "breakout", "ETH", "1h", "--mode=live")
 	fallback["close_strategy"] = map[string]interface{}{"name": camarillaPivotReversalStrategyName}

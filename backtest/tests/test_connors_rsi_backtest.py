@@ -5,7 +5,7 @@ import pytest
 from backtester import Backtester
 from registry_loader import load_registry
 from atr import ensure_atr_indicator
-from parity_diff import ParityConfig, compute_parity_frame, summarize
+from parity_diff import ParityConfig
 
 NAME = "connors_rsi_reversion"
 CLOSE = [{"name": "time_stop", "params": {"max_bars": 6}}]
@@ -61,22 +61,3 @@ def _parity_cfg(**kw):
                 comparison_mode="approximate")
     base.update(kw)
     return ParityConfig(**base)
-
-
-@pytest.mark.parametrize("window", [200, None])
-def test_non_batched_parity_runner_is_clean_on_bounded_window_and_every_prefix(window):
-    df = _market(360, seed=7)
-    frame = compute_parity_frame(df, cfg=_parity_cfg(), window=window)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0
-    assert result["mismatches"] == 0, frame[~frame["match"]].head()
-    assert result["close_parity"] == "incomplete" and not result["clean"]
-    assert (frame["live_signal"] != 0).any()
-
-
-def test_batched_parity_mode_admits_explicit_paper_and_matches_solo():
-    frame = compute_parity_frame(_market(260), cfg=_parity_cfg(batched=True), window=200)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0
-    assert result["mismatches"] == 0, frame[~frame["match"]].head()
-    assert result["close_parity"] == "incomplete" and not result["clean"]

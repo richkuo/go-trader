@@ -38,33 +38,35 @@ def _run(df, **kw):
                   timeframe="1d", save=False)
 
 
-@pytest.mark.parametrize(
-    "signals,accrual,direction,funding,capital,trades",
-    [
-        ([-1, 0, 0, 0, 0, 0], [1e-3] * 6, "short", 40.0, 10040.0, None),
-        ([-1, 0, 0, 0, 0, 0], [-1e-3] * 6, "short", -40.0, 9960.0, None),
-        ([1, 0, 0, 0, 0, 0], [1e-3] * 6, None, -40.0, 9960.0, None),
-        ([-1, 1, 0, 0, 0, 0], [1e-3] * 6, "short", 10.0, None, 1),
-        ([-1, 0, 1, 0, 0, 0], [1e-3] * 6, "short", 20.0, None, 1),
-        ([-1, 0, 0, 0, 0, 0],
-         [1e-3, 1e-3, np.nan, 1e-3, 1e-3, 1e-3], "short", 30.0, None, None),
-        ([-1, 0, 0, 1, 0, 0], None, "short", 0.0, None, None),
-        ([0, 0, 0, 0, 0, 0], [1e-3] * 6, "short", 0.0, 10000.0, None),
-    ],
-    ids=[
-        "short_collects_positive",
-        "short_pays_negative",
-        "long_pays_positive",
-        "open_bar_accrues_nothing",
-        "charge_count_equals_intervals_held",
-        "nan_accrual_ignored",
-        "no_funding_column",
-        "not_booked_while_flat",
-    ],
-)
-def test_funding_accrual_books_each_held_interval(
-    signals, accrual, direction, funding, capital, trades
-):
+_FUNDING_CASE_IDS = [
+    "short_collects_positive",
+    "short_pays_negative",
+    "long_pays_positive",
+    "open_bar_accrues_nothing",
+    "charge_count_equals_intervals_held",
+    "nan_accrual_ignored",
+    "no_funding_column",
+    "not_booked_while_flat",
+]
+
+
+def test_funding_accrual_books_each_held_interval(subtests):
+    for i, (signals, accrual, direction, funding, capital, trades) in enumerate([
+            ([-1, 0, 0, 0, 0, 0], [1e-3] * 6, "short", 40.0, 10040.0, None),
+            ([-1, 0, 0, 0, 0, 0], [-1e-3] * 6, "short", -40.0, 9960.0, None),
+            ([1, 0, 0, 0, 0, 0], [1e-3] * 6, None, -40.0, 9960.0, None),
+            ([-1, 1, 0, 0, 0, 0], [1e-3] * 6, "short", 10.0, None, 1),
+            ([-1, 0, 1, 0, 0, 0], [1e-3] * 6, "short", 20.0, None, 1),
+            ([-1, 0, 0, 0, 0, 0],
+             [1e-3, 1e-3, np.nan, 1e-3, 1e-3, 1e-3], "short", 30.0, None, None),
+            ([-1, 0, 0, 1, 0, 0], None, "short", 0.0, None, None),
+            ([0, 0, 0, 0, 0, 0], [1e-3] * 6, "short", 0.0, 10000.0, None),
+        ]):
+        with subtests.test(case=_FUNDING_CASE_IDS[i]):
+            _assert_funding_accrual_books_each_held_interval(signals, accrual, direction, funding, capital, trades)
+
+
+def _assert_funding_accrual_books_each_held_interval(signals, accrual, direction, funding, capital, trades):
     df = _df(signals, accrual=accrual)
     res = _run(df, direction=direction)
     assert res["total_funding_pnl"] == pytest.approx(funding)

@@ -20,25 +20,75 @@ import types
 import uuid
 from collections import namedtuple
 from datetime import datetime, timezone, timedelta
-from decimal import Context, Decimal, DivisionByZero, Inexact, InvalidOperation, Overflow, localcontext
-from typing import Tuple
+from decimal import ROUND_FLOOR, Context, Decimal, DivisionByZero, Inexact, InvalidOperation, Overflow, localcontext
+from typing import Optional, Tuple
 from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
 import egress_policy
+import option_data
 
 YAHOO_CRYPTO_MAP = {
-    "BTC": "BTC-USD",
-    "ETH": "ETH-USD",
-    "SOL": "SOL-USD",
-    "DOGE": "DOGE-USD",
-    "AVAX": "AVAX-USD",
-    "LINK": "LINK-USD",
+    "AAVE": "AAVE-USD",
     "ADA": "ADA-USD",
+    "ALGO": "ALGO-USD",
+    "ATOM": "ATOM-USD",
+    "AVAX": "AVAX-USD",
+    "AVNT": "AVNT-USD",
+    "AXS": "AXS-USD",
+    "BAT": "BAT-USD",
+    "BCH": "BCH-USD",
+    "BNB": "BNB-USD",
+    "BONK": "BONK-USD",
+    "BTC": "BTC-USD",
+    "CASHCAT": "CASHCAT-USD",
+    "DOGE": "DOGE-USD",
     "DOT": "DOT-USD",
-    "MATIC": "MATIC-USD",
+    "ENA": "ENA-USD",
+    "ETC": "ETC-USD",
+    "ETH": "ETH-USD",
+    "FLR": "FLR-USD",
+    "HBAR": "HBAR-USD",
+    "HYPE": "HYPE32196-USD",
+    "INJ": "INJ-USD",
+    "JTO": "JTO-USD",
+    "LDO": "LDO-USD",
+    "LINK": "LINK-USD",
+    "LTC": "LTC-USD",
+    "MEW": "MEW30126-USD",
+    "MORPHO": "MORPHO34104-USD",
+    "NEAR": "NEAR-USD",
+    "ONDO": "ONDO-USD",
+    "OP": "OP-USD",
+    "ORCA": "ORCA-USD",
+    "PAXG": "PAXG-USD",
+    "PEPE": "PEPE24478-USD",
+    "PNUT": "PNUT-USD",
+    "PYTH": "PYTH-USD",
+    "QNT": "QNT-USD",
+    "RAY": "RAY-USD",
+    "RE": "RE-USD",
+    "RENDER": "RENDER-USD",
+    "SEI": "SEI-USD",
     "SHIB": "SHIB-USD",
+    "SNX": "SNX-USD",
+    "SOL": "SOL-USD",
+    "SUI": "SUI20947-USD",
+    "SYRUP": "SYRUP-USD",
+    "UNI": "UNI7083-USD",
+    "USDC": "USDC-USD",
+    "VIRTUAL": "VIRTUAL-USD",
+    "W": "W-USD",
+    "WIF": "WIF-USD",
+    "WLD": "WLD-USD",
+    "WLFI": "WLFI33251-USD",
+    "XDC": "XDC-USD",
+    "XPL": "XPL-USD",
+    "XRP": "XRP-USD",
+    "XTZ": "XTZ-USD",
+    "ZEC": "ZEC-USD",
+    "ZORA": "ZORA35931-USD",
 }
 
 _HOUR_MS = 3_600_000
@@ -136,23 +186,62 @@ def robinhood_timeframe(name):
     return entry
 
 
-def _is_yahoo_crypto_pair(yahoo_symbol):
-    return yahoo_symbol.endswith("-USD")
+ASSET_CLASS_CRYPTO = "crypto"
+ASSET_CLASS_STOCK = "stock"
+ROBINHOOD_ASSET_CLASSES = (ASSET_CLASS_CRYPTO, ASSET_CLASS_STOCK)
+
+_STOCK_TICKER_RE = re.compile(r"[A-Z][A-Z0-9]{0,5}(?:[.-][A-Z]{1,2})?")
+_CURRENCY_PAIR_RE = re.compile(r".+-(?:USD|USDT|USDC)")
 
 
-def robinhood_yahoo_symbol(symbol):
-    return YAHOO_CRYPTO_MAP.get(symbol.upper(), symbol.upper())
+class UnsupportedRobinhoodSymbol(ValueError):
+    pass
 
 
-def robinhood_session_closed_bar_refusal(symbol):
-    yahoo_sym = robinhood_yahoo_symbol(symbol)
-    if _is_yahoo_crypto_pair(yahoo_sym):
+def robinhood_supported_crypto_coins():
+    return sorted(YAHOO_CRYPTO_MAP)
+
+
+def robinhood_asset_class(value):
+    if value is None or value == "":
         return ""
-    return (
-        f"symbol {json.dumps(symbol)} resolves to Yahoo {json.dumps(yahoo_sym)}, which is not a Yahoo crypto pair: its Yahoo rows follow "
-        "exchange trading sessions (no rows outside session hours, and hourly and longer rows open at session times "
-        "off the UTC interval grid), so the newest closed bar at the cutoff cannot be proven "
-        f"(Yahoo crypto pairs: {', '.join(sorted(YAHOO_CRYPTO_MAP))}, or a symbol ending in -USD)")
+    if value not in ROBINHOOD_ASSET_CLASSES:
+        raise ValueError(
+            f"invalid Robinhood asset class {value!r}: use {ASSET_CLASS_CRYPTO!r} for a crypto coin "
+            f"or {ASSET_CLASS_STOCK!r} for a stock or ETF underlying")
+    return value
+
+
+def robinhood_crypto_yahoo_ticker(symbol):
+    ticker = YAHOO_CRYPTO_MAP.get(symbol) if isinstance(symbol, str) else None
+    if ticker is None:
+        raise UnsupportedRobinhoodSymbol(
+            f"unsupported Robinhood crypto coin {symbol!r}: write one bare upper-case coin code from the "
+            f"verified table ({', '.join(robinhood_supported_crypto_coins())}); a stock or ETF underlying "
+            f"runs only as a Robinhood type \"options\" strategy")
+    return ticker
+
+
+def robinhood_stock_yahoo_ticker(symbol):
+    text = symbol.strip().upper() if isinstance(symbol, str) else ""
+    if "/" in text or _CURRENCY_PAIR_RE.fullmatch(text):
+        raise UnsupportedRobinhoodSymbol(
+            f"Robinhood stock underlying {symbol!r} is a currency pair: stock data needs a stock or ETF ticker")
+    if not _STOCK_TICKER_RE.fullmatch(text):
+        raise UnsupportedRobinhoodSymbol(
+            f"Robinhood stock underlying {symbol!r} is not a stock or ETF ticker "
+            f"(1 to 6 letters or digits, starting with a letter, with an optional .X or -X share class)")
+    return text
+
+
+def robinhood_yahoo_ticker(asset_class, symbol):
+    if asset_class == ASSET_CLASS_CRYPTO:
+        return robinhood_crypto_yahoo_ticker(symbol)
+    if asset_class == ASSET_CLASS_STOCK:
+        return robinhood_stock_yahoo_ticker(symbol)
+    raise ValueError(
+        "Robinhood market data needs an asset class: construct the adapter with "
+        f"asset_class={ASSET_CLASS_CRYPTO!r} or asset_class={ASSET_CLASS_STOCK!r}")
 
 
 def _yahoo_period_for(yahoo_interval, bars, crypto):
@@ -269,6 +358,21 @@ _DECIMAL_MIN_EXPONENT = -30
 _DECIMAL_MAX_ADJUSTED = 15
 _SIZING_PRECISION = 100
 _FLOOR_QUOTIENT_CAP = Decimal(10) ** 36
+_BUY_LIMIT_HEADROOM = Decimal("0.005")
+_SELL_ONE_STEP = Decimal("0.000001")
+_WIRE_STEP_CAP = 64
+SELL_PRICE_RULE_FLOOR_INCREMENT = "floor_increment"
+SELL_PRICE_RULE_FLOOR_DECIMALS = "floor_decimals"
+SELL_PRICE_RULE_ROUND_FALLBACK = "round_fallback"
+SELL_PRICE_RULE_ONE_STEP = "one_step"
+SELL_PRICE_RULE_WIRE_FLOOR = "wire_floor"
+SELL_PRICE_RULES = (
+    SELL_PRICE_RULE_FLOOR_INCREMENT,
+    SELL_PRICE_RULE_FLOOR_DECIMALS,
+    SELL_PRICE_RULE_ROUND_FALLBACK,
+    SELL_PRICE_RULE_ONE_STEP,
+    SELL_PRICE_RULE_WIRE_FLOOR,
+)
 CLOSE_KIND_WHOLE = "whole"
 CLOSE_KIND_PARTIAL = "partial"
 CLOSE_KIND_EMERGENCY = "emergency"
@@ -328,6 +432,10 @@ class _OrderEvidenceError(RuntimeError):
 
 
 class _SellSizingRefusal(_OrderPrepError):
+    pass
+
+
+class _BuyPrepError(_OrderPrepError):
     pass
 
 
@@ -644,6 +752,236 @@ def plan_sized_sell(asked, available, rules, close_kind, sole_owner):
     }
 
 
+
+def _pair_price_increment(row):
+    try:
+        if not isinstance(row, dict):
+            return None, "the pair row is not an object"
+        raw = row.get("min_order_price_increment")
+        if raw is None:
+            return None, "the pair has no min_order_price_increment"
+        value = _parse_exact_decimal(raw)
+        if value is None:
+            return None, f"the pair min_order_price_increment {raw!r} is not a bounded finite decimal"
+        if value <= 0:
+            return None, f"the pair min_order_price_increment {raw!r} is not positive"
+        return value, None
+    except Exception as e:
+        return None, f"the pair min_order_price_increment is unreadable ({type(e).__name__})"
+
+
+def _plan_text(value):
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    return "none" if value is None else repr(value)
+
+
+def _finite_decimal(value):
+    return isinstance(value, Decimal) and value.is_finite()
+
+
+def _exact_wire(value):
+    wire = float(value)
+    if not math.isfinite(wire) or Decimal(repr(wire)) != value:
+        return None
+    return wire
+
+
+def plan_sized_buy(budget, ask, rules, headroom):
+    rules = rules if isinstance(rules, dict) else {}
+    minimum = rules.get("min")
+    increment = rules.get("increment")
+    maximum = rules.get("max")
+    price_increment = rules.get("price_increment")
+    plan = {"limit": None, "sent": None}
+
+    def refuse(reason):
+        raise _BuyPrepError(
+            f"buy refused before sending: {reason} (budget B={_plan_text(budget)}, ask a={_plan_text(ask)}, "
+            f"price_increment P={_plan_text(price_increment)}, quantity increment I={_plan_text(increment)}, "
+            f"min_order_size M={_plan_text(minimum)}, max_order_size X={_plan_text(maximum)}, "
+            f"headroom H={_plan_text(headroom)}, limit L={_plan_text(plan['limit'])}, quantity Q={_plan_text(plan['sent'])})"
+        )
+
+    for name, value in (("budget", budget), ("ask", ask), ("price increment", price_increment),
+                        ("quantity increment", increment), ("minimum", minimum), ("headroom", headroom)):
+        if not _finite_decimal(value):
+            refuse(f"the {name} is not a finite decimal")
+    if maximum is not None and not _finite_decimal(maximum):
+        refuse("the maximum is not a finite decimal")
+    if headroom < 0:
+        refuse("the headroom is negative")
+    if budget <= 0:
+        refuse("the budget is not positive")
+    if ask <= 0:
+        refuse("the ask is not positive")
+    if price_increment <= 0:
+        refuse("the price increment is not positive")
+    if increment <= 0:
+        refuse("the quantity increment is not positive")
+    if minimum < 0:
+        refuse("the minimum is negative")
+    if maximum is not None and maximum <= 0:
+        refuse("the maximum is not positive")
+    capped = False
+    try:
+        with localcontext() as ctx:
+            ctx.prec = _SIZING_PRECISION
+            ctx.traps[InvalidOperation] = True
+            ctx.traps[DivisionByZero] = True
+            ctx.traps[Overflow] = True
+            ctx.traps[Inexact] = True
+            target = ask * (1 + headroom)
+            steps, rest = divmod(target, price_increment)
+            if steps > _FLOOR_QUOTIENT_CAP:
+                refuse("the limit is too many price increments to round exactly")
+            if rest > 0:
+                steps += 1
+            limit = steps * price_increment
+            plan["limit"] = limit
+            unit_cost = limit * increment
+            units = budget // unit_cost
+            if units > _FLOOR_QUOTIENT_CAP:
+                refuse("the quantity is too many increments to floor exactly")
+            sent = units * increment
+            plan["sent"] = sent
+            if maximum is not None and sent > maximum:
+                max_units = maximum // increment
+                if max_units > _FLOOR_QUOTIENT_CAP:
+                    refuse("the maximum is too many increments to floor exactly")
+                sent = max_units * increment
+                plan["sent"] = sent
+                capped = True
+            cost = sent * limit
+    except (InvalidOperation, DivisionByZero, Overflow, Inexact) as e:
+        refuse(f"exact decimal sizing failed ({type(e).__name__})")
+    if limit < ask:
+        refuse("the limit is below the ask")
+    if sent <= 0:
+        refuse("the budget floors to zero quantity at the pair increment")
+    if sent < minimum:
+        refuse("the quantity is below the venue minimum")
+    if cost > budget:
+        refuse("the order notional is above the budget")
+    wire_quantity = _exact_wire(sent)
+    if wire_quantity is None:
+        refuse("the floored quantity has no exact JSON number form")
+    wire_limit = _exact_wire(limit)
+    if wire_limit is None:
+        refuse("the limit price has no exact JSON number form")
+    max_cost = float(cost)
+    if not math.isfinite(max_cost):
+        refuse("the order notional is not finite")
+    return {
+        "budget_usd": float(budget),
+        "ask_price": float(ask),
+        "limit_price": wire_limit,
+        "price_increment": float(price_increment),
+        "headroom": float(headroom),
+        "sent_quantity": wire_quantity,
+        "min_order_size": float(minimum),
+        "quantity_increment": float(increment),
+        "max_order_size": None if maximum is None else float(maximum),
+        "max_cost_usd": max_cost,
+        "capped_by_max": capped,
+    }
+
+
+def _sell_price_decimals(bid):
+    if bid <= Decimal("0.01"):
+        return 6
+    if bid < 1:
+        return 4
+    return 2
+
+
+def _wire_at_or_below(limit):
+    wire = float(limit)
+    steps = 0
+    while not math.isfinite(wire) or Decimal(repr(wire)) > limit:
+        if steps >= _WIRE_STEP_CAP:
+            return None
+        wire = math.nextafter(wire, 0.0) if math.isfinite(wire) else sys.float_info.max
+        steps += 1
+    if not math.isfinite(wire) or wire <= 0:
+        return None
+    return wire
+
+
+def plan_sell_price(bid_raw, bid_float, increment, increment_problem, today_price):
+    valid_increment = increment if _finite_decimal(increment) and increment > 0 else None
+    today = today_price if isinstance(today_price, float) and math.isfinite(today_price) and today_price > 0 else 0.0
+    out = {"bid_price": bid_float, "sent_price": None, "price_decimals": None, "rule": None, "today_price": today}
+    if valid_increment is not None:
+        out["price_increment"] = float(valid_increment)
+    else:
+        out["price_increment_problem"] = increment_problem or "the pair price increment is missing or invalid"
+    bid = None
+    try:
+        try:
+            bid = _parse_exact_decimal(bid_raw)
+        except Exception:
+            bid = None
+        if bid is None or bid <= 0:
+            bid = Decimal(repr(bid_float))
+        decimals = _sell_price_decimals(bid)
+        out["price_decimals"] = decimals
+        today_exact = Decimal(repr(today)) if today > 0 else None
+        with localcontext() as ctx:
+            ctx.prec = _SIZING_PRECISION
+            ctx.traps[InvalidOperation] = True
+            ctx.traps[DivisionByZero] = True
+            ctx.traps[Overflow] = True
+            ctx.traps[Inexact] = False
+            floored = bid.quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_FLOOR)
+            ctx.traps[Inexact] = True
+            if valid_increment is not None:
+                units = floored // valid_increment
+                if units > _FLOOR_QUOTIENT_CAP:
+                    raise ValueError("the price is too many increments to floor exactly")
+                candidate = units * valid_increment
+                rule = SELL_PRICE_RULE_FLOOR_INCREMENT
+            else:
+                candidate = floored
+                rule = SELL_PRICE_RULE_FLOOR_DECIMALS
+            if candidate <= 0:
+                if today_exact is not None:
+                    candidate = today_exact
+                    cap = today_exact
+                    rule = SELL_PRICE_RULE_ROUND_FALLBACK
+                else:
+                    candidate = valid_increment if valid_increment is not None else _SELL_ONE_STEP
+                    cap = candidate
+                    rule = SELL_PRICE_RULE_ONE_STEP
+            else:
+                cap = min(candidate, bid) if today_exact is None else min(candidate, bid, today_exact)
+        wire = _wire_at_or_below(cap)
+        if wire is None:
+            raise ValueError("the price has no finite positive JSON number form")
+        if rule in (SELL_PRICE_RULE_FLOOR_INCREMENT, SELL_PRICE_RULE_FLOOR_DECIMALS) and Decimal(repr(wire)) != candidate:
+            rule = SELL_PRICE_RULE_WIRE_FLOOR
+        out["sent_price"] = wire
+        out["rule"] = rule
+    except Exception as e:
+        out["fallback_reason"] = f"{type(e).__name__}: {e}"
+        if out["price_decimals"] is None:
+            out["price_decimals"] = 6 if bid_float <= 0.01 else 4 if bid_float < 1 else 2
+        wire = None
+        try:
+            limits = [Decimal(repr(bid_float))]
+            if bid is not None and bid > 0:
+                limits.append(bid)
+            if today > 0:
+                limits.append(Decimal(repr(today)))
+            wire = _wire_at_or_below(min(limits))
+        except Exception:
+            wire = None
+        if wire is None:
+            wire = bid_float if today <= 0 else min(bid_float, today)
+        out["sent_price"] = wire
+        out["rule"] = SELL_PRICE_RULE_WIRE_FLOOR
+    return out
+
 def _holding_avg_price(row, quantity):
     cost_bases = row.get("cost_bases")
     if not isinstance(cost_bases, list) or not cost_bases:
@@ -701,6 +1039,21 @@ def robinhood_library():
         egress_policy.pin_robin_stocks()
         rh.helper.set_output(sys.stderr)
         yield rh
+
+
+class _TeeText:
+
+    def __init__(self, *targets):
+        self._targets = targets
+
+    def write(self, text):
+        for target in self._targets:
+            target.write(text)
+        return len(text)
+
+    def flush(self):
+        for target in self._targets:
+            target.flush()
 
 
 class RobinhoodLoginError(RuntimeError):
@@ -1458,7 +1811,8 @@ class RobinhoodExchangeAdapter:
 
     OHLCV_TIMESTAMP_KIND = "open"
 
-    def __init__(self, mode="paper", login_deadline=None):
+    def __init__(self, mode="paper", login_deadline=None, asset_class=None):
+        self._asset_class = robinhood_asset_class(asset_class)
         self._mode = mode
         self._logged_in = False
         self._login_deadline = login_deadline
@@ -1502,28 +1856,46 @@ class RobinhoodExchangeAdapter:
         return self._mode
 
     @property
+    def quotes_authenticated(self) -> bool:
+        return self._logged_in
+
+    @property
     def name(self) -> str:
         return "robinhood"
 
+    @property
+    def asset_class(self) -> str:
+        return self._asset_class
 
     def _resolve_yahoo_symbol(self, symbol: str) -> str:
-        return robinhood_yahoo_symbol(symbol)
+        return robinhood_yahoo_ticker(self._asset_class, symbol)
+
+    def require_stock_underlying(self, symbol: str, what: str = "option data") -> str:
+        if self._asset_class != ASSET_CLASS_STOCK:
+            raise option_data.OptionDataUnavailable(
+                f"unsupported basis: {what} for {symbol} needs a Robinhood adapter with asset_class="
+                f"{ASSET_CLASS_STOCK!r}, not {self._asset_class or 'unset'!r}")
+        try:
+            return robinhood_stock_yahoo_ticker(symbol)
+        except UnsupportedRobinhoodSymbol as e:
+            raise option_data.OptionDataUnavailable(f"unsupported basis: {e}") from None
 
     def get_price(self, symbol: str) -> float:
+        yahoo_sym = self._resolve_yahoo_symbol(symbol)
         if self._logged_in:
             try:
                 with robinhood_library() as rh:
-                    if symbol.upper() in YAHOO_CRYPTO_MAP:
+                    if self._asset_class == ASSET_CLASS_CRYPTO:
                         quote = rh.crypto.get_crypto_quote(symbol)
                         if quote and quote.get("mark_price"):
                             return float(quote["mark_price"])
                     else:
-                        prices = rh.stocks.get_latest_price(symbol)
+                        prices = rh.stocks.get_latest_price(yahoo_sym)
                         if prices and prices[0]:
                             return float(prices[0])
             except Exception as e:
                 print(f"[robinhood] robin_stocks price error for {symbol}: {e}", file=sys.stderr)
-        return self._get_yahoo_price(symbol)
+        return self._get_yahoo_price(symbol, yahoo_sym)
 
     def get_spot_price(self, symbol: str) -> float:
         return self.get_price(symbol)
@@ -1539,44 +1911,20 @@ class RobinhoodExchangeAdapter:
 
 
     def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:
+        yahoo_sym = self.require_stock_underlying(underlying, "volatility")
         try:
             import yfinance as yf
             egress_policy.pin_yfinance()
-            yahoo_sym = self._resolve_yahoo_symbol(underlying)
             ticker = yf.Ticker(yahoo_sym)
             hist = ticker.history(period="90d", interval="1d")
-            if hist.empty or len(hist) < 15:
-                return 0.30, 50.0
-            closes = hist["Close"].tolist()
-            returns = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes)) if closes[i - 1] > 0]
-            if len(returns) < 14:
-                return 0.30, 50.0
-
-            w = 14
-            mean = sum(returns[-w:]) / w
-            variance = sum((r - mean) ** 2 for r in returns[-w:]) / w
-            vol = math.sqrt(variance) * math.sqrt(252)
-
-            hvs = []
-            for i in range(len(returns) - w + 1):
-                chunk = returns[i:i + w]
-                m = sum(chunk) / w
-                v = sum((r - m) ** 2 for r in chunk) / w
-                hvs.append(math.sqrt(v) * math.sqrt(252) * 100)
-            current_hv = vol * 100
-            hv_min, hv_max = min(hvs), max(hvs)
-            if hv_max > hv_min:
-                iv_rank = (current_hv - hv_min) / (hv_max - hv_min) * 100
-                iv_rank = round(min(max(iv_rank, 0.0), 100.0), 1)
-            else:
-                iv_rank = 50.0
-
-            return round(vol, 4), iv_rank
+            closes = [] if hist.empty else hist["Close"].tolist()
         except Exception as e:
             print(f"[robinhood] vol_metrics error for {underlying}: {e}", file=sys.stderr)
-            return 0.30, 50.0
+            raise option_data.unavailable("volatility unavailable: daily history read failed", e) from e
+        return option_data.realized_vol_metrics(closes, 252)
 
     def get_real_expiry(self, underlying: str, target_dte: int) -> Tuple[str, int]:
+        self.require_stock_underlying(underlying, "option expiry")
         if self._logged_in:
             try:
                 with robinhood_library() as rh:
@@ -1603,6 +1951,7 @@ class RobinhoodExchangeAdapter:
 
     def get_real_strike(self, underlying: str, expiry: str,
                         option_type: str, target_strike: float) -> float:
+        self.require_stock_underlying(underlying, "option strike")
         if self._logged_in:
             try:
                 with robinhood_library() as rh:
@@ -1630,45 +1979,134 @@ class RobinhoodExchangeAdapter:
 
     def get_premium_and_greeks(self, underlying: str, option_type: str,
                                 strike: float, expiry: str, dte: float,
-                                spot: float, vol: float) -> Tuple[float, float, dict]:
+                                spot: float, vol: Optional[float] = None) -> Tuple[float, float, dict]:
+        self.require_stock_underlying(underlying, "option premium")
         if self._logged_in:
-            try:
-                with robinhood_library() as rh:
+            return self._venue_option_premium(underlying, option_type, strike, expiry, spot)
+        from pricing import bs_price_and_greeks
+        spot, strike, dte, vol = option_data.require_model_inputs(spot, strike, dte, vol)
+        price_usd, greeks = bs_price_and_greeks(spot, strike, dte, vol, option_type=option_type)
+        mark_pct = price_usd / spot
+        return round(mark_pct, 6), price_usd, greeks
+
+    def _venue_option_market_data(self, underlying: str, option_type: str, strike: float, expiry: str) -> dict:
+        library_output = io.StringIO()
+        try:
+            with robinhood_library() as rh:
+                rh.helper.set_output(_TeeText(sys.stderr, library_output))
+                try:
                     options = rh.options.find_tradable_options(
                         underlying, expirationDate=expiry,
                         strikePrice=str(strike), optionType=option_type
                     )
-                if options:
-                    opt_id = options[0].get("id") or options[0].get("url", "").split("/")[-2]
+                    market_data = None
+                    option = options[0] if options and isinstance(options[0], dict) else None
+                    opt_id = None
+                    if option is not None:
+                        opt_id = option.get("id") or option.get("url", "").split("/")[-2]
                     if opt_id:
-                        with robinhood_library() as rh:
-                            market_data = rh.options.get_option_market_data_by_id(opt_id)
-                        if market_data and isinstance(market_data, list) and market_data[0]:
-                            md = market_data[0]
-                            mark = float(md.get("adjusted_mark_price", 0) or 0)
-                            greeks = {
-                                "delta": float(md.get("delta", 0) or 0),
-                                "gamma": float(md.get("gamma", 0) or 0),
-                                "theta": float(md.get("theta", 0) or 0),
-                                "vega": float(md.get("vega", 0) or 0),
-                            }
-                            premium_usd = mark * 100
-                            mark_pct = (mark / spot) if spot > 0 else 0.0
-                            return round(mark_pct, 6), round(premium_usd, 2), greeks
-            except Exception as e:
-                print(f"[robinhood] get_premium_and_greeks error: {e}", file=sys.stderr)
+                        market_data = rh.options.get_option_market_data_by_id(opt_id)
+                finally:
+                    rh.helper.set_output(sys.stderr)
+        except Exception as e:
+            print(f"[robinhood] get_premium_and_greeks error: {e}", file=sys.stderr)
+            raise option_data.unavailable("option quote unavailable: robinhood option read failed", e,
+                                          text=library_output.getvalue()) from e
+        if option is None or not opt_id:
+            raise option_data.unavailable("option quote unavailable: no tradable robinhood option matches",
+                                          text=library_output.getvalue())
+        if not (market_data and isinstance(market_data, list) and isinstance(market_data[0], dict)):
+            raise option_data.unavailable("option quote unavailable: robinhood option market data missing",
+                                          text=library_output.getvalue())
+        return market_data[0]
 
+    @staticmethod
+    def _quote_greeks(md: dict) -> dict:
+        return {
+            "delta": float(md.get("delta", 0) or 0),
+            "gamma": float(md.get("gamma", 0) or 0),
+            "theta": float(md.get("theta", 0) or 0),
+            "vega": float(md.get("vega", 0) or 0),
+        }
+
+    def _venue_option_premium(self, underlying: str, option_type: str, strike: float,
+                              expiry: str, spot: float) -> Tuple[float, float, dict]:
+        md = self._venue_option_market_data(underlying, option_type, strike, expiry)
+        try:
+            mark = float(md.get("adjusted_mark_price", 0) or 0)
+            greeks = self._quote_greeks(md)
+        except (TypeError, ValueError):
+            raise option_data.OptionDataUnavailable("option quote unavailable: robinhood option market data malformed") from None
+        option_data.require_finite_positive(mark, "option quote unavailable: robinhood mark is not positive")
+        mark_pct = (mark / spot) if spot > 0 else 0.0
+        return round(mark_pct, 6), mark, greeks
+
+    def get_option_mark(self, underlying: str, option_type: str, strike: float, expiry: str,
+                        dte: float, spot: float, vol: Optional[float] = None) -> Tuple[float, dict, str]:
+        self.require_stock_underlying(underlying, "option mark")
+        if self._logged_in:
+            md = self._venue_option_market_data(underlying, option_type, strike, expiry)
+            raw = md.get("adjusted_mark_price")
+            if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+                raise option_data.OptionDataUnavailable("option quote unavailable: robinhood mark field missing")
+            try:
+                mark = float(raw)
+                greeks = self._quote_greeks(md)
+            except (TypeError, ValueError):
+                raise option_data.OptionDataUnavailable("option quote unavailable: robinhood option market data malformed") from None
+            if not math.isfinite(mark) or mark < 0:
+                raise option_data.OptionDataUnavailable("option quote unavailable: robinhood mark is not a finite non-negative price")
+            if not all(math.isfinite(v) for v in greeks.values()):
+                raise option_data.OptionDataUnavailable("option quote unavailable: robinhood greeks are not finite")
+            return mark, greeks, "robinhood_quote"
         from pricing import bs_price_and_greeks
-        if vol <= 0:
-            vol = 0.30
+        spot, strike, dte, vol = option_data.require_model_inputs(spot, strike, dte, vol)
         price_usd, greeks = bs_price_and_greeks(spot, strike, dte, vol, option_type=option_type)
-        premium_usd = price_usd * 100
-        mark_pct = (price_usd / spot) if spot > 0 else 0.0
-        return round(mark_pct, 6), round(premium_usd, 2), greeks
+        if not isinstance(price_usd, (int, float)) or not math.isfinite(price_usd) or price_usd <= 0:
+            raise option_data.OptionDataUnavailable("option model unavailable: black-scholes price is not positive")
+        greeks = {k: float(greeks.get(k, 0) or 0) for k in ("delta", "gamma", "theta", "vega")}
+        if not all(math.isfinite(v) for v in greeks.values()):
+            raise option_data.OptionDataUnavailable("option model unavailable: black-scholes greeks are not finite")
+        return float(price_usd), greeks, "robinhood_black_scholes"
+
+    def get_settlement_close(self, symbol: str, session_date: str, refresh_at: datetime) -> Tuple[Optional[float], str]:
+        yahoo_sym = self.require_stock_underlying(symbol, "settlement close")
+        session = datetime.strptime(session_date, "%Y-%m-%d").date()
+        start = session - timedelta(days=7)
+        end = max(refresh_at.astimezone(timezone.utc).date(), session) + timedelta(days=1)
+        try:
+            import yfinance as yf
+            egress_policy.pin_yfinance()
+            hist = yf.Ticker(yahoo_sym).history(start=start.isoformat(), end=end.isoformat(), interval="1d",
+                                                auto_adjust=False, back_adjust=False, actions=True)
+        except Exception as e:
+            print(f"[robinhood] settlement close read error for {symbol} {session_date}: {e}", file=sys.stderr)
+            raise option_data.unavailable("settlement close unavailable: daily history read failed", e) from e
+        if hist is None or hist.empty:
+            return None, f"no daily bar for {yahoo_sym} on expected session {session_date} (no rows in {start.isoformat()}..{end.isoformat()})"
+        close = None
+        for idx, row in hist.iterrows():
+            day = idx.date()
+            splits = row.get("Stock Splits", 0)
+            try:
+                split = float(splits or 0)
+            except (TypeError, ValueError):
+                raise option_data.OptionDataUnavailable("settlement close unavailable: malformed split field") from None
+            if day > session and split not in (0.0, 1.0):
+                return None, f"split after expiry: {yahoo_sym} split {split:g} on {day.isoformat()} changes the close basis"
+            if day == session:
+                try:
+                    close = float(row["Close"])
+                except (TypeError, ValueError, KeyError):
+                    raise option_data.OptionDataUnavailable("settlement close unavailable: malformed close") from None
+        if close is None:
+            return None, f"no daily bar for {yahoo_sym} on expected session {session_date}"
+        if not math.isfinite(close) or close <= 0:
+            raise option_data.OptionDataUnavailable(f"settlement close unavailable: close {close} on {session_date} is not positive")
+        return close, ""
 
 
-    def _get_yahoo_price(self, symbol: str) -> float:
-        yahoo_sym = self._resolve_yahoo_symbol(symbol)
+    def _get_yahoo_price(self, symbol: str, yahoo_sym: str) -> float:
         try:
             import yfinance as yf
             egress_policy.pin_yfinance()
@@ -1687,13 +2125,13 @@ class RobinhoodExchangeAdapter:
     def _get_yahoo_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
         entry = robinhood_timeframe(interval)
         yahoo_sym = self._resolve_yahoo_symbol(symbol)
-        crypto = _is_yahoo_crypto_pair(yahoo_sym)
+        crypto = self._asset_class == ASSET_CLASS_CRYPTO
         hours = entry.resample_hours if crypto else 0
         yf_interval = entry.yahoo_interval if crypto else entry.session_interval
         if not yf_interval:
             raise UnsupportedRobinhoodTimeframe(
-                f"Robinhood timeframe {interval!r} is resampled from Yahoo 1h rows only for crypto pairs; "
-                f"{yahoo_sym} is not a Yahoo crypto pair")
+                f"Robinhood timeframe {interval!r} is resampled from Yahoo 1h rows only for the crypto class; "
+                f"stock data for {yahoo_sym} serves only session intervals")
         bars = int(limit) + 2
         if hours:
             bars = (bars + 1) * hours
@@ -1877,10 +2315,11 @@ class RobinhoodExchangeAdapter:
     def _quote_price(self, session, urls, pair_id, side, deadline):
         body = self._read_json_dict(session, urls.crypto_quote_url(pair_id), deadline, "crypto quote")
         key = "ask_price" if side == "buy" else "bid_price"
-        price = _parse_decimal(body.get(key))
+        raw = body.get(key)
+        price = _parse_decimal(raw)
         if price is None or price <= 0:
-            raise _OrderPrepError(f"crypto quote: {key} {body.get(key)!r} is not a finite positive number")
-        return price
+            raise _OrderPrepError(f"crypto quote: {key} {raw!r} is not a finite positive number")
+        return price, raw
 
     def _poll_order(self, session, urls, order_id, ref_id, side, deadline):
         import requests
@@ -2049,26 +2488,49 @@ class RobinhoodExchangeAdapter:
         result["account_id"] = account_id
         with robinhood_library() as rh:
             round_price = rh.helper.round_price
-        price = round_price(self._quote_price(session, urls, pair_id, side, deadline))
-        sizing = None
-        if sell_policy is not None:
-            rules = _pair_quantity_rules(pair_row, symbol)
-            holding = self.holding_quantities(symbol, deadline)
-            sizing = plan_sized_sell(sell_policy["asked"], holding["available"], rules,
-                                     sell_policy["close_kind"], sell_policy.get("sole_owner") is True)
-            sizing["account_quantity"] = float(holding["quantity"])
+        quote, raw_quote = self._quote_price(session, urls, pair_id, side, deadline)
+        price_increment, increment_problem = _pair_price_increment(pair_row)
+        if side == "buy":
+            budget = _parse_exact_decimal(size)
+            if budget is None or budget <= 0:
+                raise _BuyPrepError(f"buy refused before sending: the budget {size!r} is not a bounded finite positive decimal")
+            ask = _parse_exact_decimal(raw_quote)
+            if ask is None or ask <= 0:
+                raise _BuyPrepError(f"buy refused before sending: the ask_price {raw_quote!r} is not a bounded finite positive decimal")
+            if price_increment is None:
+                raise _BuyPrepError(f"buy refused before sending: currency pairs: {increment_problem}")
+            rules = dict(_pair_quantity_rules(pair_row, symbol))
+            rules["price_increment"] = price_increment
+            buy_sizing = plan_sized_buy(budget, ask, rules, _BUY_LIMIT_HEADROOM)
+            result["buy_sizing"] = buy_sizing
+            order_type = "limit"
+            price = buy_sizing["limit_price"]
+            order_quantity = buy_sizing["sent_quantity"]
+        else:
+            sell_price = plan_sell_price(raw_quote, quote, price_increment, increment_problem, round_price(quote))
+            result["sell_price"] = sell_price
+            order_type = "market"
+            price = sell_price["sent_price"]
+            if sell_policy is not None:
+                rules = _pair_quantity_rules(pair_row, symbol)
+                holding = self.holding_quantities(symbol, deadline)
+                sizing = plan_sized_sell(sell_policy["asked"], holding["available"], rules,
+                                         sell_policy["close_kind"], sell_policy.get("sole_owner") is True)
+                sizing["account_quantity"] = float(holding["quantity"])
+                order_quantity = sizing["sent_quantity"]
+            else:
+                order_quantity = size
+        if side == "buy" or sell_policy is not None:
             remaining = deadline - time.monotonic()
             reserve = min(_CANCEL_RESERVE_S, max(remaining, 0.0) * _CANCEL_RESERVE_SHARE)
             if remaining - reserve < _POLL_INTERVAL_START_S:
                 raise _OrderPrepError(f"too little of the time budget is left after the account reads ({remaining:.2f}s); no order was sent")
+        if sell_policy is not None:
             result["sizing"] = sizing
-            order_quantity = sizing["sent_quantity"]
-        elif side == "sell":
-            order_quantity = size
-        else:
-            order_quantity = round_price(size / price)
         if not math.isfinite(order_quantity) or order_quantity <= 0:
             raise _OrderPrepError(f"order quantity {order_quantity!r} is not a finite positive number")
+        if not isinstance(price, float) or not math.isfinite(price) or price <= 0:
+            raise _OrderPrepError(f"order price {price!r} is not a finite positive number")
         result["requested_quantity"] = order_quantity
         payload = {
             "account_id": account_id,
@@ -2078,7 +2540,7 @@ class RobinhoodExchangeAdapter:
             "ref_id": ref_id,
             "side": side,
             "time_in_force": "gtc",
-            "type": "market",
+            "type": order_type,
         }
         response = None
         last_pre_send = None
@@ -2210,6 +2672,8 @@ class RobinhoodExchangeAdapter:
                 if next_url is None:
                     complete = True
                     break
+                if by_ref:
+                    break
         except _OrderPrepError as e:
             return self._finish_clean(result, OUTCOME_UNKNOWN, f"order list read failed: {e}")
         matches = by_ref if by_ref else by_fields
@@ -2260,6 +2724,12 @@ class RobinhoodExchangeAdapter:
         row_account = body.get("account_id")
         if row_account is not None and row_account != account_id:
             raise _OrderEvidenceError(f"order belongs to account {row_account!r}, not the logged-in crypto account")
+
+    def crypto_account_id(self, deadline=None, expected_account_id=None):
+        session, urls = self._logged_in_session(_OrderPrepError)
+        own_deadline = time.monotonic() + _HOLDINGS_TOTAL_DEADLINE_S
+        deadline = own_deadline if deadline is None else min(own_deadline, deadline)
+        return self._crypto_account_id(session, urls, deadline, expected_account_id)
 
     def get_crypto_positions_strict(self, deadline=None) -> list:
         try:

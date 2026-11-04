@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -13,7 +12,6 @@ var productionRefusedStrategies = map[string]string{
 	"perpetual_premium_reversion":     "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
 	"order_book_imbalance":            "backtest/candidates/order_book_imbalance_1635/REPORT.md",
 	"inventory_market_making":         "backtest/candidates/inventory_market_making_1636/REPORT.md",
-	"cross_exchange_perp_arbitrage":   "backtest/candidates/cross_exchange_perp_arbitrage_1655/REPORT.md",
 }
 
 func productionRefusedReferences(sc StrategyConfig) []edgeReference {
@@ -40,15 +38,4 @@ func productionRefusedReferences(sc StrategyConfig) []edgeReference {
 		}
 	}
 	return out
-}
-
-func productionRefusedAdmissionErrors(strategies []StrategyConfig) []string {
-	var errs []string
-	for _, sc := range strategies {
-		for _, ref := range productionRefusedReferences(sc) {
-			errs = append(errs, fmt.Sprintf("strategy %s: %s strategy %q is production_refused (research-only, evidence %s): every config is refused in any mode, with or without allow_no_edge, until a separate reviewed promotion",
-				sc.ID, ref.Role, ref.Name, productionRefusedStrategies[ref.Name]))
-		}
-	}
-	return errs
 }

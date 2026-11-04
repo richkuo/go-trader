@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"sort"
@@ -219,6 +220,7 @@ type ciWorkflowJob struct {
 	raw      []string
 	logical  [][]string
 	problems []string
+	docsGate bool
 }
 
 var (
@@ -234,6 +236,11 @@ var (
 	ciGateEcho    = regexp.MustCompile("^echo \"[^\"$`\\\\]*\"$")
 	ciShardName   = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	ciShellJobKey = regexp.MustCompile(`^\s*(- )?(strategy|matrix|needs):`)
+)
+
+const (
+	ciDocsGateNeeds = "    needs: changes"
+	ciDocsGateIf    = "    if: ${{ needs.changes.outputs.code == 'true' }}"
 )
 
 func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
@@ -277,6 +284,23 @@ func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
 		}
 	}
 	for name, job := range jobs {
+		var kept []string
+		gateNeeds, gateIf := 0, 0
+		for _, line := range job.raw {
+			switch line {
+			case ciDocsGateNeeds:
+				gateNeeds++
+			case ciDocsGateIf:
+				gateIf++
+			default:
+				kept = append(kept, line)
+			}
+		}
+		if gateNeeds != gateIf || gateNeeds > 1 {
+			job.problems = append(job.problems, fmt.Sprintf("job %s must carry the docs-only gate as exactly one %q line and one %q line, or neither", name, strings.TrimSpace(ciDocsGateNeeds), strings.TrimSpace(ciDocsGateIf)))
+		}
+		job.raw = kept
+		job.docsGate = gateNeeds > 0 || gateIf > 0
 		for i := 0; i < len(job.raw); i++ {
 			m := ciRunKey.FindStringSubmatch(job.raw[i])
 			if m == nil {
@@ -359,6 +383,35 @@ func requireCIJob(t *testing.T, jobs map[string]*ciWorkflowJob, name string) *ci
 	return job
 }
 
+func requireCIChangesJob(t *testing.T, workflow string, jobs map[string]*ciWorkflowJob) {
+	t.Helper()
+	job, ok := jobs["changes"]
+	if !ok {
+		t.Fatalf(".github/workflows/%s has no changes job, but its suite jobs read needs.changes.outputs.code", workflow)
+	}
+	for _, name := range []string{"changes", "checks"} {
+		if j, ok := jobs[name]; ok && j.docsGate {
+			t.Fatalf(".github/workflows/%s job %s carries the docs-only gate, but it must run on every pull request", workflow, name)
+		}
+	}
+	want := [][]string{{"bash scripts/check_ci_code_changed.sh"}, {"bash scripts/ci_code_changed.sh"}}
+	if !reflect.DeepEqual(job.logical, want) {
+		t.Fatalf(".github/workflows/%s changes job runs %q, want the detector check and then the detector: %q", workflow, job.logical, want)
+	}
+	outputs := 0
+	for _, line := range job.raw {
+		if line == "      code: ${{ steps.diff.outputs.code }}" {
+			outputs++
+		}
+		if ciStepIf.MatchString(line) || strings.Contains(line, "continue-on-error") {
+			t.Fatalf(".github/workflows/%s changes job has %s, so the detector check might not run", workflow, strings.TrimSpace(line))
+		}
+	}
+	if outputs != 1 {
+		t.Fatalf(".github/workflows/%s changes job declares its code output %d times, want 1", workflow, outputs)
+	}
+}
+
 func goTestFuncBody(t *testing.T, path, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -395,10 +448,6 @@ type pyIntegrationCIExemption struct {
 }
 
 var pyIntegrationCIExemptions = map[string]pyIntegrationCIExemption{}
-
-func localOnlyBasketTest(test string) bool {
-	return strings.HasPrefix(test, "TestBasket")
-}
 
 func (s ciPyIntegrationShard) selects(test string) bool {
 	return s.run.MatchString(test) && (s.skip == nil || !s.skip.MatchString(test))
@@ -638,9 +687,7 @@ func checkPyIntegrationPartition(t *testing.T, shards []ciPyIntegrationShard, te
 			t.Errorf("no %s shard job runs the allowlisted %s", ciPyIntegrationJob, test)
 		case len(owners) > 1:
 			t.Errorf("%s runs in more than one shard job: %s", test, strings.Join(owners, ", "))
-		case localOnlyBasketTest(test) && (allowed || len(owners) > 0):
-			t.Errorf("basket test %s is selected by CI (%s); basket tests run locally, not in CI", test, strings.Join(append(owners, map[bool]string{true: ciPyIntegrationJob}[allowed]), ", "))
-		case tagged[test] && !allowed && !exempt && !localOnlyBasketTest(test):
+		case tagged[test] && !allowed && !exempt:
 			t.Errorf("the pyintegration test %s runs in no CI job: add it to the %s allowlist, or to pyIntegrationCIExemptions with a written reason and an issue number", test, ciPyIntegrationJob)
 		}
 	}
@@ -808,6 +855,13 @@ func TestShellSuiteCIWiring(t *testing.T) {
 		t.Fatal(".github/workflows/ci.yml sets GOFLAGS, which can change the tests a go-python-integration shard selects")
 	}
 	jobs := parseCIWorkflowJobs(t, workflowPath)
+	for _, wf := range []string{"ci.yml", "container.yml"} {
+		wfJobs := jobs
+		if wf != "ci.yml" {
+			wfJobs = parseCIWorkflowJobs(t, filepath.Join(repoRoot, ".github", "workflows", wf))
+		}
+		requireCIChangesJob(t, wf, wfJobs)
+	}
 	shards := readPyIntegrationShards(t, jobs)
 	allowlist := shards[0].run
 	requireCIJob(t, jobs, ciShellSuitesJob)

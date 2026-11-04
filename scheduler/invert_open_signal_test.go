@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestInvertOpenSignalEchoAndResolver(t *testing.T) {
+func invertCaseInvertOpenSignalEchoAndResolver(t *testing.T) {
 	orig := runHyperliquidCheckFn
 	t.Cleanup(func() { runHyperliquidCheckFn = orig })
 
@@ -143,7 +143,7 @@ func TestInvertOpenSignalEchoAndResolver(t *testing.T) {
 	}
 }
 
-func TestInvertedCloseReachesLiveAndPaper(t *testing.T) {
+func invertCaseInvertedCloseReachesLiveAndPaper(t *testing.T) {
 	origCheck := runHyperliquidCheckFn
 	origExec := runHyperliquidExecuteFn
 	t.Cleanup(func() {
@@ -228,7 +228,7 @@ func TestInvertedCloseReachesLiveAndPaper(t *testing.T) {
 	}
 }
 
-func TestInvertedScaleInCloseIsNotAnAdd(t *testing.T) {
+func invertCaseInvertedScaleInCloseIsNotAnAdd(t *testing.T) {
 	origCheck := runHyperliquidCheckFn
 	t.Cleanup(func() { runHyperliquidCheckFn = origCheck })
 	sc := hlBatchStrategy("hl-scale", "breakout", "ETH", "1h", func(sc *StrategyConfig) {
@@ -264,7 +264,7 @@ func TestInvertedScaleInCloseIsNotAnAdd(t *testing.T) {
 	}
 }
 
-func TestSameSideCloseIsZeroedOnce(t *testing.T) {
+func invertCaseSameSideCloseIsZeroedOnce(t *testing.T) {
 	notifier, mock := confirmationNotifier()
 	sc := hlBatchStrategy("hl-guard", "breakout", "ETH", "1h")
 	logger := silentStrategyLogger(sc.ID)
@@ -286,7 +286,7 @@ func TestSameSideCloseIsZeroedOnce(t *testing.T) {
 	guardSameSideClose(sc, &HyperliquidResult{Symbol: "ETH"}, "short", 0, notifier, logger)
 }
 
-func TestManualInvertDoesNotChangeCloseEval(t *testing.T) {
+func invertCaseManualInvertDoesNotChangeCloseEval(t *testing.T) {
 	orig := runHyperliquidCheckFn
 	t.Cleanup(func() { runHyperliquidCheckFn = orig })
 	sc := StrategyConfig{
@@ -313,5 +313,17 @@ func TestManualInvertDoesNotChangeCloseEval(t *testing.T) {
 	}
 	if strings.Contains(refs, "invert_open_signal") {
 		t.Fatalf("manual refs carried invert key: %s", refs)
+	}
+}
+
+func TestInvertOpenSignal(t *testing.T) {
+	for _, tc := range []sigAdmCase{
+		{"EchoAndResolver", invertCaseInvertOpenSignalEchoAndResolver},
+		{"InvertedCloseReachesLiveAndPaper", invertCaseInvertedCloseReachesLiveAndPaper},
+		{"InvertedScaleInCloseIsNotAnAdd", invertCaseInvertedScaleInCloseIsNotAnAdd},
+		{"SameSideCloseIsZeroedOnce", invertCaseSameSideCloseIsZeroedOnce},
+		{"ManualInvertDoesNotChangeCloseEval", invertCaseManualInvertDoesNotChangeCloseEval},
+	} {
+		t.Run(tc.name, tc.run)
 	}
 }

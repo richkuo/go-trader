@@ -41,84 +41,86 @@ def test_auto_block_len():
     assert mc.auto_block_len(28) == 4
 
 
-def test_permutation_dds_stay_in_enumerated_set():
-    trades = [10.0, -20.0, 5.0]
-    enumerated = {round(mc.equity_path_stats(list(p))[0], 4)
-                  for p in itertools.permutations(trades)}
-    stats = mc.resample_stats(trades, "permute", n_paths=500, seed=42)
-    dd_vals = stats["max_dd_pct_percentiles"]
-    assert min(enumerated) <= dd_vals["p5"] <= dd_vals["p50"] \
-        <= dd_vals["p95"] <= max(enumerated)
-    fr = stats["final_return_pct_percentiles"]
-    expected_final = mc.equity_path_stats(trades)[1]
-    assert fr["p5"] == pytest.approx(expected_final, abs=1e-4)
-    assert fr["p95"] == pytest.approx(expected_final, abs=1e-4)
+def test_permutation_dds_stay_in_enumerated_set(subtests):
+    with subtests.test(case="test_permutation_dds_stay_in_enumerated_set"):
+        trades = [10.0, -20.0, 5.0]
+        enumerated = {round(mc.equity_path_stats(list(p))[0], 4)
+                      for p in itertools.permutations(trades)}
+        stats = mc.resample_stats(trades, "permute", n_paths=500, seed=42)
+        dd_vals = stats["max_dd_pct_percentiles"]
+        assert min(enumerated) <= dd_vals["p5"] <= dd_vals["p50"] \
+            <= dd_vals["p95"] <= max(enumerated)
+        fr = stats["final_return_pct_percentiles"]
+        expected_final = mc.equity_path_stats(trades)[1]
+        assert fr["p5"] == pytest.approx(expected_final, abs=1e-4)
+        assert fr["p95"] == pytest.approx(expected_final, abs=1e-4)
+
+    with subtests.test(case="test_permutation_per_path_dds_match_enumeration_exactly"):
+        trades = [10.0, -20.0, 5.0]
+        enumerated = {round(mc.equity_path_stats(list(p))[0], 6)
+                      for p in itertools.permutations(trades)}
+        from random import Random
+        rng = Random(7)
+        seen = {round(mc.equity_path_stats(mc.permuted_path(trades, rng))[0], 6)
+                for _ in range(300)}
+        assert seen <= enumerated
+        assert seen == enumerated
 
 
-def test_permutation_per_path_dds_match_enumeration_exactly():
-    trades = [10.0, -20.0, 5.0]
-    enumerated = {round(mc.equity_path_stats(list(p))[0], 6)
-                  for p in itertools.permutations(trades)}
-    from random import Random
-    rng = Random(7)
-    seen = {round(mc.equity_path_stats(mc.permuted_path(trades, rng))[0], 6)
-            for _ in range(300)}
-    assert seen <= enumerated
-    assert seen == enumerated
+def test_block_path_preserves_circular_contiguity(subtests):
+    with subtests.test(case="test_block_path_preserves_circular_contiguity"):
+        values = [1.0, 2.0, 3.0, 4.0, 5.0]
+        adjacent = {(values[i], values[(i + 1) % len(values)])
+                    for i in range(len(values))}
+        from random import Random
+        rng = Random(3)
+        for _ in range(50):
+            path = mc.block_bootstrap_path(values, 2, rng)
+            assert len(path) == len(values)
+            for i in range(0, len(path) - 1, 2):
+                assert (path[i], path[i + 1]) in adjacent
+
+    with subtests.test(case="test_block_len_full_series_yields_rotations"):
+        values = [1.0, 2.0, 3.0, 4.0]
+        rotations = {tuple(values[i:] + values[:i]) for i in range(len(values))}
+        from random import Random
+        rng = Random(11)
+        for _ in range(30):
+            assert tuple(mc.block_bootstrap_path(values, len(values), rng)) \
+                in rotations
+
+    with subtests.test(case="test_block_scheme_auto_len_recorded"):
+        stats = mc.resample_stats([1.0] * 27, "block", n_paths=10, seed=1)
+        assert stats["block_len"] == 3
+        stats = mc.resample_stats([1.0] * 27, "block", n_paths=10, seed=1,
+                                  block_len=5)
+        assert stats["block_len"] == 5
 
 
-def test_block_path_preserves_circular_contiguity():
-    values = [1.0, 2.0, 3.0, 4.0, 5.0]
-    adjacent = {(values[i], values[(i + 1) % len(values)])
-                for i in range(len(values))}
-    from random import Random
-    rng = Random(3)
-    for _ in range(50):
-        path = mc.block_bootstrap_path(values, 2, rng)
-        assert len(path) == len(values)
-        for i in range(0, len(path) - 1, 2):
-            assert (path[i], path[i + 1]) in adjacent
+def test_resample_stats_deterministic_under_seed(subtests):
+    with subtests.test(case="test_resample_stats_deterministic_under_seed"):
+        trades = [3.0, -2.0, 1.5, -4.0, 2.2, 0.7, -1.1]
+        for scheme in mc.SCHEMES:
+            a = mc.resample_stats(trades, scheme, n_paths=200, seed=99)
+            b = mc.resample_stats(trades, scheme, n_paths=200, seed=99)
+            assert a == b
 
+    with subtests.test(case="test_resample_stats_empty_is_degenerate_not_crash"):
+        for scheme in mc.SCHEMES:
+            s = mc.resample_stats([], scheme, n_paths=100, seed=1)
+            assert s["n_trades"] == 0
+            assert s["max_dd_pct_percentiles"] is None
+            assert s["p_dd_ge_kill_switch"] is None
 
-def test_block_len_full_series_yields_rotations():
-    values = [1.0, 2.0, 3.0, 4.0]
-    rotations = {tuple(values[i:] + values[:i]) for i in range(len(values))}
-    from random import Random
-    rng = Random(11)
-    for _ in range(30):
-        assert tuple(mc.block_bootstrap_path(values, len(values), rng)) \
-            in rotations
+    with subtests.test(case="test_resample_stats_single_trade"):
+        for scheme in mc.SCHEMES:
+            s = mc.resample_stats([5.0], scheme, n_paths=50, seed=1)
+            assert s["max_dd_pct_percentiles"]["p50"] == 0.0
+            assert s["final_return_pct_percentiles"]["p50"] == pytest.approx(5.0)
 
-
-def test_block_scheme_auto_len_recorded():
-    stats = mc.resample_stats([1.0] * 27, "block", n_paths=10, seed=1)
-    assert stats["block_len"] == 3
-    stats = mc.resample_stats([1.0] * 27, "block", n_paths=10, seed=1,
-                              block_len=5)
-    assert stats["block_len"] == 5
-
-
-def test_resample_stats_deterministic_under_seed():
-    trades = [3.0, -2.0, 1.5, -4.0, 2.2, 0.7, -1.1]
-    for scheme in mc.SCHEMES:
-        a = mc.resample_stats(trades, scheme, n_paths=200, seed=99)
-        b = mc.resample_stats(trades, scheme, n_paths=200, seed=99)
-        assert a == b
-
-
-def test_resample_stats_empty_is_degenerate_not_crash():
-    for scheme in mc.SCHEMES:
-        s = mc.resample_stats([], scheme, n_paths=100, seed=1)
-        assert s["n_trades"] == 0
-        assert s["max_dd_pct_percentiles"] is None
-        assert s["p_dd_ge_kill_switch"] is None
-
-
-def test_resample_stats_single_trade():
-    for scheme in mc.SCHEMES:
-        s = mc.resample_stats([5.0], scheme, n_paths=50, seed=1)
-        assert s["max_dd_pct_percentiles"]["p50"] == 0.0
-        assert s["final_return_pct_percentiles"]["p50"] == pytest.approx(5.0)
+    with subtests.test(case="test_unknown_scheme_rejected"):
+        with pytest.raises(ValueError):
+            mc.resample_stats([1.0], "bogus")
 
 
 def test_kill_switch_breach_probabilities_are_add_one_smoothed_at_both_extremes():
@@ -133,11 +135,6 @@ def test_kill_switch_breach_probabilities_are_add_one_smoothed_at_both_extremes(
                           kill_switch_pct=25.0)
     assert s["p_dd_ge_kill_switch"] == pytest.approx(101 / 101), case
     assert s["p_final_below_start"] == pytest.approx(101 / 101), case
-
-
-def test_unknown_scheme_rejected():
-    with pytest.raises(ValueError):
-        mc.resample_stats([1.0], "bogus")
 
 
 def _trade(pnl_pct, shares=2.0, entry_price=100.0, pnl=None):
@@ -158,16 +155,20 @@ def test_trade_returns():
             f"test_trade_returns[{case_id}]")
 
 
-@pytest.mark.parametrize("trades,kwargs,match", [
+_TRADE_RETURNS_REJECTS = [
     ([], {"returns": "fees"}, None),
     ([{"shares": 2.0, "entry_price": 100.0, "pnl": 8.0}],
      {"returns": "gross"}, "pnl_pct"),
     ([{"shares": 0.0, "entry_price": 0.0, "pnl": 8.0}],
      {"returns": "net"}, "pnl_pct"),
-])
-def test_trade_returns_rejects(trades, kwargs, match):
-    with pytest.raises(ValueError, match=match):
-        mc.trade_returns(trades, **kwargs)
+]
+
+
+def test_trade_returns_rejects(subtests):
+    for i, (trades, kwargs, match) in enumerate(_TRADE_RETURNS_REJECTS):
+        with subtests.test(case=i, kwargs=kwargs, match=match):
+            with pytest.raises(ValueError, match=match):
+                mc.trade_returns(trades, **kwargs)
 
 
 def _cfg(strategies, platforms=None):
@@ -280,7 +281,7 @@ _BAD_CFG = {"strategies": [{"id": "hl-x", "type": "perps",
                             "max_drawdown_pct": 15.0}]}
 
 
-@pytest.mark.parametrize("build_argv,match", [
+_BAD_INVOCATIONS = [
     (lambda tp: [], None),
     (lambda tp: ["--trades-json", "a.json", "--strategy", "breakout"], None),
     (lambda tp: ["--trades-json", str(_valid_trades_json(tp)),
@@ -338,10 +339,16 @@ _BAD_CFG = {"strategies": [{"id": "hl-x", "type": "perps",
     (lambda tp: ["--candidate-json", _write_json(
         tp, "bad.json", {"name": "squeeze_momentum", "direction": "both"}),
         "--window", "is"], "not a valid candidate"),
-])
-def test_cli_rejects_bad_invocation(tmp_path, build_argv, match):
-    with pytest.raises(SystemExit, match=match):
-        mc.main(build_argv(tmp_path))
+]
+
+
+def test_cli_rejects_bad_invocation(tmp_path, subtests):
+    for i, (build_argv, match) in enumerate(_BAD_INVOCATIONS):
+        with subtests.test(case=i, match=match):
+            case_dir = tmp_path / f"case{i}"
+            case_dir.mkdir()
+            with pytest.raises(SystemExit, match=match):
+                mc.main(build_argv(case_dir))
 
 
 def test_run_leg_trades_rejects_bad_dataset(tmp_path):
@@ -372,35 +379,35 @@ def _rich_candidate():
             "trailing_stop_atr_mult": 2.5}
 
 
-def test_run_candidate_leg_threads_the_whole_candidate_into_run_leg(monkeypatch):
-    seen = {}
+def test_run_candidate_leg_threads_the_whole_candidate_into_run_leg(monkeypatch, subtests):
+    with subtests.test(case="test_run_candidate_leg_threads_the_whole_candidate_into_run_leg"):
+        seen = {}
 
-    def fake_run_leg(reg, name, params, symbol, timeframe, window, **kw):
-        seen.update(name=name, params=params, kw=kw)
-        return {"trade_samples": list(_SAMPLES)}
+        def fake_run_leg(reg, name, params, symbol, timeframe, window, **kw):
+            seen.update(name=name, params=params, kw=kw)
+            return {"trade_samples": list(_SAMPLES)}
 
-    monkeypatch.setattr(ew, "run_leg", fake_run_leg)
-    cand = _rich_candidate()
-    ew.run_candidate_leg(_FakeReg, cand, "BTC/USDT", "1h",
-                         ("2025-06-10", "2026-01-01"), keep_trades=True)
+        monkeypatch.setattr(ew, "run_leg", fake_run_leg)
+        cand = _rich_candidate()
+        ew.run_candidate_leg(_FakeReg, cand, "BTC/USDT", "1h",
+                             ("2025-06-10", "2026-01-01"), keep_trades=True)
 
-    assert seen["name"] == "squeeze_momentum"
-    assert seen["params"] == {"kc_mult": 1.5}
-    kw = seen["kw"]
-    assert kw["close_strategies"] == cand["close_strategies"]
-    assert kw["allowed_regimes"] == ["trending_up_clean"]
-    assert kw["regime_windows_spec"] == cand["regime_windows_spec"]
-    assert kw["trailing_stop_atr_mult"] == 2.5
-    assert kw["keep_trades"] is True
+        assert seen["name"] == "squeeze_momentum"
+        assert seen["params"] == {"kc_mult": 1.5}
+        kw = seen["kw"]
+        assert kw["close_strategies"] == cand["close_strategies"]
+        assert kw["allowed_regimes"] == ["trending_up_clean"]
+        assert kw["regime_windows_spec"] == cand["regime_windows_spec"]
+        assert kw["trailing_stop_atr_mult"] == 2.5
+        assert kw["keep_trades"] is True
 
-
-def test_run_candidate_leg_applies_the_validated_long_direction_default(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(ew, "run_leg",
-                        lambda *a, **kw: seen.update(kw) or {"trade_samples": []})
-    ew.run_candidate_leg(_FakeReg, {"name": "squeeze_momentum"}, "BTC/USDT",
-                         "1h", ("2025-06-10", None))
-    assert seen["direction"] == "long"
+    with subtests.test(case="test_run_candidate_leg_applies_the_validated_long_direction_default"):
+        seen = {}
+        monkeypatch.setattr(ew, "run_leg",
+                            lambda *a, **kw: seen.update(kw) or {"trade_samples": []})
+        ew.run_candidate_leg(_FakeReg, {"name": "squeeze_momentum"}, "BTC/USDT",
+                             "1h", ("2025-06-10", None))
+        assert seen["direction"] == "long"
 
 
 def _patch_leg(monkeypatch, leg):
@@ -409,34 +416,34 @@ def _patch_leg(monkeypatch, leg):
     monkeypatch.setattr(ew, "run_candidate_leg", lambda *a, **kw: leg)
 
 
-def test_run_candidate_leg_trades_delegates_and_returns_net_series(monkeypatch):
-    captured = {}
+def test_run_candidate_leg_trades_delegates_and_returns_net_series(monkeypatch, subtests):
+    with subtests.test(case="test_run_candidate_leg_trades_delegates_and_returns_net_series"):
+        captured = {}
 
-    def fake(reg, cand, symbol, timeframe, window, **kw):
-        captured.update(cand=cand, symbol=symbol, timeframe=timeframe, kw=kw)
-        return {"trade_samples": list(_SAMPLES)}
+        def fake(reg, cand, symbol, timeframe, window, **kw):
+            captured.update(cand=cand, symbol=symbol, timeframe=timeframe, kw=kw)
+            return {"trade_samples": list(_SAMPLES)}
 
-    import registry_loader
-    monkeypatch.setattr(registry_loader, "load_registry", lambda r: _FakeReg)
-    monkeypatch.setattr(ew, "run_candidate_leg", fake)
+        import registry_loader
+        monkeypatch.setattr(registry_loader, "load_registry", lambda r: _FakeReg)
+        monkeypatch.setattr(ew, "run_candidate_leg", fake)
 
-    vals = mc.run_candidate_leg_trades(_rich_candidate(), "spot",
-                                       "BTC/USDT:1h", "is", 1000.0, "net")
-    assert vals == [1.5, -1.4]
-    assert captured["cand"]["allowed_regimes"] == ["trending_up_clean"]
-    assert (captured["symbol"], captured["timeframe"]) == ("BTC/USDT", "1h")
-    assert captured["kw"]["keep_trades"] is True
+        vals = mc.run_candidate_leg_trades(_rich_candidate(), "spot",
+                                           "BTC/USDT:1h", "is", 1000.0, "net")
+        assert vals == [1.5, -1.4]
+        assert captured["cand"]["allowed_regimes"] == ["trending_up_clean"]
+        assert (captured["symbol"], captured["timeframe"]) == ("BTC/USDT", "1h")
+        assert captured["kw"]["keep_trades"] is True
 
-    monkeypatch.setattr(ew, "run_candidate_leg", fake)
-    assert mc.run_candidate_leg_trades(_rich_candidate(), "spot",
-                                       "BTC/USDT:1h", "is", 1000.0,
-                                       "gross") == [2.0, -1.0]
+        monkeypatch.setattr(ew, "run_candidate_leg", fake)
+        assert mc.run_candidate_leg_trades(_rich_candidate(), "spot",
+                                           "BTC/USDT:1h", "is", 1000.0,
+                                           "gross") == [2.0, -1.0]
 
-
-def test_run_candidate_leg_trades_returns_none_on_missing_data(monkeypatch):
-    _patch_leg(monkeypatch, None)
-    assert mc.run_candidate_leg_trades({"name": "squeeze_momentum"}, "spot",
-                                       "BTC/USDT:1h", "is", 1000.0, "net") is None
+    with subtests.test(case="test_run_candidate_leg_trades_returns_none_on_missing_data"):
+        _patch_leg(monkeypatch, None)
+        assert mc.run_candidate_leg_trades({"name": "squeeze_momentum"}, "spot",
+                                           "BTC/USDT:1h", "is", 1000.0, "net") is None
 
 
 def test_default_dataset_args_matches_the_eval_windows_audit_six():

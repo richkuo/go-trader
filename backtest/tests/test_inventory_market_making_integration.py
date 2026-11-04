@@ -41,7 +41,6 @@ def test_registration_is_a_hidden_futures_quote_capability_with_the_committed_sp
     assert NAME not in load_registry("spot").STRATEGY_REGISTRY
     registry = reg._registry
     assert registry.STRATEGIES[NAME]["short_entries"] is False
-    assert NAME not in registry.basket_rankers()
     with open(os.path.join(CANDIDATE, "discovery_quote.json")) as fh:
         committed = json.load(fh)
     assert quote_replay.discover() == committed

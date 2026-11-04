@@ -294,6 +294,7 @@ func (lc LeaderboardSummaryConfig) Key() string {
 
 type Config struct {
 	regimeTimeframeRaw       string
+	robinhoodCoinRewrites    []robinhoodCoinRewrite
 	ConfigVersion            int                        `json:"config_version,omitempty"`
 	IntervalSeconds          int                        `json:"interval_seconds"`
 	LogDir                   string                     `json:"log_dir"`
@@ -309,8 +310,6 @@ type Config struct {
 	AutoUpdate               string                     `json:"auto_update,omitempty"`
 	LeaderboardPostTime      string                     `json:"leaderboard_post_time,omitempty"`
 	Strategies               []StrategyConfig           `json:"strategies"`
-	Baskets                  []BasketConfig             `json:"baskets,omitempty"`
-	Pairs                    []PairConfig               `json:"pairs,omitempty"`
 	PortfolioRisk            *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
 	Correlation              *CorrelationConfig         `json:"correlation,omitempty"`
 	Regime                   *RegimeConfig              `json:"regime,omitempty"`
@@ -337,7 +336,7 @@ type Config struct {
 	migrationBaseVersionSet bool
 	noEdgeMigration         *noEdgeMigrationReport
 	quoteLoad               *quoteLoadAdmission
-	pairAdmission           *pairResearchAdmission
+	regimeSideEvidence      *regimeSideEvidence
 }
 
 func (c *Config) NoEdgeMigrationReport() *noEdgeMigrationReport {
@@ -668,6 +667,8 @@ type StrategyConfig struct {
 	RestingTPTradeThrough       bool                     `json:"resting_tp_trade_through,omitempty"`
 	ATRMethod                   string                   `json:"atr_method,omitempty"`
 	InvertSignal                bool                     `json:"invert_signal,omitempty"`
+	RegimeSide                  bool                     `json:"regime_side,omitempty"`
+	AllowUncertifiedRegimeSide  bool                     `json:"allow_uncertified_regime_side,omitempty"`
 	AllowShorts                 bool                     `json:"allow_shorts,omitempty"`
 	Direction                   string                   `json:"direction,omitempty"`
 	Leverage                    float64                  `json:"leverage,omitempty"`
@@ -693,10 +694,7 @@ type StrategyConfig struct {
 	ReplaySourceID              string                   `json:"replay_source_id,omitempty"`
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`
 	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`
-	BasketID                    string                   `json:"basket_id,omitempty"`
 	Quote                       *QuoteConfig             `json:"quote,omitempty"`
-	PairID                      string                   `json:"pair_id,omitempty"`
-	pairMember                  *pairMemberRequest       `json:"-"`
 }
 
 type HedgeConfig struct {
@@ -971,16 +969,28 @@ func LoadConfigReadOnly(path string) (*Config, error) {
 	return loadConfig(path, false, true)
 }
 
+func LoadConfigForProbeAdmission(path string, enforceRegimeSide bool) (*Config, error) {
+	return loadConfigOpts(path, true, true, configLoadOptions{enforceRegimeSideAdmission: enforceRegimeSide})
+}
+
 func LoadConfigForLedgerExport(data []byte) (*Config, error) {
-	return loadConfigData("", append([]byte(nil), data...), true, true)
+	return loadConfigDataOpts("", append([]byte(nil), data...), true, true, configLoadOptions{skipRegimeSideArtifact: true})
+}
+
+func LoadConfigWithRegimeSideEvidence(path string, ev *regimeSideEvidence) (*Config, error) {
+	return loadConfigOpts(path, false, false, configLoadOptions{regimeSideEvidence: ev})
 }
 
 func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Config, error) {
+	return loadConfigOpts(path, skipLiveCredentialChecks, readOnly, configLoadOptions{})
+}
+
+func loadConfigOpts(path string, skipLiveCredentialChecks bool, readOnly bool, opts configLoadOptions) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	cfg, err := loadConfigData(path, data, skipLiveCredentialChecks, readOnly)
+	cfg, err := loadConfigDataOpts(path, data, skipLiveCredentialChecks, readOnly, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -994,24 +1004,12 @@ func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, rea
 	return loadConfigDataOpts(path, data, skipLiveCredentialChecks, readOnly, configLoadOptions{})
 }
 
-func loadConfigDataWith(path string, data []byte, skipLiveCredentialChecks bool, readOnly bool, pairAdm *pairResearchAdmission) (*Config, error) {
-	return loadConfigDataOpts(path, data, skipLiveCredentialChecks, readOnly, configLoadOptions{pairAdmission: pairAdm})
-}
-
 func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool, readOnly bool, opts configLoadOptions) (*Config, error) {
-	if opts.quoteLoad != nil && opts.pairAdmission != nil {
-		return nil, fmt.Errorf("a configuration load takes at most one internal research admission")
+	if errs := retiredResearchConfigRefusals(data); len(errs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
 	}
 	if opts.quoteLoad != nil && (!readOnly || !skipLiveCredentialChecks || path != "") {
 		return nil, fmt.Errorf("a quote-admitted load runs only in the read-only, credential-skip form with no config file")
-	}
-	pairAdm := opts.pairAdmission
-	if pairAdm == nil {
-		if errs := pairOrdinaryRefusals(data); len(errs) > 0 {
-			return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
-		}
-	} else if !pairAdm.valid() || !readOnly || path != "" {
-		return nil, fmt.Errorf("pair activation needs the internal research admission on an in-memory read-only load")
 	}
 	var noEdgeReport *noEdgeMigrationReport
 	keepNoEdgeReport := func(report *noEdgeMigrationReport) {
@@ -1082,7 +1080,7 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 			fmt.Printf("[migration] %s\n", line)
 		}
 	}
-	if rawErrs := append(validateBasketRawFields(data), validateQuoteRawFields(data)...); len(rawErrs) > 0 {
+	if rawErrs := validateQuoteRawFields(data); len(rawErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(rawErrs, "\n  "))
 	}
 	var cfg Config
@@ -1098,7 +1096,6 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 	}
 	unknownErrs := validateStrategyJSONKeys(data)
 	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
-	unknownErrs = append(unknownErrs, validateBasketJSONKeys(data)...)
 	unknownErrs = append(unknownErrs, validateEgressJSON(data)...)
 	if len(unknownErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
@@ -1121,12 +1118,6 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 	}
 	for i := range cfg.Strategies {
 		cfg.Strategies[i].PaperSource = strings.TrimSpace(cfg.Strategies[i].PaperSource)
-		cfg.Strategies[i].BasketID = strings.TrimSpace(cfg.Strategies[i].BasketID)
-		cfg.Strategies[i].PairID = strings.TrimSpace(cfg.Strategies[i].PairID)
-	}
-	for i := range cfg.Baskets {
-		cfg.Baskets[i].ID = strings.TrimSpace(cfg.Baskets[i].ID)
-		cfg.Baskets[i].Ranker = strings.TrimSpace(cfg.Baskets[i].Ranker)
 	}
 	if cfg.AutoUpdate == "" {
 		cfg.AutoUpdate = "off"
@@ -1219,6 +1210,10 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 			}
 			fmt.Printf("[INFO] %s: no theta_harvest config, applying defaults (profit=60%%, stop=200%%, dte=3)\n", cfg.Strategies[i].ID)
 		}
+	}
+
+	if errs := normalizeRobinhoodSpotCoins(&cfg); len(errs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
 	}
 
 	applyUserCloseDefaultRatchetRegimeTrails(&cfg)
@@ -1326,33 +1321,20 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 		return nil, err
 	}
 
-	if basketErrs := basketConfigErrors(&cfg); len(basketErrs) > 0 {
-		return nil, fmt.Errorf("basket config validation errors:\n  %s", strings.Join(basketErrs, "\n  "))
-	}
-
-	if pairAdm == nil {
-		for _, sc := range cfg.Strategies {
-			if len(cfg.Pairs) > 0 || isPairMember(sc) {
-				return nil, fmt.Errorf("config validation errors:\n  pair activation is refused outside the internal research admission")
-			}
-		}
-	} else {
-		if pairErrs := pairResearchConfigErrors(&cfg, pairAdm); len(pairErrs) > 0 {
-			return nil, fmt.Errorf("pair config validation errors:\n  %s", strings.Join(pairErrs, "\n  "))
-		}
-		cfg.pairAdmission = pairAdm
-		for i := range cfg.Strategies {
-			for _, m := range pairAdm.pair.Members {
-				if cfg.Strategies[i].ID == m.StrategyID {
-					req := pairMemberRequest{PairID: pairAdm.pair.ID, MemberID: m.StrategyID, Provider: pairProviderPlatforms[cfg.Strategies[i].Platform], Instrument: m.Instrument, Mode: pairManagementOnlyMode}
-					cfg.Strategies[i].pairMember = &req
-				}
-			}
-		}
-	}
-
 	if err := validateConfig(&cfg, skipLiveCredentialChecks); err != nil {
 		return nil, err
+	}
+	if !opts.skipRegimeSideArtifact && configUsesRegimeSide(&cfg) {
+		ev := opts.regimeSideEvidence
+		if ev == nil {
+			ev = readRegimeSideEvidence(directionalCertPath())
+		}
+		if opts.enforceRegimeSideAdmission {
+			if errs := regimeSideAdmissionErrors(&cfg, ev, time.Now().UTC()); len(errs) > 0 {
+				return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
+			}
+		}
+		cfg.regimeSideEvidence = ev
 	}
 	warnHyperliquidTieredATRSourceLive(&cfg)
 	return &cfg, nil
@@ -1914,6 +1896,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 
 	errs = append(errs, closedBarDecisionsConfigErrors(cfg)...)
 
+	errs = append(errs, regimeSideConfigErrors(cfg)...)
+
 	errs = append(errs, robinhoodTimeframeConfigErrors(cfg)...)
 
 	errs = append(errs, restingTPTradeThroughConfigErrors(cfg)...)
@@ -1985,6 +1969,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		}
 		if sc.Type == "options" && isLiveArgs(sc.Args) {
 			errs = append(errs, fmt.Sprintf("%s: %s", prefix, optionsLiveModeConfigError(sc.Platform)))
+		}
+		if err := optionsConfigPolicyError(sc); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v; remove the strategy, or close or migrate its open option legs first (#1912)", prefix, err))
 		}
 
 		if _, err := parseRegimeGateOnFailure(sc.RegimeGateOnFailure); err != nil {
@@ -2521,6 +2508,10 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 
 	for _, w := range strategyRefsArgsWarnings(cfg) {
+		fmt.Println(w)
+	}
+
+	for _, w := range coveredCallsSharesWarnings(cfg) {
 		fmt.Println(w)
 	}
 

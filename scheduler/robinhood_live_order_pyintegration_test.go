@@ -4,11 +4,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,6 +152,9 @@ func (e *rhLiveEnv) setRoutes(routes rhRoutes) {
 	if _, ok := routes["GET "+rhTestSession]; !ok {
 		routes = rhWith(routes, rhRoutes{"GET " + rhTestSession: {rhHoldings()}})
 	}
+	if _, ok := routes["GET "+rhTestAccounts]; !ok {
+		routes = rhWith(routes, rhRoutes{"GET " + rhTestAccounts: {rhAccountRoute(rhTestAccount)}})
+	}
 	b, err := json.Marshal(routes)
 	if err != nil {
 		e.t.Fatal(err)
@@ -222,7 +227,8 @@ func (e *rhLiveEnv) setPosition(id, coin string, qty, avgCost float64) {
 	e.t.Helper()
 	e.mu.Lock()
 	s := e.state.Strategies[id]
-	s.Positions[coin] = &Position{Symbol: coin, Quantity: qty, InitialQuantity: qty, AvgCost: avgCost, Side: "long", OwnerStrategyID: id, TradePositionID: id + ":" + coin + ":seed", OpenedAt: time.Now().UTC()}
+	s.Positions[coin] = &Position{Symbol: coin, Quantity: qty, InitialQuantity: qty, AvgCost: avgCost, Side: "long", OwnerStrategyID: id, TradePositionID: id + ":" + coin + ":seed", OpenedAt: time.Now().UTC(),
+		AccountKey: robinhoodAccountKey(), VenueAccountID: rhTestAccount, AccountBindingSource: robinhoodBindingSourceSettlement}
 	err := e.store.SaveStrategyBook(s)
 	e.mu.Unlock()
 	if err != nil {
@@ -337,11 +343,15 @@ func rhPrepRoutes() rhRoutes {
 	return rhRoutes{
 		"GET " + rhTestPairs: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{
 			map[string]interface{}{"id": "pair-btc", "asset_currency": map[string]interface{}{"code": "BTC"}, "quote_currency": map[string]interface{}{"code": "USD"},
-				"min_order_size": "0.000001", "min_order_quantity_increment": "0.00000001", "max_order_size": "20"},
+				"min_order_size": "0.000001", "min_order_quantity_increment": "0.00000001", "max_order_size": "20", "min_order_price_increment": "0.01"},
 		}}}},
 		"GET " + rhTestAccounts: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{map[string]interface{}{"id": rhTestAccount}}}}},
 		"GET " + rhTestQuote:    {{"status": 200, "json": map[string]interface{}{"ask_price": "100.00", "bid_price": "99.00"}}},
 	}
+}
+
+func rhAccountRoute(id string) rhRoute {
+	return rhRoute{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{map[string]interface{}{"id": id}}}}
 }
 
 func rhOrderBody(id, state, side, cumulative string, average interface{}, refID string) map[string]interface{} {
@@ -394,281 +404,699 @@ func rhWith(base rhRoutes, extra rhRoutes) rhRoutes {
 
 func rhOrderURL(id string) string { return rhTestOrders + id + "/" }
 
-func TestRobinhoodLiveOrderBuyBooksTheConfirmedVenueFill(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
-		"POST " + rhTestOrders:                          {rhAccepted("buy")},
-		"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("queued", "buy", "0", nil), rhOrder("filled", "buy", "9.5", "100.25")},
-		"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
-	}))
-	trades, detail := e.signal("rh-btc", 1, 0, 100)
-	if trades != 1 || !strings.Contains(detail, "LIVE BUY") {
-		t.Fatalf("trades=%d detail=%q, want one live buy", trades, detail)
-	}
-	s := e.state.Strategies["rh-btc"]
-	pos := s.Positions["BTC"]
-	if pos == nil || pos.Quantity != 9.5 || pos.AvgCost != 100.25 || pos.InitialQuantity != 9.5 {
-		t.Fatalf("position = %+v, want 9.5 @ 100.25", pos)
-	}
-	wantCash := 1000 - 9.5*100.25
-	if math.Abs(s.Cash-wantCash) > 1e-6 {
-		t.Fatalf("cash = %v, want %v", s.Cash, wantCash)
-	}
-	row := e.onlyAttempt()
-	if row.Status != robinhoodAttemptSettled || row.SettlementSeq != 1 || row.AppliedQty != 9.5 || row.VenueOrderID != rhTestOrderID {
-		t.Fatalf("attempt row = %+v, want settled once", row)
-	}
-	posts := e.orderPosts()
-	if len(posts) != 1 || !strings.Contains(string(posts[0].Body), row.RefID) {
-		t.Fatalf("posts = %+v, want one POST carrying ref_id %s", posts, row.RefID)
-	}
-	dbt := e.dbTrades("rh-btc")
-	if len(dbt) != 1 || dbt[0].Price != 100.25 || dbt[0].Quantity != 9.5 || dbt[0].ExchangeOrderID != rhTestOrderID {
-		t.Fatalf("db trades = %+v, want one venue-priced buy", dbt)
-	}
-	before := len(s.TradeHistory)
-	db, _ := e.store.dbForStrategy("rh-btc")
-	a := &robinhoodOrderAttempt{AttemptID: row.ID, StrategyID: "rh-btc", Origin: robinhoodOriginSignal, Status: robinhoodAttemptSettling, VenueOrderID: rhTestOrderID, ConfirmedQty: 9.5, ConfirmedAvgPx: 100.25}
-	e.mu.Lock()
-	again := settleRobinhoodSignalAttemptLocked(e.store, e.sc("rh-btc"), s, db, a, true, e.cfg, e.logger)
-	e.mu.Unlock()
-	if again.Settled || len(s.TradeHistory) != before {
-		t.Fatalf("a second settlement of the same venue order must book nothing, got %+v", again)
-	}
+func TestRobinhoodLiveOrderSignalOutcomes(t *testing.T) {
+	t.Run("BuyBooksTheConfirmedVenueFill", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
+			"POST " + rhTestOrders:                          {rhAccepted("buy")},
+			"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("queued", "buy", "0", nil), rhOrder("filled", "buy", "9.5", "100.25")},
+			"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
+		}))
+		trades, detail := e.signal("rh-btc", 1, 0, 100)
+		if trades != 1 || !strings.Contains(detail, "LIVE BUY") {
+			t.Fatalf("trades=%d detail=%q, want one live buy", trades, detail)
+		}
+		s := e.state.Strategies["rh-btc"]
+		pos := s.Positions["BTC"]
+		if pos == nil || pos.Quantity != 9.5 || pos.AvgCost != 100.25 || pos.InitialQuantity != 9.5 {
+			t.Fatalf("position = %+v, want 9.5 @ 100.25", pos)
+		}
+		wantCash := 1000 - 9.5*100.25
+		if math.Abs(s.Cash-wantCash) > 1e-6 {
+			t.Fatalf("cash = %v, want %v", s.Cash, wantCash)
+		}
+		row := e.onlyAttempt()
+		if row.Status != robinhoodAttemptSettled || row.SettlementSeq != 1 || row.AppliedQty != 9.5 || row.VenueOrderID != rhTestOrderID {
+			t.Fatalf("attempt row = %+v, want settled once", row)
+		}
+		posts := e.orderPosts()
+		if len(posts) != 1 || !strings.Contains(string(posts[0].Body), row.RefID) {
+			t.Fatalf("posts = %+v, want one POST carrying ref_id %s", posts, row.RefID)
+		}
+		dbt := e.dbTrades("rh-btc")
+		if len(dbt) != 1 || dbt[0].Price != 100.25 || dbt[0].Quantity != 9.5 || dbt[0].ExchangeOrderID != rhTestOrderID {
+			t.Fatalf("db trades = %+v, want one venue-priced buy", dbt)
+		}
+		before := len(s.TradeHistory)
+		db, _ := e.store.dbForStrategy("rh-btc")
+		a := &robinhoodOrderAttempt{AttemptID: row.ID, StrategyID: "rh-btc", Origin: robinhoodOriginSignal, Status: robinhoodAttemptSettling, VenueOrderID: rhTestOrderID, ConfirmedQty: 9.5, ConfirmedAvgPx: 100.25}
+		e.mu.Lock()
+		again := settleRobinhoodSignalAttemptLocked(e.store, e.sc("rh-btc"), s, db, a, true, e.cfg, e.logger)
+		e.mu.Unlock()
+		if again.Settled || len(s.TradeHistory) != before {
+			t.Fatalf("a second settlement of the same venue order must book nothing, got %+v", again)
+		}
+	})
+	t.Run("FullCloseSellWithPartialFillKeepsTheRemainder", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setPosition("rh-btc", "BTC", 0.5, 90)
+		e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{
+			"POST " + rhTestOrders:             {rhAccepted("sell")},
+			"GET " + rhOrderURL(rhTestOrderID): {rhOrder("confirmed", "sell", "0", nil), rhOrder("canceled", "sell", "0.2", "99")},
+		}))
+		trades, _ := e.signal("rh-btc", -1, 0, 99)
+		if trades != 1 {
+			t.Fatalf("trades = %d, want 1", trades)
+		}
+		pos := e.state.Strategies["rh-btc"].Positions["BTC"]
+		if pos == nil || math.Abs(pos.Quantity-0.3) > 1e-12 || pos.InitialQuantity != 0.5 {
+			t.Fatalf("position = %+v, want 0.3 remaining with InitialQuantity 0.5", pos)
+		}
+		dbt := e.dbTrades("rh-btc")
+		if len(dbt) != 1 || dbt[0].Quantity != 0.2 || dbt[0].Price != 99 || !dbt[0].IsClose {
+			t.Fatalf("db trades = %+v, want one 0.2 close at 99", dbt)
+		}
+		if posts := e.orderPosts(); len(posts) != 1 || !strings.Contains(string(posts[0].Body), `"quantity": 0.5`) {
+			t.Fatalf("posts = %+v, want one sell of the book quantity", posts)
+		}
+	})
+	t.Run("RequestedPartialCloseBooksTheFilledHalf", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setPosition("rh-btc", "BTC", 0.5, 90)
+		e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{
+			"POST " + rhTestOrders:             {rhAccepted("sell")},
+			"GET " + rhOrderURL(rhTestOrderID): {rhOrder("filled", "sell", "0.25", "99")},
+		}))
+		if trades, _ := e.signal("rh-btc", -1, 0.5, 99); trades != 1 {
+			t.Fatalf("trades = %d, want 1", trades)
+		}
+		pos := e.state.Strategies["rh-btc"].Positions["BTC"]
+		if pos == nil || math.Abs(pos.Quantity-0.25) > 1e-12 || pos.InitialQuantity != 0.5 {
+			t.Fatalf("position = %+v, want half left", pos)
+		}
+	})
+	t.Run("DefinitiveNoFillBooksNothingAndReleases", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			routes rhRoutes
+		}{
+			{"rejected", rhRoutes{"POST " + rhTestOrders: {{"status": 400, "json": map[string]interface{}{"detail": "insufficient buying power"}}}}},
+			{"not_sent", rhRoutes{"POST " + rhTestOrders: {{"raise": "new_connection"}}}},
+			{"zero_fill_cancel", rhRoutes{"POST " + rhTestOrders: {rhAccepted("buy")}, "GET " + rhOrderURL(rhTestOrderID): {rhOrder("canceled", "buy", "0", nil)}}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+				e.setRoutes(rhWith(rhPrepRoutes(), tc.routes))
+				if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 0 {
+					t.Fatalf("trades = %d, want 0", trades)
+				}
+				s := e.state.Strategies["rh-btc"]
+				if s.Cash != 1000 || len(s.Positions) != 0 || len(s.TradeHistory) != 0 || len(e.dbTrades("rh-btc")) != 0 {
+					t.Fatalf("book changed: cash=%v positions=%v trades=%v", s.Cash, s.Positions, s.TradeHistory)
+				}
+				if row := e.onlyAttempt(); row.Status != robinhoodAttemptNoFill {
+					t.Fatalf("attempt = %+v, want no_fill", row)
+				}
+				if e.failedAlerts() == 0 {
+					t.Fatal("a definitive no-fill must send the live-order-failed alert")
+				}
+			})
+		}
+	})
+	t.Run("UnresolvedOutcomeHoldsTheCoin", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			routes rhRoutes
+			status string
+		}{
+			{"http_503", rhRoutes{"POST " + rhTestOrders: {{"status": 503, "json": map[string]interface{}{"detail": "unavailable"}}}}, robinhoodAttemptUnknown},
+			{"read_timeout_after_send", rhRoutes{"POST " + rhTestOrders: {{"raise": "read_timeout"}}}, robinhoodAttemptUnknown},
+			{"connection_reset_after_send", rhRoutes{"POST " + rhTestOrders: {{"raise": "connection"}}}, robinhoodAttemptUnknown},
+			{"open_after_cancel", rhRoutes{
+				"POST " + rhTestOrders:                          {rhAccepted("buy")},
+				"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("confirmed", "buy", "0", nil)},
+				"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
+			}, robinhoodAttemptOpen},
+			{"excess_fill", rhRoutes{
+				"POST " + rhTestOrders:             {rhAccepted("buy")},
+				"GET " + rhOrderURL(rhTestOrderID): {rhOrder("filled", "buy", "50", "100")},
+			}, robinhoodAttemptUnknown},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+				e.setRoutes(rhWith(rhPrepRoutes(), tc.routes))
+				if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 0 {
+					t.Fatalf("trades = %d, want 0", trades)
+				}
+				s := e.state.Strategies["rh-btc"]
+				if s.Cash != 1000 || len(s.Positions) != 0 || len(e.dbTrades("rh-btc")) != 0 {
+					t.Fatalf("book changed: cash=%v positions=%v", s.Cash, s.Positions)
+				}
+				row := e.onlyAttempt()
+				if row.Status != tc.status || row.HoldReason == "" {
+					t.Fatalf("attempt = %+v, want %s with a hold reason", row, tc.status)
+				}
+				if e.heldAlerts() == 0 {
+					t.Fatal("an unresolved order must send the CRITICAL hold alert")
+				}
+				e.setRoutes(rhWith(rhPrepRoutes(), tc.routes))
+				if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 0 {
+					t.Fatalf("second signal trades = %d, want 0", trades)
+				}
+				if posts := e.orderPosts(); len(posts) != 0 {
+					t.Fatalf("a second signal on a held coin sent %d order(s)", len(posts))
+				}
+			})
+		}
+	})
+	t.Run("GoGuardRefusesMalformedResults", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			stdout string
+			exit   string
+		}{
+			{"empty_fill", `{"execution":{"action":"buy","symbol":"BTC","fill":{}},"order_outcome":"filled","order":{"id":"ord-1"}}`, "0"},
+			{"zero_price", `{"execution":{"action":"buy","symbol":"BTC","fill":{"avg_px":0,"quantity":1,"oid":"ord-1"}},"order_outcome":"filled","order":{"id":"ord-1"}}`, "0"},
+			{"zero_quantity", `{"execution":{"action":"buy","symbol":"BTC","fill":{"avg_px":100,"quantity":0,"oid":"ord-1"}},"order_outcome":"filled","order":{"id":"ord-1"}}`, "0"},
+			{"overflow_price", `{"execution":{"action":"buy","symbol":"BTC","fill":{"avg_px":1e400,"quantity":1,"oid":"ord-1"}},"order_outcome":"filled","order":{"id":"ord-1"}}`, "0"},
+			{"missing_outcome", `{"execution":{"action":"buy","symbol":"BTC","fill":{"avg_px":100,"quantity":1,"oid":"ord-1"}},"order":{"id":"ord-1"}}`, "0"},
+			{"no_output", ``, "1"},
+			{"no_fill_with_exit_zero", `{"execution":{"action":"buy","symbol":"BTC"},"order_outcome":"rejected","error":"refused"}`, "0"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				sc := rhLiveSpot("rh-btc", "BTC", 1000)
+				sc.Script = "shared_scripts/testdata/robinhood_offline/print_result.py"
+				e := newRHLiveEnv(t, sc)
+				t.Setenv("RH_FIXTURE_STDOUT", tc.stdout)
+				t.Setenv("RH_FIXTURE_EXIT", tc.exit)
+				if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 0 {
+					t.Fatalf("trades = %d, want 0", trades)
+				}
+				s := e.state.Strategies["rh-btc"]
+				if s.Cash != 1000 || len(s.Positions) != 0 || len(s.TradeHistory) != 0 {
+					t.Fatalf("book changed: cash=%v positions=%v trades=%v", s.Cash, s.Positions, s.TradeHistory)
+				}
+				if row := e.onlyAttempt(); row.Status != robinhoodAttemptUnknown {
+					t.Fatalf("attempt = %+v, want unknown", row)
+				}
+				if e.heldAlerts() == 0 {
+					t.Fatal("a malformed result must send the CRITICAL hold alert")
+				}
+			})
+		}
+	})
+	t.Run("PaperStrategyStillBooksTheModeledTrade", func(t *testing.T) {
+		sc := StrategyConfig{ID: "rh-paper", Type: "spot", Platform: "robinhood", Script: "shared_scripts/check_robinhood.py", Args: []string{"momentum_pro", "BTC", "1h", "--mode=paper"}, Capital: 1000}
+		e := newRHLiveEnv(t, sc)
+		s := e.state.Strategies["rh-paper"]
+		db, _ := e.store.dbForStrategy("rh-paper")
+		e.mu.Lock()
+		trades, _, _ := executeRobinhoodResult(sc, s, db, &RobinhoodResult{Symbol: "BTC", Signal: 1}, nil, "BUY", 100, nil, e.cfg, HurstGateDecision{}, e.logger)
+		e.mu.Unlock()
+		if trades != 1 || s.Positions["BTC"] == nil {
+			t.Fatalf("paper buy trades=%d positions=%v, want the modeled buy", trades, s.Positions)
+		}
+		if len(e.attemptRows()) != 0 || len(e.requests()) != 0 {
+			t.Fatal("a paper booking must make no attempt and no venue request")
+		}
+	})
+	t.Run("BookingGuardRefusesLiveResultWithoutFill", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		s := e.state.Strategies["rh-btc"]
+		db, _ := e.store.dbForStrategy("rh-btc")
+		for _, er := range []*RobinhoodExecuteResult{nil, {}, {Execution: &RobinhoodExecution{Fill: &RobinhoodFill{AvgPx: 100}}}} {
+			e.mu.Lock()
+			trades, _, _ := executeRobinhoodResult(e.sc("rh-btc"), s, db, &RobinhoodResult{Symbol: "BTC", Signal: 1}, er, "BUY", 100, nil, e.cfg, HurstGateDecision{}, e.logger)
+			e.mu.Unlock()
+			if trades != 0 || s.Cash != 1000 || len(s.Positions) != 0 {
+				t.Fatalf("live booking without a confirmed fill must refuse: trades=%d cash=%v", trades, s.Cash)
+			}
+		}
+	})
 }
 
-func TestRobinhoodLiveOrderFullCloseSellWithPartialFillKeepsTheRemainder(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	e.setPosition("rh-btc", "BTC", 0.5, 90)
-	e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{
-		"POST " + rhTestOrders:             {rhAccepted("sell")},
-		"GET " + rhOrderURL(rhTestOrderID): {rhOrder("confirmed", "sell", "0", nil), rhOrder("canceled", "sell", "0.2", "99")},
-	}))
-	trades, _ := e.signal("rh-btc", -1, 0, 99)
-	if trades != 1 {
-		t.Fatalf("trades = %d, want 1", trades)
-	}
-	pos := e.state.Strategies["rh-btc"].Positions["BTC"]
-	if pos == nil || math.Abs(pos.Quantity-0.3) > 1e-12 || pos.InitialQuantity != 0.5 {
-		t.Fatalf("position = %+v, want 0.3 remaining with InitialQuantity 0.5", pos)
-	}
-	dbt := e.dbTrades("rh-btc")
-	if len(dbt) != 1 || dbt[0].Quantity != 0.2 || dbt[0].Price != 99 || !dbt[0].IsClose {
-		t.Fatalf("db trades = %+v, want one 0.2 close at 99", dbt)
-	}
-	if posts := e.orderPosts(); len(posts) != 1 || !strings.Contains(string(posts[0].Body), `"quantity": 0.5`) {
-		t.Fatalf("posts = %+v, want one sell of the book quantity", posts)
-	}
-}
+func TestRobinhoodLiveOrderHeldAttemptResolution(t *testing.T) {
+	t.Run("ForcedTerminationHoldsAcrossRestartAndRecoverySettlesOnce", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		robinhoodOrderScriptTimeout = 1500 * time.Millisecond
+		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
+			"POST " + rhTestOrders:             {rhAccepted("buy")},
+			"GET " + rhOrderURL(rhTestOrderID): {{"sleep_s": 60, "status": 200, "json": map[string]interface{}{}}},
+		}))
+		if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 0 {
+			t.Fatalf("trades = %d, want 0", trades)
+		}
+		row := e.onlyAttempt()
+		if row.Status != robinhoodAttemptUnknown {
+			t.Fatalf("a killed order script must leave the attempt unknown, got %+v", row)
+		}
+		if s := e.state.Strategies["rh-btc"]; s.Cash != 1000 || len(s.Positions) != 0 {
+			t.Fatalf("book changed after a killed order script")
+		}
+		robinhoodOrderScriptTimeout = 14 * time.Second
 
-func TestRobinhoodLiveOrderRequestedPartialCloseBooksTheFilledHalf(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	e.setPosition("rh-btc", "BTC", 0.5, 90)
-	e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{
-		"POST " + rhTestOrders:             {rhAccepted("sell")},
-		"GET " + rhOrderURL(rhTestOrderID): {rhOrder("filled", "sell", "0.25", "99")},
-	}))
-	if trades, _ := e.signal("rh-btc", -1, 0.5, 99); trades != 1 {
-		t.Fatalf("trades = %d, want 1", trades)
-	}
-	pos := e.state.Strategies["rh-btc"].Positions["BTC"]
-	if pos == nil || math.Abs(pos.Quantity-0.25) > 1e-12 || pos.InitialQuantity != 0.5 {
-		t.Fatalf("position = %+v, want half left", pos)
-	}
-}
+		e.reopen()
+		held := robinhoodOrderStartupLines(e.state)
+		if len(held) != 1 || !strings.Contains(held[0], row.ID) {
+			t.Fatalf("restart must keep the attempt held, got %v", held)
+		}
 
-func TestRobinhoodLiveOrderDefinitiveNoFillBooksNothingAndReleases(t *testing.T) {
-	cases := []struct {
-		name   string
-		routes rhRoutes
-	}{
-		{"rejected", rhRoutes{"POST " + rhTestOrders: {{"status": 400, "json": map[string]interface{}{"detail": "insufficient buying power"}}}}},
-		{"not_sent", rhRoutes{"POST " + rhTestOrders: {{"raise": "new_connection"}}}},
-		{"zero_fill_cancel", rhRoutes{"POST " + rhTestOrders: {rhAccepted("buy")}, "GET " + rhOrderURL(rhTestOrderID): {rhOrder("canceled", "buy", "0", nil)}}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
+			"GET " + rhTestOrders: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{
+				map[string]interface{}{"id": "ord-9", "ref_id": row.RefID, "state": "filled", "side": "buy", "currency_pair_id": "pair-btc", "quantity": "0.1", "created_at": time.Now().UTC().Format(time.RFC3339)},
+			}}}},
+			"GET " + rhOrderURL("ord-9"): {{"status": 200, "json": rhOrderBody("ord-9", "filled", "buy", "0.1", "101", row.RefID)}},
+		}))
+		recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+		after := e.onlyAttempt()
+		if after.Status != robinhoodAttemptSettled || after.VenueOrderID != "ord-9" || after.SettlementSeq != 1 {
+			t.Fatalf("recovery by ref_id must settle once, got %+v", after)
+		}
+		if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Price != 101 || dbt[0].Quantity != 0.1 {
+			t.Fatalf("db trades = %+v, want one recovered buy", dbt)
+		}
+		recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+		if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 {
+			t.Fatalf("a second recovery must add no trade, got %+v", dbt)
+		}
+		if found, err := e.store.HasTradeWithExchangeOrderID("rh-btc", "ord-9"); err != nil || !found {
+			t.Fatalf("HasTradeWithExchangeOrderID = %v, %v", found, err)
+		}
+	})
+	t.Run("RecoveryOutcomes", func(t *testing.T) {
+		t.Run("terminal_zero_fill_releases", func(t *testing.T) {
 			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-			e.setRoutes(rhWith(rhPrepRoutes(), tc.routes))
-			if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 0 {
-				t.Fatalf("trades = %d, want 0", trades)
-			}
-			s := e.state.Strategies["rh-btc"]
-			if s.Cash != 1000 || len(s.Positions) != 0 || len(s.TradeHistory) != 0 || len(e.dbTrades("rh-btc")) != 0 {
-				t.Fatalf("book changed: cash=%v positions=%v trades=%v", s.Cash, s.Positions, s.TradeHistory)
-			}
-			if row := e.onlyAttempt(); row.Status != robinhoodAttemptNoFill {
-				t.Fatalf("attempt = %+v, want no_fill", row)
-			}
-			if e.failedAlerts() == 0 {
-				t.Fatal("a definitive no-fill must send the live-order-failed alert")
+			row := e.seedHeldBuy()
+			e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
+				"GET " + rhTestOrders:        {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{map[string]interface{}{"id": "ord-5", "ref_id": row.RefID, "created_at": time.Now().UTC().Format(time.RFC3339)}}}}},
+				"GET " + rhOrderURL("ord-5"): {{"status": 200, "json": rhOrderBody("ord-5", "canceled", "buy", "0", nil, row.RefID)}},
+			}))
+			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+			if got := e.onlyAttempt(); got.Status != robinhoodAttemptNoFill {
+				t.Fatalf("attempt = %+v, want no_fill", got)
 			}
 		})
-	}
-}
-
-func TestRobinhoodLiveOrderUnresolvedOutcomeHoldsTheCoin(t *testing.T) {
-	cases := []struct {
-		name   string
-		routes rhRoutes
-		status string
-	}{
-		{"http_503", rhRoutes{"POST " + rhTestOrders: {{"status": 503, "json": map[string]interface{}{"detail": "unavailable"}}}}, robinhoodAttemptUnknown},
-		{"read_timeout_after_send", rhRoutes{"POST " + rhTestOrders: {{"raise": "read_timeout"}}}, robinhoodAttemptUnknown},
-		{"connection_reset_after_send", rhRoutes{"POST " + rhTestOrders: {{"raise": "connection"}}}, robinhoodAttemptUnknown},
-		{"open_after_cancel", rhRoutes{
-			"POST " + rhTestOrders:                          {rhAccepted("buy")},
-			"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("confirmed", "buy", "0", nil)},
-			"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
-		}, robinhoodAttemptOpen},
-		{"excess_fill", rhRoutes{
-			"POST " + rhTestOrders:             {rhAccepted("buy")},
-			"GET " + rhOrderURL(rhTestOrderID): {rhOrder("filled", "buy", "50", "100")},
-		}, robinhoodAttemptUnknown},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run("not_found_after_settle_window_releases", func(t *testing.T) {
 			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-			e.setRoutes(rhWith(rhPrepRoutes(), tc.routes))
-			if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 0 {
-				t.Fatalf("trades = %d, want 0", trades)
+			row := e.seedHeldBuy()
+			old := time.Now().Add(-40 * time.Minute).UnixMilli()
+			if _, err := e.store.primary().db.Exec(`UPDATE robinhood_order_attempts SET created_at_ms = ? WHERE attempt_id = ?`, old, row.ID); err != nil {
+				t.Fatal(err)
+			}
+			e.reopen()
+			e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{"GET " + rhTestOrders: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{}}}}}))
+			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+			if got := e.onlyAttempt(); got.Status != robinhoodAttemptNoFill {
+				t.Fatalf("attempt = %+v, want no_fill after the settle window", got)
+			}
+		})
+		t.Run("not_found_inside_settle_window_holds", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.seedHeldBuy()
+			e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{"GET " + rhTestOrders: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{}}}}}))
+			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+			if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown {
+				t.Fatalf("attempt = %+v, want still unknown", got)
+			}
+		})
+		t.Run("failed_resolution_read_holds", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.seedHeldBuy()
+			e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{"GET " + rhTestOrders: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}}))
+			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+			if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown {
+				t.Fatalf("attempt = %+v, want still unknown", got)
+			}
+		})
+		t.Run("account_change_holds_without_venue_call", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.seedHeldBuy()
+			t.Setenv("ROBINHOOD_USERNAME", "another-user")
+			e.setRoutes(rhPrepRoutes())
+			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+			if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown {
+				t.Fatalf("attempt = %+v, want still unknown", got)
+			}
+			if reqs := e.requests(); len(reqs) != 0 {
+				t.Fatalf("an account change must make no venue call, got %+v", reqs)
+			}
+		})
+	})
+	t.Run("OperatorResolutionNeedsVenueEvidence", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		row := e.seedHeldBuy()
+		lookup := func(id string) (StrategyConfig, bool) {
+			for _, sc := range e.cfg.Strategies {
+				if sc.ID == id {
+					return sc, true
+				}
+			}
+			return StrategyConfig{}, false
+		}
+		stamp := time.Now().UTC().Format(time.RFC3339)
+		mismatch := rhOrderBody("ord-x", "filled", "buy", "5", "100", "")
+		mismatch["quantity"] = "5"
+		mismatch["created_at"] = stamp
+		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{"GET " + rhOrderURL("ord-x"): {{"status": 200, "json": mismatch}}}))
+		msg := resolveRobinhoodAttemptByOperator(e.deps(), lookup, "rh-btc", row.ID, "ord-x", time.Now())
+		if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown || !strings.Contains(msg, "still held") {
+			t.Fatalf("a mismatched order must keep the hold: msg=%q row=%+v", msg, got)
+		}
+		if msg := resolveRobinhoodAttemptByOperator(e.deps(), lookup, "rh-btc", "rh-000000000000000000000000", "", time.Now()); !strings.Contains(msg, "refused") {
+			t.Fatalf("an unknown attempt must be refused, got %q", msg)
+		}
+		match := rhOrderBody("ord-7", "filled", "buy", "9.5", "100.5", row.RefID)
+		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{"GET " + rhOrderURL("ord-7"): {{"status": 200, "json": match}}}))
+		msg = resolveRobinhoodAttemptByOperator(e.deps(), lookup, "rh-btc", row.ID, "ord-7", time.Now())
+		if got := e.onlyAttempt(); got.Status != robinhoodAttemptSettling || !strings.Contains(msg, "confirmed") {
+			t.Fatalf("a matching order must confirm: msg=%q row=%+v", msg, got)
+		}
+		recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+		if got := e.onlyAttempt(); got.Status != robinhoodAttemptSettled {
+			t.Fatalf("the confirmed attempt must settle with the next cycle, got %+v", got)
+		}
+		if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Price != 100.5 {
+			t.Fatalf("db trades = %+v", dbt)
+		}
+	})
+	t.Run("ReferenceMatchOnALongOrderListStopsPaging", func(t *testing.T) {
+		requireSettledLongListBuy := func(t *testing.T, e *rhLiveEnv, recoveryCalls int) {
+			t.Helper()
+			got := e.onlyAttempt()
+			if got.Status != robinhoodAttemptSettled || got.VenueOrderID != "ord-long" || got.SettlementSeq != 1 || got.AppliedQty != 9.5 || got.ConfirmedQty != 9.5 {
+				t.Fatalf("attempt after %d recovery calls = %+v, want settled once by ord-long", recoveryCalls, got)
+			}
+			dbt := e.dbTrades("rh-btc")
+			if len(dbt) != 1 || dbt[0].Price != 100.5 || dbt[0].Quantity != 9.5 || dbt[0].ExchangeOrderID != "ord-long" || dbt[0].IsClose {
+				t.Fatalf("db trades = %+v, want one 9.5 buy at 100.5 by ord-long", dbt)
 			}
 			s := e.state.Strategies["rh-btc"]
-			if s.Cash != 1000 || len(s.Positions) != 0 || len(e.dbTrades("rh-btc")) != 0 {
-				t.Fatalf("book changed: cash=%v positions=%v", s.Cash, s.Positions)
+			pos := s.Positions["BTC"]
+			if pos == nil || pos.Quantity != 9.5 || pos.AvgCost != 100.5 {
+				t.Fatalf("position = %+v, want 9.5 @ 100.5", pos)
 			}
-			row := e.onlyAttempt()
-			if row.Status != tc.status || row.HoldReason == "" {
-				t.Fatalf("attempt = %+v, want %s with a hold reason", row, tc.status)
+			if want := 1000 - 9.5*100.5; math.Abs(s.Cash-want) > 1e-6 {
+				t.Fatalf("cash = %v, want %v", s.Cash, want)
 			}
-			if e.heldAlerts() == 0 {
-				t.Fatal("an unresolved order must send the CRITICAL hold alert")
+		}
+		longList := func(refID string) rhRoutes {
+			pages := rhOrderPages(rhOrderPageCap + 1)
+			pages["GET "+rhTestOrders] = []rhRoute{{"status": 200, "json": map[string]interface{}{"next": rhTestOrders + "?cursor=1", "results": []interface{}{
+				map[string]interface{}{"id": "ord-long", "ref_id": refID, "state": "filled", "side": "buy", "currency_pair_id": "pair-btc", "quantity": "9.5", "created_at": time.Now().UTC().Format(time.RFC3339)},
+			}}}}
+			return rhWith(rhPrepRoutes(), rhWith(pages, rhRoutes{
+				"GET " + rhOrderURL("ord-long"): {{"status": 200, "json": rhOrderBody("ord-long", "filled", "buy", "9.5", "100.5", refID)}},
+			}))
+		}
+		gets := func(e *rhLiveEnv, url string) int {
+			n := 0
+			for _, r := range e.requests() {
+				if r.Method == "GET" && r.URL == url {
+					n++
+				}
 			}
-			e.setRoutes(rhWith(rhPrepRoutes(), tc.routes))
-			if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 0 {
-				t.Fatalf("second signal trades = %d, want 0", trades)
+			return n
+		}
+		requireOnePageRead := func(t *testing.T, e *rhLiveEnv) {
+			t.Helper()
+			if first, second := gets(e, rhTestOrders), gets(e, rhTestOrders+"?cursor=1"); first != 1 || second != 0 {
+				t.Fatalf("order list page reads: page 1 = %d, page 2 = %d, want 1 and 0", first, second)
+			}
+			if polls := gets(e, rhOrderURL("ord-long")); polls != 1 {
+				t.Fatalf("order polls = %d, want 1", polls)
 			}
 			if posts := e.orderPosts(); len(posts) != 0 {
-				t.Fatalf("a second signal on a held coin sent %d order(s)", len(posts))
+				t.Fatalf("recovery sent order POSTs %+v, want none", posts)
 			}
-		})
-	}
-}
-
-func TestRobinhoodLiveOrderGoGuardRefusesMalformedResults(t *testing.T) {
-	cases := []struct {
-		name   string
-		stdout string
-		exit   string
-	}{
-		{"empty_fill", `{"execution":{"action":"buy","symbol":"BTC","fill":{}},"order_outcome":"filled","order":{"id":"ord-1"}}`, "0"},
-		{"zero_price", `{"execution":{"action":"buy","symbol":"BTC","fill":{"avg_px":0,"quantity":1,"oid":"ord-1"}},"order_outcome":"filled","order":{"id":"ord-1"}}`, "0"},
-		{"zero_quantity", `{"execution":{"action":"buy","symbol":"BTC","fill":{"avg_px":100,"quantity":0,"oid":"ord-1"}},"order_outcome":"filled","order":{"id":"ord-1"}}`, "0"},
-		{"overflow_price", `{"execution":{"action":"buy","symbol":"BTC","fill":{"avg_px":1e400,"quantity":1,"oid":"ord-1"}},"order_outcome":"filled","order":{"id":"ord-1"}}`, "0"},
-		{"missing_outcome", `{"execution":{"action":"buy","symbol":"BTC","fill":{"avg_px":100,"quantity":1,"oid":"ord-1"}},"order":{"id":"ord-1"}}`, "0"},
-		{"no_output", ``, "1"},
-		{"no_fill_with_exit_zero", `{"execution":{"action":"buy","symbol":"BTC"},"order_outcome":"rejected","error":"refused"}`, "0"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			sc := rhLiveSpot("rh-btc", "BTC", 1000)
-			sc.Script = "shared_scripts/testdata/robinhood_offline/print_result.py"
-			e := newRHLiveEnv(t, sc)
-			t.Setenv("RH_FIXTURE_STDOUT", tc.stdout)
-			t.Setenv("RH_FIXTURE_EXIT", tc.exit)
-			if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 0 {
-				t.Fatalf("trades = %d, want 0", trades)
-			}
-			s := e.state.Strategies["rh-btc"]
-			if s.Cash != 1000 || len(s.Positions) != 0 || len(s.TradeHistory) != 0 {
-				t.Fatalf("book changed: cash=%v positions=%v trades=%v", s.Cash, s.Positions, s.TradeHistory)
-			}
-			if row := e.onlyAttempt(); row.Status != robinhoodAttemptUnknown {
-				t.Fatalf("attempt = %+v, want unknown", row)
-			}
-			if e.heldAlerts() == 0 {
-				t.Fatal("a malformed result must send the CRITICAL hold alert")
-			}
-		})
-	}
-}
-
-func TestRobinhoodLiveOrderPaperStrategyStillBooksTheModeledTrade(t *testing.T) {
-	sc := StrategyConfig{ID: "rh-paper", Type: "spot", Platform: "robinhood", Script: "shared_scripts/check_robinhood.py", Args: []string{"momentum_pro", "BTC", "1h", "--mode=paper"}, Capital: 1000}
-	e := newRHLiveEnv(t, sc)
-	s := e.state.Strategies["rh-paper"]
-	db, _ := e.store.dbForStrategy("rh-paper")
-	e.mu.Lock()
-	trades, _, _ := executeRobinhoodResult(sc, s, db, &RobinhoodResult{Symbol: "BTC", Signal: 1}, nil, "BUY", 100, nil, e.cfg, HurstGateDecision{}, e.logger)
-	e.mu.Unlock()
-	if trades != 1 || s.Positions["BTC"] == nil {
-		t.Fatalf("paper buy trades=%d positions=%v, want the modeled buy", trades, s.Positions)
-	}
-	if len(e.attemptRows()) != 0 || len(e.requests()) != 0 {
-		t.Fatal("a paper booking must make no attempt and no venue request")
-	}
-}
-
-func TestRobinhoodLiveOrderBookingGuardRefusesLiveResultWithoutFill(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	s := e.state.Strategies["rh-btc"]
-	db, _ := e.store.dbForStrategy("rh-btc")
-	for _, er := range []*RobinhoodExecuteResult{nil, {}, {Execution: &RobinhoodExecution{Fill: &RobinhoodFill{AvgPx: 100}}}} {
-		e.mu.Lock()
-		trades, _, _ := executeRobinhoodResult(e.sc("rh-btc"), s, db, &RobinhoodResult{Symbol: "BTC", Signal: 1}, er, "BUY", 100, nil, e.cfg, HurstGateDecision{}, e.logger)
-		e.mu.Unlock()
-		if trades != 0 || s.Cash != 1000 || len(s.Positions) != 0 {
-			t.Fatalf("live booking without a confirmed fill must refuse: trades=%d cash=%v", trades, s.Cash)
 		}
-	}
-}
+		t.Run("automatic_recovery_settles_in_one_call", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			row := e.seedHeldBuy()
+			if row.VenueOrderID != "" {
+				t.Fatalf("seeded attempt = %+v, want no venue order id", row)
+			}
+			e.setRoutes(longList(row.RefID))
+			if posts := e.orderPosts(); len(posts) != 0 {
+				t.Fatalf("order POSTs before recovery = %+v, want none", posts)
+			}
+			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+			requireOnePageRead(t, e)
+			requireSettledLongListBuy(t, e, 1)
+			e.setRoutes(longList(row.RefID))
+			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+			if reqs := e.requests(); len(reqs) != 0 {
+				t.Fatalf("a second recovery of a settled attempt made venue calls %+v", reqs)
+			}
+			requireSettledLongListBuy(t, e, 2)
+		})
+		t.Run("operator_resolution_settles_on_the_next_recovery", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			row := e.seedHeldBuy()
+			lookup := func(id string) (StrategyConfig, bool) {
+				for _, sc := range e.cfg.Strategies {
+					if sc.ID == id {
+						return sc, true
+					}
+				}
+				return StrategyConfig{}, false
+			}
+			e.setRoutes(longList(row.RefID))
+			resolveRobinhoodAttemptByOperator(e.deps(), lookup, "rh-btc", row.ID, "", time.Now())
+			requireOnePageRead(t, e)
+			got := e.onlyAttempt()
+			if got.Status != robinhoodAttemptSettling || got.VenueOrderID != "ord-long" || got.ConfirmedQty != 9.5 || got.AppliedQty != 0 || got.SettlementSeq != 0 {
+				t.Fatalf("attempt after operator resolution = %+v, want settling with nothing applied", got)
+			}
+			if s := e.state.Strategies["rh-btc"]; s.Cash != 1000 || len(s.Positions) != 0 || len(e.dbTrades("rh-btc")) != 0 {
+				t.Fatalf("operator resolution changed the book: cash=%v positions=%v", s.Cash, s.Positions)
+			}
+			e.setRoutes(rhPrepRoutes())
+			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+			if posts := e.orderPosts(); len(posts) != 0 {
+				t.Fatalf("settlement sent order POSTs %+v, want none", posts)
+			}
+			requireSettledLongListBuy(t, e, 1)
+			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+			requireSettledLongListBuy(t, e, 2)
+		})
+	})
+	t.Run("OperatorAttestedReleaseOfAnUnsentOrder", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		row := e.seedHeldBuy()
+		lookup := func(id string) (StrategyConfig, bool) {
+			for _, sc := range e.cfg.Strategies {
+				if sc.ID == id {
+					return sc, true
+				}
+			}
+			return StrategyConfig{}, false
+		}
+		e.setRoutes(rhPrepRoutes())
+		if checked, msg := prepareRobinhoodAttestedRelease(e.deps(), lookup, "rh-btc", row.ID, time.Now()); checked != nil || !strings.Contains(msg, "settle window") {
+			t.Fatalf("inside the settle window: checked=%v msg=%q, want a refusal", checked, msg)
+		}
+		if reqs := e.requests(); len(reqs) != 0 {
+			t.Fatalf("a refusal inside the settle window must make no venue call, got %+v", reqs)
+		}
 
-func TestRobinhoodLiveOrderForcedTerminationHoldsAcrossRestartAndRecoverySettlesOnce(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	robinhoodOrderScriptTimeout = 1500 * time.Millisecond
-	e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
-		"POST " + rhTestOrders:             {rhAccepted("buy")},
-		"GET " + rhOrderURL(rhTestOrderID): {{"sleep_s": 60, "status": 200, "json": map[string]interface{}{}}},
-	}))
-	if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 0 {
-		t.Fatalf("trades = %d, want 0", trades)
-	}
-	row := e.onlyAttempt()
-	if row.Status != robinhoodAttemptUnknown {
-		t.Fatalf("a killed order script must leave the attempt unknown, got %+v", row)
-	}
-	if s := e.state.Strategies["rh-btc"]; s.Cash != 1000 || len(s.Positions) != 0 {
-		t.Fatalf("book changed after a killed order script")
-	}
-	robinhoodOrderScriptTimeout = 14 * time.Second
+		old := time.Now().Add(-40 * time.Minute).UnixMilli()
+		if _, err := e.store.primary().db.Exec(`UPDATE robinhood_order_attempts SET created_at_ms = ? WHERE attempt_id = ?`, old, row.ID); err != nil {
+			t.Fatal(err)
+		}
+		e.reopen()
+		e.setRoutes(rhWith(rhPrepRoutes(), rhOrderPages(rhOrderPageCap+1)))
+		recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+		if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown || !strings.Contains(got.HoldReason, "pages") {
+			t.Fatalf("an order list past the page cap must keep the hold, got %+v", got)
+		}
 
-	e.reopen()
-	held := robinhoodOrderStartupLines(e.state)
-	if len(held) != 1 || !strings.Contains(held[0], row.ID) {
-		t.Fatalf("restart must keep the attempt held, got %v", held)
-	}
+		e.setRoutes(rhWith(rhPrepRoutes(), rhOrderPages(rhOrderPageCap+1)))
+		checked, prompt := prepareRobinhoodAttestedRelease(e.deps(), lookup, "rh-btc", row.ID, time.Now())
+		if checked == nil {
+			t.Fatalf("an unsent attempt past its settle window must reach the confirm prompt, got %q", prompt)
+		}
+		for _, want := range []string{row.ID, "buy", "BTC", row.RefID, "Submit window", "no venue order id", "pages"} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("prompt %q lacks %q", prompt, want)
+			}
+		}
+		if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown {
+			t.Fatalf("the prompt must not release the attempt, got %+v", got)
+		}
 
-	e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
-		"GET " + rhTestOrders: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{
-			map[string]interface{}{"id": "ord-9", "ref_id": row.RefID, "state": "filled", "side": "buy", "currency_pair_id": "pair-btc", "quantity": "0.1", "created_at": time.Now().UTC().Format(time.RFC3339)},
-		}}}},
-		"GET " + rhOrderURL("ord-9"): {{"status": 200, "json": rhOrderBody("ord-9", "filled", "buy", "0.1", "101", row.RefID)}},
-	}))
-	recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
-	after := e.onlyAttempt()
-	if after.Status != robinhoodAttemptSettled || after.VenueOrderID != "ord-9" || after.SettlementSeq != 1 {
-		t.Fatalf("recovery by ref_id must settle once, got %+v", after)
-	}
-	if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Price != 101 || dbt[0].Quantity != 0.1 {
-		t.Fatalf("db trades = %+v, want one recovered buy", dbt)
-	}
-	recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
-	if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 {
-		t.Fatalf("a second recovery must add no trade, got %+v", dbt)
-	}
-	if found, err := e.store.HasTradeWithExchangeOrderID("rh-btc", "ord-9"); err != nil || !found {
-		t.Fatalf("HasTradeWithExchangeOrderID = %v, %v", found, err)
-	}
+		e.mu.Lock()
+		_, live := robinhoodAttemptByID(e.state, "rh-btc", row.ID)
+		live.VenueOrderID = "ord-late"
+		e.mu.Unlock()
+		if msg := releaseRobinhoodAttemptByAttestation(e.deps(), "owner-1", "rh-btc", row.ID, *checked, time.Now()); !strings.Contains(msg, "changed while you were confirming") {
+			t.Fatalf("a venue order found during the confirm must refuse the release, got %q", msg)
+		}
+		if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown {
+			t.Fatalf("a refused release must keep the hold, got %+v", got)
+		}
+		e.mu.Lock()
+		live.VenueOrderID = ""
+		e.mu.Unlock()
+
+		if msg := releaseRobinhoodAttemptByAttestation(e.deps(), "owner-1", "rh-btc", row.ID, *checked, time.Now()); !strings.Contains(msg, "released as no_fill on your attestation") {
+			t.Fatalf("the confirmed release must succeed, got %q", msg)
+		}
+		got := e.onlyAttempt()
+		if got.Status != robinhoodAttemptNoFill || got.AppliedQty != 0 || got.SettlementSeq != 0 {
+			t.Fatalf("attempt = %+v, want no_fill with nothing applied", got)
+		}
+		var evJSON string
+		if err := e.store.primary().db.QueryRow(`SELECT evidence_json FROM robinhood_order_attempts WHERE attempt_id = ?`, row.ID).Scan(&evJSON); err != nil {
+			t.Fatal(err)
+		}
+		var ev robinhoodOrderEvidenceRecord
+		if err := json.Unmarshal([]byte(evJSON), &ev); err != nil {
+			t.Fatal(err)
+		}
+		if ev.Outcome != robinhoodOutcomeOperatorAttested || ev.Operator == nil || ev.Operator.OperatorID != "owner-1" || ev.Operator.PriorStatus != robinhoodAttemptUnknown || len(ev.Operator.PriorEvidence) == 0 {
+			t.Fatalf("evidence = %s, want the operator attestation with the prior evidence", evJSON)
+		}
+		if s := e.state.Strategies["rh-btc"]; s.Cash != 1000 || len(s.Positions) != 0 || len(e.dbTrades("rh-btc")) != 0 {
+			t.Fatalf("an attested release must book nothing: cash=%v positions=%v", s.Cash, s.Positions)
+		}
+		if msg := releaseRobinhoodAttemptByAttestation(e.deps(), "owner-1", "rh-btc", row.ID, *checked, time.Now()); !strings.Contains(msg, "changed while you were confirming") {
+			t.Fatalf("a second release must be refused, got %q", msg)
+		}
+		e.reopen()
+		if held := robinhoodOrderStartupLines(e.state); len(held) != 0 {
+			t.Fatalf("restart must not reload the released attempt, got %v", held)
+		}
+	})
+	t.Run("RemovedPeerDoesNotBlockSettlement", func(t *testing.T) {
+		for _, layout := range []string{"split", "single"} {
+			t.Run(layout, func(t *testing.T) {
+				e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
+				if layout == "split" {
+					e.store.Close()
+					e.cfg.PaperDBFile = filepath.Join(e.dir, "paper.db")
+					e.cfg.Strategies = append(e.cfg.Strategies, StrategyConfig{ID: "rh-paper", Type: "spot", Platform: "robinhood", Args: []string{"momentum_pro", "BTC", "1h", "--mode=paper"}, Capital: 100})
+					e.open()
+				}
+				e.seedSharedSettlingClose()
+				e.store.Close()
+				var kept []StrategyConfig
+				for _, sc := range e.cfg.Strategies {
+					if sc.ID != "rh-b" {
+						kept = append(kept, sc)
+					}
+				}
+				e.cfg.Strategies = kept
+				e.open()
+				settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+				row := e.onlyAttempt()
+				if row.Status != robinhoodAttemptSettled || row.SettlementSeq != 1 || math.Abs(row.AppliedQty-0.1) > 1e-12 {
+					t.Fatalf("attempt = %+v, want settled with rh-a's 0.1 share", row)
+				}
+				if dbt := e.dbTrades("rh-a"); len(dbt) != 1 || math.Abs(dbt[0].Quantity-0.1) > 1e-12 || dbt[0].Price != 98 {
+					t.Fatalf("rh-a trades = %+v, want one 0.1 sell at the venue price", dbt)
+				}
+			})
+		}
+	})
+	t.Run("UnreadableDuplicateCheckRetriesNextCycle", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
+		e.seedSharedSettlingClose()
+		db := e.store.primary().db
+		if _, err := db.Exec(`ALTER TABLE trades RENAME TO trades_hidden`); err != nil {
+			t.Fatal(err)
+		}
+		settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+		if _, err := db.Exec(`ALTER TABLE trades_hidden RENAME TO trades`); err != nil {
+			t.Fatal(err)
+		}
+		if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettling || row.HoldReason != "" {
+			t.Fatalf("attempt = %+v, want still settling with no booked-duplicate hold", row)
+		}
+		for _, id := range []string{"rh-a", "rh-b"} {
+			if len(e.state.Strategies[id].TradeHistory) != 0 || len(e.dbTrades(id)) != 0 {
+				t.Fatalf("%s booked during an unreadable duplicate check", id)
+			}
+		}
+		settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+		if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettled {
+			t.Fatalf("attempt = %+v, want settled on the next pass", row)
+		}
+		if a, b := e.dbTrades("rh-a"), e.dbTrades("rh-b"); len(a) != 1 || len(b) != 1 {
+			t.Fatalf("trades a=%+v b=%+v, want one each", a, b)
+		}
+	})
+	t.Run("SharedSettlementCommitsOnlyWithItsSettledMark", func(t *testing.T) {
+		for _, bookSaved := range []string{"rh-b", "rh-a"} {
+			t.Run(bookSaved, func(t *testing.T) {
+				e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
+				e.seedSharedSettlingClose()
+				storeCommitHook = func(storageRole) error { return fmt.Errorf("injected partition save failure") }
+				settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+				storeCommitHook = nil
+				e.mu.Lock()
+				err := e.store.SaveStrategyBook(e.state.Strategies[bookSaved])
+				e.mu.Unlock()
+				if err == nil {
+					t.Fatalf("a per-book save of %s must not commit a shared settlement without its settled mark", bookSaved)
+				}
+				if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettling {
+					t.Fatalf("durable attempt = %+v, want settling", row)
+				}
+				if a, b := e.dbTrades("rh-a"), e.dbTrades("rh-b"); len(a) != 0 || len(b) != 0 {
+					t.Fatalf("trades committed without the settled mark: a=%+v b=%+v", a, b)
+				}
+				e.reopen()
+				settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+				if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettled || row.HoldReason != "" {
+					t.Fatalf("attempt = %+v, want settled after the restart", row)
+				}
+				a, b := e.dbTrades("rh-a"), e.dbTrades("rh-b")
+				if len(a) != 1 || len(b) != 1 || math.Abs(a[0].Quantity-0.1) > 1e-12 || math.Abs(b[0].Quantity-0.3) > 1e-12 {
+					t.Fatalf("trades a=%+v b=%+v, want each share booked once", a, b)
+				}
+				e.mu.Lock()
+				err = e.store.SaveStrategyBook(e.state.Strategies[bookSaved])
+				e.mu.Unlock()
+				if err != nil {
+					t.Fatalf("per-book saves must work again after the partition save: %v", err)
+				}
+			})
+		}
+	})
+	t.Run("HoldAlertsSendOutsideTheStateLock", func(t *testing.T) {
+		eth := rhLiveSpot("rh-eth", "ETH", 1000)
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000), eth)
+		e.seedHeldSettlingBuy("rh-btc")
+		e.seedHeldSettlingBuy("rh-eth")
+		bn := &blockingNotifier{release: make(chan struct{})}
+		e.notifier = NewMultiNotifier(notifierBackend{notifier: bn, ownerID: "owner"})
+		done := make(chan struct{})
+		go func() {
+			settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+			close(done)
+		}()
+		time.Sleep(500 * time.Millisecond)
+		locked := make(chan struct{})
+		go func() {
+			e.mu.RLock()
+			e.mu.RUnlock()
+			close(locked)
+		}()
+		select {
+		case <-locked:
+		case <-time.After(2 * time.Second):
+			t.Fatal("a blocked notifier must not hold the state lock")
+		}
+		close(bn.release)
+		<-done
+		settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+		bn.mu.Lock()
+		defer bn.mu.Unlock()
+		count := map[string]int{}
+		for _, d := range bn.dms {
+			for _, coin := range []string{" buy BTC ", " buy ETH "} {
+				if strings.Contains(d, "ROBINHOOD ORDER UNRESOLVED") && strings.Contains(d, coin) {
+					count[coin]++
+				}
+			}
+		}
+		if count[" buy BTC "] != 1 || count[" buy ETH "] != 1 {
+			t.Fatalf("hold DMs = %v (%q), want one per attempt across two passes", count, bn.dms)
+		}
+	})
 }
 
 func (e *rhLiveEnv) seedHeldBuy() rhAttemptRow {
@@ -684,66 +1112,6 @@ func (e *rhLiveEnv) seedHeldBuy() rhAttemptRow {
 	return row
 }
 
-func TestRobinhoodLiveOrderRecoveryOutcomes(t *testing.T) {
-	t.Run("terminal_zero_fill_releases", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		row := e.seedHeldBuy()
-		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
-			"GET " + rhTestOrders:        {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{map[string]interface{}{"id": "ord-5", "ref_id": row.RefID, "created_at": time.Now().UTC().Format(time.RFC3339)}}}}},
-			"GET " + rhOrderURL("ord-5"): {{"status": 200, "json": rhOrderBody("ord-5", "canceled", "buy", "0", nil, row.RefID)}},
-		}))
-		recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
-		if got := e.onlyAttempt(); got.Status != robinhoodAttemptNoFill {
-			t.Fatalf("attempt = %+v, want no_fill", got)
-		}
-	})
-	t.Run("not_found_after_settle_window_releases", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		row := e.seedHeldBuy()
-		old := time.Now().Add(-40 * time.Minute).UnixMilli()
-		if _, err := e.store.primary().db.Exec(`UPDATE robinhood_order_attempts SET created_at_ms = ? WHERE attempt_id = ?`, old, row.ID); err != nil {
-			t.Fatal(err)
-		}
-		e.reopen()
-		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{"GET " + rhTestOrders: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{}}}}}))
-		recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
-		if got := e.onlyAttempt(); got.Status != robinhoodAttemptNoFill {
-			t.Fatalf("attempt = %+v, want no_fill after the settle window", got)
-		}
-	})
-	t.Run("not_found_inside_settle_window_holds", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.seedHeldBuy()
-		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{"GET " + rhTestOrders: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{}}}}}))
-		recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
-		if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown {
-			t.Fatalf("attempt = %+v, want still unknown", got)
-		}
-	})
-	t.Run("failed_resolution_read_holds", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.seedHeldBuy()
-		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{"GET " + rhTestOrders: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}}))
-		recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
-		if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown {
-			t.Fatalf("attempt = %+v, want still unknown", got)
-		}
-	})
-	t.Run("account_change_holds_without_venue_call", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.seedHeldBuy()
-		t.Setenv("ROBINHOOD_USERNAME", "another-user")
-		e.setRoutes(rhPrepRoutes())
-		recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
-		if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown {
-			t.Fatalf("attempt = %+v, want still unknown", got)
-		}
-		if reqs := e.requests(); len(reqs) != 0 {
-			t.Fatalf("an account change must make no venue call, got %+v", reqs)
-		}
-	})
-}
-
 func (e *rhLiveEnv) killSwitchInputs(phases ...rhRoutes) KillSwitchCloseInputs {
 	var rhLive []StrategyConfig
 	for _, sc := range e.cfg.Strategies {
@@ -752,7 +1120,7 @@ func (e *rhLiveEnv) killSwitchInputs(phases ...rhRoutes) KillSwitchCloseInputs {
 		}
 	}
 	calls := 0
-	fetcher := func() ([]RobinhoodPosition, error) {
+	fetcher := func() (RobinhoodHoldings, error) {
 		if calls < len(phases) {
 			e.setRoutes(phases[calls])
 		}
@@ -797,145 +1165,347 @@ func rhSellFilled(cumulative, average string) rhRoutes {
 	})
 }
 
-func TestRobinhoodLiveOrderKillSwitchConfirmsFlatWithAFreshRead(t *testing.T) {
-	t.Run("filled_and_verified_flat", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		closePhase := rhWith(rhSellFilled("0.5", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}})
-		in := e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.5"))}}, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}})
-		in.RHCloser = e.phaseCloser(closePhase, in.RHCloser)
-		plan := planKillSwitchClose(in)
-		if !plan.OnChainConfirmedFlat || len(plan.RHCloseReport.ClosedCoins) != 1 {
-			t.Fatalf("plan = %+v, want BTC closed and confirmed flat", plan.RHCloseReport)
-		}
-		e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
-		dbt := e.dbTrades("rh-btc")
-		if len(dbt) != 1 || dbt[0].Price != 98 || dbt[0].Quantity != 0.5 || dbt[0].ExchangeOrderID != rhTestOrderID {
-			t.Fatalf("db trades = %+v, want one venue-priced sell and no mark row", dbt)
-		}
-		if len(e.state.Strategies["rh-btc"].Positions) != 0 {
-			t.Fatal("book must be flat")
-		}
-		plan2 := planKillSwitchClose(e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}))
-		e.applyKillSwitch(plan2, map[string]float64{"BTC": 50})
-		if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 {
-			t.Fatalf("a second plan run must add no settlement row, got %+v", dbt)
-		}
-	})
-	t.Run("filled_but_still_held", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		closePhase := rhWith(rhSellFilled("0.2", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}})
-		in := e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.5"))}}, rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.3"))}})
-		in.RHCloser = e.phaseCloser(closePhase, in.RHCloser)
-		plan := planKillSwitchClose(in)
-		if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil || len(plan.RHCloseReport.ClosedCoins) != 0 || len(plan.RHCloseReport.AlreadyFlat) != 0 {
-			t.Fatalf("report = %+v, want BTC in Errors only", plan.RHCloseReport)
-		}
-		e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
-		pos := e.state.Strategies["rh-btc"].Positions["BTC"]
-		if pos == nil || math.Abs(pos.Quantity-0.3) > 1e-12 {
-			t.Fatalf("position = %+v, want the 0.3 remainder kept", pos)
-		}
-		if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Quantity != 0.2 || dbt[0].Price != 98 {
-			t.Fatalf("db trades = %+v, want the 0.2 fill applied once", dbt)
-		}
-	})
-	t.Run("post_close_read_fails", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		closePhase := rhWith(rhSellFilled("0.5", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}})
-		in := e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.5"))}}, rhRoutes{"GET " + rhTestHoldings: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}})
-		in.RHCloser = e.phaseCloser(closePhase, in.RHCloser)
-		plan := planKillSwitchClose(in)
-		if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil || len(plan.RHCloseReport.ClosedCoins) != 0 {
-			t.Fatalf("report = %+v, want BTC in Errors", plan.RHCloseReport)
-		}
-	})
-	t.Run("open_buy_attempt_blocks_flat", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
-			"POST " + rhTestOrders:                          {rhAccepted("buy")},
-			"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("confirmed", "buy", "0", nil)},
-			"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
-		}))
-		e.signal("rh-btc", 1, 0, 100)
-		if row := e.onlyAttempt(); row.Status != robinhoodAttemptOpen {
-			t.Fatalf("seed = %+v, want open", row)
-		}
-		stillOpen := rhWith(rhPrepRoutes(), rhRoutes{
-			"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("confirmed", "buy", "0", nil)},
-			"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
-			"GET " + rhTestHoldings:                         {rhHoldings()},
+func TestRobinhoodLiveOrderKillSwitch(t *testing.T) {
+	t.Run("ConfirmsFlatWithAFreshRead", func(t *testing.T) {
+		t.Run("filled_and_verified_flat", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			closePhase := rhWith(rhSellFilled("0.5", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}})
+			in := e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.5"))}}, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}})
+			in.RHCloser = e.phaseCloser(closePhase, in.RHCloser)
+			plan := planKillSwitchClose(in)
+			if !plan.OnChainConfirmedFlat || len(plan.RHCloseReport.ClosedCoins) != 1 {
+				t.Fatalf("plan = %+v, want BTC closed and confirmed flat", plan.RHCloseReport)
+			}
+			e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
+			dbt := e.dbTrades("rh-btc")
+			if len(dbt) != 1 || dbt[0].Price != 98 || dbt[0].Quantity != 0.5 || dbt[0].ExchangeOrderID != rhTestOrderID {
+				t.Fatalf("db trades = %+v, want one venue-priced sell and no mark row", dbt)
+			}
+			if len(e.state.Strategies["rh-btc"].Positions) != 0 {
+				t.Fatal("book must be flat")
+			}
+			plan2 := planKillSwitchClose(e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}))
+			e.applyKillSwitch(plan2, map[string]float64{"BTC": 50})
+			if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 {
+				t.Fatalf("a second plan run must add no settlement row, got %+v", dbt)
+			}
 		})
-		e.setRoutes(stillOpen)
-		in := e.killSwitchInputs(stillOpen, stillOpen)
-		plan := planKillSwitchClose(in)
-		if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil || len(plan.RHCloseReport.AlreadyFlat) != 0 {
-			t.Fatalf("report = %+v, want BTC held by the open buy", plan.RHCloseReport)
-		}
+		t.Run("filled_but_still_held", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			closePhase := rhWith(rhSellFilled("0.2", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}})
+			in := e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.5"))}}, rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.3"))}})
+			in.RHCloser = e.phaseCloser(closePhase, in.RHCloser)
+			plan := planKillSwitchClose(in)
+			if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil || len(plan.RHCloseReport.ClosedCoins) != 0 || len(plan.RHCloseReport.AlreadyFlat) != 0 {
+				t.Fatalf("report = %+v, want BTC in Errors only", plan.RHCloseReport)
+			}
+			e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
+			pos := e.state.Strategies["rh-btc"].Positions["BTC"]
+			if pos == nil || math.Abs(pos.Quantity-0.3) > 1e-12 {
+				t.Fatalf("position = %+v, want the 0.3 remainder kept", pos)
+			}
+			if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Quantity != 0.2 || dbt[0].Price != 98 {
+				t.Fatalf("db trades = %+v, want the 0.2 fill applied once", dbt)
+			}
+		})
+		t.Run("post_close_read_fails", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			closePhase := rhWith(rhSellFilled("0.5", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}})
+			in := e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.5"))}}, rhRoutes{"GET " + rhTestHoldings: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}})
+			in.RHCloser = e.phaseCloser(closePhase, in.RHCloser)
+			plan := planKillSwitchClose(in)
+			if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil || len(plan.RHCloseReport.ClosedCoins) != 0 {
+				t.Fatalf("report = %+v, want BTC in Errors", plan.RHCloseReport)
+			}
+		})
+		t.Run("open_buy_attempt_blocks_flat", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
+				"POST " + rhTestOrders:                          {rhAccepted("buy")},
+				"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("confirmed", "buy", "0", nil)},
+				"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
+			}))
+			e.signal("rh-btc", 1, 0, 100)
+			if row := e.onlyAttempt(); row.Status != robinhoodAttemptOpen {
+				t.Fatalf("seed = %+v, want open", row)
+			}
+			stillOpen := rhWith(rhPrepRoutes(), rhRoutes{
+				"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("confirmed", "buy", "0", nil)},
+				"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
+				"GET " + rhTestHoldings:                         {rhHoldings()},
+			})
+			e.setRoutes(stillOpen)
+			in := e.killSwitchInputs(stillOpen, stillOpen)
+			plan := planKillSwitchClose(in)
+			if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil || len(plan.RHCloseReport.AlreadyFlat) != 0 {
+				t.Fatalf("report = %+v, want BTC held by the open buy", plan.RHCloseReport)
+			}
+		})
+		t.Run("fill_below_book_then_verified_flat", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.ageBook("rh-btc", "BTC")
+			closePhase := rhWith(rhSellFilled("0.3", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.3", "0.3"))}})
+			in := e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.3"))}}, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}})
+			in.RHCloser = e.phaseCloser(closePhase, in.RHCloser)
+			plan := planKillSwitchClose(in)
+			if !plan.OnChainConfirmedFlat {
+				t.Fatalf("report = %+v, want confirmed flat", plan.RHCloseReport)
+			}
+			e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
+			dbt := e.dbTrades("rh-btc")
+			if len(dbt) != 2 || dbt[0].Quantity != 0.3 || dbt[0].Price != 98 || !strings.Contains(dbt[1].Details, robinhoodVerifiedFlatKillSwitch) {
+				t.Fatalf("db trades = %+v, want a venue row and a verified-flat row", dbt)
+			}
+		})
+		t.Run("shared_coin_splits_by_book", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
+			e.setPosition("rh-a", "BTC", 0.1, 90)
+			e.setPosition("rh-b", "BTC", 0.3, 90)
+			closePhase := rhWith(rhSellFilled("0.4", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.4", "0.4"))}})
+			in := e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.4"))}}, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}})
+			in.RHCloser = e.phaseCloser(closePhase, in.RHCloser)
+			plan := planKillSwitchClose(in)
+			if !plan.OnChainConfirmedFlat {
+				t.Fatalf("report = %+v, want confirmed flat", plan.RHCloseReport)
+			}
+			e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
+			a, b := e.dbTrades("rh-a"), e.dbTrades("rh-b")
+			if len(a) != 1 || len(b) != 1 || math.Abs(a[0].Quantity-0.1) > 1e-12 || math.Abs(b[0].Quantity-0.3) > 1e-12 || a[0].Price != 98 || b[0].Price != 98 {
+				t.Fatalf("trades a=%+v b=%+v, want a proportional venue split", a, b)
+			}
+		})
+		t.Run("unowned_unconfigured_coin_is_residue", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			phase := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("DOGE", "100"))}}
+			plan := planKillSwitchClose(e.killSwitchInputs(phase, phase))
+			if !plan.OnChainConfirmedFlat || len(plan.RHUnconfigured) != 0 || len(plan.RHCloseReport.Residue) != 1 || plan.RHCloseReport.Residue[0].Coin != "DOGE" {
+				t.Fatalf("plan = %+v, want DOGE with no go-trader book reported as residue without blocking flat", plan.RHCloseReport)
+			}
+			if posts := e.orderPosts(); len(posts) != 0 {
+				t.Fatalf("an unowned coin must never be sold, sent %d order(s)", len(posts))
+			}
+			if !strings.Contains(plan.DiscordMessage, "DOGE 100") || !strings.Contains(strings.Join(plan.LogLines, "\n"), "DOGE holdings 100 are above every go-trader book") {
+				t.Fatalf("residue must be in the message and the CRITICAL log, got %q / %v", plan.DiscordMessage, plan.LogLines)
+			}
+		})
+		t.Run("unconfigured_coin_held_by_a_book_blocks_flat", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.mu.Lock()
+			e.state.Strategies["rh-old-doge"] = &StrategyState{ID: "rh-old-doge", Platform: "robinhood", Type: "spot",
+				Positions: map[string]*Position{"DOGE": {Symbol: "DOGE", Quantity: 100, Side: "long"}}}
+			e.mu.Unlock()
+			phase := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("DOGE", "100"))}}
+			plan := planKillSwitchClose(e.killSwitchInputs(phase, phase))
+			if plan.OnChainConfirmedFlat || len(plan.RHUnconfigured) != 1 || plan.RHUnconfigured[0].Coin != "DOGE" {
+				t.Fatalf("plan = %+v, want DOGE held by an unconfigured book to block flat", plan.RHCloseReport)
+			}
+			if posts := e.orderPosts(); len(posts) != 0 {
+				t.Fatalf("an unconfigured coin must never be sold, sent %d order(s)", len(posts))
+			}
+		})
 	})
-	t.Run("fill_below_book_then_verified_flat", func(t *testing.T) {
+	t.Run("FlatReadAfterAFreshBuyDoesNotConfirmFlat", func(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
 		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		e.ageBook("rh-btc", "BTC")
-		closePhase := rhWith(rhSellFilled("0.3", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.3", "0.3"))}})
-		in := e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.3"))}}, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}})
-		in.RHCloser = e.phaseCloser(closePhase, in.RHCloser)
-		plan := planKillSwitchClose(in)
-		if !plan.OnChainConfirmedFlat {
-			t.Fatalf("report = %+v, want confirmed flat", plan.RHCloseReport)
+		flat := rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}
+		plan := planKillSwitchClose(e.killSwitchInputs(flat, flat))
+		if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil || len(plan.RHCloseReport.AlreadyFlat) != 0 {
+			t.Fatalf("report = %+v, want BTC unconfirmed while the read lags a fresh buy", plan.RHCloseReport)
 		}
 		e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
-		dbt := e.dbTrades("rh-btc")
-		if len(dbt) != 2 || dbt[0].Quantity != 0.3 || dbt[0].Price != 98 || !strings.Contains(dbt[1].Details, robinhoodVerifiedFlatKillSwitch) {
-			t.Fatalf("db trades = %+v, want a venue row and a verified-flat row", dbt)
+		if pos := e.state.Strategies["rh-btc"].Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
+			t.Fatalf("position = %+v, want the fresh long kept", pos)
+		}
+		e.mu.Lock()
+		e.state.Strategies["rh-btc"].Positions["BTC"].OpenedAt = time.Now().Add(-time.Hour)
+		e.mu.Unlock()
+		plan = planKillSwitchClose(e.killSwitchInputs(flat, flat))
+		if !plan.OnChainConfirmedFlat || len(plan.RHCloseReport.AlreadyFlat) != 1 {
+			t.Fatalf("report = %+v, want an old long on a flat account confirmed flat", plan.RHCloseReport)
 		}
 	})
-	t.Run("shared_coin_splits_by_book", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
-		e.setPosition("rh-a", "BTC", 0.1, 90)
-		e.setPosition("rh-b", "BTC", 0.3, 90)
-		closePhase := rhWith(rhSellFilled("0.4", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.4", "0.4"))}})
-		in := e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.4"))}}, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}})
-		in.RHCloser = e.phaseCloser(closePhase, in.RHCloser)
+	t.Run("SellsOnlyTheBookAndReportsTheResidue", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000), rhLiveSpot("rh-eth", "ETH", 1000))
+		e.setPosition("rh-a", "BTC", 0.3, 90)
+		e.setPosition("rh-b", "BTC", 0.2, 90)
+		pre := rhHoldingsPhase(rhHeld("BTC", "1.0"), rhHeld("ETH", "2"), rhHeld("DOGE", "100"))
+		post := rhHoldingsPhase(rhHeld("BTC", "0.5"), rhHeld("ETH", "2"), rhHeld("DOGE", "100"))
+		in := e.killSwitchInputs(pre, post)
+		in.RHCloser = e.phaseCloser(rhClosePhase(rhSellFilled("0.5", "98"), "1.0", "1.0"), in.RHCloser)
 		plan := planKillSwitchClose(in)
-		if !plan.OnChainConfirmedFlat {
-			t.Fatalf("report = %+v, want confirmed flat", plan.RHCloseReport)
+		if !plan.OnChainConfirmedFlat || len(plan.RHCloseReport.ClosedCoins) != 1 || plan.RHCloseReport.ClosedCoins[0] != "BTC" || len(plan.RHUnconfigured) != 0 {
+			t.Fatalf("report = %+v, want BTC closed and confirmed flat with no blocking coin", plan.RHCloseReport)
+		}
+		rhSamePosts(t, e.allPostQuantities(), 0.5)
+		residue := map[string]float64{}
+		for _, p := range plan.RHCloseReport.Residue {
+			residue[p.Coin] = p.Size
+		}
+		if len(residue) != 3 || residue["BTC"] != 0.5 || residue["ETH"] != 2 || residue["DOGE"] != 100 {
+			t.Fatalf("residue = %+v, want BTC 0.5, ETH 2 and DOGE 100", plan.RHCloseReport.Residue)
+		}
+		logs := strings.Join(plan.LogLines, "\n")
+		for _, coin := range []string{"BTC holdings 0.5", "ETH holdings 2", "DOGE holdings 100"} {
+			if !strings.Contains(logs, coin+" are above every go-trader book") {
+				t.Fatalf("CRITICAL log lacks %q: %s", coin, logs)
+			}
+		}
+		for _, want := range []string{"BTC 0.5", "ETH 2", "DOGE 100"} {
+			if !strings.Contains(plan.DiscordMessage, want) {
+				t.Fatalf("kill-switch message lacks %q: %s", want, plan.DiscordMessage)
+			}
 		}
 		e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
 		a, b := e.dbTrades("rh-a"), e.dbTrades("rh-b")
-		if len(a) != 1 || len(b) != 1 || math.Abs(a[0].Quantity-0.1) > 1e-12 || math.Abs(b[0].Quantity-0.3) > 1e-12 || a[0].Price != 98 || b[0].Price != 98 {
-			t.Fatalf("trades a=%+v b=%+v, want a proportional venue split", a, b)
+		if len(a) != 1 || len(b) != 1 || math.Abs(a[0].Quantity-0.3) > 1e-12 || math.Abs(b[0].Quantity-0.2) > 1e-12 || a[0].Price != 98 || b[0].Price != 98 {
+			t.Fatalf("trades a=%+v b=%+v, want 0.3 and 0.2 at the venue price", a, b)
+		}
+		if e.bookQty("rh-a", "BTC") != 0 || e.bookQty("rh-b", "BTC") != 0 {
+			t.Fatal("both BTC books must be flat")
+		}
+		if dbt := e.dbTrades("rh-eth"); len(dbt) != 0 {
+			t.Fatalf("the ETH strategy with no book must book nothing, got %+v", dbt)
 		}
 	})
-	t.Run("unowned_unconfigured_coin_is_residue", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		phase := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("DOGE", "100"))}}
-		plan := planKillSwitchClose(e.killSwitchInputs(phase, phase))
-		if !plan.OnChainConfirmedFlat || len(plan.RHUnconfigured) != 0 || len(plan.RHCloseReport.Residue) != 1 || plan.RHCloseReport.Residue[0].Coin != "DOGE" {
-			t.Fatalf("plan = %+v, want DOGE with no go-trader book reported as residue without blocking flat", plan.RHCloseReport)
-		}
-		if posts := e.orderPosts(); len(posts) != 0 {
-			t.Fatalf("an unowned coin must never be sold, sent %d order(s)", len(posts))
-		}
-		if !strings.Contains(plan.DiscordMessage, "DOGE 100") || !strings.Contains(strings.Join(plan.LogLines, "\n"), "DOGE holdings 100 are above every go-trader book") {
-			t.Fatalf("residue must be in the message and the CRITICAL log, got %q / %v", plan.DiscordMessage, plan.LogLines)
+	t.Run("CappedSaleClosesThePhantomRemainderOnlyOutsideTheLagWindow", func(t *testing.T) {
+		for _, aged := range []bool{true, false} {
+			t.Run(fmt.Sprintf("aged_%v", aged), func(t *testing.T) {
+				e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+				e.setPosition("rh-btc", "BTC", 0.5, 90)
+				if aged {
+					e.ageBook("rh-btc", "BTC")
+				}
+				in := e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.3")), rhHoldingsPhase())
+				in.RHCloser = e.phaseCloser(rhClosePhase(rhSellFilled("0.3", "98"), "0.3", "0.3"), in.RHCloser)
+				plan := planKillSwitchClose(in)
+				rhSamePosts(t, e.allPostQuantities(), 0.3)
+				e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
+				dbt := e.dbTrades("rh-btc")
+				if !aged {
+					if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil {
+						t.Fatalf("report = %+v, want a fresh book's flat read unconfirmed", plan.RHCloseReport)
+					}
+					if got := e.bookQty("rh-btc", "BTC"); math.Abs(got-0.2) > 1e-12 || len(dbt) != 1 {
+						t.Fatalf("book = %v trades = %+v, want the 0.2 remainder kept and only the venue sale booked", got, dbt)
+					}
+					return
+				}
+				if !plan.OnChainConfirmedFlat {
+					t.Fatalf("report = %+v, want confirmed flat", plan.RHCloseReport)
+				}
+				if len(dbt) != 2 || dbt[0].Quantity != 0.3 || dbt[0].Price != 98 || math.Abs(dbt[1].Quantity-0.2) > 1e-12 || !strings.Contains(dbt[1].Details, robinhoodVerifiedFlatKillSwitch) {
+					t.Fatalf("db trades = %+v, want a 0.3 venue row and a 0.2 verified-flat row", dbt)
+				}
+			})
 		}
 	})
-	t.Run("unconfigured_coin_held_by_a_book_blocks_flat", func(t *testing.T) {
+	t.Run("ReservedHoldingsHoldTheUnsoldBook", func(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.mu.Lock()
-		e.state.Strategies["rh-old-doge"] = &StrategyState{ID: "rh-old-doge", Platform: "robinhood", Type: "spot",
-			Positions: map[string]*Position{"DOGE": {Symbol: "DOGE", Quantity: 100, Side: "long"}}}
-		e.mu.Unlock()
-		phase := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("DOGE", "100"))}}
-		plan := planKillSwitchClose(e.killSwitchInputs(phase, phase))
-		if plan.OnChainConfirmedFlat || len(plan.RHUnconfigured) != 1 || plan.RHUnconfigured[0].Coin != "DOGE" {
-			t.Fatalf("plan = %+v, want DOGE held by an unconfigured book to block flat", plan.RHCloseReport)
+		e.setPosition("rh-btc", "BTC", 0.5, 90)
+		in := e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase(rhHeld("BTC", "0.2")))
+		in.RHCloser = e.phaseCloser(rhClosePhase(rhSellFilled("0.3", "98"), "0.5", "0.3"), in.RHCloser)
+		plan := planKillSwitchClose(in)
+		if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil || !strings.Contains(plan.RHCloseReport.Errors["BTC"].Error(), "reserved holdings") {
+			t.Fatalf("report = %+v, want BTC unconfirmed with a reserved-holdings reason", plan.RHCloseReport)
 		}
-		if posts := e.orderPosts(); len(posts) != 0 {
-			t.Fatalf("an unconfigured coin must never be sold, sent %d order(s)", len(posts))
+		rhSamePosts(t, e.allPostQuantities(), 0.3)
+		e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
+		if got := e.bookQty("rh-btc", "BTC"); math.Abs(got-0.2) > 1e-12 {
+			t.Fatalf("book = %v, want the 0.2 unsold remainder kept", got)
+		}
+
+		e.resetSent()
+		in = e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.2")), rhHoldingsPhase(rhHeld("BTC", "0.2")))
+		in.RHCloser = e.phaseCloser(rhClosePhase(rhPrepRoutes(), "0.2", "0"), in.RHCloser)
+		plan = planKillSwitchClose(in)
+		if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil {
+			t.Fatalf("report = %+v, want BTC still unconfirmed while nothing is sellable", plan.RHCloseReport)
+		}
+		rhSamePosts(t, e.allPostQuantities())
+		e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
+		if got := e.bookQty("rh-btc", "BTC"); math.Abs(got-0.2) > 1e-12 || len(e.dbTrades("rh-btc")) != 1 {
+			t.Fatalf("book = %v, want the 0.2 kept with no new trade", got)
+		}
+	})
+	t.Run("SharedPartialFillAsksOnlyTheRemainder", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
+		e.setPosition("rh-a", "BTC", 0.3, 90)
+		e.setPosition("rh-b", "BTC", 0.2, 90)
+		in := e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase(rhHeld("BTC", "0.25")))
+		in.RHCloser = e.phaseCloser(rhClosePhase(rhSellPartial("0.25", "98"), "0.5", "0.5"), in.RHCloser)
+		plan := planKillSwitchClose(in)
+		if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil {
+			t.Fatalf("report = %+v, want the partial fill unconfirmed", plan.RHCloseReport)
+		}
+		e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
+		if a, b := e.bookQty("rh-a", "BTC"), e.bookQty("rh-b", "BTC"); math.Abs(a-0.15) > 1e-12 || math.Abs(b-0.10) > 1e-12 {
+			t.Fatalf("books a=%v b=%v, want 0.15 and 0.10 after the pro-rata settlement", a, b)
+		}
+
+		e.resetSent()
+		in = e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.25")), rhHoldingsPhase())
+		in.RHCloser = e.phaseCloser(rhClosePhase(rhSellFilledAs("ord-2", "0.25", "97"), "0.25", "0.25"), in.RHCloser)
+		plan = planKillSwitchClose(in)
+		if !plan.OnChainConfirmedFlat {
+			t.Fatalf("report = %+v, want the remainder sold and confirmed", plan.RHCloseReport)
+		}
+		rhSamePosts(t, e.allPostQuantities(), 0.25)
+	})
+	t.Run("RestartKeepsTheSettlingAttemptAndSellsOnlyTheRemainder", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setPosition("rh-btc", "BTC", 0.5, 90)
+		e.setRoutes(rhClosePhase(rhSellPartial("0.2", "98"), "0.5", "0.5"))
+		if _, err := newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginKillSwitch)(RobinhoodCloseRequest{Symbol: "BTC", Quantity: 0.5, ExpectedAccountID: rhTestAccount}); err != nil {
+			t.Fatalf("seed close: %v", err)
+		}
+		row := e.onlyAttempt()
+		if row.Status != robinhoodAttemptSettling || row.ConfirmedQty != 0.2 {
+			t.Fatalf("seed attempt = %+v, want settling with a 0.2 fill", row)
+		}
+		if ev := e.evidence(row.ID); ev.Sizing == nil || ev.Sizing.CloseKind != robinhoodCloseKindEmergency || ev.Sizing.SentQuantity != 0.5 || ev.Sizing.AccountQuantity != 0.5 {
+			t.Fatalf("evidence sizing = %+v, want the emergency sizing saved with the attempt", ev.Sizing)
+		}
+		e.reopen()
+		e.resetSent()
+		in := e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.3")), rhHoldingsPhase())
+		in.RHCloser = e.phaseCloser(rhClosePhase(rhSellFilledAs("ord-2", "0.3", "97"), "0.3", "0.3"), in.RHCloser)
+		plan := planKillSwitchClose(in)
+		if !plan.OnChainConfirmedFlat {
+			t.Fatalf("report = %+v, want confirmed after the remainder sale", plan.RHCloseReport)
+		}
+		rhSamePosts(t, e.allPostQuantities(), 0.3)
+		e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
+		dbt := e.dbTrades("rh-btc")
+		if len(dbt) != 2 || math.Abs(dbt[0].Quantity-0.2) > 1e-12 || math.Abs(dbt[1].Quantity-0.3) > 1e-12 {
+			t.Fatalf("db trades = %+v, want the restored 0.2 fill and the 0.3 remainder sale", dbt)
+		}
+	})
+	t.Run("SellsARecoveredBuy", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		row := e.seedHeldBuy()
+		resolveRoutes := rhWith(rhPrepRoutes(), rhRoutes{
+			"GET " + rhTestOrders: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{
+				map[string]interface{}{"id": "ord-9", "ref_id": row.RefID, "state": "filled", "side": "buy", "currency_pair_id": "pair-btc", "quantity": "0.25", "created_at": time.Now().UTC().Format(time.RFC3339)},
+			}}}},
+			"GET " + rhOrderURL("ord-9"): {{"status": 200, "json": rhOrderBody("ord-9", "filled", "buy", "0.25", "101", row.RefID)}},
+		})
+		e.setRoutes(resolveRoutes)
+		e.sent = nil
+		in := e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.25")), rhHoldingsPhase())
+		in.RHCloser = e.phaseCloser(rhClosePhase(rhSellFilled("0.25", "99"), "0.25", "0.25"), in.RHCloser)
+		plan := planKillSwitchClose(in)
+		if !plan.OnChainConfirmedFlat || len(plan.RHCloseReport.ClosedCoins) != 1 {
+			t.Fatalf("report = %+v, want the recovered buy sold and confirmed", plan.RHCloseReport)
+		}
+		rhSamePosts(t, e.allPostQuantities(), 0.25)
+		e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
+		dbt := e.dbTrades("rh-btc")
+		if len(dbt) != 2 || dbt[0].Side != "buy" || dbt[0].Quantity != 0.25 || dbt[1].Side != "sell" || dbt[1].Quantity != 0.25 || dbt[1].Price != 99 {
+			t.Fatalf("db trades = %+v, want the recovered buy then the emergency sale", dbt)
 		}
 	})
 }
@@ -962,14 +1532,14 @@ func (e *rhLiveEnv) latchCB(id string) {
 }
 
 func (e *rhLiveEnv) runCB(fetcher RobinhoodPositionsFetcher) {
-	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, nil, false, fetcher,
+	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, RobinhoodHoldings{}, false, fetcher,
 		newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginCircuitBreaker), nil, 2*time.Minute, &e.mu,
 		robinhoodCircuitCloseDeps{store: e.store, prices: map[string]float64{"BTC": 50}, resolve: robinhoodEmergencyResolver(e.deps(), e.cfg, nil)})
 }
 
 func (e *rhLiveEnv) phasedFetcher(phases ...rhRoutes) RobinhoodPositionsFetcher {
 	calls := 0
-	return func() ([]RobinhoodPosition, error) {
+	return func() (RobinhoodHoldings, error) {
 		if calls < len(phases) {
 			e.setRoutes(phases[calls])
 		}
@@ -978,224 +1548,547 @@ func (e *rhLiveEnv) phasedFetcher(phases ...rhRoutes) RobinhoodPositionsFetcher 
 	}
 }
 
-func TestRobinhoodLiveOrderCircuitBreakerKeepsExposureUntilVerifiedFlat(t *testing.T) {
-	t.Run("activation_keeps_the_book", func(t *testing.T) {
-		sc := rhLiveSpot("rh-btc", "BTC", 1000)
-		s := NewStrategyState(sc)
-		s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1, InitialQuantity: 1, AvgCost: 1000, Side: "long"}
-		s.RiskState.PeakValue = 2000
-		s.RiskState.MaxDrawdownPct = 10
-		allowed, _ := CheckRisk(&sc, s, 500, map[string]float64{"BTC": 500}, nil, nil)
-		if allowed || !s.RiskState.CircuitBreaker {
-			t.Fatal("expected the circuit breaker to fire")
+func TestRobinhoodLiveOrderCircuitBreaker(t *testing.T) {
+	t.Run("KeepsExposureUntilVerifiedFlat", func(t *testing.T) {
+		t.Run("activation_keeps_the_book", func(t *testing.T) {
+			sc := rhLiveSpot("rh-btc", "BTC", 1000)
+			s := NewStrategyState(sc)
+			s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1, InitialQuantity: 1, AvgCost: 1000, Side: "long"}
+			s.RiskState.PeakValue = 2000
+			s.RiskState.MaxDrawdownPct = 10
+			allowed, _ := CheckRisk(&sc, s, 500, map[string]float64{"BTC": 500}, nil, nil)
+			if allowed || !s.RiskState.CircuitBreaker {
+				t.Fatal("expected the circuit breaker to fire")
+			}
+			if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 1 {
+				t.Fatalf("CB activation must keep the Robinhood live book, got %+v", s.Positions)
+			}
+		})
+		t.Run("filled_and_flat_clears_pending", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.latchCB("rh-btc")
+			held := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}}
+			closePhase := rhWith(rhSellFilled("0.5", "97"), held)
+			fetcher := e.phasedFetcher(held, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}})
+			runPendingRobinhoodCircuitClosesWithCloser(e, fetcher, closePhase)
+			if s := e.state.Strategies["rh-btc"]; s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) != nil || len(s.Positions) != 0 {
+				t.Fatalf("pending=%v positions=%v, want cleared and flat", s.RiskState.PendingCircuitCloses, s.Positions)
+			}
+			if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Price != 97 {
+				t.Fatalf("db trades = %+v, want one venue-priced sell", dbt)
+			}
+		})
+		t.Run("filled_but_still_held_keeps_pending", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.latchCB("rh-btc")
+			held := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}}
+			closePhase := rhWith(rhSellFilled("0.2", "97"), held)
+			fetcher := e.phasedFetcher(held, rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.3"))}})
+			runPendingRobinhoodCircuitClosesWithCloser(e, fetcher, closePhase)
+			s := e.state.Strategies["rh-btc"]
+			if s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil {
+				t.Fatal("pending close must be kept while the coin is still held")
+			}
+			if pos := s.Positions["BTC"]; pos == nil || math.Abs(pos.Quantity-0.3) > 1e-12 {
+				t.Fatalf("position = %+v, want 0.3 remaining", pos)
+			}
+			if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Quantity != 0.2 {
+				t.Fatalf("db trades = %+v, want the fill applied once", dbt)
+			}
+		})
+		t.Run("refetch_error_keeps_pending", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.latchCB("rh-btc")
+			held := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}}
+			fetcher := e.phasedFetcher(held, rhRoutes{"GET " + rhTestHoldings: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}})
+			runPendingRobinhoodCircuitClosesWithCloser(e, fetcher, rhWith(rhSellFilled("0.5", "97"), held))
+			if e.state.Strategies["rh-btc"].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil {
+				t.Fatal("pending close must be kept when the post-close read fails")
+			}
+		})
+		t.Run("rejected_sell_keeps_pending", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.latchCB("rh-btc")
+			held := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}}
+			refused := rhWith(rhWith(rhPrepRoutes(), held), rhRoutes{"POST " + rhTestOrders: {{"status": 400, "json": map[string]interface{}{"detail": "insufficient holdings"}}}})
+			runPendingRobinhoodCircuitClosesWithCloser(e, e.phasedFetcher(held, held), refused)
+			s := e.state.Strategies["rh-btc"]
+			if e.pendingRH("rh-btc") == nil {
+				t.Fatal("pending close must be kept when the venue refuses the sell")
+			}
+			if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
+				t.Fatalf("position = %+v, want the 0.5 book kept after a refused sell", pos)
+			}
+			if dbt := e.dbTrades("rh-btc"); len(dbt) != 0 {
+				t.Fatalf("db trades = %+v, want none after a refused sell", dbt)
+			}
+			rhSamePosts(t, e.allPostQuantities(), 0.5)
+			if row := e.onlyAttempt(); row.Status != robinhoodAttemptNoFill || row.AppliedQty != 0 {
+				t.Fatalf("attempt = %+v, want a no_fill attempt with nothing applied", row)
+			}
+		})
+		t.Run("nil_fetcher_keeps_pending", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.latchCB("rh-btc")
+			e.mu.Lock()
+			e.state.Strategies["rh-btc"].RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.5}}})
+			e.mu.Unlock()
+			closePhase := rhWith(rhSellFilled("0.5", "97"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}})
+			closer := e.phaseCloser(closePhase, newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginCircuitBreaker))
+			runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, RobinhoodHoldings{AccountID: rhTestAccount, Positions: []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}}, true, nil,
+				closer, nil, 2*time.Minute, &e.mu, robinhoodCircuitCloseDeps{store: e.store, prices: map[string]float64{"BTC": 50}})
+			if e.state.Strategies["rh-btc"].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil {
+				t.Fatal("pending close must be kept with no post-close fetcher")
+			}
+		})
+		t.Run("fresh_buy_flat_read_keeps_the_book_without_a_pending_close", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.latchCB("rh-btc")
+			flat := rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}
+			e.runCB(e.phasedFetcher(flat, flat))
+			s := e.state.Strategies["rh-btc"]
+			if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
+				t.Fatalf("position = %+v, want the fresh long kept while the read may lag the buy", pos)
+			}
+			if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil {
+				t.Fatalf("pending = %+v, want none from a flat read", p)
+			}
+			if posts := e.orderPosts(); len(posts) != 0 {
+				t.Fatalf("a lagging flat read must send no order, sent %d", len(posts))
+			}
+			if dbt := e.dbTrades("rh-btc"); len(dbt) != 0 {
+				t.Fatalf("db trades = %+v, want none", dbt)
+			}
+			e.mu.Lock()
+			s.Positions["BTC"].OpenedAt = time.Now().Add(-time.Hour)
+			e.mu.Unlock()
+			e.runCB(e.phasedFetcher(flat, flat))
+			if pos := s.Positions["BTC"]; pos != nil {
+				t.Fatalf("position = %+v, want an old long on a verified flat account closed", pos)
+			}
+		})
+		t.Run("fresh_buy_flat_read_keeps_the_pending_close", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.latchCB("rh-btc")
+			e.mu.Lock()
+			s := e.state.Strategies["rh-btc"]
+			s.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.5}}})
+			e.mu.Unlock()
+			flat := rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}
+			e.runCB(e.phasedFetcher(flat, flat))
+			if s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil {
+				t.Fatal("pending close must be kept while the flat read may lag a fresh buy")
+			}
+			if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
+				t.Fatalf("position = %+v, want the fresh long kept", pos)
+			}
+			if posts := e.orderPosts(); len(posts) != 0 {
+				t.Fatalf("a lagging flat read must send no order, sent %d", len(posts))
+			}
+			e.mu.Lock()
+			s.Positions["BTC"].OpenedAt = time.Now().Add(-time.Hour)
+			e.mu.Unlock()
+			e.runCB(e.phasedFetcher(flat, flat))
+			if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil || s.Positions["BTC"] != nil {
+				t.Fatalf("pending=%+v position=%+v, want an old long on a verified flat account cleared", p, s.Positions["BTC"])
+			}
+		})
+		t.Run("cooldown_and_reset_do_not_release_a_hold", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{"POST " + rhTestOrders: {{"status": 503, "json": map[string]interface{}{"detail": "unavailable"}}}}))
+			e.signal("rh-btc", -1, 0, 99)
+			if row := e.onlyAttempt(); row.Status != robinhoodAttemptUnknown {
+				t.Fatalf("seed = %+v", row)
+			}
+			e.mu.Lock()
+			s := e.state.Strategies["rh-btc"]
+			s.RiskState.CircuitBreaker = true
+			s.RiskState.CircuitBreakerUntil = time.Now().Add(-time.Minute)
+			sc := e.sc("rh-btc")
+			CheckRisk(&sc, s, s.Cash+45, map[string]float64{"BTC": 90}, nil, nil)
+			ResetPortfolioKillSwitchManual(e.state.partitionRisk(livePartition))
+			e.mu.Unlock()
+			e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{"POST " + rhTestOrders: {rhAccepted("sell")}}))
+			e.signal("rh-btc", -1, 0, 99)
+			if posts := e.orderPosts(); len(posts) != 0 {
+				t.Fatalf("cooldown and reset must not release the hold, sent %d order(s)", len(posts))
+			}
+		})
+	})
+	t.Run("SellsTheBookAtFireTimeAndNotTheAccount", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setPosition("rh-btc", "BTC", 0.4, 90)
+		e.ageBook("rh-btc", "BTC")
+		e.tripCB("rh-btc")
+		p := e.pendingRH("rh-btc")
+		if p == nil || len(p.Symbols) != 1 || p.Symbols[0].Symbol != "BTC" || p.Symbols[0].Size != 0.4 || p.SizeBasis != robinhoodPendingSizeBasisBook {
+			t.Fatalf("pending = %+v, want BTC 0.4 sized from the book", p)
 		}
-		if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 1 {
-			t.Fatalf("CB activation must keep the Robinhood live book, got %+v", s.Positions)
+		e.runCBPhases(rhClosePhase(rhSellFilled("0.4", "97"), "1.0", "1.0"), rhHoldingsPhase(rhHeld("BTC", "1.0")), rhHoldingsPhase(rhHeld("BTC", "0.6")))
+		rhSamePosts(t, e.allPostQuantities(), 0.4)
+		if p := e.pendingRH("rh-btc"); p != nil {
+			t.Fatalf("pending = %+v, want cleared once the book is sold", p)
+		}
+		if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Quantity != 0.4 || dbt[0].Price != 97 {
+			t.Fatalf("db trades = %+v, want one 0.4 venue sale", dbt)
+		}
+		if n := e.dmCount("still holds 0.6 BTC above every go-trader book"); n != 1 {
+			t.Fatalf("residue DMs = %d, want one naming 0.6", n)
+		}
+
+		e.resetSent()
+		e.runCBPhases(rhClosePhase(rhSellFilled("0.7", "97"), "0.7", "0.7"), rhHoldingsPhase(rhHeld("BTC", "0.7")), rhHoldingsPhase(rhHeld("BTC", "0.7")))
+		rhSamePosts(t, e.allPostQuantities())
+		if p := e.pendingRH("rh-btc"); p != nil {
+			t.Fatalf("pending = %+v, want none while the latched CB has no book", p)
 		}
 	})
-	t.Run("filled_and_flat_clears_pending", func(t *testing.T) {
+	t.Run("WithAFlatBookSendsNothing", func(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		e.latchCB("rh-btc")
-		held := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}}
-		closePhase := rhWith(rhSellFilled("0.5", "97"), held)
-		fetcher := e.phasedFetcher(held, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}})
-		runPendingRobinhoodCircuitClosesWithCloser(e, fetcher, closePhase)
-		if s := e.state.Strategies["rh-btc"]; s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) != nil || len(s.Positions) != 0 {
-			t.Fatalf("pending=%v positions=%v, want cleared and flat", s.RiskState.PendingCircuitCloses, s.Positions)
+		e.tripCB("rh-btc")
+		if p := e.pendingRH("rh-btc"); p != nil {
+			t.Fatalf("pending = %+v, want none for a flat book", p)
 		}
-		if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Price != 97 {
-			t.Fatalf("db trades = %+v, want one venue-priced sell", dbt)
+		for i := 0; i < 3; i++ {
+			e.runCBPhases(rhClosePhase(rhSellFilled("1.0", "97"), "1.0", "1.0"), rhHoldingsPhase(rhHeld("BTC", "1.0")), rhHoldingsPhase(rhHeld("BTC", "1.0")))
+		}
+		rhSamePosts(t, e.allPostQuantities())
+		if p := e.pendingRH("rh-btc"); p != nil || len(e.attemptRows()) != 0 {
+			t.Fatalf("pending = %+v attempts = %+v, want nothing", p, e.attemptRows())
 		}
 	})
-	t.Run("filled_but_still_held_keeps_pending", func(t *testing.T) {
+	t.Run("PartialFillAsksOnlyTheRemainderAcrossRestart", func(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
 		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		e.latchCB("rh-btc")
-		held := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}}
-		closePhase := rhWith(rhSellFilled("0.2", "97"), held)
-		fetcher := e.phasedFetcher(held, rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.3"))}})
-		runPendingRobinhoodCircuitClosesWithCloser(e, fetcher, closePhase)
-		s := e.state.Strategies["rh-btc"]
-		if s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil {
-			t.Fatal("pending close must be kept while the coin is still held")
+		e.ageBook("rh-btc", "BTC")
+		e.tripCB("rh-btc")
+		e.runCBPhases(rhClosePhase(rhSellPartial("0.2", "97"), "0.5", "0.5"), rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase(rhHeld("BTC", "0.3")))
+		rhSamePosts(t, e.allPostQuantities(), 0.5)
+		p := e.pendingRH("rh-btc")
+		if p == nil || math.Abs(p.Symbols[0].Size-0.3) > 1e-12 || p.SizeBasis != robinhoodPendingSizeBasisBook {
+			t.Fatalf("pending = %+v, want the 0.3 remainder", p)
 		}
-		if pos := s.Positions["BTC"]; pos == nil || math.Abs(pos.Quantity-0.3) > 1e-12 {
-			t.Fatalf("position = %+v, want 0.3 remaining", pos)
+		if got := e.bookQty("rh-btc", "BTC"); math.Abs(got-0.3) > 1e-12 {
+			t.Fatalf("book = %v, want 0.3", got)
 		}
-		if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Quantity != 0.2 {
-			t.Fatalf("db trades = %+v, want the fill applied once", dbt)
+		e.reopen()
+		if p := e.pendingRH("rh-btc"); p == nil || math.Abs(p.Symbols[0].Size-0.3) > 1e-12 {
+			t.Fatalf("pending after restart = %+v, want the 0.3 remainder kept", p)
+		}
+		e.resetSent()
+		e.runCBPhases(rhClosePhase(rhSellFilledAs("ord-2", "0.3", "96"), "0.3", "0.3"), rhHoldingsPhase(rhHeld("BTC", "0.3")), rhHoldingsPhase())
+		rhSamePosts(t, e.allPostQuantities(), 0.3)
+		if p := e.pendingRH("rh-btc"); p != nil || e.bookQty("rh-btc", "BTC") != 0 {
+			t.Fatalf("pending = %+v, want cleared with a flat book", p)
 		}
 	})
-	t.Run("refetch_error_keeps_pending", func(t *testing.T) {
+	t.Run("FailedVerifyAfterAFullFillNeverSellsTwice", func(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
 		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		e.latchCB("rh-btc")
-		held := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}}
-		fetcher := e.phasedFetcher(held, rhRoutes{"GET " + rhTestHoldings: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}})
-		runPendingRobinhoodCircuitClosesWithCloser(e, fetcher, rhWith(rhSellFilled("0.5", "97"), held))
-		if e.state.Strategies["rh-btc"].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil {
+		e.ageBook("rh-btc", "BTC")
+		e.tripCB("rh-btc")
+		e.runCBPhases(rhClosePhase(rhSellFilled("0.5", "97"), "1.1", "1.1"), rhHoldingsPhase(rhHeld("BTC", "1.1")), rhRoutes{"GET " + rhTestHoldings: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}})
+		rhSamePosts(t, e.allPostQuantities(), 0.5)
+		if p := e.pendingRH("rh-btc"); p == nil {
 			t.Fatal("pending close must be kept when the post-close read fails")
 		}
-	})
-	t.Run("rejected_sell_keeps_pending", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		e.latchCB("rh-btc")
-		held := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}}
-		refused := rhWith(rhWith(rhPrepRoutes(), held), rhRoutes{"POST " + rhTestOrders: {{"status": 400, "json": map[string]interface{}{"detail": "insufficient holdings"}}}})
-		runPendingRobinhoodCircuitClosesWithCloser(e, e.phasedFetcher(held, held), refused)
-		s := e.state.Strategies["rh-btc"]
-		if e.pendingRH("rh-btc") == nil {
-			t.Fatal("pending close must be kept when the venue refuses the sell")
+		e.resetSent()
+		e.runCBPhases(rhClosePhase(rhSellFilled("0.6", "97"), "0.6", "0.6"), rhHoldingsPhase(rhHeld("BTC", "0.6")), rhHoldingsPhase(rhHeld("BTC", "0.6")))
+		rhSamePosts(t, e.allPostQuantities())
+		if p := e.pendingRH("rh-btc"); p != nil {
+			t.Fatalf("pending = %+v, want cleared once the read shows the book sold", p)
 		}
-		if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
-			t.Fatalf("position = %+v, want the 0.5 book kept after a refused sell", pos)
-		}
-		if dbt := e.dbTrades("rh-btc"); len(dbt) != 0 {
-			t.Fatalf("db trades = %+v, want none after a refused sell", dbt)
-		}
-		rhSamePosts(t, e.allPostQuantities(), 0.5)
-		if row := e.onlyAttempt(); row.Status != robinhoodAttemptNoFill || row.AppliedQty != 0 {
-			t.Fatalf("attempt = %+v, want a no_fill attempt with nothing applied", row)
+		if n := e.dmCount("still holds 0.6 BTC above every go-trader book"); n != 1 {
+			t.Fatalf("residue DMs = %d, want one", n)
 		}
 	})
-	t.Run("nil_fetcher_keeps_pending", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		e.latchCB("rh-btc")
-		e.mu.Lock()
-		e.state.Strategies["rh-btc"].RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.5}}})
-		e.mu.Unlock()
-		closePhase := rhWith(rhSellFilled("0.5", "97"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}})
-		closer := e.phaseCloser(closePhase, newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginCircuitBreaker))
-		runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, true, nil,
-			closer, nil, 2*time.Minute, &e.mu, robinhoodCircuitCloseDeps{store: e.store, prices: map[string]float64{"BTC": 50}})
-		if e.state.Strategies["rh-btc"].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil {
-			t.Fatal("pending close must be kept with no post-close fetcher")
+	t.Run("LegacyAccountSizedPendingNeverSellsAboveTheBook", func(t *testing.T) {
+		legacy := func(e *rhLiveEnv) {
+			e.mu.Lock()
+			e.state.Strategies["rh-btc"].RiskState.CircuitBreaker = true
+			e.state.Strategies["rh-btc"].RiskState.CircuitBreakerUntil = time.Now().Add(time.Hour)
+			e.state.Strategies["rh-btc"].RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 1.0}}})
+			e.mu.Unlock()
 		}
+		t.Run("long_book_sells_the_book", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.4, 90)
+			e.ageBook("rh-btc", "BTC")
+			legacy(e)
+			e.runCBPhases(rhClosePhase(rhSellFilled("0.4", "97"), "1.0", "1.0"), rhHoldingsPhase(rhHeld("BTC", "1.0")), rhHoldingsPhase(rhHeld("BTC", "0.6")))
+			rhSamePosts(t, e.allPostQuantities(), 0.4)
+			if p := e.pendingRH("rh-btc"); p != nil {
+				t.Fatalf("pending = %+v, want cleared", p)
+			}
+		})
+		t.Run("flat_book_holds_and_alerts", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			legacy(e)
+			e.runCBPhases(rhClosePhase(rhSellFilled("1.0", "97"), "1.0", "1.0"), rhHoldingsPhase(rhHeld("BTC", "1.0")), rhHoldingsPhase(rhHeld("BTC", "1.0")))
+			rhSamePosts(t, e.allPostQuantities())
+			if p := e.pendingRH("rh-btc"); p != nil {
+				t.Fatalf("pending = %+v, want cleared", p)
+			}
+			if n := e.dmCount("from an earlier version was sized from the account"); n != 1 {
+				t.Fatalf("legacy DMs = %d, want one", n)
+			}
+		})
+		t.Run("legacy_attempt_fill_above_the_book_books_the_book_and_alerts", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.4, 90)
+			s := e.state.Strategies["rh-btc"]
+			a, err := reserveRobinhoodAttempt(e.store, e.state, s, &e.mu, "BTC", robinhoodOriginKillSwitch, "sell", robinhoodOrderRequest{Peers: []string{"rh-btc"}, Script: robinhoodLiveCloseScript}, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if req, err := parseRobinhoodOrderRequest(a); err != nil || req.Version != robinhoodOrderRequestVersion {
+				t.Fatalf("seed request = %+v %v, want a legacy version 1 request", req, err)
+			}
+			res := &RobinhoodExecuteResult{OrderOutcome: "filled", RefID: a.RefID, AccountID: rhTestAccount, Order: RobinhoodOrderEvidence{ID: "ord-legacy"}, Execution: &RobinhoodExecution{Fill: &RobinhoodFill{AvgPx: 98, Quantity: 1.0, OID: "ord-legacy"}}}
+			e.mu.Lock()
+			err = recordRobinhoodOrderOutcomeLocked(e.store, s, a, res, robinhoodOrderConfirmed, "", nil, time.Now())
+			e.mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+			if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || math.Abs(dbt[0].Quantity-0.4) > 1e-12 || dbt[0].Price != 98 {
+				t.Fatalf("db trades = %+v, want the 0.4 book closed at the venue price", dbt)
+			}
+			if n := e.dmCount("sold 0.6 BTC more than every go-trader book held"); n != 1 {
+				t.Fatalf("excess DMs = %d, want one naming 0.6", n)
+			}
+		})
 	})
-	t.Run("fresh_buy_flat_read_keeps_the_book_without_a_pending_close", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		e.latchCB("rh-btc")
-		flat := rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}
-		e.runCB(e.phasedFetcher(flat, flat))
-		s := e.state.Strategies["rh-btc"]
-		if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
-			t.Fatalf("position = %+v, want the fresh long kept while the read may lag the buy", pos)
-		}
-		if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil {
-			t.Fatalf("pending = %+v, want none from a flat read", p)
-		}
-		if posts := e.orderPosts(); len(posts) != 0 {
-			t.Fatalf("a lagging flat read must send no order, sent %d", len(posts))
-		}
-		if dbt := e.dbTrades("rh-btc"); len(dbt) != 0 {
-			t.Fatalf("db trades = %+v, want none", dbt)
-		}
-		e.mu.Lock()
-		s.Positions["BTC"].OpenedAt = time.Now().Add(-time.Hour)
-		e.mu.Unlock()
-		e.runCB(e.phasedFetcher(flat, flat))
-		if pos := s.Positions["BTC"]; pos != nil {
-			t.Fatalf("position = %+v, want an old long on a verified flat account closed", pos)
-		}
+	t.Run("NeverSellsAPositionOpenedAfterItsTarget", func(t *testing.T) {
+		readFails := rhRoutes{"GET " + rhTestHoldings: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}}
+		t.Run("full_sale_failed_reads_then_a_new_buy", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.4, 90)
+			e.ageBook("rh-btc", "BTC")
+			e.tripCB("rh-btc")
+			e.runCBPhases(rhClosePhase(rhSellFilled("0.4", "97"), "0.4", "0.4"), rhHoldingsPhase(rhHeld("BTC", "0.4")), readFails)
+			if p := e.pendingRH("rh-btc"); p == nil {
+				t.Fatal("pending close must be kept after a failed refetch")
+			}
+			e.runCBPhases(rhClosePhase(rhSellFilled("0.4", "97"), "0.4", "0.4"), readFails)
+			e.cooldownEnds("rh-btc")
+			e.setRoutes(rhBuyFilledAs("ord-3", "0.5", "100"))
+			if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 1 {
+				t.Fatalf("new buy trades = %d, want 1", trades)
+			}
+			e.resetSent()
+			e.runCBPhases(rhClosePhase(rhSellFilledAs("ord-4", "0.4", "97"), "0.5", "0.5"), rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase(rhHeld("BTC", "0.5")))
+			rhSamePosts(t, e.allPostQuantities())
+			if p := e.pendingRH("rh-btc"); p != nil {
+				t.Fatalf("pending = %+v, want cleared without a sale", p)
+			}
+			if got := e.bookQty("rh-btc", "BTC"); got != 0.5 {
+				t.Fatalf("book = %v, want the new 0.5 kept", got)
+			}
+		})
+		t.Run("remainder_closed_by_a_signal_then_a_new_buy", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.ageBook("rh-btc", "BTC")
+			e.tripCB("rh-btc")
+			e.runCBPhases(rhClosePhase(rhSellPartial("0.3", "97"), "0.5", "0.5"), rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase(rhHeld("BTC", "0.2")))
+			if p := e.pendingRH("rh-btc"); p == nil || math.Abs(p.Symbols[0].Size-0.2) > 1e-12 {
+				t.Fatalf("pending = %+v, want the 0.2 remainder", p)
+			}
+			e.cooldownEnds("rh-btc")
+			e.setRoutes(rhWith(rhSellFilledAs("ord-3", "0.2", "98"), rhSellHolding("0.2", "0.2")))
+			if trades, _ := e.signal("rh-btc", -1, 0, 98); trades != 1 || e.bookQty("rh-btc", "BTC") != 0 {
+				t.Fatalf("signal sell trades = %d book = %v, want the remainder closed", trades, e.bookQty("rh-btc", "BTC"))
+			}
+			e.runCBPhases(rhClosePhase(rhSellFilledAs("ord-9", "0.2", "97"), "0.2", "0.2"), readFails)
+			e.setRoutes(rhBuyFilledAs("ord-4", "0.3", "100"))
+			if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 1 {
+				t.Fatalf("new buy trades = %d, want 1", trades)
+			}
+			e.resetSent()
+			e.runCBPhases(rhClosePhase(rhSellFilledAs("ord-5", "0.2", "97"), "0.3", "0.3"), rhHoldingsPhase(rhHeld("BTC", "0.3")), rhHoldingsPhase(rhHeld("BTC", "0.3")))
+			rhSamePosts(t, e.allPostQuantities())
+			if p := e.pendingRH("rh-btc"); p != nil {
+				t.Fatalf("pending = %+v, want cleared without a sale", p)
+			}
+			if got := e.bookQty("rh-btc", "BTC"); math.Abs(got-0.3) > 1e-12 {
+				t.Fatalf("book = %v, want the new 0.3 kept", got)
+			}
+		})
+		t.Run("legacy_pending_after_the_breaker_reset", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.4, 90)
+			e.ageBook("rh-btc", "BTC")
+			e.mu.Lock()
+			e.state.Strategies["rh-btc"].RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 1.0}}})
+			e.mu.Unlock()
+			e.runCBPhases(rhClosePhase(rhSellFilled("0.4", "97"), "1.0", "1.0"), rhHoldingsPhase(rhHeld("BTC", "1.0")), rhHoldingsPhase(rhHeld("BTC", "1.0")))
+			rhSamePosts(t, e.allPostQuantities())
+			if p := e.pendingRH("rh-btc"); p != nil {
+				t.Fatalf("pending = %+v, want cleared", p)
+			}
+			if n := e.dmCount("the circuit breaker is no longer latched"); n != 1 {
+				t.Fatalf("owner DMs = %d, want one", n)
+			}
+			if got := e.bookQty("rh-btc", "BTC"); got != 0.4 {
+				t.Fatalf("book = %v, want 0.4 kept", got)
+			}
+		})
 	})
-	t.Run("fresh_buy_flat_read_keeps_the_pending_close", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		e.latchCB("rh-btc")
+	t.Run("SharedCoinOwnerDMIsThrottledAcrossRestart", func(t *testing.T) {
+		clk := &simulatedClock{now: time.Now().UTC().Truncate(time.Second)}
+		if err := bindTradingClock(t.Name(), clk.Now); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { unbindTradingClock(t.Name()) })
+		advance := func(d time.Duration) {
+			t.Helper()
+			if err := clk.Set(clk.Now().Add(d)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		throttle := effectiveAlertThrottleInterval()
+
+		e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000), rhLiveSpot("rh-c", "BTC", 1000))
+		e.setPosition("rh-a", "BTC", 0.3, 90)
+		e.setPosition("rh-b", "BTC", 0.2, 90)
+		e.ageBook("rh-a", "BTC")
+		e.ageBook("rh-b", "BTC")
+		e.latchCB("rh-c")
+		e.tripCB("rh-a")
+		if p := e.pendingRH("rh-a"); p == nil {
+			t.Fatal("the fire must set a book-sized pending close")
+		}
+		held := rhHoldingsPhase(rhHeld("BTC", "1.0"))
+
+		e.runCBSharedCycle(held)
+		if got := e.sharedCloseDMs("rh-a"); got != 1 {
+			t.Fatalf("first drain after the fire: shared-coin DMs = %d, want 1", got)
+		}
+		if p := e.pendingRH("rh-a"); p != nil {
+			t.Fatalf("the shared-only branch must clear the pending close, got %+v", p)
+		}
+		n := e.sharedCloseNotice("rh-a")
+		if n.Coin != "BTC" || !n.LastNotifiedAt.Equal(clk.Now()) {
+			t.Fatalf("the first drain must stamp the marker, got %+v", n)
+		}
+
+		for i := 0; i < 2; i++ {
+			advance(time.Minute)
+			e.runCBSharedCycle(held)
+		}
+		if got := e.sharedCloseDMs("rh-a"); got != 1 {
+			t.Fatalf("recovery cycles inside the window: shared-coin DMs = %d, want 1 (the first drain counts as the first send)", got)
+		}
+
+		e.reopen()
+		if got := e.sharedCloseNotice("rh-a"); got.Coin != "BTC" || !got.LastNotifiedAt.Equal(n.LastNotifiedAt) || !got.CBUntil.Equal(n.CBUntil) {
+			t.Fatalf("the marker must survive a save and load, got %+v want %+v", got, n)
+		}
+		advance(time.Minute)
+		e.runCBSharedCycle(held)
+		if got := e.sharedCloseDMs("rh-a"); got != 1 {
+			t.Fatalf("after a restart inside the window: shared-coin DMs = %d, want 1", got)
+		}
+
+		advance(throttle)
+		e.runCBSharedCycle(held)
+		if got := e.sharedCloseDMs("rh-a"); got != 2 {
+			t.Fatalf("after the throttle interval: shared-coin DMs = %d, want 2", got)
+		}
+		advance(time.Minute)
+		e.runCBSharedCycle(held)
+		if got := e.sharedCloseDMs("rh-a"); got != 2 {
+			t.Fatalf("right after the repeat: shared-coin DMs = %d, want 2", got)
+		}
+
 		e.mu.Lock()
-		s := e.state.Strategies["rh-btc"]
-		s.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.5}}})
+		e.state.Strategies["rh-a"].RiskState.CircuitBreakerUntil = e.state.Strategies["rh-a"].RiskState.CircuitBreakerUntil.Add(time.Hour)
 		e.mu.Unlock()
-		flat := rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}
-		e.runCB(e.phasedFetcher(flat, flat))
-		if s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil {
-			t.Fatal("pending close must be kept while the flat read may lag a fresh buy")
+		advance(time.Minute)
+		e.runCBSharedCycle(held)
+		if got := e.sharedCloseDMs("rh-a"); got != 3 {
+			t.Fatalf("a new CB episode inside the window: shared-coin DMs = %d, want 3", got)
 		}
-		if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
-			t.Fatalf("position = %+v, want the fresh long kept", pos)
+
+		e.mu.Lock()
+		e.state.Strategies["rh-a"].RiskState.CircuitBreakerUntil = e.state.Strategies["rh-a"].RiskState.CircuitBreakerUntil.Add(time.Hour)
+		e.state.Strategies["rh-a"].robinhoodPartitionSavePending = true
+		e.mu.Unlock()
+		advance(time.Minute)
+		e.runCBSharedCycle(held)
+		if got := e.sharedCloseDMs("rh-a"); got != 4 {
+			t.Fatalf("a failed marker save must still send the DM: shared-coin DMs = %d, want 4", got)
 		}
-		if posts := e.orderPosts(); len(posts) != 0 {
-			t.Fatalf("a lagging flat read must send no order, sent %d", len(posts))
+		stamped := e.sharedCloseNotice("rh-a")
+		if !stamped.LastNotifiedAt.Equal(clk.Now()) {
+			t.Fatalf("a failed marker save must keep the in-memory stamp, got %+v", stamped)
+		}
+		advance(time.Minute)
+		e.runCBSharedCycle(held)
+		if got := e.sharedCloseDMs("rh-a"); got != 4 {
+			t.Fatalf("the in-memory marker must still throttle after a failed save: shared-coin DMs = %d, want 4", got)
 		}
 		e.mu.Lock()
-		s.Positions["BTC"].OpenedAt = time.Now().Add(-time.Hour)
+		e.state.Strategies["rh-a"].robinhoodPartitionSavePending = false
 		e.mu.Unlock()
-		e.runCB(e.phasedFetcher(flat, flat))
-		if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil || s.Positions["BTC"] != nil {
-			t.Fatalf("pending=%+v position=%+v, want an old long on a verified flat account cleared", p, s.Positions["BTC"])
+
+		if got := e.sharedCloseDMs("rh-c"); got != 0 {
+			t.Fatalf("a latched strategy with a flat own book must get no shared-coin DM, got %d", got)
 		}
-	})
-	t.Run("cooldown_and_reset_do_not_release_a_hold", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{"POST " + rhTestOrders: {{"status": 503, "json": map[string]interface{}{"detail": "unavailable"}}}}))
-		e.signal("rh-btc", -1, 0, 99)
-		if row := e.onlyAttempt(); row.Status != robinhoodAttemptUnknown {
-			t.Fatalf("seed = %+v", row)
+		if got := e.sharedCloseDMs("rh-b"); got != 0 {
+			t.Fatalf("an unlatched peer must get no shared-coin DM, got %d", got)
 		}
+		if posts := e.allPostQuantities(); len(posts) != 0 {
+			t.Fatalf("no Robinhood order may be sent for a shared coin, got %v", posts)
+		}
+		if got := e.bookQty("rh-a", "BTC"); got != 0.3 {
+			t.Fatalf("book = %v, want 0.3 kept", got)
+		}
+
+		sc := e.sc("rh-a")
 		e.mu.Lock()
-		s := e.state.Strategies["rh-btc"]
-		s.RiskState.CircuitBreaker = true
-		s.RiskState.CircuitBreakerUntil = time.Now().Add(-time.Minute)
-		sc := e.sc("rh-btc")
-		CheckRisk(&sc, s, s.Cash+45, map[string]float64{"BTC": 90}, nil, nil)
-		ResetPortfolioKillSwitchManual(e.state.partitionRisk(livePartition))
+		s := e.state.Strategies["rh-a"]
+		advanceTo := s.RiskState.CircuitBreakerUntil.Add(time.Minute).Sub(clk.Now())
 		e.mu.Unlock()
-		e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{"POST " + rhTestOrders: {rhAccepted("sell")}}))
-		e.signal("rh-btc", -1, 0, 99)
-		if posts := e.orderPosts(); len(posts) != 0 {
-			t.Fatalf("cooldown and reset must not release the hold, sent %d order(s)", len(posts))
+		advance(advanceTo)
+		e.mu.Lock()
+		s.RiskState.PeakValue = 1000
+		s.RiskState.MaxDrawdownPct = 50
+		allowed, reason := CheckRisk(&sc, s, 1000, map[string]float64{"BTC": 50}, nil, nil)
+		cleared := s.RiskState.RobinhoodSharedCloseNotice
+		err := e.store.SaveStrategyBook(s)
+		e.mu.Unlock()
+		if !allowed || s.RiskState.CircuitBreaker {
+			t.Fatalf("the CB must unlatch after its cooldown, got allowed=%v reason=%q", allowed, reason)
+		}
+		if !cleared.IsZero() {
+			t.Fatalf("unlatching the CB must clear the marker, got %+v", cleared)
+		}
+		if err != nil {
+			t.Fatalf("save: %v", err)
+		}
+		e.reopen()
+		if got := e.sharedCloseNotice("rh-a"); !got.IsZero() {
+			t.Fatalf("the cleared marker must load as no marker, got %+v", got)
 		}
 	})
 }
 
 func runPendingRobinhoodCircuitClosesWithCloser(e *rhLiveEnv, fetcher RobinhoodPositionsFetcher, closePhase rhRoutes) {
 	closer := e.phaseCloser(closePhase, newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginCircuitBreaker))
-	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, nil, false, fetcher,
+	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, RobinhoodHoldings{}, false, fetcher,
 		closer, nil, 2*time.Minute, &e.mu,
 		robinhoodCircuitCloseDeps{store: e.store, prices: map[string]float64{"BTC": 50}, resolve: robinhoodEmergencyResolver(e.deps(), e.cfg, nil)})
-}
-
-func TestRobinhoodLiveOrderOperatorResolutionNeedsVenueEvidence(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	row := e.seedHeldBuy()
-	lookup := func(id string) (StrategyConfig, bool) {
-		for _, sc := range e.cfg.Strategies {
-			if sc.ID == id {
-				return sc, true
-			}
-		}
-		return StrategyConfig{}, false
-	}
-	stamp := time.Now().UTC().Format(time.RFC3339)
-	mismatch := rhOrderBody("ord-x", "filled", "buy", "5", "100", "")
-	mismatch["quantity"] = "5"
-	mismatch["created_at"] = stamp
-	e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{"GET " + rhOrderURL("ord-x"): {{"status": 200, "json": mismatch}}}))
-	msg := resolveRobinhoodAttemptByOperator(e.deps(), lookup, "rh-btc", row.ID, "ord-x", time.Now())
-	if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown || !strings.Contains(msg, "still held") {
-		t.Fatalf("a mismatched order must keep the hold: msg=%q row=%+v", msg, got)
-	}
-	if msg := resolveRobinhoodAttemptByOperator(e.deps(), lookup, "rh-btc", "rh-000000000000000000000000", "", time.Now()); !strings.Contains(msg, "refused") {
-		t.Fatalf("an unknown attempt must be refused, got %q", msg)
-	}
-	match := rhOrderBody("ord-7", "filled", "buy", "9.5", "100.5", row.RefID)
-	e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{"GET " + rhOrderURL("ord-7"): {{"status": 200, "json": match}}}))
-	msg = resolveRobinhoodAttemptByOperator(e.deps(), lookup, "rh-btc", row.ID, "ord-7", time.Now())
-	if got := e.onlyAttempt(); got.Status != robinhoodAttemptSettling || !strings.Contains(msg, "confirmed") {
-		t.Fatalf("a matching order must confirm: msg=%q row=%+v", msg, got)
-	}
-	recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
-	if got := e.onlyAttempt(); got.Status != robinhoodAttemptSettled {
-		t.Fatalf("the confirmed attempt must settle with the next cycle, got %+v", got)
-	}
-	if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Price != 100.5 {
-		t.Fatalf("db trades = %+v", dbt)
-	}
 }
 
 const rhOrderPageCap = 20
@@ -1210,94 +2103,6 @@ func rhOrderPages(n int) rhRoutes {
 		out["GET "+url] = []rhRoute{{"status": 200, "json": map[string]interface{}{"next": fmt.Sprintf("%s?cursor=%d", rhTestOrders, i+1), "results": []interface{}{}}}}
 	}
 	return out
-}
-
-func TestRobinhoodLiveOrderOperatorAttestedReleaseOfAnUnsentOrder(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	row := e.seedHeldBuy()
-	lookup := func(id string) (StrategyConfig, bool) {
-		for _, sc := range e.cfg.Strategies {
-			if sc.ID == id {
-				return sc, true
-			}
-		}
-		return StrategyConfig{}, false
-	}
-	e.setRoutes(rhPrepRoutes())
-	if checked, msg := prepareRobinhoodAttestedRelease(e.deps(), lookup, "rh-btc", row.ID, time.Now()); checked != nil || !strings.Contains(msg, "settle window") {
-		t.Fatalf("inside the settle window: checked=%v msg=%q, want a refusal", checked, msg)
-	}
-	if reqs := e.requests(); len(reqs) != 0 {
-		t.Fatalf("a refusal inside the settle window must make no venue call, got %+v", reqs)
-	}
-
-	old := time.Now().Add(-40 * time.Minute).UnixMilli()
-	if _, err := e.store.primary().db.Exec(`UPDATE robinhood_order_attempts SET created_at_ms = ? WHERE attempt_id = ?`, old, row.ID); err != nil {
-		t.Fatal(err)
-	}
-	e.reopen()
-	e.setRoutes(rhWith(rhPrepRoutes(), rhOrderPages(rhOrderPageCap+1)))
-	recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
-	if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown || !strings.Contains(got.HoldReason, "pages") {
-		t.Fatalf("an order list past the page cap must keep the hold, got %+v", got)
-	}
-
-	e.setRoutes(rhWith(rhPrepRoutes(), rhOrderPages(rhOrderPageCap+1)))
-	checked, prompt := prepareRobinhoodAttestedRelease(e.deps(), lookup, "rh-btc", row.ID, time.Now())
-	if checked == nil {
-		t.Fatalf("an unsent attempt past its settle window must reach the confirm prompt, got %q", prompt)
-	}
-	for _, want := range []string{row.ID, "buy", "BTC", row.RefID, "Submit window", "no venue order id", "pages"} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("prompt %q lacks %q", prompt, want)
-		}
-	}
-	if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown {
-		t.Fatalf("the prompt must not release the attempt, got %+v", got)
-	}
-
-	e.mu.Lock()
-	_, live := robinhoodAttemptByID(e.state, "rh-btc", row.ID)
-	live.VenueOrderID = "ord-late"
-	e.mu.Unlock()
-	if msg := releaseRobinhoodAttemptByAttestation(e.deps(), "owner-1", "rh-btc", row.ID, *checked, time.Now()); !strings.Contains(msg, "changed while you were confirming") {
-		t.Fatalf("a venue order found during the confirm must refuse the release, got %q", msg)
-	}
-	if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown {
-		t.Fatalf("a refused release must keep the hold, got %+v", got)
-	}
-	e.mu.Lock()
-	live.VenueOrderID = ""
-	e.mu.Unlock()
-
-	if msg := releaseRobinhoodAttemptByAttestation(e.deps(), "owner-1", "rh-btc", row.ID, *checked, time.Now()); !strings.Contains(msg, "released as no_fill on your attestation") {
-		t.Fatalf("the confirmed release must succeed, got %q", msg)
-	}
-	got := e.onlyAttempt()
-	if got.Status != robinhoodAttemptNoFill || got.AppliedQty != 0 || got.SettlementSeq != 0 {
-		t.Fatalf("attempt = %+v, want no_fill with nothing applied", got)
-	}
-	var evJSON string
-	if err := e.store.primary().db.QueryRow(`SELECT evidence_json FROM robinhood_order_attempts WHERE attempt_id = ?`, row.ID).Scan(&evJSON); err != nil {
-		t.Fatal(err)
-	}
-	var ev robinhoodOrderEvidenceRecord
-	if err := json.Unmarshal([]byte(evJSON), &ev); err != nil {
-		t.Fatal(err)
-	}
-	if ev.Outcome != robinhoodOutcomeOperatorAttested || ev.Operator == nil || ev.Operator.OperatorID != "owner-1" || ev.Operator.PriorStatus != robinhoodAttemptUnknown || len(ev.Operator.PriorEvidence) == 0 {
-		t.Fatalf("evidence = %s, want the operator attestation with the prior evidence", evJSON)
-	}
-	if s := e.state.Strategies["rh-btc"]; s.Cash != 1000 || len(s.Positions) != 0 || len(e.dbTrades("rh-btc")) != 0 {
-		t.Fatalf("an attested release must book nothing: cash=%v positions=%v", s.Cash, s.Positions)
-	}
-	if msg := releaseRobinhoodAttemptByAttestation(e.deps(), "owner-1", "rh-btc", row.ID, *checked, time.Now()); !strings.Contains(msg, "changed while you were confirming") {
-		t.Fatalf("a second release must be refused, got %q", msg)
-	}
-	e.reopen()
-	if held := robinhoodOrderStartupLines(e.state); len(held) != 0 {
-		t.Fatalf("restart must not reload the released attempt, got %v", held)
-	}
 }
 
 func TestRobinhoodLiveOrderStorageInspectionRejectsOrphanAttempts(t *testing.T) {
@@ -1391,7 +2196,7 @@ func (e *rhLiveEnv) seedSharedSettlingClose() rhAttemptRow {
 	e.setPosition("rh-a", "BTC", 0.1, 90)
 	e.setPosition("rh-b", "BTC", 0.3, 90)
 	e.setRoutes(rhWith(rhSellFilled("0.4", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.4", "0.4"))}}))
-	if _, err := newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginKillSwitch)(RobinhoodCloseRequest{Symbol: "BTC", Quantity: 0.4}); err != nil {
+	if _, err := newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginKillSwitch)(RobinhoodCloseRequest{Symbol: "BTC", Quantity: 0.4, ExpectedAccountID: rhTestAccount}); err != nil {
 		e.t.Fatalf("seed close: %v", err)
 	}
 	row := e.onlyAttempt()
@@ -1399,126 +2204,6 @@ func (e *rhLiveEnv) seedSharedSettlingClose() rhAttemptRow {
 		e.t.Fatalf("seed attempt = %+v, want settling and bound to rh-a", row)
 	}
 	return row
-}
-
-func TestRobinhoodLiveOrderRemovedPeerDoesNotBlockSettlement(t *testing.T) {
-	for _, layout := range []string{"split", "single"} {
-		t.Run(layout, func(t *testing.T) {
-			e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
-			if layout == "split" {
-				e.store.Close()
-				e.cfg.PaperDBFile = filepath.Join(e.dir, "paper.db")
-				e.cfg.Strategies = append(e.cfg.Strategies, StrategyConfig{ID: "rh-paper", Type: "spot", Platform: "robinhood", Args: []string{"momentum_pro", "BTC", "1h", "--mode=paper"}, Capital: 100})
-				e.open()
-			}
-			e.seedSharedSettlingClose()
-			e.store.Close()
-			var kept []StrategyConfig
-			for _, sc := range e.cfg.Strategies {
-				if sc.ID != "rh-b" {
-					kept = append(kept, sc)
-				}
-			}
-			e.cfg.Strategies = kept
-			e.open()
-			settleRobinhoodAttempts(e.deps(), e.cfg, nil)
-			row := e.onlyAttempt()
-			if row.Status != robinhoodAttemptSettled || row.SettlementSeq != 1 || math.Abs(row.AppliedQty-0.1) > 1e-12 {
-				t.Fatalf("attempt = %+v, want settled with rh-a's 0.1 share", row)
-			}
-			if dbt := e.dbTrades("rh-a"); len(dbt) != 1 || math.Abs(dbt[0].Quantity-0.1) > 1e-12 || dbt[0].Price != 98 {
-				t.Fatalf("rh-a trades = %+v, want one 0.1 sell at the venue price", dbt)
-			}
-		})
-	}
-}
-
-func TestRobinhoodLiveOrderUnreadableDuplicateCheckRetriesNextCycle(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
-	e.seedSharedSettlingClose()
-	db := e.store.primary().db
-	if _, err := db.Exec(`ALTER TABLE trades RENAME TO trades_hidden`); err != nil {
-		t.Fatal(err)
-	}
-	settleRobinhoodAttempts(e.deps(), e.cfg, nil)
-	if _, err := db.Exec(`ALTER TABLE trades_hidden RENAME TO trades`); err != nil {
-		t.Fatal(err)
-	}
-	if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettling || row.HoldReason != "" {
-		t.Fatalf("attempt = %+v, want still settling with no booked-duplicate hold", row)
-	}
-	for _, id := range []string{"rh-a", "rh-b"} {
-		if len(e.state.Strategies[id].TradeHistory) != 0 || len(e.dbTrades(id)) != 0 {
-			t.Fatalf("%s booked during an unreadable duplicate check", id)
-		}
-	}
-	settleRobinhoodAttempts(e.deps(), e.cfg, nil)
-	if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettled {
-		t.Fatalf("attempt = %+v, want settled on the next pass", row)
-	}
-	if a, b := e.dbTrades("rh-a"), e.dbTrades("rh-b"); len(a) != 1 || len(b) != 1 {
-		t.Fatalf("trades a=%+v b=%+v, want one each", a, b)
-	}
-}
-
-func TestRobinhoodLiveOrderSharedSettlementCommitsOnlyWithItsSettledMark(t *testing.T) {
-	for _, bookSaved := range []string{"rh-b", "rh-a"} {
-		t.Run(bookSaved, func(t *testing.T) {
-			e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
-			e.seedSharedSettlingClose()
-			storeCommitHook = func(storageRole) error { return fmt.Errorf("injected partition save failure") }
-			settleRobinhoodAttempts(e.deps(), e.cfg, nil)
-			storeCommitHook = nil
-			e.mu.Lock()
-			err := e.store.SaveStrategyBook(e.state.Strategies[bookSaved])
-			e.mu.Unlock()
-			if err == nil {
-				t.Fatalf("a per-book save of %s must not commit a shared settlement without its settled mark", bookSaved)
-			}
-			if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettling {
-				t.Fatalf("durable attempt = %+v, want settling", row)
-			}
-			if a, b := e.dbTrades("rh-a"), e.dbTrades("rh-b"); len(a) != 0 || len(b) != 0 {
-				t.Fatalf("trades committed without the settled mark: a=%+v b=%+v", a, b)
-			}
-			e.reopen()
-			settleRobinhoodAttempts(e.deps(), e.cfg, nil)
-			if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettled || row.HoldReason != "" {
-				t.Fatalf("attempt = %+v, want settled after the restart", row)
-			}
-			a, b := e.dbTrades("rh-a"), e.dbTrades("rh-b")
-			if len(a) != 1 || len(b) != 1 || math.Abs(a[0].Quantity-0.1) > 1e-12 || math.Abs(b[0].Quantity-0.3) > 1e-12 {
-				t.Fatalf("trades a=%+v b=%+v, want each share booked once", a, b)
-			}
-			e.mu.Lock()
-			err = e.store.SaveStrategyBook(e.state.Strategies[bookSaved])
-			e.mu.Unlock()
-			if err != nil {
-				t.Fatalf("per-book saves must work again after the partition save: %v", err)
-			}
-		})
-	}
-}
-
-func TestRobinhoodLiveOrderFlatReadAfterAFreshBuyDoesNotConfirmFlat(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	e.setPosition("rh-btc", "BTC", 0.5, 90)
-	flat := rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}
-	plan := planKillSwitchClose(e.killSwitchInputs(flat, flat))
-	if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil || len(plan.RHCloseReport.AlreadyFlat) != 0 {
-		t.Fatalf("report = %+v, want BTC unconfirmed while the read lags a fresh buy", plan.RHCloseReport)
-	}
-	e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
-	if pos := e.state.Strategies["rh-btc"].Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
-		t.Fatalf("position = %+v, want the fresh long kept", pos)
-	}
-	e.mu.Lock()
-	e.state.Strategies["rh-btc"].Positions["BTC"].OpenedAt = time.Now().Add(-time.Hour)
-	e.mu.Unlock()
-	plan = planKillSwitchClose(e.killSwitchInputs(flat, flat))
-	if !plan.OnChainConfirmedFlat || len(plan.RHCloseReport.AlreadyFlat) != 1 {
-		t.Fatalf("report = %+v, want an old long on a flat account confirmed flat", plan.RHCloseReport)
-	}
 }
 
 type blockingNotifier struct {
@@ -1557,48 +2242,6 @@ func (e *rhLiveEnv) seedHeldSettlingBuy(id string) {
 	e.setPosition(id, robinhoodSymbol(sc.Args), 2, 90)
 }
 
-func TestRobinhoodLiveOrderHoldAlertsSendOutsideTheStateLock(t *testing.T) {
-	eth := rhLiveSpot("rh-eth", "ETH", 1000)
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000), eth)
-	e.seedHeldSettlingBuy("rh-btc")
-	e.seedHeldSettlingBuy("rh-eth")
-	bn := &blockingNotifier{release: make(chan struct{})}
-	e.notifier = NewMultiNotifier(notifierBackend{notifier: bn, ownerID: "owner"})
-	done := make(chan struct{})
-	go func() {
-		settleRobinhoodAttempts(e.deps(), e.cfg, nil)
-		close(done)
-	}()
-	time.Sleep(500 * time.Millisecond)
-	locked := make(chan struct{})
-	go func() {
-		e.mu.RLock()
-		e.mu.RUnlock()
-		close(locked)
-	}()
-	select {
-	case <-locked:
-	case <-time.After(2 * time.Second):
-		t.Fatal("a blocked notifier must not hold the state lock")
-	}
-	close(bn.release)
-	<-done
-	settleRobinhoodAttempts(e.deps(), e.cfg, nil)
-	bn.mu.Lock()
-	defer bn.mu.Unlock()
-	count := map[string]int{}
-	for _, d := range bn.dms {
-		for _, coin := range []string{" buy BTC ", " buy ETH "} {
-			if strings.Contains(d, "ROBINHOOD ORDER UNRESOLVED") && strings.Contains(d, coin) {
-				count[coin]++
-			}
-		}
-	}
-	if count[" buy BTC "] != 1 || count[" buy ETH "] != 1 {
-		t.Fatalf("hold DMs = %v (%q), want one per attempt across two passes", count, bn.dms)
-	}
-}
-
 func (e *rhLiveEnv) allPostQuantities() []float64 {
 	e.t.Helper()
 	var out []float64
@@ -1625,7 +2268,7 @@ func (e *rhLiveEnv) resetSent() {
 
 func (e *rhLiveEnv) runCBPhases(closePhase rhRoutes, fetchPhases ...rhRoutes) {
 	closer := e.phaseCloser(closePhase, newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginCircuitBreaker))
-	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, nil, false, e.phasedFetcher(fetchPhases...),
+	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, RobinhoodHoldings{}, false, e.phasedFetcher(fetchPhases...),
 		closer, e.notifier.SendOwnerDM, 2*time.Minute, &e.mu,
 		robinhoodCircuitCloseDeps{store: e.store, prices: map[string]float64{"BTC": 50}, resolve: robinhoodEmergencyResolver(e.deps(), e.cfg, nil), settle: robinhoodDurableSettler(e.deps(), e.cfg, nil)})
 }
@@ -1691,342 +2334,6 @@ func (e *rhLiveEnv) tripCB(id string) {
 	}
 }
 
-func TestRobinhoodLiveOrderKillSwitchSellsOnlyTheBookAndReportsTheResidue(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000), rhLiveSpot("rh-eth", "ETH", 1000))
-	e.setPosition("rh-a", "BTC", 0.3, 90)
-	e.setPosition("rh-b", "BTC", 0.2, 90)
-	pre := rhHoldingsPhase(rhHeld("BTC", "1.0"), rhHeld("ETH", "2"), rhHeld("DOGE", "100"))
-	post := rhHoldingsPhase(rhHeld("BTC", "0.5"), rhHeld("ETH", "2"), rhHeld("DOGE", "100"))
-	in := e.killSwitchInputs(pre, post)
-	in.RHCloser = e.phaseCloser(rhClosePhase(rhSellFilled("0.5", "98"), "1.0", "1.0"), in.RHCloser)
-	plan := planKillSwitchClose(in)
-	if !plan.OnChainConfirmedFlat || len(plan.RHCloseReport.ClosedCoins) != 1 || plan.RHCloseReport.ClosedCoins[0] != "BTC" || len(plan.RHUnconfigured) != 0 {
-		t.Fatalf("report = %+v, want BTC closed and confirmed flat with no blocking coin", plan.RHCloseReport)
-	}
-	rhSamePosts(t, e.allPostQuantities(), 0.5)
-	residue := map[string]float64{}
-	for _, p := range plan.RHCloseReport.Residue {
-		residue[p.Coin] = p.Size
-	}
-	if len(residue) != 3 || residue["BTC"] != 0.5 || residue["ETH"] != 2 || residue["DOGE"] != 100 {
-		t.Fatalf("residue = %+v, want BTC 0.5, ETH 2 and DOGE 100", plan.RHCloseReport.Residue)
-	}
-	logs := strings.Join(plan.LogLines, "\n")
-	for _, coin := range []string{"BTC holdings 0.5", "ETH holdings 2", "DOGE holdings 100"} {
-		if !strings.Contains(logs, coin+" are above every go-trader book") {
-			t.Fatalf("CRITICAL log lacks %q: %s", coin, logs)
-		}
-	}
-	for _, want := range []string{"BTC 0.5", "ETH 2", "DOGE 100"} {
-		if !strings.Contains(plan.DiscordMessage, want) {
-			t.Fatalf("kill-switch message lacks %q: %s", want, plan.DiscordMessage)
-		}
-	}
-	e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
-	a, b := e.dbTrades("rh-a"), e.dbTrades("rh-b")
-	if len(a) != 1 || len(b) != 1 || math.Abs(a[0].Quantity-0.3) > 1e-12 || math.Abs(b[0].Quantity-0.2) > 1e-12 || a[0].Price != 98 || b[0].Price != 98 {
-		t.Fatalf("trades a=%+v b=%+v, want 0.3 and 0.2 at the venue price", a, b)
-	}
-	if e.bookQty("rh-a", "BTC") != 0 || e.bookQty("rh-b", "BTC") != 0 {
-		t.Fatal("both BTC books must be flat")
-	}
-	if dbt := e.dbTrades("rh-eth"); len(dbt) != 0 {
-		t.Fatalf("the ETH strategy with no book must book nothing, got %+v", dbt)
-	}
-}
-
-func TestRobinhoodLiveOrderKillSwitchCappedSaleClosesThePhantomRemainderOnlyOutsideTheLagWindow(t *testing.T) {
-	for _, aged := range []bool{true, false} {
-		t.Run(fmt.Sprintf("aged_%v", aged), func(t *testing.T) {
-			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-			e.setPosition("rh-btc", "BTC", 0.5, 90)
-			if aged {
-				e.ageBook("rh-btc", "BTC")
-			}
-			in := e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.3")), rhHoldingsPhase())
-			in.RHCloser = e.phaseCloser(rhClosePhase(rhSellFilled("0.3", "98"), "0.3", "0.3"), in.RHCloser)
-			plan := planKillSwitchClose(in)
-			rhSamePosts(t, e.allPostQuantities(), 0.3)
-			e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
-			dbt := e.dbTrades("rh-btc")
-			if !aged {
-				if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil {
-					t.Fatalf("report = %+v, want a fresh book's flat read unconfirmed", plan.RHCloseReport)
-				}
-				if got := e.bookQty("rh-btc", "BTC"); math.Abs(got-0.2) > 1e-12 || len(dbt) != 1 {
-					t.Fatalf("book = %v trades = %+v, want the 0.2 remainder kept and only the venue sale booked", got, dbt)
-				}
-				return
-			}
-			if !plan.OnChainConfirmedFlat {
-				t.Fatalf("report = %+v, want confirmed flat", plan.RHCloseReport)
-			}
-			if len(dbt) != 2 || dbt[0].Quantity != 0.3 || dbt[0].Price != 98 || math.Abs(dbt[1].Quantity-0.2) > 1e-12 || !strings.Contains(dbt[1].Details, robinhoodVerifiedFlatKillSwitch) {
-				t.Fatalf("db trades = %+v, want a 0.3 venue row and a 0.2 verified-flat row", dbt)
-			}
-		})
-	}
-}
-
-func TestRobinhoodLiveOrderKillSwitchReservedHoldingsHoldTheUnsoldBook(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	e.setPosition("rh-btc", "BTC", 0.5, 90)
-	in := e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase(rhHeld("BTC", "0.2")))
-	in.RHCloser = e.phaseCloser(rhClosePhase(rhSellFilled("0.3", "98"), "0.5", "0.3"), in.RHCloser)
-	plan := planKillSwitchClose(in)
-	if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil || !strings.Contains(plan.RHCloseReport.Errors["BTC"].Error(), "reserved holdings") {
-		t.Fatalf("report = %+v, want BTC unconfirmed with a reserved-holdings reason", plan.RHCloseReport)
-	}
-	rhSamePosts(t, e.allPostQuantities(), 0.3)
-	e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
-	if got := e.bookQty("rh-btc", "BTC"); math.Abs(got-0.2) > 1e-12 {
-		t.Fatalf("book = %v, want the 0.2 unsold remainder kept", got)
-	}
-
-	e.resetSent()
-	in = e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.2")), rhHoldingsPhase(rhHeld("BTC", "0.2")))
-	in.RHCloser = e.phaseCloser(rhClosePhase(rhPrepRoutes(), "0.2", "0"), in.RHCloser)
-	plan = planKillSwitchClose(in)
-	if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil {
-		t.Fatalf("report = %+v, want BTC still unconfirmed while nothing is sellable", plan.RHCloseReport)
-	}
-	rhSamePosts(t, e.allPostQuantities())
-	e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
-	if got := e.bookQty("rh-btc", "BTC"); math.Abs(got-0.2) > 1e-12 || len(e.dbTrades("rh-btc")) != 1 {
-		t.Fatalf("book = %v, want the 0.2 kept with no new trade", got)
-	}
-}
-
-func TestRobinhoodLiveOrderKillSwitchSharedPartialFillAsksOnlyTheRemainder(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
-	e.setPosition("rh-a", "BTC", 0.3, 90)
-	e.setPosition("rh-b", "BTC", 0.2, 90)
-	in := e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase(rhHeld("BTC", "0.25")))
-	in.RHCloser = e.phaseCloser(rhClosePhase(rhSellPartial("0.25", "98"), "0.5", "0.5"), in.RHCloser)
-	plan := planKillSwitchClose(in)
-	if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil {
-		t.Fatalf("report = %+v, want the partial fill unconfirmed", plan.RHCloseReport)
-	}
-	e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
-	if a, b := e.bookQty("rh-a", "BTC"), e.bookQty("rh-b", "BTC"); math.Abs(a-0.15) > 1e-12 || math.Abs(b-0.10) > 1e-12 {
-		t.Fatalf("books a=%v b=%v, want 0.15 and 0.10 after the pro-rata settlement", a, b)
-	}
-
-	e.resetSent()
-	in = e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.25")), rhHoldingsPhase())
-	in.RHCloser = e.phaseCloser(rhClosePhase(rhSellFilledAs("ord-2", "0.25", "97"), "0.25", "0.25"), in.RHCloser)
-	plan = planKillSwitchClose(in)
-	if !plan.OnChainConfirmedFlat {
-		t.Fatalf("report = %+v, want the remainder sold and confirmed", plan.RHCloseReport)
-	}
-	rhSamePosts(t, e.allPostQuantities(), 0.25)
-}
-
-func TestRobinhoodLiveOrderKillSwitchRestartKeepsTheSettlingAttemptAndSellsOnlyTheRemainder(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	e.setPosition("rh-btc", "BTC", 0.5, 90)
-	e.setRoutes(rhClosePhase(rhSellPartial("0.2", "98"), "0.5", "0.5"))
-	if _, err := newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginKillSwitch)(RobinhoodCloseRequest{Symbol: "BTC", Quantity: 0.5}); err != nil {
-		t.Fatalf("seed close: %v", err)
-	}
-	row := e.onlyAttempt()
-	if row.Status != robinhoodAttemptSettling || row.ConfirmedQty != 0.2 {
-		t.Fatalf("seed attempt = %+v, want settling with a 0.2 fill", row)
-	}
-	if ev := e.evidence(row.ID); ev.Sizing == nil || ev.Sizing.CloseKind != robinhoodCloseKindEmergency || ev.Sizing.SentQuantity != 0.5 || ev.Sizing.AccountQuantity != 0.5 {
-		t.Fatalf("evidence sizing = %+v, want the emergency sizing saved with the attempt", ev.Sizing)
-	}
-	e.reopen()
-	e.resetSent()
-	in := e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.3")), rhHoldingsPhase())
-	in.RHCloser = e.phaseCloser(rhClosePhase(rhSellFilledAs("ord-2", "0.3", "97"), "0.3", "0.3"), in.RHCloser)
-	plan := planKillSwitchClose(in)
-	if !plan.OnChainConfirmedFlat {
-		t.Fatalf("report = %+v, want confirmed after the remainder sale", plan.RHCloseReport)
-	}
-	rhSamePosts(t, e.allPostQuantities(), 0.3)
-	e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
-	dbt := e.dbTrades("rh-btc")
-	if len(dbt) != 2 || math.Abs(dbt[0].Quantity-0.2) > 1e-12 || math.Abs(dbt[1].Quantity-0.3) > 1e-12 {
-		t.Fatalf("db trades = %+v, want the restored 0.2 fill and the 0.3 remainder sale", dbt)
-	}
-}
-
-func TestRobinhoodLiveOrderKillSwitchSellsARecoveredBuy(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	row := e.seedHeldBuy()
-	resolveRoutes := rhWith(rhPrepRoutes(), rhRoutes{
-		"GET " + rhTestOrders: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{
-			map[string]interface{}{"id": "ord-9", "ref_id": row.RefID, "state": "filled", "side": "buy", "currency_pair_id": "pair-btc", "quantity": "0.25", "created_at": time.Now().UTC().Format(time.RFC3339)},
-		}}}},
-		"GET " + rhOrderURL("ord-9"): {{"status": 200, "json": rhOrderBody("ord-9", "filled", "buy", "0.25", "101", row.RefID)}},
-	})
-	e.setRoutes(resolveRoutes)
-	e.sent = nil
-	in := e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.25")), rhHoldingsPhase())
-	in.RHCloser = e.phaseCloser(rhClosePhase(rhSellFilled("0.25", "99"), "0.25", "0.25"), in.RHCloser)
-	plan := planKillSwitchClose(in)
-	if !plan.OnChainConfirmedFlat || len(plan.RHCloseReport.ClosedCoins) != 1 {
-		t.Fatalf("report = %+v, want the recovered buy sold and confirmed", plan.RHCloseReport)
-	}
-	rhSamePosts(t, e.allPostQuantities(), 0.25)
-	e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
-	dbt := e.dbTrades("rh-btc")
-	if len(dbt) != 2 || dbt[0].Side != "buy" || dbt[0].Quantity != 0.25 || dbt[1].Side != "sell" || dbt[1].Quantity != 0.25 || dbt[1].Price != 99 {
-		t.Fatalf("db trades = %+v, want the recovered buy then the emergency sale", dbt)
-	}
-}
-
-func TestRobinhoodLiveOrderCircuitBreakerSellsTheBookAtFireTimeAndNotTheAccount(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	e.setPosition("rh-btc", "BTC", 0.4, 90)
-	e.ageBook("rh-btc", "BTC")
-	e.tripCB("rh-btc")
-	p := e.pendingRH("rh-btc")
-	if p == nil || len(p.Symbols) != 1 || p.Symbols[0].Symbol != "BTC" || p.Symbols[0].Size != 0.4 || p.SizeBasis != robinhoodPendingSizeBasisBook {
-		t.Fatalf("pending = %+v, want BTC 0.4 sized from the book", p)
-	}
-	e.runCBPhases(rhClosePhase(rhSellFilled("0.4", "97"), "1.0", "1.0"), rhHoldingsPhase(rhHeld("BTC", "1.0")), rhHoldingsPhase(rhHeld("BTC", "0.6")))
-	rhSamePosts(t, e.allPostQuantities(), 0.4)
-	if p := e.pendingRH("rh-btc"); p != nil {
-		t.Fatalf("pending = %+v, want cleared once the book is sold", p)
-	}
-	if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Quantity != 0.4 || dbt[0].Price != 97 {
-		t.Fatalf("db trades = %+v, want one 0.4 venue sale", dbt)
-	}
-	if n := e.dmCount("still holds 0.6 BTC above every go-trader book"); n != 1 {
-		t.Fatalf("residue DMs = %d, want one naming 0.6", n)
-	}
-
-	e.resetSent()
-	e.runCBPhases(rhClosePhase(rhSellFilled("0.7", "97"), "0.7", "0.7"), rhHoldingsPhase(rhHeld("BTC", "0.7")), rhHoldingsPhase(rhHeld("BTC", "0.7")))
-	rhSamePosts(t, e.allPostQuantities())
-	if p := e.pendingRH("rh-btc"); p != nil {
-		t.Fatalf("pending = %+v, want none while the latched CB has no book", p)
-	}
-}
-
-func TestRobinhoodLiveOrderCircuitBreakerWithAFlatBookSendsNothing(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	e.tripCB("rh-btc")
-	if p := e.pendingRH("rh-btc"); p != nil {
-		t.Fatalf("pending = %+v, want none for a flat book", p)
-	}
-	for i := 0; i < 3; i++ {
-		e.runCBPhases(rhClosePhase(rhSellFilled("1.0", "97"), "1.0", "1.0"), rhHoldingsPhase(rhHeld("BTC", "1.0")), rhHoldingsPhase(rhHeld("BTC", "1.0")))
-	}
-	rhSamePosts(t, e.allPostQuantities())
-	if p := e.pendingRH("rh-btc"); p != nil || len(e.attemptRows()) != 0 {
-		t.Fatalf("pending = %+v attempts = %+v, want nothing", p, e.attemptRows())
-	}
-}
-
-func TestRobinhoodLiveOrderCircuitBreakerPartialFillAsksOnlyTheRemainderAcrossRestart(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	e.setPosition("rh-btc", "BTC", 0.5, 90)
-	e.ageBook("rh-btc", "BTC")
-	e.tripCB("rh-btc")
-	e.runCBPhases(rhClosePhase(rhSellPartial("0.2", "97"), "0.5", "0.5"), rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase(rhHeld("BTC", "0.3")))
-	rhSamePosts(t, e.allPostQuantities(), 0.5)
-	p := e.pendingRH("rh-btc")
-	if p == nil || math.Abs(p.Symbols[0].Size-0.3) > 1e-12 || p.SizeBasis != robinhoodPendingSizeBasisBook {
-		t.Fatalf("pending = %+v, want the 0.3 remainder", p)
-	}
-	if got := e.bookQty("rh-btc", "BTC"); math.Abs(got-0.3) > 1e-12 {
-		t.Fatalf("book = %v, want 0.3", got)
-	}
-	e.reopen()
-	if p := e.pendingRH("rh-btc"); p == nil || math.Abs(p.Symbols[0].Size-0.3) > 1e-12 {
-		t.Fatalf("pending after restart = %+v, want the 0.3 remainder kept", p)
-	}
-	e.resetSent()
-	e.runCBPhases(rhClosePhase(rhSellFilledAs("ord-2", "0.3", "96"), "0.3", "0.3"), rhHoldingsPhase(rhHeld("BTC", "0.3")), rhHoldingsPhase())
-	rhSamePosts(t, e.allPostQuantities(), 0.3)
-	if p := e.pendingRH("rh-btc"); p != nil || e.bookQty("rh-btc", "BTC") != 0 {
-		t.Fatalf("pending = %+v, want cleared with a flat book", p)
-	}
-}
-
-func TestRobinhoodLiveOrderCircuitBreakerFailedVerifyAfterAFullFillNeverSellsTwice(t *testing.T) {
-	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-	e.setPosition("rh-btc", "BTC", 0.5, 90)
-	e.ageBook("rh-btc", "BTC")
-	e.tripCB("rh-btc")
-	e.runCBPhases(rhClosePhase(rhSellFilled("0.5", "97"), "1.1", "1.1"), rhHoldingsPhase(rhHeld("BTC", "1.1")), rhRoutes{"GET " + rhTestHoldings: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}})
-	rhSamePosts(t, e.allPostQuantities(), 0.5)
-	if p := e.pendingRH("rh-btc"); p == nil {
-		t.Fatal("pending close must be kept when the post-close read fails")
-	}
-	e.resetSent()
-	e.runCBPhases(rhClosePhase(rhSellFilled("0.6", "97"), "0.6", "0.6"), rhHoldingsPhase(rhHeld("BTC", "0.6")), rhHoldingsPhase(rhHeld("BTC", "0.6")))
-	rhSamePosts(t, e.allPostQuantities())
-	if p := e.pendingRH("rh-btc"); p != nil {
-		t.Fatalf("pending = %+v, want cleared once the read shows the book sold", p)
-	}
-	if n := e.dmCount("still holds 0.6 BTC above every go-trader book"); n != 1 {
-		t.Fatalf("residue DMs = %d, want one", n)
-	}
-}
-
-func TestRobinhoodLiveOrderCircuitBreakerLegacyAccountSizedPendingNeverSellsAboveTheBook(t *testing.T) {
-	legacy := func(e *rhLiveEnv) {
-		e.mu.Lock()
-		e.state.Strategies["rh-btc"].RiskState.CircuitBreaker = true
-		e.state.Strategies["rh-btc"].RiskState.CircuitBreakerUntil = time.Now().Add(time.Hour)
-		e.state.Strategies["rh-btc"].RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 1.0}}})
-		e.mu.Unlock()
-	}
-	t.Run("long_book_sells_the_book", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.4, 90)
-		e.ageBook("rh-btc", "BTC")
-		legacy(e)
-		e.runCBPhases(rhClosePhase(rhSellFilled("0.4", "97"), "1.0", "1.0"), rhHoldingsPhase(rhHeld("BTC", "1.0")), rhHoldingsPhase(rhHeld("BTC", "0.6")))
-		rhSamePosts(t, e.allPostQuantities(), 0.4)
-		if p := e.pendingRH("rh-btc"); p != nil {
-			t.Fatalf("pending = %+v, want cleared", p)
-		}
-	})
-	t.Run("flat_book_holds_and_alerts", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		legacy(e)
-		e.runCBPhases(rhClosePhase(rhSellFilled("1.0", "97"), "1.0", "1.0"), rhHoldingsPhase(rhHeld("BTC", "1.0")), rhHoldingsPhase(rhHeld("BTC", "1.0")))
-		rhSamePosts(t, e.allPostQuantities())
-		if p := e.pendingRH("rh-btc"); p != nil {
-			t.Fatalf("pending = %+v, want cleared", p)
-		}
-		if n := e.dmCount("from an earlier version was sized from the account"); n != 1 {
-			t.Fatalf("legacy DMs = %d, want one", n)
-		}
-	})
-	t.Run("legacy_attempt_fill_above_the_book_books_the_book_and_alerts", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.4, 90)
-		s := e.state.Strategies["rh-btc"]
-		a, err := reserveRobinhoodAttempt(e.store, e.state, s, &e.mu, "BTC", robinhoodOriginKillSwitch, "sell", robinhoodOrderRequest{Peers: []string{"rh-btc"}, Script: robinhoodLiveCloseScript}, time.Now())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if req, err := parseRobinhoodOrderRequest(a); err != nil || req.Version != robinhoodOrderRequestVersion {
-			t.Fatalf("seed request = %+v %v, want a legacy version 1 request", req, err)
-		}
-		res := &RobinhoodExecuteResult{OrderOutcome: "filled", RefID: a.RefID, Order: RobinhoodOrderEvidence{ID: "ord-legacy"}, Execution: &RobinhoodExecution{Fill: &RobinhoodFill{AvgPx: 98, Quantity: 1.0, OID: "ord-legacy"}}}
-		e.mu.Lock()
-		err = recordRobinhoodOrderOutcomeLocked(e.store, s, a, res, robinhoodOrderConfirmed, "", nil, time.Now())
-		e.mu.Unlock()
-		if err != nil {
-			t.Fatal(err)
-		}
-		settleRobinhoodAttempts(e.deps(), e.cfg, nil)
-		if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || math.Abs(dbt[0].Quantity-0.4) > 1e-12 || dbt[0].Price != 98 {
-			t.Fatalf("db trades = %+v, want the 0.4 book closed at the venue price", dbt)
-		}
-		if n := e.dmCount("sold 0.6 BTC more than every go-trader book held"); n != 1 {
-			t.Fatalf("excess DMs = %d, want one naming 0.6", n)
-		}
-	})
-}
-
 func rhBuyFilledAs(id, quantity, average string) rhRoutes {
 	return rhWith(rhPrepRoutes(), rhRoutes{
 		"POST " + rhTestOrders:  {{"status": 201, "json": rhOrderBody(id, "unconfirmed", "buy", "0", nil, "")}},
@@ -2040,83 +2347,6 @@ func (e *rhLiveEnv) cooldownEnds(id string) {
 	s.RiskState.CircuitBreaker = false
 	s.RiskState.CircuitBreakerUntil = time.Now().Add(-time.Minute)
 	e.mu.Unlock()
-}
-
-func TestRobinhoodLiveOrderCircuitBreakerNeverSellsAPositionOpenedAfterItsTarget(t *testing.T) {
-	readFails := rhRoutes{"GET " + rhTestHoldings: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}}
-	t.Run("full_sale_failed_reads_then_a_new_buy", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.4, 90)
-		e.ageBook("rh-btc", "BTC")
-		e.tripCB("rh-btc")
-		e.runCBPhases(rhClosePhase(rhSellFilled("0.4", "97"), "0.4", "0.4"), rhHoldingsPhase(rhHeld("BTC", "0.4")), readFails)
-		if p := e.pendingRH("rh-btc"); p == nil {
-			t.Fatal("pending close must be kept after a failed refetch")
-		}
-		e.runCBPhases(rhClosePhase(rhSellFilled("0.4", "97"), "0.4", "0.4"), readFails)
-		e.cooldownEnds("rh-btc")
-		e.setRoutes(rhBuyFilledAs("ord-3", "0.5", "100"))
-		if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 1 {
-			t.Fatalf("new buy trades = %d, want 1", trades)
-		}
-		e.resetSent()
-		e.runCBPhases(rhClosePhase(rhSellFilledAs("ord-4", "0.4", "97"), "0.5", "0.5"), rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase(rhHeld("BTC", "0.5")))
-		rhSamePosts(t, e.allPostQuantities())
-		if p := e.pendingRH("rh-btc"); p != nil {
-			t.Fatalf("pending = %+v, want cleared without a sale", p)
-		}
-		if got := e.bookQty("rh-btc", "BTC"); got != 0.5 {
-			t.Fatalf("book = %v, want the new 0.5 kept", got)
-		}
-	})
-	t.Run("remainder_closed_by_a_signal_then_a_new_buy", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		e.ageBook("rh-btc", "BTC")
-		e.tripCB("rh-btc")
-		e.runCBPhases(rhClosePhase(rhSellPartial("0.3", "97"), "0.5", "0.5"), rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase(rhHeld("BTC", "0.2")))
-		if p := e.pendingRH("rh-btc"); p == nil || math.Abs(p.Symbols[0].Size-0.2) > 1e-12 {
-			t.Fatalf("pending = %+v, want the 0.2 remainder", p)
-		}
-		e.cooldownEnds("rh-btc")
-		e.setRoutes(rhWith(rhSellFilledAs("ord-3", "0.2", "98"), rhSellHolding("0.2", "0.2")))
-		if trades, _ := e.signal("rh-btc", -1, 0, 98); trades != 1 || e.bookQty("rh-btc", "BTC") != 0 {
-			t.Fatalf("signal sell trades = %d book = %v, want the remainder closed", trades, e.bookQty("rh-btc", "BTC"))
-		}
-		e.runCBPhases(rhClosePhase(rhSellFilledAs("ord-9", "0.2", "97"), "0.2", "0.2"), readFails)
-		e.setRoutes(rhBuyFilledAs("ord-4", "0.3", "100"))
-		if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 1 {
-			t.Fatalf("new buy trades = %d, want 1", trades)
-		}
-		e.resetSent()
-		e.runCBPhases(rhClosePhase(rhSellFilledAs("ord-5", "0.2", "97"), "0.3", "0.3"), rhHoldingsPhase(rhHeld("BTC", "0.3")), rhHoldingsPhase(rhHeld("BTC", "0.3")))
-		rhSamePosts(t, e.allPostQuantities())
-		if p := e.pendingRH("rh-btc"); p != nil {
-			t.Fatalf("pending = %+v, want cleared without a sale", p)
-		}
-		if got := e.bookQty("rh-btc", "BTC"); math.Abs(got-0.3) > 1e-12 {
-			t.Fatalf("book = %v, want the new 0.3 kept", got)
-		}
-	})
-	t.Run("legacy_pending_after_the_breaker_reset", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.4, 90)
-		e.ageBook("rh-btc", "BTC")
-		e.mu.Lock()
-		e.state.Strategies["rh-btc"].RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 1.0}}})
-		e.mu.Unlock()
-		e.runCBPhases(rhClosePhase(rhSellFilled("0.4", "97"), "1.0", "1.0"), rhHoldingsPhase(rhHeld("BTC", "1.0")), rhHoldingsPhase(rhHeld("BTC", "1.0")))
-		rhSamePosts(t, e.allPostQuantities())
-		if p := e.pendingRH("rh-btc"); p != nil {
-			t.Fatalf("pending = %+v, want cleared", p)
-		}
-		if n := e.dmCount("the circuit breaker is no longer latched"); n != 1 {
-			t.Fatalf("owner DMs = %d, want one", n)
-		}
-		if got := e.bookQty("rh-btc", "BTC"); got != 0.4 {
-			t.Fatalf("book = %v, want 0.4 kept", got)
-		}
-	})
 }
 
 func (e *rhLiveEnv) runCBSharedCycle(holdings rhRoutes) {
@@ -2133,7 +2363,7 @@ func (e *rhLiveEnv) runCBSharedCycle(holdings rhRoutes) {
 		e.t.Errorf("no close may run for a shared coin, got %+v", req)
 		return nil, fmt.Errorf("unexpected close")
 	}
-	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, nil, false, e.phasedFetcher(holdings),
+	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, RobinhoodHoldings{}, false, e.phasedFetcher(holdings),
 		closer, dm, 2*time.Minute, &e.mu,
 		robinhoodCircuitCloseDeps{store: e.store, prices: map[string]float64{"BTC": 50}, resolve: robinhoodEmergencyResolver(e.deps(), e.cfg, nil), settle: robinhoodDurableSettler(e.deps(), e.cfg, nil)})
 }
@@ -2156,141 +2386,435 @@ func (e *rhLiveEnv) sharedCloseNotice(id string) RobinhoodSharedCloseNotice {
 	return e.state.Strategies[id].RiskState.RobinhoodSharedCloseNotice
 }
 
-func TestRobinhoodLiveOrderCircuitBreakerSharedCoinOwnerDMIsThrottledAcrossRestart(t *testing.T) {
-	clk := &simulatedClock{now: time.Now().UTC().Truncate(time.Second)}
-	if err := bindTradingClock(t.Name(), clk.Now); err != nil {
-		t.Fatal(err)
+func rhPricedPrep(priceIncrement interface{}, minSize, ask, bid string) rhRoutes {
+	pair := map[string]interface{}{"id": "pair-btc", "asset_currency": map[string]interface{}{"code": "BTC"}, "quote_currency": map[string]interface{}{"code": "USD"},
+		"min_order_size": minSize, "min_order_quantity_increment": "0.00000001", "max_order_size": "20"}
+	if priceIncrement != nil {
+		pair["min_order_price_increment"] = priceIncrement
 	}
-	t.Cleanup(func() { unbindTradingClock(t.Name()) })
-	advance := func(d time.Duration) {
-		t.Helper()
-		if err := clk.Set(clk.Now().Add(d)); err != nil {
-			t.Fatal(err)
+	return rhWith(rhPrepRoutes(), rhRoutes{
+		"GET " + rhTestPairs: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{pair}}}},
+		"GET " + rhTestQuote: {{"status": 200, "json": map[string]interface{}{"ask_price": ask, "bid_price": bid}}},
+	})
+}
+
+type rhPostedOrder struct {
+	Type     string      `json:"type"`
+	Price    json.Number `json:"price"`
+	Quantity json.Number `json:"quantity"`
+}
+
+func (e *rhLiveEnv) postedOrders() []rhPostedOrder {
+	e.t.Helper()
+	var out []rhPostedOrder
+	for _, p := range append(append([]rhLoggedRequest(nil), e.sent...), e.orderPosts()...) {
+		var body rhPostedOrder
+		dec := json.NewDecoder(strings.NewReader(string(p.Body)))
+		dec.UseNumber()
+		if err := dec.Decode(&body); err != nil {
+			e.t.Fatalf("order body %s: %v", p.Body, err)
 		}
+		out = append(out, body)
 	}
-	throttle := effectiveAlertThrottleInterval()
+	return out
+}
 
-	e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000), rhLiveSpot("rh-c", "BTC", 1000))
-	e.setPosition("rh-a", "BTC", 0.3, 90)
-	e.setPosition("rh-b", "BTC", 0.2, 90)
-	e.ageBook("rh-a", "BTC")
-	e.ageBook("rh-b", "BTC")
-	e.latchCB("rh-c")
-	e.tripCB("rh-a")
-	if p := e.pendingRH("rh-a"); p == nil {
-		t.Fatal("the fire must set a book-sized pending close")
+func rhRat(t *testing.T, text string) *big.Rat {
+	t.Helper()
+	r, ok := new(big.Rat).SetString(text)
+	if !ok {
+		t.Fatalf("%q is not a decimal", text)
 	}
-	held := rhHoldingsPhase(rhHeld("BTC", "1.0"))
+	return r
+}
 
-	e.runCBSharedCycle(held)
-	if got := e.sharedCloseDMs("rh-a"); got != 1 {
-		t.Fatalf("first drain after the fire: shared-coin DMs = %d, want 1", got)
+func rhOnlyPost(t *testing.T, e *rhLiveEnv) rhPostedOrder {
+	t.Helper()
+	posts := e.postedOrders()
+	if len(posts) != 1 {
+		t.Fatalf("order POSTs = %+v, want one", posts)
 	}
-	if p := e.pendingRH("rh-a"); p != nil {
-		t.Fatalf("the shared-only branch must clear the pending close, got %+v", p)
-	}
-	n := e.sharedCloseNotice("rh-a")
-	if n.Coin != "BTC" || !n.LastNotifiedAt.Equal(clk.Now()) {
-		t.Fatalf("the first drain must stamp the marker, got %+v", n)
-	}
+	return posts[0]
+}
 
-	for i := 0; i < 2; i++ {
-		advance(time.Minute)
-		e.runCBSharedCycle(held)
+func rhFixtureBuy(echo string) string {
+	out := `{"execution":{"action":"buy","symbol":"BTC","fill":{"avg_px":100,"quantity":1,"oid":"ord-1"}},"order_outcome":"filled","order":{"id":"ord-1"},"requested_quantity":1`
+	if echo != "" {
+		out += `,"buy_sizing":` + echo
 	}
-	if got := e.sharedCloseDMs("rh-a"); got != 1 {
-		t.Fatalf("recovery cycles inside the window: shared-coin DMs = %d, want 1 (the first drain counts as the first send)", got)
-	}
+	return out + `}`
+}
 
-	e.reopen()
-	if got := e.sharedCloseNotice("rh-a"); got.Coin != "BTC" || !got.LastNotifiedAt.Equal(n.LastNotifiedAt) || !got.CBUntil.Equal(n.CBUntil) {
-		t.Fatalf("the marker must survive a save and load, got %+v want %+v", got, n)
-	}
-	advance(time.Minute)
-	e.runCBSharedCycle(held)
-	if got := e.sharedCloseDMs("rh-a"); got != 1 {
-		t.Fatalf("after a restart inside the window: shared-coin DMs = %d, want 1", got)
-	}
+func rhBuySizingJSON(budget, limit, sent float64) string {
+	b, _ := json.Marshal(RobinhoodBuySizing{BudgetUSD: budget, AskPrice: 100, LimitPrice: limit, PriceIncrement: 0.01, Headroom: 0.005, SentQuantity: sent,
+		MinOrderSize: 0.000001, QuantityIncrement: 0.00000001, MaxCostUSD: sent * limit})
+	return string(b)
+}
 
-	advance(throttle)
-	e.runCBSharedCycle(held)
-	if got := e.sharedCloseDMs("rh-a"); got != 2 {
-		t.Fatalf("after the throttle interval: shared-coin DMs = %d, want 2", got)
+func rhFixtureClose(echo string) string {
+	sz, _ := json.Marshal(RobinhoodSellSizing{AskedQuantity: 0.5, AccountQuantity: 0.5, AccountAvailable: 0.5, SentQuantity: 0.5, MinOrderSize: 0.000001, QuantityIncrement: 0.00000001, CloseKind: robinhoodCloseKindEmergency})
+	out := `{"close":{"symbol":"BTC","held_qty":0.5,"available_qty":0.5,"fill":{"avg_px":99,"total_sz":0.5,"oid":"ord-1"}},"order_outcome":"filled","order":{"id":"ord-1"},"requested_quantity":0.5,"account_id":"acct-1","sizing":` + string(sz)
+	if echo != "" {
+		out += `,"sell_price":` + echo
 	}
-	advance(time.Minute)
-	e.runCBSharedCycle(held)
-	if got := e.sharedCloseDMs("rh-a"); got != 2 {
-		t.Fatalf("right after the repeat: shared-coin DMs = %d, want 2", got)
-	}
+	return out + `}`
+}
 
-	e.mu.Lock()
-	e.state.Strategies["rh-a"].RiskState.CircuitBreakerUntil = e.state.Strategies["rh-a"].RiskState.CircuitBreakerUntil.Add(time.Hour)
-	e.mu.Unlock()
-	advance(time.Minute)
-	e.runCBSharedCycle(held)
-	if got := e.sharedCloseDMs("rh-a"); got != 3 {
-		t.Fatalf("a new CB episode inside the window: shared-coin DMs = %d, want 3", got)
-	}
+const rhValidSellPriceJSON = `{"bid_price":99,"sent_price":99,"price_decimals":2,"price_increment":0.01,"rule":"floor_increment","today_price":99}`
 
-	e.mu.Lock()
-	e.state.Strategies["rh-a"].RiskState.CircuitBreakerUntil = e.state.Strategies["rh-a"].RiskState.CircuitBreakerUntil.Add(time.Hour)
-	e.state.Strategies["rh-a"].robinhoodPartitionSavePending = true
-	e.mu.Unlock()
-	advance(time.Minute)
-	e.runCBSharedCycle(held)
-	if got := e.sharedCloseDMs("rh-a"); got != 4 {
-		t.Fatalf("a failed marker save must still send the DM: shared-coin DMs = %d, want 4", got)
-	}
-	stamped := e.sharedCloseNotice("rh-a")
-	if !stamped.LastNotifiedAt.Equal(clk.Now()) {
-		t.Fatalf("a failed marker save must keep the in-memory stamp, got %+v", stamped)
-	}
-	advance(time.Minute)
-	e.runCBSharedCycle(held)
-	if got := e.sharedCloseDMs("rh-a"); got != 4 {
-		t.Fatalf("the in-memory marker must still throttle after a failed save: shared-coin DMs = %d, want 4", got)
-	}
-	e.mu.Lock()
-	e.state.Strategies["rh-a"].robinhoodPartitionSavePending = false
-	e.mu.Unlock()
-
-	if got := e.sharedCloseDMs("rh-c"); got != 0 {
-		t.Fatalf("a latched strategy with a flat own book must get no shared-coin DM, got %d", got)
-	}
-	if got := e.sharedCloseDMs("rh-b"); got != 0 {
-		t.Fatalf("an unlatched peer must get no shared-coin DM, got %d", got)
-	}
-	if posts := e.allPostQuantities(); len(posts) != 0 {
-		t.Fatalf("no Robinhood order may be sent for a shared coin, got %v", posts)
-	}
-	if got := e.bookQty("rh-a", "BTC"); got != 0.3 {
-		t.Fatalf("book = %v, want 0.3 kept", got)
-	}
-
-	sc := e.sc("rh-a")
-	e.mu.Lock()
-	s := e.state.Strategies["rh-a"]
-	advanceTo := s.RiskState.CircuitBreakerUntil.Add(time.Minute).Sub(clk.Now())
-	e.mu.Unlock()
-	advance(advanceTo)
-	e.mu.Lock()
-	s.RiskState.PeakValue = 1000
-	s.RiskState.MaxDrawdownPct = 50
-	allowed, reason := CheckRisk(&sc, s, 1000, map[string]float64{"BTC": 50}, nil, nil)
-	cleared := s.RiskState.RobinhoodSharedCloseNotice
-	err := e.store.SaveStrategyBook(s)
-	e.mu.Unlock()
-	if !allowed || s.RiskState.CircuitBreaker {
-		t.Fatalf("the CB must unlatch after its cooldown, got allowed=%v reason=%q", allowed, reason)
-	}
-	if !cleared.IsZero() {
-		t.Fatalf("unlatching the CB must clear the marker, got %+v", cleared)
-	}
-	if err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	e.reopen()
-	if got := e.sharedCloseNotice("rh-a"); !got.IsZero() {
-		t.Fatalf("the cleared marker must load as no marker, got %+v", got)
-	}
+func TestRobinhoodLiveOrderPricing(t *testing.T) {
+	t.Run("BuyLimitStaysWithinTheCashAndBooksTheConfirmedFill", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setRoutes(rhWith(rhPricedPrep("0.01", "0.000001", "60000", "59990"), rhRoutes{
+			"POST " + rhTestOrders:             {rhAccepted("buy")},
+			"GET " + rhOrderURL(rhTestOrderID): {rhOrder("filled", "buy", "0.01658374", "60250")},
+		}))
+		if trades, _ := e.signal("rh-btc", 1, 0, 60000); trades != 1 {
+			t.Fatalf("trades = %d, want the live buy booked", trades)
+		}
+		post := rhOnlyPost(t, e)
+		if post.Type != "limit" || post.Price.String() != "60300.0" && post.Price.String() != "60300" || post.Quantity.String() != "0.01658374" {
+			t.Fatalf("order POST = %+v, want a limit of 0.01658374 at 60300", post)
+		}
+		notional := new(big.Rat).Mul(rhRat(t, post.Price.String()), rhRat(t, post.Quantity.String()))
+		if notional.Cmp(big.NewRat(1000, 1)) > 0 {
+			t.Fatalf("limit notional %s is above the 1000 cash", notional.FloatString(10))
+		}
+		s := e.state.Strategies["rh-btc"]
+		pos := s.Positions["BTC"]
+		if pos == nil || pos.Quantity != 0.01658374 || pos.AvgCost != 60250 {
+			t.Fatalf("position = %+v, want the confirmed 0.01658374 @ 60250", pos)
+		}
+		if s.CashReconcileRequired || s.Cash < 0 || math.Abs(s.Cash-(1000-0.01658374*60250)) > 1e-6 {
+			t.Fatalf("cash = %v latch = %v, want the fill debited with the latch clear", s.Cash, s.CashReconcileRequired)
+		}
+		row := e.onlyAttempt()
+		ev := e.evidence(row.ID)
+		if ev.BuySizing == nil || ev.BuySizing.LimitPrice != 60300 || ev.BuySizing.SentQuantity != 0.01658374 || ev.BuySizing.BudgetUSD != 1000 || ev.RequestedQuantity != 0.01658374 {
+			t.Fatalf("evidence = %+v, want buy_sizing with L 60300 and Q 0.01658374", ev)
+		}
+		if ev.BuySizing.MaxCostUSD > 1000 {
+			t.Fatalf("max_cost_usd = %v, want at most the budget", ev.BuySizing.MaxCostUSD)
+		}
+	})
+	t.Run("VenueFeeAboveTheCashBooksTheFillAndLatches", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		filled := rhOrderBody(rhTestOrderID, "filled", "buy", "0.01658374", "60300", "")
+		filled["executions"] = []interface{}{map[string]interface{}{"fees": []interface{}{map[string]interface{}{"amount": "0.5"}}}}
+		e.setRoutes(rhWith(rhPricedPrep("0.01", "0.000001", "60000", "59990"), rhRoutes{
+			"POST " + rhTestOrders:             {rhAccepted("buy")},
+			"GET " + rhOrderURL(rhTestOrderID): {{"status": 200, "json": filled}},
+		}))
+		if trades, _ := e.signal("rh-btc", 1, 0, 60000); trades != 1 {
+			t.Fatalf("trades = %d, want the real fill booked", trades)
+		}
+		s := e.state.Strategies["rh-btc"]
+		if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.01658374 {
+			t.Fatalf("position = %+v, want the venue fill", pos)
+		}
+		if !s.CashReconcileRequired {
+			t.Fatalf("cash = %v, want the latch set when the fee pushes the debit above the cash", s.Cash)
+		}
+		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{"POST " + rhTestOrders: {rhAccepted("buy")}}))
+		if trades, _ := e.signal("rh-btc", 1, 0, 60000); trades != 0 || len(e.orderPosts()) != 0 {
+			t.Fatalf("a latched strategy must send no further buy, trades = %d", trades)
+		}
+	})
+	t.Run("BuyPreparationRefusalsSendNothingAndAlert", func(t *testing.T) {
+		cases := []struct {
+			name           string
+			priceIncrement interface{}
+			minSize        string
+		}{
+			{"price_increment_missing", nil, "0.000001"},
+			{"price_increment_invalid", "abc", "0.000001"},
+			{"quantity_below_minimum", "0.01", "100"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+				e.setRoutes(rhWith(rhPricedPrep(tc.priceIncrement, tc.minSize, "100.00", "99.00"), rhRoutes{"POST " + rhTestOrders: {rhAccepted("buy")}}))
+				if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 0 {
+					t.Fatalf("trades = %d, want 0", trades)
+				}
+				if posts := e.orderPosts(); len(posts) != 0 {
+					t.Fatalf("a refused buy sent %d order(s)", len(posts))
+				}
+				s := e.state.Strategies["rh-btc"]
+				if s.Cash != 1000 || len(s.Positions) != 0 || len(e.dbTrades("rh-btc")) != 0 {
+					t.Fatalf("book changed: cash=%v positions=%v", s.Cash, s.Positions)
+				}
+				if row := e.onlyAttempt(); row.Status != robinhoodAttemptNoFill {
+					t.Fatalf("attempt = %+v, want no_fill", row)
+				}
+				if e.failedAlerts() == 0 {
+					t.Fatal("a refused buy must send the live-order-failed alert")
+				}
+			})
+		}
+	})
+	t.Run("LimitCanceledAfterAPartialFillBooksOnlyThePart", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
+			"POST " + rhTestOrders:             {rhAccepted("buy")},
+			"GET " + rhOrderURL(rhTestOrderID): {rhOrder("confirmed", "buy", "0", nil), rhOrder("canceled", "buy", "4", "100.5")},
+		}))
+		if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 1 {
+			t.Fatalf("trades = %d, want the partial fill booked", trades)
+		}
+		if post := rhOnlyPost(t, e); post.Type != "limit" || post.Quantity.String() != "9.95024875" {
+			t.Fatalf("order POST = %+v, want a limit for 9.95024875", post)
+		}
+		if pos := e.state.Strategies["rh-btc"].Positions["BTC"]; pos == nil || pos.Quantity != 4 || pos.AvgCost != 100.5 {
+			t.Fatalf("position = %+v, want only the confirmed 4 @ 100.5", pos)
+		}
+	})
+	t.Run("LimitOpenAfterTheCancelHoldsThenRecoversByTheSentQuantity", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
+			"POST " + rhTestOrders:                          {rhAccepted("buy")},
+			"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("confirmed", "buy", "0", nil)},
+			"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
+		}))
+		if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 0 {
+			t.Fatalf("trades = %d, want 0 while the limit stays open", trades)
+		}
+		row := e.onlyAttempt()
+		if row.Status != robinhoodAttemptOpen {
+			t.Fatalf("attempt = %+v, want open: a cancel request alone proves no fill", row)
+		}
+		if s := e.state.Strategies["rh-btc"]; s.Cash != 1000 || len(s.Positions) != 0 {
+			t.Fatal("an open limit must book nothing")
+		}
+		e.reopen()
+		var asked []float64
+		orig := robinhoodResolveFn
+		robinhoodResolveFn = func(script string, req RobinhoodResolveRequest) (*RobinhoodExecuteResult, string, error) {
+			asked = append(asked, req.RequestedQuantity)
+			return orig(script, req)
+		}
+		t.Cleanup(func() { robinhoodResolveFn = orig })
+		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
+			"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("filled", "buy", "9.95024875", "100.4")},
+			"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
+		}))
+		recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+		after := e.onlyAttempt()
+		if after.Status != robinhoodAttemptSettled || after.SettlementSeq != 1 || after.AppliedQty != 9.95024875 {
+			t.Fatalf("attempt = %+v, want settled once with 9.95024875", after)
+		}
+		if len(asked) == 0 || asked[0] != 9.95024875 {
+			t.Fatalf("resolve requested quantities = %v, want the sent 9.95024875", asked)
+		}
+		if ev := e.evidence(after.ID); ev.BuySizing == nil || ev.BuySizing.SentQuantity != 9.95024875 {
+			t.Fatalf("evidence = %+v, want the first buy_sizing kept through recovery", ev)
+		}
+		recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+		if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Quantity != 9.95024875 {
+			t.Fatalf("db trades = %+v, want one recovered buy", dbt)
+		}
+	})
+	t.Run("EverySellRouteSendsTheFlooredPrice", func(t *testing.T) {
+		tiny := func(fill string) rhRoutes {
+			return rhWith(rhPricedPrep("0.00000001", "0.000001", "0.0000116", "0.0000115"), rhRoutes{
+				"POST " + rhTestOrders:             {rhAccepted("sell")},
+				"GET " + rhOrderURL(rhTestOrderID): {rhOrder("filled", "sell", fill, "0.000011")},
+			})
+		}
+		checkPost := func(t *testing.T, e *rhLiveEnv) {
+			t.Helper()
+			post := rhOnlyPost(t, e)
+			if post.Type != "market" || post.Price.String() != "1.1e-05" || post.Quantity.String() != "0.5" {
+				t.Fatalf("order POST = %+v, want a market sell of 0.5 priced 0.000011", post)
+			}
+			ev := e.evidence(e.onlyAttempt().ID)
+			if ev.SellPrice == nil || ev.SellPrice.SentPrice != 0.000011 || ev.SellPrice.Rule != robinhoodSellPriceFloorIncrement || ev.SellPrice.BidPrice != 0.0000115 {
+				t.Fatalf("evidence = %+v, want sell_price 0.000011 by floor_increment", ev)
+			}
+		}
+		t.Run("signal", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 0.00001)
+			e.setRoutes(rhWith(tiny("0.5"), rhSellHolding("0.5", "0.5")))
+			if trades, _ := e.signal("rh-btc", -1, 0, 0.0000115); trades != 1 {
+				t.Fatalf("trades = %d, want the sell booked", trades)
+			}
+			checkPost(t, e)
+		})
+		t.Run("kill_switch", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 0.00001)
+			in := e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase())
+			in.RHCloser = e.phaseCloser(rhClosePhase(tiny("0.5"), "0.5", "0.5"), in.RHCloser)
+			plan := planKillSwitchClose(in)
+			if !plan.OnChainConfirmedFlat {
+				t.Fatalf("plan = %+v, want BTC closed and confirmed flat", plan.RHCloseReport)
+			}
+			checkPost(t, e)
+		})
+		t.Run("circuit_breaker", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.ageBook("rh-btc", "BTC")
+			e.tripCB("rh-btc")
+			e.runCBPhases(rhClosePhase(tiny("0.5"), "0.5", "0.5"), rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase())
+			checkPost(t, e)
+			if p := e.pendingRH("rh-btc"); p != nil {
+				t.Fatalf("pending = %+v, want cleared once the book is sold", p)
+			}
+		})
+	})
+	t.Run("ZeroRoundedBidSendsAPositiveFallbackAndWarns", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		var logBuf bytes.Buffer
+		e.logger = &StrategyLogger{stratID: "rh-btc", writer: &logBuf}
+		e.setPosition("rh-btc", "BTC", 0.5, 0.0000005)
+		e.setRoutes(rhWith(rhWith(rhPricedPrep("0.00000001", "0.000001", "0.0000005", "0.0000004"), rhSellHolding("0.5", "0.5")), rhRoutes{
+			"POST " + rhTestOrders:             {rhAccepted("sell")},
+			"GET " + rhOrderURL(rhTestOrderID): {rhOrder("filled", "sell", "0.5", "0.0000004")},
+		}))
+		if trades, _ := e.signal("rh-btc", -1, 0, 0.0000004); trades != 1 {
+			t.Fatalf("trades = %d, want the sell booked", trades)
+		}
+		post := rhOnlyPost(t, e)
+		price, err := post.Price.Float64()
+		if err != nil || !(price > 0) || price != 0.00000001 {
+			t.Fatalf("order POST = %+v, want the positive one-step price 1e-08", post)
+		}
+		ev := e.evidence(e.onlyAttempt().ID)
+		if ev.SellPrice == nil || ev.SellPrice.Rule != robinhoodSellPriceOneStep || ev.SellPrice.TodayPrice != 0 {
+			t.Fatalf("evidence = %+v, want sell_price by one_step", ev)
+		}
+		if !strings.Contains(logBuf.String(), "[WARN] Robinhood sell BTC price: bid 4e-07, sent 1e-08, rule one_step") {
+			t.Fatalf("log = %s, want the one_step WARN", logBuf.String())
+		}
+	})
+	t.Run("SellLeftOpenKeepsItsPriceEvidenceThroughRecovery", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setPosition("rh-btc", "BTC", 0.5, 90)
+		e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{
+			"POST " + rhTestOrders:                          {rhAccepted("sell")},
+			"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("confirmed", "sell", "0", nil)},
+			"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
+		}))
+		if trades, _ := e.signal("rh-btc", -1, 0, 99); trades != 0 {
+			t.Fatalf("trades = %d, want 0 while the sell stays open", trades)
+		}
+		row := e.onlyAttempt()
+		if ev := e.evidence(row.ID); row.Status != robinhoodAttemptOpen || ev.SellPrice == nil || ev.SellPrice.SentPrice != 99 {
+			t.Fatalf("attempt = %+v evidence = %+v, want open with sell_price 99", row, ev)
+		}
+		e.reopen()
+		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
+			"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("filled", "sell", "0.5", "99")},
+			"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
+		}))
+		recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+		after := e.onlyAttempt()
+		if after.Status != robinhoodAttemptSettled {
+			t.Fatalf("attempt = %+v, want settled by recovery", after)
+		}
+		if ev := e.evidence(after.ID); ev.SellPrice == nil || ev.SellPrice.SentPrice != 99 || ev.SellPrice.Rule != robinhoodSellPriceFloorIncrement {
+			t.Fatalf("evidence = %+v, want the first sell_price kept through recovery", ev)
+		}
+	})
+	t.Run("OptionalBuyEchoNeverBlocksAConfirmedFill", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			echo     string
+			kept     bool
+			critical bool
+			warn     bool
+		}{
+			{"missing", "", false, false, false},
+			{"null", "null", false, false, false},
+			{"string", `"abc"`, false, false, true},
+			{"array", `[1,2]`, false, false, true},
+			{"wrong_field_type", `{"budget_usd":"1000"}`, false, false, true},
+			{"negative_field", rhBuySizingJSON(-1, 100.5, 1), false, false, true},
+			{"valid", rhBuySizingJSON(1000, 100.5, 1), true, false, false},
+			{"valid_above_the_budget", rhBuySizingJSON(1000, 1100, 1), true, true, false},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				sc := rhLiveSpot("rh-btc", "BTC", 1000)
+				sc.Script = "shared_scripts/testdata/robinhood_offline/print_result.py"
+				e := newRHLiveEnv(t, sc)
+				var logBuf bytes.Buffer
+				e.logger = &StrategyLogger{stratID: "rh-btc", writer: &logBuf}
+				t.Setenv("RH_FIXTURE_STDOUT", rhFixtureBuy(tc.echo))
+				t.Setenv("RH_FIXTURE_EXIT", "0")
+				if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 1 {
+					t.Fatalf("trades = %d, want the confirmed fill booked", trades)
+				}
+				if pos := e.state.Strategies["rh-btc"].Positions["BTC"]; pos == nil || pos.Quantity != 1 || pos.AvgCost != 100 {
+					t.Fatalf("position = %+v, want 1 @ 100", pos)
+				}
+				ev := e.evidence(e.onlyAttempt().ID)
+				if (ev.BuySizing != nil) != tc.kept {
+					t.Fatalf("evidence buy_sizing = %+v, want kept=%v", ev.BuySizing, tc.kept)
+				}
+				logs := logBuf.String()
+				if strings.Contains(logs, "CRITICAL: Robinhood buy BTC limit order notional") != tc.critical {
+					t.Fatalf("log = %s, want critical=%v", logs, tc.critical)
+				}
+				if strings.Contains(logs, "the optional pricing echo was discarded") != tc.warn {
+					t.Fatalf("log = %s, want discard warn=%v", logs, tc.warn)
+				}
+			})
+		}
+		t.Run("invalid_core_still_holds", func(t *testing.T) {
+			sc := rhLiveSpot("rh-btc", "BTC", 1000)
+			sc.Script = "shared_scripts/testdata/robinhood_offline/print_result.py"
+			e := newRHLiveEnv(t, sc)
+			t.Setenv("RH_FIXTURE_STDOUT", `{"execution":{"action":"buy","symbol":"BTC","fill":{"avg_px":0,"quantity":1,"oid":"ord-1"}},"order_outcome":"filled","order":{"id":"ord-1"},"buy_sizing":`+rhBuySizingJSON(1000, 100.5, 1)+`}`)
+			t.Setenv("RH_FIXTURE_EXIT", "0")
+			if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 0 {
+				t.Fatalf("trades = %d, want 0", trades)
+			}
+			if row := e.onlyAttempt(); row.Status != robinhoodAttemptUnknown {
+				t.Fatalf("attempt = %+v, want unknown", row)
+			}
+		})
+	})
+	t.Run("OptionalSellEchoNeverBlocksAConfirmedEmergencyClose", func(t *testing.T) {
+		cases := []struct {
+			name string
+			echo string
+			kept bool
+		}{
+			{"missing", "", false},
+			{"null", "null", false},
+			{"string", `"abc"`, false},
+			{"array", `[1]`, false},
+			{"negative_price", `{"bid_price":-1,"sent_price":99,"price_decimals":2,"rule":"floor_decimals","today_price":99}`, false},
+			{"unknown_rule", `{"bid_price":99,"sent_price":99,"price_decimals":2,"rule":"legacy","today_price":99}`, false},
+			{"bad_decimals", `{"bid_price":99,"sent_price":99,"price_decimals":3,"rule":"floor_decimals","today_price":99}`, false},
+			{"valid", rhValidSellPriceJSON, true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+				e.setPosition("rh-btc", "BTC", 0.5, 90)
+				orig := robinhoodCloseFn
+				robinhoodCloseFn = func(script, symbol, refID string, quantity float64, expectedAccountID string) (*RobinhoodCloseResult, string, error) {
+					return RunRobinhoodClose("shared_scripts/testdata/robinhood_offline/print_result.py", symbol, refID, quantity, expectedAccountID)
+				}
+				t.Cleanup(func() { robinhoodCloseFn = orig })
+				t.Setenv("RH_FIXTURE_STDOUT", rhFixtureClose(tc.echo))
+				t.Setenv("RH_FIXTURE_EXIT", "0")
+				closer := newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginKillSwitch)
+				if _, err := closer(RobinhoodCloseRequest{Symbol: "BTC", Quantity: 0.5, ExpectedAccountID: rhTestAccount}); err != nil {
+					t.Fatalf("close err = %v, want the confirmed fill accepted", err)
+				}
+				row := e.onlyAttempt()
+				if row.ConfirmedQty != 0.5 || (row.Status != robinhoodAttemptSettling && row.Status != robinhoodAttemptSettled) {
+					t.Fatalf("attempt = %+v, want the confirmed 0.5 fill", row)
+				}
+				if ev := e.evidence(row.ID); (ev.SellPrice != nil) != tc.kept {
+					t.Fatalf("evidence sell_price = %+v, want kept=%v", ev.SellPrice, tc.kept)
+				}
+			})
+		}
+	})
 }

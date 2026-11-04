@@ -285,19 +285,20 @@ def test_zero_range_overflow_and_history_boundaries():
     assert (short["uo_reason"] == "insufficient_history").all()
 
 
-@pytest.mark.parametrize("params,need", [
-    (None, NEED),
-    ({**DEFAULTS, "long_window": 40, "breakout_lookback": 40}, 42),
-    ({**DEFAULTS, "long_window": 198, "breakout_lookback": 10}, 199),
-])
-def test_full_series_every_prefix_and_200_bar_window_agree(params, need):
-    df = market(480, seed=7)
-    full = run(df, params)
-    assert (full["signal"] != 0).sum() > 0 or need == 199
-    for i in range(len(df)):
-        same(full.iloc[i], run(df.iloc[: i + 1], params).iloc[-1])
-        if i + 1 >= need:
-            same(full.iloc[i], run(df.iloc[max(0, i - 199): i + 1], params).iloc[-1])
+def test_full_series_every_prefix_and_200_bar_window_agree(subtests):
+    for params, need in [
+        (None, NEED),
+        ({**DEFAULTS, "long_window": 40, "breakout_lookback": 40}, 42),
+        ({**DEFAULTS, "long_window": 198, "breakout_lookback": 10}, 199),
+    ]:
+        with subtests.test(params=params, need=need):
+            df = market(480, seed=7)
+            full = run(df, params)
+            assert (full["signal"] != 0).sum() > 0 or need == 199
+            for i in range(len(df)):
+                same(full.iloc[i], run(df.iloc[: i + 1], params).iloc[-1])
+                if i + 1 >= need:
+                    same(full.iloc[i], run(df.iloc[max(0, i - 199): i + 1], params).iloc[-1])
 
 
 def test_appending_a_smaller_future_step_never_changes_earlier_decisions():

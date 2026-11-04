@@ -121,7 +121,13 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      closed_bar=False, decision_regime_timeframe=""):
     with json_stdout() as emit:
         try:
-            from adapter import ROBINHOOD_CLOSED_BAR_REFUSED, RobinhoodExchangeAdapter, robinhood_session_closed_bar_refusal
+            from adapter import (
+                ASSET_CLASS_CRYPTO,
+                ROBINHOOD_CLOSED_BAR_REFUSED,
+                RobinhoodExchangeAdapter,
+                robinhood_crypto_yahoo_ticker,
+            )
+            robinhood_crypto_yahoo_ticker(symbol)
             from strategies import apply_strategy, get_strategy, list_strategies
             from close_registry_loader import (
                 evaluate as close_evaluate,
@@ -155,9 +161,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             if closed_bar:
                 if mode == "live":
                     raise ValueError(LIVE_CLOSED_BAR_REFUSAL)
-                session_refusal = robinhood_session_closed_bar_refusal(symbol)
-                if session_refusal:
-                    raise ValueError(f"closed_bar_decisions is not supported on robinhood: {session_refusal}")
                 for name in (strategy_name, open_strategy or strategy_name):
                     why = unsupported_open_strategy_reason(name)
                     if why:
@@ -167,7 +170,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 if timeframe in ROBINHOOD_CLOSED_BAR_REFUSED:
                     raise ValueError(f"closed_bar_decisions does not support {timeframe} on robinhood: {ROBINHOOD_CLOSED_BAR_REFUSED[timeframe]}")
 
-            adapter = RobinhoodExchangeAdapter(mode=mode)
+            adapter = RobinhoodExchangeAdapter(mode=mode, asset_class=ASSET_CLASS_CRYPTO)
 
             print(f"Fetching {symbol} {timeframe} from Robinhood/yfinance ({mode})...", file=sys.stderr)
             cutoff_ms = 0
@@ -231,7 +234,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                         else:
                             regime_rows = _select_fresh(
                                 fetch_rows_or_hold(lambda: adapter.get_ohlcv(symbol, interval=regime_tf, limit=ohlcv_limit + 1), symbol, regime_tf),
-                                regime_tf, selection.boundary_ms, cutoff_ms, ohlcv_limit).rows
+                                regime_tf, selection.boundary_ms, cutoff_ms, ohlcv_limit, min_rows=1).rows
                         decision_regime_payload, _decision_live, decision_strategy_regime = prepare_check_regime(
                             _make_dataframe(regime_rows),
                             regime_enabled=True,
@@ -428,6 +431,41 @@ def _clean_sizing(sizing):
     return clean
 
 
+_BUY_SIZING_NUMBER_KEYS = (
+    "budget_usd", "ask_price", "limit_price", "price_increment", "headroom", "sent_quantity",
+    "min_order_size", "quantity_increment", "max_order_size", "max_cost_usd",
+)
+
+
+def _clean_buy_sizing(buy_sizing):
+    if not isinstance(buy_sizing, dict):
+        return None
+    clean = {key: _finite_or_none(buy_sizing.get(key)) for key in _BUY_SIZING_NUMBER_KEYS}
+    clean["capped_by_max"] = buy_sizing.get("capped_by_max") is True
+    return clean
+
+
+_SELL_PRICE_NUMBER_KEYS = ("bid_price", "sent_price", "today_price")
+_SELL_PRICE_RULES = ("floor_increment", "floor_decimals", "round_fallback", "one_step", "wire_floor")
+
+
+def _clean_sell_price(sell_price):
+    if not isinstance(sell_price, dict):
+        return None
+    clean = {key: _finite_or_none(sell_price.get(key)) for key in _SELL_PRICE_NUMBER_KEYS}
+    decimals = sell_price.get("price_decimals")
+    clean["price_decimals"] = decimals if type(decimals) is int and decimals in (2, 4, 6) else None
+    increment = _finite_or_none(sell_price.get("price_increment"))
+    if increment is not None:
+        clean["price_increment"] = increment
+    rule = sell_price.get("rule")
+    clean["rule"] = rule if rule in _SELL_PRICE_RULES else None
+    for key in ("price_increment_problem", "fallback_reason"):
+        if isinstance(sell_price.get(key), str):
+            clean[key] = sell_price[key]
+    return clean
+
+
 def _order_envelope(order_result, action, symbol, amount_usd=None, quantity=None):
     outcome = order_result.get("outcome") or "unknown"
     execution = {"action": action, "symbol": symbol}
@@ -450,6 +488,12 @@ def _order_envelope(order_result, action, symbol, amount_usd=None, quantity=None
     }
     if sizing is not None:
         payload["sizing"] = sizing
+    buy_sizing = _clean_buy_sizing(order_result.get("buy_sizing"))
+    if buy_sizing is not None:
+        payload["buy_sizing"] = buy_sizing
+    sell_price = _clean_sell_price(order_result.get("sell_price"))
+    if sell_price is not None:
+        payload["sell_price"] = sell_price
     if outcome in _CONFIRMED_FILL_OUTCOMES and isinstance(fill, dict):
         clean = {
             "avg_px": _finite_or_none(fill.get("avg_px")),
@@ -502,7 +546,7 @@ def _float_ask(quantity_text):
     return value if math.isfinite(value) else None
 
 
-def run_execute(symbol, side, amount_usd, quantity_text, mode, ref_id=None, budget_ms=None, close_kind="partial", sole_owner=False):
+def run_execute(symbol, side, amount_usd, quantity_text, mode, ref_id=None, budget_ms=None, close_kind="partial", sole_owner=False, expected_account_id=""):
     with json_stdout() as emit:
         action = (side or "").lower()
         quantity = _float_ask(quantity_text) if action == "sell" else None
@@ -516,6 +560,10 @@ def run_execute(symbol, side, amount_usd, quantity_text, mode, ref_id=None, budg
         if mode != "live":
             _emit_order(emit, _order_envelope(_not_sent("--execute requires --mode=live", ref_id), action, symbol, amount_usd, quantity))
             return
+        expected_account_id = (expected_account_id or "").strip()
+        if action == "sell" and not expected_account_id:
+            _emit_order(emit, _order_envelope(_not_sent("--expected-account-id is required for a sell: a live sell is sent only from the account that owns the go-trader book", ref_id), action, symbol, amount_usd, quantity))
+            return
         try:
             deadline = _budget_deadline(budget_ms)
             if not ref_id:
@@ -527,10 +575,12 @@ def run_execute(symbol, side, amount_usd, quantity_text, mode, ref_id=None, budg
             return
         try:
             if action == "buy":
-                result = adapter.place_market_order(symbol, "buy", ref_id=ref_id, deadline=deadline, amount_usd=amount_usd)
+                result = adapter.place_market_order(symbol, "buy", ref_id=ref_id, deadline=deadline, amount_usd=amount_usd,
+                                                    expected_account_id=expected_account_id or None)
             else:
                 result = adapter.place_market_order(
                     symbol, "sell", ref_id=ref_id, deadline=deadline, quantity=float(asked),
+                    expected_account_id=expected_account_id,
                     sell_policy={"asked": asked, "close_kind": close_kind, "sole_owner": sole_owner is True},
                 )
         except Exception as e:
@@ -603,6 +653,7 @@ def main():
             parser.add_argument("--quantity", type=str, default="0")
             parser.add_argument("--close-kind", choices=["whole", "partial"], default="partial")
             parser.add_argument("--sole-owner", action="store_true")
+            parser.add_argument("--expected-account-id", default="")
             parser.add_argument("--mode", default="live")
             parser.add_argument("--ref-id", required=True)
             parser.add_argument("--budget-ms", type=int, required=True)
@@ -611,7 +662,7 @@ def main():
             if args.probe_only:
                 sys.exit(0)
             run_execute(args.symbol, args.side, args.amount_usd, args.quantity, args.mode, args.ref_id, args.budget_ms,
-                        close_kind=args.close_kind, sole_owner=args.sole_owner)
+                        close_kind=args.close_kind, sole_owner=args.sole_owner, expected_account_id=args.expected_account_id)
         else:
             import argparse
             parser = argparse.ArgumentParser()
@@ -644,45 +695,11 @@ def main():
                 help="#1712/#1822: decide on the last closed Yahoo bar (paper only; live refuses).")
             parser.add_argument("--decision-regime-timeframe", default="",
                 help="#1712: regime timeframe for the closed-bar decision frame.")
-            parser.add_argument("--basket-member", action="store_true", default=False,
-                help="#1781: accepted for argv-shape compatibility with the startup probe; basket members run only on Hyperliquid, so this platform refuses it.")
-            parser.add_argument("--pair-member-json", default=None,
-                help="#1862: accepted for argv-shape compatibility with the startup probe; pair members run only on Hyperliquid and OKX, so this platform refuses it.")
             parser.add_argument("--probe-only", action="store_true",
                 help="Startup compatibility probe (#645): validate argv shape and exit 0.")
             args = parser.parse_args()
             if args.probe_only:
                 sys.exit(0)
-            if args.pair_member_json is not None:
-                emit({
-                    "strategy": args.strategy,
-                    "symbol": args.symbol,
-                    "timeframe": args.timeframe,
-                    "signal": 0,
-                    "price": 0,
-                    "indicators": {},
-                    "regime": None,
-                    "mode": args.mode,
-                    "platform": "robinhood",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "error": "pair members are not supported on robinhood: the pair coordinator runs only Hyperliquid and OKX members",
-                })
-                sys.exit(1)
-            if args.basket_member:
-                emit({
-                    "strategy": args.strategy,
-                    "symbol": args.symbol,
-                    "timeframe": args.timeframe,
-                    "signal": 0,
-                    "price": 0,
-                    "indicators": {},
-                    "regime": None,
-                    "mode": args.mode,
-                    "platform": "robinhood",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "error": "basket members are not supported on robinhood: the basket coordinator runs only Hyperliquid members",
-                })
-                sys.exit(1)
             if args.closed_bar_decisions and args.mode == "live":
                 emit({
                     "strategy": args.strategy,

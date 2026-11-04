@@ -844,10 +844,7 @@ import sys as _sys
 import os as _os
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
-try:
-    from pricing import bs_price_and_greeks as _bs_price_and_greeks
-except ImportError:
-    _bs_price_and_greeks = None
+import option_data
 
 
 class DeribitExchangeAdapter:
@@ -865,32 +862,12 @@ class DeribitExchangeAdapter:
             return 0.0
 
     def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:
-        import math as _math
         try:
             exchange = egress_policy.pin_ccxt(ccxt.binanceus({"enableRateLimit": True}))
             ohlcv = exchange.fetch_ohlcv(f"{underlying}/USDT", "1d", limit=90)
-            if not ohlcv or len(ohlcv) < 15:
-                return 0.60, 50.0
-            closes = [c[4] for c in ohlcv]
-            returns = [_math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
-            if len(returns) < 14:
-                return 0.60, 50.0
-            w = 14
-            mean = sum(returns[-w:]) / w
-            variance = sum((r - mean) ** 2 for r in returns[-w:]) / w
-            vol = _math.sqrt(variance) * _math.sqrt(365)
-            hvs = []
-            for i in range(len(returns) - w + 1):
-                chunk = returns[i:i + w]
-                m = sum(chunk) / w
-                v = sum((r - m) ** 2 for r in chunk) / w
-                hvs.append(_math.sqrt(v) * _math.sqrt(365) * 100)
-            current_hv = vol * 100
-            hv_min, hv_max = min(hvs), max(hvs)
-            iv_rank = (current_hv - hv_min) / (hv_max - hv_min) * 100 if hv_max > hv_min else 50.0
-            return round(vol, 4), round(min(max(iv_rank, 0.0), 100.0), 1)
-        except Exception:
-            return 0.60, 50.0
+        except Exception as e:
+            raise option_data.unavailable("volatility unavailable: daily history read failed", e) from e
+        return option_data.realized_vol_metrics(option_data.daily_closes(ohlcv), 365)
 
     def get_real_expiry(self, underlying: str, target_dte: int) -> Tuple[str, int]:
         try:
@@ -919,18 +896,8 @@ class DeribitExchangeAdapter:
 
     def get_premium_and_greeks(self, underlying: str, option_type: str,
                                 strike: float, expiry: str, dte: float,
-                                spot: float, vol: float) -> Tuple[float, float, dict]:
-        try:
-            from utils import get_live_quote
-            quote = get_live_quote(underlying, option_type, strike, expiry)
-            if quote:
-                mark = quote["mark_price"]
-                return mark, round(mark * spot, 2), quote["greeks"]
-        except Exception:
-            pass
-        if _bs_price_and_greeks is not None and vol > 0:
-            price_usd, greeks = _bs_price_and_greeks(spot, strike, dte, vol, option_type=option_type)
-            mark_pct = (price_usd / spot) if spot > 0 else 0.0
-            return round(mark_pct, 6), round(price_usd, 2), greeks
-        fallback_pct = 0.05
-        return fallback_pct, round(fallback_pct * spot, 2), {"delta": 0.5, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+                                spot: float, vol: Optional[float] = None) -> Tuple[float, float, dict]:
+        from utils import get_live_quote
+        quote = get_live_quote(underlying, option_type, strike, expiry)
+        mark = option_data.require_finite_positive(quote["mark_price"], "option quote unavailable: deribit mark is not positive")
+        return mark, round(mark * spot, 2), quote["greeks"]

@@ -358,13 +358,20 @@ def test_manual_owner_is_refused_and_not_comparable(tmp_path):
         assert rep["simulation"]["status"] == "not_run"
 
 
-@pytest.mark.parametrize("case,reason", [
-    ("edge_gap", "market_candle_grid_incomplete"),
-    ("warmup_join_gap", "market_candle_grid_incomplete"),
-    ("missing_funding", "market_funding_incomplete"),
-    ("short_warmup", "market_indicator_history_insufficient"),
-])
-def test_hash_valid_incomplete_market_inputs_refuse_strict(tmp_path, case, reason):
+def test_hash_valid_incomplete_market_inputs_refuse_strict(tmp_path, subtests):
+    for case, reason in [
+        ("edge_gap", "market_candle_grid_incomplete"),
+        ("warmup_join_gap", "market_candle_grid_incomplete"),
+        ("missing_funding", "market_funding_incomplete"),
+        ("short_warmup", "market_indicator_history_insufficient"),
+    ]:
+        with subtests.test(case=case):
+            case_dir = tmp_path / str(case)
+            case_dir.mkdir()
+            _assert_hash_valid_incomplete_market_inputs_refuse_strict(case_dir, case, reason)
+
+
+def _assert_hash_valid_incomplete_market_inputs_refuse_strict(tmp_path, case, reason):
     fx = _copy(tmp_path)
     market = fx / "market"
     warmup = None
@@ -560,24 +567,6 @@ def test_attested_inventory_is_checked_against_the_booked_replay(tmp_path):
     assert rc == 0 and rep["outcome"] == "strict_success"
 
 
-@pytest.mark.parametrize("field,value", [
-    ("open_strategy", "sma_crossover"),
-    ("params", ["fast", 10]),
-    ("args", "sma_crossover BTC 1h"),
-])
-def test_malformed_strategy_shapes_exit_without_a_report(tmp_path, field, value):
-    fx = _copy(tmp_path)
-    cin = _load(fx / "comparison_input.json")
-    strategy = cin["historical_configuration"]["timeline"][0]["strategy"]
-    if field == "params":
-        strategy["open_strategy"]["params"] = value
-    else:
-        strategy[field] = value
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path)
-    assert rc == lc.EXIT_INPUT_ERROR and rep is None
-
-
 def test_unexpected_errors_exit_without_a_report(tmp_path, monkeypatch):
     def broken(*a, **k):
         raise RuntimeError("disposable internal failure")
@@ -720,6 +709,19 @@ def _loader_segment(tmp_path, cfg, strategy):
     return seg
 
 
+def _ready_label_fixture(frame):
+    for column in list(frame.columns):
+        if column != "regime" and not (str(column).startswith("regime_w_") and not str(column).endswith(("_ready", "_bars", "_need"))):
+            continue
+        if column + "_ready" in frame.columns:
+            continue
+        ready = frame[column].fillna("").map(lambda value: bool(str(value).strip()))
+        frame[column + "_ready"] = ready
+        frame[column + "_bars"] = [29 + i if ok else 0 for i, ok in enumerate(ready)]
+        frame[column + "_need"] = 29
+    return frame
+
+
 def _stop_frame(side, regime, anchor=100.0, marks=(99.0, 101.0, 100.0), entry_atr=2.0):
     import pandas as pd
     n = len(marks) + 1
@@ -742,7 +744,7 @@ def _engine_events(verdict, side, regime, **frame):
     bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0, platform="hyperliquid",
                     intrabar_resolution="bar_close", direction=side,
                     close_strategies=copy.deepcopy(verdict["close_refs"]) or None, **verdict["kwargs"])
-    bt.run(_stop_frame(side, regime, **frame), save=False, stop_observer=events.append)
+    bt.run(_ready_label_fixture(_stop_frame(side, regime, **frame)), save=False, stop_observer=events.append)
     return bt, events
 
 
@@ -754,8 +756,15 @@ EQUIVALENCE_CASES = [
 ]
 
 
-@pytest.mark.parametrize("case_id", EQUIVALENCE_CASES)
-def test_raw_and_loader_resolved_segments_resolve_identically(tmp_path, case_id):
+def test_raw_and_loader_resolved_segments_resolve_identically(tmp_path, subtests):
+    for case_id in EQUIVALENCE_CASES:
+        with subtests.test(case=case_id):
+            case_dir = tmp_path / str(case_id)
+            case_dir.mkdir()
+            _assert_raw_and_loader_resolved_segments_resolve_identically(case_dir, case_id)
+
+
+def _assert_raw_and_loader_resolved_segments_resolve_identically(tmp_path, case_id):
     cfg, strategy, side, regime = _parity_case(case_id)
     raw = lc.resolve_historical_stops(_raw_segment(cfg, strategy), 2, "strict")
     loader = lc.resolve_historical_stops(_loader_segment(tmp_path, cfg, strategy), 2, "strict")
@@ -816,8 +825,15 @@ def test_drawdown_fallback_geometry_matches_the_platform_oracle_case():
         ("stop_inputs_unverified", "platform_max_drawdown_pct")]
 
 
-@pytest.mark.parametrize("basis", ["raw_config", "loader_resolved"])
-def test_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(tmp_path, basis):
+def test_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(tmp_path, subtests):
+    for basis in ["raw_config", "loader_resolved"]:
+        with subtests.test(case=basis):
+            case_dir = tmp_path / str(basis)
+            case_dir.mkdir()
+            _assert_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(case_dir, basis)
+
+
+def _assert_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(tmp_path, basis):
     def build(case_id, extra_cfg=None, extra_strategy=None):
         cfg, strategy, _, _ = _parity_case(case_id)
         cfg.update(extra_cfg or {})
@@ -841,8 +857,15 @@ def test_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(tm
     assert ("stop_capability_refused", "MISSING_STOP_INPUT") in codes(named)
 
 
-@pytest.mark.parametrize("basis", ["raw_config", "loader_resolved"])
-def test_contradictory_stop_evidence_refuses_before_simulation(tmp_path, basis):
+def test_contradictory_stop_evidence_refuses_before_simulation(tmp_path, subtests):
+    for basis in ["raw_config", "loader_resolved"]:
+        with subtests.test(case=basis):
+            case_dir = tmp_path / str(basis)
+            case_dir.mkdir()
+            _assert_contradictory_stop_evidence_refuses_before_simulation(case_dir, basis)
+
+
+def _assert_contradictory_stop_evidence_refuses_before_simulation(tmp_path, basis):
     cfg, strategy, _, _ = _parity_case("pct_long")
     seg = _raw_segment(cfg, strategy) if basis == "raw_config" else _loader_segment(tmp_path, cfg, strategy)
     seg["stop_evidence"]["raw_fields"]["stop_loss_pct"] = _prov(3)
@@ -855,13 +878,18 @@ def test_contradictory_stop_evidence_refuses_before_simulation(tmp_path, basis):
     assert [(r["reason"], r["field"]) for r in verdict["refusals"]] == [("stop_inputs_unverified", "trailing_stop_pct")]
 
 
-@pytest.mark.parametrize("case_id,owner,fields", [
-    ("pct_long", "fixed_pct", {"basis", "stop_loss_pct"}),
-    ("default_scalar_atr", "fixed_atr", {"basis", "stop_loss_atr_mult"}),
-    ("unified_regime_close", "unified_regime", {"basis", "close_strategy", "regime_atr_window"}),
-    ("explicit_zero_atr_drawdown_fallback", "drawdown_fallback", {"basis", "max_drawdown_pct"}),
-])
-def test_version_one_segments_cannot_rule_out_a_protective_owner(case_id, owner, fields):
+def test_version_one_segments_cannot_rule_out_a_protective_owner(subtests):
+    for case_id, owner, fields in [
+        ("pct_long", "fixed_pct", {"basis", "stop_loss_pct"}),
+        ("default_scalar_atr", "fixed_atr", {"basis", "stop_loss_atr_mult"}),
+        ("unified_regime_close", "unified_regime", {"basis", "close_strategy", "regime_atr_window"}),
+        ("explicit_zero_atr_drawdown_fallback", "drawdown_fallback", {"basis", "max_drawdown_pct"}),
+    ]:
+        with subtests.test(case=case_id):
+            _assert_version_one_segments_cannot_rule_out_a_protective_owner(case_id, owner, fields)
+
+
+def _assert_version_one_segments_cannot_rule_out_a_protective_owner(case_id, owner, fields):
     cfg, strategy, _, _ = _parity_case(case_id)
     seg = _raw_segment(cfg, strategy)
     for key in ("basis", "stop_defaults", "stop_evidence"):
@@ -970,8 +998,15 @@ def test_drawdown_provenance_is_required_only_where_precedence_reaches_it(tmp_pa
         (r["reason"], r["field"]) for r in verdict["refusals"]}
 
 
-@pytest.mark.parametrize("basis", ["raw_config", "loader_resolved"])
-def test_unverified_leverage_refuses_a_margin_stop_on_both_bases(tmp_path, basis):
+def test_unverified_leverage_refuses_a_margin_stop_on_both_bases(tmp_path, subtests):
+    for basis in ["raw_config", "loader_resolved"]:
+        with subtests.test(case=basis):
+            case_dir = tmp_path / str(basis)
+            case_dir.mkdir()
+            _assert_unverified_leverage_refuses_a_margin_stop_on_both_bases(case_dir, basis)
+
+
+def _assert_unverified_leverage_refuses_a_margin_stop_on_both_bases(tmp_path, basis):
     strategy = {"stop_loss_margin_pct": 10, "leverage": 1}
     if basis == "raw_config":
         seg = _raw_segment({}, strategy)
@@ -1133,8 +1168,15 @@ def test_an_invalid_atr_method_is_refused_unverified_or_unread(tmp_path):
         (r["reason"], r.get("field")) for r in rep["eligibility"]["refusals"]}
 
 
-@pytest.mark.parametrize("variant", ["unified_close", "trailing_regime"])
-def test_regime_owned_stops_simulate_with_labels_and_no_gating(tmp_path, variant):
+def test_regime_owned_stops_simulate_with_labels_and_no_gating(tmp_path, subtests):
+    for variant in ["unified_close", "trailing_regime"]:
+        with subtests.test(case=variant):
+            case_dir = tmp_path / str(variant)
+            case_dir.mkdir()
+            _assert_regime_owned_stops_simulate_with_labels_and_no_gating(case_dir, variant)
+
+
+def _assert_regime_owned_stops_simulate_with_labels_and_no_gating(tmp_path, variant):
     from regime import valid_labels_for_classifier
     fx = _copy(tmp_path)
     _rehash_market(fx, warmup=72)
@@ -1249,8 +1291,13 @@ def test_verified_initial_geometry_agrees_and_an_altered_trigger_mismatches(tmp_
     assert all(m["within_tolerance"] is False for m in rep["matching"]["matched"])
 
 
-@pytest.mark.parametrize("variant", ["no_attestation", "later_stamp", "ambiguous_arms"])
-def test_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch, variant):
+def test_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch, subtests):
+    for variant in ["no_attestation", "later_stamp", "ambiguous_arms"]:
+        with subtests.test(case=variant):
+            _assert_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch, variant)
+
+
+def _assert_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch, variant):
     fx = _geometry_fixture(tmp_path, attest=variant != "no_attestation", stamp_close=variant == "later_stamp",
                            name=variant)
     if variant == "ambiguous_arms":
@@ -1273,21 +1320,41 @@ def test_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch
         assert all(r["later_stamps"] for r in geo["positions"])
 
 
-@pytest.mark.parametrize("mutate", [
-    lambda seg: seg.pop("basis"),
-    lambda seg: seg["stop_defaults"].pop("user_close_defaults"),
-    lambda seg: seg["stop_evidence"]["raw_fields"].update(bogus=seg["stop_evidence"]["raw_fields"]["leverage"]),
-    lambda seg: seg["stop_evidence"]["raw_fields"]["leverage"].update(status="verified", source=""),
-    lambda seg: seg["stop_evidence"]["raw_fields"]["trailing_stop_pct"].update(value=1),
-    lambda seg: seg["stop_evidence"].pop("resolved_fields"),
-])
-def test_malformed_stop_evidence_exits_without_a_report(tmp_path, mutate):
+def _malformed_strategy_shape(field, value):
+    def mutate(seg):
+        if field == "params":
+            seg["strategy"]["open_strategy"]["params"] = value
+        else:
+            seg["strategy"][field] = value
+    return mutate
+
+
+_MALFORMED_SEGMENT_MUTATIONS = [
+    ("open_strategy-sma_crossover", _malformed_strategy_shape("open_strategy", "sma_crossover")),
+    ("params-list", _malformed_strategy_shape("params", ["fast", 10])),
+    ("args-string", _malformed_strategy_shape("args", "sma_crossover BTC 1h")),
+    ("basis-missing", lambda seg: seg.pop("basis")),
+    ("user_close_defaults-missing", lambda seg: seg["stop_defaults"].pop("user_close_defaults")),
+    ("raw_fields-unknown_key",
+     lambda seg: seg["stop_evidence"]["raw_fields"].update(bogus=seg["stop_evidence"]["raw_fields"]["leverage"])),
+    ("leverage-verified_without_source",
+     lambda seg: seg["stop_evidence"]["raw_fields"]["leverage"].update(status="verified", source="")),
+    ("trailing_stop_pct-value_without_presence",
+     lambda seg: seg["stop_evidence"]["raw_fields"]["trailing_stop_pct"].update(value=1)),
+    ("resolved_fields-missing", lambda seg: seg["stop_evidence"].pop("resolved_fields")),
+]
+
+
+def test_malformed_strategy_shapes_and_stop_evidence_exit_without_a_report(tmp_path, subtests):
     fx = _copy(tmp_path)
-    cin = _load(fx / "comparison_input.json")
-    mutate(cin["historical_configuration"]["timeline"][0])
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path)
-    assert rc == lc.EXIT_INPUT_ERROR and rep is None
+    base = _load(fx / "comparison_input.json")
+    for case, mutate in _MALFORMED_SEGMENT_MUTATIONS:
+        with subtests.test(case=case):
+            cin = copy.deepcopy(base)
+            mutate(cin["historical_configuration"]["timeline"][0])
+            _dump(fx / "comparison_input.json", cin)
+            rc, rep = _run(fx, tmp_path, name=f"{case}.json")
+            assert rc == lc.EXIT_INPUT_ERROR and rep is None
 
 
 REGIME_WINDOWS = {
@@ -1637,11 +1704,11 @@ def test_engine_keeps_feature_stamps_and_refuses_a_missing_column():
         regime_directional_policy=policy, regime_directional_certified_states=states,
         regime_label_columns=columns,
     )
-    result = bt.run(df, save=False)
+    result = bt.run(_ready_label_fixture(df), save=False)
     assert [t["side"] for t in result["trades"]] == ["long", "long"]
     stamps = [e for e in bt._regime_stamp_trace if e["event"] == "stamp"]
     clears = [e for e in bt._regime_stamp_trace if e["event"] == "clear"]
-    assert [e["directional"] for e in stamps] == ["trending_down"]
+    assert [e["directional"] for e in stamps] == ["trending_up"]
     assert clears and clears[0]["directional"] == ""
 
     partial = df.copy()
@@ -1652,12 +1719,12 @@ def test_engine_keeps_feature_stamps_and_refuses_a_missing_column():
         regime_directional_policy=policy, regime_directional_certified_states=states,
         regime_label_columns=columns,
     )
-    held.run(partial, save=False)
-    assert held._stamp_directional == "trending_down"
+    held.run(_ready_label_fixture(partial), save=False)
+    assert held._stamp_directional == "trending_up"
     assert not any(e["event"] == "clear" for e in held._regime_stamp_trace)
     open_direction, _ = held._effective_directional_entry(
         "trending_up", held._stamp_directional, 1.0)
-    assert open_direction == "short"
+    assert open_direction == "long"
 
     named = df.copy()
     named["open_action"] = ["short", "none", "none", "none", "none", "none"]
@@ -1672,7 +1739,7 @@ def test_engine_keeps_feature_stamps_and_refuses_a_missing_column():
             "payload_row": "closed_candle",
         },
     )
-    named_result = named_bt.run(named, save=False)
+    named_result = named_bt.run(_ready_label_fixture(named), save=False)
     assert [t["side"] for t in named_result["trades"]] == ["short"]
     assert named_bt._stamp_directional == "trending_down"
 
@@ -1682,7 +1749,7 @@ def test_engine_keeps_feature_stamps_and_refuses_a_missing_column():
         regime_label_columns=columns,
     )
     with pytest.raises(ValueError, match="refusing missing regime label column regime_w_gate"):
-        refused.run(missing, save=False)
+        refused.run(_ready_label_fixture(missing), save=False)
 
 
 _REGIME_STOP = {"trend_regime": {
@@ -1703,7 +1770,7 @@ def _arms(df, *, columns=None, seed=None, regime_enabled=True):
     if columns is not None:
         kwargs["regime_label_columns"] = columns
     bt = Backtester(**kwargs)
-    bt.run(df, save=False, starting_long=seed, stop_observer=events.append)
+    bt.run(_ready_label_fixture(df), save=False, starting_long=seed, stop_observer=events.append)
     return bt, [e for e in events if e.get("event") == "arm"]
 
 
@@ -1744,7 +1811,7 @@ def test_regime_owned_stop_arms_from_the_decision_bar(tmp_path):
     _dump(fx / "comparison_input.json", cin)
     _, rep = _run(fx, tmp_path, name="named_gate_stop.json")
     assert rep["simulation"]["status"] == "run", rep["eligibility"]["refusals"]
-    assert rep["eligibility"]["regime"]["protection_source"] == "shifted_decision_bar:gate_window:short"
+    assert rep["eligibility"]["regime"]["protection_source"] == "shifted_decision_bar:primary_column"
     assert rep["eligibility"]["regime"]["timing"]["protection"] == "shifted_decision_bar"
     import pandas as pd
     from regime import bounded_window_labels, required_ohlcv_limit
@@ -1824,7 +1891,7 @@ def _armed_with_policy(df, columns, *, policy=None):
         kwargs["regime_directional_policy"] = policy
         kwargs["regime_directional_certified_states"] = dict(_STAMP_STATES)
     bt = Backtester(**kwargs)
-    result = bt.run(df, save=False, stop_observer=events.append)
+    result = bt.run(_ready_label_fixture(df), save=False, stop_observer=events.append)
     arms = [e for e in events if e.get("event") == "arm"]
     return bt, arms, result["trades"]
 
@@ -1857,8 +1924,8 @@ def test_modeled_policy_arms_the_stop_from_the_stamp_row(tmp_path):
     assert trades and trades[0]["side"] == "long"
     assert arms and arms[0]["regime"] == "trending_down"
     assert arms[0]["fraction"] == pytest.approx(0.02)
-    assert bt._stamp_directional == "trending_down"
-    assert arms[0]["regime"] == bt._stamp_directional
+    assert bt._stamp_directional == "trending_up"
+    assert arms[0]["regime"] != bt._stamp_directional
     assert arms[0]["regime"] != "trending_up"
 
     fx = _copy(tmp_path)
@@ -1897,7 +1964,7 @@ def test_modeled_policy_arms_the_stop_from_the_stamp_row(tmp_path):
     seg["strategy"]["regime_gate_window"] = "short"
     named_rep = _bind("policy_short_stop.json")
     assert named_rep["eligibility"]["regime"]["protection_source"] == (
-        "unshifted_closed_candle:gate_window:short")
+        "unshifted_closed_candle:primary_column")
     assert named_rep["eligibility"]["regime"]["timing"]["protection"] == "unshifted_closed_candle"
 
 
@@ -2002,7 +2069,7 @@ def _slice_regime_warmup(fx, cin, warmup):
     cin["market"]["manifest"]["sha256"] = _sha(base / "manifest.json")
 
 
-def test_warmup_between_lookback_and_trim_is_not_an_indicator_refusal(tmp_path):
+def test_warmup_trim_requires_matching_readiness_history(tmp_path):
     def _run_warmup(warmup, name):
         slot = tmp_path / f"warm{warmup}"
         slot.mkdir()
@@ -2023,10 +2090,9 @@ def test_warmup_between_lookback_and_trim_is_not_an_indicator_refusal(tmp_path):
 
     _, mid = _run_warmup(250, "warmup_250.json")
     reasons = {r["reason"] for r in mid["eligibility"]["refusals"]}
-    assert "market_indicator_history_insufficient" not in reasons
+    assert "market_indicator_history_insufficient" in reasons
     assert "regime_lookback_insufficient" not in reasons
-    assert mid["eligibility"]["market"]["strategy_checks"]["indicator_history"]["ok"] is True
-    assert mid["simulation"]["status"] == "run"
+    assert mid["eligibility"]["market"]["strategy_checks"]["indicator_history"]["ok"] is False
 
     _, full = _run_warmup(300, "warmup_300.json")
     assert full["eligibility"]["market"]["strategy_checks"]["indicator_history"]["ok"] is True
@@ -2054,7 +2120,7 @@ def test_unshifted_gate_attestation_reads_the_fill_row(tmp_path):
             platform="hyperliquid", strategy_type="perps", regime_enabled=True,
             allowed_regimes=["trending_up"], regime_label_columns=columns,
         )
-        result = bt.run(frame, save=False)
+        result = bt.run(_ready_label_fixture(frame), save=False)
         return frame, result["trades"]
 
     admitted, admitted_trades = _gate_run(True)
@@ -2072,7 +2138,7 @@ def test_unshifted_gate_attestation_reads_the_fill_row(tmp_path):
         allowed_regimes=["trending_up"],
         regime_label_columns={"gate": "regime", "directional_named": False},
     )
-    prior = prior_bt.run(prior_up, save=False)
+    prior = prior_bt.run(_ready_label_fixture(prior_up), save=False)
     assert prior["trades"] and prior["trades"][0]["side"] == "long"
     assert pd.Timestamp(prior["trades"][0]["entry_date"]) == prior_up.index[1]
 
@@ -2131,7 +2197,7 @@ def test_unshifted_gate_arms_protection_from_the_same_row(tmp_path):
             allowed_regimes=["trending_up"], stop_loss_atr_mult_regime=_REGIME_STOP,
             regime_label_columns=columns,
         )
-        result = bt.run(frame, save=False, stop_observer=events.append)
+        result = bt.run(_ready_label_fixture(frame), save=False, stop_observer=events.append)
         arms = [e for e in events if e.get("event") == "arm"]
         return frame, bt, arms, result["trades"]
 
@@ -2210,7 +2276,7 @@ def test_unshifted_gate_arms_protection_from_the_same_row(tmp_path):
     assert closed["simulation"]["status"] == "run", closed["eligibility"]["refusals"]
     assert closed["eligibility"]["regime"]["timing"]["protection"] == "shifted_decision_bar"
     assert closed["eligibility"]["regime"]["protection_source"] == (
-        "shifted_decision_bar:gate_window:short")
+        "shifted_decision_bar:primary_column")
     assert closed["eligibility"]["regime"]["timing"]["gate"] == "shifted_closed_bar"
 
     _, (_, named) = _stop_compare(
@@ -2218,7 +2284,7 @@ def test_unshifted_gate_arms_protection_from_the_same_row(tmp_path):
     assert named["simulation"]["status"] == "run", named["eligibility"]["refusals"]
     assert named["eligibility"]["regime"]["timing"]["protection"] == "unshifted_closed_candle"
     assert named["eligibility"]["regime"]["protection_source"] == (
-        "unshifted_closed_candle:gate_window:short")
+        "unshifted_closed_candle:primary_column")
 
 
 def _payload_stop_run(tmp_path, name, *, features=None, closed_bar=False, gate_window=None,
@@ -2277,11 +2343,11 @@ def test_result_regime_timing_evidence_sets_the_stop_row_for_every_consumer(tmp_
         tmp_path, "gate_token_named", features={"gate": unshifted}, gate_window="short")
     assert gate_token["simulation"]["status"] == "run", gate_token["eligibility"]["refusals"]
     regime = gate_token["eligibility"]["regime"]
-    assert regime["protection_source"] == "unshifted_closed_candle:gate_window:short"
+    assert regime["protection_source"] == "unshifted_closed_candle:primary_column"
     assert regime["timing"]["protection"] == unshifted
     assert regime["timing"]["gate"] == unshifted
     assert regime["timing"]["result_regime"]["status"] == "attested"
-    short = _bounded_labels(fx, "short")
+    short = _bounded_labels(fx, "medium")
     arms = gate_token["stops"]["arm_events"]
     assert arms and all(a["regime"] == short[_arm_fill_ms(a)] for a in arms)
 
@@ -2294,7 +2360,7 @@ def test_result_regime_timing_evidence_sets_the_stop_row_for_every_consumer(tmp_
 
     fx, (_, bare) = _payload_stop_run(tmp_path, "no_token_named", gate_window="short")
     assert bare["simulation"]["status"] == "run", bare["eligibility"]["refusals"]
-    assert bare["eligibility"]["regime"]["protection_source"] == "shifted_decision_bar:gate_window:short"
+    assert bare["eligibility"]["regime"]["protection_source"] == "shifted_decision_bar:primary_column"
     assert bare["eligibility"]["regime"]["timing"]["result_regime"]["status"] == "unattested"
     arms = bare["stops"]["arm_events"]
     assert arms and all(a["regime"] == short[_arm_fill_ms(a) - HOUR_MS] for a in arms)
@@ -2320,7 +2386,7 @@ def test_result_regime_timing_evidence_sets_the_stop_row_for_every_consumer(tmp_
         tmp_path, "gate_and_dir_tokens", features={"gate": unshifted, "directional": unshifted},
         gate_window="short", allowed=every)
     assert both["simulation"]["status"] == "run", both["eligibility"]["refusals"]
-    assert both["eligibility"]["regime"]["protection_source"] == "unshifted_closed_candle:gate_window:short"
+    assert both["eligibility"]["regime"]["protection_source"] == "unshifted_closed_candle:primary_column"
     arms = both["stops"]["arm_events"]
     assert arms and all(a["regime"] == short[_arm_fill_ms(a)] for a in arms)
 
@@ -2388,13 +2454,13 @@ def test_regime_context_columns_arm_the_stop_on_the_attested_row():
 
     columns, report = _context_label_columns({"gate": "unshifted_closed_candle"}, gate_window="short")
     assert columns["gate"] == "regime_w_short" and columns["payload_row"] == "closed_candle"
-    assert report["protection_source"] == "unshifted_closed_candle:gate_window:short"
-    assert _arm_label(columns, short=moving, medium=still) == "trending_up"
+    assert report["protection_source"] == "unshifted_closed_candle:primary_column"
+    assert _arm_label(columns, short=moving, medium=still) == "ranging"
 
     columns, report = _context_label_columns(None, gate_window="short")
     assert columns["payload_row"] == "decision_bar"
-    assert report["protection_source"] == "shifted_decision_bar:gate_window:short"
-    assert _arm_label(columns, short=moving, medium=still) == "trending_down"
+    assert report["protection_source"] == "shifted_decision_bar:primary_column"
+    assert _arm_label(columns, short=moving, medium=still) == "ranging"
 
     columns, report = _context_label_columns({"directional": "unshifted_closed_candle"})
     assert columns["gate"] == "regime_w_medium" and columns["payload_row"] == "closed_candle"
@@ -2430,7 +2496,7 @@ def test_engine_reads_result_regime_from_one_payload_row():
             kwargs["regime_directional_policy"] = policy
             kwargs["regime_directional_certified_states"] = dict(_STAMP_STATES)
         bt = Backtester(**kwargs)
-        result = bt.run(_ohlc(labels, actions), save=False, stop_observer=events.append)
+        result = bt.run(_ready_label_fixture(_ohlc(labels, actions)), save=False, stop_observer=events.append)
         return bt, [e for e in events if e.get("event") == "arm"], result["trades"]
 
     base = {"gate": "regime", "directional": "regime", "directional_named": False}
@@ -2593,12 +2659,19 @@ def test_resting_rule_off_suppressed_and_reclassified_variants(tmp_path):
     assert [b["classification"] for b in synced["resting_fill"]["booked_tier_closes"]] == ["tier"]
 
 
-@pytest.mark.parametrize("case,code", [
-    ("conflict", "resting_rule_conflict"),
-    ("k_ticks", "resting_rule_k_unsupported"),
-    ("null_flag", "resting_rule_flag_invalid"),
-])
-def test_resting_rule_refusals_are_never_simulated(tmp_path, case, code):
+def test_resting_rule_refusals_are_never_simulated(tmp_path, subtests):
+    for case, code in [
+        ("conflict", "resting_rule_conflict"),
+        ("k_ticks", "resting_rule_k_unsupported"),
+        ("null_flag", "resting_rule_flag_invalid"),
+    ]:
+        with subtests.test(case=case):
+            case_dir = tmp_path / str(case)
+            case_dir.mkdir()
+            _assert_resting_rule_refusals_are_never_simulated(case_dir, case, code)
+
+
+def _assert_resting_rule_refusals_are_never_simulated(tmp_path, case, code):
     inp = INPUTS[RESTING_EXPORT]
     fx = _copy(tmp_path)
     if case == "conflict":
@@ -2662,3 +2735,120 @@ def test_paper_replay_cost_model_rows_refuse_instead_of_default_costs(tmp_path):
         assert "paper_cost_model_replay_unsupported" in reasons
         assert "paper_cost_model_unknown" not in reasons
         assert rep["simulation"].get("cost_model") is None
+
+
+def _regime_side_segment(fx, **extra):
+    cin, seg = _segment(fx)
+    _use_regime_market(cin, fx)
+    seg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 20, "windows": REGIME_WINDOWS}
+    seg["strategy"]["direction"] = "both"
+    seg["strategy"]["regime_side"] = True
+    seg["strategy"]["regime_directional_window"] = "short"
+    seg["strategy"].update(extra)
+    return cin, seg
+
+
+def _regime_side_evidence(fx, cin, seg, cert=None):
+    rel, digest = _write_json(fx, "regime_labels.json", {"values_and_timing": True})
+    evidence = cin.setdefault("capability_evidence", {})
+    evidence["regime_labels"] = _verified_evidence(_binding(seg), artifact={"path": rel, "sha256": digest})
+    evidence["regime_feature_timing"] = _verified_evidence(
+        _binding(seg), features={"directional": "unshifted_closed_candle"})
+    if cert is not None:
+        cert_rel, cert_sha = _write_json(fx, "cert.json", cert)
+        evidence["directional_certification"] = _verified_evidence(
+            _binding(seg), reloads="none", artifact={"path": cert_rel, "sha256": cert_sha})
+    _dump(fx / "comparison_input.json", cin)
+
+
+def _opened_sides(rep):
+    return sorted({p["side"] for p in rep["simulated"]["positions"]})
+
+
+def test_regime_side_live_comparison_keeps_its_certification_context(tmp_path):
+    fx = _copy(tmp_path)
+    cin, seg = _regime_side_segment(fx)
+    _regime_side_evidence(fx, cin, seg)
+    rc, rep = _run(fx, tmp_path, name="side_no_cert.json")
+    assert rc == 1
+    assert ("directional_certification_unverified", "regime_side") in _codes(rep)
+    assert rep["simulation"]["status"] == "not_run"
+
+    _, approx = _run(fx, tmp_path, mode="approximate", name="side_no_cert_approx.json")
+    assert approx["simulation"]["status"] == "run", approx["eligibility"]["refusals"]
+    assert approx["simulated"]["positions"] == []
+
+    fx = _copy(tmp_path / "ack")
+    cin, seg = _regime_side_segment(fx, allow_uncertified_regime_side=True)
+    _regime_side_evidence(fx, cin, seg)
+    _, ack = _run(fx, tmp_path, name="side_ack.json")
+    assert ack["simulation"]["status"] == "run", ack["eligibility"]["refusals"]
+    rows = {(r["field"], r["category"]): r for r in ack["eligibility"]["capability_matrix"]}
+    assert rows[("regime_side", "regime")]["decision"] == "modeled"
+    assert rows[("allow_uncertified_regime_side", "regime")]["decision"] == "modeled"
+    ack_positions = ack["simulated"]["positions"]
+    assert len(ack_positions) >= 1
+
+    fx = _copy(tmp_path / "certified")
+    cin, seg = _regime_side_segment(fx)
+    _regime_side_evidence(fx, cin, seg, cert=_cert_artifact(
+        {"trending_up": "long", "trending_down": "short"}, expires_at="2026-02-01T00:00:00Z"))
+    _, certified = _run(fx, tmp_path, name="side_certified.json")
+    assert certified["simulation"]["status"] == "run", certified["eligibility"]["refusals"]
+    assert certified["eligibility"]["regime"]["certification"]["status"] == "verified"
+    assert [(p["side"], p["opened_qty"]) for p in certified["simulated"]["positions"]] == [
+        (p["side"], p["opened_qty"]) for p in ack_positions]
+
+    fx = _copy(tmp_path / "wrong")
+    cin, seg = _regime_side_segment(fx)
+    _regime_side_evidence(fx, cin, seg, cert=_cert_artifact(
+        {"trending_up": "short", "trending_down": "long", "ranging": "long"}))
+    _, wrong = _run(fx, tmp_path, name="side_wrong.json")
+    assert wrong["simulation"]["status"] == "run", wrong["eligibility"]["refusals"]
+    assert wrong["simulated"]["positions"] == []
+
+
+def test_regime_side_paper_needs_no_certification_and_conflicts_refuse(tmp_path):
+    fx = _copy(tmp_path / "paper")
+    cin = _load(fx / "comparison_input_paper.json")
+    seg = cin["historical_configuration"]["timeline"][0]
+    _use_regime_market(cin, fx)
+    seg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 20, "windows": REGIME_WINDOWS}
+    seg["strategy"].update(direction="both", regime_side=True, regime_directional_window="short")
+    binding = dict(_binding(seg), partition="paper")
+    rel, digest = _write_json(fx, "regime_labels.json", {"values_and_timing": True})
+    cin["capability_evidence"] = dict(cin.get("capability_evidence") or {}, **{
+        "regime_labels": _verified_evidence(binding, artifact={"path": rel, "sha256": digest}),
+        "regime_feature_timing": _verified_evidence(binding, features={"directional": "unshifted_closed_candle"}),
+    })
+    _dump(fx / "comparison_input_paper.json", cin)
+    _, paper = _run(fx, tmp_path, export="export_paper.json", mode="approximate", name="side_paper.json")
+    rows = {(r["field"], r["category"]): r for r in paper["eligibility"]["capability_matrix"]}
+    assert rows[("regime_side", "regime")]["decision"] == "modeled"
+    assert not any(field == "regime_side" for _, field in _codes(paper))
+    assert paper["simulation"]["status"] == "run", paper["eligibility"]["refusals"]
+    assert len(paper["simulated"]["positions"]) >= 1
+
+    fx = _copy(tmp_path)
+    cin, seg = _regime_side_segment(fx, invert_signal=True)
+    _regime_side_evidence(fx, cin, seg)
+    rc, rep = _run(fx, tmp_path, name="side_invert.json")
+    assert rc == 1
+    assert ("regime_side_invalid", "regime_side") in _codes(rep)
+    assert rep["simulation"]["status"] == "not_run"
+
+    fx = _copy(tmp_path / "ack_only")
+    cin, seg = _segment(fx)
+    seg["strategy"]["allow_uncertified_regime_side"] = True
+    _dump(fx / "comparison_input.json", cin)
+    rc, rep = _run(fx, tmp_path, name="side_ack_only.json")
+    assert rc == 1
+    assert ("regime_side_invalid", "allow_uncertified_regime_side") in _codes(rep)
+
+    fx = _copy(tmp_path / "timeframe")
+    cin, seg = _regime_side_segment(fx)
+    seg["regime"]["timeframe"] = "4h"
+    _regime_side_evidence(fx, cin, seg)
+    rc, rep = _run(fx, tmp_path, mode="approximate", name="side_timeframe.json")
+    assert rc == 1
+    assert ("regime_timeframe_unprepared", "regime_side") in _codes(rep)

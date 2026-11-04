@@ -141,8 +141,7 @@ def engine_label_columns(plan: dict) -> dict:
         "payload_row": "decision_bar",
         "gate_row": "decision_bar",
     }
-    if plan["named"]["atr"]:
-        out["atr"] = column_name(windows["atr"])
+    out["atr"] = column_name(windows["atr"])
     return out
 
 
@@ -186,30 +185,43 @@ def attach_regime_label_columns(df, plan: dict, *, regime_frame=None):
         bounded_window_labels(
             labeled, period=period, adx_threshold=adx, windows_spec=spec,
             limit=limit, columns=columns)
-        aligned = labeled.loc[:, list(columns)].shift(1).reindex(df.index, method="ffill")
-        for col in columns:
-            df[col] = aligned[col].fillna("").map(lambda v: str(v or "").strip())
+        transport = [name for col in columns for name in (col, col + "_ready", col + "_bars", col + "_need")]
+        aligned = labeled.loc[:, transport].shift(1).reindex(df.index, method="ffill")
+        for col in transport:
+            if col.endswith("_ready"):
+                df[col] = aligned[col].fillna(False).astype(bool)
+            elif col.endswith(("_bars", "_need")):
+                df[col] = aligned[col].fillna(0).astype(int)
+            else:
+                df[col] = aligned[col].fillna("").map(lambda v: str(v or "").strip())
     else:
         bounded_window_labels(
             target, period=period, adx_threshold=adx, windows_spec=spec,
             limit=limit, columns=columns)
     primary_col = column_name(plan.get("primary") or windows["gate"])
     df["regime"] = df[primary_col].fillna("").map(lambda v: str(v or "").strip())
+    for field in ("ready", "bars", "need"):
+        df["regime_" + field] = df[primary_col + "_" + field]
     return df, engine_label_columns(plan)
 
 
 def missing_label_columns(df, plan: dict) -> list:
-    needed = [column_name(plan["windows"][field]) for field in ("gate", "directional", "atr")]
+    needed = [column_name(plan["windows"][field]) + suffix for field in ("gate", "directional", "atr") for suffix in ("", "_ready", "_bars", "_need")]
     return sorted({name for name in needed if name not in getattr(df, "columns", [])})
 
 
 def overlay_regime_columns(source, signals):
     """Copy prepared label columns onto a signal frame that shares the index."""
     cols = [c for c in source.columns
-            if c == "regime" or str(c).startswith("regime_w_")]
+            if c in ("regime", "regime_ready", "regime_bars", "regime_need") or str(c).startswith("regime_w_")]
     for col in cols:
-        signals[col] = source[col].reindex(signals.index).fillna("").map(
-            lambda v: str(v or "").strip()).values
+        values = source[col].reindex(signals.index)
+        if col.endswith("_ready"):
+            signals[col] = values.fillna(False).astype(bool).values
+        elif col.endswith(("_bars", "_need")):
+            signals[col] = values.fillna(0).astype(int).values
+        else:
+            signals[col] = values.fillna("").map(lambda v: str(v or "").strip()).values
     return signals
 
 

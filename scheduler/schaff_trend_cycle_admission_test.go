@@ -11,7 +11,7 @@ import (
 
 const schaffName = "schaff_trend_cycle"
 
-func TestSchaffTrendCycleAdmissionThroughRealLoaders(t *testing.T) {
+func noEdgeCaseSchaffTrendCycleAdmissionThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const ref = "backtest/candidates/schaff_trend_cycle_1651/REPORT.md"
 	stc := func(args ...string) map[string]interface{} {
@@ -94,7 +94,7 @@ func TestSchaffTrendCycleAdmissionThroughRealLoaders(t *testing.T) {
 	}
 }
 
-func TestSchaffTrendCycleRequiresHyperliquidClosedBarDecisions(t *testing.T) {
+func noEdgeCaseSchaffTrendCycleRequiresHyperliquidClosedBarDecisions(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	t.Setenv("TOPSTEP_API_KEY", "k")
 	t.Setenv("TOPSTEP_API_SECRET", "s")
@@ -180,7 +180,7 @@ func TestSchaffTrendCycleRequiresHyperliquidClosedBarDecisions(t *testing.T) {
 	}
 }
 
-func TestSchaffTrendCycleAcknowledgementMustBeABoolean(t *testing.T) {
+func noEdgeCaseSchaffTrendCycleAcknowledgementMustBeABoolean(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	for _, raw := range []interface{}{"true", 1, map[string]interface{}{}} {
 		sc := noEdgeHLStrategy("hl-stc-eth", schaffName, "ETH", "4h", "--mode=live")
@@ -192,7 +192,7 @@ func TestSchaffTrendCycleAcknowledgementMustBeABoolean(t *testing.T) {
 	}
 }
 
-func TestSchaffTrendCycleRegistrationTables(t *testing.T) {
+func noEdgeCaseSchaffTrendCycleRegistrationTables(t *testing.T) {
 	if knownShortNames[schaffName] != "stc" || !isBidirectionalPerpsStrategy(schaffName) {
 		t.Fatalf("short name %q, bidirectional %v", knownShortNames[schaffName], isBidirectionalPerpsStrategy(schaffName))
 	}
@@ -213,7 +213,7 @@ func TestSchaffTrendCycleRegistrationTables(t *testing.T) {
 	}
 }
 
-func TestV20NoEdgeMigrationNeverStampsSchaffTrendCycle(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationNeverStampsSchaffTrendCycle(t *testing.T) {
 	open := noEdgeHLStrategy("hl-stc-open", schaffName, "ETH", "4h", "--mode=live")
 	fallback := noEdgeHLStrategy("hl-stc-close", "breakout", "ETH", "4h", "--mode=live")
 	fallback["close_strategy"] = map[string]interface{}{"name": schaffName}
@@ -267,7 +267,7 @@ func assertSchaffPaperEntry(t *testing.T, sc StrategyConfig, id string) {
 	}
 }
 
-func TestSchaffTrendCycleOperatorAddPathsCreateExplicitPaperEntries(t *testing.T) {
+func noEdgeCaseSchaffTrendCycleOperatorAddPathsCreateExplicitPaperEntries(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry(schaffName, "hyperliquid", "sol")
 	if err != nil || id != "hl-stc-sol" {

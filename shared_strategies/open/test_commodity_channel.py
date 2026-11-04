@@ -256,28 +256,29 @@ def _same(a, b):
             assert x == y, (col, x, y)
 
 
-@pytest.mark.parametrize("params", [
-    None,
-    {"lookback": 100, "threshold": 50.0, "trend_period": 150},
-    {"lookback": 14, "threshold": 150.0, "trend_period": 20},
-])
-def test_full_series_prefix_and_bounded_tail_agree(params):
-    df = _market()
-    full = run(df, params)
-    p = {**_FUTURES.STRATEGY_REGISTRY[NAME]["default_params"], **(params or {})}
-    need = max(p["lookback"] + 1, p["trend_period"])
-    assert (full["signal"] != 0).sum() > 0
-    for i in range(len(df)):
-        prefix = run(df.iloc[: i + 1], params).iloc[-1]
-        _same(full.iloc[i], prefix)
-        tail = run(df.iloc[max(0, i - 199): i + 1], params).iloc[-1]
-        if i + 1 >= need:
-            _same(full.iloc[i], tail)
-    exact = run(df.iloc[len(df) - need:], params).iloc[-1]
-    _same(full.iloc[-1], exact)
-    too_short = run(df.iloc[len(df) - need + 1:], params).iloc[-1]
-    assert too_short["cct_reason"] == "insufficient_history"
-    assert int(too_short["signal"]) == 0
+def test_full_series_prefix_and_bounded_tail_agree(subtests):
+    for params in [
+        None,
+        {"lookback": 100, "threshold": 50.0, "trend_period": 150},
+        {"lookback": 14, "threshold": 150.0, "trend_period": 20},
+    ]:
+        with subtests.test(params=params):
+            df = _market()
+            full = run(df, params)
+            p = {**_FUTURES.STRATEGY_REGISTRY[NAME]["default_params"], **(params or {})}
+            need = max(p["lookback"] + 1, p["trend_period"])
+            assert (full["signal"] != 0).sum() > 0
+            for i in range(len(df)):
+                prefix = run(df.iloc[: i + 1], params).iloc[-1]
+                _same(full.iloc[i], prefix)
+                tail = run(df.iloc[max(0, i - 199): i + 1], params).iloc[-1]
+                if i + 1 >= need:
+                    _same(full.iloc[i], tail)
+            exact = run(df.iloc[len(df) - need:], params).iloc[-1]
+            _same(full.iloc[-1], exact)
+            too_short = run(df.iloc[len(df) - need + 1:], params).iloc[-1]
+            assert too_short["cct_reason"] == "insufficient_history"
+            assert int(too_short["signal"]) == 0
 
 
 def test_close_exactly_at_trend_average_matches_on_bounded_window():

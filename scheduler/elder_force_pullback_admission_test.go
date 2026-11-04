@@ -20,7 +20,7 @@ func elderForceLoadBoth(t *testing.T, sc map[string]interface{}) (*Config, error
 	return cfg, loadErr
 }
 
-func TestElderForcePullbackAdmissionRoutesOpenAndCloseFallbackReferences(t *testing.T) {
+func noEdgeCaseElderForcePullbackAdmissionRoutesOpenAndCloseFallbackReferences(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	open := func(args ...string) map[string]interface{} {
 		return noEdgeHLStrategy("hl-efp-eth", append([]string{elderForceName, "ETH", "1h"}, args...)...)
@@ -62,7 +62,7 @@ func TestElderForcePullbackAdmissionRoutesOpenAndCloseFallbackReferences(t *test
 	}
 }
 
-func TestElderForcePullbackOperatorAddCreatesALoadableExplicitPaperEntry(t *testing.T) {
+func noEdgeCaseElderForcePullbackOperatorAddCreatesALoadableExplicitPaperEntry(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	id, entry, err := buildAddStrategyEntry(elderForceName, "hyperliquid", "sol")
 	if err != nil || id != "hl-efp-sol" {
@@ -115,7 +115,7 @@ func TestElderForcePullbackOperatorAddCreatesALoadableExplicitPaperEntry(t *test
 	}
 }
 
-func TestV20NoEdgeMigrationNeverStampsElderForcePullback(t *testing.T) {
+func noEdgeCaseV20NoEdgeMigrationNeverStampsElderForcePullback(t *testing.T) {
 	open := noEdgeHLStrategy("hl-efp-open", elderForceName, "ETH", "1h", "--mode=live")
 	fallback := noEdgeHLStrategy("hl-efp-close", "breakout", "ETH", "1h", "--mode=live")
 	fallback["close_strategy"] = map[string]interface{}{"name": elderForceName}

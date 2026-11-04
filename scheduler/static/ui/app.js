@@ -232,6 +232,11 @@
     addStratRestart: document.getElementById("add-strat-restart"),
     addStratButton: document.getElementById("add-strat-button"),
     addStratMessage: document.getElementById("add-strat-message"),
+    addStratOpenParams: document.getElementById("add-strat-open-params"),
+    addQuoteFile: document.getElementById("add-quote-file"),
+    addQuoteRestart: document.getElementById("add-quote-restart"),
+    addQuoteButton: document.getElementById("add-quote-button"),
+    addQuoteMessage: document.getElementById("add-quote-message"),
     leaderboardBody: document.getElementById("leaderboard-body"),
     leaderboardEmpty: document.getElementById("leaderboard-empty"),
     diagnosticsBody: document.getElementById("diagnostics-body"),
@@ -1214,9 +1219,12 @@
           '<canvas class="strategy-sparkline" width="48" height="28" aria-hidden="true"></canvas>' +
           '<span class="strategy-symbol"></span>' +
           '<span class="strategy-meta"></span>';
-        button.querySelector(".strategy-id").textContent = (strategy.paused ? "⏸ " : "") + strategy.id;
+        button.querySelector(".strategy-id").textContent = (strategy.engine_hold ? "[held] " : "") + (strategy.paused ? "⏸ " : "") + strategy.id;
         if (strategy.paused) {
           button.title = "Paused — position-increasing signals held";
+        }
+        if (strategy.engine_hold) {
+          button.title = "Held (" + strategy.engine_hold.reason + "): " + strategy.engine_hold.text + " — " + strategy.engine_hold.tracking_url;
         }
         button.querySelector(".strategy-symbol").textContent = strategy.symbol || "-";
         button.querySelector(".strategy-meta").textContent =
@@ -1722,10 +1730,49 @@
       return Promise.resolve();
     }
     const params = { name: name, platform: platform, asset: asset };
+    const openParamsText = (els.addStratOpenParams && els.addStratOpenParams.value || "").trim();
+    if (openParamsText) {
+      let parsed;
+      try {
+        parsed = JSON.parse(openParamsText);
+      } catch (err) {
+        setStructuralMessage("Open params must be a JSON object: " + err.message, els.addStratMessage);
+        return Promise.resolve();
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        setStructuralMessage("Open params must be a JSON object.", els.addStratMessage);
+        return Promise.resolve();
+      }
+      params.open_params = parsed;
+    }
     if (els.addStratRestart && els.addStratRestart.checked) {
       params.restart = true;
     }
     return confirmStructuralAction("add-strategy", "", params, "/api/config/add-strategy", els.addStratMessage);
+  }
+
+  async function structuralAddQuoteOwner() {
+    const file = els.addQuoteFile && els.addQuoteFile.files && els.addQuoteFile.files[0];
+    if (!file) {
+      setStructuralMessage("Choose a quote_owner JSON file.", els.addQuoteMessage);
+      return;
+    }
+    if (file.size > 1048576) {
+      setStructuralMessage("The quote_owner file exceeds 1 MiB.", els.addQuoteMessage);
+      return;
+    }
+    let text;
+    try {
+      text = await file.text();
+    } catch (err) {
+      setStructuralMessage("The quote_owner file could not be read: " + err.message, els.addQuoteMessage);
+      return;
+    }
+    const params = { fragment_text: text };
+    if (els.addQuoteRestart && els.addQuoteRestart.checked) {
+      params.restart = true;
+    }
+    return confirmStructuralAction("add-quote-owner", "", params, "/api/config/add-quote-owner", els.addQuoteMessage);
   }
 
   function structuralPerStrategy(action) {
@@ -2055,6 +2102,18 @@
     return dir + (cert ? " (certified)" : "");
   }
 
+  function regimeSideCell(side) {
+    if (!side || !side.enabled) {
+      return null;
+    }
+    const label = (side.window || "-") + "=" + (side.label || "?");
+    const req = side.requested_side || "none";
+    if (side.hold_reason) {
+      return label + " → " + req + " (held: " + side.hold_reason + ")";
+    }
+    return label + " → " + req;
+  }
+
   async function refreshStatus() {
     if (!state.activeID) return;
     const status = await getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/status");
@@ -2088,6 +2147,10 @@
     if (dirCell) {
       fields.push(["Direction", dirCell]);
     }
+    const sideCell = regimeSideCell(status.regime_side);
+    if (sideCell) {
+      fields.push(["Regime side", sideCell]);
+    }
     if (status.regime_profile && status.regime_profile.active_profile) {
       let profile = status.regime_profile.active_profile;
       if (status.regime_profile.pending_profile) {
@@ -2119,8 +2182,7 @@
       rows.push(positionRow(symbol, pos.side || "long", pos.quantity, pos.avg_cost, pos.stop_loss_trigger_px));
     });
     Object.keys(optionPositions).sort().forEach(function (symbol) {
-      const pos = optionPositions[symbol];
-      rows.push(positionRow(symbol, pos.action || "", pos.quantity, pos.entry_premium_usd, 0));
+      rows.push(optionPositionRow(symbol, optionPositions[symbol]));
     });
     els.positions.innerHTML = rows.length ? rows.join("") : '<div class="position-row"><span>Flat</span><span>-</span></div>';
   }
@@ -2128,6 +2190,38 @@
   function positionRow(symbol, side, qty, price, sl) {
     const klass = side === "short" || side === "sell" ? "pos-short" : "pos-long";
     const detail = "Qty " + fmtNumber(qty) + " @ " + fmtMoney(price) + (sl ? " / SL " + fmtMoney(sl) : "");
+    return '<div class="position-row"><strong>' + escapeHTML(symbol) + '</strong><span class="' + klass + '">' +
+      escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span>' + positionActionButtons() + '</span></div>';
+  }
+
+  function optionMarkAge(updatedAt) {
+    const ms = Date.parse(updatedAt || "");
+    if (!Number.isFinite(ms) || ms <= 0) {
+      return "";
+    }
+    const minutes = Math.max(0, Math.round((Date.now() - ms) / 60000));
+    if (minutes < 1) {
+      return "<1m";
+    }
+    const hours = Math.floor(minutes / 60);
+    if (hours >= 48) {
+      return Math.floor(hours / 24) + "d" + (hours % 24) + "h";
+    }
+    return hours > 0 ? hours + "h" + (minutes % 60) + "m" : minutes + "m";
+  }
+
+  function optionPositionRow(symbol, pos) {
+    const side = pos.action || "";
+    const klass = side === "sell" ? "pos-short" : "pos-long";
+    const age = optionMarkAge(pos.mark_updated_at);
+    let mark = "mark unknown";
+    if (age) {
+      mark = "mark " + fmtMoney(pos.current_value_usd) + " " + age + " ago (" + (pos.mark_source || "unknown source") + ")";
+    }
+    let detail = "Qty " + fmtNumber(pos.quantity) + " @ " + fmtMoney(pos.entry_premium_usd) + " / " + mark;
+    if (pos.mark_error) {
+      detail += " / " + pos.mark_error;
+    }
     return '<div class="position-row"><strong>' + escapeHTML(symbol) + '</strong><span class="' + klass + '">' +
       escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span>' + positionActionButtons() + '</span></div>';
   }
@@ -2189,7 +2283,7 @@
     els.overviewBody.innerHTML = rows.map(function (row) {
       const pnlClassName = row.pnl_pct > 0 ? "pnl-pos" : row.pnl_pct < 0 ? "pnl-neg" : "";
       return '<tr class="overview-row' + (row.id === state.activeID ? " active" : "") + '" data-id="' + escapeHTML(row.id) + '">' +
-        "<td>" + (row.paused ? '<span title="Paused">⏸</span> ' : "") + escapeHTML(row.id) + "</td>" +
+        "<td>" + (row.engine_hold ? '<span title="' + escapeHTML("Held (" + row.engine_hold.reason + "): " + row.engine_hold.text + " — " + row.engine_hold.tracking_url) + '">[held]</span> ' : "") + (row.paused ? '<span title="Paused">⏸</span> ' : "") + escapeHTML(row.id) + "</td>" +
         "<td>" + escapeHTML(row.platform || "-") + "</td>" +
         "<td>" + escapeHTML(row.symbol || "-") + "</td>" +
         "<td>" + escapeHTML(row.mode || "-") + "</td>" +
@@ -2287,6 +2381,17 @@
     }
   }
 
+  function regimeReadinessLabel(snap) {
+    if (!snap || !Number.isInteger(snap.need) || snap.need <= 0) return "unavailable";
+    return snap.ready ? snap.regime : "warming (" + snap.bars + "/" + snap.need + ")";
+  }
+
+  function regimeIdentityLabel(platform, assetClass) {
+    if (assetClass) return platform + ":" + assetClass;
+    if (platform === "robinhood") return platform + ":unclassified";
+    return platform || "";
+  }
+
   async function refreshRegimeStorePanel() {
     if (!els.regimeStoreContent) return;
     try {
@@ -2297,15 +2402,16 @@
         return;
       }
       els.regimeStoreContent.innerHTML = entries.map(function (entry) {
+        const identity = regimeIdentityLabel(entry.platform, entry.asset_class);
         const title = [entry.symbol, entry.timeframe].filter(Boolean).join(" ") +
-          (entry.platform ? " (" + entry.platform + ")" : "");
+          (identity ? " (" + identity + ")" : "");
         const windows = entry.windows || {};
         const windowRows = Object.keys(windows).sort().map(function (name) {
           const win = windows[name] || {};
-          const label = win.regime || "-";
+          const label = win.status || "unavailable";
           const views = [];
-          if (win.adx3 && win.adx3 !== label) views.push("adx3: " + win.adx3);
-          if (win.composite7 && win.composite7 !== label) views.push("c7: " + win.composite7);
+          if (win.adx3) views.push("adx3: " + regimeReadinessLabel(win.adx3));
+          if (win.composite7) views.push("c7: " + regimeReadinessLabel(win.composite7));
           return '<div class="panel-row panel-indent">' + escapeHTML(name) + ": " +
             '<span class="regime-badge ' + regimeBadgeClass(label) + '">' +
             escapeHTML(humanizeRegimeLabel(label)) + "</span>" +
@@ -2332,7 +2438,9 @@
         const when = row.ts ? new Date(row.ts).toLocaleString(undefined, {
           month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
         }) : "-";
-        const scope = [row.symbol, row.timeframe, row.window].filter(Boolean).join(" ");
+        const classed = row.asset_class || row.platform === "robinhood";
+        const scope = [row.symbol, row.timeframe, row.window].filter(Boolean).join(" ") +
+          (classed ? " (" + regimeIdentityLabel(row.platform, row.asset_class) + ")" : "");
         return '<div class="panel-row"><span class="panel-muted">' + escapeHTML(when) + "</span> " +
           escapeHTML(scope) + ": " + escapeHTML(humanizeRegimeLabel(row.old_label || "-")) +
           " → <strong>" + escapeHTML(humanizeRegimeLabel(row.new_label || "-")) + "</strong>" +
@@ -2721,6 +2829,11 @@
   if (els.addStratButton) {
     els.addStratButton.addEventListener("click", function () {
       structuralAddStrategy().catch(handleRefreshError);
+    });
+  }
+  if (els.addQuoteButton) {
+    els.addQuoteButton.addEventListener("click", function () {
+      structuralAddQuoteOwner().catch(handleRefreshError);
     });
   }
   if (els.removeStrategyButton) {

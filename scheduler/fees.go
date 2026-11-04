@@ -23,8 +23,14 @@ const (
 	FillCostModelVersion = 1
 )
 
+func stampTradeCostModel(trade *Trade) {
+	if trade.CostModelVersion == 0 {
+		trade.CostModelVersion = FillCostModelVersion
+	}
+}
+
 func ApplyAdverseSlippage(price float64, isBuy bool) float64 {
-	return applySlippageRate(price, isBuy, activeFillCostPolicy().SlippagePct)
+	return applySlippageRate(price, isBuy, SlippagePct)
 }
 
 func applySlippageRate(price float64, isBuy bool, slip float64) float64 {
@@ -39,7 +45,7 @@ func CalculateSpotFee(value float64) float64 {
 }
 
 func CalculateHyperliquidFee(notionalUSD float64) float64 {
-	return notionalUSD * activeFillCostPolicy().TakerFeePct
+	return notionalUSD * HyperliquidTakerFeePct
 }
 
 func CalculatePlatformSpotFee(platform string, value float64) float64 {

@@ -2,14 +2,14 @@
 import os
 import re
 import sys
-import math
 import time
-from typing import Tuple
+from typing import Optional, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
 import ccxt
 import egress_policy
+import option_data
 
 
 def _bill_float(value) -> float:
@@ -452,113 +452,6 @@ class OKXExchangeAdapter:
         finally:
             self._exchange.headers = saved
 
-    PAIR_SWAP_SUFFIX = "-USDT-SWAP"
-
-    def _require_live(self, caller: str):
-        if not self._is_live:
-            raise RuntimeError(f"{caller} requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)")
-
-    @classmethod
-    def pair_symbol(cls, inst_id: str) -> str:
-        if not isinstance(inst_id, str) or not inst_id.endswith(cls.PAIR_SWAP_SUFFIX) or len(inst_id) <= len(cls.PAIR_SWAP_SUFFIX):
-            raise ValueError(f"instrument {inst_id!r} is not <UNDERLYING>-USDT-SWAP")
-        return cls.order_pair(inst_id[:-len(cls.PAIR_SWAP_SUFFIX)], "swap")
-
-    def pair_instrument(self, inst_id: str) -> dict:
-        resp = self._exchange.publicGetPublicInstruments({"instType": "SWAP", "instId": inst_id})
-        if not isinstance(resp, dict) or str(resp.get("code")) != "0":
-            raise RuntimeError(f"OKX public instruments refused {inst_id}: {resp!r}")
-        data = resp.get("data")
-        if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
-            raise RuntimeError(f"OKX public instruments returned no single record for {inst_id}")
-        record = data[0]
-        out = {}
-        for field in ("instId", "ctVal", "tickSz", "lotSz", "minSz", "state", "settleCcy"):
-            value = record.get(field)
-            if not isinstance(value, str) or not value:
-                raise RuntimeError(f"OKX instrument {inst_id} field {field} is not text: {value!r}")
-            out[field] = value
-        if out["instId"] != inst_id:
-            raise RuntimeError(f"OKX public instruments returned {out['instId']} for {inst_id}")
-        return out
-
-    def pair_order_check(self, inst_id: str, native_text: str, price_text: str) -> dict:
-        self._require_live("pair_order_check")
-        pair = self.pair_symbol(inst_id)
-        inst = self.pair_instrument(inst_id)
-        self._load_markets()
-        market = self._exchange.market(pair)
-        if not isinstance(market, dict) or market.get("id") != inst_id:
-            raise RuntimeError(f"the SDK market for {pair} is not {inst_id}")
-        return {
-            "inst_id": inst_id,
-            "contract_size": inst["ctVal"],
-            "tick": inst["tickSz"],
-            "lot": inst["lotSz"],
-            "min": inst["minSz"],
-            "state": inst["state"],
-            "settle": inst["settleCcy"],
-            "amount_text": str(self._exchange.amount_to_precision(pair, float(native_text))),
-            "price_text": str(self._exchange.price_to_precision(pair, float(price_text))),
-        }
-
-    def pair_limit_ioc(self, inst_id: str, side: str, native_text: str, price_text: str, client_order_id: str,
-                       reduce_only: bool, exp_time_ms: int) -> dict:
-        self._require_live("pair_limit_ioc")
-        if side not in ("buy", "sell"):
-            raise ValueError(f"side {side!r} is neither buy nor sell")
-        pair = self.pair_symbol(inst_id)
-        params = {"tdMode": "cross", "clOrdId": client_order_id, "reduceOnly": bool(reduce_only), "timeInForce": "IOC"}
-        self._load_markets()
-        saved = self._exchange.headers
-        self._exchange.headers = {**(saved or {}), "expTime": str(int(exp_time_ms))}
-        try:
-            return self._exchange.create_order(pair, "limit", side, float(native_text), float(price_text), params=params)
-        finally:
-            self._exchange.headers = saved
-
-    def fetch_pair_order(self, inst_id: str, client_order_id: str) -> dict:
-        self._require_live("fetch_pair_order")
-        order = self._exchange.fetch_order(None, self.pair_symbol(inst_id), params={"clOrdId": client_order_id})
-        info = order.get("info") if isinstance(order, dict) else None
-        if not isinstance(info, dict):
-            raise RuntimeError(f"the order read for {client_order_id} returned no venue record: {order!r}")
-        return info
-
-    def fetch_pair_position(self, inst_id: str) -> dict:
-        self._require_live("fetch_pair_position")
-        self.pair_symbol(inst_id)
-        resp = self._exchange.privateGetAccountPositions({"instType": "SWAP", "instId": inst_id})
-        if not isinstance(resp, dict) or str(resp.get("code")) != "0" or not isinstance(resp.get("code"), str):
-            raise RuntimeError(f"OKX positions read failed: {resp!r}")
-        data = resp.get("data")
-        if not isinstance(data, list):
-            raise RuntimeError(f"OKX positions read returned no list: {resp!r}")
-        found = None
-        for i, row in enumerate(data):
-            if not isinstance(row, dict):
-                raise RuntimeError(f"OKX position row {i} is not an object, so no instrument can be proven flat")
-            row_inst = row.get("instId")
-            if not isinstance(row_inst, str) or not row_inst:
-                raise RuntimeError(f"OKX position row {i} names no instrument, so no instrument can be proven flat")
-            if row_inst != inst_id:
-                raise RuntimeError(f"OKX position row {i} names {row_inst}, outside the requested {inst_id}")
-            if found is not None:
-                raise RuntimeError(f"the OKX position list holds {inst_id} twice")
-            pos_side = row.get("posSide")
-            if pos_side != "net":
-                raise RuntimeError(f"OKX position {inst_id} has posSide {pos_side!r}; the pair needs net position mode")
-            raw = row.get("pos")
-            if not isinstance(raw, str) or not raw.strip():
-                raise RuntimeError(f"OKX position {inst_id} carries no pos text: {raw!r}")
-            mgn = row.get("mgnMode")
-            if mgn not in ("cross", "isolated"):
-                raise RuntimeError(f"OKX position {inst_id} carries margin mode {mgn!r}")
-            found = {"pos": raw.strip(), "pos_side": "net", "margin_mode": mgn, "found": True}
-        if found is None:
-            return {"pos": "0", "pos_side": "net", "margin_mode": "", "found": False}
-        return found
-
     def fetch_order_by_client_id(self, symbol: str, inst_type: str, client_order_id: str) -> dict:
         if not self._is_live:
             raise RuntimeError(
@@ -596,17 +489,6 @@ class OKXExchangeAdapter:
                 "fetch_order_trades requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
             )
         return self._exchange.fetch_order_trades(order_id, self.order_pair(symbol, inst_type))
-
-    def fetch_order_info(self, symbol: str, inst_type: str, order_id: str) -> dict:
-        if not self._is_live:
-            raise RuntimeError(
-                "fetch_order_info requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
-            )
-        order = self._exchange.fetch_order(order_id, self.order_pair(symbol, inst_type))
-        info = order.get("info") if isinstance(order, dict) else None
-        if not isinstance(info, dict):
-            raise RuntimeError(f"the order read for {order_id} returned no venue record: {order!r}")
-        return info
 
     def market_close(self, symbol: str, sz: float | None = None) -> dict:
         orders = self.market_close_orders(symbol, sz)
@@ -710,33 +592,9 @@ class OKXExchangeAdapter:
     def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:
         try:
             ohlcv = self._exchange.fetch_ohlcv(underlying + "/USDT", "1d", limit=90)
-            if not ohlcv or len(ohlcv) < 15:
-                return 0.60, 50.0
-            closes = [c[4] for c in ohlcv]
-            returns = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
-            if len(returns) < 14:
-                return 0.60, 50.0
-            w = 14
-            mean = sum(returns[-w:]) / w
-            variance = sum((r - mean) ** 2 for r in returns[-w:]) / w
-            vol = math.sqrt(variance) * math.sqrt(365)
-
-            hvs = []
-            for i in range(len(returns) - w + 1):
-                chunk = returns[i:i + w]
-                m = sum(chunk) / w
-                v = sum((r - m) ** 2 for r in chunk) / w
-                hvs.append(math.sqrt(v) * math.sqrt(365) * 100)
-            current_hv = vol * 100
-            hv_min, hv_max = min(hvs), max(hvs)
-            if hv_max > hv_min:
-                iv_rank = (current_hv - hv_min) / (hv_max - hv_min) * 100
-                iv_rank = round(min(max(iv_rank, 0.0), 100.0), 1)
-            else:
-                iv_rank = 50.0
-            return round(vol, 4), iv_rank
-        except Exception:
-            return 0.60, 50.0
+        except Exception as e:
+            raise option_data.unavailable("volatility unavailable: daily history read failed", e) from e
+        return option_data.realized_vol_metrics(option_data.daily_closes(ohlcv), 365)
 
     def get_real_expiry(self, underlying: str, target_dte: int) -> Tuple[str, int]:
         self._load_markets()
@@ -810,43 +668,48 @@ class OKXExchangeAdapter:
 
     def get_premium_and_greeks(self, underlying: str, option_type: str,
                                 strike: float, expiry: str, dte: float,
-                                spot: float, vol: float) -> Tuple[float, float, dict]:
+                                spot: float, vol: Optional[float] = None) -> Tuple[float, float, dict]:
+        from datetime import datetime, timezone
         try:
             self._load_markets()
-            from datetime import datetime, timezone
-            exp_dt = datetime.strptime(expiry, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            exp_start = int(exp_dt.timestamp() * 1000)
-            exp_end = exp_start + 86400 * 1000
+        except Exception as e:
+            raise option_data.unavailable("option quote unavailable: okx markets read failed", e) from e
+        exp_dt = datetime.strptime(expiry, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        exp_start = int(exp_dt.timestamp() * 1000)
+        exp_end = exp_start + 86400 * 1000
 
-            opt_char = "C" if option_type == "call" else "P"
-            for sym, market in self._exchange.markets.items():
-                if (market.get("type") == "option"
-                        and market.get("base", "").upper() == underlying.upper()
-                        and market.get("optionType") == option_type
-                        and float(market.get("strike") or 0) == strike
-                        and market.get("active", True)):
-                    mkt_exp = market.get("expiry")
-                    if mkt_exp and exp_start <= int(mkt_exp) < exp_end:
+        matched = False
+        last_error = None
+        for sym, market in (self._exchange.markets or {}).items():
+            if (market.get("type") == "option"
+                    and market.get("base", "").upper() == underlying.upper()
+                    and market.get("optionType") == option_type
+                    and float(market.get("strike") or 0) == strike
+                    and market.get("active", True)):
+                mkt_exp = market.get("expiry")
+                if mkt_exp and exp_start <= int(mkt_exp) < exp_end:
+                    matched = True
+                    try:
                         ticker = self._exchange.fetch_ticker(sym)
-                        mark = ticker.get("last") or ticker.get("close") or 0
-                        if mark and mark > 0:
-                            premium_usd = float(mark) * spot
-                            premium_pct = float(mark)
-                            greeks = {
-                                "delta": ticker.get("info", {}).get("delta", 0),
-                                "gamma": ticker.get("info", {}).get("gamma", 0),
-                                "theta": ticker.get("info", {}).get("theta", 0),
-                                "vega": ticker.get("info", {}).get("vega", 0),
-                            }
-                            greeks = {k: float(v or 0) for k, v in greeks.items()}
-                            return premium_pct, premium_usd, greeks
-        except Exception:
-            pass
-
-        try:
-            from pricing import bs_price_and_greeks
-            premium_usd, greeks = bs_price_and_greeks(spot, strike, dte, vol, option_type)
-            premium_pct = premium_usd / spot if spot > 0 else 0
-            return round(premium_pct, 6), round(premium_usd, 2), greeks
-        except Exception:
-            return 0.0, 0.0, {"delta": 0, "gamma": 0, "theta": 0, "vega": 0}
+                    except Exception as e:
+                        print(f"[okx] option ticker read failed for {sym}: {e}", file=sys.stderr)
+                        last_error = e
+                        continue
+                    mark = ticker.get("last") or ticker.get("close") or 0
+                    if not option_data.is_finite_positive(mark):
+                        continue
+                    premium_usd = float(mark) * spot
+                    premium_pct = float(mark)
+                    greeks = {
+                        "delta": ticker.get("info", {}).get("delta", 0),
+                        "gamma": ticker.get("info", {}).get("gamma", 0),
+                        "theta": ticker.get("info", {}).get("theta", 0),
+                        "vega": ticker.get("info", {}).get("vega", 0),
+                    }
+                    greeks = {k: float(v or 0) for k, v in greeks.items()}
+                    return premium_pct, premium_usd, greeks
+        if last_error is not None:
+            raise option_data.unavailable("option quote unavailable: okx ticker read failed", last_error) from last_error
+        if not matched:
+            raise option_data.OptionDataUnavailable("option quote unavailable: no listed okx option matches")
+        raise option_data.OptionDataUnavailable("option quote unavailable: okx mark is not positive")

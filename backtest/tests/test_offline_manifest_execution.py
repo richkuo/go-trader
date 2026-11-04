@@ -218,27 +218,33 @@ def test_manifest_loads_and_reports_complete_coverage(tmp_path):
     assert win["funding"]["complete"] and win["funding"]["present_hours"] == 150
 
 
-@pytest.mark.parametrize("damage,match", [
+_MANIFEST_FAILS_CLOSED_ON_BAD_INPUTS_CASES = [
     ("tamper", "sha256 mismatch"),
     ("missing", "is missing"),
     ("escape", "escapes"),
     ("quote", "quote hash mismatch"),
-])
-def test_manifest_fails_closed_on_bad_inputs(tmp_path, damage, match):
-    path = _build_manifest(tmp_path)
-    raw = json.loads(path.read_text())
-    if damage == "tamper":
-        with open(tmp_path / "data" / "BTC.csv.gz", "ab") as fh:
-            fh.write(b"x")
-    elif damage == "missing":
-        os.remove(tmp_path / "data" / "BTC_f.csv.gz")
-    elif damage == "escape":
-        raw["datasets"][0]["candles"]["path"] = "../outside.csv.gz"
-    else:
-        raw["venue_reference"]["documents"][0]["quote"] += " edited"
-    path.write_text(json.dumps(raw))
-    with pytest.raises(om.ManifestError, match=match):
-        om.load_manifest(str(path))
+]
+
+
+def test_manifest_fails_closed_on_bad_inputs(tmp_path, subtests):
+    for i, (damage, match) in enumerate(_MANIFEST_FAILS_CLOSED_ON_BAD_INPUTS_CASES):
+        with subtests.test(case=i, damage=damage, match=match):
+            case_dir = tmp_path / f"case{i}"
+            case_dir.mkdir()
+            path = _build_manifest(case_dir)
+            raw = json.loads(path.read_text())
+            if damage == "tamper":
+                with open(case_dir / "data" / "BTC.csv.gz", "ab") as fh:
+                    fh.write(b"x")
+            elif damage == "missing":
+                os.remove(case_dir / "data" / "BTC_f.csv.gz")
+            elif damage == "escape":
+                raw["datasets"][0]["candles"]["path"] = "../outside.csv.gz"
+            else:
+                raw["venue_reference"]["documents"][0]["quote"] += " edited"
+            path.write_text(json.dumps(raw))
+            with pytest.raises(om.ManifestError, match=match):
+                om.load_manifest(str(path))
 
 
 def test_manifest_lot_size_must_match_pinned_meta(tmp_path):
@@ -436,26 +442,32 @@ def test_acquire_refuses_existing_inputs_without_overwrite(tmp_path, monkeypatch
     assert _snapshot(tmp_path) == before
 
 
-@pytest.mark.parametrize("stage", ["fetch", "move"])
-def test_failed_acquire_leaves_frozen_inputs_and_hashes_untouched(tmp_path, monkeypatch, stage):
-    path = _acquire_manifest(tmp_path, monkeypatch,
-                             fail_on="candleSnapshot" if stage == "fetch" else None)
-    if stage == "move":
-        real_replace = os.replace
-        calls = []
+_FAILED_ACQUIRE_LEAVES_FROZEN_INPUTS_AND_HASHES_UNTOUCHED_CASES = ["fetch", "move"]
 
-        def flaky_replace(src, dst):
-            calls.append(dst)
-            if len(calls) == 4:
-                raise OSError("simulated failure while moving staged files")
-            return real_replace(src, dst)
 
-        monkeypatch.setattr(om.os, "replace", flaky_replace)
-    before = _snapshot(tmp_path)
-    with pytest.raises((om.ManifestError, OSError)):
-        om.acquire(str(path), overwrite=True)
-    assert _snapshot(tmp_path) == before
-    assert not list(tmp_path.glob(".acquire-staging-*"))
+def test_failed_acquire_leaves_frozen_inputs_and_hashes_untouched(tmp_path, monkeypatch, subtests):
+    for i, stage in enumerate(_FAILED_ACQUIRE_LEAVES_FROZEN_INPUTS_AND_HASHES_UNTOUCHED_CASES):
+        with subtests.test(case=i, stage=stage):
+            case_dir = tmp_path / f"case{i}"
+            case_dir.mkdir()
+            path = _acquire_manifest(case_dir, monkeypatch,
+                                     fail_on="candleSnapshot" if stage == "fetch" else None)
+            if stage == "move":
+                real_replace = os.replace
+                calls = []
+
+                def flaky_replace(src, dst):
+                    calls.append(dst)
+                    if len(calls) == 4:
+                        raise OSError("simulated failure while moving staged files")
+                    return real_replace(src, dst)
+
+                monkeypatch.setattr(om.os, "replace", flaky_replace)
+            before = _snapshot(case_dir)
+            with pytest.raises((om.ManifestError, OSError)):
+                om.acquire(str(path), overwrite=True)
+            assert _snapshot(case_dir) == before
+            assert not list(case_dir.glob(".acquire-staging-*"))
 
 
 def test_acquire_overwrite_replaces_inputs_and_hashes_together(tmp_path, monkeypatch):
@@ -469,34 +481,42 @@ def test_acquire_overwrite_replaces_inputs_and_hashes_together(tmp_path, monkeyp
     assert not list(tmp_path.glob(".acquire-staging-*"))
 
 
-@pytest.mark.parametrize("now_ms,last_kept", [
+_FETCH_KEEPS_CLOSED_CANDLES_ONLY_CASES = [
     (T0 + HOUR * 10 - 1, T0 + HOUR * 8),
     (T0 + HOUR * 10, T0 + HOUR * 9),
     (T0 + HOUR * 10 + 1, T0 + HOUR * 9),
-])
-def test_fetch_keeps_closed_candles_only(monkeypatch, now_ms, last_kept):
-    monkeypatch.setattr(om.time, "sleep", lambda s: None)
-    monkeypatch.setattr(om.time, "time", lambda: now_ms / 1000)
-    monkeypatch.setattr(om, "_post_info", _fake_info())
-    df = om._fetch_hl_candles("BTC", "1h", T0, T0 + HOUR * 100)
-    assert int(df["timestamp"].iloc[0]) == T0
-    assert int(df["timestamp"].iloc[-1]) == last_kept
+]
 
 
-@pytest.mark.parametrize("argv", [
+def test_fetch_keeps_closed_candles_only(monkeypatch, subtests):
+    for i, (now_ms, last_kept) in enumerate(_FETCH_KEEPS_CLOSED_CANDLES_ONLY_CASES):
+        with subtests.test(case=i, now_ms=now_ms, last_kept=last_kept):
+            monkeypatch.setattr(om.time, "sleep", lambda s: None)
+            monkeypatch.setattr(om.time, "time", lambda: now_ms / 1000)
+            monkeypatch.setattr(om, "_post_info", _fake_info())
+            df = om._fetch_hl_candles("BTC", "1h", T0, T0 + HOUR * 100)
+            assert int(df["timestamp"].iloc[0]) == T0
+            assert int(df["timestamp"].iloc[-1]) == last_kept
+
+
+_MANIFEST_FLAGS_ARE_REFUSED_BEFORE_ANY_DATA_LOAD_CASES = [
     ["--mode", "compare", "--manifest", "manifest.json"],
     ["--mode", "multi", "--manifest-window", "test"],
     ["--mode", "optimize", "--cost-multiplier", "2"],
     ["--mode", "single", "--manifest-window", "test"],
     ["--mode", "single", "--manifest-dataset", "BTC 4h"],
-])
-def test_manifest_flags_are_refused_before_any_data_load(monkeypatch, argv):
-    monkeypatch.setattr(run_backtest, "load_cached_data",
-                        lambda *a, **k: pytest.fail("data loaded despite a refused flag"))
-    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "--strategy", "sma_crossover", *argv])
-    with pytest.raises(SystemExit) as exc:
-        run_backtest.main()
-    assert exc.value.code not in (0, None)
+]
+
+
+def test_manifest_flags_are_refused_before_any_data_load(monkeypatch, subtests):
+    for i, argv in enumerate(_MANIFEST_FLAGS_ARE_REFUSED_BEFORE_ANY_DATA_LOAD_CASES):
+        with subtests.test(case=i, argv=argv):
+            monkeypatch.setattr(run_backtest, "load_cached_data",
+                                lambda *a, **k: pytest.fail("data loaded despite a refused flag"))
+            monkeypatch.setattr(sys, "argv", ["run_backtest.py", "--strategy", "sma_crossover", *argv])
+            with pytest.raises(SystemExit) as exc:
+                run_backtest.main()
+            assert exc.value.code not in (0, None)
 
 
 DAY_MS = 1_704_067_200_000
@@ -817,32 +837,82 @@ def test_resting_tp_later_sibling_cancel_keeps_the_fill_bar(tmp_path):
     assert report["rules"]["touch"]["long"]["missed_fills"] == 0
 
 
-def test_resting_tp_sibling_placement_inside_the_fill_bar_stays_boundary():
-    import resting_tp_fill_study as study
+def test_resting_tp_sibling_placement_inside_the_fill_bar_stays_boundary(subtests):
+    with subtests.test(case="test_resting_tp_sibling_placement_inside_the_fill_bar_stays_boundary"):
+        import resting_tp_fill_study as study
 
-    filled = study.order_record(1, {
-        "order": {
-            "coin": "ETH", "limitPx": "100.00", "oid": 1, "origSz": "1", "sz": "0",
-            "side": "A", "timestamp": _ms(10),
-        },
-        "status": "filled",
-        "status_time": _ms(22, 30),
-    }, [{"oid": 1, "sz": "1", "px": "100.00", "time": _ms(22, 30), "tid": 1}])
-    placed = study.order_record(2, {
-        "order": {
-            "coin": "ETH", "limitPx": "100.00", "oid": 2, "origSz": "1",
-            "side": "A", "timestamp": _ms(21),
-        },
-        "status": "open",
-    }, [])
-    candles = _example_candles()
-    frame = _frame_from_candles(candles)
-    times = study.sibling_boundary_times(filled, [filled, placed])
-    interior, boundary, missing = study.bars_for(
-        frame, FIVE_MIN, filled["placement_ms"], study.score_end_ms(filled), times)
-    assert not missing
-    assert _ms(20) in [bar["open_ms"] for bar in boundary]
-    assert _ms(20) not in [bar["open_ms"] for bar in interior]
+        filled = study.order_record(1, {
+            "order": {
+                "coin": "ETH", "limitPx": "100.00", "oid": 1, "origSz": "1", "sz": "0",
+                "side": "A", "timestamp": _ms(10),
+            },
+            "status": "filled",
+            "status_time": _ms(22, 30),
+        }, [{"oid": 1, "sz": "1", "px": "100.00", "time": _ms(22, 30), "tid": 1}])
+        placed = study.order_record(2, {
+            "order": {
+                "coin": "ETH", "limitPx": "100.00", "oid": 2, "origSz": "1",
+                "side": "A", "timestamp": _ms(21),
+            },
+            "status": "open",
+        }, [])
+        candles = _example_candles()
+        frame = _frame_from_candles(candles)
+        times = study.sibling_boundary_times(filled, [filled, placed])
+        interior, boundary, missing = study.bars_for(
+            frame, FIVE_MIN, filled["placement_ms"], study.score_end_ms(filled), times)
+        assert not missing
+        assert _ms(20) in [bar["open_ms"] for bar in boundary]
+        assert _ms(20) not in [bar["open_ms"] for bar in interior]
+
+    with subtests.test(case="test_resting_tp_sibling_placement_keeps_a_no_fill_bar_unknown"):
+        import resting_tp_fill_study as study
+
+        order = study.order_record(1, {
+            "order": {
+                "coin": "ETH", "limitPx": "100.00", "oid": 1, "origSz": "1", "sz": "1",
+                "side": "A", "timestamp": _ms(10),
+            },
+            "status": "expired",
+            "status_time": _ms(40),
+        }, [])
+        sibling = study.order_record(2, {
+            "order": {
+                "coin": "ETH", "limitPx": "100.00", "oid": 2, "origSz": "1",
+                "side": "A", "timestamp": _ms(23),
+            },
+            "status": "open",
+        }, [])
+        candles = _flat_bars(DAY_MS, _ms(45), FIVE_MIN)
+        for row in candles:
+            if row["t"] == _ms(20):
+                row["h"] = "100.60"
+        frame = _frame_from_candles(candles)
+        windows = [(DAY_MS, _ms(45)), (DAY_MS, _ms(45))]
+        name = study.classify_order(
+            order, {"side": "long"}, frame, FIVE_MIN, None, 2,
+            study.sibling_boundary_times(order, [order, sibling]), windows)
+        assert name == "not_reached"
+        assert _ms(20) in [bar["open_ms"] for bar in order["boundary"]]
+        assert _ms(20) not in [bar["open_ms"] for bar in order["interior"]]
+
+    with subtests.test(case="test_resting_tp_cancel_bar_without_a_fill_stays_boundary"):
+        import resting_tp_fill_study as study
+
+        order = study.order_record(1, {
+            "order": {
+                "coin": "ETH", "limitPx": "100.00", "oid": 1, "origSz": "1", "sz": "1",
+                "side": "A", "timestamp": _ms(10),
+            },
+            "status": "canceled",
+            "status_time": _ms(22, 30),
+        }, [])
+        frame = _frame_from_candles(_example_candles())
+        windows = [(DAY_MS, _ms(30)), (DAY_MS, _ms(30))]
+        name = study.classify_order(order, {"side": "long"}, frame, FIVE_MIN, None, 2, [], windows)
+        assert name == "not_reached"
+        assert _ms(20) in [bar["open_ms"] for bar in order["boundary"]]
+        assert _ms(20) not in [bar["open_ms"] for bar in order["interior"]]
 
 
 def _classify(status, orig, sz, fills, high=99):
@@ -868,29 +938,28 @@ def _classify(status, orig, sz, fills, high=99):
     return study.classify_order(rec, {"side": "long"}, frame, FIVE_MIN, None, 2, [], windows)
 
 
-def test_resting_tp_canceled_partial_missing_from_capture_is_incomplete():
-    import resting_tp_fill_study as study
+def test_resting_tp_canceled_partial_missing_from_capture_is_incomplete(subtests):
+    with subtests.test(case="test_resting_tp_canceled_partial_missing_from_capture_is_incomplete"):
+        import resting_tp_fill_study as study
 
-    assert _classify("reduceOnlyCanceled", "1.0", "0.6", []) == "acquisition_incomplete"
-    bare = study.order_record(9, {
-        "order": {
-            "coin": "ETH", "limitPx": "100.00", "oid": 9, "sz": "0.4",
-            "side": "A", "timestamp": DAY_MS,
-        },
-        "status": "canceled",
-        "status_time": DAY_MS + FIVE_MIN,
-    }, [])
-    assert bare["orig"] is None
-    assert "requested_quantity" in bare["missing"]
+        assert _classify("reduceOnlyCanceled", "1.0", "0.6", []) == "acquisition_incomplete"
+        bare = study.order_record(9, {
+            "order": {
+                "coin": "ETH", "limitPx": "100.00", "oid": 9, "sz": "0.4",
+                "side": "A", "timestamp": DAY_MS,
+            },
+            "status": "canceled",
+            "status_time": DAY_MS + FIVE_MIN,
+        }, [])
+        assert bare["orig"] is None
+        assert "requested_quantity" in bare["missing"]
 
+    with subtests.test(case="test_resting_tp_canceled_partial_with_captured_fills_stays_partial"):
+        fills = [{"oid": 1, "sz": "0.4", "px": "100.00", "time": DAY_MS + 1000, "tid": 1}]
+        assert _classify("canceled", "1.0", "0.6", fills) == "partial_fill"
 
-def test_resting_tp_canceled_partial_with_captured_fills_stays_partial():
-    fills = [{"oid": 1, "sz": "0.4", "px": "100.00", "time": DAY_MS + 1000, "tid": 1}]
-    assert _classify("canceled", "1.0", "0.6", fills) == "partial_fill"
-
-
-def test_resting_tp_canceled_unfilled_order_stays_unreached():
-    assert _classify("canceled", "1.0", "1.0", [], high=99) == "not_reached"
+    with subtests.test(case="test_resting_tp_canceled_unfilled_order_stays_unreached"):
+        assert _classify("canceled", "1.0", "1.0", [], high=99) == "not_reached"
 
 
 def _basis(candles, frame, since, end, candle_rows, snapshot_name="5m"):
@@ -1176,38 +1245,6 @@ def test_resting_tp_sibling_placed_after_the_fill_keeps_the_fill_bar(tmp_path):
     assert touch["false_fills"] == 0
 
 
-def test_resting_tp_sibling_placement_keeps_a_no_fill_bar_unknown():
-    import resting_tp_fill_study as study
-
-    order = study.order_record(1, {
-        "order": {
-            "coin": "ETH", "limitPx": "100.00", "oid": 1, "origSz": "1", "sz": "1",
-            "side": "A", "timestamp": _ms(10),
-        },
-        "status": "expired",
-        "status_time": _ms(40),
-    }, [])
-    sibling = study.order_record(2, {
-        "order": {
-            "coin": "ETH", "limitPx": "100.00", "oid": 2, "origSz": "1",
-            "side": "A", "timestamp": _ms(23),
-        },
-        "status": "open",
-    }, [])
-    candles = _flat_bars(DAY_MS, _ms(45), FIVE_MIN)
-    for row in candles:
-        if row["t"] == _ms(20):
-            row["h"] = "100.60"
-    frame = _frame_from_candles(candles)
-    windows = [(DAY_MS, _ms(45)), (DAY_MS, _ms(45))]
-    name = study.classify_order(
-        order, {"side": "long"}, frame, FIVE_MIN, None, 2,
-        study.sibling_boundary_times(order, [order, sibling]), windows)
-    assert name == "not_reached"
-    assert _ms(20) in [bar["open_ms"] for bar in order["boundary"]]
-    assert _ms(20) not in [bar["open_ms"] for bar in order["interior"]]
-
-
 def test_resting_tp_partial_canceled_in_the_fill_bar_is_not_scored_from_that_bar(tmp_path):
     orders = [{
         "oid": 1, "limit": "100.00", "placement": _ms(10), "status": "reduceOnlyCanceled",
@@ -1220,25 +1257,6 @@ def test_resting_tp_partial_canceled_in_the_fill_bar_is_not_scored_from_that_bar
     assert touch["quantity_errors"] == 0
     assert touch["fill_bar_unresolved"] == 1
     assert touch["missed_fills"] == 0
-
-
-def test_resting_tp_cancel_bar_without_a_fill_stays_boundary():
-    import resting_tp_fill_study as study
-
-    order = study.order_record(1, {
-        "order": {
-            "coin": "ETH", "limitPx": "100.00", "oid": 1, "origSz": "1", "sz": "1",
-            "side": "A", "timestamp": _ms(10),
-        },
-        "status": "canceled",
-        "status_time": _ms(22, 30),
-    }, [])
-    frame = _frame_from_candles(_example_candles())
-    windows = [(DAY_MS, _ms(30)), (DAY_MS, _ms(30))]
-    name = study.classify_order(order, {"side": "long"}, frame, FIVE_MIN, None, 2, [], windows)
-    assert name == "not_reached"
-    assert _ms(20) in [bar["open_ms"] for bar in order["boundary"]]
-    assert _ms(20) not in [bar["open_ms"] for bar in order["interior"]]
 
 
 def test_resting_tp_html_fill_page_reports_incomplete_capture(tmp_path):
@@ -1502,34 +1520,29 @@ def _capture_historical(tmp_path, rows):
     return bundle, raised
 
 
-def test_resting_tp_full_historical_orders_response_is_incomplete(tmp_path):
+def test_resting_tp_full_historical_orders_response_is_incomplete(tmp_path, subtests):
     import resting_tp_capture as cap
 
-    rows = [{"oid": i} for i in range(cap.HISTORICAL_ORDERS_MAX)]
-    bundle, raised = _capture_historical(tmp_path, rows)
-    row = bundle["completeness"]["historicalOrders"]
-    assert raised
-    assert row["complete"] is False
-    assert row["reason"] == f"historicalOrders returns at most {cap.HISTORICAL_ORDERS_MAX} orders"
-
-
-def test_resting_tp_historical_orders_below_the_cap_stay_complete(tmp_path):
-    import resting_tp_capture as cap
-
-    rows = [{"oid": i} for i in range(cap.HISTORICAL_ORDERS_MAX - 1)]
-    bundle, raised = _capture_historical(tmp_path, rows)
-    row = bundle["completeness"]["historicalOrders"]
-    assert raised is False
-    assert row["complete"] is True
-    assert "reason" not in row
-
-
-def test_resting_tp_historical_orders_that_are_not_a_list_are_incomplete(tmp_path):
-    bundle, raised = _capture_historical(tmp_path, {"error": "busy"})
-    row = bundle["completeness"]["historicalOrders"]
-    assert raised
-    assert row["complete"] is False
-    assert row["reason"] == "historicalOrders response is not a list"
+    cases = [
+        ("at_cap", [{"oid": i} for i in range(cap.HISTORICAL_ORDERS_MAX)],
+         f"historicalOrders returns at most {cap.HISTORICAL_ORDERS_MAX} orders"),
+        ("below_cap", [{"oid": i} for i in range(cap.HISTORICAL_ORDERS_MAX - 1)], None),
+        ("not_a_list", {"error": "busy"}, "historicalOrders response is not a list"),
+    ]
+    for case_id, rows, reason in cases:
+        with subtests.test(case=case_id):
+            case_dir = tmp_path / case_id
+            case_dir.mkdir()
+            bundle, raised = _capture_historical(case_dir, rows)
+            row = bundle["completeness"]["historicalOrders"]
+            if reason is None:
+                assert raised is False
+                assert row["complete"] is True
+                assert "reason" not in row
+            else:
+                assert raised
+                assert row["complete"] is False
+                assert row["reason"] == reason
 
 
 def _historical_status(oid, limit, placement, status, status_time, reduce_only=True):
@@ -1600,29 +1613,20 @@ def _discovered_outcome(report):
     return rows[0]["outcome"]
 
 
-def test_resting_tp_discovered_order_between_two_close_events_is_attributed(tmp_path):
-    discovered = [_historical_status(2, "150.00", _ms(12), "canceled", _ms(21))]
-    report = _study_orders(
-        tmp_path, [], _example_candles(), historical=discovered,
-        export_events=_two_close_events())
-    assert report["sample"]["windows"][0]["close_ms"] == _ms(20)
-    assert _discovered_outcome(report) == "not_reached"
-
-
-def test_resting_tp_one_close_event_keeps_that_window(tmp_path):
-    discovered = [_historical_status(2, "150.00", _ms(12), "canceled", _ms(21))]
-    report = _study_orders(tmp_path, [], _example_candles(), historical=discovered)
-    assert report["sample"]["windows"][0]["close_ms"] == _ms(30)
-    assert _discovered_outcome(report) == "not_reached"
-
-
-def test_resting_tp_discovered_order_after_the_last_close_stays_unattributed(tmp_path):
-    discovered = [_historical_status(2, "150.00", _ms(22), "canceled", _ms(28))]
-    report = _study_orders(
-        tmp_path, [], _example_candles(), historical=discovered,
-        export_events=_two_close_events())
-    assert report["sample"]["windows"][0]["close_ms"] == _ms(20)
-    assert _discovered_outcome(report) == "unattributed"
+def test_resting_tp_discovered_order_between_two_close_events_is_attributed(tmp_path, subtests):
+    cases = [
+        ("between_two_close_events", _ms(12), _ms(21), _two_close_events(), _ms(20), "not_reached"),
+        ("one_close_event", _ms(12), _ms(21), None, _ms(30), "not_reached"),
+        ("after_the_last_close", _ms(22), _ms(28), _two_close_events(), _ms(20), "unattributed"),
+    ]
+    for case_id, placement, status_time, events, close_ms, outcome in cases:
+        with subtests.test(case=case_id):
+            discovered = [_historical_status(2, "150.00", placement, "canceled", status_time)]
+            report = _study_orders(
+                tmp_path / case_id, [], _example_candles(), historical=discovered,
+                export_events=events)
+            assert report["sample"]["windows"][0]["close_ms"] == close_ms
+            assert _discovered_outcome(report) == outcome
 
 
 class _FailedInfoResp(_InfoResp):
@@ -1658,33 +1662,27 @@ def _serve(monkeypatch, response):
     return calls
 
 
-def test_resting_tp_bad_address_leaves_out_unmade_and_a_rerun_captures(tmp_path, monkeypatch):
+def test_resting_tp_bad_address_leaves_out_unmade_and_a_rerun_captures(tmp_path, monkeypatch, subtests):
     import resting_tp_capture as cap
 
-    export = _empty_export(tmp_path)
-    out = tmp_path / "capture"
-    calls = _serve(monkeypatch, _InfoResp)
-    with pytest.raises(cap.CaptureError, match="40-digit hex"):
-        cap.main(_capture_main_args(export, out, address="0x1234"))
-    assert not out.exists()
-    assert calls == []
-    cap.main(_capture_main_args(export, out))
-    assert (out / "bundle.json").is_file()
-    assert calls == ["userFillsByTime", "historicalOrders"]
-
-
-def test_resting_tp_unaligned_since_leaves_out_unmade_and_a_rerun_captures(tmp_path, monkeypatch):
-    import resting_tp_capture as cap
-
-    export = _empty_export(tmp_path)
-    out = tmp_path / "capture"
-    calls = _serve(monkeypatch, _InfoResp)
-    with pytest.raises(cap.CaptureError, match="boundary"):
-        cap.main(_capture_main_args(export, out, since_ms=DAY_MS + 1000))
-    assert not out.exists()
-    assert calls == []
-    cap.main(_capture_main_args(export, out))
-    assert (out / "bundle.json").is_file()
+    cases = [
+        ("bad_address", {"address": "0x1234"}, "40-digit hex"),
+        ("unaligned_since", {"since_ms": DAY_MS + 1000}, "boundary"),
+    ]
+    for case_id, bad, match in cases:
+        with subtests.test(case=case_id):
+            case_dir = tmp_path / case_id
+            case_dir.mkdir()
+            export = _empty_export(case_dir)
+            out = case_dir / "capture"
+            calls = _serve(monkeypatch, _InfoResp)
+            with pytest.raises(cap.CaptureError, match=match):
+                cap.main(_capture_main_args(export, out, **bad))
+            assert not out.exists()
+            assert calls == []
+            cap.main(_capture_main_args(export, out))
+            assert (out / "bundle.json").is_file()
+            assert calls == ["userFillsByTime", "historicalOrders"]
 
 
 def test_resting_tp_failed_request_keeps_out_and_a_rerun_is_refused(tmp_path, monkeypatch):

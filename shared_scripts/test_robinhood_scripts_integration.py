@@ -92,6 +92,11 @@ SITECUSTOMIZE = textwrap.dedent("""
         if item.get("sleep_s"):
             import time
             time.sleep(float(item["sleep_s"]))
+        if "sleep_until_started_s" in item:
+            import sys
+            import time
+            started = getattr(sys.modules["__main__"], "_STARTED")
+            time.sleep(max(0.0, started + float(item["sleep_until_started_s"]) - time.monotonic()))
         if item.get("raise") == "connection":
             raise requests.exceptions.ConnectionError("fake connection failure")
         if item.get("raise") == "connect_timeout":
@@ -207,6 +212,7 @@ def _run(tmp_path, script, args, routes, login=LOGIN_OK):
     site.mkdir()
     (site / "sitecustomize.py").write_text(SITECUSTOMIZE)
     fixture = run_dir / "routes.json"
+    routes = dict({"GET " + ACCOUNTS: [_page([{"id": "acct-1"}])]}, **routes)
     fixture.write_text(json.dumps(dict(routes, **{"POST " + TOKEN_URL: login})))
     log = run_dir / "requests.jsonl"
     log.write_text("")
@@ -238,24 +244,26 @@ def _count(requests_made, prefix, method="GET"):
     return sum(1 for r in requests_made if r["method"] == method and r["url"].startswith(prefix))
 
 
-@pytest.mark.parametrize("shape", sorted(FAILED_READS))
-def test_failed_holdings_read_fails_fetch_script(tmp_path, shape):
-    code, payload, made = _run(tmp_path, FETCH, [], FAILED_READS[shape])
-    assert code == 1
-    assert isinstance(payload.get("error"), str) and payload["error"]
-    assert payload["positions"] == []
-    if shape == "page_cap_exceeded":
-        assert _count(made, HOLDINGS) == 50, "test_page_cap_stops_after_fifty_holdings_requests"
+def test_failed_holdings_read_fails_fetch_script(tmp_path, subtests):
+    for shape in sorted(FAILED_READS):
+        with subtests.test(shape=shape):
+            code, payload, made = _run(tmp_path, FETCH, [], FAILED_READS[shape])
+            assert code == 1
+            assert isinstance(payload.get("error"), str) and payload["error"]
+            assert payload["positions"] == []
+            if shape == "page_cap_exceeded":
+                assert _count(made, HOLDINGS) == 50, "test_page_cap_stops_after_fifty_holdings_requests"
 
 
-@pytest.mark.parametrize("shape", sorted(FAILED_READS))
-def test_failed_holdings_read_fails_close_script(tmp_path, shape):
-    code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5"], FAILED_READS[shape])
-    assert code == 1
-    assert isinstance(payload.get("error"), str) and payload["error"]
-    assert payload["close"].get("already_flat") is None
-    assert _count(made, CURRENCY_PAIRS) == 0
-    assert _count(made, ORDERS, "POST") == 0
+def test_failed_holdings_read_fails_close_script(tmp_path, subtests):
+    for shape in sorted(FAILED_READS):
+        with subtests.test(shape=shape):
+            code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--expected-account-id=acct-1"], FAILED_READS[shape])
+            assert code == 1
+            assert isinstance(payload.get("error"), str) and payload["error"]
+            assert payload["close"].get("already_flat") is None
+            assert _count(made, CURRENCY_PAIRS) == 0
+            assert _count(made, ORDERS, "POST") == 0
 
 
 def test_complete_two_page_read_returns_every_positive_holding(tmp_path):
@@ -275,34 +283,43 @@ def test_complete_two_page_read_returns_every_positive_holding(tmp_path):
     assert all(r["timeout"] is not None and r["auth"] for r in holdings)
 
 
-@pytest.mark.parametrize("extra", [
-    {},
-    {"cost_bases": None},
-    {"cost_bases": []},
-    {"cost_bases": ["x"]},
-    {"cost_bases": [{}]},
-    {"cost_bases": {"direct_cost_basis": "100"}},
-    {"cost_bases": [{"direct_cost_basis": "abc"}]},
-    {"cost_bases": [{"direct_cost_basis": "NaN"}]},
-    {"cost_bases": [{"direct_cost_basis": None}]},
-    {"cost_bases": [{"direct_cost_basis": "-5"}]},
-], ids=lambda extra: json.dumps(extra))
-def test_unusable_cost_basis_gives_zero_avg_price(tmp_path, extra):
-    code, payload, _ = _run(tmp_path, FETCH, [], _single([_held("BTC", "0.5", **extra)]))
-    assert code == 0
-    assert payload.get("error") is None
-    assert payload["positions"] == [{"coin": "BTC", "size": 0.5, "avg_price": 0.0}]
+def test_unusable_cost_basis_gives_zero_avg_price(tmp_path, subtests):
+    for extra in [
+        {},
+        {"cost_bases": None},
+        {"cost_bases": []},
+        {"cost_bases": ["x"]},
+        {"cost_bases": [{}]},
+        {"cost_bases": {"direct_cost_basis": "100"}},
+        {"cost_bases": [{"direct_cost_basis": "abc"}]},
+        {"cost_bases": [{"direct_cost_basis": "NaN"}]},
+        {"cost_bases": [{"direct_cost_basis": None}]},
+        {"cost_bases": [{"direct_cost_basis": "-5"}]},
+    ]:
+        with subtests.test(extra=json.dumps(extra)):
+            code, payload, _ = _run(tmp_path, FETCH, [], _single([_held("BTC", "0.5", **extra)]))
+            assert code == 0
+            assert payload.get("error") is None
+            assert payload["positions"] == [{"coin": "BTC", "size": 0.5, "avg_price": 0.0}]
 
 
-def test_close_reports_already_flat_only_after_complete_read(tmp_path):
-    routes = {"GET " + HOLDINGS: [_page([ETH], PAGE2)], "GET " + PAGE2: [_page([])]}
-    code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5"], routes)
-    assert code == 0
-    assert payload.get("error") is None
-    assert payload["close"]["already_flat"] is True
-    assert _count(made, HOLDINGS) == 2
-    assert _count(made, CURRENCY_PAIRS) == 0
-    assert _count(made, ORDERS, "POST") == 0
+def test_close_reports_already_flat_only_after_complete_read(tmp_path, subtests):
+    with subtests.test(case="two_page_read"):
+        routes = {"GET " + HOLDINGS: [_page([ETH], PAGE2)], "GET " + PAGE2: [_page([])]}
+        code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--expected-account-id=acct-1"], routes)
+        assert code == 0
+        assert payload.get("error") is None
+        assert payload["close"]["already_flat"] is True
+        assert _count(made, HOLDINGS) == 2
+        assert _count(made, CURRENCY_PAIRS) == 0
+        assert _count(made, ORDERS, "POST") == 0
+    with subtests.test(case="emergency_close_with_no_total_holding"):
+        code, payload, made = _run(tmp_path, CLOSE, _close(quantity="0.5"), {"GET " + HOLDINGS: [_page([ETH])]})
+        assert code == 0, payload
+        assert payload["close"]["already_flat"] is True
+        assert payload.get("error") is None
+        assert len(_posts(made)) == 0
+        assert _count(made, CURRENCY_PAIRS) == 0
 
 
 def test_close_sells_holding_found_on_later_page(tmp_path):
@@ -311,7 +328,7 @@ def test_close_sells_holding_found_on_later_page(tmp_path):
         "GET " + PAGE2: [_page([BTC_SELLABLE])],
         "GET " + CURRENCY_PAIRS: [{"raise": "connection"}],
     }
-    code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--ref-id=" + REF_ID], routes)
+    code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--ref-id=" + REF_ID, "--expected-account-id=acct-1"], routes)
     assert code == 1
     assert isinstance(payload.get("error"), str) and payload["error"]
     assert payload["close"].get("already_flat") is None
@@ -322,7 +339,8 @@ def test_close_sells_holding_found_on_later_page(tmp_path):
 PREP = {
     "GET " + CURRENCY_PAIRS: [_page([
         {"id": PAIR_ID, "asset_currency": {"code": "BTC"}, "quote_currency": {"code": "USD"},
-         "min_order_size": "0.000001", "min_order_quantity_increment": "0.00000001", "max_order_size": "20"},
+         "min_order_size": "0.000001", "min_order_quantity_increment": "0.00000001", "max_order_size": "20",
+         "min_order_price_increment": "0.01"},
         {"id": "pair-eth", "asset_currency": {"code": "ETH"}, "quote_currency": {"code": "USD"}},
     ])],
     "GET " + ACCOUNTS: [_page([{"id": "acct-1"}])],
@@ -361,7 +379,7 @@ def _buy(budget_ms=6000):
 
 def _sell(quantity="0.5", budget_ms=6000):
     return ["--execute", "--symbol=BTC", "--side=sell", f"--quantity={quantity}", "--mode=live",
-            "--ref-id=" + REF_ID, f"--budget-ms={budget_ms}"]
+            "--ref-id=" + REF_ID, f"--budget-ms={budget_ms}", "--expected-account-id=acct-1"]
 
 
 def _posts(made):
@@ -375,19 +393,19 @@ def _assert_finite_document(payload):
 def test_execute_buy_polls_until_filled_and_reports_the_venue_fill(tmp_path):
     routes = _routes(
         [_accepted()],
-        [_order("queued"), _order("confirmed"), _order("filled", "0.1", "100.5", executions=[{"fees": [{"amount": "0.02"}]}])],
+        [_order("queued"), _order("confirmed"), _order("filled", "0.0995", "100.4", executions=[{"fees": [{"amount": "0.02"}]}])],
     )
     code, payload, made = _run(tmp_path, EXECUTE, _buy(), routes)
     assert code == 0, payload
     assert payload["order_outcome"] == "filled"
-    assert payload["execution"]["fill"] == {"avg_px": 100.5, "quantity": 0.1, "oid": ORDER_ID, "fee": 0.02}
-    assert payload["requested_quantity"] == 0.1
+    assert payload["execution"]["fill"] == {"avg_px": 100.4, "quantity": 0.0995, "oid": ORDER_ID, "fee": 0.02}
+    assert payload["requested_quantity"] == 0.09950248
     assert "error" not in payload
     posts = _posts(made)
     assert len(posts) == 1
     assert posts[0]["body"] == {
-        "account_id": "acct-1", "currency_pair_id": PAIR_ID, "price": 100.0, "quantity": 0.1,
-        "ref_id": REF_ID, "side": "buy", "time_in_force": "gtc", "type": "market",
+        "account_id": "acct-1", "currency_pair_id": PAIR_ID, "price": 100.5, "quantity": 0.09950248,
+        "ref_id": REF_ID, "side": "buy", "time_in_force": "gtc", "type": "limit",
     }
     assert posts[0]["content_type"] == "application/json"
     assert [r for r in made if r["timeout"] is None and "/oauth2/" not in r["url"]] == []
@@ -430,22 +448,17 @@ def test_execute_canceled_with_zero_fill_is_no_fill(tmp_path):
     assert "fill" not in payload["execution"]
 
 
-@pytest.mark.parametrize("body", [
-    {"detail": "insufficient buying power"},
-    {"non_field_errors": ["order size too small"]},
-], ids=["detail", "non_field_errors"])
-def test_execute_refusal_body_is_rejected(tmp_path, body):
-    code, payload, made = _run(tmp_path, EXECUTE, _buy(), _routes([{"status": 400, "json": body}]))
-    assert code == 1
-    assert payload["order_outcome"] == "rejected"
-    assert "Robinhood refused the order" in payload["error"]
-    assert len(_posts(made)) == 1
-
-
-def test_execute_accepted_empty_body_is_unknown(tmp_path):
-    code, payload, _ = _run(tmp_path, EXECUTE, _buy(), _routes([{"status": 201, "json": {}}]))
-    assert code == 1
-    assert payload["order_outcome"] == "unknown"
+def test_execute_refusal_body_is_rejected(tmp_path, subtests):
+    for name, body in [
+        ("detail", {"detail": "insufficient buying power"}),
+        ("non_field_errors", {"non_field_errors": ["order size too small"]}),
+    ]:
+        with subtests.test(body=name):
+            code, payload, made = _run(tmp_path, EXECUTE, _buy(), _routes([{"status": 400, "json": body}]))
+            assert code == 1
+            assert payload["order_outcome"] == "rejected"
+            assert "Robinhood refused the order" in payload["error"]
+            assert len(_posts(made)) == 1
 
 
 def test_execute_accepted_refused_state_with_zero_fill_is_rejected(tmp_path):
@@ -456,17 +469,19 @@ def test_execute_accepted_refused_state_with_zero_fill_is_rejected(tmp_path):
     assert payload["order_outcome"] == "rejected"
 
 
-@pytest.mark.parametrize("post", [
-    {"status": 503, "json": {"detail": "unavailable"}},
-    {"raise": "read_timeout"},
-    {"raise": "connection"},
-    {"status": 200, "text": "<html>"},
-], ids=["http_503", "read_timeout", "connection_reset", "not_json"])
-def test_execute_failure_after_send_is_unknown(tmp_path, post):
-    code, payload, made = _run(tmp_path, EXECUTE, _buy(), _routes([post]))
-    assert code == 1
-    assert payload["order_outcome"] == "unknown"
-    assert len(_posts(made)) == 1
+def test_execute_failure_after_send_is_unknown(tmp_path, subtests):
+    for name, post in [
+        ("http_503", {"status": 503, "json": {"detail": "unavailable"}}),
+        ("read_timeout", {"raise": "read_timeout"}),
+        ("connection_reset", {"raise": "connection"}),
+        ("not_json", {"status": 200, "text": "<html>"}),
+        ("accepted_empty_body", {"status": 201, "json": {}}),
+    ]:
+        with subtests.test(post=name):
+            code, payload, made = _run(tmp_path, EXECUTE, _buy(), _routes([post]))
+            assert code == 1
+            assert payload["order_outcome"] == "unknown"
+            assert len(_posts(made)) == 1
 
 
 def test_execute_pre_send_failures_resend_with_the_same_ref_id_then_report_not_sent(tmp_path):
@@ -480,7 +495,7 @@ def test_execute_pre_send_failures_resend_with_the_same_ref_id_then_report_not_s
 
 
 def test_execute_pre_send_failure_then_accept_uses_one_ref_id(tmp_path):
-    routes = _routes([{"raise": "connect_timeout"}, _accepted()], [_order("filled", "0.1", "100")])
+    routes = _routes([{"raise": "connect_timeout"}, _accepted()], [_order("filled", "0.09", "100")])
     code, payload, made = _run(tmp_path, EXECUTE, _buy(), routes)
     assert code == 0, payload
     posts = _posts(made)
@@ -488,24 +503,26 @@ def test_execute_pre_send_failure_then_accept_uses_one_ref_id(tmp_path):
     assert {p["body"]["ref_id"] for p in posts} == {REF_ID}
 
 
-@pytest.mark.parametrize("prep", ["GET " + CURRENCY_PAIRS, "GET " + ACCOUNTS, "GET " + QUOTE])
-def test_execute_prep_read_failure_sends_nothing(tmp_path, prep):
-    routes = _routes([_accepted()])
-    routes[prep] = [{"status": 500, "json": {"detail": "server error"}}]
-    code, payload, made = _run(tmp_path, EXECUTE, _buy(), routes)
-    assert code == 1
-    assert payload["order_outcome"] == "not_sent"
-    assert len(_posts(made)) == 0
+def test_execute_prep_read_failure_sends_nothing(tmp_path, subtests):
+    for prep in ["GET " + CURRENCY_PAIRS, "GET " + ACCOUNTS, "GET " + QUOTE]:
+        with subtests.test(prep=prep):
+            routes = _routes([_accepted()])
+            routes[prep] = [{"status": 500, "json": {"detail": "server error"}}]
+            code, payload, made = _run(tmp_path, EXECUTE, _buy(), routes)
+            assert code == 1
+            assert payload["order_outcome"] == "not_sent"
+            assert len(_posts(made)) == 0
 
 
-@pytest.mark.parametrize("average", [None, "NaN", "-1", "abc"])
-def test_execute_filled_without_usable_average_price_is_unknown(tmp_path, average):
-    routes = _routes([_accepted()], [_order("filled", "0.1", average)])
-    code, payload, _ = _run(tmp_path, EXECUTE, _buy(), routes)
-    assert code == 1
-    assert payload["order_outcome"] == "unknown"
-    assert "fill" not in payload["execution"]
-    _assert_finite_document(payload)
+def test_execute_filled_without_usable_average_price_is_unknown(tmp_path, subtests):
+    for average in [None, "NaN", "-1", "abc"]:
+        with subtests.test(average=average):
+            routes = _routes([_accepted()], [_order("filled", "0.09", average)])
+            code, payload, _ = _run(tmp_path, EXECUTE, _buy(), routes)
+            assert code == 1
+            assert payload["order_outcome"] == "unknown"
+            assert "fill" not in payload["execution"]
+            _assert_finite_document(payload)
 
 
 def test_execute_fill_above_the_requested_quantity_is_inconsistent(tmp_path):
@@ -685,9 +702,218 @@ def test_resolve_operator_order_without_ref_id_must_match_the_attempt_fields(tmp
     assert payload["order_outcome"] == "unknown"
 
 
-def _pairs(min_size="0.000001", increment="0.00000001", max_size="20", drop=()):
+LONG_LIST_PAGES = 21
+OTHER_REF = "22222222-2222-4222-8222-222222222222"
+
+
+def _orders_page_url(k):
+    return ORDERS if k == 1 else f"{ORDERS}?cursor={k}"
+
+
+def _long_order_list(rows_by_page=None, pages=LONG_LIST_PAGES):
+    rows_by_page = rows_by_page or {}
+    return {"GET " + _orders_page_url(k): [_page(rows_by_page.get(k, []), _orders_page_url(k + 1))]
+            for k in range(1, pages + 1)}
+
+
+def _gets(made, url):
+    return sum(1 for r in made if r["method"] == "GET" and r["url"] == url)
+
+
+def _page_tally(made, pages=LONG_LIST_PAGES):
+    return [_gets(made, _orders_page_url(k)) for k in range(1, pages + 1)]
+
+
+def _poll_url(order_id):
+    return ORDERS + order_id + "/"
+
+
+def _attempt_rows(now_ms):
+    return {
+        "exact": _list_row(ORDER_ID, now_ms - 40000),
+        "field_only": _list_row("ord-f", now_ms - 40000, ref_id=None),
+        "other_ref": _list_row("ord-o", now_ms - 40000, ref_id=OTHER_REF),
+    }
+
+
+def test_resolve_ref_id_match_on_a_long_list_stops_after_the_matching_page(tmp_path, subtests):
+    now_ms = int(time.time() * 1000)
+    rows = _attempt_rows(now_ms)
+    for match_page in (1, 3, 20):
+        with subtests.test(match_page=match_page):
+            routes = dict(PREP)
+            routes.update(_long_order_list({match_page: [rows["field_only"], rows["other_ref"], rows["exact"]]}))
+            routes["GET " + ORDER] = [_order("filled", "0.1", "100.5")]
+            code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+            assert code == 0, payload
+            assert payload["order_outcome"] == "filled"
+            assert payload["execution"]["fill"] == {"avg_px": 100.5, "quantity": 0.1, "oid": ORDER_ID}
+            assert _page_tally(made) == [1] * match_page + [0] * (LONG_LIST_PAGES - match_page)
+            assert _gets(made, ORDER) == 1
+            assert _gets(made, _poll_url("ord-f")) == 0
+            assert _count(made, ORDERS, "POST") == 0
+
+
+def test_resolve_long_list_without_a_reachable_ref_id_match_holds(tmp_path, subtests):
+    now_ms = int(time.time() * 1000)
+    rows = _attempt_rows(now_ms)
+    cases = {
+        "ref_id_only_on_page_21": {21: [rows["exact"]]},
+        "other_ref_ids_within_the_cap": {1: [rows["other_ref"]], 20: [rows["other_ref"]]},
+        "unique_field_match_on_page_1": {1: [rows["field_only"]]},
+    }
+    for case in sorted(cases):
+        with subtests.test(case=case):
+            routes = dict(PREP)
+            routes.update(_long_order_list(cases[case]))
+            routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+            routes["GET " + _poll_url("ord-f")] = [_order("filled", "0.1", "100", order_id="ord-f")]
+            code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+            assert code == 1
+            assert payload["order_outcome"] == "unknown"
+            assert "fill" not in payload["execution"]
+            assert _page_tally(made) == [1] * 20 + [0]
+            assert _gets(made, ORDER) == 0
+            assert _gets(made, _poll_url("ord-f")) == 0
+
+
+def test_resolve_two_ref_id_matches_on_the_matching_page_are_ambiguous(tmp_path):
+    now_ms = int(time.time() * 1000)
+    rows = _attempt_rows(now_ms)
+    second = _list_row("ord-2", now_ms - 39000)
+    routes = dict(PREP)
+    routes.update(_long_order_list({2: [rows["exact"], rows["other_ref"], second]}))
+    routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+    routes["GET " + _poll_url("ord-2")] = [_order("filled", "0.1", "100", order_id="ord-2")]
+    code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+    assert code == 1
+    assert payload["order_outcome"] == "unknown"
+    assert "fill" not in payload["execution"]
+    assert _page_tally(made) == [1, 1] + [0] * (LONG_LIST_PAGES - 2)
+    assert _gets(made, ORDER) == 0
+    assert _gets(made, _poll_url("ord-2")) == 0
+
+
+def test_resolve_later_page_duplicate_ref_id_is_not_read_and_the_first_match_is_polled(tmp_path):
+    now_ms = int(time.time() * 1000)
+    rows = _attempt_rows(now_ms)
+    routes = dict(PREP)
+    routes.update(_long_order_list({1: [rows["exact"]], 2: [_list_row("ord-2", now_ms - 39000)]}))
+    routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+    routes["GET " + _poll_url("ord-2")] = [_order("filled", "0.1", "100", order_id="ord-2")]
+    code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+    assert code == 0, payload
+    assert payload["order_outcome"] == "filled"
+    assert payload["execution"]["fill"] == {"avg_px": 100.0, "quantity": 0.1, "oid": ORDER_ID}
+    assert _page_tally(made) == [1] + [0] * (LONG_LIST_PAGES - 1)
+    assert _gets(made, _poll_url("ord-2")) == 0
+
+
+def test_resolve_ref_id_match_whose_next_repeats_the_first_page_resolves_without_a_second_list_read(tmp_path):
+    now_ms = int(time.time() * 1000)
+    routes = dict(PREP)
+    routes["GET " + ORDERS] = [_page([_attempt_rows(now_ms)["exact"]], ORDERS)]
+    routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+    code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+    assert code == 0, payload
+    assert payload["order_outcome"] == "filled"
+    assert payload["execution"]["fill"] == {"avg_px": 100.0, "quantity": 0.1, "oid": ORDER_ID}
+    assert _gets(made, ORDERS) == 1
+    assert _gets(made, ORDER) == 1
+
+
+def test_resolve_invalid_list_page_holds_even_with_a_ref_id_match(tmp_path, subtests):
+    now_ms = int(time.time() * 1000)
+    exact = _attempt_rows(now_ms)["exact"]
+    page2 = _orders_page_url(2)
+    page3 = _orders_page_url(3)
+    matching_page_shapes = {
+        "matching_page_without_next_key": {"status": 200, "json": {"results": [exact]}},
+        "matching_page_next_not_string": _page([exact], 2),
+        "matching_page_next_http_scheme": _page([exact], "http://nummus.robinhood.com/orders/?cursor=2"),
+        "matching_page_next_other_host": _page([exact], "https://orders.example.com/orders/?cursor=2"),
+    }
+    before_match_shapes = {
+        "page2_without_results": {"status": 200, "json": {"next": page3}},
+        "page2_transport_error": {"raise": "connection"},
+        "page2_next_repeats_page1": _page([], ORDERS),
+    }
+    for case in sorted(matching_page_shapes):
+        with subtests.test(case=case):
+            routes = dict(PREP)
+            routes.update(_long_order_list())
+            routes["GET " + ORDERS] = [matching_page_shapes[case]]
+            routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+            code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+            assert code == 1
+            assert payload["order_outcome"] == "unknown"
+            assert "fill" not in payload["execution"]
+            assert _page_tally(made) == [1] + [0] * (LONG_LIST_PAGES - 1)
+            assert _gets(made, ORDER) == 0
+    for case in sorted(before_match_shapes):
+        with subtests.test(case=case):
+            routes = dict(PREP)
+            routes.update(_long_order_list({3: [exact]}))
+            routes["GET " + page2] = [before_match_shapes[case]]
+            routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+            code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+            assert code == 1
+            assert payload["order_outcome"] == "unknown"
+            assert "fill" not in payload["execution"]
+            assert _page_tally(made) == [1, 1] + [0] * (LONG_LIST_PAGES - 2)
+            assert _gets(made, ORDER) == 0
+
+
+def test_resolve_ref_id_match_with_unusable_order_evidence_books_no_fill(tmp_path, subtests):
+    now_ms = int(time.time() * 1000)
+    exact = _attempt_rows(now_ms)["exact"]
+    polls = {
+        "poll_http_500": ({"status": 500, "json": {"detail": "down"}}, "unknown"),
+        "poll_invalid_json": ({"status": 200, "text": "{not json"}, "unknown"),
+        "poll_other_order_id": (_order("filled", "0.1", "100", order_id="ord-other"), "unknown"),
+        "poll_other_ref_id": (_order("filled", "0.1", "100", ref_id=OTHER_REF), "unknown"),
+        "poll_other_side": (_order("filled", "0.1", "100", side="sell"), "unknown"),
+        "poll_other_account": (_order("filled", "0.1", "100", account_id="acct-other"), "unknown"),
+        "filled_without_average_price": (_order("filled", "0.1", None), "unknown"),
+        "filled_with_unreadable_quantity": (_order("filled", "abc", "100"), "unknown"),
+        "filled_above_the_requested_quantity": (_order("filled", "0.5", "100"), "inconsistent"),
+    }
+    cases = {name: (exact, poll, outcome) for name, (poll, outcome) in polls.items()}
+    cases["matching_row_without_id"] = (dict(exact, id=None), _order("filled", "0.1", "100"), "unknown")
+    for case in sorted(cases):
+        row, poll, outcome = cases[case]
+        with subtests.test(case=case):
+            routes = dict(PREP)
+            routes.update(_long_order_list({1: [row]}))
+            routes["GET " + ORDER] = [poll]
+            code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+            assert code == 1
+            assert payload["order_outcome"] == outcome
+            assert "fill" not in payload["execution"]
+            assert _page_tally(made) == [1] + [0] * (LONG_LIST_PAGES - 1)
+            assert _gets(made, ORDER) == (0 if case == "matching_row_without_id" else 1)
+            assert _count(made, CANCEL, "POST") == 0
+
+
+def test_resolve_ref_id_match_with_a_hung_poll_stays_unknown_inside_the_budget(tmp_path):
+    now_ms = int(time.time() * 1000)
+    routes = dict(PREP)
+    routes.update(_long_order_list({1: [_attempt_rows(now_ms)["exact"]]}))
+    routes["GET " + ORDER] = [{"sleep_s": 30, "status": 200, "json": {}}]
+    started = time.monotonic()
+    code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+    elapsed = time.monotonic() - started
+    assert code == 1
+    assert payload["order_outcome"] == "unknown"
+    assert "fill" not in payload["execution"]
+    assert _page_tally(made) == [1] + [0] * (LONG_LIST_PAGES - 1)
+    assert elapsed < 6 + 15
+
+
+def _pairs(min_size="0.000001", increment="0.00000001", max_size="20", drop=(), price_increment="0.01"):
     row = {"id": PAIR_ID, "asset_currency": {"code": "BTC"}, "quote_currency": {"code": "USD"},
-           "min_order_size": min_size, "min_order_quantity_increment": increment, "max_order_size": max_size}
+           "min_order_size": min_size, "min_order_quantity_increment": increment, "max_order_size": max_size,
+           "min_order_price_increment": price_increment}
     for key in drop:
         row.pop(key, None)
     return {"GET " + CURRENCY_PAIRS: [_page([row])]}
@@ -740,31 +966,33 @@ def test_execute_sell_capped_by_the_available_quantity_sends_only_what_the_accou
     assert payload["execution"]["fill"]["quantity"] == 0.3
 
 
-@pytest.mark.parametrize("quantity,available,increment,want", [
-    ("0.30000000000000004", "1", "0.00000001", 0.3),
-    ("1", "0.123456789", "0.0001", 0.1234),
-], ids=["ask_off_increment", "available_off_increment"])
-def test_execute_sell_floors_to_the_pair_increment_with_an_exact_wire_number(tmp_path, quantity, available, increment, want):
-    payload, sent = _run_sized_sell(tmp_path, quantity, _holding("1", available), str(want), pairs=_pairs(min_size="0", increment=increment))
-    assert sent == want
-    assert repr(sent) == repr(want)
-    assert payload["sizing"]["sent_quantity"] == want
-    assert payload["requested_quantity"] == want
+def test_execute_sell_floors_to_the_pair_increment_with_an_exact_wire_number(tmp_path, subtests):
+    for name, quantity, available, increment, want in [
+        ("ask_off_increment", "0.30000000000000004", "1", "0.00000001", 0.3),
+        ("available_off_increment", "1", "0.123456789", "0.0001", 0.1234),
+    ]:
+        with subtests.test(case=name):
+            payload, sent = _run_sized_sell(tmp_path, quantity, _holding("1", available), str(want), pairs=_pairs(min_size="0", increment=increment))
+            assert sent == want
+            assert repr(sent) == repr(want)
+            assert payload["sizing"]["sent_quantity"] == want
+            assert payload["requested_quantity"] == want
 
 
-@pytest.mark.parametrize("close_kind,sole_owner,want,swept", [
-    ("whole", True, 0.5004, True),
-    ("whole", False, 0.5, False),
-    ("partial", True, 0.5, False),
-    (None, True, 0.5, False),
-], ids=["whole_sole_owner_sweeps", "whole_with_peer_sends_the_ask", "partial_never_sweeps", "missing_close_kind_never_sweeps"])
-def test_execute_sell_sweeps_sub_minimum_dust_only_for_a_sole_owner_whole_close(tmp_path, close_kind, sole_owner, want, swept):
-    payload, sent = _run_sized_sell(tmp_path, "0.5", _holding("0.5004", "0.5004"), str(want), pairs=_pairs(min_size="0.001"),
-                                    close_kind=close_kind, sole_owner=sole_owner)
-    assert sent == want
-    assert payload["sizing"]["swept"] is swept
-    assert payload["sizing"]["close_kind"] == (close_kind or "partial")
-    assert payload["sizing"]["sole_owner"] is sole_owner
+def test_execute_sell_sweeps_sub_minimum_dust_only_for_a_sole_owner_whole_close(tmp_path, subtests):
+    for name, close_kind, sole_owner, want, swept in [
+        ("whole_sole_owner_sweeps", "whole", True, 0.5004, True),
+        ("whole_with_peer_sends_the_ask", "whole", False, 0.5, False),
+        ("partial_never_sweeps", "partial", True, 0.5, False),
+        ("missing_close_kind_never_sweeps", None, True, 0.5, False),
+    ]:
+        with subtests.test(case=name):
+            payload, sent = _run_sized_sell(tmp_path, "0.5", _holding("0.5004", "0.5004"), str(want), pairs=_pairs(min_size="0.001"),
+                                            close_kind=close_kind, sole_owner=sole_owner)
+            assert sent == want
+            assert payload["sizing"]["swept"] is swept
+            assert payload["sizing"]["close_kind"] == (close_kind or "partial")
+            assert payload["sizing"]["sole_owner"] is sole_owner
 
 
 def test_execute_sell_whole_close_with_a_large_residue_sends_the_ask_and_reports_the_residue(tmp_path):
@@ -803,23 +1031,24 @@ SELL_REFUSALS = {
 }
 
 
-@pytest.mark.parametrize("case", sorted(SELL_REFUSALS))
-def test_execute_sell_refusals_send_no_order(tmp_path, case):
-    quantity, holding, pairs, names_inputs = SELL_REFUSALS[case]
-    code, payload, made = _run(tmp_path, EXECUTE, _sized_sell(quantity, "whole", True), _sell_routes("0.5", holding, pairs))
-    assert code == 1
-    assert payload["order_outcome"] == "not_sent"
-    assert len(_posts(made)) == 0
-    assert "fill" not in payload["execution"]
-    assert "sizing" not in payload
-    if names_inputs:
-        for token in ("R=", "A=", "M="):
-            assert token in payload["error"], payload["error"]
-    _assert_finite_document(payload)
+def test_execute_sell_refusals_send_no_order(tmp_path, subtests):
+    for case in sorted(SELL_REFUSALS):
+        with subtests.test(case=case):
+            quantity, holding, pairs, names_inputs = SELL_REFUSALS[case]
+            code, payload, made = _run(tmp_path, EXECUTE, _sized_sell(quantity, "whole", True), _sell_routes("0.5", holding, pairs))
+            assert code == 1
+            assert payload["order_outcome"] == "not_sent"
+            assert len(_posts(made)) == 0
+            assert "fill" not in payload["execution"]
+            assert "sizing" not in payload
+            if names_inputs:
+                for token in ("R=", "A=", "M="):
+                    assert token in payload["error"], payload["error"]
+            _assert_finite_document(payload)
 
 
 def _close(budget_ms=6000, quantity="0.5"):
-    return ["--symbol=BTC", "--mode=live", "--quantity=" + quantity, "--ref-id=" + REF_ID, f"--budget-ms={budget_ms}"]
+    return ["--symbol=BTC", "--mode=live", "--quantity=" + quantity, "--ref-id=" + REF_ID, f"--budget-ms={budget_ms}", "--expected-account-id=acct-1"]
 
 
 def test_close_reports_the_polled_fill_and_not_the_held_quantity(tmp_path):
@@ -843,36 +1072,38 @@ def test_close_partial_then_cancel_reports_the_partial_fill(tmp_path):
     assert payload["close"]["fill"]["total_sz"] == 0.1
 
 
-@pytest.mark.parametrize("post,outcome", [
-    ({"status": 400, "json": {"detail": "refused"}}, "rejected"),
-    ({"status": 503, "json": {"detail": "unavailable"}}, "unknown"),
-], ids=["refused", "http_503"])
-def test_close_failed_submit_exits_one(tmp_path, post, outcome):
-    routes = _routes([post], **{"GET " + HOLDINGS: [_page([BTC_SELLABLE])]})
-    code, payload, _ = _run(tmp_path, CLOSE, _close(), routes)
-    assert code == 1
-    assert payload["order_outcome"] == outcome
-    assert "fill" not in payload["close"]
+def test_close_failed_submit_exits_one(tmp_path, subtests):
+    for name, post, outcome in [
+        ("refused", {"status": 400, "json": {"detail": "refused"}}, "rejected"),
+        ("http_503", {"status": 503, "json": {"detail": "unavailable"}}, "unknown"),
+    ]:
+        with subtests.test(post=name):
+            routes = _routes([post], **{"GET " + HOLDINGS: [_page([BTC_SELLABLE])]})
+            code, payload, _ = _run(tmp_path, CLOSE, _close(), routes)
+            assert code == 1
+            assert payload["order_outcome"] == outcome
+            assert "fill" not in payload["close"]
 
 
-@pytest.mark.parametrize("post,outcome,sends", [
-    ({"raise": "read_timeout"}, "unknown", 1),
-    ({"raise": "connection"}, "unknown", 1),
-    ({"raise": "new_connection"}, "not_sent", 3),
-    ({"raise": "connect_timeout"}, "not_sent", 3),
-], ids=["read_timeout_after_send", "connection_reset_after_send", "refused_before_send", "connect_timeout_before_send"])
-def test_close_transport_failure_on_the_sell_exits_one_with_no_fill(tmp_path, post, outcome, sends):
-    routes = _routes([post], **{"GET " + HOLDINGS: [_page([BTC_SELLABLE])]})
-    code, payload, made = _run(tmp_path, CLOSE, _close(), routes)
-    assert code == 1, payload
-    assert payload["order_outcome"] == outcome
-    assert isinstance(payload.get("error"), str) and payload["error"]
-    assert "fill" not in payload["close"]
-    assert payload["close"].get("already_flat") is None
-    posts = _posts(made)
-    assert len(posts) == sends, made
-    assert {p["body"]["ref_id"] for p in posts} == {REF_ID}
-    _assert_finite_document(payload)
+def test_close_transport_failure_on_the_sell_exits_one_with_no_fill(tmp_path, subtests):
+    for name, post, outcome, sends in [
+        ("read_timeout_after_send", {"raise": "read_timeout"}, "unknown", 1),
+        ("connection_reset_after_send", {"raise": "connection"}, "unknown", 1),
+        ("refused_before_send", {"raise": "new_connection"}, "not_sent", 3),
+        ("connect_timeout_before_send", {"raise": "connect_timeout"}, "not_sent", 3),
+    ]:
+        with subtests.test(post=name):
+            routes = _routes([post], **{"GET " + HOLDINGS: [_page([BTC_SELLABLE])]})
+            code, payload, made = _run(tmp_path, CLOSE, _close(), routes)
+            assert code == 1, payload
+            assert payload["order_outcome"] == outcome
+            assert isinstance(payload.get("error"), str) and payload["error"]
+            assert "fill" not in payload["close"]
+            assert payload["close"].get("already_flat") is None
+            posts = _posts(made)
+            assert len(posts) == sends, made
+            assert {p["body"]["ref_id"] for p in posts} == {REF_ID}
+            _assert_finite_document(payload)
 
 
 def _run_emergency_close(tmp_path, quantity, holding, sent="0.4", pairs=None):
@@ -880,26 +1111,27 @@ def _run_emergency_close(tmp_path, quantity, holding, sent="0.4", pairs=None):
     return _run(tmp_path, CLOSE, _close(quantity=quantity), routes)
 
 
-@pytest.mark.parametrize("quantity,want", [("0.4", 0.4), ("0.30000000000000004", 0.3)], ids=["book_below_account", "ask_off_increment"])
-def test_emergency_close_sells_at_most_the_book_and_reports_the_residue(tmp_path, quantity, want):
-    code, payload, made = _run_emergency_close(tmp_path, quantity, _holding("1.0", "1.0"), sent=str(want))
-    assert code == 0, payload
-    posts = _posts(made)
-    assert len(posts) == 1, made
-    assert posts[0]["body"]["quantity"] == want
-    assert payload["requested_quantity"] == want
-    assert payload["close"]["held_qty"] == 1.0
-    assert payload["close"]["available_qty"] == 1.0
-    sizing = payload["sizing"]
-    assert sizing["asked_quantity"] == float(quantity)
-    assert sizing["account_quantity"] == 1.0
-    assert sizing["account_available"] == 1.0
-    assert sizing["sent_quantity"] == want
-    assert abs(sizing["residue_quantity"] - (1.0 - want)) < 1e-12
-    assert sizing["close_kind"] == "emergency"
-    assert sizing["swept"] is False
-    assert sizing["sole_owner"] is False
-    _assert_finite_document(payload)
+def test_emergency_close_sells_at_most_the_book_and_reports_the_residue(tmp_path, subtests):
+    for name, quantity, want in [("book_below_account", "0.4", 0.4), ("ask_off_increment", "0.30000000000000004", 0.3)]:
+        with subtests.test(case=name):
+            code, payload, made = _run_emergency_close(tmp_path, quantity, _holding("1.0", "1.0"), sent=str(want))
+            assert code == 0, payload
+            posts = _posts(made)
+            assert len(posts) == 1, made
+            assert posts[0]["body"]["quantity"] == want
+            assert payload["requested_quantity"] == want
+            assert payload["close"]["held_qty"] == 1.0
+            assert payload["close"]["available_qty"] == 1.0
+            sizing = payload["sizing"]
+            assert sizing["asked_quantity"] == float(quantity)
+            assert sizing["account_quantity"] == 1.0
+            assert sizing["account_available"] == 1.0
+            assert sizing["sent_quantity"] == want
+            assert abs(sizing["residue_quantity"] - (1.0 - want)) < 1e-12
+            assert sizing["close_kind"] == "emergency"
+            assert sizing["swept"] is False
+            assert sizing["sole_owner"] is False
+            _assert_finite_document(payload)
 
 
 def test_emergency_close_never_sweeps_a_sub_minimum_residue(tmp_path):
@@ -920,15 +1152,6 @@ def test_emergency_close_below_the_venue_minimum_sends_no_order(tmp_path):
     assert "sizing" not in payload
 
 
-def test_emergency_close_with_no_total_holding_is_already_flat(tmp_path):
-    code, payload, made = _run(tmp_path, CLOSE, _close(quantity="0.5"), {"GET " + HOLDINGS: [_page([ETH])]})
-    assert code == 0, payload
-    assert payload["close"]["already_flat"] is True
-    assert payload.get("error") is None
-    assert len(_posts(made)) == 0
-    assert _count(made, CURRENCY_PAIRS) == 0
-
-
 def test_emergency_close_with_reserved_holdings_is_not_flat_and_sends_no_order(tmp_path):
     code, payload, made = _run_emergency_close(tmp_path, "0.5", _holding("0.5", "0"))
     assert code == 1
@@ -940,22 +1163,244 @@ def test_emergency_close_with_reserved_holdings_is_not_flat_and_sends_no_order(t
     assert len(_posts(made)) == 0
 
 
-@pytest.mark.parametrize("args", [
-    ["--symbol=BTC", "--mode=live", "--ref-id=" + REF_ID],
-    ["--symbol=BTC", "--mode=live", "--quantity=abc", "--ref-id=" + REF_ID],
-    ["--symbol=BTC", "--mode=live", "--quantity=0", "--ref-id=" + REF_ID],
-    ["--symbol=BTC", "--mode=live", "--quantity=-1", "--ref-id=" + REF_ID],
-    ["--symbol=BTC", "--mode=live", "--quantity=NaN", "--ref-id=" + REF_ID],
-    ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--unknown-flag"],
-], ids=["missing", "text", "zero", "negative", "nan", "unknown_flag"])
-def test_emergency_close_refuses_a_missing_or_invalid_quantity_before_login(tmp_path, args):
-    proc, payload, made = _run_capture(tmp_path, CLOSE, args, _single([BTC_SELLABLE]))
-    assert proc.returncode == 1, proc.stdout
-    assert len([ln for ln in proc.stdout.splitlines() if ln.strip()]) == 1, proc.stdout
-    assert payload["order_outcome"] == "not_sent"
-    assert isinstance(payload.get("error"), str) and payload["error"]
-    assert made == []
+def test_emergency_close_refuses_a_missing_or_invalid_quantity_before_login(tmp_path, subtests):
+    for name, args in [
+        ("missing", ["--symbol=BTC", "--mode=live", "--ref-id=" + REF_ID]),
+        ("text", ["--symbol=BTC", "--mode=live", "--quantity=abc", "--ref-id=" + REF_ID]),
+        ("zero", ["--symbol=BTC", "--mode=live", "--quantity=0", "--ref-id=" + REF_ID]),
+        ("negative", ["--symbol=BTC", "--mode=live", "--quantity=-1", "--ref-id=" + REF_ID]),
+        ("nan", ["--symbol=BTC", "--mode=live", "--quantity=NaN", "--ref-id=" + REF_ID]),
+        ("unknown_flag", ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--unknown-flag"]),
+    ]:
+        with subtests.test(args=name):
+            proc, payload, made = _run_capture(tmp_path, CLOSE, args, _single([BTC_SELLABLE]))
+            assert proc.returncode == 1, proc.stdout
+            assert len([ln for ln in proc.stdout.splitlines() if ln.strip()]) == 1, proc.stdout
+            assert payload["order_outcome"] == "not_sent"
+            assert isinstance(payload.get("error"), str) and payload["error"]
+            assert made == []
 
+
+
+def _quote(ask="100.00", bid="99.00"):
+    return {"GET " + QUOTE: [{"status": 200, "json": {"ask_price": ask, "bid_price": bid}}]}
+
+
+def _buy_budget(amount, budget_ms=6000):
+    args = _buy(budget_ms)
+    args[3] = "--amount_usd=" + amount
+    return args
+
+
+def _expected_buy(budget, ask, price_increment, increment, maximum=None):
+    from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+
+    b, a, p, i = Decimal(budget), Decimal(ask), Decimal(price_increment), Decimal(increment)
+    limit = (a * Decimal("1.005") / p).to_integral_value(rounding=ROUND_CEILING) * p
+    quantity = (b / (limit * i)).to_integral_value(rounding=ROUND_FLOOR) * i
+    if maximum is not None and quantity > Decimal(maximum):
+        quantity = (Decimal(maximum) / i).to_integral_value(rounding=ROUND_FLOOR) * i
+    return limit, quantity
+
+
+BUY_ROWS = {
+    "btc_1000_at_60000": ("1000", "60000", _pairs(), "0.01", "0.00000001", None),
+    "eth_5000_at_3000": ("5000", "3000", _pairs(), "0.01", "0.00000001", None),
+    "sol_250_at_150": ("250", "150", _pairs(), "0.01", "0.00000001", None),
+    "tiny_100_at_0.00001234": ("100", "0.00001234", _pairs(min_size="1", increment="1", price_increment="0.00000001", drop=("max_order_size",)),
+                                "0.00000001", "1", None),
+    "btc_1000_at_60123.45": ("1000", "60123.45", _pairs(), "0.01", "0.00000001", None),
+    "exact_budget_boundary": ("7.035", "100", _pairs(min_size="0.01", increment="0.01"), "0.01", "0.01", None),
+    "just_below_the_boundary": ("7.0349", "100", _pairs(min_size="0.01", increment="0.01"), "0.01", "0.01", None),
+    "capped_by_the_maximum": ("1000", "100", _pairs(max_size="0.05"), "0.01", "0.00000001", "0.05"),
+}
+
+
+def test_execute_buy_sends_a_limit_bounded_by_the_budget(tmp_path, subtests):
+    from decimal import Decimal
+
+    for case in sorted(BUY_ROWS):
+        budget, ask, pairs, price_increment, increment, maximum = BUY_ROWS[case]
+        with subtests.test(case=case):
+            want_limit, want_quantity = _expected_buy(budget, ask, price_increment, increment, maximum)
+            routes = _routes([_accepted()], [_order("filled", format(want_quantity, "f"), format(want_limit, "f"))], **pairs)
+            routes.update(_quote(ask=ask))
+            code, payload, made = _run(tmp_path, EXECUTE, _buy_budget(budget), routes)
+            assert code == 0, payload
+            posts = _posts(made)
+            assert len(posts) == 1
+            body = posts[0]["body"]
+            assert body["type"] == "limit" and body["time_in_force"] == "gtc" and body["side"] == "buy"
+            limit, quantity = Decimal(repr(body["price"])), Decimal(repr(body["quantity"]))
+            assert (limit, quantity) == (want_limit, want_quantity)
+            assert limit >= Decimal(ask)
+            assert limit % Decimal(price_increment) == 0
+            assert quantity % Decimal(increment) == 0
+            assert quantity * limit <= Decimal(budget)
+            assert quantity > 0
+            assert payload["requested_quantity"] == body["quantity"]
+            sizing = payload["buy_sizing"]
+            assert sizing["limit_price"] == body["price"] and sizing["sent_quantity"] == body["quantity"]
+            assert sizing["budget_usd"] == float(budget) and sizing["ask_price"] == float(ask)
+            assert sizing["headroom"] == 0.005
+            assert Decimal(repr(sizing["max_cost_usd"])) == quantity * limit
+            assert sizing["capped_by_max"] is (maximum is not None)
+            assert payload["execution"]["fill"]["quantity"] == body["quantity"]
+            _assert_finite_document(payload)
+            if case == "exact_budget_boundary":
+                assert quantity * limit == Decimal(budget)
+            if case == "just_below_the_boundary":
+                assert quantity == Decimal("0.06")
+
+
+BUY_REFUSALS = {
+    "price_increment_missing": (_pairs(price_increment=None), _quote(), "10"),
+    "price_increment_zero": (_pairs(price_increment="0"), _quote(), "10"),
+    "price_increment_negative": (_pairs(price_increment="-0.01"), _quote(), "10"),
+    "price_increment_text": (_pairs(price_increment="abc"), _quote(), "10"),
+    "quantity_minimum_missing": (_pairs(drop=("min_order_size",)), _quote(), "10"),
+    "quantity_increment_invalid": (_pairs(increment="0"), _quote(), "10"),
+    "ask_text": (_pairs(), _quote(ask="1e2x"), "10"),
+    "ask_outside_exact_bounds": (_pairs(), _quote(ask="1e-40"), "10"),
+    "quantity_below_minimum": (_pairs(min_size="1"), _quote(), "10"),
+    "budget_floors_to_zero": (_pairs(increment="1", min_size="0"), _quote(), "10"),
+    "inexact_limit_wire_number": (_pairs(price_increment="0.00000001234567890123456789"), _quote(), "10"),
+}
+
+
+def test_execute_buy_refusals_send_no_order(tmp_path, subtests):
+    for case in sorted(BUY_REFUSALS):
+        pairs, quote, budget = BUY_REFUSALS[case]
+        with subtests.test(case=case):
+            routes = _routes([_accepted()], [_order("filled", "0.01", "100")], **pairs)
+            routes.update(quote)
+            code, payload, made = _run(tmp_path, EXECUTE, _buy_budget(budget), routes)
+            assert code == 1
+            assert payload["order_outcome"] == "not_sent"
+            assert len(_posts(made)) == 0
+            assert "fill" not in payload["execution"]
+            assert "buy_sizing" not in payload
+            assert isinstance(payload.get("error"), str) and payload["error"]
+            _assert_finite_document(payload)
+    with subtests.test(case="too_little_time_after_the_reads"):
+        routes = _routes([_accepted()], [_order("filled", "0.01", "100")])
+        routes["GET " + QUOTE] = [dict(PREP["GET " + QUOTE][0], sleep_until_started_s=9.35)]
+        code, payload, made = _run(tmp_path, EXECUTE, _buy(budget_ms=10000), routes)
+        assert code == 1
+        assert payload["order_outcome"] == "not_sent"
+        assert len(_posts(made)) == 0
+        assert "too little of the time budget is left after the account reads" in payload["error"], payload
+        assert payload["buy_sizing"]["sent_quantity"] == 0.09950248
+
+
+def test_execute_buy_limit_partial_and_open_outcomes(tmp_path, subtests):
+    with subtests.test(case="canceled_after_a_partial_fill"):
+        routes = _routes([_accepted()], [_order("confirmed"), _order("canceled", "0.04", "100.5")], [{"status": 200, "json": {}}])
+        code, payload, made = _run(tmp_path, EXECUTE, _buy(budget_ms=4000), routes)
+        assert code == 0, payload
+        assert payload["order_outcome"] == "partially_filled"
+        assert payload["execution"]["fill"]["quantity"] == 0.04
+        assert payload["requested_quantity"] == 0.09950248
+        assert _posts(made)[0]["body"]["type"] == "limit"
+    with subtests.test(case="still_open_after_the_cancel_request"):
+        routes = _routes([_accepted()], [_order("confirmed")], [{"status": 200, "json": {}}])
+        code, payload, made = _run(tmp_path, EXECUTE, _buy(budget_ms=4000), routes)
+        assert code == 1
+        assert payload["order_outcome"] == "open"
+        assert payload["cancel"]["requested"] is True
+        assert "fill" not in payload["execution"]
+        assert payload["buy_sizing"]["sent_quantity"] == 0.09950248
+
+
+SELL_PRICE_ROWS = {
+    "0.00000951": (0.00001, {None: (0.000009, "floor_decimals"), "0.00000001": (0.000009, "floor_increment")}),
+    "0.0000115": (0.000012, {None: (0.000011, "floor_decimals"), "0.00000001": (0.000011, "floor_increment")}),
+    "0.0000125": (0.000013, {None: (0.000012, "floor_decimals"), "0.00000001": (0.000012, "floor_increment")}),
+    "0.00001234": (0.000012, {None: (0.000012, "floor_decimals"), "0.00000001": (0.000012, "floor_increment")}),
+    "0.00000075": (0.000001, {None: (0.000001, "round_fallback"), "0.00000001": (0.000001, "round_fallback")}),
+    "0.0000005": (0.0, {None: (0.000001, "one_step"), "0.00000001": (0.00000001, "one_step")}),
+    "0.0000004": (0.0, {None: (0.000001, "one_step"), "0.00000001": (0.00000001, "one_step")}),
+    "0.99995": (1.0, {None: (0.9999, "floor_decimals"), "0.00000001": (0.9999, "floor_increment")}),
+    "1.4951": (1.5, {None: (1.49, "floor_decimals"), "0.00000001": (1.49, "floor_increment")}),
+    "99.00": (99.0, {None: (99.0, "floor_decimals"), "0.00000001": (99.0, "floor_increment")}),
+}
+ABOVE_BID_RULES = ("round_fallback", "one_step")
+
+
+def _run_priced_sell(tmp_path, script, bid, pairs):
+    routes = _sell_routes("0.5", _holding("0.5", "0.5"), pairs)
+    routes.update(_quote(bid=bid))
+    args = _sized_sell("0.5", "whole", True) if script == EXECUTE else _close()
+    code, payload, made = _run(tmp_path, script, args, routes)
+    assert code == 0, payload
+    posts = _posts(made)
+    assert len(posts) == 1, made
+    _assert_finite_document(payload)
+    return payload, posts[0]["body"]
+
+
+def _assert_sell_price_bounds(payload, body, bid):
+    import math
+    from decimal import Decimal
+
+    price = body["price"]
+    assert body["type"] == "market"
+    assert body["quantity"] == 0.5
+    assert isinstance(price, float) and math.isfinite(price) and price > 0
+    echo = payload["sell_price"]
+    assert echo["sent_price"] == price
+    assert echo["bid_price"] == float(bid)
+    if echo["rule"] not in ABOVE_BID_RULES:
+        assert Decimal(repr(price)) <= Decimal(bid)
+    if echo["today_price"] > 0:
+        assert Decimal(repr(price)) <= Decimal(repr(echo["today_price"]))
+    return echo
+
+
+def test_sell_price_floors_below_the_bid_on_both_sell_scripts(tmp_path, subtests):
+    for script in (EXECUTE, CLOSE):
+        for bid in sorted(SELL_PRICE_ROWS):
+            today, by_increment = SELL_PRICE_ROWS[bid]
+            for increment in (None, "0.00000001"):
+                want_price, want_rule = by_increment[increment]
+                with subtests.test(script=os.path.basename(script), bid=bid, increment=increment):
+                    payload, body = _run_priced_sell(tmp_path, script, bid, _pairs(price_increment=increment))
+                    echo = _assert_sell_price_bounds(payload, body, bid)
+                    assert (body["price"], echo["rule"], echo["today_price"]) == (want_price, want_rule, today)
+                    assert ("price_increment" in echo) is (increment is not None)
+                    assert ("price_increment_problem" in echo) is (increment is None)
+
+
+SELL_PRICE_EDGES = {
+    "increment_missing": ("99.00", _pairs(drop=("min_order_price_increment",)), 99.0, "floor_decimals"),
+    "increment_zero": ("99.00", _pairs(price_increment="0"), 99.0, "floor_decimals"),
+    "increment_text": ("99.00", _pairs(price_increment="abc"), 99.0, "floor_decimals"),
+    "coarse_increment_above_the_floor": ("99.00", _pairs(price_increment="200"), 99.0, "round_fallback"),
+    "irregular_increment_at_a_zero_rounded_bid": ("0.0000004", _pairs(price_increment="0.00000001234567890123456789"), None, "one_step"),
+    "inexact_flooring_candidate": ("1.4951", _pairs(price_increment="0.00000001234567890123456789"), None, "wire_floor"),
+    "raw_bid_below_the_exact_parser_range": ("1e-40", _pairs(price_increment=None), 0.000001, "one_step"),
+    "raw_bid_above_the_exact_parser_range": ("1e20", _pairs(), 1e20, "floor_increment"),
+}
+
+
+def test_sell_price_edge_cases_never_refuse_and_stay_positive(tmp_path, subtests):
+    from decimal import Decimal
+
+    for case in sorted(SELL_PRICE_EDGES):
+        bid, pairs, want_price, want_rule = SELL_PRICE_EDGES[case]
+        for script in (EXECUTE, CLOSE):
+            with subtests.test(case=case, script=os.path.basename(script)):
+                payload, body = _run_priced_sell(tmp_path, script, bid, pairs)
+                echo = _assert_sell_price_bounds(payload, body, bid)
+                assert echo["rule"] == want_rule
+                if want_price is not None:
+                    assert body["price"] == want_price
+                if case.startswith("increment_"):
+                    assert isinstance(echo.get("price_increment_problem"), str) and echo["price_increment_problem"]
+                if case == "irregular_increment_at_a_zero_rounded_bid":
+                    assert 0 < Decimal(repr(body["price"])) <= Decimal("0.00000001234567890123456789")
+                if case == "inexact_flooring_candidate":
+                    assert Decimal(repr(body["price"])) < Decimal("1.49")
 
 LOGIN_FAILED = "Robinhood login failed:"
 PATHFINDER = "https://api.robinhood.com/pathfinder/user_machine/"
@@ -977,7 +1422,7 @@ LOGIN_FAILURES = {
         "go-trader robinhood-login --config",
     ),
 }
-SCRIPTS = {"fetch": (FETCH, []), "close": (CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5"])}
+SCRIPTS = {"fetch": (FETCH, []), "close": (CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--expected-account-id=acct-1"])}
 
 
 def _default_session(run_dir):
@@ -995,6 +1440,7 @@ def _run_capture(tmp_path, script, args, routes, login=LOGIN_OK, home=None, sess
     else:
         home_dir = home(run_dir)
     fixture = run_dir / "routes.json"
+    routes = dict({"GET " + ACCOUNTS: [_page([{"id": "acct-1"}])]}, **routes)
     fixture.write_text(json.dumps(dict(routes, **{"POST " + TOKEN_URL: login})))
     log = run_dir / "requests.jsonl"
     log.write_text("")
@@ -1070,36 +1516,39 @@ def _session_under_file(run_dir):
     return os.path.join(os.path.realpath(blocker), "robinhood-session")
 
 
-@pytest.mark.parametrize("script_id", sorted(SCRIPTS))
-@pytest.mark.parametrize("shape", sorted(LOGIN_FAILURES))
-def test_failed_login_stops_script_before_any_account_request(tmp_path, shape, script_id):
-    login, extra_routes, want_reason = LOGIN_FAILURES[shape]
-    script, args = SCRIPTS[script_id]
-    proc, payload, made = _run_capture(tmp_path, script, args, dict(_single([BTC]), **extra_routes), login=login)
-    detail = _assert_login_refused(proc, payload, made)
-    assert _count(made, TOKEN_URL, "POST") == 1, detail
-    assert _count(made, PATHFINDER, "POST") == 0, detail
-    if want_reason is not None:
-        assert want_reason in payload["error"], detail
+def test_failed_login_stops_script_before_any_account_request(tmp_path, subtests):
+    for shape in sorted(LOGIN_FAILURES):
+        for script_id in sorted(SCRIPTS):
+            with subtests.test(shape=shape, script=script_id):
+                login, extra_routes, want_reason = LOGIN_FAILURES[shape]
+                script, args = SCRIPTS[script_id]
+                proc, payload, made = _run_capture(tmp_path, script, args, dict(_single([BTC]), **extra_routes), login=login)
+                detail = _assert_login_refused(proc, payload, made)
+                assert _count(made, TOKEN_URL, "POST") == 1, detail
+                assert _count(made, PATHFINDER, "POST") == 0, detail
+                if want_reason is not None:
+                    assert want_reason in payload["error"], detail
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores folder permissions")
-@pytest.mark.parametrize("script_id", sorted(SCRIPTS))
-def test_unwritable_session_folder_refuses_login_before_any_request(tmp_path, script_id):
-    script, args = SCRIPTS[script_id]
-    proc, payload, made = _run_capture(tmp_path, script, args, _single([BTC]), session=_unwritable_session)
-    detail = _assert_login_refused(proc, payload, made)
-    assert "is not writable" in payload["error"], detail
-    assert made == [], detail
+def test_unwritable_session_folder_refuses_login_before_any_request(tmp_path, subtests):
+    for script_id in sorted(SCRIPTS):
+        with subtests.test(script=script_id):
+            script, args = SCRIPTS[script_id]
+            proc, payload, made = _run_capture(tmp_path, script, args, _single([BTC]), session=_unwritable_session)
+            detail = _assert_login_refused(proc, payload, made)
+            assert "is not writable" in payload["error"], detail
+            assert made == [], detail
 
 
-@pytest.mark.parametrize("script_id", sorted(SCRIPTS))
-def test_session_folder_under_a_file_refuses_login_before_any_request(tmp_path, script_id):
-    script, args = SCRIPTS[script_id]
-    proc, payload, made = _run_capture(tmp_path, script, args, _single([BTC]), session=_session_under_file)
-    detail = _assert_login_refused(proc, payload, made)
-    assert "GO_TRADER_ROBINHOOD_SESSION_DIR" in payload["error"], detail
-    assert made == [], detail
+def test_session_folder_under_a_file_refuses_login_before_any_request(tmp_path, subtests):
+    for script_id in sorted(SCRIPTS):
+        with subtests.test(script=script_id):
+            script, args = SCRIPTS[script_id]
+            proc, payload, made = _run_capture(tmp_path, script, args, _single([BTC]), session=_session_under_file)
+            detail = _assert_login_refused(proc, payload, made)
+            assert "GO_TRADER_ROBINHOOD_SESSION_DIR" in payload["error"], detail
+            assert made == [], detail
 
 
 def test_cached_session_login_reads_holdings_with_its_token(tmp_path):

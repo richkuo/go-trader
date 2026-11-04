@@ -92,26 +92,23 @@ def test_hl_guarded_entry_sends_saved_ids_under_the_signed_deadline(monkeypatch,
     assert out["execution"]["fill"]["stop_loss_oid"] == 5151
 
 
-def test_hl_guarded_entry_without_a_deadline_is_not_sent(monkeypatch, capsys):
-    venue = _HLVenue()
-    out, code = _run_hl_execute(monkeypatch, capsys, venue, cloid=CLOID)
-    assert code == 1 and out["order_outcome"] == "not_sent"
-    assert ("market_open", CLOID) not in venue.calls
-
-
-def test_hl_guarded_entry_refuses_a_close_or_flip(monkeypatch, capsys):
-    for extra in ({"close_mode": "reduce_only"}, {"prev_pos_qty": 0.2}, {"close_full_position": True}):
+def test_hl_guarded_entry_without_a_deadline_is_not_sent(monkeypatch, capsys, subtests):
+    with subtests.test(case="no_deadline"):
         venue = _HLVenue()
-        out, code = _run_hl_execute(monkeypatch, capsys, venue, cloid=CLOID, expires_after_ms=1_000, **extra)
-        assert code == 1 and out["order_outcome"] == "not_sent", extra
-        assert not any(c[0] == "market_open" for c in venue.calls), extra
-
-
-def test_hl_guarded_entry_deadline_failure_sends_nothing(monkeypatch, capsys):
-    venue = _HLVenue(expiry_error=RuntimeError("exchange init failed"))
-    out, code = _run_hl_execute(monkeypatch, capsys, venue, cloid=CLOID, expires_after_ms=1_000)
-    assert code == 1 and out["order_outcome"] == "not_sent"
-    assert not any(c[0] == "market_open" for c in venue.calls)
+        out, code = _run_hl_execute(monkeypatch, capsys, venue, cloid=CLOID)
+        assert code == 1 and out["order_outcome"] == "not_sent"
+        assert ("market_open", CLOID) not in venue.calls
+    for extra in ({"close_mode": "reduce_only"}, {"prev_pos_qty": 0.2}, {"close_full_position": True}):
+        with subtests.test(case="refuses_a_close_or_flip", extra=extra):
+            venue = _HLVenue()
+            out, code = _run_hl_execute(monkeypatch, capsys, venue, cloid=CLOID, expires_after_ms=1_000, **extra)
+            assert code == 1 and out["order_outcome"] == "not_sent", extra
+            assert not any(c[0] == "market_open" for c in venue.calls), extra
+    with subtests.test(case="deadline_failure_sends_nothing"):
+        venue = _HLVenue(expiry_error=RuntimeError("exchange init failed"))
+        out, code = _run_hl_execute(monkeypatch, capsys, venue, cloid=CLOID, expires_after_ms=1_000)
+        assert code == 1 and out["order_outcome"] == "not_sent"
+        assert not any(c[0] == "market_open" for c in venue.calls)
 
 
 def test_hl_guarded_entry_exception_after_send_is_unknown(monkeypatch, capsys):

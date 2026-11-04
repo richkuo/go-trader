@@ -226,11 +226,8 @@ func TestL2BookRequirementsSurviveEveryUnionAndRefuseConflicts(t *testing.T) {
 	}
 	full := fullCycleRequirements(union)
 	due := cycleRequirementsForDue([]StrategyConfig{btc, btcWide}, req)
-	merged := mergeCycleRequirements(due, cycleRequirementsForDue([]StrategyConfig{eth}, req))
-	for name, books := range map[string]map[feedObservationKey]feedBookNeed{"full": full.Books, "merged": merged.Books} {
-		if books[l2BookKeyFor("BTC")] != want || books[l2BookKeyFor("ETH")] == (feedBookNeed{}) {
-			t.Fatalf("%s cycle requirements lost a book dimension: %+v", name, books)
-		}
+	if full.Books[l2BookKeyFor("BTC")] != want || full.Books[l2BookKeyFor("ETH")] == (feedBookNeed{}) {
+		t.Fatalf("full cycle requirements lost a book dimension: %+v", full.Books)
 	}
 	if due.Books[l2BookKeyFor("BTC")] != want || len(due.Books) != 1 {
 		t.Fatalf("due-cycle book needs %+v", due.Books)

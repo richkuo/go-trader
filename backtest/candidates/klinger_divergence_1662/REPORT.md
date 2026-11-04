@@ -2681,7 +2681,7 @@ Each row joins a simulated position to its decision bar in the evaluator output.
 `backtest/candidates/klinger_divergence_1662/parity_results.json` sha256 `b384dfee8847eae8`, clean yes (decision yes, indicator yes).
 - Decision parity: the last 600 held-out bars of every dataset, the selected `klinger_both` parameters and the frozen close owner, direction both, with a 200-row live window and with every prefix; the composer mode compares full-frame decisions with the per-bar live composer and the batched paper mode also compares solo and batched explicit-paper `check_hyperliquid.py` slots.
 - Indicator parity: for every scored row of both windows, the full-frame row equals the row computed from its own prefix, its trailing 200 rows and its exact support span (oscillator values within 1e-09 relative tolerance; signal, reason, validity, setup states and pivot timestamps exactly).
-- Admission and timed closed-bar behavior are proved by `shared_scripts/test_klinger_divergence_checks.py`.
+- Admission and timed closed-bar behavior are proved by the `klinger_divergence` cases of `shared_scripts/test_strategy_check_contract.py`.
 
 ## Full-precision evidence
 

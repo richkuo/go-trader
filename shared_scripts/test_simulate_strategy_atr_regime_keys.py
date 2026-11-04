@@ -1,4 +1,3 @@
-import contextlib
 import os
 import sys
 import time
@@ -23,13 +22,6 @@ TRAIL_V18 = "trail_stop_atr_regime"
 TRAIL_V17 = "trailing_stop_atr_regime"
 
 
-@contextlib.contextmanager
-def _case(*label):
-    try:
-        yield
-    except (Exception, pytest.fail.Exception) as exc:
-        raise AssertionError(f"case {label!r} failed: {exc}") from exc
-
 def _block(mult: float) -> dict:
     return {"trend_regime": {
         "trending_up": {"atr_multiple": mult},
@@ -42,41 +34,32 @@ A = _block(2.0)
 B = _block(4.0)
 
 
-def test_missing_field_resolves_to_none():
-    assert _resolve_atr_regime_stop({}, SL_CANON) is None
-    assert _resolve_atr_regime_stop({}, TRAIL_CANON) is None
+def test_atr_regime_stop_spellings_resolve_merge_or_raise(subtests):
+    with subtests.test(case="missing_field_resolves_to_none"):
+        assert _resolve_atr_regime_stop({}, SL_CANON) is None
+        assert _resolve_atr_regime_stop({}, TRAIL_CANON) is None
 
-
-def test_each_spelling_resolves_on_its_own():
-    cases = [
-        (SL_CANON, SL_CANON), (SL_CANON, SL_LEGACY),
-        (TRAIL_CANON, TRAIL_CANON), (TRAIL_CANON, TRAIL_V18), (TRAIL_CANON, TRAIL_V17),
-    ]
-    for canon, key in cases:
-        assert _resolve_atr_regime_stop({key: A}, canon) == A, (canon, key)
-
-
-def test_equivalent_spellings_merge_regardless_of_order():
-    cases = [
+    resolved = [
+        (SL_CANON, {SL_CANON: A}), (SL_CANON, {SL_LEGACY: A}),
+        (TRAIL_CANON, {TRAIL_CANON: A}), (TRAIL_CANON, {TRAIL_V18: A}), (TRAIL_CANON, {TRAIL_V17: A}),
         (SL_CANON, {SL_LEGACY: A, SL_CANON: A}),
         (SL_CANON, {SL_CANON: A, SL_LEGACY: A}),
         (TRAIL_CANON, {TRAIL_CANON: A, TRAIL_V18: A, TRAIL_V17: A}),
         (TRAIL_CANON, {TRAIL_V17: A, TRAIL_V18: A}),
     ]
-    for canon, cfg in cases:
-        assert _resolve_atr_regime_stop(cfg, canon) == A, (canon, list(cfg))
+    for canon, cfg in resolved:
+        with subtests.test(case="resolves", canon=canon, keys=list(cfg)):
+            assert _resolve_atr_regime_stop(cfg, canon) == A, (canon, list(cfg))
 
-
-def test_conflicting_spellings_raise():
-    cases = [
+    conflicting = [
         (SL_CANON, {SL_LEGACY: B, SL_CANON: A}),
         (SL_CANON, {SL_CANON: A, SL_LEGACY: B}),
         (TRAIL_CANON, {TRAIL_CANON: A, TRAIL_V18: B}),
         (TRAIL_CANON, {TRAIL_V17: A, TRAIL_V18: B}),
         (TRAIL_CANON, {TRAIL_V18: B, TRAIL_V17: A}),
     ]
-    for canon, cfg in cases:
-        with _case(canon, list(cfg)), pytest.raises(ValueError):
+    for canon, cfg in conflicting:
+        with subtests.test(case="conflict_raises", canon=canon, keys=list(cfg)), pytest.raises(ValueError):
             _resolve_atr_regime_stop(cfg, canon)
 
 
@@ -97,14 +80,14 @@ def _payload(cfg: dict) -> dict:
     return _run_payload({"candles": candles, "configs": [{"label": "x", "config": full}]})
 
 
-def test_conflict_surfaces_as_a_json_error_not_a_crash():
-    out = _payload({SL_LEGACY: A, SL_CANON: B})
-    assert "conflicting ATR-regime stop keys" in out["error"]
-    assert out["markers"] == {}
+def test_simulation_reports_conflicts_as_json_and_runs_agreeing_spellings(subtests):
+    with subtests.test(case="conflict_surfaces_as_a_json_error_not_a_crash"):
+        out = _payload({SL_LEGACY: A, SL_CANON: B})
+        assert "conflicting ATR-regime stop keys" in out["error"]
+        assert out["markers"] == {}
 
-
-def test_agreeing_spellings_simulate_normally():
-    out = _payload({SL_LEGACY: A, SL_CANON: A,
-                    "regime": {"enabled": True, "period": 14, "adx_threshold": 20}})
-    assert not out.get("error")
-    assert "x" in out["markers"]
+    with subtests.test(case="agreeing_spellings_simulate_normally"):
+        out = _payload({SL_LEGACY: A, SL_CANON: A,
+                        "regime": {"enabled": True, "period": 14, "adx_threshold": 20}})
+        assert not out.get("error")
+        assert "x" in out["markers"]

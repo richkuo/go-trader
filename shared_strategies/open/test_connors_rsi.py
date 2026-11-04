@@ -148,23 +148,24 @@ def _same(a, b):
             assert x == y, (col, x, y)
 
 
-@pytest.mark.parametrize("params", [None, {"price_period": 10, "streak_period": 10, "rank_window": 150,
-                                           "oversold": 35.0, "overbought": 65.0}])
-def test_full_series_prefix_and_bounded_tail_agree(params):
-    df = market(380, seed=11)
-    full = run(df, params)
-    p = {**DEFAULTS, **(params or {})}
-    need = need_for(p["rank_window"])
-    assert need <= 200
-    assert (full["signal"] != 0).sum() > 0
-    for i in range(len(df)):
-        _same(full.iloc[i], run(df.iloc[: i + 1], params).iloc[-1])
-        if i + 1 >= need:
-            _same(full.iloc[i], run(df.iloc[max(0, i - 199): i + 1], params).iloc[-1])
-    _same(full.iloc[-1], run(df.iloc[len(df) - need:], params).iloc[-1])
-    too_short = run(df.iloc[len(df) - need + 1:], params).iloc[-1]
-    assert too_short["crsi_reason"] == "insufficient_history"
-    assert int(too_short["signal"]) == 0
+def test_full_series_prefix_and_bounded_tail_agree(subtests):
+    for params in [None, {"price_period": 10, "streak_period": 10, "rank_window": 150,
+                                               "oversold": 35.0, "overbought": 65.0}]:
+        with subtests.test(params=params):
+            df = market(380, seed=11)
+            full = run(df, params)
+            p = {**DEFAULTS, **(params or {})}
+            need = need_for(p["rank_window"])
+            assert need <= 200
+            assert (full["signal"] != 0).sum() > 0
+            for i in range(len(df)):
+                _same(full.iloc[i], run(df.iloc[: i + 1], params).iloc[-1])
+                if i + 1 >= need:
+                    _same(full.iloc[i], run(df.iloc[max(0, i - 199): i + 1], params).iloc[-1])
+            _same(full.iloc[-1], run(df.iloc[len(df) - need:], params).iloc[-1])
+            too_short = run(df.iloc[len(df) - need + 1:], params).iloc[-1]
+            assert too_short["crsi_reason"] == "insufficient_history"
+            assert int(too_short["signal"]) == 0
 
 
 def test_constant_price_is_neutral_and_never_enters():

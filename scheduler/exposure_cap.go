@@ -25,8 +25,6 @@ type ExposureCapStatus struct {
 	PVBasisMiss      bool
 	OverConcentrated map[string]ExposureCapAssetStat
 	SkippedPositions []string
-
-	ValuationIncomplete string
 }
 
 func exposureCapConfigured(pr *PortfolioRiskConfig) bool {
@@ -34,10 +32,6 @@ func exposureCapConfigured(pr *PortfolioRiskConfig) bool {
 }
 
 func evaluateExposureCap(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgStrategies []StrategyConfig, prices map[string]float64, portfolioValue float64) ExposureCapStatus {
-	return evaluateExposureCapMarked(pr, states, cfgStrategies, prices, portfolioValue, nil)
-}
-
-func evaluateExposureCapMarked(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgStrategies []StrategyConfig, prices map[string]float64, portfolioValue float64, pm *pairMarks) ExposureCapStatus {
 	st := ExposureCapStatus{Configured: exposureCapConfigured(pr)}
 	if !st.Configured {
 		return st
@@ -47,9 +41,8 @@ func evaluateExposureCapMarked(pr *PortfolioRiskConfig, states map[string]*Strat
 	st.PortfolioValue = portfolioValue
 	st.PVBasisMiss = st.ConcentrationPct > 0 && portfolioValue <= 0
 
-	assets, skipped, status := computeAssetDeltasMarked(states, cfgStrategies, prices, pm)
+	assets, skipped := computeAssetDeltas(states, cfgStrategies, prices)
 	st.SkippedPositions = skipped
-	st.ValuationIncomplete = status.label()
 
 	names := make([]string, 0, len(assets))
 	for a := range assets {
@@ -80,9 +73,6 @@ func evaluateExposureCapMarked(pr *PortfolioRiskConfig, states map[string]*Strat
 	}
 	st.LongBlocked = st.CapUSD > 0 && st.LongUSD > st.CapUSD
 	st.ShortBlocked = st.CapUSD > 0 && st.ShortUSD > st.CapUSD
-	if st.ValuationIncomplete != "" {
-		st.LongBlocked, st.ShortBlocked = true, true
-	}
 	return st
 }
 
@@ -92,10 +82,10 @@ func manualExposureCapStatus(cfg *Config, state *AppState, part RiskPartition) E
 	}
 	return exposureCapStatusForSubset(partitionRiskConfig(cfg, part),
 		filterStatesByPartition(state.Strategies, cfg.Strategies, part),
-		strategiesInPartition(cfg.Strategies, part), state.pairMarksLocked())
+		strategiesInPartition(cfg.Strategies, part))
 }
 
-func exposureCapStatusForSubset(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig, pm *pairMarks) ExposureCapStatus {
+func exposureCapStatusForSubset(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig) ExposureCapStatus {
 	if !exposureCapConfigured(pr) {
 		return ExposureCapStatus{}
 	}
@@ -105,18 +95,10 @@ func exposureCapStatusForSubset(pr *PortfolioRiskConfig, states map[string]*Stra
 	}
 	sort.Strings(ids)
 	var pv float64
-	var pvStatus pairValueStatus
 	for _, id := range ids {
-		v, vs := displayStrategyValueMarked(states[id], nil, pm)
-		pv += v
-		pvStatus.merge(vs)
+		pv += displayStrategyValue(states[id], nil)
 	}
-	st := evaluateExposureCapMarked(pr, states, cfgs, nil, pv, pm)
-	if label := pvStatus.label(); label != "" && st.ValuationIncomplete == "" {
-		st.ValuationIncomplete = label
-		st.LongBlocked, st.ShortBlocked = true, true
-	}
-	return st
+	return evaluateExposureCap(pr, states, cfgs, nil, pv)
 }
 
 func exposureCapManualEntryBlock(st ExposureCapStatus, asset, dir string) (bool, string) {
@@ -147,9 +129,6 @@ func exposureCapBlocksSignal(st ExposureCapStatus, asset string, signal int, clo
 		dir = "short"
 		dirBlocked = st.ShortBlocked
 		bucketUSD = st.ShortUSD
-	}
-	if dirBlocked && st.ValuationIncomplete != "" {
-		return true, exposureCapHoldDetail(st)
 	}
 	if dirBlocked {
 		return true, fmt.Sprintf("same-direction crypto exposure $%.2f exceeds cap $%.2f — new %s opens blocked", bucketUSD, st.CapUSD, dir)
@@ -184,11 +163,16 @@ func optionsActionDirection(a OptionsAction) string {
 	return "long"
 }
 
-func exposureCapOptionsActions(st ExposureCapStatus, asset string, actions []OptionsAction) (kept []OptionsAction, dropped int, reason string) {
+func exposureCapOptionsActions(st ExposureCapStatus, asset string, actions []OptionsAction) (kept []OptionsAction, droppedLegs, droppedStructures int, reason string) {
 	if !st.Configured {
-		return actions, 0, ""
+		return actions, 0, 0, ""
 	}
+	blockedStructures := map[string]bool{}
+	blockUnnamed := false
 	for _, a := range actions {
+		if a.Action == "close" {
+			continue
+		}
 		dir := optionsActionDirection(a)
 		blocked := false
 		switch dir {
@@ -202,33 +186,46 @@ func exposureCapOptionsActions(st ExposureCapStatus, asset string, actions []Opt
 				blocked = true
 			}
 		}
-		if blocked {
-			dropped++
-			if reason == "" {
-				bucketUSD := st.LongUSD
-				if dir == "short" {
-					bucketUSD = st.ShortUSD
-				}
-				if st.ValuationIncomplete != "" {
-					reason = exposureCapHoldDetail(st)
-				} else if (dir == "long" && st.LongBlocked) || (dir == "short" && st.ShortBlocked) {
-					reason = fmt.Sprintf("same-direction crypto exposure $%.2f exceeds cap $%.2f — new %s-delta option opens blocked", bucketUSD, st.CapUSD, dir)
-				} else {
-					stat := st.OverConcentrated[asset]
-					reason = fmt.Sprintf("%s net %s exposure is %.1f%% of portfolio value (cap %.1f%%) — new %s-delta option opens blocked", asset, dir, stat.Pct, st.ConcentrationPct, dir)
-				}
+		if !blocked {
+			continue
+		}
+		if a.StructureID == "" {
+			blockUnnamed = true
+		} else {
+			blockedStructures[a.StructureID] = true
+		}
+		if reason == "" {
+			bucketUSD := st.LongUSD
+			if dir == "short" {
+				bucketUSD = st.ShortUSD
+			}
+			if (dir == "long" && st.LongBlocked) || (dir == "short" && st.ShortBlocked) {
+				reason = fmt.Sprintf("same-direction crypto exposure $%.2f exceeds cap $%.2f — new %s-delta option opens blocked", bucketUSD, st.CapUSD, dir)
+			} else {
+				stat := st.OverConcentrated[asset]
+				reason = fmt.Sprintf("%s net %s exposure is %.1f%% of portfolio value (cap %.1f%%) — new %s-delta option opens blocked", asset, dir, stat.Pct, st.ConcentrationPct, dir)
+			}
+		}
+	}
+	if reason == "" {
+		return actions, 0, 0, ""
+	}
+	counted := map[string]bool{}
+	for _, a := range actions {
+		if a.Action != "close" && (blockUnnamed || blockedStructures[a.StructureID]) {
+			droppedLegs++
+			if !counted[a.StructureID] {
+				counted[a.StructureID] = true
+				droppedStructures++
 			}
 			continue
 		}
 		kept = append(kept, a)
 	}
-	return kept, dropped, reason
+	return kept, droppedLegs, droppedStructures, reason
 }
 
 func exposureCapHoldDetail(st ExposureCapStatus) string {
-	if st.ValuationIncomplete != "" {
-		return "the exposure measurement is incomplete (" + st.ValuationIncomplete + "), so new opens in both directions hold"
-	}
 	var parts []string
 	if st.LongBlocked {
 		parts = append(parts, fmt.Sprintf("long $%.2f", st.LongUSD))
@@ -376,7 +373,6 @@ func exposureCapStatusNote(cfg *Config, state *AppState, prices map[string]float
 	if cfg == nil || state == nil {
 		return ""
 	}
-	pm := state.pairMarksLocked()
 	parts := activePartitions(cfg.Strategies)
 	var note string
 	for _, part := range parts {
@@ -386,23 +382,13 @@ func exposureCapStatusNote(cfg *Config, state *AppState, prices map[string]float
 		}
 		scoped := filterStatesByPartition(state.Strategies, cfg.Strategies, part)
 		var pv float64
-		var pvStatus pairValueStatus
 		for _, ss := range scoped {
-			v, vs := displayStrategyValueMarked(ss, prices, pm)
-			pv += v
-			pvStatus.merge(vs)
+			pv += displayStrategyValue(ss, prices)
 		}
-		st := evaluateExposureCapMarked(pr, scoped, strategiesInPartition(cfg.Strategies, part), prices, pv, pm)
+		st := evaluateExposureCap(pr, scoped, strategiesInPartition(cfg.Strategies, part), prices, pv)
 		prefix := ""
 		if len(parts) > 1 {
 			prefix = "[" + partitionLabel(part) + "] "
-		}
-		if label := pvStatus.label(); label != "" && st.ValuationIncomplete == "" {
-			st.ValuationIncomplete = label
-		}
-		if st.ValuationIncomplete != "" {
-			note += fmt.Sprintf("\n%sexposure cap: %s; new long and short opens hold until both pair members have checked marks", prefix, st.ValuationIncomplete)
-			continue
 		}
 		if st.CapUSD > 0 {
 			if st.LongBlocked || st.ShortBlocked {

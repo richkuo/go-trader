@@ -14,7 +14,7 @@ import (
 
 const regimeCheckScript = "shared_scripts/check_regime.py"
 
-const regimeBundleMinBars = 30
+const regimeBundleMinBars = 1
 
 const (
 	optionsRegimeTimeframe       = "4h"
@@ -24,14 +24,51 @@ const (
 )
 
 type regimeBundleKey struct {
-	Platform  string
-	Symbol    string
-	Timeframe string
-	SpecJSON  string
+	Platform   string
+	AssetClass string
+	Symbol     string
+	Timeframe  string
+	SpecJSON   string
 }
 
 func (k regimeBundleKey) String() string {
-	return k.Platform + "/" + k.Symbol + "/" + k.Timeframe
+	return regimeIdentityLabel(k.Platform, k.AssetClass) + "/" + k.Symbol + "/" + k.Timeframe
+}
+
+func regimeIdentityLabel(platform, assetClass string) string {
+	if assetClass != "" {
+		return platform + ":" + assetClass
+	}
+	if platform == "robinhood" {
+		return platform + ":unclassified"
+	}
+	return platform
+}
+
+func regimeBundleKeyLess(a, b regimeBundleKey) bool {
+	if a.Platform != b.Platform {
+		return a.Platform < b.Platform
+	}
+	if a.AssetClass != b.AssetClass {
+		return a.AssetClass < b.AssetClass
+	}
+	if a.Symbol != b.Symbol {
+		return a.Symbol < b.Symbol
+	}
+	if a.Timeframe != b.Timeframe {
+		return a.Timeframe < b.Timeframe
+	}
+	return a.SpecJSON < b.SpecJSON
+}
+
+func strategyRegimeAssetClass(sc StrategyConfig, platform string) string {
+	if platform != "robinhood" {
+		return ""
+	}
+	if sc.Type == "options" {
+		return robinhoodAssetClassStock
+	}
+	return robinhoodAssetClassCrypto
 }
 
 type regimeBundleRequest struct {
@@ -42,8 +79,8 @@ type regimeBundleRequest struct {
 }
 
 type RegimeBundleViews struct {
-	ADX3       string `json:"adx3"`
-	Composite7 string `json:"composite7"`
+	ADX3       RegimeSnapshot `json:"adx3"`
+	Composite7 RegimeSnapshot `json:"composite7"`
 }
 
 type RegimeBundle struct {
@@ -57,13 +94,14 @@ type RegimeBundle struct {
 }
 
 type regimeBundleOutput struct {
-	Platform  string                       `json:"platform"`
-	Symbol    string                       `json:"symbol"`
-	Timeframe string                       `json:"timeframe"`
-	BarTime   string                       `json:"bar_time"`
-	Regime    json.RawMessage              `json:"regime"`
-	Views     map[string]RegimeBundleViews `json:"views"`
-	Error     string                       `json:"error"`
+	Platform   string                       `json:"platform"`
+	AssetClass string                       `json:"asset_class"`
+	Symbol     string                       `json:"symbol"`
+	Timeframe  string                       `json:"timeframe"`
+	BarTime    string                       `json:"bar_time"`
+	Regime     json.RawMessage              `json:"regime"`
+	Views      map[string]RegimeBundleViews `json:"views"`
+	Error      string                       `json:"error"`
 }
 
 var regimeStorePhaseBudget = scriptTimeout + 15*time.Second
@@ -71,17 +109,71 @@ var regimeStorePhaseBudget = scriptTimeout + 15*time.Second
 type RegimeStore struct {
 	mu      sync.RWMutex
 	entries map[regimeBundleKey]*RegimeBundle
+	exports map[string]manualRegimeExport
+	carried map[string]manualRegimeCarry
 	builtAt time.Time
 	sealed  bool
 	gen     uint64
 }
 
+type manualRegimeCarry struct {
+	Export manualRegimeExport
+	Gen    uint64
+	Bundle *RegimeBundle
+}
+
+type manualRegimeExport struct {
+	Fingerprint string
+	Key         regimeBundleKey
+}
+
+type manualRegimeExportView struct {
+	Gen           uint64
+	ContractFound bool
+	Contract      manualRegimeExport
+	Found         bool
+	Err           string
+	At            time.Time
+	PayloadJSON   string
+}
+
 var globalRegimeStore = &RegimeStore{}
 
 func (s *RegimeStore) resetForCycle(now time.Time) uint64 {
+	return s.reset(now, nil, false)
+}
+
+func (s *RegimeStore) resetForCycleWithExports(now time.Time, exports map[string]manualRegimeExport) uint64 {
+	return s.reset(now, exports, true)
+}
+
+func (s *RegimeStore) reset(now time.Time, exports map[string]manualRegimeExport, carry bool) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	carried := make(map[string]manualRegimeCarry)
+	if carry {
+		for id, export := range s.exports {
+			if _, due := exports[id]; due {
+				continue
+			}
+			carried[id] = manualRegimeCarry{Export: export, Gen: s.gen, Bundle: s.entries[export.Key]}
+		}
+		for id, prev := range s.carried {
+			if _, due := exports[id]; due {
+				continue
+			}
+			if _, newer := carried[id]; newer {
+				continue
+			}
+			carried[id] = prev
+		}
+	}
+	s.carried = carried
 	s.entries = make(map[regimeBundleKey]*RegimeBundle)
+	s.exports = make(map[string]manualRegimeExport, len(exports))
+	for id, export := range exports {
+		s.exports[id] = export
+	}
 	s.builtAt = now
 	s.sealed = false
 	s.gen++
@@ -107,7 +199,13 @@ func (s *RegimeStore) seal() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sealed = true
-	return len(s.entries)
+	ready := 0
+	for _, bundle := range s.entries {
+		if bundle != nil && bundle.Err == "" {
+			ready++
+		}
+	}
+	return ready
 }
 
 func (s *RegimeStore) get(key regimeBundleKey) (*RegimeBundle, bool) {
@@ -117,6 +215,41 @@ func (s *RegimeStore) get(key regimeBundleKey) (*RegimeBundle, bool) {
 	return b, ok
 }
 
+func (s *RegimeStore) manualExport(key regimeBundleKey, strategyID string) manualRegimeExportView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	view := manualRegimeExportView{Gen: s.gen}
+	view.Contract, view.ContractFound = s.exports[strategyID]
+	b, ok := s.entries[key]
+	if !view.ContractFound {
+		if c, carried := s.carried[strategyID]; carried {
+			view.Gen, view.Contract, view.ContractFound = c.Gen, c.Export, true
+			b, ok = c.Bundle, c.Bundle != nil && c.Bundle.Key == key
+		}
+	}
+	if ok && b != nil {
+		view.Found = true
+		view.Err = b.Err
+		view.At = b.At
+		view.PayloadJSON = b.RawRegimeJSON
+	}
+	return view
+}
+
+func (s *RegimeStore) manualBundle(key regimeBundleKey, strategyID string) (*RegimeBundle, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, due := s.exports[strategyID]; !due {
+		if c, ok := s.carried[strategyID]; ok && c.Bundle != nil && c.Bundle.Key == key {
+			return c.Bundle, true
+		}
+	}
+	if b, ok := s.entries[key]; ok && b != nil {
+		return b, true
+	}
+	return nil, false
+}
+
 func (s *RegimeStore) Snapshot() ([]*RegimeBundle, time.Time) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -124,19 +257,7 @@ func (s *RegimeStore) Snapshot() ([]*RegimeBundle, time.Time) {
 	for _, b := range s.entries {
 		out = append(out, b)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i].Key, out[j].Key
-		if a.Platform != b.Platform {
-			return a.Platform < b.Platform
-		}
-		if a.Symbol != b.Symbol {
-			return a.Symbol < b.Symbol
-		}
-		if a.Timeframe != b.Timeframe {
-			return a.Timeframe < b.Timeframe
-		}
-		return a.SpecJSON < b.SpecJSON
-	})
+	sort.Slice(out, func(i, j int) bool { return regimeBundleKeyLess(out[i].Key, out[j].Key) })
 	return out, s.builtAt
 }
 
@@ -201,16 +322,18 @@ func strategyRegimeBundleRequest(sc StrategyConfig, rc *RegimeConfig) (regimeBun
 		if underlying == "" || strings.HasPrefix(underlying, "-") {
 			return regimeBundleRequest{}, false
 		}
+		assetClass := strategyRegimeAssetClass(sc, platform)
 		return regimeBundleRequest{
 			Key: regimeBundleKey{
-				Platform:  platform,
-				Symbol:    strings.ToUpper(underlying),
-				Timeframe: optionsRegimeTimeframe,
-				SpecJSON:  optionsRegimeWindowsSpecJSON,
+				Platform:   platform,
+				AssetClass: assetClass,
+				Symbol:     strings.ToUpper(underlying),
+				Timeframe:  optionsRegimeTimeframe,
+				SpecJSON:   optionsRegimeWindowsSpecJSON,
 			},
 			OhlcvLimit:        optionsRegimeOhlcvLimit,
 			MinBars:           optionsRegimeMinBars,
-			AllowSpotFallback: true,
+			AllowSpotFallback: assetClass == "",
 		}, true
 	}
 	if rc == nil || !rc.Enabled {
@@ -230,10 +353,11 @@ func strategyRegimeBundleRequest(sc StrategyConfig, rc *RegimeConfig) (regimeBun
 	}
 	return regimeBundleRequest{
 		Key: regimeBundleKey{
-			Platform:  platform,
-			Symbol:    symbol,
-			Timeframe: timeframe,
-			SpecJSON:  specJSON,
+			Platform:   platform,
+			AssetClass: strategyRegimeAssetClass(sc, platform),
+			Symbol:     symbol,
+			Timeframe:  timeframe,
+			SpecJSON:   specJSON,
 		},
 		OhlcvLimit: regimeRequiredOhlcvLimit(rc),
 		MinBars:    regimeBundleMinBars,
@@ -251,19 +375,7 @@ func collectRegimeBundleRequests(due []StrategyConfig, rc *RegimeConfig) []regim
 		seen[req.Key] = true
 		out = append(out, req)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i].Key, out[j].Key
-		if a.Platform != b.Platform {
-			return a.Platform < b.Platform
-		}
-		if a.Symbol != b.Symbol {
-			return a.Symbol < b.Symbol
-		}
-		if a.Timeframe != b.Timeframe {
-			return a.Timeframe < b.Timeframe
-		}
-		return a.SpecJSON < b.SpecJSON
-	})
+	sort.Slice(out, func(i, j int) bool { return regimeBundleKeyLess(out[i].Key, out[j].Key) })
 	return out
 }
 
@@ -275,6 +387,9 @@ func regimeBundleCheckArgs(req regimeBundleRequest) []string {
 		"--regime-windows-spec-json", req.Key.SpecJSON,
 		"--ohlcv-limit", strconv.Itoa(req.OhlcvLimit),
 		"--min-bars", strconv.Itoa(req.MinBars),
+	}
+	if req.Key.AssetClass != "" {
+		args = append(args, "--asset-class", req.Key.AssetClass)
 	}
 	if req.AllowSpotFallback {
 		args = append(args, "--allow-spot-fallback")
@@ -290,24 +405,59 @@ func parseRegimeBundleOutput(key regimeBundleKey, data []byte, now time.Time) (*
 	if out.Error != "" {
 		return nil, fmt.Errorf("regime bundle %s: %s", key, out.Error)
 	}
+	if out.AssetClass != key.AssetClass {
+		return nil, fmt.Errorf("regime bundle %s: worker reported asset class %q, want %q (binary/Python version mismatch; sync Python with scripts/update.sh)", key, out.AssetClass, key.AssetClass)
+	}
 	if len(out.Regime) == 0 || string(out.Regime) == "null" {
 		return nil, fmt.Errorf("regime bundle %s: missing regime payload", key)
 	}
 	var payload RegimePayload
 	if err := json.Unmarshal(out.Regime, &payload); err != nil {
-		return nil, fmt.Errorf("regime bundle %s: bad regime payload: %w", key, err)
+		payload = RegimePayload{Snapshot: &RegimeSnapshot{}}
 	}
-	if payload.IsEmpty() {
-		return nil, fmt.Errorf("regime bundle %s: empty regime payload", key)
+	var specs RegimeWindowsMap
+	if err := json.Unmarshal([]byte(key.SpecJSON), &specs); err != nil {
+		return nil, fmt.Errorf("regime bundle: invalid configured spec: %w", err)
+	}
+	normalized, malformed := normalizedRegimeWindows(specs, payload)
+	views := make(map[string]RegimeBundleViews, len(specs))
+	for name, spec := range specs {
+		view := out.Views[name]
+		adxSpec, compositeSpec := spec, spec
+		adxSpec.Classifier, compositeSpec.Classifier = "adx", "composite"
+		views[name] = RegimeBundleViews{ADX3: view.ADX3.validated(adxSpec), Composite7: view.Composite7.validated(compositeSpec)}
+	}
+	if malformed {
+		fmt.Printf("[WARN] regime bundle %s: unavailable readiness metadata\n", key)
+	}
+	payload = normalized
+	normalizedJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
 	}
 	return &RegimeBundle{
 		Key:           key,
 		Payload:       payload,
-		RawRegimeJSON: string(out.Regime),
-		Views:         out.Views,
+		RawRegimeJSON: string(normalizedJSON),
+		Views:         views,
 		BarTime:       out.BarTime,
 		At:            now,
 	}, nil
+}
+
+func normalizedRegimeWindows(specs RegimeWindowsMap, payload RegimePayload) (RegimePayload, bool) {
+	malformed := false
+	normalized := RegimePayload{MultiMode: true, Windows: make(map[string]RegimeSnapshot, len(specs))}
+	for name, spec := range specs {
+		snap := payload.WindowSnapshot(name, &RegimeConfig{Windows: specs, Enabled: true})
+		if !payload.MultiMode && len(specs) > 1 {
+			snap = RegimeSnapshot{}
+		}
+		snap = snap.validated(spec)
+		normalized.Windows[name] = snap
+		malformed = malformed || !snap.Available
+	}
+	return normalized, malformed
 }
 
 var runRegimeBundleCheckFn = runRegimeBundleCheck
@@ -382,10 +532,17 @@ func regimeGateOutagePolicyNote(key regimeBundleKey, due []StrategyConfig, rc *R
 }
 
 func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *RegimeConfig, notifier *MultiNotifier, feed *marketFeedContext) func() {
-	gen := store.resetForCycle(time.Now().UTC())
+	return startRegimeStorePopulationWithExports(store, due, rc, notifier, feed, nil)
+}
+
+func startRegimeStorePopulationWithExports(store *RegimeStore, due []StrategyConfig, rc *RegimeConfig, notifier *MultiNotifier, feed *marketFeedContext, exports map[string]manualRegimeExport) func() {
+	gen := store.resetForCycleWithExports(time.Now().UTC(), exports)
 	reqs := collectRegimeBundleRequests(due, rc)
 	if len(reqs) == 0 {
 		return func() {}
+	}
+	for _, req := range reqs {
+		store.set(&RegimeBundle{Key: req.Key, Err: regimeBundlePendingErr, At: time.Now().UTC()}, gen)
 	}
 	popCtx, popCancel := context.WithCancel(shutdownReadOnlyCtx)
 	done := make(chan struct{})
@@ -410,6 +567,7 @@ func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *Re
 				bundle, err := runRegimeBundleCheckFn(popCtx, req, marketStdin)
 				if err != nil {
 					errs[i] = err
+					store.set(&RegimeBundle{Key: req.Key, Err: err.Error(), At: time.Now().UTC()}, gen)
 					return
 				}
 				store.set(bundle, gen)
@@ -466,9 +624,13 @@ func regimeStoreSummaryParts(store *RegimeStore) ([]string, []string) {
 	all := make([]string, 0, len(bundles))
 	var changed []string
 	for _, b := range bundles {
-		label := b.Payload.PrimaryLabel(nil)
-		if label == "" {
-			label = "-"
+		parts := []string{}
+		for _, key := range sortedRegimeWindowNames(b.Payload.Snapshots()) {
+			parts = append(parts, key+"="+b.Payload.Snapshots()[key].Display())
+		}
+		label := strings.Join(parts, ", ")
+		if b.Err != "" {
+			label = "unavailable"
 		}
 		part := b.Key.String() + "=" + label
 		all = append(all, part)
@@ -485,7 +647,7 @@ func (s *RegimeStore) PayloadForStrategy(sc StrategyConfig, rc *RegimeConfig) Re
 		return RegimePayload{}
 	}
 	b, found := s.get(req.Key)
-	if !found || b == nil {
+	if !found || b == nil || b.Err != "" {
 		return RegimePayload{}
 	}
 	return b.Payload
@@ -509,7 +671,7 @@ func (s *RegimeStore) InjectionJSONForStrategy(sc StrategyConfig, rc *RegimeConf
 		return "", false
 	}
 	b, found := s.get(req.Key)
-	if !found || b == nil {
+	if !found || b == nil || b.Err != "" {
 		return "", true
 	}
 	return b.RawRegimeJSON, true

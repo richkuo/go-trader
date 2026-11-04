@@ -500,6 +500,8 @@ func entryGuardStartupLines(state *AppState) []string {
 		for _, intentID := range g.sortedIntentIDs() {
 			in := g.Intents[intentID]
 			switch {
+			case in.unresolved() && in.researchGroupOwned():
+				out = append(out, fmt.Sprintf("[entry] %s: unresolved entry held — %s", id, retiredResearchIntentRefusal(in.IntentID)))
 			case in.unresolved():
 				out = append(out, fmt.Sprintf("[entry] %s: unresolved live entry held until venue evidence resolves it — %s", id, entryIntentSummary(in)))
 			case in.replayPending():

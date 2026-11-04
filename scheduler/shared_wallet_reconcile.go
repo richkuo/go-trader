@@ -486,26 +486,15 @@ func reconcileHLWalletViaLedger(
 }
 
 func displayStrategyValue(s *StrategyState, prices map[string]float64) float64 {
-	v, _ := displayStrategyValueMarked(s, prices, nil)
-	return v
-}
-
-func displayStrategyValueMarked(s *StrategyState, prices map[string]float64, pm *pairMarks) (float64, pairValueStatus) {
-	if s != nil && s.SharedWalletValueSet && !strategyPairCostRequired(s) {
-		return s.SharedWalletValue, pairValueStatus{}
+	if s != nil && s.SharedWalletValueSet {
+		return s.SharedWalletValue
 	}
-	return portfolioValueMarked(s, prices, pm)
+	return PortfolioValue(s, prices)
 }
 
 func latestDisplayTotal(state *AppState, prices map[string]float64) float64 {
-	v, _ := latestDisplayTotalMarked(state, prices, nil)
-	return v
-}
-
-func latestDisplayTotalMarked(state *AppState, prices map[string]float64, pm *pairMarks) (float64, pairValueStatus) {
-	var status pairValueStatus
 	if state == nil {
-		return 0, status
+		return 0
 	}
 	deduped := make(map[string]bool)
 	total := 0.0
@@ -517,23 +506,15 @@ func latestDisplayTotalMarked(state *AppState, prices map[string]float64, pm *pa
 	}
 	for id, ss := range state.Strategies {
 		if !deduped[id] {
-			v, vs := displayStrategyValueMarked(ss, prices, pm)
-			total += v
-			status.merge(vs)
+			total += displayStrategyValue(ss, prices)
 		}
 	}
-	return total, status
+	return total
 }
 
 func latestDisplayTotalForPartition(state *AppState, cfgs []StrategyConfig, part RiskPartition, prices map[string]float64) float64 {
-	v, _ := latestDisplayTotalForPartitionMarked(state, cfgs, part, prices, nil)
-	return v
-}
-
-func latestDisplayTotalForPartitionMarked(state *AppState, cfgs []StrategyConfig, part RiskPartition, prices map[string]float64, pm *pairMarks) (float64, pairValueStatus) {
-	var status pairValueStatus
 	if state == nil {
-		return 0, status
+		return 0
 	}
 	deduped := make(map[string]bool)
 	total := 0.0
@@ -547,12 +528,10 @@ func latestDisplayTotalForPartitionMarked(state *AppState, cfgs []StrategyConfig
 	}
 	for id, ss := range filterStatesByPartition(state.Strategies, cfgs, part) {
 		if !deduped[id] {
-			v, vs := displayStrategyValueMarked(ss, prices, pm)
-			total += v
-			status.merge(vs)
+			total += displayStrategyValue(ss, prices)
 		}
 	}
-	return total, status
+	return total
 }
 
 func computeSubsetDisplayValue(
@@ -562,32 +541,20 @@ func computeSubsetDisplayValue(
 	walletBalances map[SharedWalletKey]float64,
 	accountShared map[SharedWalletKey][]string,
 ) (float64, bool) {
-	v, fallback, _ := computeSubsetDisplayValueMarked(subset, state, prices, walletBalances, accountShared, nil)
-	return v, fallback
-}
-
-func computeSubsetDisplayValueMarked(
-	subset []StrategyConfig,
-	state *AppState,
-	prices map[string]float64,
-	walletBalances map[SharedWalletKey]float64,
-	accountShared map[SharedWalletKey][]string,
-	pm *pairMarks,
-) (float64, bool, pairValueStatus) {
 	gated := 0.0
 	var rest []StrategyConfig
 	for _, sc := range subset {
-		if s, ok := state.Strategies[sc.ID]; ok && s != nil && s.SharedWalletValueSet && !s.SharedWalletPerformanceOnly && !isPairMember(sc) {
+		if s, ok := state.Strategies[sc.ID]; ok && s != nil && s.SharedWalletValueSet && !s.SharedWalletPerformanceOnly {
 			gated += s.SharedWalletValue
 			continue
 		}
 		rest = append(rest, sc)
 	}
 	if len(rest) == 0 {
-		return gated, false, pairValueStatus{}
+		return gated, false
 	}
-	restVal, usedFallback, status := computeSubsetPortfolioValueMarked(rest, state, prices, walletBalances, accountShared, pm)
-	return gated + restVal, usedFallback, status
+	restVal, usedFallback := computeSubsetPortfolioValue(rest, state, prices, walletBalances, accountShared)
+	return gated + restVal, usedFallback
 }
 
 func dedupedSameAccountLiveManualIDs(strategies []StrategyConfig) map[string]bool {

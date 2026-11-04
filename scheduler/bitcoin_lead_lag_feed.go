@@ -30,6 +30,21 @@ func feedStrategyUsesLeaderFrame(sc StrategyConfig) bool {
 	return strings.TrimSpace(effectiveOpenStrategy(sc)) == bitcoinLeadLagStrategyName
 }
 
+func bitcoinLeadLagFollowerErrors(sc StrategyConfig) []string {
+	if !strategyNamesBitcoinLeadLag(sc) {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(hyperliquidSymbol(sc.Args)), bitcoinLeadLagLeaderCoin) {
+		return nil
+	}
+	return []string{fmt.Sprintf("strategy %s: %s follows the %s leader, so its follower coin cannot be %s (the evaluator holds every bar with follower_is_leader); use another coin", sc.ID, bitcoinLeadLagStrategyName, bitcoinLeadLagLeaderCoin, bitcoinLeadLagLeaderCoin)}
+}
+
+func strategyNamesBitcoinLeadLag(sc StrategyConfig) bool {
+	return strings.TrimSpace(effectiveOpenStrategy(sc)) == bitcoinLeadLagStrategyName ||
+		strings.TrimSpace(strategyNameFromArgs(sc.Args)) == bitcoinLeadLagStrategyName
+}
+
 func bitcoinLeadLagSupportBars(sc StrategyConfig) (int, error) {
 	values := make(map[string]int64, len(bitcoinLeadLagSupportParams))
 	for _, b := range bitcoinLeadLagSupportParams {

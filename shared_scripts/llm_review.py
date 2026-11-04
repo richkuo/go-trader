@@ -83,7 +83,10 @@ def summarize_ohlcv(candles):
     }
 
 
-def load_platform_adapter(platform):
+_ROBINHOOD_REVIEW_CLASSES = {"spot": "crypto", "options": "stock"}
+
+
+def load_platform_adapter(platform, strat_type="", symbol=""):
     if not platform:
         return None
     base = os.path.join(os.path.dirname(__file__), "..", "platforms", platform)
@@ -97,18 +100,25 @@ def load_platform_adapter(platform):
         spec = importlib.util.spec_from_file_location(f"{platform}_adapter_llm_review", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        kwargs = {}
+        if platform == "robinhood":
+            asset_class = _ROBINHOOD_REVIEW_CLASSES.get(strat_type)
+            if asset_class is None:
+                return None
+            mod.robinhood_yahoo_ticker(asset_class, symbol)
+            kwargs["asset_class"] = asset_class
         for name in dir(mod):
             if name.endswith("ExchangeAdapter"):
-                return getattr(mod, name)()
+                return getattr(mod, name)(**kwargs)
     except Exception:
         return None
     return None
 
 
 def gather_market_context(ctx):
-    adapter = load_platform_adapter(ctx.get("platform"))
     symbol = ctx.get("symbol") or ""
     coin = symbol.split("/")[0] if "/" in symbol else symbol
+    adapter = load_platform_adapter(ctx.get("platform"), ctx.get("type") or "", coin)
     timeframe = ctx.get("timeframe") or "1h"
 
     ohlcv_summary = None

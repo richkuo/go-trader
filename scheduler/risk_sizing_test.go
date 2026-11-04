@@ -11,46 +11,47 @@ func fp(v float64) *float64 { return &v }
 
 func floatPtr(v float64) *float64 { return &v }
 
-func TestPerpsRiskBasedNotionalConstantDollarRisk(t *testing.T) {
-	cash, price, riskPct := 1000.0, 2000.0, 1.0
-	wideDist := 60.0
-	tightDist := 20.0
+func TestPerpsRiskBasedNotional(t *testing.T) {
+	t.Run("ConstantDollarRisk", func(t *testing.T) {
+		cash, price, riskPct := 1000.0, 2000.0, 1.0
+		wideDist := 60.0
+		tightDist := 20.0
 
-	wide := PerpsRiskBasedNotional(cash, price, riskPct, wideDist, 10)
-	tight := PerpsRiskBasedNotional(cash, price, riskPct, tightDist, 10)
-	if wide <= 0 || tight <= 0 {
-		t.Fatalf("expected positive notionals, got wide=%g tight=%g", wide, tight)
-	}
-	wideRisk := wide / price * wideDist
-	tightRisk := tight / price * tightDist
-	if math.Abs(wideRisk-10) > 1e-9 || math.Abs(tightRisk-10) > 1e-9 {
-		t.Fatalf("dollar risk must be constant $10: wide=%g tight=%g", wideRisk, tightRisk)
-	}
-	if tight <= wide {
-		t.Fatalf("tighter stop must size larger notional: tight=%g wide=%g", tight, wide)
-	}
-}
-
-func TestPerpsRiskBasedNotionalExchangeCapAndBadInputs(t *testing.T) {
-	cases := []struct {
-		name                               string
-		cash, price, pct, dist, exchangeLv float64
-		want                               float64
-	}{
-		{"cash × exchange_leverage cap", 1000, 2000, 1.0, 1.0, 5, 5000},
-		{"1x cap when exchangeLeverage<=0", 1000, 2000, 1.0, 1.0, 0, 1000},
-		{"zero cash", 0, 2000, 1, 20, 1, 0},
-		{"negative cash", -5, 2000, 1, 20, 1, 0},
-		{"zero price", 1000, 0, 1, 20, 1, 0},
-		{"zero pct", 1000, 2000, 0, 20, 1, 0},
-		{"zero dist", 1000, 2000, 1, 0, 1, 0},
-		{"negative dist", 1000, 2000, 1, -3, 1, 0},
-	}
-	for _, tc := range cases {
-		if got := PerpsRiskBasedNotional(tc.cash, tc.price, tc.pct, tc.dist, tc.exchangeLv); got != tc.want {
-			t.Errorf("%s: notional = %g, want %g", tc.name, got, tc.want)
+		wide := PerpsRiskBasedNotional(cash, price, riskPct, wideDist, 10)
+		tight := PerpsRiskBasedNotional(cash, price, riskPct, tightDist, 10)
+		if wide <= 0 || tight <= 0 {
+			t.Fatalf("expected positive notionals, got wide=%g tight=%g", wide, tight)
 		}
-	}
+		wideRisk := wide / price * wideDist
+		tightRisk := tight / price * tightDist
+		if math.Abs(wideRisk-10) > 1e-9 || math.Abs(tightRisk-10) > 1e-9 {
+			t.Fatalf("dollar risk must be constant $10: wide=%g tight=%g", wideRisk, tightRisk)
+		}
+		if tight <= wide {
+			t.Fatalf("tighter stop must size larger notional: tight=%g wide=%g", tight, wide)
+		}
+	})
+	t.Run("ExchangeCapAndBadInputs", func(t *testing.T) {
+		cases := []struct {
+			name                               string
+			cash, price, pct, dist, exchangeLv float64
+			want                               float64
+		}{
+			{"cash × exchange_leverage cap", 1000, 2000, 1.0, 1.0, 5, 5000},
+			{"1x cap when exchangeLeverage<=0", 1000, 2000, 1.0, 1.0, 0, 1000},
+			{"zero cash", 0, 2000, 1, 20, 1, 0},
+			{"negative cash", -5, 2000, 1, 20, 1, 0},
+			{"zero price", 1000, 0, 1, 20, 1, 0},
+			{"zero pct", 1000, 2000, 0, 20, 1, 0},
+			{"zero dist", 1000, 2000, 1, 0, 1, 0},
+			{"negative dist", 1000, 2000, 1, -3, 1, 0},
+		}
+		for _, tc := range cases {
+			if got := PerpsRiskBasedNotional(tc.cash, tc.price, tc.pct, tc.dist, tc.exchangeLv); got != tc.want {
+				t.Errorf("%s: notional = %g, want %g", tc.name, got, tc.want)
+			}
+		}
+	})
 }
 
 func TestPerpsRiskStopDistance(t *testing.T) {
@@ -163,137 +164,138 @@ func TestPerpsRiskStopDistance(t *testing.T) {
 	})
 }
 
-func TestPerpsLiveOrderSizeRiskMode(t *testing.T) {
-	riskSizing := func(dist float64) PerpsSizing {
-		s := PerpsSizing{ExchangeLeverage: 1, RiskPerTradePct: 1.0, RiskStopDistance: dist}
-		if dist <= 0 {
-			s.RiskStopUnresolved = "no positive ATR in check payload"
+func TestPerpsRiskModeSizing(t *testing.T) {
+	t.Run("PerpsLiveOrderSize", func(t *testing.T) {
+		riskSizing := func(dist float64) PerpsSizing {
+			s := PerpsSizing{ExchangeLeverage: 1, RiskPerTradePct: 1.0, RiskStopDistance: dist}
+			if dist <= 0 {
+				s.RiskStopUnresolved = "no positive ATR in check payload"
+			}
+			return s
 		}
-		return s
-	}
-	t.Run("fresh open sizes qty from stop distance", func(t *testing.T) {
-		size1, ok1, _ := perpsLiveOrderSize(1, 2000, 1000, 0, 0, riskSizing(20), "", DirectionLong, 0)
-		size2, ok2, _ := perpsLiveOrderSize(1, 2000, 1000, 0, 0, riskSizing(60), "", DirectionLong, 0)
-		if !ok1 || !ok2 {
-			t.Fatalf("both opens must size, got ok1=%v ok2=%v", ok1, ok2)
-		}
-		if math.Abs(size1*20-10) > 1e-9 || math.Abs(size2*60-10) > 1e-9 {
-			t.Fatalf("dollar risk must be $10 for both: size1×20=%g size2×60=%g", size1*20, size2*60)
-		}
+		t.Run("fresh open sizes qty from stop distance", func(t *testing.T) {
+			size1, ok1, _ := perpsLiveOrderSize(1, 2000, 1000, 0, 0, riskSizing(20), "", DirectionLong, 0)
+			size2, ok2, _ := perpsLiveOrderSize(1, 2000, 1000, 0, 0, riskSizing(60), "", DirectionLong, 0)
+			if !ok1 || !ok2 {
+				t.Fatalf("both opens must size, got ok1=%v ok2=%v", ok1, ok2)
+			}
+			if math.Abs(size1*20-10) > 1e-9 || math.Abs(size2*60-10) > 1e-9 {
+				t.Fatalf("dollar risk must be $10 for both: size1×20=%g size2×60=%g", size1*20, size2*60)
+			}
+		})
+		t.Run("unresolvable stop refuses fresh open", func(t *testing.T) {
+			size, ok, reason := perpsLiveOrderSize(1, 2000, 1000, 0, 0, riskSizing(0), "", DirectionLong, 0)
+			if ok || size != 0 {
+				t.Fatalf("open must be refused, got size=%g ok=%v", size, ok)
+			}
+			if !strings.Contains(reason, "fail-closed") || !strings.Contains(reason, "no positive ATR") {
+				t.Fatalf("reason must carry the resolver cause, got %q", reason)
+			}
+		})
+		t.Run("unresolvable stop degrades flip to close-only", func(t *testing.T) {
+			size, ok, _ := perpsLiveOrderSize(1, 2000, 1000, 0.4, 2100, riskSizing(0), "short", DirectionBoth, 0)
+			if !ok || size != 0.4 {
+				t.Fatalf("flip must degrade to close-only posQty, got size=%g ok=%v", size, ok)
+			}
+		})
+		t.Run("close never blocked by risk mode", func(t *testing.T) {
+			size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, 0.4, 2000, riskSizing(0), "long", DirectionLong, 0)
+			if !ok || size != 0.4 {
+				t.Fatalf("close must pass through, got size=%g ok=%v", size, ok)
+			}
+		})
+		t.Run("exchange cap bounds the flip open leg", func(t *testing.T) {
+			size, ok, _ := perpsLiveOrderSize(1, 2000, 1000, 0.1, 2000, riskSizing(1), "short", DirectionBoth, 0)
+			if !ok {
+				t.Fatal("flip must size")
+			}
+			newSide := size - 0.1
+			if notional := newSide * 2000; notional > 1000+1e-9 {
+				t.Fatalf("new-side notional %g exceeds cash × 1x cap", notional)
+			}
+		})
 	})
-	t.Run("unresolvable stop refuses fresh open", func(t *testing.T) {
-		size, ok, reason := perpsLiveOrderSize(1, 2000, 1000, 0, 0, riskSizing(0), "", DirectionLong, 0)
-		if ok || size != 0 {
-			t.Fatalf("open must be refused, got size=%g ok=%v", size, ok)
+	t.Run("ExecutePerpsSignal", func(t *testing.T) {
+		logger := &StrategyLogger{stratID: "test", writer: os.Stdout}
+		mkState := func() *StrategyState {
+			return &StrategyState{
+				ID: "hl-x", Type: "perps", Platform: "hyperliquid",
+				Cash: 1000, Positions: map[string]*Position{},
+			}
 		}
-		if !strings.Contains(reason, "fail-closed") || !strings.Contains(reason, "no positive ATR") {
-			t.Fatalf("reason must carry the resolver cause, got %q", reason)
+		riskSizing := func(dist float64) PerpsSizing {
+			s := PerpsSizing{ExchangeLeverage: 2, RiskPerTradePct: 1.0, RiskStopDistance: dist}
+			if dist <= 0 {
+				s.RiskStopUnresolved = "no positive ATR in check payload"
+			}
+			return s
 		}
-	})
-	t.Run("unresolvable stop degrades flip to close-only", func(t *testing.T) {
-		size, ok, _ := perpsLiveOrderSize(1, 2000, 1000, 0.4, 2100, riskSizing(0), "short", DirectionBoth, 0)
-		if !ok || size != 0.4 {
-			t.Fatalf("flip must degrade to close-only posQty, got size=%g ok=%v", size, ok)
-		}
-	})
-	t.Run("close never blocked by risk mode", func(t *testing.T) {
-		size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, 0.4, 2000, riskSizing(0), "long", DirectionLong, 0)
-		if !ok || size != 0.4 {
-			t.Fatalf("close must pass through, got size=%g ok=%v", size, ok)
-		}
-	})
-	t.Run("exchange cap bounds the flip open leg", func(t *testing.T) {
-		size, ok, _ := perpsLiveOrderSize(1, 2000, 1000, 0.1, 2000, riskSizing(1), "short", DirectionBoth, 0)
-		if !ok {
-			t.Fatal("flip must size")
-		}
-		newSide := size - 0.1
-		if notional := newSide * 2000; notional > 1000+1e-9 {
-			t.Fatalf("new-side notional %g exceeds cash × 1x cap", notional)
-		}
-	})
-}
-
-func TestExecutePerpsSignalRiskMode(t *testing.T) {
-	logger := &StrategyLogger{stratID: "test", writer: os.Stdout}
-	mkState := func() *StrategyState {
-		return &StrategyState{
-			ID: "hl-x", Type: "perps", Platform: "hyperliquid",
-			Cash: 1000, Positions: map[string]*Position{},
-		}
-	}
-	riskSizing := func(dist float64) PerpsSizing {
-		s := PerpsSizing{ExchangeLeverage: 2, RiskPerTradePct: 1.0, RiskStopDistance: dist}
-		if dist <= 0 {
-			s.RiskStopUnresolved = "no positive ATR in check payload"
-		}
-		return s
-	}
-	t.Run("open long sizes constant dollar risk", func(t *testing.T) {
-		sTight := mkState()
-		sWide := mkState()
-		if _, err := ExecutePerpsSignalWithLeverage(sTight, 1, "ETH", 2000, riskSizing(20), 0, "", 0, DirectionLong, 0, logger); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := ExecutePerpsSignalWithLeverage(sWide, 1, "ETH", 2000, riskSizing(60), 0, "", 0, DirectionLong, 0, logger); err != nil {
-			t.Fatal(err)
-		}
-		pt, pw := sTight.Positions["ETH"], sWide.Positions["ETH"]
-		if pt == nil || pw == nil {
-			t.Fatal("both opens must create positions")
-		}
-		if math.Abs(pt.Quantity*20-10) > 1e-9 || math.Abs(pw.Quantity*60-10) > 1e-9 {
-			t.Fatalf("dollar risk must be $10: tight=%g wide=%g", pt.Quantity*20, pw.Quantity*60)
-		}
-	})
-	t.Run("open short sizes constant dollar risk", func(t *testing.T) {
-		s := mkState()
-		if _, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, riskSizing(20), 0, "", 0, DirectionShort, 0, logger); err != nil {
-			t.Fatal(err)
-		}
-		pos := s.Positions["ETH"]
-		if pos == nil || pos.Side != "short" {
-			t.Fatalf("expected short position, got %+v", pos)
-		}
-		if math.Abs(pos.Quantity*20-10) > 1e-9 {
-			t.Fatalf("dollar risk must be $10, got %g", pos.Quantity*20)
-		}
-	})
-	t.Run("unresolvable stop refuses open and mutates nothing", func(t *testing.T) {
-		s := mkState()
-		trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, riskSizing(0), 0, "", 0, DirectionLong, 0, logger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if trades != 0 || len(s.Positions) != 0 || s.Cash != 1000 {
-			t.Fatalf("fail-closed open must not mutate state: trades=%d positions=%d cash=%g", trades, len(s.Positions), s.Cash)
-		}
-	})
-	t.Run("risk-mode flip closes then sizes new side from post-close cash", func(t *testing.T) {
-		s := mkState()
-		s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.4, AvgCost: 2100, Side: "short", Multiplier: 1, OwnerStrategyID: "hl-x"}
-		if _, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, riskSizing(20), 0, "", 0, DirectionBoth, 0, logger); err != nil {
-			t.Fatal(err)
-		}
-		pos := s.Positions["ETH"]
-		if pos == nil || pos.Side != "long" {
-			t.Fatalf("expected flipped long, got %+v", pos)
-		}
-		if riskDollars := pos.Quantity * 20; math.Abs(riskDollars-s.Cash*0.01) > s.Cash*0.01*0.01 {
-			t.Fatalf("flip risk %g must be ~1%% of post-close cash %g", riskDollars, s.Cash)
-		}
-	})
-	t.Run("unset field keeps legacy sizing byte-identical", func(t *testing.T) {
-		s := mkState()
-		if _, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 5, ExchangeLeverage: 5}, 0, "", 0, DirectionLong, 0, logger); err != nil {
-			t.Fatal(err)
-		}
-		pos := s.Positions["ETH"]
-		if pos == nil {
-			t.Fatal("expected position")
-		}
-		if notional := pos.Quantity * pos.AvgCost; math.Abs(notional-5000) > 1e-6 {
-			t.Fatalf("legacy sizing notional = %g, want 5000 (cash × sizing_leverage)", notional)
-		}
+		t.Run("open long sizes constant dollar risk", func(t *testing.T) {
+			sTight := mkState()
+			sWide := mkState()
+			if _, err := ExecutePerpsSignalWithLeverage(sTight, 1, "ETH", 2000, riskSizing(20), 0, "", 0, DirectionLong, 0, logger); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ExecutePerpsSignalWithLeverage(sWide, 1, "ETH", 2000, riskSizing(60), 0, "", 0, DirectionLong, 0, logger); err != nil {
+				t.Fatal(err)
+			}
+			pt, pw := sTight.Positions["ETH"], sWide.Positions["ETH"]
+			if pt == nil || pw == nil {
+				t.Fatal("both opens must create positions")
+			}
+			if math.Abs(pt.Quantity*20-10) > 1e-9 || math.Abs(pw.Quantity*60-10) > 1e-9 {
+				t.Fatalf("dollar risk must be $10: tight=%g wide=%g", pt.Quantity*20, pw.Quantity*60)
+			}
+		})
+		t.Run("open short sizes constant dollar risk", func(t *testing.T) {
+			s := mkState()
+			if _, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, riskSizing(20), 0, "", 0, DirectionShort, 0, logger); err != nil {
+				t.Fatal(err)
+			}
+			pos := s.Positions["ETH"]
+			if pos == nil || pos.Side != "short" {
+				t.Fatalf("expected short position, got %+v", pos)
+			}
+			if math.Abs(pos.Quantity*20-10) > 1e-9 {
+				t.Fatalf("dollar risk must be $10, got %g", pos.Quantity*20)
+			}
+		})
+		t.Run("unresolvable stop refuses open and mutates nothing", func(t *testing.T) {
+			s := mkState()
+			trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, riskSizing(0), 0, "", 0, DirectionLong, 0, logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if trades != 0 || len(s.Positions) != 0 || s.Cash != 1000 {
+				t.Fatalf("fail-closed open must not mutate state: trades=%d positions=%d cash=%g", trades, len(s.Positions), s.Cash)
+			}
+		})
+		t.Run("risk-mode flip closes then sizes new side from post-close cash", func(t *testing.T) {
+			s := mkState()
+			s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.4, AvgCost: 2100, Side: "short", Multiplier: 1, OwnerStrategyID: "hl-x"}
+			if _, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, riskSizing(20), 0, "", 0, DirectionBoth, 0, logger); err != nil {
+				t.Fatal(err)
+			}
+			pos := s.Positions["ETH"]
+			if pos == nil || pos.Side != "long" {
+				t.Fatalf("expected flipped long, got %+v", pos)
+			}
+			if riskDollars := pos.Quantity * 20; math.Abs(riskDollars-s.Cash*0.01) > s.Cash*0.01*0.01 {
+				t.Fatalf("flip risk %g must be ~1%% of post-close cash %g", riskDollars, s.Cash)
+			}
+		})
+		t.Run("unset field keeps legacy sizing byte-identical", func(t *testing.T) {
+			s := mkState()
+			if _, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 5, ExchangeLeverage: 5}, 0, "", 0, DirectionLong, 0, logger); err != nil {
+				t.Fatal(err)
+			}
+			pos := s.Positions["ETH"]
+			if pos == nil {
+				t.Fatal("expected position")
+			}
+			if notional := pos.Quantity * pos.AvgCost; math.Abs(notional-5000) > 1e-6 {
+				t.Fatalf("legacy sizing notional = %g, want 5000 (cash × sizing_leverage)", notional)
+			}
+		})
 	})
 }

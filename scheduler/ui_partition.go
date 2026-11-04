@@ -30,27 +30,33 @@ func (f uiPartitionFilter) configs(cfgs []StrategyConfig) []StrategyConfig {
 // neighbour deployment's view: unparseable text is a bad request and a
 // well-formed partition with no configured strategy is not found.
 func (ss *StatusServer) uiPartitionParam(w http.ResponseWriter, r *http.Request) (uiPartitionFilter, bool) {
+	filter, status, msg := ss.resolveUIPartition(r)
+	if status != http.StatusOK {
+		writeJSONError(w, status, msg)
+		return uiPartitionFilter{}, false
+	}
+	return filter, true
+}
+
+func (ss *StatusServer) resolveUIPartition(r *http.Request) (uiPartitionFilter, int, string) {
 	raw := r.URL.Query().Get(uiPartitionQueryKey)
 	if raw == "" {
-		return uiPartitionFilter{All: true}, true
+		return uiPartitionFilter{All: true}, http.StatusOK, ""
 	}
 	p, err := parseRiskPartition(raw)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return uiPartitionFilter{}, false
+		return uiPartitionFilter{}, http.StatusBadRequest, err.Error()
 	}
 	if p == unassignedPartition {
-		writeJSONError(w, http.StatusBadRequest, "partition must be live, paper or paper:<source id>")
-		return uiPartitionFilter{}, false
+		return uiPartitionFilter{}, http.StatusBadRequest, "partition must be live, paper or paper:<source id>"
 	}
 	ss.strategiesMu.RLock()
 	cfgs := append([]StrategyConfig(nil), ss.strategies...)
 	ss.strategiesMu.RUnlock()
 	if !partitionInList(p, activePartitions(cfgs)) {
-		writeJSONError(w, http.StatusNotFound, "this process owns no partition "+p.String())
-		return uiPartitionFilter{}, false
+		return uiPartitionFilter{}, http.StatusNotFound, "this process owns no partition " + p.String()
 	}
-	return uiPartitionFilter{Partition: p}, true
+	return uiPartitionFilter{Partition: p}, http.StatusOK, ""
 }
 
 func (ss *StatusServer) partitionStrategyIDs(p RiskPartition) []string {

@@ -56,53 +56,52 @@ def _run_script(adapter_response_or_exc, argv, is_live=True):
     return parsed, exit_code["value"]
 
 
-class TestPaperModeRejected:
+class TestNonLiveRejected:
 
-    def test_paper_mode_exits_nonzero(self):
-        out, code = _run_script({"id": "xx"}, ["--symbol=BTC", "--mode=paper"])
-        assert code == 1
-        assert "--mode=live required" in out["error"]
-        assert out["close"] is None
+    def test_paper_mode_or_non_live_adapter_exits_nonzero(self, subtests):
+        with subtests.test(case="paper_mode"):
+            out, code = _run_script({"id": "xx"}, ["--symbol=BTC", "--mode=paper"])
+            assert code == 1
+            assert "--mode=live required" in out["error"]
+            assert out["close"] is None
 
-    def test_default_mode_is_live(self):
-        out, code = _run_script({"id": "abc", "average": 42000, "filled": 0.01},
-                                ["--symbol=BTC"])
-        assert code == 0, out
-        assert "error" not in out
-
-
-class TestNonLiveAdapterRejected:
-
-    def test_non_live_adapter_exits_nonzero(self):
-        out, code = _run_script({}, ["--symbol=BTC", "--mode=live"], is_live=False)
-        assert code == 1
-        assert "OKX_API_KEY" in out["error"]
-        assert out["close"]["fill"] == {}
+        with subtests.test(case="non_live_adapter"):
+            out, code = _run_script({}, ["--symbol=BTC", "--mode=live"], is_live=False)
+            assert code == 1
+            assert "OKX_API_KEY" in out["error"]
+            assert out["close"]["fill"] == {}
 
 
 class TestSuccessFill:
 
-    def test_full_fill_fields(self):
-        response = {
-            "id": "12345abc",
-            "average": 42000.5,
-            "filled": 0.01,
-            "fee": {"cost": 0.25, "currency": "USDT"},
-        }
-        out, code = _run_script(response, ["--symbol=BTC", "--mode=live"])
-        assert code == 0
-        assert out["close"]["symbol"] == "BTC"
-        fill = out["close"]["fill"]
-        assert fill["avg_px"] == 42000.5
-        assert fill["total_sz"] == 0.01
-        assert fill["oid"] == "12345abc"
-        assert fill["fee"] == 0.25
+    def test_filled_close_reports_the_fill(self, subtests):
+        with subtests.test(case="default_mode_is_live"):
+            out, code = _run_script({"id": "abc", "average": 42000, "filled": 0.01},
+                                    ["--symbol=BTC"])
+            assert code == 0, out
+            assert "error" not in out
 
-    def test_minimal_fill_fields(self):
-        out, code = _run_script({"id": "x"}, ["--symbol=BTC", "--mode=live"])
-        assert code == 0
-        assert out["close"]["symbol"] == "BTC"
-        assert out["close"]["fill"].get("oid") == "x"
+        with subtests.test(case="full_fill_fields"):
+            response = {
+                "id": "12345abc",
+                "average": 42000.5,
+                "filled": 0.01,
+                "fee": {"cost": 0.25, "currency": "USDT"},
+            }
+            out, code = _run_script(response, ["--symbol=BTC", "--mode=live"])
+            assert code == 0
+            assert out["close"]["symbol"] == "BTC"
+            fill = out["close"]["fill"]
+            assert fill["avg_px"] == 42000.5
+            assert fill["total_sz"] == 0.01
+            assert fill["oid"] == "12345abc"
+            assert fill["fee"] == 0.25
+
+        with subtests.test(case="minimal_fill_fields"):
+            out, code = _run_script({"id": "x"}, ["--symbol=BTC", "--mode=live"])
+            assert code == 0
+            assert out["close"]["symbol"] == "BTC"
+            assert out["close"]["fill"].get("oid") == "x"
 
 
 class TestAlreadyFlat:
@@ -118,17 +117,18 @@ class TestAlreadyFlat:
 
 class TestFailurePaths:
 
-    def test_adapter_raises(self):
-        out, code = _run_script(RuntimeError("OKX auth failed"),
-                                ["--symbol=BTC", "--mode=live"])
-        assert code == 1
-        assert "OKX auth" in out["error"]
-        assert out["close"]["fill"] == {}
+    def test_failed_closes_exit_one_with_the_reason(self, subtests):
+        with subtests.test(case="adapter_raises"):
+            out, code = _run_script(RuntimeError("OKX auth failed"),
+                                    ["--symbol=BTC", "--mode=live"])
+            assert code == 1
+            assert "OKX auth" in out["error"]
+            assert out["close"]["fill"] == {}
 
-    def test_non_dict_response(self):
-        out, code = _run_script("unexpected string", ["--symbol=BTC", "--mode=live"])
-        assert code == 1
-        assert "unexpected adapter response type" in out["error"]
+        with subtests.test(case="non_dict_response"):
+            out, code = _run_script("unexpected string", ["--symbol=BTC", "--mode=live"])
+            assert code == 1
+            assert "unexpected adapter response type" in out["error"]
 
 
 if __name__ == "__main__":

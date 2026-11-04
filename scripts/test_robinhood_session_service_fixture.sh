@@ -65,7 +65,8 @@ echo "== build the service virtualenv"
 cat > "$DEPLOY/routes.json" <<'JSON'
 {
   "GET https://api.robinhood.com/positions/?nonzero=true": [{"status": 200, "json": {"next": null, "results": []}}],
-  "GET https://nummus.robinhood.com/holdings/": [{"status": 200, "json": {"next": null, "results": []}}]
+  "GET https://nummus.robinhood.com/holdings/": [{"status": 200, "json": {"next": null, "results": []}}],
+  "GET https://nummus.robinhood.com/accounts/": [{"status": 200, "json": {"next": null, "results": [{"id": "acct-1"}]}}]
 }
 JSON
 cat > "$STATE/config.json" <<JSON

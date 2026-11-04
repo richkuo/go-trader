@@ -144,7 +144,7 @@ func (ss *StatusServer) handleAPIConfirm(w http.ResponseWriter, r *http.Request)
 			strings.Join(append(sortedUITradeActions(), sortedUIStructuralActions()...), ", ")))
 		return
 	}
-	if strings.TrimSpace(req.StrategyID) == "" && req.Action != "add-strategy" {
+	if strings.TrimSpace(req.StrategyID) == "" && req.Action != "add-strategy" && req.Action != quoteOwnerSetupAction {
 		writeJSONError(w, http.StatusBadRequest, "strategy_id is required")
 		return
 	}

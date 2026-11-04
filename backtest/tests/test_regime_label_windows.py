@@ -1,5 +1,6 @@
 """Live-config regime windows through the real --config single path."""
 
+import dataclasses
 import json
 import sys
 
@@ -161,7 +162,7 @@ def test_prepared_atr_window_is_admitted_and_a_missing_column_is_refused(tmp_pat
                timeframe="1h", save=False)
 
 
-def test_default_directional_selector_keeps_the_gate_stamp():
+def test_default_directional_selector_keeps_the_primary_stamp():
     regime = {"enabled": True, "period": 14, "windows": {
         "medium": {"classifier": "adx", "period": 14},
         "fast": {"classifier": "adx", "period": 8},
@@ -191,7 +192,7 @@ def test_default_directional_selector_keeps_the_gate_stamp():
     bt.run(df, strategy_name="hold", symbol="BTC/USDT", timeframe="1h", save=False)
     opens = [row for row in bt._regime_stamp_trace if row["event"] == "stamp"]
     assert opens
-    assert opens[0]["directional"] == opens[0]["gate"]
+    assert opens[0]["directional"] == df[column_name("medium")].iloc[220]
     assert opens[0]["gate"] != ""
 
 
@@ -316,7 +317,7 @@ def _parity_run(selectors, regime=None):
     name = "_parity_label_windows_alternating"
 
     def alternating(frame):
-        hours = frame.index.view("int64") // 3_600_000_000_000
+        hours = frame.index.as_unit("ns").view("int64") // 3_600_000_000_000
         return frame.assign(signal=np.where((hours // 7) % 2 == 0, 1, -1))
 
     reg.STRATEGY_REGISTRY[name] = {"fn": alternating, "description": "test-only",
@@ -348,6 +349,7 @@ def test_parity_named_gate_keeps_the_primary_directional_label():
                & ((medium == "trending_down") | (fast == "trending_down"))).loc[scored]
     assert differs.any()
     assert summary["clean"], frame[~frame["match"]].head()
+    assert list(frame["live_directional_regime"]) == list(medium.shift(1).loc[scored])
     assert (frame["live_open_action"] == "short").any()
 
 
@@ -364,6 +366,7 @@ def test_parity_named_directional_and_atr_windows_against_the_default_run():
     _, primary_slow, _ = _parity_run({}, regime=swapped)
     assert list(named["bt_signal"]) == list(primary_slow["bt_signal"]), case
     assert list(named["live_signal"]) == list(primary_slow["live_signal"]), case
+    assert list(named["live_directional_regime"]) != list(default["live_directional_regime"]), case
     assert list(named["live_signal"]) != list(default["live_signal"]), case
 
     case = "test_parity_named_atr_window_keeps_the_primary_directional_label"
@@ -402,10 +405,15 @@ def test_parity_refuses_a_regime_timeframe_it_does_not_label(tmp_path):
 
     with pytest.raises(ValueError, match=r"regime\.timeframe '4h'"):
         config_from_live_config(_parity_atr_config(tmp_path, "4h"), "spot-atr")
-    for regime_timeframe in (None, "1h"):
-        cfg = config_from_live_config(
-            _parity_atr_config(tmp_path, regime_timeframe), "spot-atr")
+    cfgs = {tf: config_from_live_config(_parity_atr_config(tmp_path, tf), "spot-atr")
+            for tf in (None, "1h")}
+    for cfg in cfgs.values():
         assert cfg.regime_label_plan["windows"]["atr"] == "fast"
-        frame = compute_parity_frame(_parity_frame_df(320), cfg=cfg,
-                                     window=cfg.regime_label_plan["limit"] + 5)
-        assert len(frame) > 0
+    assert cfgs["1h"].regime_label_plan["timeframe"] == "1h"
+    assert dataclasses.replace(
+        cfgs["1h"], regime_timeframe=None,
+        regime_label_plan={**cfgs["1h"].regime_label_plan, "timeframe": ""}) == cfgs[None]
+    cfg = cfgs["1h"]
+    frame = compute_parity_frame(_parity_frame_df(320), cfg=cfg,
+                                 window=cfg.regime_label_plan["limit"] + 5)
+    assert len(frame) > 0

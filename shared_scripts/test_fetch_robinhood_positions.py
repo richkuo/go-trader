@@ -20,6 +20,7 @@ def _run_script(positions_or_exc, is_live=True):
     mock_adapter_cls = MagicMock()
     mock_adapter = MagicMock()
     mock_adapter.is_live = is_live
+    mock_adapter.crypto_account_id.return_value = "acct-1"
     mock_adapter_cls.return_value = mock_adapter
     if isinstance(positions_or_exc, Exception):
         mock_adapter.get_crypto_positions_strict.side_effect = positions_or_exc

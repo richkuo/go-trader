@@ -69,10 +69,7 @@ type HyperliquidResult struct {
 	SizedClosePreSend               hlCloseView            `json:"-"`
 	PaperPartialCloseHold           string                 `json:"-"`
 	EntrySubmitGate                 hlEntrySubmitGate      `json:"-"`
-	BasketMember                    bool                   `json:"basket_member,omitempty"`
-	BasketOpenQty                   float64                `json:"-"`
-	PairMember                      *pairMemberRequest     `json:"pair_member,omitempty"`
-	PairFill                        *pairBookFill          `json:"-"`
+	RegimeSide                      regimeSideResolution   `json:"-"`
 }
 
 type hlEntryOrderTags struct {
@@ -237,22 +234,6 @@ func (b *pythonBoundedBuffer) Write(p []byte) (int, error) {
 	return b.buf.Write(p)
 }
 
-func acquirePythonSlot(ctx context.Context) (func(), error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	select {
-	case pythonSemaphore <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	if err := ctx.Err(); err != nil {
-		<-pythonSemaphore
-		return nil, err
-	}
-	return func() { <-pythonSemaphore }, nil
-}
-
 func spawnPythonProcessWithEnvLimited(parentCtx context.Context, script string, args []string, stdinData []byte, timeout time.Duration, envOverrides map[string]string, limits pythonOutputLimits) ([]byte, []byte, error) {
 	stdout, stderr, err := spawnPythonProcessRawLimited(parentCtx, ".venv/bin/python3", egressPythonArgv(script, args), stdinData, timeout, egressChildEnvironment(envOverrides), limits)
 	return stdout, processEgress.recordChildOutcome(stderr), err
@@ -298,9 +279,6 @@ func spawnPythonProcessRawLimited(parentCtx context.Context, python string, cmdA
 
 	if err := cmd.Start(); err != nil {
 		return nil, nil, err
-	}
-	if box, ok := parentCtx.Value(pairOraclePidKey{}).(*pairOraclePidBox); ok && cmd.Process != nil {
-		box.pid.Store(int64(cmd.Process.Pid))
 	}
 	err := cmd.Wait()
 	if ctx.Err() != nil {
@@ -837,7 +815,6 @@ type HyperliquidClose struct {
 	Fill        *HyperliquidCloseFill `json:"fill,omitempty"`
 	AlreadyFlat bool                  `json:"already_flat,omitempty"`
 	SubmittedSz float64               `json:"submitted_sz,omitempty"`
-	Evidence    *nativeCloseEvidence  `json:"evidence,omitempty"`
 }
 
 type HyperliquidCloseResult struct {
@@ -1358,6 +1335,39 @@ type RobinhoodSellSizing struct {
 	ResidueQuantity   float64 `json:"residue_quantity"`
 }
 
+type RobinhoodBuySizing struct {
+	BudgetUSD         float64  `json:"budget_usd"`
+	AskPrice          float64  `json:"ask_price"`
+	LimitPrice        float64  `json:"limit_price"`
+	PriceIncrement    float64  `json:"price_increment"`
+	Headroom          float64  `json:"headroom"`
+	SentQuantity      float64  `json:"sent_quantity"`
+	MinOrderSize      float64  `json:"min_order_size"`
+	QuantityIncrement float64  `json:"quantity_increment"`
+	MaxOrderSize      *float64 `json:"max_order_size,omitempty"`
+	MaxCostUSD        float64  `json:"max_cost_usd"`
+	CappedByMax       bool     `json:"capped_by_max"`
+}
+
+const (
+	robinhoodSellPriceFloorIncrement = "floor_increment"
+	robinhoodSellPriceFloorDecimals  = "floor_decimals"
+	robinhoodSellPriceRoundFallback  = "round_fallback"
+	robinhoodSellPriceOneStep        = "one_step"
+	robinhoodSellPriceWireFloor      = "wire_floor"
+)
+
+type RobinhoodSellPrice struct {
+	BidPrice              float64  `json:"bid_price"`
+	SentPrice             float64  `json:"sent_price"`
+	PriceDecimals         int      `json:"price_decimals"`
+	PriceIncrement        *float64 `json:"price_increment,omitempty"`
+	PriceIncrementProblem string   `json:"price_increment_problem,omitempty"`
+	Rule                  string   `json:"rule"`
+	TodayPrice            float64  `json:"today_price"`
+	FallbackReason        string   `json:"fallback_reason,omitempty"`
+}
+
 type RobinhoodExecuteResult struct {
 	Execution         *RobinhoodExecution    `json:"execution"`
 	OrderOutcome      string                 `json:"order_outcome,omitempty"`
@@ -1365,11 +1375,109 @@ type RobinhoodExecuteResult struct {
 	RefID             string                 `json:"ref_id,omitempty"`
 	RequestedQuantity float64                `json:"requested_quantity,omitempty"`
 	Sizing            *RobinhoodSellSizing   `json:"sizing,omitempty"`
+	BuySizingRaw      json.RawMessage        `json:"buy_sizing,omitempty"`
+	SellPriceRaw      json.RawMessage        `json:"sell_price,omitempty"`
 	AccountID         string                 `json:"account_id,omitempty"`
 	Cancel            RobinhoodOrderCancel   `json:"cancel"`
 	Platform          string                 `json:"platform"`
 	Timestamp         string                 `json:"timestamp"`
 	Error             string                 `json:"error,omitempty"`
+	BuySizing         *RobinhoodBuySizing    `json:"-"`
+	SellPrice         *RobinhoodSellPrice    `json:"-"`
+	EchoProblems      []string               `json:"-"`
+}
+
+func robinhoodEchoAbsent(raw json.RawMessage) bool {
+	t := strings.TrimSpace(string(raw))
+	return t == "" || t == "null"
+}
+
+func robinhoodEchoNumbersValid(fields map[string]float64, positive map[string]bool) error {
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := fields[k]
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			return fmt.Errorf("%s %v is not a finite non-negative number", k, v)
+		}
+		if positive[k] && v <= 0 {
+			return fmt.Errorf("%s %v is not positive", k, v)
+		}
+	}
+	return nil
+}
+
+func decodeRobinhoodBuySizing(raw json.RawMessage) (*RobinhoodBuySizing, error) {
+	if robinhoodEchoAbsent(raw) {
+		return nil, nil
+	}
+	var b RobinhoodBuySizing
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return nil, fmt.Errorf("buy_sizing is unreadable: %v", err)
+	}
+	fields := map[string]float64{
+		"budget_usd": b.BudgetUSD, "ask_price": b.AskPrice, "limit_price": b.LimitPrice, "price_increment": b.PriceIncrement,
+		"headroom": b.Headroom, "sent_quantity": b.SentQuantity, "min_order_size": b.MinOrderSize,
+		"quantity_increment": b.QuantityIncrement, "max_cost_usd": b.MaxCostUSD,
+	}
+	if b.MaxOrderSize != nil {
+		fields["max_order_size"] = *b.MaxOrderSize
+	}
+	positive := map[string]bool{"budget_usd": true, "ask_price": true, "limit_price": true, "price_increment": true,
+		"sent_quantity": true, "quantity_increment": true, "max_cost_usd": true, "max_order_size": true}
+	if err := robinhoodEchoNumbersValid(fields, positive); err != nil {
+		return nil, fmt.Errorf("buy_sizing: %v", err)
+	}
+	return &b, nil
+}
+
+func robinhoodSellPriceRuleKnown(rule string) bool {
+	switch rule {
+	case robinhoodSellPriceFloorIncrement, robinhoodSellPriceFloorDecimals, robinhoodSellPriceRoundFallback, robinhoodSellPriceOneStep, robinhoodSellPriceWireFloor:
+		return true
+	}
+	return false
+}
+
+func decodeRobinhoodSellPrice(raw json.RawMessage) (*RobinhoodSellPrice, error) {
+	if robinhoodEchoAbsent(raw) {
+		return nil, nil
+	}
+	var p RobinhoodSellPrice
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, fmt.Errorf("sell_price is unreadable: %v", err)
+	}
+	fields := map[string]float64{"bid_price": p.BidPrice, "sent_price": p.SentPrice, "today_price": p.TodayPrice}
+	if p.PriceIncrement != nil {
+		fields["price_increment"] = *p.PriceIncrement
+	}
+	positive := map[string]bool{"bid_price": true, "sent_price": true, "price_increment": true}
+	if err := robinhoodEchoNumbersValid(fields, positive); err != nil {
+		return nil, fmt.Errorf("sell_price: %v", err)
+	}
+	if p.PriceDecimals != 2 && p.PriceDecimals != 4 && p.PriceDecimals != 6 {
+		return nil, fmt.Errorf("sell_price: price_decimals %d is not 2, 4 or 6", p.PriceDecimals)
+	}
+	if !robinhoodSellPriceRuleKnown(p.Rule) {
+		return nil, fmt.Errorf("sell_price: rule %q is not a known rule", p.Rule)
+	}
+	return &p, nil
+}
+
+func decodeRobinhoodPricingEchoes(buyRaw, sellRaw json.RawMessage) (*RobinhoodBuySizing, *RobinhoodSellPrice, []string) {
+	var problems []string
+	buy, err := decodeRobinhoodBuySizing(buyRaw)
+	if err != nil {
+		problems = append(problems, err.Error())
+	}
+	sell, err := decodeRobinhoodSellPrice(sellRaw)
+	if err != nil {
+		problems = append(problems, err.Error())
+	}
+	return buy, sell, problems
 }
 
 const (
@@ -1379,8 +1487,9 @@ const (
 )
 
 type RobinhoodSellArgs struct {
-	CloseKind string
-	SoleOwner bool
+	CloseKind         string
+	SoleOwner         bool
+	ExpectedAccountID string
 }
 
 func RunRobinhoodCheck(script string, args []string) (*RobinhoodResult, string, error) {
@@ -1424,6 +1533,9 @@ func runPythonSideEffectWithTimeout(script string, args []string, timeout time.D
 func parseRobinhoodOrderOutput(stdout []byte, stderrStr string, runErr error) (*RobinhoodExecuteResult, string, error) {
 	var result RobinhoodExecuteResult
 	parseErr := json.Unmarshal(stdout, &result)
+	if parseErr == nil {
+		result.BuySizing, result.SellPrice, result.EchoProblems = decodeRobinhoodPricingEchoes(result.BuySizingRaw, result.SellPriceRaw)
+	}
 	var timeoutErr *pythonScriptTimeoutError
 	switch {
 	case errors.As(runErr, &timeoutErr):
@@ -1457,6 +1569,9 @@ func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float6
 		if sell.SoleOwner {
 			args = append(args, "--sole-owner")
 		}
+	}
+	if sell.ExpectedAccountID != "" {
+		args = append(args, "--expected-account-id="+sell.ExpectedAccountID)
 	}
 	stdout, stderr, runErr := runPythonSideEffectWithTimeout(script, args, robinhoodOrderScriptTimeout)
 	return parseRobinhoodOrderOutput(stdout, string(stderr), runErr)
@@ -1524,7 +1639,6 @@ type OKXResult struct {
 	EntrySubmitGate okxEntrySubmitGate     `json:"-"`
 	CloseReduceOnly bool                   `json:"-"`
 	OrderSubmitted  bool                   `json:"-"`
-	PairMember      *pairMemberRequest     `json:"pair_member,omitempty"`
 }
 
 type okxEntrySubmitGate func(side string, size float64) (okxEntryOrderTags, error)
@@ -1631,14 +1745,12 @@ type OKXCloseFill struct {
 	TotalSz float64 `json:"total_sz,omitempty"`
 	OID     string  `json:"oid,omitempty"`
 	Fee     float64 `json:"fee,omitempty"`
-	BaseSz  float64 `json:"base_sz,omitempty"`
 }
 
 type OKXClose struct {
-	Symbol      string               `json:"symbol"`
-	Fill        *OKXCloseFill        `json:"fill,omitempty"`
-	AlreadyFlat bool                 `json:"already_flat,omitempty"`
-	Evidence    *nativeCloseEvidence `json:"evidence,omitempty"`
+	Symbol      string        `json:"symbol"`
+	Fill        *OKXCloseFill `json:"fill,omitempty"`
+	AlreadyFlat bool          `json:"already_flat,omitempty"`
 }
 
 type OKXCloseResult struct {
@@ -1663,9 +1775,6 @@ func RunOKXClose(script, symbol string, partialSz *float64) (*OKXCloseResult, st
 func parseOKXCloseOutput(stdout []byte, stderrStr string, runErr error) (*OKXCloseResult, string, error) {
 	var result OKXCloseResult
 	parseErr := json.Unmarshal(stdout, &result)
-	if result.Close != nil && result.Close.Fill != nil {
-		result.Close.Fill.BaseSz = 0
-	}
 
 	switch {
 	case runErr == nil && parseErr == nil && result.Error == "":
@@ -1825,19 +1934,25 @@ type RobinhoodCloseResult struct {
 	RefID             string                 `json:"ref_id,omitempty"`
 	RequestedQuantity float64                `json:"requested_quantity,omitempty"`
 	Sizing            *RobinhoodSellSizing   `json:"sizing,omitempty"`
+	SellPriceRaw      json.RawMessage        `json:"sell_price,omitempty"`
 	AccountID         string                 `json:"account_id,omitempty"`
 	Cancel            RobinhoodOrderCancel   `json:"cancel"`
 	Platform          string                 `json:"platform"`
 	Timestamp         string                 `json:"timestamp"`
 	Error             string                 `json:"error,omitempty"`
+	SellPrice         *RobinhoodSellPrice    `json:"-"`
+	EchoProblems      []string               `json:"-"`
 	RunErr            error                  `json:"-"`
 	AskedQty          float64                `json:"-"`
 	NoBook            bool                   `json:"-"`
 }
 
-func RunRobinhoodClose(script, symbol, refID string, quantity float64) (*RobinhoodCloseResult, string, error) {
+func RunRobinhoodClose(script, symbol, refID string, quantity float64, expectedAccountID string) (*RobinhoodCloseResult, string, error) {
 	if !(quantity > 0) || math.IsInf(quantity, 0) {
 		return nil, "", fmt.Errorf("the close quantity %v is not a finite positive number; no order was sent", quantity)
+	}
+	if strings.TrimSpace(expectedAccountID) == "" {
+		return nil, "", fmt.Errorf("the close has no expected Robinhood account id; no order was sent")
 	}
 	args := []string{
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -1848,6 +1963,7 @@ func RunRobinhoodClose(script, symbol, refID string, quantity float64) (*Robinho
 	if refID != "" {
 		args = append(args, "--ref-id="+refID)
 	}
+	args = append(args, "--expected-account-id="+expectedAccountID)
 	stdout, stderr, runErr := runPythonSideEffectWithTimeout(script, args, robinhoodOrderScriptTimeout)
 	result, stderrStr, err := parseRobinhoodCloseOutput(stdout, string(stderr), runErr)
 	if result != nil {
@@ -1859,6 +1975,9 @@ func RunRobinhoodClose(script, symbol, refID string, quantity float64) (*Robinho
 func parseRobinhoodCloseOutput(stdout []byte, stderrStr string, runErr error) (*RobinhoodCloseResult, string, error) {
 	var result RobinhoodCloseResult
 	parseErr := json.Unmarshal(stdout, &result)
+	if parseErr == nil {
+		_, result.SellPrice, result.EchoProblems = decodeRobinhoodPricingEchoes(nil, result.SellPriceRaw)
+	}
 	var timeoutErr *pythonScriptTimeoutError
 
 	switch {
@@ -1897,6 +2016,8 @@ func robinhoodCloseAsOrderResult(res *RobinhoodCloseResult) *RobinhoodExecuteRes
 		Platform:          res.Platform,
 		Timestamp:         res.Timestamp,
 		Error:             res.Error,
+		SellPrice:         res.SellPrice,
+		EchoProblems:      res.EchoProblems,
 	}
 	if res.Close != nil {
 		out.Execution = &RobinhoodExecution{Action: "sell", Symbol: res.Close.Symbol, Quantity: res.RequestedQuantity}
@@ -1909,6 +2030,7 @@ func robinhoodCloseAsOrderResult(res *RobinhoodCloseResult) *RobinhoodExecuteRes
 
 type RobinhoodPositionsResult struct {
 	Positions []RobinhoodPositionJSON `json:"positions"`
+	AccountID string                  `json:"account_id"`
 	Platform  string                  `json:"platform"`
 	Timestamp string                  `json:"timestamp"`
 	Error     string                  `json:"error,omitempty"`

@@ -54,7 +54,22 @@ def _df_to_rows(df):
     return rows
 
 
-def _load_adapter(platform, mode):
+_ROBINHOOD_CHART_CLASSES = {"spot": "crypto", "options": "stock"}
+
+
+def _robinhood_chart_class(chart_type, symbol):
+    asset_class = _ROBINHOOD_CHART_CLASSES.get(chart_type)
+    if asset_class is None:
+        raise ValueError(
+            f"robinhood charts serve type spot (crypto) or options (stock underlying), not {chart_type!r}")
+    sys.path.insert(0, os.path.join(ROOT, "platforms", "robinhood"))
+    from adapter import robinhood_yahoo_ticker
+
+    robinhood_yahoo_ticker(asset_class, symbol)
+    return asset_class
+
+
+def _load_adapter(platform, mode, chart_type="spot", symbol=""):
     if platform == "hyperliquid":
         sys.path.insert(0, os.path.join(ROOT, "platforms", "hyperliquid"))
         from adapter import HyperliquidExchangeAdapter
@@ -71,15 +86,15 @@ def _load_adapter(platform, mode):
 
         return TopStepExchangeAdapter(mode=mode or "paper")
     if platform == "robinhood":
-        sys.path.insert(0, os.path.join(ROOT, "platforms", "robinhood"))
+        asset_class = _robinhood_chart_class(chart_type, symbol)
         from adapter import RobinhoodExchangeAdapter
 
-        return RobinhoodExchangeAdapter(mode=mode or "paper")
+        return RobinhoodExchangeAdapter(mode=mode or "paper", asset_class=asset_class)
     return None
 
 
 def _fetch(args):
-    adapter = _load_adapter(args.platform, args.mode)
+    adapter = _load_adapter(args.platform, args.mode, args.type, args.symbol)
     if adapter is not None:
         if args.platform == "okx" and args.type == "perps":
             rows = adapter.get_perp_ohlcv(args.symbol, interval=args.timeframe, limit=args.limit)
@@ -119,6 +134,12 @@ def main():
     args = parser.parse_args()
 
     if args.probe_only:
+        if args.platform == "robinhood":
+            try:
+                _robinhood_chart_class(args.type, args.symbol)
+            except ValueError as exc:
+                print(json.dumps({"error": str(exc), "source": "error", "candles": []}))
+                sys.exit(1)
         print(json.dumps({"ok": True}))
         return
 

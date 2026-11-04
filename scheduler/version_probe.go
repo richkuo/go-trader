@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -11,8 +13,6 @@ import (
 	"syscall"
 	"time"
 )
-
-const pairMemberProbeRequestJSON = `{"pair_id":"probe","member_id":"probe","provider":"hyperliquid","instrument":"BTC","mode":"management_only"}`
 
 var probeArgv = []string{
 	"probe", "BTC", "1h",
@@ -33,8 +33,6 @@ var probeArgv = []string{
 	allowNoEdgeFlag,
 	closedBarDecisionsFlag,
 	decisionRegimeTimeframeFlag + "=1h",
-	basketMemberFlag,
-	pairMemberFlag + "=" + pairMemberProbeRequestJSON,
 	"--probe-only",
 }
 
@@ -57,24 +55,6 @@ var probeCompositeArgv = []string{
 	allowNoEdgeFlag,
 	closedBarDecisionsFlag,
 	decisionRegimeTimeframeFlag + "=1h",
-	basketMemberFlag,
-	pairMemberFlag + "=" + pairMemberProbeRequestJSON,
-	"--probe-only",
-}
-
-const okxPairMemberProbeRequestJSON = `{"pair_id":"probe","member_id":"probe","provider":"okx","instrument":"BTC-USDT-SWAP","mode":"management_only"}`
-
-var okxPairManagementProbeArgv = []string{
-	"pair_member", "BTC", "1h", "--mode=paper", "--inst-type=swap",
-	"--position-side", "long",
-	"--position-avg-cost=1",
-	"--position-qty=1",
-	"--position-initial-qty=1",
-	"--position-entry-atr=1",
-	"--position-risk-anchor-price=1",
-	"--strategy-refs", `{"open":{"name":"pair_member","params":{}},"closes":[{"name":"atr_stop","params":{"atr_mult":3}}]}`,
-	pairMemberFlag + "=" + okxPairMemberProbeRequestJSON,
-	pairManagementStdinFlag,
 	"--probe-only",
 }
 
@@ -144,8 +124,6 @@ var sizedCloseProbeArgv = []string{
 	"--cloid=0x00000000000000000000000000000003",
 	"--probe-only",
 }
-
-var basketRankerProbeArgv = []string{"--probe-only"}
 
 var limitOpenProbeArgv = []string{
 	"--limit-open",
@@ -243,6 +221,30 @@ var checkRegimeMarketProbeArgv = []string{
 	"--probe-only",
 }
 
+var checkRegimeRobinhoodCryptoProbeArgv = []string{
+	"--platform=robinhood", "--symbol=BTC", "--timeframe=1h",
+	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
+	"--ohlcv-limit", "200", "--min-bars", "30",
+	"--asset-class", robinhoodAssetClassCrypto,
+	"--probe-only",
+}
+
+var checkRegimeRobinhoodStockProbeArgv = []string{
+	"--platform=robinhood", "--symbol=SPY", "--timeframe=" + optionsRegimeTimeframe,
+	"--regime-windows-spec-json", optionsRegimeWindowsSpecJSON,
+	"--ohlcv-limit", "100", "--min-bars", "30",
+	"--asset-class", robinhoodAssetClassStock,
+	"--probe-only",
+}
+
+var fetchCandlesRobinhoodCryptoProbeArgv = []string{
+	"--platform=robinhood", "--type=spot", "--symbol=BTC", "--timeframe=1h", "--limit=1", "--probe-only",
+}
+
+var fetchCandlesRobinhoodStockProbeArgv = []string{
+	"--platform=robinhood", "--type=options", "--symbol=SPY", "--timeframe=1d", "--limit=1", "--probe-only",
+}
+
 var strategyTunerSchemaProbeArgv = []string{
 	"--type=spot", "--strategy=sma", "--probe-only",
 }
@@ -258,7 +260,7 @@ var robinhoodExecuteProbeArgv = []string{
 var robinhoodExecuteSellProbeArgv = []string{
 	"--execute", "--symbol=BTC", "--side=sell", "--mode=live",
 	"--ref-id=00000000-0000-4000-8000-000000000000", "--budget-ms=50000",
-	"--quantity=1", "--close-kind=whole", "--sole-owner", "--probe-only",
+	"--quantity=1", "--close-kind=whole", "--sole-owner", "--expected-account-id=probe", "--probe-only",
 }
 
 var robinhoodResolveProbeArgv = []string{
@@ -271,36 +273,8 @@ var robinhoodResolveProbeArgv = []string{
 
 var robinhoodCloseProbeArgv = []string{
 	"--symbol=BTC", "--mode=live", "--quantity=1", "--budget-ms=50000",
-	"--ref-id=00000000-0000-4000-8000-000000000000", "--probe-only",
+	"--ref-id=00000000-0000-4000-8000-000000000000", "--expected-account-id=probe", "--probe-only",
 }
-
-const (
-	pairOrderHLProbeRequestJSON     = `{"v":2,"pair_id":"probe","partition":"live","member_id":"probe","provider":"hyperliquid","account_key":"hyperliquid:mainnet:0x0000000000000000000000000000000000000001","instrument":"BTC","client_order_id":"0x00000000000000000000000000000005","purpose":"pair_exit","order_side":"sell","position_side":"long","base_qty":0.001,"native_qty":0.001,"contract_size":1,"price_bound":1,"accept_deadline_ms":1,"origin_slot_ms":1,"reduce_only":true,"contract_fingerprint":"0000000000000000000000000000000000000000000000000000000000000000","reference_max_age_ms":1,"reference_receipt_ms":1,"reference_px":"1"}`
-	pairOrderOKXProbeRequestJSON    = `{"v":2,"pair_id":"probe","partition":"live","member_id":"probe","provider":"okx","account_key":"okx:swap:live:key-0000000000000000","instrument":"BTC-USDT-SWAP","client_order_id":"gtprobe","purpose":"pair_entry","order_side":"buy","position_side":"long","base_qty":0.01,"native_qty":1,"contract_size":0.01,"price_bound":1,"accept_deadline_ms":1,"quote_event_id":"pq-probe","origin_slot_ms":1,"reduce_only":false,"contract_fingerprint":"0000000000000000000000000000000000000000000000000000000000000000","capability_hash":"0000000000000000000000000000000000000000000000000000000000000000","evidence_hash":"0000000000000000000000000000000000000000000000000000000000000000"}`
-	pairPositionHLProbeRequestJSON  = `{"v":1,"provider":"hyperliquid","account_key":"hyperliquid:mainnet:0x0000000000000000000000000000000000000001","instrument":"BTC","member_id":"probe","partition":"live"}`
-	pairPositionOKXProbeRequestJSON = `{"v":1,"provider":"okx","account_key":"okx:swap:live:key-0000000000000000","instrument":"BTC-USDT-SWAP","member_id":"probe","partition":"live"}`
-	pairNativeHistoryHLProbeJSON    = `{"v":1,"pair_id":"probe","partition":"live","member_id":"probe","provider":"hyperliquid","account_key":"hyperliquid:mainnet:0x0000000000000000000000000000000000000001","instrument":"BTC","attempt_id":"pna-00000000000000000000000000000000","order_side":"sell","venue_order_ids":["1"],"from_ms":1,"through_ms":2,"revision":"0000000000000000"}`
-	pairNativeHistoryOKXProbeJSON   = `{"v":1,"pair_id":"probe","partition":"live","member_id":"probe","provider":"okx","account_key":"okx:swap:live:key-0000000000000000","instrument":"BTC-USDT-SWAP","attempt_id":"pna-00000000000000000000000000000000","order_side":"buy","venue_order_ids":["1"],"from_ms":1,"through_ms":2,"revision":"0000000000000000"}`
-)
-
-var pairOrderHLProbeArgvs = [][]string{
-	{pairOrderFlag + "=" + pairOrderHLProbeRequestJSON, "--mode=live", "--probe-only"},
-	{pairQueryFlag + "=" + pairOrderHLProbeRequestJSON, "--since-ms=1", "--mode=live", "--probe-only"},
-	{pairPositionFlag + "=" + pairPositionHLProbeRequestJSON, "--mode=live", "--probe-only"},
-	{pairNativeHistoryFlag + "=" + pairNativeHistoryHLProbeJSON, "--mode=live", "--probe-only"},
-}
-
-var pairOrderOKXProbeArgvs = [][]string{
-	{pairOrderFlag + "=" + pairOrderOKXProbeRequestJSON, "--mode=live", "--probe-only"},
-	{pairQueryFlag + "=" + pairOrderOKXProbeRequestJSON, "--since-ms=1", "--mode=live", "--probe-only"},
-	{pairNativeHistoryFlag + "=" + pairNativeHistoryOKXProbeJSON, "--mode=live", "--probe-only"},
-}
-
-var pairPositionOKXProbeArgv = []string{pairPositionFlag + "=" + pairPositionOKXProbeRequestJSON, "--mode=live", "--probe-only"}
-
-var pairEvidenceHyperliquidProbeArgv = []string{"--provider=hyperliquid", "--instrument=BTC", "--probe-only"}
-
-var pairEvidenceOKXProbeArgv = []string{"--provider=okx", "--instrument=BTC-USDT-SWAP", "--probe-only"}
 
 const probeTimeout = 15 * time.Second
 
@@ -349,12 +323,12 @@ func probeCheckScripts(cfg *Config) error {
 			if err := probeOneCheckScriptFn(script, recoverEntryProbeArgv); err != nil {
 				return err
 			}
-			for _, argv := range quoteProbeArgvs {
-				if err := probeOneCheckScriptFn(script, argv); err != nil {
+			if configUsesRegimeSide(cfg) {
+				if err := probeRegimeSideContract(script); err != nil {
 					return err
 				}
 			}
-			for _, argv := range pairOrderHLProbeArgvs {
+			for _, argv := range quoteProbeArgvs {
 				if err := probeOneCheckScriptFn(script, argv); err != nil {
 					return err
 				}
@@ -378,14 +352,6 @@ func probeCheckScripts(cfg *Config) error {
 			if err := probeOneCheckScriptFn(script, okxRecoverEntryProbeArgv); err != nil {
 				return err
 			}
-			for _, argv := range pairOrderOKXProbeArgvs {
-				if err := probeOneCheckScriptFn(script, argv); err != nil {
-					return err
-				}
-			}
-			if err := probeOneCheckScriptFn(script, okxPairManagementProbeArgv); err != nil {
-				return err
-			}
 		}
 	}
 	if anyRobinhoodLiveSpot(cfg) {
@@ -399,46 +365,13 @@ func probeCheckScripts(cfg *Config) error {
 			return err
 		}
 	}
+	if anyRobinhoodOptions(cfg) {
+		if err := probeOneScriptContractFn(robinhoodOptionMarksScript, robinhoodOptionMarksProbeArgv, optionMarksContract); err != nil {
+			return err
+		}
+	}
 	if anyHLLiveReconcilable(cfg) {
 		if err := probeOneCheckScriptFn(hyperliquidLiveCloseScript, sizedCloseProbeArgv); err != nil {
-			return err
-		}
-	}
-	hlPerps, okxSwap := pairEvidenceProbeProviders(cfg)
-	if hlPerps {
-		if err := probeOneCheckScriptFn(pairEvidenceReaderScript, pairEvidenceHyperliquidProbeArgv); err != nil {
-			return err
-		}
-		if err := probeOneCheckScriptFn(pairQuoteReaderScript, pairQuoteHLPublicProbeArgv); err != nil {
-			return err
-		}
-		if err := probeOneCheckScriptFn(pairQuoteReaderScript, pairQuoteHLArchiveProbeArgv); err != nil {
-			return err
-		}
-		for _, argv := range [][]string{pairHistoryHLCandlesProbeArgv, pairHistoryHLFundingProbeArgv, pairHistoryHLOracleProbeArgv, pairHistoryHLResearchFundingProbeArgv} {
-			if err := probeOneCheckScriptFn(pairHistoryReaderScript, argv); err != nil {
-				return err
-			}
-		}
-	}
-	if okxSwap {
-		if err := probeOneCheckScriptFn(pairEvidenceReaderScript, pairEvidenceOKXProbeArgv); err != nil {
-			return err
-		}
-		if err := probeOneCheckScriptFn(pairQuoteReaderScript, pairQuoteOKXPublicProbeArgv); err != nil {
-			return err
-		}
-		if err := probeOneCheckScriptFn(okxFetchPositionsScript, pairPositionOKXProbeArgv); err != nil {
-			return err
-		}
-		for _, argv := range [][]string{pairHistoryOKXCandlesProbeArgv, pairHistoryOKXFundingProbeArgv, pairHistoryOKXResearchFundingProbeArgv} {
-			if err := probeOneCheckScriptFn(pairHistoryReaderScript, argv); err != nil {
-				return err
-			}
-		}
-	}
-	if len(cfg.Baskets) > 0 {
-		if err := probeOneCheckScriptFn(basketRankerScript, basketRankerProbeArgv); err != nil {
 			return err
 		}
 	}
@@ -460,26 +393,27 @@ func probeCheckScripts(cfg *Config) error {
 		if err := probeOneCheckScriptFn(regimeCheckScript, checkRegimeMarketProbeArgv); err != nil {
 			return err
 		}
-		if err := probeOneCheckScriptFn("shared_scripts/simulate_strategy.py", simulateStrategyProbeArgv); err != nil {
-			return err
+		if anyRobinhoodSpot(cfg) {
+			if err := probeOneCheckScriptFn(regimeCheckScript, checkRegimeRobinhoodCryptoProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn("shared_scripts/fetch_candles.py", fetchCandlesRobinhoodCryptoProbeArgv); err != nil {
+				return err
+			}
 		}
-		if err := probeOneCheckScriptFn(pairPolicyScript, pairPolicyProbeArgv); err != nil {
+		if anyRobinhoodOptions(cfg) {
+			if err := probeOneCheckScriptFn(regimeCheckScript, checkRegimeRobinhoodStockProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn("shared_scripts/fetch_candles.py", fetchCandlesRobinhoodStockProbeArgv); err != nil {
+				return err
+			}
+		}
+		if err := probeOneCheckScriptFn("shared_scripts/simulate_strategy.py", simulateStrategyProbeArgv); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func pairEvidenceProbeProviders(cfg *Config) (hlPerps, okxSwap bool) {
-	for _, sc := range cfg.Strategies {
-		switch {
-		case sc.Platform == "hyperliquid" && sc.Type == "perps":
-			hlPerps = true
-		case sc.Platform == "okx" && sc.Type == "perps" && okxInstType(sc.Args) == "swap":
-			okxSwap = true
-		}
-	}
-	return hlPerps, okxSwap
 }
 
 func anyHLLiveReconcilable(cfg *Config) bool {
@@ -507,6 +441,59 @@ func uniqueCheckScripts(cfg *Config) []string {
 	return out
 }
 
+func regimeSideProbeArgv(base []string, openSide string) []string {
+	out := append([]string{}, base...)
+	for i := 0; i+1 < len(out); i++ {
+		if out[i] == "--strategy-refs" {
+			out[i+1] = `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}],"open_side":"` + openSide + `"}`
+		}
+	}
+	return out
+}
+
+var probeOneCheckScriptRejectsFn = probeOneCheckScriptRejects
+
+func probeRegimeSideContract(script string) error {
+	for _, base := range [][]string{probeArgv, probeCompositeArgv} {
+		for _, side := range []string{regimeSideLong, regimeSideShort, regimeSideNone} {
+			if err := probeOneCheckScriptFn(script, regimeSideProbeArgv(base, side)); err != nil {
+				return err
+			}
+		}
+		if err := probeOneCheckScriptRejectsFn(script, regimeSideProbeArgv(base, "sideways")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func probeOneCheckScriptRejects(script string, argv []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ".venv/bin/python3", egressPythonArgv(script, argv)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if env := egressChildEnvironment(nil); env != nil {
+		cmd.Env = env
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		if cmd.Process != nil {
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return fmt.Errorf("%s: probe timed out after %s", script, probeTimeout)
+	}
+	if err == nil {
+		return fmt.Errorf("%s accepted an invalid regime_side open_side request under --probe-only (binary/Python version mismatch: the check script does not validate open_side; sync Python with scripts/update.sh)", script)
+	}
+	if !strings.Contains(stderr.String(), "open_side") {
+		return formatProbeFailure(script, err, stderr.String(), stdout.String())
+	}
+	return nil
+}
+
 func probeOneCheckScript(script string, argv []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
@@ -530,6 +517,67 @@ func probeOneCheckScript(script string, argv []string) error {
 	}
 	if err != nil {
 		return formatProbeFailure(script, err, stderr.String(), stdout.String())
+	}
+	return nil
+}
+
+var robinhoodOptionMarksProbeArgv = []string{"--platform=robinhood", "--probe-only"}
+
+var probeOneScriptContractFn = probeOneScriptContract
+
+func anyRobinhoodSpot(cfg *Config) bool {
+	for _, sc := range cfg.Strategies {
+		if sc.Type == "spot" && sc.Platform == "robinhood" {
+			return true
+		}
+	}
+	return false
+}
+
+func anyRobinhoodOptions(cfg *Config) bool {
+	for _, sc := range cfg.Strategies {
+		if sc.Type == "options" && sc.Platform == "robinhood" {
+			return true
+		}
+	}
+	return false
+}
+
+func probeOneScriptContract(script string, argv []string, contract string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ".venv/bin/python3", egressPythonArgv(script, argv)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if env := egressChildEnvironment(nil); env != nil {
+		cmd.Env = env
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		if cmd.Process != nil {
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return fmt.Errorf("%s: probe timed out after %s", script, probeTimeout)
+	}
+	if err != nil {
+		return formatProbeFailure(script, err, stderr.String(), stdout.String())
+	}
+	dec := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
+	var doc struct {
+		Contract string `json:"contract"`
+		Probe    bool   `json:"probe"`
+	}
+	if derr := dec.Decode(&doc); derr != nil {
+		return fmt.Errorf("%s --probe-only wrote no %s document (binary/Python version mismatch; sync Python with scripts/update.sh): %v; stdout: %s", script, contract, derr, strings.TrimSpace(stdout.String()))
+	}
+	var extra json.RawMessage
+	if derr := dec.Decode(&extra); derr != io.EOF {
+		return fmt.Errorf("%s --probe-only wrote more than one JSON document (binary/Python version mismatch)", script)
+	}
+	if doc.Contract != contract || !doc.Probe {
+		return fmt.Errorf("%s --probe-only reports contract %q, want %q (binary/Python version mismatch; sync Python with scripts/update.sh)", script, doc.Contract, contract)
 	}
 	return nil
 }

@@ -1,7 +1,8 @@
+import importlib.util
 import math
 import os
-import re
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -24,8 +25,15 @@ from pricing import bs_price, bs_price_and_greeks
 DERIBIT_ADAPTER = REPO_ROOT / "platforms" / "deribit" / "adapter.py"
 
 
-def test_strikes_round_to_the_underlying_grid():
-    for underlying, target, expected in [
+def _deribit_exchange_adapter():
+    spec = importlib.util.spec_from_file_location("_bt_options_deribit_adapter_parity", DERIBIT_ADAPTER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.DeribitExchangeAdapter
+
+
+def test_strikes_round_to_the_underlying_grid_like_the_adapter_fallback(monkeypatch, subtests):
+    grid = [
         ("BTC", 67234, 67000),
         ("BTC", 67501, 68000),
         ("BTC", 67500, 68000),
@@ -35,44 +43,37 @@ def test_strikes_round_to_the_underlying_grid():
         ("SOL", 150, 150),
         ("SOL", 173, 150),
         ("DOGE", 0.2134, 0.0),
-    ]:
-        assert adapter_strike(underlying, target) == expected, \
-            f"test_strikes_round_to_the_underlying_grid[{underlying}-{target}-{expected}]"
+    ]
+    with subtests.test("test_strikes_round_to_the_underlying_grid"):
+        for underlying, target, expected in grid:
+            assert adapter_strike(underlying, target) == expected, \
+                f"test_strikes_round_to_the_underlying_grid[{underlying}-{target}-{expected}]"
+    with subtests.test("test_strikes_round_to_the_underlying_grid_like_the_adapter_fallback"):
+        with monkeypatch.context() as mp:
+            no_chain = types.ModuleType("utils")
+            no_chain.find_closest_strike = lambda *args, **kwargs: None
+            mp.setitem(sys.modules, "utils", no_chain)
+            adapter_cls = _deribit_exchange_adapter()
+            for underlying, target, expected in grid:
+                label = f"test_strikes_round_to_the_underlying_grid[{underlying}-{target}-{expected}]"
+                live = adapter_cls.get_real_strike(None, underlying, "", "call", target)
+                assert live == expected, (label, live)
+            for underlying, step in [("BTC", ADAPTER_STRIKE_STEP["BTC"]), ("ETH", DEFAULT_STRIKE_STEP),
+                                     ("SOL", DEFAULT_STRIKE_STEP)]:
+                for target in (step * 7, step * 7 + step * 0.49, step * 7 + step * 0.51, step * 7.5, step * 8.5):
+                    label = f"adapter_fallback_parity[{underlying}-{target}]"
+                    assert adapter_cls.get_real_strike(None, underlying, "", "call", target) == \
+                        adapter_strike(underlying, target), label
 
 
-def test_strike_grid_matches_adapter_source():
-    text = DERIBIT_ADAPTER.read_text()
-    match = re.search(
-        r"def get_real_strike\([^)]*\)[^:]*:.*?return round\(target_strike / (\d+)\) \* (\d+)",
-        text,
-        re.DOTALL,
-    )
-    assert match, (
-        "get_real_strike fallback no longer matches "
-        "'return round(target_strike / N) * N' — update scraper regex"
-    )
-    default_step = int(match.group(1))
-    assert default_step == int(DEFAULT_STRIKE_STEP), (
-        f"Adapter uses ${default_step} default strike step, backtest uses "
-        f"${DEFAULT_STRIKE_STEP}"
-    )
-
-    btc_match = re.search(
-        r'underlying\.upper\(\) == ["\']BTC["\']:\s*(?:\n\s*)?return round\(target_strike, (-?\d+)\)',
-        text,
-    )
-    assert btc_match, (
-        "get_real_strike BTC branch no longer matches "
-        "'round(target_strike, -N)' — update scraper regex"
-    )
-    btc_digits = int(btc_match.group(1))
-    assert 10 ** (-btc_digits) == int(ADAPTER_STRIKE_STEP["BTC"]), (
-        f"Adapter rounds BTC to 10^{-btc_digits}, backtest uses "
-        f"{ADAPTER_STRIKE_STEP['BTC']}"
-    )
+def test_backtest_bs_matches_shared_pricing_and_greeks(subtests):
+    with subtests.test(case="backtest_bs_matches_shared_pricing"):
+        _assert_backtest_bs_matches_shared_pricing()
+    with subtests.test(case="greeks_populated_on_bs_price"):
+        _assert_greeks_populated_on_bs_price()
 
 
-def test_backtest_bs_matches_shared_pricing():
+def _assert_backtest_bs_matches_shared_pricing():
     for spot, strike, dte, vol, option_type in [
         (67000, 68000, 30, 0.80, "call"),
         (67000, 66000, 30, 0.80, "put"),
@@ -88,7 +89,7 @@ def test_backtest_bs_matches_shared_pricing():
         )
 
 
-def test_greeks_populated_on_bs_price():
+def _assert_greeks_populated_on_bs_price():
     for option_type, delta_lo, delta_hi in [
         ("call", 0.4, 0.7),
         ("put", -0.6, -0.3),

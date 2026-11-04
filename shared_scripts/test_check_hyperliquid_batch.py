@@ -132,71 +132,63 @@ SLOT_MATRIX = [
 ]
 
 
-def test_batched_slots_match_their_solo_evaluation(mod):
-    batch_adapter = FakeAdapter()
-    envelope, exit_code = mod.run_batch_signal_check(
-        "BTC", "1h", SLOT_MATRIX,
-        ohlcv_limit=200, atr_method="simple", mark_price=25_000.0,
-        adapter=batch_adapter,
-    )
-    assert exit_code == 0, envelope
-    assert envelope["error"] == "" and envelope["error_scope"] == ""
-    assert [r["id"] for r in envelope["results"]] == ["hl-a", "hl-b", "hl-c"]
-
-    for slot, batched in zip(SLOT_MATRIX, envelope["results"]):
-        solo_shared = _shared(mod, FakeAdapter())
-        solo = mod.evaluate_signal_slot(solo_shared, slot)
-        assert _strip_volatile(batched) == _strip_volatile(solo), slot["id"]
-
-
-def test_slot_timestamps_are_rfc3339(mod):
+def test_batched_slot_matrix_matches_solo_and_keeps_slot_values(mod, subtests):
     from datetime import datetime
 
-    envelope, _ = mod.run_batch_signal_check(
-        "BTC", "1h", SLOT_MATRIX, mark_price=25_000.0, adapter=FakeAdapter())
-    datetime.fromisoformat(envelope["timestamp"])
-    for result in envelope["results"]:
-        datetime.fromisoformat(result["timestamp"])
-
-
-def test_heterogeneous_slots_keep_their_own_values(mod):
-    envelope, exit_code = mod.run_batch_signal_check(
-        "BTC", "1h", SLOT_MATRIX, mark_price=25_000.0, adapter=FakeAdapter())
-    assert exit_code == 0
-    by_id = {r["id"]: r for r in envelope["results"]}
-    assert by_id["hl-a"]["mode"] == "paper"
-    assert by_id["hl-b"]["mode"] == "live"
-    assert by_id["hl-a"]["strategy"] == "breakout"
-    assert by_id["hl-b"]["strategy"] == "momentum_pro"
-    assert by_id["hl-c"]["close_fraction"] >= 0.0
-    assert by_id["hl-a"].get("close_fraction", 0.0) == 0.0
-
-
-def test_shared_mark_price_is_applied_to_every_slot(mod):
-    envelope, _ = mod.run_batch_signal_check(
-        "BTC", "1h", SLOT_MATRIX, mark_price=25_000.0, adapter=FakeAdapter())
-    for result in envelope["results"]:
-        assert result["price"] == 25_000.0
-
-
-def test_spot_price_fallback_used_once_when_mark_absent(mod):
-    adapter = FakeAdapter(spot_price=31_337.0)
-    envelope, _ = mod.run_batch_signal_check(
-        "BTC", "1h", SLOT_MATRIX, mark_price=0.0, adapter=adapter)
-    assert adapter.spot_price_calls == 1
-    for result in envelope["results"]:
-        assert result["price"] == 31_337.0
-
-
-def test_sub_dollar_mark_is_reported_at_full_precision_on_both_paths(mod):
-    for mark in (0.1234, 0.006, 0.34567):
+    with subtests.test(case="mark_25000"):
+        batch_adapter = FakeAdapter()
         envelope, exit_code = mod.run_batch_signal_check(
-            "BTC", "1h", SLOT_MATRIX, mark_price=mark, adapter=FakeAdapter())
-        assert exit_code == 0, (mark, envelope)
+            "BTC", "1h", SLOT_MATRIX,
+            ohlcv_limit=200, atr_method="simple", mark_price=25_000.0,
+            adapter=batch_adapter,
+        )
+        assert exit_code == 0, envelope
+        assert envelope["error"] == "" and envelope["error_scope"] == ""
+        assert [r["id"] for r in envelope["results"]] == ["hl-a", "hl-b", "hl-c"]
+        assert batch_adapter.ohlcv_calls, "legacy polling must still reach the adapter"
+
+        for slot, batched in zip(SLOT_MATRIX, envelope["results"]):
+            solo_shared = _shared(mod, FakeAdapter())
+            solo = mod.evaluate_signal_slot(solo_shared, slot)
+            assert _strip_volatile(batched) == _strip_volatile(solo), slot["id"]
+
+        datetime.fromisoformat(envelope["timestamp"])
         for result in envelope["results"]:
-            assert result["price"] == mark, (mark, result["id"])
-        solo = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=mark), SLOT_MATRIX[0])
-        assert solo["price"] == mark, mark
+            datetime.fromisoformat(result["timestamp"])
+            assert result["price"] == 25_000.0
+
+        by_id = {r["id"]: r for r in envelope["results"]}
+        assert by_id["hl-a"]["mode"] == "paper"
+        assert by_id["hl-b"]["mode"] == "live"
+        assert by_id["hl-a"]["strategy"] == "breakout"
+        assert by_id["hl-b"]["strategy"] == "momentum_pro"
+        assert by_id["hl-c"]["close_fraction"] >= 0.0
+        assert by_id["hl-a"].get("close_fraction", 0.0) == 0.0
+
+    with subtests.test(case="candles_are_fetched_once_per_batch"):
+        adapter = FakeAdapter()
+        mod.run_batch_signal_check("BTC", "1h", SLOT_MATRIX, mark_price=1.0, adapter=adapter)
+        assert adapter.ohlcv_calls == [("BTC", "1h", 200)]
+
+
+def test_slot_price_comes_from_the_mark_or_one_spot_fallback(mod, subtests):
+    with subtests.test(case="spot_price_fallback_used_once_when_mark_absent"):
+        adapter = FakeAdapter(spot_price=31_337.0)
+        envelope, _ = mod.run_batch_signal_check(
+            "BTC", "1h", SLOT_MATRIX, mark_price=0.0, adapter=adapter)
+        assert adapter.spot_price_calls == 1
+        for result in envelope["results"]:
+            assert result["price"] == 31_337.0
+
+    for mark in (0.1234, 0.006, 0.34567):
+        with subtests.test(case="sub_dollar_mark_at_full_precision", mark=mark):
+            envelope, exit_code = mod.run_batch_signal_check(
+                "BTC", "1h", SLOT_MATRIX, mark_price=mark, adapter=FakeAdapter())
+            assert exit_code == 0, (mark, envelope)
+            for result in envelope["results"]:
+                assert result["price"] == mark, (mark, result["id"])
+            solo = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=mark), SLOT_MATRIX[0])
+            assert solo["price"] == mark, mark
 
 
 def test_slot_cannot_mutate_the_shared_frame(mod):
@@ -223,31 +215,25 @@ def test_slot_cannot_mutate_the_shared_frame(mod):
     assert _strip_volatile(peer) == _strip_volatile(solo)
 
 
-def test_candles_are_fetched_once_per_batch(mod):
-    adapter = FakeAdapter()
-    mod.run_batch_signal_check("BTC", "1h", SLOT_MATRIX, mark_price=1.0, adapter=adapter)
-    assert adapter.ohlcv_calls == [("BTC", "1h", 200)]
+def test_shared_fetches_are_memoized_and_handed_out_as_copies(mod, subtests):
+    with subtests.test(case="htf_frames_are_fetched_once_and_handed_out_as_copies"):
+        adapter = FakeAdapter()
+        shared = _shared(mod, adapter)
+        first = mod._shared_htf_frame(shared, "BTC", "4h", 100)
+        second = mod._shared_htf_frame(shared, "BTC", "4h", 100)
+        assert adapter.ohlcv_calls == [("BTC", "1h", 200), ("BTC", "4h", 100)]
+        assert first is not second
+        first["annotation"] = 1.0
+        third = mod._shared_htf_frame(shared, "BTC", "4h", 100)
+        assert "annotation" not in third.columns
 
-
-def test_htf_frames_are_fetched_once_and_handed_out_as_copies(mod):
-    adapter = FakeAdapter()
-    shared = _shared(mod, adapter)
-    first = mod._shared_htf_frame(shared, "BTC", "4h", 100)
-    second = mod._shared_htf_frame(shared, "BTC", "4h", 100)
-    assert adapter.ohlcv_calls == [("BTC", "1h", 200), ("BTC", "4h", 100)]
-    assert first is not second
-    first["annotation"] = 1.0
-    third = mod._shared_htf_frame(shared, "BTC", "4h", 100)
-    assert "annotation" not in third.columns
-
-
-def test_funding_fetches_are_memoized_across_slots(mod):
-    adapter = FakeAdapter()
-    slots = [_slot("hl-f1", "delta_neutral_funding"), _slot("hl-f2", "delta_neutral_funding")]
-    envelope, _ = mod.run_batch_signal_check(
-        "BTC", "1h", slots, mark_price=1.0, adapter=adapter)
-    assert adapter.funding_rate_calls == 1
-    assert len(envelope["results"]) == 2
+    with subtests.test(case="funding_fetches_are_memoized_across_slots"):
+        adapter = FakeAdapter()
+        slots = [_slot("hl-f1", "delta_neutral_funding"), _slot("hl-f2", "delta_neutral_funding")]
+        envelope, _ = mod.run_batch_signal_check(
+            "BTC", "1h", slots, mark_price=1.0, adapter=adapter)
+        assert adapter.funding_rate_calls == 1
+        assert len(envelope["results"]) == 2
 
 
 def test_one_failing_slot_does_not_disturb_its_peers(mod):
@@ -270,26 +256,6 @@ def test_one_failing_slot_does_not_disturb_its_peers(mod):
     assert _strip_volatile(by_id["hl-ok-1"]) == _strip_volatile(solo)
 
 
-def test_shared_state_failure_returns_a_distinct_sentinel(mod):
-    adapter = FakeAdapter(ohlcv_error=RuntimeError("upstream 429"))
-    envelope, exit_code = mod.run_batch_signal_check(
-        "BTC", "1h", SLOT_MATRIX, mark_price=1.0, adapter=adapter)
-    assert exit_code == 1
-    assert envelope["error_scope"] == "shared_state"
-    assert "upstream 429" in envelope["error"]
-    assert envelope["results"] == []
-
-
-def test_insufficient_candles_is_a_shared_state_failure(mod):
-    adapter = FakeAdapter(candles=_candles(n=10))
-    envelope, exit_code = mod.run_batch_signal_check(
-        "BTC", "1h", SLOT_MATRIX, mark_price=1.0, adapter=adapter)
-    assert exit_code == 1
-    assert envelope["error_scope"] == "shared_state"
-    assert envelope["error"] == "Insufficient data: 10 candles"
-    assert envelope["results"] == []
-
-
 def test_build_shared_signal_state_raises_typed_errors(mod):
     with pytest.raises(mod.InsufficientCandlesError):
         mod.build_shared_signal_state("BTC", "1h", adapter=FakeAdapter(candles=_candles(n=5)))
@@ -297,21 +263,20 @@ def test_build_shared_signal_state_raises_typed_errors(mod):
         mod.build_shared_signal_state("BTC", "1h")
 
 
-def test_parse_batch_slots_accepts_the_documented_envelope(mod):
-    raw = json.dumps({"v": 1, "slots": [
-        {"id": "hl-a", "strategy": "breakout",
-         "strategy_refs": {"open": {"name": "breakout", "params": {"lookback": 30}},
-                           "closes": [{"name": "atr_stop", "params": {"atr_multiple": 2.0}}]}},
-    ]})
-    slots = mod.parse_batch_slots(raw)
-    assert len(slots) == 1
-    assert slots[0]["open_strategy"] == "breakout"
-    assert slots[0]["close_strategies"] == "atr_stop"
-    assert slots[0]["params"] == {"lookback": 30}
-    assert slots[0]["close_params_by_name"] == {"atr_stop": {"atr_multiple": 2.0}}
+def test_parse_batch_slots_accepts_the_documented_envelope_and_rejects_bad_ones(mod, subtests):
+    with subtests.test(case="documented_envelope"):
+        raw = json.dumps({"v": 1, "slots": [
+            {"id": "hl-a", "strategy": "breakout",
+             "strategy_refs": {"open": {"name": "breakout", "params": {"lookback": 30}},
+                               "closes": [{"name": "atr_stop", "params": {"atr_multiple": 2.0}}]}},
+        ]})
+        slots = mod.parse_batch_slots(raw)
+        assert len(slots) == 1
+        assert slots[0]["open_strategy"] == "breakout"
+        assert slots[0]["close_strategies"] == "atr_stop"
+        assert slots[0]["params"] == {"lookback": 30}
+        assert slots[0]["close_params_by_name"] == {"atr_stop": {"atr_multiple": 2.0}}
 
-
-def test_parse_batch_slots_rejects_bad_envelopes(mod):
     cases = [
         ({"v": 2, "slots": [{"id": "a", "strategy": "breakout"}]}, "protocol version"),
         ({"v": 1, "slots": []}, "non-empty"),
@@ -321,7 +286,7 @@ def test_parse_batch_slots_rejects_bad_envelopes(mod):
         ({"v": 1, "slots": [{"id": "a"}]}, "missing 'strategy'"),
     ]
     for payload, fragment in cases:
-        with _case(fragment):
+        with subtests.test(case="bad_envelope", fragment=fragment):
             with pytest.raises(ValueError) as exc:
                 mod.parse_batch_slots(json.dumps(payload))
             assert fragment in str(exc.value)
@@ -343,40 +308,40 @@ def _run_main(mod, monkeypatch, argv, stdin_text, adapter):
     return buf.getvalue(), code
 
 
-def test_batch_check_argv_returns_the_documented_json(mod, monkeypatch):
-    stdin_text = json.dumps({"v": 1, "slots": [
-        {"id": "hl-a", "strategy": "breakout", "mode": "paper",
-         "strategy_refs": {"open": {"name": "breakout", "params": {}}}},
-        {"id": "hl-b", "strategy": "momentum_pro", "mode": "live",
-         "strategy_refs": {"open": {"name": "momentum_pro", "params": {}}}},
-    ]})
-    out, code = _run_main(mod, monkeypatch, [
-        "--batch-check", "--symbol=BTC", "--timeframe=1h",
-        "--ohlcv-limit", "200", "--atr-method=simple", "--mark-price=25000",
-    ], stdin_text, FakeAdapter())
-    assert code == 0, out
-    envelope = json.loads(out)
-    assert envelope["platform"] == "hyperliquid"
-    assert envelope["symbol"] == "BTC" and envelope["timeframe"] == "1h"
-    assert envelope["error"] == "" and envelope["error_scope"] == ""
-    assert [r["id"] for r in envelope["results"]] == ["hl-a", "hl-b"]
-    for result in envelope["results"]:
-        for key in ("strategy", "symbol", "timeframe", "signal", "price",
-                    "indicators", "mode", "platform", "timestamp"):
-            assert key in result
-        assert isinstance(result["signal"], int)
-        assert isinstance(result["price"], (int, float))
+def test_batch_check_argv_returns_the_documented_json_or_rejects_malformed_stdin(mod, monkeypatch, subtests):
+    with subtests.test(case="documented_json"), monkeypatch.context() as mp:
+        stdin_text = json.dumps({"v": 1, "slots": [
+            {"id": "hl-a", "strategy": "breakout", "mode": "paper",
+             "strategy_refs": {"open": {"name": "breakout", "params": {}}}},
+            {"id": "hl-b", "strategy": "momentum_pro", "mode": "live",
+             "strategy_refs": {"open": {"name": "momentum_pro", "params": {}}}},
+        ]})
+        out, code = _run_main(mod, mp, [
+            "--batch-check", "--symbol=BTC", "--timeframe=1h",
+            "--ohlcv-limit", "200", "--atr-method=simple", "--mark-price=25000",
+        ], stdin_text, FakeAdapter())
+        assert code == 0, out
+        envelope = json.loads(out)
+        assert envelope["platform"] == "hyperliquid"
+        assert envelope["symbol"] == "BTC" and envelope["timeframe"] == "1h"
+        assert envelope["error"] == "" and envelope["error_scope"] == ""
+        assert [r["id"] for r in envelope["results"]] == ["hl-a", "hl-b"]
+        for result in envelope["results"]:
+            for key in ("strategy", "symbol", "timeframe", "signal", "price",
+                        "indicators", "mode", "platform", "timestamp"):
+                assert key in result
+            assert isinstance(result["signal"], int)
+            assert isinstance(result["price"], (int, float))
 
-
-def test_batch_check_rejects_a_malformed_stdin_envelope(mod, monkeypatch):
-    out, code = _run_main(mod, monkeypatch, [
-        "--batch-check", "--symbol=BTC", "--timeframe=1h",
-    ], "{not json", FakeAdapter())
-    assert code == 1
-    envelope = json.loads(out)
-    assert envelope["error_scope"] == "shared_state"
-    assert "invalid batch payload" in envelope["error"]
-    assert envelope["results"] == []
+    with subtests.test(case="malformed_stdin"), monkeypatch.context() as mp:
+        out, code = _run_main(mod, mp, [
+            "--batch-check", "--symbol=BTC", "--timeframe=1h",
+        ], "{not json", FakeAdapter())
+        assert code == 1
+        envelope = json.loads(out)
+        assert envelope["error_scope"] == "shared_state"
+        assert "invalid batch payload" in envelope["error"]
+        assert envelope["results"] == []
 
 
 def test_batch_check_probe_only_exits_before_reading_stdin(mod, monkeypatch):
@@ -392,40 +357,39 @@ def test_batch_check_probe_only_exits_before_reading_stdin(mod, monkeypatch):
     assert exc.value.code == 0
 
 
-def test_single_strategy_mode_still_prints_one_object(mod, monkeypatch):
-    out, code = _run_main(mod, monkeypatch, [
-        "breakout", "BTC", "1h", "--mode=paper", "--mark-price=25000",
-        "--strategy-refs", json.dumps({"open": {"name": "breakout", "params": {}}}),
-    ], "", FakeAdapter())
-    assert code == 0, out
-    result = json.loads(out)
-    assert result["strategy"] == "breakout"
-    assert result["platform"] == "hyperliquid"
-    assert result["price"] == 25_000.0
-    assert "results" not in result
+def test_single_strategy_mode_keeps_its_one_object_shapes(mod, monkeypatch, subtests):
+    with subtests.test(case="prints_one_object"), monkeypatch.context() as mp:
+        out, code = _run_main(mod, mp, [
+            "breakout", "BTC", "1h", "--mode=paper", "--mark-price=25000",
+            "--strategy-refs", json.dumps({"open": {"name": "breakout", "params": {}}}),
+        ], "", FakeAdapter())
+        assert code == 0, out
+        result = json.loads(out)
+        assert result["strategy"] == "breakout"
+        assert result["platform"] == "hyperliquid"
+        assert result["price"] == 25_000.0
+        assert "results" not in result
 
+    with subtests.test(case="insufficient_data_shape_is_unchanged"), monkeypatch.context() as mp:
+        out, code = _run_main(mod, mp, [
+            "breakout", "BTC", "1h", "--mode=paper",
+            "--strategy-refs", json.dumps({"open": {"name": "breakout", "params": {}}}),
+        ], "", FakeAdapter(candles=_candles(n=12)))
+        assert code == 1
+        result = json.loads(out)
+        assert result["error"] == "Insufficient data: 12 candles"
+        assert "regime" not in result
 
-def test_single_strategy_insufficient_data_shape_is_unchanged(mod, monkeypatch):
-    out, code = _run_main(mod, monkeypatch, [
-        "breakout", "BTC", "1h", "--mode=paper",
-        "--strategy-refs", json.dumps({"open": {"name": "breakout", "params": {}}}),
-    ], "", FakeAdapter(candles=_candles(n=12)))
-    assert code == 1
-    result = json.loads(out)
-    assert result["error"] == "Insufficient data: 12 candles"
-    assert "regime" not in result
-
-
-def test_single_strategy_error_shape_is_unchanged(mod, monkeypatch):
-    out, code = _run_main(mod, monkeypatch, [
-        "no_such_strategy_1442", "BTC", "1h", "--mode=paper",
-        "--strategy-refs", json.dumps({"open": {"name": "no_such_strategy_1442", "params": {}}}),
-    ], "", FakeAdapter())
-    assert code == 1
-    result = json.loads(out)
-    assert result["error"]
-    assert result["regime"] is None
-    assert result["signal"] == 0
+    with subtests.test(case="error_shape_is_unchanged"), monkeypatch.context() as mp:
+        out, code = _run_main(mod, mp, [
+            "no_such_strategy_1442", "BTC", "1h", "--mode=paper",
+            "--strategy-refs", json.dumps({"open": {"name": "no_such_strategy_1442", "params": {}}}),
+        ], "", FakeAdapter())
+        assert code == 1
+        result = json.loads(out)
+        assert result["error"]
+        assert result["regime"] is None
+        assert result["signal"] == 0
 
 
 def test_shared_state_accepts_a_prebuilt_frame_without_an_adapter(mod):
@@ -499,17 +463,71 @@ def _market_payload(symbol="BTC", timeframe="1h", rows=None, htf_rows=None,
     return payload
 
 
-def test_market_payload_contract(mod):
-    adapter = FakeAdapter()
-    market = _market_payload()
-    shared = mod.build_shared_signal_state(
-        "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
-        mark_price=0.0, market=market)
-    assert adapter.ohlcv_calls == []
-    assert adapter.spot_price_calls == 0
-    assert shared["adapter"] is None
-    assert shared["price_override"] == 25_000.0
-    assert len(shared["df"]) == len(_candles())
+def test_market_payload_serves_frames_mid_and_funding_without_fetching(mod, subtests):
+    with subtests.test(case="primary_frame_and_mid"):
+        adapter = FakeAdapter()
+        market = _market_payload()
+        shared = mod.build_shared_signal_state(
+            "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
+            mark_price=0.0, market=market)
+        assert adapter.ohlcv_calls == []
+        assert adapter.spot_price_calls == 0
+        assert shared["adapter"] is None
+        assert shared["price_override"] == 25_000.0
+        assert len(shared["df"]) == len(_candles())
+
+    with subtests.test(case="higher_timeframe_frame"):
+        adapter = FakeAdapter()
+        htf_rows = _candles(n=80, step_ms=4 * 3_600_000)
+        market = _market_payload(htf_rows=htf_rows)
+        shared = mod.build_shared_signal_state(
+            "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
+            mark_price=25_000.0, market=market)
+        out = mod.evaluate_signal_slot(shared, _slot("hl-htf", "breakout", htf_filter=True))
+        assert adapter.ohlcv_calls == []
+        assert out["indicators"].get("htf_trend") in (-1, 0, 1)
+
+    with subtests.test(case="funding"):
+        adapter = FakeAdapter()
+        rows = _candles()
+        funding = {
+            "current": 0.0003, "avg_7d": 0.0002, "has_scalar": True,
+            "records": [{"rate": 0.0004, "time": rows[0][0] - 10},
+                        {"rate": 0.0005, "time": rows[0][0] + 10}],
+            "has_records": True, "fetched_at_ms": 1_700_000_000_000, "source": "rest",
+        }
+        shared = mod.build_shared_signal_state(
+            "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
+            mark_price=25_000.0, market=_market_payload(rows=rows, funding=funding))
+        scalar = mod._shared_funding_scalar(shared, "BTC")
+        assert scalar == {"current_funding_rate": 0.0003, "avg_funding_rate_7d": 0.0002}
+        records = mod._shared_funding_records(shared, "BTC")
+        assert records == [{"rate": 0.0005, "time": rows[0][0] + 10}]
+        assert adapter.funding_rate_calls == 0
+        assert adapter.funding_range_calls == 0
+
+
+def test_market_payload_missing_htf_frame_or_funding_is_an_explicit_error(mod, subtests):
+    with subtests.test(case="missing_htf_frame"):
+        adapter = FakeAdapter()
+        shared = mod.build_shared_signal_state(
+            "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
+            mark_price=25_000.0, market=_market_payload())
+        with pytest.raises(mod.MarketPayloadError):
+            mod._shared_htf_frame(shared, "BTC", "4h", 60)
+        assert adapter.ohlcv_calls == []
+
+    with subtests.test(case="missing_funding"):
+        adapter = FakeAdapter()
+        shared = mod.build_shared_signal_state(
+            "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
+            mark_price=25_000.0, market=_market_payload())
+        with pytest.raises(mod.MarketPayloadError):
+            mod._shared_funding_scalar(shared, "BTC")
+        with pytest.raises(mod.MarketPayloadError):
+            mod._shared_funding_records(shared, "BTC")
+        assert adapter.funding_rate_calls == 0
+        assert adapter.funding_range_calls == 0
 
 
 def test_market_payload_matches_legacy_polling_for_the_same_frozen_rows(mod):
@@ -522,62 +540,33 @@ def test_market_payload_matches_legacy_polling_for_the_same_frozen_rows(mod):
     assert _strip_volatile(injected) == _strip_volatile(legacy)
 
 
-def test_market_payload_serves_the_higher_timeframe_frame_without_fetching(mod):
-    adapter = FakeAdapter()
-    htf_rows = _candles(n=80, step_ms=4 * 3_600_000)
-    market = _market_payload(htf_rows=htf_rows)
-    shared = mod.build_shared_signal_state(
-        "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
-        mark_price=25_000.0, market=market)
-    out = mod.evaluate_signal_slot(shared, _slot("hl-htf", "breakout", htf_filter=True))
-    assert adapter.ohlcv_calls == []
-    assert out["indicators"].get("htf_trend") in (-1, 0, 1)
+def test_shared_state_failures_return_the_shared_state_sentinel(mod, subtests):
+    with subtests.test(case="adapter_failure"):
+        adapter = FakeAdapter(ohlcv_error=RuntimeError("upstream 429"))
+        envelope, exit_code = mod.run_batch_signal_check(
+            "BTC", "1h", SLOT_MATRIX, mark_price=1.0, adapter=adapter)
+        assert exit_code == 1
+        assert envelope["error_scope"] == "shared_state"
+        assert "upstream 429" in envelope["error"]
+        assert envelope["results"] == []
 
+    with subtests.test(case="insufficient_candles"):
+        adapter = FakeAdapter(candles=_candles(n=10))
+        envelope, exit_code = mod.run_batch_signal_check(
+            "BTC", "1h", SLOT_MATRIX, mark_price=1.0, adapter=adapter)
+        assert exit_code == 1
+        assert envelope["error_scope"] == "shared_state"
+        assert envelope["error"] == "Insufficient data: 10 candles"
+        assert envelope["results"] == []
 
-def test_market_payload_missing_htf_frame_is_an_explicit_error(mod):
-    adapter = FakeAdapter()
-    shared = mod.build_shared_signal_state(
-        "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
-        mark_price=25_000.0, market=_market_payload())
-    with pytest.raises(mod.MarketPayloadError):
-        mod._shared_htf_frame(shared, "BTC", "4h", 60)
-    assert adapter.ohlcv_calls == []
+    with subtests.test(case="market_payload_short_history"):
+        envelope, exit_code = mod.run_batch_signal_check(
+            "BTC", "1h", SLOT_MATRIX, ohlcv_limit=200, atr_method="simple",
+            mark_price=25_000.0, market=_market_payload(rows=_candles(n=10)))
+        assert exit_code == 1
+        assert envelope["error_scope"] == "shared_state"
+        assert "candles" in envelope["error"]
 
-
-def test_market_payload_funding_comes_from_the_payload(mod):
-    adapter = FakeAdapter()
-    rows = _candles()
-    funding = {
-        "current": 0.0003, "avg_7d": 0.0002, "has_scalar": True,
-        "records": [{"rate": 0.0004, "time": rows[0][0] - 10},
-                    {"rate": 0.0005, "time": rows[0][0] + 10}],
-        "has_records": True, "fetched_at_ms": 1_700_000_000_000, "source": "rest",
-    }
-    shared = mod.build_shared_signal_state(
-        "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
-        mark_price=25_000.0, market=_market_payload(rows=rows, funding=funding))
-    scalar = mod._shared_funding_scalar(shared, "BTC")
-    assert scalar == {"current_funding_rate": 0.0003, "avg_funding_rate_7d": 0.0002}
-    records = mod._shared_funding_records(shared, "BTC")
-    assert records == [{"rate": 0.0005, "time": rows[0][0] + 10}]
-    assert adapter.funding_rate_calls == 0
-    assert adapter.funding_range_calls == 0
-
-
-def test_market_payload_missing_funding_is_an_explicit_error(mod):
-    adapter = FakeAdapter()
-    shared = mod.build_shared_signal_state(
-        "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
-        mark_price=25_000.0, market=_market_payload())
-    with pytest.raises(mod.MarketPayloadError):
-        mod._shared_funding_scalar(shared, "BTC")
-    with pytest.raises(mod.MarketPayloadError):
-        mod._shared_funding_records(shared, "BTC")
-    assert adapter.funding_rate_calls == 0
-    assert adapter.funding_range_calls == 0
-
-
-def test_market_payload_defects_fail_the_shared_state(mod):
     adapter = FakeAdapter()
     defects = {
         "missing frame": {"version": 4, "snapshot_id": "x", "frames": {}},
@@ -591,61 +580,45 @@ def test_market_payload_defects_fail_the_shared_state(mod):
         "not an object": "nope",
     }
     for name, market in defects.items():
-        envelope, exit_code = mod.run_batch_signal_check(
-            "BTC", "1h", SLOT_MATRIX, ohlcv_limit=200, atr_method="simple",
-            mark_price=25_000.0, adapter=adapter, market=market)
-        assert exit_code == 1, name
-        assert envelope["error_scope"] == "shared_state", name
-        assert envelope["results"] == [], name
-    assert adapter.ohlcv_calls == []
+        with subtests.test(case="market_payload_defect", defect=name):
+            envelope, exit_code = mod.run_batch_signal_check(
+                "BTC", "1h", SLOT_MATRIX, ohlcv_limit=200, atr_method="simple",
+                mark_price=25_000.0, adapter=adapter, market=market)
+            assert exit_code == 1, name
+            assert envelope["error_scope"] == "shared_state", name
+            assert envelope["results"] == [], name
+    with subtests.test(case="market_payload_defects_never_fetch"):
+        assert adapter.ohlcv_calls == []
 
 
-def test_market_payload_short_history_is_insufficient_data(mod):
-    envelope, exit_code = mod.run_batch_signal_check(
-        "BTC", "1h", SLOT_MATRIX, ohlcv_limit=200, atr_method="simple",
-        mark_price=25_000.0, market=_market_payload(rows=_candles(n=10)))
-    assert exit_code == 1
-    assert envelope["error_scope"] == "shared_state"
-    assert "candles" in envelope["error"]
+def test_parse_batch_request_and_market_stdin_versions(mod, subtests):
+    with subtests.test(case="parse_batch_request"):
+        slots_json = json.dumps({"v": 1, "slots": [{"id": "a", "strategy": "breakout"}]})
+        slots, market = mod.parse_batch_request(slots_json)
+        assert market is None and len(slots) == 1
 
+        v2 = json.dumps({"v": 2, "slots": [{"id": "a", "strategy": "breakout"}],
+                         "market": _market_payload()})
+        slots, market = mod.parse_batch_request(v2)
+        assert len(slots) == 1
+        assert market["snapshot_id"] == "300s/1700000000"
 
-def test_parse_batch_request_versions(mod):
-    slots_json = json.dumps({"v": 1, "slots": [{"id": "a", "strategy": "breakout"}]})
-    slots, market = mod.parse_batch_request(slots_json)
-    assert market is None and len(slots) == 1
+        with pytest.raises(ValueError):
+            mod.parse_batch_request(json.dumps({"v": 2, "slots": [{"id": "a", "strategy": "b"}]}))
+        with pytest.raises(ValueError):
+            mod.parse_batch_request(json.dumps({"v": 1, "slots": [{"id": "a", "strategy": "b"}],
+                                                "market": _market_payload()}))
+        with pytest.raises(ValueError):
+            mod.parse_batch_request(json.dumps({"v": 3, "slots": [{"id": "a", "strategy": "b"}]}))
 
-    v2 = json.dumps({"v": 2, "slots": [{"id": "a", "strategy": "breakout"}],
-                     "market": _market_payload()})
-    slots, market = mod.parse_batch_request(v2)
-    assert len(slots) == 1
-    assert market["snapshot_id"] == "300s/1700000000"
-
-    with pytest.raises(ValueError):
-        mod.parse_batch_request(json.dumps({"v": 2, "slots": [{"id": "a", "strategy": "b"}]}))
-    with pytest.raises(ValueError):
-        mod.parse_batch_request(json.dumps({"v": 1, "slots": [{"id": "a", "strategy": "b"}],
-                                            "market": _market_payload()}))
-    with pytest.raises(ValueError):
-        mod.parse_batch_request(json.dumps({"v": 3, "slots": [{"id": "a", "strategy": "b"}]}))
-
-
-def test_v1_batch_requests_still_fetch_through_the_adapter(mod):
-    adapter = FakeAdapter()
-    envelope, exit_code = mod.run_batch_signal_check(
-        "BTC", "1h", SLOT_MATRIX, ohlcv_limit=200, atr_method="simple",
-        mark_price=25_000.0, adapter=adapter)
-    assert exit_code == 0, envelope
-    assert adapter.ohlcv_calls, "legacy polling must still reach the adapter"
-
-
-def test_parse_market_stdin_requires_the_v2_envelope(mod):
-    market = _market_payload()
-    parsed = mod.parse_market_stdin(json.dumps({"v": 2, "market": market}))
-    assert parsed["snapshot_id"] == market["snapshot_id"]
-    with pytest.raises(ValueError):
-        mod.parse_market_stdin(json.dumps({"v": 1, "market": market}))
-    with pytest.raises(mod.MarketPayloadError):
-        mod.parse_market_stdin(json.dumps({"v": 2}))
+    with subtests.test(case="parse_market_stdin"):
+        market = _market_payload()
+        parsed = mod.parse_market_stdin(json.dumps({"v": 2, "market": market}))
+        assert parsed["snapshot_id"] == market["snapshot_id"]
+        with pytest.raises(ValueError):
+            mod.parse_market_stdin(json.dumps({"v": 1, "market": market}))
+        with pytest.raises(mod.MarketPayloadError):
+            mod.parse_market_stdin(json.dumps({"v": 2}))
 
 
 def _tier_slot(slot_id, initial_qty, current_qty, entry_atr, mode="live"):

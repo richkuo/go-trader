@@ -41,15 +41,16 @@ def _run(df, **kw):
                   timeframe="1d", save=False)
 
 
-@pytest.mark.parametrize(
-    "closes,expected_entry,expected_exit,pnl_sign,expected_final",
-    [
-        ([100, 100, 90, 80, 80, 80], 100.0, 80.0, 1, 12000.0),
-        ([100, 100, 110, 120, 120, 120], None, None, -1, 8000.0),
-    ],
-)
-def test_short_round_trip_pnl(closes, expected_entry, expected_exit, pnl_sign,
-                              expected_final):
+def test_short_round_trip_pnl(subtests):
+    for closes, expected_entry, expected_exit, pnl_sign, expected_final in [
+            ([100, 100, 90, 80, 80, 80], 100.0, 80.0, 1, 12000.0),
+            ([100, 100, 110, 120, 120, 120], None, None, -1, 8000.0),
+        ]:
+        with subtests.test(case=repr(closes)):
+            _assert_short_round_trip_pnl(closes, expected_entry, expected_exit, pnl_sign, expected_final)
+
+
+def _assert_short_round_trip_pnl(closes, expected_entry, expected_exit, pnl_sign, expected_final):
     signals = [-1, 0, 0, 1, 0, 0]
     res = _run(_df(closes, signals))
     assert res["total_trades"] == 1
@@ -120,7 +121,20 @@ def test_end_of_data_flush_closes_open_short():
     assert t["pnl"] > 0
 
 
-def test_fixed_atr_stop_buys_back_on_adverse_rally():
+def test_short_stops_mirror_above_entry(subtests):
+    with subtests.test(case="fixed_atr_stop_buys_back_on_adverse_rally"):
+        _assert_fixed_atr_stop_buys_back_on_adverse_rally()
+    with subtests.test(case="fixed_atr_stop_fills_next_bar_open"):
+        _assert_fixed_atr_stop_fills_next_bar_open()
+    with subtests.test(case="trailing_atr_stop_tightens_down_and_exits_on_bounce"):
+        _assert_trailing_atr_stop_tightens_down_and_exits_on_bounce()
+    with subtests.test(case="trailing_stop_never_loosens_on_adverse_move"):
+        _assert_trailing_stop_never_loosens_on_adverse_move()
+    with subtests.test(case="fixed_pct_stop_mirrors_above_entry"):
+        _assert_fixed_pct_stop_mirrors_above_entry()
+
+
+def _assert_fixed_atr_stop_buys_back_on_adverse_rally():
     closes = [100, 100, 103, 110, 120, 130, 130]
     signals = [-1, 0, 0, 0, 0, 0, 0]
     df = _df(closes, signals, atr=2.0)
@@ -131,7 +145,7 @@ def test_fixed_atr_stop_buys_back_on_adverse_rally():
     assert stopped["final_capital"] > no_stop["final_capital"]
 
 
-def test_fixed_atr_stop_fills_next_bar_open():
+def _assert_fixed_atr_stop_fills_next_bar_open():
     closes = [100, 100, 103, 200, 200]
     opens = [100, 100, 103, 104, 200]
     signals = [-1, 0, 0, 0, 0]
@@ -141,7 +155,7 @@ def test_fixed_atr_stop_fills_next_bar_open():
     assert res["trades"][0]["exit_price"] == pytest.approx(104.0)
 
 
-def test_trailing_atr_stop_tightens_down_and_exits_on_bounce():
+def _assert_trailing_atr_stop_tightens_down_and_exits_on_bounce():
     closes = [100, 100, 90, 80, 70, 80, 95, 100, 100]
     signals = [-1, 0, 0, 0, 0, 0, 0, 0, 0]
     df = _df(closes, signals, atr=2.0)
@@ -152,7 +166,7 @@ def test_trailing_atr_stop_tightens_down_and_exits_on_bounce():
     assert trailed["final_capital"] > no_stop["final_capital"]
 
 
-def test_trailing_stop_never_loosens_on_adverse_move():
+def _assert_trailing_stop_never_loosens_on_adverse_move():
     closes = [100, 100, 85, 70, 75, 75]
     signals = [-1, 0, 0, 0, 0, 0]
     df = _df(closes, signals, atr=2.0)
@@ -162,7 +176,7 @@ def test_trailing_stop_never_loosens_on_adverse_move():
     assert res["trades"][0]["pnl"] > 0
 
 
-def test_fixed_pct_stop_mirrors_above_entry():
+def _assert_fixed_pct_stop_mirrors_above_entry():
     closes = [100, 100, 106, 115, 130, 130]
     signals = [-1, 0, 0, 0, 0, 0]
     df = _df(closes, signals)
@@ -172,7 +186,14 @@ def test_fixed_pct_stop_mirrors_above_entry():
     assert stopped["final_capital"] > no_stop["final_capital"]
 
 
-def test_starting_long_rejected_on_short_path():
+def test_short_path_rejects_starting_long_and_plain_both(subtests):
+    with subtests.test(case="starting_long_rejected_on_short_path"):
+        _assert_starting_long_rejected_on_short_path()
+    with subtests.test(case="direction_both_rejected_on_plain_path"):
+        _assert_direction_both_rejected_on_plain_path()
+
+
+def _assert_starting_long_rejected_on_short_path():
     closes = [100, 100, 100]
     signals = [0, 0, 0]
     bt = Backtester(initial_capital=10000.0, direction="short",
@@ -182,7 +203,7 @@ def test_starting_long_rejected_on_short_path():
                starting_long={"entry_price": 100.0})
 
 
-def test_direction_both_rejected_on_plain_path():
+def _assert_direction_both_rejected_on_plain_path():
     closes = [100, 100, 110, 120, 120]
     signals = [1, 0, 0, -1, 0]
     with pytest.raises(ValueError, match="direction='both'"):
@@ -199,7 +220,18 @@ def test_direction_long_default_is_unchanged():
     assert [t["side"] for t in explicit["trades"]] == ["long"]
 
 
-def test_no_short_reentry_after_blowup_plain_path():
+def test_no_short_reopen_after_blowup(subtests):
+    with subtests.test(case="no_short_reentry_after_blowup_plain_path"):
+        _assert_no_short_reentry_after_blowup_plain_path()
+    with subtests.test(case="consecutive_reentry_attempts_after_blowup_do_not_compound"):
+        _assert_consecutive_reentry_attempts_after_blowup_do_not_compound()
+    with subtests.test(case="cash_zero_boundary_books_no_phantom_trade"):
+        _assert_cash_zero_boundary_books_no_phantom_trade()
+    with subtests.test(case="no_reopen_after_short_blowup_engine_path_grid"):
+        _assert_no_reopen_after_short_blowup_engine_path_grid(subtests)
+
+
+def _assert_no_short_reentry_after_blowup_plain_path():
     closes = [100, 100, 250, 250, 100, 50, 50]
     signals = [-1, 0, 1, -1, 0, 0, 0]
     res = _run(_df(closes, signals))
@@ -208,7 +240,7 @@ def test_no_short_reentry_after_blowup_plain_path():
     assert res["final_capital"] == pytest.approx(-5000.0)
 
 
-def test_consecutive_reentry_attempts_after_blowup_do_not_compound():
+def _assert_consecutive_reentry_attempts_after_blowup_do_not_compound():
     closes = [100, 100, 250, 250, 100, 80, 50]
     signals = [-1, 0, 1, -1, -1, -1, 0]
     res = _run(_df(closes, signals))
@@ -216,7 +248,7 @@ def test_consecutive_reentry_attempts_after_blowup_do_not_compound():
     assert res["final_capital"] == pytest.approx(-5000.0)
 
 
-def test_cash_zero_boundary_books_no_phantom_trade():
+def _assert_cash_zero_boundary_books_no_phantom_trade():
     closes = [100, 100, 200, 200, 200]
     signals = [-1, 0, 1, -1, 0]
     res = _run(_df(closes, signals))
@@ -225,15 +257,17 @@ def test_cash_zero_boundary_books_no_phantom_trade():
     assert res["final_capital"] == pytest.approx(0.0)
 
 
-@pytest.mark.parametrize(
-    "closes,signals,extra_kw",
-    [
-        ([100, 100, 200, 300, 300, 100, 100], [-1, 0, 0, 0, -1, 0, 0], {}),
-        ([100, 100, 200, 300, 300, 300, 300], [-1, 0, 0, 0, 1, 0, 0],
-         {"direction": "both"}),
-    ],
-)
-def test_no_reopen_after_short_blowup_engine_path(closes, signals, extra_kw):
+def _assert_no_reopen_after_short_blowup_engine_path_grid(subtests):
+    for closes, signals, extra_kw in [
+            ([100, 100, 200, 300, 300, 100, 100], [-1, 0, 0, 0, -1, 0, 0], {}),
+            ([100, 100, 200, 300, 300, 300, 300], [-1, 0, 0, 0, 1, 0, 0],
+             {"direction": "both"}),
+        ]:
+        with subtests.test(case=repr(extra_kw)):
+            _assert_no_reopen_after_short_blowup_engine_path(closes, signals, extra_kw)
+
+
+def _assert_no_reopen_after_short_blowup_engine_path(closes, signals, extra_kw):
     df = _df(closes, signals, atr=2.0)
     res = _run(df, close_strategies=[
         {"name": "time_stop", "params": {"max_bars": 2}},

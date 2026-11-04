@@ -735,6 +735,7 @@ _UNREPLAYABLE_ENTRY_SHAPERS = (
     "invert_signal",
     "regime_directional_policy",
     "profile_allocation",
+    "regime_side",
 )
 
 
@@ -746,7 +747,8 @@ def _reject_unreplayable_entry_shapers(kwargs: dict) -> None:
             f"that M6's entry-locked replay cannot reproduce faithfully "
             f"(invert_signal flips the traded side, regime_directional_policy mutates "
             f"the entry direction per regime, profile_allocation swaps open params per "
-            f"profile) — the control arm would silently NOT trade the live incumbent's "
+            f"profile, regime_side opens either trigger sign on the side the regime "
+            f"window selects) — the control arm would silently NOT trade the live incumbent's "
             f"entries, so the A/B would compare against a phantom incumbent. M6 refuses "
             f"rather than mislead. To A/B this strategy's EXIT, drive the open side "
             f"explicitly instead of resolving it from the config: --incumbent-close "

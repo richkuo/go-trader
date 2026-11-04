@@ -33,483 +33,527 @@ func replayTestResult() *HyperliquidResult {
 	return &HyperliquidResult{Symbol: "ETH", Price: 1900, Indicators: map[string]interface{}{}}
 }
 
-func TestMirrorReplayOpenBooksLiveFill(t *testing.T) {
-	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	cfg := &Config{}
-	decidedAt := time.Date(2026, 8, 10, 12, 53, 0, 0, time.UTC)
-	pending := []ReplayDecision{
-		{DecisionID: 7, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: decidedAt, Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1908.25},
-	}
+func TestMirrorReplayBooksDecisions(t *testing.T) {
+	t.Run("OpenBooksLiveFill", func(t *testing.T) {
+		sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+		cfg := &Config{}
+		decidedAt := time.Date(2026, 8, 10, 12, 53, 0, 0, time.UTC)
+		pending := []ReplayDecision{
+			{DecisionID: 7, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: decidedAt, Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1908.25},
+		}
 
-	applied, trades, details, _ := applyReplayedLiveDecisions(sc, s, pending, 1910.0, replayTestResult(), cfg, logger)
-	if trades != 1 || len(applied) != 1 || applied[0] != 7 {
-		t.Fatalf("trades=%d applied=%v, want 1 trade, [7]", trades, applied)
-	}
-	pos := s.Positions["ETH"]
-	if pos == nil {
-		t.Fatal("no position booked")
-	}
-	if pos.Quantity != 0.5 || math.Abs(pos.AvgCost-1908.25*(1+SlippagePct)) > 1e-9 || pos.Side != "long" {
-		t.Errorf("position mismatch: %+v, want 0.5 long @ the live reference 1908.25 moved against the buy by SlippagePct", pos)
-	}
-	if !pos.OpenedAt.Equal(decidedAt) {
-		t.Errorf("OpenedAt = %v, want %v", pos.OpenedAt, decidedAt)
-	}
-	if len(details) != 1 || !strings.Contains(details[0], "REPLAY OPEN") {
-		t.Errorf("details = %v", details)
-	}
-	if len(s.TradeHistory) != 1 || !s.TradeHistory[0].Timestamp.Equal(decidedAt) {
-		t.Fatalf("trade history = %+v", s.TradeHistory)
-	}
-	if !strings.Contains(s.TradeHistory[0].Details, "replay_live_mirror") {
-		t.Errorf("open trade missing mirror tag: %q", s.TradeHistory[0].Details)
-	}
-	for _, c := range []struct {
-		side, wantDetail string
-		wantPx           float64
-	}{
-		{"long", "@ $2001.00", 2000 * (1 + SlippagePct)},
-		{"short", "@ $1999.00", 2000 * (1 - SlippagePct)},
-	} {
+		applied, trades, details, _ := applyReplayedLiveDecisions(sc, s, pending, 1910.0, replayTestResult(), cfg, logger)
+		if trades != 1 || len(applied) != 1 || applied[0] != 7 {
+			t.Fatalf("trades=%d applied=%v, want 1 trade, [7]", trades, applied)
+		}
+		pos := s.Positions["ETH"]
+		if pos == nil {
+			t.Fatal("no position booked")
+		}
+		if pos.Quantity != 0.5 || math.Abs(pos.AvgCost-1908.25*(1+SlippagePct)) > 1e-9 || pos.Side != "long" {
+			t.Errorf("position mismatch: %+v, want 0.5 long @ the live reference 1908.25 moved against the buy by SlippagePct", pos)
+		}
+		if !pos.OpenedAt.Equal(decidedAt) {
+			t.Errorf("OpenedAt = %v, want %v", pos.OpenedAt, decidedAt)
+		}
+		if len(details) != 1 || !strings.Contains(details[0], "REPLAY OPEN") {
+			t.Errorf("details = %v", details)
+		}
+		if len(s.TradeHistory) != 1 || !s.TradeHistory[0].Timestamp.Equal(decidedAt) {
+			t.Fatalf("trade history = %+v", s.TradeHistory)
+		}
+		if !strings.Contains(s.TradeHistory[0].Details, "replay_live_mirror") {
+			t.Errorf("open trade missing mirror tag: %q", s.TradeHistory[0].Details)
+		}
+		for _, c := range []struct {
+			side, wantDetail string
+			wantPx           float64
+		}{
+			{"long", "@ $2001.00", 2000 * (1 + SlippagePct)},
+			{"short", "@ $1999.00", 2000 * (1 - SlippagePct)},
+		} {
+			sc2, s2, logger2 := replayMirrorTestSetup(t, "hl-paper-eth")
+			row := ReplayDecision{DecisionID: 8, StrategyID: sc2.ID, DecisionType: ReplayDecisionOpen, DecidedAt: decidedAt, Symbol: "ETH", Side: c.side, Quantity: 0.25, ReferencePrice: 2000}
+			_, n, det, _ := applyReplayedLiveDecisions(sc2, s2, []ReplayDecision{row}, 2000, replayTestResult(), cfg, logger2)
+			if n != 1 || len(det) != 1 || !strings.Contains(det[0], c.wantDetail) || len(s2.TradeHistory) != 1 || math.Abs(s2.TradeHistory[0].Price-c.wantPx) > 1e-9 {
+				t.Errorf("replay %s open at 2000: trades %d details %v history %+v, want detail %q and trade price %.9f", c.side, n, det, s2.TradeHistory, c.wantDetail, c.wantPx)
+			}
+		}
+	})
+	t.Run("FullCloseBooksMirrorReason", func(t *testing.T) {
+		sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+		s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 1908.25, Side: "long", Multiplier: 1}
+		pending := []ReplayDecision{
+			{DecisionID: 3, StrategyID: sc.ID, DecisionType: ReplayDecisionFullClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900.5, CloseReason: "hl_sync_stop_loss"},
+		}
+		applied, trades, details, _ := applyReplayedLiveDecisions(sc, s, pending, 1902.0, replayTestResult(), &Config{}, logger)
+		if trades != 1 || len(applied) != 1 {
+			t.Fatalf("trades=%d applied=%v", trades, applied)
+		}
+		if _, stillOpen := s.Positions["ETH"]; stillOpen {
+			t.Fatal("position still open after replayed full close")
+		}
+		if len(s.ClosedPositions) != 1 {
+			t.Fatalf("closed positions = %d, want 1", len(s.ClosedPositions))
+		}
+		cp := s.ClosedPositions[0]
+		if cp.CloseReason != "replay_live_mirror" || math.Abs(cp.ClosePrice-1902.0*(1-SlippagePct)) > 1e-9 {
+			t.Errorf("closed position = %+v, want reason replay_live_mirror @ the 1902 cycle price moved against the sell by SlippagePct", cp)
+		}
+		if len(details) != 1 || !strings.Contains(details[0], "hl_sync_stop_loss") {
+			t.Errorf("details = %v — want the live close reason surfaced", details)
+		}
+	})
+	t.Run("ScaleInBlends", func(t *testing.T) {
+		sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+		s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1}
+		pending := []ReplayDecision{
+			{DecisionID: 4, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1920},
+		}
+		_, trades, details, _ := applyReplayedLiveDecisions(sc, s, pending, 1920.0, replayTestResult(), &Config{}, logger)
+		if trades != 1 {
+			t.Fatalf("trades = %d, want 1", trades)
+		}
+		pos := s.Positions["ETH"]
+		wantAvg := (0.5*1900 + 0.5*1920*(1+SlippagePct)) / 1.0
+		if pos.Quantity != 1.0 || math.Abs(pos.AvgCost-wantAvg) > 1e-9 {
+			t.Errorf("blended position qty=%.4f avg=%.9f, want 1.0 @ %.9f (add at the 1920 reference moved against the buy)", pos.Quantity, pos.AvgCost, wantAvg)
+		}
+		if last := s.TradeHistory[len(s.TradeHistory)-1]; math.Abs(last.Price-1920*(1+SlippagePct)) > 1e-9 {
+			t.Errorf("replay add trade price = %.9f, want %.9f", last.Price, 1920*(1+SlippagePct))
+		}
+		if len(details) != 1 || !strings.Contains(details[0], "REPLAY SCALE-IN") {
+			t.Errorf("details = %v", details)
+		}
+	})
+	t.Run("PartialCloseReduces", func(t *testing.T) {
+		sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+		s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1.0, InitialQuantity: 1.0, AvgCost: 1900, Side: "long", Multiplier: 1}
+		pending := []ReplayDecision{
+			{DecisionID: 5, StrategyID: sc.ID, DecisionType: ReplayDecisionPartialClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.4, ReferencePrice: 1912, CloseReason: "tiered_tp"},
+		}
+		_, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1911.0, replayTestResult(), &Config{}, logger)
+		if trades != 1 {
+			t.Fatalf("trades = %d, want 1", trades)
+		}
+		pos := s.Positions["ETH"]
+		if pos == nil || pos.Quantity != 0.6 {
+			t.Fatalf("remaining = %+v, want 0.6", pos)
+		}
+		if len(s.TradeHistory) != 1 || s.TradeHistory[0].Quantity != 0.4 || math.Abs(s.TradeHistory[0].Price-1911.0*(1-SlippagePct)) > 1e-9 {
+			t.Errorf("partial close trade = %+v, want 0.4 @ paper mark 1911 moved against the sell by SlippagePct (reason tiered_tp is not a resting tier fill)", s.TradeHistory)
+		}
+	})
+	t.Run("DriftSkipsWithoutWedging", func(t *testing.T) {
+		sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+		s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1}
+		pending := []ReplayDecision{
+			{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1908},
+			{DecisionID: 2, StrategyID: sc.ID, DecisionType: ReplayDecisionFullClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1905, CloseReason: "signal"},
+		}
+		applied, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1905.0, replayTestResult(), &Config{}, logger)
+		if len(applied) != 2 {
+			t.Fatalf("applied = %v, want both rows consumed", applied)
+		}
+		if trades != 1 {
+			t.Fatalf("trades = %d, want 1 (only the close applied)", trades)
+		}
+		if _, stillOpen := s.Positions["ETH"]; stillOpen {
+			t.Fatal("drift close did not flatten the paper book")
+		}
+	})
+	t.Run("OpenSeedsLiveStamps", func(t *testing.T) {
+		sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+		result := replayTestResult()
+		result.Indicators["atr"] = 99.0
+		pending := []ReplayDecision{
+			{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900, EntryATR: 42.5, Regime: "trending_up"},
+		}
+		if _, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1900.0, result, &Config{}, logger); trades != 1 {
+			t.Fatalf("trades = %d, want 1", trades)
+		}
+		pos := s.Positions["ETH"]
+		if pos.EntryATR != 42.5 {
+			t.Errorf("EntryATR = %v, want live's 42.5 (not paper's 99)", pos.EntryATR)
+		}
+		if pos.Regime != "trending_up" {
+			t.Errorf("Regime = %q, want live's trending_up", pos.Regime)
+		}
+	})
+	t.Run("ClosedBarZeroEntryATROpenDoesNotWedgeMirror", func(t *testing.T) {
+		logDB, err := OpenDecisionLogDB(filepath.Join(t.TempDir(), "replay.db"))
+		if err != nil {
+			t.Fatalf("OpenDecisionLogDB: %v", err)
+		}
+		defer logDB.Close()
+		sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+		sc.ClosedBarDecisions = true
+		sc.ReplaySourceID = "hl-live-eth"
+		decidedAt := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+		for _, dec := range []ReplayDecision{
+			{StrategyID: "hl-live-eth", DecisionType: ReplayDecisionOpen, DecidedAt: decidedAt, Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900, EntryATR: 0},
+			{StrategyID: "hl-live-eth", DecisionType: ReplayDecisionFullClose, DecidedAt: decidedAt.Add(time.Hour), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1910, CloseReason: "signal"},
+		} {
+			if err := logDB.InsertDecision(dec); err != nil {
+				t.Fatalf("InsertDecision: %v", err)
+			}
+		}
+		pending, err := logDB.PendingDecisions("hl-live-eth")
+		if err != nil || len(pending) != 2 {
+			t.Fatalf("pending = %v err=%v, want 2 rows", pending, err)
+		}
+		applied, trades, _, driftDMs := applyReplayedLiveDecisions(sc, s, pending, 1910, replayTestResult(), &Config{}, logger)
+		if len(applied) != 2 || applied[0] != pending[0].DecisionID || applied[1] != pending[1].DecisionID {
+			t.Fatalf("applied = %v, want both decision IDs %d and %d", applied, pending[0].DecisionID, pending[1].DecisionID)
+		}
+		if trades != 0 {
+			t.Fatalf("trades = %d, want 0 (open skipped, close finds paper flat)", trades)
+		}
+		if pos := s.Positions["ETH"]; pos != nil && pos.Quantity != 0 {
+			t.Fatalf("paper book holds %+v, want flat", pos)
+		}
+		if len(driftDMs) != 1 || !strings.Contains(driftDMs[0], replayDriftKindOpenWithoutEntryATR) {
+			t.Fatalf("drift DMs = %v, want one %s alert", driftDMs, replayDriftKindOpenWithoutEntryATR)
+		}
+		if err := logDB.MarkDecisionsApplied(applied); err != nil {
+			t.Fatalf("MarkDecisionsApplied: %v", err)
+		}
+
+		replayMirrorResetProgress(sc.ID)
+		replayDriftAlerts.reset()
+		restarted, err := logDB.PendingDecisions("hl-live-eth")
+		if err != nil {
+			t.Fatalf("PendingDecisions after restart: %v", err)
+		}
+		if len(restarted) != 0 {
+			t.Fatalf("pending after restart = %+v, want none", restarted)
+		}
+		reapplied, trades, _, driftDMs := applyReplayedLiveDecisions(sc, s, pending, 1910, replayTestResult(), &Config{}, logger)
+		if trades != 0 || len(driftDMs) != 0 || len(reapplied) != 2 {
+			t.Fatalf("re-apply after restart: trades=%d drift=%v applied=%v, want 0 trades, no drift alert, both rows re-marked", trades, driftDMs, reapplied)
+		}
+	})
+	t.Run("ClosedBarOpenAfterZeroEntryATRRowBooksFromRowATR", func(t *testing.T) {
+		sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+		sc.ClosedBarDecisions = true
+		risk := 1.0
+		sc.RiskPerTradePct = &risk
+		result := replayTestResult()
+		result.Indicators["atr"] = 99.0
+		pending := []ReplayDecision{
+			{DecisionID: 1, StrategyID: "hl-live-eth", DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900, EntryATR: 0},
+			{DecisionID: 2, StrategyID: "hl-live-eth", DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.25, ReferencePrice: 1905, EntryATR: 1584},
+		}
+		applied, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1905, result, &Config{}, logger)
+		if len(applied) != 2 || trades != 1 {
+			t.Fatalf("applied=%v trades=%d, want both rows applied and one open booked", applied, trades)
+		}
+		pos := s.Positions["ETH"]
+		if pos == nil || pos.Quantity != 0.25 || math.Abs(pos.AvgCost-1905*(1+SlippagePct)) > 1e-9 {
+			t.Fatalf("position = %+v, want the second open 0.25 @ 1905 moved against the buy by SlippagePct", pos)
+		}
+		if pos.EntryATR != 1584 {
+			t.Fatalf("EntryATR = %v, want the row's 1584 (not paper's 99)", pos.EntryATR)
+		}
+	})
+}
+
+func TestMirrorReplayWatermarkDurability(t *testing.T) {
+	t.Run("HighWaterPreventsDoubleApply", func(t *testing.T) {
+		sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+		pending := []ReplayDecision{
+			{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
+			{DecisionID: 2, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1910},
+		}
+		applied, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1910.0, replayTestResult(), &Config{}, logger)
+		if trades != 2 || len(applied) != 2 {
+			t.Fatalf("first pass trades=%d applied=%v, want 2/2", trades, applied)
+		}
+		applied, trades, _, _ = applyReplayedLiveDecisions(sc, s, pending, 1910.0, replayTestResult(), &Config{}, logger)
+		if trades != 0 {
+			t.Fatalf("second pass re-applied %d trades — double-apply protection failed", trades)
+		}
+		if len(applied) != 2 {
+			t.Fatalf("second pass applied=%v, want both re-marked", applied)
+		}
+		if pos := s.Positions["ETH"]; pos.Quantity != 1.0 {
+			t.Fatalf("position qty = %.4f, want 1.0 (no double add)", pos.Quantity)
+		}
+	})
+	t.Run("PersistedWatermarkSurvivesRestart", func(t *testing.T) {
+		sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+		s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1.0, InitialQuantity: 1.0, AvgCost: 1905, Side: "long", Multiplier: 1}
+		s.ReplayMirrorWatermark = 2
+		pending := []ReplayDecision{
+			{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
+			{DecisionID: 2, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1910},
+			{DecisionID: 3, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1920},
+		}
+		applied, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1920.0, replayTestResult(), &Config{}, logger)
+		if trades != 1 {
+			t.Fatalf("trades = %d, want 1 (only row 3 re-applied)", trades)
+		}
+		if len(applied) != 3 {
+			t.Fatalf("applied = %v, want all three rows (re-)marked", applied)
+		}
+		if pos := s.Positions["ETH"]; pos.Quantity != 1.5 {
+			t.Fatalf("position qty = %.4f, want 1.5 (no double add of rows 1-2)", pos.Quantity)
+		}
+		if s.ReplayMirrorWatermark != 3 {
+			t.Fatalf("watermark = %d, want 3", s.ReplayMirrorWatermark)
+		}
+	})
+	t.Run("KillDuringSaveDoesNotDuplicateTrades", func(t *testing.T) {
+		sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatalf("OpenStateDB: %v", err)
+		}
+		defer sdb.Close()
+		prev := tradeRecorder
+		tradeRecorder = sdb.InsertTrade
+		t.Cleanup(func() { tradeRecorder = prev })
+
+		sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+		pending := []ReplayDecision{
+			{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
+			{DecisionID: 2, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1910},
+		}
+		if _, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1910.0, replayTestResult(), &Config{}, logger); trades != 2 {
+			t.Fatalf("first apply trades = %d, want 2", trades)
+		}
+		_, n, err := sdb.QueryTradeHistory(sc.ID, "", time.Time{}, time.Time{}, 100, 0)
+		if err != nil {
+			t.Fatalf("QueryTradeHistory after unsaved apply: %v", err)
+		}
+		if n != 0 {
+			t.Fatalf("trades in DB after unsaved apply = %d, want 0 (eager persist would have written them)", n)
+		}
+
 		sc2, s2, logger2 := replayMirrorTestSetup(t, "hl-paper-eth")
-		row := ReplayDecision{DecisionID: 8, StrategyID: sc2.ID, DecisionType: ReplayDecisionOpen, DecidedAt: decidedAt, Symbol: "ETH", Side: c.side, Quantity: 0.25, ReferencePrice: 2000}
-		_, n, det, _ := applyReplayedLiveDecisions(sc2, s2, []ReplayDecision{row}, 2000, replayTestResult(), cfg, logger2)
-		if n != 1 || len(det) != 1 || !strings.Contains(det[0], c.wantDetail) || len(s2.TradeHistory) != 1 || math.Abs(s2.TradeHistory[0].Price-c.wantPx) > 1e-9 {
-			t.Errorf("replay %s open at 2000: trades %d details %v history %+v, want detail %q and trade price %.9f", c.side, n, det, s2.TradeHistory, c.wantDetail, c.wantPx)
+		if _, trades, _, _ := applyReplayedLiveDecisions(sc2, s2, pending, 1910.0, replayTestResult(), &Config{}, logger2); trades != 2 {
+			t.Fatalf("restart re-apply trades = %d, want 2", trades)
 		}
-	}
+		state := NewAppState()
+		state.Strategies[s2.ID] = s2
+		if err := sdb.SaveState(state); err != nil {
+			t.Fatalf("SaveState: %v", err)
+		}
+		_, n, err = sdb.QueryTradeHistory(sc.ID, "", time.Time{}, time.Time{}, 100, 0)
+		if err != nil {
+			t.Fatalf("QueryTradeHistory after restart save: %v", err)
+		}
+		if n != 2 {
+			t.Fatalf("trades after restart re-apply+save = %d, want 2 (not a duplicate 4)", n)
+		}
+	})
 }
 
-func TestMirrorReplayFullCloseBooksMirrorReason(t *testing.T) {
-	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 1908.25, Side: "long", Multiplier: 1}
-	pending := []ReplayDecision{
-		{DecisionID: 3, StrategyID: sc.ID, DecisionType: ReplayDecisionFullClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900.5, CloseReason: "hl_sync_stop_loss"},
-	}
-	applied, trades, details, _ := applyReplayedLiveDecisions(sc, s, pending, 1902.0, replayTestResult(), &Config{}, logger)
-	if trades != 1 || len(applied) != 1 {
-		t.Fatalf("trades=%d applied=%v", trades, applied)
-	}
-	if _, stillOpen := s.Positions["ETH"]; stillOpen {
-		t.Fatal("position still open after replayed full close")
-	}
-	if len(s.ClosedPositions) != 1 {
-		t.Fatalf("closed positions = %d, want 1", len(s.ClosedPositions))
-	}
-	cp := s.ClosedPositions[0]
-	if cp.CloseReason != "replay_live_mirror" || math.Abs(cp.ClosePrice-1902.0*(1-SlippagePct)) > 1e-9 {
-		t.Errorf("closed position = %+v, want reason replay_live_mirror @ the 1902 cycle price moved against the sell by SlippagePct", cp)
-	}
-	if len(details) != 1 || !strings.Contains(details[0], "hl_sync_stop_loss") {
-		t.Errorf("details = %v — want the live close reason surfaced", details)
-	}
-}
+func TestSaveStrategyBookScope(t *testing.T) {
+	t.Run("DoesNotRewriteUnrelatedStrategies", func(t *testing.T) {
+		sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatalf("OpenStateDB: %v", err)
+		}
+		defer sdb.Close()
 
-func TestMirrorReplayScaleInBlends(t *testing.T) {
-	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1}
-	pending := []ReplayDecision{
-		{DecisionID: 4, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1920},
-	}
-	_, trades, details, _ := applyReplayedLiveDecisions(sc, s, pending, 1920.0, replayTestResult(), &Config{}, logger)
-	if trades != 1 {
-		t.Fatalf("trades = %d, want 1", trades)
-	}
-	pos := s.Positions["ETH"]
-	wantAvg := (0.5*1900 + 0.5*1920*(1+SlippagePct)) / 1.0
-	if pos.Quantity != 1.0 || math.Abs(pos.AvgCost-wantAvg) > 1e-9 {
-		t.Errorf("blended position qty=%.4f avg=%.9f, want 1.0 @ %.9f (add at the 1920 reference moved against the buy)", pos.Quantity, pos.AvgCost, wantAvg)
-	}
-	if last := s.TradeHistory[len(s.TradeHistory)-1]; math.Abs(last.Price-1920*(1+SlippagePct)) > 1e-9 {
-		t.Errorf("replay add trade price = %.9f, want %.9f", last.Price, 1920*(1+SlippagePct))
-	}
-	if len(details) != 1 || !strings.Contains(details[0], "REPLAY SCALE-IN") {
-		t.Errorf("details = %v", details)
-	}
-}
+		unrelated := NewStrategyState(StrategyConfig{ID: "hl-other", Type: "perps", Platform: "hyperliquid", Capital: 50000})
+		unrelated.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1, InitialQuantity: 1, AvgCost: 60000, Side: "long", Multiplier: 1}
+		for i := 0; i < 50; i++ {
+			unrelated.TradeHistory = append(unrelated.TradeHistory, Trade{
+				StrategyID: unrelated.ID, Symbol: "BTC", Quantity: 0.01, Price: 60000, persisted: true,
+			})
+		}
+		fleet := NewAppState()
+		fleet.Strategies[unrelated.ID] = unrelated
+		if err := sdb.SaveState(fleet); err != nil {
+			t.Fatalf("seed SaveState: %v", err)
+		}
 
-func TestMirrorReplayPartialCloseReduces(t *testing.T) {
-	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1.0, InitialQuantity: 1.0, AvgCost: 1900, Side: "long", Multiplier: 1}
-	pending := []ReplayDecision{
-		{DecisionID: 5, StrategyID: sc.ID, DecisionType: ReplayDecisionPartialClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.4, ReferencePrice: 1912, CloseReason: "tiered_tp"},
-	}
-	_, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1911.0, replayTestResult(), &Config{}, logger)
-	if trades != 1 {
-		t.Fatalf("trades = %d, want 1", trades)
-	}
-	pos := s.Positions["ETH"]
-	if pos == nil || pos.Quantity != 0.6 {
-		t.Fatalf("remaining = %+v, want 0.6", pos)
-	}
-	if len(s.TradeHistory) != 1 || s.TradeHistory[0].Quantity != 0.4 || math.Abs(s.TradeHistory[0].Price-1911.0*(1-SlippagePct)) > 1e-9 {
-		t.Errorf("partial close trade = %+v, want 0.4 @ paper mark 1911 moved against the sell by SlippagePct (reason tiered_tp is not a resting tier fill)", s.TradeHistory)
-	}
-}
+		sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+		pending := []ReplayDecision{
+			{DecisionID: 7, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
+		}
+		if _, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1900.0, replayTestResult(), &Config{}, logger); trades != 1 {
+			t.Fatalf("trades = %d, want 1", trades)
+		}
+		if err := sdb.SaveStrategyBook(s); err != nil {
+			t.Fatalf("SaveStrategyBook: %v", err)
+		}
 
-func TestMirrorReplayDriftSkipsWithoutWedging(t *testing.T) {
-	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1}
-	pending := []ReplayDecision{
-		{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1908},
-		{DecisionID: 2, StrategyID: sc.ID, DecisionType: ReplayDecisionFullClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1905, CloseReason: "signal"},
-	}
-	applied, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1905.0, replayTestResult(), &Config{}, logger)
-	if len(applied) != 2 {
-		t.Fatalf("applied = %v, want both rows consumed", applied)
-	}
-	if trades != 1 {
-		t.Fatalf("trades = %d, want 1 (only the close applied)", trades)
-	}
-	if _, stillOpen := s.Positions["ETH"]; stillOpen {
-		t.Fatal("drift close did not flatten the paper book")
-	}
-}
+		loaded, err := sdb.LoadState()
+		if err != nil {
+			t.Fatalf("LoadState: %v", err)
+		}
+		other := loaded.Strategies[unrelated.ID]
+		if other == nil {
+			t.Fatal("SaveStrategyBook deleted the unrelated strategy — it used a fleet rewrite")
+		}
+		if other.Cash != 50000 {
+			t.Fatalf("unrelated cash = %v, want 50000", other.Cash)
+		}
+		if pos := other.Positions["BTC"]; pos == nil || pos.Quantity != 1 {
+			t.Fatalf("unrelated position = %+v, want BTC qty 1", pos)
+		}
+		got := loaded.Strategies[sc.ID]
+		if got == nil || got.ReplayMirrorWatermark != 7 {
+			t.Fatalf("mirrored strategy = %+v, want watermark 7", got)
+		}
+		if pos := got.Positions["ETH"]; pos == nil || pos.Quantity != 0.5 {
+			t.Fatalf("mirrored position = %+v, want ETH qty 0.5", pos)
+		}
+	})
+	t.Run("ReplacesOpenPositionAcrossCycles", func(t *testing.T) {
+		sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatalf("OpenStateDB: %v", err)
+		}
+		defer sdb.Close()
 
-func TestMirrorReplayHighWaterPreventsDoubleApply(t *testing.T) {
-	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	pending := []ReplayDecision{
-		{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
-		{DecisionID: 2, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1910},
-	}
-	applied, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1910.0, replayTestResult(), &Config{}, logger)
-	if trades != 2 || len(applied) != 2 {
-		t.Fatalf("first pass trades=%d applied=%v, want 2/2", trades, applied)
-	}
-	applied, trades, _, _ = applyReplayedLiveDecisions(sc, s, pending, 1910.0, replayTestResult(), &Config{}, logger)
-	if trades != 0 {
-		t.Fatalf("second pass re-applied %d trades — double-apply protection failed", trades)
-	}
-	if len(applied) != 2 {
-		t.Fatalf("second pass applied=%v, want both re-marked", applied)
-	}
-	if pos := s.Positions["ETH"]; pos.Quantity != 1.0 {
-		t.Fatalf("position qty = %.4f, want 1.0 (no double add)", pos.Quantity)
-	}
-}
+		sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+		open := []ReplayDecision{
+			{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
+		}
+		if _, trades, _, _ := applyReplayedLiveDecisions(sc, s, open, 1900.0, replayTestResult(), &Config{}, logger); trades != 1 {
+			t.Fatalf("open trades = %d, want 1", trades)
+		}
+		if err := sdb.SaveStrategyBook(s); err != nil {
+			t.Fatalf("SaveStrategyBook after open: %v", err)
+		}
 
-func TestMirrorReplayPersistedWatermarkSurvivesRestart(t *testing.T) {
-	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1.0, InitialQuantity: 1.0, AvgCost: 1905, Side: "long", Multiplier: 1}
-	s.ReplayMirrorWatermark = 2
-	pending := []ReplayDecision{
-		{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
-		{DecisionID: 2, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1910},
-		{DecisionID: 3, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1920},
-	}
-	applied, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1920.0, replayTestResult(), &Config{}, logger)
-	if trades != 1 {
-		t.Fatalf("trades = %d, want 1 (only row 3 re-applied)", trades)
-	}
-	if len(applied) != 3 {
-		t.Fatalf("applied = %v, want all three rows (re-)marked", applied)
-	}
-	if pos := s.Positions["ETH"]; pos.Quantity != 1.5 {
-		t.Fatalf("position qty = %.4f, want 1.5 (no double add of rows 1-2)", pos.Quantity)
-	}
-	if s.ReplayMirrorWatermark != 3 {
-		t.Fatalf("watermark = %d, want 3", s.ReplayMirrorWatermark)
-	}
-}
+		add := []ReplayDecision{
+			{DecisionID: 2, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1910},
+		}
+		if _, trades, _, _ := applyReplayedLiveDecisions(sc, s, add, 1910.0, replayTestResult(), &Config{}, logger); trades != 1 {
+			t.Fatalf("scale-in trades = %d, want 1", trades)
+		}
+		if err := sdb.SaveStrategyBook(s); err != nil {
+			t.Fatalf("SaveStrategyBook after scale-in: %v", err)
+		}
+		loaded, err := sdb.LoadState()
+		if err != nil || loaded == nil {
+			t.Fatalf("LoadState after scale-in: loaded=%v err=%v", loaded, err)
+		}
+		got := loaded.Strategies[sc.ID]
+		if got == nil {
+			t.Fatal("strategy missing after scale-in save")
+		}
+		if pos := got.Positions["ETH"]; pos == nil || pos.Quantity != 1.0 {
+			t.Fatalf("after scale-in position = %+v, want ETH qty 1.0", pos)
+		}
 
-func TestMirrorReplayOpenSeedsLiveStamps(t *testing.T) {
-	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	result := replayTestResult()
-	result.Indicators["atr"] = 99.0
-	pending := []ReplayDecision{
-		{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900, EntryATR: 42.5, Regime: "trending_up"},
-	}
-	if _, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1900.0, result, &Config{}, logger); trades != 1 {
-		t.Fatalf("trades = %d, want 1", trades)
-	}
-	pos := s.Positions["ETH"]
-	if pos.EntryATR != 42.5 {
-		t.Errorf("EntryATR = %v, want live's 42.5 (not paper's 99)", pos.EntryATR)
-	}
-	if pos.Regime != "trending_up" {
-		t.Errorf("Regime = %q, want live's trending_up", pos.Regime)
-	}
-}
+		partial := []ReplayDecision{
+			{DecisionID: 3, StrategyID: sc.ID, DecisionType: ReplayDecisionPartialClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.25, ReferencePrice: 1912},
+		}
+		sc2, s2, logger2 := replayMirrorTestSetup(t, "hl-paper-eth")
+		s2 = got
+		if _, trades, _, _ := applyReplayedLiveDecisions(sc2, s2, partial, 1911.0, replayTestResult(), &Config{}, logger2); trades != 1 {
+			t.Fatalf("partial-close trades = %d, want 1", trades)
+		}
+		if err := sdb.SaveStrategyBook(s2); err != nil {
+			t.Fatalf("SaveStrategyBook after partial-close: %v", err)
+		}
+		loaded, err = sdb.LoadState()
+		if err != nil || loaded == nil {
+			t.Fatalf("LoadState after partial-close: loaded=%v err=%v", loaded, err)
+		}
+		got = loaded.Strategies[sc.ID]
+		if pos := got.Positions["ETH"]; pos == nil || pos.Quantity != 0.75 {
+			t.Fatalf("after partial-close position = %+v, want ETH qty 0.75", pos)
+		}
 
-func TestMirrorReplayKillDuringSaveDoesNotDuplicateTrades(t *testing.T) {
-	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("OpenStateDB: %v", err)
-	}
-	defer sdb.Close()
-	prev := tradeRecorder
-	tradeRecorder = sdb.InsertTrade
-	t.Cleanup(func() { tradeRecorder = prev })
+		full := []ReplayDecision{
+			{DecisionID: 4, StrategyID: sc.ID, DecisionType: ReplayDecisionFullClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.75, ReferencePrice: 1905, CloseReason: "signal"},
+		}
+		sc3, s3, logger3 := replayMirrorTestSetup(t, "hl-paper-eth")
+		s3 = got
+		if _, trades, _, _ := applyReplayedLiveDecisions(sc3, s3, full, 1905.0, replayTestResult(), &Config{}, logger3); trades != 1 {
+			t.Fatalf("full-close trades = %d, want 1", trades)
+		}
+		if err := sdb.SaveStrategyBook(s3); err != nil {
+			t.Fatalf("SaveStrategyBook after full-close: %v", err)
+		}
+		loaded, err = sdb.LoadState()
+		if err != nil || loaded == nil {
+			t.Fatalf("LoadState after full-close: loaded=%v err=%v", loaded, err)
+		}
+		got = loaded.Strategies[sc.ID]
+		if pos := got.Positions["ETH"]; pos != nil && pos.Quantity > 0 {
+			t.Fatalf("after full-close resurrected position = %+v, want flat", pos)
+		}
+		var posRows int
+		if err := sdb.db.QueryRow(`SELECT COUNT(*) FROM positions WHERE strategy_id = ?`, sc.ID).Scan(&posRows); err != nil {
+			t.Fatalf("count positions after full-close: %v", err)
+		}
+		if posRows != 0 {
+			t.Fatalf("positions rows after full-close = %d, want 0 (stale row would resurrect on LoadState)", posRows)
+		}
 
-	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	pending := []ReplayDecision{
-		{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
-		{DecisionID: 2, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1910},
-	}
-	if _, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1910.0, replayTestResult(), &Config{}, logger); trades != 2 {
-		t.Fatalf("first apply trades = %d, want 2", trades)
-	}
-	_, n, err := sdb.QueryTradeHistory(sc.ID, "", time.Time{}, time.Time{}, 100, 0)
-	if err != nil {
-		t.Fatalf("QueryTradeHistory after unsaved apply: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("trades in DB after unsaved apply = %d, want 0 (eager persist would have written them)", n)
-	}
-
-	sc2, s2, logger2 := replayMirrorTestSetup(t, "hl-paper-eth")
-	if _, trades, _, _ := applyReplayedLiveDecisions(sc2, s2, pending, 1910.0, replayTestResult(), &Config{}, logger2); trades != 2 {
-		t.Fatalf("restart re-apply trades = %d, want 2", trades)
-	}
-	state := NewAppState()
-	state.Strategies[s2.ID] = s2
-	if err := sdb.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
-	}
-	_, n, err = sdb.QueryTradeHistory(sc.ID, "", time.Time{}, time.Time{}, 100, 0)
-	if err != nil {
-		t.Fatalf("QueryTradeHistory after restart save: %v", err)
-	}
-	if n != 2 {
-		t.Fatalf("trades after restart re-apply+save = %d, want 2 (not a duplicate 4)", n)
-	}
-}
-
-func TestSaveStrategyBookDoesNotRewriteUnrelatedStrategies(t *testing.T) {
-	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("OpenStateDB: %v", err)
-	}
-	defer sdb.Close()
-
-	unrelated := NewStrategyState(StrategyConfig{ID: "hl-other", Type: "perps", Platform: "hyperliquid", Capital: 50000})
-	unrelated.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1, InitialQuantity: 1, AvgCost: 60000, Side: "long", Multiplier: 1}
-	for i := 0; i < 50; i++ {
-		unrelated.TradeHistory = append(unrelated.TradeHistory, Trade{
-			StrategyID: unrelated.ID, Symbol: "BTC", Quantity: 0.01, Price: 60000, persisted: true,
+		reopen := []ReplayDecision{
+			{DecisionID: 5, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.2, ReferencePrice: 1920},
+		}
+		sc4, s4, logger4 := replayMirrorTestSetup(t, "hl-paper-eth")
+		s4 = got
+		if _, trades, _, _ := applyReplayedLiveDecisions(sc4, s4, reopen, 1920.0, replayTestResult(), &Config{}, logger4); trades != 1 {
+			t.Fatalf("reopen trades = %d, want 1", trades)
+		}
+		if err := sdb.SaveStrategyBook(s4); err != nil {
+			t.Fatalf("SaveStrategyBook after reopen: %v", err)
+		}
+		loaded, err = sdb.LoadState()
+		if err != nil || loaded == nil {
+			t.Fatalf("LoadState after reopen: loaded=%v err=%v", loaded, err)
+		}
+		got = loaded.Strategies[sc.ID]
+		if pos := got.Positions["ETH"]; pos == nil || pos.Quantity != 0.2 {
+			t.Fatalf("after reopen position = %+v, want ETH qty 0.2", pos)
+		}
+	})
+	t.Run("AcknowledgesOnlyItsOwnActions", func(t *testing.T) {
+		cfg := splitTestConfig(t)
+		cfg.Strategies = append(cfg.Strategies, StrategyConfig{
+			ID: "hl-live-2", Type: "manual", Platform: "hyperliquid", Symbol: "BTC", Args: []string{"--mode=live"},
 		})
-	}
-	fleet := NewAppState()
-	fleet.Strategies[unrelated.ID] = unrelated
-	if err := sdb.SaveState(fleet); err != nil {
-		t.Fatalf("seed SaveState: %v", err)
-	}
+		cfg.Strategies[0].Type = "manual"
+		cfg.Strategies[1].Type = "manual"
+		store := openSplitStore(t, cfg)
 
-	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	pending := []ReplayDecision{
-		{DecisionID: 7, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
-	}
-	if _, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1900.0, replayTestResult(), &Config{}, logger); trades != 1 {
-		t.Fatalf("trades = %d, want 1", trades)
-	}
-	if err := sdb.SaveStrategyBook(s); err != nil {
-		t.Fatalf("SaveStrategyBook: %v", err)
-	}
-
-	loaded, err := sdb.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState: %v", err)
-	}
-	other := loaded.Strategies[unrelated.ID]
-	if other == nil {
-		t.Fatal("SaveStrategyBook deleted the unrelated strategy — it used a fleet rewrite")
-	}
-	if other.Cash != 50000 {
-		t.Fatalf("unrelated cash = %v, want 50000", other.Cash)
-	}
-	if pos := other.Positions["BTC"]; pos == nil || pos.Quantity != 1 {
-		t.Fatalf("unrelated position = %+v, want BTC qty 1", pos)
-	}
-	got := loaded.Strategies[sc.ID]
-	if got == nil || got.ReplayMirrorWatermark != 7 {
-		t.Fatalf("mirrored strategy = %+v, want watermark 7", got)
-	}
-	if pos := got.Positions["ETH"]; pos == nil || pos.Quantity != 0.5 {
-		t.Fatalf("mirrored position = %+v, want ETH qty 0.5", pos)
-	}
-}
-
-func TestSaveStrategyBookReplacesOpenPositionAcrossCycles(t *testing.T) {
-	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("OpenStateDB: %v", err)
-	}
-	defer sdb.Close()
-
-	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	open := []ReplayDecision{
-		{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
-	}
-	if _, trades, _, _ := applyReplayedLiveDecisions(sc, s, open, 1900.0, replayTestResult(), &Config{}, logger); trades != 1 {
-		t.Fatalf("open trades = %d, want 1", trades)
-	}
-	if err := sdb.SaveStrategyBook(s); err != nil {
-		t.Fatalf("SaveStrategyBook after open: %v", err)
-	}
-
-	add := []ReplayDecision{
-		{DecisionID: 2, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1910},
-	}
-	if _, trades, _, _ := applyReplayedLiveDecisions(sc, s, add, 1910.0, replayTestResult(), &Config{}, logger); trades != 1 {
-		t.Fatalf("scale-in trades = %d, want 1", trades)
-	}
-	if err := sdb.SaveStrategyBook(s); err != nil {
-		t.Fatalf("SaveStrategyBook after scale-in: %v", err)
-	}
-	loaded, err := sdb.LoadState()
-	if err != nil || loaded == nil {
-		t.Fatalf("LoadState after scale-in: loaded=%v err=%v", loaded, err)
-	}
-	got := loaded.Strategies[sc.ID]
-	if got == nil {
-		t.Fatal("strategy missing after scale-in save")
-	}
-	if pos := got.Positions["ETH"]; pos == nil || pos.Quantity != 1.0 {
-		t.Fatalf("after scale-in position = %+v, want ETH qty 1.0", pos)
-	}
-
-	partial := []ReplayDecision{
-		{DecisionID: 3, StrategyID: sc.ID, DecisionType: ReplayDecisionPartialClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.25, ReferencePrice: 1912},
-	}
-	sc2, s2, logger2 := replayMirrorTestSetup(t, "hl-paper-eth")
-	s2 = got
-	if _, trades, _, _ := applyReplayedLiveDecisions(sc2, s2, partial, 1911.0, replayTestResult(), &Config{}, logger2); trades != 1 {
-		t.Fatalf("partial-close trades = %d, want 1", trades)
-	}
-	if err := sdb.SaveStrategyBook(s2); err != nil {
-		t.Fatalf("SaveStrategyBook after partial-close: %v", err)
-	}
-	loaded, err = sdb.LoadState()
-	if err != nil || loaded == nil {
-		t.Fatalf("LoadState after partial-close: loaded=%v err=%v", loaded, err)
-	}
-	got = loaded.Strategies[sc.ID]
-	if pos := got.Positions["ETH"]; pos == nil || pos.Quantity != 0.75 {
-		t.Fatalf("after partial-close position = %+v, want ETH qty 0.75", pos)
-	}
-
-	full := []ReplayDecision{
-		{DecisionID: 4, StrategyID: sc.ID, DecisionType: ReplayDecisionFullClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.75, ReferencePrice: 1905, CloseReason: "signal"},
-	}
-	sc3, s3, logger3 := replayMirrorTestSetup(t, "hl-paper-eth")
-	s3 = got
-	if _, trades, _, _ := applyReplayedLiveDecisions(sc3, s3, full, 1905.0, replayTestResult(), &Config{}, logger3); trades != 1 {
-		t.Fatalf("full-close trades = %d, want 1", trades)
-	}
-	if err := sdb.SaveStrategyBook(s3); err != nil {
-		t.Fatalf("SaveStrategyBook after full-close: %v", err)
-	}
-	loaded, err = sdb.LoadState()
-	if err != nil || loaded == nil {
-		t.Fatalf("LoadState after full-close: loaded=%v err=%v", loaded, err)
-	}
-	got = loaded.Strategies[sc.ID]
-	if pos := got.Positions["ETH"]; pos != nil && pos.Quantity > 0 {
-		t.Fatalf("after full-close resurrected position = %+v, want flat", pos)
-	}
-	var posRows int
-	if err := sdb.db.QueryRow(`SELECT COUNT(*) FROM positions WHERE strategy_id = ?`, sc.ID).Scan(&posRows); err != nil {
-		t.Fatalf("count positions after full-close: %v", err)
-	}
-	if posRows != 0 {
-		t.Fatalf("positions rows after full-close = %d, want 0 (stale row would resurrect on LoadState)", posRows)
-	}
-
-	reopen := []ReplayDecision{
-		{DecisionID: 5, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.2, ReferencePrice: 1920},
-	}
-	sc4, s4, logger4 := replayMirrorTestSetup(t, "hl-paper-eth")
-	s4 = got
-	if _, trades, _, _ := applyReplayedLiveDecisions(sc4, s4, reopen, 1920.0, replayTestResult(), &Config{}, logger4); trades != 1 {
-		t.Fatalf("reopen trades = %d, want 1", trades)
-	}
-	if err := sdb.SaveStrategyBook(s4); err != nil {
-		t.Fatalf("SaveStrategyBook after reopen: %v", err)
-	}
-	loaded, err = sdb.LoadState()
-	if err != nil || loaded == nil {
-		t.Fatalf("LoadState after reopen: loaded=%v err=%v", loaded, err)
-	}
-	got = loaded.Strategies[sc.ID]
-	if pos := got.Positions["ETH"]; pos == nil || pos.Quantity != 0.2 {
-		t.Fatalf("after reopen position = %+v, want ETH qty 0.2", pos)
-	}
-}
-
-func TestMirrorReplayClosedBarZeroEntryATROpenDoesNotWedgeMirror(t *testing.T) {
-	logDB, err := OpenDecisionLogDB(filepath.Join(t.TempDir(), "replay.db"))
-	if err != nil {
-		t.Fatalf("OpenDecisionLogDB: %v", err)
-	}
-	defer logDB.Close()
-	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	sc.ClosedBarDecisions = true
-	sc.ReplaySourceID = "hl-live-eth"
-	decidedAt := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
-	for _, dec := range []ReplayDecision{
-		{StrategyID: "hl-live-eth", DecisionType: ReplayDecisionOpen, DecidedAt: decidedAt, Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900, EntryATR: 0},
-		{StrategyID: "hl-live-eth", DecisionType: ReplayDecisionFullClose, DecidedAt: decidedAt.Add(time.Hour), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1910, CloseReason: "signal"},
-	} {
-		if err := logDB.InsertDecision(dec); err != nil {
-			t.Fatalf("InsertDecision: %v", err)
+		state := splitTestState(t)
+		state.Strategies["hl-live"].Type = "manual"
+		state.Strategies["hl-paper"].Type = "manual"
+		state.Strategies["hl-live-2"] = &StrategyState{
+			ID: "hl-live-2", Type: "manual", Platform: "hyperliquid", Cash: 3000, InitialCapital: 3000,
+			Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
 		}
-	}
-	pending, err := logDB.PendingDecisions("hl-live-eth")
-	if err != nil || len(pending) != 2 {
-		t.Fatalf("pending = %v err=%v, want 2 rows", pending, err)
-	}
-	applied, trades, _, driftDMs := applyReplayedLiveDecisions(sc, s, pending, 1910, replayTestResult(), &Config{}, logger)
-	if len(applied) != 2 || applied[0] != pending[0].DecisionID || applied[1] != pending[1].DecisionID {
-		t.Fatalf("applied = %v, want both decision IDs %d and %d", applied, pending[0].DecisionID, pending[1].DecisionID)
-	}
-	if trades != 0 {
-		t.Fatalf("trades = %d, want 0 (open skipped, close finds paper flat)", trades)
-	}
-	if pos := s.Positions["ETH"]; pos != nil && pos.Quantity != 0 {
-		t.Fatalf("paper book holds %+v, want flat", pos)
-	}
-	if len(driftDMs) != 1 || !strings.Contains(driftDMs[0], replayDriftKindOpenWithoutEntryATR) {
-		t.Fatalf("drift DMs = %v, want one %s alert", driftDMs, replayDriftKindOpenWithoutEntryATR)
-	}
-	if err := logDB.MarkDecisionsApplied(applied); err != nil {
-		t.Fatalf("MarkDecisionsApplied: %v", err)
-	}
+		if err := SaveStateWithStore(state, store); err != nil {
+			t.Fatalf("SaveStateWithStore: %v", err)
+		}
 
-	replayMirrorResetProgress(sc.ID)
-	replayDriftAlerts.reset()
-	restarted, err := logDB.PendingDecisions("hl-live-eth")
-	if err != nil {
-		t.Fatalf("PendingDecisions after restart: %v", err)
-	}
-	if len(restarted) != 0 {
-		t.Fatalf("pending after restart = %+v, want none", restarted)
-	}
-	reapplied, trades, _, driftDMs := applyReplayedLiveDecisions(sc, s, pending, 1910, replayTestResult(), &Config{}, logger)
-	if trades != 0 || len(driftDMs) != 0 || len(reapplied) != 2 {
-		t.Fatalf("re-apply after restart: trades=%d drift=%v applied=%v, want 0 trades, no drift alert, both rows re-marked", trades, driftDMs, reapplied)
-	}
-}
+		now := time.Now().UTC()
+		for _, id := range []string{"hl-live", "hl-live-2"} {
+			if err := store.InsertPendingManualAction(PendingManualAction{
+				StrategyID: id, Action: "open", Symbol: "ETH", Side: "long",
+				Quantity: 1, FillPrice: 2000, CreatedAt: now,
+			}); err != nil {
+				t.Fatalf("InsertPendingManualAction(%s): %v", id, err)
+			}
+		}
+		rows, err := store.primary().LoadPendingManualActions()
+		if err != nil || len(rows) != 2 {
+			t.Fatalf("queued rows = %d (err=%v), want 2", len(rows), err)
+		}
+		for _, r := range rows {
+			store.recordAppliedManualAction(r.StrategyID, storageRolePrimary, r.ID)
+		}
 
-func TestMirrorReplayClosedBarOpenAfterZeroEntryATRRowBooksFromRowATR(t *testing.T) {
-	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	sc.ClosedBarDecisions = true
-	risk := 1.0
-	sc.RiskPerTradePct = &risk
-	result := replayTestResult()
-	result.Indicators["atr"] = 99.0
-	pending := []ReplayDecision{
-		{DecisionID: 1, StrategyID: "hl-live-eth", DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900, EntryATR: 0},
-		{DecisionID: 2, StrategyID: "hl-live-eth", DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.25, ReferencePrice: 1905, EntryATR: 1584},
-	}
-	applied, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1905, result, &Config{}, logger)
-	if len(applied) != 2 || trades != 1 {
-		t.Fatalf("applied=%v trades=%d, want both rows applied and one open booked", applied, trades)
-	}
-	pos := s.Positions["ETH"]
-	if pos == nil || pos.Quantity != 0.25 || math.Abs(pos.AvgCost-1905*(1+SlippagePct)) > 1e-9 {
-		t.Fatalf("position = %+v, want the second open 0.25 @ 1905 moved against the buy by SlippagePct", pos)
-	}
-	if pos.EntryATR != 1584 {
-		t.Fatalf("EntryATR = %v, want the row's 1584 (not paper's 99)", pos.EntryATR)
-	}
+		if err := store.SaveStrategyBook(state.Strategies["hl-live"]); err != nil {
+			t.Fatalf("SaveStrategyBook: %v", err)
+		}
+		after, err := store.primary().LoadPendingManualActions()
+		if err != nil {
+			t.Fatalf("LoadPendingManualActions: %v", err)
+		}
+		if len(after) != 1 || after[0].StrategyID != "hl-live-2" {
+			t.Fatalf("remaining rows = %+v, want only hl-live-2 (its effect is still unsaved)", after)
+		}
+	})
 }

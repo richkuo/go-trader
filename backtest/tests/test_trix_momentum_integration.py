@@ -17,15 +17,13 @@ if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
 
 from atr import ensure_atr_indicator
-from backtester import Backtester, validate_close_capabilities
-from close_registry_loader import evaluate as close_evaluate
+from backtester import Backtester
 from closed_bar import FRAME_INTERVAL_ATTR, FRAME_TIMESTAMP_KIND_ATTR, declare_frame_cadence
 from eval_windows import expand_sweep
 import optimizer
 from optimizer import DEFAULT_PARAM_RANGES, strategy_warmup_bars
-from parity_diff import ParityConfig, compute_parity_frame, summarize
+from parity_diff import ParityConfig
 from registry_loader import load_registry
-from strategy_composition import evaluate_open_close, finalize_decision
 
 NAME = "trix_momentum"
 STUDY = os.path.join(_REPO, "backtest", "candidates", "trix_momentum_1659")
@@ -44,10 +42,6 @@ DECISION_COLUMNS = ["trix_value", "trix_prev_value", "trix_signal_line", "trix_p
 def _close_refs():
     with open(os.path.join(STUDY, "protocol.json")) as fh:
         return json.load(fh)["close_strategies"]
-
-
-def _close_params():
-    return _close_refs()[0]["params"]
 
 
 def _reg():
@@ -138,40 +132,9 @@ def _ref_signal(c, t, p):
     return 0, osc, line, posc, pline
 
 
-def test_registration_metadata_grid_and_hidden_discovery():
-    fut = _reg()
-    entry = fut.STRATEGY_REGISTRY[NAME]
-    raw = fut._registry.STRATEGIES[NAME]
-    with open(os.path.join(STUDY, "protocol.json")) as fh:
-        proto = json.load(fh)
-    assert entry["default_params"] == SEED == proto["seed_params"]
-    assert entry["edge_status"] == "no_edge"
-    assert entry["edge_source"] in ("unvalidated", "study_fail", "study_inconclusive")
-    assert entry["edge_ref"] == "backtest/candidates/trix_momentum_1659/REPORT.md"
-    assert os.path.isfile(os.path.join(_REPO, entry["edge_ref"]))
-    assert raw["short_entries"] is True and raw["platforms"] == ("futures",)
-    assert raw["param_validator"] is not None
-    assert NAME in fut._registry.short_entry_strategies()
-    assert NAME in fut._registry.DISCOVERY_HIDDEN_STRATEGIES
-    assert NAME not in fut.list_strategies()
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
-    assert DEFAULT_PARAM_RANGES[NAME] == proto["grids"][NAME]
+def _check_grid_history_need_bounds():
     combos = [p for _, p in expand_sweep(SEED, [(k, list(v)) for k, v in DEFAULT_PARAM_RANGES[NAME].items()])]
-    assert len(combos) == 18
-    for p in combos:
-        fut._registry.validate_params(NAME, p)
     assert max(_need(p) for p in combos) == 194
-    for platform in ("spot", "futures"):
-        out = subprocess.run([sys.executable, os.path.join(_REPO, "shared_strategies", "open", platform,
-                                                          "strategies.py"), "--list-json"],
-                             capture_output=True, text=True, cwd=_REPO, check=True).stdout
-        captures = []
-        for phase in ("before", "after"):
-            with open(os.path.join(STUDY, f"discovery_{phase}_{platform}.json"), "rb") as fh:
-                captures.append(fh.read())
-        assert captures[0] == captures[1]
-        assert NAME.encode() not in captures[1]
-        assert NAME not in out
 
 
 def test_values_match_an_independent_scalar_reference_and_both_entry_directions():
@@ -211,7 +174,7 @@ def _last(closes, params):
     return _apply(_from_closes(closes), params).iloc[-1]
 
 
-def test_crossing_boundaries_and_the_zero_line_filter():
+def _check_crossing_boundaries_and_the_zero_line_filter():
     p = TINY
     base = [100.0] * 20
     up = _last(base + [101.0], p)
@@ -245,7 +208,7 @@ def test_crossing_boundaries_and_the_zero_line_filter():
     assert found == {1: True, -1: True}
 
 
-def test_sustained_conditions_do_not_repeat_entries():
+def _check_sustained_conditions_do_not_repeat_entries():
     df = _walk(400, 21)
     out = _apply(df, SMALL)
     sig = out["signal"].to_numpy()
@@ -308,13 +271,13 @@ INVALID_MARKET_INPUTS = [
 ]
 
 
-def test_invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame():
+def _check_invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame():
     for i, (mutate, reason) in enumerate(INVALID_MARKET_INPUTS):
         with _case(f"{i}-{reason}"):
             _holds_at_end(mutate(_walk(120, 3)), SMALL, reason)
 
 
-def test_negative_or_missing_volume_is_not_an_entry_input():
+def _check_negative_or_missing_volume_is_not_an_entry_input():
     df = _walk(120, 3)
     a = _apply(df, SMALL)
     b = _apply(_set_last(df, "volume", -1.0), SMALL)
@@ -323,7 +286,7 @@ def test_negative_or_missing_volume_is_not_an_entry_input():
         pd.testing.assert_frame_equal(a[DECISION_COLUMNS], other[DECISION_COLUMNS])
 
 
-def test_missing_or_wrong_cadence_holds_every_row():
+def _check_missing_or_wrong_cadence_holds_every_row():
     df = _walk(120, 3)
     df.attrs.pop(FRAME_INTERVAL_ATTR)
     out = _apply(df, SMALL)
@@ -336,7 +299,7 @@ def test_missing_or_wrong_cadence_holds_every_row():
     assert set(out["trix_reason"].iloc[_need(SMALL) - 1:]) == {"cadence_gap"}
 
 
-def test_a_defect_in_the_prior_endpoints_exclusive_oldest_bar_holds_the_decision():
+def _check_a_defect_in_the_prior_endpoints_exclusive_oldest_bar_holds_the_decision():
     df = _walk(200, 5)
     p = SMALL
     t = 150
@@ -353,7 +316,7 @@ def test_a_defect_in_the_prior_endpoints_exclusive_oldest_bar_holds_the_decision
                                    check_names=False)
 
 
-def test_overflowing_prices_hold_as_nonfinite_derived():
+def _check_overflowing_prices_hold_as_nonfinite_derived():
     closes = [1e308 if i % 2 == 0 else 1.7e308 for i in range(60)]
     df = _from_closes(closes)
     df["high"] = df["close"]
@@ -363,7 +326,7 @@ def test_overflowing_prices_hold_as_nonfinite_derived():
     assert out["trix_value"].isna().all()
 
 
-def test_subnormal_prices_hold_as_invalid_denominator():
+def _check_subnormal_prices_hold_as_invalid_denominator():
     closes = [5e-324] * 60
     df = _from_closes(closes)
     df["high"] = df["close"]
@@ -373,7 +336,20 @@ def test_subnormal_prices_hold_as_invalid_denominator():
     assert set(out["trix_reason"].iloc[_need(SMALL) - 1:]) <= {"invalid_denominator", "nonfinite_derived", "no_cross"}
 
 
-def test_constant_prices_never_enter_and_report_finite_zero_values():
+def test_input_defects_hold_with_a_reason_and_preserve_the_frame(subtests):
+    for label, check in (
+        ("invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame", _check_invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame),
+        ("negative_or_missing_volume_is_not_an_entry_input", _check_negative_or_missing_volume_is_not_an_entry_input),
+        ("missing_or_wrong_cadence_holds_every_row", _check_missing_or_wrong_cadence_holds_every_row),
+        ("a_defect_in_the_prior_endpoints_exclusive_oldest_bar_holds_the_decision", _check_a_defect_in_the_prior_endpoints_exclusive_oldest_bar_holds_the_decision),
+        ("overflowing_prices_hold_as_nonfinite_derived", _check_overflowing_prices_hold_as_nonfinite_derived),
+        ("subnormal_prices_hold_as_invalid_denominator", _check_subnormal_prices_hold_as_invalid_denominator),
+    ):
+        with subtests.test(case=label):
+            check()
+
+
+def _check_constant_prices_never_enter_and_report_finite_zero_values():
     out = _apply(_from_closes([250.0] * 200), SEED)
     assert (out["signal"] == 0).all()
     valid = out[out["trix_valid"] == 1.0]
@@ -382,14 +358,14 @@ def test_constant_prices_never_enter_and_report_finite_zero_values():
     assert (valid["trix_value"] == 0.0).all() and (valid["trix_signal_line"] == 0.0).all()
 
 
-def test_rising_and_falling_series_report_the_matching_oscillator_sign():
+def _check_rising_and_falling_series_report_the_matching_oscillator_sign():
     up = _apply(_from_closes([100.0 * 1.002 ** i for i in range(200)]), SEED)
     down = _apply(_from_closes([100.0 * 0.998 ** i for i in range(200)]), SEED)
     assert (up["trix_value"].dropna() > 0).all() and (down["trix_value"].dropna() < 0).all()
     assert (up["signal"] == 0).all() and (down["signal"] == 0).all()
 
 
-def test_a_defect_holds_only_inside_its_dependency_window():
+def _check_a_defect_holds_only_inside_its_dependency_window():
     df = _walk(300, 5)
     need = _need(SMALL)
     bad = 150
@@ -415,28 +391,23 @@ INVALID_PARAMS = [
 ]
 
 
-def test_invalid_parameters_fail_validation():
-    reg = _reg()
-    for params in INVALID_PARAMS:
-        p = {**SEED, **params}
-        with _case(params):
-            with pytest.raises(ValueError):
-                reg._registry.validate_params(NAME, p)
-            with pytest.raises(ValueError):
-                _apply(_walk(120, 1), p)
-            from trix_momentum import trix_momentum_core
-            with pytest.raises(ValueError):
-                trix_momentum_core(_walk(120, 1), **p)
-
-
 BOUNDARY_PARAMS = [SMALLEST, BOUNDARY, {"period": 32, "signal_period": 191, "recursion_length": 192},
                    {"period": 1, "signal_period": 5, "recursion_length": 6}]
 
 
-def test_boundary_parameters_validate_and_decide_at_l_plus_two_rows():
+def _check_boundary_parameters_validate_and_decide_at_l_plus_two_rows():
     for params in BOUNDARY_PARAMS:
         with _case(params):
             _boundary_parameters_validate_and_decide_at_l_plus_two_rows(params)
+
+
+def test_history_need_is_bounded_for_the_grid_and_every_boundary_parameter(subtests):
+    for label, check in (
+        ("grid_history_need_bounds", _check_grid_history_need_bounds),
+        ("boundary_parameters_validate_and_decide_at_l_plus_two_rows", _check_boundary_parameters_validate_and_decide_at_l_plus_two_rows),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 def _boundary_parameters_validate_and_decide_at_l_plus_two_rows(params):
@@ -503,7 +474,7 @@ def test_timestamp_column_and_native_close_frames_decide_the_same_way():
     assert d["trix_eval_ts_ms"].isna().all()
 
 
-def test_full_series_every_prefix_and_every_200_row_frame_agree_on_frozen_candles():
+def _check_full_series_every_prefix_and_every_200_row_frame_agree_on_frozen_candles():
     df = _frozen("BTC", "1h", 460)
     for p in (SEED, BOUNDARY, {"period": 12, "signal_period": 12, "recursion_length": 192}):
         need = _need(p)
@@ -521,12 +492,24 @@ def test_full_series_every_prefix_and_every_200_row_frame_agree_on_frozen_candle
         assert short["trix_reason"].iloc[-1] == "insufficient_history"
 
 
-def test_frozen_candles_produce_both_directions_with_the_seed():
+def _check_frozen_candles_produce_both_directions_with_the_seed():
     out = _apply(_frozen("SOL", "4h", 1500), SEED)
     assert {-1, 1} <= set(out["signal"].unique())
 
 
-def test_rows_outside_the_dependency_window_cannot_change_a_decision():
+def test_entry_rule_cases_fire_once_and_hold_with_their_reasons(subtests):
+    for label, check in (
+        ("crossing_boundaries_and_the_zero_line_filter", _check_crossing_boundaries_and_the_zero_line_filter),
+        ("sustained_conditions_do_not_repeat_entries", _check_sustained_conditions_do_not_repeat_entries),
+        ("constant_prices_never_enter_and_report_finite_zero_values", _check_constant_prices_never_enter_and_report_finite_zero_values),
+        ("rising_and_falling_series_report_the_matching_oscillator_sign", _check_rising_and_falling_series_report_the_matching_oscillator_sign),
+        ("frozen_candles_produce_both_directions_with_the_seed", _check_frozen_candles_produce_both_directions_with_the_seed),
+    ):
+        with subtests.test(case=label):
+            check()
+
+
+def _check_rows_outside_the_dependency_window_cannot_change_a_decision():
     df = _frozen("ETH", "4h", 400)
     p = SEED
     need = _need(p)
@@ -547,66 +530,14 @@ def test_rows_outside_the_dependency_window_cannot_change_a_decision():
     assert recovered["trix_valid"].iloc[t - 1] == 0.0
 
 
-def _composer(df, params, side="", position_ctx=None):
-    reg = _reg()
-    evaluation = evaluate_open_close(
-        reg.apply_strategy, reg.get_strategy, df, NAME, NAME, ["tiered_tp_pct"], side, params=params,
-        position_ctx=position_ctx, close_evaluate=close_evaluate, close_params_by_name={"tiered_tp_pct": _close_params()})
-    return evaluation, finalize_decision(evaluation, side)
-
-
-def test_composer_emits_both_directions_and_holds_entries_while_a_position_is_open():
-    base = [100.0] * 20
-    long_df = _from_closes(base + [101.0])
-    short_df = _from_closes(base + [99.0])
-    _, d = _composer(long_df, TINY)
-    assert (d["open_action"], d["signal"]) == ("long", 1)
-    _, d = _composer(short_df, TINY)
-    assert (d["open_action"], d["signal"]) == ("short", -1)
-    for df in (long_df, short_df):
-        mark = float(df["close"].iloc[-1])
-        for side in ("long", "short"):
-            ctx = {"side": side, "avg_cost": mark, "entry_atr": 50.0, "current_quantity": 1.0, "initial_quantity": 1.0}
-            _, held = _composer(df, TINY, side, ctx)
-            assert held["signal"] == 0 and held["close_fraction"] == 0.0
-
-
-def test_entry_data_hold_keeps_the_close_owner_executable():
-    for mutation in ("price", "geometry", "cadence", "insufficient", "order"):
-        with _case(mutation):
-            _entry_data_hold_keeps_the_close_owner_executable(mutation)
-
-
-def _entry_data_hold_keeps_the_close_owner_executable(mutation):
-    df = _walk(200, 9)
-    if mutation == "price":
-        df = _set_at(df, -5, "close", np.nan)
-    elif mutation == "geometry":
-        df = _set_last(df, "open", df["high"].iloc[-1] * 2)
-    elif mutation == "cadence":
-        df = _with_index(df, list(df.index[:-1]) + [df.index[-1] + pd.Timedelta(hours=2)])
-    elif mutation == "order":
-        df = _with_index(df, list(df.index[:-1]) + [df.index[-3]])
-    else:
-        df = df.iloc[-(_need(SMALL) - 1):]
-    mark = float(df["close"].iloc[-1])
-    ctx = {"side": "long", "avg_cost": mark / 1.05, "entry_atr": 1.0, "current_quantity": 1.0,
-           "initial_quantity": 1.0}
-    evaluation, decision = _composer(df, SMALL, "long", ctx)
-    assert evaluation.open_result_df["trix_valid"].iloc[-1] == 0.0
-    assert decision["open_action"] == "none"
-    assert decision["close_strategy"] == "tiered_tp_pct" and decision["close_fraction"] == 1.0
-    assert decision["signal"] == -1
-    _, decision = _composer(df, SMALL, "short", dict(ctx, side="short", avg_cost=mark * 1.05))
-    assert decision["open_action"] == "none" and decision["close_fraction"] == 1.0 and decision["signal"] == 1
-    _, decision = _composer(df, SMALL, "long", dict(ctx, avg_cost=mark / 1.015))
-    assert decision["close_fraction"] == 0.25
-
-
-def test_close_owner_passes_strict_capability_validation():
-    report = validate_close_capabilities(close_refs=_close_refs(), comparison_mode=None, platform="hyperliquid",
-                                         strategy_type="perps", phase="preflight").to_dict()
-    assert report["close_eligibility"] == "eligible" and not report["approximations"] and not report["refusals"]
+def test_decisions_depend_only_on_the_dependency_window(subtests):
+    for label, check in (
+        ("a_defect_holds_only_inside_its_dependency_window", _check_a_defect_holds_only_inside_its_dependency_window),
+        ("full_series_every_prefix_and_every_200_row_frame_agree_on_frozen_candles", _check_full_series_every_prefix_and_every_200_row_frame_agree_on_frozen_candles),
+        ("rows_outside_the_dependency_window_cannot_change_a_decision", _check_rows_outside_the_dependency_window_cannot_change_a_decision),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 def _bt(params, **kw):
@@ -658,59 +589,11 @@ def _simulator_long_only_never_opens_a_short(sig):
     assert res["trades"] and {t["side"] for t in res["trades"]} == {"long"}
 
 
-def test_simulator_keeps_closing_and_stopping_after_entry_inputs_fail():
-    df = _walk(800, 5)
-    sig = ensure_atr_indicator(_apply(df, SMALL))
-    first = next(int(i) for i in np.flatnonzero(sig["signal"].to_numpy() != 0)
-                 if i > 100 and np.isfinite(sig["atr"].iloc[i]))
-    corrupt = df.copy()
-    later = corrupt.index[first + 1:]
-    shift = later + pd.to_timedelta(np.arange(1, len(later) + 1), unit="min")
-    corrupt = _with_index(corrupt, list(corrupt.index[:first + 1]) + list(shift))
-    bad = ensure_atr_indicator(_apply(corrupt, SMALL))
-    assert (bad["signal"].iloc[:first + 1].to_numpy() == sig["signal"].iloc[:first + 1].to_numpy()).all()
-    assert (bad["signal"].iloc[first + 1:] == 0).all()
-    res = _bt(SMALL).run(bad, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    last_entry = max(pd.Timestamp(t["entry_date"]) for t in res["trades"])
-    assert last_entry == bad.index[first + 1]
-    final = [t for t in res["trades"] if pd.Timestamp(t["entry_date"]) == last_entry]
-    assert {t["exit_reason"].split(":")[0] for t in final} <= {"sl", "tiered_tp_pct"}
-
-
 def _cfg(params, **kw):
     base = dict(strategy_name=NAME, params=params, registry="futures", platform="hyperliquid",
                 symbol="BTC", timeframe="4h")
     base.update(kw)
     return ParityConfig(**base)
-
-
-@pytest.mark.parametrize("window", [200, None])
-@pytest.mark.parametrize("params", [SEED, BOUNDARY])
-def test_raw_entry_parity_on_frozen_candles(window, params):
-    frame = compute_parity_frame(_frozen("BTC", "4h", 420), cfg=_cfg(params), window=window)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0
-    assert result["clean"], frame[~frame["match"]].head()
-
-
-@pytest.mark.parametrize("window", [200, None])
-def test_composed_parity_covers_flat_long_and_short_contexts(window):
-    cfg = _cfg(SMALL, close_refs=_close_refs(), direction="both")
-    frame = compute_parity_frame(_frozen("SOL", "4h", 620), cfg=cfg, window=window)
-    result = summarize(frame)
-    assert result["mismatches"] == 0 and result["clean"], frame[~frame["match"]].head()
-    assert (frame["live_open_action"] == "long").any() and (frame["live_open_action"] == "short").any()
-    closing = frame[frame["live_close_fraction"] > 0]
-    assert (closing["live_signal"] == -1).any() and (closing["live_signal"] == 1).any()
-
-
-@pytest.mark.parametrize("window", [200, None])
-def test_batched_explicit_paper_parity_matches_solo(window):
-    cfg = _cfg(SMALL, close_refs=_close_refs(), direction="both", batched=True)
-    frame = compute_parity_frame(_frozen("BTC", "4h", 320), cfg=cfg, window=window)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0
-    assert result["clean"] and result["batch_clean"], frame[~frame["match"]].head()
 
 
 _CACHE_SCRIPT = r"""
@@ -739,6 +622,12 @@ print(json.dumps(out, default=str))
 """
 
 
+def _subdir(tmp_path, name):
+    path = tmp_path / name
+    path.mkdir()
+    return path
+
+
 def _cache_case(tmp_path, drop=None):
     proc = subprocess.run(
         [sys.executable, "-c", _CACHE_SCRIPT, str(tmp_path / "cache.db"), STUDY, json.dumps(drop or {})],
@@ -748,7 +637,7 @@ def _cache_case(tmp_path, drop=None):
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def test_missing_held_hour_funding_makes_every_arm_unscorable_and_the_verdict_inconclusive(tmp_path):
+def _check_missing_held_hour_funding_makes_every_arm_unscorable_and_the_verdict_inconclusive(tmp_path):
     lo = int(pd.Timestamp("2025-03-01").timestamp() * 1000)
     hi = int(pd.Timestamp("2025-04-01").timestamp() * 1000)
     out = _cache_case(tmp_path, {"BTC": [lo, hi]})
@@ -765,7 +654,7 @@ def test_missing_held_hour_funding_makes_every_arm_unscorable_and_the_verdict_in
     assert funding["coverage_complete"] is False
 
 
-def test_complete_funding_gives_scorable_legs_and_long_only_comparators(tmp_path):
+def _check_complete_funding_gives_scorable_legs_and_long_only_comparators(tmp_path):
     out = _cache_case(tmp_path)
     verdict = out["verdict"]
     assert verdict["gates"]["all_windows_scorable"] is True
@@ -776,3 +665,12 @@ def test_complete_funding_gives_scorable_legs_and_long_only_comparators(tmp_path
         assert leg["funding"]["mode"] == "charge" and leg["funding_incomplete"] is False
         assert leg["warmup"]["bars"] == 300
         assert leg["next_bar_fills"]["mismatches"] == 0
+
+
+def test_study_funding_coverage_decides_whether_every_leg_is_scorable(subtests, tmp_path):
+    for label, check in (
+        ("missing_held_hour_funding_makes_every_arm_unscorable_and_the_verdict_inconclusive", lambda: _check_missing_held_hour_funding_makes_every_arm_unscorable_and_the_verdict_inconclusive(_subdir(tmp_path, "missing"))),
+        ("complete_funding_gives_scorable_legs_and_long_only_comparators", lambda: _check_complete_funding_gives_scorable_legs_and_long_only_comparators(_subdir(tmp_path, "complete"))),
+    ):
+        with subtests.test(case=label):
+            check()

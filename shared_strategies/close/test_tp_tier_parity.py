@@ -23,11 +23,12 @@ def registry():
     return _load_close_registry()
 
 
-@pytest.mark.parametrize("case", _FIXTURE["ladder_rule"], ids=lambda c: c["id"])
-def test_resting_ladder_rule_matches_fixture(registry, case):
-    got = importlib.import_module("tiered_tp_atr").resting_tiers(case["tiers"])
+def test_resting_ladder_rule_matches_fixture(registry, subtests):
+    for case in _FIXTURE["ladder_rule"]:
+        with subtests.test(case=case["id"]):
+            got = importlib.import_module("tiered_tp_atr").resting_tiers(case["tiers"])
 
-    assert (None if got is None else [list(pair) for pair in got]) == case["want"]
+            assert (None if got is None else [list(pair) for pair in got]) == case["want"]
 
 
 _FILL_RULE_EVALUATORS = (
@@ -36,12 +37,6 @@ _FILL_RULE_EVALUATORS = (
     "tiered_tp_atr_regime",
     "tiered_tp_atr_live_regime",
 )
-
-
-def _fill_rule_params():
-    for case in _FIXTURE["fill_rule"]:
-        for name in case.get("evaluators", _FILL_RULE_EVALUATORS):
-            yield pytest.param(case, name, id=f"{case['id']}-{name}")
 
 
 def _fill_rule_market(case):
@@ -62,8 +57,14 @@ def _fill_rule_market(case):
     return {"mark_price": case["candles"][-1][4], **case["market"], "resting_tp_rule": rule}
 
 
-@pytest.mark.parametrize("case,name", list(_fill_rule_params()))
-def test_resting_fill_rule_matches_fixture(registry, case, name):
+def test_resting_fill_rule_matches_fixture(registry, subtests):
+    for case in _FIXTURE["fill_rule"]:
+        for name in case.get("evaluators", _FILL_RULE_EVALUATORS):
+            with subtests.test(case=case["id"], evaluator=name):
+                _assert_fill_rule_case(registry, case, name)
+
+
+def _assert_fill_rule_case(registry, case, name):
     p = case["position"]
     anchor = p["risk_anchor_price"] or p["avg_cost"]
     result = registry.evaluate(name, {
