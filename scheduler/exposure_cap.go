@@ -163,11 +163,16 @@ func optionsActionDirection(a OptionsAction) string {
 	return "long"
 }
 
-func exposureCapOptionsActions(st ExposureCapStatus, asset string, actions []OptionsAction) (kept []OptionsAction, dropped int, reason string) {
+func exposureCapOptionsActions(st ExposureCapStatus, asset string, actions []OptionsAction) (kept []OptionsAction, droppedLegs, droppedStructures int, reason string) {
 	if !st.Configured {
-		return actions, 0, ""
+		return actions, 0, 0, ""
 	}
+	blockedStructures := map[string]bool{}
+	blockUnnamed := false
 	for _, a := range actions {
+		if a.Action == "close" {
+			continue
+		}
 		dir := optionsActionDirection(a)
 		blocked := false
 		switch dir {
@@ -181,25 +186,43 @@ func exposureCapOptionsActions(st ExposureCapStatus, asset string, actions []Opt
 				blocked = true
 			}
 		}
-		if blocked {
-			dropped++
-			if reason == "" {
-				bucketUSD := st.LongUSD
-				if dir == "short" {
-					bucketUSD = st.ShortUSD
-				}
-				if (dir == "long" && st.LongBlocked) || (dir == "short" && st.ShortBlocked) {
-					reason = fmt.Sprintf("same-direction crypto exposure $%.2f exceeds cap $%.2f — new %s-delta option opens blocked", bucketUSD, st.CapUSD, dir)
-				} else {
-					stat := st.OverConcentrated[asset]
-					reason = fmt.Sprintf("%s net %s exposure is %.1f%% of portfolio value (cap %.1f%%) — new %s-delta option opens blocked", asset, dir, stat.Pct, st.ConcentrationPct, dir)
-				}
+		if !blocked {
+			continue
+		}
+		if a.StructureID == "" {
+			blockUnnamed = true
+		} else {
+			blockedStructures[a.StructureID] = true
+		}
+		if reason == "" {
+			bucketUSD := st.LongUSD
+			if dir == "short" {
+				bucketUSD = st.ShortUSD
+			}
+			if (dir == "long" && st.LongBlocked) || (dir == "short" && st.ShortBlocked) {
+				reason = fmt.Sprintf("same-direction crypto exposure $%.2f exceeds cap $%.2f — new %s-delta option opens blocked", bucketUSD, st.CapUSD, dir)
+			} else {
+				stat := st.OverConcentrated[asset]
+				reason = fmt.Sprintf("%s net %s exposure is %.1f%% of portfolio value (cap %.1f%%) — new %s-delta option opens blocked", asset, dir, stat.Pct, st.ConcentrationPct, dir)
+			}
+		}
+	}
+	if reason == "" {
+		return actions, 0, 0, ""
+	}
+	counted := map[string]bool{}
+	for _, a := range actions {
+		if a.Action != "close" && (blockUnnamed || blockedStructures[a.StructureID]) {
+			droppedLegs++
+			if !counted[a.StructureID] {
+				counted[a.StructureID] = true
+				droppedStructures++
 			}
 			continue
 		}
 		kept = append(kept, a)
 	}
-	return kept, dropped, reason
+	return kept, droppedLegs, droppedStructures, reason
 }
 
 func exposureCapHoldDetail(st ExposureCapStatus) string {

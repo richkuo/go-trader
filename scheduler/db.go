@@ -2731,6 +2731,14 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 	if err := optRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate option_positions: %w", err)
 	}
+	normalizeIDs := make([]string, 0, len(out.Strategies))
+	for procID := range out.Strategies {
+		normalizeIDs = append(normalizeIDs, procID)
+	}
+	sort.Strings(normalizeIDs)
+	for _, procID := range normalizeIDs {
+		normalizeLoadedOptionKeys(out.Strategies[procID])
+	}
 
 	for storedID, procID := range loaded {
 		s := out.Strategies[procID]

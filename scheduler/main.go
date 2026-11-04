@@ -3256,7 +3256,15 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier,
 		notifyScriptFailure(notifier, sc, scriptFailureError, err.Error())
 		return nil, "", false
 	}
-	clearScriptFailure(notifier, sc)
+	if check := checkOptionsStructures(result); len(check.Refusals) > 0 {
+		msg := "options structure contract: " + strings.Join(check.Refusals, "; ")
+		logger.RunningOnFailure(sc.Script, args)
+		logger.Error("Script structure failure: %s", msg)
+		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
+		result.Actions = check.Actions
+	} else {
+		clearScriptFailure(notifier, sc)
+	}
 
 	signalStr := "HOLD"
 	if result.Signal == 1 {
