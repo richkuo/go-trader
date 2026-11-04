@@ -399,9 +399,17 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 	}
 }
 
+func regimeReadinessStop(mult float64) *RegimeATRBlock {
+	return &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: mult}, "trending_down": {ATR: mult}, "ranging": {ATR: mult}}}
+}
+
+func regimeReadinessManual(id, mode string) StrategyConfig {
+	return StrategyConfig{ID: id, Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=" + mode}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: regimeReadinessStop(2)}
+}
+
 func regimeReadinessAdmissionIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
 	t.Helper()
-	sc := StrategyConfig{ID: "readiness-manual", Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=paper"}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: 2}, "trending_down": {ATR: 2}, "ranging": {ATR: 2}}}}
+	sc := regimeReadinessManual("readiness-manual", "paper")
 	cfg := &Config{Regime: rc, Strategies: []StrategyConfig{sc}}
 	orders, cancels := 0, 0
 	type sentOrder struct {
@@ -664,7 +672,7 @@ func regimeReadinessOnceIntegration(t *testing.T) {
 
 func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
 	t.Helper()
-	sc := StrategyConfig{ID: "readiness-recovery", Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=paper"}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: 2}, "trending_down": {ATR: 2}, "ranging": {ATR: 2}}}}
+	sc := regimeReadinessManual("readiness-recovery", "paper")
 	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60, Strategies: []StrategyConfig{sc}}
 	adopted := sc
 	adopted.ID += "-adopted"
@@ -968,7 +976,7 @@ func regimeReadinessClassifierCaseIntegration(t *testing.T, root string) {
 
 func regimeReadinessLimitIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
 	t.Helper()
-	sc := StrategyConfig{ID: "readiness-limit-live", Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=live"}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: 2}, "trending_down": {ATR: 2}, "ranging": {ATR: 2}}}}
+	sc := regimeReadinessManual("readiness-limit-live", "live")
 	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60, Strategies: []StrategyConfig{sc}}
 	state := NewAppState()
 	route := newMRPLocalRoute(t, cfg, state)
@@ -1058,10 +1066,8 @@ func regimeReadinessLimitIntegration(t *testing.T, bundles []*RegimeBundle, rc *
 
 func regimeReadinessCarryIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
 	t.Helper()
-	stop := func(mult float64) *RegimeATRBlock {
-		return &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: mult}, "trending_down": {ATR: mult}, "ranging": {ATR: mult}}}
-	}
-	sc := StrategyConfig{ID: "readiness-carry", Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=live"}, IntervalSeconds: 300, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: stop(2)}
+	sc := regimeReadinessManual("readiness-carry", "live")
+	sc.IntervalSeconds = 300
 	perps := StrategyConfig{ID: "readiness-carry-perps", Platform: "hyperliquid", Type: "perps", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=paper"}}
 	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60, Strategies: []StrategyConfig{sc}}
 	previousStore := globalRegimeStore
@@ -1157,7 +1163,7 @@ func regimeReadinessCarryIntegration(t *testing.T, bundles []*RegimeBundle, rc *
 	cycle(cfg, []StrategyConfig{perps}, ready(0))
 	reloaded := *cfg
 	changed := sc
-	changed.StopLossATRMultRegime = stop(3)
+	changed.StopLossATRMultRegime = regimeReadinessStop(3)
 	reloaded.Strategies = []StrategyConfig{changed}
 	server.UpdateStrategies(reloaded.Strategies)
 	server.SetConfigContext("", &reloaded)
