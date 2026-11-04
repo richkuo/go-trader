@@ -1962,4 +1962,579 @@ assert_eq "$(rb_check "$rb_test/go-trader-1921")" "blocked" "rh binding: an unre
 grep -q "could not read the config or a state file" "$rb_test/err" || { echo "FAIL: rh binding: an unreadable state block says so" >&2; cat "$rb_test/err" >&2; exit 1; }
 rm -rf "$rb_test"
 
+assert_eq "$(update_resolve_from /srv/d ./go-trader.pid)" "/srv/d/go-trader.pid" "resolve from: a ./ path resolves from the deployment root"
+assert_eq "$(update_resolve_from /srv/d/ state/w.pid)" "/srv/d/state/w.pid" "resolve from: a relative path resolves from the deployment root"
+assert_eq "$(update_resolve_from /srv/d /run/w.pid)" "/run/w.pid" "resolve from: an absolute path is kept"
+assert_eq "$(update_resolve_from /srv/d '')" "" "resolve from: an empty path stays empty"
+
+owner_repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [[ -z "$owner_repo_root" || ! -x "$owner_repo_root/scripts/update.sh" ]]; then
+    echo "FAIL: restart owner fixtures need the repository checkout with scripts/update.sh" >&2
+    exit 1
+fi
+
+ow_root=$(cd "$(mktemp -d)" && pwd -P)
+
+owner_fail() {
+    echo "FAIL: $1" >&2
+    [[ -n "${2:-}" && -f "$2" ]] && cat "$2" >&2
+    exit 1
+}
+
+mkdir -p "$ow_root/shim"
+cat >"$ow_root/shim/systemctl" <<'EOS'
+#!/usr/bin/env bash
+st="${SYSTEMCTL_SHIM_STATE:?}"
+cmd="${1:-}"
+[[ $# -gt 0 ]] && shift
+unit=""
+prop=""
+quiet=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -p) prop="$2"; shift 2 ;;
+        --quiet) quiet=1; shift ;;
+        -*) shift ;;
+        *) [[ -z "$unit" ]] && unit="$1"; shift ;;
+    esac
+done
+case "$cmd" in
+    --version) echo 'systemd 255'; exit 0 ;;
+    list-units) [[ -f "$st/active-units" ]] && cat "$st/active-units"; exit 0 ;;
+    list-unit-files) exit 0 ;;
+    is-active)
+        state=$(cat "$st/u/$unit/ActiveState" 2>/dev/null || echo inactive)
+        [[ "$quiet" == "1" ]] || echo "$state"
+        [[ "$state" == "active" ]] && exit 0
+        exit 3
+        ;;
+    is-enabled) echo disabled; exit 1 ;;
+    show)
+        f="$st/u/$unit/$prop"
+        [[ -f "$f" ]] && cat "$f"
+        exit "$(cat "$f.rc" 2>/dev/null || echo 0)"
+        ;;
+    restart)
+        echo "restart $unit" >>"$st/calls"
+        seq_file="$st/u/$unit/restart-rcs"
+        rc=0
+        if [[ -s "$seq_file" ]]; then
+            rc=$(head -n 1 "$seq_file")
+            tail -n +2 "$seq_file" >"$seq_file.next"
+            mv "$seq_file.next" "$seq_file"
+        fi
+        exit "$rc"
+        ;;
+    stop)
+        echo "stop $unit" >>"$st/calls"
+        mkdir -p "$st/u/$unit"
+        printf 'inactive' >"$st/u/$unit/ActiveState"
+        printf '0' >"$st/u/$unit/MainPID"
+        exit 0
+        ;;
+    *) echo "$cmd $unit" >>"$st/calls"; exit 0 ;;
+esac
+EOS
+chmod +x "$ow_root/shim/systemctl"
+
+mkdir -p "$ow_root/nosys"
+IFS=: read -r -a ow_path_dirs <<<"$PATH"
+for ow_pd in "${ow_path_dirs[@]}"; do
+    [[ -d "$ow_pd" ]] || continue
+    for ow_f in "$ow_pd"/*; do
+        ow_n="${ow_f##*/}"
+        [[ "$ow_n" == "systemctl" || -e "$ow_root/nosys/$ow_n" || -L "$ow_root/nosys/$ow_n" ]] && continue
+        [[ -f "$ow_f" && -x "$ow_f" ]] || continue
+        ln -s "$ow_f" "$ow_root/nosys/$ow_n"
+    done
+done
+if PATH="$ow_root/nosys" command -v systemctl >/dev/null 2>&1; then
+    owner_fail "the systemctl-free PATH still resolves systemctl"
+fi
+if ! PATH="$ow_root/nosys" command -v git >/dev/null 2>&1; then
+    owner_fail "the systemctl-free PATH lost git"
+fi
+
+unit_set() {
+    mkdir -p "$1/u/$2"
+    printf '%s' "$4" >"$1/u/$2/$3"
+}
+unit_rc() {
+    mkdir -p "$1/u/$2"
+    printf '%s' "$4" >"$1/u/$2/$3.rc"
+}
+
+(
+    mk_fleet() {
+        mkdir -p "$1/parent" "$1/st" "$1/proc/self"
+        git -C "$1/parent" init -q
+    }
+    mk_dir() {
+        mkdir -p "$1/$2/scheduler"
+        git -C "$1/$2" init -q
+        echo '{}' >"$1/$2/scheduler/config.json"
+    }
+    map_unit() {
+        printf '%s loaded active running x\n' "$3" >>"$1/st/active-units"
+        unit_set "$1/st" "$3" WorkingDirectory "$1/$2"
+        unit_set "$1/st" "$3" ActiveState active
+        unit_set "$1/st" "$3" LoadState loaded
+    }
+    run_fleet() {
+        local fleet="$1" path="$2"
+        shift 2
+        local -a envs=()
+        while [[ $# -gt 0 && "$1" != "--" ]]; do
+            envs+=("$1")
+            shift
+        done
+        shift
+        : >"$fleet/records"
+        local rc=0
+        (
+            cd "$fleet/parent"
+            env -u GO_TRADER_PIDFILE -u GO_TRADER_RUN_SH -u RESTART -u RESTART_MODE -u GO_TRADER_UPDATE_ALL_ROOT \
+                -u GO_TRADER_SERVICE -u GO_TRADER_PROC_ROOT \
+                PATH="$path" RECORD_OUT="$fleet/records" SYSTEMCTL_SHIM_STATE="$fleet/st" \
+                GO_TRADER_PROC_ROOT="$fleet/proc" GO_TRADER_SERVICE=go-trader-parent \
+                ${envs[@]+"${envs[@]}"} \
+                bash "$owner_repo_root/scripts/update.sh" "$@" --update-all-root="$fleet"
+        ) >"$fleet/out" 2>&1 || rc=$?
+        printf '%s' "$rc"
+    }
+    spawned() {
+        grep -q "^\[child\] cwd=$1/$2 " "$1/records"
+    }
+    expect_spawn() {
+        spawned "$1" "$2" || owner_fail "$3: $2 was not dispatched" "$1/out"
+    }
+    expect_skip() {
+        ! spawned "$1" "$2" || owner_fail "$3: $2 was dispatched" "$1/out"
+        grep -qF "WARNING: skipping $1/$2 (restart route cannot succeed: $4" "$1/out" \
+            || owner_fail "$3: no skip line naming $2 and '$4'" "$1/out"
+    }
+    expect_text() {
+        grep -qF -- "$2" "$1/out" || owner_fail "$3: output lacks '$2'" "$1/out"
+    }
+
+    bash() {
+        if [[ "${1:-}" == *update.sh ]]; then
+            printf '[child] cwd=%s GO_TRADER_SERVICE=%s argv=%s\n' \
+                "$(pwd)" "${GO_TRADER_SERVICE:-<unset>}" "$*" >>"${RECORD_OUT:?}"
+            case " ${MOCK_FAIL_DIRS:-} " in
+                *" ${PWD##*/} "*) return 1 ;;
+            esac
+            return 0
+        fi
+        command bash "$@"
+    }
+    export -f bash
+
+    f="$ow_root/f1"
+    mk_fleet "$f"
+    for n in live folded sigok nowrap nonexec; do
+        mk_dir "$f" "go-trader-$n"
+    done
+    map_unit "$f" go-trader-live go-trader-live.service
+    unit_set "$f/st" go-trader-parent LoadState not-found
+    unit_set "$f/st" go-trader-parent FragmentPath ""
+    for n in sigok nowrap nonexec; do
+        echo 4242 >"$f/go-trader-$n/go-trader.pid"
+    done
+    printf '#!/bin/sh\n' >"$f/go-trader-sigok/run.sh"
+    chmod 755 "$f/go-trader-sigok/run.sh"
+    printf '#!/bin/sh\n' >"$f/go-trader-nonexec/run.sh"
+    chmod 644 "$f/go-trader-nonexec/run.sh"
+    rc=$(run_fleet "$f" "$ow_root/shim:$PATH" -- --all --restart)
+    assert_eq "$rc" "0" "owner fleet: one proven skip plus successes exits 0"
+    expect_spawn "$f" go-trader-live "owner fleet: a mapped loaded unit"
+    expect_spawn "$f" go-trader-sigok "owner fleet: a missing unit with pidfile and executable wrapper"
+    expect_spawn "$f" go-trader-nowrap "owner fleet: a missing wrapper the transfer may supply"
+    expect_spawn "$f" go-trader-nonexec "owner fleet: a non-executable wrapper the transfer may repair"
+    expect_skip "$f" go-trader-folded "owner fleet: a missing unit with no fragment and no pidfile" \
+        "route=signal-fallback, LoadState=not-found: signal restart needs pidfile $f/go-trader-folded/go-trader.pid"
+    expect_text "$f" "all instances OK (4 updated, 1 skipped of 5 discovered)" "owner fleet: totals"
+    expect_text "$f" "1 deployment(s) skipped because their restart route cannot succeed" "owner fleet: skip summary"
+    expect_text "$f" "$f/go-trader-nowrap restart route: unknown" "owner fleet: an uncertain wrapper is unknown"
+    rc=$(run_fleet "$f" "$ow_root/shim:$PATH" GO_TRADER_PROC_ROOT="$f/noproc" -- --all --restart)
+    assert_eq "$rc" "0" "owner fleet: proc-root skips plus one success exit 0"
+    expect_spawn "$f" go-trader-live "owner fleet: a loaded unit needs no proc root"
+    expect_skip "$f" go-trader-sigok "owner fleet: no proc root" \
+        "route=signal-fallback, LoadState=not-found: signal restart needs $f/noproc/self"
+    expect_text "$f" "all instances OK (1 updated, 4 skipped of 5 discovered)" "owner fleet: proc-root totals"
+    rc=$(run_fleet "$f" "$ow_root/shim:$PATH" MOCK_FAIL_DIRS=go-trader-sigok -- --all --restart)
+    [[ "$rc" != "0" ]] || owner_fail "owner fleet: a failed child with skips must still fail the batch" "$f/out"
+    expect_text "$f" "1 failing instance(s) (4 updated, 1 skipped)" "owner fleet: a real child failure"
+    rc=$(run_fleet "$f" "$ow_root/shim:$PATH" -- --all)
+    assert_eq "$rc" "2" "owner fleet: --all without restart exits 2"
+    [[ ! -s "$f/records" ]] || owner_fail "owner fleet: --all without restart dispatched a child" "$f/records"
+    rc=$(run_fleet "$f" "$ow_root/shim:$PATH" RESTART=1 -- --all)
+    assert_eq "$rc" "0" "owner fleet: RESTART=1 enables the batch"
+    expect_spawn "$f" go-trader-live "owner fleet: RESTART=1 dispatches"
+    expect_skip "$f" go-trader-folded "owner fleet: RESTART=1 applies the owner check" "route=signal-fallback"
+
+    f="$ow_root/f2"
+    mk_fleet "$f"
+    mk_dir "$f" go-trader-custom
+    mkdir -p "$f/go-trader-custom/bin"
+    printf '#!/bin/sh\n' >"$f/go-trader-custom/bin/wrap.sh"
+    chmod 755 "$f/go-trader-custom/bin/wrap.sh"
+    echo 4242 >"$f/abs.pid"
+    unit_set "$f/st" go-trader-parent LoadState not-found
+    rc=$(run_fleet "$f" "$ow_root/shim:$PATH" GO_TRADER_PIDFILE="$f/abs.pid" GO_TRADER_RUN_SH=bin/wrap.sh -- --all --restart)
+    assert_eq "$rc" "0" "owner custom: an absolute pidfile and a relative wrapper keep the deployment"
+    expect_spawn "$f" go-trader-custom "owner custom: absolute pidfile plus relative wrapper"
+    expect_text "$f" "wrapper $f/go-trader-custom/bin/wrap.sh" "owner custom: the wrapper resolves from the deployment root"
+    rm -f "$f/abs.pid"
+    rc=$(run_fleet "$f" "$ow_root/shim:$PATH" GO_TRADER_PIDFILE="$f/abs.pid" GO_TRADER_RUN_SH=bin/wrap.sh -- --all --restart)
+    [[ "$rc" != "0" ]] || owner_fail "owner custom: a batch that skips every deployment must fail" "$f/out"
+    expect_skip "$f" go-trader-custom "owner custom: the custom pidfile is gone" "route=signal-fallback, LoadState=not-found: signal restart needs pidfile $f/abs.pid"
+    expect_text "$f" "updated 0 deployments" "owner custom: zero updates"
+    expect_text "$f" "1 with no restart route that can succeed" "owner custom: zero updates names the route reason"
+
+    f="$ow_root/f3"
+    mk_fleet "$f"
+    mk_dir "$f" go-trader-rel
+    mkdir -p "$f/go-trader-rel/state" "$f/outside"
+    echo 4242 >"$f/go-trader-rel/state/w.pid"
+    printf '#!/bin/sh\n' >"$f/outside/wrap.sh"
+    chmod 755 "$f/outside/wrap.sh"
+    unit_set "$f/st" go-trader-parent LoadState not-found
+    rc=$(run_fleet "$f" "$ow_root/shim:$PATH" GO_TRADER_PIDFILE=state/w.pid GO_TRADER_RUN_SH="$f/outside/wrap.sh" -- --all --restart)
+    assert_eq "$rc" "0" "owner relative: a relative pidfile and an absolute wrapper keep the deployment"
+    expect_spawn "$f" go-trader-rel "owner relative: relative pidfile plus absolute wrapper"
+    rm -f "$f/go-trader-rel/state/w.pid"
+    mkdir -p "$f/parent/state"
+    echo 4242 >"$f/parent/state/w.pid"
+    rc=$(run_fleet "$f" "$ow_root/shim:$PATH" GO_TRADER_PIDFILE=state/w.pid GO_TRADER_RUN_SH="$f/outside/wrap.sh" -- --all --restart)
+    expect_skip "$f" go-trader-rel "owner relative: the pidfile resolves from the deployment, not the batch parent" \
+        "route=signal-fallback, LoadState=not-found: signal restart needs pidfile $f/go-trader-rel/state/w.pid"
+    echo 4242 >"$f/go-trader-rel/state/w.pid"
+    chmod 644 "$f/outside/wrap.sh"
+    rc=$(run_fleet "$f" "$ow_root/shim:$PATH" GO_TRADER_PIDFILE=state/w.pid GO_TRADER_RUN_SH="$f/outside/wrap.sh" -- --all --restart)
+    expect_skip "$f" go-trader-rel "owner relative: a non-executable wrapper outside the tree" \
+        "route=signal-fallback, LoadState=not-found: signal restart needs executable wrapper $f/outside/wrap.sh"
+    expect_text "$f" "lies outside the deployment tree" "owner relative: the outside wrapper reason"
+
+    f="$ow_root/f4"
+    mk_fleet "$f"
+    for n in redirect sigmissing uncertain; do
+        mk_dir "$f" "go-trader-$n"
+    done
+    printf '#!/bin/sh\n' >"$f/go-trader-redirect/go-trader"
+    chmod 755 "$f/go-trader-redirect/go-trader"
+    map_unit "$f" go-trader-redirect go-trader-redirect.service
+    unit_set "$f/st" go-trader-redirect.service ExecStart "$f/go-trader-redirect/go-trader --config $f/go-trader-redirect/scheduler/config.json"
+    map_unit "$f" go-trader-uncertain go-trader-uncertain.service
+    unit_rc "$f/st" go-trader-uncertain.service ExecStart 1
+    rc=$(run_fleet "$f" "$ow_root/shim:$PATH" -- --all --restart --restart-mode signal)
+    assert_eq "$rc" "0" "owner signal: a redirect, an uncertain probe and one skip exit 0"
+    expect_spawn "$f" go-trader-redirect "owner signal: an active unit running this binary redirects to systemd"
+    grep -q "cwd=$f/go-trader-redirect .*--restart-mode signal" "$f/records" \
+        || owner_fail "owner signal: the redirected child lost --restart-mode signal" "$f/records"
+    expect_text "$f" "$f/go-trader-redirect restart route: owned (route=systemd-redirect, LoadState=loaded" "owner signal: redirect route"
+    expect_spawn "$f" go-trader-uncertain "owner signal: an uncertain redirect probe"
+    expect_text "$f" "$f/go-trader-uncertain restart route: unknown" "owner signal: an uncertain redirect is unknown"
+    expect_skip "$f" go-trader-sigmissing "owner signal: an inactive unit and no pidfile" \
+        "route=signal, LoadState=-: signal restart needs pidfile $f/go-trader-sigmissing/go-trader.pid"
+
+    load_case() {
+        local name="$1" state="$2" verdict="$3"
+        local cf="$ow_root/load-$name"
+        mk_fleet "$cf"
+        mk_dir "$cf" go-trader-x
+        case "$state" in
+            none) ;;
+            rc1) unit_set "$cf/st" go-trader-parent LoadState loaded; unit_rc "$cf/st" go-trader-parent LoadState 1 ;;
+            *) unit_set "$cf/st" go-trader-parent LoadState "$state" ;;
+        esac
+        case "$name" in
+            masked-empty)
+                : >"$cf/frag.service"
+                unit_set "$cf/st" go-trader-parent FragmentPath "$cf/frag.service"
+                ;;
+            masked-link)
+                ln -s /dev/null "$cf/frag.service"
+                unit_set "$cf/st" go-trader-parent FragmentPath "$cf/frag.service"
+                ;;
+            inactive-other)
+                unit_set "$cf/st" go-trader-parent ActiveState inactive
+                unit_set "$cf/st" go-trader-parent WorkingDirectory /srv/another-deployment
+                ;;
+            not-found-fragment)
+                unit_set "$cf/st" go-trader-parent FragmentPath /etc/systemd/system/go-trader-parent.service
+                ;;
+            frag-rc1)
+                unit_rc "$cf/st" go-trader-parent FragmentPath 1
+                ;;
+        esac
+        rc=$(run_fleet "$cf" "$ow_root/shim:$PATH" -- --all --restart)
+        assert_eq "$rc" "0" "owner load state $name: the deployment stays in the batch"
+        expect_spawn "$cf" go-trader-x "owner load state $name"
+        expect_text "$cf" "$cf/go-trader-x restart route: $verdict" "owner load state $name: verdict"
+    }
+    load_case masked-empty masked owned
+    load_case masked-link masked owned
+    load_case inactive-other loaded owned
+    load_case bad-setting bad-setting unknown
+    load_case error error unknown
+    load_case not-found-fragment not-found unknown
+    load_case frag-rc1 not-found unknown
+    load_case rc1 rc1 unknown
+    load_case empty "" unknown
+    load_case absent none unknown
+    load_case malformed "LoadState=loaded" unknown
+    load_case two-lines $'loaded\nloaded' unknown
+
+    f="$ow_root/f5"
+    mk_fleet "$f"
+    mk_dir "$f" go-trader-x
+    for mode in systemd signal; do
+        rc=$(run_fleet "$f" "$ow_root/nosys" -- --all --restart --restart-mode "$mode")
+        assert_eq "$rc" "0" "owner no systemctl ($mode): the deployment stays in the batch"
+        expect_spawn "$f" go-trader-x "owner no systemctl ($mode)"
+        expect_text "$f" "$f/go-trader-x restart route: unknown (route=$mode, LoadState=-: systemctl is not available" "owner no systemctl ($mode): verdict"
+    done
+)
+
+ow_bin="$ow_root/bin"
+mkdir -p "$ow_bin"
+cp "$ow_root/shim/systemctl" "$ow_bin/systemctl"
+cat >"$ow_bin/uv" <<'EOS'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo 'uv 0.0.0'; exit 0; fi
+echo "uv $*" >>"${OWNER_TOOL_LOG:?}"
+mkdir -p .venv/bin
+printf '#!/bin/sh\necho Python 3.12.9\n' >.venv/bin/python3
+chmod +x .venv/bin/python3
+echo synced >.venv/stamp
+EOS
+cat >"$ow_bin/go" <<'EOS'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "version" ]]; then echo 'go version go1.26.2'; exit 0; fi
+echo "go $*" >>"${OWNER_TOOL_LOG:?}"
+dir=. out= ver=dev
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -C) dir="$2"; shift 2 ;;
+        -o) out="$2"; shift 2 ;;
+        -ldflags) ver="${2#*main.Version=}"; ver="${ver%% *}"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+case "$out" in /*) ;; *) out="$dir/$out" ;; esac
+printf '#!/usr/bin/env bash\nif [[ "$1" == "version" ]]; then echo "%s"; exit 0; fi\nif [[ "$1" == "probe" || "$1" == "agent-info" ]]; then exit 0; fi\nexec sleep 60\n' "$ver" >"$out"
+chmod +x "$out"
+EOS
+printf '#!/usr/bin/env bash\n"$@"\n' >"$ow_bin/sudo"
+printf '#!/usr/bin/env python3\nimport os, sys\ntry:\n    os.setsid()\nexcept OSError:\n    pass\nos.execvp(sys.argv[1], sys.argv[1:])\n' >"$ow_bin/setsid"
+cat >"$ow_bin/curl" <<'EOS'
+#!/usr/bin/env bash
+ver=$(./go-trader version 2>/dev/null || echo dev)
+printf '{"version":"%s","pid":99999}\n' "$ver"
+EOS
+chmod +x "$ow_bin"/*
+
+(
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+    declare -a ow_pids=()
+    cleanup_owner_pids() {
+        local p
+        for p in ${ow_pids[@]+"${ow_pids[@]}"}; do
+            kill -KILL "$p" 2>/dev/null || true
+        done
+        for p in "$ow_root"/d-*/deploy/go-trader.pid; do
+            [[ -f "$p" ]] && kill -KILL "$(cat "$p")" 2>/dev/null || true
+        done
+    }
+    trap cleanup_owner_pids EXIT
+
+    mk_deploy() {
+        local p="$ow_root/d-$1"
+        mkdir -p "$p/proc/self" "$p/st"
+        git init -q --bare "$p/origin.git"
+        git -C "$p/origin.git" symbolic-ref HEAD refs/heads/main
+        git clone -q "$p/origin.git" "$p/deploy" 2>/dev/null
+        git -C "$p/deploy" symbolic-ref HEAD refs/heads/main
+        mkdir -p "$p/deploy/scripts" "$p/deploy/scheduler"
+        cp "$owner_repo_root/scripts/update.sh" "$owner_repo_root/scripts/update_helpers.sh" "$p/deploy/scripts/"
+        printf 'package main\nfunc main() {}\n' >"$p/deploy/scheduler/main.go"
+        printf 'v1\n' >"$p/deploy/README.md"
+        printf 'go-trader\ngo-trader.*\nrun.sh\nwrapper.pid\nscheduler/config.json\nscheduler/tuning_runs/\nscheduler/logs/\nstate/\n.venv/\n' >"$p/deploy/.gitignore"
+        git -C "$p/deploy" add .
+        git -C "$p/deploy" commit -q -m v1
+        git -C "$p/deploy" push -q -u origin HEAD:main 2>/dev/null
+        git clone -q -b main "$p/origin.git" "$p/work" 2>/dev/null
+        printf 'v2\n' >"$p/work/README.md"
+        git -C "$p/work" commit -q -am v2
+        git -C "$p/work" push -q origin HEAD:main 2>/dev/null
+        echo '{}' >"$p/deploy/scheduler/config.json"
+        printf '#!/usr/bin/env bash\nif [[ "$1" == "version" ]]; then echo v1; exit 0; fi\nif [[ "$1" == "probe" || "$1" == "agent-info" ]]; then exit 0; fi\nexec sleep 60\n' >"$p/deploy/go-trader"
+        chmod 755 "$p/deploy/go-trader"
+        mkdir -p "$p/deploy/.venv/bin"
+        printf '#!/bin/sh\necho Python 3.12.9\n' >"$p/deploy/.venv/bin/python3"
+        chmod 755 "$p/deploy/.venv/bin/python3"
+        : >"$p/tools.log"
+        printf '%s' "$p"
+    }
+    run_deploy() {
+        local p="$1"
+        shift
+        local -a envs=()
+        while [[ $# -gt 0 && "$1" != "--" ]]; do
+            envs+=("$1")
+            shift
+        done
+        shift
+        local rc=0
+        (
+            cd "$p/deploy"
+            env -u GO_TRADER_PIDFILE -u GO_TRADER_RUN_SH -u RESTART -u RESTART_MODE -u GO_TRADER_SERVICE \
+                -u GO_TRADER_UPDATE_PAUSE_AT -u GO_TRADER_UPDATE_FAIL_AT \
+                PATH="$ow_bin:$PATH" SYSTEMCTL_SHIM_STATE="$p/st" OWNER_TOOL_LOG="$p/tools.log" \
+                GO_TRADER_PROC_ROOT="$p/proc" GO_TRADER_UPDATE_RECOVERY_DIR="$p/rec" \
+                ACTIVE_TIMEOUT=5 HEALTH_TIMEOUT=5 RECOVERY_HEALTH_TIMEOUT=5 \
+                ${envs[@]+"${envs[@]}"} \
+                bash scripts/update.sh "$@"
+        ) >"$p/out" 2>&1 || rc=$?
+        printf '%s' "$rc"
+    }
+    out_has() {
+        grep -qF -- "$2" "$1/out" || owner_fail "$3: output lacks '$2'" "$1/out"
+    }
+    out_lacks() {
+        ! grep -qF -- "$2" "$1/out" || owner_fail "$3: output has '$2'" "$1/out"
+    }
+    start_dummy() {
+        local pid
+        pid=$(sleep 60 >/dev/null 2>&1 & echo "$!")
+        ow_pids+=("$pid")
+        echo "$pid" >"$1/deploy/go-trader.pid"
+    }
+    write_exec_wrapper() {
+        printf '#!/usr/bin/env bash\necho $$ > ./go-trader.pid\nexec ./go-trader --config scheduler/config.json\n' >"$1/deploy/run.sh"
+        chmod 755 "$1/deploy/run.sh"
+    }
+
+    for how in flag env; do
+        p=$(mk_deploy "refuse-$how")
+        unit_set "$p/st" go-trader LoadState not-found
+        head_before=$(git -C "$p/deploy" rev-parse HEAD)
+        if [[ "$how" == "flag" ]]; then
+            rc=$(run_deploy "$p" -- --restart)
+        else
+            rc=$(run_deploy "$p" RESTART=1 --)
+        fi
+        [[ "$rc" != "0" ]] || owner_fail "owner refusal ($how): a proven no-owner restart must fail" "$p/out"
+        out_has "$p" "FAIL phase=preflight: restart route cannot succeed for $p/deploy (route=signal-fallback, LoadState=not-found" "owner refusal ($how)"
+        out_lacks "$p" "phase: snapshot" "owner refusal ($how): no snapshot phase"
+        [[ ! -e "$p/rec" ]] || owner_fail "owner refusal ($how): the recovery directory exists (lock, snapshot or marker)" "$p/out"
+        [[ ! -s "$p/tools.log" ]] || owner_fail "owner refusal ($how): uv or go ran" "$p/tools.log"
+        assert_eq "$(git -C "$p/deploy" rev-parse HEAD)" "$head_before" "owner refusal ($how): HEAD unchanged"
+        assert_eq "$(cat "$p/deploy/README.md")" "v1" "owner refusal ($how): tracked files unchanged"
+        assert_eq "$("$p/deploy/go-trader" version)" "v1" "owner refusal ($how): binary unchanged"
+        [[ ! -e "$p/deploy/go-trader.new" ]] || owner_fail "owner refusal ($how): a staged binary exists" "$p/out"
+    done
+
+    p=$(mk_deploy redirect)
+    unit_set "$p/st" go-trader ActiveState active
+    unit_set "$p/st" go-trader LoadState loaded
+    unit_set "$p/st" go-trader ExecStart "$p/deploy/go-trader --config $p/deploy/scheduler/config.json"
+    unit_set "$p/st" go-trader FragmentPath /usr/lib/systemd/system/go-trader.service
+    rc=$(run_deploy "$p" -- --restart --restart-mode signal)
+    [[ "$rc" != "0" ]] || owner_fail "owner redirect: the vendor fragment refusal must still stop the update" "$p/out"
+    out_has "$p" "restart route: owned (route=systemd-redirect, LoadState=loaded" "owner redirect: the child keeps the redirect"
+    out_has "$p" "routing restart through systemctl" "owner redirect: the existing redirect runs"
+    out_has "$p" "outside /etc/systemd/system" "owner redirect: the existing fragment check runs next"
+    out_lacks "$p" "restart route cannot succeed" "owner redirect: no owner refusal"
+    out_lacks "$p" "phase: snapshot" "owner redirect: no snapshot phase"
+    [[ -z "$(find "$p/rec" -name '*.incomplete' 2>/dev/null)" ]] || owner_fail "owner redirect: an incomplete marker exists" "$p/out"
+
+    p=$(mk_deploy codeonly)
+    unit_set "$p/st" go-trader LoadState not-found
+    rc=$(run_deploy "$p" --)
+    assert_eq "$rc" "0" "owner code-only: an update without restart completes"
+    out_has "$p" "build OK at" "owner code-only"
+    out_lacks "$p" "restart route" "owner code-only: no owner check runs"
+    assert_eq "$(cat "$p/deploy/README.md")" "v2" "owner code-only: the pull landed"
+    [[ -z "$(find "$p/rec" -name '*.incomplete' 2>/dev/null)" ]] || owner_fail "owner code-only: an incomplete marker exists" "$p/out"
+
+    p=$(mk_deploy transfer)
+    printf '#!/bin/sh\nexit 0\n' >"$p/work/run.sh"
+    chmod 755 "$p/work/run.sh"
+    rc=$(run_deploy "$p" -- --rsync-from "$p/work")
+    assert_eq "$rc" "0" "owner transfer: a code-only rsync completes"
+    [[ -f "$p/deploy/run.sh" && -x "$p/deploy/run.sh" ]] || owner_fail "owner transfer: the managed transfer did not supply an executable wrapper" "$p/out"
+    chmod 644 "$p/deploy/run.sh"
+    rc=$(run_deploy "$p" -- --rsync-from "$p/work")
+    assert_eq "$rc" "0" "owner transfer: a second code-only rsync completes"
+    [[ -x "$p/deploy/run.sh" ]] || owner_fail "owner transfer: the managed transfer did not repair a non-executable wrapper" "$p/out"
+
+    p=$(mk_deploy fallback)
+    unit_set "$p/st" go-trader LoadState not-found
+    printf '5\n' >"$p/st/u/go-trader/restart-rcs"
+    write_exec_wrapper "$p"
+    start_dummy "$p"
+    rc=$(run_deploy "$p" -- --restart)
+    assert_eq "$rc" "0" "owner fallback: a missing unit with pidfile and wrapper restarts through signal"
+    out_has "$p" "restart route: owned (route=signal-fallback, LoadState=not-found" "owner fallback: verdict"
+    out_has "$p" "falling back to signal restart" "owner fallback: the signal fallback runs"
+    out_has "$p" "[update] done:" "owner fallback: the update finishes"
+    ow_pids+=("$(cat "$p/deploy/go-trader.pid")")
+
+    p=$(mk_deploy nowrapper)
+    unit_set "$p/st" go-trader LoadState not-found
+    printf '5\n5\n' >"$p/st/u/go-trader/restart-rcs"
+    start_dummy "$p"
+    rc=$(run_deploy "$p" -- --restart)
+    [[ "$rc" != "0" ]] || owner_fail "owner no wrapper: a restart without a wrapper must fail" "$p/out"
+    out_has "$p" "restart route: unknown (route=signal-fallback" "owner no wrapper: an uncertain wrapper continues"
+    out_has "$p" "signal fallback requires GO_TRADER_RUN_SH" "owner no wrapper: the restart prerequisite message is unchanged"
+    out_has "$p" "recovery: signal fallback unavailable (missing executable" "owner no wrapper: the recovery prerequisite message is unchanged"
+    out_has "$p" "recovery: INCOMPLETE" "owner no wrapper: recovery reports the failure"
+    [[ -n "$(find "$p/rec" -name '*.incomplete' 2>/dev/null)" ]] || owner_fail "owner no wrapper: no incomplete marker" "$p/out"
+    assert_eq "$("$p/deploy/go-trader" version)" "v1" "owner no wrapper: the previous binary is restored"
+
+    for variant in removed kept; do
+        p=$(mk_deploy "recovery-$variant")
+        unit_set "$p/st" go-trader LoadState loaded
+        unit_set "$p/st" go-trader ActiveState active
+        unit_set "$p/st" go-trader MainPID 4242
+        printf '0\n5\n' >"$p/st/u/go-trader/restart-rcs"
+        write_exec_wrapper "$p"
+        start_dummy "$p"
+        sentinel="$p/pause"
+        (run_deploy "$p" GO_TRADER_UPDATE_PAUSE_AT="probe:$sentinel" GO_TRADER_UPDATE_FAIL_AT=verify_health -- --restart >"$p/rc") &
+        bg=$!
+        waited=0
+        until [[ -s "$sentinel.reached" ]]; do
+            if [[ $waited -ge 300 ]] || ! kill -0 "$bg" 2>/dev/null; then
+                wait "$bg" 2>/dev/null || true
+                owner_fail "owner recovery $variant: the update never reached the probe pause" "$p/out"
+            fi
+            sleep 0.1
+            waited=$((waited + 1))
+        done
+        [[ "$variant" == "removed" ]] && rm -rf "$p/proc/self"
+        touch "$sentinel"
+        wait "$bg" || true
+        [[ "$(cat "$p/rc")" != "0" ]] || owner_fail "owner recovery $variant: a forced health failure must fail" "$p/out"
+        if [[ -f "$p/deploy/go-trader.pid" ]]; then
+            ow_pids+=("$(cat "$p/deploy/go-trader.pid")")
+        fi
+        out_has "$p" "restart route: owned (route=systemd, LoadState=loaded" "owner recovery $variant: verdict"
+        out_has "$p" "recovery: systemd unit go-trader not found" "owner recovery $variant: recovery hits the missing unit"
+        if [[ "$variant" == "removed" ]]; then
+            out_has "$p" "recovery: signal fallback unavailable (need Linux + pidfile)" "owner recovery removed: recovery reads the proc root when it runs"
+            [[ -n "$(find "$p/rec" -name '*.incomplete' 2>/dev/null)" ]] || owner_fail "owner recovery removed: no incomplete marker" "$p/out"
+        else
+            out_has "$p" "recovery: complete" "owner recovery kept: the signal respawn recovers"
+            out_lacks "$p" "signal fallback unavailable" "owner recovery kept: the wrapper is still there"
+        fi
+    done
+)
+
+rm -rf "$ow_root"
+
 echo "OK: update_helpers tests passed"
