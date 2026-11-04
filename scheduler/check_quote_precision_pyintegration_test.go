@@ -1873,6 +1873,21 @@ func qpSchedOptionLegs() []qpSchedOptionLeg {
 	}
 }
 
+func qpFlatRankDaily() string {
+	closes := make([]float64, 40)
+	for i := range closes {
+		closes[i] = 100
+		if i%2 == 1 {
+			closes[i] = 100 * math.Exp(0.8/math.Sqrt(365))
+		}
+	}
+	raw, err := json.Marshal(closes)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
 func qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage(t *testing.T) {
 	t.Parallel()
 	root := robinhoodStdoutPyRoot(t)
@@ -1881,7 +1896,7 @@ func qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage(t *testi
 	sc.IntervalSeconds = 60
 	spot := qpSpotSC("qp-opt-sched-spot", "BTC/USDT")
 	spot.IntervalSeconds = 60
-	sched.env = qpChildEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": "error"})
+	sched.env = qpChildEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": qpFlatRankDaily()})
 	cfg := sched.config([]StrategyConfig{sc, spot})
 	sched.run(cfg, "Cycle 1 complete", nil)
 
@@ -1903,7 +1918,7 @@ func qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage(t *testi
 	if !ok {
 		t.Fatalf("the process never finished its first cycle:\n%s", out)
 	}
-	if n := strings.Count(out, "Script returned error: vol_mean_reversion needs iv rank: volatility unavailable: daily history read failed"); n < 2 {
+	if n := strings.Count(out, "Script returned error: vol_mean_reversion needs iv rank: iv rank unavailable: flat volatility range"); n < 2 {
 		t.Fatalf("the entry check must fail in both cycles (%d failures):\n%s", n, out)
 	}
 	for _, leg := range qpSchedOptionLegs() {
@@ -2053,8 +2068,8 @@ func qpCaseCheckQuotePrecisionOptionsResultContract(t *testing.T) {
 					t.Fatalf("a valid result must clear the failure state; log:\n%s", buf.String())
 				}
 				for _, leg := range s.OptionPositions {
-					if leg.ContractMultiplier != 1 {
-						t.Fatalf("ibkr leg %s stamped %v, want 1", leg.ID, leg.ContractMultiplier)
+					if leg.ContractMultiplier != 0.1 {
+						t.Fatalf("ibkr leg %s stamped %v, want 0.1", leg.ID, leg.ContractMultiplier)
 					}
 				}
 				return

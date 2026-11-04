@@ -370,6 +370,16 @@ func probeCheckScripts(cfg *Config) error {
 			return err
 		}
 	}
+	if ibkrScripts := ibkrOptionsCheckScripts(cfg); len(ibkrScripts) > 0 {
+		if err := probeOneScriptContractFn(optionMarksScript, ibkrOptionMarksProbeArgv, optionMarksContract); err != nil {
+			return err
+		}
+		for _, script := range ibkrScripts {
+			if err := probeOneScriptContractFn(script, optionCalendarProbeArgv("ibkr"), optionCalendarContract); err != nil {
+				return err
+			}
+		}
+	}
 	if anyHLLiveReconcilable(cfg) {
 		if err := probeOneCheckScriptFn(hyperliquidLiveCloseScript, sizedCloseProbeArgv); err != nil {
 			return err
@@ -522,6 +532,21 @@ func probeOneCheckScript(script string, argv []string) error {
 }
 
 var robinhoodOptionMarksProbeArgv = []string{"--platform=robinhood", "--probe-only"}
+
+var ibkrOptionMarksProbeArgv = []string{"--platform=ibkr", "--probe-only"}
+
+func ibkrOptionsCheckScripts(cfg *Config) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, sc := range cfg.Strategies {
+		if sc.Type == "options" && sc.Platform == "ibkr" && sc.Script != "" && !seen[sc.Script] {
+			seen[sc.Script] = true
+			out = append(out, sc.Script)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
 var probeOneScriptContractFn = probeOneScriptContract
 

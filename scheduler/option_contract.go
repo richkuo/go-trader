@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+	_ "time/tzdata"
 )
 
 const optionPremiumUnitUnderlying = "underlying_unit"
@@ -16,18 +19,38 @@ const (
 	optionSettlementPhysical = "physical"
 )
 
+type optionExpiryCutoff struct {
+	Zone      string
+	Hour      int
+	Minute    int
+	ReadDelay time.Duration
+}
+
 type optionContractSpec struct {
 	Platform            string
 	Multiplier          float64
+	LegacyMultiplier    float64
 	RequireCoveredCalls bool
 	Settlement          string
+	Cutoff              *optionExpiryCutoff
+	MarkSource          string
+	SettlementSource    string
+	SettlementBasis     string
 }
 
+const (
+	ibkrMarkSource            = "binanceus_black_scholes_hv14"
+	ibkrSettlementSource      = "binanceus_spot_vwap_1530_1600_london"
+	optionSettlementBasisVWAP = "spot_candle_close_vwap"
+)
+
 var optionContractSpecs = map[string]optionContractSpec{
-	"robinhood": {Platform: "robinhood", Multiplier: 100, RequireCoveredCalls: true, Settlement: optionSettlementPhysical},
-	"deribit":   {Platform: "deribit", Multiplier: 1, Settlement: optionSettlementCash},
-	"okx":       {Platform: "okx", Multiplier: 1, Settlement: optionSettlementCash},
-	"ibkr":      {Platform: "ibkr", Multiplier: 1, Settlement: optionSettlementCash},
+	"robinhood": {Platform: "robinhood", Multiplier: 100, LegacyMultiplier: 100, RequireCoveredCalls: true, Settlement: optionSettlementPhysical},
+	"deribit":   {Platform: "deribit", Multiplier: 1, LegacyMultiplier: 1, Settlement: optionSettlementCash},
+	"okx":       {Platform: "okx", Multiplier: 1, LegacyMultiplier: 1, Settlement: optionSettlementCash},
+	"ibkr": {Platform: "ibkr", LegacyMultiplier: 1, Settlement: optionSettlementCash,
+		Cutoff:     &optionExpiryCutoff{Zone: "Europe/London", Hour: 16, Minute: 0, ReadDelay: 5 * time.Minute},
+		MarkSource: ibkrMarkSource, SettlementSource: ibkrSettlementSource, SettlementBasis: optionSettlementBasisVWAP},
 }
 
 func optionSettlementStyle(platform string) (string, error) {
@@ -44,7 +67,18 @@ func optionSettlementStyle(platform string) (string, error) {
 	return "", fmt.Errorf("option settlement style %q for platform %q is not cash or physical", spec.Settlement, platform)
 }
 
-var optionContractUnderlyingMultipliers = map[string]map[string]float64{}
+var optionContractUnderlyingMultipliers = map[string]map[string]float64{
+	"ibkr": {"BTC": 0.1, "ETH": 0.1},
+}
+
+func optionListedUnderlyings(platform string) []string {
+	out := make([]string, 0, len(optionContractUnderlyingMultipliers[platform]))
+	for u := range optionContractUnderlyingMultipliers[platform] {
+		out = append(out, u)
+	}
+	sort.Strings(out)
+	return out
+}
 
 func lookupOptionContractSpec(platform, underlying string) (optionContractSpec, error) {
 	spec, ok := optionContractSpecs[platform]
@@ -52,14 +86,76 @@ func lookupOptionContractSpec(platform, underlying string) (optionContractSpec, 
 		return optionContractSpec{}, fmt.Errorf("no option contract size for platform %q", platform)
 	}
 	if overrides := optionContractUnderlyingMultipliers[platform]; overrides != nil {
-		if m, ok := overrides[strings.ToUpper(underlying)]; ok {
+		if m, ok := overrides[strings.ToUpper(strings.TrimSpace(underlying))]; ok {
 			spec.Multiplier = m
+		} else if spec.Multiplier <= 0 {
+			return optionContractSpec{}, fmt.Errorf("%s options support only the %s underlyings; underlying %q has no contract size", platform, strings.Join(optionListedUnderlyings(platform), " and "), underlying)
 		}
 	}
 	if !finitePositive(spec.Multiplier) {
 		return optionContractSpec{}, fmt.Errorf("option contract size for %s %s is not positive", platform, underlying)
 	}
 	return spec, nil
+}
+
+const (
+	optionCalendarFlag            = "--option-calendar-json"
+	optionCalendarContract        = "option_calendar_v1"
+	optionCalendarProbeUnderlying = "BTC"
+)
+
+type optionCalendarContext struct {
+	Contract     string `json:"contract"`
+	Platform     string `json:"platform"`
+	Underlying   string `json:"underlying"`
+	EvaluatedAt  string `json:"evaluated_at"`
+	CutoffZone   string `json:"cutoff_zone"`
+	CutoffHour   int    `json:"cutoff_hour"`
+	CutoffMinute int    `json:"cutoff_minute"`
+}
+
+func optionCalendarArg(platform, underlying string, now time.Time) (string, bool, error) {
+	spec, ok := optionContractSpecs[platform]
+	if !ok || spec.Cutoff == nil {
+		return "", false, nil
+	}
+	raw, err := json.Marshal(optionCalendarContext{
+		Contract: optionCalendarContract, Platform: platform, Underlying: strings.ToUpper(strings.TrimSpace(underlying)),
+		EvaluatedAt: now.UTC().Format(time.RFC3339Nano), CutoffZone: spec.Cutoff.Zone, CutoffHour: spec.Cutoff.Hour, CutoffMinute: spec.Cutoff.Minute,
+	})
+	if err != nil {
+		return "", false, err
+	}
+	return optionCalendarFlag + "=" + string(raw), true, nil
+}
+
+func optionsCheckArgsPlatform(args []string) string {
+	platform := "deribit"
+	for _, a := range args {
+		if strings.HasPrefix(a, "--platform=") {
+			platform = strings.TrimPrefix(a, "--platform=")
+		}
+	}
+	return platform
+}
+
+func optionCalendarProbeArgv(platform string) []string {
+	arg, ok, err := optionCalendarArg(platform, optionCalendarProbeUnderlying, time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC))
+	if err != nil || !ok {
+		return nil
+	}
+	return []string{"wheel", optionCalendarProbeUnderlying, "--platform=" + platform, arg, "--probe-only"}
+}
+
+func legacyOptionContractMultiplier(platform string) (float64, error) {
+	spec, ok := optionContractSpecs[platform]
+	if !ok {
+		return 0, fmt.Errorf("no option contract size for platform %q", platform)
+	}
+	if !finitePositive(spec.LegacyMultiplier) {
+		return 0, fmt.Errorf("legacy option contract size for %s is not positive", platform)
+	}
+	return spec.LegacyMultiplier, nil
 }
 
 var optionInverseFamilyUnderlyings = map[string]bool{"BTC": true, "ETH": true}
@@ -86,6 +182,10 @@ func optionPricingPolicyError(platform, underlying string) error {
 	case "robinhood":
 		if why := robinhoodStockUnderlyingError(underlying); why != "" {
 			return fmt.Errorf("%s", why)
+		}
+	case "ibkr":
+		if _, err := lookupOptionContractSpec(platform, u); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -122,7 +222,10 @@ func optionsConfigPolicyError(sc StrategyConfig) error {
 	if u == "" {
 		return nil
 	}
-	return optionPricingPolicyError(sc.Platform, u)
+	if err := optionPricingPolicyError(sc.Platform, u); err != nil {
+		return fmt.Errorf("strategy %s platform %s underlying %s: %w", sc.ID, sc.Platform, u, err)
+	}
+	return nil
 }
 
 func optionStrategyCannotCoverCalls(strategy, platform string) bool {
@@ -150,6 +253,9 @@ func maxOptionContractMultiplier() float64 {
 	for _, spec := range optionContractSpecs {
 		if spec.Multiplier > max {
 			max = spec.Multiplier
+		}
+		if spec.LegacyMultiplier > max {
+			max = spec.LegacyMultiplier
 		}
 	}
 	for _, overrides := range optionContractUnderlyingMultipliers {
@@ -185,11 +291,7 @@ func optionPositionMultiplier(platform string, pos *OptionPosition) (float64, er
 	if m > 0 {
 		return m, nil
 	}
-	spec, err := lookupOptionContractSpec(platform, pos.Underlying)
-	if err != nil {
-		return 0, err
-	}
-	return spec.Multiplier, nil
+	return legacyOptionContractMultiplier(platform)
 }
 
 func strategyOptionMultiplier(s *StrategyState, key string, pos *OptionPosition) (float64, error) {
