@@ -142,9 +142,6 @@ func (b *brokerDiscordTransport) FollowupMessageCreate(interaction *discordgo.In
 }
 
 func (b *brokerDiscordTransport) ApplicationCommandBulkOverwrite(appID string, guildID string, commands []*discordgo.ApplicationCommand, options ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error) {
-	if guildID != "" {
-		return nil, fmt.Errorf("the notification broker registers global commands only")
-	}
 	ctx, cancel := brokerContext(options)
 	defer cancel()
 	raw, err := json.Marshal(commands)
@@ -152,7 +149,7 @@ func (b *brokerDiscordTransport) ApplicationCommandBulkOverwrite(appID string, g
 		return nil, err
 	}
 	var out []*discordgo.ApplicationCommand
-	if err := b.c.Call(ctx, notifybroker.OpDiscordCommands, notifybroker.DiscordCommandsRequest{Commands: raw}, &out); err != nil {
+	if err := b.c.Call(ctx, notifybroker.OpDiscordCommands, notifybroker.DiscordCommandsRequest{Commands: raw, GuildID: guildID}, &out); err != nil {
 		return nil, err
 	}
 	return out, nil

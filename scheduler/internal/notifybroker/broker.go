@@ -449,7 +449,7 @@ func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, 
 		if appID == "" {
 			return nil, errors.New("discord application identity is not available yet")
 		}
-		out, err := session.ApplicationCommandBulkOverwrite(appID, "", cmds, opt)
+		out, err := session.ApplicationCommandBulkOverwrite(appID, strings.TrimSpace(req.GuildID), cmds, opt)
 		if err != nil {
 			return nil, err
 		}

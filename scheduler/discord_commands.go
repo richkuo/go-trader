@@ -44,7 +44,7 @@ var opsCommandNames = map[string]bool{
 	"clear-cash-reconcile":      true,
 	"clear-operator-close":      true,
 	"resolve-entry":             true,
-	"resolve-robinhood-order":   true,
+	"resolve-rh-order":          true,
 	robinhoodAccountCommandName: true,
 }
 
@@ -491,7 +491,7 @@ func slashCommands() []*discordgo.ApplicationCommand {
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID that holds the attempt", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "attempt", Description: "Attempt id (ei-...) from the LIVE ENTRY alert or the startup log", Required: true},
 		}},
-		{Name: commandPrefix + "resolve-robinhood-order", Description: "Re-check a held Robinhood order; settle or release on venue evidence (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "resolve-rh-order", Description: "Re-check a held Robinhood order; settle or release on venue evidence (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID that holds the attempt", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "attempt", Description: "Attempt id (rh-...) from the ROBINHOOD ORDER UNRESOLVED alert or the startup log", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "order", Description: "Robinhood order id to look up, when the alert shows none"},
@@ -533,7 +533,11 @@ func (d *DiscordNotifier) RegisterSlashCommands(ss *StatusServer, cfg *Config) e
 	if d.broker == nil {
 		d.session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) { d.interactionCreate(s, i) })
 	}
-	if _, err := d.transport.ApplicationCommandBulkOverwrite(appID, "", slashCommands()); err != nil {
+	scope, err := d.slashCommandScope(appID)
+	if err != nil {
+		return err
+	}
+	if _, err := d.transport.ApplicationCommandBulkOverwrite(appID, scope, slashCommands()); err != nil {
 		return fmt.Errorf("bulk overwrite commands: %w", err)
 	}
 	return nil
@@ -558,7 +562,12 @@ func (d *DiscordNotifier) registerSlashCommandsWhenReady() {
 		case <-time.After(delay):
 		}
 		if appID := d.selfUserID(); appID != "" {
-			_, err := d.transport.ApplicationCommandBulkOverwrite(appID, "", slashCommands())
+			scope, scopeErr := d.slashCommandScope(appID)
+			if scopeErr != nil {
+				fmt.Println("[WARN] Discord slash command registration skipped:", scopeErr)
+				return
+			}
+			_, err := d.transport.ApplicationCommandBulkOverwrite(appID, scope, slashCommands())
 			if err == nil {
 				fmt.Println("Discord slash commands registered (the notification broker's Discord gateway is up)")
 				return
@@ -641,7 +650,7 @@ func (d *DiscordNotifier) interactionCreate(s discordTransport, i *discordgo.Int
 		d.handleClearOperatorClose(s, i, data.Options)
 	case "resolve-entry":
 		d.handleResolveEntry(s, i, data.Options)
-	case "resolve-robinhood-order":
+	case "resolve-rh-order":
 		d.handleResolveRobinhoodOrder(s, i, data.Options)
 	case robinhoodAccountCommandName:
 		d.handleResolveRobinhoodAccount(s, i, data.Options)

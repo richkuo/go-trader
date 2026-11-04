@@ -903,7 +903,7 @@ func formatRobinhoodOrderHoldAlert(strategyID string, a *robinhoodOrderAttempt, 
 	if a.VenueOrderID != "" {
 		order = a.VenueOrderID
 	}
-	return fmt.Sprintf("**ROBINHOOD ORDER UNRESOLVED** [%s] %s %s attempt %s (origin %s, ref_id %s, venue order %s): %s. No Robinhood order for %s is sent until this order is resolved; recovery retries every cycle, or run /%sresolve-robinhood-order %s %s with the venue order id; when the order history shows no order for this attempt, add release:%s.",
+	return fmt.Sprintf("**ROBINHOOD ORDER UNRESOLVED** [%s] %s %s attempt %s (origin %s, ref_id %s, venue order %s): %s. No Robinhood order for %s is sent until this order is resolved; recovery retries every cycle, or run /%sresolve-rh-order %s %s with the venue order id; when the order history shows no order for this attempt, add release:%s.",
 		strategyID, a.Side, a.Symbol, a.AttemptID, a.Origin, a.RefID, order, reason, a.Symbol, commandPrefix, strategyID, a.AttemptID, robinhoodAttestReleaseChoice)
 }
 
