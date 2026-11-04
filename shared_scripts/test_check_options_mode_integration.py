@@ -25,6 +25,11 @@ QP_KEYS = (
 )
 
 
+IBKR_CALENDAR = "--option-calendar-json=" + json.dumps({
+    "contract": "option_calendar_v1", "platform": "ibkr", "underlying": "BTC", "evaluated_at": "2026-11-04T12:00:00Z",
+    "cutoff_zone": "Europe/London", "cutoff_hour": 16, "cutoff_minute": 0})
+
+
 def _expected_error(platform):
     return (
         "options strategies run as paper only: no venue order path exists for options on "
@@ -305,7 +310,7 @@ RUNTIME_ERRORS = {
                                                        "vol_mean_reversion needs iv rank: " + READ_FAILED + " (upstream status 503)"),
     "rank_strategy_without_rank_butterfly": (["butterfly", "BTC", "--platform=ibkr"], {"QP_QUOTE": 100000, "QP_DAILY": json.dumps(BASE_CLOSES[:15])},
                                              "butterfly needs iv rank: iv rank unavailable: flat volatility range"),
-    "ibkr_model_without_volatility": (["protective_puts", "BTC", "--platform=ibkr"], {"QP_QUOTE": 100000, "QP_DAILY": "error"},
+    "ibkr_model_without_volatility": (["protective_puts", "BTC", "--platform=ibkr", IBKR_CALENDAR], {"QP_QUOTE": 100000, "QP_DAILY": "error"},
                                       "volatility unavailable: model pricing needs measured volatility: " + READ_FAILED),
     "robinhood_logged_out_model_without_volatility": (["covered_calls", "SPY", "--platform=robinhood"], {"QP_QUOTE": 600, "QP_DAILY": "429"},
                                                       "volatility unavailable: model pricing needs measured volatility: " + READ_FAILED + " (upstream status 429)"),
@@ -401,7 +406,7 @@ def test_rank_free_model_entries_price_from_measured_volatility(tmp_path, subtes
         with subtests.test(strategy=strategy):
             run_dir = tmp_path / strategy
             run_dir.mkdir()
-            proc, _ = _run([strategy, "BTC", "--platform=ibkr"], run_dir, "[]",
+            proc, _ = _run([strategy, "BTC", "--platform=ibkr", IBKR_CALENDAR], run_dir, "[]",
                            extra={"QP_QUOTE": 100000, "QP_DAILY": json.dumps(FLAT_RANGE_CLOSES)})
             assert proc.returncode == 0, proc.stderr
             out = _single_document(proc)

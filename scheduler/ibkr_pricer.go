@@ -2,123 +2,67 @@ package main
 
 import (
 	"fmt"
-	"math"
-	"strings"
 	"time"
 )
 
-type IBKRPricer struct {
-	spotPrices map[string]float64
+type IBKROptionPricer struct {
+	script string
+	run    optionMarksRunner
 }
 
-func NewIBKRPricer(spotPrices map[string]float64) *IBKRPricer {
-	return &IBKRPricer{spotPrices: spotPrices}
+func NewIBKROptionPricer() *IBKROptionPricer {
+	return &IBKROptionPricer{script: optionMarksScript, run: runPythonReadOnlyWithStdin}
 }
 
-func (p *IBKRPricer) Name() string { return "ibkr" }
+func (p *IBKROptionPricer) Name() string { return "ibkr" }
 
-func (p *IBKRPricer) FetchSpotPrice(underlying string) (float64, error) {
-	upper := strings.ToUpper(underlying)
-	for _, suffix := range []string{"/USD", "/USDT", "/USDC"} {
-		if price, ok := p.spotPrices[upper+suffix]; ok && finitePositive(price) {
-			return price, nil
+func (p *IBKROptionPricer) Refresh(reqs []optionLegRequest, refreshAt time.Time) []optionLegReply {
+	return runOptionMarksBatch("ibkr", p.script, p.run, reqs, refreshAt, true, ibkrOptionMarkReply)
+}
+
+func ibkrOptionMarkReply(req optionLegRequest, leg rhOptionMarksLeg) (optionLegReply, error) {
+	reply := optionLegReply{Key: req.Key}
+	switch leg.Status {
+	case "mark", "settled", "pending", "error":
+	default:
+		return reply, fmt.Errorf("unknown status %q", leg.Status)
+	}
+	cutoff, cerr := time.Parse(time.RFC3339Nano, leg.CutoffUTC)
+	ready, rerr := time.Parse(time.RFC3339Nano, leg.SettlementReadyUTC)
+	if cerr != nil || rerr != nil || !cutoff.Equal(req.KnownCutoff) || !ready.Equal(req.KnownReady) {
+		reply.Err = fmt.Sprintf("ibkr reply schedule cutoff_utc %q settlement_ready_utc %q differs from the expected %s and %s",
+			leg.CutoffUTC, leg.SettlementReadyUTC, req.KnownCutoff.UTC().Format(time.RFC3339), req.KnownReady.UTC().Format(time.RFC3339))
+		return reply, nil
+	}
+	reply.CutoffAt, reply.ReadyAt = cutoff.UTC(), ready.UTC()
+	spec := optionContractSpecs["ibkr"]
+	switch leg.Status {
+	case "mark":
+		mark := optionMarksReplyMark(leg)
+		if mark == nil {
+			reply.Err = "ibkr mark reply is missing its value, spot or greeks"
+			return reply, nil
 		}
-	}
-	return 0, fmt.Errorf("no spot price cached for %s", underlying)
-}
-
-const (
-	ibkrMarkSource       = "ibkr_black_scholes_legacy_model"
-	ibkrSettlementSource = "ibkr_cycle_price_legacy_model"
-	ibkrModelVolatility  = 0.80
-	ibkrModelRate        = 0.05
-)
-
-func (p *IBKRPricer) Refresh(reqs []optionLegRequest, refreshAt time.Time) []optionLegReply {
-	out := make([]optionLegReply, 0, len(reqs))
-	for _, req := range reqs {
-		reply := optionLegReply{Key: req.Key}
-		cutoff, ready, ok, err := optionGoExpirySchedule("ibkr", req.Expiry)
-		if err != nil || !ok {
-			reply.Err = fmt.Sprintf("invalid expiry %q", req.Expiry)
-			out = append(out, reply)
-			continue
+		if mark.Source != spec.MarkSource {
+			reply.Err = fmt.Sprintf("ibkr mark source %q is not %s", mark.Source, spec.MarkSource)
+			return reply, nil
 		}
-		reply.CutoffAt, reply.ReadyAt = cutoff, ready
-		spot, spotErr := p.FetchSpotPrice(req.Underlying)
-		if !refreshAt.Before(cutoff) {
-			if spotErr != nil {
-				reply.Pending = fmt.Sprintf("%s: %v", ibkrSettlementSource, spotErr)
-			} else {
-				reply.Settlement = &optionLegSettlement{Price: spot, Basis: optionSettlementBasisIBKR, Date: refreshAt.UTC().Format("2006-01-02"), Source: ibkrSettlementSource}
-			}
-			out = append(out, reply)
-			continue
+		reply.Mark = mark
+	case "settled":
+		st := leg.Settlement
+		if st == nil || st.Price == nil {
+			reply.Err = "ibkr settlement reply has no price"
+			return reply, nil
 		}
-		if spotErr != nil {
-			reply.Err = spotErr.Error()
-			out = append(out, reply)
-			continue
+		if st.Basis != spec.SettlementBasis || st.Source != spec.SettlementSource || st.Date != req.Expiry {
+			reply.Err = fmt.Sprintf("ibkr settlement %s %s on %s is not the %s %s for expiry %s", st.Source, st.Basis, st.Date, spec.SettlementSource, spec.SettlementBasis, req.Expiry)
+			return reply, nil
 		}
-		mark, err := p.markAt(req.OptionType, req.Strike, spot, cutoff.Sub(refreshAt).Hours()/24)
-		if err != nil {
-			reply.Err = err.Error()
-		} else {
-			reply.Mark = mark
-		}
-		out = append(out, reply)
+		reply.Settlement = &optionLegSettlement{Price: *st.Price, Basis: st.Basis, Date: st.Date, Source: st.Source}
+	case "pending":
+		reply.Pending = firstNonEmpty(leg.Reason, "ibkr settlement pending")
+	case "error":
+		reply.Err = firstNonEmpty(leg.Reason, "ibkr option read failed")
 	}
-	return out
-}
-
-func (p *IBKRPricer) markAt(optionType string, strike, spot, dte float64) (*optionLegMark, error) {
-	if !finitePositive(dte) {
-		return nil, fmt.Errorf("days to expiry %v are not positive", dte)
-	}
-	price, delta, gamma, vega, theta := bsPrice(spot, strike, dte/365.0, ibkrModelRate, ibkrModelVolatility, strings.ToLower(optionType))
-	for _, v := range []float64{price, delta, gamma, vega, theta} {
-		if math.IsNaN(v) || math.IsInf(v, 0) {
-			return nil, fmt.Errorf("black-scholes result is not finite")
-		}
-	}
-	if price < 0 {
-		price = 0
-	}
-	return &optionLegMark{PerUnitUSD: price, Spot: spot, Greeks: OptGreeks{Delta: delta, Gamma: gamma, Theta: theta, Vega: vega}, Source: ibkrMarkSource}, nil
-}
-
-func bsPrice(S, K, T, r, sigma float64, optionType string) (price, delta, gamma, vega, theta float64) {
-	if T <= 0 || sigma <= 0 || S <= 0 || K <= 0 {
-		return 0, 0, 0, 0, 0
-	}
-
-	d1 := (math.Log(S/K) + (r+0.5*sigma*sigma)*T) / (sigma * math.Sqrt(T))
-	d2 := d1 - sigma*math.Sqrt(T)
-
-	nd1 := stdNormCDF(d1)
-	nd2 := stdNormCDF(d2)
-	pdfD1 := stdNormPDF(d1)
-
-	if optionType == "call" {
-		price = S*nd1 - K*math.Exp(-r*T)*nd2
-		delta = nd1
-		theta = (-S*pdfD1*sigma/(2*math.Sqrt(T)) - r*K*math.Exp(-r*T)*nd2) / 365
-	} else {
-		price = K*math.Exp(-r*T)*stdNormCDF(-d2) - S*stdNormCDF(-d1)
-		delta = nd1 - 1
-		theta = (-S*pdfD1*sigma/(2*math.Sqrt(T)) + r*K*math.Exp(-r*T)*stdNormCDF(-d2)) / 365
-	}
-
-	gamma = pdfD1 / (S * sigma * math.Sqrt(T))
-	vega = S * pdfD1 * math.Sqrt(T)
-
-	return
-}
-
-func stdNormCDF(x float64) float64 {
-	return 0.5 * math.Erfc(-x/math.Sqrt2)
-}
-
-func stdNormPDF(x float64) float64 {
-	return math.Exp(-0.5*x*x) / math.Sqrt(2*math.Pi)
+	return reply, nil
 }

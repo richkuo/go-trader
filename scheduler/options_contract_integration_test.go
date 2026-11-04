@@ -99,14 +99,14 @@ func (p ocPricer) Refresh(reqs []optionLegRequest, refreshAt time.Time) []option
 		if refreshAt.Before(cutoff) {
 			r.Mark = &optionLegMark{PerUnitUSD: p.mark * p.spot, Spot: p.spot, Greeks: OptGreeks{Delta: 0.3}, Source: "contract-test"}
 		} else {
-			basis := optionSettlementBasisDelivery
+			basis, source := optionSettlementBasisDelivery, "contract-test"
 			switch p.platform {
 			case "robinhood":
 				basis = optionSettlementBasisRawClose
 			case "ibkr":
-				basis = optionSettlementBasisIBKR
+				basis, source = optionSettlementBasisVWAP, ibkrSettlementSource
 			}
-			r.Settlement = &optionLegSettlement{Price: p.expirySpot, Basis: basis, Date: req.Expiry, Source: "contract-test"}
+			r.Settlement = &optionLegSettlement{Price: p.expirySpot, Basis: basis, Date: req.Expiry, Source: source}
 		}
 		out = append(out, r)
 	}
@@ -730,8 +730,10 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 
 const ocExpiry = "2026-12-18"
 
-func ocLeg(action, optionType string, strike, premiumUSD float64) OptionsAction {
-	return OptionsAction{Action: action, OptionType: optionType, Strike: strike, Expiry: ocExpiry, PremiumUSD: premiumUSD}
+const ocIBKRContractSize = 0.1
+
+func ocLeg(action, optionType string, strike, contractPremiumUSD float64) OptionsAction {
+	return OptionsAction{Action: action, OptionType: optionType, Strike: strike, Expiry: ocExpiry, PremiumUSD: contractPremiumUSD / ocIBKRContractSize}
 }
 
 func ocStructure(id string, legs ...OptionsAction) []OptionsAction {
@@ -895,8 +897,8 @@ func TestOptionStructureEntryIntegration(t *testing.T) {
 				want: []string{"Insufficient free cash for the 3 buys of option structure oc-1: required $1101.75", "leg 3/3"}},
 			{name: "sell_premium_cannot_fund_buys", cash: 600, actions: []OptionsAction{ocLeg("sell", "call", 200, 500), ocLeg("buy", "call", 100, 1), ocLeg("buy", "call", 110, 700)},
 				want: []string{"Insufficient free cash for the 2 buys of option structure oc-1", "before any premium from its sells", "leg 3/3"}},
-			{name: "put_collateral", actions: two(ocLeg("sell", "put", 2000, 1)), want: []string{"Insufficient collateral for short put BTC strike=2000 qty=1: required $2000.00 (new $2000.00 + reserved $0.00), available cash $997.50", "leg 3/3"}},
-			{name: "post_fee_reserve", actions: two(ocLeg("sell", "put", 997.5, 0.1)), want: []string{"would leave cash below reserved put collateral: required $997.50, available $997.35", "leg 3/3"}},
+			{name: "put_collateral", actions: two(ocLeg("sell", "put", 20000, 1)), want: []string{"Insufficient collateral for short put BTC strike=20000 qty=1: required $2000.00 (new $2000.00 + reserved $0.00), available cash $997.50", "leg 3/3"}},
+			{name: "post_fee_reserve", actions: two(ocLeg("sell", "put", 9975, 0.1)), want: []string{"would leave cash below reserved put collateral: required $997.50, available $997.35", "leg 3/3"}},
 			{name: "repeat", existing: map[string]*OptionPosition{"held": {ID: "held", Underlying: "BTC", OptionType: "call", Strike: 150, Expiry: ocExpiry, Action: "buy", Quantity: 1, ContractMultiplier: 1, EntryPremiumUSD: 5, CurrentValueUSD: 5}},
 				actions: two(ocLeg("buy", "call", 150, 1)), want: []string{"repeats open option leg held", "leg 3/3"}},
 			{name: "destination_collision", existing: map[string]*OptionPosition{"BTC-call-buy-120-2026-12-18": {ID: "BTC-call-buy-120-2026-12-18", Underlying: "BTC", OptionType: "call", Strike: 119.5, Expiry: ocExpiry, Action: "buy", Quantity: 1, ContractMultiplier: 1, EntryPremiumUSD: 5, CurrentValueUSD: 5}},
@@ -1198,7 +1200,7 @@ func TestOptionStructureEntryIntegration(t *testing.T) {
 		env.saveAll()
 		storage := map[string]string{def.ID: def.ID, src.ID: "src-store"}
 		fly := func() *OptionsResult {
-			return ocResult("ibkr", "BTC", 100, ocLeg("buy", "call", 95, 6), OptionsAction{Action: "sell", OptionType: "call", Strike: 100, Expiry: ocExpiry, PremiumUSD: 3, Quantity: 2}, ocLeg("buy", "call", 105, 1))
+			return ocResult("ibkr", "BTC", 100, ocLeg("buy", "call", 95, 6), OptionsAction{Action: "sell", OptionType: "call", Strike: 100, Expiry: ocExpiry, PremiumUSD: 3 / ocIBKRContractSize, Quantity: 2}, ocLeg("buy", "call", 105, 1))
 		}
 		wantCash := 100000 - 6.25 + (6 - 0.5) - 1.25
 		for _, id := range []string{def.ID, src.ID} {
@@ -1481,4 +1483,187 @@ func TestOptionLegacyKeyNormalizationIntegration(t *testing.T) {
 			check(env, "reload after save")
 		})
 	}
+}
+
+func TestIBKROptionContractSizeIntegration(t *testing.T) {
+	t.Run("new_btc_and_eth_entries_use_a_tenth_of_a_coin", func(t *testing.T) {
+		btc := ocSC("ib-size-btc", "ibkr", "BTC")
+		eth := ocSC("ib-size-eth", "ibkr", "ETH")
+		env := ocEnv(t, btc, eth)
+		fee := CalculateOptionFee("ibkr", 200, 1)
+		logger, buf := ocLogger(btc.ID)
+		if n, err := ExecuteOptionsSignal(env.strat(btc.ID), ocResult("ibkr", "BTC", 60000, OptionsAction{Action: "buy", OptionType: "call", Strike: 60000, Expiry: ocExpiry, PremiumUSD: 2000, Quantity: 1}), logger); err != nil || n != 1 {
+			t.Fatalf("btc buy trades=%d err=%v; log:\n%s", n, err, buf.String())
+		}
+		if s := env.strat(btc.ID); !ocNear(s.Cash, 100000-200-fee) || s.OptionPositions["BTC-call-buy-60000-2026-12-18"].ContractMultiplier != 0.1 {
+			t.Fatalf("btc buy cash=%v legs=%v", s.Cash, ocBookSnapshot(s))
+		}
+		logger, buf = ocLogger(eth.ID)
+		if n, err := ExecuteOptionsSignal(env.strat(eth.ID), ocResult("ibkr", "ETH", 3000, OptionsAction{Action: "sell", OptionType: "put", Strike: 3000, Expiry: ocExpiry, PremiumUSD: 2000, Quantity: 1}), logger); err != nil || n != 1 {
+			t.Fatalf("eth sell trades=%d err=%v; log:\n%s", n, err, buf.String())
+		}
+		s := env.strat(eth.ID)
+		if !ocNear(s.Cash, 100000+200-fee) || s.OptionPositions["ETH-put-sell-3000-2026-12-18"].ContractMultiplier != 0.1 {
+			t.Fatalf("eth sell cash=%v legs=%v", s.Cash, ocBookSnapshot(s))
+		}
+		if c, err := reservedShortPutCollateralUSD(s); err != nil || !ocNear(c, 300) {
+			t.Fatalf("eth put collateral = %v, %v; want 300", c, err)
+		}
+		env.saveAll()
+		env = env.restart()
+		if leg := env.strat(eth.ID).OptionPositions["ETH-put-sell-3000-2026-12-18"]; leg == nil || leg.ContractMultiplier != 0.1 {
+			t.Fatalf("restart eth leg = %+v", leg)
+		}
+	})
+
+	t.Run("unsupported_underlyings_refuse_config_and_keep_their_rows", func(t *testing.T) {
+		sol := ocSC("ib-sol", "ibkr", "SOL")
+		err := validateConfig(&Config{IntervalSeconds: 600, DBFile: filepath.Join(t.TempDir(), "state.db"), Strategies: []StrategyConfig{sol}}, true)
+		if err == nil || !strings.Contains(err.Error(), "strategy ib-sol platform ibkr underlying SOL: ibkr options support only the BTC and ETH underlyings") {
+			t.Fatalf("SOL config = %v", err)
+		}
+		for _, u := range []string{"BTC", "ETH"} {
+			if err := optionsConfigPolicyError(ocSC("ib-"+u, "ibkr", u)); err != nil {
+				t.Fatalf("%s config = %v", u, err)
+			}
+		}
+		if _, err := lookupOptionContractSpec("ibkr", "SOL"); err == nil {
+			t.Fatal("a new SOL contract lookup must fail")
+		}
+		dir := t.TempDir()
+		cfg := &Config{DBFile: filepath.Join(dir, "state.db"), Strategies: []StrategyConfig{sol}}
+		env := openEntryTestEnv(t, cfg)
+		ibSol := env.strat(sol.ID)
+		ibSol.OptionPositions["SOL-put-sell-150-2026-12-18"] = &OptionPosition{ID: "SOL-put-sell-150-2026-12-18", TradePositionID: "tp-sol", Underlying: "SOL", OptionType: "put", Strike: 150,
+			Expiry: ocExpiry, Action: "sell", Quantity: 2, EntryPremiumUSD: 12, CurrentValueUSD: -11}
+		env.saveAll()
+		env.store.Close()
+		sum := func() [32]byte {
+			b, err := os.ReadFile(cfg.DBFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return sha256.Sum256(b)
+		}
+		before := sum()
+		layout, _ := resolveStorageLayout(cfg)
+		ident, _ := buildStorageIdentityMap(cfg, layout)
+		ro, err := OpenStateStoreReadOnly(layout, ident)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roState, _, err := LoadStateWithStore(cfg, ro)
+		if err != nil {
+			t.Fatalf("a legacy SOL row must load for inspection: %v", err)
+		}
+		leg := roState.Strategies[sol.ID].OptionPositions["SOL-put-sell-150-2026-12-18"]
+		if leg == nil || leg.ContractMultiplier != 1 || leg.EntryPremiumUSD != 12 {
+			t.Fatalf("SOL leg = %+v, want legacy size 1", leg)
+		}
+		reqs := collectOptionLegRequests(roState.Strategies[sol.ID], "ibkr", time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC))
+		if len(reqs) != 1 || !strings.Contains(reqs[0].PreError, "ibkr options support only the BTC and ETH underlyings") || reqs[0].Multiplier != 1 {
+			t.Fatalf("SOL request = %+v", reqs)
+		}
+		ro.Close()
+		if sum() != before {
+			t.Fatal("inspecting a refused strategy changed its file")
+		}
+	})
+
+	t.Run("legacy_sizes_survive_both_loads_both_saves_partitions_and_aliases", func(t *testing.T) {
+		dir := t.TempDir()
+		def := ocSC("ib-legacy", "ibkr", "BTC")
+		src := ocSC("ib-legacy-src", "ibkr", "ETH")
+		src.PaperSource = "src"
+		src.StorageStrategyID = "ib-src-store"
+		cfg := &Config{DBFile: filepath.Join(dir, "state.db"), IntervalSeconds: 600, PaperSources: []PaperSourceConfig{{ID: "src", DBFile: filepath.Join(dir, "src.db")}},
+			Strategies: []StrategyConfig{def, src}}
+		env := openEntryTestEnv(t, cfg)
+		d := env.strat(def.ID)
+		d.Cash = 5000
+		d.OptionPositions["unstamped"] = &OptionPosition{ID: "unstamped", TradePositionID: "tp-u", Underlying: "BTC", OptionType: "put", Strike: 60000, Expiry: ocExpiry,
+			Action: "sell", Quantity: 1, EntryPremiumUSD: 900, CurrentValueUSD: -800}
+		d.OptionPositions["half"] = &OptionPosition{ID: "half", TradePositionID: "tp-h", Underlying: "BTC", OptionType: "call", Strike: 70000, Expiry: ocExpiry,
+			Action: "buy", Quantity: 3, ContractMultiplier: 0.5, EntryPremiumUSD: 450, CurrentValueUSD: 400}
+		sp := env.strat(src.ID)
+		sp.Cash = 7000
+		sp.OptionPositions["src-unstamped"] = &OptionPosition{ID: "src-unstamped", TradePositionID: "tp-s", Underlying: "ETH", OptionType: "put", Strike: 3000, Expiry: ocExpiry,
+			Action: "sell", Quantity: 2, EntryPremiumUSD: 120, CurrentValueUSD: -110}
+		env.saveAll()
+		env.store.Close()
+
+		for _, path := range []string{cfg.DBFile, filepath.Join(dir, "src.db")} {
+			raw, err := OpenStateDB(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := raw.db.Exec(`UPDATE option_positions SET contract_multiplier = 0 WHERE id != 'half'`); err != nil {
+				t.Fatal(err)
+			}
+			raw.Close()
+		}
+		raw, err := OpenStateDB(cfg.DBFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := raw.db.Exec(`ALTER TABLE option_positions DROP COLUMN contract_multiplier`); err != nil {
+			t.Fatalf("drop column to build a pre-#1911 file: %v", err)
+		}
+		raw.Close()
+
+		check := func(label string, state *AppState, wantHalf float64) {
+			t.Helper()
+			db := state.Strategies[def.ID]
+			if db == nil || db.Cash != 5000 || db.OptionPositions["unstamped"].ContractMultiplier != 1 || db.OptionPositions["unstamped"].EntryPremiumUSD != 900 || db.OptionPositions["unstamped"].CurrentValueUSD != -800 {
+				t.Fatalf("%s: default book = %+v", label, db)
+			}
+			if got := db.OptionPositions["half"].ContractMultiplier; got != wantHalf {
+				t.Fatalf("%s: half stamp = %v, want %v", label, got, wantHalf)
+			}
+			sb := state.Strategies[src.ID]
+			if sb == nil || sb.Cash != 7000 || sb.OptionPositions["src-unstamped"].ContractMultiplier != 1 || sb.OptionPositions["src-unstamped"].Quantity != 2 {
+				t.Fatalf("%s: source book = %+v", label, sb)
+			}
+		}
+
+		primary, err := OpenStateDB(cfg.DBFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		viaDB, err := LoadStateWithDB(&Config{DBFile: cfg.DBFile, Strategies: []StrategyConfig{def}}, primary)
+		if err != nil {
+			t.Fatalf("LoadStateWithDB: %v", err)
+		}
+		if leg := viaDB.Strategies[def.ID].OptionPositions["unstamped"]; leg == nil || leg.ContractMultiplier != 1 {
+			t.Fatalf("LoadStateWithDB unstamped leg = %+v, want legacy 1", leg)
+		}
+		if leg := viaDB.Strategies[def.ID].OptionPositions["half"]; leg == nil || leg.ContractMultiplier != 1 {
+			t.Fatalf("LoadStateWithDB of a dropped column = %+v, want legacy 1", leg)
+		}
+		primary.Close()
+
+		env = openEntryTestEnv(t, cfg)
+		check("store load of a pre-#1911 file", env.state, 1)
+		env.strat(def.ID).OptionPositions["half"].ContractMultiplier = 0.5
+		if c, err := reservedShortPutCollateralUSD(env.strat(def.ID)); err != nil || c != 60000 {
+			t.Fatalf("legacy collateral = %v, %v; want 60000 at size 1", c, err)
+		}
+		if v := optionRiskMultiplier("ibkr", env.strat(def.ID).OptionPositions["unstamped"]); v != 1 {
+			t.Fatalf("risk multiplier = %v", v)
+		}
+		if err := env.store.SaveStrategyBook(env.strat(def.ID)); err != nil {
+			t.Fatalf("book save: %v", err)
+		}
+		env.saveAll()
+		env = env.restart()
+		check("restart after both saves", env.state, 0.5)
+		var stored float64
+		if err := env.fileFor(src.ID).db.QueryRow(`SELECT contract_multiplier FROM option_positions WHERE strategy_id = 'ib-src-store' AND id = 'src-unstamped'`).Scan(&stored); err != nil || stored != 1 {
+			t.Fatalf("source alias stamp = %v, %v; want 1", stored, err)
+		}
+		viaDB, err = LoadStateWithDB(&Config{DBFile: cfg.DBFile, Strategies: []StrategyConfig{def}}, env.fileFor(def.ID))
+		if err != nil || viaDB.Strategies[def.ID].OptionPositions["unstamped"].ContractMultiplier != 1 || viaDB.Strategies[def.ID].OptionPositions["half"].ContractMultiplier != 0.5 {
+			t.Fatalf("LoadStateWithDB after save: %v", err)
+		}
+	})
 }

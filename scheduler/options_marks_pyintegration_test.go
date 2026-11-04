@@ -4,8 +4,11 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -195,6 +198,380 @@ func TestRobinhoodOptionMarksPyIntegration(t *testing.T) {
 		deribitOnly := &Config{Strategies: []StrategyConfig{ocSC("deribit-om-probe", "deribit", "BTC")}}
 		if anyRobinhoodOptions(deribitOnly) || !anyRobinhoodOptions(cfg) {
 			t.Fatal("the mark probe must run only for robinhood options")
+		}
+	})
+}
+
+const ibFakeScript = `import json, os, sys
+mode = os.environ["OM_MODE"]
+req = json.loads(sys.stdin.read())
+def doc(**kw):
+    d = {"contract": "option_marks_v1", "platform": "ibkr", "premium_unit": "underlying_unit", "legs": []}
+    d.update(kw)
+    return d
+def base(leg):
+    return {"id": leg["id"], "cutoff_utc": leg["cutoff_utc"], "settlement_ready_utc": leg["settlement_ready_utc"]}
+def mark(leg, source="binanceus_black_scholes_hv14"):
+    out = base(leg)
+    out.update(status="mark", mark={"value_per_unit": 900.0, "spot": 60000.0, "greeks": {"delta": -0.3, "gamma": 0.0, "theta": -5.0, "vega": 1.0}, "source": source})
+    return out
+def settled(leg):
+    out = base(leg)
+    out.update(status="settled", settlement={"price": 58000.0, "basis": "spot_candle_close_vwap", "date": leg["expiry"], "source": "binanceus_spot_vwap_1530_1600_london"})
+    return out
+legs = req["legs"]
+if mode == "good":
+    print(json.dumps(doc(legs=[mark(l) for l in legs])))
+elif mode == "bad_platform":
+    print(json.dumps(dict(doc(legs=[mark(l) for l in legs]), platform="robinhood")))
+elif mode == "wrong_source":
+    print(json.dumps(doc(legs=[mark(legs[0], "fixed_vol_model")] + [mark(l) for l in legs[1:]])))
+elif mode == "changed_times":
+    moved = mark(legs[0]); moved["cutoff_utc"] = legs[0]["expiry"] + "T00:00:00Z"
+    print(json.dumps(doc(legs=[moved] + [mark(l) for l in legs[1:]])))
+elif mode == "missing_times":
+    bare = mark(legs[0]); bare.pop("cutoff_utc")
+    print(json.dumps(doc(legs=[bare] + [mark(l) for l in legs[1:]])))
+elif mode == "early_settle":
+    print(json.dumps(doc(legs=[settled(l) for l in legs])))
+elif mode == "unknown_status":
+    odd = base(legs[0]); odd["status"] = "assigned"
+    print(json.dumps(doc(legs=[odd] + [mark(l) for l in legs[1:]])))
+elif mode == "duplicate_id":
+    print(json.dumps(doc(legs=[mark(l) for l in legs] + [mark(legs[0])])))
+elif mode == "omitted_leg":
+    print(json.dumps(doc(legs=[mark(l) for l in legs[1:]])))
+elif mode == "extra_document":
+    print(json.dumps(doc(legs=[mark(l) for l in legs])))
+    print(json.dumps(doc(legs=[mark(l) for l in legs])))
+`
+
+func ibPyLeg(id, optionType, action, expiry string, strike, mult, value float64) *OptionPosition {
+	return &OptionPosition{ID: id, TradePositionID: "tp-" + id, Underlying: "BTC", OptionType: optionType, Strike: strike, Expiry: expiry,
+		Action: action, Quantity: 1, ContractMultiplier: mult, EntryPremiumUSD: math.Abs(value), CurrentValueUSD: value,
+		OpenedAt: time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)}
+}
+
+func ibMinuteWindow(expiry string, close float64) []interface{} {
+	cutoff, _, _, _ := optionGoExpirySchedule("ibkr", expiry)
+	start := cutoff.Add(-30 * time.Minute).UnixMilli()
+	rows := make([]interface{}, 0, 30)
+	for i := int64(0); i < 30; i++ {
+		rows = append(rows, []interface{}{start + i*60000, close, close, close, close, 1.0 + float64(i%3)})
+	}
+	return rows
+}
+
+func ibMinuteReads(t *testing.T, logPath string) []int64 {
+	t.Helper()
+	raw, err := os.ReadFile(logPath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	var out []int64
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec struct {
+			Call      string `json:"call"`
+			Timeframe string `json:"timeframe"`
+			Since     *int64 `json:"since"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("request log line %q: %v", line, err)
+		}
+		if rec.Call == "fetch_ohlcv" && rec.Timeframe == "1m" && rec.Since != nil {
+			out = append(out, *rec.Since)
+		}
+	}
+	return out
+}
+
+func TestIBKROptionMarksPyIntegration(t *testing.T) {
+	root := qpRoot(t)
+
+	t.Run("real_script_marks_with_measured_volatility", func(t *testing.T) {
+		qpEnv(t, root, map[string]string{"QP_QUOTE": "60000", "QP_CLOSE": "60000", "QP_DAILY": qpOptionsDaily(qpOptionsBaselineDaily)})
+		sc := ocSC("ib-om-real", "ibkr", "BTC")
+		env := ocEnv(t, sc)
+		s := env.strat(sc.ID)
+		s.Cash = 100000
+		s.OptionPositions["live"] = ibPyLeg("live", "put", "sell", "2026-11-27", 60000, 0.1, -123)
+		refreshAt := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+		res := lcRefresh(env, sc, NewIBKROptionPricer(), nil, newOptionSettlementAlertThrottle(), refreshAt)
+		leg := s.OptionPositions["live"]
+		cutoff := time.Date(2026, 11, 27, 16, 0, 0, 0, time.UTC)
+		if res.Marked != 1 || leg.MarkSource != ibkrMarkSource || leg.MarkError != "" || !leg.MarkUpdatedAt.Equal(refreshAt) || leg.CurrentValueUSD >= 0 || leg.CurrentValueUSD == -123 {
+			t.Fatalf("mark: res=%+v leg=%+v", res, leg)
+		}
+		if !leg.ExpiryCutoffAt.Equal(cutoff) || !ocNear(leg.DTE, cutoff.Sub(refreshAt).Hours()/24) {
+			t.Fatalf("cutoff=%s dte=%v", leg.ExpiryCutoffAt, leg.DTE)
+		}
+		marked := leg.CurrentValueUSD
+		t.Setenv("QP_DAILY", "error")
+		later := refreshAt.Add(time.Hour)
+		res = lcRefresh(env, sc, NewIBKROptionPricer(), nil, newOptionSettlementAlertThrottle(), later)
+		if res.Marked != 0 || len(res.Failures) != 1 || leg.CurrentValueUSD != marked || !strings.Contains(leg.MarkError, "volatility unavailable: model pricing needs measured volatility") || !ocNear(leg.DTE, cutoff.Sub(later).Hours()/24) {
+			t.Fatalf("missing history: res=%+v leg=%+v", res, leg)
+		}
+		t.Setenv("QP_DAILY", `[100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0]`)
+		res = lcRefresh(env, sc, NewIBKROptionPricer(), nil, newOptionSettlementAlertThrottle(), later)
+		if res.Marked != 1 || leg.MarkError != "" {
+			t.Fatalf("a rank-only failure must still mark: res=%+v leg=%+v", res, leg)
+		}
+	})
+
+	t.Run("real_script_settles_the_dated_window_once", func(t *testing.T) {
+		logPath := filepath.Join(t.TempDir(), "qp.log")
+		bars, _ := json.Marshal(map[string]interface{}{"BTC/USDT": append(ibMinuteWindow("2026-11-13", 62000), ibMinuteWindow("2026-11-20", 58000)...)})
+		qpEnv(t, root, map[string]string{"QP_QUOTE": "60000", "QP_CLOSE": "60000", "QP_DAILY": qpOptionsDaily(qpOptionsBaselineDaily),
+			"QP_MINUTE_BARS": string(bars), "QP_LOG": logPath})
+		sc := ocSC("ib-om-settle", "ibkr", "BTC")
+		env := ocEnv(t, sc)
+		s := env.strat(sc.ID)
+		s.Cash = 100000
+		s.OptionPositions["sold-put"] = ibPyLeg("sold-put", "put", "sell", "2026-11-20", 60000, 0.1, -50)
+		s.OptionPositions["bought-call"] = ibPyLeg("bought-call", "call", "buy", "2026-11-13", 60000, 0.1, 40)
+		env.saveAll()
+		waiting := time.Date(2026, 11, 20, 16, 2, 0, 0, time.UTC)
+		res := lcRefresh(env, sc, NewIBKROptionPricer(), nil, newOptionSettlementAlertThrottle(), waiting)
+		if res.Settled != 1 || res.Waiting != 1 || len(res.Alerts) != 0 || s.OptionPositions["bought-call"] != nil || s.OptionPositions["sold-put"] == nil || !ocNear(s.Cash, 100200) {
+			t.Fatalf("first refresh: res=%+v cash=%v legs=%v", res, s.Cash, ocBookSnapshot(s))
+		}
+		start13 := time.Date(2026, 11, 13, 15, 30, 0, 0, time.UTC).UnixMilli()
+		if reads := ibMinuteReads(t, logPath); len(reads) != 1 || reads[0] != start13 {
+			t.Fatalf("minute reads before the 11-20 read boundary = %v, want only the 11-13 window %d", reads, start13)
+		}
+		ready := time.Date(2026, 11, 20, 16, 5, 0, 0, time.UTC)
+		res = lcRefresh(env, sc, NewIBKROptionPricer(), nil, newOptionSettlementAlertThrottle(), ready)
+		if res.Settled != 1 || len(s.OptionPositions) != 0 || len(s.Positions) != 0 || !ocNear(s.Cash, 100000) {
+			t.Fatalf("second refresh: res=%+v cash=%v positions=%v", res, s.Cash, s.Positions)
+		}
+		env.saveAll()
+		env = env.restart()
+		res = lcRefresh(env, sc, NewIBKROptionPricer(), nil, newOptionSettlementAlertThrottle(), ready.Add(time.Hour))
+		env.saveAll()
+		if _, closed, legs := lcRows(t, env, sc.ID); res.Legs != 0 || closed != 2 || legs != 0 || !ocNear(env.strat(sc.ID).Cash, 100000) {
+			t.Fatalf("restart: res=%+v closed=%d legs=%d cash=%v", res, closed, legs, env.strat(sc.ID).Cash)
+		}
+		trades := esTrades(t, env, sc.ID)
+		if len(trades) != 2 || !strings.Contains(trades[0].details+trades[1].details, "binanceus_spot_vwap_1530_1600_london spot_candle_close_vwap 2026-11-20") {
+			t.Fatalf("trades = %+v", trades)
+		}
+	})
+
+	t.Run("reply_contract_failures", func(t *testing.T) {
+		script := filepath.Join(t.TempDir(), "fake_ibkr_marks.py")
+		if err := os.WriteFile(script, []byte(ibFakeScript), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		markAt := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+		waitAt := time.Date(2026, 11, 20, 16, 1, 0, 0, time.UTC)
+		const whole, first, omitted, early = "whole", "first", "omitted", "early"
+		for _, tc := range []struct {
+			mode, scope, reason string
+		}{
+			{"bad_platform", whole, "platform is not ibkr"},
+			{"unknown_status", whole, `unknown status "assigned"`},
+			{"duplicate_id", whole, "duplicate leg id"},
+			{"extra_document", whole, "stdout holds more than one JSON document"},
+			{"wrong_source", first, `ibkr mark source "fixed_vol_model" is not binanceus_black_scholes_hv14`},
+			{"changed_times", first, "ibkr reply schedule cutoff_utc"},
+			{"missing_times", first, "ibkr reply schedule cutoff_utc \"\""},
+			{"omitted_leg", omitted, "ibkr option marks reply omitted this leg"},
+			{"early_settle", early, "settlement before the read boundary"},
+		} {
+			t.Run(tc.mode, func(t *testing.T) {
+				t.Setenv("OM_MODE", tc.mode)
+				pricer := &IBKROptionPricer{script: script, run: func(script string, args []string, stdin []byte) ([]byte, []byte, error) {
+					return runPythonWithTimeout(shutdownReadOnlyCtx, script, args, stdin, 5*time.Second)
+				}}
+				s := &StrategyState{ID: "ib-om-fake", Platform: "ibkr", Cash: 100000, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}}
+				s.OptionPositions["a-put"] = ibPyLeg("a-put", "put", "sell", "2026-11-20", 60000, 0.1, -55)
+				s.OptionPositions["b-call"] = ibPyLeg("b-call", "call", "sell", "2026-11-20", 65000, 0.1, -22)
+				at := markAt
+				if tc.scope == early {
+					at = waitAt
+				}
+				reqs := collectOptionLegRequests(s, "ibkr", at)
+				logger, _ := ocLogger(s.ID)
+				res := applyOptionLegReplies(s, "ibkr", reqs, refreshOptionLegs(pricer, reqs, at), at, logger)
+				put, call := s.OptionPositions["a-put"], s.OptionPositions["b-call"]
+				if put == nil || call == nil || s.Cash != 100000 {
+					t.Fatalf("an invalid reply changed the book: cash=%v legs=%v", s.Cash, ocBookSnapshot(s))
+				}
+				cutoff := time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC)
+				if !put.ExpiryCutoffAt.Equal(cutoff) || !call.ExpiryCutoffAt.Equal(cutoff) {
+					t.Fatalf("schedule must stay the Go cutoff: %s %s", put.ExpiryCutoffAt, call.ExpiryCutoffAt)
+				}
+				switch tc.scope {
+				case whole:
+					if !strings.Contains(put.MarkError, tc.reason) || !strings.Contains(call.MarkError, tc.reason) || put.CurrentValueUSD != -55 || call.CurrentValueUSD != -22 || len(res.Failures) != 2 {
+						t.Fatalf("whole batch: res=%+v put=%+v call=%+v", res, put, call)
+					}
+				case first, omitted:
+					failed, ok := put, call
+					if !strings.Contains(failed.MarkError, tc.reason) || failed.CurrentValueUSD != -55 || ok.MarkError != "" || !ocNear(ok.CurrentValueUSD, -90) || len(res.Failures) != 1 {
+						t.Fatalf("one leg: res=%+v failed=%+v ok=%+v", res, failed, ok)
+					}
+				case early:
+					if res.Waiting != 2 || res.Settled != 0 || len(res.Alerts) != 0 || !strings.Contains(put.MarkError, tc.reason) {
+						t.Fatalf("early settlement: res=%+v put=%+v", res, put)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("startup_probe", func(t *testing.T) {
+		logPath := filepath.Join(t.TempDir(), "qp.log")
+		qpEnv(t, root, map[string]string{"QP_LOG": logPath})
+		cfg := &Config{Strategies: []StrategyConfig{ocSC("ib-om-probe", "ibkr", "BTC")}}
+		if anyRobinhoodOptions(cfg) || len(ibkrOptionsCheckScripts(cfg)) != 1 {
+			t.Fatal("an ibkr-only config must run the ibkr probes and no robinhood probe")
+		}
+		if err := probeCheckScripts(cfg); err != nil {
+			t.Fatalf("probe with the real ibkr scripts: %v", err)
+		}
+		if reads := ibMinuteReads(t, logPath); len(reads) != 0 {
+			t.Fatalf("--probe-only read market data: %v", reads)
+		}
+		if err := probeOneScriptContract("shared_scripts/missing_option_marks.py", ibkrOptionMarksProbeArgv, optionMarksContract); err == nil || !strings.Contains(err.Error(), "missing from deploy tree") {
+			t.Fatalf("missing script probe = %v", err)
+		}
+		other := filepath.Join(t.TempDir(), "other_contract.py")
+		if err := os.WriteFile(other, []byte(`import json; print(json.dumps({"contract": "option_marks_v0", "probe": True}))`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := probeOneScriptContract(other, ibkrOptionMarksProbeArgv, optionMarksContract); err == nil || !strings.Contains(err.Error(), `reports contract "option_marks_v0"`) {
+			t.Fatalf("incompatible mark contract probe = %v", err)
+		}
+		old := filepath.Join(t.TempDir(), "old_check_options.py")
+		if err := os.WriteFile(old, []byte("import sys\nif '--probe-only' in sys.argv:\n    sys.exit(0)\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := probeOneScriptContract(old, optionCalendarProbeArgv("ibkr"), optionCalendarContract); err == nil || !strings.Contains(err.Error(), "wrote no option_calendar_v1 document") {
+			t.Fatalf("a check script without the calendar context must fail the probe: %v", err)
+		}
+		shadow := t.TempDir()
+		if err := os.WriteFile(filepath.Join(shadow, "ccxt.py"), []byte(`raise ImportError("ccxt is not installed")`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PYTHONPATH", shadow)
+		if err := probeOneScriptContract(optionMarksScript, ibkrOptionMarksProbeArgv, optionMarksContract); err == nil || !strings.Contains(err.Error(), "ccxt is not installed") {
+			t.Fatalf("a missing ibkr dependency must fail the probe: %v", err)
+		}
+	})
+
+	t.Run("options_only_scheduler_once", func(t *testing.T) {
+		dir := t.TempDir()
+		dbPath := filepath.Join(dir, "state.db")
+		sc := StrategyConfig{ID: "ib-once", Type: "options", Platform: "ibkr", Script: "shared_scripts/check_options.py",
+			Args: []string{"wheel", "BTC", "--platform=ibkr", "--mode=paper"}, Capital: 100000, MaxDrawdownPct: 50}
+		cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{sc}}
+		store := openSplitStore(t, cfg)
+		state := NewAppState()
+		expiry := time.Now().UTC().AddDate(0, 0, 20).Format("2006-01-02")
+		state.Strategies[sc.ID] = &StrategyState{ID: sc.ID, Type: "options", Platform: "ibkr", Cash: 100000, InitialCapital: 100000,
+			Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{
+				"legacy-call": {ID: "legacy-call", TradePositionID: "tp-legacy-call", Underlying: "BTC", OptionType: "call", Strike: 65000, Expiry: expiry,
+					Action: "buy", Quantity: 1, EntryPremiumUSD: 700, CurrentValueUSD: 700, DTE: 30, OpenedAt: time.Now().UTC().Add(-48 * time.Hour)},
+			}}
+		if err := SaveStateWithStore(state, store); err != nil {
+			t.Fatal(err)
+		}
+		store.Close()
+		blob, err := json.MarshalIndent(map[string]any{
+			"config_version": CurrentConfigVersion, "interval_seconds": 3600, "db_file": dbPath, "log_dir": filepath.Join(dir, "logs"),
+			"strategies": []StrategyConfig{sc},
+		}, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfgPath := filepath.Join(dir, "config.json")
+		if err := os.WriteFile(cfgPath, blob, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		logPath := filepath.Join(dir, "qp.log")
+		cmd := exec.Command(pyintegrationBinary(t), "--config", cfgPath, "--once", "--status-port", strconv.Itoa(htfITFreePort(t)))
+		cmd.Dir = root
+		cmd.Env = append(qpChildEnv(t, root, map[string]string{"QP_QUOTE": "60000", "QP_CLOSE": "60000", "QP_DAILY": qpOptionsDaily(qpOptionsBaselineDaily), "QP_LOG": logPath}),
+			"DISCORD_BOT_TOKEN=", "TELEGRAM_BOT_TOKEN=")
+		started := time.Now().UTC()
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("scheduler --once: %v\n%s", err, out)
+		}
+		if strings.Contains(string(out), "All prices are zero/missing") || strings.Contains(string(out), "network blocked") {
+			t.Fatalf("options-only cycle skipped or reached the network:\n%s", out)
+		}
+		db, err := OpenStateDB(dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		rows, err := db.db.Query(`SELECT id, expiry, current_value_usd, dte, contract_multiplier, mark_source, mark_error, mark_updated_at, expiry_cutoff_at FROM option_positions WHERE strategy_id = ? ORDER BY id`, sc.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		type row struct {
+			id, expiry, source, markErr, markedAt, cutoffAt string
+			value, dte, mult                                float64
+		}
+		got := map[string]row{}
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.id, &r.expiry, &r.value, &r.dte, &r.mult, &r.source, &r.markErr, &r.markedAt, &r.cutoffAt); err != nil {
+				t.Fatal(err)
+			}
+			got[r.id] = r
+		}
+		legacy, ok := got["legacy-call"]
+		if !ok || legacy.mult != 1 || legacy.source != ibkrMarkSource || legacy.markErr != "" {
+			t.Fatalf("legacy leg row = %+v; output:\n%s", legacy, out)
+		}
+		markedAt, err := time.Parse(time.RFC3339Nano, legacy.markedAt)
+		if err != nil || markedAt.Before(started) {
+			t.Fatalf("mark timestamp %q is not from this run (started %s)", legacy.markedAt, started)
+		}
+		cutoff, _, _, _ := optionGoExpirySchedule("ibkr", expiry)
+		if legacy.cutoffAt != formatTime(cutoff) || !ocNear(legacy.dte, cutoff.Sub(markedAt).Hours()/24) || legacy.dte >= 30 {
+			t.Fatalf("legacy leg cutoff=%s dte=%v, want %s", legacy.cutoffAt, legacy.dte, cutoff)
+		}
+		dte := cutoff.Sub(markedAt).Seconds() / 86400
+		expect := exec.Command(filepath.Join(root, ".venv", "bin", "python3"), "-c", `import json, sys
+sys.path.insert(0, "shared_tools")
+import option_data
+from pricing import bs_price_and_greeks
+vol, _ = option_data.realized_vol_metrics(json.loads(sys.argv[1]), 365)
+print(json.dumps(bs_price_and_greeks(60000.0, 65000.0, float(sys.argv[2]), vol, option_type="call")[0]))`, qpOptionsDaily(qpOptionsBaselineDaily), strconv.FormatFloat(dte, 'g', -1, 64))
+		expect.Dir = root
+		raw, err := expect.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var perUnit float64
+		if err := json.Unmarshal(raw, &perUnit); err != nil {
+			t.Fatal(err)
+		}
+		if want := perUnit * 1; math.Abs(legacy.value-want) > 1e-6*math.Abs(want) {
+			t.Fatalf("legacy leg value = %v, want %v from the measured-volatility model at size 1", legacy.value, want)
+		}
+		entries := 0
+		for id, r := range got {
+			if id == "legacy-call" {
+				continue
+			}
+			entries++
+			day, err := time.Parse("2006-01-02", r.expiry)
+			if err != nil || r.mult != 0.1 || day.Weekday() == time.Saturday || day.Weekday() == time.Sunday {
+				t.Fatalf("new entry %s = %+v, want size 0.1 on a weekday", id, r)
+			}
+		}
+		if entries != 1 {
+			t.Fatalf("new wheel entries = %d, want 1; rows=%+v; output:\n%s", entries, got, out)
 		}
 	})
 }

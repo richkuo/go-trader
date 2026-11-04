@@ -28,6 +28,8 @@ SUPPORTED_PLATFORMS = ("deribit", "ibkr", "okx", "robinhood")
 RANK_STRATEGIES = ("butterfly", "vol_mean_reversion")
 PREMIUM_UNIT = "underlying_unit"
 STRUCTURE_CONTRACT = "options_structures_v1"
+CALENDAR_FLAG = "--option-calendar-json"
+CALENDAR_PROBE_CONTRACT = "option_calendar_v1"
 ENTRY_ACTIONS = ("buy", "sell")
 
 
@@ -38,7 +40,7 @@ class CheckError(Exception):
         self.reason = reason
 
 
-def _load_adapter(platform: str, underlying: str = ""):
+def _load_adapter(platform: str, underlying: str = "", calendar_json=None):
     adapter_path = os.path.join(_REPO_ROOT, "platforms", platform, "adapter.py")
     if not os.path.exists(adapter_path):
         raise ImportError(f"No adapter found for platform '{platform}' at {adapter_path}")
@@ -55,6 +57,14 @@ def _load_adapter(platform: str, underlying: str = ""):
         except module.UnsupportedRobinhoodSymbol as e:
             raise CheckError(f"unsupported basis: {e}") from None
         kwargs["asset_class"] = module.ASSET_CLASS_STOCK
+    if calendar_json is not None:
+        parse = getattr(module, "parse_calendar_context", None)
+        if parse is None:
+            raise CheckError(f"{platform} options take no --option-calendar-json context")
+        try:
+            kwargs["calendar"] = parse(calendar_json, platform, underlying)
+        except module.CalendarContextError as e:
+            raise CheckError(f"invalid option calendar context: {e.reason}") from None
     for name in dir(module):
         if name.endswith("ExchangeAdapter"):
             return getattr(module, name)(**kwargs)
@@ -106,13 +116,6 @@ def _regime_label_from_df(df):
         return None
 
 
-def _platform_extra(adapter, underlying: str) -> dict:
-    multiplier_fn = getattr(adapter, 'get_multiplier', None)
-    if multiplier_fn is not None:
-        return {'multiplier': multiplier_fn(underlying), 'contract_spec': 'CME_MICRO'}
-    return {}
-
-
 def _build_action(action, option_type, strike, expiry_str, dte,
                   premium_pct, premium_usd, greeks, **extra) -> dict:
     d = {
@@ -149,9 +152,8 @@ def _option_leg(underlying, action, option_type, target_strike,
                 expiry_str, dte, fallback_pct, spot, vol, adapter, **extra) -> dict:
     strike = adapter.get_real_strike(underlying, expiry_str, option_type, target_strike)
     prem_pct, prem_usd, greeks = _priced_leg(adapter, underlying, option_type, strike, expiry_str, dte, spot, vol)
-    platform_fields = _platform_extra(adapter, underlying)
     return _build_action(action, option_type, strike, expiry_str, dte,
-                         prem_pct, prem_usd, greeks, **platform_fields, **extra)
+                         prem_pct, prem_usd, greeks, **extra)
 
 
 def parse_positions_context(raw_positions):
@@ -307,7 +309,6 @@ def evaluate_vol_mean_reversion(underlying, spot_price, vol_annual, iv_rank,
     signal = 0
     actions = []
     expiry_str, dte = adapter.get_real_expiry(underlying, 30)
-    pf = _platform_extra(adapter, underlying)
 
     if iv_rank > 75:
         signal = -1
@@ -328,9 +329,9 @@ def evaluate_vol_mean_reversion(underlying, spot_price, vol_annual, iv_rank,
         )
         actions = [
             _build_action("buy", "call", atm_strike, expiry_str, dte,
-                          call_pct, call_usd, call_greeks, **pf),
+                          call_pct, call_usd, call_greeks),
             _build_action("buy", "put", atm_strike, expiry_str, dte,
-                          put_pct, put_usd, put_greeks, **pf),
+                          put_pct, put_usd, put_greeks),
         ]
 
     return signal, actions, iv_rank
@@ -460,6 +461,7 @@ def _usage():
 def _parse_args(args):
     platform = "deribit"
     regime_payload_json = None
+    calendar_json = None
     remaining = []
     invalid = False
     i = 0
@@ -478,10 +480,14 @@ def _parse_args(args):
             regime_payload_json = arg.split("=", 1)[1]
         elif arg.startswith("--regime-payload-json"):
             regime_payload_json = ""
+        elif arg.startswith(CALENDAR_FLAG + "="):
+            calendar_json = arg.split("=", 1)[1]
+        elif arg.startswith(CALENDAR_FLAG):
+            invalid = True
         else:
             remaining.append(arg)
         i += 1
-    return platform, regime_payload_json, remaining, invalid
+    return platform, regime_payload_json, calendar_json, remaining, invalid
 
 
 def _reject_constant(name):
@@ -543,7 +549,7 @@ def _result(ctx, **fields):
 
 
 def _evaluate(ctx, args):
-    platform, regime_payload_json, remaining, invalid_args = _parse_args(args)
+    platform, regime_payload_json, calendar_json, remaining, invalid_args = _parse_args(args)
     ctx["platform"] = platform
     ctx["strategy"] = remaining[0] if remaining else ""
     ctx["underlying"] = remaining[1].upper() if len(remaining) > 1 else ""
@@ -566,7 +572,7 @@ def _evaluate(ctx, args):
     if len(existing_positions) >= MAX_POSITIONS_PER_STRATEGY:
         return _result(ctx, skip_reason=f"Max positions reached ({len(existing_positions)}/{MAX_POSITIONS_PER_STRATEGY})")
 
-    adapter = _load_adapter(platform, underlying)
+    adapter = _load_adapter(platform, underlying, calendar_json)
 
     spot_price = option_data.require_finite_positive(adapter.get_spot_price(underlying), "Could not fetch spot price")
 
@@ -610,10 +616,6 @@ def _evaluate(ctx, args):
     )
     if vol_metrics_error:
         output["vol_metrics_error"] = vol_metrics_error
-    multiplier_fn = getattr(adapter, 'get_multiplier', None)
-    if multiplier_fn is not None:
-        output["multiplier"] = multiplier_fn(underlying)
-        output["contract_type"] = "CME_MICRO"
     return output
 
 
@@ -636,9 +638,28 @@ def _run(args, emit):
     return 0
 
 
+def _probe(args):
+    platform, _, calendar_json, remaining, invalid = _parse_args([a for a in args if a != "--probe-only"])
+    if calendar_json is None:
+        sys.exit(0)
+    if invalid or len(remaining) < 2:
+        print(f"option calendar probe argv is invalid: {args}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        adapter = _load_adapter(platform, remaining[1].upper(), calendar_json)
+        if getattr(adapter, "_calendar", None) is None:
+            raise CheckError(f"{platform} adapter did not accept the option calendar context")
+    except Exception as e:
+        print(f"option calendar probe rejected: {_stable_reason(e)}", file=sys.stderr)
+        sys.exit(2)
+    with json_stdout() as emit:
+        emit({"contract": CALENDAR_PROBE_CONTRACT, "platform": platform, "probe": True})
+    sys.exit(0)
+
+
 def main():
     if "--probe-only" in sys.argv:
-        sys.exit(0)
+        _probe(sys.argv[1:])
     with json_stdout() as emit:
         code = _run(sys.argv[1:], emit)
     sys.exit(code)

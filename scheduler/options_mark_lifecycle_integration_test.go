@@ -402,7 +402,7 @@ func esSettle(platform string, price float64) lcPricer {
 		case "robinhood":
 			st.Basis, st.Source = optionSettlementBasisRawClose, "yahoo_daily_raw_close"
 		case "ibkr":
-			st.Basis, st.Source = optionSettlementBasisIBKR, ibkrSettlementSource
+			st.Basis, st.Source = optionSettlementBasisVWAP, ibkrSettlementSource
 		case "okx":
 			st.Basis, st.Source = optionSettlementBasisDelivery, okxDeribitProxySource
 		default:
@@ -600,7 +600,7 @@ func TestOptionExpirySettlementIntegration(t *testing.T) {
 		for _, tc := range []struct{ platform, label string }{
 			{"deribit", "deribit_delivery_price delivery_price 2026-06-26 $54000.00"},
 			{"okx", "deribit_proxy delivery_price 2026-06-26 $54000.00"},
-			{"ibkr", "ibkr_cycle_price_legacy_model cycle_price_legacy_model 2026-06-26 $54000.00"},
+			{"ibkr", "binanceus_spot_vwap_1530_1600_london spot_candle_close_vwap 2026-06-26 $54000.00"},
 		} {
 			t.Run(tc.platform, func(t *testing.T) {
 				env, sc, s := esStrategy(t, tc.platform+"-es-put", tc.platform, "BTC", 100000)
@@ -1071,4 +1071,181 @@ func TestOptionLegacyCashPlatformLongWarningIntegration(t *testing.T) {
 	if p := env.strat(b.ID).Positions["BTC"]; p == nil || p.Quantity != 0.5 || p.AvgCost != 54000 {
 		t.Fatalf("reload changed the legacy long: %+v", p)
 	}
+}
+
+func ibSettle(price float64, basis, source, date string) func(req optionLegRequest, at time.Time) optionLegReply {
+	return func(req optionLegRequest, at time.Time) optionLegReply {
+		cutoff, ready, _, _ := optionGoExpirySchedule("ibkr", req.Expiry)
+		if at.Before(cutoff) {
+			return optionLegReply{CutoffAt: cutoff, ReadyAt: ready, Mark: &optionLegMark{PerUnitUSD: 100, Spot: 60000, Source: ibkrMarkSource}}
+		}
+		d := date
+		if d == "" {
+			d = req.Expiry
+		}
+		return optionLegReply{CutoffAt: cutoff, ReadyAt: ready, Settlement: &optionLegSettlement{Price: price, Basis: basis, Date: d, Source: source}}
+	}
+}
+
+func ibLeg(s *StrategyState, id, optionType, action, expiry string, strike, mult, premium float64) {
+	value := premium
+	if action == "sell" {
+		value = -premium
+	}
+	s.OptionPositions[id] = &OptionPosition{ID: id, TradePositionID: "tp-" + id, Underlying: "BTC", OptionType: optionType, Strike: strike,
+		Expiry: expiry, Action: action, Quantity: 1, ContractMultiplier: mult, EntryPremiumUSD: premium, CurrentValueUSD: value,
+		OpenedAt: time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)}
+}
+
+func TestIBKROptionExpiryScheduleIntegration(t *testing.T) {
+	const expiry = "2026-11-20"
+	cutoff := time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC)
+	ready := cutoff.Add(5 * time.Minute)
+
+	t.Run("london_cutoff_in_winter_and_summer", func(t *testing.T) {
+		for _, tc := range []struct {
+			expiry        string
+			cutoff, ready time.Time
+		}{
+			{"2026-11-20", time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC), time.Date(2026, 11, 20, 16, 5, 0, 0, time.UTC)},
+			{"2026-06-19", time.Date(2026, 6, 19, 15, 0, 0, 0, time.UTC), time.Date(2026, 6, 19, 15, 5, 0, 0, time.UTC)},
+			{"2026-03-27", time.Date(2026, 3, 27, 16, 0, 0, 0, time.UTC), time.Date(2026, 3, 27, 16, 5, 0, 0, time.UTC)},
+			{"2026-03-31", time.Date(2026, 3, 31, 15, 0, 0, 0, time.UTC), time.Date(2026, 3, 31, 15, 5, 0, 0, time.UTC)},
+		} {
+			c, r, ok, err := optionGoExpirySchedule("ibkr", tc.expiry)
+			if err != nil || !ok || !c.Equal(tc.cutoff) || !r.Equal(tc.ready) {
+				t.Fatalf("%s schedule = %s %s %v %v, want %s %s", tc.expiry, c, r, ok, err, tc.cutoff, tc.ready)
+			}
+		}
+	})
+
+	t.Run("a_stale_midnight_stamp_never_controls_expiry", func(t *testing.T) {
+		env, sc, s := esStrategy(t, "ib-stale-cutoff", "ibkr", "BTC", 100000)
+		ibLeg(s, "stale", "put", "sell", expiry, 60000, 0.1, 50)
+		s.OptionPositions["stale"].ExpiryCutoffAt = time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+		s.OptionPositions["stale"].SettlementReadyAt = s.OptionPositions["stale"].ExpiryCutoffAt
+		morning := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+		if optionLegAwaitingSettlement("ibkr", s.OptionPositions["stale"], morning) {
+			t.Fatal("a stored midnight cutoff put a pre-cutoff leg into settlement")
+		}
+		if !optionLegAwaitingSettlement("ibkr", s.OptionPositions["stale"], cutoff) {
+			t.Fatal("the leg must wait for settlement from the London cutoff")
+		}
+		reqs := collectOptionLegRequests(s, "ibkr", morning)
+		if len(reqs) != 1 || reqs[0].Op != optionLegOpMark || !reqs[0].KnownCutoff.Equal(cutoff) || !reqs[0].KnownReady.Equal(ready) || !reqs[0].GoSchedule {
+			t.Fatalf("request = %+v, want a mark with the Go schedule", reqs)
+		}
+		res := lcRefresh(env, sc, lcPricer{reply: ibSettle(58000, optionSettlementBasisVWAP, ibkrSettlementSource, "")}, nil, nil, morning)
+		if leg := s.OptionPositions["stale"]; res.Marked != 1 || !leg.ExpiryCutoffAt.Equal(cutoff) || !leg.SettlementReadyAt.Equal(ready) || !ocNear(leg.CurrentValueUSD, -10) || !ocNear(leg.DTE, 4.0/24) {
+			t.Fatalf("mark res=%+v leg=%+v", res, leg)
+		}
+	})
+
+	t.Run("a_reply_cannot_change_the_schedule", func(t *testing.T) {
+		env, sc, s := esStrategy(t, "ib-moved-cutoff", "ibkr", "BTC", 100000)
+		ibLeg(s, "moved", "put", "sell", expiry, 60000, 0.1, 50)
+		at := time.Date(2026, 11, 19, 16, 0, 0, 0, time.UTC)
+		moved := lcPricer{reply: func(req optionLegRequest, at time.Time) optionLegReply {
+			day := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+			return optionLegReply{CutoffAt: day, ReadyAt: day, Settlement: &optionLegSettlement{Price: 1, Basis: optionSettlementBasisVWAP, Date: expiry, Source: ibkrSettlementSource}}
+		}}
+		res := lcRefresh(env, sc, moved, nil, nil, at)
+		leg := s.OptionPositions["moved"]
+		if leg == nil || len(res.Failures) != 1 || !strings.Contains(leg.MarkError, "the pricer changed the expiry schedule") || !leg.ExpiryCutoffAt.Equal(cutoff) || !ocNear(leg.DTE, 1) || s.Cash != 100000 {
+			t.Fatalf("res=%+v leg=%+v cash=%v", res, leg, s.Cash)
+		}
+	})
+
+	t.Run("no_booking_before_the_read_boundary_even_on_a_fabricated_success", func(t *testing.T) {
+		env, sc, s := esStrategy(t, "ib-early", "ibkr", "BTC", 100000)
+		ibLeg(s, "early", "put", "sell", expiry, 60000, 0.1, 50)
+		backend := &mockNotifier{}
+		notifier := NewMultiNotifier(notifierBackend{notifier: backend, ownerID: "owner", channels: map[string]string{"ibkr": "ib-ch"}})
+		throttle := newOptionSettlementAlertThrottle()
+		for _, at := range []time.Time{cutoff, ready.Add(-time.Second)} {
+			res := lcRefresh(env, sc, lcPricer{reply: ibSettle(58000, optionSettlementBasisVWAP, ibkrSettlementSource, "")}, notifier, throttle, at)
+			leg := s.OptionPositions["early"]
+			if res.Settled != 0 || res.Waiting != 1 || len(res.Alerts) != 0 || len(res.Failures) != 0 || leg == nil || s.Cash != 100000 {
+				t.Fatalf("at %s: res=%+v leg=%+v cash=%v", at, res, leg, s.Cash)
+			}
+			if !strings.Contains(leg.MarkError, "settlement before the read boundary") || leg.DTE != 0 {
+				t.Fatalf("waiting leg = %+v", leg)
+			}
+		}
+		if _, dms := lcSettlementAlerts(backend); dms != 0 {
+			t.Fatalf("a waiting leg sent %d settlement alerts", dms)
+		}
+		res := lcRefresh(env, sc, lcPricer{reply: func(req optionLegRequest, at time.Time) optionLegReply {
+			return optionLegReply{CutoffAt: cutoff, ReadyAt: ready, Pending: "no complete " + ibkrSettlementSource + " window"}
+		}}, notifier, throttle, ready)
+		if res.Waiting != 0 || len(res.Alerts) != 1 || s.OptionPositions["early"] == nil || !strings.HasPrefix(s.OptionPositions["early"].MarkError, optionSettlementPendingPrefix+"no complete") || s.Cash != 100000 {
+			t.Fatalf("failed read at readiness: res=%+v leg=%+v", res, s.OptionPositions["early"])
+		}
+		lcRefresh(env, sc, lcPricer{reply: func(req optionLegRequest, at time.Time) optionLegReply {
+			return optionLegReply{CutoffAt: cutoff, ReadyAt: ready, Pending: "still missing"}
+		}}, notifier, throttle, ready.Add(time.Minute))
+		if _, dms := lcSettlementAlerts(backend); dms != 1 {
+			t.Fatalf("settlement alerts = %d, want one under the throttle", dms)
+		}
+	})
+
+	t.Run("only_the_dated_vwap_contract_settles", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, basis, source, date, want string
+		}{
+			{"legacy_basis", "cycle_price_legacy_model", ibkrSettlementSource, "", "is not the " + ibkrSettlementSource + " " + optionSettlementBasisVWAP},
+			{"other_source", optionSettlementBasisVWAP, "binanceus_spot_last", "", "is not the " + ibkrSettlementSource},
+			{"later_date", optionSettlementBasisVWAP, ibkrSettlementSource, "2026-11-21", "on 2026-11-21 is not the"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				env, sc, s := esStrategy(t, "ib-basis-"+tc.name, "ibkr", "BTC", 100000)
+				ibLeg(s, "leg", "put", "sell", expiry, 60000, 0.1, 50)
+				res := lcRefresh(env, sc, lcPricer{reply: ibSettle(58000, tc.basis, tc.source, tc.date)}, nil, nil, ready)
+				if res.Settled != 0 || s.OptionPositions["leg"] == nil || !strings.Contains(s.OptionPositions["leg"].MarkError, tc.want) || s.Cash != 100000 {
+					t.Fatalf("res=%+v leg=%+v", res, s.OptionPositions["leg"])
+				}
+				res = lcRefresh(env, sc, lcPricer{reply: ibSettle(58000, optionSettlementBasisVWAP, ibkrSettlementSource, "")}, nil, nil, ready.Add(time.Hour))
+				if res.Settled != 1 || s.OptionPositions["leg"] != nil || !ocNear(s.Cash, 99800) {
+					t.Fatalf("retry: res=%+v cash=%v", res, s.Cash)
+				}
+			})
+		}
+	})
+
+	t.Run("cash_settlement_uses_each_stored_size_once", func(t *testing.T) {
+		env, sc, s := esStrategy(t, "ib-settle", "ibkr", "BTC", 100000)
+		ibLeg(s, "sold-put", "put", "sell", expiry, 60000, 0.1, 50)
+		ibLeg(s, "bought-call", "call", "buy", expiry, 56000, 0.1, 40)
+		ibLeg(s, "otm-call", "call", "sell", expiry, 65000, 0.1, 30)
+		ibLeg(s, "legacy-put", "put", "sell", expiry, 59000, 1, 300)
+		env.saveAll()
+		res := lcRefresh(env, sc, lcPricer{reply: ibSettle(58000, optionSettlementBasisVWAP, ibkrSettlementSource, "")}, nil, nil, ready)
+		if res.Settled != 4 || len(s.OptionPositions) != 0 || len(s.Positions) != 0 {
+			t.Fatalf("res=%+v legs=%v positions=%v", res, s.OptionPositions, s.Positions)
+		}
+		wantCash := 100000.0 - 200 + 200 + 0 - 1000
+		if !ocNear(s.Cash, wantCash) || !ocNear(s.RiskState.DailyPnL, (50-200)+(200-40)+30+(300-1000)) {
+			t.Fatalf("cash=%v daily=%v, want cash %v", s.Cash, s.RiskState.DailyPnL, wantCash)
+		}
+		env.saveAll()
+		opt, assign := esOptionRows(esTrades(t, env, sc.ID))
+		if len(opt) != 4 || len(assign) != 0 {
+			t.Fatalf("rows: options=%d assignments=%d", len(opt), len(assign))
+		}
+		for _, tr := range opt {
+			if !strings.Contains(tr.details, "[settlement "+ibkrSettlementSource+" "+optionSettlementBasisVWAP+" "+expiry+" $58000.00]") {
+				t.Fatalf("settlement row lacks the dated source: %+v", tr)
+			}
+		}
+		env = env.restart()
+		s = env.strat(sc.ID)
+		res = lcRefresh(env, sc, lcPricer{reply: ibSettle(58000, optionSettlementBasisVWAP, ibkrSettlementSource, "")}, nil, nil, ready.Add(time.Hour))
+		env.saveAll()
+		if res.Legs != 0 || !ocNear(s.Cash, wantCash) || len(esTrades(t, env, sc.ID)) != 4 {
+			t.Fatalf("restart repeated settlement: res=%+v cash=%v trades=%d", res, s.Cash, len(esTrades(t, env, sc.ID)))
+		}
+		if _, closed, legs := lcRows(t, env, sc.ID); closed != 4 || legs != 0 {
+			t.Fatalf("closed=%d legs=%d", closed, legs)
+		}
+	})
 }

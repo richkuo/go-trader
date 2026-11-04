@@ -2,6 +2,19 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 1918: IBKR paper options use 0.1-coin contracts, independent marks, a London cutoff and a dated settlement
+
+Runtime behavior changes for every IBKR `type: options` strategy; there is no opt-out and no schema change. Options stay paper only.
+Before this change a new IBKR leg stored contract size 1 (the adapter's BTC 0.1 / ETH 0.5 output was never read), the IBKR mark read a cycle-price key that only a spot strategy supplies and used a fixed volatility of 0.80, the cutoff and read boundary were 00:00 UTC, settlement used the cycle spot labelled with the refresh date, and entry expiries were today plus the target days, weekends included.
+Now: current size 0.1 coin for BTC and ETH (`optionContractUnderlyingMultipliers`); legacy size for an unstamped stored leg: IBKR 1, Robinhood 100, Deribit 1, OKX 1 (`LegacyMultiplier`); positive stamps are never changed and no recorded cash, premium or quantity is rescaled.
+Marks: `shared_scripts/fetch_option_marks.py --platform=ibkr` through the existing batch lifecycle, Black-Scholes on BinanceUS spot and the shared 14-day measured volatility (`binanceus_black_scholes_hv14`).
+Cutoff 16:00 Europe/London, read boundary 16:05 London; no settlement read or booking before the boundary, even on a provider reply.
+Settlement: the BinanceUS one-minute close VWAP from 15:30 to 16:00 London for the expiry date, `<U>/USDT` then `<U>/USD`, one complete symbol window only (`binanceus_spot_vwap_1530_1600_london`, basis `spot_candle_close_vwap`); otherwise settlement pending, retried each refresh.
+Supported underlyings: BTC and ETH.
+Entry expiry: nearest candidate from the paper CME Micro calendar passed as `--option-calendar-json` (Monday to Thursday weeklies, four non-monthly Friday weeklies, last-Friday monthlies, two-weekday rollover overlap).
+Paper approximations: the real micro options deliver a futures position and fix on the futures price (weekly) or the reference rate (monthly); the paper book cash-settles intrinsic directly at a spot-candle VWAP. UK and US holiday exclusions and monthly holiday date adjustments are not modelled, so a candidate is not guaranteed to be listed. Source read date: 2026-11-04 (CME Micro Bitcoin and Micro Ether specifications, rulebook chapters 348A and 347A, clearing notice 23-165), as read by the issue and plan authors; the build session could not reach the CME pages, so the listing horizon is not independently re-verified. IBKR fee accuracy against the broker is unverified.
+Operator action: inspect a config copy with the new binary before updating (`./go-trader inspect --config <copy>`); close or migrate any IBKR options strategy on an underlying other than BTC or ETH first, because a refused config cannot manage its open legs. The proposed contract quantity is unchanged, so there is no automatic tenfold quantity; existing size stamps remain. Deploy Go and Python together with `bash scripts/update.sh --restart`.
+
 ### Issue 1919: options entries book whole structures
 
 Runtime behavior changes for every `type: options` strategy; there is no opt-out, no config change and no schema change.

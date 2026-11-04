@@ -22,7 +22,6 @@ const (
 
 	optionSettlementBasisDelivery = "delivery_price"
 	optionSettlementBasisRawClose = "raw_close"
-	optionSettlementBasisIBKR     = "cycle_price_legacy_model"
 )
 
 type optionLegRequest struct {
@@ -39,6 +38,7 @@ type optionLegRequest struct {
 	Op              string
 	KnownCutoff     time.Time
 	KnownReady      time.Time
+	GoSchedule      bool
 	PreError        string
 }
 
@@ -111,18 +111,30 @@ func optionGoExpirySchedule(platform, expiry string) (time.Time, time.Time, bool
 	case "deribit", "okx":
 		cutoff := day.Add(8 * time.Hour)
 		return cutoff, cutoff.Add(time.Hour), true, nil
-	case "ibkr":
-		return day, day, true, nil
 	}
-	return time.Time{}, time.Time{}, false, nil
+	spec, ok := optionContractSpecs[platform]
+	if !ok || spec.Cutoff == nil {
+		return time.Time{}, time.Time{}, false, nil
+	}
+	loc, err := time.LoadLocation(spec.Cutoff.Zone)
+	if err != nil {
+		return time.Time{}, time.Time{}, false, fmt.Errorf("%s expiry cutoff zone %q: %w", platform, spec.Cutoff.Zone, err)
+	}
+	cutoff := time.Date(day.Year(), day.Month(), day.Day(), spec.Cutoff.Hour, spec.Cutoff.Minute, 0, 0, loc).UTC()
+	return cutoff, cutoff.Add(spec.Cutoff.ReadDelay), true, nil
+}
+
+func optionSettlementNeedsReadBoundary(platform string) bool {
+	spec, ok := optionContractSpecs[platform]
+	return ok && spec.Cutoff != nil
 }
 
 func optionLegAwaitingSettlement(platform string, pos *OptionPosition, now time.Time) bool {
-	if !pos.ExpiryCutoffAt.IsZero() {
-		return !now.Before(pos.ExpiryCutoffAt)
-	}
 	if cutoff, _, ok, err := optionGoExpirySchedule(platform, pos.Expiry); err == nil && ok {
 		return !now.Before(cutoff)
+	}
+	if !pos.ExpiryCutoffAt.IsZero() {
+		return !now.Before(pos.ExpiryCutoffAt)
 	}
 	day, err := time.Parse("2006-01-02", pos.Expiry)
 	return err == nil && !now.Before(day)
@@ -165,6 +177,7 @@ func collectOptionLegRequests(s *StrategyState, platform string, refreshAt time.
 			errs = append(errs, fmt.Sprintf("action %q is not buy or sell", pos.Action))
 		}
 		cutoff, ready, resolved, err := optionGoExpirySchedule(platform, pos.Expiry)
+		req.GoSchedule = err == nil && resolved
 		if err != nil {
 			errs = append(errs, err.Error())
 		} else if !resolved && !pos.ExpiryCutoffAt.IsZero() {
@@ -302,8 +315,9 @@ func optionSettlementError(platform string, pos *OptionPosition, st *optionLegSe
 			return fmt.Errorf("settlement basis %s on %s is not a raw close of the expiry session for %s", st.Basis, st.Date, pos.Expiry)
 		}
 	case "ibkr":
-		if st.Basis != optionSettlementBasisIBKR {
-			return fmt.Errorf("settlement basis %s is not the ibkr legacy model", st.Basis)
+		spec := optionContractSpecs[platform]
+		if st.Basis != spec.SettlementBasis || st.Source != spec.SettlementSource || st.Date != pos.Expiry {
+			return fmt.Errorf("settlement %s %s on %s is not the %s %s for expiry %s", st.Source, st.Basis, st.Date, spec.SettlementSource, spec.SettlementBasis, pos.Expiry)
 		}
 	default:
 		return fmt.Errorf("no settlement basis for platform %q", platform)
@@ -328,7 +342,12 @@ func applyOptionLegReplies(s *StrategyState, platform string, reqs []optionLegRe
 			r = optionLegReply{Key: req.Key, Err: "no result for this leg"}
 		}
 		cutoff, ready := req.KnownCutoff, req.KnownReady
-		if !r.CutoffAt.IsZero() {
+		if req.GoSchedule {
+			if (!r.CutoffAt.IsZero() && !r.CutoffAt.Equal(cutoff)) || (!r.ReadyAt.IsZero() && !r.ReadyAt.Equal(ready)) {
+				r = optionLegReply{Key: r.Key, Err: fmt.Sprintf("the pricer changed the expiry schedule (cutoff %s, read boundary %s; expected %s, %s)",
+					r.CutoffAt.UTC().Format(time.RFC3339), r.ReadyAt.UTC().Format(time.RFC3339), cutoff.Format(time.RFC3339), ready.Format(time.RFC3339))}
+			}
+		} else if !r.CutoffAt.IsZero() {
 			cutoff, ready = r.CutoffAt, r.ReadyAt
 		}
 		if !cutoff.IsZero() && (ready.IsZero() || ready.Before(cutoff)) {
@@ -356,6 +375,9 @@ func applyOptionLegReplies(s *StrategyState, platform string, reqs []optionLegRe
 		if !refreshAt.Before(cutoff) {
 			if r.Mark != nil && r.Settlement == nil && r.Err == "" && r.Pending == "" {
 				r.Err = "the pricer returned a mark for a leg at or past its expiry cutoff"
+			}
+			if r.Settlement != nil && refreshAt.Before(ready) && optionSettlementNeedsReadBoundary(platform) {
+				r = optionLegReply{Key: r.Key, Pending: "the pricer returned a settlement before the read boundary; it is not booked"}
 			}
 			if r.Err == "" && r.Pending == "" && r.Settlement != nil {
 				if err := optionSettlementError(platform, pos, r.Settlement); err != nil {
@@ -738,20 +760,23 @@ func clearOptionMarkFailure(notifier *MultiNotifier, sc StrategyConfig) {
 type optionPricers struct {
 	Deribit   *DeribitPricer
 	Robinhood *RobinhoodOptionPricer
+	IBKR      *IBKROptionPricer
 }
 
 func newOptionPricers() optionPricers {
-	return optionPricers{Deribit: NewDeribitPricer(), Robinhood: NewRobinhoodOptionPricer()}
+	return optionPricers{Deribit: NewDeribitPricer(), Robinhood: NewRobinhoodOptionPricer(), IBKR: NewIBKROptionPricer()}
 }
 
-func optionPricerFor(platform string, prices map[string]float64, shared optionPricers) OptionPricer {
+func optionPricerFor(platform string, shared optionPricers) OptionPricer {
 	switch platform {
 	case "robinhood":
 		if shared.Robinhood != nil {
 			return shared.Robinhood
 		}
 	case "ibkr":
-		return NewIBKRPricer(prices)
+		if shared.IBKR != nil {
+			return shared.IBKR
+		}
 	case "deribit":
 		if shared.Deribit != nil {
 			return shared.Deribit

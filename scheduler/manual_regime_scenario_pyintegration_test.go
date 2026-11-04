@@ -162,6 +162,27 @@ func (d *mrpDaemon) waitFreshCycle() {
 	d.waitCycles(mrpCycles(d.output()) + 1)
 }
 
+const mrpGenerationMargin = 15 * time.Second
+
+func mrpGenerationLeft(r mrpRoute) time.Duration {
+	now := time.Now()
+	next := time.UnixMilli((now.UnixMilli()/mrpIntervalMs + 1) * mrpIntervalMs)
+	if end := r.env.BundleAt.Add(time.Duration(r.env.IntervalSeconds) * time.Second); end.Before(next) {
+		next = end
+	}
+	return next.Sub(now)
+}
+
+func (e *mrpEnv) settledGeneration(d *mrpDaemon, port int, strategyID string) mrpRoute {
+	e.t.Helper()
+	got := e.route(port, strategyID, "paper")
+	if got.status == http.StatusOK && got.env.Result == manualRegimeResultBundle && got.env.BundleAt != nil && mrpGenerationLeft(got) >= mrpGenerationMargin {
+		return got
+	}
+	d.waitFreshCycle()
+	return e.route(port, strategyID, "paper")
+}
+
 type mrpProxy struct {
 	port   int
 	mu     sync.Mutex
@@ -377,11 +398,12 @@ func (l *mrpLocalRoute) publish(bundle *RegimeBundle) {
 
 func regimeReadinessProcessIntegration(t *testing.T) {
 	t.Helper()
-	regimeReadinessProcessWebsocket(t)
-	regimeReadinessProcessShared(t)
+	var shared func()
+	regimeReadinessProcessWebsocket(t, func() { shared = regimeReadinessProcessShared(t) })
+	shared()
 }
 
-func regimeReadinessProcessWebsocket(t *testing.T) {
+func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
 	t.Helper()
 	e := newMRPEnv(t, 40)
 	port := htfITFreePort(t)
@@ -422,6 +444,7 @@ func regimeReadinessProcessWebsocket(t *testing.T) {
 	daemon.waitLog("fallback bind", 60*time.Second, func(s string) bool {
 		return strings.Contains(s, fmt.Sprintf("bound to %d instead", port+1))
 	})
+	afterBind()
 	daemon.waitCycles(1)
 	good := mrpURL(port + 1)
 	markerA := mrpMarkerPath(filepath.Join(e.dir, "state.db"))
@@ -471,8 +494,7 @@ func regimeReadinessProcessWebsocket(t *testing.T) {
 	os.WriteFile(lockPath, pidBlob, 0o644)
 	t.Logf("identity: equal reported process identifiers leave admission to the owner nonce")
 
-	daemon.waitFreshCycle()
-	before := e.route(port+1, "mr-ready", "paper")
+	before := e.settledGeneration(daemon, port+1, "mr-ready")
 	if before.status != http.StatusOK || before.env.Result != manualRegimeResultBundle {
 		t.Fatalf("route: %+v", before.env)
 	}
@@ -761,7 +783,7 @@ func regimeReadinessProcessWebsocket(t *testing.T) {
 	r = e.command(cfgMismatch, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	e.expectRefused(r, "command configuration differs", "configuration differs")
 
-	daemon.waitFreshCycle()
+	e.settledGeneration(daemon, port+1, "mr-ready")
 	reloaded := e.writeConfig("config-a.json", func(doc map[string]any) {
 		strategies(doc)
 		doc["user_defaults"] = map[string]any{"manual": map[string]any{"stop_loss_atr_mult": 3}}
@@ -831,7 +853,7 @@ func regimeReadinessProcessWebsocket(t *testing.T) {
 	t.Logf("restart: add adoption kept original entry evidence through adoption and restart; graceful stop removed the marker; a crash-left marker authorized nothing")
 }
 
-func regimeReadinessProcessShared(t *testing.T) {
+func regimeReadinessProcessShared(t *testing.T) func() {
 	t.Helper()
 	e := newMRPEnv(t, 40)
 	sockDir, err := os.MkdirTemp("", "mrp")
@@ -856,10 +878,19 @@ func regimeReadinessProcessShared(t *testing.T) {
 	feed := e.startDaemon(feedCfg, feedPort)
 	feed.waitLog("feed socket", 120*time.Second, func(s string) bool { _, err := os.Stat(sock); return err == nil })
 	daemon := e.startDaemon(cfg, port)
+	daemon.waitLog("status bind", 60*time.Second, func(s string) bool {
+		return strings.Contains(s, fmt.Sprintf("Status endpoint at http://localhost:%d/status", port))
+	})
+	return func() {
+		regimeReadinessProcessSharedChecks(t, e, cfg, port, daemon, feed)
+	}
+}
+
+func regimeReadinessProcessSharedChecks(t *testing.T, e *mrpEnv, cfg string, port int, daemon, feed *mrpDaemon) {
+	t.Helper()
 	daemon.waitCycles(1)
 	url := mrpURL(port)
-	daemon.waitFreshCycle()
-	before := e.route(port, "mr-ready", "paper")
+	before := e.settledGeneration(daemon, port, "mr-ready")
 	r := e.command(cfg, []string{url}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5")
 	if r.code != 0 {
 		t.Fatalf("shared ready open:\n%s\n%s", r, daemon.output())

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -169,8 +170,7 @@ func TestDeribitMarkPricing(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				prices := map[string]float64{"BTC/USDT": tc.spot}
-				pricer := NewIBKRPricer(prices)
+				pricer := &IBKROptionPricer{script: optionMarksScript, run: ibkrFixtureMarksRunner(tc.spot)}
 
 				lm, _ := NewLogManager("")
 				logger, _ := lm.GetStrategyLogger("test")
@@ -203,7 +203,30 @@ func TestDeribitMarkPricing(t *testing.T) {
 
 var _ OptionPricer = (*DeribitPricer)(nil)
 
-var _ OptionPricer = (*IBKRPricer)(nil)
+var _ OptionPricer = (*IBKROptionPricer)(nil)
+
+func ibkrFixtureMarksRunner(settlement float64) optionMarksRunner {
+	return func(script string, args []string, stdin []byte) ([]byte, []byte, error) {
+		var req rhOptionMarksRequest
+		if err := json.Unmarshal(stdin, &req); err != nil {
+			return nil, nil, err
+		}
+		legs := make([]map[string]interface{}, 0, len(req.Legs))
+		for _, leg := range req.Legs {
+			out := map[string]interface{}{"id": leg.ID, "cutoff_utc": leg.CutoffUTC, "settlement_ready_utc": leg.SettlementReadyUTC}
+			if settlement > 0 {
+				out["status"] = "settled"
+				out["settlement"] = map[string]interface{}{"price": settlement, "basis": optionSettlementBasisVWAP, "date": leg.Expiry, "source": ibkrSettlementSource}
+			} else {
+				out["status"] = "pending"
+				out["reason"] = "no complete settlement window"
+			}
+			legs = append(legs, out)
+		}
+		doc, err := json.Marshal(map[string]interface{}{"contract": optionMarksContract, "platform": "ibkr", "premium_unit": optionPremiumUnitUnderlying, "legs": legs})
+		return doc, nil, err
+	}
+}
 
 var _ OptionPricer = (*RobinhoodOptionPricer)(nil)
 
