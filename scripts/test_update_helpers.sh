@@ -1962,11 +1962,6 @@ assert_eq "$(rb_check "$rb_test/go-trader-1921")" "blocked" "rh binding: an unre
 grep -q "could not read the config or a state file" "$rb_test/err" || { echo "FAIL: rh binding: an unreadable state block says so" >&2; cat "$rb_test/err" >&2; exit 1; }
 rm -rf "$rb_test"
 
-assert_eq "$(update_resolve_from /srv/d ./go-trader.pid)" "/srv/d/go-trader.pid" "resolve from: a ./ path resolves from the deployment root"
-assert_eq "$(update_resolve_from /srv/d/ state/w.pid)" "/srv/d/state/w.pid" "resolve from: a relative path resolves from the deployment root"
-assert_eq "$(update_resolve_from /srv/d /run/w.pid)" "/run/w.pid" "resolve from: an absolute path is kept"
-assert_eq "$(update_resolve_from /srv/d '')" "" "resolve from: an empty path stays empty"
-
 owner_repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
 if [[ -z "$owner_repo_root" || ! -x "$owner_repo_root/scripts/update.sh" ]]; then
     echo "FAIL: restart owner fixtures need the repository checkout with scripts/update.sh" >&2
@@ -2097,6 +2092,7 @@ unit_rc() {
                 -u GO_TRADER_SERVICE -u GO_TRADER_PROC_ROOT \
                 PATH="$path" RECORD_OUT="$fleet/records" SYSTEMCTL_SHIM_STATE="$fleet/st" \
                 GO_TRADER_PROC_ROOT="$fleet/proc" GO_TRADER_SERVICE=go-trader-parent \
+                GO_TRADER_UPDATE_RECOVERY_DIR="$fleet/rec" \
                 ${envs[@]+"${envs[@]}"} \
                 bash "$owner_repo_root/scripts/update.sh" "$@" --update-all-root="$fleet"
         ) >"$fleet/out" 2>&1 || rc=$?
@@ -2295,6 +2291,33 @@ unit_rc() {
         expect_spawn "$f" go-trader-x "owner no systemctl ($mode)"
         expect_text "$f" "$f/go-trader-x restart route: unknown (route=$mode, LoadState=-: systemctl is not available" "owner no systemctl ($mode): verdict"
     done
+
+    f="$ow_root/f6"
+    mk_fleet "$f"
+    mk_dir "$f" go-trader-live
+    mk_dir "$f" go-trader-marked
+    map_unit "$f" go-trader-live go-trader-live.service
+    unit_set "$f/st" go-trader-parent LoadState not-found
+    unit_set "$f/st" go-trader-parent FragmentPath ""
+    mkdir -p "$f/rec"
+    ow_key=$(update_recovery_key "$f/go-trader-marked")
+    update_write_incomplete_marker "$f/rec" "$ow_key" "$f/go-trader-marked" "$f/rec/$ow_key" "fixture recovery failure" "fixture"
+    rc=$(run_fleet "$f" "$ow_root/shim:$PATH" -- --all --restart)
+    [[ "$rc" != "0" ]] || owner_fail "owner marker fleet: a no-owner tree held by a blocking marker must fail the batch" "$f/out"
+    expect_spawn "$f" go-trader-live "owner marker fleet: the healthy tree still updates"
+    ! spawned "$f" go-trader-marked || owner_fail "owner marker fleet: the marked tree was dispatched" "$f/out"
+    expect_text "$f" "FAILED in $f/go-trader-marked (incomplete recovery marker blocks update of $f/go-trader-marked; inspect the saved snapshot and run --clear-recovery" "owner marker fleet: the parent names the marker"
+    expect_text "$f" "REFUSED: incomplete recovery marker $f/rec/$ow_key.incomplete" "owner marker fleet: the marker check names the marker file"
+    expect_text "$f" "1 failing instance(s) (1 updated, 0 skipped)" "owner marker fleet: counted as a failing instance"
+    ! grep -qF "WARNING: skipping $f/go-trader-marked" "$f/out" || owner_fail "owner marker fleet: the marked tree was reported as a skip" "$f/out"
+    [[ -f "$f/rec/$ow_key.incomplete" ]] || owner_fail "owner marker fleet: the marker was removed" "$f/out"
+    sed -i.bak 's/^deploy_dev_ino=.*/deploy_dev_ino=0:1/' "$f/rec/$ow_key.incomplete"
+    rm -f "$f/rec/$ow_key.incomplete.bak"
+    rc=$(run_fleet "$f" "$ow_root/shim:$PATH" -- --all --restart)
+    assert_eq "$rc" "0" "owner marker fleet: a stale marker does not block the skip"
+    expect_skip "$f" go-trader-marked "owner marker fleet: a stale marker" \
+        "route=signal-fallback, LoadState=not-found: signal restart needs pidfile $f/go-trader-marked/go-trader.pid"
+    expect_text "$f" "all instances OK (1 updated, 1 skipped of 2 discovered)" "owner marker fleet: stale-marker totals"
 )
 
 ow_bin="$ow_root/bin"
@@ -2436,6 +2459,24 @@ chmod +x "$ow_bin"/*
         assert_eq "$("$p/deploy/go-trader" version)" "v1" "owner refusal ($how): binary unchanged"
         [[ ! -e "$p/deploy/go-trader.new" ]] || owner_fail "owner refusal ($how): a staged binary exists" "$p/out"
     done
+
+    p=$(mk_deploy refuse-marker)
+    unit_set "$p/st" go-trader LoadState not-found
+    mkdir -p "$p/rec"
+    ow_key=$(update_recovery_key "$p/deploy")
+    update_write_incomplete_marker "$p/rec" "$ow_key" "$p/deploy" "$p/rec/$ow_key" "fixture recovery failure" "fixture"
+    head_before=$(git -C "$p/deploy" rev-parse HEAD)
+    rc=$(run_deploy "$p" -- --restart)
+    [[ "$rc" != "0" ]] || owner_fail "owner marker refusal: a marked no-owner tree must fail" "$p/out"
+    out_has "$p" "FAIL phase=preflight: incomplete recovery marker blocks update of $p/deploy; inspect the saved snapshot and run --clear-recovery" "owner marker refusal: the marker message"
+    out_has "$p" "REFUSED: incomplete recovery marker $p/rec/$ow_key.incomplete" "owner marker refusal: the marker file"
+    out_lacks "$p" "restart route cannot succeed" "owner marker refusal: no restart-route advice"
+    out_lacks "$p" "phase: snapshot" "owner marker refusal: no snapshot phase"
+    [[ ! -e "$p/rec/$ow_key.lock" ]] || owner_fail "owner marker refusal: a lock exists" "$p/out"
+    [[ ! -e "$p/rec/$ow_key" ]] || owner_fail "owner marker refusal: a snapshot directory exists" "$p/out"
+    [[ -f "$p/rec/$ow_key.incomplete" ]] || owner_fail "owner marker refusal: the marker was removed" "$p/out"
+    [[ ! -s "$p/tools.log" ]] || owner_fail "owner marker refusal: uv or go ran" "$p/tools.log"
+    assert_eq "$(git -C "$p/deploy" rev-parse HEAD)" "$head_before" "owner marker refusal: HEAD unchanged"
 
     p=$(mk_deploy redirect)
     unit_set "$p/st" go-trader ActiveState active

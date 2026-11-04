@@ -635,6 +635,7 @@ With restart enabled (`--restart` or `RESTART=1`), preflight runs one read-only 
 An explicit signal request first takes the existing redirect to systemd when an active unit runs this deployment's binary.
 The check returns `no-owner` only on proof: a systemd unit that a successful probe reports `LoadState=not-found` with no fragment path (or an effective signal route), plus a missing `<proc root>/self`, a missing pidfile, or a missing or non-executable wrapper outside the deployment tree.
 On `no-owner` the update fails in phase `preflight`, and nothing changes: no lock, snapshot or incomplete-recovery marker.
+Before that refusal it runs the existing incomplete-recovery marker check (`update_check_incomplete_marker`); a blocking marker fails the update with the marker message, as before #1979.
 A loaded unit (also inactive or inherited from the parent's service) and a masked unit (unit sync can replace an empty regular fragment, and the load state alone cannot tell that from a symlink mask) are `owned`.
 These continue unchanged as `unknown`: no `systemctl`, a failed, empty or malformed probe, an uncertain redirect probe, any other load state (`bad-setting`, `error`, not-found with a fragment path), and a wrapper inside the tree, which the code transfer can supply or repair.
 A code-only update (no restart, including the in-process auto-updater) never runs the check.
@@ -645,6 +646,7 @@ Feeds run first, then schedulers, one at a time.
 Each child resolves `GO_TRADER_SERVICE` from the active unit that owns its `WorkingDirectory`; a directory no active unit owns falls back to the parent's service and logs a warning.
 Before it starts a child, the parent runs the signal-mode restart-route check above in that deployment's context (its git root, resolved unit, restart mode and paths).
 On `no-owner` it logs `WARNING: skipping <dir> (restart route cannot succeed: ...)` on stderr with the route, load state and failed prerequisite, counts the directory as skipped, and changes nothing in it; the child still runs its own check.
+A `no-owner` deployment that a blocking incomplete-recovery marker holds is not skipped: the parent logs `FAILED in <dir> (incomplete recovery marker blocks update ...)` and counts a failing instance, so the batch exits non-zero, as before #1979; a stale marker does not block, and the deployment is skipped.
 Directories that are gone or have no `scheduler/config.json` are also skipped.
 Exit status (changed in #1979): the batch exits 0 when at least one deployment updates and no child fails, even with skips, and prints a WARNING with the count of restart-route skips; any failing child still exits non-zero; a batch that updates nothing still fails with `updated 0 deployments` and names both skip reasons.
 Cron jobs or alerts that read the exit status no longer see a failure for a skipped deployment, so read the WARNING lines.

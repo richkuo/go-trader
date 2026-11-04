@@ -186,6 +186,7 @@ while [[ $# -gt 0 ]]; do
             echo "  systemd mode falls back to signal when the unit is not found (systemctl exit 5)."
             echo "  With restart enabled, an update whose restart route is proven unable to succeed fails in"
             echo "  preflight before the recovery lock, snapshot, transfer, dependency sync or build."
+            echo "  A blocking incomplete-recovery marker on such a tree is reported first and fails the run."
             echo "  Relative GO_TRADER_PIDFILE, GO_TRADER_RUN_SH and GO_TRADER_PROC_ROOT resolve from the"
             echo "  deployment root."
             echo ""
@@ -1124,6 +1125,11 @@ if [[ "$update_all" == "1" ]]; then
         fi
         owner_text="route=${_own_lines[1]:-$restart_mode}, LoadState=${_own_lines[2]:--}: ${_own_lines[3]:-no detail}"
         if [[ "${_own_lines[0]:-unknown}" == "no-owner" ]]; then
+            if ! update_check_incomplete_marker "$(update_recovery_root)" "$(update_recovery_key "$owner_root")" "$owner_root"; then
+                echo "[update] --all: FAILED in $(cd "$d" && pwd) (incomplete recovery marker blocks update of $owner_root; inspect the saved snapshot and run --clear-recovery; its restart route also cannot succeed: $owner_text)" >&2
+                fail_count=$((fail_count + 1))
+                continue
+            fi
             echo "[update] --all: WARNING: skipping $(cd "$d" && pwd) (restart route cannot succeed: $owner_text; nothing was changed)" >&2
             skip_count=$((skip_count + 1))
             skip_no_route=$((skip_no_route + 1))
@@ -1241,6 +1247,8 @@ if [[ "$restart" == "1" ]]; then
     done < <(update_restart_owner_decision "$repo_root" "$service_unit" "$restart_mode" "$go_trader_pidfile" "$go_trader_run_sh" "$proc_root")
     restart_owner_text="route=${restart_owner[1]:-$restart_mode}, LoadState=${restart_owner[2]:--}: ${restart_owner[3]:-no detail}"
     if [[ "${restart_owner[0]:-unknown}" == "no-owner" ]]; then
+        update_check_incomplete_marker "$(update_recovery_root)" "$(update_recovery_key "$repo_root")" "$repo_root" \
+            || fail "incomplete recovery marker blocks update of $repo_root; inspect the saved snapshot and run --clear-recovery"
         fail "restart route cannot succeed for $repo_root ($restart_owner_text); nothing was changed. Install or repair the systemd unit, start the deployment once through its wrapper so it writes the pidfile, or update without --restart"
     fi
     echo "[update] restart route: ${restart_owner[0]:-unknown} ($restart_owner_text)"
