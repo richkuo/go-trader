@@ -517,7 +517,11 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		}},
 	}
 	for _, c := range cmds {
-		c.Contexts = guildAndDMContext()
+		if opsCommandNames[strings.TrimPrefix(c.Name, commandPrefix)] {
+			c.Contexts = &[]discordgo.InteractionContextType{discordgo.InteractionContextBotDM}
+		} else {
+			c.Contexts = guildAndDMContext()
+		}
 		c.IntegrationTypes = guildAndUserInstallTypes()
 	}
 	return cmds
@@ -576,12 +580,14 @@ func (d *DiscordNotifier) registerSlashCommandsWhenReady() {
 		case <-time.After(delay):
 		}
 		if appID := d.selfUserID(); appID != "" {
-			scope, scopeErr := d.slashCommandScope(appID)
-			if scopeErr != nil {
-				fmt.Println("[WARN] Discord slash command registration skipped:", scopeErr)
+			scope, err := d.slashCommandScope(appID)
+			if errors.Is(err, errDiscordCommandScopeNotOwned) {
+				fmt.Println("[WARN] Discord slash command registration skipped:", err)
 				return
 			}
-			_, err := d.transport.ApplicationCommandBulkOverwrite(appID, scope, slashCommands())
+			if err == nil {
+				_, err = d.transport.ApplicationCommandBulkOverwrite(appID, scope, slashCommands())
+			}
 			if err == nil {
 				fmt.Println("Discord slash commands registered (the notification broker's Discord gateway is up)")
 				return

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -9,6 +10,8 @@ import (
 
 // discordCommandLister is implemented by transports that can list the commands
 // already registered for an application in a scope.
+var errDiscordCommandScopeNotOwned = errors.New("discord command scope is not owned by go-trader")
+
 type discordCommandLister interface {
 	ApplicationCommands(appID string, guildID string, options ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error)
 }
@@ -22,7 +25,7 @@ func checkCommandNamespaceOwnership(lister discordCommandLister, appID string, s
 	}
 	for _, c := range existing {
 		if !strings.HasPrefix(c.Name, commandPrefix) {
-			return fmt.Errorf("the %s scope of this Discord application already hosts %d command(s) owned by another program (for example %q); give go-trader its own Discord application and bot token, or point discord.guild_id at a scope go-trader owns", discordScopeLabel(scope), len(existing), c.Name)
+			return fmt.Errorf("%w: the %s scope of this Discord application already hosts command(s) owned by another program (for example %q); give go-trader its own Discord application and bot token, or point discord.guild_id at a scope go-trader owns", errDiscordCommandScopeNotOwned, discordScopeLabel(scope), c.Name)
 		}
 	}
 	return nil

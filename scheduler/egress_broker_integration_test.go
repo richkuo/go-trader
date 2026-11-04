@@ -154,6 +154,9 @@ func startFakeNotifyServices(t *testing.T, ca *egressTestCA) (*fakeNotifyService
 			}
 			f.record("discord.message:"+path, string(body))
 			_, _ = io.WriteString(w, `{"id":"7001","channel_id":"5001","content":"ok"}`)
+		case host == "discord.com" && r.Method == http.MethodGet && strings.Contains(path, "/applications/") && strings.HasSuffix(path, "/commands"):
+			f.record("discord.commands_list", "")
+			_, _ = io.WriteString(w, `[]`)
 		case host == "discord.com" && strings.Contains(path, "/applications/") && strings.HasSuffix(path, "/commands"):
 			f.record("discord.commands", string(body))
 			_, _ = io.WriteString(w, `[]`)

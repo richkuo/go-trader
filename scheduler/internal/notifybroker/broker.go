@@ -343,7 +343,7 @@ func (b *Broker) handle(ctx context.Context, bc *brokerConn, f *Frame) (json.Raw
 			resp.DiscordUserID = b.discordSelfID(ctx)
 		}
 		return json.Marshal(resp)
-	case OpDiscordSend, OpDiscordUserChannel, OpDiscordRespond, OpDiscordFollowup, OpDiscordCommands:
+	case OpDiscordSend, OpDiscordUserChannel, OpDiscordRespond, OpDiscordFollowup, OpDiscordCommands, OpDiscordCommandList:
 		if b.rest == nil {
 			return nil, errors.New("discord is not configured in the notification broker")
 		}
@@ -361,6 +361,17 @@ func (b *Broker) handle(ctx context.Context, bc *brokerConn, f *Frame) (json.Raw
 	default:
 		return nil, fmt.Errorf("unknown operation %q", f.Op)
 	}
+}
+
+func commandGuildID(raw string) (string, error) {
+	guildID := strings.TrimSpace(raw)
+	if guildID == "" {
+		return "", nil
+	}
+	if err := ValidSnowflake(guildID); err != nil {
+		return "", fmt.Errorf("guild id: %w", err)
+	}
+	return guildID, nil
 }
 
 func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, f *Frame) (json.RawMessage, error) {
@@ -441,6 +452,10 @@ func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, 
 		if err := decodeStrict(f.Payload, &req); err != nil {
 			return nil, err
 		}
+		guildID, err := commandGuildID(req.GuildID)
+		if err != nil {
+			return nil, err
+		}
 		var cmds []*discordgo.ApplicationCommand
 		if err := json.Unmarshal(req.Commands, &cmds); err != nil {
 			return nil, fmt.Errorf("commands: %v", err)
@@ -449,7 +464,7 @@ func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, 
 		if appID == "" {
 			return nil, errors.New("discord application identity is not available yet")
 		}
-		out, err := session.ApplicationCommandBulkOverwrite(appID, strings.TrimSpace(req.GuildID), cmds, opt)
+		out, err := session.ApplicationCommandBulkOverwrite(appID, guildID, cmds, opt)
 		if err != nil {
 			return nil, err
 		}
@@ -459,11 +474,15 @@ func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, 
 		if err := decodeStrict(f.Payload, &req); err != nil {
 			return nil, err
 		}
+		guildID, err := commandGuildID(req.GuildID)
+		if err != nil {
+			return nil, err
+		}
 		appID := b.discordSelfID(ctx)
 		if appID == "" {
 			return nil, errors.New("discord application identity is not available yet")
 		}
-		cmds, err := session.ApplicationCommands(appID, strings.TrimSpace(req.GuildID))
+		cmds, err := session.ApplicationCommands(appID, guildID, opt)
 		if err != nil {
 			return nil, err
 		}
