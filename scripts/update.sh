@@ -164,6 +164,14 @@ while [[ $# -gt 0 ]]; do
             echo "                      A glob dir with no discovered unit maps to an active go-trader@<name>, or an"
             echo "                      enabled role=feed one, whose WorkingDirectory is the dir."
             echo "                      --update-all-root pins the glob root."
+            echo "                      Before each child starts, a read-only restart-route check runs in that"
+            echo "                      deployment's context. A dir whose route is proven unable to restart (a"
+            echo "                      not-found unit with no fragment path and no signal pidfile, no /proc, or a"
+            echo "                      missing wrapper outside the tree) is skipped with a WARNING and nothing in"
+            echo "                      it changes. An uncertain result (no systemctl, a failed or unreadable probe,"
+            echo "                      a masked or other load state, a wrapper the transfer may supply) continues."
+            echo "                      Exit status: non-zero when any child fails or no dir was updated; skipped"
+            echo "                      dirs alone do not fail the batch."
             echo "  With --all + systemd: each child resolves GO_TRADER_SERVICE from the active unit that owns"
             echo "                      that deployment's WorkingDirectory (per-dir systemd lookup). Parent"
             echo "                      --unit / --service / GO_TRADER_SERVICE is overridden when a per-dir"
@@ -176,6 +184,11 @@ while [[ $# -gt 0 ]]; do
             echo "  RESTART=1 env var also enables restart."
             echo "  RESTART_MODE=signal requires Linux, GO_TRADER_RUN_SH, GO_TRADER_PIDFILE (see #766)."
             echo "  systemd mode falls back to signal when the unit is not found (systemctl exit 5)."
+            echo "  With restart enabled, an update whose restart route is proven unable to succeed fails in"
+            echo "  preflight before the recovery lock, snapshot, transfer, dependency sync or build."
+            echo "  A blocking incomplete-recovery marker on such a tree is reported first and fails the run."
+            echo "  Relative GO_TRADER_PIDFILE, GO_TRADER_RUN_SH and GO_TRADER_PROC_ROOT resolve from the"
+            echo "  deployment root."
             echo ""
             echo "Env overrides:"
             echo "  GO_TRADER_SERVICE=<unit>   systemd unit (default: go-trader; systemd mode only)"
@@ -408,18 +421,20 @@ restart_uses_signal_pid() {
 }
 
 require_signal_restart_prereqs() {
-    if [[ ! -d "$proc_root/self" ]]; then
-        fail "systemd unit missing and signal fallback requires Linux (/proc); install the unit or use --restart-mode signal on Linux with pidfile+run.sh"
-    fi
-    if [[ ! -f "$go_trader_pidfile" ]]; then
-        fail "systemd unit missing and signal fallback requires pidfile ($go_trader_pidfile); start via wrapper once (scripts/create-run-sh.sh) or install the systemd unit"
-    fi
-    if [[ ! -f "$go_trader_run_sh" ]]; then
-        fail "systemd unit missing and signal fallback requires GO_TRADER_RUN_SH ($go_trader_run_sh); create via scripts/create-run-sh.sh or install the systemd unit"
-    fi
-    if [[ ! -x "$go_trader_run_sh" ]]; then
-        fail "systemd unit missing and signal fallback requires executable GO_TRADER_RUN_SH ($go_trader_run_sh)"
-    fi
+    case "$(update_signal_prereq_status "$PWD" "$proc_root" "$go_trader_pidfile" "$go_trader_run_sh")" in
+        missing-proc)
+            fail "systemd unit missing and signal fallback requires Linux (/proc); install the unit or use --restart-mode signal on Linux with pidfile+run.sh"
+            ;;
+        missing-pidfile)
+            fail "systemd unit missing and signal fallback requires pidfile ($go_trader_pidfile); start via wrapper once (scripts/create-run-sh.sh) or install the systemd unit"
+            ;;
+        missing-wrapper)
+            fail "systemd unit missing and signal fallback requires GO_TRADER_RUN_SH ($go_trader_run_sh); create via scripts/create-run-sh.sh or install the systemd unit"
+            ;;
+        wrapper-not-executable)
+            fail "systemd unit missing and signal fallback requires executable GO_TRADER_RUN_SH ($go_trader_run_sh)"
+            ;;
+    esac
 }
 
 ensure_prev_main_pid_for_signal() {
@@ -481,40 +496,6 @@ signal_kill_pidfile_process_then_respawn() {
     signal_launch_wrapper_nonfatal "$run_sh"
 }
 
-execstart_main_binary() {
-    local raw="$1"
-    raw="${raw//$'\n'/ }"
-    if [[ "$raw" == \{*path=* ]]; then
-        local p="${raw#*path=}"
-        p="${p%% ;*}"
-        printf '%s' "$p"
-        return 0
-    fi
-    local b="${raw%% *}"
-    b="${b#\"}"
-    b="${b%\"}"
-    printf '%s' "$b"
-}
-
-update_canonicalize_path() {
-    local p="$1"
-    if [[ "$p" != /* ]]; then
-        printf '%s' "$p"
-        return 0
-    fi
-    if command -v realpath >/dev/null 2>&1; then
-        if rp=$(realpath "$p" 2>/dev/null); then
-            printf '%s' "$rp"
-            return 0
-        fi
-    fi
-    if rp=$(readlink -f "$p" 2>/dev/null); then
-        printf '%s' "$rp"
-        return 0
-    fi
-    printf '%s' "$p"
-}
-
 run_rsync_from() {
     local src="$1"
     local dest="$2"
@@ -557,19 +538,7 @@ warn_execstart_vs_swap() {
 }
 
 systemd_unit_manages_this_instance() {
-    local unit="$1"
-    command -v systemctl >/dev/null 2>&1 || return 1
-    local active_state exec_line binary bin_abs swap_res
-    active_state=$(systemctl is-active "$unit" 2>/dev/null || true)
-    exec_line=$(systemctl show -p ExecStart --value "$unit" 2>/dev/null | head -n 1 || true)
-    binary=$(execstart_main_binary "$exec_line")
-    if [[ "$binary" == /* ]]; then
-        bin_abs=$(update_canonicalize_path "$binary")
-    else
-        bin_abs=""
-    fi
-    swap_res=$(update_canonicalize_path "$(pwd)/go-trader")
-    [[ "$(update_signal_redirect_decision "$active_state" "$bin_abs" "$swap_res")" == "redirect" ]]
+    [[ "$(update_signal_redirect_probe "$1" "$(pwd)")" == "redirect" ]]
 }
 
 signal_sweep_stray_instance_procs() {
@@ -680,14 +649,16 @@ start_and_verify_recovered_service() {
     sudo systemctl restart "$service_unit" || rb_rc=$?
     if [[ $rb_rc -eq 5 ]]; then
         echo "[update] recovery: systemd unit $service_unit not found — trying signal respawn" >&2
-        if [[ ! -d "$proc_root/self" ]] || [[ ! -f "$go_trader_pidfile" ]]; then
-            echo "[update] recovery: signal fallback unavailable (need Linux + pidfile)" >&2
-            return 1
-        fi
-        if [[ ! -f "$go_trader_run_sh" ]] || [[ ! -x "$go_trader_run_sh" ]]; then
-            echo "[update] recovery: signal fallback unavailable (missing executable $go_trader_run_sh)" >&2
-            return 1
-        fi
+        case "$(update_signal_prereq_status "$PWD" "$proc_root" "$go_trader_pidfile" "$go_trader_run_sh")" in
+            missing-proc|missing-pidfile)
+                echo "[update] recovery: signal fallback unavailable (need Linux + pidfile)" >&2
+                return 1
+                ;;
+            missing-wrapper|wrapper-not-executable)
+                echo "[update] recovery: signal fallback unavailable (missing executable $go_trader_run_sh)" >&2
+                return 1
+                ;;
+        esac
         restart_uses_signal=1
         signal_stop_pidfile_and_stray "$go_trader_pidfile"
         signal_launch_wrapper_nonfatal "$go_trader_run_sh" || return 1
@@ -1105,19 +1076,22 @@ if [[ "$update_all" == "1" ]]; then
     fi
     fail_count=0
     skip_count=0
+    skip_no_deploy=0
+    skip_no_route=0
     update_count=0
     for d in "${all_dirs[@]}"; do
         if [[ ! -d "$d" ]]; then
             echo "[update] --all: skipping $d (no longer a directory)" >&2
             skip_count=$((skip_count + 1))
+            skip_no_deploy=$((skip_no_deploy + 1))
             continue
         fi
         if [[ ! -f "${d}scheduler/config.json" ]]; then
             echo "[update] --all: skipping $(cd "$d" && pwd) (no scheduler/config.json — not a deployment)" >&2
             skip_count=$((skip_count + 1))
+            skip_no_deploy=$((skip_no_deploy + 1))
             continue
         fi
-        update_count=$((update_count + 1))
         mapped_unit="${unit_for_dir[$d]:-}"
         if [[ -z "$mapped_unit" ]]; then
             mapped_unit=$(update_convention_unit_for_dir "$d")
@@ -1140,6 +1114,29 @@ if [[ "$update_all" == "1" ]]; then
         else
             echo "[update] --all: $(cd "$d" && pwd) -> unit $resolved_unit (no active systemd unit; falling back)"
         fi
+        declare -a _own_lines=()
+        owner_root=$(update_git "$d" rev-parse --show-toplevel 2>/dev/null || true)
+        if [[ -n "$owner_root" ]]; then
+            while IFS= read -r _line || [[ -n "$_line" ]]; do
+                _own_lines+=("$_line")
+            done < <(update_restart_owner_decision "$owner_root" "$resolved_unit" "$restart_mode" "$go_trader_pidfile" "$go_trader_run_sh" "$proc_root")
+        else
+            _own_lines=(unknown "$restart_mode" - "git cannot resolve the deployment root of $d")
+        fi
+        owner_text="route=${_own_lines[1]:-$restart_mode}, LoadState=${_own_lines[2]:--}: ${_own_lines[3]:-no detail}"
+        if [[ "${_own_lines[0]:-unknown}" == "no-owner" ]]; then
+            if ! update_check_incomplete_marker "$(update_recovery_root)" "$(update_recovery_key "$owner_root")" "$owner_root"; then
+                echo "[update] --all: FAILED in $(cd "$d" && pwd) (incomplete recovery marker blocks update of $owner_root; inspect the saved snapshot and run --clear-recovery; its restart route also cannot succeed: $owner_text)" >&2
+                fail_count=$((fail_count + 1))
+                continue
+            fi
+            echo "[update] --all: WARNING: skipping $(cd "$d" && pwd) (restart route cannot succeed: $owner_text; nothing was changed)" >&2
+            skip_count=$((skip_count + 1))
+            skip_no_route=$((skip_no_route + 1))
+            continue
+        fi
+        echo "[update] --all: $(cd "$d" && pwd) restart route: ${_own_lines[0]:-unknown} ($owner_text)"
+        update_count=$((update_count + 1))
         child_rc=0
         if [[ "$(type -t bash 2>/dev/null || true)" == "function" ]]; then
             (cd "$d" && GO_TRADER_SERVICE="$resolved_unit" bash "$THIS_SCRIPT" "${resolved_child_args[@]}") || child_rc=$?
@@ -1158,7 +1155,10 @@ if [[ "$update_all" == "1" ]]; then
         fail "--all completed with $fail_count failing instance(s) ($update_count updated, $skip_count skipped)"
     fi
     if [[ $update_count -eq 0 ]]; then
-        fail "--all updated 0 deployments ($skip_count of ${#all_dirs[@]} discovered dir(s) skipped — none had scheduler/config.json). Check discovery: --update-all-root <dir> / GO_TRADER_UPDATE_ALL_ROOT, or systemd unit WorkingDirectory."
+        fail "--all updated 0 deployments ($skip_count of ${#all_dirs[@]} discovered dir(s) skipped: $skip_no_deploy gone or without scheduler/config.json, $skip_no_route with no restart route that can succeed). Check discovery: --update-all-root <dir> / GO_TRADER_UPDATE_ALL_ROOT, or systemd unit WorkingDirectory; for restart-route skips, read the WARNING lines above."
+    fi
+    if [[ $skip_no_route -gt 0 ]]; then
+        echo "[update] --all: WARNING: $skip_no_route deployment(s) skipped because their restart route cannot succeed; nothing in them was changed (see the WARNING lines above)" >&2
     fi
     echo "[update] --all: all instances OK ($update_count updated, $skip_count skipped of ${#all_dirs[@]} discovered)"
     exit 0
@@ -1240,6 +1240,20 @@ fi
 update_managed_rsync_excludes "$repo_root" \
     || fail "could not establish managed-set exclusions for $repo_root; refusing to mutate deployment"
 
+if [[ "$restart" == "1" ]]; then
+    declare -a restart_owner=()
+    while IFS= read -r _line || [[ -n "$_line" ]]; do
+        restart_owner+=("$_line")
+    done < <(update_restart_owner_decision "$repo_root" "$service_unit" "$restart_mode" "$go_trader_pidfile" "$go_trader_run_sh" "$proc_root")
+    restart_owner_text="route=${restart_owner[1]:-$restart_mode}, LoadState=${restart_owner[2]:--}: ${restart_owner[3]:-no detail}"
+    if [[ "${restart_owner[0]:-unknown}" == "no-owner" ]]; then
+        update_check_incomplete_marker "$(update_recovery_root)" "$(update_recovery_key "$repo_root")" "$repo_root" \
+            || fail "incomplete recovery marker blocks update of $repo_root; inspect the saved snapshot and run --clear-recovery"
+        fail "restart route cannot succeed for $repo_root ($restart_owner_text); nothing was changed. Install or repair the systemd unit, start the deployment once through its wrapper so it writes the pidfile, or update without --restart"
+    fi
+    echo "[update] restart route: ${restart_owner[0]:-unknown} ($restart_owner_text)"
+fi
+
 recovery_root=$(update_recovery_root)
 recovery_key=$(update_recovery_key "$repo_root")
 lock_rc=0
@@ -1304,12 +1318,14 @@ if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
         echo "[update] signal: systemd unit '$service_unit' is active and its ExecStart runs this binary ($(pwd)/go-trader) — routing restart through systemctl to avoid spawning an out-of-cgroup duplicate (#850). Set GO_TRADER_SERVICE to target a different unit, or stop the unit to use signal mode." >&2
         restart_mode="systemd"
     else
-        if [[ ! -d "$proc_root/self" ]]; then
-            fail "RESTART_MODE=signal requires Linux (/proc); use systemd mode on other OSes"
-        fi
-        if [[ ! -f "$go_trader_pidfile" ]]; then
-            fail "signal mode: pidfile missing ($go_trader_pidfile). Start the instance once via your wrapper so it writes the pidfile."
-        fi
+        case "$(update_signal_prereq_status "$PWD" "$proc_root" "$go_trader_pidfile" "$go_trader_run_sh")" in
+            missing-proc)
+                fail "RESTART_MODE=signal requires Linux (/proc); use systemd mode on other OSes"
+                ;;
+            missing-pidfile)
+                fail "signal mode: pidfile missing ($go_trader_pidfile). Start the instance once via your wrapper so it writes the pidfile."
+                ;;
+        esac
     fi
 fi
 
