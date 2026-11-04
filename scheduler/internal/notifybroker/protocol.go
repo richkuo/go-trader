@@ -23,6 +23,7 @@ const (
 	OpDiscordRespond     = "discord.interaction_respond"
 	OpDiscordFollowup    = "discord.followup"
 	OpDiscordCommands    = "discord.register_commands"
+	OpDiscordCommandList = "discord.list_commands"
 	OpTelegramCall       = "telegram.call"
 	OpGitHubIssue        = "github.create_issue"
 
@@ -88,6 +89,10 @@ type DiscordFollowupRequest struct {
 type DiscordCommandsRequest struct {
 	Commands json.RawMessage `json:"commands"`
 	GuildID  string          `json:"guild_id,omitempty"`
+}
+
+type DiscordCommandListRequest struct {
+	GuildID string `json:"guild_id,omitempty"`
 }
 
 type TelegramCallRequest struct {

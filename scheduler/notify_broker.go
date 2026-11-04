@@ -155,6 +155,16 @@ func (b *brokerDiscordTransport) ApplicationCommandBulkOverwrite(appID string, g
 	return out, nil
 }
 
+func (b *brokerDiscordTransport) ApplicationCommands(appID string, guildID string, options ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error) {
+	ctx, cancel := brokerContext(options)
+	defer cancel()
+	var out []*discordgo.ApplicationCommand
+	if err := b.c.Call(ctx, notifybroker.OpDiscordCommandList, notifybroker.DiscordCommandListRequest{GuildID: guildID}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 type notifyBrokerSession struct {
 	client  *notifybroker.Client
 	discord *brokerDiscordTransport

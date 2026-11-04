@@ -454,6 +454,20 @@ func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, 
 			return nil, err
 		}
 		return json.Marshal(out)
+	case OpDiscordCommandList:
+		var req DiscordCommandListRequest
+		if err := decodeStrict(f.Payload, &req); err != nil {
+			return nil, err
+		}
+		appID := b.discordSelfID(ctx)
+		if appID == "" {
+			return nil, errors.New("discord application identity is not available yet")
+		}
+		cmds, err := session.ApplicationCommands(appID, strings.TrimSpace(req.GuildID))
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(cmds)
 	}
 	return nil, fmt.Errorf("unknown operation %q", f.Op)
 }

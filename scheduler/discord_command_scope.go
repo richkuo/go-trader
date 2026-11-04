@@ -22,13 +22,22 @@ func checkCommandNamespaceOwnership(lister discordCommandLister, appID string, s
 	}
 	for _, c := range existing {
 		if !strings.HasPrefix(c.Name, commandPrefix) {
-			return fmt.Errorf("this Discord application already hosts %d command(s) owned by another program (for example %q); give go-trader its own Discord application and bot token, or set discord.guild_id so go-trader registers into a guild scope and leaves the global list untouched", len(existing), c.Name)
+			return fmt.Errorf("the %s scope of this Discord application already hosts %d command(s) owned by another program (for example %q); give go-trader its own Discord application and bot token, or point discord.guild_id at a scope go-trader owns", discordScopeLabel(scope), len(existing), c.Name)
 		}
 	}
 	return nil
 }
 
-// slashCommandScope returns the scope used to register slash commands.
+// scopeLabel names a command scope for error messages.
+func discordScopeLabel(scope string) string {
+	if strings.TrimSpace(scope) == "" {
+		return "global"
+	}
+	return "guild " + strings.TrimSpace(scope)
+}
+
+// resolveSlashCommandScope picks the scope go-trader registers into and proves
+// that scope is go-trader's to overwrite.
 //
 // Discord keeps one global command list per application, and a global bulk
 // overwrite replaces every command on the app, including commands another
@@ -37,19 +46,27 @@ func checkCommandNamespaceOwnership(lister discordCommandLister, appID string, s
 // other commands.
 //
 // A guild scope comes from discord.guild_id. Without one, the global scope is
-// used, but only when no foreign program owns commands on the application.
-func (d *DiscordNotifier) slashCommandScope(appID string) (string, error) {
-	if d.cfg != nil {
-		if guildID := strings.TrimSpace(d.cfg.Discord.GuildID); guildID != "" {
-			return guildID, nil
+// used, but only when the scope holds no command owned by another program.
+func resolveSlashCommandScope(appID string, scope string, lister discordCommandLister) (string, error) {
+	scope = strings.TrimSpace(scope)
+	if lister == nil {
+		if scope == "" {
+			return "", fmt.Errorf("cannot verify which programs own the global Discord command list; set discord.guild_id so go-trader registers into a guild scope, or give go-trader its own Discord application and bot token")
 		}
+		return scope, nil
 	}
-	lister, ok := d.transport.(discordCommandLister)
-	if !ok {
-		return "", nil
-	}
-	if err := checkCommandNamespaceOwnership(lister, appID, ""); err != nil {
+	if err := checkCommandNamespaceOwnership(lister, appID, scope); err != nil {
 		return "", err
 	}
-	return "", nil
+	return scope, nil
+}
+
+// slashCommandScope returns the scope used to register slash commands.
+func (d *DiscordNotifier) slashCommandScope(appID string) (string, error) {
+	scope := ""
+	if d.cfg != nil {
+		scope = d.cfg.Discord.GuildID
+	}
+	lister, _ := d.transport.(discordCommandLister)
+	return resolveSlashCommandScope(appID, scope, lister)
 }
