@@ -92,6 +92,11 @@ SITECUSTOMIZE = textwrap.dedent("""
         if item.get("sleep_s"):
             import time
             time.sleep(float(item["sleep_s"]))
+        if "sleep_until_started_s" in item:
+            import sys
+            import time
+            started = getattr(sys.modules["__main__"], "_STARTED")
+            time.sleep(max(0.0, started + float(item["sleep_until_started_s"]) - time.monotonic()))
         if item.get("raise") == "connection":
             raise requests.exceptions.ConnectionError("fake connection failure")
         if item.get("raise") == "connect_timeout":
@@ -1279,11 +1284,12 @@ def test_execute_buy_refusals_send_no_order(tmp_path, subtests):
             _assert_finite_document(payload)
     with subtests.test(case="too_little_time_after_the_reads"):
         routes = _routes([_accepted()], [_order("filled", "0.01", "100")])
-        routes["GET " + ACCOUNTS] = [dict(_page([{"id": "acct-1"}]), sleep_s=2.2)]
-        code, payload, made = _run(tmp_path, EXECUTE, _buy(budget_ms=3000), routes)
+        routes["GET " + QUOTE] = [dict(PREP["GET " + QUOTE][0], sleep_until_started_s=9.35)]
+        code, payload, made = _run(tmp_path, EXECUTE, _buy(budget_ms=10000), routes)
         assert code == 1
         assert payload["order_outcome"] == "not_sent"
         assert len(_posts(made)) == 0
+        assert "too little of the time budget is left after the account reads" in payload["error"], payload
         assert payload["buy_sizing"]["sent_quantity"] == 0.09950248
 
 
