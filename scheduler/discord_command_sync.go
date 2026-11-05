@@ -38,6 +38,26 @@ var errSlashCreateBudget = errors.New("slash command create budget exhausted")
 
 const slashResyncFlapRepairs = 3
 
+var slashHeldStateCommandNames = map[string]bool{
+	"clear-cash-reconcile":      true,
+	operatorCloseCommandName:    true,
+	"resolve-entry":             true,
+	"resolve-rh-order":          true,
+	robinhoodAccountCommandName: true,
+}
+
+func slashCreatePriority(c *discordgo.ApplicationCommand) int {
+	name := strings.TrimPrefix(c.Name, commandPrefix)
+	switch {
+	case slashHeldStateCommandNames[name]:
+		return 0
+	case opsCommandNames[name]:
+		return 1
+	default:
+		return 2
+	}
+}
+
 func ownedSlashCommand(c *discordgo.ApplicationCommand) bool {
 	if c == nil || !strings.HasPrefix(c.Name, commandPrefix) {
 		return false
@@ -60,6 +80,8 @@ func syncOwnedSlashCommands(t discordTransport, appID string, desired []*discord
 		}
 		want[c.Name] = true
 	}
+	ordered := append([]*discordgo.ApplicationCommand(nil), desired...)
+	sort.SliceStable(ordered, func(i, j int) bool { return slashCreatePriority(ordered[i]) < slashCreatePriority(ordered[j]) })
 	existing, err := t.ApplicationCommands(appID, "")
 	if err != nil {
 		return res, fmt.Errorf("list global commands: %w", err)
@@ -82,7 +104,7 @@ func syncOwnedSlashCommands(t discordTransport, appID string, desired []*discord
 		}
 		return false
 	}
-	for _, c := range desired {
+	for _, c := range ordered {
 		cur, ok := have[c.Name]
 		switch {
 		case !ok:
@@ -340,7 +362,7 @@ func (d *DiscordNotifier) resyncSlashCommands(ctx context.Context, appID string,
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	var repairs []time.Time
-	flapWarned, budgetWarned := false, false
+	flapping, flapWarned, budgetWarned := false, false, false
 	backOff := func() {
 		wait = min(wait*2, maxWait)
 	}
@@ -353,7 +375,7 @@ func (d *DiscordNotifier) resyncSlashCommands(ctx context.Context, appID string,
 		res, err := d.syncOwnedSlashCommandsLocked(appID, true)
 		now := time.Now()
 		repairs = pruneTimes(repairs, now, flapWindow)
-		if len(repairs) == 0 {
+		if len(repairs) == 0 && !flapping {
 			flapWarned = false
 		}
 		budgetHit := errors.Is(err, errSlashCreateBudget)
@@ -375,6 +397,9 @@ func (d *DiscordNotifier) resyncSlashCommands(ctx context.Context, appID string,
 			budgetWarned = true
 			d.slashResyncOwnerDM(fmt.Sprintf("[slash] go-trader stopped re-creating its Discord slash commands: it reached its limit of %d creates within %s, because another program keeps deleting them. Missing go-trader commands stay missing until that window passes or go-trader restarts; give each program its own bot token.", slashCreateBudget, slashCreateBudgetWindow))
 		}
+		if len(repairs) >= slashResyncFlapRepairs {
+			flapping = true
+		}
 		if len(repairs) >= slashResyncFlapRepairs && !flapWarned {
 			flapWarned = true
 			d.slashResyncOwnerDM(fmt.Sprintf("[slash] go-trader repaired its Discord slash commands %d times within %s. Another program or another go-trader instance that uses this bot token keeps changing them; go-trader now waits longer between checks (up to %s). Give each program its own bot token, or run one go-trader version per token.", len(repairs), flapWindow, maxWait))
@@ -382,15 +407,12 @@ func (d *DiscordNotifier) resyncSlashCommands(ctx context.Context, appID string,
 		switch {
 		case throttled:
 			backOff()
-		case err != nil:
+		case err == nil && res.writes() == 0:
+			wait, flapping, budgetWarned = base, false, false
+		case !flapping:
 			wait = base
-		case res.writes() == 0:
-			wait = base
-			budgetWarned = false
-		case len(repairs) >= slashResyncFlapRepairs:
+		case res.writes() > 0:
 			backOff()
-		default:
-			wait = base
 		}
 		timer.Reset(wait)
 	}

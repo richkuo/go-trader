@@ -151,7 +151,7 @@ func (f *fakeNotifyServices) serveCommands(w http.ResponseWriter, r *http.Reques
 	if len(parts) == at+2 {
 		id = parts[at+1]
 	}
-	key, status, out := f.commandOp(r.Method, scope, id, body)
+	key, status, out := f.commandOp(r.Method, scope, id, body, r.URL.Query().Get("with_localizations") == "true")
 	f.record(key, string(body))
 	if out == nil {
 		w.WriteHeader(status)
@@ -162,7 +162,7 @@ func (f *fakeNotifyServices) serveCommands(w http.ResponseWriter, r *http.Reques
 	_, _ = w.Write(out)
 }
 
-func (f *fakeNotifyServices) commandOp(method, scope, id string, body []byte) (string, int, []byte) {
+func (f *fakeNotifyServices) commandOp(method, scope, id string, body []byte, withLocalizations bool) (string, int, []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	encode := func(v any) []byte {
@@ -173,7 +173,17 @@ func (f *fakeNotifyServices) commandOp(method, scope, id string, body []byte) (s
 	case method == http.MethodGet && id == "":
 		list := make([]map[string]any, 0)
 		for _, c := range f.commands[scope] {
-			list = append(list, c)
+			if withLocalizations {
+				list = append(list, c)
+				continue
+			}
+			shown := make(map[string]any, len(c))
+			for k, v := range c {
+				if k != "name_localizations" && k != "description_localizations" {
+					shown[k] = v
+				}
+			}
+			list = append(list, shown)
 		}
 		return "discord.commands_list", http.StatusOK, encode(list)
 	case method == http.MethodPut && id == "":
@@ -444,6 +454,7 @@ func TestEgressDirectNotificationsUseTheIsolatedBroker(t *testing.T) {
 	services.seedCommand("", commandPrefix+"resolve-robinhood-order", "old name")
 	services.seedCommandFields("", map[string]any{"name": commandPrefix + "status", "description": "outdated description", "contexts": []int{1}})
 	services.seedCommandFields("", map[string]any{"name": commandPrefix + "logs", "description": "Recent journalctl lines (owner DM only)", "contexts": []int{1}, "integration_types": []int{0}, "default_member_permissions": "8"})
+	services.seedCommandFields("", map[string]any{"name": commandPrefix + "pnl", "description": "Portfolio P&L (total, per-platform, per-strategy)", "contexts": []int{0, 1}, "integration_types": []int{0}, "name_localizations": map[string]string{"de": "go-trader-gewinn"}, "description_localizations": map[string]string{"de": "Gewinn und Verlust"}})
 	services.seedCommand(legacyGuild, commandPrefix+"health", "registered by the guild-scope build")
 	services.seedCommand(legacyGuild, "openclaw-guild", "OpenClaw guild command")
 	cfg.Discord.GuildID = legacyGuild
@@ -479,16 +490,23 @@ func TestEgressDirectNotificationsUseTheIsolatedBroker(t *testing.T) {
 	if got := services.commandField("", commandPrefix+"logs", "contexts"); !reflect.DeepEqual(got, []any{float64(1)}) {
 		t.Fatalf("go-trader-logs contexts after sync = %v, want bot DM only", got)
 	}
+	if got := services.commandField("", commandPrefix+"pnl", "name_localizations"); got != nil {
+		t.Fatalf("go-trader-pnl name_localizations after sync = %v, want them cleared by a re-create", got)
+	}
+	if got := services.commandField("", commandPrefix+"pnl", "description_localizations"); got != nil {
+		t.Fatalf("go-trader-pnl description_localizations after sync = %v, want them cleared by a re-create", got)
+	}
 	if got := services.commandNames(legacyGuild); !reflect.DeepEqual(got, []string{"openclaw-guild"}) {
 		t.Fatalf("legacy guild commands after cleanup = %v, want only the foreign command", got)
 	}
 	created, edited, deleted := len(services.bodiesFor("discord.command_create")), len(services.bodiesFor("discord.command_edit")), len(services.bodiesFor("discord.command_delete"))
-	if created != len(slashCommands())-1 || edited != 1 || deleted != 3 {
-		t.Fatalf("sync writes: created %d, edited %d, deleted %d; want %d, 1, 3", created, edited, deleted, len(slashCommands())-1)
+	if created != len(slashCommands())-1 || edited != 1 || deleted != 4 {
+		t.Fatalf("sync writes: created %d, edited %d, deleted %d; want %d, 1, 4", created, edited, deleted, len(slashCommands())-1)
 	}
 	t.Logf("case: shared bot token: foreign global and guild commands kept, stale go-trader commands removed (%d created, %d edited, %d deleted)", created, edited, deleted)
 	t.Log("case: stored go-trader-status with contexts [1] and an outdated description: edited to contexts [0 1]")
 	t.Log("case: stored go-trader-logs with default_member_permissions that a PATCH cannot clear: deleted and created again without it")
+	t.Log("case: stored go-trader-pnl with name and description localizations, served by the list only on with_localizations=true: deleted and created again without them")
 
 	writes := services.commandWrites()
 	if err := d.RegisterSlashCommands(nil, cfg); err != nil {
