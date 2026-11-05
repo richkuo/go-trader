@@ -256,6 +256,12 @@ func (f *fakeNotifyServices) record(key, body string) {
 	f.bodies[key] = append(f.bodies[key], body)
 }
 
+func (f *fakeNotifyServices) requestKeys() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.requests...)
+}
+
 func (f *fakeNotifyServices) bodiesFor(key string) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -434,14 +440,14 @@ func TestEgressDirectNotificationsUseTheIsolatedBroker(t *testing.T) {
 
 	notifier.SendOwnerDM("egress outage drill")
 	if got := services.bodiesFor("discord.message:/api/v9/channels/5001/messages"); len(got) != 1 || !strings.Contains(got[0], "egress outage drill") {
-		t.Fatalf("owner DM through the broker: %v (requests %v)", got, services.requests)
+		t.Fatalf("owner DM through the broker: %v (requests %v)", got, services.requestKeys())
 	}
 	if got := services.bodiesFor("telegram.sendMessage"); len(got) != 1 || !strings.Contains(got[0], `"777"`) {
 		t.Fatalf("telegram owner message through the broker: %v", got)
 	}
 	notifier.SendToChannel("binanceus", "spot", "channel alert")
 	if got := services.bodiesFor("discord.message:/api/v9/channels/6001/messages"); len(got) != 1 {
-		t.Fatalf("channel message through the broker: %v", services.requests)
+		t.Fatalf("channel message through the broker: %v", services.requestKeys())
 	}
 
 	d := notifier.DiscordBackend()
@@ -563,7 +569,7 @@ func TestEgressDirectNotificationsUseTheIsolatedBroker(t *testing.T) {
 	flapDeadline := time.Now().Add(10 * time.Second)
 	for !flapDM() {
 		if time.Now().After(flapDeadline) {
-			t.Fatalf("no owner DM after %d repairs within the flap window; requests %v", slashResyncFlapRepairs, services.requests)
+			t.Fatalf("no owner DM after %d repairs within the flap window; requests %v", slashResyncFlapRepairs, services.requestKeys())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -585,7 +591,7 @@ func TestEgressDirectNotificationsUseTheIsolatedBroker(t *testing.T) {
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-		t.Fatalf("no interaction callback for %s; requests %v", id, services.requests)
+		t.Fatalf("no interaction callback for %s; requests %v", id, services.requestKeys())
 		return ""
 	}
 	services.dispatch(t, "INTERACTION_CREATE", interaction("801", "424242", "go-trader-health"))
@@ -659,7 +665,7 @@ func TestEgressDirectNotificationsUseTheIsolatedBroker(t *testing.T) {
 			t.Fatalf("the broker reached a non-notification destination: %+v", rec)
 		}
 	}
-	for _, key := range services.requests {
+	for _, key := range services.requestKeys() {
 		if strings.HasPrefix(key, "unexpected:") {
 			t.Fatalf("unexpected request %s", key)
 		}
@@ -753,7 +759,7 @@ func TestEgressBrokerSlashCommandsSurviveALateDiscordGateway(t *testing.T) {
 	}
 	notifier.SendOwnerDM("gateway down drill")
 	if got := services.bodiesFor("discord.message:/api/v9/channels/5001/messages"); len(got) != 1 || !strings.Contains(got[0], "gateway down drill") {
-		t.Fatalf("owner DM while the gateway is down: %v (requests %v)", got, services.requests)
+		t.Fatalf("owner DM while the gateway is down: %v (requests %v)", got, services.requestKeys())
 	}
 	if got := services.bodiesFor("telegram.sendMessage"); len(got) != 1 || !strings.Contains(got[0], "gateway down drill") {
 		t.Fatalf("telegram owner message while the gateway is down: %v", got)
@@ -768,7 +774,7 @@ func TestEgressBrokerSlashCommandsSurviveALateDiscordGateway(t *testing.T) {
 		deadline := time.Now().Add(timeout)
 		for !ok() {
 			if time.Now().After(deadline) {
-				t.Fatalf("%s: timed out; requests %v", desc, services.requests)
+				t.Fatalf("%s: timed out; requests %v", desc, services.requestKeys())
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
@@ -792,7 +798,7 @@ func TestEgressBrokerSlashCommandsSurviveALateDiscordGateway(t *testing.T) {
 	select {
 	case <-services.gwReady:
 	case <-time.After(30 * time.Second):
-		t.Fatalf("the broker never opened the Discord gateway after it came back; requests %v", services.requests)
+		t.Fatalf("the broker never opened the Discord gateway after it came back; requests %v", services.requestKeys())
 	}
 	waitFor("background slash command registration", 30*time.Second, func() bool { return len(services.commandNames("")) == len(slashCommands()) })
 	services.dispatch(t, "INTERACTION_CREATE", interaction("901"))
@@ -811,7 +817,7 @@ func TestEgressBrokerSlashCommandsSurviveALateDiscordGateway(t *testing.T) {
 	waitFor("the owner command after a broker restart", 10*time.Second, answered("902"))
 	t.Log("case: the broker restarts after a successful registration: /health answered again after it reconnected")
 
-	for _, key := range services.requests {
+	for _, key := range services.requestKeys() {
 		if strings.HasPrefix(key, "unexpected:") {
 			t.Fatalf("unexpected request %s", key)
 		}
@@ -871,7 +877,7 @@ func TestEgressRefusalDMIsRecordedOnlyWhenDelivered(t *testing.T) {
 		t.Fatal("refusal DM recorded while the broker socket does not answer")
 	}
 	if len(services.bodiesFor(dmKey)) != 0 {
-		t.Fatalf("a DM reached Discord without a broker: %v", services.requests)
+		t.Fatalf("a DM reached Discord without a broker: %v", services.requestKeys())
 	}
 	t.Log("case: broker socket does not answer: no DM delivered, no record written")
 
@@ -903,13 +909,13 @@ func TestEgressRefusalDMIsRecordedOnlyWhenDelivered(t *testing.T) {
 		t.Fatal("refusal DM recorded while Discord returns 503 and Telegram is off")
 	}
 	if len(services.bodiesFor(refusedKey)) == 0 {
-		t.Fatalf("the broker never tried the DM: %v", services.requests)
+		t.Fatalf("the broker never tried the DM: %v", services.requestKeys())
 	}
 	t.Log("case: Discord REST returns 503 and Telegram is off: no record written")
 
 	services.setMessageDown(false)
 	if !notifyEgressRefusal(cfg, dmPath, reason, "drill three", interval, time.Now().UTC()) {
-		t.Fatalf("refusal DM not delivered after the broker and Discord came up: %v", services.requests)
+		t.Fatalf("refusal DM not delivered after the broker and Discord came up: %v", services.requestKeys())
 	}
 	if got := services.bodiesFor(dmKey); len(got) != 1 || !strings.Contains(got[0], "drill three") {
 		t.Fatalf("delivered DM: %v", got)
