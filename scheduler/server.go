@@ -48,6 +48,8 @@ type StatusServer struct {
 	tradeDepsHook func(*manualCoreDeps)
 	restartFn     func() error
 
+	paperCloseMarks func(StrategyConfig, *paperClosePlan) (map[string]paperCloseMark, error)
+
 	perpsErrMu              sync.Mutex
 	lastFuturesErrLoggedAt  time.Time
 	lastFuturesModeLoggedAt time.Time

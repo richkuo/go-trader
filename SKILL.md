@@ -729,6 +729,10 @@ Never apply a runtime-default change silently when the operator has not been sho
 
 When in doubt, treat a commit as a runtime default and prompt. Per-release narrative for every archived entry lives in [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md); regenerate a fresh candidate list from `git log --oneline -50`.
 
+- **Operator paper close and the remove-strategy guard (#1984, runtime default, no opt-out, no config or schema change, new owner command).** Before this change no command could close a paper position of a non-manual strategy, and `remove-strategy` let the next restart delete open paper positions with no close trade.
+  Now `/go-trader-paper-close <strategy> [symbol]` and the dashboard paper-close action book an `operator_paper_close` trade at a fresh mark, and `remove-strategy` refuses on Discord and the dashboard while the strategy holds any position or option-leg row (§ Discord Slash Commands, § Operator paper close).
+  Operator action: flatten a strategy with `paper-close` (paper) or its live close command before you remove it. A new slash command can take about an hour to appear.
+
 - **Hyperliquid API wallet expiry warnings and CRITICAL (#1983, runtime default, alerts only, no opt-out, no config or schema change, new startup probe).** Before this change an expired Hyperliquid API wallet made every live order and stop fail with only the generic `LIVE ORDER FAILED` alert, and nothing warned before expiry.
   Now a live Hyperliquid daemon checks the key at startup and hourly, warns 14, 7, 3 and 1 days before `validUntil`, and sends one `HL API WALLET CRITICAL` when Hyperliquid no longer knows the key or a signed action is rejected for it (see Hyperliquid API wallet lifetime). The check never exits 78.
   Operator action: none, unless a warning or CRITICAL arrives; then create a new API wallet, set `HYPERLIQUID_SECRET_KEY`, and restart. Deploy Go and Python together with `bash scripts/update.sh --restart` (a live Hyperliquid config now probes `fetch_hl_agent_status.py --probe-only`, and a stale Python tree exits 78).
@@ -967,7 +971,8 @@ The bot must be invited with the `applications.commands` OAuth scope in addition
 | `config set <key> <value>` | A top-level or per-strategy field. Per-strategy keys (`strategies.<id>.<field>`) need `config_version` 13 or newer. Writes are atomic and serialized with the dashboard tuner; the reply states whether it applied through SIGHUP or a restart |
 | `add-strategy <name> <platform> <asset>` | Generates a Hyperliquid perps (always paper) or BinanceUS spot entry. The name must be a known short name. An entry-only candidate listed in `addStrategyEntryOnlyCandidates` also gets its explicit `close_strategy` (with tier params where listed) and `closed_bar_decisions: true`, so it decides on the closed bars its study used, plus `stop_loss_atr_mult` where listed (for example `mass_index_reversal`: `tiered_tp_pct` +3%, `stop_loss_atr_mult: 1.0`); otherwise the stop stays the loader default. A research scalar (`addStrategyResearchCandidates`, #1923) is Hyperliquid-only, always `--mode=paper`, carries its timeframe, cadence, close and stop, needs `open_params` (a JSON object) for its required params (`macro_event_breakout`: calendar and quote artifacts), and is refused unless the config's root `market_feed` is `websocket` or `shared`; the add never changes root settings. The web dashboard takes the same `open_params` |
 | `add-quote-owner <fragment>` | Adds one held paper quote owner from an attached `quote_owner` JSON file (§ Quote Lifecycle, Typed quote setup), after a DM confirm that shows the full entry, its digest and the engine hold. Needs a restart |
-| `remove-strategy <id>` | Removes a strategy after an out-of-band DM confirm. Needs a restart |
+| `remove-strategy <id>` | Removes a strategy after an out-of-band DM confirm. Needs a restart. It refuses while the strategy holds any position or option-leg row, zero quantity included, because the startup prune and the next full-file save delete those rows by cascade with no close trade. The refusal names the sorted symbols and the close path: `paper-close` for paper, `manual-close` for live `type=manual`, `force-close` for live Hyperliquid perps, the `inventory_quote_exit` lane for a quote-owned book, or no close command for any other live platform. The check runs before the confirm and again inside the config write lock. Trade history stays |
+| `paper-close <strategy> [symbol]` | Flattens the open positions and option legs of one paper strategy, in any paper partition and under its `storage_strategy_id` alias, after a DM confirm. It books one close trade per leg at a fresh mark with reason `operator_paper_close`, sends no order and needs no restart; it saves only that strategy's book (`SaveStrategyBook`). Details: § Operator paper close |
 | `add-platform <name>` | Emits a setup checklist. Secrets go in the environment file, never the config |
 | `paper-to-live <strategy>` | Flips `--mode=paper` or `--mode paper` to one `--mode=live` token after a DM confirm. Needs a restart, refuses while the strategy holds an open position, and refuses every `type: options` strategy (options run as paper only). It refuses any research reference (§ Add Or Change Strategies item 7) at confirmation and again on the current disk config before the flip |
 | `apply-regime-gate` | Interactive picker over type-eligible flat strategies, applies a named regime entry-gate preset, then confirms before writing. It refuses a non-flat target both before and after the confirm. The confirm lists any OTHER strategy whose dormant `allowed_regimes` gate the accompanying `regime.enabled` flip would reactivate — read that list first. Applies through a full restart |
@@ -2017,6 +2022,8 @@ The identity that matters at runtime is the **risk partition**: `live`, `paper` 
 
 `paper_sources` entries, their `db_file`, and any strategy's `paper_source` are **restart-required**: a SIGHUP that adds, removes or repoints one is rejected. So is a source's `portfolio_risk.max_notional_usd`, exactly as the root and `paper` ones are.
 
+Supported removal (`remove-strategy` on Discord and the dashboard) refuses while the strategy holds any `positions` or `option_positions` row, so it never leaves rows for the startup orphan prune; only a hand edit of the config can still reach the prune WARN.
+
 **Who owns what**
 
 | Table | Owner | Notes |
@@ -2768,6 +2775,16 @@ This is not the portfolio kill switch. Operator-required is per-strategy and aff
 
 ---
 
+## Operator paper close
+
+`/go-trader-paper-close <strategy> [symbol]` (owner DM, `paper_close.go`) and the dashboard paper-close action (`POST /api/confirm` with `action: paper-close`, then `POST /api/strategies/<id>/paper-close`) share one core on `StatusServer`: `preparePaperClose` builds and shows the plan, and `applyPaperClose` books it.
+Scope: a paper strategy (`portfolioScopeFor`) whose `partitionForStrategy` is `paper` or `paper:<id>`; a live, unmapped or quote-owned strategy refuses. Live closes keep `manual-close` and `force-close`. There is no CLI writer, because a CLI process beside the daemon would be overwritten by the daemon's next full-file save.
+Marks come from the platform's own source, never the merged `fetchLiveMarkPrices` map: Hyperliquid perps, manual and hedge legs use `allMids`; OKX perps the swap ticker; OKX spot the spot ticker (`-USDT`, then `-USD`, then `-USDC`); Robinhood spot the BinanceUS `<COIN>/USD` ticker; other `/` spot symbols `FetchPrices`; futures `FetchFuturesMarks`, with its mode in the reply. Any other platform and type refuses. A missing, zero or non-finite mark refuses; `AvgCost` is never used.
+Option legs at or past the expiry cutoff stay open and are listed. Every other leg must pass the harvest fresh-mark gate (`optionHarvestEligibility`) and books at its stored `CurrentValueUSD`; any failure refuses the whole command.
+Apply order: the per-file manual-action lock, a plan compare under `mu.RLock` (symbols, sides, quantities, average costs, position ids, kept legs), the queued manual action and resting limit row checks, the mark fetch with no `mu`, then `mu.Lock`, a second compare, the closes and `SaveStrategyBook`. A plan that changed during the confirm refuses with no state change.
+Closes run through `closeVirtualPositionAtPrice` (inside `mutatePaperPerpsBook`) and `closeOptionLegAtValue` with reason `operator_paper_close`; the kill switch and circuit breaker keep `circuit_breaker`. Each close is a `FeeSourceReconcileAdjustment` trade with gross PnL and goes through `RecordTradeResult` (or `RecordHedgeTradeResult` for a hedge leg), so `DailyPnL` and `ConsecutiveLosses` move and a losing close can trip the per-strategy breaker.
+A `symbol` that names a hedge leg, or a primary with a coupled hedge leg, refuses; omit `symbol` to close both. The reply warns when the strategy is not paused (its next signal can reopen) and when it is a replay mirror. A failed save leaves the close in memory, and the next cycle save retries.
+
 ## Cash Reconcile Latch
 
 A live spot fill that overshoots virtual cash is always booked, because the venue already filled it. The strategy then latches `CashReconcileRequired`, raises a CRITICAL alert, and blocks further live buys. Closes keep running. Clear it with `/go-trader-clear-cash-reconcile <strategy>` only after the books match the venue — the command drops the buy block and never invents or adjusts cash.
@@ -2817,6 +2834,7 @@ Per-subsystem mechanism notes for coding agents. `CLAUDE.md` keeps only the guar
 
 ### Loopback UI and tuning (`server.go`, `ui_*.go`, `static/ui/*`, `ui_tuning.go`)
 
+- Paper close (§ Operator paper close): the confirm pins the plan as the nonce payload, and the apply refuses with 409 when the book differs. Position rows of a paper strategy show "Paper close", and the trade panel shows "Close all paper positions"; "Force close" shows only for live Hyperliquid perps. `removeStrategyGuarded` holds `configWriteMu` and takes `mu.RLock` inside; no path holds `mu` and then takes `configWriteMu`.
 - `applyStrategyConfigPatch` needs `config_version>=13`. `/tuning` (`static/ui/tuning.html`) is read-and-launch: it re-reads `/api/strategies/<id>/config` on every poll.
 - `/api/tuning/runs` is a suggest-only lane. `tuning.max_retained_runs` prunes terminal run directories. `POST /api/tuning/apply` is refused on drift against the schema-v2 `promotion_baseline` and applies through `mutateConfigRoot` as an exact replace.
 - **Partition navigation.** Every dashboard read takes an optional `partition` query key carrying the runtime's own partition text (`live`, `paper`, `paper:<source id>`).
@@ -3050,6 +3068,7 @@ Ship Go and Python from one commit with `bash scripts/update.sh --restart`.
 - `agent_info.go`: read-only dump.
 - `logger.go`: `log_level` gate. A new per-cycle or per-check line uses `logger.Debug`/`logDebugf` or an on-change form (`InfoOnChange`, `logOnChangef`, keyed on a stable state value, never on a price or balance); errors, warnings, trades and non-HOLD signals stay unconditional. Event-driven protection sync lines (after a trade, a limit fill, a failed-close re-arm) stay `logger.Info`.
 - `failure_alerts.go`/`script_failure_alerts.go`: primary alert at 3 strikes; transient 429/5xx/timeout stays WARN until 15 strikes or 75 minutes.
+- `paper_close.go`/`remove_strategy_guard.go`: `/paper-close` mutating (§ Operator paper close); the remove guard for Discord and the dashboard.
 - `discord_commands.go`/`discord_mutating_commands.go`: `/clear-cash-reconcile`, `/clear-operator-close` (`operator_required_close.go`), `/resolve-entry` (`entry_operator.go`), `/resolve-rh-order` (`robinhood_order_recovery.go`) and `/resolve-rh-account` (`robinhood_account_resolve.go`) mutating, `/closing-strategies` read-only.
 - `missing_mark_alerts.go`: throttled DM per `(strategy_id, symbol)`. `hl_reconcile_gap_alerts.go`: alerting only. `portfolio_warning.go`, `circuit_breaker_alert.go`: alert routing.
 - `model_only_reconcile.go`: § Model-Only Close Reconciliation. `portfolio.go`: `CashReconcileRequired` (§ Cash Reconcile Latch). `kill_switch_close.go` and `*_close.go`: `type=manual` HL positions join the flatten via `hlKillSwitchAll`.

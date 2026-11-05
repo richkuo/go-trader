@@ -139,9 +139,16 @@ func (ss *StatusServer) handleAPIConfirm(w http.ResponseWriter, r *http.Request)
 	req.Params = obj["params"]
 
 	structural := uiStructuralActions[req.Action]
+	if req.Action == paperCloseCommandName {
+		ss.confirmPaperClose(w, req)
+		return
+	}
 	if !uiTradeActions[req.Action] && !structural {
+		known := append(sortedUITradeActions(), sortedUIStructuralActions()...)
+		known = append(known, paperCloseCommandName)
+		sort.Strings(known)
 		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown action %q (want one of %s)", req.Action,
-			strings.Join(append(sortedUITradeActions(), sortedUIStructuralActions()...), ", ")))
+			strings.Join(known, ", ")))
 		return
 	}
 	if strings.TrimSpace(req.StrategyID) == "" && req.Action != "add-strategy" && req.Action != quoteOwnerSetupAction {

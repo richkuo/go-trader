@@ -157,10 +157,10 @@ func (ss *StatusServer) confirmStructuralAction(action, strategyID string, param
 		if isOnlyStrategyOnDisk(ss.configPath, sc.ID) {
 			return "", "", "", fmt.Errorf("refusing to remove the only strategy %q — a config must keep at least one strategy", sc.ID)
 		}
-		desc := fmt.Sprintf("remove-strategy: delete %s from the config. It stops trading after restart; its positions and trade history in the state DB are NOT touched.", sc.ID)
-		if ss.strategyHasOpenPosition(strategyID) {
-			desc += " ⚠️ This strategy currently holds an OPEN position — removing it stops all management (trailing SL sync, close evaluation) for that position after restart; flatten first unless you intend to manage it manually."
+		if reason := ss.removeStrategyRefusal(sc.ID); reason != "" {
+			return "", "", "", fmt.Errorf("%s", reason)
 		}
+		desc := fmt.Sprintf("remove-strategy: delete %s from the config. It stops trading after restart. %s", sc.ID, removeStrategyHistoryNote)
 		desc += " " + structuralApplyMessage(p.Restart)
 		return sc.ID, desc, "", nil
 	case "paper-to-live":
@@ -344,10 +344,11 @@ func (ss *StatusServer) handleAPIStrategyStructural(w http.ResponseWriter, r *ht
 	var err error
 	switch action {
 	case "remove-strategy":
-		err = ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
-			return removeStrategyFromRoot(root, id)
-		})
-		msg = fmt.Sprintf("Removed strategy %s. Its positions and trade history in the state DB are not touched.", id)
+		err = ss.removeStrategyGuarded(id)
+		msg = fmt.Sprintf("Removed strategy %s. %s", id, removeStrategyHistoryNote)
+		if !p.Restart {
+			msg += " Pause it until the restart, or it keeps trading and can open a position the next restart would then delete."
+		}
 	case "paper-to-live":
 		msg, err = ss.executePaperToLive(id)
 	case "apply-regime-gate":

@@ -329,14 +329,18 @@ func TestUIRemoveStrategy(t *testing.T) {
 	})
 }
 
-func TestUIRemoveStrategyConfirmWarnsOnOpenPosition(t *testing.T) {
-	ss, _, _ := newStructuralTestServer(t)
+func TestUIRemoveStrategyConfirmRefusesOnOpenPosition(t *testing.T) {
+	ss, path, _ := newStructuralTestServer(t)
 	ss.state.Strategies["sma-btc"] = &StrategyState{
 		Positions: map[string]*Position{"BTC/USDT": {Quantity: 0.5, AvgCost: 50000}},
 	}
-	confirm := structuralConfirm(t, ss, "remove-strategy", "sma-btc", `{}`)
-	if !strings.Contains(confirm.Description, "OPEN position") {
-		t.Fatalf("confirm description must warn about the open position: %s", confirm.Description)
+	before := configStrategyIDs(t, path)
+	w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", `{"action":"remove-strategy","strategy_id":"sma-btc","params":{}}`, nil)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "BTC/USDT") || !strings.Contains(w.Body.String(), "paper-close") {
+		t.Fatalf("confirm remove-strategy status = %d body %s, want 400 refusal naming BTC/USDT and paper-close", w.Code, w.Body.String())
+	}
+	if after := configStrategyIDs(t, path); !slices.Equal(after, before) {
+		t.Fatalf("refused confirm must not mutate config; before %v after %v", before, after)
 	}
 }
 

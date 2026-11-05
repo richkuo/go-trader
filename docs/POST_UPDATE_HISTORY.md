@@ -2,6 +2,15 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 1984: operator paper close and the remove-strategy guard
+
+Runtime default with a new owner command; there is no opt-out, no config change and no schema change.
+Before this change `manual-close` refused every strategy whose type is not `manual`, `force-close` accepted only live Hyperliquid perps, and `remove-strategy` said open positions were "NOT touched". After the restart the startup prune and the next full-file save deleted those rows by cascade, so open paper exposure disappeared with no close trade and no realized PnL.
+Now `/go-trader-paper-close <strategy> [symbol]` and the dashboard paper-close action flatten one paper strategy at a fresh per-platform mark, book one `operator_paper_close` trade per leg, and save only that strategy's book (SKILL.md § Operator paper close).
+`remove-strategy` on Discord and the dashboard refuses while the strategy holds any position or option-leg row, names the symbols and the close path, and checks again inside the config write lock after the confirm. The "NOT touched" text is gone from all three places.
+`backtest/fee_evidence.py` groups `operator_paper_close` rows as `manual`.
+Operator action: flatten before removal. The new slash command registers through the normal sync and can take about an hour to appear.
+
 ### Issue 1983: Hyperliquid API wallet expiry warnings and CRITICAL
 
 Runtime default with new alerts only; there is no opt-out, no config change and no schema change.
