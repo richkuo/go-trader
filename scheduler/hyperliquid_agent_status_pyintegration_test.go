@@ -463,3 +463,174 @@ func TestHLAgentRejectionThroughEverySignedRunnerSendsOneCritical(t *testing.T) 
 		t.Fatal("the classifier matched another venue rejection")
 	}
 }
+
+func (f *hlAgentFixture) rejectingDriver(address string) string {
+	f.t.Helper()
+	venue := "User or API Wallet does not exist."
+	if address != "" {
+		venue = "User or API Wallet " + address + " does not exist."
+	}
+	body := "import json, sys\nprint(json.dumps({\"error\": \"exchange rejected order: {'status': 'err', 'response': '" + venue + "'}\", \"order_outcome\": \"rejected\"}))\nsys.exit(1)\n"
+	path := filepath.Join(f.t.TempDir(), "rejecting.py")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+	return path
+}
+
+func (f *hlAgentFixture) dmsWith(sub string) []string {
+	f.mock.mu.Lock()
+	defer f.mock.mu.Unlock()
+	var out []string
+	for _, dm := range f.mock.dms {
+		f.assertNoKey("owner DM", dm.content)
+		if strings.Contains(dm.content, sub) {
+			out = append(out, dm.content)
+		}
+	}
+	return out
+}
+
+func (f *hlAgentFixture) knownSigner() string {
+	hlAgentStatus.mu.Lock()
+	defer hlAgentStatus.mu.Unlock()
+	return hlAgentStatus.signerAddress
+}
+
+func TestHLAgentRejectionNamingTheSignerSendsOneReplaceKeyCritical(t *testing.T) {
+	f := newHLAgentFixture(t, hlAgentTestMaster)
+	f.stub.set("valid", time.Now().Add(100*24*time.Hour).UnixMilli())
+	hlAgentStatus.runCheck(nil, hlAgentCheckTimeout)
+	signer := f.knownSigner()
+	if !hlAgentAddressRE.MatchString(signer) {
+		t.Fatalf("the valid check did not record the signer: %q", signer)
+	}
+	_, _, _ = RunHyperliquidExecute(f.rejectingDriver(signer), "ETH", "buy", 1, 0, 0, 0, "cross", 1, hlCloseModeReduceOnly, hlExecuteSnapshot{})
+	f.stub.set("missing", 0)
+	hlAgentStatus.runCheck(nil, hlAgentCheckTimeout)
+	if got := f.criticals(); got != 1 {
+		t.Fatalf("a rejection naming the signer and a missing check sent %d CRITICAL alerts, want 1", got)
+	}
+	crit := f.dmsWith("HL API WALLET CRITICAL")[0]
+	if !strings.Contains(crit, "create a new API wallet") || !strings.Contains(crit, signer) {
+		t.Fatalf("the CRITICAL does not give the replace-key fix for the signer: %s", crit)
+	}
+	if got := len(f.dmsWith("SIGNATURE MISMATCH")); got != 0 {
+		t.Fatalf("a rejection naming the signer sent %d signature mismatch alerts", got)
+	}
+}
+
+func TestHLAgentRejectionNamingAnotherAddressIsASignatureMismatch(t *testing.T) {
+	f := newHLAgentFixture(t, hlAgentTestMaster)
+	f.stub.set("valid", time.Now().Add(100*24*time.Hour).UnixMilli())
+	hlAgentStatus.runCheck(nil, hlAgentCheckTimeout)
+	signer := f.knownSigner()
+	driver := f.rejectingDriver(hlAgentTestOther)
+
+	_, _, _ = RunHyperliquidExecute(driver, "ETH", "buy", 1, 0, 0, 0, "cross", 1, hlCloseModeReduceOnly, hlExecuteSnapshot{})
+	hlAgentStatus.runCheck(nil, hlAgentCheckTimeout)
+	_, _, _ = RunHyperliquidUpdateStopLoss(driver, "ETH", "long", 1, 100, 0)
+	sc := StrategyConfig{ID: "hl-agent-mismatch", Platform: "hyperliquid"}
+	notifyLiveExecFailure(f.n, sc, directionOpen, "ETH", "exchange rejected order: {'status': 'err', 'response': 'User or API Wallet "+hlAgentTestOther+" does not exist.'}")
+	t.Cleanup(func() { clearLiveExecThrottle(sc, directionOpen, "ETH") })
+
+	if got := f.criticals(); got != 0 {
+		t.Fatalf("a rejection naming another address sent %d replace-key CRITICAL alerts", got)
+	}
+	if got := len(f.dmsWith("HL API WALLET RECOVERED")); got != 0 {
+		t.Fatalf("a valid check after a signature mismatch sent %d RECOVERED alerts", got)
+	}
+	mismatch := f.dmsWith("**HL SIGNATURE MISMATCH**")
+	if len(mismatch) != 1 {
+		t.Fatalf("three mismatched rejections sent %d signature mismatch alerts, want 1", len(mismatch))
+	}
+	for _, want := range []string{hlAgentTestOther, signer, "A new API wallet does not fix this"} {
+		if !strings.Contains(mismatch[0], want) {
+			t.Fatalf("the signature mismatch alert does not name %q: %s", want, mismatch[0])
+		}
+	}
+	hlAgentStatus.mu.Lock()
+	bad := hlAgentStatus.bad
+	hlAgentStatus.mu.Unlock()
+	if bad {
+		t.Fatal("a signature mismatch marked the API wallet bad")
+	}
+	later := time.Now().UTC().Add(effectiveAlertThrottleInterval() + time.Hour)
+	requireKinds(t, "mismatch after the throttle", hlAgentStatus.observeRejection("User or API Wallet "+hlAgentTestOther+" does not exist.", later), hlAgentAlertMismatch)
+}
+
+func TestHLAgentRejectionWithNoAddressKeepsTheCritical(t *testing.T) {
+	f := newHLAgentFixture(t, hlAgentTestMaster)
+	f.stub.set("valid", time.Now().Add(100*24*time.Hour).UnixMilli())
+	hlAgentStatus.runCheck(nil, hlAgentCheckTimeout)
+	if f.knownSigner() == "" {
+		t.Fatal("the valid check did not record the signer")
+	}
+	_, _, _ = RunHyperliquidExecute(f.rejectingDriver(""), "ETH", "buy", 1, 0, 0, 0, "cross", 1, hlCloseModeReduceOnly, hlExecuteSnapshot{})
+	if got := f.criticals(); got != 1 {
+		t.Fatalf("a rejection with no address sent %d CRITICAL alerts, want 1", got)
+	}
+	if got := len(f.dmsWith("SIGNATURE MISMATCH")); got != 0 {
+		t.Fatalf("a rejection with no address sent %d signature mismatch alerts", got)
+	}
+}
+
+func TestHLAgentWrongMasterCriticalNamesTheAccountThatGetsTheOrders(t *testing.T) {
+	f := newHLAgentFixture(t, hlAgentTestMaster)
+	now := time.Now().UTC()
+
+	agent, err := f.run("wrong_master", now.Add(100*24*time.Hour).UnixMilli())
+	if err != nil || agent.Error != "" {
+		t.Fatalf("wrong master report: %v %+v", err, agent)
+	}
+	alerts := (&hlAgentStatusOwner{}).applyReport(agent, now, now)
+	requireKinds(t, "agent of another account", alerts, hlAgentAlertCritical)
+	if want := "to account `" + agent.RoleUser + "`"; !strings.Contains(alerts[0].Text, want) || !strings.EqualFold(agent.RoleUser, hlAgentTestOther) {
+		t.Fatalf("the CRITICAL does not name %s as the account that gets the orders: %s", hlAgentTestOther, alerts[0].Text)
+	}
+	if !strings.Contains(alerts[0].Text, "check account `"+agent.RoleUser+"` on Hyperliquid for open positions") {
+		t.Fatalf("the CRITICAL does not tell the operator to check the other account: %s", alerts[0].Text)
+	}
+
+	user, err := f.run("user", now.Add(100*24*time.Hour).UnixMilli())
+	if err != nil || user.Error != "" {
+		t.Fatalf("user report: %v %+v", err, user)
+	}
+	alerts = (&hlAgentStatusOwner{}).applyReport(user, now, now)
+	requireKinds(t, "key is its own account", alerts, hlAgentAlertCritical)
+	if want := "to account `" + user.SignerAddress + "`"; !strings.Contains(alerts[0].Text, want) || strings.EqualFold(user.SignerAddress, hlAgentTestMaster) {
+		t.Fatalf("the CRITICAL does not name the signer %s as the account that gets the orders: %s", user.SignerAddress, alerts[0].Text)
+	}
+}
+
+func TestHLAgentUnknownEndDateSendsOneOwnerDM(t *testing.T) {
+	f := newHLAgentFixture(t, hlAgentTestMaster)
+	f.stub.set("not_listed", time.Now().Add(100*24*time.Hour).UnixMilli())
+	hlAgentStatus.runCheck(nil, hlAgentCheckTimeout)
+	hlAgentStatus.runCheck(nil, hlAgentCheckTimeout)
+	unknown := f.dmsWith("**HL API WALLET END DATE UNKNOWN**")
+	if len(unknown) != 1 {
+		t.Fatalf("two checks with no end date sent %d owner DMs, want 1", len(unknown))
+	}
+	if !strings.Contains(unknown[0], "cannot send the 14, 7, 3 or 1 day expiry warnings") {
+		t.Fatalf("the DM does not say that no expiry warning will be sent: %s", unknown[0])
+	}
+
+	f.stub.set("valid", time.Now().Add(13*24*time.Hour+time.Hour).UnixMilli())
+	hlAgentStatus.runCheck(nil, hlAgentCheckTimeout)
+	if got := f.dmsWith("**HL API WALLET EXPIRES IN 13 DAYS**"); len(got) != 1 {
+		t.Fatalf("a valid check 13 days out after an unknown end date sent %d 14-day warnings, want 1", len(got))
+	}
+
+	f.stub.set("not_listed", time.Now().Add(100*24*time.Hour).UnixMilli())
+	hlAgentStatus.runCheck(nil, hlAgentCheckTimeout)
+	if got := len(f.dmsWith("**HL API WALLET END DATE UNKNOWN**")); got != 2 {
+		t.Fatalf("an unknown end date after a valid check sent %d DMs in total, want 2", got)
+	}
+	f.mock.mu.Lock()
+	channels := len(f.mock.messages)
+	f.mock.mu.Unlock()
+	if channels != 0 {
+		t.Fatalf("with an owner configured, %d alerts went to channels", channels)
+	}
+}

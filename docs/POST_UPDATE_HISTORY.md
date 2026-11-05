@@ -10,6 +10,9 @@ Now, when a strategy is live Hyperliquid and `HYPERLIQUID_SECRET_KEY` is set, th
 The script reads `userRole` for the signer and `extraAgents` for the master the venue names; Go classifies the result: valid, valid with no listed lifetime, the master key itself, missing, wrong master, expired, or check error.
 Warnings go out at 14, 7, 3 and 1 days before `validUntil`, once per signer, `validUntil` and threshold while the process runs (a first reading inside a later threshold sends only that one); a restart can resend the current threshold once.
 Missing, wrong master and expired send one `HL API WALLET CRITICAL`, repeated on the alert throttle interval while the state stays bad; a later good check that started after the last rejection sends one recovery line.
+The wrong-master CRITICAL names the account that receives the orders (the agent's master, or the key's own account) and tells the operator to check it for positions and orders.
+A valid API wallet with no listed end date sends one `HL API WALLET END DATE UNKNOWN` DM per signer until the state changes.
+A rejection that names an address other than the signer read by the last check sends one throttled `HL SIGNATURE MISMATCH` alert with no replace-key fix and does not enter the CRITICAL state.
 Each signed Hyperliquid runner and `notifyLiveExecFailure` (Hyperliquid only) feed the venue rejection text into the same state, so many strategies that fail in one cycle send one CRITICAL in total; command-line processes print the CRITICAL to stderr only.
 A failed venue read never sends a CRITICAL and never exits; 24 hours of failed checks send one `HL API WALLET CHECK FAILING` warning.
 The startup probe now also runs `fetch_hl_agent_status.py --probe-only` for a live Hyperliquid config (no network, no secret read), so a stale Python tree exits 78.

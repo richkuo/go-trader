@@ -28,6 +28,8 @@ const (
 	hlAgentAlertCritical  = "critical"
 	hlAgentAlertRecovered = "recovered"
 	hlAgentAlertStale     = "stale"
+	hlAgentAlertMismatch  = "mismatch"
+	hlAgentAlertNoExpiry  = "no_expiry"
 )
 
 type hlAgentExpiryThreshold struct {
@@ -62,6 +64,7 @@ var (
 	hlAgentKeyLikeHexRE       = regexp.MustCompile(`(?i)(0x)?[0-9a-f]{64,}`)
 	hlAgentKeyLikeDigitsRE    = regexp.MustCompile(`\d{60,}`)
 	hlAgentRejectionRE        = regexp.MustCompile(`(?i)user or api wallet[^.\n]{0,120}?does not exist\.?`)
+	hlAgentNamedAddressRE     = regexp.MustCompile(`(?i)\b0x[0-9a-f]{40}\b`)
 )
 
 type hlAgentReport struct {
@@ -92,6 +95,9 @@ type hlAgentStatusOwner struct {
 	firstErrorAt     time.Time
 	lastStaleWarnAt  time.Time
 	lastValidUntilMs int64
+	signerAddress    string
+	lastMismatchAt   time.Time
+	noExpirySigner   string
 }
 
 var hlAgentStatus = &hlAgentStatusOwner{}
@@ -211,18 +217,29 @@ func hlAgentCriticalText(state hlAgentState, r hlAgentReport) string {
 	case hlAgentStateExpired:
 		cause = fmt.Sprintf("The API wallet %s for account `%s` expired at %s.", hlAgentWalletLabel(r), r.MasterAddress, time.UnixMilli(r.ValidUntilMs).UTC().Format("2006-01-02 15:04 UTC"))
 	case hlAgentStateWrongMaster:
+		trades := r.RoleUser
 		if r.Role == "user" {
+			trades = r.SignerAddress
 			cause = fmt.Sprintf("The key `%s` is its own Hyperliquid account, but HYPERLIQUID_ACCOUNT_ADDRESS is `%s`.", r.SignerAddress, r.MasterAddress)
 		} else {
 			cause = fmt.Sprintf("The API wallet `%s` signs for account `%s`, but HYPERLIQUID_ACCOUNT_ADDRESS is `%s`.", r.SignerAddress, r.RoleUser, r.MasterAddress)
 		}
-		return fmt.Sprintf("**HL API WALLET CRITICAL** %s %s Fix: set HYPERLIQUID_ACCOUNT_ADDRESS to the account this key trades for, or create an API wallet for the configured account and set HYPERLIQUID_SECRET_KEY to its key; then restart go-trader. The scheduler never creates or approves keys.", cause, hlAgentEffectLine)
+		effect := fmt.Sprintf("Effect: Hyperliquid applies every live order, stop-loss and take-profit signed by this key to account `%s`, but go-trader reads balances, fills, positions and open orders from `%s`, so it does not reconcile positions or orders on `%s`. Before you change the config, check account `%s` on Hyperliquid for open positions and orders that go-trader placed.", trades, r.MasterAddress, trades, trades)
+		return fmt.Sprintf("**HL API WALLET CRITICAL** %s %s Fix: set HYPERLIQUID_ACCOUNT_ADDRESS to the account this key trades for, or create an API wallet for the configured account and set HYPERLIQUID_SECRET_KEY to its key; then restart go-trader. The scheduler never creates or approves keys.", cause, effect)
 	}
 	return fmt.Sprintf("**HL API WALLET CRITICAL** %s %s %s", cause, hlAgentEffectLine, hlAgentFixLine)
 }
 
 func hlAgentRejectionCriticalText(excerpt string) string {
 	return fmt.Sprintf("**HL API WALLET CRITICAL** Hyperliquid rejected a signed action: \"%s\" The API wallet in HYPERLIQUID_SECRET_KEY expired, was removed, or was never approved. %s %s", excerpt, hlAgentEffectLine, hlAgentFixLine)
+}
+
+func hlAgentSignatureMismatchText(excerpt, named, signer string) string {
+	return fmt.Sprintf("**HL SIGNATURE MISMATCH** Hyperliquid rejected a signed action: \"%s\" The venue read the signature as address `%s`, but the configured API wallet is `%s`. A new API wallet does not fix this: the signature or the signed request was wrong, for example a signing fault in go-trader or the Hyperliquid SDK. Effect: the order, stop-loss, take-profit or cancel in that request was not done. Check open positions and their stop-losses on Hyperliquid, and check the go-trader and Hyperliquid SDK versions.", excerpt, named, signer)
+}
+
+func hlAgentNoExpiryText(r hlAgentReport) string {
+	return fmt.Sprintf("**HL API WALLET END DATE UNKNOWN** The API wallet `%s` for account `%s` is valid, but Hyperliquid lists no end date for it, so the scheduler cannot send the 14, 7, 3 or 1 day expiry warnings for this key. When Hyperliquid stops accepting the key, live Hyperliquid orders, stop-losses and take-profits fail and one CRITICAL is sent. Check the end date of this API wallet on Hyperliquid and plan its replacement.", r.SignerAddress, r.MasterAddress)
 }
 
 func hlAgentWarningText(r hlAgentReport, now time.Time) string {
@@ -269,6 +286,10 @@ func (o *hlAgentStatusOwner) applyReport(r hlAgentReport, checkStartedAt, now ti
 	o.firstErrorAt = time.Time{}
 	o.lastStaleWarnAt = time.Time{}
 	o.lastValidUntilMs = 0
+	o.signerAddress = strings.ToLower(r.SignerAddress)
+	if state != hlAgentStateUnknownLifetime {
+		o.noExpirySigner = ""
+	}
 	switch state {
 	case hlAgentStateMissing, hlAgentStateWrongMaster, hlAgentStateExpired:
 		return o.markBadLocked(state, hlAgentCriticalText(state, r), now)
@@ -284,7 +305,11 @@ func (o *hlAgentStatusOwner) applyReport(r hlAgentReport, checkStartedAt, now ti
 	case hlAgentStateMasterKey:
 		logOnChangef("hl-agent", string(state), "[hl-agent] HYPERLIQUID_SECRET_KEY is the account key of %s; it has no API wallet lifetime\n", r.MasterAddress)
 	case hlAgentStateUnknownLifetime:
-		logOnChangef("hl-agent", string(state), "[hl-agent] WARN: API wallet %s for account %s is valid, but Hyperliquid lists no lifetime for it; no expiry warning can be sent\n", r.SignerAddress, r.MasterAddress)
+		logChanges.changed("hl-agent", string(state))
+		if o.noExpirySigner != o.signerAddress {
+			o.noExpirySigner = o.signerAddress
+			alerts = append(alerts, hlAgentAlert{Kind: hlAgentAlertNoExpiry, Text: hlAgentNoExpiryText(r)})
+		}
 	case hlAgentStateValid:
 		o.lastValidUntilMs = r.ValidUntilMs
 		until := time.UnixMilli(r.ValidUntilMs)
@@ -341,8 +366,16 @@ func (o *hlAgentStatusOwner) applyCheckErrorLocked(detail string, now time.Time)
 
 func (o *hlAgentStatusOwner) observeRejection(text string, now time.Time) []hlAgentAlert {
 	excerpt := hlAgentRejectionExcerpt(text)
+	named := strings.ToLower(hlAgentNamedAddressRE.FindString(hlAgentRejectionRE.FindString(text)))
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if named != "" && o.signerAddress != "" && named != o.signerAddress {
+		if !alertThrottleDue(o.lastMismatchAt, now) {
+			return nil
+		}
+		o.lastMismatchAt = now
+		return []hlAgentAlert{{Kind: hlAgentAlertMismatch, Text: hlAgentSignatureMismatchText(excerpt, named, o.signerAddress)}}
+	}
 	o.lastRejectionAt = now
 	return o.markBadLocked(hlAgentStateMissing, hlAgentRejectionCriticalText(excerpt), now)
 }
