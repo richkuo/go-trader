@@ -65,7 +65,7 @@ func ownedSlashCommand(c *discordgo.ApplicationCommand) bool {
 	return c.Type == 0 || c.Type == discordgo.ChatApplicationCommand
 }
 
-func syncOwnedSlashCommands(t discordTransport, appID string, desired []*discordgo.ApplicationCommand, allowCreate func() bool) (slashCommandSyncResult, error) {
+func syncOwnedSlashCommands(t discordTransport, appID string, desired []*discordgo.ApplicationCommand, allowCreate func() bool, recordCreate func()) (slashCommandSyncResult, error) {
 	var res slashCommandSyncResult
 	want := make(map[string]bool, len(desired))
 	for _, c := range desired {
@@ -104,6 +104,11 @@ func syncOwnedSlashCommands(t discordTransport, appID string, desired []*discord
 		}
 		return false
 	}
+	created := func() {
+		if recordCreate != nil {
+			recordCreate()
+		}
+	}
 	for _, c := range ordered {
 		cur, ok := have[c.Name]
 		switch {
@@ -115,6 +120,7 @@ func syncOwnedSlashCommands(t discordTransport, appID string, desired []*discord
 				errs = append(errs, fmt.Errorf("create %s: %w", c.Name, err))
 				continue
 			}
+			created()
 			res.Created++
 		case slashCommandMatches(cur, c):
 			res.Unchanged++
@@ -130,6 +136,7 @@ func syncOwnedSlashCommands(t discordTransport, appID string, desired []*discord
 				errs = append(errs, fmt.Errorf("recreate %s: create: %w", c.Name, err))
 				continue
 			}
+			created()
 			res.Recreated++
 		default:
 			if _, err := t.ApplicationCommandEdit(appID, "", cur.ID, c); err != nil {
@@ -277,13 +284,12 @@ func (d *DiscordNotifier) syncOwnedSlashCommandsLocked(appID string, enforceBudg
 	allowCreate := func() bool {
 		now := time.Now()
 		d.createTimes = pruneTimes(d.createTimes, now, slashCreateBudgetWindow)
-		if enforceBudget && len(d.createTimes) >= slashCreateBudget {
-			return false
-		}
-		d.createTimes = append(d.createTimes, now)
-		return true
+		return !enforceBudget || len(d.createTimes) < slashCreateBudget
 	}
-	res, err := syncOwnedSlashCommands(d.transport, appID, slashCommands(), allowCreate)
+	recordCreate := func() {
+		d.createTimes = append(d.createTimes, time.Now())
+	}
+	res, err := syncOwnedSlashCommands(d.transport, appID, slashCommands(), allowCreate, recordCreate)
 	if err != nil {
 		err = fmt.Errorf("sync slash commands: %w%s", err, brokerProtocolHint(err))
 	}
