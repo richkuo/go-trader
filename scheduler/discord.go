@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -42,6 +43,10 @@ type DiscordNotifier struct {
 
 	ss  *StatusServer
 	cfg *Config
+
+	syncMu       sync.Mutex
+	resyncOnce   sync.Once
+	resyncCancel context.CancelFunc
 }
 
 func NewDiscordNotifier(token, ownerID string) (*DiscordNotifier, error) {
@@ -68,6 +73,12 @@ func NewDiscordNotifier(token, ownerID string) (*DiscordNotifier, error) {
 }
 
 func (d *DiscordNotifier) Close() {
+	d.mu.Lock()
+	cancel := d.resyncCancel
+	d.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if d.session != nil {
 		d.session.Close()
 	}

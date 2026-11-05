@@ -424,8 +424,12 @@ func dmContext() *[]discordgo.InteractionContextType {
 	return &[]discordgo.InteractionContextType{discordgo.InteractionContextBotDM}
 }
 
+func readOnlyContext() *[]discordgo.InteractionContextType {
+	return &[]discordgo.InteractionContextType{discordgo.InteractionContextGuild, discordgo.InteractionContextBotDM}
+}
+
 func slashCommands() []*discordgo.ApplicationCommand {
-	return []*discordgo.ApplicationCommand{
+	cmds := []*discordgo.ApplicationCommand{
 		{Name: commandPrefix + "status", Description: "Live portfolio status (cash, positions, value, regime)"},
 		{Name: commandPrefix + "health", Description: "Daemon health: running, last cycle, version"},
 		{Name: commandPrefix + "positions", Description: "Open positions across platforms"},
@@ -509,6 +513,15 @@ func slashCommands() []*discordgo.ApplicationCommand {
 			}},
 		}},
 	}
+	for _, c := range cmds {
+		if c.Contexts == nil {
+			c.Contexts = readOnlyContext()
+		}
+		c.IntegrationTypes = &[]discordgo.ApplicationIntegrationType{discordgo.ApplicationIntegrationGuildInstall}
+		nsfw := false
+		c.NSFW = &nsfw
+	}
+	return cmds
 }
 
 func (d *DiscordNotifier) RegisterSlashCommands(ss *StatusServer, cfg *Config) error {
@@ -535,7 +548,9 @@ func (d *DiscordNotifier) RegisterSlashCommands(ss *StatusServer, cfg *Config) e
 	if d.broker == nil {
 		d.session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) { d.interactionCreate(s, i) })
 	}
-	return d.syncSlashCommands(appID)
+	err := d.syncSlashCommands(appID)
+	d.startSlashCommandResync(appID, err)
+	return err
 }
 
 var errSlashCommandsDeferred = errors.New("the notification broker has no Discord identity yet; the command handler is installed and registration retries in the background")
@@ -560,6 +575,7 @@ func (d *DiscordNotifier) registerSlashCommandsWhenReady() {
 			err := d.syncSlashCommands(appID)
 			if err == nil {
 				fmt.Println("Discord slash commands registered (the notification broker's Discord gateway is up)")
+				d.startSlashCommandResync(appID, nil)
 				return
 			}
 			if msg := err.Error(); msg != lastErr {

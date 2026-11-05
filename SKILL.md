@@ -536,6 +536,8 @@ The application cannot close positions through an unreachable proxy; resting ven
    For a unit with an egress drop-in it must run as root: it builds the controller from the same exported sources, runs the probe as the unit's user with the unit's environment files, switches the controller (previous binary kept as `.prev`) before the app restart, and restores both on rollback.
    Controller restarts use `systemctl restart --job-mode=ignore-dependencies`, because the drop-in's `Requires=` would otherwise restart the app with the controller; the app restarts once, after the controller is ready.
    The namespace rules stay installed through the switch.
+   The notification broker unit (`go-trader-notify@<name>.service`) runs the controller binary, so after a switch or a rollback restore that restarted the controller, the update restarts a running broker too; a host with no running broker skips it.
+   The scheduler and the broker share one request protocol, so a broker left on an older binary refuses new requests (`unknown operation`); the slash-command error then names the unit to restart.
    In the mode the in-process updater and `auto_update` checks refuse (the service has no route to Git) and `/restart` asks the controller to restart the registered unit.
 
 **Container deployment.** `docker/compose.egress.yaml` adds `egress-net` (the release image running `egress-anchor`, `network_mode: none`, labeled with the deployment) and joins `go-trader` and `cli` to it with `network_mode: service:egress-net` (no published port; the host status relay serves `127.0.0.1:<port>`).
@@ -579,7 +581,7 @@ On a difference it keeps the loaded file as `<unit>.prev`, installs the shipped 
 A rollback restores `<unit>.prev` and reloads before restarting the previous binary.
 Before the binary swap, a `journal` phase runs the same journald namespace sync as the installer (Run And Install Service § Journal namespace); a failed sync removes `go-trader.new` and stops the update, so the binary, the unit and the running service stay unchanged.
 Drop-ins under `<unit>.d/` are never written — `scripts/merge-paper-instance.sh` and `scripts/egress-install.sh` own those.
-For a unit with an egress drop-in (`NetworkNamespacePath` plus `GO_TRADER_EGRESS_DEPLOYMENT`), the update must run as root: it builds the egress controller from the same exported sources into a root-owned staging directory, runs the probe as the unit's user with the unit's environment files, switches `go-trader-egress@<deployment>` to the new controller (the previous one kept as `.prev`) before the app restart, and restores both on rollback (§ Egress Proxy Mode).
+For a unit with an egress drop-in (`NetworkNamespacePath` plus `GO_TRADER_EGRESS_DEPLOYMENT`), the update must run as root: it builds the egress controller from the same exported sources into a root-owned staging directory, runs the probe as the unit's user with the unit's environment files, switches `go-trader-egress@<deployment>` to the new controller (the previous one kept as `.prev`) before the app restart, restarts a running `go-trader-notify@<deployment>` broker after each controller restart, and restores both on rollback (§ Egress Proxy Mode).
 A unit name this repo does not ship is logged and skipped, never guessed; a fragment that is a symlink whose target differs is left to the operator; a unit loaded from outside `/etc/systemd/system` (vendor or generator) stops the update before the swap.
 `scripts/install-service.sh` is still the first-install path: it also creates `logs/`, enables the unit, and starts it.
 
@@ -711,6 +713,10 @@ Never apply a runtime-default change silently when the operator has not been sho
 ### Reference: classification table
 
 When in doubt, treat a commit as a runtime default and prompt. Per-release narrative for every archived entry lives in [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md); regenerate a fresh candidate list from `git log --oneline -50`.
+
+- **Discord slash commands sync by name and the update restarts the notification broker (#1982, runtime default, no opt-out, no config change, operator action required).** Before this change one 33-character command name made Discord reject the whole bulk overwrite, so no go-trader command registered, and a global bulk overwrite deleted the commands of any other program that shares the bot token.
+  Now `/go-trader-resolve-robinhood-order` is `/go-trader-resolve-rh-order`, and registration creates, edits or deletes only `go-trader-` commands at startup and every minute after (§ Discord Slash Commands). On a broker-mode host the update restarts `go-trader-notify@<name>.service` after the controller switch.
+  Operator action: tell operators to use `/go-trader-resolve-rh-order`. When a broker-mode host was updated by a checkout without this change, run `sudo systemctl restart go-trader-notify@<name>.service` once; the next re-sync registers the commands.
 
 - **Updates skip or refuse a deployment whose restart cannot succeed (#1979, update tooling, no opt-out, no config or schema change, exit-status change).** Before this change `update.sh --all --restart` rebuilt every discovered deployment, so a retained tree with no restart route (for example a not-found unit and no signal pidfile) was transferred, built and swapped before the restart failed, and a failed recovery could leave an incomplete-recovery marker that blocked later updates.
   Now a read-only restart-route check runs before any lock or snapshot: the batch parent skips a deployment proven unable to restart with a WARNING, and a single-folder restart update refuses it in preflight; uncertain results continue as before (§ Auto-Update, signal and batch mode).
@@ -918,6 +924,8 @@ If Discord is enabled, wait for the first cycle and confirm messages in the conf
 
 Global slash commands register at startup, covering every guild the bot is in plus DMs; a first-time command-shape change can take about an hour to propagate.
 Registration never bulk-overwrites the command list: it reads the global list and creates, edits or deletes only `go-trader-` chat commands, so commands another program registered with the same bot token stay, and a renamed or removed go-trader command is deleted. The notification broker refuses a create, edit or delete outside the `go-trader-` namespace.
+Every command sets its contexts, integration types and `nsfw`, so a sync can reset a field that something else changed; a command that holds a field a PATCH cannot clear (`default_member_permissions` or localizations) is deleted and created again.
+After startup the sync repeats every minute and writes only on drift, so a global bulk overwrite by the other program is repaired within a minute; three repairs within 30 minutes send the owner one DM that names the shared bot token.
 `discord.guild_id` (optional, restart-required) only names a guild from which startup deletes the `go-trader-` commands that the guild-scope build registered there; commands still register globally.
 The bot must be invited with the `applications.commands` OAuth scope in addition to `bot`. Every command carries the `go-trader-` prefix on the wire (`/go-trader-status`); authorization and dispatch operate on the bare ID. Registration failure is non-fatal — it logs and DMs the owner.
 
