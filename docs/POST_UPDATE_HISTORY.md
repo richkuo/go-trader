@@ -2,6 +2,24 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 1979: updates skip or refuse a deployment whose restart cannot succeed
+
+Update tooling change in `scripts/update.sh` and `scripts/update_helpers.sh`; there is no opt-out, no config change and no schema change.
+Before this change `update.sh --all --restart` started a child for every discovered directory that had `scheduler/config.json`, whatever its restart route.
+A retained tree whose route could not restart (for example a folded paper tree whose unit is not found, with no signal pidfile) was transferred, synced, built, probed and swapped before the restart failed; the child then ran recovery, a failed recovery could keep the snapshot and write an incomplete-recovery marker that blocked later updates until `--clear-recovery`, and the failed child made the whole batch exit non-zero.
+Now one read-only restart-route check (`update_restart_owner_decision`) runs in the deployment's own context: its git root, resolved unit, restart mode, and the pidfile, wrapper and proc root resolved from the deployment root.
+The batch parent runs it before it starts each child and skips a `no-owner` deployment with a stderr WARNING that names the route, the load state and the failed prerequisite; the child runs it again, independently, before the recovery lock.
+A single-folder update with restart enabled (`--restart` or `RESTART=1`) fails in phase `preflight` on `no-owner` before the lock, snapshot, transfer, dependency sync and build, and writes no marker.
+Both refusals first run the existing incomplete-recovery marker check: a blocking marker keeps the earlier outcome (the child fails with the marker message, and the parent counts a failing instance so the batch exits non-zero); a stale marker does not block.
+`no-owner` needs proof: a successful probe of a not-found unit with no fragment path (or an effective signal route after the existing redirect check), plus a missing proc root, a missing pidfile, or a missing or non-executable wrapper outside the deployment tree.
+Unknown cases continue through the existing flow: no `systemctl`, a failed, empty or malformed probe, an uncertain redirect probe, a not-found unit with a fragment path, other load states such as `bad-setting` and `error`, and a wrapper inside the tree, which the code transfer can supply or repair.
+Loaded units (also inactive ones and units inherited from the parent's service) and masked units stay eligible, as before.
+Exit status change: a batch with at least one update, some skips and no failing child now exits 0 and prints a WARNING with the skip count; a failing child still fails the batch; a batch that updates nothing still fails with `updated 0 deployments`, now naming both skip reasons.
+Cron jobs and alerts that read the exit status no longer see a failure for a skipped deployment.
+Code-only updates, including the in-process auto-updater, never run the check.
+Operator action: after a fleet update, read the `WARNING: skipping` lines, then install or repair the unit, start the deployment once through its wrapper so it writes the pidfile, or retire the tree.
+The batch parent runs the `update.sh` of the checkout that invokes `--all`, so the new rule applies once that checkout carries this change.
+
 ### Issue 1918: IBKR paper options use 0.1-coin contracts, independent marks, a London cutoff and a dated settlement
 
 Runtime behavior changes for every IBKR `type: options` strategy; there is no opt-out and no schema change. Options stay paper only.

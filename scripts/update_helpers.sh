@@ -247,6 +247,227 @@ update_signal_redirect_decision() {
     printf ''
 }
 
+execstart_main_binary() {
+    local raw="$1"
+    raw="${raw//$'\n'/ }"
+    if [[ "$raw" == \{*path=* ]]; then
+        local p="${raw#*path=}"
+        p="${p%% ;*}"
+        printf '%s' "$p"
+        return 0
+    fi
+    local b="${raw%% *}"
+    b="${b#\"}"
+    b="${b%\"}"
+    printf '%s' "$b"
+}
+
+update_canonicalize_path() {
+    local p="$1"
+    if [[ "$p" != /* ]]; then
+        printf '%s' "$p"
+        return 0
+    fi
+    if command -v realpath >/dev/null 2>&1; then
+        if rp=$(realpath "$p" 2>/dev/null); then
+            printf '%s' "$rp"
+            return 0
+        fi
+    fi
+    if rp=$(readlink -f "$p" 2>/dev/null); then
+        printf '%s' "$rp"
+        return 0
+    fi
+    printf '%s' "$p"
+}
+
+update_resolve_from() {
+    local base="$1" path="$2"
+    if [[ -z "$path" || "$path" == /* ]]; then
+        printf '%s' "$path"
+        return 0
+    fi
+    while [[ "$path" == ./* ]]; do
+        path="${path#./}"
+    done
+    printf '%s/%s' "${base%/}" "$path"
+}
+
+update_signal_prereq_status() {
+    local base="$1" proc pidfile run_sh
+    proc=$(update_resolve_from "$base" "$2")
+    pidfile=$(update_resolve_from "$base" "$3")
+    run_sh=$(update_resolve_from "$base" "$4")
+    if [[ ! -d "$proc/self" ]]; then
+        printf 'missing-proc'
+    elif [[ ! -f "$pidfile" ]]; then
+        printf 'missing-pidfile'
+    elif [[ ! -f "$run_sh" ]]; then
+        printf 'missing-wrapper'
+    elif [[ ! -x "$run_sh" ]]; then
+        printf 'wrapper-not-executable'
+    else
+        printf 'ok'
+    fi
+    return 0
+}
+
+update_signal_redirect_probe() {
+    local unit="$1" root="$2" active_state exec_out exec_rc=0 exec_line binary bin_abs="" swap_res
+    command -v systemctl >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+    active_state=$(systemctl is-active "$unit" 2>/dev/null || true)
+    exec_out=$(systemctl show -p ExecStart --value "$unit" 2>/dev/null) || exec_rc=$?
+    exec_line="${exec_out%%$'\n'*}"
+    binary=$(execstart_main_binary "$exec_line")
+    if [[ "$binary" == /* ]]; then
+        bin_abs=$(update_canonicalize_path "$binary")
+    fi
+    swap_res=$(update_canonicalize_path "${root%/}/go-trader")
+    if [[ "$(update_signal_redirect_decision "$active_state" "$bin_abs" "$swap_res")" == "redirect" ]]; then
+        printf 'redirect'
+        return 0
+    fi
+    case "$active_state" in
+        inactive|failed)
+            printf 'none'
+            return 0
+            ;;
+        active)
+            if [[ "$exec_rc" -eq 0 && "$bin_abs" == /* && -n "$swap_res" ]]; then
+                printf 'none'
+                return 0
+            fi
+            ;;
+    esac
+    printf 'unknown'
+    return 0
+}
+
+update_path_tree_scope() {
+    local root="${1%/}" path="$2" root_real="" dir dir_real path_real
+    if [[ -z "$root" || "$path" != /* ]]; then
+        printf 'unknown'
+        return 0
+    fi
+    case "$path/" in
+        *"/../"*)
+            printf 'inside'
+            return 0
+            ;;
+    esac
+    if update_path_within "$path" "$root"; then
+        printf 'inside'
+        return 0
+    fi
+    if ! root_real=$(update_realpath "$root" 2>/dev/null) || [[ -z "$root_real" ]]; then
+        printf 'unknown'
+        return 0
+    fi
+    if update_path_within "$path" "$root_real"; then
+        printf 'inside'
+        return 0
+    fi
+    dir="${path%/*}"
+    [[ -n "$dir" ]] || dir="/"
+    if [[ ! -d "$dir" ]] || ! dir_real=$(cd "$dir" 2>/dev/null && pwd -P) || [[ -z "$dir_real" ]]; then
+        printf 'unknown'
+        return 0
+    fi
+    if update_path_within "$dir_real" "$root" || update_path_within "$dir_real" "$root_real"; then
+        printf 'inside'
+        return 0
+    fi
+    if ! path_real=$(update_realpath "$path" 2>/dev/null) || [[ -z "$path_real" ]]; then
+        printf 'unknown'
+        return 0
+    fi
+    if update_path_within "$path_real" "$root" || update_path_within "$path_real" "$root_real"; then
+        printf 'inside'
+        return 0
+    fi
+    printf 'outside'
+    return 0
+}
+
+update_restart_owner_emit() {
+    printf '%s\n%s\n%s\n%s\n' "$1" "$2" "$3" "$4"
+}
+
+update_restart_owner_decision() {
+    local root="${1%/}" unit="$2" mode="$3" pidfile="$4" run_sh="$5" proc="$6"
+    local route="$mode" load_state="-" redirect ls_out ls_rc=0 frag_out frag_rc=0 status scope
+    local pid_abs run_abs proc_abs
+    pid_abs=$(update_resolve_from "$root" "$pidfile")
+    run_abs=$(update_resolve_from "$root" "$run_sh")
+    proc_abs=$(update_resolve_from "$root" "$proc")
+    if ! command -v systemctl >/dev/null 2>&1; then
+        update_restart_owner_emit unknown "$mode" - "systemctl is not available, so the restart route of $root cannot be proven"
+        return 0
+    fi
+    if [[ "$mode" == "signal" ]]; then
+        redirect=$(update_signal_redirect_probe "$unit" "$root")
+        case "$redirect" in
+            redirect) route="systemd-redirect" ;;
+            none) route="signal" ;;
+            *)
+                update_restart_owner_emit unknown signal - "could not prove whether systemd unit $unit runs $root/go-trader"
+                return 0
+                ;;
+        esac
+    fi
+    if [[ "$route" != "signal" ]]; then
+        ls_out=$(systemctl show -p LoadState --value "$unit" 2>/dev/null) || ls_rc=$?
+        if [[ "$ls_rc" -ne 0 || ! "$ls_out" =~ ^[a-z][a-z-]*$ ]]; then
+            update_restart_owner_emit unknown "$route" - "systemctl show -p LoadState for $unit failed or printed an unreadable value"
+            return 0
+        fi
+        load_state="$ls_out"
+        case "$load_state" in
+            loaded|masked)
+                update_restart_owner_emit owned "$route" "$load_state" "systemd unit $unit is $load_state"
+                return 0
+                ;;
+            not-found) ;;
+            *)
+                update_restart_owner_emit unknown "$route" "$load_state" "systemd unit $unit has LoadState=$load_state"
+                return 0
+                ;;
+        esac
+        frag_out=$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null) || frag_rc=$?
+        frag_out="${frag_out#"${frag_out%%[![:space:]]*}"}"
+        frag_out="${frag_out%"${frag_out##*[![:space:]]}"}"
+        if [[ "$frag_rc" -ne 0 || -n "$frag_out" ]]; then
+            update_restart_owner_emit unknown "$route" "$load_state" "systemd unit $unit is not-found but its fragment path could not be proven empty"
+            return 0
+        fi
+        route="signal-fallback"
+    fi
+    status=$(update_signal_prereq_status "$root" "$proc" "$pidfile" "$run_sh")
+    case "$status" in
+        ok)
+            update_restart_owner_emit owned "$route" "$load_state" "signal restart has $proc_abs/self, pidfile $pid_abs and executable wrapper $run_abs"
+            ;;
+        missing-proc)
+            update_restart_owner_emit no-owner "$route" "$load_state" "signal restart needs $proc_abs/self (Linux /proc), which is missing"
+            ;;
+        missing-pidfile)
+            update_restart_owner_emit no-owner "$route" "$load_state" "signal restart needs pidfile $pid_abs, which is missing and which the update never writes"
+            ;;
+        missing-wrapper|wrapper-not-executable)
+            scope=$(update_path_tree_scope "$root" "$run_abs")
+            if [[ "$scope" == "outside" ]]; then
+                update_restart_owner_emit no-owner "$route" "$load_state" "signal restart needs executable wrapper $run_abs, which is missing or not executable and lies outside the deployment tree, so the code transfer cannot supply it"
+            else
+                update_restart_owner_emit unknown "$route" "$load_state" "wrapper $run_abs is missing or not executable, but the code transfer may supply it"
+            fi
+            ;;
+        *)
+            update_restart_owner_emit unknown "$route" "$load_state" "signal prerequisites of $root could not be read"
+            ;;
+    esac
+    return 0
+}
+
 update_should_sweep_proc() {
     local comm="$1" pid_cwd="$2" repo_abs="$3"
     [[ "$comm" == "go-trader" ]] || { printf ''; return 0; }
