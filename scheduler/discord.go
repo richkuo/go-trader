@@ -45,6 +45,7 @@ type DiscordNotifier struct {
 	cfg *Config
 
 	syncMu       sync.Mutex
+	createTimes  []time.Time
 	resyncOnce   sync.Once
 	resyncCancel context.CancelFunc
 }

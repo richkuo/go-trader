@@ -27,9 +27,14 @@ func (r slashCommandSyncResult) writes() int {
 }
 
 var (
-	slashResyncInterval   = time.Minute
-	slashResyncFlapWindow = 30 * time.Minute
+	slashResyncInterval     = time.Minute
+	slashResyncMaxInterval  = 30 * time.Minute
+	slashResyncFlapWindow   = 30 * time.Minute
+	slashCreateBudget       = 100
+	slashCreateBudgetWindow = 24 * time.Hour
 )
+
+var errSlashCreateBudget = errors.New("slash command create budget exhausted")
 
 const slashResyncFlapRepairs = 3
 
@@ -40,7 +45,7 @@ func ownedSlashCommand(c *discordgo.ApplicationCommand) bool {
 	return c.Type == 0 || c.Type == discordgo.ChatApplicationCommand
 }
 
-func syncOwnedSlashCommands(t discordTransport, appID string, desired []*discordgo.ApplicationCommand) (slashCommandSyncResult, error) {
+func syncOwnedSlashCommands(t discordTransport, appID string, desired []*discordgo.ApplicationCommand, allowCreate func() bool) (slashCommandSyncResult, error) {
 	var res slashCommandSyncResult
 	want := make(map[string]bool, len(desired))
 	for _, c := range desired {
@@ -66,10 +71,24 @@ func syncOwnedSlashCommands(t discordTransport, appID string, desired []*discord
 		}
 	}
 	var errs []error
+	budgetHit := false
+	mayCreate := func() bool {
+		if allowCreate == nil || allowCreate() {
+			return true
+		}
+		if !budgetHit {
+			budgetHit = true
+			errs = append(errs, errSlashCreateBudget)
+		}
+		return false
+	}
 	for _, c := range desired {
 		cur, ok := have[c.Name]
 		switch {
 		case !ok:
+			if !mayCreate() {
+				continue
+			}
 			if _, err := t.ApplicationCommandCreate(appID, "", c); err != nil {
 				errs = append(errs, fmt.Errorf("create %s: %w", c.Name, err))
 				continue
@@ -78,6 +97,9 @@ func syncOwnedSlashCommands(t discordTransport, appID string, desired []*discord
 		case slashCommandMatches(cur, c):
 			res.Unchanged++
 		case slashCommandNeedsRecreate(cur, c):
+			if !mayCreate() {
+				continue
+			}
 			if err := t.ApplicationCommandDelete(appID, "", cur.ID); err != nil {
 				errs = append(errs, fmt.Errorf("recreate %s: delete: %w", c.Name, err))
 				continue
@@ -217,14 +239,41 @@ func pruneEmptyJSON(v any) any {
 	}
 }
 
-func (d *DiscordNotifier) syncOwnedSlashCommandsLocked(appID string) (slashCommandSyncResult, error) {
+func pruneTimes(times []time.Time, now time.Time, window time.Duration) []time.Time {
+	kept := times[:0]
+	for _, at := range times {
+		if now.Sub(at) < window {
+			kept = append(kept, at)
+		}
+	}
+	return kept
+}
+
+func (d *DiscordNotifier) syncOwnedSlashCommandsLocked(appID string, enforceBudget bool) (slashCommandSyncResult, error) {
 	d.syncMu.Lock()
 	defer d.syncMu.Unlock()
-	res, err := syncOwnedSlashCommands(d.transport, appID, slashCommands())
+	allowCreate := func() bool {
+		now := time.Now()
+		d.createTimes = pruneTimes(d.createTimes, now, slashCreateBudgetWindow)
+		if enforceBudget && len(d.createTimes) >= slashCreateBudget {
+			return false
+		}
+		d.createTimes = append(d.createTimes, now)
+		return true
+	}
+	res, err := syncOwnedSlashCommands(d.transport, appID, slashCommands(), allowCreate)
 	if err != nil {
 		err = fmt.Errorf("sync slash commands: %w%s", err, brokerProtocolHint(err))
 	}
 	return res, err
+}
+
+func slashRateLimited(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "429") || strings.Contains(msg, "rate limit")
 }
 
 func brokerProtocolHint(err error) string {
@@ -239,7 +288,7 @@ func brokerProtocolHint(err error) string {
 }
 
 func (d *DiscordNotifier) syncSlashCommands(appID string) error {
-	res, err := d.syncOwnedSlashCommandsLocked(appID)
+	res, err := d.syncOwnedSlashCommandsLocked(appID, false)
 	fmt.Printf("Discord slash commands synced: %d created, %d updated, %d recreated, %d deleted, %d unchanged\n", res.Created, res.Updated, res.Recreated, res.Deleted, res.Unchanged)
 	if err != nil {
 		return err
@@ -272,59 +321,77 @@ func (d *DiscordNotifier) startSlashCommandResync(appID string, initialErr error
 		if initialErr != nil {
 			lastErr = initialErr.Error()
 		}
-		go d.resyncSlashCommands(ctx, appID, slashResyncInterval, slashResyncFlapWindow, lastErr)
+		go d.resyncSlashCommands(ctx, appID, slashResyncInterval, slashResyncMaxInterval, slashResyncFlapWindow, lastErr)
 	})
 }
 
-func (d *DiscordNotifier) resyncSlashCommands(ctx context.Context, appID string, interval, flapWindow time.Duration, lastErr string) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+func (d *DiscordNotifier) slashResyncOwnerDM(msg string) {
+	fmt.Println("[WARN] " + msg)
+	if d.ownerID == "" {
+		return
+	}
+	if err := d.SendDM(d.ownerID, msg); err != nil {
+		fmt.Printf("[WARN] Discord slash command owner DM failed: %v\n", err)
+	}
+}
+
+func (d *DiscordNotifier) resyncSlashCommands(ctx context.Context, appID string, base, maxWait, flapWindow time.Duration, lastErr string) {
+	wait := base
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
 	var repairs []time.Time
-	warned := false
+	flapWarned, budgetWarned := false, false
+	backOff := func() {
+		wait = min(wait*2, maxWait)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
-		res, err := d.syncOwnedSlashCommandsLocked(appID)
+		res, err := d.syncOwnedSlashCommandsLocked(appID, true)
+		now := time.Now()
+		repairs = pruneTimes(repairs, now, flapWindow)
+		if len(repairs) == 0 {
+			flapWarned = false
+		}
+		budgetHit := errors.Is(err, errSlashCreateBudget)
+		throttled := budgetHit || slashRateLimited(err)
 		if err != nil {
 			if msg := err.Error(); msg != lastErr {
 				lastErr = msg
-				fmt.Printf("[WARN] Discord slash command re-sync failed: %v (retrying every %s)\n", err, interval)
+				fmt.Printf("[WARN] Discord slash command re-sync failed: %v\n", err)
 			}
-			continue
-		}
-		if lastErr != "" {
+		} else if lastErr != "" {
 			lastErr = ""
-			fmt.Printf("Discord slash command re-sync recovered: %d created, %d updated, %d recreated, %d deleted\n", res.Created, res.Updated, res.Recreated, res.Deleted)
-			continue
+			fmt.Println("Discord slash command re-sync recovered")
 		}
-		now := time.Now()
-		kept := repairs[:0]
-		for _, at := range repairs {
-			if now.Sub(at) < flapWindow {
-				kept = append(kept, at)
-			}
+		if res.writes() > 0 {
+			repairs = append(repairs, now)
+			fmt.Printf("[WARN] Discord slash commands changed outside go-trader and were repaired: %d created, %d updated, %d recreated, %d deleted\n", res.Created, res.Updated, res.Recreated, res.Deleted)
 		}
-		repairs = kept
-		if len(repairs) == 0 {
-			warned = false
+		if budgetHit && !budgetWarned {
+			budgetWarned = true
+			d.slashResyncOwnerDM(fmt.Sprintf("[slash] go-trader stopped re-creating its Discord slash commands: it reached its limit of %d creates within %s, because another program keeps deleting them. Missing go-trader commands stay missing until that window passes or go-trader restarts; give each program its own bot token.", slashCreateBudget, slashCreateBudgetWindow))
 		}
-		if res.writes() == 0 {
-			continue
+		if len(repairs) >= slashResyncFlapRepairs && !flapWarned {
+			flapWarned = true
+			d.slashResyncOwnerDM(fmt.Sprintf("[slash] go-trader repaired its Discord slash commands %d times within %s. Another program or another go-trader instance that uses this bot token keeps changing them; go-trader now waits longer between checks (up to %s). Give each program its own bot token, or run one go-trader version per token.", len(repairs), flapWindow, maxWait))
 		}
-		repairs = append(repairs, now)
-		fmt.Printf("[WARN] Discord slash commands changed outside go-trader and were repaired: %d created, %d updated, %d recreated, %d deleted\n", res.Created, res.Updated, res.Recreated, res.Deleted)
-		if len(repairs) >= slashResyncFlapRepairs && !warned {
-			warned = true
-			msg := fmt.Sprintf("[slash] go-trader repaired its Discord slash commands %d times within %s. Another program or another go-trader instance that uses this bot token keeps changing them; give each program its own bot token, or run one go-trader version per token.", len(repairs), flapWindow)
-			fmt.Println("[WARN] " + msg)
-			if d.ownerID != "" {
-				if err := d.SendDM(d.ownerID, msg); err != nil {
-					fmt.Printf("[WARN] Discord slash command flap DM failed: %v\n", err)
-				}
-			}
+		switch {
+		case throttled:
+			backOff()
+		case err != nil:
+			wait = base
+		case res.writes() == 0:
+			wait = base
+			budgetWarned = false
+		case len(repairs) >= slashResyncFlapRepairs:
+			backOff()
+		default:
+			wait = base
 		}
+		timer.Reset(wait)
 	}
 }

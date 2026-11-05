@@ -447,9 +447,11 @@ func TestEgressDirectNotificationsUseTheIsolatedBroker(t *testing.T) {
 	services.seedCommand(legacyGuild, commandPrefix+"health", "registered by the guild-scope build")
 	services.seedCommand(legacyGuild, "openclaw-guild", "OpenClaw guild command")
 	cfg.Discord.GuildID = legacyGuild
-	prevResync, prevFlap := slashResyncInterval, slashResyncFlapWindow
-	slashResyncInterval, slashResyncFlapWindow = 200*time.Millisecond, time.Minute
-	t.Cleanup(func() { slashResyncInterval, slashResyncFlapWindow = prevResync, prevFlap })
+	prevResync, prevFlap, prevBudget := slashResyncInterval, slashResyncFlapWindow, slashCreateBudget
+	slashResyncInterval, slashResyncFlapWindow, slashCreateBudget = 200*time.Millisecond, time.Minute, 1000
+	t.Cleanup(func() {
+		slashResyncInterval, slashResyncFlapWindow, slashCreateBudget = prevResync, prevFlap, prevBudget
+	})
 	if err := d.RegisterSlashCommands(nil, cfg); err != nil {
 		t.Fatalf("register commands through the broker: %v", err)
 	}
