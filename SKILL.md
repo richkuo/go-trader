@@ -916,7 +916,10 @@ If Discord is enabled, wait for the first cycle and confirm messages in the conf
 
 ## Discord Slash Commands
 
-Global slash commands register at startup, covering every guild the bot is in plus DMs; a first-time command-shape change can take about an hour to propagate. The bot must be invited with the `applications.commands` OAuth scope in addition to `bot`. Every command carries the `go-trader-` prefix on the wire (`/go-trader-status`); authorization and dispatch operate on the bare ID. Registration failure is non-fatal — it logs and DMs the owner.
+Global slash commands register at startup, covering every guild the bot is in plus DMs; a first-time command-shape change can take about an hour to propagate.
+Registration never bulk-overwrites the command list: it reads the global list and creates, edits or deletes only `go-trader-` chat commands, so commands another program registered with the same bot token stay, and a renamed or removed go-trader command is deleted. The notification broker refuses a create, edit or delete outside the `go-trader-` namespace.
+`discord.guild_id` (optional, restart-required) only names a guild from which startup deletes the `go-trader-` commands that the guild-scope build registered there; commands still register globally.
+The bot must be invited with the `applications.commands` OAuth scope in addition to `bot`. Every command carries the `go-trader-` prefix on the wire (`/go-trader-status`); authorization and dispatch operate on the bare ID. Registration failure is non-fatal — it logs and DMs the owner.
 
 **Read-only** — any guild or DM, anyone. They read live in-process state with no HTTP round trip. Replies are public in-channel unless `discord.ephemeral_replies: true`.
 

@@ -996,8 +996,20 @@ func (tr *orcTransport) FollowupMessageCreate(_ *discordgo.Interaction, _ bool, 
 	return &discordgo.Message{}, nil
 }
 
-func (tr *orcTransport) ApplicationCommandBulkOverwrite(string, string, []*discordgo.ApplicationCommand, ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error) {
+func (tr *orcTransport) ApplicationCommands(string, string, ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error) {
 	return nil, nil
+}
+
+func (tr *orcTransport) ApplicationCommandCreate(string, string, *discordgo.ApplicationCommand, ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error) {
+	return nil, nil
+}
+
+func (tr *orcTransport) ApplicationCommandEdit(string, string, string, *discordgo.ApplicationCommand, ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error) {
+	return nil, nil
+}
+
+func (tr *orcTransport) ApplicationCommandDelete(string, string, string, ...discordgo.RequestOption) error {
+	return nil
 }
 
 type orcCommander struct {

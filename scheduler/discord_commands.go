@@ -13,9 +13,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
+
+	"trading-scheduler/internal/notifybroker"
 )
 
-const commandPrefix = "go-trader-"
+const commandPrefix = notifybroker.CommandNamePrefix
 
 var readOnlyCommandNames = map[string]bool{
 	"status":             true,
@@ -418,21 +420,12 @@ func parseBacktestSummary(report string) string {
 		grab("Total Return:"), grab("Sharpe Ratio:"), grab("Max Drawdown:"), grab("Total Trades:"), grab("Win Rate:"))
 }
 
-// guildAndDMContext makes a command usable in the guild and in the owner's DM.
-// A guild-scoped command needs the DM context explicitly, or it only shows up
-// in the server and the owner cannot reach it from a DM.
-func guildAndDMContext() *[]discordgo.InteractionContextType {
-	return &[]discordgo.InteractionContextType{discordgo.InteractionContextGuild, discordgo.InteractionContextBotDM}
-}
-
-// guildAndUserInstallTypes allows the command to be installed to a user, which
-// is what makes a command available in a DM.
-func guildAndUserInstallTypes() *[]discordgo.ApplicationIntegrationType {
-	return &[]discordgo.ApplicationIntegrationType{discordgo.ApplicationIntegrationGuildInstall, discordgo.ApplicationIntegrationUserInstall}
+func dmContext() *[]discordgo.InteractionContextType {
+	return &[]discordgo.InteractionContextType{discordgo.InteractionContextBotDM}
 }
 
 func slashCommands() []*discordgo.ApplicationCommand {
-	cmds := []*discordgo.ApplicationCommand{
+	return []*discordgo.ApplicationCommand{
 		{Name: commandPrefix + "status", Description: "Live portfolio status (cash, positions, value, regime)"},
 		{Name: commandPrefix + "health", Description: "Daemon health: running, last cycle, version"},
 		{Name: commandPrefix + "positions", Description: "Open positions across platforms"},
@@ -444,63 +437,63 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		{Name: commandPrefix + "dead-strategies", Description: "Strategies that have never opened a position"},
 		{Name: commandPrefix + "correlation", Description: "Correlation / concentration warnings"},
 		{Name: commandPrefix + "closing-strategies", Description: "Registered close evaluators and their config params"},
-		{Name: commandPrefix + "logs", Description: "Recent journalctl lines (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "logs", Description: "Recent journalctl lines (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionInteger, Name: "n", Description: "Number of lines (default 50, max 200)"},
 		}},
-		{Name: commandPrefix + "restart", Description: "Restart the go-trader service (owner DM only)"},
-		{Name: commandPrefix + "report-an-issue", Description: "File a GitHub issue (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "restart", Description: "Restart the go-trader service (owner DM only)", Contexts: dmContext()},
+		{Name: commandPrefix + "report-an-issue", Description: "File a GitHub issue (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "title", Description: "Issue title", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "body", Description: "Issue description", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "label", Description: "Optional label (applied if it exists on the repo)"},
 		}},
-		{Name: commandPrefix + "backtest", Description: "Run a single backtest (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "backtest", Description: "Run a single backtest (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy name", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "symbol", Description: "Symbol, e.g. BTC/USDT", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "timeframe", Description: "Timeframe (default 1h)"},
 		}},
-		{Name: commandPrefix + "config", Description: "Show or change configuration (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "config", Description: "Show or change configuration (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "show", Description: "Show the current config (secrets redacted)"},
 			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "set", Description: "Set a config key", Options: []*discordgo.ApplicationCommandOption{
 				{Type: discordgo.ApplicationCommandOptionString, Name: "key", Description: "e.g. interval_seconds or strategies.<id>.leverage", Required: true},
 				{Type: discordgo.ApplicationCommandOptionString, Name: "value", Description: "New value", Required: true},
 			}},
 		}},
-		{Name: commandPrefix + "add-strategy", Description: "Add a strategy to the config (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "add-strategy", Description: "Add a strategy to the config (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Strategy name, e.g. momentum", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "platform", Description: "hyperliquid or binanceus", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "asset", Description: "Ticker, e.g. BTC", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "open_params", Description: "JSON object of required research params, e.g. a hash-pinned calendar"},
 		}},
-		{Name: commandPrefix + quoteOwnerSetupAction, Description: "Add a held paper quote owner from a quote_owner JSON file (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + quoteOwnerSetupAction, Description: "Add a held paper quote owner from a quote_owner JSON file (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionAttachment, Name: "fragment", Description: "quote_owner setup JSON file (at most 1 MiB)", Required: true},
 		}},
-		{Name: commandPrefix + "remove-strategy", Description: "Remove a strategy from the config (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "remove-strategy", Description: "Remove a strategy from the config (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "id", Description: "Strategy ID to remove", Required: true},
 		}},
-		{Name: commandPrefix + "add-platform", Description: "Guided platform setup instructions (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "add-platform", Description: "Guided platform setup instructions (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Platform name, e.g. hyperliquid", Required: true},
 		}},
-		{Name: commandPrefix + "paper-to-live", Description: "Switch a strategy from paper to live (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "paper-to-live", Description: "Switch a strategy from paper to live (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID to switch to live", Required: true},
 		}},
-		{Name: commandPrefix + "apply-regime-gate", Description: "Interactively wire a regime entry-gate onto a strategy (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "apply-regime-gate", Description: "Interactively wire a regime entry-gate onto a strategy (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "gate", Description: "Gate preset (default comp_up_clean_p21)"},
 		}},
-		{Name: commandPrefix + "clear-cash-reconcile", Description: "Clear CashReconcileRequired after books match the venue (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "clear-cash-reconcile", Description: "Clear CashReconcileRequired after books match the venue (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID whose cash-reconcile latch to clear", Required: true},
 		}},
-		{Name: commandPrefix + operatorCloseCommandName, Description: "Clear an operator-required circuit-breaker close after you flatten it on the venue (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + operatorCloseCommandName, Description: "Clear an operator-required circuit-breaker close after you flatten it on the venue (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID that holds the operator-required entry", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "platform", Description: "okx_spot or robinhood_options; needed only when the strategy holds both", Choices: []*discordgo.ApplicationCommandOptionChoice{
 				{Name: PlatformPendingCloseOKXSpot, Value: PlatformPendingCloseOKXSpot},
 				{Name: PlatformPendingCloseRobinhoodOptions, Value: PlatformPendingCloseRobinhoodOptions},
 			}},
 		}},
-		{Name: commandPrefix + "resolve-entry", Description: "Re-check a held live entry; release only on complete no-execution evidence (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "resolve-entry", Description: "Re-check a held live entry; release only on complete no-execution evidence (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID that holds the attempt", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "attempt", Description: "Attempt id (ei-...) from the LIVE ENTRY alert or the startup log", Required: true},
 		}},
-		{Name: commandPrefix + "resolve-rh-order", Description: "Re-check a held Robinhood order; settle or release on venue evidence (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "resolve-rh-order", Description: "Re-check a held Robinhood order; settle or release on venue evidence (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID that holds the attempt", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "attempt", Description: "Attempt id (rh-...) from the ROBINHOOD ORDER UNRESOLVED alert or the startup log", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "order", Description: "Robinhood order id to look up, when the alert shows none"},
@@ -508,7 +501,7 @@ func slashCommands() []*discordgo.ApplicationCommand {
 				{Name: robinhoodAttestReleaseChoice, Value: robinhoodAttestReleaseChoice},
 			}},
 		}},
-		{Name: commandPrefix + robinhoodAccountCommandName, Description: "Resolve a Robinhood book held for account identity (owner DM only)", Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + robinhoodAccountCommandName, Description: "Resolve a Robinhood book held for account identity (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID of the held book", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "action", Description: "bind-current: coins are on this account; release-book: coins are outside every managed account", Required: true, Choices: []*discordgo.ApplicationCommandOptionChoice{
 				{Name: robinhoodAccountActionBind, Value: robinhoodAccountActionBind},
@@ -516,15 +509,6 @@ func slashCommands() []*discordgo.ApplicationCommand {
 			}},
 		}},
 	}
-	for _, c := range cmds {
-		if opsCommandNames[strings.TrimPrefix(c.Name, commandPrefix)] {
-			c.Contexts = &[]discordgo.InteractionContextType{discordgo.InteractionContextBotDM}
-		} else {
-			c.Contexts = guildAndDMContext()
-		}
-		c.IntegrationTypes = guildAndUserInstallTypes()
-	}
-	return cmds
 }
 
 func (d *DiscordNotifier) RegisterSlashCommands(ss *StatusServer, cfg *Config) error {
@@ -551,14 +535,7 @@ func (d *DiscordNotifier) RegisterSlashCommands(ss *StatusServer, cfg *Config) e
 	if d.broker == nil {
 		d.session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) { d.interactionCreate(s, i) })
 	}
-	scope, err := d.slashCommandScope(appID)
-	if err != nil {
-		return err
-	}
-	if _, err := d.transport.ApplicationCommandBulkOverwrite(appID, scope, slashCommands()); err != nil {
-		return fmt.Errorf("bulk overwrite commands: %w", err)
-	}
-	return nil
+	return d.syncSlashCommands(appID)
 }
 
 var errSlashCommandsDeferred = errors.New("the notification broker has no Discord identity yet; the command handler is installed and registration retries in the background")
@@ -580,14 +557,7 @@ func (d *DiscordNotifier) registerSlashCommandsWhenReady() {
 		case <-time.After(delay):
 		}
 		if appID := d.selfUserID(); appID != "" {
-			scope, err := d.slashCommandScope(appID)
-			if errors.Is(err, errDiscordCommandScopeNotOwned) {
-				fmt.Println("[WARN] Discord slash command registration skipped:", err)
-				return
-			}
-			if err == nil {
-				_, err = d.transport.ApplicationCommandBulkOverwrite(appID, scope, slashCommands())
-			}
+			err := d.syncSlashCommands(appID)
 			if err == nil {
 				fmt.Println("Discord slash commands registered (the notification broker's Discord gateway is up)")
 				return

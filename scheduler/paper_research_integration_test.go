@@ -176,8 +176,20 @@ func (f *paperResearchDiscord) FollowupMessageCreate(_ *discordgo.Interaction, _
 	return &discordgo.Message{}, nil
 }
 
-func (f *paperResearchDiscord) ApplicationCommandBulkOverwrite(string, string, []*discordgo.ApplicationCommand, ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error) {
+func (f *paperResearchDiscord) ApplicationCommands(string, string, ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error) {
 	return nil, nil
+}
+
+func (f *paperResearchDiscord) ApplicationCommandCreate(string, string, *discordgo.ApplicationCommand, ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error) {
+	return nil, nil
+}
+
+func (f *paperResearchDiscord) ApplicationCommandEdit(string, string, string, *discordgo.ApplicationCommand, ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error) {
+	return nil, nil
+}
+
+func (f *paperResearchDiscord) ApplicationCommandDelete(string, string, string, ...discordgo.RequestOption) error {
+	return nil
 }
 
 func (f *paperResearchDiscord) last() string {

@@ -141,18 +141,44 @@ func (b *brokerDiscordTransport) FollowupMessageCreate(interaction *discordgo.In
 	return &msg, nil
 }
 
-func (b *brokerDiscordTransport) ApplicationCommandBulkOverwrite(appID string, guildID string, commands []*discordgo.ApplicationCommand, options ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error) {
+func (b *brokerDiscordTransport) ApplicationCommandCreate(appID string, guildID string, cmd *discordgo.ApplicationCommand, options ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error) {
+	if guildID != "" {
+		return nil, fmt.Errorf("the notification broker creates global commands only")
+	}
 	ctx, cancel := brokerContext(options)
 	defer cancel()
-	raw, err := json.Marshal(commands)
+	raw, err := json.Marshal(cmd)
 	if err != nil {
 		return nil, err
 	}
-	var out []*discordgo.ApplicationCommand
-	if err := b.c.Call(ctx, notifybroker.OpDiscordCommands, notifybroker.DiscordCommandsRequest{Commands: raw, GuildID: guildID}, &out); err != nil {
+	var out discordgo.ApplicationCommand
+	if err := b.c.Call(ctx, notifybroker.OpDiscordCommandCreate, notifybroker.DiscordCommandCreateRequest{Command: raw}, &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return &out, nil
+}
+
+func (b *brokerDiscordTransport) ApplicationCommandEdit(appID string, guildID string, cmdID string, cmd *discordgo.ApplicationCommand, options ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error) {
+	if guildID != "" {
+		return nil, fmt.Errorf("the notification broker edits global commands only")
+	}
+	ctx, cancel := brokerContext(options)
+	defer cancel()
+	raw, err := json.Marshal(cmd)
+	if err != nil {
+		return nil, err
+	}
+	var out discordgo.ApplicationCommand
+	if err := b.c.Call(ctx, notifybroker.OpDiscordCommandEdit, notifybroker.DiscordCommandEditRequest{ID: cmdID, Command: raw}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (b *brokerDiscordTransport) ApplicationCommandDelete(appID string, guildID string, cmdID string, options ...discordgo.RequestOption) error {
+	ctx, cancel := brokerContext(options)
+	defer cancel()
+	return b.c.Call(ctx, notifybroker.OpDiscordCommandDelete, notifybroker.DiscordCommandDeleteRequest{GuildID: guildID, ID: cmdID}, nil)
 }
 
 func (b *brokerDiscordTransport) ApplicationCommands(appID string, guildID string, options ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error) {

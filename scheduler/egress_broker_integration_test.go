@@ -13,11 +13,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/gorilla/websocket"
 
 	"trading-scheduler/internal/egresspolicy"
@@ -37,6 +41,141 @@ type fakeNotifyServices struct {
 	gatewayDown bool
 	selfDown    bool
 	messageDown bool
+
+	commands  map[string]map[string]map[string]any
+	nextCmdID int
+}
+
+func (f *fakeNotifyServices) seedCommand(scope, name, description string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.storeCommandLocked(scope, map[string]any{"name": name, "description": description})
+}
+
+func (f *fakeNotifyServices) storeCommandLocked(scope string, cmd map[string]any) string {
+	if f.commands == nil {
+		f.commands = map[string]map[string]map[string]any{}
+	}
+	if f.commands[scope] == nil {
+		f.commands[scope] = map[string]map[string]any{}
+	}
+	f.nextCmdID++
+	id := strconv.Itoa(880000 + f.nextCmdID)
+	cmd["id"] = id
+	cmd["application_id"] = "999"
+	cmd["version"] = id
+	if _, ok := cmd["type"]; !ok {
+		cmd["type"] = 1
+	}
+	if scope != "" {
+		cmd["guild_id"] = scope
+	}
+	f.commands[scope][id] = cmd
+	return id
+}
+
+func (f *fakeNotifyServices) commandNames(scope string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var names []string
+	for _, c := range f.commands[scope] {
+		names = append(names, c["name"].(string))
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (f *fakeNotifyServices) commandDescription(scope, name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.commands[scope] {
+		if c["name"] == name {
+			d, _ := c["description"].(string)
+			return d
+		}
+	}
+	return ""
+}
+
+func (f *fakeNotifyServices) commandWrites() int {
+	return len(f.bodiesFor("discord.command_create")) + len(f.bodiesFor("discord.command_edit")) + len(f.bodiesFor("discord.command_delete")) + len(f.bodiesFor("discord.commands_bulk"))
+}
+
+func (f *fakeNotifyServices) serveCommands(w http.ResponseWriter, r *http.Request, path string, body []byte) {
+	rest := path[strings.Index(path, "/applications/")+len("/applications/"):]
+	parts := strings.Split(rest, "/")
+	scope, at := "", 1
+	if len(parts) > 3 && parts[1] == "guilds" {
+		scope, at = parts[2], 3
+	}
+	if len(parts) <= at || parts[at] != "commands" || len(parts) > at+2 {
+		f.record("unexpected:"+r.Host+path, string(body))
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	id := ""
+	if len(parts) == at+2 {
+		id = parts[at+1]
+	}
+	key, status, out := f.commandOp(r.Method, scope, id, body)
+	f.record(key, string(body))
+	if out == nil {
+		w.WriteHeader(status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(out)
+}
+
+func (f *fakeNotifyServices) commandOp(method, scope, id string, body []byte) (string, int, []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	encode := func(v any) []byte {
+		raw, _ := json.Marshal(v)
+		return raw
+	}
+	switch {
+	case method == http.MethodGet && id == "":
+		list := make([]map[string]any, 0)
+		for _, c := range f.commands[scope] {
+			list = append(list, c)
+		}
+		return "discord.commands_list", http.StatusOK, encode(list)
+	case method == http.MethodPut && id == "":
+		return "discord.commands_bulk", http.StatusOK, []byte("[]")
+	case method == http.MethodPost && id == "":
+		var cmd map[string]any
+		if err := json.Unmarshal(body, &cmd); err != nil {
+			return "discord.command_create_bad", http.StatusBadRequest, nil
+		}
+		newID := f.storeCommandLocked(scope, cmd)
+		return "discord.command_create", http.StatusCreated, encode(f.commands[scope][newID])
+	}
+	cur, ok := f.commands[scope][id]
+	if !ok {
+		return "discord.command_missing:" + method, http.StatusNotFound, []byte(`{"message":"Unknown application command","code":10063}`)
+	}
+	switch method {
+	case http.MethodGet:
+		return "discord.command_get", http.StatusOK, encode(cur)
+	case http.MethodPatch:
+		var patch map[string]any
+		if err := json.Unmarshal(body, &patch); err != nil {
+			return "discord.command_edit_bad", http.StatusBadRequest, nil
+		}
+		for k, v := range patch {
+			if k == "id" || k == "application_id" || k == "version" || k == "guild_id" {
+				continue
+			}
+			cur[k] = v
+		}
+		return "discord.command_edit", http.StatusOK, encode(cur)
+	case http.MethodDelete:
+		delete(f.commands[scope], id)
+		return "discord.command_delete", http.StatusNoContent, nil
+	}
+	return "discord.command_bad_method:" + method, http.StatusMethodNotAllowed, nil
 }
 
 func (f *fakeNotifyServices) setMessageDown(down bool) {
@@ -154,12 +293,8 @@ func startFakeNotifyServices(t *testing.T, ca *egressTestCA) (*fakeNotifyService
 			}
 			f.record("discord.message:"+path, string(body))
 			_, _ = io.WriteString(w, `{"id":"7001","channel_id":"5001","content":"ok"}`)
-		case host == "discord.com" && r.Method == http.MethodGet && strings.Contains(path, "/applications/") && strings.HasSuffix(path, "/commands"):
-			f.record("discord.commands_list", "")
-			_, _ = io.WriteString(w, `[]`)
-		case host == "discord.com" && strings.Contains(path, "/applications/") && strings.HasSuffix(path, "/commands"):
-			f.record("discord.commands", string(body))
-			_, _ = io.WriteString(w, `[]`)
+		case host == "discord.com" && strings.Contains(path, "/applications/"):
+			f.serveCommands(w, r, path, body)
 		case host == "discord.com" && strings.Contains(path, "/interactions/"):
 			f.record("discord.callback:"+path, string(body))
 			w.WriteHeader(http.StatusNoContent)
@@ -269,12 +404,67 @@ func TestEgressDirectNotificationsUseTheIsolatedBroker(t *testing.T) {
 	if d == nil {
 		t.Fatal("no Discord backend")
 	}
+	const legacyGuild = "1471669827545337969"
+	foreignGlobal := services.seedCommand("", "help", "OpenClaw help")
+	services.seedCommand("", "model", "OpenClaw model picker")
+	services.seedCommand("", commandPrefix+"resolve-robinhood-order", "old name")
+	services.seedCommand("", commandPrefix+"status", "outdated description")
+	services.seedCommand(legacyGuild, commandPrefix+"health", "registered by the guild-scope build")
+	services.seedCommand(legacyGuild, "openclaw-guild", "OpenClaw guild command")
+	cfg.Discord.GuildID = legacyGuild
 	if err := d.RegisterSlashCommands(nil, cfg); err != nil {
 		t.Fatalf("register commands through the broker: %v", err)
 	}
-	if len(services.bodiesFor("discord.commands")) != 1 {
-		t.Fatal("command registration did not reach Discord")
+	if n := len(services.bodiesFor("discord.commands_bulk")); n != 0 {
+		t.Fatalf("registration sent %d bulk overwrite(s); it must change commands one at a time", n)
 	}
+	var wantGlobal []string
+	for _, c := range slashCommands() {
+		wantGlobal = append(wantGlobal, c.Name)
+	}
+	wantGlobal = append(wantGlobal, "help", "model")
+	sort.Strings(wantGlobal)
+	if got := services.commandNames(""); !reflect.DeepEqual(got, wantGlobal) {
+		t.Fatalf("global commands after sync = %v, want %v", got, wantGlobal)
+	}
+	if got := services.commandDescription("", commandPrefix+"status"); got == "outdated description" {
+		t.Fatal("the outdated go-trader-status command was not updated")
+	}
+	if got := services.commandNames(legacyGuild); !reflect.DeepEqual(got, []string{"openclaw-guild"}) {
+		t.Fatalf("legacy guild commands after cleanup = %v, want only the foreign command", got)
+	}
+	created, edited, deleted := len(services.bodiesFor("discord.command_create")), len(services.bodiesFor("discord.command_edit")), len(services.bodiesFor("discord.command_delete"))
+	if created != len(slashCommands())-1 || edited != 1 || deleted != 2 {
+		t.Fatalf("sync writes: created %d, edited %d, deleted %d; want %d, 1, 2", created, edited, deleted, len(slashCommands())-1)
+	}
+	t.Logf("case: shared bot token: foreign global and guild commands kept, stale go-trader commands removed (%d created, %d edited, %d deleted)", created, edited, deleted)
+
+	writes := services.commandWrites()
+	if err := d.RegisterSlashCommands(nil, cfg); err != nil {
+		t.Fatalf("second registration through the broker: %v", err)
+	}
+	if got := services.commandWrites(); got != writes {
+		t.Fatalf("a second registration with no change wrote %d command change(s)", got-writes)
+	}
+	t.Log("case: an unchanged command set: the second registration wrote nothing")
+
+	brokerSess := processNotifyBroker()
+	if brokerSess == nil || brokerSess.discord == nil {
+		t.Fatal("no broker Discord transport")
+	}
+	if err := brokerSess.discord.ApplicationCommandDelete("999", "", foreignGlobal); err == nil || !strings.Contains(err.Error(), "outside the") {
+		t.Fatalf("broker delete of a foreign command = %v, want a namespace refusal", err)
+	}
+	if _, err := brokerSess.discord.ApplicationCommandCreate("999", "", &discordgo.ApplicationCommand{Name: "help", Description: "x"}); err == nil || !strings.Contains(err.Error(), "outside the") {
+		t.Fatalf("broker create of a foreign name = %v, want a namespace refusal", err)
+	}
+	if _, err := brokerSess.discord.ApplicationCommandEdit("999", "", foreignGlobal, &discordgo.ApplicationCommand{Name: commandPrefix + "help", Description: "x"}); err == nil || !strings.Contains(err.Error(), "outside the") {
+		t.Fatalf("broker edit of a foreign command = %v, want a namespace refusal", err)
+	}
+	if got := services.commandNames(""); !reflect.DeepEqual(got, wantGlobal) {
+		t.Fatalf("global commands after refused broker writes = %v, want %v", got, wantGlobal)
+	}
+	t.Log("case: the broker refuses to create, edit or delete a command outside the go-trader namespace")
 
 	interaction := func(id, user, name string) map[string]any {
 		return map[string]any{
@@ -343,6 +533,9 @@ func TestEgressDirectNotificationsUseTheIsolatedBroker(t *testing.T) {
 		{notifybroker.OpTelegramCall, map[string]any{"method": "sendMessage", "payload": map[string]string{"chat_id": "777", "text": "x", "url": "y"}}, "not allowed"},
 		{notifybroker.OpDiscordSend, map[string]string{"channel_id": "../../users", "content": "x"}, "channel id"},
 		{notifybroker.OpDiscordSend, map[string]string{"channel_id": "6001", "content": "x", "url": "https://api.hyperliquid.xyz"}, "unknown field"},
+		{"discord.register_commands", map[string]any{"commands": []any{}}, "unknown operation"},
+		{notifybroker.OpDiscordCommandDelete, map[string]string{"id": "../../users"}, "command id"},
+		{notifybroker.OpDiscordCommandDelete, map[string]string{"guild_id": "../x", "id": "1"}, "guild id"},
 	}
 	for _, r := range refusals {
 		err := sess.client.Call(context.Background(), r.op, r.payload, nil)
@@ -452,7 +645,7 @@ func TestEgressBrokerSlashCommandsSurviveALateDiscordGateway(t *testing.T) {
 		t.Fatalf("registration with no Discord identity = %v, want the deferred registration", err)
 	}
 	t.Logf("case: the broker never connects to Discord: RegisterSlashCommands returned the one deferred warning: %v", err)
-	if len(services.bodiesFor("discord.commands")) != 0 {
+	if services.commandWrites() != 0 {
 		t.Fatal("commands were registered without an application identity")
 	}
 	notifier.SendOwnerDM("gateway down drill")
@@ -498,7 +691,7 @@ func TestEgressBrokerSlashCommandsSurviveALateDiscordGateway(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatalf("the broker never opened the Discord gateway after it came back; requests %v", services.requests)
 	}
-	waitFor("background slash command registration", 30*time.Second, func() bool { return len(services.bodiesFor("discord.commands")) == 1 })
+	waitFor("background slash command registration", 30*time.Second, func() bool { return len(services.commandNames("")) == len(slashCommands()) })
 	services.dispatch(t, "INTERACTION_CREATE", interaction("901"))
 	waitFor("the owner command after a late gateway", 10*time.Second, answered("901"))
 	t.Log("case: the broker opens Discord after the registration wait ran out: commands registered in the background and /health answered")

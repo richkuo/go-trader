@@ -17,15 +17,19 @@ const (
 	FrameResponse = "response"
 	FrameEvent    = "event"
 
-	OpHello              = "hello"
-	OpDiscordSend        = "discord.send"
-	OpDiscordUserChannel = "discord.user_channel"
-	OpDiscordRespond     = "discord.interaction_respond"
-	OpDiscordFollowup    = "discord.followup"
-	OpDiscordCommands    = "discord.register_commands"
-	OpDiscordCommandList = "discord.list_commands"
-	OpTelegramCall       = "telegram.call"
-	OpGitHubIssue        = "github.create_issue"
+	OpHello                = "hello"
+	OpDiscordSend          = "discord.send"
+	OpDiscordUserChannel   = "discord.user_channel"
+	OpDiscordRespond       = "discord.interaction_respond"
+	OpDiscordFollowup      = "discord.followup"
+	OpDiscordCommandList   = "discord.list_commands"
+	OpDiscordCommandCreate = "discord.create_command"
+	OpDiscordCommandEdit   = "discord.edit_command"
+	OpDiscordCommandDelete = "discord.delete_command"
+
+	CommandNamePrefix = "go-trader-"
+	OpTelegramCall    = "telegram.call"
+	OpGitHubIssue     = "github.create_issue"
 
 	EventDiscordInteraction = "discord.interaction"
 	EventDiscordMessage     = "discord.message"
@@ -86,13 +90,22 @@ type DiscordFollowupRequest struct {
 	Files       []FileAttachment `json:"files,omitempty"`
 }
 
-type DiscordCommandsRequest struct {
-	Commands json.RawMessage `json:"commands"`
-	GuildID  string          `json:"guild_id,omitempty"`
-}
-
 type DiscordCommandListRequest struct {
 	GuildID string `json:"guild_id,omitempty"`
+}
+
+type DiscordCommandCreateRequest struct {
+	Command json.RawMessage `json:"command"`
+}
+
+type DiscordCommandEditRequest struct {
+	ID      string          `json:"id"`
+	Command json.RawMessage `json:"command"`
+}
+
+type DiscordCommandDeleteRequest struct {
+	GuildID string `json:"guild_id,omitempty"`
+	ID      string `json:"id"`
 }
 
 type TelegramCallRequest struct {
