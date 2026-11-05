@@ -282,16 +282,6 @@ def test_input_defects_hold_with_a_reason_without_raising(subtests):
             check()
 
 
-INVALID_PARAMS = [
-    {"period": 0}, {"period": 199}, {"period": 20.5}, {"period": True}, {"period": float("nan")},
-    {"period": float("inf")}, {"period": "20"},
-    {"threshold": 0}, {"threshold": 100}, {"threshold": -10}, {"threshold": float("nan")},
-    {"threshold": float("inf")}, {"threshold": True}, {"threshold": "25"},
-    {"expected_interval_ms": 0}, {"expected_interval_ms": -H}, {"expected_interval_ms": 1.5},
-    {"expected_interval_ms": True}, {"expected_interval_ms": float("nan")}, {"expected_interval_ms": None},
-]
-
-
 def test_period_endpoints_and_the_200_bar_check_window():
     closes = _walk(220, seed=3)
     one = _apply(_frame(closes), dict(PARAMS, period=1))

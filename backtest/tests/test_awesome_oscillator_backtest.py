@@ -44,14 +44,6 @@ def _bt(**kw):
     return Backtester(**base)
 
 
-def _swap_high_low(df, start):
-    hi, lo = df.columns.get_loc("high"), df.columns.get_loc("low")
-    high = df.iloc[start:, hi].copy()
-    df.iloc[start:, hi] = df.iloc[start:, lo].to_numpy()
-    df.iloc[start:, lo] = high.to_numpy()
-    return df
-
-
 def _frozen_frame(rows=520):
     manifest = om.load_manifest(MANIFEST)
     dataset = om.dataset_by_key(manifest, "BTC 4h")

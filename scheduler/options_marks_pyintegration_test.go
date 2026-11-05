@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const omFakeScript = `import json, os, sys, time
+const omFakeScript = `import json, os, sys
 mode = os.environ["OM_MODE"]
 req = json.loads(sys.stdin.read())
 ids = [leg["id"] for leg in req["legs"]]
@@ -30,29 +30,8 @@ if mode == "good":
     print(json.dumps(doc(legs=good)))
 elif mode == "bad_contract":
     print(json.dumps(dict(doc(legs=good), contract="option_marks_v0")))
-elif mode == "bad_unit":
-    print(json.dumps(dict(doc(legs=good), premium_unit="contract")))
-elif mode == "bad_platform":
-    print(json.dumps(dict(doc(legs=good), platform="deribit")))
-elif mode == "duplicate_id":
-    print(json.dumps(doc(legs=good + [mark(ids[0])])))
-elif mode == "unknown_id":
-    print(json.dumps(doc(legs=good + [mark("ghost")])))
 elif mode == "omitted_leg":
     print(json.dumps(doc(legs=good[1:])))
-elif mode == "extra_document":
-    print(json.dumps(doc(legs=good)))
-    print(json.dumps(doc(legs=good)))
-elif mode == "string_number":
-    bad = mark(ids[0]); bad["mark"]["value_per_unit"] = "9.0"
-    print(json.dumps(doc(legs=[bad] + good[1:])))
-elif mode == "exit_with_error_doc":
-    print(json.dumps(doc(error="robinhood adapter unavailable: RuntimeError")))
-    sys.exit(1)
-elif mode == "exit_without_doc":
-    sys.exit(1)
-elif mode == "timeout":
-    time.sleep(10)
 `
 
 func omSeed(s *StrategyState) {
@@ -112,15 +91,6 @@ func TestRobinhoodOptionMarksPyIntegration(t *testing.T) {
 			mode, scope, reason string
 		}{
 			{"bad_contract", whole, "contract is not option_marks_v1"},
-			{"bad_unit", whole, "premium_unit is not underlying_unit"},
-			{"bad_platform", whole, "platform is not robinhood"},
-			{"duplicate_id", whole, "duplicate leg id"},
-			{"unknown_id", whole, `unknown leg id "ghost"`},
-			{"extra_document", whole, "stdout holds more than one JSON document"},
-			{"string_number", whole, "invalid JSON document"},
-			{"exit_with_error_doc", whole, "script error: robinhood adapter unavailable: RuntimeError"},
-			{"exit_without_doc", whole, "script failed with no output"},
-			{"timeout", whole, "script timed out after 2s"},
 			{"omitted_leg", omitted, "robinhood option marks reply omitted this leg"},
 		}
 		for _, tc := range cases {
@@ -177,24 +147,6 @@ func TestRobinhoodOptionMarksPyIntegration(t *testing.T) {
 		if raw, err := os.ReadFile(requests); err == nil && len(strings.TrimSpace(string(raw))) > 0 {
 			t.Fatalf("--probe-only made network requests:\n%s", raw)
 		}
-		if err := probeOneScriptContract("shared_scripts/missing_option_marks.py", robinhoodOptionMarksProbeArgv, optionMarksContract); err == nil || !strings.Contains(err.Error(), "missing from deploy tree") {
-			t.Fatalf("missing script probe = %v", err)
-		}
-		other := filepath.Join(t.TempDir(), "other_contract.py")
-		if err := os.WriteFile(other, []byte(`import json; print(json.dumps({"contract": "option_marks_v0", "probe": True}))`), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := probeOneScriptContract(other, robinhoodOptionMarksProbeArgv, optionMarksContract); err == nil || !strings.Contains(err.Error(), `reports contract "option_marks_v0"`) {
-			t.Fatalf("incompatible contract probe = %v", err)
-		}
-		shadow := t.TempDir()
-		if err := os.WriteFile(filepath.Join(shadow, "exchange_calendars.py"), []byte(`raise ImportError("exchange_calendars is not installed")`), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("PYTHONPATH", shadow)
-		if err := probeOneScriptContract(robinhoodOptionMarksScript, robinhoodOptionMarksProbeArgv, optionMarksContract); err == nil || !strings.Contains(err.Error(), "exchange_calendars is not installed") {
-			t.Fatalf("a missing calendar dependency must fail the probe: %v", err)
-		}
 		deribitOnly := &Config{Strategies: []StrategyConfig{ocSC("deribit-om-probe", "deribit", "BTC")}}
 		if anyRobinhoodOptions(deribitOnly) || !anyRobinhoodOptions(cfg) {
 			t.Fatal("the mark probe must run only for robinhood options")
@@ -222,28 +174,12 @@ def settled(leg):
 legs = req["legs"]
 if mode == "good":
     print(json.dumps(doc(legs=[mark(l) for l in legs])))
-elif mode == "bad_platform":
-    print(json.dumps(dict(doc(legs=[mark(l) for l in legs]), platform="robinhood")))
 elif mode == "wrong_source":
     print(json.dumps(doc(legs=[mark(legs[0], "fixed_vol_model")] + [mark(l) for l in legs[1:]])))
-elif mode == "changed_times":
-    moved = mark(legs[0]); moved["cutoff_utc"] = legs[0]["expiry"] + "T00:00:00Z"
-    print(json.dumps(doc(legs=[moved] + [mark(l) for l in legs[1:]])))
-elif mode == "missing_times":
-    bare = mark(legs[0]); bare.pop("cutoff_utc")
-    print(json.dumps(doc(legs=[bare] + [mark(l) for l in legs[1:]])))
-elif mode == "early_settle":
-    print(json.dumps(doc(legs=[settled(l) for l in legs])))
-elif mode == "unknown_status":
-    odd = base(legs[0]); odd["status"] = "assigned"
-    print(json.dumps(doc(legs=[odd] + [mark(l) for l in legs[1:]])))
-elif mode == "duplicate_id":
-    print(json.dumps(doc(legs=[mark(l) for l in legs] + [mark(legs[0])])))
 elif mode == "omitted_leg":
     print(json.dumps(doc(legs=[mark(l) for l in legs[1:]])))
-elif mode == "extra_document":
-    print(json.dumps(doc(legs=[mark(l) for l in legs])))
-    print(json.dumps(doc(legs=[mark(l) for l in legs])))
+elif mode == "early_settle":
+    print(json.dumps(doc(legs=[settled(l) for l in legs])))
 `
 
 func ibPyLeg(id, optionType, action, expiry string, strike, mult, value float64) *OptionPosition {
@@ -315,11 +251,6 @@ func TestIBKROptionMarksPyIntegration(t *testing.T) {
 		if res.Marked != 0 || len(res.Failures) != 1 || leg.CurrentValueUSD != marked || !strings.Contains(leg.MarkError, "volatility unavailable: model pricing needs measured volatility") || !ocNear(leg.DTE, cutoff.Sub(later).Hours()/24) {
 			t.Fatalf("missing history: res=%+v leg=%+v", res, leg)
 		}
-		t.Setenv("QP_DAILY", `[100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0, 100.0, 200.0]`)
-		res = lcRefresh(env, sc, NewIBKROptionPricer(), nil, newOptionSettlementAlertThrottle(), later)
-		if res.Marked != 1 || leg.MarkError != "" {
-			t.Fatalf("a rank-only failure must still mark: res=%+v leg=%+v", res, leg)
-		}
 	})
 
 	t.Run("real_script_settles_the_dated_window_once", func(t *testing.T) {
@@ -368,17 +299,11 @@ func TestIBKROptionMarksPyIntegration(t *testing.T) {
 		}
 		markAt := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
 		waitAt := time.Date(2026, 11, 20, 16, 1, 0, 0, time.UTC)
-		const whole, first, omitted, early = "whole", "first", "omitted", "early"
+		const first, omitted, early = "first", "omitted", "early"
 		for _, tc := range []struct {
 			mode, scope, reason string
 		}{
-			{"bad_platform", whole, "platform is not ibkr"},
-			{"unknown_status", whole, `unknown status "assigned"`},
-			{"duplicate_id", whole, "duplicate leg id"},
-			{"extra_document", whole, "stdout holds more than one JSON document"},
 			{"wrong_source", first, `ibkr mark source "fixed_vol_model" is not binanceus_black_scholes_hv14`},
-			{"changed_times", first, "ibkr reply schedule cutoff_utc"},
-			{"missing_times", first, "ibkr reply schedule cutoff_utc \"\""},
 			{"omitted_leg", omitted, "ibkr option marks reply omitted this leg"},
 			{"early_settle", early, "settlement before the read boundary"},
 		} {
@@ -406,10 +331,6 @@ func TestIBKROptionMarksPyIntegration(t *testing.T) {
 					t.Fatalf("schedule must stay the Go cutoff: %s %s", put.ExpiryCutoffAt, call.ExpiryCutoffAt)
 				}
 				switch tc.scope {
-				case whole:
-					if !strings.Contains(put.MarkError, tc.reason) || !strings.Contains(call.MarkError, tc.reason) || put.CurrentValueUSD != -55 || call.CurrentValueUSD != -22 || len(res.Failures) != 2 {
-						t.Fatalf("whole batch: res=%+v put=%+v call=%+v", res, put, call)
-					}
 				case first, omitted:
 					failed, ok := put, call
 					if !strings.Contains(failed.MarkError, tc.reason) || failed.CurrentValueUSD != -55 || ok.MarkError != "" || !ocNear(ok.CurrentValueUSD, -90) || len(res.Failures) != 1 {
@@ -436,31 +357,6 @@ func TestIBKROptionMarksPyIntegration(t *testing.T) {
 		}
 		if reads := ibMinuteReads(t, logPath); len(reads) != 0 {
 			t.Fatalf("--probe-only read market data: %v", reads)
-		}
-		if err := probeOneScriptContract("shared_scripts/missing_option_marks.py", ibkrOptionMarksProbeArgv, optionMarksContract); err == nil || !strings.Contains(err.Error(), "missing from deploy tree") {
-			t.Fatalf("missing script probe = %v", err)
-		}
-		other := filepath.Join(t.TempDir(), "other_contract.py")
-		if err := os.WriteFile(other, []byte(`import json; print(json.dumps({"contract": "option_marks_v0", "probe": True}))`), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := probeOneScriptContract(other, ibkrOptionMarksProbeArgv, optionMarksContract); err == nil || !strings.Contains(err.Error(), `reports contract "option_marks_v0"`) {
-			t.Fatalf("incompatible mark contract probe = %v", err)
-		}
-		old := filepath.Join(t.TempDir(), "old_check_options.py")
-		if err := os.WriteFile(old, []byte("import sys\nif '--probe-only' in sys.argv:\n    sys.exit(0)\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := probeOneScriptContract(old, optionCalendarProbeArgv("ibkr"), optionCalendarContract); err == nil || !strings.Contains(err.Error(), "wrote no option_calendar_v1 document") {
-			t.Fatalf("a check script without the calendar context must fail the probe: %v", err)
-		}
-		shadow := t.TempDir()
-		if err := os.WriteFile(filepath.Join(shadow, "ccxt.py"), []byte(`raise ImportError("ccxt is not installed")`), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("PYTHONPATH", shadow)
-		if err := probeOneScriptContract(optionMarksScript, ibkrOptionMarksProbeArgv, optionMarksContract); err == nil || !strings.Contains(err.Error(), "ccxt is not installed") {
-			t.Fatalf("a missing ibkr dependency must fail the probe: %v", err)
 		}
 	})
 

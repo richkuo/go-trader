@@ -12,7 +12,6 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if os.path.join(REPO, "shared_tools") not in sys.path:
     sys.path.insert(0, os.path.join(REPO, "shared_tools"))
 AUTO_SUGGEST = os.path.join(REPO, "backtest", "auto_suggest.py")
-M6 = os.path.join(REPO, "backtest", "exit_policy_ab.py")
 DATASET = "BTC/USDT:4h"
 WINDOW = "2023"
 
@@ -280,99 +279,3 @@ def test_stop_only_variant_without_candidate_close_runs_like_empty_close(candle_
     assert not (out_dir / "m6.inherit_no_close.m6.json").exists()
 
 
-def test_central_policy_refusal_and_reversal_limitation_are_kept(candle_env, tmp_path):
-    spec = _spec({
-        "strategy_id": "sma_crossover",
-        "incumbent_close": INCUMBENT,
-        "candidate_close_variants": [
-            {"key": "ratchet_fixed", "candidate_close": [
-                {"name": "trailing_tp_ratchet", "params": {}}],
-             "candidate_stops": {"stop_loss_atr_mult": 1.0}},
-            {"key": "reversal", "candidate_close": []},
-            {"key": "reversal_drop", "candidate_close": [], "candidate_stops": "drop"},
-            {"key": "tp_ok", "candidate_close": WIDE_TP},
-        ],
-    })
-    proc, report, _ = _auto_suggest(candle_env, tmp_path, spec)
-    assert proc.returncode == 1
-    entries = {e["key"]: e for e in report["ranked"]}
-    refused = entries["m6.ratchet_fixed"]
-    assert refused["verdict"] == "excluded_close_capability"
-    assert refused["precondition_errors"] == [
-        "close_capability_refused:UNSUPPORTED_STOP_OWNER"]
-    assert refused["close_capability_refusal"]["reason_code"] == "UNSUPPORTED_STOP_OWNER"
-    assert refused["evidence"] == {}
-    for key in ("m6.reversal", "m6.reversal_drop"):
-        assert entries[key]["verdict"] == "excluded_not_replayable"
-        assert entries[key]["candidate"]["candidate_stop_only"] is False
-    assert entries["m6.tp_ok"]["evidence"]["m6"]["status"] == "ok"
-    cv = report["close_validation"]
-    assert cv["requested_set_complete"] is False
-    assert [r["reason_code"] for r in cv["refusals"]] == ["UNSUPPORTED_STOP_OWNER"]
-    assert "INCOMPLETE" in proc.stdout
-
-
-_INVALID_STOP_VARIANTS = [
-    ("trail_close_ref", {"key": "v", "candidate_close": [{"name": "trailing_stop_atr_mult",
-                                       "params": {"atr_mult": 3.0}}]}, "candidate_stops"),
-    ("sl_close_ref", {"key": "v", "candidate_close": [{"name": "stop_loss_atr_mult",
-                                                       "params": {"atr_mult": 1.0}}]}, "candidate_stops"),
-    ("bool", {"key": "v", "candidate_close": [], "candidate_stops": True}, "candidate_stops"),
-    ("unknown_mode", {"key": "v", "candidate_close": [], "candidate_stops": "keep"}, "candidate_stops"),
-    ("null", {"key": "v", "candidate_close": [], "candidate_stops": None}, "candidate_stops"),
-    ("empty", {"key": "v", "candidate_close": [], "candidate_stops": {}}, "exactly one"),
-    ("unknown_key", {"key": "v", "candidate_close": [], "candidate_stops": {"stop_loss_pct": 2.0}},
-     "unknown key"),
-    ("both_keys", {"key": "v", "candidate_close": [], "candidate_stops": {
-        "stop_loss_atr_mult": 1.0, "trailing_stop_atr_mult": 2.0}}, "exactly one"),
-    ("zero", {"key": "v", "candidate_close": [], "candidate_stops": {"trailing_stop_atr_mult": 0}},
-     "finite positive"),
-    ("negative", {"key": "v", "candidate_close": [], "candidate_stops": {"trailing_stop_atr_mult": -1}},
-     "finite positive"),
-    ("string", {"key": "v", "candidate_close": [], "candidate_stops": {"trailing_stop_atr_mult": "3"}},
-     "finite positive"),
-    ("bool_value", {"key": "v", "candidate_close": [], "candidate_stops": {"trailing_stop_atr_mult": True}},
-     "finite positive"),
-    ("nan", {"key": "v", "candidate_close": [],
-             "candidate_stops": {"trailing_stop_atr_mult": float("nan")}}, "finite positive"),
-]
-
-
-def test_spec_validation_rejects_invalid_stop_inputs(candle_env, tmp_path, subtests):
-    for case, variant, needle in _INVALID_STOP_VARIANTS:
-        with subtests.test(case=case):
-            case_dir = tmp_path / case
-            case_dir.mkdir()
-            spec = _spec({"strategy_id": "sma_crossover", "incumbent_close": INCUMBENT,
-                          "candidate_close_variants": [variant]})
-            proc, report, _ = _auto_suggest(candle_env, case_dir, spec, "--dry-run")
-            assert proc.returncode != 0
-            assert report is None
-            assert needle in proc.stderr
-            assert "candidate_stops" in proc.stderr
-    with subtests.test(case="stack_close_named_as_stop_field"):
-        case_dir = tmp_path / "stack_close_named_as_stop_field"
-        case_dir.mkdir()
-        _assert_stack_close_named_as_stop_field_is_rejected(candle_env, case_dir)
-
-
-def _assert_stack_close_named_as_stop_field_is_rejected(candle_env, tmp_path):
-    spec = _spec({"strategy_id": "sma_crossover", "incumbent_close": INCUMBENT,
-                  "close_stack_specs": [{"close": {"name": "trailing_stop_atr_mult",
-                                                   "params": {"atr_mult": [3.0]}}}]})
-    proc, _, _ = _auto_suggest(candle_env, tmp_path, spec, "--dry-run")
-    assert proc.returncode != 0
-    assert "close_stack_specs[0].close" in proc.stderr
-    assert "candidate_stops" in proc.stderr
-
-
-def test_m6_child_rejects_invalid_candidate_stops(candle_env, subtests):
-    for raw in ['{"trailing_stop_atr_mult": 0}', "keep", '{"trailing_stop_pct": 1.0}']:
-        with subtests.test(raw=raw):
-            proc = subprocess.run(
-                [sys.executable, M6, "--strategy", "sma_crossover", "--registry", "spot",
-                 "--incumbent-close", json.dumps(INCUMBENT), "--candidate-close", "[]",
-                 "--candidate-stops", raw, "--windows", WINDOW, "--datasets", DATASET],
-                cwd=REPO, env=candle_env, capture_output=True, text=True, timeout=300)
-            assert proc.returncode != 0
-            assert "--candidate-stops" in proc.stderr

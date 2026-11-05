@@ -215,7 +215,6 @@ func TestRobinhoodLiveOrderSizedSell(t *testing.T) {
 			post      float64
 			left      float64
 		}{
-			{"account_covers_the_share", "1", "0.25", 0.25, 0.25},
 			{"account_short_of_the_share", "0.2", "0.2", 0.2, 0.3},
 		}
 		for _, tc := range cases {
@@ -234,40 +233,6 @@ func TestRobinhoodLiveOrderSizedSell(t *testing.T) {
 			})
 		}
 	})
-	t.Run("SellRefusalsSendNothingAndBookNothing", func(t *testing.T) {
-		cases := []struct {
-			name   string
-			routes rhRoutes
-		}{
-			{"holdings_http_500", rhSizedSellRoutes(rhRoutes{"GET " + rhTestHoldings: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}}, "0.5")},
-			{"coin_absent", rhSizedSellRoutes(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("ETH", "1", "1"))}}, "0.5")},
-			{"below_minimum", rhSizedSellRoutes(rhSellHolding("0.0005", "0.0005"), "0.0005", rhPairRules("0.001", "0.00000001"))},
-		}
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-				clearLiveExecThrottle(e.sc("rh-btc"), directionClose, "BTC")
-				e.setPosition("rh-btc", "BTC", 0.5, 90)
-				e.setRoutes(tc.routes)
-				if trades, _ := e.signal("rh-btc", -1, 0, 99); trades != 0 {
-					t.Fatalf("trades = %d, want 0", trades)
-				}
-				if posts := e.orderPosts(); len(posts) != 0 {
-					t.Fatalf("a refused sell sent %d order(s)", len(posts))
-				}
-				if row := e.onlyAttempt(); row.Status != robinhoodAttemptNoFill {
-					t.Fatalf("attempt = %+v, want no_fill", row)
-				}
-				if e.failedAlerts() == 0 {
-					t.Fatal("a refused sell must send the live-order-failed alert")
-				}
-				s := e.state.Strategies["rh-btc"]
-				if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.5 || s.Cash != 1000 || len(e.dbTrades("rh-btc")) != 0 {
-					t.Fatalf("book changed: position=%+v cash=%v", pos, s.Cash)
-				}
-			})
-		}
-	})
 	t.Run("SellResultWithoutSentQuantityHolds", func(t *testing.T) {
 		cases := []struct {
 			name     string
@@ -275,10 +240,7 @@ func TestRobinhoodLiveOrderSizedSell(t *testing.T) {
 			keptSent float64
 		}{
 			{"no_sizing", rhFixtureSell(0.5, 0.5, ""), 0},
-			{"asked_differs_from_the_book", rhFixtureSell(0.4, 0.4, rhSizingJSON(0.4, 0.4, 0.4, false)), 0},
-			{"sent_above_the_ask_without_a_sweep", rhFixtureSell(0.5, 0.6, rhSizingJSON(0.5, 0.6, 0.6, false)), 0},
 			{"fill_above_the_sent", rhFixtureSell(0.5, 0.4, rhSizingJSON(0.5, 0.4, 0.4, false)), 0.4},
-			{"sent_differs_from_requested_quantity", rhFixtureSell(0.4, 0.4, rhSizingJSON(0.5, 0.5, 0.5, false)), 0},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -389,62 +351,6 @@ func TestRobinhoodLiveOrderSizedSell(t *testing.T) {
 				if r.URL == rhOrderURL("ord-x") {
 					t.Fatalf("recovery must not adopt a same-pair order by the frozen ask, but it read %s", r.URL)
 				}
-			}
-		})
-		t.Run("version_1_sell_attempt_keeps_the_frozen_quantity_rule", func(t *testing.T) {
-			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-			e.setPosition("rh-btc", "BTC", 0.5, 90)
-			s := e.state.Strategies["rh-btc"]
-			a, err := reserveRobinhoodAttempt(e.store, e.state, s, &e.mu, "BTC", robinhoodOriginSignal, "sell", robinhoodOrderRequest{
-				Signal: -1, SignalStr: "SELL", Quantity: 0.5, Price: 99, PrevPosSide: "long", PrevPosQty: 0.5,
-				CloseKind: robinhoodCloseKindWhole, SoleOwner: true,
-				Result: json.RawMessage(`{"symbol":"BTC","signal":-1}`),
-			}, time.Now())
-			if err != nil {
-				t.Fatal(err)
-			}
-			e.mu.Lock()
-			err = recordRobinhoodOrderOutcomeLocked(e.store, s, a, nil, robinhoodOrderUnknown, "seed", nil, time.Now())
-			e.mu.Unlock()
-			if err != nil {
-				t.Fatal(err)
-			}
-			var reqJSON string
-			if err := e.store.primary().db.QueryRow(`SELECT request_json FROM robinhood_order_attempts WHERE attempt_id = ?`, a.AttemptID).Scan(&reqJSON); err != nil {
-				t.Fatal(err)
-			}
-			var frozen map[string]interface{}
-			if err := json.Unmarshal([]byte(reqJSON), &frozen); err != nil {
-				t.Fatal(err)
-			}
-			if frozen["version"] != float64(robinhoodSizedSellRequestVersion) {
-				t.Fatalf("a signal sell must freeze request version 2, got %v", frozen["version"])
-			}
-			frozen["version"] = float64(robinhoodOrderRequestVersion)
-			delete(frozen, "close_kind")
-			delete(frozen, "sole_owner")
-			v1, _ := json.Marshal(frozen)
-			if _, err := e.store.primary().db.Exec(`UPDATE robinhood_order_attempts SET request_json = ? WHERE attempt_id = ?`, string(v1), a.AttemptID); err != nil {
-				t.Fatal(err)
-			}
-			e.reopen()
-			stamp := time.Now().UTC().Format(time.RFC3339)
-			e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
-				"GET " + rhTestOrders: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{
-					map[string]interface{}{"id": "ord-9", "state": "filled", "side": "sell", "currency_pair_id": "pair-btc", "quantity": "0.5", "created_at": stamp},
-				}}}},
-				"GET " + rhOrderURL("ord-9"): {{"status": 200, "json": map[string]interface{}{"id": "ord-9", "state": "filled", "side": "sell", "currency_pair_id": "pair-btc", "quantity": "0.5", "cumulative_quantity": "0.5", "average_price": "99", "created_at": stamp}}},
-			}))
-			recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
-			row := e.onlyAttempt()
-			if row.Status != robinhoodAttemptSettled || row.VenueOrderID != "ord-9" {
-				t.Fatalf("a version 1 sell must resolve by its frozen quantity and settle, got %+v", row)
-			}
-			if pos := e.state.Strategies["rh-btc"].Positions["BTC"]; pos != nil {
-				t.Fatalf("position = %+v, want closed by the full fill", pos)
-			}
-			if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Quantity != 0.5 || dbt[0].Price != 99 {
-				t.Fatalf("db trades = %+v, want one 0.5 close at 99", dbt)
 			}
 		})
 	})

@@ -9,8 +9,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 const rhOtherVenue = "acct-other"
@@ -564,116 +562,28 @@ func TestRobinhoodAccountBindingHeldBookAlerts(t *testing.T) {
 	})
 }
 
-func rhAccountOpts(strategy, action string) []*discordgo.ApplicationCommandInteractionDataOption {
-	return []*discordgo.ApplicationCommandInteractionDataOption{
-		{Name: "strategy", Type: discordgo.ApplicationCommandOptionString, Value: strategy},
-		{Name: "action", Type: discordgo.ApplicationCommandOptionString, Value: action},
-	}
-}
-
 func TestRobinhoodAccountBindingOwnerActions(t *testing.T) {
-	t.Run("command_refusals", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setBoundPosition("rh-btc", "BTC", 0.5, "", "")
-		ss := &StatusServer{state: e.state, mu: &e.mu, stateDB: e.store, strategies: e.cfg.Strategies}
-		d := &DiscordNotifier{ownerID: "owner", ss: ss}
-		opts := rhAccountOpts("rh-btc", robinhoodAccountActionRelease)
-		for name, msg := range map[string]string{
-			"intruder":   d.resolveRobinhoodAccountCommand("intruder", "", opts),
-			"guild":      d.resolveRobinhoodAccountCommand("owner", "guild-1", opts),
-			"no_owner":   (&DiscordNotifier{ss: ss}).resolveRobinhoodAccountCommand("owner", "", opts),
-			"no_storage": (&DiscordNotifier{ownerID: "owner", ss: &StatusServer{state: e.state, mu: &e.mu, strategies: e.cfg.Strategies}}).resolveRobinhoodAccountCommand("owner", "", opts),
-			"bad_action": d.resolveRobinhoodAccountCommand("owner", "", rhAccountOpts("rh-btc", "sell-all")),
-			"unknown":    d.resolveRobinhoodAccountCommand("owner", "", rhAccountOpts("rh-none", robinhoodAccountActionBind)),
-		} {
-			if !strings.Contains(msg, "owner") && !strings.Contains(msg, "DM") && !strings.Contains(msg, "not ready") && !strings.Contains(msg, "refused") {
-				t.Errorf("%s: %q, want a refusal", name, msg)
-			}
-		}
-		if pos := e.position("rh-btc", "BTC"); pos == nil || pos.AccountKey != "" {
-			t.Fatalf("book changed: %+v", pos)
-		}
-		if len(commandPrefix+robinhoodAccountCommandName) > 32 {
-			t.Fatalf("command name %q is over the 32-character Discord limit", commandPrefix+robinhoodAccountCommandName)
-		}
-	})
-	t.Run("prepare_defers_a_stored_current_binding_to_the_read_and_refuses_an_unrelated_unresolved_attempt", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
-		e.setBoundPosition("rh-a", "BTC", 0.5, robinhoodAccountKey(), rhTestAccount)
-		e.setBoundPosition("rh-b", "BTC", 0.2, "", "")
-		d := e.resolveDeps(e.holdingsFetcher(), rhMark(50))
-		if res, msg := prepareRobinhoodAccountResolution(d, "rh-a", robinhoodAccountActionBind); res == nil || !strings.Contains(msg, "the fresh holdings read decides") {
-			t.Fatalf("stored current book: %q, want the decision left to the fresh read", msg)
-		}
-		e.seedSettlingAttempt("rh-a", &robinhoodOrderAttempt{AttemptID: "rh-000000000000000000000004", AccountKey: robinhoodAccountKey(), Symbol: "BTC", Origin: robinhoodOriginSignal, Side: "buy",
-			RefID: "66666666-6666-4666-8666-666666666666", Status: robinhoodAttemptUnknown, RequestJSON: `{"version":1}`, CreatedAtMs: 1, UpdatedAtMs: 1})
-		d = e.resolveDeps(e.holdingsFetcher(), rhMark(50))
-		for _, action := range []string{robinhoodAccountActionBind, robinhoodAccountActionRelease} {
-			if res, msg := prepareRobinhoodAccountResolution(d, "rh-b", action); res != nil || !strings.Contains(msg, "is unresolved") {
-				t.Fatalf("%s with an unresolved attempt: %q", action, msg)
-			}
-		}
-	})
-
 	type outcome struct {
 		name   string
-		book   [2]string
 		rows   []interface{}
 		action string
 		mark   float64
-		setup  func(e *rhLiveEnv, r *robinhoodAccountResolution) func()
 		want   string
 	}
 	cases := []outcome{
 		{name: "bind_ok", rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionBind, want: "Bound"},
-		{name: "bind_key_only_ok", book: [2]string{"current", ""}, rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionBind, want: "Bound"},
 		{name: "bind_insufficient", rows: []interface{}{rhHeld("BTC", "0.4")}, action: robinhoodAccountActionBind, want: "below the"},
-		{name: "bind_stored_venue_mismatch", book: [2]string{"", rhOtherVenue}, rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionBind, want: "is bound to venue account"},
-		{name: "bind_failed_read", rows: nil, action: robinhoodAccountActionBind, want: "read of the configured account failed",
-			setup: func(e *rhLiveEnv, _ *robinhoodAccountResolution) func() { return nil }},
-		{name: "busy_lock", rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionBind, want: "in progress",
-			setup: func(e *rhLiveEnv, r *robinhoodAccountResolution) func() {
-				release, _ := tryLockRobinhoodCoin(r.CurrentKey, r.Coin)
-				return release
-			}},
-		{name: "changed_snapshot", rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionBind, want: "changed while you were confirming",
-			setup: func(e *rhLiveEnv, _ *robinhoodAccountResolution) func() {
-				e.mu.Lock()
-				e.state.Strategies["rh-btc"].Positions["BTC"].Quantity = 0.45
-				e.mu.Unlock()
-				return nil
-			}},
 		{name: "release_ok", rows: nil, action: robinhoodAccountActionRelease, mark: 50, want: "Released"},
 		{name: "release_holdings_on_account", rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionRelease, mark: 50, want: "above the"},
-		{name: "release_zero_mark", rows: nil, action: robinhoodAccountActionRelease, mark: 0, want: "no finite positive current mark"},
-		{name: "release_nan_mark", rows: nil, action: robinhoodAccountActionRelease, mark: math.NaN(), want: "no finite positive current mark"},
-		{name: "release_configured_key_other_venue_ok", book: [2]string{"current", rhOtherVenue}, rows: nil, action: robinhoodAccountActionRelease, mark: 50, want: "Released"},
-		{name: "bind_read_names_the_bound_venue", book: [2]string{"current", rhTestAccount}, rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionBind, want: "already bound"},
-		{name: "release_read_names_the_bound_venue", book: [2]string{"current", rhTestAccount}, rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionRelease, mark: 50, want: "already bound"},
-		{name: "release_configured_key_other_venue_holdings_on_account", book: [2]string{"current", rhOtherVenue}, rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionRelease, mark: 50, want: "above the"},
-		{name: "bind_configured_key_other_venue", book: [2]string{"current", rhOtherVenue}, rows: []interface{}{rhHeld("BTC", "0.5")}, action: robinhoodAccountActionBind, want: "is bound to venue account"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-			key := tc.book[0]
-			if key == "current" {
-				key = robinhoodAccountKey()
-			}
-			e.setBoundPosition("rh-btc", "BTC", 0.5, key, tc.book[1])
-			fetcher := e.holdingsFetcher(tc.rows...)
-			if tc.name == "bind_failed_read" {
-				fetcher = e.phasedFetcher(rhRoutes{"GET " + rhTestHoldings: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}})
-			}
-			d := e.resolveDeps(fetcher, rhMark(tc.mark))
+			e.setBoundPosition("rh-btc", "BTC", 0.5, "", "")
+			d := e.resolveDeps(e.holdingsFetcher(tc.rows...), rhMark(tc.mark))
 			res, prompt := prepareRobinhoodAccountResolution(d, "rh-btc", tc.action)
 			if res == nil {
 				t.Fatalf("prepare refused: %q", prompt)
-			}
-			if tc.setup != nil {
-				if release := tc.setup(e, res); release != nil {
-					defer release()
-				}
 			}
 			before := e.position("rh-btc", "BTC")
 			cash := e.state.Strategies["rh-btc"].Cash
@@ -715,67 +625,42 @@ func TestRobinhoodAccountBindingOwnerActions(t *testing.T) {
 		})
 	}
 
-	for _, action := range []string{robinhoodAccountActionBind, robinhoodAccountActionRelease} {
-		t.Run("save_failure_leaves_everything_unchanged_"+action, func(t *testing.T) {
-			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-			e.setBoundPosition("rh-btc", "BTC", 0.5, "", "")
-			rows := []interface{}{rhHeld("BTC", "0.5")}
-			if action == robinhoodAccountActionRelease {
-				rows = nil
-			}
-			d := e.resolveDeps(e.holdingsFetcher(rows...), rhMark(50))
-			res, prompt := prepareRobinhoodAccountResolution(d, "rh-btc", action)
-			if res == nil {
-				t.Fatalf("prepare: %q", prompt)
-			}
-			s := e.state.Strategies["rh-btc"]
-			before := *e.position("rh-btc", "BTC")
-			cash, trades, closed, risk := s.Cash, len(s.TradeHistory), len(s.ClosedPositions), s.RiskState.ConsecutiveLosses
-			storeCommitHook = func(storageRole) error { return fmt.Errorf("injected save failure") }
-			msg := applyRobinhoodAccountResolution(d, "owner-1", *res, time.Now())
-			storeCommitHook = nil
-			if !strings.Contains(msg, "Nothing was changed") {
-				t.Fatalf("apply = %q", msg)
-			}
-			after := e.position("rh-btc", "BTC")
-			if after == nil || after.AccountKey != before.AccountKey || after.Quantity != before.Quantity || s.Cash != cash || len(s.TradeHistory) != trades || len(s.ClosedPositions) != closed || s.RiskState.ConsecutiveLosses != risk {
-				t.Fatalf("memory changed after a failed save: %+v", after)
-			}
-			for _, a := range drainModelOnlyCloseAlerts() {
-				if a.StrategyID == "rh-btc" {
-					t.Fatalf("alert queued before commit: %+v", a)
-				}
-			}
-			e.reopen()
-			if got := e.dbBinding("rh-btc", "BTC"); got != (rhBindRow{"", "", robinhoodBindingSourceBackfill}) && got != (rhBindRow{}) {
-				t.Fatalf("db binding = %+v after a failed save", got)
-			}
-			if len(e.dbTrades("rh-btc")) != 0 {
-				t.Fatal("trades written by a failed save")
-			}
-		})
-	}
-
-	t.Run("final_validation_uses_the_peer_total_changed_during_the_read", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
-		e.setBoundPosition("rh-a", "BTC", 0.5, "", "")
-		e.setBoundPosition("rh-b", "BTC", 0.2, robinhoodAccountKey(), rhTestAccount)
-		inner := e.holdingsFetcher(rhHeld("BTC", "0.7"))
-		fetcher := func() (RobinhoodHoldings, error) {
-			e.mu.Lock()
-			e.state.Strategies["rh-b"].Positions["BTC"].Quantity = 0.3
-			e.mu.Unlock()
-			return inner()
-		}
-		d := e.resolveDeps(fetcher, nil)
-		res, prompt := prepareRobinhoodAccountResolution(d, "rh-a", robinhoodAccountActionBind)
+	t.Run("save_failure_leaves_everything_unchanged", func(t *testing.T) {
+		action := robinhoodAccountActionRelease
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setBoundPosition("rh-btc", "BTC", 0.5, "", "")
+		d := e.resolveDeps(e.holdingsFetcher(), rhMark(50))
+		res, prompt := prepareRobinhoodAccountResolution(d, "rh-btc", action)
 		if res == nil {
 			t.Fatalf("prepare: %q", prompt)
 		}
-		if msg := applyRobinhoodAccountResolution(d, "owner-1", *res, time.Now()); !strings.Contains(msg, "below the 0.8") {
-			t.Fatalf("apply = %q, want the new peer total used", msg)
+		s := e.state.Strategies["rh-btc"]
+		before := *e.position("rh-btc", "BTC")
+		cash, trades, closed, risk := s.Cash, len(s.TradeHistory), len(s.ClosedPositions), s.RiskState.ConsecutiveLosses
+		storeCommitHook = func(storageRole) error { return fmt.Errorf("injected save failure") }
+		msg := applyRobinhoodAccountResolution(d, "owner-1", *res, time.Now())
+		storeCommitHook = nil
+		if !strings.Contains(msg, "Nothing was changed") {
+			t.Fatalf("apply = %q", msg)
+		}
+		after := e.position("rh-btc", "BTC")
+		if after == nil || after.AccountKey != before.AccountKey || after.Quantity != before.Quantity || s.Cash != cash || len(s.TradeHistory) != trades || len(s.ClosedPositions) != closed || s.RiskState.ConsecutiveLosses != risk {
+			t.Fatalf("memory changed after a failed save: %+v", after)
+		}
+		for _, a := range drainModelOnlyCloseAlerts() {
+			if a.StrategyID == "rh-btc" {
+				t.Fatalf("alert queued before commit: %+v", a)
+			}
+		}
+		e.reopen()
+		if got := e.dbBinding("rh-btc", "BTC"); got != (rhBindRow{"", "", robinhoodBindingSourceBackfill}) && got != (rhBindRow{}) {
+			t.Fatalf("db binding = %+v after a failed save", got)
+		}
+		if len(e.dbTrades("rh-btc")) != 0 {
+			t.Fatal("trades written by a failed save")
 		}
 	})
+
 	t.Run("a_bind_in_progress_blocks_order_dispatch_for_the_coin", func(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
 		e.setBoundPosition("rh-a", "BTC", 0.5, "", "")

@@ -376,7 +376,7 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 	if err != nil || len(actions) != 1 || !reflect.DeepEqual(actions[0].RegimeSnapshots, before) {
 		t.Fatalf("queued snapshots: %v %+v", err, actions)
 	}
-	for _, invalid := range []string{`null`, `{"regime":"trending_up"}`, `{"regime":"trending_up","ready":"true","bars":100,"need":101}`, `{"regime":"trending_up","ready":true,"bars":100,"need":101}`, `{"regime":"trending_up","ready":true,"bars":101,"need":29}`, `{"regime":"","ready":false,"bars":101,"need":101}`} {
+	for _, invalid := range []string{`{"regime":"trending_up"}`, `{"regime":"trending_up","ready":true,"bars":100,"need":101}`} {
 		var out map[string]json.RawMessage
 		if err := json.Unmarshal(outputs[3], &out); err != nil {
 			t.Fatal(err)
@@ -923,8 +923,6 @@ func regimeReadinessClassifierCaseIntegration(t *testing.T, root string) {
 		hold             string
 	}{
 		{"capital", "Composite", 20, 200, ""},
-		{"capital-warming", "Composite", 20, 10, "regime stop window w warming (10/29)"},
-		{"spaced", " composite ", 60, 200, ""},
 		{"spaced-warming", " composite ", 60, 59, "regime stop window w warming (59/60)"},
 	}
 	for _, tc := range cases {

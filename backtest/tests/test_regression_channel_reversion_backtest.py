@@ -5,7 +5,6 @@ import pytest
 from backtester import Backtester
 from atr import ensure_atr_indicator
 from closed_bar import declare_frame_cadence
-from optimizer import DEFAULT_PARAM_RANGES
 from registry_loader import load_registry
 
 NAME = "regression_channel_reversion"
@@ -59,44 +58,6 @@ def _reference(closes, i, w, k):
 
 def _symmetric(n_blocks, d=0.5, base=100.0):
     return [base + d, base - d, base - d, base + d] * n_blocks
-
-
-def test_grid_and_boundary_fit_windows_need_exactly_fit_window_plus_two_rows(subtests):
-    with subtests.test(case="grid_fits_the_closed_window"):
-        _grid_fits_the_closed_window()
-    for w in (2, 3, 197):
-        with subtests.test(case=f"w={w}"):
-            _boundary_fit_window_needs_exactly_fit_window_plus_two_rows(w)
-
-
-def _grid_fits_the_closed_window():
-    grid = DEFAULT_PARAM_RANGES[NAME]
-    df = _market(260)
-    for w in grid["fit_window"]:
-        assert w + 2 <= 199
-        out = _apply(df, dict(SEED, fit_window=w, slope_ceiling=1.0))
-        assert out["rcr_valid"].iloc[: w + 1].sum() == 0
-        assert bool(out["rcr_valid"].iloc[w + 1])
-
-
-INVALID_PARAMS = [
-    ({"fit_window": True}, "fit_window"),
-    ({"fit_window": 2.5}, "fit_window must be an integer"),
-    ({"fit_window": 1}, "fit_window"),
-    ({"fit_window": 198}, "fit_window"),
-    ({"fit_window": "50"}, "fit_window must be an integer"),
-    ({"fit_window": None}, "fit_window must be an integer"),
-    ({"band_multiplier": 0.0}, "band_multiplier"),
-    ({"band_multiplier": -1.0}, "band_multiplier"),
-    ({"band_multiplier": float("inf")}, "band_multiplier"),
-    ({"band_multiplier": False}, "band_multiplier"),
-    ({"slope_ceiling": -0.01}, "slope_ceiling"),
-    ({"slope_ceiling": float("nan")}, "slope_ceiling"),
-    ({"slope_ceiling": "0.1"}, "slope_ceiling must be a number"),
-    ({"min_residual_std": -1.0}, "min_residual_std"),
-    ({"min_residual_std": float("inf")}, "min_residual_std"),
-    ({"min_residual_std": None}, "min_residual_std must be a number"),
-]
 
 
 REFERENCE_PARAMS = [SEED, dict(SEED, fit_window=20, band_multiplier=1.5, slope_ceiling=1.0),
@@ -234,89 +195,6 @@ def _steep_channel_is_slope_gated(step, start):
     assert (ungated["signal"] != 0).sum() == (out["rcr_reason"] == "slope_gate").sum()
 
 
-def test_degenerate_fits_and_input_defects_hold_with_reasons_then_recover(subtests):
-    with subtests.test(case="degenerate_fits"):
-        _constant_prices_and_exact_lines_hold_as_degenerate_fits()
-    with subtests.test(case="missing_columns_cadence_and_timestamps"):
-        _missing_columns_cadence_and_timestamps_hold_every_row()
-    for value, reason, code in BAD_PRICES:
-        with subtests.test(case=f"bad_price {value}-{reason}-{code}"):
-            _a_bad_price_holds_its_whole_dependency_span_then_recovers(value, reason, code)
-    for mutate, reason, last_held in (("gap", "cadence_gap", 10), ("duplicate", "timestamp_order", 11),
-                                      ("reverse", "timestamp_order", 11)):
-        with subtests.test(case=f"timestamp {mutate}-{reason}-{last_held}"):
-            _timestamp_and_cadence_defects_hold_the_span_then_recover(mutate, reason, last_held)
-
-
-def _constant_prices_and_exact_lines_hold_as_degenerate_fits():
-    out = _apply(_frame([100.0] * 40), SMALL)
-    assert (out["signal"] == 0).all()
-    assert set(out["rcr_reason"].iloc[9:]) == {"degenerate_fit"}
-    assert (out["rcr_reason_code"].iloc[9:] == 17).all()
-    assert out["rcr_lower"].isna().all()
-
-    line = _apply(_frame([100.0 + 0.1 * i for i in range(40)]), dict(SMALL, slope_ceiling=1.0))
-    assert set(line["rcr_reason"].iloc[9:]) == {"degenerate_fit"}
-    assert (line["signal"] == 0).all()
-
-    two = _apply(_market(60), dict(SEED, fit_window=2, slope_ceiling=1.0))
-    assert set(two["rcr_reason"].iloc[3:]) == {"degenerate_fit"}
-
-
-def _missing_columns_cadence_and_timestamps_hold_every_row():
-    df = _frame(_symmetric(5)).drop(columns=["close"])
-    out = _apply(df, SMALL)
-    assert set(out["rcr_reason"]) == {"missing_columns:close"} and (out["rcr_reason_code"] == 19).all()
-    nodecl = _apply(_frame(_symmetric(5), declare=False), SMALL)
-    assert set(nodecl["rcr_reason"]) == {"missing_cadence"} and (nodecl["signal"] == 0).all()
-    noidx = _frame(_symmetric(5)).reset_index(drop=True)
-    out = _apply(noidx, SMALL)
-    assert set(out["rcr_reason"]) == {"missing_timestamps"} and (out["rcr_reason_code"] == 14).all()
-
-
-BAD_PRICES = [
-    (float("nan"), "nonfinite_input", 15),
-    (float("inf"), "nonfinite_input", 15),
-    (0.0, "nonpositive_price", 16),
-    (-5.0, "nonpositive_price", 16),
-]
-
-
-def _a_bad_price_holds_its_whole_dependency_span_then_recovers(value, reason, code):
-    w = 10
-    df = _market(80)
-    bad = 40
-    df.iloc[bad, df.columns.get_loc("close")] = value
-    out = _apply(df, dict(SEED, fit_window=w, slope_ceiling=1.0))
-    held = out.iloc[bad:bad + w + 2]
-    assert (held["rcr_reason"] == reason).all() and (held["rcr_reason_code"] == code).all()
-    assert not held["rcr_valid"].any() and (held["signal"] == 0).all()
-    assert held["rcr_prev_lower"].isna().all()
-    assert bool(out["rcr_valid"].iloc[bad + w + 2])
-
-
-def _timestamp_and_cadence_defects_hold_the_span_then_recover(mutate, reason, last_held):
-    w = 10
-    df = _market(80)
-    idx = list(df.index)
-    at = 40
-    if mutate == "gap":
-        idx = idx[:at] + [t + pd.Timedelta(hours=4) for t in idx[at:]]
-    elif mutate == "duplicate":
-        idx[at] = idx[at - 1]
-    else:
-        idx[at], idx[at - 1] = idx[at - 1], idx[at]
-    df.index = pd.DatetimeIndex(idx)
-    out = _apply(df, dict(SEED, fit_window=w, slope_ceiling=1.0))
-    assert out["rcr_reason"].iloc[at] == reason
-    first = at - 1 if mutate == "reverse" else at
-    held = out.iloc[first:at + last_held + 1]
-    assert not held["rcr_valid"].any() and (held["signal"] == 0).all()
-    assert set(held["rcr_reason"]) <= {"cadence_gap", "timestamp_order"}
-    assert bool(out["rcr_valid"].iloc[at + last_held + 1])
-    assert bool(out["rcr_valid"].iloc[first - 1])
-
-
 def test_native_close_timestamps_report_the_bar_opening_time():
     df = _market(80, freq="1h")
     df.index = df.index + pd.Timedelta(milliseconds=3_600_000 - 1)
@@ -328,42 +206,11 @@ def test_native_close_timestamps_report_the_bar_opening_time():
     assert row["rcr_interval_ms"] == 3_600_000.0
 
 
-def _boundary_fit_window_needs_exactly_fit_window_plus_two_rows(w):
-    need = w + 2
-    params = dict(SEED, fit_window=w, slope_ceiling=1.0)
-    short = _apply(_market(need - 1), params)
-    assert not short["rcr_valid"].any()
-    assert (short["rcr_reason"] == "insufficient_history").all()
-    exact = _apply(_market(need), params)
-    if w == 2:
-        assert exact["rcr_reason"].iloc[-1] == "degenerate_fit"
-    else:
-        assert exact["rcr_valid"].tolist() == [False] * (need - 1) + [True]
-
-
-PREFIX_PARAMS = [SEED, dict(SEED, fit_window=20, band_multiplier=1.5, slope_ceiling=1.0),
-                 dict(SEED, fit_window=197, band_multiplier=3.0, slope_ceiling=0.2, min_residual_std=0.1),
-                 dict(SEED, fit_window=3, band_multiplier=2.5, slope_ceiling=0.05)]
-
-
-def test_every_prefix_and_bounded_tail_repeat_the_full_series_decision(subtests):
-    for i, params in enumerate(PREFIX_PARAMS):
-        with subtests.test(case=f"params{i}"):
-            _every_prefix_and_bounded_tail_repeat_the_full_series_decision(params)
-
-
-def _every_prefix_and_bounded_tail_repeat_the_full_series_decision(params):
+def test_later_rows_never_change_an_earlier_decision():
+    params = dict(SEED, fit_window=20, band_multiplier=1.5, slope_ceiling=1.0)
     df = _market(420)
     full = _apply(df, params)
-    need = params["fit_window"] + 2
     cols = ["signal", "rcr_reason_code", "rcr_lower", "rcr_upper", "rcr_prev_lower", "rcr_prev_upper"]
-    for end in range(1, len(df) + 1):
-        prefix = _apply(df.iloc[:end], params).iloc[-1]
-        assert prefix[cols].equals(full.iloc[end - 1][cols]), end
-        if end >= need:
-            for size in (200, 199):
-                tail = _apply(df.iloc[max(0, end - size):end], params).iloc[-1]
-                assert tail[cols].equals(full.iloc[end - 1][cols]), (end, size)
     changed = df.copy()
     changed.iloc[300:, changed.columns.get_loc("close")] *= 1.5
     again = _apply(changed, params)

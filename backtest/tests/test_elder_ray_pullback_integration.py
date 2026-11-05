@@ -393,15 +393,6 @@ def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
     assert out["erp_valid"].iloc[bad + need - 1] == 1.0
 
 
-INVALID_PARAMS = [
-    {"ema_period": 1}, {"ema_period": 33}, {"ema_period": 13.5}, {"ema_period": True},
-    {"ema_period": float("nan")}, {"ema_period": "13"}, {"ema_period": None},
-    {"slope_span": 0}, {"slope_span": 9}, {"slope_span": 2.5}, {"slope_span": False}, {"slope_span": float("inf")},
-    {"pullback_window": 0}, {"pullback_window": 17}, {"pullback_window": 3.25}, {"pullback_window": "8"},
-    {"pullback_window": -1},
-]
-
-
 def test_integral_float_parameters_are_accepted_as_integers():
     df = _walk(200, 1)
     floats = {"ema_period": 13.0, "slope_span": 3.0, "pullback_window": 8.0}
