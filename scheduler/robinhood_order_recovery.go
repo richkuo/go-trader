@@ -346,7 +346,7 @@ func robinhoodOrderStartupLines(state *AppState) []string {
 	return lines
 }
 
-const robinhoodOperatorCommandName = "resolve-robinhood-order"
+const robinhoodOperatorCommandName = "resolve-rh-order"
 
 var robinhoodAttemptIDPattern = regexp.MustCompile(`^rh-[0-9a-f]{24}$`)
 
