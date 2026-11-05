@@ -564,7 +564,6 @@ var (
 
 func (d *DiscordNotifier) registerSlashCommandsWhenReady() {
 	delay := slashRegisterFirstRetry
-	lastErr := ""
 	for {
 		select {
 		case <-shutdownReadOnlyCtx.Done():
@@ -575,13 +574,11 @@ func (d *DiscordNotifier) registerSlashCommandsWhenReady() {
 			err := d.syncSlashCommands(appID)
 			if err == nil {
 				fmt.Println("Discord slash commands registered (the notification broker's Discord gateway is up)")
-				d.startSlashCommandResync(appID, nil)
-				return
+			} else {
+				fmt.Printf("[WARN] Discord slash command registration through the notification broker failed: %v (the slash command re-sync retries it)\n", err)
 			}
-			if msg := err.Error(); msg != lastErr {
-				lastErr = msg
-				fmt.Printf("[WARN] Discord slash command registration through the notification broker failed: %v (retrying)\n", err)
-			}
+			d.startSlashCommandResync(appID, err)
+			return
 		}
 		if delay < slashRegisterMaxDelay {
 			delay = min(delay*2, slashRegisterMaxDelay)
