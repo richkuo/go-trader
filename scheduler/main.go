@@ -253,6 +253,7 @@ func main() {
 	// keeps down, so the owner is paged instead of reading stderr.
 	notifier, cleanupNotifier := buildNotifierFromConfig(cfg)
 	defer cleanupNotifier()
+	hlAgentStatus.bind(notifier)
 	go runEgressAlertMonitor(shutdownReadOnlyCtx, func(msg string) {
 		if notifier.HasOwner() {
 			notifier.SendOwnerDM(msg)
@@ -778,6 +779,13 @@ func main() {
 			notifier.SendOwnerDM(fmt.Sprintf("**Startup probe failed** — refusing to start (exit %d; fix deploy, then restart):\n```\n%v\n```", ExitProbeFailure, err))
 		}
 		os.Exit(ExitProbeFailure)
+	}
+
+	if hlAgentStatusEnabled(cfg) {
+		firstDelay := runHLAgentStatusStartup(notifier)
+		if !*once {
+			go runHLAgentStatusMonitor(shutdownReadOnlyCtx, notifier, firstDelay)
+		}
 	}
 
 	var lastNotifiedHash string

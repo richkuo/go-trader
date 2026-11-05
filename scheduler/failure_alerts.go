@@ -107,6 +107,7 @@ func formatLiveExecFailureAlert(strategyID, platform, direction, symbol, errMsg 
 }
 
 func notifyLiveExecFailure(notifier *MultiNotifier, sc StrategyConfig, direction, symbol, errMsg string) {
+	noteHLAgentRejection(notifier, sc, errMsg)
 	if notifier == nil || !notifier.HasBackends() {
 		return
 	}

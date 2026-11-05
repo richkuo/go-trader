@@ -321,6 +321,22 @@ def _fetch_raw_meta(base_url: str):
     return spot_meta, meta
 
 
+def hyperliquid_base_url() -> str:
+    return TESTNET_URL if os.environ.get("HYPERLIQUID_TESTNET", "") == "1" else MAINNET_URL
+
+
+def hyperliquid_signer(secret: str, account_address: str):
+    import eth_account
+    wallet = eth_account.Account.from_key(secret)
+    return wallet, account_address or wallet.address
+
+
+def hyperliquid_info_api(timeout: float):
+    if _HLAPI is None:
+        raise RuntimeError("hyperliquid.api.API unavailable")
+    return _HLAPI(base_url=hyperliquid_base_url(), timeout=timeout)
+
+
 class HyperliquidExchangeAdapter:
 
     def __init__(self, public_only: bool = False):
@@ -332,8 +348,7 @@ class HyperliquidExchangeAdapter:
         self._public_only = bool(public_only)
         secret = "" if self._public_only else os.environ.get("HYPERLIQUID_SECRET_KEY", "")
         addr = "" if self._public_only else os.environ.get("HYPERLIQUID_ACCOUNT_ADDRESS", "")
-        testnet = os.environ.get("HYPERLIQUID_TESTNET", "") == "1"
-        base_url = TESTNET_URL if testnet else MAINNET_URL
+        base_url = hyperliquid_base_url()
         self._base_url = base_url
 
         self._wallet = None
@@ -349,10 +364,7 @@ class HyperliquidExchangeAdapter:
         self._account_address = addr
 
         if secret:
-            import eth_account
-            wallet = eth_account.Account.from_key(secret)
-            self._wallet = wallet
-            self._account_address = addr or wallet.address
+            self._wallet, self._account_address = hyperliquid_signer(secret, addr)
 
     def _build_info(self, base_url: str, allow_cache: bool):
         cached = _load_meta_cache() if allow_cache else None

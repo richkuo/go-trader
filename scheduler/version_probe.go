@@ -385,6 +385,11 @@ func probeCheckScripts(cfg *Config) error {
 			return err
 		}
 	}
+	if anyHyperliquidLive(cfg) {
+		if err := probeOneCheckScriptFn(hlAgentStatusScript, hlAgentStatusProbeArgv); err != nil {
+			return err
+		}
+	}
 	if anyStrategyUsesLLMEntryAnalysis(cfg) {
 		if err := probeOneCheckScriptFn(llmEntryAnalysisScript, llmReviewProbeArgv); err != nil {
 			return err
