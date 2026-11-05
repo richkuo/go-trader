@@ -44,10 +44,13 @@ type DiscordNotifier struct {
 	ss  *StatusServer
 	cfg *Config
 
-	syncMu       sync.Mutex
-	createTimes  []time.Time
-	resyncOnce   sync.Once
-	resyncCancel context.CancelFunc
+	syncMu          sync.Mutex
+	createTimes     []time.Time
+	legacyGuildID   string
+	legacyGuildDone bool
+	legacyGuildErr  string
+	resyncOnce      sync.Once
+	resyncCancel    context.CancelFunc
 }
 
 func NewDiscordNotifier(token, ownerID string) (*DiscordNotifier, error) {

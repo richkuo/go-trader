@@ -318,25 +318,37 @@ func brokerProtocolHint(err error) string {
 func (d *DiscordNotifier) syncSlashCommands(appID string) error {
 	res, err := d.syncOwnedSlashCommandsLocked(appID, false)
 	fmt.Printf("Discord slash commands synced: %d created, %d updated, %d recreated, %d deleted, %d unchanged\n", res.Created, res.Updated, res.Recreated, res.Deleted, res.Unchanged)
+	if d.cfg != nil {
+		if guildID := strings.TrimSpace(d.cfg.Discord.GuildID); guildID != "" {
+			d.syncMu.Lock()
+			d.legacyGuildID = guildID
+			d.syncMu.Unlock()
+		}
+	}
 	if err != nil {
 		return err
 	}
-	if d.cfg == nil {
-		return nil
-	}
-	guildID := strings.TrimSpace(d.cfg.Discord.GuildID)
-	if guildID == "" {
-		return nil
-	}
-	d.syncMu.Lock()
-	n, gerr := deleteOwnedGuildSlashCommands(d.transport, appID, guildID)
-	d.syncMu.Unlock()
-	if gerr != nil {
-		fmt.Printf("[WARN] Discord legacy guild command cleanup: %v\n", gerr)
-		return nil
-	}
-	fmt.Printf("Discord legacy guild %s: removed %d go-trader command(s); discord.guild_id is used only for this cleanup and can be removed\n", guildID, n)
+	d.cleanupLegacyGuildSlashCommands(appID)
 	return nil
+}
+
+func (d *DiscordNotifier) cleanupLegacyGuildSlashCommands(appID string) {
+	d.syncMu.Lock()
+	defer d.syncMu.Unlock()
+	guildID := d.legacyGuildID
+	if guildID == "" || d.legacyGuildDone {
+		return
+	}
+	n, err := deleteOwnedGuildSlashCommands(d.transport, appID, guildID)
+	if err != nil {
+		if msg := err.Error(); msg != d.legacyGuildErr {
+			d.legacyGuildErr = msg
+			fmt.Printf("[WARN] Discord legacy guild command cleanup: %v (the slash command re-sync retries it)\n", err)
+		}
+		return
+	}
+	d.legacyGuildDone = true
+	fmt.Printf("Discord legacy guild %s: removed %d go-trader command(s); discord.guild_id is used only for this cleanup and can be removed\n", guildID, n)
 }
 
 func (d *DiscordNotifier) startSlashCommandResync(appID string, initialErr error) {
@@ -379,6 +391,9 @@ func (d *DiscordNotifier) resyncSlashCommands(ctx context.Context, appID string,
 		case <-timer.C:
 		}
 		res, err := d.syncOwnedSlashCommandsLocked(appID, true)
+		if err == nil {
+			d.cleanupLegacyGuildSlashCommands(appID)
+		}
 		now := time.Now()
 		repairs = pruneTimes(repairs, now, flapWindow)
 		if len(repairs) == 0 && !flapping {
