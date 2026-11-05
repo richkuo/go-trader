@@ -162,11 +162,18 @@ func (d *mrpDaemon) waitFreshCycle() {
 	d.waitCycles(mrpCycles(d.output()) + 1)
 }
 
-const mrpGenerationMargin = 15 * time.Second
+const (
+	mrpCycleSeconds     = 20
+	mrpGenerationMargin = 10 * time.Second
+)
 
 func mrpGenerationLeft(r mrpRoute) time.Duration {
+	step := int64(r.env.IntervalSeconds) * 1000
+	if step <= 0 {
+		return 0
+	}
 	now := time.Now()
-	next := time.UnixMilli((now.UnixMilli()/mrpIntervalMs + 1) * mrpIntervalMs)
+	next := time.UnixMilli((now.UnixMilli()/step + 1) * step)
 	if end := r.env.BundleAt.Add(time.Duration(r.env.IntervalSeconds) * time.Second); end.Before(next) {
 		next = end
 	}
@@ -355,18 +362,37 @@ func (l *mrpLocalRoute) publish(bundle *RegimeBundle) {
 	globalRegimeStore.set(bundle, gen)
 }
 
+func mrpFreePortPair(t *testing.T) (int, net.Listener) {
+	t.Helper()
+	for i := 0; i < 50; i++ {
+		first, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := first.Addr().(*net.TCPAddr).Port
+		second, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port+1))
+		first.Close()
+		if err == nil {
+			t.Cleanup(func() { second.Close() })
+			return port, second
+		}
+	}
+	t.Fatal("no free consecutive port pair")
+	return 0, nil
+}
+
 func regimeReadinessProcessIntegration(t *testing.T) {
 	t.Helper()
 	var shared func()
-	regimeReadinessProcessWebsocket(t, func() { shared = regimeReadinessProcessShared(t) })
-	shared()
+	regimeReadinessProcessWebsocket(t, func() { shared = regimeReadinessProcessShared(t) }, func() { shared() })
 }
 
-func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
+func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func()) {
 	t.Helper()
 	e := newMRPEnv(t, 40)
-	port := htfITFreePort(t)
+	port, fallbackHold := mrpFreePortPair(t)
 	strategies := func(doc map[string]any) {
+		doc["interval_seconds"] = mrpCycleSeconds
 		doc["status_port"] = port
 		doc["strategies"] = []any{
 			mrpManualStrategy("mr-ready", "short"), mrpManualStrategy("mr-add", "short"), mrpManualStrategy("mr-limit", "short"),
@@ -398,12 +424,16 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
 	e.expectRefused(r, "no scheduler limit", "unavailable")
 
 	wrong := e.startDaemon(cfgB, port)
-	wrong.waitCycles(1)
+	wrong.waitLog("status bind", 60*time.Second, func(s string) bool {
+		return strings.Contains(s, fmt.Sprintf("Status endpoint at http://localhost:%d/status", port))
+	})
+	fallbackHold.Close()
 	daemon := e.startDaemon(cfgA, 0)
 	daemon.waitLog("fallback bind", 60*time.Second, func(s string) bool {
 		return strings.Contains(s, fmt.Sprintf("bound to %d instead", port+1))
 	})
 	afterBind()
+	wrong.waitCycles(1)
 	daemon.waitCycles(1)
 	good := mrpURL(port + 1)
 	markerA := mrpMarkerPath(filepath.Join(e.dir, "state.db"))
@@ -633,6 +663,7 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
 		t.Fatalf("stopped scheduler:\n%s", r)
 	}
 	restarted := e.startDaemon(reloaded, port+1)
+	duringRestart()
 	restarted.waitCycles(1)
 	mr, err := readManualRegimeOwnerMarker(markerA)
 	if err != nil || mr.OwnerNonce == ma.OwnerNonce {
@@ -674,6 +705,7 @@ func regimeReadinessProcessShared(t *testing.T) func() {
 	sock := filepath.Join(sockDir, "feed.sock")
 	port := htfITFreePort(t)
 	cfg := e.writeConfig("consumer.json", func(doc map[string]any) {
+		doc["interval_seconds"] = mrpCycleSeconds
 		doc["market_feed"] = "shared"
 		doc["shared_market_feed"] = map[string]any{"primary_socket": sock}
 		doc["strategies"] = []any{mrpManualStrategy("mr-ready", "short"), mrpManualStrategy("mr-limit", "short"), mrpManualStrategy("mr-warming", "long")}

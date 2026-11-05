@@ -78,6 +78,7 @@ func paperResearchNoHeldWork(t *testing.T, label, log string) {
 func TestPaperResearchSchedulerEngineHold(t *testing.T) {
 	e := newMRPEnv(t, 40)
 	t.Run("held_only_once_reports_the_hold_and_exits", func(t *testing.T) {
+		t.Parallel()
 		cfg := e.writeConfig("held-only.json", func(doc map[string]any) {
 			delete(doc, "regime")
 			doc["strategies"] = []any{paperResearchOwnerDoc("")}
@@ -107,6 +108,7 @@ func TestPaperResearchSchedulerEngineHold(t *testing.T) {
 		store.Close()
 	})
 	t.Run("mixed_once_runs_ordinary_work_and_unavailable_research_input_holds", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		cfg := e.writeConfig("mixed.json", func(doc map[string]any) {
 			delete(doc, "regime")
@@ -133,6 +135,7 @@ func TestPaperResearchSchedulerEngineHold(t *testing.T) {
 		t.Logf("mixed log:\n%s", log)
 	})
 	t.Run("daemon_reports_the_hold_each_cycle_after_reload_and_in_status", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		port := htfITFreePort(t)
 		cfg := e.writeConfig("daemon.json", func(doc map[string]any) {

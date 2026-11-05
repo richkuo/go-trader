@@ -311,12 +311,11 @@ func qpCaseCheckQuotePrecisionFetchPricesKeepsTheTickerQuote(t *testing.T) {
 }
 
 type qpScheduler struct {
-	t     *testing.T
-	root  string
-	bin   string
-	dir   string
-	env   []string
-	lines []string
+	t    *testing.T
+	root string
+	bin  string
+	dir  string
+	env  []string
 }
 
 func qpBuildScheduler(t *testing.T, root string) *qpScheduler {
@@ -350,15 +349,22 @@ var qpStatusLine = regexp.MustCompile(`\[server\] Status endpoint at (http://loc
 
 func (s *qpScheduler) run(cfgPath, until string, whileRunning func(statusURL string)) string {
 	s.t.Helper()
-	s.lines = nil
-	cmd := exec.Command(s.bin, "--config", cfgPath)
-	cmd.Dir = s.root
-	cmd.Env = s.env
+	out, err := qpRunSchedulerProcess(s.bin, s.root, s.env, cfgPath, until, nil, whileRunning)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return out
+}
+
+func qpRunSchedulerProcess(bin, root string, env []string, cfgPath, until string, stop <-chan struct{}, whileRunning func(statusURL string)) (string, error) {
+	cmd := exec.Command(bin, "--config", cfgPath)
+	cmd.Dir = root
+	cmd.Env = env
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
 	if err := cmd.Start(); err != nil {
-		s.t.Fatalf("start scheduler: %v", err)
+		return "", fmt.Errorf("start scheduler: %v", err)
 	}
 	lines := make(chan string, 1<<16)
 	go func() {
@@ -375,8 +381,10 @@ func (s *qpScheduler) run(cfgPath, until string, whileRunning func(statusURL str
 		pw.Close()
 		exited <- err
 	}()
+	var got []string
 	statusURL := ""
 	reached := false
+	stopped := false
 	deadline := time.After(180 * time.Second)
 wait:
 	for {
@@ -385,7 +393,7 @@ wait:
 			if !ok {
 				break wait
 			}
-			s.lines = append(s.lines, line)
+			got = append(got, line)
 			if m := qpStatusLine.FindStringSubmatch(line); m != nil {
 				statusURL = m[1]
 			}
@@ -394,6 +402,9 @@ wait:
 				break wait
 			}
 		case <-deadline:
+			break wait
+		case <-stop:
+			stopped = true
 			break wait
 		}
 	}
@@ -408,13 +419,16 @@ wait:
 		<-exited
 	}
 	for line := range lines {
-		s.lines = append(s.lines, line)
+		got = append(got, line)
 	}
-	out := strings.Join(s.lines, "\n")
+	out := strings.Join(got, "\n")
+	if stopped {
+		return out, fmt.Errorf("scheduler stopped before it printed %q; output:\n%s", until, out)
+	}
 	if !reached {
-		s.t.Fatalf("scheduler never printed %q; output:\n%s", until, out)
+		return out, fmt.Errorf("scheduler never printed %q; output:\n%s", until, out)
 	}
-	return out
+	return out, nil
 }
 
 type qpTradeRow struct {
@@ -1354,6 +1368,7 @@ func TestCheckQuotePrecisionRebaselineSurvivesABookSaveBeforeSaveAll(t *testing.
 }
 
 func TestCheckQuotePrecision(t *testing.T) {
+	optionsOutage := qpStartOptionsSchedulerOutage(t)
 	for _, tc := range []sigAdmCase{
 		{"RunnersReturnTheFullQuote", qpCaseCheckQuotePrecisionRunnersReturnTheFullQuote},
 		{"RunnerFallbacksAndFailures", qpCaseCheckQuotePrecisionRunnerFallbacksAndFailures},
@@ -1366,7 +1381,7 @@ func TestCheckQuotePrecision(t *testing.T) {
 		{"PriceTextKeepsLargePrices", qpCaseCheckQuotePrecisionPriceTextKeepsLargePrices},
 		{"OptionsOutageKeepsHarvestAndReporting", qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting},
 		{"OptionsFailureAlertThresholds", qpCaseCheckQuotePrecisionOptionsFailureAlertThresholds},
-		{"OptionsSchedulerHarvestsDuringEntryOutage", qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage},
+		{"OptionsSchedulerHarvestsDuringEntryOutage", optionsOutage.check},
 		{"OptionsResultContractRefusesMismatchedUnitsAndPlatforms", qpCaseCheckQuotePrecisionOptionsResultContract},
 		{"OptionsStructureContractBooksWholeStructures", qpCaseCheckQuotePrecisionOptionsStructureContract},
 	} {
@@ -1680,32 +1695,73 @@ func qpFlatRankDaily() string {
 	return string(raw)
 }
 
-func qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage(t *testing.T) {
-	t.Parallel()
+type qpOptionsOutageRun struct {
+	sc   StrategyConfig
+	db   string
+	stop chan struct{}
+	done chan struct{}
+	out  string
+	err  error
+}
+
+func qpStartOptionsSchedulerOutage(t *testing.T) *qpOptionsOutageRun {
+	t.Helper()
 	root := robinhoodStdoutPyRoot(t)
 	sched := qpBuildScheduler(t, root)
 	sc := qpOptionsHarvestSC("qp-opt-sched")
-	sc.IntervalSeconds = 60
+	sc.IntervalSeconds = 20
 	spot := qpSpotSC("qp-opt-sched-spot", "BTC/USDT")
-	spot.IntervalSeconds = 60
+	spot.IntervalSeconds = 20
 	sched.env = qpChildEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": qpFlatRankDaily()})
 	cfg := sched.config([]StrategyConfig{sc, spot})
-	sched.run(cfg, "Cycle 1 complete", nil)
+	r := &qpOptionsOutageRun{sc: sc, db: filepath.Join(sched.dir, "state.db"), stop: make(chan struct{}), done: make(chan struct{})}
+	bin, env := sched.bin, sched.env
+	go func() {
+		defer close(r.done)
+		r.out, r.err = qpOptionsOutageScenario(bin, root, env, cfg, r.db, sc, r.stop)
+	}()
+	t.Cleanup(func() {
+		close(r.stop)
+		<-r.done
+	})
+	return r
+}
 
-	db, err := sql.Open("sqlite", filepath.Join(sched.dir, "state.db"))
+func qpOptionsOutageScenario(bin, root string, env []string, cfgPath, dbPath string, sc StrategyConfig, stop <-chan struct{}) (string, error) {
+	if _, err := qpRunSchedulerProcess(bin, root, env, cfgPath, "Cycle 1 complete", stop, nil); err != nil {
+		return "", err
+	}
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		t.Fatal(err)
+		return "", err
 	}
 	defer db.Close()
 	now := time.Now().UTC()
 	for _, leg := range qpSchedOptionLegs() {
-		qpExec(t, db, `INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte, action, quantity, entry_premium, entry_premium_usd, current_value_usd, opened_at)
+		if _, err := db.Exec(`INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte, action, quantity, entry_premium, entry_premium_usd, current_value_usd, opened_at)
 			VALUES (?, ?, '', 'BTC', ?, ?, ?, ?, 'sell', 1, 0.1, ?, ?, ?)`,
-			sc.ID, leg.id, leg.optionType, leg.strike, now.AddDate(0, 0, leg.days).Format("2006-01-02"), float64(leg.days), leg.entryUSD, -leg.entryUSD, now.Add(-time.Hour).Format(time.RFC3339))
+			sc.ID, leg.id, leg.optionType, leg.strike, now.AddDate(0, 0, leg.days).Format("2006-01-02"), float64(leg.days), leg.entryUSD, -leg.entryUSD, now.Add(-time.Hour).Format(time.RFC3339)); err != nil {
+			return "", fmt.Errorf("seed option leg %s: %v", leg.id, err)
+		}
 	}
-	qpExec(t, db, `UPDATE strategies SET cash = ? WHERE id = ?`, qpOptionsSeedCash, sc.ID)
+	if _, err := db.Exec(`UPDATE strategies SET cash = ? WHERE id = ?`, qpOptionsSeedCash, sc.ID); err != nil {
+		return "", fmt.Errorf("seed cash: %v", err)
+	}
+	return qpRunSchedulerProcess(bin, root, env, cfgPath, "Cycle 3 complete", stop, nil)
+}
 
-	out := sched.run(cfg, "Cycle 3 complete", nil)
+func (r *qpOptionsOutageRun) check(t *testing.T) {
+	t.Parallel()
+	<-r.done
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	sc, out := r.sc, r.out
+	db, err := sql.Open("sqlite", r.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
 	firstCycle, _, ok := strings.Cut(out, "Cycle 2 complete")
 	if !ok {
 		t.Fatalf("the process never finished its first cycle:\n%s", out)

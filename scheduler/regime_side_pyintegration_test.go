@@ -471,49 +471,51 @@ func TestRegimeSideCertificationIntegration(t *testing.T) {
 		valid := art("valid.json", func(p string) {
 			rsITWriteArtifact(t, p, map[string]string{"trending_up_clean": "long"}, future)
 		})
-		run := func(cfg, artifact string, args ...string) (int, string) {
-			cmd := exec.Command(bin, args...)
+		start := func(cfg, artifact string, extraEnv ...string) func() (int, string) {
+			cmd := exec.Command(bin, "probe", "--config", cfg)
 			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "GO_TRADER_DIRECTIONAL_CERT_PATH="+artifact, "HYPERLIQUID_SECRET_KEY=0x"+strings.Repeat("1", 64), "GO_TRADER_HL_BATCH=0")
-			out, err := cmd.CombinedOutput()
-			code := 0
-			if ee, ok := err.(*exec.ExitError); ok {
-				code = ee.ExitCode()
-			} else if err != nil {
+			cmd.Env = append(append(os.Environ(), "GO_TRADER_DIRECTIONAL_CERT_PATH="+artifact, "HYPERLIQUID_SECRET_KEY=0x"+strings.Repeat("1", 64), "GO_TRADER_HL_BATCH=0"), extraEnv...)
+			var out bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &out, &out
+			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
-			return code, string(out)
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			return func() (int, string) {
+				err := <-done
+				if ee, ok := err.(*exec.ExitError); ok {
+					return ee.ExitCode(), out.String()
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				return 0, out.String()
+			}
 		}
+		missing := start(cfgPath, filepath.Join(dir, "absent.json"))
+		expiredProbe := start(cfgPath, expired)
+		recovery := start(cfgPath, expired, "GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off")
+		admitted := start(cfgPath, valid)
+		paper := start(paperPath, filepath.Join(dir, "absent.json"))
 		for _, tc := range []struct {
 			name, artifact, reason string
+			wait                   func() (int, string)
 		}{
-			{"missing", filepath.Join(dir, "absent.json"), "is missing"},
-			{"expired", expired, "has an expired cell"},
+			{"missing", filepath.Join(dir, "absent.json"), "is missing", missing},
+			{"expired", expired, "has an expired cell", expiredProbe},
 		} {
-			code, out := run(cfgPath, tc.artifact, "probe", "--config", cfgPath)
+			code, out := tc.wait()
 			if code != 1 || !strings.Contains(out, "strategy[rs-live].regime_side: live admission refused") || !strings.Contains(out, tc.artifact) || !strings.Contains(out, tc.reason) {
 				t.Fatalf("%s: probe must refuse with the artifact path and reason %q, exit=%d\n%s", tc.name, tc.reason, code, out)
 			}
 		}
-		recovery := func(cfg, artifact string) (int, string) {
-			cmd := exec.Command(bin, "probe", "--config", cfg)
-			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "GO_TRADER_DIRECTIONAL_CERT_PATH="+artifact, "HYPERLIQUID_SECRET_KEY=0x"+strings.Repeat("1", 64), "GO_TRADER_HL_BATCH=0", "GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off")
-			out, err := cmd.CombinedOutput()
-			if ee, ok := err.(*exec.ExitError); ok {
-				return ee.ExitCode(), string(out)
-			} else if err != nil {
-				t.Fatal(err)
-			}
-			return 0, string(out)
-		}
-		if code, out := recovery(cfgPath, expired); code != 0 || !strings.Contains(out, "probe: OK") {
+		if code, out := recovery(); code != 0 || !strings.Contains(out, "probe: OK") {
 			t.Fatalf("the update recovery probe must not refuse the restored config on certification evidence, exit=%d\n%s", code, out)
 		}
-		if code, out := run(cfgPath, valid, "probe", "--config", cfgPath); code != 0 || !strings.Contains(out, "probe: OK") {
+		if code, out := admitted(); code != 0 || !strings.Contains(out, "probe: OK") {
 			t.Fatalf("a matching active cell must admit the live config, exit=%d\n%s", code, out)
 		}
-		if code, out := run(paperPath, filepath.Join(dir, "absent.json"), "probe", "--config", paperPath); code != 0 {
+		if code, out := paper(); code != 0 {
 			t.Fatalf("paper needs no certification, exit=%d\n%s", code, out)
 		}
 	})
@@ -688,14 +690,16 @@ func TestRegimeSideConfigAndReloadIntegration(t *testing.T) {
 	root := htfITRoot(t)
 	bin := pyintegrationBinary(t)
 
-	t.Run("ProbeAcceptsAValidPaperConfig", func(t *testing.T) {
-		okPath := rsITWriteConfigFile(t, t.TempDir(), rsITStrategy("rs-ok", "paper", "both", false, nil))
-		cmd := exec.Command(bin, "probe", "--config", okPath)
-		cmd.Dir = root
-		if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "probe: OK") {
-			t.Fatalf("a valid paper regime_side config must pass the probe including the open_side contract: %v\n%s", err, out)
-		}
-	})
+	okPath := rsITWriteConfigFile(t, t.TempDir(), rsITStrategy("rs-ok", "paper", "both", false, nil))
+	probe := exec.Command(bin, "probe", "--config", okPath)
+	probe.Dir = root
+	var probeOut bytes.Buffer
+	probe.Stdout, probe.Stderr = &probeOut, &probeOut
+	if err := probe.Start(); err != nil {
+		t.Fatal(err)
+	}
+	probeDone := make(chan error, 1)
+	go func() { probeDone <- probe.Wait() }()
 
 	t.Run("ReloadAppliesFlatAndRefusesOpen", func(t *testing.T) {
 		t.Chdir(root)
@@ -814,6 +818,12 @@ func TestRegimeSideConfigAndReloadIntegration(t *testing.T) {
 			if sc.RegimeSide {
 				t.Fatalf("init must not enable regime_side on live strategies, got %s", sc.ID)
 			}
+		}
+	})
+
+	t.Run("ProbeAcceptsAValidPaperConfig", func(t *testing.T) {
+		if err := <-probeDone; err != nil || !strings.Contains(probeOut.String(), "probe: OK") {
+			t.Fatalf("a valid paper regime_side config must pass the probe including the open_side contract: %v\n%s", err, probeOut.String())
 		}
 	})
 }
