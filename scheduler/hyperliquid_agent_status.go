@@ -371,9 +371,13 @@ func (o *hlAgentStatusOwner) deliver(n *MultiNotifier, alerts []hlAgentAlert) {
 	}
 	for _, a := range alerts {
 		fmt.Fprintf(os.Stderr, "[hl-agent] %s: %s\n", strings.ToUpper(a.Kind), a.Text)
-		if n != nil && n.HasBackends() {
-			n.SendToAllChannels(a.Text)
+		if n == nil || !n.HasBackends() {
+			continue
+		}
+		if n.HasOwner() {
 			n.SendOwnerDM(a.Text)
+		} else {
+			n.SendToAllChannels(a.Text)
 		}
 	}
 }

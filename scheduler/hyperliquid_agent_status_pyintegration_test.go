@@ -300,9 +300,25 @@ func TestHLAgentStatusCheckAlertsOnceAndNeverOnErrors(t *testing.T) {
 	hlAgentStatus.runCheck(nil, hlAgentCheckTimeout)
 	f.mock.mu.Lock()
 	last := f.mock.dms[len(f.mock.dms)-1].content
+	channelMessages := len(f.mock.messages)
 	f.mock.mu.Unlock()
 	if !strings.Contains(last, "HL API WALLET RECOVERED") {
 		t.Fatalf("a valid check after a missing one sent %q", last)
+	}
+	if channelMessages != 0 {
+		t.Fatalf("with an owner configured, %d alerts went to channels", channelMessages)
+	}
+
+	noOwnerMock := &mockNotifier{}
+	noOwner := NewMultiNotifier(notifierBackend{notifier: noOwnerMock, channels: map[string]string{"hyperliquid": "hl-ch"}})
+	hlAgentStatus = &hlAgentStatusOwner{}
+	f.stub.set("missing", 0)
+	hlAgentStatus.runCheck(noOwner, hlAgentCheckTimeout)
+	noOwnerMock.mu.Lock()
+	fallback, fallbackDMs := len(noOwnerMock.messages), len(noOwnerMock.dms)
+	noOwnerMock.mu.Unlock()
+	if fallback != 1 || fallbackDMs != 0 {
+		t.Fatalf("with no owner configured, channels got %d and DMs %d alerts, want 1 and 0", fallback, fallbackDMs)
 	}
 }
 
