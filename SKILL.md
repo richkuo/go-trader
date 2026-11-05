@@ -225,7 +225,7 @@ Set in systemd overrides or exported environment variables before installation:
 | `ANTHROPIC_API_KEY` | Required only when a strategy opts into `llm_entry_analysis` |
 | `GO_TRADER_GITHUB_TOKEN` | Token for `/go-trader-report-an-issue` (falls back to `GITHUB_TOKEN`) |
 | `BINANCE_API_KEY`, `BINANCE_API_SECRET` | Binance live |
-| `HYPERLIQUID_SECRET_KEY`, `HYPERLIQUID_ACCOUNT_ADDRESS` | Hyperliquid live |
+| `HYPERLIQUID_SECRET_KEY`, `HYPERLIQUID_ACCOUNT_ADDRESS` | Hyperliquid live; an API wallet key has a fixed lifetime (see Hyperliquid API wallet lifetime below) |
 | `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` | TopStep live |
 | `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` | Robinhood live crypto orders; when set, paper Robinhood checks and the options check also log in for authenticated option data (expiry, strikes, premiums, Greeks); options run as paper only and place no order; the login session is kept in `<config folder>/robinhood-session` (see Robinhood session below) |
 | `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE`, `OKX_SANDBOX` | OKX live/demo |
@@ -237,6 +237,19 @@ Set in systemd overrides or exported environment variables before installation:
 | `GO_TRADER_EGRESS_PROXY` | Egress proxy URL (`http`, `https`, `socks5`, `socks5h`; explicit port; optional credentials); a non-empty value turns on egress proxy mode (§ Egress Proxy Mode) |
 | `GO_TRADER_EGRESS_DEPLOYMENT` | Egress deployment name; set by the egress drop-in or `docker/compose.egress.yaml`, not by hand |
 | `GO_TRADER_NOTIFY_GITHUB_REPOS` | Notification broker only: comma-separated repositories it may file issues in (default `richkuo/go-trader`) |
+
+### Hyperliquid API wallet lifetime
+
+A Hyperliquid API wallet (agent wallet) has a fixed lifetime that is set when the operator creates it.
+When it ends, Hyperliquid removes the agent, and every signed action fails with `User or API Wallet <address> does not exist.`: entries, closes, stop-loss placement and updates, and take-profits.
+When at least one strategy is live Hyperliquid and `HYPERLIQUID_SECRET_KEY` is set, the daemon checks the key with `shared_scripts/fetch_hl_agent_status.py` (public info endpoint: `userRole` for the signer, `extraAgents` for its master).
+The check runs once at startup, directly after the startup probe, and then every hour (sooner when `validUntil` is less than an hour away).
+It is read-only and non-fatal: a venue read failure logs a WARN and never exits 78; 24 hours of failed checks send one `HL API WALLET CHECK FAILING` warning, repeated on the alert throttle interval.
+Alerts go to the owner DM and every channel: `HL API WALLET EXPIRES IN N DAYS` at 14 days before `validUntil`, `HL API WALLET EXPIRES SOON` at 3 days, and `HL API WALLET CRITICAL` when the key is expired or unknown to Hyperliquid, or signs for an account other than `HYPERLIQUID_ACCOUNT_ADDRESS`.
+A signed order, stop or take-profit rejected with that venue text sends the same CRITICAL; many strategies failing together send one CRITICAL, repeated on the alert throttle interval, and a later good check sends one `HL API WALLET RECOVERED` line.
+The generic `LIVE ORDER FAILED` alert and every trading, booking and protection decision stay unchanged.
+Replacement: create a new API wallet for the master account on Hyperliquid, set `HYPERLIQUID_SECRET_KEY` to its key (the account address stays the master), then restart go-trader.
+The scheduler never creates, approves or rotates keys, and no alert or log line shows the key.
 
 ### Robinhood session
 
@@ -713,6 +726,10 @@ Never apply a runtime-default change silently when the operator has not been sho
 ### Reference: classification table
 
 When in doubt, treat a commit as a runtime default and prompt. Per-release narrative for every archived entry lives in [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md); regenerate a fresh candidate list from `git log --oneline -50`.
+
+- **Hyperliquid API wallet expiry warnings and CRITICAL (#1983, runtime default, alerts only, no opt-out, no config or schema change, new startup probe).** Before this change an expired Hyperliquid API wallet made every live order and stop fail with only the generic `LIVE ORDER FAILED` alert, and nothing warned before expiry.
+  Now a live Hyperliquid daemon checks the key at startup and hourly, warns 14 and 3 days before `validUntil`, and sends one `HL API WALLET CRITICAL` when Hyperliquid no longer knows the key or a signed action is rejected for it (see Hyperliquid API wallet lifetime). The check never exits 78.
+  Operator action: none, unless a warning or CRITICAL arrives; then create a new API wallet, set `HYPERLIQUID_SECRET_KEY`, and restart. Deploy Go and Python together with `bash scripts/update.sh --restart` (a live Hyperliquid config now probes `fetch_hl_agent_status.py --probe-only`, and a stale Python tree exits 78).
 
 - **Discord slash commands sync by name and the update restarts the notification broker (#1982, runtime default, no opt-out, no config change, operator action required).** Before this change one 33-character command name made Discord reject the whole bulk overwrite, so no go-trader command registered, and a global bulk overwrite deleted the commands of any other program that shares the bot token.
   Now `/go-trader-resolve-robinhood-order` is `/go-trader-resolve-rh-order`, and registration creates, edits or deletes only `go-trader-` commands at startup and every minute after (§ Discord Slash Commands). On a broker-mode host the update restarts `go-trader-notify@<name>.service` after the controller switch.
@@ -3027,6 +3044,7 @@ Ship Go and Python from one commit with `bash scripts/update.sh --restart`.
 
 - `version_probe.go`/`probe_cmd.go`/`exit_codes.go`: every unique check script runs with `--probe-only` at startup; `probeFailureScriptMissing` detects `"can't open file"`; a failure logs, DMs the owner, and exits 78 (`EX_CONFIG`).
 - `trade_diagnostics*.go`: eager insert in `recordClosedPosition`; MFE/MAE computed async outside `mu`.
+- `hyperliquid_agent_status.go`: sole owner of the Hyperliquid API wallet alerts (see Hyperliquid API wallet lifetime): one in-memory state behind its own mutex, never `mu`; inputs are the startup and hourly checks (`runPythonWithTimeout`, read-only), `observeHLAgentScriptOutput` right after each signed HL runner (`executor.go`, `manual_limit.go`), and `notifyLiveExecFailure` for `platform: hyperliquid`; only a check that started after the last rejection clears the CRITICAL.
 - `agent_info.go`: read-only dump.
 - `logger.go`: `log_level` gate. A new per-cycle or per-check line uses `logger.Debug`/`logDebugf` or an on-change form (`InfoOnChange`, `logOnChangef`, keyed on a stable state value, never on a price or balance); errors, warnings, trades and non-HOLD signals stay unconditional. Event-driven protection sync lines (after a trade, a limit fill, a failed-close re-arm) stay `logger.Info`.
 - `failure_alerts.go`/`script_failure_alerts.go`: primary alert at 3 strikes; transient 429/5xx/timeout stays WARN until 15 strikes or 75 minutes.
@@ -3050,6 +3068,7 @@ Ship Go and Python from one commit with `bash scripts/update.sh --restart`.
   Numeric `indicators` are rounded to six decimals except `eom_`, `mfi_`, `ama_`, `erp_`, `stc_`, `trix_`, `cpr_`, `mir_`, `smi_`, `cce_`, `efp_`, `tsi_` and `klinger_` columns (`FULL_PRECISION_INDICATOR_PREFIXES`), which keep full float precision so a `money_flow_index_reversal`, `ease_of_movement_breakout`, `adaptive_moving_average`, `elder_ray_pullback`, `schaff_trend_cycle`, `trix_momentum`, `camarilla_pivot_reversal`, `mass_index_reversal`, `stochastic_momentum_index`, `calendar_conditioned_entry`, `elder_force_pullback`, `true_strength_index` or `klinger_divergence` entry reproduces from the check output (#1658, #1671, #1641, #1648, #1651, #1659, #1669, #1670, #1663, #1653, #1668, #1667, #1662); text columns in `TEXT_INDICATOR_COLUMNS` go to `indicator_labels`.
   Check-time frames carry a `decision_time` attribute (closed-bar cutoff and boundary, empty when untimed) and `_make_dataframe` records out-of-order received timestamps in `received_order_defect_ms` before sorting; only `schaff_trend_cycle`, `camarilla_pivot_reversal`, `stochastic_momentum_index`, `calendar_conditioned_entry` and `klinger_divergence` read them (`mass_index_reversal`, `elder_force_pullback` and `true_strength_index` read `received_order_defect_ms` only), and historical frames carry neither.
   Reference preflight receives the timeframe: a fixed-interval cadence (`expected_interval_ms`, explicit or default) that disagrees with it is refused before any candle fetch, and a batch whose every slot fails preflight returns per-slot refusals without building shared state (#1669).
+- `fetch_hl_agent_status.py` reports API wallet facts only (signer, master, role, `valid_until_ms`); Go classifies them. It uses the adapter's `hyperliquid_signer`, `hyperliquid_base_url` and `hyperliquid_info_api` helpers (bounded HTTP timeout, no meta fetch), never prints a traceback, and redacts the key from every error.
 - HL adapter caches in `/tmp`, lazy `_ensure_exchange`, sparse indices via `_normalize_spot_meta`. The SDK's `asset_to_sz_decimals` keys by integer asset index; resolve via `name_to_asset(symbol)` (fallback `coin_to_asset`); a direct symbol lookup is a legacy test-mock-only fallback.
 - `shared_tools/atr.py` shims `shared_strategies/open/indicators_core.py`; `atr_method` resolves via `resolveATRMethod`. `indicators_core.py` holds ATR/RSI, the per-endpoint `fixed_length_ema` (exactly L values, restarted at each bar's own seed; #1668), plus `hurst_exponent` (DFA, live SSoT) and research-only `hurst_rescaled_range`. Options strategies live in `options/strategies.py`.
 - Strategy DSL: config params sit under runtime; `HTFFilter` is not available on options or `delta_neutral_funding`. `no_edge` holds 70 names (`edge_status.go` `noEdgeStrategies` mirrors the Python registry; `scripts/test_go_python_registry_parity.py` checks it with platforms, short names and native close names); admission is `noEdgeAdmissionErrors`, warnings `noEdgeStartupWarnings`. `productionRefusedStrategies` (`production_refusal.go`, mirrored by registry `production_refused=True` and checked by the parity script) marks research names; `researchAdmissionErrors` (`research_admission.go`) admits them only in explicit paper on the Hyperliquid perps sealed-feed route in every loader before the market-feed check, and paper-to-live refuses them at confirmation and again on the current disk config inside `mutateConfigRoot`; Python `admit_strategy_references` applies the same mode, route and same-name close rules before the no-edge gate, in solo and batch checks.

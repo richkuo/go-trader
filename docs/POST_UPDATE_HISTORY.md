@@ -2,6 +2,19 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 1983: Hyperliquid API wallet expiry warnings and CRITICAL
+
+Runtime default with new alerts only; there is no opt-out, no config change and no schema change.
+Before this change an expired Hyperliquid API wallet made every signed action fail with `User or API Wallet <address> does not exist.`, and the only alert was the generic `LIVE ORDER FAILED` message per strategy, symbol and direction, with no cause, effect or fix.
+Now, when a strategy is live Hyperliquid and `HYPERLIQUID_SECRET_KEY` is set, the daemon runs `shared_scripts/fetch_hl_agent_status.py` once at startup (synchronously, 20 s bound, after the startup probe) and then every hour in its own goroutine.
+The script reads `userRole` for the signer and `extraAgents` for the master the venue names; Go classifies the result: valid, valid with no listed lifetime, the master key itself, missing, wrong master, expired, or check error.
+Warnings go out at 14 and 3 days before `validUntil`, once per signer, `validUntil` and threshold while the process runs; a restart can resend the current threshold once.
+Missing, wrong master and expired send one `HL API WALLET CRITICAL`, repeated on the alert throttle interval while the state stays bad; a later good check that started after the last rejection sends one recovery line.
+Each signed Hyperliquid runner and `notifyLiveExecFailure` (Hyperliquid only) feed the venue rejection text into the same state, so many strategies that fail in one cycle send one CRITICAL in total; command-line processes print the CRITICAL to stderr only.
+A failed venue read never sends a CRITICAL and never exits; 24 hours of failed checks send one `HL API WALLET CHECK FAILING` warning.
+The startup probe now also runs `fetch_hl_agent_status.py --probe-only` for a live Hyperliquid config (no network, no secret read), so a stale Python tree exits 78.
+Operator action: none until an alert arrives; then create a new API wallet for the master account, set `HYPERLIQUID_SECRET_KEY`, and restart. Deploy Go and Python together with `bash scripts/update.sh --restart`.
+
 ### Issue 1979: updates skip or refuse a deployment whose restart cannot succeed
 
 Update tooling change in `scripts/update.sh` and `scripts/update_helpers.sh`; there is no opt-out, no config change and no schema change.
