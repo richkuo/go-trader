@@ -13,8 +13,6 @@ import (
 )
 
 const (
-	hlAgentWarnLead           = 14 * 24 * time.Hour
-	hlAgentUrgentLead         = 3 * 24 * time.Hour
 	hlAgentCheckInterval      = time.Hour
 	hlAgentCheckTimeout       = 20 * time.Second
 	hlAgentStaleAfter         = 24 * time.Hour
@@ -31,6 +29,18 @@ const (
 	hlAgentAlertRecovered = "recovered"
 	hlAgentAlertStale     = "stale"
 )
+
+type hlAgentExpiryThreshold struct {
+	lead time.Duration
+	kind string
+}
+
+var hlAgentExpiryThresholds = []hlAgentExpiryThreshold{
+	{lead: 14 * 24 * time.Hour, kind: hlAgentAlertWarn},
+	{lead: 7 * 24 * time.Hour, kind: hlAgentAlertWarn},
+	{lead: 3 * 24 * time.Hour, kind: hlAgentAlertUrgent},
+	{lead: 24 * time.Hour, kind: hlAgentAlertUrgent},
+}
 
 type hlAgentState string
 
@@ -215,12 +225,15 @@ func hlAgentRejectionCriticalText(excerpt string) string {
 	return fmt.Sprintf("**HL API WALLET CRITICAL** Hyperliquid rejected a signed action: \"%s\" The API wallet in HYPERLIQUID_SECRET_KEY expired, was removed, or was never approved. %s %s", excerpt, hlAgentEffectLine, hlAgentFixLine)
 }
 
-func hlAgentWarningText(kind string, r hlAgentReport, now time.Time) string {
+func hlAgentWarningText(r hlAgentReport, now time.Time) string {
 	until := time.UnixMilli(r.ValidUntilMs)
 	remaining := until.Sub(now)
-	head := "**HL API WALLET EXPIRES SOON**"
-	if kind == hlAgentAlertWarn {
-		head = fmt.Sprintf("**HL API WALLET EXPIRES IN %d DAYS**", int(remaining/(24*time.Hour)))
+	head := "**HL API WALLET EXPIRES IN UNDER 1 DAY**"
+	switch days := int(remaining / (24 * time.Hour)); {
+	case days == 1:
+		head = "**HL API WALLET EXPIRES IN 1 DAY**"
+	case days > 1:
+		head = fmt.Sprintf("**HL API WALLET EXPIRES IN %d DAYS**", days)
 	}
 	return fmt.Sprintf("%s The API wallet %s for account `%s` expires at %s (%s left). After that, every live Hyperliquid order, stop-loss and take-profit fails. Before then, create a new API wallet for the account on Hyperliquid, set HYPERLIQUID_SECRET_KEY to its key, and restart go-trader.", head, hlAgentWalletLabel(r), r.MasterAddress, until.UTC().Format("2006-01-02 15:04 UTC"), formatHLAgentRemaining(remaining))
 }
@@ -287,22 +300,24 @@ func (o *hlAgentStatusOwner) thresholdAlertsLocked(r hlAgentReport, now time.Tim
 	}
 	prefix := fmt.Sprintf("%s|%d|", strings.ToLower(r.SignerAddress), r.ValidUntilMs)
 	remaining := time.UnixMilli(r.ValidUntilMs).Sub(now)
-	switch {
-	case remaining <= hlAgentUrgentLead:
-		if o.sentThresholds[prefix+hlAgentAlertUrgent] {
-			return nil
+	reached := -1
+	for i, th := range hlAgentExpiryThresholds {
+		if remaining <= th.lead {
+			reached = i
 		}
-		o.sentThresholds[prefix+hlAgentAlertUrgent] = true
-		o.sentThresholds[prefix+hlAgentAlertWarn] = true
-		return []hlAgentAlert{{Kind: hlAgentAlertUrgent, Text: hlAgentWarningText(hlAgentAlertUrgent, r, now)}}
-	case remaining <= hlAgentWarnLead:
-		if o.sentThresholds[prefix+hlAgentAlertWarn] {
-			return nil
-		}
-		o.sentThresholds[prefix+hlAgentAlertWarn] = true
-		return []hlAgentAlert{{Kind: hlAgentAlertWarn, Text: hlAgentWarningText(hlAgentAlertWarn, r, now)}}
 	}
-	return nil
+	if reached < 0 {
+		return nil
+	}
+	th := hlAgentExpiryThresholds[reached]
+	key := prefix + th.lead.String()
+	if o.sentThresholds[key] {
+		return nil
+	}
+	for _, earlier := range hlAgentExpiryThresholds[:reached+1] {
+		o.sentThresholds[prefix+earlier.lead.String()] = true
+	}
+	return []hlAgentAlert{{Kind: th.kind, Text: hlAgentWarningText(r, now)}}
 }
 
 func (o *hlAgentStatusOwner) applyCheckError(detail string, now time.Time) []hlAgentAlert {

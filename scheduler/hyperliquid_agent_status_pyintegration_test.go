@@ -321,8 +321,20 @@ func TestHLAgentStatusExpiryThresholdsAndThrottle(t *testing.T) {
 	requireKinds(t, "20 days left", o.applyReport(r, at(20*day), at(20*day)))
 	requireKinds(t, "13 days left", o.applyReport(r, at(13*day), at(13*day)), hlAgentAlertWarn)
 	requireKinds(t, "13 days left again", o.applyReport(r, at(13*day-time.Hour), at(13*day-time.Hour)))
+	sevenDay := o.applyReport(r, at(6*day+12*time.Hour), at(6*day+12*time.Hour))
+	requireKinds(t, "6.5 days left", sevenDay, hlAgentAlertWarn)
+	if !strings.HasPrefix(sevenDay[0].Text, "**HL API WALLET EXPIRES IN 6 DAYS**") {
+		t.Fatalf("the 7-day warning is %q", sevenDay[0].Text)
+	}
+	requireKinds(t, "6 days left", o.applyReport(r, at(6*day), at(6*day)))
 	requireKinds(t, "2 days left", o.applyReport(r, at(2*day), at(2*day)), hlAgentAlertUrgent)
-	requireKinds(t, "2 days left again", o.applyReport(r, at(day), at(day)))
+	requireKinds(t, "2 days left again", o.applyReport(r, at(2*day-time.Hour), at(2*day-time.Hour)))
+	oneDay := o.applyReport(r, at(20*time.Hour), at(20*time.Hour))
+	requireKinds(t, "20 hours left", oneDay, hlAgentAlertUrgent)
+	if !strings.HasPrefix(oneDay[0].Text, "**HL API WALLET EXPIRES IN UNDER 1 DAY**") {
+		t.Fatalf("the 1-day warning is %q", oneDay[0].Text)
+	}
+	requireKinds(t, "1 hour left", o.applyReport(r, at(time.Hour), at(time.Hour)))
 	if d := o.nextCheckDelay(base.Add(-10 * time.Minute)); d != 10*time.Minute+hlAgentExpiryRecheckDelay {
 		t.Fatalf("the check before expiry waits %s", d)
 	}
@@ -346,7 +358,8 @@ func TestHLAgentStatusExpiryThresholdsAndThrottle(t *testing.T) {
 
 	fresh := &hlAgentStatusOwner{}
 	requireKinds(t, "first observation 2 days out", fresh.applyReport(r, at(2*day), at(2*day)), hlAgentAlertUrgent)
-	requireKinds(t, "then 1 day out", fresh.applyReport(r, at(day), at(day)))
+	requireKinds(t, "then 2 days out again", fresh.applyReport(r, at(2*day-time.Hour), at(2*day-time.Hour)))
+	requireKinds(t, "then 1 day out", fresh.applyReport(r, at(day), at(day)), hlAgentAlertUrgent)
 }
 
 func TestHLAgentStatusRecoveryWaitsForACheckAfterTheRejection(t *testing.T) {
