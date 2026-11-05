@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const removeStrategyHistoryNote = "Removal is refused while it holds an open position or option leg; its trade history stays in the state DB."
+const removeStrategyHistoryNote = "Removal is refused unless the strategy is paused and holds no position, option leg or queued action; its trade history stays in the state DB."
 
 func (ss *StatusServer) strategyPositionSymbols(id string) ([]string, *StrategyState, error) {
 	if ss == nil || ss.state == nil || ss.mu == nil {
@@ -58,15 +58,57 @@ func (ss *StatusServer) removeStrategyRefusal(id string) string {
 	if err != nil {
 		return err.Error()
 	}
-	if len(syms) == 0 {
+	if len(syms) > 0 {
+		advice := "The running daemon does not list it in its roster; restart so it loads the strategy, then close them first."
+		if ok {
+			advice = removeStrategyCloseAdvice(sc, view)
+		}
+		return fmt.Sprintf("strategy %q still holds open position or option-leg rows (%s); removing it now would let the next restart delete them with no close trade. %s",
+			id, strings.Join(syms, ", "), advice)
+	}
+	if !ok {
 		return ""
 	}
-	advice := "The running daemon does not list it in its roster; restart so it loads the strategy, then close them first."
-	if ok {
-		advice = removeStrategyCloseAdvice(sc, view)
+	if !sc.Paused {
+		return fmt.Sprintf("strategy %q is not paused in the running daemon, so a cycle can still open a position after this check and the restart would then delete it with no close trade. Pause it first (dashboard pause toggle or `/go-trader-config set strategies.%s.paused true`), wait for the reload, then remove it.", id, id)
 	}
-	return fmt.Sprintf("strategy %q still holds open position or option-leg rows (%s); removing it now would let the next restart delete them with no close trade. %s",
-		id, strings.Join(syms, ", "), advice)
+	if src := replayMirrorSourceID(sc); src != "" {
+		return fmt.Sprintf("strategy %q is a replay mirror of %s, and pause does not hold replayed opens. Turn off its replay_sharing while it is flat, wait for the reload, then remove it.", id, src)
+	}
+	if reason := ss.removeStrategyQueuedRowRefusal(id); reason != "" {
+		return reason
+	}
+	return ""
+}
+
+func (ss *StatusServer) removeStrategyQueuedRowRefusal(id string) string {
+	if ss.stateDB == nil {
+		return "state store unavailable; cannot prove the strategy has no queued action"
+	}
+	actions, err := ss.stateDB.LoadPendingManualActions()
+	if err != nil {
+		return fmt.Sprintf("could not read queued manual actions (%v); cannot prove the strategy has no queued action", err)
+	}
+	var queued []string
+	for _, a := range actions {
+		if a.StrategyID == id {
+			queued = append(queued, fmt.Sprintf("manual %s %s", a.Action, a.Symbol))
+		}
+	}
+	orders, err := ss.stateDB.LoadPendingLimitOrders()
+	if err != nil {
+		return fmt.Sprintf("could not read resting limit orders (%v); cannot prove the strategy has no queued action", err)
+	}
+	for _, o := range orders {
+		if o.StrategyID == id {
+			queued = append(queued, fmt.Sprintf("resting limit %s %s", o.Side, o.Symbol))
+		}
+	}
+	if len(queued) == 0 {
+		return ""
+	}
+	sort.Strings(queued)
+	return fmt.Sprintf("strategy %q has queued rows that can still open a position (%s); let them apply or cancel them, then remove it.", id, strings.Join(queued, ", "))
 }
 
 func (ss *StatusServer) removeStrategyGuarded(id string) error {

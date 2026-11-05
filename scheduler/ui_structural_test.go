@@ -65,6 +65,17 @@ func newStructuralTestServer(t *testing.T) (*StatusServer, string, *atomic.Int32
 	return ss, path, restarts
 }
 
+func pauseRoster(t *testing.T, ss *StatusServer) {
+	t.Helper()
+	ss.strategiesMu.Lock()
+	for i := range ss.strategies {
+		ss.strategies[i].Paused = true
+	}
+	roster := append([]StrategyConfig(nil), ss.strategies...)
+	ss.strategiesMu.Unlock()
+	ss.stateDB = openEntryTestEnv(t, newEntryTestConfig(t, roster...)).store
+}
+
 func structuralConfirm(t *testing.T, ss *StatusServer, action, strategyID, params string) uiConfirmResponse {
 	t.Helper()
 	body := fmt.Sprintf(`{"action":%q,"strategy_id":%q,"params":%s}`, action, strategyID, params)
@@ -275,6 +286,7 @@ func TestUIAddStrategy(t *testing.T) {
 func TestUIRemoveStrategy(t *testing.T) {
 	t.Run("UIRemoveStrategyEndToEnd", func(t *testing.T) {
 		ss, path, restarts := newStructuralTestServer(t)
+		pauseRoster(t, ss)
 		confirm := structuralConfirm(t, ss, "remove-strategy", "sma-btc", `{}`)
 		if confirm.ConfirmPhrase != "sma-btc" {
 			t.Fatalf("confirm phrase = %q, want sma-btc", confirm.ConfirmPhrase)
@@ -309,6 +321,7 @@ func TestUIRemoveStrategy(t *testing.T) {
 	})
 	t.Run("UIRemoveStrategyExecuteRefusesOnlyStrategyAfterConcurrentPrune", func(t *testing.T) {
 		ss, path, _ := newStructuralTestServer(t)
+		pauseRoster(t, ss)
 		confirm := structuralConfirm(t, ss, "remove-strategy", "hl-momentum-eth", `{}`)
 		if err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
 			return removeStrategyFromRoot(root, "sma-btc")

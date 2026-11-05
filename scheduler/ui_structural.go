@@ -346,9 +346,6 @@ func (ss *StatusServer) handleAPIStrategyStructural(w http.ResponseWriter, r *ht
 	case "remove-strategy":
 		err = ss.removeStrategyGuarded(id)
 		msg = fmt.Sprintf("Removed strategy %s. %s", id, removeStrategyHistoryNote)
-		if !p.Restart {
-			msg += " Pause it until the restart, or it keeps trading and can open a position the next restart would then delete."
-		}
 	case "paper-to-live":
 		msg, err = ss.executePaperToLive(id)
 	case "apply-regime-gate":

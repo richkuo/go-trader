@@ -680,8 +680,8 @@ func pcRemoveFixture(t *testing.T) (*pcFixture, string) {
 		PaperDBFile:     filepath.Join(dir, "paper.db"),
 		IntervalSeconds: 600,
 		Strategies: []StrategyConfig{
-			{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}, Capital: 1000},
-			{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h", "--mode=paper"}, Capital: 100, Leverage: 1},
+			{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}, Capital: 1000, Paused: true},
+			{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h", "--mode=paper"}, Capital: 100, Leverage: 1, Paused: true},
 		},
 	}
 	f := newPCFixture(t, cfg)
@@ -694,6 +694,92 @@ func pcRemoveFixture(t *testing.T) (*pcFixture, string) {
 	f.env.saveAll()
 	f.setMark("BTC/USDT", 51000)
 	return f, path
+}
+
+func (f *pcFixture) setRoster(id string, edit func(*StrategyConfig)) {
+	f.ss.strategiesMu.Lock()
+	defer f.ss.strategiesMu.Unlock()
+	for i := range f.ss.strategies {
+		if f.ss.strategies[i].ID == id {
+			edit(&f.ss.strategies[i])
+		}
+	}
+}
+
+func TestRemoveStrategyRequiresPausedFlatAndUnqueued(t *testing.T) {
+	t.Run("an unpaused flat paper HL perps strategy is refused on Discord before any prompt", func(t *testing.T) {
+		f, path := pcRemoveFixture(t)
+		f.setRoster("hl-momentum-eth", func(sc *StrategyConfig) { sc.Paused = false })
+		raw, _ := os.ReadFile(path)
+		prompts := f.promptCount()
+		msg := f.run("remove-strategy", pcOwner, "", pcOpts("id", "hl-momentum-eth"), "", nil)
+		if !strings.Contains(msg, "Refused") || !strings.Contains(msg, "not paused") || !strings.Contains(msg, "strategies.hl-momentum-eth.paused true") {
+			t.Fatalf("an unpaused remove must refuse and name the pause step: %q", msg)
+		}
+		if f.promptCount() != prompts || f.restarts.Load() != 0 {
+			t.Fatal("a refused remove must send no prompt and start no restart")
+		}
+		if now, _ := os.ReadFile(path); string(now) != string(raw) {
+			t.Fatal("a refused remove must leave the config bytes unchanged")
+		}
+	})
+
+	t.Run("dashboard refuses an unpaused flat paper spot strategy at preview and at apply", func(t *testing.T) {
+		f, path := pcRemoveFixture(t)
+		f.env.mu.Lock()
+		delete(f.env.strat("sma-btc").Positions, "BTC/USDT")
+		f.env.mu.Unlock()
+		f.setRoster("sma-btc", func(sc *StrategyConfig) { sc.Paused = false })
+		w := mutationPost(f.ss, f.ss.handleAPIConfirm, "/api/confirm", `{"action":"remove-strategy","strategy_id":"sma-btc","params":{"restart":false}}`, nil)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "not paused") {
+			t.Fatalf("preview of an unpaused remove must refuse: %d %s", w.Code, w.Body.String())
+		}
+		f.setRoster("sma-btc", func(sc *StrategyConfig) { sc.Paused = true })
+		c := structuralConfirm(t, f.ss, "remove-strategy", "sma-btc", `{"restart":false}`)
+		f.setRoster("sma-btc", func(sc *StrategyConfig) { sc.Paused = false })
+		raw, _ := os.ReadFile(path)
+		h := func(w http.ResponseWriter, r *http.Request) {
+			f.ss.handleAPIStrategyStructural(w, r, "sma-btc", "remove-strategy")
+		}
+		w = mutationPost(f.ss, h, "/api/strategies/sma-btc/remove-strategy", fmt.Sprintf(`{"nonce":%q,"params":{"restart":false}}`, c.Nonce), nil)
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "not paused") {
+			t.Fatalf("apply after a resume must refuse: %d %s", w.Code, w.Body.String())
+		}
+		if now, _ := os.ReadFile(path); string(now) != string(raw) {
+			t.Fatal("the refused apply must leave the config bytes unchanged")
+		}
+	})
+
+	t.Run("a paused replay mirror is refused because pause does not hold replayed opens", func(t *testing.T) {
+		f, path := pcRemoveFixture(t)
+		f.setRoster("hl-momentum-eth", func(sc *StrategyConfig) {
+			sc.ReplaySharing = ReplaySharingLiveMirror
+			sc.ReplaySourceID = "hl-live-src"
+		})
+		raw, _ := os.ReadFile(path)
+		msg := f.run("remove-strategy", pcOwner, "", pcOpts("id", "hl-momentum-eth"), "", nil)
+		if !strings.Contains(msg, "replay mirror of hl-live-src") {
+			t.Fatalf("a replay mirror remove must refuse: %q", msg)
+		}
+		if now, _ := os.ReadFile(path); string(now) != string(raw) {
+			t.Fatal("a refused remove must leave the config bytes unchanged")
+		}
+	})
+
+	t.Run("a queued manual action is refused because it can still open a position", func(t *testing.T) {
+		f, path := pcRemoveFixture(t)
+		if err := f.env.store.InsertPendingManualAction(PendingManualAction{StrategyID: "hl-momentum-eth", Action: "open", Symbol: "ETH", Side: "buy", Quantity: 0.1}); err != nil {
+			t.Fatalf("queue manual action: %v", err)
+		}
+		raw, _ := os.ReadFile(path)
+		msg := f.run("remove-strategy", pcOwner, "", pcOpts("id", "hl-momentum-eth"), "", nil)
+		if !strings.Contains(msg, "queued rows") || !strings.Contains(msg, "manual open ETH") {
+			t.Fatalf("a remove with a queued open must refuse: %q", msg)
+		}
+		if now, _ := os.ReadFile(path); string(now) != string(raw) {
+			t.Fatal("a refused remove must leave the config bytes unchanged")
+		}
+	})
 }
 
 func TestRemoveStrategyGuardIntegration(t *testing.T) {
