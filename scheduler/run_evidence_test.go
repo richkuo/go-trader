@@ -1,6 +1,9 @@
 package main
 
 import (
+	"io"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,6 +66,33 @@ func TestRunEvidenceKillSwitchHold(t *testing.T) {
 		due, _, _ := computeDueSet(now.Add(time.Second), cfg, intervals, map[string]time.Time{}, nil, false, nil)
 		if len(due) != 1 || due[0].ID != sc.ID {
 			t.Fatalf("latched strategy was not due on the next tick: %+v", due)
+		}
+	})
+	t.Run("MigrateFixtureEnvKeepsPaperKillSwitchLatched", func(t *testing.T) {
+		t.Setenv("GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH", "1")
+		part := paperSourcePartition("btc")
+		prs := &PortfolioRiskState{KillSwitchActive: true, KillSwitchCloseApplied: true}
+		st := &AppState{PortfolioRisk: map[RiskPartition]*PortfolioRiskState{part: prs}}
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := os.Stdout
+		os.Stdout = w
+		applyPaperKillSwitchCycle(st, &Config{}, nil, &scopeCycleRisk{
+			Partition: part, KillSwitchFired: true, TotalPV: 100, PeakRebaselineAvailable: true,
+		}, false)
+		w.Close()
+		os.Stdout = old
+		logged, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !prs.KillSwitchActive {
+			t.Fatal("fixture env cleared the paper kill switch")
+		}
+		if !strings.Contains(string(logged), "GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH=1") {
+			t.Fatalf("log = %q", logged)
 		}
 	})
 	t.Run("PaperKillSwitchAutoResetsWithoutFixtureEnv", func(t *testing.T) {

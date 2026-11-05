@@ -233,6 +233,40 @@ func TestRobinhoodLiveOrderSizedSell(t *testing.T) {
 			})
 		}
 	})
+	t.Run("SellRefusalsSendNothingAndBookNothing", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			routes rhRoutes
+		}{
+			{"holdings_http_500", rhSizedSellRoutes(rhRoutes{"GET " + rhTestHoldings: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}}, "0.5")},
+			{"coin_absent", rhSizedSellRoutes(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("ETH", "1", "1"))}}, "0.5")},
+			{"below_minimum", rhSizedSellRoutes(rhSellHolding("0.0005", "0.0005"), "0.0005", rhPairRules("0.001", "0.00000001"))},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+				clearLiveExecThrottle(e.sc("rh-btc"), directionClose, "BTC")
+				e.setPosition("rh-btc", "BTC", 0.5, 90)
+				e.setRoutes(tc.routes)
+				if trades, _ := e.signal("rh-btc", -1, 0, 99); trades != 0 {
+					t.Fatalf("trades = %d, want 0", trades)
+				}
+				if posts := e.orderPosts(); len(posts) != 0 {
+					t.Fatalf("a refused sell sent %d order(s)", len(posts))
+				}
+				if row := e.onlyAttempt(); row.Status != robinhoodAttemptNoFill {
+					t.Fatalf("attempt = %+v, want no_fill", row)
+				}
+				if e.failedAlerts() == 0 {
+					t.Fatal("a refused sell must send the live-order-failed alert")
+				}
+				s := e.state.Strategies["rh-btc"]
+				if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.5 || s.Cash != 1000 || len(e.dbTrades("rh-btc")) != 0 {
+					t.Fatalf("book changed: position=%+v cash=%v", pos, s.Cash)
+				}
+			})
+		}
+	})
 	t.Run("SellResultWithoutSentQuantityHolds", func(t *testing.T) {
 		cases := []struct {
 			name     string
@@ -240,7 +274,10 @@ func TestRobinhoodLiveOrderSizedSell(t *testing.T) {
 			keptSent float64
 		}{
 			{"no_sizing", rhFixtureSell(0.5, 0.5, ""), 0},
+			{"asked_differs_from_the_book", rhFixtureSell(0.4, 0.4, rhSizingJSON(0.4, 0.4, 0.4, false)), 0},
+			{"sent_above_the_ask_without_a_sweep", rhFixtureSell(0.5, 0.6, rhSizingJSON(0.5, 0.6, 0.6, false)), 0},
 			{"fill_above_the_sent", rhFixtureSell(0.5, 0.4, rhSizingJSON(0.5, 0.4, 0.4, false)), 0.4},
+			{"sent_differs_from_requested_quantity", rhFixtureSell(0.4, 0.4, rhSizingJSON(0.5, 0.5, 0.5, false)), 0},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
