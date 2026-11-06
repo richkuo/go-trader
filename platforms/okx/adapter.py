@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import ccxt
 import egress_policy
 import option_data
+from ohlcv_range import page_ccxt_ohlcv
 
 
 def _bill_float(value) -> float:
@@ -210,6 +211,16 @@ class OKXExchangeAdapter:
             return candles
         except Exception:
             return []
+
+    RANGE_PAGE_LIMIT = 100
+
+    def get_ohlcv_range(self, symbol: str, interval: str, start_ms: int, end_ms: int, inst_type: str = "spot") -> dict:
+        if inst_type not in ("spot", "swap"):
+            raise ValueError(f"OKX candle range instrument type {inst_type!r} is not spot or swap")
+        pair = f"{symbol}/USDT:USDT" if inst_type == "swap" else f"{symbol}/USDT"
+        out = page_ccxt_ohlcv(self._exchange, pair, interval, start_ms, end_ms, page_limit=self.RANGE_PAGE_LIMIT)
+        out["instrument"] = pair
+        return out
 
     def get_funding_rate(self, symbol: str) -> float:
         try:

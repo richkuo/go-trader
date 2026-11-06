@@ -19,7 +19,7 @@ import (
 
 const captureMaxAttempts = 3
 
-var captureDigestTables = []string{"trades", "wallet_transfers", "trade_diagnostics"}
+var captureDigestTables = []string{"trades", "wallet_transfers", "trade_diagnostics", "trade_feedback"}
 
 type captureDigest struct {
 	Sum        string
