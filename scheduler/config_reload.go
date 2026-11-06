@@ -410,7 +410,8 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	cfg.SummaryFrequency = cloneStringMap(next.SummaryFrequency)
 
 	if !reflect.DeepEqual(cfg.TradeFeedbackAnalysis, next.TradeFeedbackAnalysis) {
-		addChange("trade_feedback_analysis: %s -> %s (applies to analyses admitted after this reload)", cfg.tradeFeedbackAnalysisSettings(), next.tradeFeedbackAnalysisSettings())
+		addChange("trade_feedback_analysis: %s %s -> %s %s (applies to analyses admitted after this reload)", cfg.tradeFeedbackAnalysisSettings(), cfg.tradeFeedbackAPISettings(),
+			next.tradeFeedbackAnalysisSettings(), next.tradeFeedbackAPISettings())
 	}
 	cfg.TradeFeedbackAnalysis = next.TradeFeedbackAnalysis.clone()
 

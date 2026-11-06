@@ -306,7 +306,7 @@ func startTradeFeedbackAnalysis(server *StatusServer, store *StateStore, statusT
 		return nil
 	}
 	if server.feedbackAnalysisAdapters == nil {
-		server.feedbackAnalysisAdapters = tradeFeedbackProductionAdapters()
+		server.feedbackAnalysisAdapters = tradeFeedbackProductionAdapters(server)
 	}
 	if store == nil {
 		server.feedbackAnalysisDown = "the state store is unavailable"

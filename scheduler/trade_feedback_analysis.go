@@ -48,8 +48,10 @@ const (
 var tradeFeedbackKnownProviders = []string{tradeFeedbackProviderAPI, tradeFeedbackProviderLocal}
 
 type TradeFeedbackAnalysisConfig struct {
-	TimeoutS     *int `json:"timeout_s,omitempty"`
-	MaxPositions *int `json:"max_positions,omitempty"`
+	TimeoutS     *int    `json:"timeout_s,omitempty"`
+	MaxPositions *int    `json:"max_positions,omitempty"`
+	APIModel     *string `json:"api_model,omitempty"`
+	APIEffort    *string `json:"api_effort,omitempty"`
 }
 
 func (c *TradeFeedbackAnalysisConfig) clone() *TradeFeedbackAnalysisConfig {
@@ -64,6 +66,14 @@ func (c *TradeFeedbackAnalysisConfig) clone() *TradeFeedbackAnalysisConfig {
 	if c.MaxPositions != nil {
 		v := *c.MaxPositions
 		out.MaxPositions = &v
+	}
+	if c.APIModel != nil {
+		v := *c.APIModel
+		out.APIModel = &v
+	}
+	if c.APIEffort != nil {
+		v := *c.APIEffort
+		out.APIEffort = &v
 	}
 	return out
 }
@@ -388,6 +398,7 @@ type tradeFeedbackBundleInputs struct {
 	strategy tradeFeedbackBundleStrategy
 	meta     tradeFeedbackStrategyMeta
 	settings tradeFeedbackAnalysisSettings
+	api      tradeFeedbackAPISettings
 }
 
 type tradeFeedbackBundleBuild struct {
@@ -451,8 +462,9 @@ func (ss *StatusServer) loadTradeFeedbackBundleInputs(ctx context.Context, id st
 	if err != nil {
 		return nil, reviewErr(http.StatusBadGateway, "load strategy metadata: %s", tradeFeedbackRedact(err.Error(), ss.statusToken))
 	}
+	settings, api := ss.currentFeedbackAnalysisConfig()
 	return &tradeFeedbackBundleInputs{sc: sc, ctx: strat.tradeFeedbackContext, strategy: strat, meta: meta,
-		settings: ss.currentFeedbackAnalysisSettings()}, nil
+		settings: settings, api: api}, nil
 }
 
 func tradeFeedbackCandidate(rec tradeFeedbackRecord, storedID, wantStorageID string) (*tradeFeedbackEvidence, string) {
@@ -670,8 +682,10 @@ type tradeFeedbackAnalysisAdapter interface {
 	Run(ctx context.Context, job *tradeFeedbackAnalysisJob) (tradeFeedbackProviderOutput, error)
 }
 
-func tradeFeedbackProductionAdapters() map[string]tradeFeedbackAnalysisAdapter {
-	return map[string]tradeFeedbackAnalysisAdapter{}
+func tradeFeedbackProductionAdapters(ss *StatusServer) map[string]tradeFeedbackAnalysisAdapter {
+	return map[string]tradeFeedbackAnalysisAdapter{
+		tradeFeedbackProviderAPI: &tradeFeedbackAPIAdapter{ss: ss},
+	}
 }
 
 func tradeFeedbackKnownProvider(p string) bool {
@@ -851,7 +865,7 @@ func (ss *StatusServer) submitTradeFeedbackAnalysis(w http.ResponseWriter, r *ht
 		return
 	}
 	if ok, reason := adapter.Available(); !ok {
-		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("provider %s is unavailable: %s; nothing was started", req.Provider, reason))
+		writeJSONError(w, http.StatusConflict, fmt.Sprintf("provider %s is unavailable: %s; nothing was started", req.Provider, reason))
 		return
 	}
 	m := ss.feedbackAnalysis
@@ -1045,7 +1059,9 @@ func tradeFeedbackViewFor(req tradeFeedbackAnalysisRequest) tradeFeedbackAnalysi
 		v.Status = t.EventStatus
 		completed := t.CreatedAt
 		v.CompletedAt = &completed
-		v.Model = t.Model
+		if t.Model != "" {
+			v.Model = t.Model
+		}
 		v.ModelVerification = t.ModelVerification
 		v.Error = t.Error
 		if t.ResultJSON != "" {

@@ -2788,7 +2788,7 @@
     }
   }
 
-  const feedbackState = { submitting: false, partitionFetched: "all" };
+  const feedbackState = { submitting: false, apiSubmitting: false, partitionFetched: "all" };
 
   function feedbackNode(tag, className, text) {
     const el = document.createElement(tag);
@@ -2859,8 +2859,10 @@
     });
     if (!data.available && data.reason) summary.push(feedbackNode("p", "tuner-note", data.reason));
     (data.providers || []).forEach(function (p) {
-      summary.push(feedbackNode("p", "tuner-note", "Provider " + p.id + ": " + (p.available ? "available" : (p.reason || "unavailable"))));
+      summary.push(feedbackNode("p", "tuner-note", "Provider " + p.id + ": " + (p.available ? "available" + (p.reason ? " (" + p.reason + ")" : "") : (p.reason || "unavailable"))));
     });
+    const apiAction = renderFeedbackAPIAction(id, data);
+    if (apiAction) summary.push(apiAction);
     const research = data.research || {};
     if (!research.supported) {
       summary.push(feedbackNode("p", "tuner-note", "Research: " + (research.status || "unknown") + (research.reason ? " (" + research.reason + ")" : "")));
@@ -2869,6 +2871,44 @@
     const items = (data.analyses || []).map(function (a) { return renderFeedbackAnalysisItem(id, a); });
     if (!items.length) items.push(feedbackNode("p", "tuner-note", "No analyses yet."));
     els.feedbackList.replaceChildren.apply(els.feedbackList, items);
+  }
+
+  function renderFeedbackAPIAction(id, data) {
+    const provider = (data.providers || []).find(function (p) { return p.id === "anthropic_api"; });
+    if (!provider) return null;
+    const sel = data.selection || {};
+    const box = feedbackNode("div", "feedback-analysis-proposal");
+    const button = feedbackNode("button", "tuner-button secondary", "Analyze with the Anthropic API…");
+    button.type = "button";
+    let blocked = "";
+    if (!data.available) blocked = data.reason || "analysis is unavailable";
+    else if (!provider.available) blocked = provider.reason || "the Anthropic API provider is unavailable";
+    else if (!(sel.included > 0)) blocked = "there are no usable saved marks to analyze";
+    button.disabled = !!blocked || feedbackState.submitting || feedbackState.apiSubmitting;
+    button.addEventListener("click", function () { submitFeedbackAPIAnalysis(id, sel.included || 0, provider.reason || ""); });
+    box.appendChild(button);
+    if (blocked) box.appendChild(feedbackNode("p", "tuner-note", "Anthropic API: " + blocked));
+    return box;
+  }
+
+  async function submitFeedbackAPIAnalysis(strategyID, included, settings) {
+    if (feedbackState.apiSubmitting || state.activeID !== strategyID) return;
+    const question = "Send " + included + " saved mark(s) of " + strategyID + " to the Anthropic API" +
+      (settings ? " (" + settings + ")" : "") + "? This is one paid call. It is never retried by itself, and the result changes no setting.";
+    if (!window.confirm(question)) {
+      setFeedbackMessage("Cancelled. No analysis request was sent.", "");
+      return;
+    }
+    feedbackState.apiSubmitting = true;
+    try {
+      const resp = await postJSON(feedbackAnalysesURL(strategyID), { provider: "anthropic_api" });
+      setFeedbackMessage("Analysis " + (resp.request_id || "") + " is accepted. Its progress shows below.", "success");
+    } catch (err) {
+      setFeedbackMessage("The analysis was not started: " + apiFeedbackError(err), "error");
+    } finally {
+      feedbackState.apiSubmitting = false;
+      refreshFeedbackAnalysis().catch(function () {});
+    }
   }
 
   function renderFeedbackAnalysisItem(id, a) {
