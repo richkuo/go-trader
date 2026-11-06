@@ -109,6 +109,21 @@ func TestRobinhoodLiveOrderCoinIdentity(t *testing.T) {
 		}
 	})
 
+	t.Run("StuckCircuitBreakerSellsTheMigratedCanonicalBook", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "btc", 1000))
+		e.setPosition("rh-btc", "btc", 0.5, 90)
+		rhIdentityRequireMigrated(t, e.loadMigrated(rhIdentityLiveMap("rh-btc", "btc")), "rh-btc")
+		e.latchCB("rh-btc")
+		held := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}}
+		runPendingRobinhoodCircuitClosesWithCloser(e, e.phasedFetcher(held, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}), rhWith(rhSellFilled("0.5", "97"), held))
+		if s := e.state.Strategies["rh-btc"]; s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) != nil || len(s.Positions) != 0 {
+			t.Fatalf("pending=%v positions=%v, want cleared after a confirmed sale", s.RiskState.PendingCircuitCloses, s.Positions)
+		}
+		if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Price != 97 || dbt[0].Quantity != 0.5 {
+			t.Fatalf("db trades = %+v, want one venue-priced sell", dbt)
+		}
+	})
+
 	t.Run("PendingCloseDrainSellsTheMigratedCanonicalCoin", func(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "btc", 1000))
 		e.setPosition("rh-btc", "btc", 0.5, 90)
@@ -234,7 +249,7 @@ func TestRobinhoodLiveOrderCoinIdentity(t *testing.T) {
 		sc := StrategyConfig{ID: "rh-btc", Type: "spot", Platform: "robinhood", Script: stub, Args: []string{"momentum_pro", "BTC", "1h", "--mode=paper"}}
 		payload := map[string]interface{}{"strategy": "momentum_pro", "timeframe": "1h", "signal": 1, "price": 100,
 			"indicators": map[string]interface{}{}, "mode": "paper", "platform": "robinhood", "close_fraction": 0}
-		for _, symbol := range []string{"btc"} {
+		for _, symbol := range []string{"ETH", "btc", ""} {
 			scriptFailureTracker = &ScriptFailureTracker{}
 			e.mock.mu.Lock()
 			e.mock.messages = nil
@@ -287,6 +302,7 @@ func TestRobinhoodLiveOrderCoinIdentity(t *testing.T) {
 		t.Cleanup(func() { robinhoodFetchPositionsScript = prev })
 		t.Setenv("HTF_IT_STUB_EXIT", "0")
 		for name, rows := range map[string][]interface{}{
+			"empty":     {map[string]interface{}{"coin": "  ", "size": 0.5, "avg_price": 1}},
 			"duplicate": {map[string]interface{}{"coin": "BTC", "size": 0.25, "avg_price": 1}, map[string]interface{}{"coin": " btc", "size": 0.25, "avg_price": 1}},
 		} {
 			blob, _ := json.Marshal(map[string]interface{}{"positions": rows, "platform": "robinhood"})
