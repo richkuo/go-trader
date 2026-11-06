@@ -2755,7 +2755,8 @@
     els.statusGrid.innerHTML = "<dt>Message</dt><dd>" + escapeHTML(err.message) + "</dd>";
   }
 
-  async function refreshAll() {
+  async function refreshAll(options) {
+    const tick = !!(options && options.tick);
     try {
       if (state.viewMode === "table") {
         await Promise.all([refreshOverview(), refreshOpsPanels()]);
@@ -2768,7 +2769,7 @@
         refreshRegimeStorePanel(),
         refreshTransitionsPanel(),
         loadTunerConfig(),
-        refreshFeedbackAnalysis(),
+        refreshFeedbackAnalysis({ tick: tick }),
         loadSparklines(filteredStrategies().map(function (s) {
           return s.id;
         })),
@@ -2783,12 +2784,12 @@
     const ms = Number(els.interval.value);
     if (ms > 0) {
       state.timer = setInterval(function () {
-        refreshAll().catch(handleRefreshError);
+        refreshAll({ tick: true }).catch(handleRefreshError);
       }, ms);
     }
   }
 
-  const feedbackState = { submitting: false, partitionFetched: "all" };
+  const feedbackState = { submitting: false, partitionFetched: "all", cache: null };
 
   function feedbackNode(tag, className, text) {
     const el = document.createElement(tag);
@@ -2816,7 +2817,30 @@
     return value;
   }
 
-  async function refreshFeedbackAnalysis() {
+  function feedbackCacheKey(id, partition) {
+    return JSON.stringify([id, partition]);
+  }
+
+  function feedbackHistorySignature(data) {
+    return stableJSON({
+      available: !!data.available,
+      reason: data.reason || "",
+      providers: data.providers || [],
+      analyses: (data.analyses || []).map(function (a) {
+        return [a.request_id, a.status, a.progress || ""];
+      }),
+    });
+  }
+
+  async function feedbackHistoryUnchanged(id, cached) {
+    const hist = await getJSONForPartition(feedbackAnalysesURL(id) + "?view=history");
+    if (state.activeID !== id || !partitionStillSelected(hist.partition)) return true;
+    return feedbackCacheKey(id, hist.partition) === cached.key &&
+      !!hist.data.input_signature && hist.data.input_signature === cached.inputSignature &&
+      feedbackHistorySignature(hist.data) === cached.historySignature;
+  }
+
+  async function refreshFeedbackAnalysis(options) {
     if (!els.feedbackPanel) return;
     const id = state.activeID;
     if (!id) {
@@ -2825,12 +2849,23 @@
     }
     els.feedbackPanel.hidden = false;
     try {
+      const cached = feedbackState.cache;
+      if (options && options.tick && cached && cached.key === feedbackCacheKey(id, state.partitionFilter) &&
+          await feedbackHistoryUnchanged(id, cached)) {
+        return;
+      }
       const fetched = await getJSONForPartition(feedbackAnalysesURL(id));
       if (state.activeID !== id || !partitionStillSelected(fetched.partition)) return;
       feedbackState.partitionFetched = fetched.partition;
+      feedbackState.cache = {
+        key: feedbackCacheKey(id, fetched.partition),
+        inputSignature: fetched.data.input_signature || "",
+        historySignature: feedbackHistorySignature(fetched.data),
+      };
       renderFeedbackAnalysis(id, fetched.data);
     } catch (err) {
       if (state.activeID !== id) return;
+      feedbackState.cache = null;
       els.feedbackStatus.textContent = "Unavailable";
       els.feedbackSummary.replaceChildren(feedbackNode("p", "tuner-note", apiFeedbackError(err)));
       els.feedbackList.replaceChildren();
