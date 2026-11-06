@@ -244,3 +244,46 @@ func retiredResearchConfigRefusals(raw []byte) []string {
 	}
 	return errs
 }
+
+func validateTradeFeedbackAnalysisJSON(rawData []byte) []string {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(rawData, &root); err != nil {
+		return nil
+	}
+	raw, ok := root[tradeFeedbackAnalysisConfigKey]
+	if !ok {
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "null" {
+		return []string{tradeFeedbackAnalysisConfigKey + ": must be an object; omit the block to use the defaults"}
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+		return []string{tradeFeedbackAnalysisConfigKey + ": must be an object"}
+	}
+	known := knownJSONKeys(reflect.TypeOf(TradeFeedbackAnalysisConfig{}))
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var errs []string
+	for _, k := range keys {
+		if !known[k] {
+			errs = append(errs, fmt.Sprintf("%s: unknown field %q", tradeFeedbackAnalysisConfigKey, k))
+			continue
+		}
+		lo, hi := tradeFeedbackAnalysisFieldBounds(k)
+		text := strings.TrimSpace(string(obj[k]))
+		n, err := strconv.ParseInt(text, 10, 64)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s.%s: must be a whole number from %d to %d, got %s", tradeFeedbackAnalysisConfigKey, k, lo, hi, text))
+			continue
+		}
+		if n < int64(lo) || n > int64(hi) {
+			errs = append(errs, fmt.Sprintf("%s.%s: must be from %d to %d, got %d", tradeFeedbackAnalysisConfigKey, k, lo, hi, n))
+		}
+	}
+	return errs
+}

@@ -482,6 +482,40 @@ CREATE TRIGGER IF NOT EXISTS trade_feedback_retained
 BEFORE DELETE ON trade_feedback
 BEGIN SELECT RAISE(ABORT, 'trade feedback rows are retained'); END;
 
+CREATE TABLE IF NOT EXISTS trade_feedback_analyses (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT NOT NULL,
+    event_status TEXT NOT NULL CHECK (event_status IN ('accepted', 'ok', 'invalid', 'failed')),
+    strategy_id TEXT NOT NULL,
+    partition TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    model_verification TEXT NOT NULL DEFAULT '',
+    effort TEXT NOT NULL DEFAULT '',
+    timeout_s INTEGER NOT NULL,
+    bundle_version INTEGER NOT NULL,
+    bundle_sha256 TEXT NOT NULL,
+    bundle_json TEXT NOT NULL DEFAULT '',
+    feedback_rowids TEXT NOT NULL,
+    result_json TEXT NOT NULL DEFAULT '',
+    validation_json TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    usage_json TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_feedback_analyses_accepted ON trade_feedback_analyses(request_id) WHERE event_status = 'accepted';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_feedback_analyses_terminal ON trade_feedback_analyses(request_id) WHERE event_status <> 'accepted';
+CREATE INDEX IF NOT EXISTS idx_trade_feedback_analyses_strategy ON trade_feedback_analyses(strategy_id, rowid);
+
+CREATE TRIGGER IF NOT EXISTS trade_feedback_analyses_immutable
+BEFORE UPDATE ON trade_feedback_analyses
+BEGIN SELECT RAISE(ABORT, 'trade feedback analysis rows are immutable'); END;
+
+CREATE TRIGGER IF NOT EXISTS trade_feedback_analyses_retained
+BEFORE DELETE ON trade_feedback_analyses
+BEGIN SELECT RAISE(ABORT, 'trade feedback analysis rows are retained'); END;
+
 -- #1224 per-window regime label history: at most one row per closed bar per
 -- (bundle key, window) — the processor skips re-recording a bar already stored,
 -- so the debounce run counts distinct bars, not raw per-cycle populations.

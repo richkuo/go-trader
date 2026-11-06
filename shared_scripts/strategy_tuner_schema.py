@@ -16,6 +16,9 @@ def main() -> None:
     parser.add_argument("--type", default="spot")
     parser.add_argument("--strategy", required=True)
     parser.add_argument("--probe-only", action="store_true")
+    parser.add_argument("--research-support", action="store_true")
+    parser.add_argument("--config", default="")
+    parser.add_argument("--strategy-id", default="")
     args = parser.parse_args()
 
     if args.probe_only:
@@ -30,16 +33,22 @@ def main() -> None:
         print(json.dumps({"error": f"unknown strategy {name!r} in {reg_key} registry"}))
         sys.exit(1)
 
-    print(
-        json.dumps(
-            {
-                "strategy": name,
-                "registry": reg_key,
-                "description": strat.get("description", ""),
-                "default_params": dict(strat.get("default_params") or {}),
-            }
-        )
-    )
+    out = {
+        "strategy": name,
+        "registry": reg_key,
+        "description": strat.get("description", ""),
+        "default_params": dict(strat.get("default_params") or {}),
+    }
+    if args.research_support:
+        if not args.config or not args.strategy_id:
+            print(json.dumps({"error": "--research-support needs --config and --strategy-id"}))
+            sys.exit(1)
+        from tune_live import research_support
+        try:
+            out["research"] = research_support(args.config, args.strategy_id)
+        except (OSError, ValueError) as exc:
+            out["research"] = {"supported": False, "status": "config_error", "reason": str(exc)}
+    print(json.dumps(out))
 
 
 if __name__ == "__main__":

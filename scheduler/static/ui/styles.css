@@ -1891,3 +1891,42 @@ h3 {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.feedback-analysis-summary,
+.feedback-analysis-list {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.feedback-analysis-item {
+  border: 1px solid var(--line, #d0d5dd);
+  border-radius: 6px;
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+.feedback-analysis-item h4 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.feedback-analysis-item ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.feedback-analysis-proposal {
+  display: grid;
+  gap: 4px;
+}
+
+.feedback-research-grid {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
