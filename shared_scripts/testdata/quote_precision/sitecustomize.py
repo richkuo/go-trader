@@ -113,42 +113,11 @@ def _option_quote_mode():
     return "value", float(raw)
 
 
-def _okx_option_markets(spot):
-    from datetime import datetime, timedelta, timezone
-    now = datetime.now(timezone.utc)
-    markets = {}
-    for days in (21, 30, 37, 45):
-        exp = (now + timedelta(days=days)).replace(hour=8, minute=0, second=0, microsecond=0)
-        exp_ms = int(exp.timestamp() * 1000)
-        tag = exp.strftime("%y%m%d")
-        for i in range(41):
-            strike = round(spot * (0.80 + 0.01 * i), 8)
-            for option_type, char in (("call", "C"), ("put", "P")):
-                sym = "BTC/USD:BTC-%s-%s-%s" % (tag, repr(strike), char)
-                markets[sym] = {"symbol": sym, "type": "option", "base": "BTC", "optionType": option_type,
-                                "strike": strike, "expiry": exp_ms, "active": True}
-    return markets
-
-
 def _option_greeks():
     raw = os.environ.get("QP_OPTION_GREEKS", "")
     if raw:
         return json.loads(raw)
     return {"delta": 0.25, "gamma": 0.0001, "theta": -1.5, "vega": 2.5}
-
-
-def _option_ticker(ccxt, exchange_id, symbol):
-    mode, value = _option_quote_mode()
-    _log({"call": "option_ticker", "exchange": exchange_id, "symbol": symbol, "mode": mode})
-    if mode == "429":
-        raise ccxt.RateLimitExceeded(exchange_id + " GET https://stub.invalid/ticker 429 Too Many Requests")
-    if mode == "503":
-        raise ccxt.ExchangeNotAvailable(exchange_id + " GET https://stub.invalid/ticker 503 Service Unavailable")
-    if mode == "error":
-        raise ccxt.NetworkError("quote precision stub: option ticker failure for " + symbol)
-    if mode == "missing":
-        return {"symbol": symbol, "last": None, "close": None, "info": {}}
-    return {"symbol": symbol, "last": value, "info": _option_greeks()}
 
 
 def _install_deribit_ticker(requests):
@@ -220,45 +189,6 @@ def _install_frozen_topstep_clock(iso):
     sys.meta_path.insert(0, TopStepClockFinder())
 
 
-def _install_okx_venue(ccxt, fill):
-    orders = {}
-
-    def order_body(symbol, side, amount, params):
-        filled = fill.get("filled")
-        if filled is None:
-            filled = amount
-        return {
-            "id": "qp-okx-1",
-            "clientOrderId": (params or {}).get("clOrdId", ""),
-            "symbol": symbol,
-            "side": side,
-            "amount": amount,
-            "status": fill.get("status", "closed"),
-            "filled": filled,
-            "average": fill.get("average"),
-            "fee": {"cost": fill.get("fee", 0.0), "currency": "USDT"},
-        }
-
-    def create_market_order(self, symbol, side, amount, price=None, params=None):
-        _log({"call": "create_market_order", "symbol": symbol, "side": side, "amount": amount,
-              "params": params or {}, "exp_time": (self.headers or {}).get("expTime", "")})
-        if fill.get("create") == "network_error":
-            raise ccxt.NetworkError("quote precision stub: order send timed out")
-        order = order_body(symbol, side, amount, params)
-        orders[order["clientOrderId"]] = order
-        return order
-
-    def fetch_order(self, id, symbol=None, params=None):
-        cid = (params or {}).get("clOrdId", "")
-        _log({"call": "fetch_order", "symbol": symbol, "client_order_id": cid})
-        if cid not in orders:
-            raise ccxt.OrderNotFound("quote precision stub has no order " + cid)
-        return orders[cid]
-
-    ccxt.okx.create_market_order = create_market_order
-    ccxt.okx.fetch_order = fetch_order
-
-
 def _install():
     real_connect = socket.socket.connect
 
@@ -283,13 +213,9 @@ def _install():
     import requests
     import yfinance
 
-    okx_options = os.environ.get("QP_OKX_OPTIONS", "") in ("1", "empty")
-
     def fetch_ticker(self, symbol, params=None):
         _log({"call": "fetch_ticker", "exchange": self.id, "symbol": symbol})
         _noise()
-        if okx_options and symbol in (getattr(self, "markets", None) or {}) and self.markets[symbol].get("type") == "option":
-            return _option_ticker(ccxt, self.id, symbol)
         if tickers is not None:
             if symbol not in tickers:
                 raise ccxt.BadSymbol("quote precision stub has no ticker for " + symbol)
@@ -331,20 +257,12 @@ def _install():
         return rows
 
     def load_markets(self, reload=False, params=None):
-        if okx_options and self.id == "okx":
-            spot = _quote_mode()[1] or close
-            self.markets = _okx_option_markets(spot) if os.environ.get("QP_OKX_OPTIONS") == "1" else {}
-            return self.markets
         return {}
 
-    for cls in (ccxt.Exchange, ccxt.binance, ccxt.binanceus, ccxt.okx, ccxt.luno):
+    for cls in (ccxt.Exchange, ccxt.binance, ccxt.binanceus, ccxt.luno):
         cls.fetch_ticker = fetch_ticker
         cls.fetch_ohlcv = fetch_ohlcv
         cls.load_markets = load_markets
-
-    okx_fill_raw = os.environ.get("QP_OKX_FILL", "")
-    if okx_fill_raw:
-        _install_okx_venue(ccxt, json.loads(okx_fill_raw))
 
     _install_deribit_ticker(requests)
 

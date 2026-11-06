@@ -953,18 +953,6 @@ func TestResolveManualOpenOrderSize(t *testing.T) {
 			t.Errorf("expected zero-size error, got: %v", err)
 		}
 	})
-
-	t.Run("non-hl strategy errors", func(t *testing.T) {
-		scOKX := sc
-		scOKX.Platform = "okx"
-		fetch := func(coins []string) (map[string]float64, error) {
-			return map[string]float64{"ETH": 2000}, nil
-		}
-		_, _, err := resolveManualOpenOrderSize(scOKX, 0, 0, 50, fetch)
-		if err == nil || !strings.Contains(err.Error(), "cannot determine HL coin") {
-			t.Errorf("expected coin-resolution error, got: %v", err)
-		}
-	})
 }
 
 func TestOperatorSharedCloseFloorGatesBothCores(t *testing.T) {

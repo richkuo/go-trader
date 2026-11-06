@@ -179,8 +179,6 @@ def test_resolve_kill_switch_pct():
     cases = [
         (_cfg([{"id": "s1", "type": "perps", "max_drawdown_pct": 12.5}]),
          "s1", 12.5),
-        (_cfg([{"id": "s1", "type": "spot", "platform": "okx"}],
-              {"okx": {"risk": {"max_drawdown_pct": 33.0}}}), "s1", 33.0),
         (_cfg([{"id": "hl-btc-x", "type": "perps"}],
               {"hyperliquid": {"risk": {"max_drawdown_pct": 18.0}}}),
          "hl-btc-x", 18.0),

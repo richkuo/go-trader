@@ -7,22 +7,6 @@ import (
 )
 
 func TestCalculatePlatformFee(t *testing.T) {
-	t.Run("Spot", func(t *testing.T) {
-		cases := []struct {
-			platform string
-			want     float64
-		}{
-			{"okx", 1000.0 * OKXSpotTakerFeePct},
-			{"okx-perps", 1000.0 * OKXPerpsTakerFeePct},
-		}
-		for _, tc := range cases {
-			t.Run(tc.platform, func(t *testing.T) {
-				if fee := CalculatePlatformSpotFee(tc.platform, 1000.0); fee != tc.want {
-					t.Errorf("%s fee: got %f, want %f", tc.platform, fee, tc.want)
-				}
-			})
-		}
-	})
 	t.Run("Futures", func(t *testing.T) {
 		sc := StrategyConfig{
 			FuturesConfig: &FuturesConfig{FeePerContract: 1.50},
@@ -46,7 +30,7 @@ func TestOrdinaryPerpsBookingKeepsVenueCostsAndStamp(t *testing.T) {
 	for _, c := range []struct {
 		platform string
 		fee      float64
-	}{{"okx", OKXPerpsTakerFeePct}, {"hyperliquid", HyperliquidTakerFeePct}} {
+	}{{"hyperliquid", HyperliquidTakerFeePct}} {
 		s := NewStrategyState(StrategyConfig{ID: "plain-" + c.platform, Platform: c.platform, Type: "perps", Capital: 1000})
 		if _, err := ExecutePerpsSignalWithLeverage(s, 1, "BTC", 60000, PerpsSizing{SizingLeverage: 1}, 0, "", 0, DirectionLong, 0, logger); err != nil {
 			t.Fatal(err)

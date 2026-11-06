@@ -283,25 +283,25 @@ func TestSharedWalletPoolSizingMargin(t *testing.T) {
 		}
 	})
 	t.Run("FlipReleaseMatchesStoredLeverageReservation", func(t *testing.T) {
-		t.Setenv("OKX_API_KEY", "okx-pool")
+		t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
 		marginCap := 500.0
 		sc := StrategyConfig{
-			ID: "okx-a", Platform: "okx", Type: "perps",
+			ID: "hl-a", Platform: "hyperliquid", Type: "perps",
 			Args:     []string{"sma", "BTC", "1h", "--mode=live"},
 			Leverage: 5, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true,
 		}
 		peer := sc
-		peer.ID = "okx-b"
+		peer.ID = "hl-b"
 		peer.Args = []string{"rsi", "ETH", "1h", "--mode=live"}
 		strategies := []StrategyConfig{sc, peer}
 		state := &AppState{Strategies: map[string]*StrategyState{
-			"okx-a": {Positions: map[string]*Position{
+			"hl-a": {Positions: map[string]*Position{
 				"BTC": {Quantity: 1, AvgCost: 100, Leverage: 10},
 			}},
-			"okx-b": {Positions: map[string]*Position{}},
+			"hl-b": {Positions: map[string]*Position{}},
 		}}
 		shared := detectSharedWallets(strategies)
-		key := SharedWalletKey{Platform: "okx", Account: "okx-pool"}
+		key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
 		available, pooled, known := sharedWalletPoolAvailableMargin(
 			sc, strategies, state, map[string]float64{"BTC": 100}, shared,
 			map[SharedWalletKey]float64{key: 1000},
@@ -315,19 +315,19 @@ func TestSharedWalletPoolSizingMargin(t *testing.T) {
 		}
 	})
 	t.Run("FlipPreservesSignedAccountHeadroom", func(t *testing.T) {
-		t.Setenv("OKX_API_KEY", "okx-pool")
+		t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
 		marginCap := 100.0
 		sc := StrategyConfig{
-			ID: "okx-a", Platform: "okx", Type: "perps",
+			ID: "hl-a", Platform: "hyperliquid", Type: "perps",
 			Args:     []string{"sma", "BTC", "1h", "--mode=live"},
 			Leverage: 1, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true,
 		}
 		peer := sc
-		peer.ID = "okx-b"
+		peer.ID = "hl-b"
 		peer.Args = []string{"rsi", "ETH", "1h", "--mode=live"}
 		strategies := []StrategyConfig{sc, peer}
 		shared := detectSharedWallets(strategies)
-		key := SharedWalletKey{Platform: "okx", Account: "okx-pool"}
+		key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
 
 		tests := []struct {
 			name          string
@@ -356,13 +356,13 @@ func TestSharedWalletPoolSizingMargin(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				state := &AppState{Strategies: map[string]*StrategyState{
-					"okx-a": {Positions: map[string]*Position{
+					"hl-a": {Positions: map[string]*Position{
 						"BTC": {Quantity: tt.flippingQty, AvgCost: 10, Leverage: 1, Side: "long"},
 					}},
-					"okx-b": {Positions: map[string]*Position{}},
+					"hl-b": {Positions: map[string]*Position{}},
 				}}
 				if tt.peerQty > 0 {
-					state.Strategies["okx-b"].Positions["ETH"] = &Position{
+					state.Strategies["hl-b"].Positions["ETH"] = &Position{
 						Quantity: tt.peerQty, AvgCost: 10, Leverage: 1, Side: "long",
 					}
 				}

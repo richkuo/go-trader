@@ -116,11 +116,6 @@ func noEdgeCaseCamarillaPivotReversalRequiresHyperliquidPerpsClosedBarDecisions(
 	off["closed_bar_decisions"] = false
 	closeOff := noEdgeHLStrategy("hl-bo-eth", "breakout", "ETH", "1h", "--mode=paper")
 	closeOff["close_strategy"] = map[string]interface{}{"name": camarillaPivotReversalStrategyName}
-	okx := map[string]interface{}{
-		"id": "okx-cpr", "type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py",
-		"args": []string{camarillaPivotReversalStrategyName, "ETH", "1h", "--mode=paper"}, "capital": 100.0,
-		"max_drawdown_pct": 10.0, "leverage": 1.0, "closed_bar_decisions": true,
-	}
 	manual := map[string]interface{}{
 		"id": "hl-cpr-manual", "type": "manual", "platform": "hyperliquid", "symbol": "ETH", "timeframe": "1h",
 		"leverage": 1.0, "capital": 100.0, "allow_no_edge": true,
@@ -129,7 +124,6 @@ func noEdgeCaseCamarillaPivotReversalRequiresHyperliquidPerpsClosedBarDecisions(
 	for name, sc := range map[string]map[string]interface{}{
 		"open without closed bars":           off,
 		"close fallback without closed bars": closeOff,
-		"okx with closed bars":               okx,
 		"hyperliquid manual close":           manual,
 	} {
 		t.Run(name, func(t *testing.T) {

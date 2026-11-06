@@ -232,14 +232,6 @@ func productionRefusedEveryModeAndReference(t *testing.T, name string) {
 		if _, _, err := buildAddStrategyEntry(name, "hyperliquid", "btc"); err == nil || !strings.Contains(err.Error(), "quote-owned") {
 			t.Fatalf("the scalar add route must refuse the quote capability, got %v", err)
 		}
-	} else {
-		okx := researchFixtureArgs(researchScalarFixture(t, name), name, []string{"--mode=paper"})
-		okx["platform"], okx["script"] = "okx", "shared_scripts/check_okx.py"
-		for i, err := range researchLoadAll(t, websocket, okx) {
-			if err == nil {
-				t.Fatalf("loader %d admitted the research candidate off the Hyperliquid perps route", i)
-			}
-		}
 	}
 	mass := noEdgeHLStrategy("hl-massrev-eth", "mass_index_reversal", "ETH", "1h", "--mode=paper")
 	for i, err := range researchLoadAll(t, nil, mass) {

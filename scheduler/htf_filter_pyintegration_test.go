@@ -212,8 +212,6 @@ func htfITCaseHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses(t *tes
 	}
 	strats := []strat{
 		{"bus-atrb-btc", "BTC/USDT", true, map[string]any{"type": "spot", "platform": "binanceus", "script": "shared_scripts/check_strategy.py", "args": []string{"atr_breakout", "BTC/USDT", "1h"}, "capital": 1000}},
-		{"okx-atrb-btc", "BTC", true, map[string]any{"type": "spot", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": []string{"atr_breakout", "BTC", "1h", "--mode=paper", "--inst-type=spot"}, "capital": 1000}},
-		{"okx-brk-btc-perp", "BTC", false, map[string]any{"type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": []string{"breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap"}, "capital": 1000, "leverage": 1, "sizing_leverage": 1, "close_strategy": map[string]any{"name": "tiered_tp_pct"}}},
 		{"rh-atrb-btc", "BTC", true, map[string]any{"type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py", "args": []string{"atr_breakout", "BTC", "30m", "--mode=paper"}, "capital": 1000}},
 		{"ts-brk-es", "ES", false, map[string]any{"type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py", "args": []string{"breakout", "ES", "1h", "--mode=paper"}, "capital": 50000, "close_strategy": map[string]any{"name": "tiered_tp_pct"}}},
 	}
@@ -349,12 +347,6 @@ func htfITConsumers(stub string) []htfITConsumer {
 				_, _, _, ok := runSpotCheck(sc, prices, PositionCtx{}, nil, "simple", notifier, l)
 				return ok
 			}},
-		{"okx spot", StrategyConfig{ID: "htf-c-okx", Type: "spot", Platform: "okx", Script: stub, Args: []string{"breakout", "BTC", "1h", "--mode=paper", "--inst-type=spot"}, HTFFilter: true},
-			base("okx", nil),
-			func(sc StrategyConfig, l *StrategyLogger) bool {
-				_, _, _, ok := runOKXCheck(sc, prices, PositionCtx{}, nil, "simple", notifier, l)
-				return ok
-			}},
 		{"robinhood spot", StrategyConfig{ID: "htf-c-rh", Type: "spot", Platform: "robinhood", Script: stub, Args: []string{"breakout", "BTC", "1h", "--mode=paper"}, HTFFilter: true},
 			base("robinhood", nil),
 			func(sc StrategyConfig, l *StrategyLogger) bool {
@@ -455,7 +447,7 @@ func htfITCaseHTFFilterIntegrationConsumersValidateTheContract(t *testing.T) {
 	}
 
 	consumers := htfITConsumers(stub)
-	ts := consumers[3]
+	ts := consumers[2]
 	closed := htfITWith(ts.base, map[string]any{"market_open": false, "signal": 0, "price": 0,
 		"htf_filter": htfITBlock("not_evaluated", 0, "the market is closed, so the check returned before fetching candles")})
 	if ok, log := htfITStubRun(t, ts, ts.sc, closed, 0); ok || strings.Contains(log, "mismatch") || !strings.Contains(log, "Market closed") {
@@ -483,7 +475,7 @@ func htfITCaseHTFFilterIntegrationConsumersValidateTheContract(t *testing.T) {
 		t.Fatalf("an unheld closed-bar decision cannot support not_evaluated, ok=%t\n%s", ok, log)
 	}
 
-	hl := consumers[4]
+	hl := consumers[3]
 	sc := hl.sc
 	var buf bytes.Buffer
 	degraded := degradedHyperliquidResult(sc, "BTC", "paper", "no ready higher-timeframe frame for BTC|4h", 100)
@@ -567,10 +559,8 @@ func htfITCaseHTFFilterIntegrationAlertsRouteThrottleAndRecover(t *testing.T) {
 		Args: []string{"atr_breakout", "BTC/USDT", "1h"}, HTFFilter: true, PaperSource: "src-a"}
 	live := StrategyConfig{ID: "htf-live", Type: "spot", Platform: "binanceus", Script: "shared_scripts/check_strategy.py",
 		Args: []string{"atr_breakout", "BTC/USDT", "1h", "--mode=live"}, HTFFilter: true, AllowNoEdge: &allowNoEdge}
-	paperPeer := StrategyConfig{ID: "htf-paper", Type: "spot", Platform: "okx", Script: "shared_scripts/check_okx.py",
-		Args: []string{"atr_breakout", "BTC", "1h", "--mode=paper", "--inst-type=spot"}}
-	cfg := &Config{Strategies: []StrategyConfig{src, live, paperPeer}}
-	cfg.Discord.Channels = map[string]string{"binanceus": "ch-live", "okx-paper": "ch-okx-paper", "binanceus-paper:src-a": "ch-src-a"}
+	cfg := &Config{Strategies: []StrategyConfig{src, live}}
+	cfg.Discord.Channels = map[string]string{"binanceus": "ch-live", "binanceus-paper:src-a": "ch-src-a"}
 	sink := &htfITSink{}
 	notifier := NewMultiNotifier(notifierBackend{notifier: sink, channels: cfg.Discord.Channels, ownerID: "owner"})
 	notifier.ReloadConfig(cfg)
@@ -662,23 +652,6 @@ func htfITCaseHTFFilterIntegrationAlertsRouteThrottleAndRecover(t *testing.T) {
 	spot(src, neutral)
 	expectNone("second successful evaluation")
 
-	for i := 0; i < 3; i++ {
-		spot(src, short)
-	}
-	expectOne("alert before skipped", "ch-src-a", "3 unavailable evaluations")
-	skipped := StrategyConfig{ID: src.ID, Type: "perps", Platform: "okx", Script: "shared_scripts/check_okx.py",
-		Args: []string{"delta_neutral_funding", "BTC", "1h", "--mode=paper", "--inst-type=swap"}, HTFFilter: true, PaperSource: "src-a"}
-	htfITUseFixture(t, root, fixture(short))
-	if _, _, _, ok := runOKXCheck(skipped, map[string]float64{"BTC": 100}, PositionCtx{}, nil, "simple", notifier, &StrategyLogger{stratID: skipped.ID, writer: &logBuf}); !ok {
-		t.Fatalf("an excluded open strategy must be a usable result\n%s", logBuf.String())
-	}
-	expectNone("skipped clears silently")
-	if htfITTrackerCount(src.ID) != 0 {
-		t.Fatalf("skipped must clear the tracker, got %d", htfITTrackerCount(src.ID))
-	}
-	spot(src, neutral)
-	expectNone("ok after a silent clear has nothing to recover")
-
 	for i := 1; i <= 14; i++ {
 		spot(src, transient)
 	}
@@ -699,18 +672,18 @@ func htfITCaseHTFFilterIntegrationAlertsRouteThrottleAndRecover(t *testing.T) {
 		spot(live, short)
 	}
 	m, d := sink.drain()
-	if len(m) != 3 || len(d) != 1 || !strings.Contains(d[0].content, "[live scope]") || !strings.Contains(d[0].content, "partition=live") {
+	if len(m) != 2 || len(d) != 1 || !strings.Contains(d[0].content, "[live scope]") || !strings.Contains(d[0].content, "partition=live") {
 		t.Fatalf("a live alert must reach every channel and the owner, got messages=%v dms=%v", m, d)
 	}
 	seen := map[string]bool{}
 	for _, msg := range m {
 		seen[msg.channelID] = true
 	}
-	if !seen["ch-live"] || !seen["ch-okx-paper"] || !seen["ch-src-a"] {
+	if !seen["ch-live"] || !seen["ch-src-a"] {
 		t.Fatalf("live routing must keep the existing all-channel behavior, got %v", m)
 	}
 
-	cfg.Discord.Channels = map[string]string{"binanceus": "ch-live", "okx-paper": "ch-okx-paper", "binanceus-paper:src-a": "ch-src-b"}
+	cfg.Discord.Channels = map[string]string{"binanceus": "ch-live", "binanceus-paper:src-a": "ch-src-b"}
 	notifier.ReloadConfig(cfg)
 	for i := 0; i < 3; i++ {
 		spot(src, short)

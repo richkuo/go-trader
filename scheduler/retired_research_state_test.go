@@ -88,7 +88,6 @@ func retiredResearchOrdinaryConfig(path string) *Config {
 		DBFile: path,
 		Strategies: []StrategyConfig{
 			{ID: "ordinary-hl-btc", Platform: "hyperliquid", Type: "perps", Script: "shared_scripts/check_hyperliquid.py", Args: []string{"sma_crossover", "BTC", "1h", "--mode=paper"}, Capital: 1000, MaxDrawdownPct: 20, Leverage: 2},
-			{ID: "ordinary-okx-eth", Platform: "okx", Type: "perps", Script: "shared_scripts/check_okx.py", Args: []string{"sma_crossover", "ETH", "1h", "--mode=paper"}, Capital: 1000, MaxDrawdownPct: 20, Leverage: 2},
 		},
 	}
 }

@@ -13,13 +13,11 @@ H = 3_600_000
 
 SCRIPTS = {
     "binanceus": ("check_strategy.py", ["atr_breakout", "BTC/USDT", "1h", "--mode=paper"], "BTC/USDT"),
-    "okx-spot": ("check_okx.py", ["atr_breakout", "BTC", "1h", "--mode=paper", "--inst-type=spot"], "BTC"),
-    "okx-swap": ("check_okx.py", ["breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap"], "BTC"),
     "robinhood": ("check_robinhood.py", ["atr_breakout", "BTC", "30m", "--mode=paper"], "BTC"),
     "topstep": ("check_topstep.py", ["breakout", "ES", "1h", "--mode=paper"], "ES"),
 }
 
-SWALLOWING_ADAPTERS = ("okx-spot", "okx-swap", "robinhood", "topstep")
+SWALLOWING_ADAPTERS = ("robinhood", "topstep")
 
 
 def _now_hour():
@@ -154,16 +152,6 @@ def test_a_successful_neutral_trend_reports_ok_and_keeps_the_signal(tmp_path, su
             assert "HTF filter unavailable" not in proc.stderr
 
 
-def test_an_excluded_open_strategy_reports_skipped(tmp_path):
-    proc = _run("check_okx.py", ["delta_neutral_funding", "BTC", "1h", "--mode=paper", "--inst-type=swap", "--htf-filter"],
-                _fixture(tmp_path, "short"))
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    block = json.loads(proc.stdout)["htf_filter"]
-    assert block["status"] == "skipped"
-    assert "delta_neutral_funding" in block["reason"]
-    assert "HTF filter unavailable" not in proc.stderr
-
-
 def test_topstep_closed_market_return_reports_not_evaluated(tmp_path):
     proc, out = _check(tmp_path, "topstep", "short", market_open=False)
     assert proc.returncode == 0, proc.stderr + proc.stdout
@@ -196,13 +184,6 @@ def test_closed_bar_higher_timeframe_status(tmp_path, subtests):
         assert "BTC/USDT 4h candles failed" in out["htf_filter"]["reason"]
         assert out["close_fraction"] == 1.0
         assert proc.stderr.count("HTF filter unavailable for BTC/USDT 4h: ") == 1
-
-    with subtests.test(case="short_frame_holds_and_reports_unavailable"):
-        proc, out = _check(tmp_path, "okx-swap", "short", extra=["--closed-bar-decisions"])
-        assert proc.returncode == 0, proc.stderr + proc.stdout
-        assert out["closed_bar_decision"]["held"] is True
-        assert out["htf_filter"]["status"] == "unavailable"
-        assert "insufficient closed history" in out["htf_filter"]["reason"]
 
     with subtests.test(case="valid_frame_reports_ok"):
         proc, out = _check(tmp_path, "binanceus", "neutral", extra=["--closed-bar-decisions"])

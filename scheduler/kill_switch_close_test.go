@@ -285,15 +285,6 @@ func TestPlanKillSwitchClose(t *testing.T) {
 			want string
 		}{
 			{
-				name: "OKX", want: "okx err",
-				wire: func(in *KillSwitchCloseInputs) {
-					in.OKXLiveAllPerps = []StrategyConfig{{ID: "okx-btc", Platform: "okx", Type: "perps",
-						Args: []string{"sma", "BTC", "1h", "--mode=live"}}}
-					in.OKXCloser, _ = stubOKXLiveCloser(map[string]error{"BTC": fmt.Errorf("okx err")})
-					in.OKXFetcher, _ = stubOKXPositionsFetcher([]OKXPosition{{Coin: "BTC", Size: 0.01, Side: "long"}}, nil)
-				},
-			},
-			{
 				name: "Robinhood", want: "rh err",
 				wire: func(in *KillSwitchCloseInputs) {
 					in.RHLiveCrypto = []StrategyConfig{{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
@@ -336,33 +327,6 @@ func TestPlanKillSwitchClose(t *testing.T) {
 			})
 		}
 	})
-}
-
-func stubOKXLiveCloser(errs map[string]error) (OKXLiveCloser, *[]string) {
-	var calls []string
-	closer := func(symbol string, partialSz *float64) (*OKXCloseResult, error) {
-		calls = append(calls, symbol)
-		if err, ok := errs[symbol]; ok && err != nil {
-			return nil, err
-		}
-		return &OKXCloseResult{
-			Close:    &OKXClose{Symbol: symbol, Fill: &OKXCloseFill{TotalSz: 1.0, AvgPx: 100}},
-			Platform: "okx",
-		}, nil
-	}
-	return closer, &calls
-}
-
-func stubOKXPositionsFetcher(positions []OKXPosition, err error) (OKXPositionsFetcher, *int) {
-	var calls int
-	fetcher := func() ([]OKXPosition, error) {
-		calls++
-		if err != nil {
-			return nil, err
-		}
-		return positions, nil
-	}
-	return fetcher, &calls
 }
 
 func TestHyperliquidKillSwitchClose(t *testing.T) {
@@ -756,33 +720,6 @@ type killSwitchPlatformHarness struct {
 
 func killSwitchPlatformHarnesses() []killSwitchPlatformHarness {
 	return []killSwitchPlatformHarness{
-		{
-			name: "OKX", label: "OKX", coin: "BTC", extraCoin: "SOL",
-			build: func(coins []string, closeErrs map[string]error, fetchErr error) (KillSwitchCloseInputs, *[]string, *int) {
-				var positions []OKXPosition
-				for _, c := range coins {
-					positions = append(positions, OKXPosition{Coin: c, Size: 0.01, EntryPrice: 42000, Side: "long"})
-				}
-				closer, calls := stubOKXLiveCloser(closeErrs)
-				fetcher, fetchCalls := stubOKXPositionsFetcher(positions, fetchErr)
-				return KillSwitchCloseInputs{
-					OKXLiveAllPerps: []StrategyConfig{{ID: "okx-sma-btc", Platform: "okx", Type: "perps",
-						Args: []string{"sma", "BTC", "1h", "--mode=live"}}},
-					OKXCloser:       closer,
-					OKXFetcher:      fetcher,
-					PortfolioReason: "drawdown reason",
-					CloseTimeout:    time.Second,
-				}, calls, fetchCalls
-			},
-			errs: func(plan KillSwitchClosePlan) map[string]error { return plan.OKXCloseReport.Errors },
-			unconfigured: func(plan KillSwitchClosePlan) []string {
-				var out []string
-				for _, p := range plan.OKXUnconfigured {
-					out = append(out, p.Coin)
-				}
-				return out
-			},
-		},
 		{
 			name: "Robinhood", label: "Robinhood", coin: "BTC", extraCoin: "DOGE",
 			build: func(coins []string, closeErrs map[string]error, fetchErr error) (KillSwitchCloseInputs, *[]string, *int) {

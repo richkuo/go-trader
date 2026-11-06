@@ -70,11 +70,6 @@ func noEdgeCaseStochasticMomentumIndexRequiresHyperliquidPerpsClosedBarDecisions
 	openRef["open_strategy"] = map[string]interface{}{"name": smiName}
 	closeOff := noEdgeHLStrategy("hl-bo-eth", "breakout", "ETH", "4h", "--mode=paper")
 	closeOff["close_strategy"] = map[string]interface{}{"name": smiName}
-	okx := map[string]interface{}{
-		"id": "okx-smi", "type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py",
-		"args": []string{smiName, "ETH", "4h", "--mode=paper"}, "capital": 100.0,
-		"max_drawdown_pct": 10.0, "leverage": 1.0, "closed_bar_decisions": true,
-	}
 	manual := map[string]interface{}{
 		"id": "hl-smi-manual", "type": "manual", "platform": "hyperliquid", "symbol": "ETH", "timeframe": "4h",
 		"leverage": 1.0, "capital": 100.0, "allow_no_edge": true,
@@ -84,7 +79,6 @@ func noEdgeCaseStochasticMomentumIndexRequiresHyperliquidPerpsClosedBarDecisions
 		"open without closed bars":           off,
 		"effective open without closed bars": openRef,
 		"close fallback without closed bars": closeOff,
-		"okx with closed bars":               okx,
 		"hyperliquid manual close":           manual,
 	} {
 		t.Run(name, func(t *testing.T) {

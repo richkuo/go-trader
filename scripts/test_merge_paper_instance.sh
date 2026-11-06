@@ -768,10 +768,10 @@ import json, sys
 live_p, paper_p = sys.argv[1], sys.argv[2]
 live = json.load(open(live_p))
 paper = json.load(open(paper_p))
-live["discord"]["channels"]["okx"] = "C-okx-live"
+live["discord"]["channels"]["robinhood"] = "C-rh-live"
 paper["discord"]["channels"]["hyperliquid"] = "C-live"
 paper["discord"]["dm_channels"] = {"hyperliquid-paper": "D-live"}
-live["discord"]["dm_channels"] = {"hyperliquid": "D-live", "okx": "D-okx-live"}
+live["discord"]["dm_channels"] = {"hyperliquid": "D-live", "robinhood": "D-rh-live"}
 json.dump(live, open(live_p, "w"))
 json.dump(paper, open(paper_p, "w"))
 PY
@@ -784,7 +784,7 @@ assert_rc "$rc" "0" "dry run with a live-only second channel exits 0"
 staged="$LIVE_CFG.merge-staged"
 assert_eq "$(json_get "$staged" discord.channels.hyperliquid)" "C-live" "the merged map keeps the single bare channel key"
 assert_eq "$(json_get "$staged" discord.channels.hyperliquid-paper)" "" "no -paper channel key is added when the paper value already routes through the bare key"
-assert_eq "$(json_get "$staged" discord.channels.okx)" "C-okx-live" "the live-only channel is untouched"
+assert_eq "$(json_get "$staged" discord.channels.robinhood)" "C-rh-live" "the live-only channel is untouched"
 assert_eq "$(json_get "$staged" discord.dm_channels.hyperliquid-paper)" "D-live" "the dm -paper key survives, because tradeAlertRoutes never falls back off it for a paper strategy"
 
 echo "== a paper dm map with only a bare key refuses at proof"

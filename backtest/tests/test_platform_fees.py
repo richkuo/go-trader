@@ -40,7 +40,7 @@ def _scrape_fees_go_constants() -> dict:
     text = FEES_GO.read_text()
     const_pattern = re.compile(
         r"^\s*(BinanceSpotFeePct|HyperliquidTakerFeePct|HyperliquidMakerFeePct|"
-        r"LunoTakerFeePct|OKXSpotTakerFeePct|OKXPerpsTakerFeePct|SlippagePct|FillCostModelVersion)\s*=\s*([0-9.]+)",
+        r"LunoTakerFeePct|SlippagePct|FillCostModelVersion)\s*=\s*([0-9.]+)",
         re.MULTILINE,
     )
     return {m.group(1): float(m.group(2)) for m in const_pattern.finditer(text)}
@@ -52,8 +52,6 @@ def test_platform_fee_table_matches_fees_go(subtests):
         assert go_rates["BinanceSpotFeePct"] == PLATFORM_FEE_PCT["binanceus"]
         assert go_rates["HyperliquidTakerFeePct"] == PLATFORM_FEE_PCT["hyperliquid"]
         assert go_rates["LunoTakerFeePct"] == PLATFORM_FEE_PCT["luno"]
-        assert go_rates["OKXSpotTakerFeePct"] == PLATFORM_FEE_PCT["okx"]
-        assert go_rates["OKXPerpsTakerFeePct"] == PLATFORM_FEE_PCT["okx-perps"]
         assert go_rates["SlippagePct"] == DEFAULT_SLIPPAGE_PCT
         assert Backtester(platform="hyperliquid").slippage_pct == DEFAULT_SLIPPAGE_PCT
         assert go_rates["FillCostModelVersion"] == FILL_COST_MODEL_VERSION
@@ -127,8 +125,6 @@ def test_fee_actually_deducted_end_to_end(subtests):
         ("hyperliquid", 0.00045),
         ("robinhood",   0.0),
         ("luno",        0.01),
-        ("okx",         0.001),
-        ("okx-perps",   0.0005),
     ]:
         with subtests.test(platform=platform):
             assert Backtester(platform=platform).commission_pct == pytest.approx(expected_rate)

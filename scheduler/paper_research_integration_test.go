@@ -480,7 +480,6 @@ func TestPaperResearchQuoteOwnerSetup(t *testing.T) {
 			func(sc map[string]interface{}) {
 				sc["args"] = []string{"inventory_market_making", "ETH", "1m", "--mode=paper"}
 			},
-			func(sc map[string]interface{}) { sc["platform"] = "okx" },
 		} {
 			setup, err := parseQuoteOwnerSetup(paperResearchQuoteFragment(mutate))
 			if err != nil {

@@ -168,8 +168,8 @@ func TestCashReconcileRequiredSaveLoadRoundTrip(t *testing.T) {
 				OptionPositions:       make(map[string]*OptionPosition),
 				TradeHistory:          []Trade{},
 			},
-			"okx-btc": {
-				ID: "okx-btc", Type: "spot", Platform: "okx",
+			"rh-eth": {
+				ID: "rh-eth", Type: "spot", Platform: "robinhood",
 				Cash: -12.5, InitialCapital: 1000,
 				CashReconcileRequired: true,
 				Positions:             make(map[string]*Position),
@@ -196,16 +196,16 @@ func TestCashReconcileRequiredSaveLoadRoundTrip(t *testing.T) {
 	if rh.Cash != 0.005 {
 		t.Fatalf("cash = %g, want 0.005 (not clamped)", rh.Cash)
 	}
-	okx := loaded.Strategies["okx-btc"]
-	if okx == nil || !okx.CashReconcileRequired {
+	neg := loaded.Strategies["rh-eth"]
+	if neg == nil || !neg.CashReconcileRequired {
 		t.Fatal("negative-cash strategy must also keep CashReconcileRequired across Save/Load")
 	}
 
 	ValidateState(loaded, nil)
 	if loaded.Strategies["rh-btc"].Cash != 0.005 {
 	}
-	if !loaded.Strategies["okx-btc"].CashReconcileRequired || loaded.Strategies["okx-btc"].Cash != 0 {
-		t.Fatalf("okx after ValidateState: cash=%g latch=%v", loaded.Strategies["okx-btc"].Cash, loaded.Strategies["okx-btc"].CashReconcileRequired)
+	if !loaded.Strategies["rh-eth"].CashReconcileRequired || loaded.Strategies["rh-eth"].Cash != 0 {
+		t.Fatalf("rh-eth after ValidateState: cash=%g latch=%v", loaded.Strategies["rh-eth"].Cash, loaded.Strategies["rh-eth"].CashReconcileRequired)
 	}
 	loaded.Strategies["rh-btc"].Cash = 0
 	loaded.Strategies["rh-btc"].CashReconcileRequired = true
@@ -322,47 +322,6 @@ func TestExecuteOrderCashReconcileGate(t *testing.T) {
 
 		calls = nil
 		er, ok = run(&RobinhoodResult{Symbol: "BTC", Signal: 1}, 50, false, 0, "")
-		if !ok || er == nil {
-			t.Fatalf("unlatched buy: got ok=%v er=%v, want proceed", ok, er != nil)
-		}
-		if len(calls) != 1 || calls[0] != "buy" {
-			t.Fatalf("unlatched buy calls=%v, want [buy]", calls)
-		}
-	})
-	t.Run("OKX", func(t *testing.T) {
-		orig := okxExecuteFn
-		t.Cleanup(func() { okxExecuteFn = orig })
-
-		var calls []string
-		okxExecuteFn = func(script, symbol, side string, size float64, instType string) (*OKXExecuteResult, string, error) {
-			calls = append(calls, side)
-			return &OKXExecuteResult{
-				Execution: &OKXExecution{Action: side, Symbol: symbol, Size: size, Fill: &OKXFill{AvgPx: 100, TotalSz: size}},
-			}, "", nil
-		}
-		logger := &StrategyLogger{stratID: "okx-btc", writer: io.Discard}
-		sc := StrategyConfig{ID: "okx-btc", Type: "spot", Platform: "okx", Script: "check_okx.py"}
-
-		calls = nil
-		er, ok := runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: 1, Price: 100}, 100, 50, false, true, 0, "", 0, 0, HurstGateDecision{}, nil, logger)
-		if ok || er != nil {
-			t.Fatalf("latched buy: got ok=%v er=%v, want held", ok, er != nil)
-		}
-		if len(calls) != 0 {
-			t.Fatalf("latched buy must not place order, calls=%v", calls)
-		}
-
-		calls = nil
-		er, ok = runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: -1, Price: 100}, 100, 0, false, true, 0.5, "long", 100, 0, HurstGateDecision{}, nil, logger)
-		if !ok || er == nil {
-			t.Fatalf("latched sell: got ok=%v er=%v, want proceed", ok, er != nil)
-		}
-		if len(calls) != 1 || calls[0] != "sell" {
-			t.Fatalf("latched sell calls=%v, want [sell]", calls)
-		}
-
-		calls = nil
-		er, ok = runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: 1, Price: 100}, 100, 50, false, false, 0, "", 0, 0, HurstGateDecision{}, nil, logger)
 		if !ok || er == nil {
 			t.Fatalf("unlatched buy: got ok=%v er=%v, want proceed", ok, er != nil)
 		}

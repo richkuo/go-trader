@@ -853,7 +853,6 @@ func TestRegimeSideConfigAndReloadIntegration(t *testing.T) {
 			regime bool
 			field  string
 		}{
-			{"okx", base(map[string]any{"platform": "okx", "script": "shared_scripts/check_okx.py", "args": []any{"breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap"}}), true, "strategy[rs-bad].regime_side: only supported for HL perps"},
 			{"manual", map[string]any{"id": "rs-bad", "type": "manual", "platform": "hyperliquid", "symbol": "BTC", "timeframe": "1h", "capital": 1000, "max_drawdown_pct": 50, "regime_side": true}, true, "strategy[rs-bad].regime_side: only supported for HL perps"},
 			{"regime_off", base(nil), false, "strategy[rs-bad].regime_side: requires top-level regime.enabled=true"},
 			{"window", base(map[string]any{"regime_directional_window": "nope"}), true, `regime_directional_window="nope" not found`},
