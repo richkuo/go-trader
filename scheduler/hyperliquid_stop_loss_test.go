@@ -19,6 +19,7 @@ func TestEffectiveStopLossPct(t *testing.T) {
 		sc   StrategyConfig
 		want float64
 	}{
+		{"non-HL returns 0", StrategyConfig{Platform: "topstep", Type: "perps", StopLossPct: pf(1.5)}, 0},
 		{"non-perps returns 0", StrategyConfig{Platform: "hyperliquid", Type: "spot", StopLossPct: pf(1.5)}, 0},
 		{"unset and no drawdown", hlPerps(StrategyConfig{Leverage: 5}), 0},
 		{"explicit pct", hlPerps(StrategyConfig{StopLossPct: pf(1.5), Leverage: 5}), 1.5},

@@ -1366,6 +1366,7 @@ func TestOptionLegacyKeyNormalizationIntegration(t *testing.T) {
 			s.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhoodOptions, &PendingCircuitClose{OperatorRequired: true, ConsecutiveFailures: 2, Episode: "orc-x",
 				FiredAt: time.Unix(5000, 0).UTC(), LastNotifiedAt: time.Unix(5100, 0).UTC(),
 				Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC-call-sell-102-" + e, Size: 2, PositionID: "tp-BTC-call-sell-102-" + e}, {Symbol: "my-leg", Size: 4}}})
+			s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{OperatorRequired: true, Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC-call-sell-102-" + e, Size: 1}}})
 			RecordTrade(s, Trade{Timestamp: time.Unix(1500, 0).UTC(), StrategyID: s.ID, Symbol: "BTC-call-sell-102-" + e, PositionID: "tp-BTC-call-sell-102-" + e, Side: "sell", Quantity: 2, Price: 20, Value: 20, TradeType: "options"})
 			recordClosedOptionPosition(s, leg("BTC-call-sell-103-"+e, "call", "sell", 102.6, 1), 5, 5, "signal", time.Unix(1600, 0).UTC())
 			env.saveAll()
@@ -1440,6 +1441,9 @@ func TestOptionLegacyKeyNormalizationIntegration(t *testing.T) {
 					if b.OptionPositions[p.Symbol] == nil {
 						t.Fatalf("%s: pending close names absent leg %s", stage, p.Symbol)
 					}
+				}
+				if other := b.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); other == nil || len(other.Symbols) != 1 || other.Symbols[0].Symbol != "BTC-call-sell-102-"+e || other.Symbols[0].Size != 1 {
+					t.Fatalf("%s: another platform's pending close changed: %+v", stage, other)
 				}
 				var tradeSym, closedID string
 				fdb := env.fileFor(sc.ID).db

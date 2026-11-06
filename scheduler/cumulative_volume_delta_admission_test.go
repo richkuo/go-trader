@@ -232,6 +232,14 @@ func productionRefusedEveryModeAndReference(t *testing.T, name string) {
 		if _, _, err := buildAddStrategyEntry(name, "hyperliquid", "btc"); err == nil || !strings.Contains(err.Error(), "quote-owned") {
 			t.Fatalf("the scalar add route must refuse the quote capability, got %v", err)
 		}
+	} else {
+		topstep := researchFixtureArgs(researchScalarFixture(t, name), name, []string{"--mode=paper"})
+		topstep["platform"], topstep["script"], topstep["type"] = "topstep", "shared_scripts/check_topstep.py", "futures"
+		for i, err := range researchLoadAll(t, websocket, topstep) {
+			if err == nil || !strings.Contains(err.Error(), `set "platform": "hyperliquid" (got "topstep")`) {
+				t.Fatalf("loader %d must refuse the research candidate on topstep for its platform, got %v", i, err)
+			}
+		}
 	}
 	mass := noEdgeHLStrategy("hl-massrev-eth", "mass_index_reversal", "ETH", "1h", "--mode=paper")
 	for i, err := range researchLoadAll(t, nil, mass) {

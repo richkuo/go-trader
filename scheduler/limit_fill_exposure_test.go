@@ -93,19 +93,22 @@ func TestLimitFillLiveExposureReadings(t *testing.T) {
 			Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}}
 		paper := StrategyConfig{ID: "hl-paper", Platform: "hyperliquid", Type: "perps", Symbol: "ETH",
 			Args: []string{"ema_crossover", "ETH", "1h"}}
+		rh := StrategyConfig{ID: "rh-eth", Platform: "robinhood", Type: "perps", Symbol: "ETH",
+			Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}}
 
 		state := &AppState{Strategies: map[string]*StrategyState{
 			"hl-live":  {ID: "hl-live", Positions: map[string]*Position{"ETH": {Symbol: "ETH", Side: "long", Quantity: 1.0}}},
 			"hl-short": {ID: "hl-short", Positions: map[string]*Position{"ETH": {Symbol: "ETH", Side: "short", Quantity: 0.25}}},
 			"hl-paper": {ID: "hl-paper", Positions: map[string]*Position{"ETH": {Symbol: "ETH", Side: "long", Quantity: 5.0}}},
+			"rh-eth":   {ID: "rh-eth", Positions: map[string]*Position{"ETH": {Symbol: "ETH", Side: "long", Quantity: 7.0}}},
 		}}
 
-		got := hyperliquidBookedSignedNetForCoin([]StrategyConfig{live, short, paper}, state, "ETH")
+		got := hyperliquidBookedSignedNetForCoin([]StrategyConfig{live, short, paper, rh}, state, "ETH")
 		if got != 0.75 {
 			t.Fatalf("booked signed net = %g, want 0.75 (live Hyperliquid legs only, signed by side)", got)
 		}
-		if owners := hyperliquidLiveOwnersForCoin([]StrategyConfig{live, short, paper}, "ETH"); owners != 2 {
-			t.Fatalf("owners = %d, want 2 (paper legs carry no on-chain exposure)", owners)
+		if owners := hyperliquidLiveOwnersForCoin([]StrategyConfig{live, short, paper, rh}, "ETH"); owners != 2 {
+			t.Fatalf("owners = %d, want 2 (paper and non-Hyperliquid legs carry no on-chain exposure)", owners)
 		}
 	})
 }
