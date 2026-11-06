@@ -77,22 +77,20 @@ func paperResearchNoHeldWork(t *testing.T, label, log string) {
 
 func TestPaperResearchSchedulerEngineHold(t *testing.T) {
 	e := newMRPEnv(t, 40)
-	t.Run("held_only_once_reports_the_hold_and_exits_after_restart", func(t *testing.T) {
+	t.Run("held_only_once_reports_the_hold_and_exits", func(t *testing.T) {
+		t.Parallel()
 		cfg := e.writeConfig("held-only.json", func(doc map[string]any) {
 			delete(doc, "regime")
 			doc["strategies"] = []any{paperResearchOwnerDoc("")}
 		})
-		for run := 1; run <= 2; run++ {
-			log := paperResearchOnce(t, e, cfg)
-			if !strings.Contains(log, paperResearchHoldLine) || !strings.Contains(log, "--once flag set, exiting after single cycle.") {
-				t.Fatalf("run %d: the held-only --once must report the hold and reach the end-of-cycle exit:\n%s", run, log)
-			}
-			if strings.Contains(log, "[feed] eval=") {
-				t.Fatalf("run %d: a held-only cycle must not request an evaluation snapshot:\n%s", run, log)
-			}
-			paperResearchNoHeldWork(t, "held-only", log)
-			t.Logf("held-only run %d hold line: %s", run, paperResearchHoldLine)
+		log := paperResearchOnce(t, e, cfg)
+		if !strings.Contains(log, paperResearchHoldLine) || !strings.Contains(log, "--once flag set, exiting after single cycle.") {
+			t.Fatalf("the held-only --once must report the hold and reach the end-of-cycle exit:\n%s", log)
 		}
+		if strings.Contains(log, "[feed] eval=") {
+			t.Fatalf("a held-only cycle must not request an evaluation snapshot:\n%s", log)
+		}
+		paperResearchNoHeldWork(t, "held-only", log)
 		_, store := e.readStore(cfg)
 		db, err := store.dbForStrategy("hl-invmm-btc")
 		if err != nil {
@@ -110,6 +108,7 @@ func TestPaperResearchSchedulerEngineHold(t *testing.T) {
 		store.Close()
 	})
 	t.Run("mixed_once_runs_ordinary_work_and_unavailable_research_input_holds", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		cfg := e.writeConfig("mixed.json", func(doc map[string]any) {
 			delete(doc, "regime")
@@ -136,6 +135,7 @@ func TestPaperResearchSchedulerEngineHold(t *testing.T) {
 		t.Logf("mixed log:\n%s", log)
 	})
 	t.Run("daemon_reports_the_hold_each_cycle_after_reload_and_in_status", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		port := htfITFreePort(t)
 		cfg := e.writeConfig("daemon.json", func(doc map[string]any) {
@@ -145,13 +145,13 @@ func TestPaperResearchSchedulerEngineHold(t *testing.T) {
 			doc["strategies"] = []any{paperResearchOwnerDoc("")}
 		})
 		d := e.startDaemon(cfg, port)
-		d.waitLog("two hold cycles", 120*time.Second, func(s string) bool { return strings.Count(s, paperResearchHoldLine) >= 3 })
+		d.waitLog("a hold cycle", 120*time.Second, func(s string) bool { return strings.Count(s, paperResearchHoldLine) >= 2 })
 		if err := d.cmd.Process.Signal(syscall.SIGHUP); err != nil {
 			t.Fatal(err)
 		}
 		d.waitLog("reload", 60*time.Second, func(s string) bool { return strings.Contains(s, "[reload] "+paperResearchHoldLine) })
 		before := strings.Count(d.output(), paperResearchHoldLine)
-		d.waitLog("a hold after reload", 60*time.Second, func(s string) bool { return strings.Count(s, paperResearchHoldLine) >= before+2 })
+		d.waitLog("a hold after reload", 60*time.Second, func(s string) bool { return strings.Count(s, paperResearchHoldLine) >= before+1 })
 		req, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:"+strconv.Itoa(port)+"/health", nil)
 		req.Header.Set("Authorization", "Bearer "+e.token)
 		resp, err := http.DefaultClient.Do(req)

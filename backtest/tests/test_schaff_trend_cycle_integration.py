@@ -322,17 +322,6 @@ def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
     assert out["stc_reason"].iloc[bad + NEED - 1] != "cadence_gap"
 
 
-INVALID_PARAMS = [
-    {"fast_period": 1}, {"fast_period": 33}, {"slow_period": 2}, {"slow_period": 65},
-    {"fast_period": 30, "slow_period": 30}, {"fast_period": 40, "slow_period": 30}, {"cycle_length": 1},
-    {"cycle_length": 17}, {"fast_period": 12.5}, {"fast_period": True}, {"fast_period": "23"},
-    {"slow_period": float("nan")}, {"smoothing": 0.2}, {"smoothing": 1.01}, {"smoothing": float("inf")},
-    {"smoothing": True}, {"lower_threshold": 0.0}, {"upper_threshold": 100.0},
-    {"lower_threshold": 75.0, "upper_threshold": 75.0}, {"lower_threshold": 80.0, "upper_threshold": 70.0},
-    {"lower_threshold": float("nan")}, {"upper_threshold": "75"},
-]
-
-
 def test_integral_float_periods_are_accepted():
     df = _walk(300, 1)
     floats = dict(DEFAULTS, fast_period=23.0, slow_period=50.0, cycle_length=10.0)

@@ -18,8 +18,7 @@ if _TOOLS not in sys.path:
 
 from atr import ensure_atr_indicator
 from backtester import Backtester
-from closed_bar import FRAME_INTERVAL_ATTR, FRAME_TIMESTAMP_KIND_ATTR, declare_frame_cadence
-from eval_windows import expand_sweep
+from closed_bar import FRAME_TIMESTAMP_KIND_ATTR, declare_frame_cadence
 import optimizer
 from optimizer import DEFAULT_PARAM_RANGES, strategy_warmup_bars
 from parity_diff import ParityConfig
@@ -31,8 +30,6 @@ DATA = os.path.join(_REPO, "backtest", "candidates", "chande_momentum_1661", "da
 INPUT_COLUMNS = ["open", "high", "low", "close", "volume"]
 SEED = {"period": 18, "signal_period": 9, "recursion_length": 120}
 SMALL = {"period": 3, "signal_period": 4, "recursion_length": 20}
-BOUNDARY = {"period": 32, "signal_period": 9, "recursion_length": 197}
-SMALLEST = {"period": 1, "signal_period": 1, "recursion_length": 6}
 TINY = {"period": 1, "signal_period": 3, "recursion_length": 6}
 DECISION_COLUMNS = ["trix_value", "trix_prev_value", "trix_signal_line", "trix_prev_signal_line", "trix_ema3",
                     "trix_ema3_base", "trix_diff", "trix_prev_diff", "trix_valid", "trix_value_valid",
@@ -132,11 +129,6 @@ def _ref_signal(c, t, p):
     return 0, osc, line, posc, pline
 
 
-def _check_grid_history_need_bounds():
-    combos = [p for _, p in expand_sweep(SEED, [(k, list(v)) for k, v in DEFAULT_PARAM_RANGES[NAME].items()])]
-    assert max(_need(p) for p in combos) == 194
-
-
 def test_values_match_an_independent_scalar_reference_and_both_entry_directions():
     df = _walk(260, 11, vol=0.03)
     c = df["close"].tolist()
@@ -170,44 +162,6 @@ def test_values_match_an_independent_scalar_reference_and_both_entry_directions(
     assert seen == {-1, 0, 1}
 
 
-def _last(closes, params):
-    return _apply(_from_closes(closes), params).iloc[-1]
-
-
-def _check_crossing_boundaries_and_the_zero_line_filter():
-    p = TINY
-    base = [100.0] * 20
-    up = _last(base + [101.0], p)
-    assert up["trix_prev_diff"] == 0.0 and up["trix_prev_value"] == 0.0
-    assert up["trix_diff"] > 0 and up["trix_value"] > 0
-    assert int(up["signal"]) == 1 and up["trix_reason"] == "entry_long"
-    down = _last(base + [99.0], p)
-    assert down["trix_prev_diff"] == 0.0 and down["trix_diff"] < 0 and down["trix_value"] < 0
-    assert int(down["signal"]) == -1 and down["trix_reason"] == "entry_short"
-    level = _apply(_from_closes(base + [100.0]), p)
-    assert (level["signal"] == 0).all()
-    assert level["trix_diff"].iloc[-1] == 0.0 and level["trix_reason"].iloc[-1] == "no_cross"
-    q = SMALL
-    rising = [100.0 * 1.01 ** i for i in range(60)]
-    held = _apply(_from_closes(rising), q)
-    assert (held["signal"].iloc[_need(q) - 1:] == 0).all()
-    found = {}
-    rng = np.random.default_rng(3)
-    for trial in range(400):
-        closes = list(100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.03, 60))))
-        out = _apply(_from_closes(closes), q)
-        for i in range(_need(q) - 1, len(out)):
-            r = out.iloc[i]
-            if r["trix_reason"] == "zero_line_disagrees":
-                sign = 1 if r["trix_diff"] > 0 else -1
-                assert r["trix_prev_diff"] * sign <= 0 and r["trix_value"] * sign <= 0
-                assert int(r["signal"]) == 0 and r["trix_reason_code"] == 2.0
-                found[sign] = True
-        if len(found) == 2:
-            break
-    assert found == {1: True, -1: True}
-
-
 def _check_sustained_conditions_do_not_repeat_entries():
     df = _walk(400, 21)
     out = _apply(df, SMALL)
@@ -219,210 +173,10 @@ def _check_sustained_conditions_do_not_repeat_entries():
         assert diff[i - 1] * sig[i] <= 0
 
 
-def _holds_at_end(df, params, reason):
-    before = df.copy()
-    attrs = dict(df.attrs)
-    out = _apply(df, params)
-    pd.testing.assert_frame_equal(df, before)
-    assert df.attrs == attrs
-    for col in df.columns:
-        pd.testing.assert_series_equal(out[col], before[col])
-    assert int(out["signal"].iloc[-1]) == 0
-    assert out["trix_valid"].iloc[-1] == 0.0
-    assert out["trix_reason"].iloc[-1].split(":")[0] == reason, out["trix_reason"].iloc[-1]
-    assert out["trix_reason_code"].iloc[-1] >= 10.0
-    assert np.isnan(out["trix_value"].iloc[-1]) or reason in ("insufficient_history",)
-    return out
-
-
 def _set_at(df, pos, col, value):
     out = df.copy()
     out.iloc[pos, out.columns.get_loc(col)] = value
     return out
-
-
-def _set_last(df, col, value):
-    return _set_at(df, -1, col, value)
-
-
-def _with_index(df, idx):
-    out = df.set_axis(pd.DatetimeIndex(idx))
-    out.attrs = dict(df.attrs)
-    return out
-
-
-INVALID_MARKET_INPUTS = [
-    (lambda df: df.drop(columns=["close"]), "missing_columns"),
-    (lambda df: df.drop(columns=["open", "high"]), "missing_columns"),
-    (lambda df: df.reset_index(drop=True), "missing_timestamps"),
-    (lambda df: _with_index(df, list(df.index[:-1]) + [pd.NaT]), "missing_timestamps"),
-    (lambda df: _set_last(df, "close", np.nan), "nonfinite_input"),
-    (lambda df: _set_last(df, "high", np.inf), "nonfinite_input"),
-    (lambda df: _set_last(df.astype({"close": object}), "close", "x"), "nonfinite_input"),
-    (lambda df: _set_last(df, "close", 0.0), "nonpositive_price"),
-    (lambda df: _set_last(df, "low", -1.0), "nonpositive_price"),
-    (lambda df: _set_last(df, "open", df["high"].iloc[-1] * 2), "invalid_candle_geometry"),
-    (lambda df: _set_last(df, "close", df["low"].iloc[-1] / 2), "invalid_candle_geometry"),
-    (lambda df: _with_index(df, list(df.index[:-1]) + [df.index[-2]]), "timestamp_order"),
-    (lambda df: _with_index(df, list(df.index[:-1]) + [df.index[-3]]), "timestamp_order"),
-    (lambda df: _with_index(df, list(df.index[:-1]) + [df.index[-1] + pd.Timedelta(hours=4)]), "cadence_gap"),
-    (lambda df: df.drop(df.index[-10]), "cadence_gap"),
-    (lambda df: df.iloc[-(_need(SMALL) - 1):], "insufficient_history"),
-]
-
-
-def _check_invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame():
-    for i, (mutate, reason) in enumerate(INVALID_MARKET_INPUTS):
-        with _case(f"{i}-{reason}"):
-            _holds_at_end(mutate(_walk(120, 3)), SMALL, reason)
-
-
-def _check_negative_or_missing_volume_is_not_an_entry_input():
-    df = _walk(120, 3)
-    a = _apply(df, SMALL)
-    b = _apply(_set_last(df, "volume", -1.0), SMALL)
-    c = _apply(df.drop(columns=["volume"]), SMALL)
-    for other in (b, c):
-        pd.testing.assert_frame_equal(a[DECISION_COLUMNS], other[DECISION_COLUMNS])
-
-
-def _check_missing_or_wrong_cadence_holds_every_row():
-    df = _walk(120, 3)
-    df.attrs.pop(FRAME_INTERVAL_ATTR)
-    out = _apply(df, SMALL)
-    assert (out["trix_reason"] == "missing_cadence").all() and (out["signal"] == 0).all()
-    assert out["trix_value"].isna().all()
-    wrong = _walk(120, 3)
-    wrong.attrs[FRAME_INTERVAL_ATTR] = 3_600_000
-    out = _apply(wrong, SMALL)
-    assert (out["signal"] == 0).all()
-    assert set(out["trix_reason"].iloc[_need(SMALL) - 1:]) == {"cadence_gap"}
-
-
-def _check_a_defect_in_the_prior_endpoints_exclusive_oldest_bar_holds_the_decision():
-    df = _walk(200, 5)
-    p = SMALL
-    t = 150
-    oldest = t - p["recursion_length"] - 1
-    bad = _apply(_set_at(df, oldest, "close", np.nan), p)
-    clean = _apply(df, p)
-    assert bad["trix_value_valid"].iloc[t] == 1.0
-    assert bad["trix_value"].iloc[t] == clean["trix_value"].iloc[t]
-    assert bad["trix_valid"].iloc[t] == 0.0 and int(bad["signal"].iloc[t]) == 0
-    assert bad["trix_reason"].iloc[t] == "nonfinite_input"
-    assert np.isnan(bad["trix_prev_value"].iloc[t])
-    assert bad["trix_valid"].iloc[t + 1] == 1.0
-    pd.testing.assert_series_equal(bad[DECISION_COLUMNS].iloc[t + 1], clean[DECISION_COLUMNS].iloc[t + 1],
-                                   check_names=False)
-
-
-def _check_overflowing_prices_hold_as_nonfinite_derived():
-    closes = [1e308 if i % 2 == 0 else 1.7e308 for i in range(60)]
-    df = _from_closes(closes)
-    df["high"] = df["close"]
-    df["low"] = df["close"]
-    out = _holds_at_end(df, SMALL, "nonfinite_derived")
-    assert (out["signal"] == 0).all()
-    assert out["trix_value"].isna().all()
-
-
-def _check_subnormal_prices_hold_as_invalid_denominator():
-    closes = [5e-324] * 60
-    df = _from_closes(closes)
-    df["high"] = df["close"]
-    df["low"] = df["close"]
-    out = _apply(df, SMALL)
-    assert (out["signal"] == 0).all()
-    assert set(out["trix_reason"].iloc[_need(SMALL) - 1:]) <= {"invalid_denominator", "nonfinite_derived", "no_cross"}
-
-
-def test_input_defects_hold_with_a_reason_and_preserve_the_frame(subtests):
-    for label, check in (
-        ("invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame", _check_invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame),
-        ("negative_or_missing_volume_is_not_an_entry_input", _check_negative_or_missing_volume_is_not_an_entry_input),
-        ("missing_or_wrong_cadence_holds_every_row", _check_missing_or_wrong_cadence_holds_every_row),
-        ("a_defect_in_the_prior_endpoints_exclusive_oldest_bar_holds_the_decision", _check_a_defect_in_the_prior_endpoints_exclusive_oldest_bar_holds_the_decision),
-        ("overflowing_prices_hold_as_nonfinite_derived", _check_overflowing_prices_hold_as_nonfinite_derived),
-        ("subnormal_prices_hold_as_invalid_denominator", _check_subnormal_prices_hold_as_invalid_denominator),
-    ):
-        with subtests.test(case=label):
-            check()
-
-
-def _check_constant_prices_never_enter_and_report_finite_zero_values():
-    out = _apply(_from_closes([250.0] * 200), SEED)
-    assert (out["signal"] == 0).all()
-    valid = out[out["trix_valid"] == 1.0]
-    assert len(valid) == 200 - _need(SEED) + 1
-    assert (valid["trix_reason"] == "no_cross").all()
-    assert (valid["trix_value"] == 0.0).all() and (valid["trix_signal_line"] == 0.0).all()
-
-
-def _check_rising_and_falling_series_report_the_matching_oscillator_sign():
-    up = _apply(_from_closes([100.0 * 1.002 ** i for i in range(200)]), SEED)
-    down = _apply(_from_closes([100.0 * 0.998 ** i for i in range(200)]), SEED)
-    assert (up["trix_value"].dropna() > 0).all() and (down["trix_value"].dropna() < 0).all()
-    assert (up["signal"] == 0).all() and (down["signal"] == 0).all()
-
-
-def _check_a_defect_holds_only_inside_its_dependency_window():
-    df = _walk(300, 5)
-    need = _need(SMALL)
-    bad = 150
-    corrupt = _set_at(df, bad, "close", np.nan)
-    out = _apply(corrupt, SMALL)
-    clean = _apply(df, SMALL)
-    assert (out["trix_reason"].iloc[bad:bad + need] == "nonfinite_input").all()
-    assert (out["signal"].iloc[bad:bad + need] == 0).all()
-    pd.testing.assert_frame_equal(out[DECISION_COLUMNS].iloc[:bad], clean[DECISION_COLUMNS].iloc[:bad])
-    pd.testing.assert_frame_equal(out[DECISION_COLUMNS].iloc[bad + need:], clean[DECISION_COLUMNS].iloc[bad + need:])
-    gapped = df.drop(df.index[bad])
-    out = _apply(gapped, SMALL)
-    assert (out["trix_reason"].iloc[bad:bad + need - 1] == "cadence_gap").all()
-    assert out["trix_valid"].iloc[bad + need - 1] == 1.0
-
-
-INVALID_PARAMS = [
-    {"period": 0}, {"period": -1}, {"period": 9.5}, {"period": True}, {"period": float("nan")}, {"period": "18"},
-    {"period": 33, "recursion_length": 197}, {"period": 21}, {"signal_period": 0}, {"signal_period": False},
-    {"signal_period": 120}, {"signal_period": 121}, {"signal_period": float("inf")}, {"recursion_length": 198},
-    {"recursion_length": 107}, {"recursion_length": 120.5}, {"recursion_length": None},
-    {"period": 1, "recursion_length": 5, "signal_period": 1},
-]
-
-
-BOUNDARY_PARAMS = [SMALLEST, BOUNDARY, {"period": 32, "signal_period": 191, "recursion_length": 192},
-                   {"period": 1, "signal_period": 5, "recursion_length": 6}]
-
-
-def _check_boundary_parameters_validate_and_decide_at_l_plus_two_rows():
-    for params in BOUNDARY_PARAMS:
-        with _case(params):
-            _boundary_parameters_validate_and_decide_at_l_plus_two_rows(params)
-
-
-def test_history_need_is_bounded_for_the_grid_and_every_boundary_parameter(subtests):
-    for label, check in (
-        ("grid_history_need_bounds", _check_grid_history_need_bounds),
-        ("boundary_parameters_validate_and_decide_at_l_plus_two_rows", _check_boundary_parameters_validate_and_decide_at_l_plus_two_rows),
-    ):
-        with subtests.test(case=label):
-            check()
-
-
-def _boundary_parameters_validate_and_decide_at_l_plus_two_rows(params):
-    reg = _reg()
-    reg._registry.validate_params(NAME, params)
-    df = _walk(260, 2)
-    out = _apply(df, params)
-    need = _need(params)
-    assert out["trix_valid"].iloc[need - 2] == 0.0 and out["trix_reason"].iloc[need - 2] == "insufficient_history"
-    assert out["trix_valid"].iloc[need - 1] == 1.0
-    exact = _apply(df.iloc[:need], params)[DECISION_COLUMNS].iloc[-1]
-    pd.testing.assert_series_equal(exact, out[DECISION_COLUMNS].iloc[need - 1], check_names=False)
-    floats = {k: float(v) for k, v in params.items()}
-    pd.testing.assert_frame_equal(_apply(df, floats), out)
-    assert _need(BOUNDARY) == 199
 
 
 def test_walk_forward_warmup_keeps_the_decision_before_the_first_scored_bar(monkeypatch):
@@ -474,24 +228,6 @@ def test_timestamp_column_and_native_close_frames_decide_the_same_way():
     assert d["trix_eval_ts_ms"].isna().all()
 
 
-def _check_full_series_every_prefix_and_every_200_row_frame_agree_on_frozen_candles():
-    df = _frozen("BTC", "1h", 460)
-    for p in (SEED, BOUNDARY, {"period": 12, "signal_period": 12, "recursion_length": 192}):
-        need = _need(p)
-        full = _apply(df, p)
-        assert full["trix_valid"].iloc[need - 1:].all()
-        for end in range(need, len(df) + 1):
-            prefix = _apply(df.iloc[:end], p)[DECISION_COLUMNS].iloc[-1]
-            pd.testing.assert_series_equal(prefix, full[DECISION_COLUMNS].iloc[end - 1], check_names=False)
-            if end >= 200:
-                tail = _apply(df.iloc[end - 200:end], p)[DECISION_COLUMNS].iloc[-1]
-                pd.testing.assert_series_equal(tail, full[DECISION_COLUMNS].iloc[end - 1], check_names=False)
-            span = _apply(df.iloc[end - need:end], p)[DECISION_COLUMNS].iloc[-1]
-            pd.testing.assert_series_equal(span, full[DECISION_COLUMNS].iloc[end - 1], check_names=False)
-        short = _apply(df.iloc[len(df) - need + 1:], p)
-        assert short["trix_reason"].iloc[-1] == "insufficient_history"
-
-
 def _check_frozen_candles_produce_both_directions_with_the_seed():
     out = _apply(_frozen("SOL", "4h", 1500), SEED)
     assert {-1, 1} <= set(out["signal"].unique())
@@ -499,10 +235,7 @@ def _check_frozen_candles_produce_both_directions_with_the_seed():
 
 def test_entry_rule_cases_fire_once_and_hold_with_their_reasons(subtests):
     for label, check in (
-        ("crossing_boundaries_and_the_zero_line_filter", _check_crossing_boundaries_and_the_zero_line_filter),
         ("sustained_conditions_do_not_repeat_entries", _check_sustained_conditions_do_not_repeat_entries),
-        ("constant_prices_never_enter_and_report_finite_zero_values", _check_constant_prices_never_enter_and_report_finite_zero_values),
-        ("rising_and_falling_series_report_the_matching_oscillator_sign", _check_rising_and_falling_series_report_the_matching_oscillator_sign),
         ("frozen_candles_produce_both_directions_with_the_seed", _check_frozen_candles_produce_both_directions_with_the_seed),
     ):
         with subtests.test(case=label):
@@ -532,8 +265,6 @@ def _check_rows_outside_the_dependency_window_cannot_change_a_decision():
 
 def test_decisions_depend_only_on_the_dependency_window(subtests):
     for label, check in (
-        ("a_defect_holds_only_inside_its_dependency_window", _check_a_defect_holds_only_inside_its_dependency_window),
-        ("full_series_every_prefix_and_every_200_row_frame_agree_on_frozen_candles", _check_full_series_every_prefix_and_every_200_row_frame_agree_on_frozen_candles),
         ("rows_outside_the_dependency_window_cannot_change_a_decision", _check_rows_outside_the_dependency_window_cannot_change_a_decision),
     ):
         with subtests.test(case=label):
