@@ -61,7 +61,7 @@ def _patch_ccxt(module):
     def load_markets(self, reload=False, params=None):
         return {}
 
-    for name in ("binanceus", "okx"):
+    for name in ("binanceus",):
         cls = getattr(module, name)
         cls.fetch_ohlcv = fetch_ohlcv
         cls.fetch_ticker = fetch_ticker

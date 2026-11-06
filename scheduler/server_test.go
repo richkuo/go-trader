@@ -197,7 +197,6 @@ func TestStatusAndHealthEndpoints(t *testing.T) {
 			{Type: "spot", Args: []string{"rsi", "ETH/USDT", "1h"}},
 			{Type: "options", Args: []string{"vol", "BTC"}},
 			{Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "SOL", "1h"}},
-			{Type: "perps", Platform: "okx", Args: []string{"ema", "BTC", "1h"}},
 		}
 		state := NewAppState()
 		var mu sync.RWMutex
@@ -227,14 +226,6 @@ func TestStatusAndHealthEndpoints(t *testing.T) {
 		}
 		if !hlSet["SOL"] {
 			t.Errorf("hlPerpsCoins missing SOL; got %v", ss.hlPerpsCoins)
-		}
-
-		okxSet := make(map[string]bool)
-		for _, c := range ss.okxPerpsCoins {
-			okxSet[c] = true
-		}
-		if !okxSet["BTC"] {
-			t.Errorf("okxPerpsCoins missing BTC; got %v", ss.okxPerpsCoins)
 		}
 	})
 }
@@ -334,8 +325,8 @@ func TestHandleHistory(t *testing.T) {
 func TestHandleAPIStrategyRoster(t *testing.T) {
 	t.Run("UIPausedAndDirectionalSerialization", func(t *testing.T) {
 		state := NewAppState()
-		state.Strategies["okx-eth"] = &StrategyState{
-			ID:              "okx-eth",
+		state.Strategies["hl-eth"] = &StrategyState{
+			ID:              "hl-eth",
 			Type:            "perps",
 			Cash:            1000,
 			InitialCapital:  1000,
@@ -345,7 +336,7 @@ func TestHandleAPIStrategyRoster(t *testing.T) {
 		}
 		var mu sync.RWMutex
 		strategies := []StrategyConfig{
-			{ID: "okx-eth", Platform: "okx", Type: "perps", Args: []string{"ema", "ETH", "4h"}, Direction: DirectionBoth, Paused: true},
+			{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"ema", "ETH", "4h"}, Direction: DirectionBoth, Paused: true},
 		}
 		ss := NewStatusServer(state, &mu, "", strategies, nil)
 
@@ -381,7 +372,7 @@ func TestHandleAPIStrategyRoster(t *testing.T) {
 			t.Errorf("overview paused = %+v, want paused true", ovResp.Strategies)
 		}
 
-		req = httptest.NewRequest("GET", "/api/strategies/okx-eth/status", nil)
+		req = httptest.NewRequest("GET", "/api/strategies/hl-eth/status", nil)
 		w = httptest.NewRecorder()
 		ss.handleAPIStrategy(w, req)
 		if w.Code != http.StatusOK {
@@ -411,7 +402,7 @@ func TestHandleAPIStrategyRoster(t *testing.T) {
 		state := NewAppState()
 		var mu sync.RWMutex
 		strategies := []StrategyConfig{
-			{ID: "okx-eth", Platform: "okx", Type: "perps", Args: []string{"ema", "ETH", "4h"}, Direction: DirectionBoth},
+			{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"ema", "ETH", "4h"}, Direction: DirectionBoth},
 			{ID: "spot-btc", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}},
 		}
 		ss := NewStatusServer(state, &mu, "", strategies, nil)
@@ -453,8 +444,8 @@ func TestHandleAPIStrategyRoster(t *testing.T) {
 			Positions:       make(map[string]*Position),
 			OptionPositions: make(map[string]*OptionPosition),
 		}
-		state.Strategies["okx-eth"] = &StrategyState{
-			ID:              "okx-eth",
+		state.Strategies["hl-eth"] = &StrategyState{
+			ID:              "hl-eth",
 			Type:            "perps",
 			Cash:            800,
 			InitialCapital:  1000,
@@ -463,7 +454,7 @@ func TestHandleAPIStrategyRoster(t *testing.T) {
 		}
 		var mu sync.RWMutex
 		strategies := []StrategyConfig{
-			{ID: "okx-eth", Platform: "okx", Type: "perps", Args: []string{"ema", "ETH", "4h"}, Direction: DirectionBoth},
+			{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"ema", "ETH", "4h"}, Direction: DirectionBoth},
 			{ID: "spot-btc", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}},
 		}
 		ss := NewStatusServer(state, &mu, "", strategies, nil)
@@ -500,12 +491,12 @@ func TestHandleAPIStrategyRoster(t *testing.T) {
 		if spot.Direction != "" {
 			t.Errorf("spot-btc direction = %q, want empty", spot.Direction)
 		}
-		okx := byID["okx-eth"]
-		if okx.Direction != DirectionBoth {
-			t.Errorf("okx-eth direction = %q, want %q", okx.Direction, DirectionBoth)
+		hl := byID["hl-eth"]
+		if hl.Direction != DirectionBoth {
+			t.Errorf("hl-eth direction = %q, want %q", hl.Direction, DirectionBoth)
 		}
-		if okx.PnL != -200 || okx.PnLPct != -20 {
-			t.Errorf("okx-eth pnl = %v/%v, want -200/-20", okx.PnL, okx.PnLPct)
+		if hl.PnL != -200 || hl.PnLPct != -20 {
+			t.Errorf("hl-eth pnl = %v/%v, want -200/-20", hl.PnL, hl.PnLPct)
 		}
 	})
 	t.Run("UIStrategyOverviewModeAndCloseStrategy", func(t *testing.T) {

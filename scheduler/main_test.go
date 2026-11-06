@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"math"
-	"strings"
 	"testing"
 )
 
@@ -148,43 +147,6 @@ func TestExecuteResultBooking(t *testing.T) {
 					t.Fatalf("remaining position = %+v, want 0.5 left", pos)
 				}
 			})
-		}
-	})
-	t.Run("ExecuteOKXResult_SpotLiveFillCashOverBudget", func(t *testing.T) {
-		s := &StrategyState{
-			ID:              "okx-spot-btc",
-			Type:            "spot",
-			Platform:        "okx",
-			Cash:            0.40,
-			InitialCapital:  1000,
-			Positions:       make(map[string]*Position),
-			OptionPositions: make(map[string]*OptionPosition),
-			TradeHistory:    []Trade{},
-			RiskState:       RiskState{PeakValue: 1000},
-		}
-		sc := StrategyConfig{ID: "okx-spot-btc", Type: "spot", Platform: "okx"}
-		result := &OKXResult{Signal: 1, Symbol: "BTC", Price: 50000}
-		execResult := &OKXExecuteResult{
-			Execution: &OKXExecution{
-				Action: "buy", Symbol: "BTC", Size: 0.01,
-				Fill: &OKXFill{AvgPx: 50000, TotalSz: 0.01, OID: "okx-over-oid", Fee: 0.50},
-			},
-			Platform: "okx",
-		}
-
-		lm, _ := NewLogManager("")
-		logger, _ := lm.GetStrategyLogger("test")
-		defer logger.Close()
-
-		trades, _, cashAlert := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, HurstGateDecision{}, logger)
-		if trades != 1 {
-			t.Fatalf("trades = %d, want 1 — sub-dollar cash live fill must book (#1394)", trades)
-		}
-		if cashAlert == "" || !strings.Contains(cashAlert, "CRITICAL: LIVE SPOT CASH OVER BUDGET") {
-			t.Fatalf("cashAlert = %q, want CRITICAL over-budget alert", cashAlert)
-		}
-		if !s.CashReconcileRequired {
-			t.Fatal("CashReconcileRequired must latch on OKX over-budget book")
 		}
 	})
 }

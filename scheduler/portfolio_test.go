@@ -216,35 +216,6 @@ func TestExecuteSpotWithFillFee(t *testing.T) {
 			t.Errorf("repeat paper sell = %+v, want identical price %.9f", again.TradeHistory, execPrice)
 		}
 	})
-	t.Run("OKXPerpsFee", func(t *testing.T) {
-		s := NewStrategyState(StrategyConfig{
-			ID:       "okx-perps-test",
-			Type:     "perps",
-			Platform: "okx",
-			Capital:  1000,
-		})
-
-		lm, _ := NewLogManager("")
-		logger, _ := lm.GetStrategyLogger("test")
-		defer logger.Close()
-
-		_, err := ExecuteSpotSignalWithFillFee(s, 1, "BTC", 50000.0, 0, 0, "", 0, logger)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(s.Positions) == 0 {
-			t.Fatal("expected a position to be opened")
-		}
-		pos := s.Positions["BTC"]
-		tradeCost := pos.Quantity * pos.AvgCost
-		expectedFee := tradeCost * OKXPerpsTakerFeePct
-		actualCash := s.Cash
-		expectedCash := 1000.0 - tradeCost - expectedFee
-		diff := actualCash - expectedCash
-		if diff < -0.01 || diff > 0.01 {
-			t.Errorf("cash mismatch: got %.6f, want %.6f (diff %.6f) -- wrong fee rate may have been used", actualCash, expectedCash, diff)
-		}
-	})
 	t.Run("LiveFillUsesExchangeFee", func(t *testing.T) {
 		s := &StrategyState{
 			ID:              "rh-momentum-btc",

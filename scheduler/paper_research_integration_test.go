@@ -480,7 +480,6 @@ func TestPaperResearchQuoteOwnerSetup(t *testing.T) {
 			func(sc map[string]interface{}) {
 				sc["args"] = []string{"inventory_market_making", "ETH", "1m", "--mode=paper"}
 			},
-			func(sc map[string]interface{}) { sc["platform"] = "okx" },
 		} {
 			setup, err := parseQuoteOwnerSetup(paperResearchQuoteFragment(mutate))
 			if err != nil {
@@ -489,6 +488,14 @@ func TestPaperResearchQuoteOwnerSetup(t *testing.T) {
 			if err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error { return addQuoteOwnerToRoot(root, setup) }); err == nil {
 				t.Fatalf("a structurally invalid owner was written: %s", setup.Entry)
 			}
+		}
+		offPlatform := paperResearchQuoteFragment(func(sc map[string]interface{}) { sc["platform"] = "robinhood" })
+		offSetup, offErr := parseQuoteOwnerSetup(offPlatform)
+		if offErr == nil {
+			offErr = ss.mutateConfigRoot(func(root map[string]json.RawMessage) error { return addQuoteOwnerToRoot(root, offSetup) })
+		}
+		if offErr == nil || !strings.Contains(offErr.Error(), "quote ownership supports only Hyperliquid perps") {
+			t.Fatalf("a Robinhood quote owner must be refused for its platform, got %v", offErr)
 		}
 		exclusive := paperResearchQuoteFragment(nil)
 		ss2, path2 := paperResearchServer(t, websocket, func() map[string]interface{} {

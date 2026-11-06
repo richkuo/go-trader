@@ -119,13 +119,6 @@ func noEdgeCaseKlingerDivergenceRequiresHyperliquidClosedBarDecisions(t *testing
 		sc["open_strategy"] = map[string]interface{}{"name": klingerName}
 		return sc
 	}
-	okx := func() map[string]interface{} {
-		return map[string]interface{}{
-			"id": "okx-klingerdiv", "type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py",
-			"args": []string{klingerName, "ETH", "4h", "--mode=paper"}, "capital": 100.0, "max_drawdown_pct": 10.0,
-			"leverage": 1.0,
-		}
-	}
 	topstep := map[string]interface{}{
 		"id": "ts-klingerdiv", "type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py",
 		"args": []string{klingerName, "ES", "1h", "--mode=paper"}, "capital": 1000.0, "max_drawdown_pct": 10.0,
@@ -152,10 +145,6 @@ func noEdgeCaseKlingerDivergenceRequiresHyperliquidClosedBarDecisions(t *testing
 		{"hyperliquid effective open without closed bars refused",
 			openRef(noEdgeHLStrategy("hl-klingerdiv-open", "breakout", "ETH", "4h", "--mode=paper")),
 			[]string{`open strategy "` + klingerName + `"`, needs}},
-		{"okx positional open without closed bars refused", okx(),
-			[]string{`open strategy "` + klingerName + `"`, needs, "platform=okx"}},
-		{"okx positional open with closed bars refused", closed(okx(), true),
-			[]string{`open strategy "` + klingerName + `"`, needs, "platform=okx", "closed_bar_decisions=true"}},
 		{"topstep positional open refused", topstep,
 			[]string{`open strategy "` + klingerName + `"`, needs, "platform=topstep"}},
 		{"hyperliquid manual close refused", manual,
