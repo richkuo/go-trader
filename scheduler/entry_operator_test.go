@@ -425,6 +425,11 @@ func entryOperatorCaseEntryOperatorRefusesEveryUnprovenOrContradictedState(t *te
 		queries  int
 	}{
 		{"entry order exists", "hyperliquid", nil, func() *entryRecoveryResult { return found(entryAbsentHL()) }, nil, "entry order exists at the venue", 1},
+		{"client-id fill without an order", "hyperliquid", nil, func() *entryRecoveryResult {
+			r := entryAbsentHL()
+			r.Order.FillQty, r.Order.FillCount = 0.1, 1
+			return r
+		}, nil, "reports 1 fill(s)", 1},
 		{"fill history matches the client id", "hyperliquid", nil, func() *entryRecoveryResult {
 			r := entryAbsentHL()
 			r.Order.Coverage.MatchedCount, r.Order.Coverage.MatchedQty = 1, 0.2
@@ -445,21 +450,45 @@ func entryOperatorCaseEntryOperatorRefusesEveryUnprovenOrContradictedState(t *te
 			r.Stop = nil
 			return r
 		}, nil, "initial stop lookup returned no evidence", 1},
+		{"missing order default zero fill without coverage", "hyperliquid", nil, func() *entryRecoveryResult {
+			r := entryAbsentHL()
+			r.Order = &entryRecoveryOrder{Found: false}
+			return r
+		}, nil, "returned no fill-history coverage", 1},
 		{"partial history", "hyperliquid", nil, func() *entryRecoveryResult {
 			r := entryAbsentHL()
 			r.Order.Coverage.Complete, r.Order.Coverage.Reason = false, "more than 40 fill orders need a client id lookup"
 			return r
 		}, nil, "is incomplete: more than 40", 1},
+		{"history starts after the window", "hyperliquid", nil, func() *entryRecoveryResult {
+			r := entryAbsentHL()
+			r.Order.Coverage.FromMs = time.Now().UnixMilli()
+			return r
+		}, nil, "after the attempt window start", 1},
+		{"history ends before the deadline", "hyperliquid", nil, func() *entryRecoveryResult {
+			r := entryAbsentHL()
+			r.Order.Coverage.ThroughMs = 2
+			return r
+		}, nil, "before the release deadline", 1},
 		{"query against another account", "hyperliquid", nil, func() *entryRecoveryResult {
 			r := entryAbsentHL()
 			r.Account = "hyperliquid:mainnet:0x00000000000000000000000000000000deadbeef"
 			return r
 		}, nil, "ran against account", 1},
 		{"query error", "hyperliquid", nil, func() *entryRecoveryResult { return nil }, errors.New("recovery query error: exit status 1"), "venue query failed", 1},
+		{"result with an error", "hyperliquid", nil, func() *entryRecoveryResult { return entryAbsentHL() }, errors.New("recovery query error: exit status 1 (fills page 3 failed)"), "venue query failed", 1},
 		{"timeout", "hyperliquid", nil, func() *entryRecoveryResult { return entryAbsentHL() }, context.DeadlineExceeded, "venue query failed", 1},
+		{"venue error field", "hyperliquid", nil, func() *entryRecoveryResult {
+			r := entryAbsentHL()
+			r.Error = "entry recovery query failed: rate limit"
+			return r
+		}, nil, "entry recovery query failed: rate limit", 1},
 		{"saved confirmed fill", "hyperliquid", func(f *entryOperatorFixture) {
 			f.rewrite(func(in *entryIntent, _ *entryIntentRequest) { in.ConfirmedQty, in.ConfirmedNotional = 0.2, 20 })
 		}, entryAbsentHL, nil, "saved confirmed fill", 0},
+		{"saved venue order", "hyperliquid", func(f *entryOperatorFixture) {
+			f.rewrite(func(in *entryIntent, _ *entryIntentRequest) { in.VenueOrderID = "o-7" })
+		}, entryAbsentHL, nil, "saved venue order o-7", 0},
 		{"saved unbooked fill evidence", "hyperliquid", func(f *entryOperatorFixture) {
 			f.rewrite(func(in *entryIntent, _ *entryIntentRequest) {
 				in.EvidenceJSON = marshalEntryJSON(entryIntentEvidence{Outcome: "filled_unbooked", FilledQty: 0.3})
@@ -480,6 +509,12 @@ func entryOperatorCaseEntryOperatorRefusesEveryUnprovenOrContradictedState(t *te
 		{"missing stop deadline", "hyperliquid", func(f *entryOperatorFixture) {
 			f.rewrite(func(_ *entryIntent, req *entryIntentRequest) { req.StopExpiresAfterMs = 0 })
 		}, entryAbsentHL, nil, "no initial-stop deadline", 0},
+		{"missing entry deadline", "hyperliquid", func(f *entryOperatorFixture) {
+			f.rewrite(func(_ *entryIntent, req *entryIntentRequest) { req.ExpiresAfterMs = 0 })
+		}, entryAbsentHL, nil, "no venue deadline", 0},
+		{"malformed request", "hyperliquid", func(f *entryOperatorFixture) {
+			f.rewrite(func(in *entryIntent, _ *entryIntentRequest) { in.RequestJSON = `{"version":99}` })
+		}, entryAbsentHL, nil, "version 99 is not supported", 0},
 		{"missing account binding", "hyperliquid", func(f *entryOperatorFixture) {
 			f.rewrite(func(in *entryIntent, _ *entryIntentRequest) { in.AccountKey = "" })
 		}, entryAbsentHL, nil, "no saved venue account binding", 0},

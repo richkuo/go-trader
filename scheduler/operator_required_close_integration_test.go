@@ -130,6 +130,12 @@ func (f *orcFixture) clock() time.Time {
 	return f.now
 }
 
+func (f *orcFixture) setNow(t time.Time) {
+	f.clockMu.Lock()
+	defer f.clockMu.Unlock()
+	f.now = t.UTC()
+}
+
 func (f *orcFixture) advance(d time.Duration) time.Time {
 	f.clockMu.Lock()
 	defer f.clockMu.Unlock()
@@ -161,6 +167,15 @@ func (f *orcFixture) openOption(id, optID string, qty float64) {
 	}
 	s.OptionPositions[optID] = &OptionPosition{ID: optID, Underlying: "SPY", OptionType: "call", Strike: 500, Expiry: "2026-06-19",
 		Action: "buy", Quantity: qty, EntryPremiumUSD: 100, CurrentValueUSD: 100, OpenedAt: f.clock()}
+}
+
+func (f *orcFixture) optionQty(id, optID string) float64 {
+	f.env.mu.RLock()
+	defer f.env.mu.RUnlock()
+	if op := f.env.strat(id).OptionPositions[optID]; op != nil {
+		return op.Quantity
+	}
+	return 0
 }
 
 func (f *orcFixture) fireDrawdownErr(id string) error {
@@ -297,6 +312,10 @@ func (f *orcFixture) drainExpect(label string, wantChannel, wantDM int) string {
 	}, wantChannel, wantDM)
 }
 
+func orcCriticalLines(log string) int {
+	return strings.Count(log, "[CRITICAL] operator-required-close: strategy ") - strings.Count(log, "saving the reminder stamp failed")
+}
+
 func (f *orcFixture) assertNoLockedSends() {
 	f.t.Helper()
 	f.rec.mu.Lock()
@@ -307,7 +326,148 @@ func (f *orcFixture) assertNoLockedSends() {
 }
 
 func TestOperatorRequiredClose(t *testing.T) {
+	t.Run("ReminderThrottleSurvivesRestart", func(t *testing.T) {
+		f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+		f.openOption("rh-a", "opt-a", 2)
+		f.fireDrawdown("rh-a")
+		fired := f.clock()
+
+		e := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
+		if e == nil || !e.OperatorRequired || !strings.HasPrefix(e.Episode, "orc-") || !e.FiredAt.Equal(fired) || !e.LastNotifiedAt.IsZero() {
+			t.Fatalf("the fire must create an operator-required entry with an episode, the fire time and no stamp: %+v", e)
+		}
+		if len(e.Symbols) != 1 || e.Symbols[0].Symbol != "opt-a" || e.Symbols[0].Size != 2 {
+			t.Fatalf("the entry must hold the own-book leg: %+v", e.Symbols)
+		}
+		if qty := f.optionQty("rh-a", "opt-a"); qty != 0 {
+			t.Fatalf("the fire must still close the virtual book, got %v", qty)
+		}
+
+		log := f.drainExpect("first drain", 1, 1)
+		if orcCriticalLines(log) != 1 || !strings.Contains(log, "; warning due") {
+			t.Fatalf("the first drain must log one CRITICAL line marked due:\n%s", log)
+		}
+		msg := f.rec.lastChannel()
+		for _, want := range []string{"rh-a", "go-trader-clear-operator-close", DefaultAlertThrottleInterval.String(), "alert_throttle_interval", "virtual size at fire", "episode " + e.Episode, "CB until"} {
+			if !strings.Contains(msg, want) {
+				t.Fatalf("the warning must contain %q:\n%s", want, msg)
+			}
+		}
+		stamp := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions).LastNotifiedAt
+		if !stamp.Equal(fired) {
+			t.Fatalf("the drain must stamp the trading-clock time %s, got %s", fired, stamp)
+		}
+		if got := f.storedPendingJSON("rh-a"); !strings.Contains(got, `"last_notified_at":"`+fired.Format(time.RFC3339)) {
+			t.Fatalf("the stamp must be saved at once, stored %s", got)
+		}
+
+		for i := 0; i < 2; i++ {
+			f.advance(time.Hour)
+			log = f.drainExpect(fmt.Sprintf("drain %d inside the window", i+2), 0, 0)
+			if orcCriticalLines(log) != 1 || !strings.Contains(log, "next warning after "+fired.Add(DefaultAlertThrottleInterval).Format(operatorRequiredTimeFormat)) {
+				t.Fatalf("a quiet drain must still log the CRITICAL line with the next warning time:\n%s", log)
+			}
+		}
+
+		f.restart()
+		got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
+		if got == nil || !got.LastNotifiedAt.Equal(stamp) || got.Episode != e.Episode || !got.FiredAt.Equal(fired) {
+			t.Fatalf("restart must keep the stamp, episode and fire time: %+v", got)
+		}
+		f.drainExpect("drain after restart inside the window", 0, 0)
+
+		f.setNow(stamp.Add(DefaultAlertThrottleInterval))
+		f.drainExpect("drain at the interval", 1, 1)
+		f.advance(time.Minute)
+		f.drainExpect("drain after the repeat", 0, 0)
+		f.assertNoLockedSends()
+	})
+	t.Run("MixedDueEntriesListOnlyTheDueOne", func(t *testing.T) {
+		f := newORCFixture(t, orcRobinhoodOptions("rh-a"), orcRobinhoodOptions("rh-b"))
+		f.openOption("rh-a", "opt-a", 2)
+		f.fireDrawdown("rh-a")
+		f.drainExpect("first strategy", 1, 1)
+		stampA := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions).LastNotifiedAt
+
+		f.advance(time.Hour)
+		f.openOption("rh-b", "opt-b", 1)
+		f.fireDrawdown("rh-b")
+		log := f.drainExpect("mixed drain", 1, 1)
+		msg := f.rec.lastChannel()
+		if !strings.Contains(msg, "rh-b") || strings.Contains(msg, "rh-a") || !strings.Contains(msg, "1 strategy-platform pair hit") {
+			t.Fatalf("the message must list only the due entry:\n%s", msg)
+		}
+		if orcCriticalLines(log) != 2 {
+			t.Fatalf("both entries must log a CRITICAL line:\n%s", log)
+		}
+		if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions).LastNotifiedAt; !got.Equal(stampA) {
+			t.Fatalf("the entry that was not due must keep its stamp %s, got %s", stampA, got)
+		}
+		if got := f.entry("rh-b", PlatformPendingCloseRobinhoodOptions).LastNotifiedAt; !got.Equal(f.clock()) {
+			t.Fatalf("the due entry must be stamped, got %s", got)
+		}
+		f.assertNoLockedSends()
+	})
 	t.Run("NewFireSendsAtOnceAndKeepsEarlierLegs", func(t *testing.T) {
+		t.Run("robinhood_options_repeated_leg", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 2)
+			f.fireLossStreak("rh-a")
+			f.drainExpect("first fire", 1, 1)
+			first := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
+
+			f.advance(2 * time.Hour)
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
+			second := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
+			if second.Episode == first.Episode || !second.LastNotifiedAt.IsZero() || !second.FiredAt.Equal(f.clock()) {
+				t.Fatalf("a contributing fire must write a new episode and reset the stamp: first %+v second %+v", first, second)
+			}
+			if len(second.Symbols) != 1 || second.Symbols[0].Size != 3 {
+				t.Fatalf("a re-buy of 1 after an uncleared 2 fire must show 3: %+v", second.Symbols)
+			}
+			f.drainExpect("drain after the second fire inside the window", 1, 1)
+			if !strings.Contains(f.rec.lastChannel(), "opt-a (virtual size at fire 3.000000)") || !strings.Contains(f.rec.lastChannel(), "summed across the fires not cleared") {
+				t.Fatalf("the warning must show the summed size:\n%s", f.rec.lastChannel())
+			}
+
+			f.advance(2 * time.Hour)
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
+			third := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
+			if third.Episode == second.Episode || !third.LastNotifiedAt.IsZero() || len(third.Symbols) != 1 || third.Symbols[0].Size != 4 {
+				t.Fatalf("a fire with the same fresh leg must add it, write a new episode and reset the stamp: %+v", third)
+			}
+			f.drainExpect("drain after an identical-leg fire inside the window", 1, 1)
+			stamped := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
+
+			f.advance(2 * time.Hour)
+			f.fireLossStreak("rh-a")
+			after := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
+			if after.Episode != stamped.Episode || !after.LastNotifiedAt.Equal(stamped.LastNotifiedAt) || !operatorCloseLegsEqual(after.Symbols, stamped.Symbols) {
+				t.Fatalf("a flat-book fire must leave the summed entry unchanged: before %+v after %+v", stamped, after)
+			}
+			f.drainExpect("drain inside the window after a flat-book fire", 0, 0)
+			f.assertNoLockedSends()
+		})
+		t.Run("robinhood_options_clear_between_fires", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 2)
+			f.fireLossStreak("rh-a")
+			ack, prompt := prepareOperatorRequiredCloseAck(f.env.state, &f.env.mu, "rh-a", "")
+			if ack == nil {
+				t.Fatalf("prepare refused: %s", prompt)
+			}
+			if msg := applyOperatorRequiredCloseAck(f.env.state, &f.env.mu, f.env.store, orcOwnerID, *ack); !strings.HasPrefix(msg, "Cleared") {
+				t.Fatalf("the clear must succeed, got %q", msg)
+			}
+			f.advance(2 * time.Hour)
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); got == nil || len(got.Symbols) != 1 || got.Symbols[0].Size != 1 {
+				t.Fatalf("a fire after a clear must show only its own leg: %+v", got)
+			}
+		})
 		t.Run("robinhood_options", func(t *testing.T) {
 			f := newORCFixture(t, orcRobinhoodOptions("rh-opt"))
 			f.openOption("rh-opt", "opt-b", 2)
@@ -337,7 +497,7 @@ func TestOperatorRequiredClose(t *testing.T) {
 		})
 	})
 	t.Run("FlatBookFireAddsNothing", func(t *testing.T) {
-		f := newORCFixture(t, orcRobinhoodOptions("rh-opt"))
+		f := newORCFixture(t, orcRobinhoodOptions("rh-opt"), orcRobinhoodOptions("rh-old"))
 		for _, c := range []struct{ id, platform string }{{"rh-opt", PlatformPendingCloseRobinhoodOptions}} {
 			log := captureORCStdout(t, func() { f.fireDrawdown(c.id) })
 			if !strings.Contains(log, "circuit breaker fired with a flat own book; no new leg was added") {
@@ -350,7 +510,146 @@ func TestOperatorRequiredClose(t *testing.T) {
 		if log := f.drainExpect("drain after flat fires", 0, 0); strings.Contains(log, "operator-required-close") {
 			t.Fatalf("no entry means no CRITICAL line:\n%s", log)
 		}
+
+		f.openOption("rh-old", "opt-a", 1)
+		f.fireLossStreak("rh-old")
+		f.drainExpect("older entry", 1, 1)
+		before := f.entry("rh-old", PlatformPendingCloseRobinhoodOptions)
+		f.advance(2 * time.Hour)
+		f.fireLossStreak("rh-old")
+		after := f.entry("rh-old", PlatformPendingCloseRobinhoodOptions)
+		if after.Episode != before.Episode || !after.LastNotifiedAt.Equal(before.LastNotifiedAt) || !after.FiredAt.Equal(before.FiredAt) || !operatorCloseLegsEqual(after.Symbols, before.Symbols) {
+			t.Fatalf("a flat-book fire must leave the earlier entry unchanged: before %+v after %+v", before, after)
+		}
+		f.drainExpect("drain inside the window after a flat-book fire", 0, 0)
 		f.assertNoLockedSends()
+	})
+	t.Run("ExpiryKeepsTheEntry", func(t *testing.T) {
+		f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+		f.openOption("rh-a", "opt-a", 1)
+		f.fireDrawdown("rh-a")
+		f.drainExpect("first drain", 1, 1)
+
+		f.advance(DefaultCBDrawdownCooldown + time.Hour)
+		sc := f.config("rh-a")
+		f.env.mu.Lock()
+		s := f.env.strat("rh-a")
+		ok, reason := CheckRisk(sc, s, s.RiskState.PeakValue, map[string]float64{orcSymbol: 100}, nil, nil)
+		cb := s.RiskState.CircuitBreaker
+		f.env.mu.Unlock()
+		if !ok || cb {
+			t.Fatalf("the circuit breaker must unlatch after its cooldown: allowed=%v reason=%q latched=%v", ok, reason, cb)
+		}
+		if e := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); e == nil || !e.OperatorRequired {
+			t.Fatal("circuit-breaker expiry must keep the operator-required entry")
+		}
+		f.drainExpect("reminder after expiry", 1, 1)
+		if msg := f.rec.lastChannel(); !strings.Contains(msg, "CB cooldown ended") {
+			t.Fatalf("the reminder must say the cooldown ended:\n%s", msg)
+		}
+		f.advance(time.Hour)
+		f.drainExpect("quiet after the expiry reminder", 0, 0)
+		f.assertNoLockedSends()
+	})
+	t.Run("DeliveryAndSaveFailures", func(t *testing.T) {
+		t.Run("save_failure_keeps_the_memory_stamp", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireDrawdown("rh-a")
+			f.env.fileFor("rh-a").readOnly = true
+			log := f.drainExpect("drain with a failed save", 1, 1)
+			if !strings.Contains(log, "[CRITICAL] operator-required-close: strategy rh-a: saving the reminder stamp failed") {
+				t.Fatalf("a failed stamp save must log CRITICAL:\n%s", log)
+			}
+			stamp := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions).LastNotifiedAt
+			if !stamp.Equal(f.clock()) {
+				t.Fatalf("the memory stamp must stay after a failed save, got %s", stamp)
+			}
+			f.advance(time.Hour)
+			f.drainExpect("drain inside the window after a failed save", 0, 0)
+			f.env.fileFor("rh-a").readOnly = false
+			f.env.saveAll()
+			f.restart()
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); got == nil || !got.LastNotifiedAt.Equal(stamp) {
+				t.Fatalf("the cycle save must persist the stamp: %+v", got)
+			}
+			f.drainExpect("drain after restart", 0, 0)
+			f.assertNoLockedSends()
+		})
+		t.Run("restart_before_the_save_repeats_once", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireDrawdown("rh-a")
+			f.env.saveAll()
+			f.env.fileFor("rh-a").readOnly = true
+			f.drainExpect("drain with a failed save", 1, 1)
+			f.restart()
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); got == nil || !got.LastNotifiedAt.IsZero() {
+				t.Fatalf("the restart must load the unstamped entry: %+v", got)
+			}
+			f.advance(time.Minute)
+			f.drainExpect("the repeated warning after restart", 1, 1)
+			f.advance(time.Minute)
+			f.drainExpect("quiet after the repeat", 0, 0)
+		})
+		t.Run("no_backend_stamps_nothing", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireDrawdown("rh-a")
+			f.notifier = NewMultiNotifier()
+			log := f.drainExpect("drain with no backend", 0, 0)
+			if !strings.Contains(log, "no notification backend is configured; the warning for 1 entry was not sent and nothing was stamped") || orcCriticalLines(log) != 1 {
+				t.Fatalf("a drain with no backend must log both CRITICAL lines:\n%s", log)
+			}
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); !got.LastNotifiedAt.IsZero() {
+				t.Fatalf("a drain with no backend must stamp nothing: %+v", got)
+			}
+			captureORCStdout(t, func() { drainOperatorRequiredPendingCloses(f.env.state, nil, &f.env.mu, f.env.store) })
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); !got.LastNotifiedAt.IsZero() {
+				t.Fatalf("a nil notifier must stamp nothing: %+v", got)
+			}
+		})
+		t.Run("every_destination_failing_retries", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireDrawdown("rh-a")
+			f.rec.failChannel, f.rec.failDM = true, true
+			log := f.drainExpect("drain where every send fails", 0, 0)
+			if !strings.Contains(log, "the warning reached no channel and no owner DM; nothing was stamped and the next drain retries") {
+				t.Fatalf("a fully failed send must log CRITICAL:\n%s", log)
+			}
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); !got.LastNotifiedAt.IsZero() {
+				t.Fatalf("a fully failed send must stamp nothing: %+v", got)
+			}
+			attempts := f.rec.attempts
+			f.advance(time.Minute)
+			f.drainExpect("retry", 0, 0)
+			if f.rec.attempts != attempts+2 {
+				t.Fatalf("the next drain must retry both destinations, attempts %d -> %d", attempts, f.rec.attempts)
+			}
+			f.rec.failChannel = false
+			f.advance(time.Minute)
+			f.drainExpect("partial delivery", 1, 0)
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); !got.LastNotifiedAt.Equal(f.clock()) {
+				t.Fatalf("partial delivery must stamp the entry: %+v", got)
+			}
+			f.advance(time.Minute)
+			f.drainExpect("quiet after partial delivery", 0, 0)
+			f.assertNoLockedSends()
+		})
+		t.Run("backward_clock_is_due", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireDrawdown("rh-a")
+			f.drainExpect("first drain", 1, 1)
+			earlier := f.advance(-time.Hour)
+			f.drainExpect("drain on a clock that moved back", 1, 1)
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); !got.LastNotifiedAt.Equal(earlier) {
+				t.Fatalf("the stamp must move to the earlier time: %+v", got)
+			}
+			f.advance(time.Minute)
+			f.drainExpect("quiet after the backward stamp", 0, 0)
+		})
 	})
 	t.Run("KillSwitchFireStillClearsBothKeys", func(t *testing.T) {
 		f := newORCFixture(t, orcRobinhoodOptions("rh-opt"))
@@ -515,6 +814,87 @@ func TestOperatorRequiredClose(t *testing.T) {
 		f.assertNoLockedSends()
 	})
 	t.Run("ConfirmationInterleavings", func(t *testing.T) {
+		t.Run("drain_stamp_during_confirm_still_clears", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
+			c := f.commander(orcOwnerID)
+			msg := c.run(orcOwnerID, "", orcCommandOpts("rh-a", ""), "confirm", func() {
+				drainOperatorRequiredPendingCloses(f.env.state, f.notifier, &f.env.mu, f.env.store)
+			})
+			if !strings.HasPrefix(msg, "Cleared") {
+				t.Fatalf("a reminder stamp is not a change of scope, got %q", msg)
+			}
+			if f.entry("rh-a", PlatformPendingCloseRobinhoodOptions) != nil {
+				t.Fatal("the entry must be cleared")
+			}
+			c.assertNoLockedPrompt()
+			f.assertNoLockedSends()
+		})
+		t.Run("identical_leg_fire_during_confirm_refuses", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
+			f.drainExpect("first", 1, 1)
+			c := f.commander(orcOwnerID)
+			var hookErr error
+			msg := c.run(orcOwnerID, "", orcCommandOpts("rh-a", ""), "confirm", func() {
+				f.advance(2 * time.Hour)
+				f.openOption("rh-a", "opt-a", 1)
+				hookErr = f.fireLossStreakErr("rh-a")
+			})
+			if hookErr != nil {
+				t.Fatal(hookErr)
+			}
+			if !strings.Contains(msg, "changed while you were confirming") {
+				t.Fatalf("a new fire during the confirm must refuse, got %q", msg)
+			}
+			got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
+			if got == nil || !got.LastNotifiedAt.IsZero() || !got.FiredAt.Equal(f.clock()) {
+				t.Fatalf("the new entry must stay with a zero stamp: %+v", got)
+			}
+			if f.storedPendingJSON("rh-a") == "" {
+				t.Fatal("a refused clear must not remove the stored entry")
+			}
+			c.assertNoLockedPrompt()
+		})
+		t.Run("kill_switch_clear_during_confirm_refuses", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
+			c := f.commander(orcOwnerID)
+			msg := c.run(orcOwnerID, "", orcCommandOpts("rh-a", ""), "confirm", func() {
+				f.env.mu.Lock()
+				f.env.strat("rh-a").RiskState.clearPendingCircuitClosesForKillSwitch()
+				f.env.mu.Unlock()
+			})
+			if !strings.Contains(msg, "changed while you were confirming") {
+				t.Fatalf("a kill-switch clear during the confirm must refuse, got %q", msg)
+			}
+			c.assertNoLockedPrompt()
+		})
+		t.Run("another_clear_that_finishes_first_wins", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
+			c := f.commander(orcOwnerID)
+			var inner string
+			msg := c.run(orcOwnerID, "", orcCommandOpts("rh-a", ""), "confirm", func() {
+				ack, prep := prepareOperatorRequiredCloseAck(f.env.state, &f.env.mu, "rh-a", "")
+				if ack == nil {
+					inner = prep
+					return
+				}
+				inner = applyOperatorRequiredCloseAck(f.env.state, &f.env.mu, f.env.store, "other-session", *ack)
+			})
+			if !strings.HasPrefix(inner, "Cleared") {
+				t.Fatalf("the clear that finished first must succeed, got %q", inner)
+			}
+			if !strings.Contains(msg, "changed while you were confirming") {
+				t.Fatalf("the slower clear must refuse, got %q", msg)
+			}
+			c.assertNoLockedPrompt()
+		})
 		t.Run("added_leg_during_confirm_refuses", func(t *testing.T) {
 			f := newORCFixture(t, orcRobinhoodOptions("rh-opt"))
 			f.openOption("rh-opt", "opt-a", 1)
