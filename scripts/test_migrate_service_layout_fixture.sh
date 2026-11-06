@@ -924,7 +924,7 @@ CPU_LIVE_WARN="[WARN] cpu: this process runs live strategies, but its cgroup"
 
 unit_log_count() {
     local unit="$1" since="$2" text="$3" n
-    n=$( { journalctl --namespace=+go-trader -u "$unit" --since "@$since" --no-pager -o cat 2>/dev/null; journalctl -u "$unit" --since "@$since" --no-pager -o cat 2>/dev/null; } | grep -cF -- "$text") || true
+    n=$( { journalctl --namespace=+go-trader -u "$unit" --since "@$since" --no-pager -o short-precise 2>/dev/null; journalctl -u "$unit" --since "@$since" --no-pager -o short-precise 2>/dev/null; } | sort -u | grep -cF -- "$text") || true
     printf '%s' "${n:-0}"
 }
 
