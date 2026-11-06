@@ -239,7 +239,7 @@ UPDATE_CPU_DROPIN_NAME=40-go-trader-cpu
 UPDATE_CPU_WEIGHT_ENV=GO_TRADER_PAPER_CPU_WEIGHT
 UPDATE_CPU_WEIGHT_DEFAULT=20
 UPDATE_CPU_WEIGHT_MAX=10000
-UPDATE_CPU_WEIGHT_MIN_SYSTEMD=232
+UPDATE_CPU_WEIGHT_MIN_SYSTEMD=236
 
 update_cpu_template_unit() {
     local unit="$1" instance
@@ -437,25 +437,21 @@ update_cpu_class_for_unit() {
 }
 
 update_cpu_dropin_plan() {
-    local unit="$1" binary="$2" dest="$3" class="" weight="" major desired decision
-    if class=$(update_cpu_class_for_unit "$unit" "$binary"); then
+    local unit="$1" binary="$2" dest="$3" class="" weight="" major desired=""
+    local decision
+    major=$(update_systemd_major_version "$(systemctl --version 2>/dev/null || true)")
+    if ! [[ "$major" =~ ^[0-9]+$ ]] || (( 10#$major < UPDATE_CPU_WEIGHT_MIN_SYSTEMD )); then
+        echo "[cpu] systemd ${major:-<unknown>} is older than $UPDATE_CPU_WEIGHT_MIN_SYSTEMD or unknown: the classifier needs systemd-run --pipe (235) and --collect (236), so it does not run and the managed CPU weight drop-in stays absent for $unit" >&2
+    elif class=$(update_cpu_class_for_unit "$unit" "$binary"); then
         echo "[cpu] $unit config class: $class" >&2
-    else
-        class=""
-        echo "[cpu] $unit has no CPU class; the managed CPU weight drop-in stays absent" >&2
-    fi
-    if [[ "$class" == "paper" ]] && ! weight=$(update_cpu_weight_for_unit "$unit"); then
-        desired=""
-    elif [[ "$class" == "paper" ]]; then
-        major=$(update_systemd_major_version "$(systemctl --version 2>/dev/null || true)")
-        desired=$(update_cpu_desired_weight "$class" "$weight" "$major")
-        if [[ "$weight" == "0" ]]; then
-            echo "[cpu] $UPDATE_CPU_WEIGHT_ENV=0 turns the paper CPU weight off for $unit" >&2
-        elif [[ -z "$desired" ]]; then
-            echo "[cpu] systemd ${major:-<unknown>} is older than $UPDATE_CPU_WEIGHT_MIN_SYSTEMD or unknown; no CPUWeight drop-in for $unit" >&2
+        if [[ "$class" == "paper" ]] && weight=$(update_cpu_weight_for_unit "$unit"); then
+            desired=$(update_cpu_desired_weight "$class" "$weight" "$major")
+            if [[ "$weight" == "0" ]]; then
+                echo "[cpu] $UPDATE_CPU_WEIGHT_ENV=0 turns the paper CPU weight off for $unit" >&2
+            fi
         fi
     else
-        desired=""
+        echo "[cpu] $unit has no CPU class; the managed CPU weight drop-in stays absent" >&2
     fi
     decision=$(update_cpu_dropin_decision "$dest" "$desired")
     printf '%s %s' "$decision" "$desired"

@@ -2716,6 +2716,15 @@ EOF
     fi
     assert_eq "$(CPU_TEST_CLASS=paper CPU_TEST_ENVFILE="$cpu_root/missing.env (ignore_errors=yes)" plan)" "replace 20" "cpu: a missing optional EnvironmentFile is unset"
     assert_eq "$(CPU_TEST_CLASS=paper CPU_TEST_SYSTEMD=231 plan)" "remove " "cpu: systemd older than 232 removes the drop-in"
+    for old_systemd in 231 233 235; do
+        : >"$CPU_TEST_LOG"
+        : >"$cpu_root/plan.err"
+        assert_eq "$(CPU_TEST_CLASS=paper CPU_TEST_SYSTEMD=$old_systemd plan)" "remove " "cpu: systemd $old_systemd removes the drop-in"
+        ! grep -q '^systemd-run' "$CPU_TEST_LOG" || cpu_fail "the classifier ran under systemd $old_systemd" "$CPU_TEST_LOG"
+        grep -qF "[cpu] systemd $old_systemd is older than 236 or unknown" "$cpu_root/plan.err" || cpu_fail "systemd $old_systemd must log the version gate" "$cpu_root/plan.err"
+        ! grep -qE 'has no CPU class|cpu-class .* failed' "$cpu_root/plan.err" || cpu_fail "systemd $old_systemd must not log a classifier failure" "$cpu_root/plan.err"
+    done
+    assert_eq "$(CPU_TEST_CLASS=paper CPU_TEST_SYSTEMD=236 plan)" "replace 20" "cpu: systemd 236 runs the classifier"
     assert_eq "$(CPU_TEST_CLASS=live plan)" "remove " "cpu: live class removes the drop-in"
     assert_eq "$(CPU_TEST_CLASS=feed plan)" "remove " "cpu: feed class removes the drop-in"
     assert_eq "$(CPU_TEST_CLASS=fail plan)" "remove " "cpu: a classifier failure removes the drop-in"
