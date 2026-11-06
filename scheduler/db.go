@@ -444,6 +444,44 @@ CREATE INDEX IF NOT EXISTS idx_trade_diag_position ON trade_diagnostics(strategy
 CREATE INDEX IF NOT EXISTS idx_trade_diag_closed_at ON trade_diagnostics(closed_at DESC, rowid DESC);
 CREATE INDEX IF NOT EXISTS idx_trade_diag_strategy_closed_at ON trade_diagnostics(strategy_id, closed_at DESC, rowid DESC);
 
+CREATE TABLE IF NOT EXISTS trade_feedback (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_id TEXT NOT NULL,
+    position_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    platform TEXT NOT NULL DEFAULT '',
+    instrument_type TEXT NOT NULL DEFAULT '',
+    timeframe TEXT NOT NULL,
+    preferred_entry_time INTEGER NOT NULL,
+    preferred_entry_price REAL NOT NULL,
+    preferred_exit_time INTEGER NOT NULL,
+    preferred_exit_price REAL NOT NULL,
+    actual_opened_at TEXT NOT NULL,
+    actual_closed_at TEXT NOT NULL,
+    actual_avg_entry_price REAL NOT NULL,
+    actual_avg_exit_price REAL NOT NULL,
+    actual_realized_pnl REAL NOT NULL,
+    actual_realized_pnl_basis TEXT NOT NULL,
+    close_reason TEXT NOT NULL DEFAULT '',
+    entry_atr REAL NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    evidence_version INTEGER NOT NULL,
+    evidence_json TEXT NOT NULL,
+    evidence_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_feedback_position ON trade_feedback(strategy_id, position_id, rowid);
+
+CREATE TRIGGER IF NOT EXISTS trade_feedback_immutable
+BEFORE UPDATE ON trade_feedback
+BEGIN SELECT RAISE(ABORT, 'trade feedback rows are immutable'); END;
+
+CREATE TRIGGER IF NOT EXISTS trade_feedback_retained
+BEFORE DELETE ON trade_feedback
+BEGIN SELECT RAISE(ABORT, 'trade feedback rows are retained'); END;
+
 -- #1224 per-window regime label history: at most one row per closed bar per
 -- (bundle key, window) — the processor skips re-recording a bar already stored,
 -- so the debounce run counts distinct bars, not raw per-cycle populations.
@@ -3043,6 +3081,30 @@ func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTr
 	return out, nil
 }
 
+const tradeHistorySelectColumns = "rowid, timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source, COALESCE(cost_model_version, 0) AS cost_model_version, COALESCE(cost_policy_id, '') AS cost_policy_id"
+
+func (sdb *StateDB) scanTradeHistoryRow(rows *sql.Rows) (Trade, error) {
+	var t Trade
+	var tsStr string
+	var isCloseInt, pnlGrossInt int
+	var tpOIDsJSON string
+	var slATRMult sql.NullFloat64
+	if err := rows.Scan(&t.sourceRowID, &tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &slATRMult, &t.TPTiersJSON, &pnlGrossInt, &t.FeeSource, &t.CostModelVersion, &t.CostPolicyID); err != nil {
+		return Trade{}, fmt.Errorf("scan trade: %w", err)
+	}
+	t.StrategyID = sdb.fromStorageID(t.StrategyID)
+	t.sourceRole = sdb.storageRoleOf()
+	t.Timestamp = parseTime(tsStr)
+	t.IsClose = isCloseInt != 0
+	t.PnLGross = pnlGrossInt != 0
+	t.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
+	if slATRMult.Valid {
+		v := slATRMult.Float64
+		t.StopLossATRMult = &v
+	}
+	return t, nil
+}
+
 func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until time.Time, limit, offset int) ([]Trade, int, error) {
 	var where []string
 	var args []interface{}
@@ -3084,7 +3146,7 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 		limit = 500
 	}
 
-	query := fmt.Sprintf("SELECT rowid, timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source, COALESCE(cost_model_version, 0) AS cost_model_version, COALESCE(cost_policy_id, '') AS cost_policy_id FROM trades %s ORDER BY timestamp DESC, rowid DESC LIMIT ? OFFSET ?", whereClause)
+	query := fmt.Sprintf("SELECT "+tradeHistorySelectColumns+" FROM trades %s ORDER BY timestamp DESC, rowid DESC LIMIT ? OFFSET ?", whereClause)
 	queryArgs := append(args, limit, offset)
 	rows, err := sdb.db.Query(query, queryArgs...)
 	if err != nil {
@@ -3094,23 +3156,9 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 
 	var trades []Trade
 	for rows.Next() {
-		var t Trade
-		var tsStr string
-		var isCloseInt, pnlGrossInt int
-		var tpOIDsJSON string
-		var slATRMult sql.NullFloat64
-		if err := rows.Scan(&t.sourceRowID, &tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &slATRMult, &t.TPTiersJSON, &pnlGrossInt, &t.FeeSource, &t.CostModelVersion, &t.CostPolicyID); err != nil {
-			return nil, 0, fmt.Errorf("scan trade: %w", err)
-		}
-		t.StrategyID = sdb.fromStorageID(t.StrategyID)
-		t.sourceRole = sdb.storageRoleOf()
-		t.Timestamp = parseTime(tsStr)
-		t.IsClose = isCloseInt != 0
-		t.PnLGross = pnlGrossInt != 0
-		t.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
-		if slATRMult.Valid {
-			v := slATRMult.Float64
-			t.StopLossATRMult = &v
+		t, err := sdb.scanTradeHistoryRow(rows)
+		if err != nil {
+			return nil, 0, err
 		}
 		trades = append(trades, t)
 	}
