@@ -152,6 +152,16 @@ func mrpCycles(log string) int {
 	return strings.Count(log, " complete (")
 }
 
+func mrpLastCycle(log string) string {
+	lines := strings.Split(log, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], " complete (") {
+			return strings.TrimSpace(lines[i])
+		}
+	}
+	return "no completed cycle"
+}
+
 func (d *mrpDaemon) waitCycles(n int) {
 	d.t.Helper()
 	d.waitLog(fmt.Sprintf("cycle %d", n), 180*time.Second, func(s string) bool { return mrpCycles(s) >= n })
@@ -163,7 +173,7 @@ func (d *mrpDaemon) waitFreshCycle() {
 }
 
 const (
-	mrpCycleSeconds     = 20
+	mrpCycleSeconds     = 30
 	mrpGenerationMargin = 10 * time.Second
 )
 
@@ -182,12 +192,17 @@ func mrpGenerationLeft(r mrpRoute) time.Duration {
 
 func (e *mrpEnv) settledGeneration(d *mrpDaemon, port int, strategyID string) mrpRoute {
 	e.t.Helper()
-	got := e.route(port, strategyID, "paper")
-	if got.status == http.StatusOK && got.env.Result == manualRegimeResultBundle && got.env.BundleAt != nil && mrpGenerationLeft(got) >= mrpGenerationMargin {
-		return got
+	var got mrpRoute
+	for attempt := 0; attempt < 5; attempt++ {
+		got = e.route(port, strategyID, "paper")
+		if got.status == http.StatusOK && got.env.Result == manualRegimeResultBundle && got.env.BundleAt != nil && mrpGenerationLeft(got) >= mrpGenerationMargin {
+			e.t.Logf("evidence window: generation %d with %s left after %d fresh cycles; %s", got.env.Generation, mrpGenerationLeft(got).Round(time.Millisecond), attempt, mrpLastCycle(d.output()))
+			return got
+		}
+		d.waitFreshCycle()
 	}
-	d.waitFreshCycle()
-	return e.route(port, strategyID, "paper")
+	e.t.Fatalf("no paper generation for %s kept %s before the next cycle after 5 fresh cycles: status %d result %q; %s", strategyID, mrpGenerationMargin, got.status, got.env.Result, mrpLastCycle(d.output()))
+	return got
 }
 
 type mrpProxy struct {
