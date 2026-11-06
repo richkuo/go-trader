@@ -23,6 +23,12 @@ scheduler/state.db
 robinhood-session/
 .worktrees/
 .claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/go-trader-trade-feedback/
+.claude/skills/go-trader-trade-feedback/*
+!.claude/skills/go-trader-trade-feedback/SKILL.md
+!.claude/skills/go-trader-trade-feedback/trade_feedback_client.py
 local/
 
 # macOS

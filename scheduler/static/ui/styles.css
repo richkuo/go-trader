@@ -1923,6 +1923,15 @@ h3 {
   gap: 4px;
 }
 
+.feedback-analysis-local {
+  display: grid;
+  gap: 6px;
+}
+
+.feedback-analysis-local button {
+  justify-self: start;
+}
+
 .feedback-research-grid {
   max-height: 240px;
   overflow: auto;

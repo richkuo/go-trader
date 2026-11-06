@@ -2860,6 +2860,7 @@
     if (!data.available && data.reason) summary.push(feedbackNode("p", "tuner-note", data.reason));
     (data.providers || []).forEach(function (p) {
       summary.push(feedbackNode("p", "tuner-note", "Provider " + p.id + ": " + (p.available ? "available" : (p.reason || "unavailable"))));
+      if (p.id === "claude_code" && p.available && data.available) summary.push(renderFeedbackLocalCommand(id));
     });
     const research = data.research || {};
     if (!research.supported) {
@@ -2869,6 +2870,35 @@
     const items = (data.analyses || []).map(function (a) { return renderFeedbackAnalysisItem(id, a); });
     if (!items.length) items.push(feedbackNode("p", "tuner-note", "No analyses yet."));
     els.feedbackList.replaceChildren.apply(els.feedbackList, items);
+  }
+
+  function feedbackShellQuote(text) {
+    return "'" + String(text).replace(/'/g, "'\\''") + "'";
+  }
+
+  function renderFeedbackLocalCommand(id) {
+    const box = feedbackNode("div", "feedback-analysis-local");
+    box.appendChild(feedbackNode("p", "", "Local Claude Code analysis: run this in your go-trader checkout. Set GO_TRADER_STATUS_TOKEN in that shell yourself; the dashboard never shows it."));
+    const command = "GO_TRADER_DASHBOARD_URL=" + feedbackShellQuote(window.location.origin) +
+      " claude " + feedbackShellQuote("/go-trader-trade-feedback " + id);
+    const pre = feedbackNode("pre", "feedback-research-grid", command);
+    pre.dataset.feedbackLocalCommand = "true";
+    box.appendChild(pre);
+    const button = feedbackNode("button", "tuner-button secondary", "Copy command");
+    button.type = "button";
+    button.addEventListener("click", function () {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) {
+        setFeedbackMessage("Copy is not available here. Select the command and copy it.", "error");
+        return;
+      }
+      navigator.clipboard.writeText(command).then(function () {
+        setFeedbackMessage("Command copied. It holds no token.", "success");
+      }, function () {
+        setFeedbackMessage("Copy failed. Select the command and copy it.", "error");
+      });
+    });
+    box.appendChild(button);
+    return box;
   }
 
   function renderFeedbackAnalysisItem(id, a) {
