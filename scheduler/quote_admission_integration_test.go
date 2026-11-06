@@ -57,7 +57,7 @@ func TestQuoteAdmissionRefusals(t *testing.T) {
 				t.Fatalf("%s: a quote owner is never batch eligible", name)
 			}
 			prevCheck := runHyperliquidCheckFn
-			runHyperliquidCheckFn = func(string, []string) (*HyperliquidResult, string, error) {
+			runHyperliquidCheckFn = func(pythonChildPriority, string, []string) (*HyperliquidResult, string, error) {
 				t.Fatalf("%s: scalar dispatch spawned a check for a quote owner", name)
 				return nil, "", nil
 			}

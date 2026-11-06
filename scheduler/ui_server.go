@@ -294,6 +294,8 @@ func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request
 		ss.handleAPIStrategyTradeAction(w, r, id, resource)
 	case "remove-strategy", "paper-to-live", "apply-regime-gate":
 		ss.handleAPIStrategyStructural(w, r, id, resource)
+	case paperCloseCommandName:
+		ss.handleAPIStrategyPaperClose(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}

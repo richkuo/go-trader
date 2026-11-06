@@ -280,6 +280,7 @@ func spawnPythonProcessRawLimited(parentCtx context.Context, python string, cmdA
 	if err := cmd.Start(); err != nil {
 		return nil, nil, err
 	}
+	applyPythonChildPriority(ctx, cmd.Process.Pid)
 	err := cmd.Wait()
 	if ctx.Err() != nil {
 		if cmd.Process != nil {
@@ -334,6 +335,10 @@ func runPythonReadOnlyWithStdin(script string, args []string, stdinData []byte) 
 	return runPython(shutdownReadOnlyCtx, script, args, stdinData)
 }
 
+func runPythonReadOnlyPriority(prio pythonChildPriority, script string, args []string, stdinData []byte) ([]byte, []byte, error) {
+	return runPython(withPythonChildPriority(shutdownReadOnlyCtx, prio), script, args, stdinData)
+}
+
 func runPythonSideEffect(script string, args []string) ([]byte, []byte, error) {
 	sideEffectWG.Add(1)
 	defer sideEffectWG.Done()
@@ -344,8 +349,8 @@ func RunPythonScript(script string, args []string) ([]byte, []byte, error) {
 	return runPythonReadOnly(script, args)
 }
 
-func RunSpotCheck(script string, args []string) (*SpotResult, string, error) {
-	stdout, stderr, err := RunPythonScript(script, args)
+func RunSpotCheck(prio pythonChildPriority, script string, args []string) (*SpotResult, string, error) {
+	stdout, stderr, err := runPythonReadOnlyPriority(prio, script, args, nil)
 	stderrStr := string(stderr)
 	if err != nil {
 		var result SpotResult
@@ -366,8 +371,8 @@ func RunPythonScriptWithStdin(script string, args []string, stdinData []byte) ([
 	return runPythonReadOnlyWithStdin(script, args, stdinData)
 }
 
-func RunOptionsCheckWithStdin(script string, args []string, positionsJSON string) (*OptionsResult, string, error) {
-	stdout, stderr, err := RunPythonScriptWithStdin(script, args, []byte(positionsJSON))
+func RunOptionsCheckWithStdin(prio pythonChildPriority, script string, args []string, positionsJSON string) (*OptionsResult, string, error) {
+	stdout, stderr, err := runPythonReadOnlyPriority(prio, script, args, []byte(positionsJSON))
 	stderrStr := string(stderr)
 	if err != nil {
 		var result OptionsResult
@@ -384,12 +389,12 @@ func RunOptionsCheckWithStdin(script string, args []string, positionsJSON string
 	return &result, stderrStr, nil
 }
 
-func RunHyperliquidCheck(script string, args []string) (*HyperliquidResult, string, error) {
-	return runHyperliquidCheckStdout(RunPythonScript(script, args))
+func RunHyperliquidCheck(prio pythonChildPriority, script string, args []string) (*HyperliquidResult, string, error) {
+	return runHyperliquidCheckStdout(runPythonReadOnlyPriority(prio, script, args, nil))
 }
 
-func RunHyperliquidCheckWithStdin(script string, args []string, stdinData []byte) (*HyperliquidResult, string, error) {
-	return runHyperliquidCheckStdout(runPythonReadOnlyWithStdin(script, args, stdinData))
+func RunHyperliquidCheckWithStdin(prio pythonChildPriority, script string, args []string, stdinData []byte) (*HyperliquidResult, string, error) {
+	return runHyperliquidCheckStdout(runPythonReadOnlyPriority(prio, script, args, stdinData))
 }
 
 func runHyperliquidCheckStdout(stdout, stderr []byte, err error) (*HyperliquidResult, string, error) {
@@ -1071,8 +1076,8 @@ type TopStepExecuteResult struct {
 	Error     string            `json:"error,omitempty"`
 }
 
-func RunTopStepCheck(script string, args []string) (*TopStepResult, string, error) {
-	stdout, stderr, err := RunPythonScript(script, args)
+func RunTopStepCheck(prio pythonChildPriority, script string, args []string) (*TopStepResult, string, error) {
+	stdout, stderr, err := runPythonReadOnlyPriority(prio, script, args, nil)
 	stderrStr := string(stderr)
 	if err != nil {
 		var result TopStepResult
@@ -1497,8 +1502,8 @@ type RobinhoodSellArgs struct {
 	ExpectedAccountID string
 }
 
-func RunRobinhoodCheck(script string, args []string) (*RobinhoodResult, string, error) {
-	stdout, stderr, err := RunPythonScript(script, args)
+func RunRobinhoodCheck(prio pythonChildPriority, script string, args []string) (*RobinhoodResult, string, error) {
+	stdout, stderr, err := runPythonReadOnlyPriority(prio, script, args, nil)
 	stderrStr := string(stderr)
 	if err != nil {
 		var result RobinhoodResult
@@ -1683,8 +1688,8 @@ type OKXExecuteResult struct {
 	OrderStatus   string        `json:"order_status,omitempty"`
 }
 
-func RunOKXCheck(script string, args []string) (*OKXResult, string, error) {
-	stdout, stderr, err := RunPythonScript(script, args)
+func RunOKXCheck(prio pythonChildPriority, script string, args []string) (*OKXResult, string, error) {
+	stdout, stderr, err := runPythonReadOnlyPriority(prio, script, args, nil)
 	stderrStr := string(stderr)
 	if err != nil {
 		var result OKXResult
