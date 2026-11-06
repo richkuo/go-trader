@@ -73,11 +73,11 @@ func TestFeedOutageHoldsEntriesAndKeepsProtection(t *testing.T) {
 	origPlain := runHyperliquidCheckFn
 	origStdin := runHyperliquidCheckWithStdinFn
 	spawns := 0
-	runHyperliquidCheckFn = func(string, []string) (*HyperliquidResult, string, error) {
+	runHyperliquidCheckFn = func(pythonChildPriority, string, []string) (*HyperliquidResult, string, error) {
 		spawns++
 		return nil, "", nil
 	}
-	runHyperliquidCheckWithStdinFn = func(string, []string, []byte) (*HyperliquidResult, string, error) {
+	runHyperliquidCheckWithStdinFn = func(pythonChildPriority, string, []string, []byte) (*HyperliquidResult, string, error) {
 		spawns++
 		return nil, "", nil
 	}
