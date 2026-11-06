@@ -13,7 +13,7 @@ A process with any live strategy keeps every child at the default priority, beca
 Side-effect and execute children, the regime bundle check, LLM entry analysis, UI children, probe children, the Robinhood login helper and shared read-only fetches always keep the default priority.
 A priority failure never fails or delays a check: a child that already exited is ignored, and any other error prints one WARN per distinct error.
 Limits: paper checks are slower on a busy host and can reach the script or batch timeout more often; a batch timeout keeps the shared-state failure contract (one alert per group, same-cycle per-member checks, per-strategy fallback after three failures).
-Nice orders tasks inside one CPU cgroup; on a host whose `system.slice` has no `cpu` controller all go-trader services share one pool, so a paper instance also yields to a live instance.
+Nice orders tasks inside one CPU cgroup. When the root `cgroup.subtree_control` lists `cpu` and `system.slice` does not, all go-trader services share one pool, so a paper instance also yields to a live instance on the same host. When `cpu` is off at the root and `kernel.sched_autogroup_enabled=1`, each service is its own autogroup, so nice orders tasks only inside one service and a paper instance does not yield to a live instance.
 Operator action: none. Check with `ps -eLo pid,tid,ni,args | grep check_` during a paper cycle, and compare live cycle times and `hl-batch .* shared state failed` counts with the times before the update.
 A per-unit `CPUWeight` for paper-only systemd instances follows in a separate change.
 
