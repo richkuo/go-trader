@@ -877,12 +877,13 @@ func qpCaseCheckQuotePrecisionOKXLiveSizingAndFillPrecedence(t *testing.T) {
 		sc.ClosedBarDecisions = true
 		sc.Capital = 1000
 
+		clk := bindEntryTestClockFrom(t, time.Now().UTC().Truncate(time.Hour).Add(time.Hour), 0)
 		log := filepath.Join(t.TempDir(), "venue.jsonl")
 		qpOKXLiveEnv(t, root, log, map[string]interface{}{"average": 0.00001236, "fee": 0.01}, "cross_up", q)
 		env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
 		useEntryTradeRecorder(t, env.store)
-		at := time.Now().Add(-5 * time.Minute)
-		bar := at.Truncate(time.Hour).Add(-time.Hour)
+		at := clk.now()
+		bar := entryTestNewestBar(at)
 		env.dispatchOKX(sc, 1, q, entryTestDecision(bar, at), at)
 		orders := qpOrders(t, log)
 		if len(orders) != 1 || orders[0].Params["clOrdId"] == nil || !qpClose(orders[0].Amount, 1000/q) {
