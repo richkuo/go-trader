@@ -31,6 +31,8 @@ type shellSuiteWiring struct {
 	permitted    map[string]string
 	shardEnv     string
 	shardDefault string
+	gates        []string
+	soleRoot     bool
 }
 
 var shellSuiteWirings = map[string]shellSuiteWiring{
@@ -38,6 +40,7 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		goTest:     "TestMergePaperInstance",
 		goTestFile: "merge_paper_instance_test.go",
 		marker:     "OK: merge-paper-instance tests passed",
+		gates:      []string{"merge_paper"},
 	},
 	"test_update_helpers.sh": {
 		goTest:     "TestUpdateHelpersEnvfileParsing790",
@@ -102,7 +105,7 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		requireEnv: []string{"ROBINHOOD_SESSION_SERVICE_FIXTURE_REQUIRE_RUN"},
 	},
 	"test_container_image.sh": {
-		manualReason: "needs Docker and a built image; .github/workflows/container.yml runs it through scripts/run_ci_shell_suite.sh on linux/amd64 and linux/arm64",
+		manualReason: "needs Docker and a built image; .github/workflows/container.yml runs it through scripts/run_ci_shell_suite.sh on linux/amd64 for every pull request, and on linux/amd64 and linux/arm64 for every main push and release",
 		marker:       "PASS: container image (identity, clean layers, volume setup, bind and token policy, auth, SIGHUP reload, dashboard and crash restarts, persistence, graceful stop with a Python child, fatal holds 78/79/80, early-failure restarts, one-shot exits, backup and restore)",
 		forbidden: []string{
 			"NOTE: GO_TRADER_TEST_REQUIRE_ONCE=0",
@@ -122,6 +125,7 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		sudo:       true,
 		marker:     "PASS: egress docker deployment (anchor enforcement, application attestation, relay-only egress, status relay, one-shot commands, anchor restart)",
 		requireEnv: []string{"EGRESS_DOCKER_FIXTURE_REQUIRE_RUN"},
+		gates:      []string{"egress_docker"},
 	},
 	"test_migrate_service_layout_fixture.sh": {
 		ciStep:     true,
@@ -133,6 +137,8 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		},
 		shardEnv:     "FIXTURE_SCENARIOS",
 		shardDefault: "SCENARIOS",
+		gates:        []string{"update", "migrate"},
+		soleRoot:     true,
 	},
 }
 
@@ -219,8 +225,10 @@ func TestUpdateShellScriptSyntax(t *testing.T) {
 type ciWorkflowJob struct {
 	raw      []string
 	logical  [][]string
+	gates    []string
 	problems []string
 	docsGate bool
+	jobGate  string
 }
 
 var (
@@ -236,6 +244,10 @@ var (
 	ciGateEcho    = regexp.MustCompile("^echo \"[^\"$`\\\\]*\"$")
 	ciShardName   = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	ciShellJobKey = regexp.MustCompile(`^\s*(- )?(strategy|matrix|needs):`)
+	ciStepStart   = regexp.MustCompile(`^      - `)
+	ciStepGate    = regexp.MustCompile(`^        if: \$\{\{ needs\.changes\.outputs\.([a-z][a-z0-9_]*) == 'true' \}\}$`)
+	ciJobGate     = regexp.MustCompile(`^    if: \$\{\{ needs\.changes\.outputs\.([a-z][a-z0-9_]*) == 'true' \}\}$`)
+	ciChangesOut  = regexp.MustCompile(`^      ([a-z][a-z0-9_]*): \$\{\{ steps\.diff\.outputs\.([a-z][a-z0-9_]*) \}\}$`)
 )
 
 const (
@@ -287,24 +299,47 @@ func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
 		var kept []string
 		gateNeeds, gateIf := 0, 0
 		for _, line := range job.raw {
-			switch line {
-			case ciDocsGateNeeds:
+			m := ciJobGate.FindStringSubmatch(line)
+			switch {
+			case line == ciDocsGateNeeds:
 				gateNeeds++
-			case ciDocsGateIf:
+			case line == ciDocsGateIf:
 				gateIf++
+			case m != nil && m[1] != "code":
+				gateIf++
+				job.jobGate = m[1]
 			default:
 				kept = append(kept, line)
 			}
 		}
 		if gateNeeds != gateIf || gateNeeds > 1 {
-			job.problems = append(job.problems, fmt.Sprintf("job %s must carry the docs-only gate as exactly one %q line and one %q line, or neither", name, strings.TrimSpace(ciDocsGateNeeds), strings.TrimSpace(ciDocsGateIf)))
+			job.problems = append(job.problems, fmt.Sprintf("job %s must carry the docs-only gate as exactly one %q line and one %q line (or one suite gate if: ${{ needs.changes.outputs.<gate> == 'true' }}), or neither", name, strings.TrimSpace(ciDocsGateNeeds), strings.TrimSpace(ciDocsGateIf)))
 		}
 		job.raw = kept
 		job.docsGate = gateNeeds > 0 || gateIf > 0
+		stepOf := make([]int, len(job.raw))
+		stepGate := map[int]string{}
+		step := -1
+		for i, line := range job.raw {
+			if ciStepStart.MatchString(line) {
+				step++
+			}
+			stepOf[i] = step
+			if m := ciStepGate.FindStringSubmatch(line); m != nil {
+				if _, dup := stepGate[step]; dup || step < 0 || job.jobGate != "" {
+					job.problems = append(job.problems, fmt.Sprintf("job %s has a step with more than one condition, a condition outside a step, or a step condition inside a job that a suite gate already gates", name))
+				}
+				stepGate[step] = m[1]
+			}
+		}
 		for i := 0; i < len(job.raw); i++ {
 			m := ciRunKey.FindStringSubmatch(job.raw[i])
 			if m == nil {
 				continue
+			}
+			gate := stepGate[stepOf[i]]
+			if job.jobGate != "" {
+				gate = job.jobGate
 			}
 			keyCol := len(m[1]) + len(m[2])
 			value := strings.TrimSpace(m[3])
@@ -330,6 +365,7 @@ func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
 				body = []string{value}
 			}
 			job.logical = append(job.logical, ciLogicalLines(body))
+			job.gates = append(job.gates, gate)
 		}
 	}
 	return jobs
@@ -367,8 +403,8 @@ func requireCIJob(t *testing.T, jobs map[string]*ciWorkflowJob, name string) *ci
 		if strings.Contains(line, "continue-on-error") {
 			t.Fatalf("job %s sets continue-on-error, so a failing suite would not fail CI", name)
 		}
-		if ciStepIf.MatchString(line) {
-			t.Fatalf("job %s has a conditional (%s), so a suite step might not run", name, strings.TrimSpace(line))
+		if ciStepIf.MatchString(line) && !ciStepGate.MatchString(line) {
+			t.Fatalf("job %s has a conditional (%s), so a suite step might not run; the only step condition allowed is if: ${{ needs.changes.outputs.<gate> == 'true' }}", name, strings.TrimSpace(line))
 		}
 		if ciShellKey.MatchString(line) {
 			t.Fatalf("job %s overrides the step shell or defaults (%s), so a failing command might not fail the step", name, strings.TrimSpace(line))
@@ -383,7 +419,7 @@ func requireCIJob(t *testing.T, jobs map[string]*ciWorkflowJob, name string) *ci
 	return job
 }
 
-func requireCIChangesJob(t *testing.T, workflow string, jobs map[string]*ciWorkflowJob) {
+func requireCIChangesJob(t *testing.T, workflow string, jobs map[string]*ciWorkflowJob) map[string]bool {
 	t.Helper()
 	job, ok := jobs["changes"]
 	if !ok {
@@ -399,9 +435,16 @@ func requireCIChangesJob(t *testing.T, workflow string, jobs map[string]*ciWorkf
 		t.Fatalf(".github/workflows/%s changes job runs %q, want the detector check and then the detector: %q", workflow, job.logical, want)
 	}
 	outputs := 0
+	declared := map[string]bool{}
 	for _, line := range job.raw {
 		if line == "      code: ${{ steps.diff.outputs.code }}" {
 			outputs++
+		}
+		if m := ciChangesOut.FindStringSubmatch(line); m != nil {
+			if m[1] != m[2] || declared[m[1]] {
+				t.Fatalf(".github/workflows/%s changes job declares output %s twice or from another step output (%s)", workflow, m[1], strings.TrimSpace(line))
+			}
+			declared[m[1]] = true
 		}
 		if ciStepIf.MatchString(line) || strings.Contains(line, "continue-on-error") {
 			t.Fatalf(".github/workflows/%s changes job has %s, so the detector check might not run", workflow, strings.TrimSpace(line))
@@ -410,6 +453,7 @@ func requireCIChangesJob(t *testing.T, workflow string, jobs map[string]*ciWorkf
 	if outputs != 1 {
 		t.Fatalf(".github/workflows/%s changes job declares its code output %d times, want 1", workflow, outputs)
 	}
+	return declared
 }
 
 func goTestFuncBody(t *testing.T, path, name string) string {
@@ -438,6 +482,7 @@ const ciPyIntegrationJob = "go-python-integration"
 
 type ciPyIntegrationShard struct {
 	job  string
+	gate string
 	run  *regexp.Regexp
 	skip *regexp.Regexp
 }
@@ -474,9 +519,15 @@ func readPyIntegrationShards(t *testing.T, jobs map[string]*ciWorkflowJob) []ciP
 		}
 	}
 	sort.Strings(named)
-	shards := []ciPyIntegrationShard{readPyIntegrationShard(t, ciPyIntegrationJob, requireCIJob(t, jobs, ciPyIntegrationJob))}
+	shards := readPyIntegrationShard(t, ciPyIntegrationJob, requireCIJob(t, jobs, ciPyIntegrationJob))
+	if len(shards) != 1 || shards[0].gate != "" {
+		t.Fatalf("%s must hold the allowlist in exactly one go test step with no condition", ciPyIntegrationJob)
+	}
+	if jobs[ciPyIntegrationJob].jobGate != "" || jobs[ciShellSuitesJob] == nil || jobs[ciShellSuitesJob].jobGate != "" {
+		t.Fatalf("%s and %s must run on every code change, never under a suite gate", ciPyIntegrationJob, ciShellSuitesJob)
+	}
 	for _, name := range named {
-		shards = append(shards, readPyIntegrationShard(t, name, requireCIJob(t, jobs, name)))
+		shards = append(shards, readPyIntegrationShard(t, name, requireCIJob(t, jobs, name))...)
 	}
 	return shards
 }
@@ -493,26 +544,32 @@ func compilePyIntegrationPattern(t *testing.T, job, flag, pattern string) *regex
 	return re
 }
 
-func readPyIntegrationShard(t *testing.T, name string, job *ciWorkflowJob) ciPyIntegrationShard {
+func readPyIntegrationShard(t *testing.T, name string, job *ciWorkflowJob) []ciPyIntegrationShard {
 	t.Helper()
-	shard := ciPyIntegrationShard{job: name}
-	sawSkipGate := false
-	for _, step := range job.logical {
+	var shards []ciPyIntegrationShard
+	labels := map[string]bool{}
+	for si, step := range job.logical {
+		var shard *ciPyIntegrationShard
+		label := name
+		if job.gates[si] != "" && job.jobGate == "" {
+			label = name + " (" + job.gates[si] + " step)"
+		}
 		pipefail := false
 		teeLog := ""
 		gateOpen := false
 		gateExits := false
+		sawSkipGate := false
 		for _, line := range step {
 			runs := ciRunPattern.FindAllStringSubmatch(line, -1)
 			skips := ciSkipPattern.FindAllStringSubmatch(line, -1)
 			if strings.Count(line, "-run") != len(runs) || strings.Count(line, "-skip") != len(skips) {
-				t.Fatalf("%s has a -run or -skip flag this guard cannot read: %s", name, line)
+				t.Fatalf("%s has a -run or -skip flag this guard cannot read: %s", label, line)
 			}
 			if gateOpen {
 				switch {
 				case line == "fi":
 					if !gateExits {
-						t.Fatalf("the %s SKIP gate must run exit 1 before fi, or a --- SKIP line does not fail the step", name)
+						t.Fatalf("the %s SKIP gate must run exit 1 before fi, or a --- SKIP line does not fail the step", label)
 					}
 					gateOpen = false
 					sawSkipGate = true
@@ -520,7 +577,7 @@ func readPyIntegrationShard(t *testing.T, name string, job *ciWorkflowJob) ciPyI
 					gateExits = true
 				case ciGateEcho.MatchString(line):
 				default:
-					t.Fatalf("the %s SKIP gate may hold only plain echo lines and exit 1 before fi: %s", name, line)
+					t.Fatalf("the %s SKIP gate may hold only plain echo lines and exit 1 before fi: %s", label, line)
 				}
 				continue
 			}
@@ -530,7 +587,7 @@ func readPyIntegrationShard(t *testing.T, name string, job *ciWorkflowJob) ciPyI
 			if teeLog != "" && strings.Contains(line, "--- SKIP") {
 				want := "if grep -n -- '--- SKIP' " + teeLog + "; then"
 				if line != want {
-					t.Fatalf("the %s SKIP gate must be exactly %q: %s", name, want, line)
+					t.Fatalf("the %s SKIP gate must be exactly %q: %s", label, want, line)
 				}
 				gateOpen = true
 				gateExits = false
@@ -538,40 +595,48 @@ func readPyIntegrationShard(t *testing.T, name string, job *ciWorkflowJob) ciPyI
 			}
 			if len(runs) == 0 {
 				if len(skips) > 0 {
-					t.Fatalf("%s has a -skip flag outside its go test line: %s", name, line)
+					t.Fatalf("%s has a -skip flag outside its go test line: %s", label, line)
 				}
 				continue
 			}
-			if shard.run != nil || len(runs) != 1 || len(skips) > 1 {
-				t.Fatalf("%s must have exactly one -run '...' argument and at most one -skip '...' argument", name)
+			if shard != nil || len(runs) != 1 || len(skips) > 1 {
+				t.Fatalf("%s must have exactly one -run '...' argument and at most one -skip '...' argument in each step", label)
 			}
 			if !strings.HasPrefix(line, "go -C scheduler test ") || !strings.Contains(line, " -tags pyintegration ") || !strings.Contains(line, " -v ") {
-				t.Fatalf("the %s -run line must be a verbose pyintegration go test: %s", name, line)
+				t.Fatalf("the %s -run line must be a verbose pyintegration go test: %s", label, line)
 			}
 			if !pipefail {
-				t.Fatalf("the %s step must run set -o pipefail before the piped go test, or a failing test passes: %s", name, line)
+				t.Fatalf("the %s step must run set -o pipefail before the piped go test, or a failing test passes: %s", label, line)
 			}
 			tee := ciTeeTarget.FindStringSubmatch(line)
 			if tee == nil {
-				t.Fatalf("the %s go test must end with 2>&1 | tee <log> so the SKIP gate reads its output: %s", name, line)
+				t.Fatalf("the %s go test must end with 2>&1 | tee <log> so the SKIP gate reads its output: %s", label, line)
 			}
 			teeLog = tee[1]
-			shard.run = compilePyIntegrationPattern(t, name, "-run", runs[0][1])
+			shard = &ciPyIntegrationShard{job: label, gate: job.gates[si], run: compilePyIntegrationPattern(t, label, "-run", runs[0][1])}
 			if len(skips) == 1 {
-				shard.skip = compilePyIntegrationPattern(t, name, "-skip", skips[0][1])
+				shard.skip = compilePyIntegrationPattern(t, label, "-skip", skips[0][1])
 			}
 		}
 		if gateOpen {
-			t.Fatalf("the %s SKIP gate has no closing fi", name)
+			t.Fatalf("the %s SKIP gate has no closing fi", label)
 		}
+		if shard == nil {
+			continue
+		}
+		if !sawSkipGate {
+			t.Fatalf("%s does not fail when a selected test reports --- SKIP in the log its go test writes", label)
+		}
+		if labels[label] {
+			t.Fatalf("%s has more than one go test step with the same condition", label)
+		}
+		labels[label] = true
+		shards = append(shards, *shard)
 	}
-	if shard.run == nil {
+	if len(shards) == 0 {
 		t.Fatalf("%s has no -run '...' argument", name)
 	}
-	if !sawSkipGate {
-		t.Fatalf("%s does not fail when a selected test reports --- SKIP in the log its go test writes", name)
-	}
-	return shard
+	return shards
 }
 
 func pyIntegrationBuildTests(t *testing.T, schedDir string) ([]string, map[string]bool) {
@@ -716,6 +781,7 @@ const ciShellSuitesJob = "shell-suites"
 
 type ciSuiteShard struct {
 	job       string
+	gate      string
 	scenarios []string
 }
 
@@ -785,10 +851,10 @@ func checkCIShardPartition(t *testing.T, script string, w shellSuiteWiring, src,
 	t.Helper()
 	defaults := readShardDefaults(t, script, w, src)
 	if len(runs) == 0 {
-		t.Errorf("no shell-suites job runs scripts/%s", script)
+		t.Errorf("no CI step runs scripts/%s", script)
 	}
 	if n := strings.Count(workflow, w.shardEnv); n != len(runs) {
-		t.Errorf(".github/workflows/ci.yml names %s %d times, but %d shell-suites commands run scripts/%s with it", w.shardEnv, n, len(runs), script)
+		t.Errorf(".github/workflows/ci.yml names %s %d times, but %d CI commands run scripts/%s with it", w.shardEnv, n, len(runs), script)
 	}
 	for _, m := range regexp.MustCompile(regexp.QuoteMeta(w.shardEnv)+`='([^']*)'`).FindAllStringSubmatch(workflow, -1) {
 		if strings.Join(strings.Fields(m[1]), " ") != m[1] {
@@ -798,7 +864,7 @@ func checkCIShardPartition(t *testing.T, script string, w shellSuiteWiring, src,
 	owners := map[string][]string{}
 	for _, run := range runs {
 		for _, name := range run.scenarios {
-			owners[name] = append(owners[name], run.job)
+			owners[name] = append(owners[name], run.job+" (gate "+run.gate+")")
 		}
 	}
 	known := map[string]bool{}
@@ -806,7 +872,7 @@ func checkCIShardPartition(t *testing.T, script string, w shellSuiteWiring, src,
 		known[name] = true
 		switch len(owners[name]) {
 		case 0:
-			t.Errorf("no shell-suites job runs scenario %s of scripts/%s: add it to exactly one %s list", name, script, w.shardEnv)
+			t.Errorf("no CI step runs scenario %s of scripts/%s: add it to exactly one %s list", name, script, w.shardEnv)
 		case 1:
 		default:
 			t.Errorf("scenario %s of scripts/%s runs in more than one shard: %s", name, script, strings.Join(owners[name], ", "))
@@ -821,6 +887,65 @@ func checkCIShardPartition(t *testing.T, script string, w shellSuiteWiring, src,
 	sort.Strings(unknown)
 	for _, name := range unknown {
 		t.Errorf("%s runs scenario %s of scripts/%s, which is not in its default %s list", strings.Join(owners[name], ", "), name, script, w.shardDefault)
+	}
+}
+
+func wiringHasGate(w shellSuiteWiring, gate string) bool {
+	if len(w.gates) == 0 {
+		return gate == ""
+	}
+	for _, g := range w.gates {
+		if g == gate {
+			return true
+		}
+	}
+	return false
+}
+
+func checkCIStepGates(t *testing.T, jobs map[string]*ciWorkflowJob, declared map[string]bool) {
+	t.Helper()
+	var names []string
+	for name := range jobs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if g := jobs[name].jobGate; g != "" && !declared[g] {
+			t.Errorf("job %s is gated on needs.changes.outputs.%s, which is not a suite gate the changes job declares", name, g)
+		}
+		for _, line := range jobs[name].raw {
+			m := ciStepGate.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			if m[1] == "code" || !declared[m[1]] {
+				t.Errorf("job %s gates a step on needs.changes.outputs.%s, which is not a suite gate the changes job declares", name, m[1])
+			}
+		}
+	}
+}
+
+func checkGatedPyIntegrationShards(t *testing.T, shards []ciPyIntegrationShard, tests []string) {
+	t.Helper()
+	wrappers := map[string]shellSuiteWiring{}
+	for _, w := range shellSuiteWirings {
+		if w.goTest != "" {
+			wrappers[w.goTest] = w
+		}
+	}
+	for _, test := range tests {
+		for _, shard := range shards {
+			if !shard.selects(test) {
+				continue
+			}
+			w, isWrapper := wrappers[test]
+			switch {
+			case shard.gate != "" && !isWrapper:
+				t.Errorf("%s runs %s only when needs.changes.outputs.%s is true, but only a shell suite wrapper with that gate may run under a condition", shard.job, test, shard.gate)
+			case isWrapper && !wiringHasGate(w, shard.gate):
+				t.Errorf("%s runs %s under condition %q, but its shellSuiteWirings gates are %v", shard.job, test, shard.gate, w.gates)
+			}
+		}
 	}
 }
 
@@ -855,28 +980,43 @@ func TestShellSuiteCIWiring(t *testing.T) {
 		t.Fatal(".github/workflows/ci.yml sets GOFLAGS, which can change the tests a go-python-integration shard selects")
 	}
 	jobs := parseCIWorkflowJobs(t, workflowPath)
+	var declared map[string]bool
 	for _, wf := range []string{"ci.yml", "container.yml"} {
 		wfJobs := jobs
 		if wf != "ci.yml" {
 			wfJobs = parseCIWorkflowJobs(t, filepath.Join(repoRoot, ".github", "workflows", wf))
 		}
-		requireCIChangesJob(t, wf, wfJobs)
+		outputs := requireCIChangesJob(t, wf, wfJobs)
+		if wf == "ci.yml" {
+			declared = outputs
+		}
 	}
+	checkCIStepGates(t, jobs, declared)
 	shards := readPyIntegrationShards(t, jobs)
 	allowlist := shards[0].run
 	requireCIJob(t, jobs, ciShellSuitesJob)
 	var shellJobs []string
-	for name := range jobs {
-		if name == ciShellSuitesJob || strings.HasPrefix(name, ciShellSuitesJob+"-") {
+	for name, job := range jobs {
+		runsSuite := false
+		for _, step := range job.logical {
+			for _, line := range step {
+				if strings.Contains(line, "scripts/test_") {
+					runsSuite = true
+				}
+			}
+		}
+		if runsSuite || name == ciShellSuitesJob || strings.HasPrefix(name, ciShellSuitesJob+"-") {
 			shellJobs = append(shellJobs, name)
 		}
 	}
 	sort.Strings(shellJobs)
 	pyTests, pyTagged := pyIntegrationBuildTests(t, schedDir)
 	checkPyIntegrationPartition(t, shards, pyTests, pyTagged)
+	checkGatedPyIntegrationShards(t, shards, pyTests)
 
 	invoked := map[string]int{}
 	shardRuns := map[string][]ciSuiteShard{}
+	usedGates := map[string]map[string]bool{}
 	for _, jobName := range shellJobs {
 		shellJob := requireCIJob(t, jobs, jobName)
 		for _, line := range shellJob.raw {
@@ -884,7 +1024,10 @@ func TestShellSuiteCIWiring(t *testing.T) {
 				t.Fatalf("job %s declares %s, so each of its suites might not run once on its own runner", jobName, strings.TrimSpace(line))
 			}
 		}
-		for _, step := range shellJob.logical {
+		var rootSuites []string
+		soleRoot := ""
+		for si, step := range shellJob.logical {
+			gate := shellJob.gates[si]
 			for _, line := range step {
 				all := strings.Count(line, "scripts/test_")
 				found := ciSuiteInvoke.FindAllStringSubmatch(line, -1)
@@ -899,6 +1042,19 @@ func TestShellSuiteCIWiring(t *testing.T) {
 				w, ok := shellSuiteWirings[script]
 				if !ok || !w.ciStep {
 					t.Fatalf("%s runs scripts/%s, which is not declared as a shell-suites step", jobName, script)
+				}
+				if !wiringHasGate(w, gate) {
+					t.Fatalf("the %s step that runs scripts/%s has condition %q, but its shellSuiteWirings gates are %v (no gates means no condition)", jobName, script, gate, w.gates)
+				}
+				if usedGates[script] == nil {
+					usedGates[script] = map[string]bool{}
+				}
+				usedGates[script][gate] = true
+				if w.sudo {
+					rootSuites = append(rootSuites, script)
+					if w.soleRoot {
+						soleRoot = script
+					}
 				}
 				if strings.Contains(line, "#") {
 					t.Fatalf("the %s command for scripts/%s contains #, so part of it may be a comment: %s", jobName, script, line)
@@ -921,7 +1077,7 @@ func TestShellSuiteCIWiring(t *testing.T) {
 				marker := w.marker
 				if w.shardEnv != "" {
 					list := readCIShardList(t, jobName, script, w, strings.TrimSuffix(cmd, "bash scripts/"+script))
-					shardRuns[script] = append(shardRuns[script], ciSuiteShard{job: jobName, scenarios: list})
+					shardRuns[script] = append(shardRuns[script], ciSuiteShard{job: jobName, gate: gate, scenarios: list})
 					marker = fmt.Sprintf(w.marker, strings.Join(list, " "))
 				}
 				if strings.Count(opts, "--marker ") != 1 || !strings.Contains(opts, "--marker '"+marker+"'") {
@@ -939,6 +1095,13 @@ func TestShellSuiteCIWiring(t *testing.T) {
 					if !strings.Contains(" "+cmd+" ", " "+env+"=1 ") {
 						t.Fatalf("%s command for scripts/%s does not set %s=1", jobName, script, env)
 					}
+				}
+			}
+		}
+		if soleRoot != "" {
+			for _, other := range rootSuites {
+				if other != soleRoot {
+					t.Errorf("job %s runs scripts/%s, which changes host-wide systemd files and state, beside the root suite scripts/%s; give it a job with no other root suite", jobName, soleRoot, other)
 				}
 			}
 		}
@@ -985,7 +1148,14 @@ func TestShellSuiteCIWiring(t *testing.T) {
 			}
 		case w.ciStep && w.shardEnv == "":
 			if invoked[name] != 1 {
-				t.Errorf("the shell-suites jobs run scripts/%s %d times, want exactly once", name, invoked[name])
+				t.Errorf("the CI jobs run scripts/%s %d times, want exactly once", name, invoked[name])
+			}
+		}
+		if w.ciStep {
+			for _, gate := range w.gates {
+				if !usedGates[name][gate] {
+					t.Errorf("shellSuiteWirings gives scripts/%s gate %s, but no CI step runs it under that condition", name, gate)
+				}
 			}
 		}
 

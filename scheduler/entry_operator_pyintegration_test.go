@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func entryOperatorRepoRoot(t *testing.T) string {
@@ -27,7 +26,7 @@ func entryOperatorRepoRoot(t *testing.T) string {
 
 func TestEntryOperatorRealOKXQueryErrorRefusesTheRelease(t *testing.T) {
 	root := entryOperatorRepoRoot(t)
-	f := newEntryOperatorFixture(t, "okx-swap")
+	f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "okx-swap")
 	f.backdate()
 	t.Setenv("OKX_API_SECRET", "")
 	t.Setenv("OKX_PASSPHRASE", "")
@@ -100,12 +99,12 @@ func installEntryHLRecoveryDriver(t *testing.T, root string, entry map[string]an
 func TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease(t *testing.T) {
 	root := entryOperatorRepoRoot(t)
 	t.Run("a found filled entry books once when an unattributed fill lookup fails", func(t *testing.T) {
-		f := newEntryOperatorFixture(t, "hyperliquid")
+		f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid")
 		f.backdate()
 		installEntryHLRecoveryDriver(t, root, map[string]any{"status": "order", "order": map[string]any{"status": "filled",
 			"order": map[string]any{"oid": 901, "origSz": "0.4", "sz": "0", "cloid": f.intent().ClientOrderID}}})
-		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
-		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now().Add(2*entryRecoveryQueryInterval))
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, f.clk.now())
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, f.clk.advance(2*entryRecoveryQueryInterval))
 		if qty, _ := f.env.position(f.sc.ID, "BTC"); math.Abs(qty-0.4) > 1e-9 {
 			t.Fatalf("position %v, want the proven 0.4 booked", qty)
 		}
@@ -117,11 +116,11 @@ func TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease(t *testing.T)
 		}
 	})
 	t.Run("a missing entry stays held when an unattributed fill lookup fails", func(t *testing.T) {
-		f := newEntryOperatorFixture(t, "hyperliquid")
+		f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid")
 		f.backdate()
 		installEntryHLRecoveryDriver(t, root, nil)
 		cashBefore := f.cash()
-		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, f.clk.now())
 		if r := f.row(); r.Status != entryIntentSubmitting || !strings.Contains(r.Hold, "lookup failed") {
 			t.Fatalf("row %+v", r)
 		}
