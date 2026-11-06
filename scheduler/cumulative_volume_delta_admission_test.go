@@ -233,11 +233,11 @@ func productionRefusedEveryModeAndReference(t *testing.T, name string) {
 			t.Fatalf("the scalar add route must refuse the quote capability, got %v", err)
 		}
 	} else {
-		okx := researchFixtureArgs(researchScalarFixture(t, name), name, []string{"--mode=paper"})
-		okx["platform"], okx["script"] = "okx", "shared_scripts/check_okx.py"
-		for i, err := range researchLoadAll(t, websocket, okx) {
-			if err == nil {
-				t.Fatalf("loader %d admitted the research candidate off the Hyperliquid perps route", i)
+		topstep := researchFixtureArgs(researchScalarFixture(t, name), name, []string{"--mode=paper"})
+		topstep["platform"], topstep["script"], topstep["type"] = "topstep", "shared_scripts/check_topstep.py", "futures"
+		for i, err := range researchLoadAll(t, websocket, topstep) {
+			if err == nil || !strings.Contains(err.Error(), `set "platform": "hyperliquid" (got "topstep")`) {
+				t.Fatalf("loader %d must refuse the research candidate on topstep for its platform, got %v", i, err)
 			}
 		}
 	}

@@ -152,9 +152,9 @@ func tunerHandlerCandles() []UICandle {
 func tunerHandlerStrategy(mutate func(*StrategyConfig)) StrategyConfig {
 	pct := 50.0
 	sc := StrategyConfig{
-		ID:           "okx-preview",
+		ID:           "hl-preview",
 		Type:         "perps",
-		Platform:     "okx",
+		Platform:     "hyperliquid",
 		Args:         []string{"sma_crossover", "BTC", "1h"},
 		OpenStrategy: StrategyRef{Name: "sma_crossover", Params: map[string]interface{}{"fast_period": 5, "slow_period": 20}},
 		StopLossPct:  &pct,

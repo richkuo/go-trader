@@ -3,7 +3,6 @@ import os
 import sys
 
 import numpy as np
-import pytest
 
 from backtest_options import calc_iv_rank
 
@@ -61,44 +60,3 @@ def _assert_rank_lands_in_expected_band():
         rank = calc_iv_rank(closes, recent_window=RECENT, lookback_days=LOOKBACK)
         assert (rank > lo) if strict_lo else (rank >= lo), f"{case}: got {rank}, low bound {lo}"
         assert (rank < hi) if strict_hi else (rank <= hi), f"{case}: got {rank}, high bound {hi}"
-
-
-def _live_okx_iv_rank(closes: list, window: int = 14) -> float:
-    if len(closes) < window + 1:
-        return 50.0
-    returns = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
-    if len(returns) < window:
-        return 50.0
-    mean = sum(returns[-window:]) / window
-    variance = sum((r - mean) ** 2 for r in returns[-window:]) / window
-    current = math.sqrt(variance * 365) * 100
-    hvs = []
-    for i in range(len(returns) - window + 1):
-        chunk = returns[i:i + window]
-        m = sum(chunk) / window
-        v = sum((r - m) ** 2 for r in chunk) / window
-        hvs.append(math.sqrt(v * 365) * 100)
-    lo, hi = min(hvs), max(hvs)
-    if hi <= lo:
-        return 50.0
-    rank = (current - lo) / (hi - lo) * 100
-    return min(max(rank, 0.0), 100.0)
-
-
-def test_matches_live_okx_adapter_shape():
-    rng = np.random.default_rng(99)
-    log_returns = rng.normal(loc=0.0, scale=0.03, size=120)
-    closes = [100.0]
-    for r in log_returns:
-        closes.append(closes[-1] * math.exp(r))
-
-    total_returns = len(closes) - 1
-    lookback = total_returns - RECENT
-
-    got = calc_iv_rank(closes, recent_window=RECENT, lookback_days=lookback)
-    expected = _live_okx_iv_rank(closes, window=RECENT)
-
-    assert got == pytest.approx(expected, abs=1e-9), (
-        f"backtest calc_iv_rank must produce the same percentile as the live "
-        f"OKX adapter on identical inputs — got {got}, expected {expected}"
-    )

@@ -61,9 +61,6 @@ func setNoEdgeLiveCredentials(t *testing.T) {
 	t.Helper()
 	t.Setenv("HYPERLIQUID_SECRET_KEY", "0x0000000000000000000000000000000000000000000000000000000000000001")
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0x0000000000000000000000000000000000000001")
-	t.Setenv("OKX_API_KEY", "k")
-	t.Setenv("OKX_API_SECRET", "s")
-	t.Setenv("OKX_PASSPHRASE", "p")
 }
 
 func rawStrategiesByID(t *testing.T, path string) map[string]map[string]interface{} {
@@ -155,7 +152,6 @@ func noEdgeCaseNoEdgeAdmissionMatrixThroughRealLoaders(t *testing.T) {
 			[]string{`open strategy "chande_momentum"`, "explicit live mode"}, ""},
 		{"go spot paper dispatch supplies paper", spot("binanceus", "rsi", "BTC/USDT", "1h"), nil, ScopePaper},
 		{"go spot explicit live refused", spot("binanceus", "rsi", "BTC/USDT", "1h", "--mode=live"), []string{"explicit live mode"}, ""},
-		{"okx spot missing mode refused", spot("okx", "rsi", "BTC/USDT", "1h"), []string{"missing --mode"}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1450,13 +1446,6 @@ func noEdgeCaseChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.
 		sc["close_strategy"] = ref
 		return sc
 	}
-	okx := func(timeframe string) map[string]interface{} {
-		return map[string]interface{}{
-			"id": "okx-cmo", "type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py",
-			"args": []string{cmo, "ETH", timeframe, "--mode=paper"}, "capital": 100.0, "max_drawdown_pct": 10.0,
-			"leverage": 1.0,
-		}
-	}
 	topstep := map[string]interface{}{
 		"id": "ts-cmo", "type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py",
 		"args": []string{cmo, "ES", "1h", "--mode=paper"}, "capital": 1000.0, "max_drawdown_pct": 10.0,
@@ -1496,8 +1485,6 @@ func noEdgeCaseChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.
 			[]string{`close strategy "chande_momentum": registry default expected_interval_ms=3600000 does not match timeframe 4h`}, ""},
 		{"close fallback explicit match loads", withCloseParams(noEdgeHLStrategy("hl-cmo", "breakout", "ETH", "4h", "--mode=paper"), interval(14400000)), nil, ""},
 		{"close fallback inherits the open params", withCloseParams(withOpenParams(noEdgeHLStrategy("hl-cmo", cmo, "ETH", "4h", "--mode=paper"), interval(14400000)), nil), nil, ""},
-		{"okx perps 4h explicit match loads", withOpenParams(okx("4h"), interval(14400000)), nil, ""},
-		{"okx perps 4h registry default refused", okx("4h"), []string{`strategy okx-cmo: open strategy "chande_momentum": registry default`}, ""},
 		{"topstep refused for session breaks", topstep, []string{`strategy ts-cmo: open strategy "chande_momentum" holds every signal`, "type=futures platform=topstep", "runs only on perps"}, ""},
 		{"manual close fallback registry default refused on 4h", manual(nil),
 			[]string{`strategy hl-cmo-manual: close strategy "chande_momentum": registry default expected_interval_ms=3600000 does not match timeframe 4h`, `"expected_interval_ms": 14400000`}, ""},

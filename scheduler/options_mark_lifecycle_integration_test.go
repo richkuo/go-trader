@@ -403,8 +403,6 @@ func esSettle(platform string, price float64) lcPricer {
 			st.Basis, st.Source = optionSettlementBasisRawClose, "yahoo_daily_raw_close"
 		case "ibkr":
 			st.Basis, st.Source = optionSettlementBasisVWAP, ibkrSettlementSource
-		case "okx":
-			st.Basis, st.Source = optionSettlementBasisDelivery, okxDeribitProxySource
 		default:
 			st.Basis, st.Source = optionSettlementBasisDelivery, deribitSettlementSource
 		}
@@ -599,7 +597,6 @@ func TestOptionExpirySettlementIntegration(t *testing.T) {
 	t.Run("sold_put_on_every_cash_platform_delivers_nothing", func(t *testing.T) {
 		for _, tc := range []struct{ platform, label string }{
 			{"deribit", "deribit_delivery_price delivery_price 2026-06-26 $54000.00"},
-			{"okx", "deribit_proxy delivery_price 2026-06-26 $54000.00"},
 			{"ibkr", "binanceus_spot_vwap_1530_1600_london spot_candle_close_vwap 2026-06-26 $54000.00"},
 		} {
 			t.Run(tc.platform, func(t *testing.T) {
@@ -1036,16 +1033,14 @@ func TestOptionExpiryResultsReachRiskGatesIntegration(t *testing.T) {
 func TestOptionLegacyCashPlatformLongWarningIntegration(t *testing.T) {
 	b := ocSC("deribit-legacy-b", "deribit", "BTC")
 	a := ocSC("deribit-legacy-a", "deribit", "BTC")
-	okx := ocSC("okx-legacy", "okx", "ETH")
 	short := ocSC("deribit-legacy-short", "deribit", "BTC")
 	unrelated := ocSC("deribit-legacy-eth", "deribit", "BTC")
 	rh := ocSC("rh-legacy", "robinhood", "SPY")
-	env := ocEnv(t, b, a, okx, short, unrelated, rh)
+	env := ocEnv(t, b, a, short, unrelated, rh)
 	env.strat(b.ID).Positions["BTC"] = &Position{Symbol: "BTC", Side: "long", Quantity: 0.5, AvgCost: 54000, OwnerStrategyID: b.ID}
 	env.strat(a.ID).Positions["BTC"] = &Position{Symbol: "BTC", Side: "long", Quantity: 1, AvgCost: 60000, OwnerStrategyID: a.ID}
 	esLeg(env.strat(a.ID), "BTC", "call", "sell", 70000, 1, 1, 500)
 	env.strat(a.ID).OptionPositions["BTC-call-sell-70000-"+esExpiry].Expiry = "2099-01-01"
-	env.strat(okx.ID).Positions["ETH"] = &Position{Symbol: "ETH", Side: "long", Quantity: 2, AvgCost: 3000, OwnerStrategyID: okx.ID}
 	env.strat(short.ID).Positions["BTC"] = &Position{Symbol: "BTC", Side: "short", Quantity: 1, AvgCost: 60000, OwnerStrategyID: short.ID}
 	env.strat(unrelated.ID).Positions["ETH"] = &Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 3000, OwnerStrategyID: unrelated.ID}
 	env.strat(rh.ID).Positions["SPY"] = &Position{Symbol: "SPY", Side: "long", Quantity: 100, AvgCost: 90, OwnerStrategyID: rh.ID}
@@ -1058,9 +1053,8 @@ func TestOptionLegacyCashPlatformLongWarningIntegration(t *testing.T) {
 			warns = append(warns, line)
 		}
 	}
-	if len(warns) != 3 || !strings.Contains(warns[0], "strategy deribit-legacy-a on deribit") || !strings.Contains(warns[0], "BTC quantity=1 cost_basis=60000") ||
-		!strings.Contains(warns[1], "strategy deribit-legacy-b on deribit") || !strings.Contains(warns[1], "quantity=0.5 cost_basis=54000") ||
-		!strings.Contains(warns[2], "strategy okx-legacy on okx") || !strings.Contains(warns[2], "ETH quantity=2") {
+	if len(warns) != 2 || !strings.Contains(warns[0], "strategy deribit-legacy-a on deribit") || !strings.Contains(warns[0], "BTC quantity=1 cost_basis=60000") ||
+		!strings.Contains(warns[1], "strategy deribit-legacy-b on deribit") || !strings.Contains(warns[1], "quantity=0.5 cost_basis=54000") {
 		t.Fatalf("legacy-long warnings = %q", warns)
 	}
 	if p := env.strat(b.ID).Positions["BTC"]; p == nil || p.Quantity != 0.5 || p.AvgCost != 54000 || len(env.strat(b.ID).OptionPositions) != 0 {

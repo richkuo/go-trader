@@ -111,13 +111,6 @@ func noEdgeCaseSchaffTrendCycleRequiresHyperliquidClosedBarDecisions(t *testing.
 		sc["open_strategy"] = map[string]interface{}{"name": schaffName}
 		return sc
 	}
-	okx := func() map[string]interface{} {
-		return map[string]interface{}{
-			"id": "okx-stc", "type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py",
-			"args": []string{schaffName, "ETH", "4h", "--mode=paper"}, "capital": 100.0, "max_drawdown_pct": 10.0,
-			"leverage": 1.0,
-		}
-	}
 	topstep := map[string]interface{}{
 		"id": "ts-stc", "type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py",
 		"args": []string{schaffName, "ES", "1h", "--mode=paper"}, "capital": 1000.0, "max_drawdown_pct": 10.0,
@@ -144,10 +137,6 @@ func noEdgeCaseSchaffTrendCycleRequiresHyperliquidClosedBarDecisions(t *testing.
 		{"hyperliquid effective open without closed bars refused",
 			openRef(noEdgeHLStrategy("hl-stc-open", "breakout", "ETH", "4h", "--mode=paper")),
 			[]string{`open strategy "` + schaffName + `"`, needs}},
-		{"okx positional open without closed bars refused", okx(),
-			[]string{`open strategy "` + schaffName + `"`, needs, "platform=okx"}},
-		{"okx positional open with closed bars refused", closed(okx(), true),
-			[]string{`open strategy "` + schaffName + `"`, needs, "platform=okx", "closed_bar_decisions=true"}},
 		{"topstep positional open refused", topstep,
 			[]string{`open strategy "` + schaffName + `"`, needs, "platform=topstep"}},
 		{"hyperliquid manual close refused", manual,

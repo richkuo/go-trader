@@ -111,73 +111,6 @@ func TestSharedWalletDisplayValues(t *testing.T) {
 			t.Errorf("manual value = %v, want %v", msol.SharedWalletValue, 200.0/1200.0*1000.0+15)
 		}
 	})
-	t.Run("ReconcileOKXPositionsNotFetchedSkips", func(t *testing.T) {
-		t.Setenv("OKX_API_KEY", "okxkey")
-		strategies := []StrategyConfig{
-			{ID: "okx-a", Platform: "okx", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 500},
-			{ID: "okx-b", Platform: "okx", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 500},
-		}
-		state := &AppState{Strategies: map[string]*StrategyState{
-			"okx-a": {ID: "okx-a", Cash: 500, Positions: map[string]*Position{}},
-			"okx-b": {ID: "okx-b", Cash: 500, Positions: map[string]*Position{}},
-		}}
-		sharedWallets := detectSharedWallets(strategies)
-		key := SharedWalletKey{Platform: "okx", Account: "okxkey"}
-		walletBalances := map[SharedWalletKey]float64{key: 1000.0}
-
-		results := reconcileSharedWalletDisplayValues(strategies, state, nil, sharedWallets, walletBalances, nil, nil, false)
-		if len(results) != 0 {
-			t.Fatalf("expected OKX wallet skipped when positions not fetched, got %d results", len(results))
-		}
-		if state.Strategies["okx-a"].SharedWalletValueSet || state.Strategies["okx-b"].SharedWalletValueSet {
-			t.Error("OKX members must fall back (Set=false) when positions fetch failed")
-		}
-
-		results = reconcileSharedWalletDisplayValues(strategies, state, nil, sharedWallets, walletBalances, nil, nil, true)
-		if len(results) != 1 || !state.Strategies["okx-a"].SharedWalletValueSet {
-			t.Fatalf("expected OKX reconcile when positions fetched, got %+v", results)
-		}
-	})
-	t.Run("ReconcileOKXPoolShowsAttributedPerformance", func(t *testing.T) {
-		t.Setenv("OKX_API_KEY", "okx-pool")
-		marginCap := 100.0
-		strategies := []StrategyConfig{
-			{ID: "okx-a", Platform: "okx", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
-			{ID: "okx-b", Platform: "okx", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
-		}
-		state := &AppState{Strategies: map[string]*StrategyState{
-			"okx-a": {ID: "okx-a", Platform: "okx", Type: "perps", Positions: map[string]*Position{}},
-			"okx-b": {ID: "okx-b", Platform: "okx", Type: "perps", Positions: map[string]*Position{}},
-		}}
-		db := newLedgerTestDB(t)
-		if err := db.InsertTrade("okx-a", Trade{
-			Timestamp: time.Now().UTC(), StrategyID: "okx-a", Symbol: "BTC",
-			Side: "buy", Quantity: 1, Price: 100, Value: 100,
-			TradeType: "perps", ExchangeFee: 2,
-		}); err != nil {
-			t.Fatalf("insert open fee: %v", err)
-		}
-
-		sharedWallets := detectSharedWallets(strategies)
-		key := SharedWalletKey{Platform: "okx", Account: "okx-pool"}
-		results := reconcileSharedWalletDisplayValues(
-			strategies, state, db, sharedWallets,
-			map[SharedWalletKey]float64{key: 1000},
-			nil, nil, true,
-		)
-		if len(results) != 1 {
-			t.Fatalf("expected one pooled reconcile result, got %+v", results)
-		}
-		if got := state.Strategies["okx-a"].SharedWalletValue; got != -2 {
-			t.Fatalf("okx-a performance = %v, want -2 open fee (not a wallet allocation)", got)
-		}
-		if got := state.Strategies["okx-b"].SharedWalletValue; got != 0 {
-			t.Fatalf("idle okx-b performance = %v, want 0", got)
-		}
-		if got := latestDisplayTotal(state, nil); got != 1000 {
-			t.Fatalf("operator total=%v, want real wallet equity 1000 counted once", got)
-		}
-	})
 	t.Run("ReconcileFetchFailedFallsBack", func(t *testing.T) {
 		t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 		state, strategies := buildSharedWalletTestState()
@@ -305,16 +238,6 @@ func TestSharedWalletDisplayValues(t *testing.T) {
 }
 
 func TestVenuePositionReadsCarryUnrealizedPnL(t *testing.T) {
-	t.Run("ParseOKXPositionsOutput", func(t *testing.T) {
-		stdout := []byte(`{"positions":[{"coin":"BTC","size":0.3,"entry_price":60000,"side":"long","unrealized_pnl":123.45}],"platform":"okx"}`)
-		res, _, err := parseOKXPositionsOutput(stdout, "", nil)
-		if err != nil {
-			t.Fatalf("unexpected err: %v", err)
-		}
-		if len(res.Positions) != 1 || math.Abs(res.Positions[0].UnrealizedPnL-123.45) > 1e-9 {
-			t.Fatalf("expected unrealized_pnl 123.45, got %+v", res.Positions)
-		}
-	})
 	t.Run("FetchHyperliquidState", func(t *testing.T) {
 		resp := map[string]interface{}{
 			"marginSummary": map[string]string{"accountValue": "1000.00"},

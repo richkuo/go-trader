@@ -211,7 +211,6 @@ def test_live_equivalence_reads_the_artifact_exact_label_and_expiry(monkeypatch,
 def test_loader_refuses_structural_combinations(tmp_path, subtests):
     cases = (
         ("spot", {"type": "spot", "platform": "binanceus"}),
-        ("okx", {"platform": "okx"}),
         ("directional_policy", {"regime_directional_policy": {"trend_regime": {
             "trending_up_clean": {"direction": "long"}}}}),
         ("window_divergence", {"regime_window_divergence": {"enabled": True}}),
