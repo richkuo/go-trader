@@ -70,6 +70,8 @@ swap_stage="none"
 unit_mutated=0
 unit_reloaded=0
 journal_mutated=0
+cpu_dropin_mutated=0
+cpu_dropin_path=""
 egress_controller_mutated=0
 egress_state_file=""
 restart_attempted=0
@@ -828,8 +830,8 @@ update_exit_coordinator() {
     if [[ -n "$egress_staged" ]]; then
         rm -rf "$(dirname "$egress_staged")" 2>/dev/null || true
     fi
-    if [[ "$unit_mutated" == "1" || "$unit_reloaded" == "1" || "$journal_mutated" == "1" || "$egress_controller_mutated" == "1" ]]; then
-        if update_restore_snapshot_external "$recovery_dir" "$unit_mutated" "$unit_reloaded" "$journal_mutated" "$egress_controller_mutated" "$egress_state_file"; then
+    if [[ "$unit_mutated" == "1" || "$unit_reloaded" == "1" || "$journal_mutated" == "1" || "$egress_controller_mutated" == "1" || "$cpu_dropin_mutated" == "1" ]]; then
+        if update_restore_snapshot_external "$recovery_dir" "$unit_mutated" "$unit_reloaded" "$journal_mutated" "$egress_controller_mutated" "$egress_state_file" "$cpu_dropin_mutated"; then
             stage_restore_external="ok"
         else
             stage_restore_external="failed"
@@ -1330,6 +1332,7 @@ if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
 fi
 
 if [[ "$restart" == "1" && "$restart_mode" == "systemd" ]]; then
+    cpu_dropin_path=$(update_cpu_dropin_path "$service_unit")
     unit_sync_source_path=$(update_unit_source_path "$repo_root" "$service_unit")
     unit_sync_installed_path=$(trim_space "$(systemctl show -p FragmentPath --value "$service_unit" 2>/dev/null || true)")
     if [[ -n "$unit_sync_source_path" && -n "$unit_sync_installed_path" ]]; then
@@ -1426,7 +1429,7 @@ end_phase
 
 begin_phase snapshot
 snapshot_started=1
-update_take_snapshot "$repo_root" "$recovery_dir" "$unit_sync_source_path" "$unit_sync_installed_path" "$egress_deployment" \
+update_take_snapshot "$repo_root" "$recovery_dir" "$unit_sync_source_path" "$unit_sync_installed_path" "$egress_deployment" "$cpu_dropin_path" \
     || fail "pre-update snapshot failed in $recovery_dir; nothing in $repo_root was modified"
 snapshot_ready=1
 echo "[update] snapshot: saved pre-update state in $recovery_dir"
@@ -1659,6 +1662,53 @@ if [[ "$restart_mode" == "systemd" ]]; then
     fi
     end_phase
 
+    begin_phase cpu
+    if [[ -z "$cpu_dropin_path" ]]; then
+        echo "[update] cpu: $service_unit is not a go-trader@<instance> template unit; no CPU weight drop-in is managed for it"
+    else
+        cpu_load_state=$(trim_space "$(systemctl show -p LoadState --value "$service_unit" 2>/dev/null || true)")
+        if [[ "$cpu_load_state" != "loaded" ]]; then
+            echo "[update] cpu: $service_unit has LoadState=${cpu_load_state:-<unknown>}; leaving its CPU weight drop-in unchanged"
+        else
+            cpu_plan=$(update_cpu_dropin_plan "$service_unit" "$repo_root/go-trader" "$cpu_dropin_path")
+            cpu_decision="${cpu_plan%% *}"
+            cpu_weight="${cpu_plan#* }"
+            case "$cpu_decision" in
+                install|replace|remove)
+                    update_record_intent cpu_dropin
+                    cpu_dropin_mutated=1
+                    if update_should_fail_at cpu_dropin; then
+                        fail "forced CPU weight drop-in failure for $cpu_dropin_path"
+                    fi
+                    update_cpu_dropin_apply "$cpu_decision" "$cpu_dropin_path" "$cpu_weight" \
+                        || fail "could not $cpu_decision the CPU weight drop-in $cpu_dropin_path"
+                    if [[ "$cpu_decision" == "remove" ]]; then
+                        echo "[update] cpu: removed $cpu_dropin_path"
+                    else
+                        echo "[update] cpu: wrote $cpu_dropin_path (CPUWeight=$cpu_weight, $cpu_decision)"
+                    fi
+                    if update_should_fail_at cpu_dropin_after_write; then
+                        fail "forced failure after writing the CPU weight drop-in $cpu_dropin_path"
+                    fi
+                    if ! sudo systemctl daemon-reload; then
+                        fail "systemctl daemon-reload failed after changing $cpu_dropin_path"
+                    fi
+                    ;;
+                skip-symlink)
+                    echo "[update] cpu: $cpu_dropin_path is a symlink; leaving the operator's link alone" >&2
+                    ;;
+                *)
+                    if [[ -n "$cpu_weight" ]]; then
+                        echo "[update] cpu: $cpu_dropin_path already sets CPUWeight=$cpu_weight"
+                    else
+                        echo "[update] cpu: no CPU weight drop-in for $service_unit"
+                    fi
+                    ;;
+            esac
+        fi
+    fi
+    end_phase
+
     warn_execstart_vs_swap "$service_unit"
     warn_missing_systemd_environment_files "$service_unit"
 
@@ -1721,6 +1771,7 @@ if [[ "$restart_mode" == "systemd" ]]; then
     fi
     end_phase
 else
+    echo "[update] cpu: RESTART_MODE=signal manages no systemd unit, so no CPU weight drop-in is written"
     begin_phase restart
     update_record_intent restart
     restart_attempted=1

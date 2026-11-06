@@ -48,6 +48,7 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		marker:     "OK: update_helpers tests passed",
 		forbidden: []string{
 			"note: GO_TRADER_BIN unset; effective-cadence drift case skipped",
+			"note: GO_TRADER_BIN unset; cpu-class binary cases skipped",
 			"note: this git does not simulate another owner; the trust and refusal cases are skipped",
 			"note: git not installed; update_git cases skipped",
 			"exists; the uv-missing case is skipped",

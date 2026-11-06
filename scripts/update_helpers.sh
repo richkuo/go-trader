@@ -235,6 +235,228 @@ update_sync_journal_namespace() {
     return 0
 }
 
+UPDATE_CPU_DROPIN_NAME=40-go-trader-cpu
+UPDATE_CPU_WEIGHT_ENV=GO_TRADER_PAPER_CPU_WEIGHT
+UPDATE_CPU_WEIGHT_DEFAULT=20
+UPDATE_CPU_WEIGHT_MAX=10000
+UPDATE_CPU_WEIGHT_MIN_SYSTEMD=236
+
+update_cpu_template_unit() {
+    local unit="$1" instance
+    [[ -n "$unit" ]] || { printf ''; return 0; }
+    [[ "$unit" == *.* ]] || unit="${unit}.service"
+    [[ "$unit" == go-trader@*.service ]] || { printf ''; return 0; }
+    instance="${unit#go-trader@}"
+    instance="${instance%.service}"
+    [[ "$(update_validate_instance_name "$instance")" == "ok" ]] || { printf ''; return 0; }
+    printf '%s' "$unit"
+}
+
+update_cpu_dropin_path() {
+    local unit
+    unit=$(update_cpu_template_unit "$1")
+    [[ -n "$unit" ]] || { printf ''; return 0; }
+    update_unit_dropin_path "${UPDATE_SYSTEMD_UNIT_DIR:-/etc/systemd/system}" "$unit" "$UPDATE_CPU_DROPIN_NAME"
+}
+
+update_cpu_dropin_content() {
+    printf '[Service]\nCPUWeight=%s\n' "$1"
+}
+
+update_cpu_dropin_is_managed() {
+    local path="$1" body weight
+    [[ -f "$path" && ! -L "$path" ]] || return 1
+    body=$(cat "$path"; printf x) || return 1
+    body="${body%x}"
+    [[ "$body" =~ ^\[Service\]$'\n'CPUWeight=([1-9][0-9]{0,4})$'\n'$ ]] || return 1
+    weight="${BASH_REMATCH[1]}"
+    (( 10#$weight <= UPDATE_CPU_WEIGHT_MAX ))
+}
+
+update_cpu_weight_value() {
+    local raw="$1" is_set="$2"
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    if [[ "$is_set" != "1" || -z "$raw" ]]; then
+        printf '%s' "$UPDATE_CPU_WEIGHT_DEFAULT"
+        return 0
+    fi
+    if [[ "$raw" =~ ^[0-9]{1,5}$ ]] && (( 10#$raw <= UPDATE_CPU_WEIGHT_MAX )); then
+        printf '%s' "$((10#$raw))"
+        return 0
+    fi
+    echo "[cpu] WARNING: $UPDATE_CPU_WEIGHT_ENV='$raw' is not an integer from 0 to $UPDATE_CPU_WEIGHT_MAX; using the default CPU weight $UPDATE_CPU_WEIGHT_DEFAULT" >&2
+    printf '%s' "$UPDATE_CPU_WEIGHT_DEFAULT"
+}
+
+update_cpu_weight_for_unit() {
+    local unit="$1" env_text files_text out
+    env_text=$(systemctl show -p Environment --value "$unit" 2>/dev/null || true)
+    files_text=$(systemctl show -p EnvironmentFiles --value "$unit" 2>/dev/null || true)
+    out=$(update_unit_env_value_from_show "$UPDATE_CPU_WEIGHT_ENV" "$env_text" "$files_text" strict) || {
+        echo "[cpu] WARNING: could not read the environment files of $unit, so an opt-out ($UPDATE_CPU_WEIGHT_ENV=0) cannot be ruled out; the managed CPU weight drop-in stays absent (run the update as root)" >&2
+        return 1
+    }
+    if [[ "$out" == SET\ * ]]; then
+        update_cpu_weight_value "${out#SET }" 1
+    else
+        update_cpu_weight_value "" 0
+    fi
+}
+
+update_cpu_desired_weight() {
+    local class="$1" weight="$2" major="$3"
+    [[ "$class" == "paper" ]] || { printf ''; return 0; }
+    [[ "$weight" =~ ^[0-9]+$ ]] && (( 10#$weight > 0 )) || { printf ''; return 0; }
+    [[ "$major" =~ ^[0-9]+$ ]] && (( 10#$major >= UPDATE_CPU_WEIGHT_MIN_SYSTEMD )) || { printf ''; return 0; }
+    printf '%s' "$((10#$weight))"
+}
+
+update_cpu_dropin_decision() {
+    local dest="$1" weight="$2"
+    [[ -n "$dest" ]] || { printf 'none'; return 0; }
+    if [[ -L "$dest" ]]; then
+        printf 'skip-symlink'
+        return 0
+    fi
+    if [[ -z "$weight" ]]; then
+        if [[ -e "$dest" ]]; then
+            printf 'remove'
+        else
+            printf 'none'
+        fi
+        return 0
+    fi
+    if [[ ! -e "$dest" ]]; then
+        printf 'install'
+        return 0
+    fi
+    if cmp -s "$dest" <(update_cpu_dropin_content "$weight"); then
+        printf 'none'
+    else
+        printf 'replace'
+    fi
+}
+
+update_cpu_warn_later_dropins() {
+    local dest="$1" unit_dir name d f base
+    unit_dir="${dest%/*}"
+    unit_dir="${unit_dir%/*}"
+    name="${dest##*/}"
+    for d in "${dest%/*}" "$unit_dir/go-trader@.service.d"; do
+        [[ -d "$d" ]] || continue
+        for f in "$d"/*.conf; do
+            [[ -f "$f" ]] || continue
+            base="${f##*/}"
+            [[ "$f" != "$dest" ]] || continue
+            [[ "$base" > "$name" ]] || continue
+            if grep -Eq '^[[:space:]]*CPUWeight[[:space:]]*=' "$f" 2>/dev/null; then
+                echo "[cpu] WARNING: $f sorts after $name and sets CPUWeight=, so systemd uses its value instead of the managed one" >&2
+            fi
+        done
+    done
+}
+
+update_cpu_dropin_apply() {
+    local decision="$1" dest="$2" weight="$3" dir tmp staged
+    dir="${dest%/*}"
+    case "$decision" in
+        install|replace)
+            [[ "$weight" =~ ^[1-9][0-9]*$ ]] || return 1
+            tmp=$(mktemp) || return 1
+            update_cpu_dropin_content "$weight" >"$tmp" || { rm -f "$tmp"; return 1; }
+            staged="${dest}.tmp-$$"
+            if ! update_unit_sudo install -d -m 0755 "$dir" \
+                || ! update_unit_sudo install -m 0644 "$tmp" "$staged"; then
+                rm -f "$tmp"
+                update_unit_sudo rm -f "$staged" 2>/dev/null || true
+                return 1
+            fi
+            rm -f "$tmp"
+            if ! update_unit_sudo mv -f "$staged" "$dest"; then
+                update_unit_sudo rm -f "$staged" 2>/dev/null || true
+                return 1
+            fi
+            update_cpu_warn_later_dropins "$dest"
+            ;;
+        remove)
+            update_unit_sudo rm -f "$dest" || return 1
+            update_unit_sudo rmdir "$dir" 2>/dev/null || true
+            ;;
+        *)
+            ;;
+    esac
+    return 0
+}
+
+update_cpu_class_for_unit() {
+    local unit="$1" binary="$2" owner cfg wd out rc=0 errf
+    if [[ ! -x "$binary" ]]; then
+        echo "[cpu] $binary is not an executable go-trader binary" >&2
+        return 1
+    fi
+    cfg=$(update_unit_config_path "$unit")
+    if [[ -z "$cfg" ]]; then
+        echo "[cpu] $unit names no config file and has no WorkingDirectory" >&2
+        return 1
+    fi
+    owner=$(update_unit_owner "$unit") || {
+        echo "[cpu] could not resolve the User and Group of $unit" >&2
+        return 1
+    }
+    if [[ "${owner%%:*}" == "0" ]]; then
+        echo "[cpu] $unit runs as root; the classifier never runs as root, so the CPU weight drop-in stays absent" >&2
+        return 1
+    fi
+    if ! command -v systemd-run >/dev/null 2>&1; then
+        echo "[cpu] systemd-run is not installed, so the classifier cannot run as the owner of $unit" >&2
+        return 1
+    fi
+    wd=$(systemctl show -p WorkingDirectory --value "$unit" 2>/dev/null || true)
+    local -a args=(--wait --pipe --collect --quiet --unit "go-trader-cpu-class-$$-$RANDOM"
+        "--uid=${owner%%:*}" "--gid=${owner#*:}"
+        -p ProtectSystem=strict -p PrivateTmp=true -p NoNewPrivileges=true -p RuntimeMaxSec=60)
+    [[ -n "$wd" ]] && args+=(-p "WorkingDirectory=$wd")
+    errf=$(mktemp) || return 1
+    out=$(update_unit_sudo systemd-run "${args[@]}" -- "$binary" cpu-class --config "$cfg" </dev/null 2>"$errf") || rc=$?
+    if [[ "$rc" != "0" ]]; then
+        echo "[cpu] $binary cpu-class --config $cfg failed (exit $rc):" >&2
+        sed 's/^/[cpu]   /' "$errf" >&2
+        rm -f "$errf"
+        return 1
+    fi
+    rm -f "$errf"
+    case "$out" in
+        paper|live|feed)
+            printf '%s' "$out"
+            return 0
+            ;;
+    esac
+    echo "[cpu] $binary cpu-class --config $cfg printed an unexpected result: '$out'" >&2
+    return 1
+}
+
+update_cpu_dropin_plan() {
+    local unit="$1" binary="$2" dest="$3" class="" weight="" major desired=""
+    local decision
+    major=$(update_systemd_major_version "$(systemctl --version 2>/dev/null || true)")
+    if ! [[ "$major" =~ ^[0-9]+$ ]] || (( 10#$major < UPDATE_CPU_WEIGHT_MIN_SYSTEMD )); then
+        echo "[cpu] systemd ${major:-<unknown>} is older than $UPDATE_CPU_WEIGHT_MIN_SYSTEMD or unknown: the classifier needs systemd-run --pipe (235) and --collect (236), so it does not run and the managed CPU weight drop-in stays absent for $unit" >&2
+    elif class=$(update_cpu_class_for_unit "$unit" "$binary"); then
+        echo "[cpu] $unit config class: $class" >&2
+        if [[ "$class" == "paper" ]] && weight=$(update_cpu_weight_for_unit "$unit"); then
+            desired=$(update_cpu_desired_weight "$class" "$weight" "$major")
+            if [[ "$weight" == "0" ]]; then
+                echo "[cpu] $UPDATE_CPU_WEIGHT_ENV=0 turns the paper CPU weight off for $unit" >&2
+            fi
+        fi
+    else
+        echo "[cpu] $unit has no CPU class; the managed CPU weight drop-in stays absent" >&2
+    fi
+    decision=$(update_cpu_dropin_decision "$dest" "$desired")
+    printf '%s %s' "$decision" "$desired"
+}
+
 update_signal_redirect_decision() {
     local is_active="$1" exec_bin_abs="$2" swap_bin_abs="$3"
     [[ "$is_active" == "active" ]] || { printf ''; return 0; }
@@ -588,18 +810,25 @@ update_deployment_role() {
     update_deployment_role_for_config "${1%/}/scheduler/config.json"
 }
 
-update_unit_role() {
+update_unit_config_path() {
     local unit="$1" wd execstart cfg
     wd=$(systemctl show "$unit" -p WorkingDirectory --value 2>/dev/null || true)
     execstart=$(systemctl show "$unit" -p ExecStart --value 2>/dev/null | head -n 1 || true)
     cfg=$(update_execstart_config_path "$execstart")
     if [[ -z "$cfg" ]]; then
-        [[ -n "$wd" ]] || { printf 'scheduler'; return 0; }
+        [[ -n "$wd" ]] || { printf ''; return 0; }
         cfg="${wd%/}/scheduler/config.json"
     elif [[ "$cfg" != /* ]]; then
-        [[ -n "$wd" ]] || { printf 'scheduler'; return 0; }
+        [[ -n "$wd" ]] || { printf ''; return 0; }
         cfg="${wd%/}/$cfg"
     fi
+    printf '%s' "$cfg"
+}
+
+update_unit_role() {
+    local cfg
+    cfg=$(update_unit_config_path "$1")
+    [[ -n "$cfg" ]] || { printf 'scheduler'; return 0; }
     update_deployment_role_for_config "$cfg"
 }
 
@@ -1755,19 +1984,33 @@ update_give_tree() {
     return 0
 }
 
-UPDATE_DIRECTIONAL_CERT_PY='
-import importlib.util, os, shlex, sys
+UPDATE_UNIT_ENV_PY='
+import importlib.util, os, shlex, stat, sys
+sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("migrate_service_layout", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-key = "GO_TRADER_DIRECTIONAL_CERT_PATH"
+key = sys.argv[4]
+strict = len(sys.argv) > 5 and sys.argv[5] == "strict"
 found = None
 for k, v in mod.parse_env_assignments(sys.argv[2]) or []:
     if k == key:
         found = v
 for entry in sys.argv[3].splitlines():
     path = entry.split(" (ignore_errors=")[0].strip()
-    if not path.startswith("/") or not os.path.isfile(path):
+    if not path.startswith("/"):
+        continue
+    if strict:
+        try:
+            st = os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError as exc:
+            sys.stderr.write("cannot stat environment file %s: %s\n" % (path, exc))
+            sys.exit(1)
+        if not stat.S_ISREG(st.st_mode):
+            continue
+    elif not os.path.isfile(path):
         continue
     for k, v in mod.parse_env_file(path):
         if k == key:
@@ -1785,8 +2028,13 @@ update_directional_cert_path_from_show() {
         grep -q GO_TRADER_DIRECTIONAL_CERT_PATH "$path" 2>/dev/null && mentioned=1
     done <<<"$files_text"
     [[ "$mentioned" == 1 ]] || return 0
+    update_unit_env_value_from_show GO_TRADER_DIRECTIONAL_CERT_PATH "$env_text" "$files_text"
+}
+
+update_unit_env_value_from_show() {
+    local key="$1" env_text="$2" files_text="$3" mode="${4:-}" dir out
     dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-    out=$(python3 -I -c "$UPDATE_DIRECTIONAL_CERT_PY" "$dir/migrate-service-layout.py" "$env_text" "$files_text") || return 1
+    out=$(python3 -I -B -c "$UPDATE_UNIT_ENV_PY" "$dir/migrate-service-layout.py" "$env_text" "$files_text" "$key" "$mode") || return 1
     printf '%s' "$out"
 }
 
@@ -2974,7 +3222,7 @@ PY
 }
 
 update_take_snapshot() {
-    local deploy_dir="$1" snap_dir="$2" unit_source="$3" unit_installed="$4" egress_dep="$5"
+    local deploy_dir="$1" snap_dir="$2" unit_source="$3" unit_installed="$4" egress_dep="$5" cpu_dropin_dest="${6:-}"
     update_managed_rsync_excludes "$deploy_dir" || return 1
     update_validate_venv_topology "$deploy_dir" || return 1
     local rec_root
@@ -3104,6 +3352,12 @@ update_take_snapshot() {
         fi
     fi
 
+    local had_cpu_dropin=0
+    if [[ -n "$cpu_dropin_dest" ]] && [[ -e "$cpu_dropin_dest" || -L "$cpu_dropin_dest" ]]; then
+        had_cpu_dropin=1
+        cp -pP "$cpu_dropin_dest" "$snap_dir/external/cpu-dropin.conf" || return 1
+    fi
+
     local cfg_status_port="${UPDATE_CONFIG_STATUS_PORT:-8099}"
 
     if update_should_fail_at snapshot_copy; then
@@ -3132,6 +3386,8 @@ update_take_snapshot() {
         printf 'egress_cur=%q\n' "$egress_cur"
         printf 'had_egress_controller=%q\n' "$had_egress_controller"
         printf 'had_egress_controller_prev=%q\n' "$had_egress_controller_prev"
+        printf 'cpu_dropin_dest=%q\n' "$cpu_dropin_dest"
+        printf 'had_cpu_dropin=%q\n' "$had_cpu_dropin"
         printf 'cfg_status_port=%q\n' "$cfg_status_port"
     } >"$snap_dir/manifest.env"
     update_pause_if_requested snapshot_before_complete
@@ -3266,12 +3522,13 @@ update_restore_snapshot_binaries() {
 }
 
 update_restore_snapshot_external() {
-    local snap_dir="$1" unit_mut="$2" unit_rel="$3" journal_mut="$4" egress_mut="$5" egress_state_file="$6"
+    local snap_dir="$1" unit_mut="$2" unit_rel="$3" journal_mut="$4" egress_mut="$5" egress_state_file="$6" cpu_mut="${7:-0}"
     [[ -f "$snap_dir/COMPLETE" && -f "$snap_dir/manifest.env" ]] || return 1
     if update_should_fail_at restore_external; then
         echo "[update] recovery: forced restore_external failure" >&2
         return 1
     fi
+    local cpu_dropin_dest="" had_cpu_dropin=0
     source "$snap_dir/manifest.env"
     local ext_ok=1
 
@@ -3290,8 +3547,23 @@ update_restore_snapshot_external() {
             update_unit_sudo rm -f "${unit_installed}.prev" || true
         fi
     fi
-    if [[ "$unit_mut" == "1" || "$unit_rel" == "1" ]]; then
-        if ! sudo systemctl daemon-reload; then
+    if [[ "$cpu_mut" == "1" && -n "$cpu_dropin_dest" ]]; then
+        if [[ "$had_cpu_dropin" == "1" ]]; then
+            if ! update_unit_sudo install -d -m 0755 "${cpu_dropin_dest%/*}" \
+                || ! update_unit_sudo cp -pP "$snap_dir/external/cpu-dropin.conf" "$cpu_dropin_dest"; then
+                echo "[update] recovery: could not restore CPU weight drop-in $cpu_dropin_dest" >&2
+                ext_ok=0
+            fi
+        else
+            if ! update_unit_sudo rm -f "$cpu_dropin_dest"; then
+                echo "[update] recovery: could not remove CPU weight drop-in $cpu_dropin_dest" >&2
+                ext_ok=0
+            fi
+            update_unit_sudo rmdir "${cpu_dropin_dest%/*}" 2>/dev/null || true
+        fi
+    fi
+    if [[ "$unit_mut" == "1" || "$unit_rel" == "1" || "$cpu_mut" == "1" ]]; then
+        if ! update_unit_sudo systemctl daemon-reload; then
             echo "[update] recovery: systemctl daemon-reload failed after unit restore" >&2
             ext_ok=0
         fi

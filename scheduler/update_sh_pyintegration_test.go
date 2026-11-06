@@ -1782,3 +1782,172 @@ func computeDirDigest(t *testing.T, root string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+func TestUpdateShellCPUWeightDropIn(t *testing.T) {
+	t.Parallel()
+	type result struct {
+		out    string
+		err    error
+		dropin string
+		calls  []string
+	}
+	run := func(t *testing.T, unit string, prior string, extraEnv ...string) result {
+		t.Helper()
+		bash, deploy, _, _, baseEnv := setupUpdateShellTestRepo(t)
+		binDir := filepath.Join(filepath.Dir(deploy), "bin")
+		unitDir := filepath.Join(filepath.Dir(deploy), "units")
+		callLog := filepath.Join(filepath.Dir(deploy), "systemctl.log")
+		dropin := filepath.Join(unitDir, "go-trader@paper.service.d", "40-go-trader-cpu.conf")
+		envReader, err := os.ReadFile(filepath.Join(filepath.Dir(updateShellScriptPath(t)), "migrate-service-layout.py"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(deploy, "scripts", "migrate-service-layout.py"), envReader, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if prior != "" {
+			if err := os.MkdirAll(filepath.Dir(dropin), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(dropin, []byte(prior), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		goStub := "#!/usr/bin/env bash\n" +
+			"if [[ \"$1\" == \"version\" ]]; then echo 'go version go1.26.2'; exit 0; fi\n" +
+			"dir=. out= ver=dev\n" +
+			"while [[ $# -gt 0 ]]; do\n" +
+			"  case \"$1\" in\n" +
+			"    -C) dir=\"$2\"; shift 2 ;;\n" +
+			"    -o) out=\"$2\"; shift 2 ;;\n" +
+			"    -ldflags) ver=\"${2#*main.Version=}\"; ver=\"${ver%% *}\"; shift 2 ;;\n" +
+			"    *) shift ;;\n" +
+			"  esac\n" +
+			"done\n" +
+			"case \"$out\" in /*) ;; *) out=\"$dir/$out\" ;; esac\n" +
+			"printf '#!/usr/bin/env bash\\nif [[ \"$1\" == \"version\" ]]; then echo \"%s\"; exit 0; fi\\nif [[ \"$1\" == \"probe\" || \"$1\" == \"agent-info\" ]]; then exit 0; fi\\nif [[ \"$1\" == \"cpu-class\" ]]; then echo \"[INFO] loader\" >&2; echo paper; exit 0; fi\\nexec sleep 60\\n' \"$ver\" > \"$out\"\n" +
+			"chmod +x \"$out\"\n"
+		if err := os.WriteFile(filepath.Join(binDir, "go"), []byte(goStub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		systemctlStub := "#!/usr/bin/env bash\n" +
+			"printf '%s\\n' \"$*\" >>\"" + callLog + "\"\n" +
+			"case \"$*\" in\n" +
+			"  --version) echo 'systemd 255 (255.4-1ubuntu8)' ;;\n" +
+			"  *is-active*) exit 0 ;;\n" +
+			"  *MainPID*) echo $$ ;;\n" +
+			"  *\"-p LoadState --value\"*) echo loaded ;;\n" +
+			"  *\"-p User --value\"*) id -un ;;\n" +
+			"  *\"-p Group --value\"*) echo ;;\n" +
+			"  *\"-p WorkingDirectory --value\"*) echo \"$PWD\" ;;\n" +
+			"  *\"-p ExecStart --value\"*) echo \"{ path=$PWD/go-trader ; argv[]=$PWD/go-trader --config $PWD/scheduler/config.json ; }\" ;;\n" +
+			"  restart\\ *) printf 'restart-saw:%s\\n' \"$(tr '\\n' ' ' <\"" + dropin + "\" 2>/dev/null)\" >>\"" + callLog + "\" ;;\n" +
+			"esac\n" +
+			"exit 0\n"
+		if err := os.WriteFile(filepath.Join(binDir, "systemctl"), []byte(systemctlStub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		systemdRunStub := "#!/usr/bin/env bash\n" +
+			"while [[ $# -gt 0 && \"$1\" != \"--\" ]]; do shift; done\n" +
+			"shift\n" +
+			"exec \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(binDir, "systemd-run"), []byte(systemdRunStub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(bash, filepath.Join(deploy, "scripts", "update.sh"), "--restart", "--unit", unit)
+		cmd.Dir = deploy
+		cmd.Env = append(append([]string{}, baseEnv...), "UPDATE_SYSTEMD_UNIT_DIR="+unitDir)
+		cmd.Env = append(cmd.Env, extraEnv...)
+		out, err := cmd.CombinedOutput()
+		res := result{out: string(out), err: err}
+		if body, readErr := os.ReadFile(dropin); readErr == nil {
+			res.dropin = string(body)
+		} else if !os.IsNotExist(readErr) {
+			t.Fatal(readErr)
+		}
+		if data, readErr := os.ReadFile(callLog); readErr == nil {
+			res.calls = strings.Split(strings.TrimSpace(string(data)), "\n")
+		}
+		return res
+	}
+	indexOf := func(calls []string, want string) int {
+		for i, c := range calls {
+			if c == want {
+				return i
+			}
+		}
+		return -1
+	}
+	const managed = "[Service]\nCPUWeight=20\n"
+
+	t.Run("PaperInstanceGetsWeightBeforeRestart", func(t *testing.T) {
+		t.Parallel()
+		res := run(t, "go-trader@paper", "")
+		if res.err != nil {
+			t.Fatalf("update failed: %v\n%s", res.err, res.out)
+		}
+		if res.dropin != managed {
+			t.Fatalf("drop-in = %q, want %q\n%s", res.dropin, managed, res.out)
+		}
+		reload := indexOf(res.calls, "daemon-reload")
+		restart := indexOf(res.calls, "restart go-trader@paper")
+		if reload < 0 || restart < 0 || reload > restart {
+			t.Fatalf("want daemon-reload before restart, calls:\n%s", strings.Join(res.calls, "\n"))
+		}
+		if indexOf(res.calls, "restart-saw:[Service] CPUWeight=20 ") < 0 {
+			t.Fatalf("the restart did not see the drop-in, calls:\n%s", strings.Join(res.calls, "\n"))
+		}
+		if !strings.Contains(res.out, "[update] cpu: wrote ") {
+			t.Fatalf("missing cpu write line\n%s", res.out)
+		}
+	})
+	t.Run("ForcedFailureAfterWriteRestoresAbsence", func(t *testing.T) {
+		t.Parallel()
+		res := run(t, "go-trader@paper", "", "GO_TRADER_UPDATE_FAIL_AT=cpu_dropin_after_write")
+		if res.err == nil {
+			t.Fatalf("expected the forced failure to fail the update\n%s", res.out)
+		}
+		if !strings.Contains(res.out, "FAIL phase=cpu") || !strings.Contains(res.out, "recovery: complete") {
+			t.Fatalf("expected FAIL phase=cpu and a complete recovery\n%s", res.out)
+		}
+		if res.dropin != "" {
+			t.Fatalf("drop-in must be absent after recovery, got %q\n%s", res.dropin, res.out)
+		}
+		if indexOf(res.calls, "daemon-reload") < 0 {
+			t.Fatalf("recovery must reload systemd, calls:\n%s", strings.Join(res.calls, "\n"))
+		}
+		if indexOf(res.calls, "restart go-trader@paper") >= 0 {
+			t.Fatalf("the unit must not be restarted, calls:\n%s", strings.Join(res.calls, "\n"))
+		}
+	})
+	t.Run("ForcedFailureAfterWriteRestoresPriorFile", func(t *testing.T) {
+		t.Parallel()
+		prior := "[Service]\nCPUWeight=50\n"
+		res := run(t, "go-trader@paper", prior, "GO_TRADER_UPDATE_FAIL_AT=cpu_dropin_after_write")
+		if res.err == nil || !strings.Contains(res.out, "FAIL phase=cpu") {
+			t.Fatalf("expected FAIL phase=cpu\n%s", res.out)
+		}
+		if !strings.Contains(res.out, "(CPUWeight=20, replace)") {
+			t.Fatalf("expected the update to replace the prior weight before failing\n%s", res.out)
+		}
+		if res.dropin != prior {
+			t.Fatalf("drop-in = %q, want the prior %q restored\n%s", res.dropin, prior, res.out)
+		}
+		if indexOf(res.calls, "daemon-reload") < 0 {
+			t.Fatalf("recovery must reload systemd, calls:\n%s", strings.Join(res.calls, "\n"))
+		}
+	})
+	t.Run("PlainUnitSkips", func(t *testing.T) {
+		t.Parallel()
+		res := run(t, "go-trader", "")
+		if res.err != nil {
+			t.Fatalf("update failed: %v\n%s", res.err, res.out)
+		}
+		if got := strings.Count(res.out, "[update] cpu: go-trader is not a go-trader@<instance> template unit"); got != 1 {
+			t.Fatalf("want one INFO skip line, got %d\n%s", got, res.out)
+		}
+		if res.dropin != "" {
+			t.Fatalf("no drop-in may be written for a plain unit\n%s", res.out)
+		}
+	})
+}

@@ -460,6 +460,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	if cfg.marketFeedMode() != next.marketFeedMode() {
 		errs = append(errs, fmt.Sprintf("market_feed changed (%q -> %q; restart required)", cfg.marketFeedMode(), next.marketFeedMode()))
 	}
+	if cfg.PaperOnly != next.PaperOnly {
+		errs = append(errs, fmt.Sprintf("paper_only changed (%t -> %t; restart required)", cfg.PaperOnly, next.PaperOnly))
+	}
 	if strings.TrimSpace(cfg.Role) != strings.TrimSpace(next.Role) {
 		errs = append(errs, fmt.Sprintf("role changed (%q -> %q; restart required)", cfg.Role, next.Role))
 	}

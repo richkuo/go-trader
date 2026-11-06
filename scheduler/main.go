@@ -42,6 +42,7 @@ var knownSubcommands = []string{
 	"robinhood-login",
 	"notify-broker",
 	"egress-anchor",
+	"cpu-class",
 }
 
 func validateDaemonInvocation(extra []string) error {
@@ -121,6 +122,8 @@ func main() {
 			os.Exit(runQuoteReplay(os.Args[2:]))
 		case "robinhood-login":
 			os.Exit(runRobinhoodLogin(os.Args[2:]))
+		case "cpu-class":
+			os.Exit(runCPUClass(os.Args[2:]))
 		}
 	}
 
@@ -308,7 +311,10 @@ func main() {
 		missingStateWarning = msg
 	}
 	if !readOnlyReport {
-		fmt.Println(configurePaperChildPriority(cfg.Strategies))
+		fmt.Println(configurePaperChildPriority(cfg.Strategies, cfg.PaperOnly))
+		if w := liveProcessCPUWeightWarning(cfg); w != "" {
+			fmt.Println(w)
+		}
 	}
 	if paper, ok := storageLayoutCfg.spec(storageRolePaper); ok {
 		if _, statErr := os.Stat(paper.Canonical); statErr != nil {
