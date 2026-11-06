@@ -9,6 +9,7 @@ CLAUDE_YML = os.path.abspath(os.path.join(HERE, "..", "workflows", "claude.yml")
 
 VERIFY_STEP = "Verify @claude is an actual invocation (not in a code block or example)"
 CLASSIFY_MODE_STEP = "Classify invocation route (review, implement, fix-pr, or untrusted-issue)"
+RESOLVE_MODEL_STEP = "Read model shorthand and effort from @claude invocation"
 
 PR_URL = "https://api.github.com/repos/o/r/pulls/5"
 
@@ -69,12 +70,14 @@ def extract_step_run_block(yml_text, step_name):
     return "\n".join(l[min_indent:] if l.strip() != "" else "" for l in body)
 
 
-def _run_block(script, env_overrides, output_key):
+def _run_block(script, env_overrides, output_key, unset_keys=()):
     with tempfile.TemporaryDirectory() as d:
         out_path = os.path.join(d, "github_output")
         open(out_path, "w").close()
         env = dict(os.environ)
         env.update(env_overrides)
+        for key in unset_keys:
+            env.pop(key, None)
         env["GITHUB_OUTPUT"] = out_path
         r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
         value = None
@@ -183,3 +186,30 @@ def test_verify_invocation_fires(subtests):
     for case_id, event_name, body, trigger_actor, expected in VERIFY_CASES:
         with subtests.test(case=case_id):
             assert run_verify_invocation(event_name, body, trigger_actor) == expected
+
+
+def run_resolve_flow(event_name, stripped, pr_url="", docs_release_enabled=None):
+    script = extract_step_run_block(_read(CLAUDE_YML), RESOLVE_MODEL_STEP)
+    env = {"EVENT_NAME": event_name, "STRIPPED": stripped, "PR_URL": pr_url}
+    unset = ()
+    if docs_release_enabled is None:
+        unset = ("DOCS_RELEASE_ENABLED",)
+    else:
+        env["DOCS_RELEASE_ENABLED"] = docs_release_enabled
+    return _run_block(script, env, "flow", unset_keys=unset)
+
+
+RESOLVE_FLOW_CASES = [
+    ("sync_docs_on_pr_comment", "issue_comment", "@claude sync-docs", PR_URL, "true", ""),
+    ("create_release_on_pr_comment", "issue_comment", "@claude create-release", PR_URL, "true", ""),
+    ("sync_docs_on_issue_comment", "issue_comment", "@claude sync-docs", "", "true", "sync-docs"),
+    ("create_release_on_issue_comment", "issue_comment", "@claude opus create-release", "", "true", "create-release"),
+    ("docs_release_disabled_on_issue_comment", "issue_comment", "@claude sync-docs", "", None, ""),
+    ("sync_docs_on_issues_event", "issues", "@claude sync-docs", "", "true", ""),
+]
+
+
+def test_resolve_flow_only_on_plain_issue_comment(subtests):
+    for case_id, event_name, stripped, pr_url, docs_release_enabled, expected in RESOLVE_FLOW_CASES:
+        with subtests.test(case=case_id):
+            assert run_resolve_flow(event_name, stripped, pr_url, docs_release_enabled) == expected
