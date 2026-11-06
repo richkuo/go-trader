@@ -30,7 +30,7 @@ def _run(tmp_path, fixture, argv, script=None):
     path.write_text(json.dumps(fixture))
     env = dict(os.environ)
     env.update({"PYTHONPATH": _OFFLINE, "CANDLE_RANGE_FIXTURE": str(path), "ROBINHOOD_USERNAME": "",
-                "HYPERLIQUID_SECRET_KEY": "", "OKX_API_KEY": "", "GO_TRADER_HL_OHLCV_CACHE": "0"})
+                "HYPERLIQUID_SECRET_KEY": "", "GO_TRADER_HL_OHLCV_CACHE": "0"})
     cmd = [sys.executable] + (["-c", script] if script else [os.path.join(_ROOT, "shared_scripts", "fetch_candles.py")] + argv)
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=_ROOT, env=env, timeout=240)
     assert "network blocked by the candle range fixture" not in proc.stderr, proc.stderr
@@ -77,26 +77,6 @@ def test_hyperliquid_range_stops_on_a_stalled_page(tmp_path):
     assert out["candles"] == []
     assert out["range"]["stalled"] is True
     assert len([c for c in calls if c[0] == "hl"]) == 1
-
-
-def test_okx_range_routes_spot_and_perps_to_their_own_instrument(tmp_path):
-    rows = _bars(T0, 12)
-    fixture = {"ccxt": {"BTC/USDT|1h": rows, "BTC/USDT:USDT|1h": rows}, "ccxt_page_cap": 5}
-    seen = {}
-    for chart_type, want in (("spot", "BTC/USDT"), ("perps", "BTC/USDT:USDT")):
-        run_dir = tmp_path / chart_type
-        run_dir.mkdir()
-        proc, calls = _run(run_dir, fixture,
-                           ["--platform", "okx", "--type", chart_type, "--symbol", "BTC", "--timeframe", "1h",
-                            "--from", _iso(T0 + H), "--to", _iso(T0 + 10 * H)])
-        assert proc.returncode == 0, proc.stdout + proc.stderr
-        out = _out(proc)
-        assert out["source"] == "okx:adapter:range"
-        assert out["range"]["instrument"] == want
-        assert {c[2] for c in calls if c[0] == "ccxt"} == {want}
-        assert {c[1] for c in calls if c[0] == "ccxt"} == {"okx"}
-        seen[chart_type] = [c["time"] * 1000 for c in out["candles"]]
-    assert seen["spot"] == seen["perps"] == [T0 + i * H for i in range(1, 11)]
 
 
 def test_ccxt_range_pages_drops_invalid_rows_and_terminates(tmp_path):

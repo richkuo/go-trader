@@ -50,7 +50,7 @@ def _patch_ccxt(module):
             return rows[:n]
         return rows[-limit:] if limit else rows
 
-    for name in ("binanceus", "okx"):
+    for name in ("binanceus",):
         getattr(module, name).fetch_ohlcv = fetch_ohlcv
 
 

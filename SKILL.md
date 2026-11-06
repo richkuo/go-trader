@@ -1550,8 +1550,8 @@ It returns 401, 403, 415, 413 and 400 for those checks and for bad prices, note 
 The save always fetches the candles again, outside `mu` and outside any transaction. Under `configWriteMu` it then rechecks the running roster, the in-process removal flag and the strategy's entry in the config file (removal, mode, `paper_source`, `storage_strategy_id`, platform, type), and inside one write transaction of the owning file re-reads the fills, diagnostics and book rows and inserts only if their fingerprint still matches the validated one; any change returns 409 and writes nothing.
 Each save adds a row; there is no update or delete path.
 
-`shared_scripts/fetch_candles.py` with `--from` now reads the requested range before it filters: Hyperliquid through the public-only `get_ohlcv_range` (opening time `t`), OKX spot and swap through `get_ohlcv_range` on the matching instrument, and ccxt platforms through `fetch_ohlcv_range`, each with a finite request budget and a stall stop. Invalid rows are dropped and counted.
-TopStep and Robinhood have no historical range read: they return their latest window marked `:latest`, which never counts as full coverage. Without `--from` the request is unchanged.
+`shared_scripts/fetch_candles.py` with `--from` now reads the requested range before it filters: Hyperliquid through the public-only `get_ohlcv_range` (opening time `t`), and ccxt platforms through `fetch_ohlcv_range`, each with a finite request budget and a stall stop. Invalid rows are dropped and counted.
+OKX, TopStep and Robinhood have no historical range read: they return their latest window marked `:latest`, which never counts as full coverage. Without `--from` the request is unchanged.
 The diagnostics worker passes `--from`, so it now receives these range reads (Hyperliquid bars keyed by opening time); its metrics and status policy are unchanged and terminal rows are not retried.
 
 ---

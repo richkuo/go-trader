@@ -152,11 +152,6 @@ def _range_adapter(platform):
         from adapter import HyperliquidExchangeAdapter
 
         return HyperliquidExchangeAdapter(public_only=True)
-    if platform == "okx":
-        sys.path.insert(0, os.path.join(ROOT, "platforms", "okx"))
-        from adapter import OKXExchangeAdapter
-
-        return OKXExchangeAdapter(public_only=True)
     raise ValueError(f"no range adapter for platform {platform!r}")
 
 
@@ -169,18 +164,11 @@ def _fetch_range(args, start_ms, end_ms):
         meta = {"supported": True, "requests": res["pages"], "truncated": res["truncated"],
                 "stalled": res["stalled"], "instrument": args.symbol}
         return res["rows"], "hyperliquid:adapter:range", meta
-    if args.platform == "okx":
-        inst_type = "swap" if args.type == "perps" else "spot"
-        res = _range_adapter("okx").get_ohlcv_range(args.symbol, args.timeframe, start_ms, end_ms, inst_type=inst_type)
-        meta = {"supported": True, "requests": res["requests"], "truncated": res["truncated"],
-                "stalled": res["stalled"], "instrument": res["instrument"]}
-        return res["rows"], "okx:adapter:range", meta
-    if args.platform in ("topstep", "robinhood"):
-        adapter = _load_adapter(args.platform, args.mode, args.type, args.symbol)
-        rows = adapter.get_ohlcv(args.symbol, interval=args.timeframe, limit=args.limit)
+    if args.platform in ("okx", "topstep", "robinhood"):
+        rows, _ = _fetch(args)
         meta = {"supported": False, "requests": 1, "truncated": False, "stalled": False, "instrument": args.symbol,
                 "reason": f"{args.platform} serves only a latest window; older bars in the range may be missing"}
-        return rows or [], f"{args.platform}:adapter:latest", meta
+        return rows, f"{args.platform}:adapter:latest", meta
     exchange_id = args.platform if args.platform else "binanceus"
     if exchange_id == "manual":
         raise ValueError("platform 'manual' has no historical candle source")
