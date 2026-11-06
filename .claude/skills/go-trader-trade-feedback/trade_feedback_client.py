@@ -224,7 +224,7 @@ def cmd_submit(args):
 def cmd_poll(args):
     deadline = time.monotonic() + args.timeout
     while True:
-        status, raw = call("GET", strategy_path(args.strategy_id, "analyses"))
+        status, raw = call("GET", strategy_path(args.strategy_id, "analyses") + "?view=history")
         if status != 200:
             raise server_error(status, raw)
         data = json.loads(raw.decode("utf-8"))
