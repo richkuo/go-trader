@@ -95,44 +95,12 @@ func (sdb *StateDB) requireAnalysisTable(q interface {
 // applied before any integrity check so an invalid newest mark never pulls an
 // older mark or another position into the window.
 func (sdb *StateDB) ReadLatestTradeFeedback(procID string, limit int) ([]tradeFeedbackRecord, []string, error) {
-	if sdb == nil || sdb.db == nil {
-		return nil, nil, fmt.Errorf("state db unavailable")
-	}
-	if limit <= 0 {
-		return nil, nil, fmt.Errorf("candidate limit must be positive")
-	}
-	sid, err := sdb.toStorageID(procID)
-	if err != nil {
-		return nil, nil, err
-	}
-	tx, err := sdb.db.Begin()
-	if err != nil {
-		return nil, nil, fmt.Errorf("begin trade feedback read: %w", err)
-	}
-	defer tx.Rollback()
-	ok, err := sdb.tableExistsTx(tx, "trade_feedback")
-	if err != nil {
-		return nil, nil, err
-	}
-	if !ok {
-		return nil, nil, fmt.Errorf("the %s state file has no trade_feedback table", sdb.storageRoleOf())
-	}
-	rows, err := tx.Query(`SELECT f.rowid, f.strategy_id, f.position_id, f.symbol, f.side, f.platform, f.instrument_type, f.timeframe,
+	var out []tradeFeedbackRecord
+	stored, err := sdb.queryLatestTradeFeedback(procID, limit, `f.rowid, f.strategy_id, f.position_id, f.symbol, f.side, f.platform, f.instrument_type, f.timeframe,
 			f.preferred_entry_time, f.preferred_entry_price, f.preferred_exit_time, f.preferred_exit_price,
 			f.actual_opened_at, f.actual_closed_at, f.actual_avg_entry_price, f.actual_avg_exit_price,
 			f.actual_realized_pnl, f.actual_realized_pnl_basis, f.close_reason, f.entry_atr, f.note,
-			f.evidence_version, f.evidence_json, f.evidence_sha256, f.created_at
-		FROM trade_feedback f
-		WHERE f.strategy_id = ?
-		  AND f.rowid = (SELECT MAX(g.rowid) FROM trade_feedback g WHERE g.strategy_id = f.strategy_id AND g.position_id = f.position_id)
-		ORDER BY f.rowid DESC
-		LIMIT ?`, sid, limit)
-	if err != nil {
-		return nil, nil, fmt.Errorf("query latest trade feedback: %w", err)
-	}
-	var out []tradeFeedbackRecord
-	var stored []string
-	for rows.Next() {
+			f.evidence_version, f.evidence_json, f.evidence_sha256, f.created_at`, func(rows *sql.Rows) (string, error) {
 		var r tradeFeedbackRecord
 		var opened, closed, created string
 		if err := rows.Scan(&r.RowID, &r.StrategyID, &r.PositionID, &r.Symbol, &r.Side, &r.Platform, &r.InstrumentType, &r.Timeframe,
@@ -140,25 +108,99 @@ func (sdb *StateDB) ReadLatestTradeFeedback(procID string, limit int) ([]tradeFe
 			&opened, &closed, &r.ActualAvgEntryPrice, &r.ActualAvgExitPrice,
 			&r.ActualRealizedPnL, &r.ActualRealizedBasis, &r.CloseReason, &r.EntryATR, &r.Note,
 			&r.EvidenceVersion, &r.EvidenceJSON, &r.EvidenceSHA256, &created); err != nil {
-			rows.Close()
-			return nil, nil, fmt.Errorf("scan latest trade feedback: %w", err)
+			return "", err
 		}
-		stored = append(stored, r.StrategyID)
+		stored := r.StrategyID
 		r.StrategyID = sdb.fromStorageID(r.StrategyID)
 		r.ActualOpenedAt = parseTime(opened)
 		r.ActualClosedAt = parseTime(closed)
 		r.CreatedAt = parseTime(created)
 		out = append(out, r)
+		return stored, nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, stored, nil
+}
+
+type tradeFeedbackCandidateKey struct {
+	RowID            int64  `json:"rowid"`
+	StoredStrategyID string `json:"stored_strategy_id"`
+	PositionID       string `json:"position_id"`
+	EvidenceVersion  int    `json:"evidence_version"`
+}
+
+func (sdb *StateDB) ReadLatestTradeFeedbackCandidates(procID string, limit int) ([]tradeFeedbackCandidateKey, error) {
+	out := []tradeFeedbackCandidateKey{}
+	_, err := sdb.queryLatestTradeFeedback(procID, limit, `f.rowid, f.strategy_id, f.position_id, f.evidence_version`, func(rows *sql.Rows) (string, error) {
+		var k tradeFeedbackCandidateKey
+		if err := rows.Scan(&k.RowID, &k.StoredStrategyID, &k.PositionID, &k.EvidenceVersion); err != nil {
+			return "", err
+		}
+		out = append(out, k)
+		return k.StoredStrategyID, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func tradeFeedbackLatestQuery(columns string) string {
+	return `SELECT ` + columns + `
+		FROM trade_feedback f
+		WHERE f.strategy_id = ?
+		  AND f.rowid = (SELECT MAX(g.rowid) FROM trade_feedback g WHERE g.strategy_id = f.strategy_id AND g.position_id = f.position_id)
+		ORDER BY f.rowid DESC
+		LIMIT ?`
+}
+
+func (sdb *StateDB) queryLatestTradeFeedback(procID string, limit int, columns string, scan func(*sql.Rows) (string, error)) ([]string, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, fmt.Errorf("state db unavailable")
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("candidate limit must be positive")
+	}
+	sid, err := sdb.toStorageID(procID)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin trade feedback read: %w", err)
+	}
+	defer tx.Rollback()
+	ok, err := sdb.tableExistsTx(tx, "trade_feedback")
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("the %s state file has no trade_feedback table", sdb.storageRoleOf())
+	}
+	rows, err := tx.Query(tradeFeedbackLatestQuery(columns), sid, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query latest trade feedback: %w", err)
+	}
+	var stored []string
+	for rows.Next() {
+		id, err := scan(rows)
+		if err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan latest trade feedback: %w", err)
+		}
+		stored = append(stored, id)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, nil, fmt.Errorf("iterate latest trade feedback: %w", err)
+		return nil, fmt.Errorf("iterate latest trade feedback: %w", err)
 	}
 	rows.Close()
 	if err := tx.Commit(); err != nil {
-		return nil, nil, fmt.Errorf("finish trade feedback read: %w", err)
+		return nil, fmt.Errorf("finish trade feedback read: %w", err)
 	}
-	return out, stored, nil
+	return stored, nil
 }
 
 func (sdb *StateDB) InsertTradeFeedbackAnalysisAccepted(procID string, ev *tradeFeedbackAnalysisEvent) error {
@@ -379,6 +421,15 @@ func (st *StateStore) ReadLatestTradeFeedback(strategyID string, limit int) (*St
 	}
 	rows, stored, err := db.ReadLatestTradeFeedback(strategyID, limit)
 	return db, rows, stored, err
+}
+
+func (st *StateStore) ReadLatestTradeFeedbackCandidates(strategyID string, limit int) (*StateDB, []tradeFeedbackCandidateKey, error) {
+	db, err := st.dbForStrategy(strategyID)
+	if err != nil {
+		return nil, nil, err
+	}
+	keys, err := db.ReadLatestTradeFeedbackCandidates(strategyID, limit)
+	return db, keys, err
 }
 
 func (st *StateStore) InsertTradeFeedbackAnalysisAccepted(strategyID string, ev *tradeFeedbackAnalysisEvent) (*StateDB, error) {

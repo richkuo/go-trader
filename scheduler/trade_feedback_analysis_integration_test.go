@@ -1188,3 +1188,205 @@ func TestTradeFeedbackAnalysisResearchLaunchRereadsSettingsUnderLock(t *testing.
 		}
 	})
 }
+
+func TestTradeFeedbackAnalysisHistoryPollSkipsBundleBuild(t *testing.T) {
+	db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	store := singleFileStore(db)
+	e := newTFAEnv(t, store, []StrategyConfig{trConfig()})
+	var metaCalls int
+	e.ss.feedbackAnalysisMeta = func(ctx context.Context, sc StrategyConfig, path string) (tradeFeedbackStrategyMeta, error) {
+		e.metaMu.Lock()
+		defer e.metaMu.Unlock()
+		metaCalls++
+		return cloneTradeFeedbackMeta(e.meta), nil
+	}
+	metaCount := func() int {
+		e.metaMu.Lock()
+		defer e.metaMu.Unlock()
+		return metaCalls
+	}
+	const marks = 50
+	saveLong := func(i int, note string) {
+		pid := fmt.Sprintf("pos-%02d", i)
+		open := float64(-1500 * (i + 1))
+		e.seedClosedLong(trSID, pid, "ETH", e.at(open+0.2), e.at(open+990.1))
+		if rec := e.post(trSID, trBody(pid, e.at(open+1).Unix(), e.at(open+500).Unix(), 95, 115, note), tfaAuth); rec.Code != http.StatusOK {
+			t.Fatalf("save mark %s = %d: %s", pid, rec.Code, rec.Body.String())
+		}
+	}
+	for i := 0; i < marks; i++ {
+		saveLong(i, "mark")
+	}
+	var minBars, evidenceBytes int64
+	if err := db.db.QueryRow(`SELECT MIN(json_array_length(json_extract(evidence_json, '$.candles.bars'))), SUM(length(evidence_json)) FROM trade_feedback`).Scan(&minBars, &evidenceBytes); err != nil {
+		t.Fatal(err)
+	}
+	if minBars < 1480 || minBars > diagMaxFetchBars {
+		t.Fatalf("smallest saved window holds %d bars, want about %d", minBars, diagMaxFetchBars)
+	}
+	e.waitTerminal(trSID, tfaRequestID(t, e.submit(trSID, `{"provider":"anthropic_api"}`, nil)))
+
+	getRaw := func(query string) *httptest.ResponseRecorder {
+		return e.do(http.MethodGet, e.analysesURL(trSID)+query, nil, tfaAuth)
+	}
+	beforeFull := metaCount()
+	var full tradeFeedbackAnalysesResponse
+	fullBytes := tfaAllocated(func() { full = e.list(trSID, "") })
+	if full.View != tradeFeedbackAnalysesViewFull || full.Selection.Included != marks || full.InputSignature == "" || len(full.Analyses) != 1 || !full.Analyses[0].CurrentContext {
+		t.Fatalf("full view = view %q included %d signature %q analyses %+v", full.View, full.Selection.Included, full.InputSignature, full.Analyses)
+	}
+	if metaCount() != beforeFull+1 || fullBytes < uint64(evidenceBytes) {
+		t.Fatalf("full view: metadata calls %d, allocated %d bytes for %d evidence bytes; the measurement does not see the bundle build", metaCount()-beforeFull, fullBytes, evidenceBytes)
+	}
+
+	const ticks = 10
+	beforeHistory := metaCount()
+	var bodies []*httptest.ResponseRecorder
+	historyBytes := tfaAllocated(func() {
+		for i := 0; i < ticks; i++ {
+			bodies = append(bodies, getRaw("?view=history"))
+		}
+	})
+	t.Logf("full view allocated %d bytes; %d history views allocated %d bytes; %d marks hold %d evidence bytes", fullBytes, ticks, historyBytes, marks, evidenceBytes)
+	if metaCount() != beforeHistory {
+		t.Fatalf("history views loaded metadata %d times", metaCount()-beforeHistory)
+	}
+	if perView, perMark := historyBytes/ticks, uint64(evidenceBytes)/marks; perView >= perMark {
+		t.Fatalf("one history view allocated %d bytes, at least the evidence of one mark (%d bytes)", perView, perMark)
+	}
+	for i, rec := range bodies {
+		if rec.Code != http.StatusOK {
+			t.Fatalf("history view %d = %d: %s", i, rec.Code, rec.Body.String())
+		}
+		var top map[string]json.RawMessage
+		var hist tradeFeedbackAnalysesHistoryResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &top); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &hist); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := top["selection"]; ok {
+			t.Fatalf("history view %d carries a selection", i)
+		}
+		if _, ok := top["research"]; ok {
+			t.Fatalf("history view %d carries research support", i)
+		}
+		var analyses []map[string]json.RawMessage
+		if err := json.Unmarshal(top["analyses"], &analyses); err != nil || len(analyses) != 1 {
+			t.Fatalf("history view %d analyses = %s (%v)", i, top["analyses"], err)
+		}
+		for _, key := range []string{"research", "current_context"} {
+			if _, ok := analyses[0][key]; ok {
+				t.Fatalf("history view %d analysis carries %s", i, key)
+			}
+		}
+		if hist.View != tradeFeedbackAnalysesViewHistory || hist.InputSignature != full.InputSignature ||
+			hist.Analyses[0].RequestID != full.Analyses[0].RequestID || hist.Analyses[0].Status != full.Analyses[0].Status || len(hist.Analyses[0].Result) == 0 {
+			t.Fatalf("history view %d = view %q signature %q analysis %+v; want signature %q", i, hist.View, hist.InputSignature, hist.Analyses[0], full.InputSignature)
+		}
+	}
+
+	historySignature := func() string {
+		rec := getRaw("?view=history")
+		var hist tradeFeedbackAnalysesHistoryResponse
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &hist) != nil || hist.InputSignature == "" {
+			t.Fatalf("history view = %d: %s", rec.Code, rec.Body.String())
+		}
+		return hist.InputSignature
+	}
+	seen := map[string]string{full.InputSignature: "initial"}
+	expectNew := func(change string) string {
+		t.Helper()
+		sig := historySignature()
+		if prev, ok := seen[sig]; ok {
+			t.Fatalf("after %s the signature equals the one after %s", change, prev)
+		}
+		seen[sig] = change
+		if again := e.list(trSID, "").InputSignature; again != sig {
+			t.Fatalf("after %s the full view signature %q differs from the history signature %q", change, again, sig)
+		}
+		return sig
+	}
+	saveLong(marks, "a new position")
+	expectNew("a new mark")
+	if rec := e.post(trSID, trBody("pos-03", e.at(-1500*4+2).Unix(), e.at(-1500*4+400).Unix(), 96, 114, "replaced"), tfaAuth); rec.Code != http.StatusOK {
+		t.Fatalf("replace mark = %d: %s", rec.Code, rec.Body.String())
+	}
+	replaced := expectNew("a replacement mark")
+	if historySignature() != replaced {
+		t.Fatalf("an unchanged poll changed the signature")
+	}
+	e.ss.strategiesMu.Lock()
+	e.ss.feedbackAnalysisSettings = tradeFeedbackAnalysisSettings{TimeoutS: 300, MaxPositions: 10}
+	e.ss.strategiesMu.Unlock()
+	expectNew("a max_positions change")
+	changed := trConfig()
+	changed.OpenStrategy = StrategyRef{Name: "momentum", Params: map[string]interface{}{"roc_period": 9}}
+	e.ss.UpdateStrategies([]StrategyConfig{changed})
+	expectNew("a strategy params change")
+
+	for _, q := range []string{"?view=full", "?view=", "?view=HISTORY", "?view=history&view=history"} {
+		if rec := getRaw(q); rec.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s = %d, want 400: %s", q, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+type tfaPrepareHookAdapter struct {
+	*tfaAdapter
+	before func()
+}
+
+func (a *tfaPrepareHookAdapter) Prepare(req tradeFeedbackAnalysisSubmit, build *tradeFeedbackBundleBuild) (tradeFeedbackAdmission, *tradeReviewError) {
+	if a.before != nil {
+		a.before()
+	}
+	return a.tfaAdapter.Prepare(req, build)
+}
+
+func TestTradeFeedbackAnalysisAdmissionRecordsCurrentSelectionAndRefusesStale(t *testing.T) {
+	e := newTFAEnv(t, singleFileStore(openTestDB(t)), []StrategyConfig{trConfig()})
+	db := e.store.primary()
+	for _, pid := range []string{"pos-a", "pos-b", "pos-c"} {
+		e.seedClosedLong(trSID, pid, "ETH", e.at(2.2), e.at(6.1))
+	}
+	e.saveMark(trSID, "pos-a", "a")
+	e.saveMark(trSID, "pos-b", "b")
+	hook := &tfaPrepareHookAdapter{tfaAdapter: e.adapter}
+	e.ss.feedbackAnalysisAdapters = map[string]tradeFeedbackAnalysisAdapter{tradeFeedbackProviderAPI: hook}
+
+	cur := e.list(trSID, "")
+	rec := e.submit(trSID, `{"provider":"anthropic_api"}`, nil)
+	id := tfaRequestID(t, rec)
+	var accepted struct {
+		BundleSHA256   string  `json:"bundle_sha256"`
+		FeedbackRowIDs []int64 `json:"feedback_rowids"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if accepted.BundleSHA256 != cur.Selection.BundleSHA256 || fmt.Sprint(accepted.FeedbackRowIDs) != fmt.Sprint(cur.Selection.FeedbackRowIDs) {
+		t.Fatalf("admission recorded %s %v, current selection is %s %v", accepted.BundleSHA256, accepted.FeedbackRowIDs, cur.Selection.BundleSHA256, cur.Selection.FeedbackRowIDs)
+	}
+	stored, err := e.store.ReadTradeFeedbackAnalysis(trSID, id)
+	if err != nil || stored == nil || stored.Accepted.BundleSHA256 != cur.Selection.BundleSHA256 || fmt.Sprint(stored.Accepted.FeedbackRowIDs) != fmt.Sprint(cur.Selection.FeedbackRowIDs) {
+		t.Fatalf("stored accepted event = %+v (%v), want the current selection", stored, err)
+	}
+	e.waitTerminal(trSID, id)
+
+	before := tfaAnalysisRows(t, db)
+	calls := e.adapter.callCount()
+	hook.before = func() { e.saveMark(trSID, "pos-c", "saved during admission") }
+	rec = e.submit(trSID, `{"provider":"anthropic_api"}`, nil)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "changed while the request was prepared") {
+		t.Fatalf("submit with a mark saved during admission = %d: %s", rec.Code, rec.Body.String())
+	}
+	if after := tfaAnalysisRows(t, db); fmt.Sprint(after) != fmt.Sprint(before) || e.adapter.callCount() != calls {
+		t.Fatalf("a refused admission wrote rows %v -> %v or called the provider %d -> %d", before, after, calls, e.adapter.callCount())
+	}
+}
