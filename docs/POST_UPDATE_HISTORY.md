@@ -17,6 +17,15 @@ Nice orders tasks inside one CPU cgroup; on a host whose `system.slice` has no `
 Operator action: none. Check with `ps -eLo pid,tid,ni,args | grep check_` during a paper cycle, and compare live cycle times and `hl-batch .* shared state failed` counts with the times before the update.
 A per-unit `CPUWeight` for paper-only systemd instances follows in a separate change.
 
+### Issue 1984: operator paper close and the remove-strategy guard
+
+Runtime default with a new owner command; there is no opt-out, no config change and no schema change.
+Before this change `manual-close` refused every strategy whose type is not `manual`, `force-close` accepted only live Hyperliquid perps, and `remove-strategy` said open positions were "NOT touched". After the restart the startup prune and the next full-file save deleted those rows by cascade, so open paper exposure disappeared with no close trade and no realized PnL.
+Now `/go-trader-paper-close <strategy> [symbol]` and the dashboard paper-close action flatten one paper strategy at a fresh per-platform mark, book one `operator_paper_close` trade per leg, and save only that strategy's book (SKILL.md § Operator paper close).
+`remove-strategy` on Discord and the dashboard refuses while the strategy holds any position or option-leg row, names the symbols and the close path, and checks again inside the config write lock after the confirm. It also refuses unless the running roster shows the strategy paused, refuses a replay mirror, and refuses while a queued manual action or resting limit row names it, so no cycle can open a position between the check and the restart prune. The dashboard remove always restarts, as Discord does, and dashboard open and add refuse a removed strategy until the process exits. The "NOT touched" text is gone from all three places.
+`backtest/fee_evidence.py` groups `operator_paper_close` rows as `manual`.
+Operator action: pause, then flatten, before removal. The new slash command registers through the normal sync and can take about an hour to appear.
+
 ### Issue 1983: Hyperliquid API wallet expiry warnings and CRITICAL
 
 Runtime default with new alerts only; there is no opt-out, no config change and no schema change.
