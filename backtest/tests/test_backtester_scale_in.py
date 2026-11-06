@@ -471,6 +471,7 @@ def _assert_loader_defaults_off(tmp_path):
 _LOADER_REJECT_CASES = [
         ({"scale_in": {"max_adds": 3}}, "allow_scale_in"),
         ({"type": "spot", "allow_scale_in": True}, "perps/manual-only"),
+        ({"platform": "robinhood", "allow_scale_in": True}, "hyperliquid-only"),
         ({"allow_scale_in": True,
           "args": ["tema_cross", "BTC", "4h", "--mode", "live"],
           "stop_loss_atr_mult": None, "stop_loss_pct": 5.0}, "static scalar"),

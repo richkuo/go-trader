@@ -489,6 +489,14 @@ func TestPaperResearchQuoteOwnerSetup(t *testing.T) {
 				t.Fatalf("a structurally invalid owner was written: %s", setup.Entry)
 			}
 		}
+		offPlatform := paperResearchQuoteFragment(func(sc map[string]interface{}) { sc["platform"] = "robinhood" })
+		offSetup, offErr := parseQuoteOwnerSetup(offPlatform)
+		if offErr == nil {
+			offErr = ss.mutateConfigRoot(func(root map[string]json.RawMessage) error { return addQuoteOwnerToRoot(root, offSetup) })
+		}
+		if offErr == nil || !strings.Contains(offErr.Error(), "quote ownership supports only Hyperliquid perps") {
+			t.Fatalf("a Robinhood quote owner must be refused for its platform, got %v", offErr)
+		}
 		exclusive := paperResearchQuoteFragment(nil)
 		ss2, path2 := paperResearchServer(t, websocket, func() map[string]interface{} {
 			sc := paperResearchMomentum()
