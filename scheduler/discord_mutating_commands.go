@@ -966,8 +966,7 @@ func (d *DiscordNotifier) handleAddQuoteOwner(s discordTransport, i *discordgo.I
 
 func (d *DiscordNotifier) handleRemoveStrategy(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
-	path, err := d.configOpsReady()
-	if err != nil {
+	if _, err := d.configOpsReady(); err != nil {
 		followupText(s, i, err.Error())
 		return
 	}
@@ -976,18 +975,49 @@ func (d *DiscordNotifier) handleRemoveStrategy(s discordTransport, i *discordgo.
 		followupText(s, i, "usage: /go-trader-remove-strategy <id>")
 		return
 	}
-	if !d.confirmDestructive(interactionUserID(i), fmt.Sprintf("Remove strategy `%s` from the config? It stops trading after restart. Its open positions and trade history in the state DB are NOT touched.", id)) {
+	if reason := d.ss.removeStrategyRefusal(id); reason != "" {
+		followupText(s, i, "Refused: "+reason)
+		return
+	}
+	if !d.confirmDestructive(interactionUserID(i), fmt.Sprintf("Remove strategy `%s` from the config? It stops trading after restart. %s", id, removeStrategyHistoryNote)) {
 		followupText(s, i, "Cancelled — no confirmation received.")
 		return
 	}
-	wErr := d.mutateConfig(path, func(root map[string]json.RawMessage) error {
-		return removeStrategyFromRoot(root, id)
-	})
+	wErr := d.ss.removeStrategyGuarded(id)
 	if wErr != nil {
 		followupText(s, i, "remove-strategy failed: "+wErr.Error())
 		return
 	}
 	d.applyConfigChange(s, i, true, fmt.Sprintf("Removed strategy `%s`.", id))
+}
+
+func (d *DiscordNotifier) handlePaperClose(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+	deferAck(s, i)
+	id := optionString(opts, "strategy", "")
+	if id == "" {
+		followupText(s, i, "usage: /go-trader-paper-close <strategy> [symbol]")
+		return
+	}
+	if d.ss == nil || d.ss.state == nil || d.ss.mu == nil {
+		followupText(s, i, "status server not ready")
+		return
+	}
+	plan, marks, err := d.ss.preparePaperClose(id, optionString(opts, "symbol", ""))
+	if err != nil {
+		followupText(s, i, err.Error())
+		return
+	}
+	userID := interactionUserID(i)
+	if !d.confirmDestructive(userID, paperClosePrompt(plan, marks)) {
+		followupText(s, i, "Cancelled — no confirmation received.")
+		return
+	}
+	msg, err := d.ss.applyPaperClose("discord:"+userID, plan)
+	if err != nil {
+		followupText(s, i, err.Error())
+		return
+	}
+	followupText(s, i, msg)
 }
 
 func (d *DiscordNotifier) handleAddPlatform(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {

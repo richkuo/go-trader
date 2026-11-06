@@ -210,6 +210,7 @@
     tradeSizingAmount: document.getElementById("trade-sizing-amount"),
     tradeOpenButton: document.getElementById("trade-open-button"),
     tradeAddButton: document.getElementById("trade-add-button"),
+    tradePaperCloseAll: document.getElementById("trade-paper-close-all"),
     tradePositionForm: document.getElementById("trade-position-form"),
     tradeCloseQty: document.getElementById("trade-close-qty"),
     tradeSLTrigger: document.getElementById("trade-sl-trigger"),
@@ -1536,7 +1537,11 @@
   }
 
   function strategySupportsForceClose(strat) {
-    return !!strat && strat.type === "perps" && strat.platform === "hyperliquid";
+    return !!strat && strat.type === "perps" && strat.platform === "hyperliquid" && strat.partition === "live";
+  }
+
+  function strategySupportsPaperClose(strat) {
+    return !!strat && !!strat.partition && strat.partition !== "live";
   }
 
   function updateTradePanel(status) {
@@ -1545,7 +1550,12 @@
     const manual = strategySupportsManualActions(strat);
     const forceClose = strategySupportsForceClose(strat);
     const hasPosition = !!(status && status.positions && Object.keys(status.positions).length);
-    els.tradePanel.hidden = !(manual || forceClose);
+    const hasOptionLeg = !!(status && status.option_positions && Object.keys(status.option_positions).length);
+    const paperClose = strategySupportsPaperClose(strat) && (hasPosition || hasOptionLeg);
+    els.tradePanel.hidden = !(manual || forceClose || paperClose);
+    if (els.tradePaperCloseAll) {
+      els.tradePaperCloseAll.hidden = !paperClose;
+    }
     if (els.tradeOpenForm) {
       els.tradeOpenForm.hidden = !manual;
     }
@@ -1556,7 +1566,7 @@
       els.tradeAddButton.hidden = !manual || !hasPosition;
     }
     if (els.tradePositionForm) {
-      els.tradePositionForm.hidden = !hasPosition;
+      els.tradePositionForm.hidden = !hasPosition || !(manual || forceClose);
     }
     const slField = document.getElementById("trade-sl-field");
     if (slField) {
@@ -2191,7 +2201,7 @@
     const klass = side === "short" || side === "sell" ? "pos-short" : "pos-long";
     const detail = "Qty " + fmtNumber(qty) + " @ " + fmtMoney(price) + (sl ? " / SL " + fmtMoney(sl) : "");
     return '<div class="position-row"><strong>' + escapeHTML(symbol) + '</strong><span class="' + klass + '">' +
-      escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span>' + positionActionButtons() + '</span></div>';
+      escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span>' + positionActionButtons(symbol) + '</span></div>';
   }
 
   function optionMarkAge(updatedAt) {
@@ -2223,12 +2233,16 @@
       detail += " / " + pos.mark_error;
     }
     return '<div class="position-row"><strong>' + escapeHTML(symbol) + '</strong><span class="' + klass + '">' +
-      escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span>' + positionActionButtons() + '</span></div>';
+      escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span>' + positionActionButtons(symbol) + '</span></div>';
   }
 
-  function positionActionButtons() {
+  function positionActionButtons(symbol) {
     const strat = activeStrategyMeta();
     const buttons = [];
+    if (strategySupportsPaperClose(strat)) {
+      buttons.push('<button type="button" class="trade-row-button danger" data-trade-action="paper-close" data-symbol="' +
+        escapeHTML(symbol) + '">Paper close</button>');
+    }
     if (strategySupportsManualActions(strat)) {
       buttons.push('<button type="button" class="trade-row-button" data-trade-action="close">Close</button>');
       buttons.push('<button type="button" class="trade-row-button" data-trade-action="update-sl">Edit SL</button>');
@@ -2808,13 +2822,20 @@
       tradeAdd().catch(handleRefreshError);
     });
   }
+  if (els.tradePaperCloseAll) {
+    els.tradePaperCloseAll.addEventListener("click", function () {
+      confirmTradeAction("paper-close", {}).catch(handleRefreshError);
+    });
+  }
   if (els.positions) {
     els.positions.addEventListener("click", function (event) {
       const button = event.target.closest("[data-trade-action]");
       if (!button) return;
       const action = button.dataset.tradeAction;
       let run;
-      if (action === "close" || action === "force-close") {
+      if (action === "paper-close") {
+        run = confirmTradeAction("paper-close", { symbol: button.dataset.symbol || "" });
+      } else if (action === "close" || action === "force-close") {
         run = tradeClose(action);
       } else if (action === "update-sl") {
         run = tradeUpdateSL();
