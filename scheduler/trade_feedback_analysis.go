@@ -395,6 +395,7 @@ type tradeFeedbackBundleBuild struct {
 	bundle     tradeFeedbackBundle
 	bundleJSON []byte
 	db         *StateDB
+	markKeys   []tradeFeedbackMarkKey
 }
 
 func (b *tradeFeedbackBundleBuild) digest() string { return b.bundle.BundleSHA256 }
@@ -565,7 +566,9 @@ func (ss *StatusServer) assembleTradeFeedbackBundle(in *tradeFeedbackBundleInput
 		Marks:     []tradeFeedbackBundleMark{},
 		Semantics: tradeFeedbackBundleSemantics,
 	}
+	markKeys := make([]tradeFeedbackMarkKey, 0, len(recs))
 	for i, rec := range recs {
+		markKeys = append(markKeys, tradeFeedbackMarkKey{RowID: rec.RowID, EvidenceSHA256: rec.EvidenceSHA256})
 		b.Selection.CandidateRowIDs = append(b.Selection.CandidateRowIDs, rec.RowID)
 		ev, reason := tradeFeedbackCandidate(rec, stored[i], in.ctx.StorageStrategyID)
 		if reason != "" {
@@ -579,7 +582,7 @@ func (ss *StatusServer) assembleTradeFeedbackBundle(in *tradeFeedbackBundleInput
 	if err != nil {
 		return nil, reviewErr(http.StatusInternalServerError, "%v", err)
 	}
-	return &tradeFeedbackBundleBuild{inputs: *in, bundle: b, bundleJSON: raw, db: db}, nil
+	return &tradeFeedbackBundleBuild{inputs: *in, bundle: b, bundleJSON: raw, db: db, markKeys: markKeys}, nil
 }
 
 func (ss *StatusServer) buildTradeFeedbackBundle(ctx context.Context, id string) (*tradeFeedbackBundleBuild, *tradeReviewError) {
@@ -997,7 +1000,7 @@ type tradeFeedbackResultProposals struct {
 	} `json:"proposals"`
 }
 
-func (ss *StatusServer) tradeFeedbackResearchFor(view *tradeFeedbackAnalysisView, cur *tradeFeedbackBundleBuild, research tradeFeedbackResearchSupport) {
+func (ss *StatusServer) tradeFeedbackResearchFor(view *tradeFeedbackAnalysisView, curDigest string, research tradeFeedbackResearchSupport) {
 	view.Research = []tradeFeedbackProposalResearch{}
 	var result tradeFeedbackResultProposals
 	if len(view.Result) == 0 || json.Unmarshal(view.Result, &result) != nil {
@@ -1021,7 +1024,7 @@ func (ss *StatusServer) tradeFeedbackResearchFor(view *tradeFeedbackAnalysisView
 			r.Reason = "the analysis did not pass validation"
 		case !valid[i]:
 			r.Reason = "this proposal did not pass validation"
-		case cur == nil || cur.digest() != view.BundleSHA256:
+		case curDigest == "" || curDigest != view.BundleSHA256:
 			r.Reason = "the strategy's marks or settings changed since this analysis; run a new analysis"
 		case !research.Supported:
 			r.Reason = "the tuning harness does not support this strategy: " + research.Status
@@ -1065,6 +1068,130 @@ func tradeFeedbackViewFor(req tradeFeedbackAnalysisRequest) tradeFeedbackAnalysi
 	return v
 }
 
+type tradeFeedbackListSummary struct {
+	digest          string
+	maxPositions    int
+	candidateRowIDs []int64
+	feedbackRowIDs  []int64
+	exclusions      []tradeFeedbackExclusion
+}
+
+type tradeFeedbackListCacheEntry struct {
+	key     string
+	db      *StateDB
+	summary tradeFeedbackListSummary
+}
+
+type tradeFeedbackListCache struct {
+	mu      sync.Mutex
+	entries map[string]tradeFeedbackListCacheEntry
+}
+
+func (c *tradeFeedbackListCache) get(id string, db *StateDB, key string) (tradeFeedbackListSummary, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[id]
+	if !ok || e.db != db || e.key != key {
+		return tradeFeedbackListSummary{}, false
+	}
+	return e.summary, true
+}
+
+func (c *tradeFeedbackListCache) put(id string, db *StateDB, key string, summary tradeFeedbackListSummary) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = map[string]tradeFeedbackListCacheEntry{}
+	}
+	c.entries[id] = tradeFeedbackListCacheEntry{key: key, db: db, summary: summary}
+}
+
+func (c *tradeFeedbackListCache) drop(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, id)
+}
+
+func (c *tradeFeedbackListCache) retain(ids map[string]bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id := range c.entries {
+		if !ids[id] {
+			delete(c.entries, id)
+		}
+	}
+}
+
+func (ss *StatusServer) pruneTradeFeedbackListCache() {
+	ss.strategiesMu.RLock()
+	ids := make(map[string]bool, len(ss.strategies))
+	for _, sc := range ss.strategies {
+		ids[sc.ID] = true
+	}
+	ss.strategiesMu.RUnlock()
+	ss.feedbackListCache.retain(ids)
+}
+
+func tradeFeedbackListCacheKey(in *tradeFeedbackBundleInputs, db *StateDB, marks []tradeFeedbackMarkKey) (string, error) {
+	material := struct {
+		BundleVersion int                         `json:"bundle_version"`
+		Strategy      tradeFeedbackBundleStrategy `json:"strategy"`
+		DefaultParams map[string]interface{}      `json:"default_params"`
+		Description   string                      `json:"description"`
+		MaxPositions  int                         `json:"max_positions"`
+		SourceRole    string                      `json:"source_role"`
+		Marks         []tradeFeedbackMarkKey      `json:"marks"`
+	}{tradeFeedbackBundleVersion, in.strategy, in.meta.DefaultParams, in.meta.Description, in.settings.MaxPositions,
+		string(db.storageRoleOf()), marks}
+	raw, err := json.Marshal(material)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func tradeFeedbackListSummaryOf(build *tradeFeedbackBundleBuild) tradeFeedbackListSummary {
+	sel := build.bundle.Selection
+	return tradeFeedbackListSummary{
+		digest:          build.digest(),
+		maxPositions:    sel.MaxPositions,
+		candidateRowIDs: append([]int64{}, sel.CandidateRowIDs...),
+		feedbackRowIDs:  append([]int64{}, sel.FeedbackRowIDs...),
+		exclusions:      append([]tradeFeedbackExclusion{}, sel.Exclusions...),
+	}
+}
+
+func (ss *StatusServer) currentTradeFeedbackListSummary(ctx context.Context, id string) (*tradeFeedbackListSummary, tradeFeedbackResearchSupport, *tradeReviewError) {
+	in, rerr := ss.loadTradeFeedbackBundleInputs(ctx, id)
+	if rerr != nil {
+		return nil, tradeFeedbackResearchSupport{}, rerr
+	}
+	if ss.stateDB == nil {
+		return nil, tradeFeedbackResearchSupport{}, reviewErr(http.StatusServiceUnavailable, "database not available")
+	}
+	if db, marks, err := ss.stateDB.ReadLatestTradeFeedbackKeys(id, in.settings.MaxPositions); err == nil {
+		if key, err := tradeFeedbackListCacheKey(in, db, marks); err == nil {
+			if summary, ok := ss.feedbackListCache.get(id, db, key); ok {
+				return &summary, in.meta.Research, nil
+			}
+		}
+	}
+	build, rerr := ss.assembleTradeFeedbackBundle(in)
+	if rerr != nil {
+		ss.feedbackListCache.drop(id)
+		return nil, tradeFeedbackResearchSupport{}, rerr
+	}
+	summary := tradeFeedbackListSummaryOf(build)
+	if key, err := tradeFeedbackListCacheKey(in, build.db, build.markKeys); err == nil {
+		ss.feedbackListCache.put(id, build.db, key, summary)
+		if _, ok := ss.strategyConfig(id); !ok {
+			ss.feedbackListCache.drop(id)
+		}
+	}
+	return &summary, in.meta.Research, nil
+}
+
 func (ss *StatusServer) listTradeFeedbackAnalyses(w http.ResponseWriter, r *http.Request, id string) {
 	filter, ok := ss.uiPartitionParam(w, r)
 	if !ok {
@@ -1093,15 +1220,16 @@ func (ss *StatusServer) listTradeFeedbackAnalyses(w http.ResponseWriter, r *http
 		resp.Reason = ss.feedbackAnalysisUnavailableReason()
 	}
 	resp.Selection.MaxPositions = resp.Settings.MaxPositions
-	cur, rerr := ss.buildTradeFeedbackBundle(r.Context(), id)
+	var curDigest string
+	cur, research, rerr := ss.currentTradeFeedbackListSummary(r.Context(), id)
 	if rerr != nil {
 		resp.Selection.Error = rerr.Msg
 		resp.Research = tradeFeedbackResearchSupport{Status: "unknown", Reason: rerr.Msg}
 	} else {
-		sel := cur.bundle.Selection
-		resp.Selection = tradeFeedbackSelectionView{Included: len(sel.FeedbackRowIDs), Candidates: len(sel.CandidateRowIDs),
-			MaxPositions: sel.MaxPositions, FeedbackRowIDs: sel.FeedbackRowIDs, Exclusions: sel.Exclusions, BundleSHA256: cur.digest()}
-		resp.Research = cur.inputs.meta.Research
+		curDigest = cur.digest
+		resp.Selection = tradeFeedbackSelectionView{Included: len(cur.feedbackRowIDs), Candidates: len(cur.candidateRowIDs),
+			MaxPositions: cur.maxPositions, FeedbackRowIDs: cur.feedbackRowIDs, Exclusions: cur.exclusions, BundleSHA256: cur.digest}
+		resp.Research = research
 	}
 	var progress map[string]string
 	if ss.feedbackAnalysis != nil {
@@ -1115,8 +1243,8 @@ func (ss *StatusServer) listTradeFeedbackAnalyses(w http.ResponseWriter, r *http
 				v.Progress = "unresolved"
 			}
 		}
-		v.CurrentContext = cur != nil && cur.digest() == v.BundleSHA256
-		ss.tradeFeedbackResearchFor(&v, cur, resp.Research)
+		v.CurrentContext = curDigest != "" && curDigest == v.BundleSHA256
+		ss.tradeFeedbackResearchFor(&v, curDigest, resp.Research)
 		resp.Analyses = append(resp.Analyses, v)
 	}
 	writeJSON(w, resp)
@@ -1231,7 +1359,7 @@ func (ss *StatusServer) verifyTradeFeedbackResearchLaunch(ctx context.Context, h
 	if refusal != "" {
 		return reviewErr(http.StatusConflict, "%s", refusal)
 	}
-	ss.tradeFeedbackResearchFor(&view, cur, in.meta.Research)
+	ss.tradeFeedbackResearchFor(&view, cur.digest(), in.meta.Research)
 	for _, r := range view.Research {
 		if r.Index == index {
 			if !r.Available {

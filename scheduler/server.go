@@ -43,6 +43,7 @@ type StatusServer struct {
 	feedbackAnalysisMeta     func(context.Context, StrategyConfig, string) (tradeFeedbackStrategyMeta, error)
 	feedbackAnalysisAdapters map[string]tradeFeedbackAnalysisAdapter
 	feedbackAnalysisDown     string
+	feedbackListCache        tradeFeedbackListCache
 
 	globalNotifyRatchet *bool
 	reloadConfig        func() error
@@ -117,8 +118,9 @@ func (ss *StatusServer) UpdateStrategies(strategies []StrategyConfig) {
 		return
 	}
 	ss.strategiesMu.Lock()
-	defer ss.strategiesMu.Unlock()
 	ss.strategies = append([]StrategyConfig(nil), strategies...)
+	ss.strategiesMu.Unlock()
+	ss.pruneTradeFeedbackListCache()
 }
 
 // UpdatePaperSources records the display labels of the sources this process

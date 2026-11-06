@@ -1188,3 +1188,241 @@ func TestTradeFeedbackAnalysisResearchLaunchRereadsSettingsUnderLock(t *testing.
 		}
 	})
 }
+
+func tfaBigMarks(t *testing.T, e *tfaEnv, db *StateDB, count, bars int) {
+	t.Helper()
+	e.seedDefault()
+	e.saveMark(trSID, "pos-a", "seed")
+	good := tfaLatestRecord(t, db, trSID)
+	var base tradeFeedbackEvidence
+	if err := json.Unmarshal([]byte(good.EvidenceJSON), &base); err != nil {
+		t.Fatal(err)
+	}
+	candles := make([]UICandle, bars)
+	start := e.at(-float64(bars)).Unix()
+	for i := range candles {
+		px := 2345.67 + float64(i%97)*0.37
+		candles[i] = UICandle{Time: start + int64(i)*3600, Open: px, High: px + 12.34, Low: px - 11.21, Close: px + 1.11, Volume: 1234.5678}
+	}
+	for i := 0; i < count; i++ {
+		pid := fmt.Sprintf("pos-big-%03d", i)
+		e.seedClosedLong(trSID, pid, "ETH", e.at(2.2), e.at(6.1))
+		ev := base
+		ev.PositionID = pid
+		ev.Candles.Bars = candles
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(raw)
+		rec := good
+		rec.PositionID = pid
+		rec.Note = "large window " + pid
+		rec.EvidenceJSON = string(raw)
+		rec.EvidenceSHA256 = hex.EncodeToString(sum[:])
+		tfaInsertRawMark(t, db, trSID, rec)
+	}
+}
+
+func TestTradeFeedbackAnalysisListPollReusesCurrentBundleSummary(t *testing.T) {
+	db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	e := newTFAEnv(t, singleFileStore(db), []StrategyConfig{trConfig()})
+	tfaBigMarks(t, e, db, tradeFeedbackAnalysisDefaultMaxPositions, diagMaxFetchBars)
+
+	full, rerr := e.ss.buildTradeFeedbackBundle(context.Background(), trSID)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	bundleBytes := uint64(len(full.bundleJSON))
+	if len(full.bundle.Marks) != tradeFeedbackAnalysisDefaultMaxPositions || len(full.bundle.Marks[0].Candles.Bars) != diagMaxFetchBars {
+		t.Fatalf("bundle holds %d marks, first with %d bars; want %d marks of %d bars", len(full.bundle.Marks), len(full.bundle.Marks[0].Candles.Bars),
+			tradeFeedbackAnalysisDefaultMaxPositions, diagMaxFetchBars)
+	}
+
+	var first, second tradeFeedbackAnalysesResponse
+	firstBytes := tfaAllocated(func() { first = e.list(trSID, "") })
+	secondBytes := tfaAllocated(func() { second = e.list(trSID, "") })
+	t.Logf("bundle %d bytes; first poll allocated %d bytes, second poll allocated %d bytes", bundleBytes, firstBytes, secondBytes)
+	if firstBytes < bundleBytes {
+		t.Fatalf("the first poll allocated %d bytes, below one bundle (%d bytes): it did not build the bundle", firstBytes, bundleBytes)
+	}
+	if secondBytes >= bundleBytes/4 {
+		t.Fatalf("the unchanged second poll allocated %d bytes, at least a quarter of one bundle (%d bytes): it rebuilt the bundle", secondBytes, bundleBytes)
+	}
+	for _, resp := range []tradeFeedbackAnalysesResponse{first, second} {
+		sel := resp.Selection
+		if sel.BundleSHA256 != full.digest() || sel.Included != len(full.bundle.Selection.FeedbackRowIDs) ||
+			sel.Candidates != len(full.bundle.Selection.CandidateRowIDs) || len(sel.Exclusions) != 0 || sel.Error != "" {
+			t.Fatalf("poll selection = %+v, want the full rebuild digest %s with %d marks", sel, full.digest(), len(full.bundle.Selection.FeedbackRowIDs))
+		}
+	}
+}
+
+func tfaPoisonListCache(t *testing.T, ss *StatusServer, id, digest string) {
+	t.Helper()
+	ss.feedbackListCache.mu.Lock()
+	defer ss.feedbackListCache.mu.Unlock()
+	ent, ok := ss.feedbackListCache.entries[id]
+	if !ok {
+		t.Fatalf("no list cache entry for %s", id)
+	}
+	ent.summary.digest = digest
+	ss.feedbackListCache.entries[id] = ent
+}
+
+func tfaListMatchesFullRebuild(t *testing.T, e *tfaEnv, label string) tradeFeedbackAnalysesResponse {
+	t.Helper()
+	resp := e.list(trSID, "")
+	full, rerr := e.ss.buildTradeFeedbackBundle(context.Background(), trSID)
+	if rerr != nil {
+		t.Fatalf("%s: full rebuild: %v", label, rerr)
+	}
+	sel := full.bundle.Selection
+	gotIDs, _ := json.Marshal(resp.Selection.FeedbackRowIDs)
+	wantIDs, _ := json.Marshal(sel.FeedbackRowIDs)
+	gotEx, _ := json.Marshal(resp.Selection.Exclusions)
+	wantEx, _ := json.Marshal(sel.Exclusions)
+	if resp.Selection.BundleSHA256 != full.digest() || string(gotIDs) != string(wantIDs) || string(gotEx) != string(wantEx) ||
+		resp.Selection.Candidates != len(sel.CandidateRowIDs) || resp.Selection.MaxPositions != sel.MaxPositions {
+		t.Fatalf("%s: poll selection = %+v, want digest %s ids %s exclusions %s", label, resp.Selection, full.digest(), wantIDs, wantEx)
+	}
+	if resp.Research != full.inputs.meta.Research {
+		t.Fatalf("%s: research support = %+v, want %+v", label, resp.Research, full.inputs.meta.Research)
+	}
+	for _, v := range resp.Analyses {
+		if want := full.digest() == v.BundleSHA256; v.CurrentContext != want {
+			t.Fatalf("%s: analysis %s current_context = %v, full rebuild says %v", label, v.RequestID, v.CurrentContext, want)
+		}
+		expect := v
+		e.ss.tradeFeedbackResearchFor(&expect, full.digest(), full.inputs.meta.Research)
+		got, _ := json.Marshal(v.Research)
+		want, _ := json.Marshal(expect.Research)
+		if string(got) != string(want) {
+			t.Fatalf("%s: analysis %s research = %s, full rebuild says %s", label, v.RequestID, got, want)
+		}
+	}
+	return resp
+}
+
+func TestTradeFeedbackAnalysisListCacheFollowsEveryBundleInput(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"strategies":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := newTuningRunManager(configPath, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newTFAEnv(t, singleFileStore(openTestDB(t)), []StrategyConfig{trConfig()})
+	e.ss.tuning = mgr
+	for _, pid := range []string{"pos-a", "pos-b", "pos-c"} {
+		e.seedClosedLong(trSID, pid, "ETH", e.at(2.2), e.at(6.1))
+	}
+	e.saveMark(trSID, "pos-a", "a")
+	e.saveMark(trSID, "pos-b", "b")
+	cfg := &Config{Strategies: []StrategyConfig{trConfig()}}
+	e.ss.SetConfigContext("", cfg)
+
+	analysis := e.waitTerminal(trSID, tfaRequestID(t, e.submit(trSID, `{"provider":"anthropic_api"}`, nil)))
+	base := tfaListMatchesFullRebuild(t, e, "baseline")
+	if len(base.Analyses) != 1 || !base.Analyses[0].CurrentContext || len(base.Analyses[0].Research) != 1 || !base.Analyses[0].Research[0].Available {
+		t.Fatalf("baseline analysis = %+v, want current context with research available", base.Analyses)
+	}
+	if again := tfaListMatchesFullRebuild(t, e, "unchanged"); again.Selection.BundleSHA256 != base.Selection.BundleSHA256 {
+		t.Fatalf("an unchanged poll moved the digest")
+	}
+
+	poison := strings.Repeat("f", 64)
+	tfaPoisonListCache(t, e.ss, trSID, poison)
+	if got := e.list(trSID, "").Selection.BundleSHA256; got != poison {
+		t.Fatalf("an unchanged poll returned %s, not the cached entry: the poll did not read the cache", got)
+	}
+
+	submitted := e.submit(trSID, `{"provider":"anthropic_api"}`, nil)
+	var accepted struct {
+		BundleSHA256 string `json:"bundle_sha256"`
+	}
+	json.Unmarshal(submitted.Body.Bytes(), &accepted)
+	if submitted.Code != http.StatusAccepted || accepted.BundleSHA256 != base.Selection.BundleSHA256 {
+		t.Fatalf("admission with a poisoned list cache = %d digest %s, want 202 with the rebuilt digest %s", submitted.Code, accepted.BundleSHA256, base.Selection.BundleSHA256)
+	}
+	e.waitTerminal(trSID, tfaRequestID(t, submitted))
+	tfaPoisonListCache(t, e.ss, trSID, poison)
+	launch := httptest.NewRequest(http.MethodPost, "/api/tuning/runs",
+		strings.NewReader(`{"strategy_ids":["`+trSID+`"],"overrides":{"`+trSID+`":{"params":{"roc_period":[10,12]}}}}`))
+	launch.Header.Set("Content-Type", "application/json")
+	launch.Header.Set("Authorization", "Bearer "+tfaToken)
+	launch.Header.Set(tradeFeedbackResearchHeader, analysis.RequestID+":0:"+analysis.BundleSHA256)
+	launched := httptest.NewRecorder()
+	e.ss.handleAPITuningRuns(launched, launch)
+	if launched.Code != http.StatusAccepted {
+		t.Fatalf("research launch with a poisoned list cache = %d: %s", launched.Code, launched.Body.String())
+	}
+
+	reload := func(mut func(next *Config)) {
+		t.Helper()
+		next := &Config{Strategies: []StrategyConfig{cfg.Strategies[0]}, TradeFeedbackAnalysis: cfg.TradeFeedbackAnalysis.clone()}
+		next.Strategies[0].OpenStrategy.Params = deepCloneJSONMap(cfg.Strategies[0].OpenStrategy.Params)
+		mut(next)
+		if _, err := applyHotReloadConfig(cfg, next, e.state, nil, e.ss); err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+	}
+	trailing := 2.5
+	cases := []struct {
+		name   string
+		change func()
+	}{
+		{"mark_save", func() { e.saveMark(trSID, "pos-c", "c") }},
+		{"params_reload", func() {
+			reload(func(next *Config) {
+				next.Strategies[0].OpenStrategy = StrategyRef{Name: "momentum", Params: map[string]interface{}{"roc_period": 9.0}}
+			})
+		}},
+		{"stops_reload", func() {
+			reload(func(next *Config) { next.Strategies[0].TrailingStopPct = &trailing })
+		}},
+		{"max_positions", func() {
+			reload(func(next *Config) { next.TradeFeedbackAnalysis = &TradeFeedbackAnalysisConfig{MaxPositions: intPtrTFA(2)} })
+		}},
+		{"registry_metadata", func() {
+			e.metaMu.Lock()
+			e.meta.DefaultParams = map[string]interface{}{"roc_period": 14.0, "threshold": 4.0}
+			e.metaMu.Unlock()
+		}},
+	}
+	prev := base.Selection.BundleSHA256
+	for _, c := range cases {
+		tfaPoisonListCache(t, e.ss, trSID, poison)
+		if got := e.list(trSID, "").Selection.BundleSHA256; got != poison {
+			t.Fatalf("%s: the poll before the change returned %s, not the cached entry", c.name, got)
+		}
+		c.change()
+		resp := tfaListMatchesFullRebuild(t, e, c.name)
+		if resp.Selection.BundleSHA256 == prev {
+			t.Fatalf("%s: the digest did not change", c.name)
+		}
+		for _, v := range resp.Analyses {
+			if v.CurrentContext || (len(v.Research) == 1 && v.Research[0].Available) {
+				t.Fatalf("%s: analysis %s still offers the old context: %+v", c.name, v.RequestID, v)
+			}
+		}
+		prev = resp.Selection.BundleSHA256
+	}
+	if got := tfaListMatchesFullRebuild(t, e, "max_positions_selection"); got.Selection.Candidates != 2 || got.Selection.MaxPositions != 2 {
+		t.Fatalf("selection after max_positions 2 = %+v", got.Selection)
+	}
+
+	e.ss.UpdateStrategies(nil)
+	e.ss.feedbackListCache.mu.Lock()
+	_, kept := e.ss.feedbackListCache.entries[trSID]
+	e.ss.feedbackListCache.mu.Unlock()
+	if kept {
+		t.Fatalf("the list cache kept an entry for a strategy that left the roster")
+	}
+}
