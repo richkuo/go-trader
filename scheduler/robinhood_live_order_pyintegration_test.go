@@ -956,6 +956,33 @@ func TestRobinhoodLiveOrderHeldAttemptResolution(t *testing.T) {
 			})
 		}
 	})
+	t.Run("UnreadableDuplicateCheckRetriesNextCycle", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
+		e.seedSharedSettlingClose()
+		db := e.store.primary().db
+		if _, err := db.Exec(`ALTER TABLE trades RENAME TO trades_hidden`); err != nil {
+			t.Fatal(err)
+		}
+		settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+		if _, err := db.Exec(`ALTER TABLE trades_hidden RENAME TO trades`); err != nil {
+			t.Fatal(err)
+		}
+		if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettling || row.HoldReason != "" {
+			t.Fatalf("attempt = %+v, want still settling with no booked-duplicate hold", row)
+		}
+		for _, id := range []string{"rh-a", "rh-b"} {
+			if len(e.state.Strategies[id].TradeHistory) != 0 || len(e.dbTrades(id)) != 0 {
+				t.Fatalf("%s booked during an unreadable duplicate check", id)
+			}
+		}
+		settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+		if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettled {
+			t.Fatalf("attempt = %+v, want settled on the next pass", row)
+		}
+		if a, b := e.dbTrades("rh-a"), e.dbTrades("rh-b"); len(a) != 1 || len(b) != 1 {
+			t.Fatalf("trades a=%+v b=%+v, want one each", a, b)
+		}
+	})
 	t.Run("SharedSettlementCommitsOnlyWithItsSettledMark", func(t *testing.T) {
 		for _, bookSaved := range []string{"rh-b", "rh-a"} {
 			t.Run(bookSaved, func(t *testing.T) {
@@ -1182,6 +1209,23 @@ func TestRobinhoodLiveOrderKillSwitch(t *testing.T) {
 				t.Fatalf("report = %+v, want BTC held by the open buy", plan.RHCloseReport)
 			}
 		})
+		t.Run("fill_below_book_then_verified_flat", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.ageBook("rh-btc", "BTC")
+			closePhase := rhWith(rhSellFilled("0.3", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.3", "0.3"))}})
+			in := e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.3"))}}, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}})
+			in.RHCloser = e.phaseCloser(closePhase, in.RHCloser)
+			plan := planKillSwitchClose(in)
+			if !plan.OnChainConfirmedFlat {
+				t.Fatalf("report = %+v, want confirmed flat", plan.RHCloseReport)
+			}
+			e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
+			dbt := e.dbTrades("rh-btc")
+			if len(dbt) != 2 || dbt[0].Quantity != 0.3 || dbt[0].Price != 98 || !strings.Contains(dbt[1].Details, robinhoodVerifiedFlatKillSwitch) {
+				t.Fatalf("db trades = %+v, want a venue row and a verified-flat row", dbt)
+			}
+		})
 		t.Run("shared_coin_splits_by_book", func(t *testing.T) {
 			e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
 			e.setPosition("rh-a", "BTC", 0.1, 90)
@@ -1263,6 +1307,38 @@ func TestRobinhoodLiveOrderKillSwitch(t *testing.T) {
 			t.Fatalf("the ETH strategy with no book must book nothing, got %+v", dbt)
 		}
 	})
+	t.Run("CappedSaleClosesThePhantomRemainderOnlyOutsideTheLagWindow", func(t *testing.T) {
+		for _, aged := range []bool{true, false} {
+			t.Run(fmt.Sprintf("aged_%v", aged), func(t *testing.T) {
+				e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+				e.setPosition("rh-btc", "BTC", 0.5, 90)
+				if aged {
+					e.ageBook("rh-btc", "BTC")
+				}
+				in := e.killSwitchInputs(rhHoldingsPhase(rhHeld("BTC", "0.3")), rhHoldingsPhase())
+				in.RHCloser = e.phaseCloser(rhClosePhase(rhSellFilled("0.3", "98"), "0.3", "0.3"), in.RHCloser)
+				plan := planKillSwitchClose(in)
+				rhSamePosts(t, e.allPostQuantities(), 0.3)
+				e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
+				dbt := e.dbTrades("rh-btc")
+				if !aged {
+					if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil {
+						t.Fatalf("report = %+v, want a fresh book's flat read unconfirmed", plan.RHCloseReport)
+					}
+					if got := e.bookQty("rh-btc", "BTC"); math.Abs(got-0.2) > 1e-12 || len(dbt) != 1 {
+						t.Fatalf("book = %v trades = %+v, want the 0.2 remainder kept and only the venue sale booked", got, dbt)
+					}
+					return
+				}
+				if !plan.OnChainConfirmedFlat {
+					t.Fatalf("report = %+v, want confirmed flat", plan.RHCloseReport)
+				}
+				if len(dbt) != 2 || dbt[0].Quantity != 0.3 || dbt[0].Price != 98 || math.Abs(dbt[1].Quantity-0.2) > 1e-12 || !strings.Contains(dbt[1].Details, robinhoodVerifiedFlatKillSwitch) {
+					t.Fatalf("db trades = %+v, want a 0.3 venue row and a 0.2 verified-flat row", dbt)
+				}
+			})
+		}
+	})
 	t.Run("ReservedHoldingsHoldTheUnsoldBook", func(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
 		e.setPosition("rh-btc", "BTC", 0.5, 90)
@@ -1341,6 +1417,12 @@ func (e *rhLiveEnv) latchCB(id string) {
 	s.RiskState.CircuitBreaker = true
 	s.RiskState.CircuitBreakerUntil = time.Now().Add(time.Hour)
 	e.mu.Unlock()
+}
+
+func (e *rhLiveEnv) runCB(fetcher RobinhoodPositionsFetcher) {
+	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, RobinhoodHoldings{}, false, fetcher,
+		newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginCircuitBreaker), nil, 2*time.Minute, &e.mu,
+		robinhoodCircuitCloseDeps{store: e.store, prices: map[string]float64{"BTC": 50}, resolve: robinhoodEmergencyResolver(e.deps(), e.cfg, nil)})
 }
 
 func (e *rhLiveEnv) phasedFetcher(phases ...rhRoutes) RobinhoodPositionsFetcher {
@@ -1454,6 +1536,60 @@ func TestRobinhoodLiveOrderCircuitBreaker(t *testing.T) {
 			rhSamePosts(t, e.allPostQuantities(), 0.5)
 			if row := e.onlyAttempt(); row.Status != robinhoodAttemptNoFill || row.AppliedQty != 0 {
 				t.Fatalf("attempt = %+v, want a no_fill attempt with nothing applied", row)
+			}
+		})
+		t.Run("fresh_buy_flat_read_keeps_the_book_without_a_pending_close", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.latchCB("rh-btc")
+			flat := rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}
+			e.runCB(e.phasedFetcher(flat, flat))
+			s := e.state.Strategies["rh-btc"]
+			if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
+				t.Fatalf("position = %+v, want the fresh long kept while the read may lag the buy", pos)
+			}
+			if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil {
+				t.Fatalf("pending = %+v, want none from a flat read", p)
+			}
+			if posts := e.orderPosts(); len(posts) != 0 {
+				t.Fatalf("a lagging flat read must send no order, sent %d", len(posts))
+			}
+			if dbt := e.dbTrades("rh-btc"); len(dbt) != 0 {
+				t.Fatalf("db trades = %+v, want none", dbt)
+			}
+			e.mu.Lock()
+			s.Positions["BTC"].OpenedAt = time.Now().Add(-time.Hour)
+			e.mu.Unlock()
+			e.runCB(e.phasedFetcher(flat, flat))
+			if pos := s.Positions["BTC"]; pos != nil {
+				t.Fatalf("position = %+v, want an old long on a verified flat account closed", pos)
+			}
+		})
+		t.Run("fresh_buy_flat_read_keeps_the_pending_close", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.latchCB("rh-btc")
+			e.mu.Lock()
+			s := e.state.Strategies["rh-btc"]
+			s.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.5}}})
+			e.mu.Unlock()
+			flat := rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}
+			e.runCB(e.phasedFetcher(flat, flat))
+			if s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil {
+				t.Fatal("pending close must be kept while the flat read may lag a fresh buy")
+			}
+			if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
+				t.Fatalf("position = %+v, want the fresh long kept", pos)
+			}
+			if posts := e.orderPosts(); len(posts) != 0 {
+				t.Fatalf("a lagging flat read must send no order, sent %d", len(posts))
+			}
+			e.mu.Lock()
+			s.Positions["BTC"].OpenedAt = time.Now().Add(-time.Hour)
+			e.mu.Unlock()
+			e.runCB(e.phasedFetcher(flat, flat))
+			if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil || s.Positions["BTC"] != nil {
+				t.Fatalf("pending=%+v position=%+v, want an old long on a verified flat account cleared", p, s.Positions["BTC"])
 			}
 		})
 		t.Run("cooldown_and_reset_do_not_release_a_hold", func(t *testing.T) {
