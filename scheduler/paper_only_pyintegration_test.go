@@ -38,6 +38,30 @@ func TestPaperOnlyConfigIntegration(t *testing.T) {
 			}
 		}
 	})
+	t.Run("init_shaped_manual_hyperliquid_strategy_refused", func(t *testing.T) {
+		t.Parallel()
+		for _, withPlatform := range []bool{true, false} {
+			sc := map[string]any{"id": "hl-manual-btc-live", "type": "manual", "symbol": "BTC", "timeframe": "1h", "capital": 1000, "leverage": 3, "max_drawdown_pct": 10}
+			if withPlatform {
+				sc["platform"] = "hyperliquid"
+			}
+			cfg := e.writeConfig("paper-only-init-manual-"+strconv.FormatBool(withPlatform)+".json", func(doc map[string]any) {
+				doc["paper_only"] = true
+				doc["strategies"] = []any{mrpManualStrategy("mr-ready", "short"), sc}
+			})
+			want := "strategy[hl-manual-btc-live]: paper_only is true, so a live strategy (--mode=live) is refused"
+			for _, args := range [][]string{{"probe"}, {"--once", "--status-port", strconv.Itoa(htfITFreePort(t))}} {
+				run := e.command(cfg, nil, args...)
+				if run.code == 0 || !strings.Contains(run.stderr, want) {
+					t.Fatalf("platform=%t %v must refuse the loader-defaulted live manual strategy by name:\n%s", withPlatform, args, run)
+				}
+			}
+			run := e.command(cfg, nil, "cpu-class")
+			if run.code != 1 || run.stdout != "" || !strings.Contains(run.stderr, want) {
+				t.Fatalf("platform=%t cpu-class must exit 1 with no stdout:\n%s", withPlatform, run)
+			}
+		}
+	})
 	t.Run("paper_only_once_runs_as_paper_only_process", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()

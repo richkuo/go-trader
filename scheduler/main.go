@@ -312,6 +312,9 @@ func main() {
 	}
 	if !readOnlyReport {
 		fmt.Println(configurePaperChildPriority(cfg.Strategies, cfg.PaperOnly))
+		if w := liveProcessCPUWeightWarning(cfg); w != "" {
+			fmt.Println(w)
+		}
 	}
 	if paper, ok := storageLayoutCfg.spec(storageRolePaper); ok {
 		if _, statErr := os.Stat(paper.Canonical); statErr != nil {

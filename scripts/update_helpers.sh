@@ -293,7 +293,7 @@ update_cpu_weight_for_unit() {
     local unit="$1" env_text files_text out
     env_text=$(systemctl show -p Environment --value "$unit" 2>/dev/null || true)
     files_text=$(systemctl show -p EnvironmentFiles --value "$unit" 2>/dev/null || true)
-    out=$(update_unit_env_value_from_show "$UPDATE_CPU_WEIGHT_ENV" "$env_text" "$files_text") || {
+    out=$(update_unit_env_value_from_show "$UPDATE_CPU_WEIGHT_ENV" "$env_text" "$files_text" strict) || {
         echo "[cpu] WARNING: could not read the environment files of $unit, so an opt-out ($UPDATE_CPU_WEIGHT_ENV=0) cannot be ruled out; the managed CPU weight drop-in stays absent (run the update as root)" >&2
         return 1
     }
@@ -1989,18 +1989,32 @@ update_give_tree() {
 }
 
 UPDATE_UNIT_ENV_PY='
-import importlib.util, os, shlex, sys
+import importlib.util, os, shlex, stat, sys
+sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("migrate_service_layout", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 key = sys.argv[4]
+strict = len(sys.argv) > 5 and sys.argv[5] == "strict"
 found = None
 for k, v in mod.parse_env_assignments(sys.argv[2]) or []:
     if k == key:
         found = v
 for entry in sys.argv[3].splitlines():
     path = entry.split(" (ignore_errors=")[0].strip()
-    if not path.startswith("/") or not os.path.isfile(path):
+    if not path.startswith("/"):
+        continue
+    if strict:
+        try:
+            st = os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError as exc:
+            sys.stderr.write("cannot stat environment file %s: %s\n" % (path, exc))
+            sys.exit(1)
+        if not stat.S_ISREG(st.st_mode):
+            continue
+    elif not os.path.isfile(path):
         continue
     for k, v in mod.parse_env_file(path):
         if k == key:
@@ -2022,9 +2036,9 @@ update_directional_cert_path_from_show() {
 }
 
 update_unit_env_value_from_show() {
-    local key="$1" env_text="$2" files_text="$3" dir out
+    local key="$1" env_text="$2" files_text="$3" mode="${4:-}" dir out
     dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-    out=$(python3 -I -c "$UPDATE_UNIT_ENV_PY" "$dir/migrate-service-layout.py" "$env_text" "$files_text" "$key") || return 1
+    out=$(python3 -I -B -c "$UPDATE_UNIT_ENV_PY" "$dir/migrate-service-layout.py" "$env_text" "$files_text" "$key" "$mode") || return 1
     printf '%s' "$out"
 }
 

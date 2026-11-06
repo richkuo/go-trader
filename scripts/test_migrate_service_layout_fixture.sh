@@ -769,6 +769,25 @@ scenario_confirm() {
     expect_exit 17 tool apply --unit "$unit" --instance "$inst" --confirm-live go-trader-other.service
     [[ ! -e "$STATE_ROOT/$inst" && ! -e "/opt/go-trader-$inst" ]] || fail "a refused live apply changed the host"
     [[ "$(unit_prop "$unit" MainPID)" == "$pid_before" ]] || fail "a refused live apply touched $unit"
+    local since
+    mkdir -p "/etc/systemd/system/$unit.d"
+    printf '[Service]\nCPUWeight=20\n' >"/etc/systemd/system/$unit.d/40-go-trader-cpu.conf"
+    systemctl daemon-reload
+    sleep 1
+    since=$(date +%s)
+    systemctl restart "$unit"
+    wait_health "$unit" "$port"
+    wait_unit_log "$unit" "$since" "[priority]" || fail "$unit printed no [priority] line after the restart"
+    wait_unit_log "$unit" "$since" "$CPU_LIVE_WARN" || fail "a live process under CPUWeight=20 printed no cpu WARN"
+    [[ "$(unit_log_count "$unit" "$since" "$CPU_LIVE_WARN")" == "1" ]] || fail "a live process under CPUWeight=20 must print the cpu WARN once"
+    rm -rf "/etc/systemd/system/$unit.d"
+    systemctl daemon-reload
+    sleep 1
+    since=$(date +%s)
+    systemctl restart "$unit"
+    wait_health "$unit" "$port"
+    wait_unit_log "$unit" "$since" "[priority]" || fail "$unit printed no [priority] line after the drop-in removal"
+    [[ "$(unit_log_count "$unit" "$since" "$CPU_LIVE_WARN")" == "0" ]] || fail "a live process at the default CPU weight printed the cpu WARN"
     systemctl stop "$unit"
     echo "live confirmation OK"
 }
@@ -899,6 +918,23 @@ tree_version() {
 
 root_owned() {
     find "$1" -xdev -user root -print | head -n 20
+}
+
+CPU_LIVE_WARN="[WARN] cpu: this process runs live strategies, but its cgroup"
+
+unit_log_count() {
+    local unit="$1" since="$2" text="$3" n
+    n=$( { journalctl --namespace=+go-trader -u "$unit" --since "@$since" --no-pager -o cat 2>/dev/null; journalctl -u "$unit" --since "@$since" --no-pager -o cat 2>/dev/null; } | grep -cF -- "$text") || true
+    printf '%s' "${n:-0}"
+}
+
+wait_unit_log() {
+    local unit="$1" since="$2" text="$3" i
+    for i in $(seq 1 30); do
+        [[ "$(unit_log_count "$unit" "$since" "$text")" != "0" ]] && return 0
+        sleep 1
+    done
+    return 1
 }
 
 advance_origin() {
@@ -1341,6 +1377,8 @@ scenario_update_recovery() {
     wait_health "$tunit" "$port"
     grep -qF "[update] cpu: wrote /etc/systemd/system/$tunit.d/40-go-trader-cpu.conf (CPUWeight=20, install)" "$WORK/last.out" || fail "update.sh did not write the CPU weight drop-in for the paper_only instance"
     [[ "$(unit_prop "$tunit" CPUWeight)" == "20" ]] || fail "$tunit CPUWeight is $(unit_prop "$tunit" CPUWeight) after update.sh, want 20"
+    wait_unit_log "$tunit" 0 "[priority] paper-only process" || fail "$tunit printed no paper-only [priority] line"
+    [[ "$(unit_log_count "$tunit" 0 "$CPU_LIVE_WARN")" == "0" ]] || fail "a paper_only process under CPUWeight=20 printed the live cpu WARN"
     v1_ver=$(health_field "$port" version)
     [[ "$(root_git "$tree" rev-parse HEAD)" == "$v1_sha" ]] || fail "tree did not advance to v1"
 
