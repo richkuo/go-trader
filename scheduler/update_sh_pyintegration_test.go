@@ -468,20 +468,54 @@ func TestApplyUpgradeTimeoutSendsSIGTERMAndRecoversWithoutOrphans(t *testing.T) 
 
 		binDir := t.TempDir()
 		childPidFile := filepath.Join(parent, "child.pid")
-		uvStub := "#!/usr/bin/env bash\n" +
-			"if [[ \"$1\" == \"--version\" ]]; then echo 'uv 0.0.0'; exit 0; fi\n" +
-			"echo $$ > " + childPidFile + "\n" +
-			"mkdir -p .venv/bin\n" +
-			"echo mutated > .venv/mutated.txt\n" +
-			"sleep 30 &\n" +
-			"spid=$!\n" +
-			"trap 'kill -TERM $spid 2>/dev/null || true; exit 143' TERM\n" +
-			"wait $spid\n"
-		if err := os.WriteFile(filepath.Join(binDir, "uv"), []byte(uvStub), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(binDir, "go"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
-			t.Fatal(err)
+		switch mode {
+		case "uv":
+			uvStub := "#!/usr/bin/env bash\n" +
+				"if [[ \"$1\" == \"--version\" ]]; then echo 'uv 0.0.0'; exit 0; fi\n" +
+				"echo $$ > " + childPidFile + "\n" +
+				"mkdir -p .venv/bin\n" +
+				"echo mutated > .venv/mutated.txt\n" +
+				"sleep 30 &\n" +
+				"spid=$!\n" +
+				"trap 'kill -TERM $spid 2>/dev/null || true; exit 143' TERM\n" +
+				"wait $spid\n"
+			if err := os.WriteFile(filepath.Join(binDir, "uv"), []byte(uvStub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(binDir, "go"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		case "git_pull":
+			gitStub := "#!/bin/sh\n" +
+				"case \" $* \" in\n" +
+				"  *\" pull \"*)\n" +
+				"    echo $$ > " + childPidFile + "\n" +
+				"    sleep 30\n" +
+				"    exit 1\n" +
+				"    ;;\n" +
+				"esac\n" +
+				"exec " + realGit + " \"$@\"\n"
+			if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(gitStub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(binDir, "uv"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(binDir, "go"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		case "go_build":
+			goStub := "#!/usr/bin/env bash\n" +
+				"if [[ \"$1\" == \"version\" || \"$1\" == \"--version\" ]]; then echo 'go version go1.26.2'; exit 0; fi\n" +
+				"echo $$ > " + childPidFile + "\n" +
+				"sleep 30\n" +
+				"exit 1\n"
+			if err := os.WriteFile(filepath.Join(binDir, "go"), []byte(goStub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(binDir, "uv"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
 		}
 
 		for _, warm := range []string{
@@ -547,7 +581,9 @@ func TestApplyUpgradeTimeoutSendsSIGTERMAndRecoversWithoutOrphans(t *testing.T) 
 		}
 	}
 
-	runCase("uv", "3")
+	runCase("uv", "35")
+	runCase("git_pull", "")
+	runCase("go_build", "")
 }
 
 func setupUpdateShellTestRepo(t *testing.T) (string, string, string, string, []string) {

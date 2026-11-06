@@ -15,6 +15,7 @@ git init -q "$tmp/repo"
 mkdir -p "$tmp/repo/scheduler/cmd/egress-controller" "$tmp/repo/docs" "$tmp/repo/scripts" "$tmp/repo/.github/workflows"
 for f in CLAUDE.md SKILL.md README.md scheduler/main.go docs/backtesting-registry.md scheduler/cmd/egress-controller/manifest.go \
   scheduler/quote_coordinator.go scripts/merge-paper-instance.sh scripts/update.sh scripts/migrate-service-layout.py \
+  scheduler/server.go scheduler/risk.go scheduler/state_presence.go scheduler/update_sh_feature_test.go \
   .github/workflows/ci.yml; do
   printf 'base\n' >"$tmp/repo/$f"
 done
@@ -81,6 +82,10 @@ check "egress controller, pull request" pull_request merge "code=true quote=fals
 check "merge script, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scripts/merge-paper-instance.sh'
 check "update script, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=false" 'echo x >>scripts/update.sh'
 check "layout tool, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true" 'echo x >>scripts/migrate-service-layout.py'
+check "status port source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scheduler/server.go'
+check "latch hook, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=false migrate=true" 'echo x >>scheduler/risk.go'
+check "missing-state hook, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scheduler/state_presence.go'
+check "merge harness bash helper, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=false" 'echo x >>scheduler/update_sh_feature_test.go'
 check "gated file renamed away, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=false" 'git mv scripts/update.sh scripts/moved.sh'
 check "workflow, pull request" pull_request merge "$all" 'echo x >>.github/workflows/ci.yml'
 

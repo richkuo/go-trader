@@ -22,7 +22,7 @@ gate_patterns() {
         scripts/test_merge_paper_instance.sh 'systemd/*' scheduler/merge_paper_instance_test.go
         'scheduler/config*.go' 'scheduler/*db*.go' 'scheduler/state*.go' 'scheduler/storage*.go' 'scheduler/inspect*.go'
         'scheduler/risk_partition*.go' 'scheduler/singleton_lock*.go' 'scheduler/manual_action_lock*.go'
-        scheduler/go.mod scheduler/go.sum)
+        scheduler/server.go scheduler/update_sh_feature_test.go scheduler/go.mod scheduler/go.sum)
       ;;
     update)
       pats=(scripts/update.sh 'scripts/update_*' scripts/install-service.sh scripts/migrate-service-layout.py
@@ -32,7 +32,8 @@ gate_patterns() {
     migrate)
       pats=(scripts/migrate-service-layout.py 'scripts/update_*' scripts/install-service.sh scripts/merge-paper-instance.sh
         scripts/paper_alias.py scripts/shared-feed-convert.sh 'systemd/*' go-trader.service
-        'scheduler/run_evidence*.go' scripts/test_migrate_service_layout_fixture.sh
+        'scheduler/run_evidence*.go' scheduler/risk.go scheduler/server.go scheduler/state_presence.go
+        scripts/test_migrate_service_layout_fixture.sh
         scripts/run_ci_shell_suite.sh)
       ;;
     *)
