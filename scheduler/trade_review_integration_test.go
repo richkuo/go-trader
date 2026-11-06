@@ -839,6 +839,59 @@ func TestTradeFeedbackRefusesPendingConfigContextChange(t *testing.T) {
 	})
 }
 
+func TestTradeFeedbackManualHyperliquidLoaderDefaultsAreNoPendingChange(t *testing.T) {
+	const sid = "hl-manual-btc"
+	skeleton := map[string]interface{}{"id": sid, "type": "manual", "platform": "hyperliquid", "symbol": "BTC", "timeframe": "1h", "leverage": 2, "capital": 1000}
+	noPlatform := map[string]interface{}{"id": sid, "type": "manual", "symbol": "BTC", "timeframe": "1h", "leverage": 2, "capital": 1000}
+	explicitPaper := map[string]interface{}{"id": sid, "type": "manual", "platform": "hyperliquid", "symbol": "BTC", "timeframe": "1h", "leverage": 2, "capital": 1000,
+		"args": []string{"hold", "BTC", "1h", "--mode=paper"}}
+	cases := []struct {
+		name   string
+		roster map[string]interface{}
+		disk   map[string]interface{}
+		code   int
+	}{
+		{"argsless_skeleton_unchanged", skeleton, skeleton, http.StatusOK},
+		{"disk_switched_to_paper", skeleton, explicitPaper, http.StatusConflict},
+		{"inferred_platform_unchanged", noPlatform, noPlatform, http.StatusOK},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, err := LoadConfig(writeNoEdgeConfig(t, CurrentConfigVersion, c.roster))
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			var loaded StrategyConfig
+			for _, sc := range cfg.Strategies {
+				if sc.ID == sid {
+					loaded = sc
+				}
+			}
+			if strategyDisplayMode(loaded) != "live" || loaded.Platform != "hyperliquid" {
+				t.Fatalf("roster strategy mode=%q platform=%q, want live hyperliquid (args %v)", strategyDisplayMode(loaded), loaded.Platform, loaded.Args)
+			}
+			e := newTREnvWith(t, "", singleFileStore(openTestDB(t)), []StrategyConfig{loaded})
+			e.seedClosedLong(sid, "pos-a", "BTC", e.at(2.2), e.at(6.1))
+			e.ss.configPath = writeNoEdgeConfig(t, CurrentConfigVersion, c.disk)
+			_, review := e.review(sid, "pos-a")
+			if wantAvail := c.code == http.StatusOK; review.SaveAvailable != wantAvail {
+				t.Fatalf("review save_available = %v, want %v (reason %q)", review.SaveAvailable, wantAvail, review.Reason)
+			}
+			rec := e.post(sid, e.validBody("pos-a", ""), nil)
+			if rec.Code != c.code {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, c.code, rec.Body.String())
+			}
+			want := 0
+			if c.code == http.StatusOK {
+				want = 1
+			}
+			if n := trFeedbackRows(t, e.store.primary()); n != want {
+				t.Fatalf("rows = %d, want %d", n, want)
+			}
+		})
+	}
+}
+
 func TestTradeFeedbackConcurrentSavesReloadsAndConfigWrites(t *testing.T) {
 	e := newTREnv(t, "")
 	e.seedDefault()

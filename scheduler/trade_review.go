@@ -870,6 +870,12 @@ func (ss *StatusServer) handleAPIStrategyTradeReview(w http.ResponseWriter, r *h
 	}
 	resp := b.response()
 	resp.PositionID = positionID
+	if resp.SaveAvailable {
+		if refusal := ss.tradeFeedbackContextRefusal(tradeFeedbackContextFor(sc)); refusal != "" {
+			resp.Reason = refusal
+			resp.SaveAvailable = false
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	if b.fetchErr != nil {
@@ -955,35 +961,27 @@ func (ss *StatusServer) tradeFeedbackContextRefusal(want tradeFeedbackContext) s
 		return fmt.Sprintf("cannot read the config strategies to confirm %q: %v", want.StrategyID, err)
 	}
 	for _, item := range list {
-		var disk struct {
-			ID                string   `json:"id"`
-			Platform          string   `json:"platform"`
-			Type              string   `json:"type"`
-			Args              []string `json:"args"`
-			PaperSource       string   `json:"paper_source"`
-			StorageStrategyID string   `json:"storage_strategy_id"`
+		var probe struct {
+			ID string `json:"id"`
 		}
-		if json.Unmarshal(item, &disk) != nil || disk.ID != want.StrategyID {
+		if json.Unmarshal(item, &probe) != nil || probe.ID != want.StrategyID {
 			continue
 		}
-		storage := strings.TrimSpace(disk.StorageStrategyID)
-		if storage == "" {
-			storage = disk.ID
+		var disk StrategyConfig
+		if err := json.Unmarshal(item, &disk); err != nil {
+			return fmt.Sprintf("cannot parse the config entry to confirm strategy %q: %v", want.StrategyID, err)
 		}
-		diskMode := "paper"
-		if isLiveArgs(disk.Args) {
-			diskMode = "live"
-		}
+		got := tradeFeedbackContextFor(effectiveIdentityStrategy(disk))
 		switch {
-		case diskMode != want.Mode:
-			return fmt.Sprintf("strategy %q has a pending %s-to-%s change in the config", want.StrategyID, want.Mode, diskMode)
-		case want.Mode == "paper" && paperSourcePartition(strings.TrimSpace(disk.PaperSource)).String() != want.Partition:
+		case got.Mode != want.Mode:
+			return fmt.Sprintf("strategy %q has a pending %s-to-%s change in the config", want.StrategyID, want.Mode, got.Mode)
+		case want.Mode == "paper" && got.Partition != want.Partition:
 			return fmt.Sprintf("strategy %q has a pending paper_source change in the config", want.StrategyID)
-		case storage != want.StorageStrategyID:
+		case got.StorageStrategyID != want.StorageStrategyID:
 			return fmt.Sprintf("strategy %q has a pending storage_strategy_id change in the config", want.StrategyID)
-		case disk.Platform != "" && disk.Platform != want.Platform:
+		case got.Platform != "" && got.Platform != want.Platform:
 			return fmt.Sprintf("strategy %q has a pending platform change in the config", want.StrategyID)
-		case disk.Type != "" && disk.Type != want.Type:
+		case got.Type != "" && got.Type != want.Type:
 			return fmt.Sprintf("strategy %q has a pending type change in the config", want.StrategyID)
 		}
 		return ""
