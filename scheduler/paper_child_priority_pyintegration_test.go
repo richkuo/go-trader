@@ -113,7 +113,7 @@ func pcpGate(t *testing.T, strategies []StrategyConfig, increment int) string {
 		paperPriorityProcessEligible.Store(prevEligible)
 		paperChildNiceIncrement = prevIncrement
 	})
-	return configurePaperChildPriority(strategies)
+	return configurePaperChildPriority(strategies, false)
 }
 
 func pcpStrategy(id, mode string) map[string]any {

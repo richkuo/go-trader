@@ -2,6 +2,19 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 1987 (part 2): `paper_only` key and a CPU weight for paper template instances
+
+Opt-in; a new root config key `paper_only` and a new read-only `cpu-class` subcommand; there is no schema change.
+Before this change no config could declare a paper instance, and every go-trader systemd unit had the default CPU weight.
+Now `"paper_only": true` makes every config load (startup, `--once`, `probe`, SIGHUP reload, read-only loads) refuse each `--mode=live` strategy (including a `type: manual` Hyperliquid entry with no `args`, which loads as live) and name it, so a paper unit never trades live. The key is restart-required, a `role: "feed"` config rejects it, and a paper-only process lowers its paper check priority even with an empty roster.
+`go-trader cpu-class --config <path>` prints exactly `paper`, `live` or `feed`, writes nothing, and exits 1 on a read or load error.
+For a `go-trader@<instance>.service` unit, `scripts/update.sh --restart` (a new `cpu` phase before the restart) and `scripts/install-service.sh` run the classifier as the unit's own user under `systemd-run` and keep `/etc/systemd/system/go-trader@<instance>.service.d/40-go-trader-cpu.conf` (`[Service]`, `CPUWeight=<weight>`) only for class `paper`. The weight is `GO_TRADER_PAPER_CPU_WEIGHT` from the unit environment: unset = 20, `0` = no drop-in, `1`-`10000` = that value, anything else = WARN and 20; an environment file the updater cannot read leaves the drop-in absent.
+Every other result (live, feed, a classifier failure, a root unit, systemd older than 236, which the classifier needs for `systemd-run --pipe` and `--collect`) removes the managed file. `update.sh` snapshots the prior file or its absence and restores it, with a `daemon-reload`, when the update fails after the write.
+`migrate-service-layout.py` and `merge-paper-instance.sh --new-target` rollbacks remove the file only while it is in the exact managed form.
+A process that is not `paper_only`, has a live strategy, and runs at a cgroup `cpu.weight` below 100 prints one `[WARN] cpu:` line at startup that names the drop-in.
+Side effect: once one unit sets `CPUWeight`, systemd turns on the `cpu` controller in `system.slice`, so go-trader services share CPU by weight with the other services there.
+Operator action: for each paper-only instance, add `"paper_only": true` to its config after this update, then run `bash scripts/update.sh --restart` for that instance. Check `systemctl show -p CPUWeight go-trader@<instance>.service` and `cat /sys/fs/cgroup/system.slice/cgroup.subtree_control`, then compare live cycle times while a paper cycle runs with the times before.
+
 ### Issue 1987: paper check children of a paper-only process run at a lower CPU priority
 
 Runtime default; opt out with `GO_TRADER_PAPER_NICE=0`; there is no config change and no schema change.

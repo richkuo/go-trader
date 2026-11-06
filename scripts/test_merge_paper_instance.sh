@@ -229,6 +229,13 @@ assert_contains "$out" "manual-action.lock" "manual-action contention names the 
 
 echo "== dry run"
 setup dry
+python3 - "$BASE/paper/config.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+cfg = json.load(open(path))
+cfg["paper_only"] = True
+json.dump(cfg, open(path, "w"), indent=2)
+PY
 before=$(fingerprints)
 out=$(run_merge 2>&1) && rc=0 || rc=$?
 [[ "$rc" == "0" ]] || { echo "$out" >&2; fail "dry run exits 0 (rc=$rc)"; }
@@ -241,8 +248,10 @@ assert_contains "$out" "stamp hl-x-paper interval_seconds=600" "paper root caden
 assert_contains "$out" "ReadWritePaths=$(update_canonical_db_path "$BASE/paper")" "writable directive names the paper db directory"
 assert_contains "$out" "retire the paper instance's status port (8098)" "status port retirement note"
 assert_contains "$out" "dropped paper root key log_dir" "dropped keys listed"
+assert_contains "$out" "dropped paper root key paper_only (live value kept)" "a paper_only paper config folds with the key dropped"
 staged="$LIVE_CFG.merge-staged"
 [[ -f "$staged" ]] || fail "staged config written"
+[[ "$(json_get "$staged" paper_only)" == "" ]] || fail "the merged live config must not carry paper_only"
 assert_eq "$(json_get "$staged" strategies.1.id)" "hl-x-paper" "staged paper id"
 assert_eq "$(json_get "$staged" strategies.1.storage_strategy_id)" "hl-x" "staged storage alias"
 assert_eq "$(json_get "$staged" strategies.1.interval_seconds)" "600" "staged interval"
@@ -393,10 +402,15 @@ echo "== rollback with a pre-existing drop-in"
 setup rollback2
 mkdir -p "$(dirname "$DROPIN")"
 printf '[Service]\nNice=5\n' > "$DROPIN"
+CPU_DROPIN_LIVE="$(dirname "$DROPIN")/40-go-trader-cpu.conf"
+printf '[Service]\nCPUWeight=20\n' > "$CPU_DROPIN_LIVE"
+cpu_fp=$(update_file_fingerprint "$CPU_DROPIN_LIVE")
 out=$(run_merge --apply 2>&1) || { echo "$out" >&2; fail "apply with prior drop-in"; }
 assert_eq "$(cat "$DROPIN")" "$EXPECT_DROPIN" "override replaced"
+assert_eq "$(update_file_fingerprint "$CPU_DROPIN_LIVE")" "$cpu_fp" "the apply leaves the managed CPU weight drop-in byte-identical"
 out=$(run_merge --rollback 2>&1) || { echo "$out" >&2; fail "rollback with prior drop-in"; }
 assert_eq "$(cat "$DROPIN")" $'[Service]\nNice=5' "rollback restores the prior drop-in"
+assert_eq "$(update_file_fingerprint "$CPU_DROPIN_LIVE")" "$cpu_fp" "the rollback leaves the managed CPU weight drop-in byte-identical"
 
 echo "== interruption after the config step"
 setup interrupt
@@ -2167,8 +2181,10 @@ conn.close()
 ' "$ETH_DB"
 written=$(db_fingerprints "$BTC_DB" "$ETH_DB")
 target_db_fp=$(db_fingerprints "$NT_DIR/state.db")
+printf '[Service]\nCPUWeight=20\n' > "$NT_DROPIN_DIR/40-go-trader-cpu.conf"
 out=$(run_nt_folds --rollback 2>&1) && rc=0 || rc=$?
 [[ "$rc" == "0" ]] || { echo "$out" >&2; fail "new-target rollback exits 0 (rc=$rc)"; }
+assert_contains "$out" "rollback: removed $NT_DROPIN_DIR/40-go-trader-cpu.conf" "the rollback removes the managed CPU weight drop-in that update.sh wrote"
 grep -qx 'disable go-trader@paper.service' "$F/systemctl.log" || fail "the rollback disables the new unit"
 grep -qx 'reset-failed go-trader@paper.service' "$F/systemctl.log" || fail "the rollback clears a failed state of the new unit"
 [[ ! -e "$NT_DROPIN_DIR" ]] || fail "the rollback removes the drop-ins and their directory"

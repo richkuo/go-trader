@@ -66,6 +66,9 @@ SHARED_STATE_DIR = STATE_BASE + "/shared"
 SHARED_FEED_JOURNAL = STATE_BASE + "/shared-feed/convert.journal"
 TEMPLATE_NAME = "go-trader@.service"
 RESERVED_INSTANCES = {"shared", "shared-feed", "service-layout", "migrate"}
+CPU_DROPIN_NAME = "40-go-trader-cpu.conf"
+CPU_DROPIN_RE = re.compile(r"\A\[Service\]\nCPUWeight=([1-9][0-9]{0,4})\n\Z")
+CPU_WEIGHT_MAX = 10000
 DEFAULT_STATUS_PORT = 8099
 HELD_KILL_SWITCH = "portfolio_kill_switch"
 DEFAULT_DB_FILE = "scheduler/state.db"
@@ -2330,6 +2333,31 @@ def read_last_cycle(path):
     return parse_iso(row[0]) if row and row[0] else None
 
 
+def cpu_dropin_is_managed(path):
+    if os.path.islink(path) or not os.path.isfile(path):
+        return False
+    try:
+        with open(path, "rb") as f:
+            data = f.read(4096)
+        text = data.decode("ascii")
+    except (OSError, UnicodeDecodeError):
+        return False
+    m = CPU_DROPIN_RE.match(text)
+    return bool(m) and int(m.group(1)) <= CPU_WEIGHT_MAX
+
+
+def remove_managed_cpu_dropin(unit):
+    d = os.path.join(UNIT_DIR, unit + ".d")
+    p = os.path.join(d, CPU_DROPIN_NAME)
+    if not cpu_dropin_is_managed(p):
+        return
+    os.unlink(p)
+    try:
+        os.rmdir(d)
+    except OSError:
+        pass
+
+
 def remove_target_artifacts(t, move_aside):
     m = t.m
     txe = t.entries()
@@ -2362,6 +2390,7 @@ def remove_target_artifacts(t, move_aside):
             jd = "/etc/systemd/journald@%s.conf" % m["log_namespace"]
             if os.path.exists(jd):
                 os.unlink(jd)
+    remove_managed_cpu_dropin(m["target_unit"])
     daemon_reload()
     return moved
 

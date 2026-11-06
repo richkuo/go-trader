@@ -333,6 +333,7 @@ type Config struct {
 	Role                     string                       `json:"role,omitempty"`
 	Feed                     *FeedRoleConfig              `json:"feed,omitempty"`
 	Egress                   *EgressConfig                `json:"egress,omitempty"`
+	PaperOnly                bool                         `json:"paper_only,omitempty"`
 
 	migrationBaseVersion    int
 	migrationBaseVersionSet bool
@@ -1104,6 +1105,9 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 	unknownErrs = append(unknownErrs, validateEgressJSON(data)...)
 	if len(unknownErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
+	}
+	if errs := paperOnlyLiveStrategyErrors(&cfg); len(errs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
 	}
 	if cfg.IntervalSeconds <= 0 {
 		cfg.IntervalSeconds = 600

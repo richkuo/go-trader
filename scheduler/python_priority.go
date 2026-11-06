@@ -55,12 +55,12 @@ func resolvePaperChildNiceIncrement() int {
 	return n
 }
 
-func configurePaperChildPriority(strategies []StrategyConfig) string {
-	eligible := len(strategies) > 0 && !HasLiveStrategy(strategies)
+func configurePaperChildPriority(strategies []StrategyConfig, paperOnly bool) string {
+	eligible := !HasLiveStrategy(strategies) && (paperOnly || len(strategies) > 0)
 	paperPriorityProcessEligible.Store(eligible)
 	increment := paperChildNiceIncrement()
 	switch {
-	case len(strategies) == 0:
+	case !eligible && len(strategies) == 0:
 		return "[priority] paper check children run at the default priority: the roster is empty"
 	case !eligible:
 		return "[priority] paper check children run at the default priority: this process has a live strategy"
