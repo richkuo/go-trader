@@ -951,26 +951,30 @@ type tradeFeedbackProposalResearch struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
+type tradeFeedbackAnalysisRecordView struct {
+	RequestID         string          `json:"request_id"`
+	Status            string          `json:"status"`
+	Progress          string          `json:"progress,omitempty"`
+	Provider          string          `json:"provider"`
+	Model             string          `json:"model"`
+	ModelVerification string          `json:"model_verification"`
+	Effort            string          `json:"effort"`
+	TimeoutS          int             `json:"timeout_s"`
+	BundleSHA256      string          `json:"bundle_sha256"`
+	FeedbackRowIDs    []int64         `json:"feedback_rowids"`
+	AcceptedAt        time.Time       `json:"accepted_at"`
+	CompletedAt       *time.Time      `json:"completed_at,omitempty"`
+	Result            json.RawMessage `json:"result,omitempty"`
+	ResultText        string          `json:"result_text,omitempty"`
+	Validation        json.RawMessage `json:"validation,omitempty"`
+	Error             string          `json:"error,omitempty"`
+	Usage             json.RawMessage `json:"usage,omitempty"`
+}
+
 type tradeFeedbackAnalysisView struct {
-	RequestID         string                          `json:"request_id"`
-	Status            string                          `json:"status"`
-	Progress          string                          `json:"progress,omitempty"`
-	Provider          string                          `json:"provider"`
-	Model             string                          `json:"model"`
-	ModelVerification string                          `json:"model_verification"`
-	Effort            string                          `json:"effort"`
-	TimeoutS          int                             `json:"timeout_s"`
-	BundleSHA256      string                          `json:"bundle_sha256"`
-	FeedbackRowIDs    []int64                         `json:"feedback_rowids"`
-	AcceptedAt        time.Time                       `json:"accepted_at"`
-	CompletedAt       *time.Time                      `json:"completed_at,omitempty"`
-	Result            json.RawMessage                 `json:"result,omitempty"`
-	ResultText        string                          `json:"result_text,omitempty"`
-	Validation        json.RawMessage                 `json:"validation,omitempty"`
-	Error             string                          `json:"error,omitempty"`
-	Usage             json.RawMessage                 `json:"usage,omitempty"`
-	Research          []tradeFeedbackProposalResearch `json:"research"`
-	CurrentContext    bool                            `json:"current_context"`
+	tradeFeedbackAnalysisRecordView
+	Research       []tradeFeedbackProposalResearch `json:"research"`
+	CurrentContext bool                            `json:"current_context"`
 }
 
 type tradeFeedbackSelectionView struct {
@@ -984,15 +988,43 @@ type tradeFeedbackSelectionView struct {
 }
 
 type tradeFeedbackAnalysesResponse struct {
-	StrategyID string                        `json:"strategy_id"`
-	Partition  string                        `json:"partition"`
-	Settings   tradeFeedbackAnalysisSettings `json:"settings"`
-	Selection  tradeFeedbackSelectionView    `json:"selection"`
-	Research   tradeFeedbackResearchSupport  `json:"research"`
-	Providers  []tradeFeedbackProviderView   `json:"providers"`
-	Available  bool                          `json:"available"`
-	Reason     string                        `json:"reason,omitempty"`
-	Analyses   []tradeFeedbackAnalysisView   `json:"analyses"`
+	View           string                        `json:"view"`
+	StrategyID     string                        `json:"strategy_id"`
+	Partition      string                        `json:"partition"`
+	Settings       tradeFeedbackAnalysisSettings `json:"settings"`
+	InputSignature string                        `json:"input_signature"`
+	Selection      tradeFeedbackSelectionView    `json:"selection"`
+	Research       tradeFeedbackResearchSupport  `json:"research"`
+	Providers      []tradeFeedbackProviderView   `json:"providers"`
+	Available      bool                          `json:"available"`
+	Reason         string                        `json:"reason,omitempty"`
+	Analyses       []tradeFeedbackAnalysisView   `json:"analyses"`
+}
+
+type tradeFeedbackAnalysesHistoryResponse struct {
+	View           string                            `json:"view"`
+	StrategyID     string                            `json:"strategy_id"`
+	Partition      string                            `json:"partition"`
+	Settings       tradeFeedbackAnalysisSettings     `json:"settings"`
+	InputSignature string                            `json:"input_signature"`
+	Providers      []tradeFeedbackProviderView       `json:"providers"`
+	Available      bool                              `json:"available"`
+	Reason         string                            `json:"reason,omitempty"`
+	Analyses       []tradeFeedbackAnalysisRecordView `json:"analyses"`
+}
+
+const (
+	tradeFeedbackAnalysesViewFull    = "full"
+	tradeFeedbackAnalysesViewHistory = "history"
+)
+
+type tradeFeedbackInputSignaturePayload struct {
+	Strategy     tradeFeedbackBundleStrategy   `json:"strategy"`
+	Settings     tradeFeedbackAnalysisSettings `json:"settings"`
+	ConfigSHA256 string                        `json:"config_sha256"`
+	SourceRole   string                        `json:"source_role"`
+	Candidates   []tradeFeedbackCandidateKey   `json:"candidates"`
+	Errors       []string                      `json:"errors"`
 }
 
 type tradeFeedbackValidationView struct {
@@ -1052,8 +1084,12 @@ func (ss *StatusServer) tradeFeedbackResearchFor(view *tradeFeedbackAnalysisView
 }
 
 func tradeFeedbackViewFor(req tradeFeedbackAnalysisRequest) tradeFeedbackAnalysisView {
+	return tradeFeedbackAnalysisView{tradeFeedbackAnalysisRecordView: tradeFeedbackRecordViewFor(req)}
+}
+
+func tradeFeedbackRecordViewFor(req tradeFeedbackAnalysisRequest) tradeFeedbackAnalysisRecordView {
 	a := req.Accepted
-	v := tradeFeedbackAnalysisView{RequestID: a.RequestID, Status: a.EventStatus, Provider: a.Provider, Model: a.Model, Effort: a.Effort,
+	v := tradeFeedbackAnalysisRecordView{RequestID: a.RequestID, Status: a.EventStatus, Provider: a.Provider, Model: a.Model, Effort: a.Effort,
 		TimeoutS: a.TimeoutS, BundleSHA256: a.BundleSHA256, FeedbackRowIDs: a.FeedbackRowIDs, AcceptedAt: a.CreatedAt}
 	if t := req.Terminal; t != nil {
 		v.Status = t.EventStatus
@@ -1081,7 +1117,71 @@ func tradeFeedbackViewFor(req tradeFeedbackAnalysisRequest) tradeFeedbackAnalysi
 	return v
 }
 
+func tradeFeedbackAnalysesView(r *http.Request) (string, bool) {
+	vals, present := r.URL.Query()["view"]
+	if !present {
+		return tradeFeedbackAnalysesViewFull, true
+	}
+	if len(vals) != 1 || vals[0] != tradeFeedbackAnalysesViewHistory {
+		return "", false
+	}
+	return tradeFeedbackAnalysesViewHistory, true
+}
+
+func (ss *StatusServer) tradeFeedbackInputSignature(id string) string {
+	p := tradeFeedbackInputSignaturePayload{Candidates: []tradeFeedbackCandidateKey{}, Errors: []string{}}
+	_, strat, ok := ss.feedbackStrategySnapshot(id)
+	if !ok {
+		p.Errors = append(p.Errors, "strategy not found")
+	}
+	p.Strategy = strat
+	p.Settings = ss.currentFeedbackAnalysisSettings()
+	if digest, err := tradeFeedbackConfigDigest(ss.configPath); err != nil {
+		p.Errors = append(p.Errors, "config: "+err.Error())
+	} else {
+		p.ConfigSHA256 = digest
+	}
+	if ss.stateDB == nil {
+		p.Errors = append(p.Errors, "database not available")
+	} else if db, keys, err := ss.stateDB.ReadLatestTradeFeedbackCandidates(id, p.Settings.MaxPositions); err != nil {
+		p.Errors = append(p.Errors, "candidates: "+err.Error())
+	} else {
+		p.SourceRole = string(db.storageRoleOf())
+		p.Candidates = keys
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func (ss *StatusServer) tradeFeedbackRecordViews(history []tradeFeedbackAnalysisRequest) []tradeFeedbackAnalysisRecordView {
+	var progress map[string]string
+	if ss.feedbackAnalysis != nil {
+		progress = ss.feedbackAnalysis.progressSnapshot()
+	}
+	out := make([]tradeFeedbackAnalysisRecordView, 0, len(history))
+	for _, h := range history {
+		v := tradeFeedbackRecordViewFor(h)
+		if h.Terminal == nil {
+			v.Progress = progress[v.RequestID]
+			if v.Progress == "" {
+				v.Progress = "unresolved"
+			}
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
 func (ss *StatusServer) listTradeFeedbackAnalyses(w http.ResponseWriter, r *http.Request, id string) {
+	view, ok := tradeFeedbackAnalysesView(r)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "view must be absent or history")
+		return
+	}
 	filter, ok := ss.uiPartitionParam(w, r)
 	if !ok {
 		return
@@ -1100,13 +1200,24 @@ func (ss *StatusServer) listTradeFeedbackAnalyses(w http.ResponseWriter, r *http
 		writeJSONError(w, http.StatusInternalServerError, "read analyses: "+err.Error())
 		return
 	}
-	resp := tradeFeedbackAnalysesResponse{
-		StrategyID: id, Partition: partitionFor(sc).String(), Settings: ss.currentFeedbackAnalysisSettings(),
-		Providers: ss.tradeFeedbackProviderViews(), Available: ss.feedbackAnalysis != nil, Analyses: []tradeFeedbackAnalysisView{},
-		Selection: tradeFeedbackSelectionView{FeedbackRowIDs: []int64{}, Exclusions: []tradeFeedbackExclusion{}},
+	signature := ss.tradeFeedbackInputSignature(id)
+	records := ss.tradeFeedbackRecordViews(history)
+	available := ss.feedbackAnalysis != nil
+	reason := ""
+	if !available {
+		reason = ss.feedbackAnalysisUnavailableReason()
 	}
-	if !resp.Available {
-		resp.Reason = ss.feedbackAnalysisUnavailableReason()
+	if view == tradeFeedbackAnalysesViewHistory {
+		writeJSON(w, tradeFeedbackAnalysesHistoryResponse{View: view, StrategyID: id, Partition: partitionFor(sc).String(),
+			Settings: ss.currentFeedbackAnalysisSettings(), InputSignature: signature, Providers: ss.tradeFeedbackProviderViews(),
+			Available: available, Reason: reason, Analyses: records})
+		return
+	}
+	resp := tradeFeedbackAnalysesResponse{
+		View: view, StrategyID: id, Partition: partitionFor(sc).String(), Settings: ss.currentFeedbackAnalysisSettings(),
+		InputSignature: signature, Providers: ss.tradeFeedbackProviderViews(), Available: available, Reason: reason,
+		Analyses:  []tradeFeedbackAnalysisView{},
+		Selection: tradeFeedbackSelectionView{FeedbackRowIDs: []int64{}, Exclusions: []tradeFeedbackExclusion{}},
 	}
 	resp.Selection.MaxPositions = resp.Settings.MaxPositions
 	cur, rerr := ss.buildTradeFeedbackBundle(r.Context(), id)
@@ -1119,18 +1230,8 @@ func (ss *StatusServer) listTradeFeedbackAnalyses(w http.ResponseWriter, r *http
 			MaxPositions: sel.MaxPositions, FeedbackRowIDs: sel.FeedbackRowIDs, Exclusions: sel.Exclusions, BundleSHA256: cur.digest()}
 		resp.Research = cur.inputs.meta.Research
 	}
-	var progress map[string]string
-	if ss.feedbackAnalysis != nil {
-		progress = ss.feedbackAnalysis.progressSnapshot()
-	}
-	for _, h := range history {
-		v := tradeFeedbackViewFor(h)
-		if h.Terminal == nil {
-			v.Progress = progress[v.RequestID]
-			if v.Progress == "" {
-				v.Progress = "unresolved"
-			}
-		}
+	for _, rec := range records {
+		v := tradeFeedbackAnalysisView{tradeFeedbackAnalysisRecordView: rec}
 		v.CurrentContext = cur != nil && cur.digest() == v.BundleSHA256
 		ss.tradeFeedbackResearchFor(&v, cur, resp.Research)
 		resp.Analyses = append(resp.Analyses, v)
