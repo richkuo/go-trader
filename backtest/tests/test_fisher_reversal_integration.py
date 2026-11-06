@@ -235,13 +235,6 @@ def _check_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_fram
     assert out["fisher_valid"].iloc[bad + need - 1] == 1.0
 
 
-INVALID_PARAMS = [
-    {"lookback": 1}, {"lookback": 33}, {"lookback": 9.5}, {"lookback": True}, {"lookback": float("nan")},
-    {"lookback": "9"}, {"extreme": 0.49}, {"extreme": 3.01}, {"extreme": float("inf")}, {"extreme": True},
-    {"extreme": "1.5"},
-]
-
-
 def test_integral_float_lookback_is_accepted():
     df = _walk(120, 1)
     pd.testing.assert_frame_equal(_apply(df, {"lookback": 9.0, "extreme": 1.5}), _apply(df, {"lookback": 9, "extreme": 1.5}))

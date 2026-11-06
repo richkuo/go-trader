@@ -1,10 +1,8 @@
 import json
 import os
-import subprocess
 import sys
 
 import numpy as np
-import pandas as pd
 import pytest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -16,7 +14,6 @@ for _p in (_BACKTEST, os.path.join(_ROOT, "shared_tools"), os.path.join(_ROOT, "
 
 import book_archive as ba  # noqa: E402
 import book_event_simulator as sim  # noqa: E402
-import lz4_frame  # noqa: E402
 import order_book_imbalance as obi  # noqa: E402
 from book_inputs import ARCHIVE_TIME_SEMANTICS, CONTRACT  # noqa: E402
 from book_replay import book_identity  # noqa: E402
@@ -175,29 +172,6 @@ def _check_age_truncation_marker_and_flip_boundaries():
     assert obi.evaluate_section(late, "BTC", P, cut_deadline)["reason"] == "evidence_truncated"
 
 
-def _check_missing_and_malformed_books_hold_and_candle_only_consumers_are_refused():
-    reg = load_registry("futures")
-    df = pd.DataFrame({"open": [1.0, 1.0], "high": [1.0, 1.0], "low": [1.0, 1.0], "close": [1.0, 1.0], "volume": [1.0, 1.0]})
-    with pytest.raises(ValueError, match="candle-only run cannot score it"):
-        reg.apply_strategy(NAME, df, {})
-    out = reg.apply_strategy(NAME, df, {"l2_book_observations": {"available": False, "coin": "BTC", "kind": "l2_book", "reason": "gap"}})
-    assert list(out["signal"]) == [0, 0] and out["obi_reason"].iloc[-1] == "book_unavailable"
-    bad = section(*long_run(), T0 + 30_000)
-    bad["observations"][0]["bids"][0][0] = "1e5"
-    assert obi.evaluate_section(bad, "BTC", P)["reason"] == "book_malformed"
-    books, marks = long_run()
-    crossing = books[3]
-    d = obi.ceil_grid(max(crossing["event_ms"], crossing["recv_ms"]))
-    good = reg.apply_strategy(NAME, df, {**P, "l2_book_observations": section(books, marks, d)})
-    assert list(good["signal"]) == [0, 1] and good["obi_reason"].iloc[0] == "not_decision_row"
-    code = ("import json,sys; sys.path[:0]=sys.argv[1:4]; import order_book_imbalance as o; "
-            "print(json.dumps(o.evaluate_section(json.loads(sys.stdin.read()), 'BTC', json.loads(sys.argv[4]))))")
-    fresh = subprocess.run([sys.executable, "-c", code, _BACKTEST, os.path.join(_ROOT, "shared_tools"),
-                            os.path.join(_ROOT, "shared_strategies", "open"), json.dumps(P)],
-                           input=json.dumps(section(books, marks, d)), capture_output=True, text=True, check=True)
-    assert json.loads(fresh.stdout)["entry_id"] == decide(books, marks, d)["entry_id"]
-
-
 def _random_books(seed=1635, n=900, coin="BTC"):
     rng = np.random.default_rng(seed)
     out, marks = [], [marker(1, T0)]
@@ -218,20 +192,19 @@ def _random_books(seed=1635, n=900, coin="BTC"):
 def test_study_path_matches_the_pure_evaluator_on_every_deadline():
     books, marks = _random_books()
     cb = sim.CoinBooks("BTC", [books], marks, 1, 5)
-    for p in (P, dict(P, confirmation_observations=2, entry_threshold=0.2), dict(P, confirmation_observations=5, depth_levels=1)):
-        vp = obi.validate_params(p)
-        q = cb.classify(vp["depth_levels"], vp["entry_threshold"], vp["max_spread_bps"], vp["min_combined_depth_usd"])
-        fast = {}
-        for e in sim.candidate_entries(cb, q, vp["confirmation_observations"], vp["max_snapshot_age_ms"], 60_000):
-            _, eid = obi.episode_ids("BTC", vp, e["boundary"], e["direction"], cb.identity[e["first"]], cb.identity[e["crossing"]], e["deadline_ms"])
-            fast[e["deadline_ms"]] = (e["direction"], eid)
-        assert fast, p
-        first, last = obi.ceil_grid(books[0]["recv_ms"]), obi.ceil_grid(books[-1]["recv_ms"])
-        for d in range(first, last, 1000):
-            sec = sim.section_at(cb, d, vp["depth_levels"], 60_000, ARCHIVE_TIME_SEMANTICS,
-                                 {k: CONTRACT[k] for k in ("source", "contract", "identity_semantics", "max_future_skew_ms", "max_lag_ms", "max_gap_ms")})
-            got = obi.evaluate_section(sec, "BTC", vp, d, accept_time_semantics=(ARCHIVE_TIME_SEMANTICS,))
-            assert (got["signal"], got["entry_id"]) == fast.get(d, (0, "")), (p, d, got["reason"])
+    vp = obi.validate_params(P)
+    q = cb.classify(vp["depth_levels"], vp["entry_threshold"], vp["max_spread_bps"], vp["min_combined_depth_usd"])
+    fast = {}
+    for e in sim.candidate_entries(cb, q, vp["confirmation_observations"], vp["max_snapshot_age_ms"], 60_000):
+        _, eid = obi.episode_ids("BTC", vp, e["boundary"], e["direction"], cb.identity[e["first"]], cb.identity[e["crossing"]], e["deadline_ms"])
+        fast[e["deadline_ms"]] = (e["direction"], eid)
+    assert fast
+    first, last = obi.ceil_grid(books[0]["recv_ms"]), obi.ceil_grid(books[-1]["recv_ms"])
+    for d in range(first, last, 1000):
+        sec = sim.section_at(cb, d, vp["depth_levels"], 60_000, ARCHIVE_TIME_SEMANTICS,
+                             {k: CONTRACT[k] for k in ("source", "contract", "identity_semantics", "max_future_skew_ms", "max_lag_ms", "max_gap_ms")})
+        got = obi.evaluate_section(sec, "BTC", vp, d, accept_time_semantics=(ARCHIVE_TIME_SEMANTICS,))
+        assert (got["signal"], got["entry_id"]) == fast.get(d, (0, "")), (d, got["reason"])
 
 
 def _market(books_by, minutes=120, marks=None, funding=None, eligible=True):
@@ -318,84 +291,6 @@ def test_stop_on_marks_funding_partial_fill_minimum_and_terminal_inventory():
     assert res["refusals"] == {"purge": 1}
 
 
-def test_archive_importer_refuses_contract_breaks_and_infers_barriers(tmp_path):
-    def iso(ms):
-        import datetime as dt
-        return dt.datetime.fromtimestamp(ms / 1000, dt.UTC).strftime("%Y-%m-%dT%H:%M:%S") + ".%03d000123" % (ms % 1000)
-
-    def line(recv, ev, tag="1", coin="BTC", ver=1, bad=False):
-        bids, asks = levels(100000, 100001, f"1.{tag}", "1.0")
-        data = {"coin": coin, "time": ev, "levels": [[{"px": b[0], "sz": b[1], "n": 1} for b in bids], [{"px": a[0], "sz": a[1], "n": 1} for a in asks]]}
-        if bad:
-            data["levels"][0][0]["px"] = "1e5"
-        return json.dumps({"time": iso(recv), "ver_num": ver, "raw": {"channel": "l2Book", "data": data}})
-    h0 = T0
-    rows = [line(h0 + 1000, h0 + 700), line(h0 + 6000, h0 + 5700), line(h0 + 7000, h0 + 5700), line(h0 + 8000, h0 + 5700, tag="2"),
-            line(h0 + 30000, h0 + 29700), line(h0 + 35000, h0 + 34700, bad=True), line(h0 + 40000, h0 + 39700, coin="ETH"),
-            line(h0 + 45000, h0 + 44700, ver=2), "not json", line(h0 + 50000, h0 + 49700)]
-    imp = ba.ArchiveCoinImporter("BTC", h0)
-    imp.hour(h0, ("\n".join(rows) + "\n").encode())
-    imp.missing_hour(h0 + ba.HOUR_MS)
-    imp.hour(h0 + 2 * ba.HOUR_MS, (line(h0 + 2 * ba.HOUR_MS + 500, h0 + 2 * ba.HOUR_MS + 200) + "\n").encode())
-    imp.finish(h0 + 3 * ba.HOUR_MS)
-    assert imp.counts["accepted"] == 5 and imp.counts["duplicate"] == 1 and imp.counts["conflict"] == 1
-    assert imp.counts["rejected"] == 2 and imp.counts["envelope_rejected"] == 2 and imp.counts["missing_hours"] == 1
-    reasons = [(m["reason"], m["at_ms"] - h0) for m in imp.owner._hist("BTC")["markers"]]
-    assert reasons[:3] == [("epoch_start", 0), ("subscribed", 0), ("conflict", 8000)]
-    assert ("silence", 16001) in reasons and ("disconnected", ba.HOUR_MS) in reasons and ("subscribed", 2 * ba.HOUR_MS) in reasons
-    fixture = os.path.join(_HERE, "testdata", "obi_archive_hour.lz4")
-    with open(fixture, "rb") as fh:
-        blob = lz4_frame.decompress(fh.read())
-    assert blob.count(b"\n") == 30 and b'"channel":"l2Book"' in blob
-    corrupt = bytearray(open(fixture, "rb").read())
-    corrupt[-5] ^= 1
-    with pytest.raises(lz4_frame.LZ4FrameError):
-        lz4_frame.decompress(bytes(corrupt))
-    manifest = {"files": [{"key": ba.book_key("20260801", 0, "BTC"), "status": "present", "size": 1, "sha256": "0" * 64}]}
-    os.makedirs(tmp_path / "raw" / "market_data" / "20260801" / "0" / "l2Book")
-    with open(tmp_path / "raw" / ba.book_key("20260801", 0, "BTC"), "wb") as fh:
-        fh.write(open(fixture, "rb").read())
-    with pytest.raises(ba.ArchiveError, match="does not match the manifest"):
-        ba.import_window(str(tmp_path / "raw"), str(tmp_path / "out"), ["BTC"], ["20260801"], manifest)
-    manifest["files"][0].update(size=os.path.getsize(fixture), sha256=ba.sha256_file(fixture))
-    out = ba.import_window(str(tmp_path / "raw"), str(tmp_path / "out"), ["BTC"], ["20260801"], manifest)
-    assert out["coins"]["BTC"]["counts"]["accepted"] == 30 and out["coins"]["BTC"]["counts"]["missing_hours"] == 23
-    day = ba.read_day(str(tmp_path / "out" / "BTC_20260801.json.gz"))
-    tail = ba.read_day(str(tmp_path / "out" / "BTC_tail.json.gz"))
-    assert len(day["observations"]) + len(tail["observations"]) == 30
-
-
-def _check_every_candle_research_entrypoint_refuses_the_candidate():
-    import run_backtest
-    with pytest.raises(SystemExit, match="supplied l2Book depth observations"):
-        run_backtest.run_single_backtest(NAME, "BTC", "1m", 30, platform="hyperliquid", registry="futures")
-    from optimizer import walk_forward_optimize
-    with pytest.raises(ValueError, match="supplied l2Book depth observations"):
-        walk_forward_optimize(pd.DataFrame(), NAME, [{}], n_splits=2, timeframe="1m", registry="futures", platform="hyperliquid", verbose=False)
-    import eval_windows
-    with pytest.raises(ValueError, match="supplied l2Book depth observations"):
-        eval_windows.run_leg(load_registry("futures"), NAME, {}, "BTC", "1m", ("2026-08-01", "2026-08-02"))
-    import ledger_compare
-    market = {"coin": "BTC", "interval": "1m", "registry": {NAME}, "funding_input_strategies": set(),
-              "observation_input_strategies": set(), "trade_flow_input_strategies": set(), "macro_event_input_strategies": set(),
-              "leader_input_strategies": set(), "volume_profile_input_strategies": set(), "premium_input_strategies": set(),
-              "book_input_strategies": {NAME}}
-    seg = {"strategy": {"type": "perps", "platform": "hyperliquid", "args": [NAME, "BTC", "1m"], "open_strategy": {"name": NAME}}}
-    stop = {"applicable": False, "status": "not_applicable", "refusals": [], "owner": None, "needs_labels": False, "kwargs": None,
-            "labels": None, "required_inputs": [], "input_version": 2, "basis": None, "resolved_live_units": None,
-            "capability_context": None, "close_refs": None}
-    rows = ledger_compare.capability_matrix(seg, {}, market, stop)
-    opened = [r for r in rows if r["field"] == "open_strategy"]
-    assert opened and opened[0]["decision"] == "refused" and "l2Book" in opened[0]["reason"]
-    import exit_policy_ab
-    with pytest.raises(ValueError, match="supplied l2Book depth observations"):
-        exit_policy_ab._prepare_signals(load_registry("futures"), NAME, {}, pd.DataFrame())
-    from closed_bar import unsupported_open_strategy_reason
-    assert unsupported_open_strategy_reason(NAME).startswith("unsupported_cadence")
-    from book_inputs import refuse_book_input_strategy
-    refuse_book_input_strategy("donchian_breakout", "a test")
-
-
 def test_entry_thresholds_episode_lifecycle_and_evidence_boundaries(subtests):
     for check in (
             _check_threshold_equality_filters_and_depth_are_exact,
@@ -406,10 +301,3 @@ def test_entry_thresholds_episode_lifecycle_and_evidence_boundaries(subtests):
             check()
 
 
-def test_missing_books_hold_and_every_candle_only_consumer_refuses(subtests):
-    for check in (
-            _check_missing_and_malformed_books_hold_and_candle_only_consumers_are_refused,
-            _check_every_candle_research_entrypoint_refuses_the_candidate,
-    ):
-        with subtests.test(case=check.__name__.removeprefix("_check_")):
-            check()

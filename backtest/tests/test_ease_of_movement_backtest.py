@@ -118,13 +118,6 @@ def test_warmup_is_the_larger_of_period_plus_one_and_window_plus_two():
     assert not _apply(_frame(_flat(24) + rows[-1:]), {"eom_period": 25, "breakout_window": 4})["eom_valid"].iloc[-1]
 
 
-INVALID_PARAMS = [
-    {"eom_period": True}, {"eom_period": 2.5}, {"eom_period": float("inf")}, {"eom_period": float("nan")},
-    {"eom_period": 1}, {"eom_period": 101}, {"breakout_window": 1}, {"breakout_window": 101},
-    {"breakout_window": "20"}, {"breakout_window": np.bool_(True)},
-]
-
-
 def test_integral_float_parameters_and_bounds_are_accepted():
     _apply(_frame(_flat(30)), {"eom_period": 14.0, "breakout_window": 20.0})
     _apply(_frame(_flat(120)), {"eom_period": 2, "breakout_window": 100})

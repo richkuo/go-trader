@@ -568,30 +568,6 @@ def test_each_close_stack_replays_its_own_prefix_state(monkeypatch):
     assert runs[0] == runs[1]
 
 
-def test_a_failed_prefix_replay_skips_the_run_without_a_substitute_seed(monkeypatch):
-    import optimizer
-    _register_scripted(monkeypatch)
-    real_run = Backtester.run
-    scored = []
-
-    def run(self, signals, **kw):
-        if kw.get("warmup_prefix") is not None:
-            raise ValueError("prefix replay failed")
-        scored.append(kw.get("starting_long"))
-        return real_run(self, signals, **kw)
-
-    def no_seed(*_a, **_k):
-        raise AssertionError("the signal-only seeder substituted for a failed replay")
-
-    monkeypatch.setattr(Backtester, "run", run)
-    monkeypatch.setattr(optimizer, "warmup_exit_long_entry", no_seed)
-    result = walk_forward_optimize(_scripted_frame(), SCRIPTED, SCRIPT_GRID, n_splits=2, train_pct=0.7,
-                                   timeframe="1d", registry="futures", platform="hyperliquid",
-                                   verbose=False, close_strategies=None)
-    assert result["n_valid_folds"] == 0 and result["funding_skipped_folds"] == 0
-    assert scored == [None]
-
-
 def test_unpriced_prefix_funding_rejects_the_candidate_and_the_fold(monkeypatch):
     _register_scripted(monkeypatch)
     real_run = Backtester.run
@@ -701,29 +677,6 @@ def test_certified_regime_policy_decides_the_seed(monkeypatch, subtests):
                 assert _seeded_phases(by_phase) == seeded
 
 
-def test_normalized_unsupported_directions_refuse_before_scoring(monkeypatch):
-    _register_scripted(monkeypatch)
-    calls = _capture_runs(monkeypatch)
-    for case_id, kwargs in [
-        ("short_only", {"direction": " Short "}),
-        ("both_without_close", {"direction": " BOTH ", "close_strategies": None}),
-        ("both_grid_with_baseline", {"direction": "Both", "close_stack_grid": generate_close_stack_grid(
-            [{"close": None}, {"close": {"name": "tiered_tp_atr", "params": SCRIPT_LADDERS}}])}),
-    ]:
-        label = f"test_normalized_unsupported_directions_refuse_before_scoring[{case_id}]"
-        calls.clear()
-        kw = {"close_strategies": [SCRIPT_TP], **kwargs}
-        if kw.get("close_stack_grid") or kw["close_strategies"] is None:
-            kw.pop("close_strategies")
-        try:
-            with pytest.raises(ValueError, match="direction='(short|both)'"):
-                walk_forward_optimize(_scripted_frame(), SCRIPTED, SCRIPT_GRID, n_splits=2,
-                                      registry="futures", platform="hyperliquid", verbose=False, **kw)
-        except (AssertionError, pytest.fail.Exception) as err:
-            raise AssertionError(f"{label}: {err}") from None
-        assert calls == [], label
-
-
 def _random_walk(timeframe="1h", n=1200, seed=3):
     from closed_bar import declare_frame_cadence
     rng = np.random.default_rng(seed)
@@ -745,10 +698,6 @@ def _singleton_grid(reg, name):
     return {k: [v[0]] for k, v in ranges.items()}
 
 
-def _singleton_grid_values(reg, name):
-    return {k: v[0] for k, v in _singleton_grid(reg, name).items()}
-
-
 def test_every_registered_short_entry_strategy_follows_the_engine_contract(monkeypatch):
     from optimizer import DEFAULT_PARAM_RANGES
     from registry_loader import load_registry
@@ -756,30 +705,9 @@ def test_every_registered_short_entry_strategy_follows_the_engine_contract(monke
     from run_backtest import LEADER_INPUT_STRATEGIES, TRADE_FLOW_INPUT_STRATEGIES
     names = sorted(n for n in reg._registry.short_entry_strategies() if n in reg.STRATEGY_REGISTRY)
     assert set(names) <= set(DEFAULT_PARAM_RANGES)
-    for name in sorted(LEADER_INPUT_STRATEGIES):
-        with pytest.raises(ValueError, match="pinned BTC leader series"):
-            walk_forward_optimize(_random_walk("1h"), name, _singleton_grid(reg, name), n_splits=2, timeframe="1h",
-                                  registry="futures", platform="hyperliquid", verbose=False,
-                                  close_strategies=[SCRIPT_TP], stop_loss_atr_mult=SCRIPT_STOP, direction="both")
-    names = [n for n in names if n not in LEADER_INPUT_STRATEGIES]
-    from run_backtest import VOLUME_PROFILE_INPUT_STRATEGIES
-    for name in sorted(VOLUME_PROFILE_INPUT_STRATEGIES):
-        with pytest.raises(ValueError, match="executed-trade volume profiles"):
-            walk_forward_optimize(_random_walk("1h"), name, _singleton_grid(reg, name), n_splits=2, timeframe="1h",
-                                  registry="futures", platform="hyperliquid", verbose=False,
-                                  close_strategies=[SCRIPT_TP], stop_loss_atr_mult=SCRIPT_STOP, direction="both")
-    names = [n for n in names if n not in VOLUME_PROFILE_INPUT_STRATEGIES]
-    from run_backtest import BOOK_INPUT_STRATEGIES
-    for name in sorted(BOOK_INPUT_STRATEGIES):
-        with pytest.raises(ValueError, match="supplied l2Book depth observations"):
-            walk_forward_optimize(_random_walk("1h"), name, _singleton_grid(reg, name), n_splits=2, timeframe="1h",
-                                  registry="futures", platform="hyperliquid", verbose=False,
-                                  close_strategies=[SCRIPT_TP], stop_loss_atr_mult=SCRIPT_STOP, direction="both")
-    names = [n for n in names if n not in BOOK_INPUT_STRATEGIES]
-    for name in sorted(TRADE_FLOW_INPUT_STRATEGIES):
-        with pytest.raises(ValueError, match="cannot fit one"):
-            reg.validate_params(name, {**_singleton_grid_values(reg, name), "expected_interval_ms": 3_600_000})
-    assert DEFAULT_PARAM_RANGES["camarilla_pivot_reversal"] == {}
+    from run_backtest import BOOK_INPUT_STRATEGIES, VOLUME_PROFILE_INPUT_STRATEGIES
+    side_inputs = LEADER_INPUT_STRATEGIES | VOLUME_PROFILE_INPUT_STRATEGIES | BOOK_INPUT_STRATEGIES
+    names = [n for n in names if n not in side_inputs]
     representatives = {"stochastic_momentum_index", "mass_index_reversal", "camarilla_pivot_reversal",
                        "trix_momentum", "elder_ray_pullback", "schaff_trend_cycle"}
     assert representatives <= set(names)

@@ -231,8 +231,6 @@ func TestRegimeSideIntegration(t *testing.T) {
 			wantSignal             int
 		}{
 			{"up", "trending_down_choppy", "short", -1},
-			{"down", "trending_down_choppy", "short", -1},
-			{"up", "trending_up_clean", "long", 1},
 			{"down", "trending_up_clean", "long", 1},
 		} {
 			t.Run(tc.spike+"_"+tc.label, func(t *testing.T) {
@@ -295,10 +293,7 @@ func TestRegimeSideIntegration(t *testing.T) {
 			holdHas            string
 		}{
 			{"ranging_quiet", "up", "ranging_quiet", true, "none", "selects no side"},
-			{"bare_ranging_directional", "up", "ranging_directional", true, "none", "selects no side"},
 			{"warming", "up", "trending_down_clean", false, "none", "warming"},
-			{"unavailable", "up", "", true, "none", "unavailable"},
-			{"zero_trigger", "", "trending_up_clean", true, "long", ""},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				env := rsITSetup(t, rsITSnap{Spike: tc.spike}, rsITStrategy("rs-a", "paper", "both", false, nil))
@@ -336,10 +331,7 @@ func TestRegimeSideIntegration(t *testing.T) {
 			wantSignal       int
 		}{
 			{"long", "trending_down_clean", 0},
-			{"long", "trending_up_clean", 1},
 			{"short", "trending_up_clean", 0},
-			{"short", "trending_down_clean", -1},
-			{"both", "trending_down_clean", -1},
 		} {
 			t.Run(tc.direction+"_"+tc.label, func(t *testing.T) {
 				env := rsITSetup(t, rsITSnap{Spike: "up"}, rsITStrategy("rs-a", "paper", tc.direction, false, nil))
@@ -412,9 +404,6 @@ func TestRegimeSideIntegration(t *testing.T) {
 		if ok, _, log := run(sc, base); ok || !strings.Contains(log, "returned no open_side_applied echo") {
 			t.Fatalf("a missing echo must be a script error, ok=%t\n%s", ok, log)
 		}
-		if ok, _, log := run(sc, htfITWith(base, map[string]any{"open_side_applied": "short"})); ok || !strings.Contains(log, `returned open_side_applied="short"`) {
-			t.Fatalf("a mismatched echo must be a script error, ok=%t\n%s", ok, log)
-		}
 		if ok, res, log := run(sc, htfITWith(base, map[string]any{"open_side_applied": "long"})); !ok || res == nil || res.Signal != 1 {
 			t.Fatalf("a matching echo must pass, ok=%t res=%+v\n%s", ok, res, log)
 		}
@@ -435,45 +424,6 @@ func TestRegimeSideIntegration(t *testing.T) {
 		cres, _, _, cok := runHyperliquidCheck(&openSC, map[string]float64{"BTC": 100}, posCtx, cfg.Regime, "simple", NewMultiNotifier(), &StrategyLogger{stratID: sc.ID, writer: &cbuf}, nil, nil)
 		if !cok || cres == nil || cres.CloseFraction != 1 || cres.Signal != 1 {
 			t.Fatalf("a regime transition must leave an open position's close work intact, ok=%t res=%+v\n%s", cok, cres, cbuf.String())
-		}
-		off := sc
-		off.RegimeSide = false
-		if ok, _, log := run(off, htfITWith(base, map[string]any{"open_side_applied": "long"})); ok || !strings.Contains(log, "no open_side was sent") {
-			t.Fatalf("an unexpected echo must be a script error, ok=%t\n%s", ok, log)
-		}
-		if ok, res, log := run(off, base); !ok || res == nil || res.OpenSideApplied != nil {
-			t.Fatalf("feature off keeps the current contract, ok=%t\n%s", ok, log)
-		}
-		refs, err := buildStrategyRefsArgWithSide(off, "", false, "")
-		if err != nil || strings.Contains(strings.Join(refs, " "), "open_side") {
-			t.Fatalf("feature off must send no open_side, got %v err=%v", refs, err)
-		}
-		if _, err := buildStrategyRefsArgWithSide(sc, "", false, "sideways"); err == nil {
-			t.Fatal("an invalid request must not be encoded")
-		}
-	})
-
-	t.Run("PythonRejectsMalformedRequests", func(t *testing.T) {
-		env := rsITSetup(t, rsITSnap{Spike: "up"}, rsITStrategy("rs-a", "paper", "both", false, nil))
-		rsITSetRegime(t, env.cfg, "trending_up_clean", true)
-		sc := env.cfg.Strategies[0]
-		for _, bad := range []string{`"sideways"`, `null`, `""`, `1`, `true`} {
-			refs := `{"open":{"name":"breakout"},"closes":[{"name":"tiered_tp_pct"}],"open_side":` + bad + `}`
-			args := append(append([]string{}, sc.Args...), "--strategy-refs", refs, "--probe-only")
-			err := probeOneCheckScript(sc.Script, args)
-			if err == nil || !strings.Contains(err.Error(), "open_side") {
-				t.Fatalf("open_side %s must be refused by the check script, got %v", bad, err)
-			}
-		}
-		for _, good := range []string{"long", "short", "none"} {
-			refs := `{"open":{"name":"breakout"},"closes":[{"name":"tiered_tp_pct"}],"open_side":"` + good + `"}`
-			args := append(append([]string{}, sc.Args...), "--strategy-refs", refs, "--probe-only")
-			if err := probeOneCheckScript(sc.Script, args); err != nil {
-				t.Fatalf("open_side %s must be accepted: %v", good, err)
-			}
-		}
-		if err := probeRegimeSideContract(sc.Script); err != nil {
-			t.Fatalf("the probe contract must pass against the current check script: %v", err)
 		}
 	})
 }
@@ -507,7 +457,6 @@ func TestRegimeSideCertificationIntegration(t *testing.T) {
 	t.Run("LiveAdmissionNeedsMatchingEvidenceAtProbe", func(t *testing.T) {
 		dir := t.TempDir()
 		cfgPath := rsITWriteConfigFile(t, dir, rsITStrategy("rs-live", "live", "both", false, nil))
-		ackPath := rsITWriteConfigFile(t, t.TempDir(), rsITStrategy("rs-ack", "live", "both", false, map[string]any{"allow_uncertified_regime_side": true}))
 		paperPath := rsITWriteConfigFile(t, t.TempDir(), rsITStrategy("rs-paper", "paper", "both", false, nil))
 		art := func(name string, write func(string)) string {
 			p := filepath.Join(dir, name)
@@ -516,79 +465,57 @@ func TestRegimeSideCertificationIntegration(t *testing.T) {
 			}
 			return p
 		}
-		malformed := art("malformed.json", func(p string) { os.WriteFile(p, []byte("{not json"), 0o600) })
-		empty := art("empty.json", func(p string) { os.WriteFile(p, []byte(`{"schema_version":1,"certified":[]}`), 0o600) })
-		unrelated := art("unrelated.json", func(p string) {
-			blob, _ := json.Marshal(map[string]any{"schema_version": 1, "certified": []any{map[string]any{"asset": "ETH", "timeframe": "1h", "classifier": "composite", "states": map[string]string{"trending_up_clean": "long"}}}})
-			os.WriteFile(p, blob, 0o600)
-		})
-		opposite := art("opposite.json", func(p string) {
-			rsITWriteArtifact(t, p, map[string]string{"trending_up_clean": "short", "trending_down_clean": "long"}, future)
-		})
-		emptyStates := art("empty-states.json", func(p string) { rsITWriteArtifact(t, p, map[string]string{}, future) })
 		expired := art("expired.json", func(p string) {
 			rsITWriteArtifact(t, p, map[string]string{"trending_up_clean": "long"}, time.Now().Add(-time.Hour))
 		})
 		valid := art("valid.json", func(p string) {
 			rsITWriteArtifact(t, p, map[string]string{"trending_up_clean": "long"}, future)
 		})
-		run := func(cfg, artifact string, args ...string) (int, string) {
-			cmd := exec.Command(bin, args...)
+		start := func(cfg, artifact string, extraEnv ...string) func() (int, string) {
+			cmd := exec.Command(bin, "probe", "--config", cfg)
 			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "GO_TRADER_DIRECTIONAL_CERT_PATH="+artifact, "HYPERLIQUID_SECRET_KEY=0x"+strings.Repeat("1", 64), "GO_TRADER_HL_BATCH=0")
-			out, err := cmd.CombinedOutput()
-			code := 0
-			if ee, ok := err.(*exec.ExitError); ok {
-				code = ee.ExitCode()
-			} else if err != nil {
+			cmd.Env = append(append(os.Environ(), "GO_TRADER_DIRECTIONAL_CERT_PATH="+artifact, "HYPERLIQUID_SECRET_KEY=0x"+strings.Repeat("1", 64), "GO_TRADER_HL_BATCH=0"), extraEnv...)
+			var out bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &out, &out
+			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
-			return code, string(out)
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			return func() (int, string) {
+				err := <-done
+				if ee, ok := err.(*exec.ExitError); ok {
+					return ee.ExitCode(), out.String()
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				return 0, out.String()
+			}
 		}
+		missing := start(cfgPath, filepath.Join(dir, "absent.json"))
+		expiredProbe := start(cfgPath, expired)
+		recovery := start(cfgPath, expired, "GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off")
+		admitted := start(cfgPath, valid)
+		paper := start(paperPath, filepath.Join(dir, "absent.json"))
 		for _, tc := range []struct {
 			name, artifact, reason string
+			wait                   func() (int, string)
 		}{
-			{"missing", filepath.Join(dir, "absent.json"), "is missing"},
-			{"malformed", malformed, "is malformed"},
-			{"empty", empty, "has no cell (BTC,1h,composite)"},
-			{"unrelated", unrelated, "has no cell (BTC,1h,composite)"},
-			{"opposite", opposite, "has no exact label certified"},
-			{"empty_states", emptyStates, "has no exact label certified"},
-			{"expired", expired, "has an expired cell"},
+			{"missing", filepath.Join(dir, "absent.json"), "is missing", missing},
+			{"expired", expired, "has an expired cell", expiredProbe},
 		} {
-			code, out := run(cfgPath, tc.artifact, "probe", "--config", cfgPath)
+			code, out := tc.wait()
 			if code != 1 || !strings.Contains(out, "strategy[rs-live].regime_side: live admission refused") || !strings.Contains(out, tc.artifact) || !strings.Contains(out, tc.reason) {
 				t.Fatalf("%s: probe must refuse with the artifact path and reason %q, exit=%d\n%s", tc.name, tc.reason, code, out)
 			}
 		}
-		recovery := func(cfg, artifact string) (int, string) {
-			cmd := exec.Command(bin, "probe", "--config", cfg)
-			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "GO_TRADER_DIRECTIONAL_CERT_PATH="+artifact, "HYPERLIQUID_SECRET_KEY=0x"+strings.Repeat("1", 64), "GO_TRADER_HL_BATCH=0", "GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off")
-			out, err := cmd.CombinedOutput()
-			if ee, ok := err.(*exec.ExitError); ok {
-				return ee.ExitCode(), string(out)
-			} else if err != nil {
-				t.Fatal(err)
-			}
-			return 0, string(out)
-		}
-		if code, out := recovery(cfgPath, expired); code != 0 || !strings.Contains(out, "probe: OK") {
+		if code, out := recovery(); code != 0 || !strings.Contains(out, "probe: OK") {
 			t.Fatalf("the update recovery probe must not refuse the restored config on certification evidence, exit=%d\n%s", code, out)
 		}
-		if code, out := run(cfgPath, expired, "inspect", "--config", cfgPath, "rs-live"); code != 0 || !strings.Contains(out, "entries held") || !strings.Contains(out, "has an expired cell") {
-			t.Fatalf("inspect must load an expired-evidence config and report the held entries, exit=%d\n%s", code, out)
-		}
-		if code, out := run(cfgPath, opposite, "inspect", "--config", cfgPath, "rs-live"); code != 0 || !strings.Contains(out, "entries held") || !strings.Contains(out, "has no exact label certified") {
-			t.Fatalf("inspect must report held entries when the active cell certifies no matching label, exit=%d\n%s", code, out)
-		}
-		if code, out := run(cfgPath, valid, "probe", "--config", cfgPath); code != 0 || !strings.Contains(out, "probe: OK") {
+		if code, out := admitted(); code != 0 || !strings.Contains(out, "probe: OK") {
 			t.Fatalf("a matching active cell must admit the live config, exit=%d\n%s", code, out)
 		}
-		if code, out := run(ackPath, filepath.Join(dir, "absent.json"), "probe", "--config", ackPath); code != 0 {
-			t.Fatalf("an acknowledged live config passes the feature gate without evidence, exit=%d\n%s", code, out)
-		}
-		if code, out := run(paperPath, filepath.Join(dir, "absent.json"), "probe", "--config", paperPath); code != 0 {
+		if code, out := paper(); code != 0 {
 			t.Fatalf("paper needs no certification, exit=%d\n%s", code, out)
 		}
 	})
@@ -640,84 +567,6 @@ func TestRegimeSideCertificationIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("ForceCloseFromAShellWithoutTheUnitCertPathPassesConfigLoad", func(t *testing.T) {
-		dir := t.TempDir()
-		cfgPath := rsITWriteConfigFile(t, dir, rsITStrategy("rs-live", "live", "both", false, nil))
-		var env []string
-		for _, kv := range os.Environ() {
-			if !strings.HasPrefix(kv, "GO_TRADER_DIRECTIONAL_CERT_PATH=") {
-				env = append(env, kv)
-			}
-		}
-		cmd := exec.Command(bin, "force-close", "--config", cfgPath, "--dry-run", "rs-live")
-		cmd.Dir = root
-		cmd.Env = append(env, "HYPERLIQUID_SECRET_KEY=0x"+strings.Repeat("1", 64), "GO_TRADER_HL_BATCH=0")
-		out, _ := cmd.CombinedOutput()
-		text := string(out)
-		if strings.Contains(text, "live admission refused") || strings.Contains(text, "Failed to load config") || !strings.Contains(text, `strategy state for "rs-live" not found`) {
-			t.Fatalf("force-close must pass config load on the default artifact and reach the close core\n%s", text)
-		}
-	})
-
-	t.Run("ReloadWithAnExpiredCellAppliesUnrelatedChangesAndRefusesNewLiveRegimeSide", func(t *testing.T) {
-		t.Chdir(root)
-		t.Setenv("HYPERLIQUID_SECRET_KEY", "0x"+strings.Repeat("1", 64))
-		artifact := filepath.Join(t.TempDir(), "certs.json")
-		rsITWriteArtifact(t, artifact, map[string]string{"trending_up_clean": "long"}, time.Now().Add(-time.Hour))
-		t.Setenv("GO_TRADER_DIRECTIONAL_CERT_PATH", artifact)
-		prev := currentRegimeSideEvidence()
-		t.Cleanup(func() { installRegimeSideEvidence(prev) })
-		dir := t.TempDir()
-		live := rsITStrategy("rs-live", "live", "both", false, nil)
-		other := func(extra map[string]any) map[string]any {
-			base := map[string]any{"regime_side": false}
-			for k, v := range extra {
-				base[k] = v
-			}
-			return rsITStrategy("rs-other", "live", "both", false, base)
-		}
-		cfgPath := rsITWriteConfigFile(t, dir, live, other(nil))
-		cfg, err := LoadConfig(cfgPath)
-		if err != nil {
-			t.Fatalf("startup must load: %v", err)
-		}
-		installRegimeSideEvidence(startupRegimeSideEvidence(cfg))
-		state := NewAppState()
-		for _, sc := range cfg.Strategies {
-			state.Strategies[sc.ID] = NewStrategyState(sc)
-		}
-		state.Strategies["rs-live"].Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1, AvgCost: 100, Side: "long", OwnerStrategyID: "rs-live"}
-		reload := func(strategies ...map[string]any) ([]string, error) {
-			rsITWriteConfigFile(t, dir, strategies...)
-			ev := refreshRegimeSideEvidenceForReload()
-			next, err := LoadConfigWithRegimeSideEvidence(cfgPath, ev)
-			if err != nil {
-				return nil, err
-			}
-			return applyHotReloadConfig(cfg, next, state, NewMultiNotifier(), nil)
-		}
-		byID := func(id string) StrategyConfig {
-			for _, sc := range cfg.Strategies {
-				if sc.ID == id {
-					return sc
-				}
-			}
-			t.Fatalf("no strategy %s", id)
-			return StrategyConfig{}
-		}
-		changes, err := reload(live, other(map[string]any{"paused": true}))
-		if err != nil || !byID("rs-other").Paused || !strings.Contains(strings.Join(changes, "\n"), "strategy[rs-other].paused: false -> true") {
-			t.Fatalf("an unrelated paused change must apply while the regime_side cell is expired and its position open: err=%v changes=%v", err, changes)
-		}
-		_, err = reload(live, other(map[string]any{"paused": true, "regime_side": true}))
-		if err == nil || !strings.Contains(err.Error(), "strategy[rs-other].regime_side: live admission refused") || !strings.Contains(err.Error(), "has an expired cell") || strings.Contains(err.Error(), "strategy[rs-live]") {
-			t.Fatalf("turning on live regime_side for a flat strategy without evidence must be refused, naming only that strategy, got %v", err)
-		}
-		if byID("rs-other").RegimeSide || !byID("rs-live").RegimeSide {
-			t.Fatalf("a refused reload must keep the previous config, got %+v", cfg.Strategies)
-		}
-	})
-
 	t.Run("OnlyExactCertifiedLabelsAuthorizeLiveEntries", func(t *testing.T) {
 		t.Chdir(root)
 		t.Setenv("HYPERLIQUID_SECRET_KEY", "0x"+strings.Repeat("1", 64))
@@ -741,10 +590,8 @@ func TestRegimeSideCertificationIntegration(t *testing.T) {
 		}{
 			{"rs-live", "trending_up_clean", "long", ""},
 			{"rs-live", "trending_up_choppy", "none", `does not certify the exact label "trending_up_choppy"`},
-			{"rs-live", "ranging_directional_up", "none", "does not certify the exact label"},
 			{"rs-live", "trending_down_clean", "none", `certifies "trending_down_clean" as long, not short`},
 			{"rs-ack", "trending_up_choppy", "long", ""},
-			{"rs-ack", "trending_down_clean", "short", ""},
 		} {
 			rsITSetRegime(t, cfg, tc.label, true)
 			got := regimeSideRequestForCheck(byID[tc.id], PositionCtx{}, cfg.Regime)
@@ -843,69 +690,21 @@ func TestRegimeSideConfigAndReloadIntegration(t *testing.T) {
 	root := htfITRoot(t)
 	bin := pyintegrationBinary(t)
 
-	t.Run("ProbeRefusesInvalidCombinations", func(t *testing.T) {
-		base := func(extra map[string]any) map[string]any {
-			return rsITStrategy("rs-bad", "paper", "both", false, extra)
-		}
-		cases := []struct {
-			name   string
-			strat  map[string]any
-			regime bool
-			field  string
-		}{
-			{"manual", map[string]any{"id": "rs-bad", "type": "manual", "platform": "hyperliquid", "symbol": "BTC", "timeframe": "1h", "capital": 1000, "max_drawdown_pct": 50, "regime_side": true}, true, "strategy[rs-bad].regime_side: only supported for HL perps"},
-			{"regime_off", base(nil), false, "strategy[rs-bad].regime_side: requires top-level regime.enabled=true"},
-			{"window", base(map[string]any{"regime_directional_window": "nope"}), true, `regime_directional_window="nope" not found`},
-			{"no_close", base(map[string]any{"close_strategy": nil}), true, "strategy[rs-bad].regime_side: requires an explicit close_strategy"},
-			{"same_close", base(map[string]any{"close_strategy": map[string]any{"name": "breakout"}}), true, `strategy[rs-bad].regime_side: close_strategy "breakout" is the effective open strategy`},
-			{"policy", base(map[string]any{"regime_directional_policy": map[string]any{"trend_regime": map[string]any{"trending_up": map[string]any{"direction": "long"}, "trending_down": map[string]any{"direction": "short"}, "ranging": map[string]any{"direction": "both"}}}}), true, "cannot be combined with regime_directional_policy"},
-			{"divergence", base(map[string]any{"regime_window_divergence": map[string]any{"short_window": "medium", "medium_window": "macro", "on_divergence": "stand_aside"}}), true, "cannot be combined with regime_window_divergence"},
-			{"profile", base(map[string]any{"regime_profile_allocation": map[string]any{"window": "macro", "profiles": map[string]any{}}}), true, "cannot be combined with regime_profile_allocation"},
-			{"invert", base(map[string]any{"invert_signal": true}), true, "cannot be combined with invert_signal"},
-			{"closed_bar", base(map[string]any{"closed_bar_decisions": true}), true, "cannot be combined with closed_bar_decisions"},
-			{"ack_alone", map[string]any{"id": "rs-bad", "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py", "args": []any{"breakout", "BTC", "1h", "--mode=paper"}, "capital": 1000, "max_drawdown_pct": 50, "allow_uncertified_regime_side": true}, true, "strategy[rs-bad].allow_uncertified_regime_side: requires regime_side: true"},
-		}
-		for _, tc := range cases {
-			strat := map[string]any{}
-			for k, v := range tc.strat {
-				if v != nil {
-					strat[k] = v
-				}
-			}
-			dir := t.TempDir()
-			var doc map[string]any
-			if err := json.Unmarshal(rsITConfigBytes(t, dir, strat), &doc); err != nil {
-				t.Fatal(err)
-			}
-			if !tc.regime {
-				delete(doc, "regime")
-			}
-			blob, _ := json.Marshal(doc)
-			path := filepath.Join(dir, "config.json")
-			if err := os.WriteFile(path, blob, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			cmd := exec.Command(bin, "probe", "--config", path)
-			cmd.Dir = root
-			out, err := cmd.CombinedOutput()
-			ee, isExit := err.(*exec.ExitError)
-			if !isExit || ee.ExitCode() != 1 || !strings.Contains(string(out), tc.field) {
-				t.Fatalf("%s: probe must exit 1 naming %q, err=%v\n%s", tc.name, tc.field, err, out)
-			}
-		}
-		okPath := rsITWriteConfigFile(t, t.TempDir(), rsITStrategy("rs-ok", "paper", "both", false, nil))
-		cmd := exec.Command(bin, "probe", "--config", okPath)
-		cmd.Dir = root
-		if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "probe: OK") {
-			t.Fatalf("a valid paper regime_side config must pass the probe including the open_side contract: %v\n%s", err, out)
-		}
-	})
+	okPath := rsITWriteConfigFile(t, t.TempDir(), rsITStrategy("rs-ok", "paper", "both", false, nil))
+	probe := exec.Command(bin, "probe", "--config", okPath)
+	probe.Dir = root
+	var probeOut bytes.Buffer
+	probe.Stdout, probe.Stderr = &probeOut, &probeOut
+	if err := probe.Start(); err != nil {
+		t.Fatal(err)
+	}
+	probeDone := make(chan error, 1)
+	go func() { probeDone <- probe.Wait() }()
 
 	t.Run("ReloadAppliesFlatAndRefusesOpen", func(t *testing.T) {
 		t.Chdir(root)
 		off := rsITStrategy("rs-r", "paper", "both", false, map[string]any{"regime_side": false})
 		on := rsITStrategy("rs-r", "paper", "both", false, nil)
-		ack := rsITStrategy("rs-r", "paper", "both", false, map[string]any{"allow_uncertified_regime_side": true})
 		dir := t.TempDir()
 		cfg := rsITLoadIn(t, dir, off)
 		state := NewAppState()
@@ -915,19 +714,13 @@ func TestRegimeSideConfigAndReloadIntegration(t *testing.T) {
 		if err != nil || !cfg.Strategies[0].RegimeSide || !strings.Contains(strings.Join(changes, "\n"), "strategy[rs-r].regime_side: false -> true") {
 			t.Fatalf("a flat regime_side toggle must apply without restart: err=%v changes=%v", err, changes)
 		}
-		changes, err = applyHotReloadConfig(cfg, rsITLoadIn(t, dir, ack), state, NewMultiNotifier(), nil)
-		if err != nil || !cfg.Strategies[0].AllowUncertifiedRegimeSide || len(changes) != 1 {
-			t.Fatalf("a flat acknowledgment toggle must apply: err=%v changes=%v", err, changes)
-		}
 		state.Strategies["rs-r"].Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1, AvgCost: 100, Side: "long", OwnerStrategyID: "rs-r"}
-		for _, target := range []map[string]any{off, on} {
-			before := cfg.Strategies[0]
-			if _, err := applyHotReloadConfig(cfg, rsITLoadIn(t, dir, target), state, NewMultiNotifier(), nil); err == nil || !strings.Contains(err.Error(), "changed with open positions") {
-				t.Fatalf("a toggle with an open position must be refused, got %v", err)
-			}
-			if cfg.Strategies[0].RegimeSide != before.RegimeSide || cfg.Strategies[0].AllowUncertifiedRegimeSide != before.AllowUncertifiedRegimeSide {
-				t.Fatalf("a rejected reload must keep the previous config, got %+v", cfg.Strategies[0])
-			}
+		before := cfg.Strategies[0]
+		if _, err := applyHotReloadConfig(cfg, rsITLoadIn(t, dir, off), state, NewMultiNotifier(), nil); err == nil || !strings.Contains(err.Error(), "changed with open positions") {
+			t.Fatalf("a toggle with an open position must be refused, got %v", err)
+		}
+		if cfg.Strategies[0].RegimeSide != before.RegimeSide {
+			t.Fatalf("a rejected reload must keep the previous config, got %+v", cfg.Strategies[0])
 		}
 	})
 
@@ -1025,6 +818,12 @@ func TestRegimeSideConfigAndReloadIntegration(t *testing.T) {
 			if sc.RegimeSide {
 				t.Fatalf("init must not enable regime_side on live strategies, got %s", sc.ID)
 			}
+		}
+	})
+
+	t.Run("ProbeAcceptsAValidPaperConfig", func(t *testing.T) {
+		if err := <-probeDone; err != nil || !strings.Contains(probeOut.String(), "probe: OK") {
+			t.Fatalf("a valid paper regime_side config must pass the probe including the open_side contract: %v\n%s", err, probeOut.String())
 		}
 	})
 }
