@@ -234,6 +234,7 @@ Set in systemd overrides or exported environment variables before installation:
 | `GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH` | `1` only in the migrate layout fixture's latch scenario. A paper kill switch with no DM owner stays latched, and the daemon logs that this variable suppressed the auto-reset. Do not set it on a running service |
 | `GO_TRADER_CASHFLOW_JOURNAL_ALARM` | `0`/`off`/`false`/`no` forces the legacy trade-ledger drift basis for HL shared wallets (default on) |
 | `GO_TRADER_HL_BATCH` | `0`/`off`/`false`/`no` disables batched Hyperliquid signal checks |
+| `GO_TRADER_PAPER_NICE` | Nice increment for the paper check children of a paper-only process (§ Paper CPU priority): unset = `10`, an integer `0`-`19` is used as is, `0` turns the feature off, any other value logs one WARN and uses `10` |
 | `GO_TRADER_EGRESS_PROXY` | Egress proxy URL (`http`, `https`, `socks5`, `socks5h`; explicit port; optional credentials); a non-empty value turns on egress proxy mode (§ Egress Proxy Mode) |
 | `GO_TRADER_EGRESS_DEPLOYMENT` | Egress deployment name; set by the egress drop-in or `docker/compose.egress.yaml`, not by hand |
 | `GO_TRADER_NOTIFY_GITHUB_REPOS` | Notification broker only: comma-separated repositories it may file issues in (default `richkuo/go-trader`) |
@@ -386,6 +387,18 @@ If that restart fails, the previous file is put back and the install stops befor
 Local settings (for example a different `SystemMaxUse`) go in `/etc/systemd/journald@go-trader.conf.d/*.conf`, followed by `sudo systemctl restart systemd-journald@go-trader.service`.
 `LogNamespace=` needs systemd 245 or newer.
 On an older systemd the installer warns, skips the config, and continues; systemd ignores the unknown unit line and the logs stay in the default journal.
+
+**Paper CPU priority (#1987).** A scheduler process whose roster is non-empty and holds no live strategy (by `isLiveArgs`) runs its paper check children at a lower CPU priority.
+The decision is made once at startup, because a SIGHUP reload cannot add or remove strategies or change their args. One `[priority]` line states the result: the increment, or the reason it is off (empty roster, a live strategy, or `GO_TRADER_PAPER_NICE=0`).
+The children that get the lower priority are the per-strategy check scripts (spot, options, Hyperliquid, TopStep, Robinhood, OKX, and the Hyperliquid manual check) and a Hyperliquid batch group whose members are all paper.
+Target nice = `min(19, scheduler nice + GO_TRADER_PAPER_NICE)`, default increment 10, so the value is relative to the nice the unit already runs at.
+Right after `cmd.Start()` the scheduler calls `setpriority(PRIO_PGRP, <child pid>, <target>)`. Each child leads its own process group, so every thread of the child and every process it starts later get the value. The child runs at the scheduler priority only for the short interpreter-start window before that call.
+A process with any live strategy keeps every child at its own priority: its cycle loop runs checks one at a time, so a slower paper check would delay the next live check.
+These children always keep the default priority: every `runPythonSideEffect*` caller and `Run*Execute` wrapper, the regime bundle check, LLM entry analysis, UI candle and tuning children, the startup probe, the Robinhood login helper, and shared read-only fetches such as prices and balances.
+Failure policy: a child that already exited (`ESRCH`) is ignored. Any other error prints one `[WARN] paper check child priority:` line per distinct error, and the check continues at the default priority. Raising a child's nice needs no privilege, so `NoNewPrivileges=true` does not block it.
+Known limits: a lower-priority child holds its `pythonSemaphore` slot (capacity 4) longer on a busy host, and paper checks can reach the 30 s script timeout or the batch timeout more often. A batch timeout keeps the shared-state failure contract (§ Hyperliquid Batched Signal Checks), so count `hl-batch .* shared state failed` lines on a paper instance after the deploy.
+Scope across services: nice orders tasks that share one CPU cgroup. When the root `cgroup.subtree_control` lists `cpu` and `system.slice` does not (no unit sets a CPU property), all go-trader services share one pool, and a paper instance yields to a live instance on the same host. When `cpu` is off at the root and `kernel.sched_autogroup_enabled=1`, each service session is its own autogroup, and nice orders tasks only inside one service.
+Operator check: `ps -eLo pid,tid,ni,args | grep check_` while a paper cycle runs. A per-unit `CPUWeight` for paper-only systemd instances is a separate follow-up change.
 
 **Config out of the deploy tree.** Both units set `StateDirectory=go-trader[/%i]` and point `ExecStart --config` at `/var/lib/go-trader[/<instance>]/config.json`. For an existing in-tree deploy, stop the service first, then run `scripts/migrate-config-out-of-tree.sh [--instance <name>]` — it refuses while the daemon is live. `scheduler/config.json` stays as a transition symlink; a config-version migration that rewrites the file replaces that symlink with a regular in-tree file, so prefer the out-of-tree path.
 
@@ -728,6 +741,10 @@ Never apply a runtime-default change silently when the operator has not been sho
 ### Reference: classification table
 
 When in doubt, treat a commit as a runtime default and prompt. Per-release narrative for every archived entry lives in [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md); regenerate a fresh candidate list from `git log --oneline -50`.
+
+- **Paper check children of a paper-only process run at a lower CPU priority (#1987, runtime default, opt-out `GO_TRADER_PAPER_NICE=0`, no config or schema change).** Before this change every Python child ran at the scheduler's own priority, so a large paper cycle competed for CPU with live work on the same host.
+  Now a scheduler whose roster holds no live strategy runs its per-strategy check children and all-paper Hyperliquid batch children at the scheduler nice +10 (at most 19) and prints one `[priority]` line at startup. A process with any live strategy, and every side-effect, execute, regime, LLM, UI and probe child, keep the default priority (§ Paper CPU priority).
+  Operator action: none. To opt out, set `GO_TRADER_PAPER_NICE=0` in the unit environment and restart. To check, run `ps -eLo pid,tid,ni,args | grep check_` during a paper cycle, and compare live cycle times and `hl-batch .* shared state failed` counts with the times before the update.
 
 - **Hyperliquid API wallet expiry warnings and CRITICAL (#1983, runtime default, alerts only, no opt-out, no config or schema change, new startup probe).** Before this change an expired Hyperliquid API wallet made every live order and stop fail with only the generic `LIVE ORDER FAILED` alert, and nothing warned before expiry.
   Now a live Hyperliquid daemon checks the key at startup and hourly, warns 14, 7, 3 and 1 days before `validUntil`, and sends one `HL API WALLET CRITICAL` when Hyperliquid no longer knows the key or a signed action is rejected for it (see Hyperliquid API wallet lifetime). The check never exits 78.
@@ -2455,6 +2472,7 @@ Operator-visible behavior:
 - A batch that fails on the shared market-data step makes **every member spawn its own check the same cycle**, so a batch failure never blanks a close, stop, ratchet, protection sync, or hedge. One alert is raised per group, not per strategy.
 - Three consecutive shared-state failures on one group revert it to per-strategy checks and retry the batch every 10 cycles. A success clears the state and re-alerts as recovered.
 - A slot whose configuration changed between snapshot and dispatch spawns its own check instead of trusting the batch.
+- In a paper-only process an all-paper group runs its batch child at the paper nice (§ Paper CPU priority). On a saturated host that child can reach the batch timeout more often; a timeout takes the shared-failure path above, and the per-member checks it starts are also at the paper nice.
 
 The log line names the group as `platform/symbol/timeframe/limit=N/atr=M`.
 
