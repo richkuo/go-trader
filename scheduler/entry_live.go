@@ -229,7 +229,7 @@ func markEntryIntentSubmitting(store *StateStore, s *StrategyState, mu *sync.RWM
 	in.RequestJSON = next.RequestJSON
 	in.Status = entryIntentSubmitting
 	in.durableStatus = entryIntentSubmitting
-	in.UpdatedAtMs = time.Now().UnixMilli()
+	in.UpdatedAtMs = tradingNow().UnixMilli()
 	return nil
 }
 
@@ -239,7 +239,7 @@ func hyperliquidEntrySubmitGate(store *StateStore, s *StrategyState, mu *sync.RW
 		if err != nil {
 			return hlEntryOrderTags{}, err
 		}
-		now := time.Now()
+		now := tradingNow()
 		req.Side = side
 		req.Size = size
 		req.StopLossPct = stopLossPct
@@ -264,7 +264,7 @@ func okxEntrySubmitGateFor(store *StateStore, s *StrategyState, mu *sync.RWMutex
 		if err != nil {
 			return okxEntryOrderTags{}, err
 		}
-		now := time.Now()
+		now := tradingNow()
 		req.Side = side
 		req.Size = size
 		req.SubmittedAtMs = now.UnixMilli()
@@ -280,7 +280,7 @@ func resolveEntryIntentNoFill(store *StateStore, s *StrategyState, mu *sync.RWMu
 	if in == nil {
 		return false
 	}
-	ev.ObservedAtMs = time.Now().UnixMilli()
+	ev.ObservedAtMs = tradingNow().UnixMilli()
 	mu.Lock()
 	defer mu.Unlock()
 	if stale != nil {
@@ -317,7 +317,7 @@ func holdEntryIntentUnknown(store *StateStore, sc StrategyConfig, s *StrategySta
 	}
 	mu.Lock()
 	in.HoldReason = reason
-	in.UpdatedAtMs = time.Now().UnixMilli()
+	in.UpdatedAtMs = tradingNow().UnixMilli()
 	err := store.PersistEntryGuardProgress(s)
 	mu.Unlock()
 	msg := fmt.Sprintf("**LIVE ENTRY OUTCOME UNKNOWN** [%s] %s %s entry %s (client order %s): %s. No new entry is sent for this strategy until the venue order is resolved; exits, stops and protection continue.",
@@ -374,7 +374,7 @@ func commitLiveEntrySettlementLocked(store *StateStore, s *StrategyState, in *en
 	if in == nil || s == nil || s.EntryGuard == nil {
 		return false
 	}
-	now := time.Now()
+	now := tradingNow()
 	consumed, qty, notional, fee := entryTradesConsume(s, in.key(), fromIdx)
 	ev.ObservedAtMs = now.UnixMilli()
 	in.EvidenceJSON = marshalEntryJSON(ev)

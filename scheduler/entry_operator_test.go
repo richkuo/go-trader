@@ -24,11 +24,11 @@ func useEntryTestHLAccount(t *testing.T) {
 }
 
 func entryTestCoverage() *entryFillCoverage {
-	return &entryFillCoverage{Complete: true, FromMs: 1, ThroughMs: time.Now().Add(time.Hour).UnixMilli(), Pages: 1, Rows: 3, Source: "test"}
+	return &entryFillCoverage{Complete: true, FromMs: 1, ThroughMs: entryTestEvidenceNow().Add(time.Hour).UnixMilli(), Pages: 1, Rows: 3, Source: "test"}
 }
 
 func entryAbsentHL() *entryRecoveryResult {
-	return &entryRecoveryResult{Platform: "hyperliquid", Account: entryTestHLAccountKey, CheckedAtMs: time.Now().UnixMilli(),
+	return &entryRecoveryResult{Platform: "hyperliquid", Account: entryTestHLAccountKey, CheckedAtMs: entryTestEvidenceNow().UnixMilli(),
 		Order: &entryRecoveryOrder{Found: false, Coverage: entryTestCoverage()},
 		Stop:  &entryRecoveryOrder{Found: false, Coverage: entryTestCoverage()}}
 }
@@ -69,12 +69,13 @@ func fixedVenue(res *entryRecoveryResult, err error) *entryVenueQuery {
 
 type entryOperatorFixture struct {
 	t        *testing.T
+	clk      *entryTestClock
 	env      *entryTestEnv
 	sc       StrategyConfig
 	intentID string
 }
 
-func newEntryOperatorFixture(t *testing.T, provider string, extra ...StrategyConfig) *entryOperatorFixture {
+func newEntryOperatorFixture(t *testing.T, clk *entryTestClock, provider string, extra ...StrategyConfig) *entryOperatorFixture {
 	t.Helper()
 	releaseHeldLiveEntryAttempts()
 	useEntryTestHLAccount(t)
@@ -89,8 +90,8 @@ func newEntryOperatorFixture(t *testing.T, provider string, extra ...StrategyCon
 	}
 	env := openEntryTestEnv(t, newEntryTestConfig(t, append([]StrategyConfig{sc}, extra...)...))
 	useEntryTradeRecorder(t, env.store)
-	at := time.Now().Add(-10 * time.Minute)
-	bar := at.Truncate(time.Hour).Add(-time.Hour)
+	at := clk.now()
+	bar := entryTestNewestBar(at)
 	venue := &entryLiveVenue{t: t, env: env, respond: func([]string) (*HyperliquidExecuteResult, error) { return nil, errors.New("execute error: timeout") }}
 	venue.install()
 	env.dispatchHLLive(sc, 1, 100, entryTestDecision(bar, at), at)
@@ -99,7 +100,7 @@ func newEntryOperatorFixture(t *testing.T, provider string, extra ...StrategyCon
 	if in == nil || in.Status != entryIntentSubmitting {
 		t.Fatalf("fixture attempt %+v", in)
 	}
-	return &entryOperatorFixture{t: t, env: env, sc: sc, intentID: in.IntentID}
+	return &entryOperatorFixture{t: t, clk: clk, env: env, sc: sc, intentID: in.IntentID}
 }
 
 func (f *entryOperatorFixture) intent() *entryIntent {
@@ -133,7 +134,7 @@ func (f *entryOperatorFixture) rewrite(mutate func(in *entryIntent, req *entryIn
 
 func (f *entryOperatorFixture) backdate() {
 	f.t.Helper()
-	now := time.Now()
+	now := f.clk.now()
 	f.rewrite(func(in *entryIntent, req *entryIntentRequest) {
 		req.ExpiresAfterMs = now.Add(-10 * time.Minute).UnixMilli()
 		if in.InitialStopClientID != "" {
@@ -181,9 +182,8 @@ func (f *entryOperatorFixture) cash() float64 {
 }
 
 func (f *entryOperatorFixture) admitNextCandle() entryAdmission {
-	at := time.Now()
-	bar := at.Truncate(time.Hour).Add(-time.Hour)
-	return admitClosedBarEntry(f.sc, f.env.strat(f.sc.ID), &f.env.mu, "BTC", entryTestDecision(bar, at.Add(-time.Second)), 1, 0, 0, "", at)
+	at := f.clk.now()
+	return admitClosedBarEntry(f.sc, f.env.strat(f.sc.ID), &f.env.mu, "BTC", entryTestDecision(entryTestNewestBar(at), at), 1, 0, 0, "", at)
 }
 
 func (f *entryOperatorFixture) assertUnchanged(msg string, cashBefore float64) {
@@ -217,7 +217,7 @@ func (f *entryOperatorFixture) assertUnchanged(msg string, cashBefore float64) {
 func entryOperatorCaseEntryOperatorReleasesAVerifiedAbsentAttemptExactlyOnce(t *testing.T) {
 	for _, provider := range []string{"hyperliquid"} {
 		t.Run(provider, func(t *testing.T) {
-			f := newEntryOperatorFixture(t, provider)
+			f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), provider)
 			f.backdate()
 			res := entryAbsentHL()
 			q := fixedVenue(res, nil)
@@ -292,7 +292,7 @@ func entryOperatorCaseEntryOperatorReleasesAVerifiedAbsentAttemptExactlyOnce(t *
 func entryOperatorCaseEntryOperatorQueriesFillHistoryOnlyThroughTheReleaseDeadline(t *testing.T) {
 	for _, provider := range []string{"hyperliquid"} {
 		t.Run(provider, func(t *testing.T) {
-			f := newEntryOperatorFixture(t, provider)
+			f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), provider)
 			f.backdate()
 			in := f.intent()
 			req, err := parseEntryIntentRequest(in)
@@ -337,7 +337,7 @@ func entryOperatorCaseEntryOperatorQueriesFillHistoryOnlyThroughTheReleaseDeadli
 }
 
 func entryOperatorCaseEntryRecoveryAndCommandHoldOnAClientIDFillBeforeTheReleaseDeadline(t *testing.T) {
-	f := newEntryOperatorFixture(t, "hyperliquid")
+	f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid")
 	f.backdate()
 	in := f.intent()
 	req, err := parseEntryIntentRequest(in)
@@ -351,7 +351,7 @@ func entryOperatorCaseEntryRecoveryAndCommandHoldOnAClientIDFillBeforeTheRelease
 	res.Order.Coverage.MatchedCount, res.Order.Coverage.MatchedQty = 1, 0.1
 	installEntryVenueQuery(t, fixedVenue(res, nil))
 	cashBefore := f.cash()
-	recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
+	recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, f.clk.now())
 	if r := f.row(); r.Status != entryIntentSubmitting {
 		t.Fatalf("recovery changed the attempt to %s", r.Status)
 	}
@@ -365,7 +365,7 @@ func entryOperatorCaseEntryRecoveryAndCommandHoldOnAClientIDFillBeforeTheRelease
 func entryOperatorCaseEntryOperatorAuthorizationAndOwnershipRefuseBeforeMutation(t *testing.T) {
 	paper := entryTestHLStrategy("hl-paper", "paper")
 	other := entryTestHLStrategy("hl-other", "live")
-	f := newEntryOperatorFixture(t, "hyperliquid", paper, other)
+	f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid", paper, other)
 	f.backdate()
 	q := fixedVenue(entryAbsentHL(), nil)
 	installEntryVenueQuery(t, q)
@@ -462,7 +462,7 @@ func entryOperatorCaseEntryOperatorRefusesEveryUnprovenOrContradictedState(t *te
 		}, nil, "is incomplete: more than 40", 1},
 		{"history starts after the window", "hyperliquid", nil, func() *entryRecoveryResult {
 			r := entryAbsentHL()
-			r.Order.Coverage.FromMs = time.Now().UnixMilli()
+			r.Order.Coverage.FromMs = entryTestEvidenceNow().UnixMilli()
 			return r
 		}, nil, "after the attempt window start", 1},
 		{"history ends before the deadline", "hyperliquid", nil, func() *entryRecoveryResult {
@@ -496,14 +496,15 @@ func entryOperatorCaseEntryOperatorRefusesEveryUnprovenOrContradictedState(t *te
 		}, entryAbsentHL, nil, "saved evidence of a 0.30000000 fill", 0},
 		{"deadline not passed", "hyperliquid", func(f *entryOperatorFixture) {
 			f.rewrite(func(_ *entryIntent, req *entryIntentRequest) {
-				req.ExpiresAfterMs = time.Now().Add(time.Minute).UnixMilli()
-				req.StopExpiresAfterMs = time.Now().Add(2 * time.Minute).UnixMilli()
-				req.SubmittedAtMs = time.Now().Add(-time.Minute).UnixMilli()
+				now := f.clk.now()
+				req.ExpiresAfterMs = now.Add(time.Minute).UnixMilli()
+				req.StopExpiresAfterMs = now.Add(2 * time.Minute).UnixMilli()
+				req.SubmittedAtMs = now.Add(-time.Minute).UnixMilli()
 			})
 		}, entryAbsentHL, nil, "deadline plus grace has not passed", 0},
 		{"stop deadline not passed", "hyperliquid", func(f *entryOperatorFixture) {
 			f.rewrite(func(_ *entryIntent, req *entryIntentRequest) {
-				req.StopExpiresAfterMs = time.Now().Add(-time.Minute).UnixMilli()
+				req.StopExpiresAfterMs = f.clk.now().Add(-time.Minute).UnixMilli()
 			})
 		}, entryAbsentHL, nil, "deadline plus grace has not passed", 0},
 		{"missing stop deadline", "hyperliquid", func(f *entryOperatorFixture) {
@@ -524,7 +525,7 @@ func entryOperatorCaseEntryOperatorRefusesEveryUnprovenOrContradictedState(t *te
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newEntryOperatorFixture(t, tc.provider)
+			f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), tc.provider)
 			f.backdate()
 			if tc.prepare != nil {
 				tc.prepare(f)
@@ -546,15 +547,32 @@ func entryOperatorCaseEntryOperatorRefusesEveryUnprovenOrContradictedState(t *te
 }
 
 func entryOperatorCaseEntryOperatorRefusesSettlingAndReservedAttempts(t *testing.T) {
-	f := newEntryOperatorFixture(t, "hyperliquid")
+	f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid")
 	f.backdate()
 	partial := &entryRecoveryResult{Platform: "hyperliquid", Account: entryTestHLAccountKey,
 		Order: &entryRecoveryOrder{Found: true, Status: "open", OrderID: "9", OrigSz: 0.4, ExecutedSz: 0.1, FillQty: 0.1, FillAvgPx: 100, FillCount: 1, FillsComplete: true, Coverage: entryTestCoverage()}}
-	q := fixedVenue(partial, nil)
-	installEntryVenueQuery(t, q)
-	recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
-	if r := f.row(); r.Status != entryIntentSettling {
+	b := newBlockingVenue(t, func(int) (*entryRecoveryResult, error) { return partial, nil }, 1)
+	q := b.q
+	started := f.clk.now()
+	done := make(chan struct{})
+	go func() {
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, started)
+		close(done)
+	}()
+	waitEntered(t, b)
+	observed := f.clk.advance(time.Minute)
+	close(b.proceed)
+	<-done
+	r := f.row()
+	if r.Status != entryIntentSettling {
 		t.Fatalf("fixture status %s", r.Status)
+	}
+	var ev entryIntentEvidence
+	if err := json.Unmarshal([]byte(r.Evidence), &ev); err != nil {
+		t.Fatal(err)
+	}
+	if ev.Outcome != "partial_open_order" || ev.ObservedAtMs != observed.UnixMilli() {
+		t.Fatalf("partial-open evidence %s observed at %d, want partial_open_order observed after the venue query at %d (recovery started %d)", ev.Outcome, ev.ObservedAtMs, observed.UnixMilli(), started.UnixMilli())
 	}
 	consumed := f.env.consumedBar(f.sc.ID, "BTC", "long")
 	if consumed == 0 {
@@ -572,8 +590,8 @@ func entryOperatorCaseEntryOperatorRefusesSettlingAndReservedAttempts(t *testing
 
 	sc := entryTestHLStrategy("hl-reserved", "live")
 	env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
-	at := entryTestBar(1).Add(10 * time.Second)
-	adm := admitClosedBarEntry(sc, env.strat(sc.ID), &env.mu, "BTC", entryTestDecision(entryTestBar(0), at), 1, 0, 0, "", at)
+	at := f.clk.now()
+	adm := admitClosedBarEntry(sc, env.strat(sc.ID), &env.mu, "BTC", entryTestDecision(entryTestNewestBar(at), at), 1, 0, 0, "", at)
 	in, err := reserveLiveEntryIntent(env.store, sc, env.strat(sc.ID), &env.mu, adm, entryProviderHyperliquid, entryIntentRequest{Kind: "open", Signal: 1, Price: 100}, at)
 	if err != nil {
 		t.Fatal(err)
@@ -628,13 +646,14 @@ func entryOperatorCaseEntryOperatorSerializesWithRecoveryAndOtherRequests(t *tes
 	}
 
 	t.Run("release first; recovery and a duplicate request wait their turn", func(t *testing.T) {
-		f := newEntryOperatorFixture(t, "hyperliquid")
+		f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid")
 		f.backdate()
 		b := newBlockingVenue(t, func(int) (*entryRecoveryResult, error) { return entryAbsentHL(), nil }, 1)
 		done := make(chan string, 1)
 		go func() { done <- f.command() }()
 		waitEntered(t, b)
-		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now().Add(time.Hour))
+		advanced := f.clk.advance(time.Hour)
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, advanced)
 		if dup := f.command(); !strings.Contains(dup, "in progress") {
 			t.Fatalf("a duplicate request during the check: %q", dup)
 		}
@@ -645,7 +664,14 @@ func entryOperatorCaseEntryOperatorSerializesWithRecoveryAndOtherRequests(t *tes
 		if msg := <-done; !strings.HasPrefix(msg, "Released attempt") {
 			t.Fatalf("release: %q", msg)
 		}
-		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now().Add(2*time.Hour))
+		var ev entryIntentEvidence
+		if err := json.Unmarshal([]byte(f.row().Evidence), &ev); err != nil {
+			t.Fatal(err)
+		}
+		if ev.ObservedAtMs != advanced.UnixMilli() || ev.Operator == nil || ev.Operator.ReleasedAtMs != advanced.UnixMilli() {
+			t.Fatalf("the release proof must read the clock after the venue query (%d): observed %d operator %+v", advanced.UnixMilli(), ev.ObservedAtMs, ev.Operator)
+		}
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, f.clk.advance(time.Hour))
 		if got := f.env.intentStatuses(f.sc.ID); len(got) != 1 || got[0] != entryIntentNoFill || b.q.count() != 1 {
 			t.Fatalf("after release: intents %v queries %d", got, b.q.count())
 		}
@@ -655,12 +681,12 @@ func entryOperatorCaseEntryOperatorSerializesWithRecoveryAndOtherRequests(t *tes
 	})
 
 	t.Run("recovery first books the fill; the command then reports it resolved", func(t *testing.T) {
-		f := newEntryOperatorFixture(t, "hyperliquid")
+		f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid")
 		f.backdate()
 		b := newBlockingVenue(t, func(int) (*entryRecoveryResult, error) { return filled(), nil }, 1)
 		done := make(chan struct{})
 		go func() {
-			recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
+			recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, f.clk.now())
 			close(done)
 		}()
 		waitEntered(t, b)
@@ -681,7 +707,7 @@ func entryOperatorCaseEntryOperatorSerializesWithRecoveryAndOtherRequests(t *tes
 	})
 
 	t.Run("evidence changed in memory during the operator query", func(t *testing.T) {
-		f := newEntryOperatorFixture(t, "hyperliquid")
+		f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid")
 		f.backdate()
 		b := newBlockingVenue(t, func(int) (*entryRecoveryResult, error) { return entryAbsentHL(), nil }, 1)
 		done := make(chan string, 1)
@@ -704,7 +730,7 @@ func entryOperatorCaseEntryOperatorSerializesWithRecoveryAndOtherRequests(t *tes
 	})
 
 	t.Run("evidence changed in the state file during the operator query", func(t *testing.T) {
-		f := newEntryOperatorFixture(t, "hyperliquid")
+		f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid")
 		f.backdate()
 		b := newBlockingVenue(t, func(int) (*entryRecoveryResult, error) { return entryAbsentHL(), nil }, 1)
 		done := make(chan string, 1)
@@ -735,12 +761,12 @@ func entryOperatorCaseEntryOperatorSerializesWithRecoveryAndOtherRequests(t *tes
 			{"verified absence", entryAbsentHL},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				f := newEntryOperatorFixture(t, "hyperliquid")
+				f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid")
 				f.backdate()
 				b := newBlockingVenue(t, func(int) (*entryRecoveryResult, error) { return tc.res(), nil }, 1)
 				done := make(chan struct{})
 				go func() {
-					recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
+					recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, f.clk.now())
 					close(done)
 				}()
 				waitEntered(t, b)
@@ -774,12 +800,12 @@ func entryOperatorCaseEntryOperatorSerializesWithRecoveryAndOtherRequests(t *tes
 	})
 
 	t.Run("a stale recovery job cannot restore a hold the operator released", func(t *testing.T) {
-		f := newEntryOperatorFixture(t, "hyperliquid")
+		f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid")
 		f.backdate()
 		b := newBlockingVenue(t, func(int) (*entryRecoveryResult, error) { return nil, errors.New("connection reset") }, 1)
 		done := make(chan struct{})
 		go func() {
-			recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
+			recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, f.clk.now())
 			close(done)
 		}()
 		waitEntered(t, b)
@@ -800,7 +826,7 @@ func entryOperatorCaseEntryOperatorSerializesWithRecoveryAndOtherRequests(t *tes
 }
 
 func entryOperatorCaseEntryOperatorFailedCommitKeepsTheHoldAndRetrySucceeds(t *testing.T) {
-	f := newEntryOperatorFixture(t, "hyperliquid")
+	f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid")
 	f.backdate()
 	q := fixedVenue(entryAbsentHL(), nil)
 	installEntryVenueQuery(t, q)
@@ -825,14 +851,15 @@ func entryOperatorCaseEntryOperatorFailedCommitKeepsTheHoldAndRetrySucceeds(t *t
 func entryOperatorCaseEntryRecoveryKeepsProvenExecutionAgainstLaterEmptyResults(t *testing.T) {
 	t.Run("a booking conflict saves the proven fill before holding", func(t *testing.T) {
 		useEntryTestHLAccount(t)
-		env, sc := entryTestUnknownScaleIn(t)
-		backdateEntryDeadlines(t, env, sc.ID)
+		clk := bindEntryTestClock(t, 0)
+		env, sc := entryTestUnknownScaleIn(t, clk)
+		backdateEntryDeadlines(t, clk, env, sc.ID)
 		env.mu.Lock()
 		env.strat(sc.ID).Positions["BTC"].Quantity = 0.5
 		env.mu.Unlock()
 		q := fixedVenue(entryTestScaleInFill(), nil)
 		installEntryVenueQuery(t, q)
-		recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, time.Now())
+		recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, clk.now())
 		in := env.strat(sc.ID).EntryGuard.unresolvedIntent()
 		if in == nil {
 			t.Fatal("the conflicting attempt was released")
@@ -848,7 +875,7 @@ func entryOperatorCaseEntryRecoveryKeepsProvenExecutionAgainstLaterEmptyResults(
 		env = env.restart()
 		absent := entryAbsentHL()
 		q.respond = func(int) (*entryRecoveryResult, error) { return absent, nil }
-		recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, time.Now().Add(time.Hour))
+		recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, clk.advance(time.Hour))
 		if got := env.intentStatuses(sc.ID); len(got) != 1 || got[0] != entryIntentSubmitting {
 			t.Fatalf("a later empty result released proven execution: %v", got)
 		}
@@ -874,8 +901,9 @@ func entryOperatorCaseEntryRecoveryKeepsProvenExecutionAgainstLaterEmptyResults(
 			{"result and query error together", nil, nil},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				env, sc := entryTestUnknownAttempt(t)
-				backdateEntryDeadlines(t, env, sc.ID)
+				clk := bindEntryTestClock(t, 0)
+				env, sc := entryTestUnknownAttempt(t, clk)
+				backdateEntryDeadlines(t, clk, env, sc.ID)
 				if tc.prepare != nil {
 					tc.prepare(env, sc.ID)
 				}
@@ -884,7 +912,7 @@ func entryOperatorCaseEntryRecoveryKeepsProvenExecutionAgainstLaterEmptyResults(
 					q = fixedVenue(entryAbsentHL(), errors.New("recovery query error: exit status 1"))
 				}
 				installEntryVenueQuery(t, q)
-				recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, time.Now())
+				recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, clk.now())
 				if got := env.intentStatuses(sc.ID); len(got) != 1 || got[0] != entryIntentSubmitting {
 					t.Fatalf("intents %v, want the attempt held", got)
 				}

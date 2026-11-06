@@ -1003,7 +1003,7 @@ func main() {
 			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier, cfg.Regime)
 		}
 
-		recoverEntryIntents(cfg, state, store, &mu, notifier, logMgr, time.Now())
+		recoverEntryIntents(cfg, state, store, &mu, notifier, logMgr, tradingNow())
 		recoverRobinhoodOrders(cfg, state, store, &mu, notifier, logMgr, time.Now())
 		notifyRobinhoodHeldBooks(state, cfg.Strategies, &mu, notifier, time.Now())
 
