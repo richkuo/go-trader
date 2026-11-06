@@ -13,9 +13,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
+
+	"trading-scheduler/internal/notifybroker"
 )
 
-const commandPrefix = "go-trader-"
+const commandPrefix = notifybroker.CommandNamePrefix
 
 var readOnlyCommandNames = map[string]bool{
 	"status":             true,
@@ -38,6 +40,7 @@ var opsCommandNames = map[string]bool{
 	"add-strategy":              true,
 	quoteOwnerSetupAction:       true,
 	"remove-strategy":           true,
+	paperCloseCommandName:       true,
 	"add-platform":              true,
 	"paper-to-live":             true,
 	"apply-regime-gate":         true,
@@ -422,8 +425,12 @@ func dmContext() *[]discordgo.InteractionContextType {
 	return &[]discordgo.InteractionContextType{discordgo.InteractionContextBotDM}
 }
 
+func readOnlyContext() *[]discordgo.InteractionContextType {
+	return &[]discordgo.InteractionContextType{discordgo.InteractionContextGuild, discordgo.InteractionContextBotDM}
+}
+
 func slashCommands() []*discordgo.ApplicationCommand {
-	return []*discordgo.ApplicationCommand{
+	cmds := []*discordgo.ApplicationCommand{
 		{Name: commandPrefix + "status", Description: "Live portfolio status (cash, positions, value, regime)"},
 		{Name: commandPrefix + "health", Description: "Daemon health: running, last cycle, version"},
 		{Name: commandPrefix + "positions", Description: "Open positions across platforms"},
@@ -468,6 +475,10 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		{Name: commandPrefix + "remove-strategy", Description: "Remove a strategy from the config (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "id", Description: "Strategy ID to remove", Required: true},
 		}},
+		{Name: commandPrefix + paperCloseCommandName, Description: "Close a paper strategy's open positions at the current mark (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Paper strategy ID", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "symbol", Description: "Close only this symbol or option leg (default: every leg)"},
+		}},
 		{Name: commandPrefix + "add-platform", Description: "Guided platform setup instructions (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Platform name, e.g. hyperliquid", Required: true},
 		}},
@@ -507,6 +518,15 @@ func slashCommands() []*discordgo.ApplicationCommand {
 			}},
 		}},
 	}
+	for _, c := range cmds {
+		if c.Contexts == nil {
+			c.Contexts = readOnlyContext()
+		}
+		c.IntegrationTypes = &[]discordgo.ApplicationIntegrationType{discordgo.ApplicationIntegrationGuildInstall}
+		nsfw := false
+		c.NSFW = &nsfw
+	}
+	return cmds
 }
 
 func (d *DiscordNotifier) RegisterSlashCommands(ss *StatusServer, cfg *Config) error {
@@ -533,10 +553,9 @@ func (d *DiscordNotifier) RegisterSlashCommands(ss *StatusServer, cfg *Config) e
 	if d.broker == nil {
 		d.session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) { d.interactionCreate(s, i) })
 	}
-	if _, err := d.transport.ApplicationCommandBulkOverwrite(appID, "", slashCommands()); err != nil {
-		return fmt.Errorf("bulk overwrite commands: %w", err)
-	}
-	return nil
+	err := d.syncSlashCommands(appID)
+	d.startSlashCommandResync(appID, err)
+	return err
 }
 
 var errSlashCommandsDeferred = errors.New("the notification broker has no Discord identity yet; the command handler is installed and registration retries in the background")
@@ -550,7 +569,6 @@ var (
 
 func (d *DiscordNotifier) registerSlashCommandsWhenReady() {
 	delay := slashRegisterFirstRetry
-	lastErr := ""
 	for {
 		select {
 		case <-shutdownReadOnlyCtx.Done():
@@ -558,15 +576,14 @@ func (d *DiscordNotifier) registerSlashCommandsWhenReady() {
 		case <-time.After(delay):
 		}
 		if appID := d.selfUserID(); appID != "" {
-			_, err := d.transport.ApplicationCommandBulkOverwrite(appID, "", slashCommands())
+			err := d.syncSlashCommands(appID)
 			if err == nil {
 				fmt.Println("Discord slash commands registered (the notification broker's Discord gateway is up)")
-				return
+			} else {
+				fmt.Printf("[WARN] Discord slash command registration through the notification broker failed: %v (the slash command re-sync retries it)\n", err)
 			}
-			if msg := err.Error(); msg != lastErr {
-				lastErr = msg
-				fmt.Printf("[WARN] Discord slash command registration through the notification broker failed: %v (retrying)\n", err)
-			}
+			d.startSlashCommandResync(appID, err)
+			return
 		}
 		if delay < slashRegisterMaxDelay {
 			delay = min(delay*2, slashRegisterMaxDelay)
@@ -629,6 +646,8 @@ func (d *DiscordNotifier) interactionCreate(s discordTransport, i *discordgo.Int
 		d.handleAddQuoteOwner(s, i, data)
 	case "remove-strategy":
 		d.handleRemoveStrategy(s, i, data.Options)
+	case paperCloseCommandName:
+		d.handlePaperClose(s, i, data.Options)
 	case "add-platform":
 		d.handleAddPlatform(s, i, data.Options)
 	case "paper-to-live":

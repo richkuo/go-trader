@@ -271,6 +271,13 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 	ss.tradeActionMu.Lock()
 	defer ss.tradeActionMu.Unlock()
 
+	if action == "open" || action == "add" {
+		if reason := ss.removedStrategyRefusal(id); reason != "" {
+			writeJSONError(w, http.StatusConflict, reason)
+			return
+		}
+	}
+
 	guardSym := sc.Symbol
 	if action == "force-close" {
 		guardSym = sym

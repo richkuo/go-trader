@@ -45,8 +45,13 @@ type StatusServer struct {
 	confirmMu     sync.Mutex
 	confirmNonces map[string]confirmNonceEntry
 	tradeActionMu sync.Mutex
-	tradeDepsHook func(*manualCoreDeps)
-	restartFn     func() error
+
+	removedMu         sync.Mutex
+	removedStrategies map[string]bool
+	tradeDepsHook     func(*manualCoreDeps)
+	restartFn         func() error
+
+	paperCloseMarks func(StrategyConfig, *paperClosePlan) (map[string]paperCloseMark, error)
 
 	perpsErrMu              sync.Mutex
 	lastFuturesErrLoggedAt  time.Time

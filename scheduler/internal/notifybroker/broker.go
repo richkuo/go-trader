@@ -343,7 +343,7 @@ func (b *Broker) handle(ctx context.Context, bc *brokerConn, f *Frame) (json.Raw
 			resp.DiscordUserID = b.discordSelfID(ctx)
 		}
 		return json.Marshal(resp)
-	case OpDiscordSend, OpDiscordUserChannel, OpDiscordRespond, OpDiscordFollowup, OpDiscordCommands:
+	case OpDiscordSend, OpDiscordUserChannel, OpDiscordRespond, OpDiscordFollowup, OpDiscordCommandList, OpDiscordCommandCreate, OpDiscordCommandEdit, OpDiscordCommandDelete:
 		if b.rest == nil {
 			return nil, errors.New("discord is not configured in the notification broker")
 		}
@@ -361,6 +361,51 @@ func (b *Broker) handle(ctx context.Context, bc *brokerConn, f *Frame) (json.Raw
 	default:
 		return nil, fmt.Errorf("unknown operation %q", f.Op)
 	}
+}
+
+func ownedCommandName(name string) bool {
+	return strings.HasPrefix(name, CommandNamePrefix) && len(name) > len(CommandNamePrefix)
+}
+
+func ownedCommandPayload(raw json.RawMessage) (*discordgo.ApplicationCommand, error) {
+	var cmd discordgo.ApplicationCommand
+	if err := json.Unmarshal(raw, &cmd); err != nil {
+		return nil, fmt.Errorf("command: %v", err)
+	}
+	if !ownedCommandName(cmd.Name) {
+		return nil, fmt.Errorf("command %q is outside the %s namespace", cmd.Name, CommandNamePrefix)
+	}
+	if cmd.Type != 0 && cmd.Type != discordgo.ChatApplicationCommand {
+		return nil, fmt.Errorf("command %q is not a chat command", cmd.Name)
+	}
+	cmd.ID, cmd.ApplicationID, cmd.GuildID, cmd.Version = "", "", "", ""
+	return &cmd, nil
+}
+
+func requireOwnedCommand(session *discordgo.Session, appID, guildID, cmdID string, opt discordgo.RequestOption) error {
+	cur, err := session.ApplicationCommand(appID, guildID, cmdID, opt)
+	if err != nil {
+		return fmt.Errorf("read command %s: %w", cmdID, err)
+	}
+	if cur == nil || !ownedCommandName(cur.Name) || (cur.Type != 0 && cur.Type != discordgo.ChatApplicationCommand) {
+		name := ""
+		if cur != nil {
+			name = cur.Name
+		}
+		return fmt.Errorf("command %s (%q) is outside the %s namespace", cmdID, name, CommandNamePrefix)
+	}
+	return nil
+}
+
+func commandGuildID(raw string) (string, error) {
+	guildID := strings.TrimSpace(raw)
+	if guildID == "" {
+		return "", nil
+	}
+	if err := ValidSnowflake(guildID); err != nil {
+		return "", fmt.Errorf("guild id: %w", err)
+	}
+	return guildID, nil
 }
 
 func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, f *Frame) (json.RawMessage, error) {
@@ -436,24 +481,89 @@ func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, 
 			return nil, err
 		}
 		return json.Marshal(msg)
-	case OpDiscordCommands:
-		var req DiscordCommandsRequest
+	case OpDiscordCommandList:
+		var req DiscordCommandListRequest
 		if err := decodeStrict(f.Payload, &req); err != nil {
 			return nil, err
 		}
-		var cmds []*discordgo.ApplicationCommand
-		if err := json.Unmarshal(req.Commands, &cmds); err != nil {
-			return nil, fmt.Errorf("commands: %v", err)
+		guildID, err := commandGuildID(req.GuildID)
+		if err != nil {
+			return nil, err
 		}
 		appID := b.discordSelfID(ctx)
 		if appID == "" {
 			return nil, errors.New("discord application identity is not available yet")
 		}
-		out, err := session.ApplicationCommandBulkOverwrite(appID, "", cmds, opt)
+		cmds, err := session.ApplicationCommands(appID, guildID, opt)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(cmds)
+	case OpDiscordCommandCreate:
+		var req DiscordCommandCreateRequest
+		if err := decodeStrict(f.Payload, &req); err != nil {
+			return nil, err
+		}
+		cmd, err := ownedCommandPayload(req.Command)
+		if err != nil {
+			return nil, err
+		}
+		appID := b.discordSelfID(ctx)
+		if appID == "" {
+			return nil, errors.New("discord application identity is not available yet")
+		}
+		out, err := session.ApplicationCommandCreate(appID, "", cmd, opt)
 		if err != nil {
 			return nil, err
 		}
 		return json.Marshal(out)
+	case OpDiscordCommandEdit:
+		var req DiscordCommandEditRequest
+		if err := decodeStrict(f.Payload, &req); err != nil {
+			return nil, err
+		}
+		if err := ValidSnowflake(req.ID); err != nil {
+			return nil, fmt.Errorf("command id: %w", err)
+		}
+		cmd, err := ownedCommandPayload(req.Command)
+		if err != nil {
+			return nil, err
+		}
+		appID := b.discordSelfID(ctx)
+		if appID == "" {
+			return nil, errors.New("discord application identity is not available yet")
+		}
+		if err := requireOwnedCommand(session, appID, "", req.ID, opt); err != nil {
+			return nil, err
+		}
+		out, err := session.ApplicationCommandEdit(appID, "", req.ID, cmd, opt)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(out)
+	case OpDiscordCommandDelete:
+		var req DiscordCommandDeleteRequest
+		if err := decodeStrict(f.Payload, &req); err != nil {
+			return nil, err
+		}
+		guildID, err := commandGuildID(req.GuildID)
+		if err != nil {
+			return nil, err
+		}
+		if err := ValidSnowflake(req.ID); err != nil {
+			return nil, fmt.Errorf("command id: %w", err)
+		}
+		appID := b.discordSelfID(ctx)
+		if appID == "" {
+			return nil, errors.New("discord application identity is not available yet")
+		}
+		if err := requireOwnedCommand(session, appID, guildID, req.ID, opt); err != nil {
+			return nil, err
+		}
+		if err := session.ApplicationCommandDelete(appID, guildID, req.ID, opt); err != nil {
+			return nil, err
+		}
+		return json.Marshal(struct{}{})
 	}
 	return nil, fmt.Errorf("unknown operation %q", f.Op)
 }

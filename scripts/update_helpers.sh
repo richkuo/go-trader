@@ -1926,6 +1926,19 @@ update_egress_restart_controller() {
     systemctl restart --job-mode=ignore-dependencies "go-trader-egress@$1.service"
 }
 
+update_egress_restart_broker() {
+    local unit="go-trader-notify@$1.service"
+    if ! systemctl is-active --quiet "$unit"; then
+        echo "[update] egress: no running notification broker for $1; nothing to restart"
+        return 0
+    fi
+    if ! systemctl restart "$unit"; then
+        echo "[update] egress: restarting $unit failed; it still runs the previous controller binary" >&2
+        return 1
+    fi
+    echo "[update] egress: notification broker $unit restarted on the installed controller binary"
+}
+
 update_egress_switch_controller() {
     local deployment="$1" staged="$2" state_file="${3:-}" cur
     cur=$(update_egress_controller_path "$deployment")
@@ -1953,6 +1966,7 @@ update_egress_switch_controller() {
         echo "[update] egress: controller for $deployment did not report ready within 30s" >&2
         return 1
     fi
+    update_egress_restart_broker "$deployment" || return 1
     echo "[update] egress: controller for $deployment switched and ready (namespace rules stayed installed throughout)"
     return 0
 }
@@ -1973,6 +1987,9 @@ update_egress_restore_controller() {
     fi
     if [[ "$need_restart" == "1" ]]; then
         update_egress_restart_controller "$deployment" || return 1
+        update_egress_wait_ready "$deployment" 30 || return 1
+        update_egress_restart_broker "$deployment"
+        return
     fi
     update_egress_wait_ready "$deployment" 30
 }

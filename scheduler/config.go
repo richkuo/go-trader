@@ -17,6 +17,7 @@ type DiscordConfig struct {
 	Enabled            bool              `json:"enabled"`
 	Token              string            `json:"token"`
 	OwnerID            string            `json:"owner_id,omitempty"`
+	GuildID            string            `json:"guild_id,omitempty"`
 	DMChannels         map[string]string `json:"dm_channels,omitempty"`
 	Channels           map[string]string `json:"channels"`
 	TradeAlertChannels map[string]string `json:"trade_alert_channels,omitempty"`

@@ -494,6 +494,7 @@ func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64,
 func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeMode, snapshot, extraCancelOIDs...)
 	stdout, stderr, err := runPythonSideEffect(script, args)
+	observeHLAgentScriptOutput(stdout, stderr)
 	hlNoteCoinSubmission(symbol)
 	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)
 }
@@ -513,6 +514,7 @@ func RunHyperliquidUpdateStopLoss(script, symbol, side string, size, triggerPx f
 		args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", cancelStopLossOID))
 	}
 	stdout, stderr, err := runPythonSideEffect(script, args)
+	observeHLAgentScriptOutput(stdout, stderr)
 	res, stderrStr, parseErr := parseHyperliquidUpdateStopLossOutput(stdout, string(stderr), err)
 	if hlStopUpdateMovesChain(res) {
 		hlNoteCoinSubmission(symbol)
@@ -658,6 +660,7 @@ func buildHyperliquidSyncProtectionArgv(plan hlProtectionPlan, reconcileFillHint
 func RunHyperliquidSyncProtection(script string, plan hlProtectionPlan, reconcileFillHintsJSON []byte) (*HyperliquidProtectionSyncResult, string, error) {
 	args := buildHyperliquidSyncProtectionArgv(plan, reconcileFillHintsJSON)
 	stdout, stderr, err := runPythonSideEffect(script, args)
+	observeHLAgentScriptOutput(stdout, stderr)
 	stderrStr := string(stderr)
 	var result HyperliquidProtectionSyncResult
 	if jsonErr := json.Unmarshal(stdout, &result); jsonErr != nil {
@@ -910,6 +913,7 @@ func RunHyperliquidSizedClose(script string, req hlSizedCloseRequest) (*Hyperliq
 		return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: req.Symbol}, Platform: "hyperliquid", Error: msg, OrderOutcome: "not_sent"}, "", fmt.Errorf("%s", msg)
 	}
 	stdout, stderr, runErr := runPythonSideEffect(script, buildHyperliquidSizedCloseArgs(req))
+	observeHLAgentScriptOutput(stdout, stderr)
 	hlNoteCoinSubmission(req.Symbol)
 	return parseHyperliquidCloseOutput(stdout, string(stderr), runErr)
 }
@@ -977,6 +981,7 @@ func RunHyperliquidCloseCancelAfterFill(script, symbol string, partialSz *float6
 func runHyperliquidClose(script, symbol string, partialSz *float64, cancelStopLossOIDs []int64, cancelProtectionAfterClose bool) (*HyperliquidCloseResult, string, error) {
 	args := buildHyperliquidCloseArgs(symbol, partialSz, cancelStopLossOIDs, cancelProtectionAfterClose)
 	stdout, stderr, runErr := runPythonSideEffect(script, args)
+	observeHLAgentScriptOutput(stdout, stderr)
 	hlNoteCoinSubmission(symbol)
 	return parseHyperliquidCloseOutput(stdout, string(stderr), runErr)
 }

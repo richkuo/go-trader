@@ -1365,44 +1365,61 @@ func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[str
 			kept = append(kept, id)
 			continue
 		}
-		var pnl, closePrice float64
-		if pos.Action == "buy" {
-			pnl = pos.CurrentValueUSD - pos.EntryPremiumUSD
-			s.Cash += pos.CurrentValueUSD
-			closePrice = pos.CurrentValueUSD
-		} else {
-			buybackCost := -pos.CurrentValueUSD
-			pnl = pos.EntryPremiumUSD - buybackCost
-			s.Cash -= buybackCost
-			closePrice = buybackCost
-		}
-		if logger != nil {
-			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Action, id, closePrice, pnl)
-		}
-		positionID := ensureOptionTradeID(s.ID, pos)
-		trade := Trade{
-			Timestamp:   now,
-			StrategyID:  s.ID,
-			Symbol:      id,
-			PositionID:  positionID,
-			Side:        optionCloseTradeSide(pos.Action),
-			Quantity:    pos.Quantity,
-			Price:       closePrice,
-			Value:       closePrice,
-			TradeType:   "options",
-			Details:     fmt.Sprintf("Circuit breaker force-close, PnL: $%.2f", pnl),
-			IsClose:     true,
-			RealizedPnL: pnl,
-			PnLGross:    true,
-			FeeSource:   FeeSourceReconcileAdjustment,
-			Regime:      s.Regime,
-		}
-		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
-		recordClosedOptionPosition(s, pos, closePrice, pnl, "circuit_breaker", now)
-		delete(s.OptionPositions, id)
+		closeOptionLegAtValue(s, id, pos, "circuit_breaker", "Circuit breaker force-close", now, logger)
 	}
 	return kept
+}
+
+func virtualCloseLabel(reason string) string {
+	if strings.HasPrefix(reason, operatorPaperCloseReason) {
+		return "Operator paper close"
+	}
+	return "Circuit breaker"
+}
+
+func closeOptionLegAtValue(s *StrategyState, id string, pos *OptionPosition, reason, detailPrefix string, now time.Time, logger *StrategyLogger) {
+	var pnl, closePrice float64
+	if pos.Action == "buy" {
+		pnl = pos.CurrentValueUSD - pos.EntryPremiumUSD
+		s.Cash += pos.CurrentValueUSD
+		closePrice = pos.CurrentValueUSD
+	} else {
+		buybackCost := -pos.CurrentValueUSD
+		pnl = pos.EntryPremiumUSD - buybackCost
+		s.Cash -= buybackCost
+		closePrice = buybackCost
+	}
+	if logger != nil {
+		logger.Warn("%s: force-closing %s %s @ $%.2f (PnL: $%.2f)", virtualCloseLabel(reason), pos.Action, id, closePrice, pnl)
+	}
+	positionID := ensureOptionTradeID(s.ID, pos)
+	trade := Trade{
+		Timestamp:   now,
+		StrategyID:  s.ID,
+		Symbol:      id,
+		PositionID:  positionID,
+		Side:        optionCloseTradeSide(pos.Action),
+		Quantity:    pos.Quantity,
+		Price:       closePrice,
+		Value:       closePrice,
+		TradeType:   "options",
+		Details:     fmt.Sprintf("%s, PnL: $%.2f", detailPrefix, pnl),
+		IsClose:     true,
+		RealizedPnL: pnl,
+		PnLGross:    true,
+		FeeSource:   FeeSourceReconcileAdjustment,
+		Regime:      s.Regime,
+	}
+	RecordTrade(s, trade)
+	RecordTradeResult(&s.RiskState, pnl)
+	recordClosedOptionPosition(s, pos, closePrice, pnl, reason, now)
+	delete(s.OptionPositions, id)
+}
+
+func closeVirtualPositionAtPrice(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, price float64, reason, detailPrefix string, logger *StrategyLogger) {
+	mutatePaperPerpsBook(s, symbol, func() {
+		bookVirtualClose(s, sc, symbol, pos, price, reason, detailPrefix, false, logger)
+	})
 }
 
 func closeVirtualPositionAtMark(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, logger *StrategyLogger) {
@@ -1426,11 +1443,17 @@ func bookVirtualClose(s *StrategyState, sc *StrategyConfig, symbol string, pos *
 	}
 	var pnl, value float64
 	tradeType := classifyPositionTradeType(s, pos)
+	label := virtualCloseLabel(reason)
+	prefix := details
+	details = ""
 	if closePositionIsCorrupt(pos) {
 		reason = reason + "_corrupt"
-		details = fmt.Sprintf("Circuit breaker close %s (corrupt qty=%.6f avg_cost=%.4f) — zero PnL booked", pos.Side, pos.Quantity, pos.AvgCost)
+		if prefix == "" {
+			prefix = label + " close"
+		}
+		details = fmt.Sprintf("%s %s (corrupt qty=%.6f avg_cost=%.4f) — zero PnL booked", prefix, pos.Side, pos.Quantity, pos.AvgCost)
 		if logger != nil {
-			logger.Warn("Circuit breaker: corrupt %s position %s (qty=%.6f avg_cost=%.4f) — booking zero realized PnL, not qty*(price-avgCost)", pos.Side, symbol, pos.Quantity, pos.AvgCost)
+			logger.Warn("%s: corrupt %s position %s (qty=%.6f avg_cost=%.4f) — booking zero realized PnL, not qty*(price-avgCost)", label, pos.Side, symbol, pos.Quantity, pos.AvgCost)
 		}
 	} else if pos.Multiplier > 0 {
 		if pos.Side == "long" {
@@ -1450,6 +1473,9 @@ func bookVirtualClose(s *StrategyState, sc *StrategyConfig, symbol string, pos *
 		s.Cash += pos.Quantity*pos.AvgCost - pos.Quantity*price
 		value = pos.Quantity * price
 	}
+	if details == "" && prefix != "" {
+		details = fmt.Sprintf("%s %s, PnL: $%.2f", prefix, pos.Side, pnl)
+	}
 	if details == "" && verifiedFlat {
 		details = fmt.Sprintf("Verified flat by a fresh Robinhood holdings read; no venue fill (%s) %s, PnL: $%.2f (model-only reconciliation adjustment)", reason, pos.Side, pnl)
 		if sc != nil && isLiveArgs(sc.Args) {
@@ -1464,7 +1490,7 @@ func bookVirtualClose(s *StrategyState, sc *StrategyConfig, symbol string, pos *
 	}
 	details = fmt.Sprintf("%s, pre-streak=%d", details, s.RiskState.ConsecutiveLosses)
 	if logger != nil {
-		logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
+		logger.Warn("%s: force-closing %s %s @ $%.2f (PnL: $%.2f)", label, pos.Side, symbol, price, pnl)
 	}
 	positionID := ensurePositionTradeID(s.ID, symbol, pos)
 	trade := Trade{

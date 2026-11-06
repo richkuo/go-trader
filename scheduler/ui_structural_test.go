@@ -65,6 +65,17 @@ func newStructuralTestServer(t *testing.T) (*StatusServer, string, *atomic.Int32
 	return ss, path, restarts
 }
 
+func pauseRoster(t *testing.T, ss *StatusServer) {
+	t.Helper()
+	ss.strategiesMu.Lock()
+	for i := range ss.strategies {
+		ss.strategies[i].Paused = true
+	}
+	roster := append([]StrategyConfig(nil), ss.strategies...)
+	ss.strategiesMu.Unlock()
+	ss.stateDB = openEntryTestEnv(t, newEntryTestConfig(t, roster...)).store
+}
+
 func structuralConfirm(t *testing.T, ss *StatusServer, action, strategyID, params string) uiConfirmResponse {
 	t.Helper()
 	body := fmt.Sprintf(`{"action":%q,"strategy_id":%q,"params":%s}`, action, strategyID, params)
@@ -275,6 +286,7 @@ func TestUIAddStrategy(t *testing.T) {
 func TestUIRemoveStrategy(t *testing.T) {
 	t.Run("UIRemoveStrategyEndToEnd", func(t *testing.T) {
 		ss, path, restarts := newStructuralTestServer(t)
+		pauseRoster(t, ss)
 		confirm := structuralConfirm(t, ss, "remove-strategy", "sma-btc", `{}`)
 		if confirm.ConfirmPhrase != "sma-btc" {
 			t.Fatalf("confirm phrase = %q, want sma-btc", confirm.ConfirmPhrase)
@@ -290,9 +302,7 @@ func TestUIRemoveStrategy(t *testing.T) {
 		if ids := configStrategyIDs(t, path); len(ids) != 1 || ids[0] != "hl-momentum-eth" {
 			t.Fatalf("strategies after remove = %v, want [hl-momentum-eth]", ids)
 		}
-		if restarts.Load() != 0 {
-			t.Fatalf("restarts = %d, want 0", restarts.Load())
-		}
+		waitForRestarts(t, restarts, 1)
 		if _, err := LoadConfigForProbe(path); err != nil {
 			t.Fatalf("config after remove fails validation: %v", err)
 		}
@@ -309,6 +319,7 @@ func TestUIRemoveStrategy(t *testing.T) {
 	})
 	t.Run("UIRemoveStrategyExecuteRefusesOnlyStrategyAfterConcurrentPrune", func(t *testing.T) {
 		ss, path, _ := newStructuralTestServer(t)
+		pauseRoster(t, ss)
 		confirm := structuralConfirm(t, ss, "remove-strategy", "hl-momentum-eth", `{}`)
 		if err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
 			return removeStrategyFromRoot(root, "sma-btc")
@@ -329,14 +340,18 @@ func TestUIRemoveStrategy(t *testing.T) {
 	})
 }
 
-func TestUIRemoveStrategyConfirmWarnsOnOpenPosition(t *testing.T) {
-	ss, _, _ := newStructuralTestServer(t)
+func TestUIRemoveStrategyConfirmRefusesOnOpenPosition(t *testing.T) {
+	ss, path, _ := newStructuralTestServer(t)
 	ss.state.Strategies["sma-btc"] = &StrategyState{
 		Positions: map[string]*Position{"BTC/USDT": {Quantity: 0.5, AvgCost: 50000}},
 	}
-	confirm := structuralConfirm(t, ss, "remove-strategy", "sma-btc", `{}`)
-	if !strings.Contains(confirm.Description, "OPEN position") {
-		t.Fatalf("confirm description must warn about the open position: %s", confirm.Description)
+	before := configStrategyIDs(t, path)
+	w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", `{"action":"remove-strategy","strategy_id":"sma-btc","params":{}}`, nil)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "BTC/USDT") || !strings.Contains(w.Body.String(), "paper-close") {
+		t.Fatalf("confirm remove-strategy status = %d body %s, want 400 refusal naming BTC/USDT and paper-close", w.Code, w.Body.String())
+	}
+	if after := configStrategyIDs(t, path); !slices.Equal(after, before) {
+		t.Fatalf("refused confirm must not mutate config; before %v after %v", before, after)
 	}
 }
 

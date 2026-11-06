@@ -91,6 +91,7 @@ func parseHyperliquidLimitOpenOutput(stdout []byte, stderrStr string, runErr err
 func RunHyperliquidLimitOpen(script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
 	args := buildHyperliquidLimitOpenArgs(symbol, side, size, limitPx, tif, marginMode, leverage, snapshot)
 	stdout, stderr, err := runPythonSideEffect(script, args)
+	observeHLAgentScriptOutput(stdout, stderr)
 	hlNoteCoinSubmission(symbol)
 	return parseHyperliquidLimitOpenOutput(stdout, string(stderr), err)
 }
@@ -154,6 +155,7 @@ func RunHyperliquidCancelOrder(script, symbol string, oid int64) (*HyperliquidCa
 		"--mode=live",
 	}
 	stdout, stderr, runErr := runPythonSideEffect(script, args)
+	observeHLAgentScriptOutput(stdout, stderr)
 	return parseHyperliquidCancelOrderOutput(stdout, string(stderr), runErr)
 }
 

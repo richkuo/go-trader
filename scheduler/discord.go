@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -26,7 +27,10 @@ type discordTransport interface {
 	UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	InteractionRespond(interaction *discordgo.Interaction, resp *discordgo.InteractionResponse, options ...discordgo.RequestOption) error
 	FollowupMessageCreate(interaction *discordgo.Interaction, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	ApplicationCommandBulkOverwrite(appID string, guildID string, commands []*discordgo.ApplicationCommand, options ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error)
+	ApplicationCommands(appID string, guildID string, options ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error)
+	ApplicationCommandCreate(appID string, guildID string, cmd *discordgo.ApplicationCommand, options ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error)
+	ApplicationCommandEdit(appID string, guildID string, cmdID string, cmd *discordgo.ApplicationCommand, options ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error)
+	ApplicationCommandDelete(appID string, guildID string, cmdID string, options ...discordgo.RequestOption) error
 }
 
 type DiscordNotifier struct {
@@ -39,6 +43,14 @@ type DiscordNotifier struct {
 
 	ss  *StatusServer
 	cfg *Config
+
+	syncMu          sync.Mutex
+	createTimes     []time.Time
+	legacyGuildID   string
+	legacyGuildDone bool
+	legacyGuildErr  string
+	resyncOnce      sync.Once
+	resyncCancel    context.CancelFunc
 }
 
 func NewDiscordNotifier(token, ownerID string) (*DiscordNotifier, error) {
@@ -65,6 +77,12 @@ func NewDiscordNotifier(token, ownerID string) (*DiscordNotifier, error) {
 }
 
 func (d *DiscordNotifier) Close() {
+	d.mu.Lock()
+	cancel := d.resyncCancel
+	d.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if d.session != nil {
 		d.session.Close()
 	}
