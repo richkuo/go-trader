@@ -2578,4 +2578,221 @@ chmod +x "$ow_bin"/*
 
 rm -rf "$ow_root"
 
+cpu_root=$(mktemp -d)
+(
+    set -euo pipefail
+    cpu_fail() {
+        echo "FAIL: cpu: $1" >&2
+        [[ -n "${2:-}" && -f "${2:-}" ]] && cat "$2" >&2
+        exit 1
+    }
+
+    if [[ -n "${GO_TRADER_BIN:-}" && -x "${GO_TRADER_BIN:-}" ]]; then
+        cc="$cpu_root/class"
+        mkdir -p "$cc"
+        hl_paper='{"id":"hl-a","type":"perps","platform":"hyperliquid","script":"shared_scripts/check_hyperliquid.py","args":["sma_crossover","BTC","1h","--mode=paper"],"capital":1000}'
+        hl_live='{"id":"hl-b","type":"perps","platform":"hyperliquid","script":"shared_scripts/check_hyperliquid.py","args":["sma_crossover","ETH","1h","--mode=live"],"capital":1000}'
+        hl_pct='{"id":"hl-c","type":"perps","platform":"hyperliquid","script":"shared_scripts/check_hyperliquid.py","args":["sma_crossover","SOL","1h","--mode=paper"],"capital_pct":0.5}'
+        printf '{"interval_seconds":300,"paper_only":true,"strategies":[%s]}\n' "$hl_paper" >"$cc/paper.json"
+        printf '{"interval_seconds":300,"strategies":[%s]}\n' "$hl_paper" >"$cc/roster.json"
+        printf '{"interval_seconds":300,"strategies":[%s,%s]}\n' "$hl_paper" "$hl_live" >"$cc/live.json"
+        printf '{"interval_seconds":300,"strategies":[]}\n' >"$cc/empty.json"
+        printf '{"role":"feed","strategies":[]}\n' >"$cc/feed.json"
+        printf '{"interval_seconds":300,"paper_only":true,"strategies":[%s]}\n' "$hl_pct" >"$cc/pct.json"
+        printf '{"interval_seconds":300,"paper_only":true,"strategies":[%s,%s]}\n' "$hl_paper" "$hl_live" >"$cc/refused.json"
+        for want in paper:paper roster:live live:live empty:live feed:feed pct:paper; do
+            name="${want%%:*}"
+            out=$(cd "$cc" && env -u HYPERLIQUID_ACCOUNT_ADDRESS "$GO_TRADER_BIN" cpu-class --config "$name.json" 2>"$cc/$name.err") \
+                || cpu_fail "cpu-class $name exited non-zero" "$cc/$name.err"
+            [[ "$out" == "${want#*:}" ]] || cpu_fail "cpu-class $name printed '$out', want '${want#*:}'" "$cc/$name.err"
+        done
+        grep -q '^\[INFO\]' "$cc/paper.err" || cpu_fail "cpu-class must keep the loader's [INFO] lines on stderr" "$cc/paper.err"
+        before=$(cd "$cc" && find . | sort)
+        rc=0
+        out=$(cd "$cc" && "$GO_TRADER_BIN" cpu-class --config missing.json 2>"$cc/missing.err") || rc=$?
+        [[ "$rc" != "0" && -z "$out" ]] || cpu_fail "cpu-class on a missing config must exit non-zero with no stdout (rc=$rc out=$out)"
+        rc=0
+        out=$(cd "$cc" && "$GO_TRADER_BIN" cpu-class --config refused.json 2>"$cc/refused.err") || rc=$?
+        [[ "$rc" != "0" && -z "$out" ]] || cpu_fail "cpu-class on a paper_only config with a live strategy must fail (rc=$rc out=$out)"
+        grep -q 'strategy\[hl-b\]: paper_only is true' "$cc/refused.err" || cpu_fail "the paper_only refusal must name the live strategy" "$cc/refused.err"
+        after=$(cd "$cc" && find . -name '*.err' -prune -o -print | sort)
+        [[ "$(printf '%s\n' "$before" | grep -v '\.err$')" == "$after" ]] || cpu_fail "cpu-class created or removed files: before=[$before] after=[$after]"
+    else
+        echo "note: GO_TRADER_BIN unset; cpu-class binary cases skipped"
+    fi
+
+    stub="$cpu_root/bin"
+    units="$cpu_root/units"
+    mkdir -p "$stub" "$units"
+    cat >"$stub/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$CPU_TEST_LOG"
+case "$*" in
+    --version) printf 'systemd %s (255.4-1)\n+PAM\n' "${CPU_TEST_SYSTEMD:-255}" ;;
+    *"-p User --value"*) printf '%s\n' "${CPU_TEST_USER-}" ;;
+    *"-p Group --value"*) printf '\n' ;;
+    *"-p WorkingDirectory --value"*) printf '%s\n' "$CPU_TEST_WD" ;;
+    *"-p ExecStart --value"*) printf '{ path=%s ; argv[]=%s --config %s ; ignore_errors=no }\n' "$CPU_TEST_BIN" "$CPU_TEST_BIN" "$CPU_TEST_CFG" ;;
+    *"-p Environment --value"*) printf '%s\n' "${CPU_TEST_ENV-}" ;;
+    *"-p EnvironmentFiles --value"*) printf '%s\n' "${CPU_TEST_ENVFILE-}" ;;
+esac
+exit 0
+EOF
+    cat >"$stub/systemd-run" <<'EOF'
+#!/usr/bin/env bash
+printf 'systemd-run %s\n' "$*" >>"$CPU_TEST_LOG"
+while [[ $# -gt 0 && "$1" != "--" ]]; do shift; done
+shift
+exec "$@"
+EOF
+    cat >"$cpu_root/fake-go-trader" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == "cpu-class" ]] || exit 2
+echo "[INFO] loader noise" >&2
+case "${CPU_TEST_CLASS:-}" in
+    fail) echo "cpu-class: load config: broken" >&2; exit 1 ;;
+    junk) printf 'paper\nlive\n'; exit 0 ;;
+    *) printf '%s\n' "$CPU_TEST_CLASS" ;;
+esac
+EOF
+    chmod +x "$stub/systemctl" "$stub/systemd-run" "$cpu_root/fake-go-trader"
+    export PATH="$stub:$PATH" UPDATE_UNIT_SUDO="" UPDATE_SYSTEMD_UNIT_DIR="$units"
+    export CPU_TEST_LOG="$cpu_root/calls.log" CPU_TEST_USER="$(id -un)" CPU_TEST_WD="$cpu_root" CPU_TEST_BIN="$cpu_root/fake-go-trader" CPU_TEST_CFG="$cpu_root/config.json"
+    : >"$CPU_TEST_LOG"
+
+    unit=go-trader@paper.service
+    dest=$(update_cpu_dropin_path go-trader@paper)
+    assert_eq "$dest" "$units/go-trader@paper.service.d/40-go-trader-cpu.conf" "cpu: drop-in path for a template instance"
+    assert_eq "$(update_cpu_dropin_path go-trader)" "" "cpu: no drop-in path for the plain unit"
+    assert_eq "$(update_cpu_dropin_path go-trader@bad/x)" "" "cpu: no drop-in path for an invalid instance"
+    assert_eq "$(update_cpu_dropin_path other@paper.service)" "" "cpu: no drop-in path for a foreign template"
+    assert_eq "$(update_unit_config_path "$unit")" "$cpu_root/config.json" "cpu: config path from ExecStart"
+    assert_eq "$(update_unit_role "$unit")" "scheduler" "cpu: update_unit_role is unchanged for a missing config"
+
+    plan() { update_cpu_dropin_plan "$unit" "$cpu_root/fake-go-trader" "$dest" 2>>"$cpu_root/plan.err"; }
+    apply() {
+        local p d w
+        p=$(plan)
+        d="${p%% *}"
+        w="${p#* }"
+        update_cpu_dropin_apply "$d" "$dest" "$w" 2>>"$cpu_root/apply.err" || cpu_fail "apply $d failed" "$cpu_root/apply.err"
+        printf '%s' "$d"
+    }
+
+    mkdir -p "${dest%/*}"
+    printf '[Service]\nCPUWeight=100\n' >"${dest%/*}/50-local.conf"
+    : >"$cpu_root/apply.err"
+    assert_eq "$(CPU_TEST_CLASS=paper apply)" "install" "cpu: paper class installs the drop-in"
+    assert_eq "$(cat "$dest"; printf x)" "$(printf '[Service]\nCPUWeight=20\nx')" "cpu: installed drop-in body"
+    grep -q '50-local.conf sorts after 40-go-trader-cpu.conf and sets CPUWeight=' "$cpu_root/apply.err" || cpu_fail "a later local CPUWeight drop-in must be named in a WARN" "$cpu_root/apply.err"
+    rm -f "${dest%/*}/50-local.conf"
+    update_cpu_dropin_is_managed "$dest" || cpu_fail "the installed drop-in must be in the managed form"
+    [[ -z "$(find "${dest%/*}" -name '*.tmp-*')" ]] || cpu_fail "a staged temp file was left behind"
+    assert_eq "$(CPU_TEST_CLASS=paper plan)" "none 20" "cpu: an unchanged drop-in needs nothing"
+    assert_eq "$(CPU_TEST_CLASS=paper CPU_TEST_ENV='GO_TRADER_PAPER_CPU_WEIGHT=50' apply)" "replace" "cpu: a new weight replaces the drop-in"
+    assert_eq "$(sed -n 's/^CPUWeight=//p' "$dest")" "50" "cpu: replaced weight"
+    : >"$cpu_root/plan.err"
+    assert_eq "$(CPU_TEST_CLASS=paper CPU_TEST_ENV='GO_TRADER_PAPER_CPU_WEIGHT=abc' plan)" "replace 20" "cpu: an invalid weight uses 20"
+    grep -q "GO_TRADER_PAPER_CPU_WEIGHT='abc' is not an integer" "$cpu_root/plan.err" || cpu_fail "an invalid weight must WARN" "$cpu_root/plan.err"
+    assert_eq "$(CPU_TEST_CLASS=paper CPU_TEST_ENV='GO_TRADER_PAPER_CPU_WEIGHT=10001' plan)" "replace 20" "cpu: an out-of-range weight uses 20"
+    assert_eq "$(CPU_TEST_CLASS=paper CPU_TEST_ENV='GO_TRADER_PAPER_CPU_WEIGHT=0' plan)" "remove " "cpu: weight 0 removes the drop-in"
+    printf 'GO_TRADER_PAPER_CPU_WEIGHT=0\n' >"$cpu_root/unit.env"
+    assert_eq "$(CPU_TEST_CLASS=paper CPU_TEST_ENVFILE="$cpu_root/unit.env (ignore_errors=no)" plan)" "remove " "cpu: weight 0 from an EnvironmentFile removes the drop-in"
+    printf 'GO_TRADER_PAPER_CPU_WEIGHT=45\n' >"$cpu_root/unit.env"
+    assert_eq "$(CPU_TEST_CLASS=paper CPU_TEST_ENVFILE="$cpu_root/unit.env (ignore_errors=no)" plan)" "replace 45" "cpu: a weight from an EnvironmentFile is used"
+    if [[ "$(id -u)" != "0" ]]; then
+        chmod 000 "$cpu_root/unit.env"
+        : >"$cpu_root/plan.err"
+        assert_eq "$(CPU_TEST_CLASS=paper CPU_TEST_ENVFILE="$cpu_root/unit.env (ignore_errors=no)" plan)" "remove " "cpu: an unreadable EnvironmentFile removes the drop-in"
+        grep -q "could not read the environment files of $unit" "$cpu_root/plan.err" || cpu_fail "an unreadable EnvironmentFile must WARN" "$cpu_root/plan.err"
+        chmod 600 "$cpu_root/unit.env"
+    fi
+    assert_eq "$(CPU_TEST_CLASS=paper CPU_TEST_SYSTEMD=231 plan)" "remove " "cpu: systemd older than 232 removes the drop-in"
+    assert_eq "$(CPU_TEST_CLASS=live plan)" "remove " "cpu: live class removes the drop-in"
+    assert_eq "$(CPU_TEST_CLASS=feed plan)" "remove " "cpu: feed class removes the drop-in"
+    assert_eq "$(CPU_TEST_CLASS=fail plan)" "remove " "cpu: a classifier failure removes the drop-in"
+    assert_eq "$(CPU_TEST_CLASS=junk plan)" "remove " "cpu: a two-line classifier result removes the drop-in"
+    assert_eq "$(CPU_TEST_CLASS=paper CPU_TEST_USER='' plan)" "remove " "cpu: a root unit never runs the classifier"
+    : >"$CPU_TEST_LOG"
+    CPU_TEST_CLASS=paper CPU_TEST_USER='' plan >/dev/null
+    ! grep -q '^systemd-run' "$CPU_TEST_LOG" || cpu_fail "the classifier ran for a root unit" "$CPU_TEST_LOG"
+    CPU_TEST_CLASS=paper plan >/dev/null
+    grep -q "^systemd-run .*--uid=$(id -u) .*-p ProtectSystem=strict .*-p RuntimeMaxSec=60 .*-- $cpu_root/fake-go-trader cpu-class --config $cpu_root/config.json" "$CPU_TEST_LOG" \
+        || cpu_fail "the classifier must run sandboxed as the unit owner" "$CPU_TEST_LOG"
+    assert_eq "$(CPU_TEST_CLASS=live apply)" "remove" "cpu: live class removes the file"
+    [[ ! -e "$dest" && ! -d "${dest%/*}" ]] || cpu_fail "remove must delete the file and the empty drop-in directory"
+    mkdir -p "${dest%/*}"
+    printf 'keep\n' >"${dest%/*}/60-keep.conf"
+    CPU_TEST_CLASS=paper apply >/dev/null
+    assert_eq "$(CPU_TEST_CLASS=live apply)" "remove" "cpu: remove with another drop-in present"
+    [[ ! -e "$dest" && -f "${dest%/*}/60-keep.conf" ]] || cpu_fail "remove must keep other drop-ins and their directory"
+    assert_eq "$(CPU_TEST_CLASS=live plan)" "none " "cpu: absent and not wanted needs nothing"
+    ln -s "${dest%/*}/60-keep.conf" "$dest"
+    assert_eq "$(CPU_TEST_CLASS=paper plan)" "skip-symlink 20" "cpu: a symlink is left alone"
+    assert_eq "$(CPU_TEST_CLASS=live plan)" "skip-symlink " "cpu: a symlink is never removed"
+    rm -f "$dest" "${dest%/*}/60-keep.conf"
+    rmdir "${dest%/*}"
+
+    form="$cpu_root/form"
+    mkdir -p "$form"
+    printf '[Service]\nCPUWeight=20\n' >"$form/ok1"
+    printf '[Service]\nCPUWeight=10000\n' >"$form/ok2"
+    printf '[Service]\nCPUWeight=10001\n' >"$form/bad1"
+    printf '[Service]\nCPUWeight=0\n' >"$form/bad2"
+    printf '[Service]\nCPUWeight=20' >"$form/bad3"
+    printf '[Service]\nCPUWeight=20\nNice=5\n' >"$form/bad4"
+    printf '# local\n[Service]\nCPUWeight=20\n' >"$form/bad5"
+    printf '[Service]\r\nCPUWeight=20\r\n' >"$form/bad6"
+    ln -s "$form/ok1" "$form/bad7"
+    for f in "$form"/*; do
+        sh_ans=no
+        update_cpu_dropin_is_managed "$f" && sh_ans=yes
+        py_ans=$(python3 -I -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("msl", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print("yes" if mod.cpu_dropin_is_managed(sys.argv[2]) else "no")
+' "$SCRIPT_DIR/migrate-service-layout.py" "$f")
+        want=no
+        [[ "${f##*/}" == ok* ]] && want=yes
+        assert_eq "$sh_ans" "$want" "cpu: shell managed form for ${f##*/}"
+        assert_eq "$py_ans" "$want" "cpu: Python managed form for ${f##*/}"
+    done
+    py_name=$(sed -n 's/^CPU_DROPIN_NAME = "\(.*\)"$/\1/p' "$SCRIPT_DIR/migrate-service-layout.py")
+    assert_eq "$py_name" "${UPDATE_CPU_DROPIN_NAME}.conf" "cpu: migrate-service-layout.py and update_helpers.sh name the same drop-in"
+
+    snap_deploy="$cpu_root/deploy"
+    mkdir -p "$snap_deploy/scheduler"
+    printf 'v1\n' >"$snap_deploy/README.md"
+    printf '{"strategies":[]}\n' >"$snap_deploy/scheduler/config.json"
+    git -C "$snap_deploy" init -q
+    git -C "$snap_deploy" -c user.email=t@example.invalid -c user.name=t add README.md
+    git -C "$snap_deploy" -c user.email=t@example.invalid -c user.name=t commit -qm v1
+    skey=$(update_recovery_key "$snap_deploy")
+    round_trip() {
+        local label="$1" snap="$cpu_root/rec/$skey"
+        rm -rf "$cpu_root/rec"
+        UPDATE_NO_FREEZE_EXCLUDES=1 update_take_snapshot "$snap_deploy" "$snap" "" "" "" "$dest" >/dev/null 2>"$cpu_root/snap.err" \
+            || cpu_fail "$label: snapshot failed" "$cpu_root/snap.err"
+        grep -q "^cpu_dropin_dest=" "$snap/manifest.env" || cpu_fail "$label: manifest lacks cpu_dropin_dest"
+        CPU_TEST_CLASS="$2" CPU_TEST_ENV="${3:-}" apply >/dev/null
+        : >"$CPU_TEST_LOG"
+        update_restore_snapshot_external "$snap" 0 0 0 0 "" 1 2>"$cpu_root/restore.err" || cpu_fail "$label: restore failed" "$cpu_root/restore.err"
+        grep -qx 'daemon-reload' "$CPU_TEST_LOG" || cpu_fail "$label: restore must reload systemd" "$CPU_TEST_LOG"
+    }
+    round_trip "absent -> installed" paper
+    [[ ! -e "$dest" && ! -d "${dest%/*}" ]] || cpu_fail "absent -> installed: restore must leave the drop-in absent"
+    CPU_TEST_CLASS=paper CPU_TEST_ENV='GO_TRADER_PAPER_CPU_WEIGHT=35' apply >/dev/null
+    before_fp=$(update_file_fingerprint "$dest")
+    round_trip "present -> changed" paper 'GO_TRADER_PAPER_CPU_WEIGHT=70'
+    assert_eq "$(update_file_fingerprint "$dest")" "$before_fp" "cpu: present -> changed restores the prior bytes"
+    round_trip "present -> removed" live
+    assert_eq "$(update_file_fingerprint "$dest")" "$before_fp" "cpu: present -> removed restores the prior bytes"
+    : >"$CPU_TEST_LOG"
+    update_restore_snapshot_external "$cpu_root/rec/$skey" 0 0 0 0 "" 0 2>/dev/null || cpu_fail "restore with nothing mutated failed"
+    ! grep -qx 'daemon-reload' "$CPU_TEST_LOG" || cpu_fail "restore with nothing mutated must not reload" "$CPU_TEST_LOG"
+)
+rm -rf "$cpu_root"
+
 echo "OK: update_helpers tests passed"
