@@ -101,8 +101,6 @@ def run_classify_mode(event_name, stripped, pr_url="", issue_author_assoc="", is
             "STRIPPED": stripped,
             "ISSUE_AUTHOR_ASSOC": issue_author_assoc,
             "ISSUE_AUTHOR_LOGIN": issue_author_login,
-            "PR_AUTHOR_ASSOC": "",
-            "PR_AUTHOR_LOGIN": "",
         },
         "mode",
     )

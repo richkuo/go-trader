@@ -35,7 +35,6 @@ jobs:
       flow: ${{ steps.resolve_model.outputs.flow }}
       model: ${{ steps.resolve_model.outputs.model }}
       effort: ${{ steps.resolve_model.outputs.effort }}
-      pr_author_trusted: ${{ steps.classify_mode.outputs.pr_author_trusted }}
     steps:
       - name: Verify @claude is an actual invocation (not in a code block or example)
         id: verify_invocation
@@ -126,8 +125,6 @@ jobs:
           STRIPPED: ${{ steps.verify_invocation.outputs.stripped }}
           ISSUE_AUTHOR_ASSOC: ${{ github.event.issue.author_association }}
           ISSUE_AUTHOR_LOGIN: ${{ github.event.issue.user.login }}
-          PR_AUTHOR_ASSOC: ${{ github.event.pull_request.author_association }}
-          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
         run: |
           IS_ISSUE=false
           case "$EVENT_NAME" in
@@ -142,19 +139,6 @@ jobs:
           if [ "$ISSUE_AUTHOR_LOGIN" = "claude[bot]" ]; then
             ISSUE_AUTHOR_TRUSTED=true
           fi
-
-          PR_AUTHOR_TRUSTED=false
-          if [ -n "$PR_URL" ]; then
-            PR_AUTHOR_TRUSTED="$ISSUE_AUTHOR_TRUSTED"
-          else
-            case "$PR_AUTHOR_ASSOC" in
-              OWNER|MEMBER|COLLABORATOR) PR_AUTHOR_TRUSTED=true ;;
-            esac
-            if [ "$PR_AUTHOR_LOGIN" = "claude[bot]" ]; then
-              PR_AUTHOR_TRUSTED=true
-            fi
-          fi
-          echo "pr_author_trusted=$PR_AUTHOR_TRUSTED" >> "$GITHUB_OUTPUT"
 
           if [ -n "$FLOW" ] || [ "$IS_ISSUE" = "true" ]; then
             if [ "$ISSUE_AUTHOR_TRUSTED" = "true" ]; then
