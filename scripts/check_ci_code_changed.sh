@@ -17,7 +17,7 @@ for f in CLAUDE.md SKILL.md README.md scheduler/executor.go docs/backtesting-reg
   scheduler/quote_coordinator.go scripts/merge-paper-instance.sh scripts/update.sh scripts/migrate-service-layout.py \
   scheduler/server.go scheduler/risk.go scheduler/state_presence.go scheduler/update_sh_feature_test.go \
   scheduler/main.go scheduler/probe_cmd.go scheduler/storage_inspect.go scheduler/singleton_lock.go scheduler/inspect_cmd.go \
-  scheduler/market_feed_role.go .github/workflows/ci.yml; do
+  scheduler/market_feed_role.go scheduler/version.go .github/workflows/ci.yml; do
   printf 'base\n' >"$tmp/repo/$f"
 done
 g add -A
@@ -84,7 +84,8 @@ check "merge script, pull request" pull_request merge "code=true quote=false egr
 check "update script, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=false" 'echo x >>scripts/update.sh'
 check "layout tool, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true" 'echo x >>scripts/migrate-service-layout.py'
 check "status port source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true" 'echo x >>scheduler/server.go'
-check "subcommand dispatch, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=true" 'echo x >>scheduler/main.go'
+check "subcommand dispatch, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true" 'echo x >>scheduler/main.go'
+check "version source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true" 'echo x >>scheduler/version.go'
 check "probe source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=true" 'echo x >>scheduler/probe_cmd.go'
 check "storage-inspect source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scheduler/storage_inspect.go'
 check "lock holder source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scheduler/singleton_lock.go'
