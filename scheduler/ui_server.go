@@ -105,6 +105,7 @@ const uiEquityLookbackLimit = 500
 
 type UITradeMarker struct {
 	Time        int64   `json:"time"`
+	PositionID  string  `json:"position_id"`
 	Position    string  `json:"position"`
 	Color       string  `json:"color"`
 	Shape       string  `json:"shape"`
@@ -265,6 +266,18 @@ func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request
 			return
 		}
 		ss.handleAPIStrategyStatus(w, r, id)
+	case "trade-review":
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		ss.handleAPIStrategyTradeReview(w, r, id)
+	case "trade-feedback":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		ss.handleAPIStrategyTradeFeedback(w, r, id)
 	case "equity":
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -773,6 +786,7 @@ func tradeMarkers(trades []Trade) []UITradeMarker {
 		}
 		m := UITradeMarker{
 			Time:        tr.Timestamp.UTC().Unix(),
+			PositionID:  tr.PositionID,
 			Side:        tr.Side,
 			IsClose:     tr.IsClose,
 			Price:       tr.Price,

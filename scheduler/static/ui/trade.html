@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>Trade review · go-trader</title>
+    <script>
+      (function () {
+        try {
+          if (window.localStorage.getItem("goTraderDarkMode") === "1") {
+            document.documentElement.classList.add("dark");
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="/dashboard/styles.css">
+  </head>
+  <body data-page="trade-review">
+    <main class="tuning-shell trade-review-shell">
+      <header class="tuning-page-header">
+        <div>
+          <nav class="tuning-breadcrumbs" aria-label="Primary">
+            <a href="/dashboard">Dashboard</a>
+            <span aria-hidden="true">/</span>
+            <span>Trade review</span>
+          </nav>
+          <h1 id="review-title">Trade review</h1>
+          <p id="review-subtitle">Loading position…</p>
+        </div>
+        <button id="review-refresh" class="tuner-button secondary" type="button">Reload</button>
+      </header>
+
+      <p id="review-error" class="trade-review-error" role="alert" hidden></p>
+
+      <div class="trade-review-layout">
+        <section class="tuning-card trade-review-chart-card">
+          <div class="tuning-section-heading">
+            <div>
+              <h2>Chart</h2>
+              <p id="review-coverage">Coverage: loading</p>
+            </div>
+          </div>
+          <div id="review-chart" class="trade-review-chart" aria-label="Position candles"></div>
+          <p id="review-legend" class="trade-review-legend"></p>
+        </section>
+
+        <aside class="tuning-card trade-review-side">
+          <h2>Actual result</h2>
+          <dl id="review-actual" class="trade-review-facts"></dl>
+          <h2>Preferred entry and exit</h2>
+          <p id="review-eligibility" class="trade-review-eligibility"></p>
+          <form id="review-form" class="trade-review-form" novalidate>
+            <div class="trade-review-mode" role="group" aria-label="Chart click selects">
+              <button id="mode-entry" class="tuner-button secondary" type="button" aria-pressed="false">Select entry on chart</button>
+              <button id="mode-exit" class="tuner-button secondary" type="button" aria-pressed="false">Select exit on chart</button>
+            </div>
+            <label for="entry-time">Entry bar</label>
+            <select id="entry-time"></select>
+            <label for="entry-price">Entry price</label>
+            <input id="entry-price" type="number" step="any" inputmode="decimal">
+            <p id="entry-range" class="trade-review-hint"></p>
+            <label for="exit-time">Exit bar</label>
+            <select id="exit-time"></select>
+            <label for="exit-price">Exit price</label>
+            <input id="exit-price" type="number" step="any" inputmode="decimal">
+            <p id="exit-range" class="trade-review-hint"></p>
+            <label for="review-note">Note (optional, at most 2000 characters)</label>
+            <textarea id="review-note" rows="4" maxlength="2000"></textarea>
+            <p id="review-form-message" class="trade-review-hint" role="status"></p>
+            <button id="review-save" class="tuner-button primary" type="submit">Save annotation</button>
+          </form>
+        </aside>
+      </div>
+
+      <section class="tuning-card trade-review-section">
+        <h2>Saved annotations</h2>
+        <div id="review-annotations"><p class="panel-muted">None saved yet.</p></div>
+      </section>
+
+      <section class="tuning-card trade-review-section">
+        <h2>Fills</h2>
+        <div class="trade-history-scroll trade-review-fills">
+          <table class="trade-history-table">
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Role</th>
+                <th scope="col">Side</th>
+                <th scope="col">Price</th>
+                <th scope="col">Qty</th>
+                <th scope="col">Fee</th>
+                <th scope="col">Net result</th>
+                <th scope="col">Details</th>
+              </tr>
+            </thead>
+            <tbody id="review-fills"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <script src="/dashboard/lightweight-charts.standalone.production.js"></script>
+    <script src="/dashboard/trade.js"></script>
+  </body>
+</html>

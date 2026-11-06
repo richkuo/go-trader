@@ -2036,9 +2036,13 @@
     els.tradeHistoryTable.hidden = false;
     els.tradeHistoryBody.innerHTML = trades.map(function (trade) {
       const sideClass = tradeSideClass(trade);
-      const rowClass = tradeRowClass(trade);
+      const positionID = trade.position_id ? String(trade.position_id) : "";
+      const rowClass = (tradeRowClass(trade) + (positionID ? " trade-history-row-link" : " trade-history-row-legacy")).trim();
+      const rowAttrs = positionID
+        ? " tabindex=\"0\" role=\"link\" data-position-id=\"" + escapeHTML(positionID) + "\" title=\"Open this position's review window\""
+        : " title=\"This row has no position id, so it cannot open a review window\"";
       return (
-        "<tr class=\"" + escapeHTML(rowClass) + "\">" +
+        "<tr class=\"" + escapeHTML(rowClass) + "\"" + rowAttrs + ">" +
         "<td>" + escapeHTML(fmtTradeTime(trade.time)) + "</td>" +
         "<td class=\"" + escapeHTML(sideClass) + "\">" + escapeHTML(tradeSideLabel(trade)) + "</td>" +
         "<td>" + escapeHTML(fmtMoney(trade.price)) + "</td>" +
@@ -2049,6 +2053,31 @@
         "</tr>"
       );
     }).join("");
+  }
+
+  function tradeReviewURL(strategyID, positionID) {
+    return "/dashboard/trade.html?strategy=" + encodeURIComponent(strategyID) +
+      "&position=" + encodeURIComponent(positionID);
+  }
+
+  function openTradeReview(row) {
+    if (!row || !state.activeID) return;
+    const positionID = row.getAttribute("data-position-id");
+    if (!positionID) return;
+    window.open(tradeReviewURL(state.activeID, positionID), "_blank", "noopener");
+  }
+
+  function initTradeHistoryActivation() {
+    els.tradeHistoryBody.addEventListener("click", function (event) {
+      openTradeReview(event.target.closest("tr[data-position-id]"));
+    });
+    els.tradeHistoryBody.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const row = event.target.closest("tr[data-position-id]");
+      if (!row) return;
+      event.preventDefault();
+      openTradeReview(row);
+    });
   }
 
   function humanizeRegimeLabel(label) {
@@ -2800,6 +2829,7 @@
   }
 
   initSidebar();
+  initTradeHistoryActivation();
   if (els.tunerForm) {
     els.tunerForm.addEventListener("input", onTunerFieldChange);
     els.tunerForm.addEventListener("change", onTunerFieldChange);
