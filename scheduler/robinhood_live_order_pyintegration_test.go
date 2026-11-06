@@ -1385,6 +1385,36 @@ func TestRobinhoodLiveOrderCircuitBreaker(t *testing.T) {
 				t.Fatalf("db trades = %+v, want one venue-priced sell", dbt)
 			}
 		})
+		t.Run("open_buy_attempt_blocks_verified_flat", func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+			e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
+				"POST " + rhTestOrders:                          {rhAccepted("buy")},
+				"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("confirmed", "buy", "0", nil)},
+				"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
+			}))
+			e.signal("rh-btc", 1, 0, 100)
+			if row := e.onlyAttempt(); row.Status != robinhoodAttemptOpen {
+				t.Fatalf("seed = %+v, want open", row)
+			}
+			e.setPosition("rh-btc", "BTC", 0.5, 90)
+			e.mu.Lock()
+			e.state.Strategies["rh-btc"].Positions["BTC"].OpenedAt = time.Now().UTC().Add(-time.Hour)
+			e.mu.Unlock()
+			e.latchCB("rh-btc")
+			stillOpen := rhWith(rhPrepRoutes(), rhRoutes{
+				"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("confirmed", "buy", "0", nil)},
+				"POST " + rhOrderURL(rhTestOrderID) + "cancel/": {{"status": 200, "json": map[string]interface{}{}}},
+				"GET " + rhTestHoldings:                         {rhHoldings()},
+			})
+			runPendingRobinhoodCircuitClosesWithCloser(e, e.phasedFetcher(stillOpen, stillOpen), stillOpen)
+			s := e.state.Strategies["rh-btc"]
+			if pos := s.Positions["BTC"]; pos == nil || math.Abs(pos.Quantity-0.5) > 1e-12 {
+				t.Fatalf("position = %+v, want the 0.5 book kept while the buy is open", pos)
+			}
+			if dbt := e.dbTrades("rh-btc"); len(dbt) != 0 {
+				t.Fatalf("db trades = %+v, want none while the buy is open", dbt)
+			}
+		})
 		t.Run("filled_but_still_held_keeps_pending", func(t *testing.T) {
 			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
 			e.setPosition("rh-btc", "BTC", 0.5, 90)
