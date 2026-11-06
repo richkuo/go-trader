@@ -57,14 +57,14 @@ type tradeFeedbackAnalysisRequest struct {
 }
 
 const tradeFeedbackAnalysisColumns = `rowid, request_id, event_status, strategy_id, partition, provider, model, model_verification,
-	effort, timeout_s, bundle_version, bundle_sha256, bundle_json, feedback_rowids, result_json, validation_json,
+	effort, timeout_s, bundle_version, bundle_sha256, feedback_rowids, result_json, validation_json,
 	error, usage_json, created_at`
 
 func (sdb *StateDB) scanTradeFeedbackAnalysisEvent(row interface{ Scan(...interface{}) error }) (tradeFeedbackAnalysisEvent, string, error) {
 	var ev tradeFeedbackAnalysisEvent
 	var rowIDs, created string
 	if err := row.Scan(&ev.RowID, &ev.RequestID, &ev.EventStatus, &ev.StrategyID, &ev.Partition, &ev.Provider, &ev.Model,
-		&ev.ModelVerification, &ev.Effort, &ev.TimeoutS, &ev.BundleVersion, &ev.BundleSHA256, &ev.BundleJSON, &rowIDs,
+		&ev.ModelVerification, &ev.Effort, &ev.TimeoutS, &ev.BundleVersion, &ev.BundleSHA256, &rowIDs,
 		&ev.ResultJSON, &ev.ValidationJSON, &ev.Error, &ev.UsageJSON, &created); err != nil {
 		return ev, "", err
 	}

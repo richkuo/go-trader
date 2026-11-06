@@ -1213,10 +1213,16 @@ func (ss *StatusServer) verifyTradeFeedbackResearchLaunch(ctx context.Context, h
 		return reviewErr(http.StatusConflict, "the submitted grid is not exactly proposal %d of analysis %s", index, requestID)
 	}
 	ss.configWriteMu.Lock()
-	cur, rerr := ss.assembleTradeFeedbackBundle(in)
-	var refusal string
-	if rerr == nil {
-		refusal = ss.tradeFeedbackContextRefusal(in.ctx)
+	var cur *tradeFeedbackBundleBuild
+	refusal := ss.tradeFeedbackContextRefusal(in.ctx)
+	if refusal == "" {
+		if _, strat, ok := ss.feedbackStrategySnapshot(id); !ok {
+			refusal = fmt.Sprintf("strategy %q left the running roster", id)
+		} else {
+			in.strategy = strat
+			in.ctx = strat.tradeFeedbackContext
+			cur, rerr = ss.assembleTradeFeedbackBundle(in)
+		}
 	}
 	ss.configWriteMu.Unlock()
 	if rerr != nil {

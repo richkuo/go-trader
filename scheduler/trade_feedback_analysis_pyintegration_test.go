@@ -77,6 +77,17 @@ func TestTradeFeedbackAnalysisRealValidatorOutcomes(t *testing.T) {
 			}
 		}
 	}
+	dup := run(`{"summary":"a","summary":"b","findings":[],"proposals":[],"confidence":"low"}`)
+	var dupVal struct {
+		Outcome string   `json:"outcome"`
+		Reasons []string `json:"reasons"`
+	}
+	if err := json.Unmarshal(dup.Validation, &dupVal); err != nil {
+		t.Fatalf("duplicate key = %s (%s), validation %s: %v", dup.Status, dup.Error, dup.Validation, err)
+	}
+	if dup.Status != tradeFeedbackAnalysisInvalid || dupVal.Outcome != tradeFeedbackAnalysisInvalid || len(dupVal.Reasons) != 1 || !strings.Contains(dupVal.Reasons[0], "duplicate object key 'summary'") {
+		t.Fatalf("duplicate key = %s (%s) outcome %s reasons %v, want invalid with a duplicate-key reason", dup.Status, dup.Error, dupVal.Outcome, dupVal.Reasons)
+	}
 }
 
 func startTradeFeedbackAnalysisForTest(t *testing.T, e *tfaEnv, validate tradeFeedbackValidator) *tradeFeedbackAnalysisManager {
@@ -141,6 +152,14 @@ func TestTradeFeedbackAnalysisRealValidatorFailures(t *testing.T) {
 	broken := e.waitTerminal(trSID, tfaRequestID(t, e.submit(trSID, `{"provider":"anthropic_api"}`, nil)))
 	if broken.Status != tradeFeedbackAnalysisFailed {
 		t.Fatalf("subprocess failure = %s %q, want failed", broken.Status, broken.Error)
+	}
+	e.mgr.shutdown()
+	e.mgr = startTradeFeedbackAnalysisForTest(t, e, func(ctx context.Context, b []byte, r json.RawMessage, to time.Duration) ([]byte, string, error) {
+		return runTradeFeedbackValidator(ctx, []byte(`{"selection":{}}`), r, to)
+	})
+	noRows := e.waitTerminal(trSID, tfaRequestID(t, e.submit(trSID, `{"provider":"anthropic_api"}`, nil)))
+	if noRows.Status != tradeFeedbackAnalysisFailed || !strings.Contains(noRows.Error, "validator:") {
+		t.Fatalf("a bundle with no selected rows = %s %q, want failed", noRows.Status, noRows.Error)
 	}
 }
 

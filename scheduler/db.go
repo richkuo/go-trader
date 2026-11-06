@@ -495,13 +495,13 @@ CREATE TABLE IF NOT EXISTS trade_feedback_analyses (
     timeout_s INTEGER NOT NULL,
     bundle_version INTEGER NOT NULL,
     bundle_sha256 TEXT NOT NULL,
-    bundle_json TEXT NOT NULL DEFAULT '',
     feedback_rowids TEXT NOT NULL,
     result_json TEXT NOT NULL DEFAULT '',
     validation_json TEXT NOT NULL DEFAULT '',
     error TEXT NOT NULL DEFAULT '',
     usage_json TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    bundle_json TEXT NOT NULL DEFAULT ''
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_feedback_analyses_accepted ON trade_feedback_analyses(request_id) WHERE event_status = 'accepted';

@@ -226,11 +226,14 @@ func (m *tradeFeedbackAnalysisManager) process(job *tradeFeedbackAnalysisJob) {
 		m.finish(job, term)
 		return
 	}
-	if !json.Valid(raw) {
-		wrapped, _ := json.Marshal(string(raw))
-		raw = wrapped
+	wrapped, err := json.Marshal(string(raw))
+	if err != nil {
+		term.Status = tradeFeedbackAnalysisFailed
+		term.Error = "encode the result for the validator: " + err.Error()
+		m.finish(job, term)
+		return
 	}
-	validation, outcome, err := m.validate(ctx, job.Bundle, raw, time.Until(job.Deadline))
+	validation, outcome, err := m.validate(ctx, job.Bundle, wrapped, time.Until(job.Deadline))
 	if err != nil {
 		term.Status = tradeFeedbackAnalysisFailed
 		term.Error = truncateUTF8(tradeFeedbackRedact("validator: "+cause(err), m.statusToken), tradeFeedbackAnalysisErrorLimit)

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -75,6 +76,10 @@ func tfaStubValidator(ctx context.Context, bundle []byte, result json.RawMessage
 		Findings []struct {
 			FeedbackRowID int64 `json:"feedback_rowid"`
 		} `json:"findings"`
+	}
+	var text string
+	if json.Unmarshal(result, &text) == nil {
+		result = json.RawMessage(text)
 	}
 	outcome := tradeFeedbackAnalysisOK
 	if json.Unmarshal(result, &r) != nil {
@@ -965,4 +970,221 @@ func TestTradeFeedbackAnalysisResearchLaunchContract(t *testing.T) {
 	if rec := launch(exact, fresh.RequestID+":0:"+fresh.BundleSHA256); rec.Code != http.StatusConflict {
 		t.Fatalf("unsupported launch = %d, want 409", rec.Code)
 	}
+}
+
+func tfaAllocated(f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+func TestTradeFeedbackAnalysisListAndRecoveryLeaveStoredBundlesUnread(t *testing.T) {
+	db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	store := singleFileStore(db)
+	e := newTFAEnv(t, store, []StrategyConfig{trConfig()})
+	e.seedDefault()
+	e.saveMark(trSID, "pos-a", "mark")
+
+	const bundleBytes = 4 << 20
+	bundle := `{"pad":"` + strings.Repeat("x", bundleBytes) + `"}`
+	want := map[string]string{}
+	for i := 0; i < tradeFeedbackAnalysisHistoryLimit; i++ {
+		id := fmt.Sprintf("tfa-big-%02d", i)
+		digest := fmt.Sprintf("%064x", i+1)
+		ev := &tradeFeedbackAnalysisEvent{RequestID: id, Partition: "paper", Provider: tradeFeedbackProviderAPI, TimeoutS: 300,
+			BundleVersion: 1, BundleSHA256: digest, BundleJSON: bundle, FeedbackRowIDs: []int64{1}, CreatedAt: time.Now().UTC()}
+		if _, err := store.InsertTradeFeedbackAnalysisAccepted(trSID, ev); err != nil {
+			t.Fatal(err)
+		}
+		want[id] = tradeFeedbackAnalysisAccepted
+		if i%2 == 0 {
+			if _, err := db.AppendTradeFeedbackAnalysisTerminal(id, tradeFeedbackAnalysisTerminal{Status: tradeFeedbackAnalysisInvalid,
+				Error: "bad content", ValidationJSON: `{"outcome":"invalid","reasons":["bad content"],"proposals":[]}`}); err != nil {
+				t.Fatal(err)
+			}
+			want[id] = tradeFeedbackAnalysisInvalid
+		}
+	}
+	var lastColumn string
+	if err := db.db.QueryRow(`SELECT name FROM pragma_table_info('trade_feedback_analyses') ORDER BY cid DESC LIMIT 1`).Scan(&lastColumn); err != nil || lastColumn != "bundle_json" {
+		t.Fatalf("last column = %q (%v), want bundle_json after every column a read selects", lastColumn, err)
+	}
+	var stored int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM trade_feedback_analyses WHERE event_status = 'accepted' AND length(bundle_json) = ?`, len(bundle)).Scan(&stored); err != nil || stored != tradeFeedbackAnalysisHistoryLimit {
+		t.Fatalf("accepted rows keeping the full bundle = %d (%v)", stored, err)
+	}
+
+	var resp tradeFeedbackAnalysesResponse
+	listed := tfaAllocated(func() { resp = e.list(trSID, "") })
+	if listed >= bundleBytes {
+		t.Fatalf("one list request allocated %d bytes, at least one stored bundle (%d bytes)", listed, bundleBytes)
+	}
+	if len(resp.Analyses) != tradeFeedbackAnalysisHistoryLimit {
+		t.Fatalf("listed %d analyses, want %d", len(resp.Analyses), tradeFeedbackAnalysisHistoryLimit)
+	}
+	for i, v := range resp.Analyses {
+		wantID := fmt.Sprintf("tfa-big-%02d", tradeFeedbackAnalysisHistoryLimit-1-i)
+		n := tradeFeedbackAnalysisHistoryLimit - i
+		if v.RequestID != wantID || v.Status != want[wantID] || v.BundleSHA256 != fmt.Sprintf("%064x", n) || v.CurrentContext {
+			t.Fatalf("view %d = %s %s %s current %v, want %s %s", i, v.RequestID, v.Status, v.BundleSHA256, v.CurrentContext, wantID, want[wantID])
+		}
+		if v.Status == tradeFeedbackAnalysisAccepted && v.Progress != "unresolved" {
+			t.Fatalf("view %s progress = %q, want unresolved", v.RequestID, v.Progress)
+		}
+		if v.Status == tradeFeedbackAnalysisInvalid && v.Error != "bad content" {
+			t.Fatalf("view %s error = %q", v.RequestID, v.Error)
+		}
+	}
+	reads, err := store.ReadTradeFeedbackAnalyses(trSID, tradeFeedbackAnalysisHistoryLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range reads {
+		if r.Accepted.BundleJSON != "" || (r.Terminal != nil && r.Terminal.BundleJSON != "") {
+			t.Fatalf("a history read carried the stored bundle for %s", r.Accepted.RequestID)
+		}
+	}
+
+	var recovered int
+	recoveredBytes := tfaAllocated(func() {
+		recovered, err = store.RecoverTradeFeedbackAnalyses(tradeFeedbackInterruptedError, time.Now().UTC())
+	})
+	if err != nil || recovered != tradeFeedbackAnalysisHistoryLimit/2 {
+		t.Fatalf("recovery = %d, %v; want %d", recovered, err, tradeFeedbackAnalysisHistoryLimit/2)
+	}
+	t.Logf("list allocated %d bytes, recovery allocated %d bytes, stored bundle %d bytes each", listed, recoveredBytes, bundleBytes)
+	if recoveredBytes >= bundleBytes {
+		t.Fatalf("recovery allocated %d bytes, at least one stored bundle (%d bytes)", recoveredBytes, bundleBytes)
+	}
+	for _, v := range e.list(trSID, "").Analyses {
+		switch want[v.RequestID] {
+		case tradeFeedbackAnalysisAccepted:
+			if v.Status != tradeFeedbackAnalysisFailed || v.Error != tradeFeedbackInterruptedError {
+				t.Fatalf("recovered %s = %s %q, want failed with the interrupted reason", v.RequestID, v.Status, v.Error)
+			}
+		default:
+			if v.Status != want[v.RequestID] {
+				t.Fatalf("%s = %s after recovery, want %s", v.RequestID, v.Status, want[v.RequestID])
+			}
+		}
+	}
+	if n, err := store.RecoverTradeFeedbackAnalyses(tradeFeedbackInterruptedError, time.Now().UTC()); err != nil || n != 0 {
+		t.Fatalf("second recovery = %d, %v; want 0", n, err)
+	}
+}
+
+func TestTradeFeedbackAnalysisResearchLaunchRereadsSettingsUnderLock(t *testing.T) {
+	exact := `{"strategy_ids":["` + trSID + `"],"overrides":{"` + trSID + `":{"params":{"roc_period":[10,12]}}}}`
+	setup := func(t *testing.T) (*tfaEnv, *tuningRunManager, string) {
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "config.json")
+		if err := os.WriteFile(configPath, []byte(`{"strategies":[]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		mgr, err := newTuningRunManager(configPath, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e := newTFAEnv(t, singleFileStore(openTestDB(t)), []StrategyConfig{trConfig()})
+		e.ss.tuning = mgr
+		e.seedDefault()
+		e.saveMark(trSID, "pos-a", "mark")
+		v := e.waitTerminal(trSID, tfaRequestID(t, e.submit(trSID, `{"provider":"anthropic_api"}`, nil)))
+		if len(v.Research) != 1 || !v.Research[0].Available {
+			t.Fatalf("research = %+v", v.Research)
+		}
+		return e, mgr, v.RequestID + ":0:" + v.BundleSHA256
+	}
+	launch := func(e *tfaEnv, header string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/tuning/runs", strings.NewReader(exact))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+tfaToken)
+		req.Header.Set(tradeFeedbackResearchHeader, header)
+		rec := httptest.NewRecorder()
+		e.ss.handleAPITuningRuns(rec, req)
+		return rec
+	}
+	publishDuringMetadata := func(e *tfaEnv, publish func([]StrategyConfig) []StrategyConfig) *int {
+		calls := 0
+		e.ss.feedbackAnalysisMeta = func(ctx context.Context, sc StrategyConfig, path string) (tradeFeedbackStrategyMeta, error) {
+			calls++
+			if calls == 1 {
+				e.ss.strategiesMu.Lock()
+				e.ss.strategies = publish(append([]StrategyConfig(nil), e.ss.strategies...))
+				e.ss.strategiesMu.Unlock()
+			}
+			return tfaMeta(), nil
+		}
+		return &calls
+	}
+
+	t.Run("params_changed_during_metadata", func(t *testing.T) {
+		e, mgr, hdr := setup(t)
+		calls := publishDuringMetadata(e, func(list []StrategyConfig) []StrategyConfig {
+			for i := range list {
+				if list[i].ID == trSID {
+					list[i].OpenStrategy.Params = map[string]interface{}{"roc_period": 20.0}
+				}
+			}
+			return list
+		})
+		rec := launch(e, hdr)
+		if *calls != 1 || rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "no tuning run was started") {
+			t.Fatalf("launch after a params change during the metadata call = %d (metadata calls %d): %s", rec.Code, *calls, rec.Body.String())
+		}
+		if runs := mgr.list(); len(runs) != 0 {
+			t.Fatalf("a refused launch started %d runs", len(runs))
+		}
+	})
+
+	t.Run("unchanged", func(t *testing.T) {
+		e, mgr, hdr := setup(t)
+		calls := publishDuringMetadata(e, func(list []StrategyConfig) []StrategyConfig { return list })
+		if rec := launch(e, hdr); *calls != 1 || rec.Code != http.StatusAccepted {
+			t.Fatalf("unchanged launch = %d (metadata calls %d): %s", rec.Code, *calls, rec.Body.String())
+		}
+		runs := mgr.list()
+		if len(runs) != 1 {
+			t.Fatalf("runs = %d, want 1", len(runs))
+		}
+		raw, err := os.ReadFile(filepath.Join(mgr.rootDir, runs[0].ID, tuningRunSpecFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var stored tuningRunSpec
+		if err := json.Unmarshal(raw, &stored); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := json.Marshal(stored.Overrides)
+		if string(got) != `{"`+trSID+`":{"params":{"roc_period":[10,12]}}}` || len(stored.StrategyIDs) != 1 || stored.StrategyIDs[0] != trSID {
+			t.Fatalf("stored tuning spec = %s %v, want exactly the proposal grid", got, stored.StrategyIDs)
+		}
+	})
+
+	t.Run("removed_during_metadata", func(t *testing.T) {
+		e, mgr, hdr := setup(t)
+		calls := publishDuringMetadata(e, func(list []StrategyConfig) []StrategyConfig {
+			out := list[:0]
+			for _, sc := range list {
+				if sc.ID != trSID {
+					out = append(out, sc)
+				}
+			}
+			return out
+		})
+		rec := launch(e, hdr)
+		if *calls != 1 || rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "left the running roster") {
+			t.Fatalf("launch after a removal during the metadata call = %d (metadata calls %d): %s", rec.Code, *calls, rec.Body.String())
+		}
+		if runs := mgr.list(); len(runs) != 0 {
+			t.Fatalf("a refused launch started %d runs", len(runs))
+		}
+	})
 }
