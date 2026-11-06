@@ -186,6 +186,12 @@ func (ss *StatusServer) handleAPIConfirm(w http.ResponseWriter, r *http.Request)
 			writeJSONError(w, http.StatusBadRequest, lookupErr.Error())
 			return
 		}
+		if req.Action == "open" || req.Action == "add" {
+			if reason := ss.removedStrategyRefusal(req.StrategyID); reason != "" {
+				writeJSONError(w, http.StatusConflict, reason)
+				return
+			}
+		}
 	}
 	binding, err := canonicalConfirmBinding(req.Action, req.StrategyID, req.Params)
 	if err != nil {

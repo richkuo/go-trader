@@ -161,7 +161,7 @@ func (ss *StatusServer) confirmStructuralAction(action, strategyID string, param
 			return "", "", "", fmt.Errorf("%s", reason)
 		}
 		desc := fmt.Sprintf("remove-strategy: delete %s from the config. It stops trading after restart. %s", sc.ID, removeStrategyHistoryNote)
-		desc += " " + structuralApplyMessage(p.Restart)
+		desc += " " + removeStrategyRestartNote + " " + structuralApplyMessage(true)
 		return sc.ID, desc, "", nil
 	case "paper-to-live":
 		sc, ok := ss.strategyConfig(strategyID)
@@ -358,8 +358,9 @@ func (ss *StatusServer) handleAPIStrategyStructural(w http.ResponseWriter, r *ht
 		writeJSONError(w, http.StatusConflict, action+" failed: "+err.Error())
 		return
 	}
-	writeJSON(w, uiMutationResponse{OK: true, Message: msg + " " + structuralApplyMessage(p.Restart)})
-	ss.maybeRestart(p.Restart)
+	restart := p.Restart || action == "remove-strategy"
+	writeJSON(w, uiMutationResponse{OK: true, Message: msg + " " + structuralApplyMessage(restart)})
+	ss.maybeRestart(restart)
 }
 
 func (ss *StatusServer) paperToLiveBlockedReason(id string, afterConfirm bool) string {

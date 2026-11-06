@@ -111,11 +111,34 @@ func (ss *StatusServer) removeStrategyQueuedRowRefusal(id string) string {
 	return fmt.Sprintf("strategy %q has queued rows that can still open a position (%s); let them apply or cancel them, then remove it.", id, strings.Join(queued, ", "))
 }
 
+const removeStrategyRestartNote = "A removal always restarts the daemon, whatever the restart box says, and dashboard open and add refuse the strategy until then."
+
 func (ss *StatusServer) removeStrategyGuarded(id string) error {
-	return ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
+	ss.tradeActionMu.Lock()
+	defer ss.tradeActionMu.Unlock()
+	err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
 		if reason := ss.removeStrategyRefusal(id); reason != "" {
 			return fmt.Errorf("%s", reason)
 		}
 		return removeStrategyFromRoot(root, id)
 	})
+	if err != nil {
+		return err
+	}
+	ss.removedMu.Lock()
+	if ss.removedStrategies == nil {
+		ss.removedStrategies = make(map[string]bool)
+	}
+	ss.removedStrategies[id] = true
+	ss.removedMu.Unlock()
+	return nil
+}
+
+func (ss *StatusServer) removedStrategyRefusal(id string) string {
+	ss.removedMu.Lock()
+	defer ss.removedMu.Unlock()
+	if ss.removedStrategies[id] {
+		return fmt.Sprintf("strategy %q was removed from the config; it opens nothing until the restart that drops it", id)
+	}
+	return ""
 }

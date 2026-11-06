@@ -782,6 +782,104 @@ func TestRemoveStrategyRequiresPausedFlatAndUnqueued(t *testing.T) {
 	})
 }
 
+func pcManualRemoveFixture(t *testing.T) (*pcFixture, string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(minimalConfigJSON), &root); err != nil {
+		t.Fatal(err)
+	}
+	var list []json.RawMessage
+	if err := json.Unmarshal(root["strategies"], &list); err != nil {
+		t.Fatal(err)
+	}
+	list = append(list, json.RawMessage(`{"id": "man-p", "type": "manual", "platform": "hyperliquid", "symbol": "SOL", "timeframe": "1h", "leverage": 1, "capital": 100, "max_drawdown_pct": 10, "paused": true}`))
+	root["strategies"], _ = json.Marshal(list)
+	raw, _ := json.MarshalIndent(root, "", "  ")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		DBFile:          filepath.Join(dir, "live.db"),
+		PaperDBFile:     filepath.Join(dir, "paper.db"),
+		IntervalSeconds: 600,
+		Strategies: []StrategyConfig{
+			{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}, Capital: 1000, Paused: true},
+			{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h", "--mode=paper"}, Capital: 100, Leverage: 1, Paused: true},
+			{ID: "man-p", Type: "manual", Platform: "hyperliquid", Symbol: "SOL", Timeframe: "1h", Leverage: 1, Capital: 100, Paused: true},
+		},
+	}
+	f := newPCFixture(t, cfg)
+	f.ss.configPath = path
+	return f, path
+}
+
+func TestRemoveStrategyDashboardAlwaysRestartsAndBlocksOpens(t *testing.T) {
+	removeOnDashboard := func(t *testing.T, f *pcFixture, id, params string) *httptest.ResponseRecorder {
+		t.Helper()
+		c := structuralConfirm(t, f.ss, "remove-strategy", id, params)
+		if !strings.Contains(c.Description, removeStrategyRestartNote) {
+			t.Fatalf("the remove preview must say it always restarts: %q", c.Description)
+		}
+		h := func(w http.ResponseWriter, r *http.Request) {
+			f.ss.handleAPIStrategyStructural(w, r, id, "remove-strategy")
+		}
+		return mutationPost(f.ss, h, "/api/strategies/"+id+"/remove-strategy", fmt.Sprintf(`{"nonce":%q,"params":%s}`, c.Nonce, params), nil)
+	}
+
+	t.Run("a dashboard remove with restart off still restarts, and a later dashboard open is refused", func(t *testing.T) {
+		f, _ := pcManualRemoveFixture(t)
+		openConfirm := func() (int, string, string) {
+			w := mutationPost(f.ss, f.ss.handleAPIConfirm, "/api/confirm", `{"action":"open","strategy_id":"man-p","params":{"size":1}}`, nil)
+			var c uiConfirmResponse
+			_ = json.Unmarshal(w.Body.Bytes(), &c)
+			return w.Code, c.Nonce, w.Body.String()
+		}
+		code, staleNonce, body := openConfirm()
+		if code != http.StatusOK {
+			t.Fatalf("before the removal a dashboard open confirm must work: %d %s", code, body)
+		}
+		if w := removeOnDashboard(t, f, "man-p", `{"restart":false}`); w.Code != http.StatusOK {
+			t.Fatalf("remove = %d %s", w.Code, w.Body.String())
+		}
+		waitForRestarts(t, f.restarts, 1)
+		if code, _, body := openConfirm(); code != http.StatusConflict || !strings.Contains(body, "was removed from the config") {
+			t.Fatalf("an open confirm after the removal must refuse: %d %s", code, body)
+		}
+		h := func(w http.ResponseWriter, r *http.Request) { f.ss.handleAPIStrategyTradeAction(w, r, "man-p", "open") }
+		w := mutationPost(f.ss, h, "/api/strategies/man-p/open", fmt.Sprintf(`{"nonce":%q,"params":{"size":1}}`, staleNonce), nil)
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "was removed from the config") {
+			t.Fatalf("an open with a nonce issued before the removal must refuse: %d %s", w.Code, w.Body.String())
+		}
+		actions, err := f.env.store.LoadPendingManualActions()
+		if err != nil || len(actions) != 0 {
+			t.Fatalf("a refused open must queue nothing: %v %+v", err, actions)
+		}
+		f.env.mu.Lock()
+		delete(f.env.state.Strategies, "man-p")
+		f.env.mu.Unlock()
+		f.env.saveAll()
+		var positions int
+		_ = f.env.fileFor("sma-btc").db.QueryRow("SELECT COUNT(*) FROM positions WHERE strategy_id = 'man-p'").Scan(&positions)
+		if positions != 0 {
+			t.Fatalf("no position row may exist for the removed strategy: %d", positions)
+		}
+	})
+
+	t.Run("a dashboard remove with restart on starts exactly one restart", func(t *testing.T) {
+		f, _ := pcManualRemoveFixture(t)
+		if w := removeOnDashboard(t, f, "man-p", `{"restart":true}`); w.Code != http.StatusOK {
+			t.Fatalf("remove = %d %s", w.Code, w.Body.String())
+		}
+		waitForRestarts(t, f.restarts, 1)
+		time.Sleep(50 * time.Millisecond)
+		if n := f.restarts.Load(); n != 1 {
+			t.Fatalf("restarts = %d, want 1", n)
+		}
+	})
+}
+
 func TestRemoveStrategyGuardIntegration(t *testing.T) {
 	t.Run("refuses on both surfaces while rows exist, then removes after a flatten", func(t *testing.T) {
 		f, path := pcRemoveFixture(t)

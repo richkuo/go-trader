@@ -302,9 +302,7 @@ func TestUIRemoveStrategy(t *testing.T) {
 		if ids := configStrategyIDs(t, path); len(ids) != 1 || ids[0] != "hl-momentum-eth" {
 			t.Fatalf("strategies after remove = %v, want [hl-momentum-eth]", ids)
 		}
-		if restarts.Load() != 0 {
-			t.Fatalf("restarts = %d, want 0", restarts.Load())
-		}
+		waitForRestarts(t, restarts, 1)
 		if _, err := LoadConfigForProbe(path); err != nil {
 			t.Fatalf("config after remove fails validation: %v", err)
 		}
