@@ -450,8 +450,8 @@ func hyperliquidBatchEnabled() bool {
 
 var runHyperliquidBatchCheckFn = runHyperliquidBatchCheck
 
-func runHyperliquidBatchCheck(script string, args []string, stdinJSON []byte) (*HyperliquidBatchResult, string, error) {
-	stdout, stderr, err := runPythonWithTimeout(shutdownReadOnlyCtx, script, args, stdinJSON, hlBatchTimeout)
+func runHyperliquidBatchCheck(prio pythonChildPriority, script string, args []string, stdinJSON []byte) (*HyperliquidBatchResult, string, error) {
+	stdout, stderr, err := runPythonWithTimeout(withPythonChildPriority(shutdownReadOnlyCtx, prio), script, args, stdinJSON, hlBatchTimeout)
 	stderrStr := string(stderr)
 	parsed, parseErr := parseHyperliquidBatchOutput(stdout)
 	if err != nil {
@@ -555,7 +555,7 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 			logf("[INFO] hl-batch %s: %d strategies in one call (%s)", in.Key, len(in.Members), strings.Join(in.MemberIDsOrdered(), ", "))
 		}
 		started := time.Now()
-		out, stderr, err := runHyperliquidBatchCheckFn(hyperliquidCheckScript, args, stdin)
+		out, stderr, err := runHyperliquidBatchCheckFn(hlBatchGroupPriority(in.Members), hyperliquidCheckScript, args, stdin)
 		elapsed := time.Since(started)
 		if err != nil {
 			hlBatchApplySharedFailure(in, err.Error(), stderr, notifier, logf)

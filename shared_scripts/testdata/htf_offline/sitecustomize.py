@@ -7,6 +7,7 @@ import sys
 import time
 
 _FIXTURE_PATH = os.environ.get("HTF_OFFLINE_FIXTURE", "")
+_NICE_DIR = os.environ.get("HTF_OFFLINE_NICE_DIR", "")
 
 
 def _load():
@@ -130,6 +131,40 @@ class _FixtureFinder(importlib.abc.MetaPathFinder):
         spec.loader.exec_module = exec_module
         return spec
 
+
+def _thread_nices():
+    task_dir = "/proc/self/task"
+    if not os.path.isdir(task_dir):
+        return {"process": os.getpriority(os.PRIO_PROCESS, 0)}
+    out = {}
+    for tid in os.listdir(task_dir):
+        try:
+            with open(os.path.join(task_dir, tid, "stat")) as fh:
+                raw = fh.read()
+        except OSError:
+            continue
+        out[tid] = int(raw[raw.rindex(")") + 2:].split()[16])
+    return out
+
+
+def _start_nice_recorder():
+    import atexit
+    import threading
+
+    threading.Thread(target=threading.Event().wait, name="nice-recorder", daemon=True).start()
+
+    def write():
+        path = os.path.join(_NICE_DIR, "%d.json" % os.getpid())
+        doc = {"pid": os.getpid(), "pgrp": os.getpgrp(), "argv": list(sys.argv), "threads": _thread_nices()}
+        with open(path + ".tmp", "w") as fh:
+            json.dump(doc, fh)
+        os.replace(path + ".tmp", path)
+
+    atexit.register(write)
+
+
+if _NICE_DIR:
+    _start_nice_recorder()
 
 if _FIXTURE_PATH:
     _block_network()

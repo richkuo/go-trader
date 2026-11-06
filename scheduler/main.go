@@ -307,6 +307,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, msg)
 		missingStateWarning = msg
 	}
+	if !readOnlyReport {
+		fmt.Println(configurePaperChildPriority(cfg.Strategies))
+	}
 	if paper, ok := storageLayoutCfg.spec(storageRolePaper); ok {
 		if _, statErr := os.Stat(paper.Canonical); statErr != nil {
 			fmt.Printf("[storage] paper state file %q is absent; it will be created on the first save\n", paper.Path)
@@ -3096,7 +3099,7 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 	args = appendAllowNoEdgeArg(args, sc)
 	logger.Running(sc.Script, args)
 
-	result, stderr, err := RunSpotCheck(sc.Script, args)
+	result, stderr, err := RunSpotCheck(checkChildPriority(sc), sc.Script, args)
 	if err != nil {
 		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
@@ -3247,7 +3250,7 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier,
 	}
 	logger.Running(sc.Script, args)
 
-	result, stderr, err := RunOptionsCheckWithStdin(sc.Script, args, posJSON)
+	result, stderr, err := RunOptionsCheckWithStdin(checkChildPriority(sc), sc.Script, args, posJSON)
 	if err != nil {
 		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
@@ -3533,9 +3536,9 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	if marketStdin != nil && feed != nil && feed.StdinRun != nil {
 		result, stderr, err = runHyperliquidCheckStdout(feed.StdinRun(sc.Script, args, marketStdin))
 	} else if marketStdin != nil {
-		result, stderr, err = runHyperliquidCheckWithStdinFn(sc.Script, args, marketStdin)
+		result, stderr, err = runHyperliquidCheckWithStdinFn(checkChildPriority(*sc), sc.Script, args, marketStdin)
 	} else {
-		result, stderr, err = runHyperliquidCheckFn(sc.Script, args)
+		result, stderr, err = runHyperliquidCheckFn(checkChildPriority(*sc), sc.Script, args)
 	}
 	errMsg, mode := "", scriptFailureCrash
 	switch {
@@ -4107,7 +4110,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 	args = appendAllowNoEdgeArg(args, sc)
 	logger.Running(sc.Script, args)
 
-	result, stderr, err := RunTopStepCheck(sc.Script, args)
+	result, stderr, err := RunTopStepCheck(checkChildPriority(sc), sc.Script, args)
 	if err != nil {
 		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
@@ -4316,7 +4319,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 	args = appendAllowNoEdgeArg(args, sc)
 	logger.Running(sc.Script, args)
 
-	result, stderr, err := RunRobinhoodCheck(sc.Script, args)
+	result, stderr, err := RunRobinhoodCheck(checkChildPriority(sc), sc.Script, args)
 	if err != nil {
 		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
@@ -4746,7 +4749,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	args = appendAllowNoEdgeArg(args, sc)
 	logger.Running(sc.Script, args)
 
-	result, stderr, err := RunOKXCheck(sc.Script, args)
+	result, stderr, err := RunOKXCheck(checkChildPriority(sc), sc.Script, args)
 	return completeOKXCheck(sc, args, result, stderr, err, prices, notifier, logger)
 }
 

@@ -2,6 +2,30 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 1987: paper check children of a paper-only process run at a lower CPU priority
+
+Runtime default; opt out with `GO_TRADER_PAPER_NICE=0`; there is no config change and no schema change.
+Before this change every Python child of the scheduler ran at the scheduler's own priority, so a large paper cycle could hold every core while a live instance on the same host ran its cycle.
+Now, when the roster is non-empty and holds no live strategy, the scheduler raises the nice value of each per-strategy check child and each all-paper Hyperliquid batch child to `min(19, scheduler nice + N)` right after the child starts, with `setpriority(PRIO_PGRP, ...)` so every thread of the child gets the value.
+`N` comes from `GO_TRADER_PAPER_NICE`: unset = 10, an integer from 0 to 19 is used as is, 0 turns the feature off, and any other value prints one `[WARN]` line and uses 10.
+The decision is made once at startup, and one `[priority]` line names the increment or the reason it is off.
+A process with any live strategy keeps every child at the default priority, because its checks run one at a time and a slower paper check would delay a live check.
+Side-effect and execute children, the regime bundle check, LLM entry analysis, UI children, probe children, the Robinhood login helper and shared read-only fetches always keep the default priority.
+A priority failure never fails or delays a check: a child that already exited is ignored, and any other error prints one WARN per distinct error.
+Limits: paper checks are slower on a busy host and can reach the script or batch timeout more often; a batch timeout keeps the shared-state failure contract (one alert per group, same-cycle per-member checks, per-strategy fallback after three failures).
+Nice orders tasks inside one CPU cgroup. When the root `cgroup.subtree_control` lists `cpu` and `system.slice` does not, all go-trader services share one pool, so a paper instance also yields to a live instance on the same host. When `cpu` is off at the root and `kernel.sched_autogroup_enabled=1`, each service is its own autogroup, so nice orders tasks only inside one service and a paper instance does not yield to a live instance.
+Operator action: none. Check with `ps -eLo pid,tid,ni,args | grep check_` during a paper cycle, and compare live cycle times and `hl-batch .* shared state failed` counts with the times before the update.
+A per-unit `CPUWeight` for paper-only systemd instances follows in a separate change.
+
+### Issue 1984: operator paper close and the remove-strategy guard
+
+Runtime default with a new owner command; there is no opt-out, no config change and no schema change.
+Before this change `manual-close` refused every strategy whose type is not `manual`, `force-close` accepted only live Hyperliquid perps, and `remove-strategy` said open positions were "NOT touched". After the restart the startup prune and the next full-file save deleted those rows by cascade, so open paper exposure disappeared with no close trade and no realized PnL.
+Now `/go-trader-paper-close <strategy> [symbol]` and the dashboard paper-close action flatten one paper strategy at a fresh per-platform mark, book one `operator_paper_close` trade per leg, and save only that strategy's book (SKILL.md § Operator paper close).
+`remove-strategy` on Discord and the dashboard refuses while the strategy holds any position or option-leg row, names the symbols and the close path, and checks again inside the config write lock after the confirm. It also refuses unless the running roster shows the strategy paused, refuses a replay mirror, and refuses while a queued manual action or resting limit row names it, so no cycle can open a position between the check and the restart prune. The dashboard remove always restarts, as Discord does, and dashboard open and add refuse a removed strategy until the process exits. The "NOT touched" text is gone from all three places.
+`backtest/fee_evidence.py` groups `operator_paper_close` rows as `manual`.
+Operator action: pause, then flatten, before removal. The new slash command registers through the normal sync and can take about an hour to appear.
+
 ### Issue 1983: Hyperliquid API wallet expiry warnings and CRITICAL
 
 Runtime default with new alerts only; there is no opt-out, no config change and no schema change.

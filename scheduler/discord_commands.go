@@ -40,6 +40,7 @@ var opsCommandNames = map[string]bool{
 	"add-strategy":              true,
 	quoteOwnerSetupAction:       true,
 	"remove-strategy":           true,
+	paperCloseCommandName:       true,
 	"add-platform":              true,
 	"paper-to-live":             true,
 	"apply-regime-gate":         true,
@@ -474,6 +475,10 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		{Name: commandPrefix + "remove-strategy", Description: "Remove a strategy from the config (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "id", Description: "Strategy ID to remove", Required: true},
 		}},
+		{Name: commandPrefix + paperCloseCommandName, Description: "Close a paper strategy's open positions at the current mark (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Paper strategy ID", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "symbol", Description: "Close only this symbol or option leg (default: every leg)"},
+		}},
 		{Name: commandPrefix + "add-platform", Description: "Guided platform setup instructions (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Platform name, e.g. hyperliquid", Required: true},
 		}},
@@ -641,6 +646,8 @@ func (d *DiscordNotifier) interactionCreate(s discordTransport, i *discordgo.Int
 		d.handleAddQuoteOwner(s, i, data)
 	case "remove-strategy":
 		d.handleRemoveStrategy(s, i, data.Options)
+	case paperCloseCommandName:
+		d.handlePaperClose(s, i, data.Options)
 	case "add-platform":
 		d.handleAddPlatform(s, i, data.Options)
 	case "paper-to-live":

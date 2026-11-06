@@ -37,7 +37,9 @@ func hlBatchTestState(ids ...string) *AppState {
 func stubBatchCheck(t *testing.T, fn func(script string, args []string, stdinJSON []byte) (*HyperliquidBatchResult, string, error)) {
 	t.Helper()
 	orig := runHyperliquidBatchCheckFn
-	runHyperliquidBatchCheckFn = fn
+	runHyperliquidBatchCheckFn = func(_ pythonChildPriority, script string, args []string, stdinJSON []byte) (*HyperliquidBatchResult, string, error) {
+		return fn(script, args, stdinJSON)
+	}
 	t.Cleanup(func() { runHyperliquidBatchCheckFn = orig })
 }
 

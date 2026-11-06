@@ -82,7 +82,7 @@ func TestRobinhoodScriptStdoutContract(t *testing.T) {
 
 				for _, checkMode := range []string{"--mode=paper", "--mode=live"} {
 					robinhoodStdoutFreshHome(t)
-					result, stderr, err := RunRobinhoodCheck(checkScript, []string{"momentum_pro", "BTC", "1h", checkMode})
+					result, stderr, err := RunRobinhoodCheck(checkChildPriority(StrategyConfig{Args: []string{"momentum_pro", "BTC", "1h", checkMode}}), checkScript, []string{"momentum_pro", "BTC", "1h", checkMode})
 					if err != nil || result == nil {
 						t.Errorf("RunRobinhoodCheck %s (%s): result=%v err=%v stderr:\n%s", checkMode, mode, result, err, stderr)
 					}
@@ -115,7 +115,7 @@ func TestRobinhoodScriptStdoutContract(t *testing.T) {
 				robinhoodStdoutRequireStubbedLogin(t, "RunRobinhoodFetchPositions", mode, stderr)
 
 				robinhoodStdoutFreshHome(t)
-				options, stderr, err := RunOptionsCheckWithStdin("shared_scripts/check_options.py", []string{"vol_mean_reversion", "BTC", "--platform=robinhood"}, "[]")
+				options, stderr, err := RunOptionsCheckWithStdin(checkChildPriority(StrategyConfig{Args: []string{"vol_mean_reversion", "BTC", "--platform=robinhood"}}), "shared_scripts/check_options.py", []string{"vol_mean_reversion", "BTC", "--platform=robinhood"}, "[]")
 				if err != nil || options == nil {
 					t.Errorf("RunOptionsCheckWithStdin (%s): result=%v err=%v stderr:\n%s", mode, options, err, stderr)
 				}
@@ -316,14 +316,14 @@ func TestRobinhoodScriptStdoutLoginRefusals(t *testing.T) {
 				keep := func(parts ...string) { texts = append(texts, parts...) }
 
 				freshHome(t)
-				live, stderr, err := RunRobinhoodCheck(checkScript, []string{"momentum_pro", "BTC", "1h", "--mode=live"})
+				live, stderr, err := RunRobinhoodCheck(checkChildPriority(StrategyConfig{Args: []string{"momentum_pro", "BTC", "1h", "--mode=live"}}), checkScript, []string{"momentum_pro", "BTC", "1h", "--mode=live"})
 				keep(stderr)
 				if err != nil || live == nil || !strings.HasPrefix(live.Error, loginFailed) || live.Signal != 0 {
 					t.Errorf("live check: got result=%+v err=%v, want an %q envelope with signal 0", live, err, loginFailed)
 				}
 
 				freshHome(t)
-				paper, stderr, err := RunRobinhoodCheck(checkScript, []string{"momentum_pro", "BTC", "1h", "--mode=paper"})
+				paper, stderr, err := RunRobinhoodCheck(checkChildPriority(StrategyConfig{Args: []string{"momentum_pro", "BTC", "1h", "--mode=paper"}}), checkScript, []string{"momentum_pro", "BTC", "1h", "--mode=paper"})
 				keep(stderr)
 				if err != nil || paper == nil || paper.Error != "" || paper.Price <= 0 || strings.Contains(stderr, "can only be called when logged in") {
 					t.Errorf("paper check: got result=%+v err=%v, want a logged-out paper result on public data; stderr:\n%s", paper, err, stderr)
@@ -421,7 +421,7 @@ func TestRobinhoodScriptStdoutLoginRefusals(t *testing.T) {
 				}
 
 				freshHome(t)
-				options, stderr, err := RunOptionsCheckWithStdin("shared_scripts/check_options.py", []string{"vol_mean_reversion", "BTC", "--platform=robinhood"}, "[]")
+				options, stderr, err := RunOptionsCheckWithStdin(checkChildPriority(StrategyConfig{Args: []string{"vol_mean_reversion", "BTC", "--platform=robinhood"}}), "shared_scripts/check_options.py", []string{"vol_mean_reversion", "BTC", "--platform=robinhood"}, "[]")
 				keep(stderr)
 				if err != nil || options == nil || options.Error != "" {
 					t.Errorf("options: got result=%+v err=%v, want a paper result with no error", options, err)
@@ -470,7 +470,7 @@ func TestRobinhoodScriptStdoutLoginRefusals(t *testing.T) {
 					os.Unsetenv(robinhoodSessionDirEnv)
 				}
 
-				live, stderr, err := RunRobinhoodCheck(checkScript, []string{"momentum_pro", "BTC", "1h", "--mode=live"})
+				live, stderr, err := RunRobinhoodCheck(checkChildPriority(StrategyConfig{Args: []string{"momentum_pro", "BTC", "1h", "--mode=live"}}), checkScript, []string{"momentum_pro", "BTC", "1h", "--mode=live"})
 				if err != nil || live == nil || !strings.HasPrefix(live.Error, loginFailed) || !strings.Contains(live.Error, robinhoodSessionDirEnv) || live.Signal != 0 {
 					t.Errorf("live check: got result=%+v err=%v, want an %q envelope naming %s with signal 0; stderr:\n%s", live, err, loginFailed, robinhoodSessionDirEnv, stderr)
 				}

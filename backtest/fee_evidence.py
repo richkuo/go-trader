@@ -33,6 +33,7 @@ CLOSE_REASON_GROUPS = {
     "signal": "signal_close",
     "force_close": "manual",
     "manual_close": "manual",
+    "operator_paper_close": "manual",
     "hl_sync_external": "external",
     "hl_sync_external_partial": "external",
     "circuit_breaker": "risk_close",
