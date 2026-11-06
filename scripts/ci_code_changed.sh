@@ -27,12 +27,14 @@ gate_patterns() {
     update)
       pats=(scripts/update.sh 'scripts/update_*' scripts/install-service.sh scripts/migrate-service-layout.py
         scripts/shared-feed-convert.sh 'systemd/*' go-trader.service scripts/test_migrate_service_layout_fixture.sh
+        scheduler/main.go 'scheduler/probe*.go' scheduler/server.go 'scheduler/market_feed_role*.go'
         scripts/run_ci_shell_suite.sh)
       ;;
     migrate)
       pats=(scripts/migrate-service-layout.py 'scripts/update_*' scripts/install-service.sh scripts/merge-paper-instance.sh
         scripts/paper_alias.py scripts/shared-feed-convert.sh 'systemd/*' go-trader.service
         'scheduler/run_evidence*.go' scheduler/risk.go scheduler/server.go scheduler/state_presence.go
+        scheduler/main.go 'scheduler/probe*.go' 'scheduler/storage*.go' 'scheduler/singleton_lock*.go' 'scheduler/inspect*.go'
         scripts/test_migrate_service_layout_fixture.sh
         scripts/run_ci_shell_suite.sh)
       ;;

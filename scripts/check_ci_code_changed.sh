@@ -13,10 +13,11 @@ g() { git -C "$tmp/repo" -c user.email=ci@example.invalid -c user.name=ci -c ini
 
 git init -q "$tmp/repo"
 mkdir -p "$tmp/repo/scheduler/cmd/egress-controller" "$tmp/repo/docs" "$tmp/repo/scripts" "$tmp/repo/.github/workflows"
-for f in CLAUDE.md SKILL.md README.md scheduler/main.go docs/backtesting-registry.md scheduler/cmd/egress-controller/manifest.go \
+for f in CLAUDE.md SKILL.md README.md scheduler/executor.go docs/backtesting-registry.md scheduler/cmd/egress-controller/manifest.go \
   scheduler/quote_coordinator.go scripts/merge-paper-instance.sh scripts/update.sh scripts/migrate-service-layout.py \
   scheduler/server.go scheduler/risk.go scheduler/state_presence.go scheduler/update_sh_feature_test.go \
-  .github/workflows/ci.yml; do
+  scheduler/main.go scheduler/probe_cmd.go scheduler/storage_inspect.go scheduler/singleton_lock.go scheduler/inspect_cmd.go \
+  scheduler/market_feed_role.go .github/workflows/ci.yml; do
   printf 'base\n' >"$tmp/repo/$f"
 done
 g add -A
@@ -70,19 +71,25 @@ code_only="code=true quote=false egress_docker=false merge_paper=false update=fa
 none="code=false quote=false egress_docker=false merge_paper=false update=false migrate=false"
 
 check "docs only, pull request" pull_request merge "$none" 'echo x >>CLAUDE.md; echo x >>SKILL.md; echo x >>README.md'
-check "docs and code, pull request" pull_request merge "$code_only" 'echo x >>CLAUDE.md; echo x >>scheduler/main.go'
+check "docs and code, pull request" pull_request merge "$code_only" 'echo x >>CLAUDE.md; echo x >>scheduler/executor.go'
 check "docs only, push" push merge "$all" 'echo x >>SKILL.md'
 check "docs only, no event" "" merge "$all" 'echo x >>SKILL.md'
 check "test-read doc, pull request" pull_request merge "$code_only" 'echo x >>docs/backtesting-registry.md'
 check "rename out of the list, pull request" pull_request merge "$code_only" 'git mv README.md README2.md'
-check "code renamed into the list, pull request" pull_request merge "$code_only" 'git rm -q README.md && git mv scheduler/main.go README.md'
+check "code renamed into the list, pull request" pull_request merge "$code_only" 'git rm -q README.md && git mv scheduler/executor.go README.md'
 check "head is not a merge commit, pull request" pull_request plain "$all" 'echo x >>SKILL.md'
 check "quote coordinator, pull request" pull_request merge "code=true quote=true egress_docker=false merge_paper=false update=false migrate=false" 'echo x >>scheduler/quote_coordinator.go'
 check "egress controller, pull request" pull_request merge "code=true quote=false egress_docker=true merge_paper=false update=false migrate=false" 'echo x >>scheduler/cmd/egress-controller/manifest.go'
 check "merge script, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scripts/merge-paper-instance.sh'
 check "update script, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=false" 'echo x >>scripts/update.sh'
 check "layout tool, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true" 'echo x >>scripts/migrate-service-layout.py'
-check "status port source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scheduler/server.go'
+check "status port source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true" 'echo x >>scheduler/server.go'
+check "subcommand dispatch, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=true" 'echo x >>scheduler/main.go'
+check "probe source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=true" 'echo x >>scheduler/probe_cmd.go'
+check "storage-inspect source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scheduler/storage_inspect.go'
+check "lock holder source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scheduler/singleton_lock.go'
+check "inspect source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scheduler/inspect_cmd.go'
+check "feed health source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=false" 'echo x >>scheduler/market_feed_role.go'
 check "latch hook, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=false migrate=true" 'echo x >>scheduler/risk.go'
 check "missing-state hook, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scheduler/state_presence.go'
 check "merge harness bash helper, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=false" 'echo x >>scheduler/update_sh_feature_test.go'
