@@ -35,6 +35,7 @@ jobs:
       flow: ${{ steps.resolve_model.outputs.flow }}
       model: ${{ steps.resolve_model.outputs.model }}
       effort: ${{ steps.resolve_model.outputs.effort }}
+      pr_author_trusted: ${{ steps.classify_mode.outputs.pr_author_trusted }}
     steps:
       - name: Verify @claude is an actual invocation (not in a code block or example)
         id: verify_invocation
@@ -44,6 +45,8 @@ jobs:
           REVIEW_BODY: ${{ github.event.review.body }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           TRIGGER_ACTOR: ${{ github.actor }}
+          PERL_STRIP_FENCED: 's/```.*?```//gs'
+          SED_STRIP_INLINE: 's/`[^`]*`//g'
         run: |
           case "$EVENT_NAME" in
             issue_comment|pull_request_review_comment)
@@ -57,7 +60,7 @@ jobs:
               ;;
           esac
 
-          STRIPPED=$(printf '%s' "$BODY" | perl -0777 -pe 's/```.*?```//gs' | sed 's/`[^`]*`//g')
+          STRIPPED=$(printf '%s' "$BODY" | perl -0777 -pe "$PERL_STRIP_FENCED" | sed "$SED_STRIP_INLINE")
 
           DELIM="STRIPPED_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
           {
@@ -90,6 +93,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           STRIPPED: ${{ steps.verify_invocation.outputs.stripped }}
           DOCS_RELEASE_ENABLED: ${{ vars.DOCS_RELEASE_ENABLED }}
+          PR_URL: ${{ github.event.issue.pull_request.url }}
         run: |
           MODEL_SHORT=$(printf '%s' "$STRIPPED" | grep -ioE '(^|(\r?\n))[[:space:]]*@claude[[:space:]]+[a-z]+[0-9]*' | head -1 | awk '{print $NF}' | tr '[:upper:]' '[:lower:]' || true)
 
@@ -99,7 +103,7 @@ jobs:
           echo "effort=$EFFORT_RAW" >> "$GITHUB_OUTPUT"
 
           FLOW=""
-          if [ "$EVENT_NAME" = "issue_comment" ] && [ "$DOCS_RELEASE_ENABLED" = "true" ]; then
+          if [ "$EVENT_NAME" = "issue_comment" ] && [ -z "$PR_URL" ] && [ "$DOCS_RELEASE_ENABLED" = "true" ]; then
             for cand in create-release sync-docs; do
               if printf '%s' "$STRIPPED" | grep -qiE "(^|(\r?\n))[[:space:]]*@claude([[:space:]]+(opus|opus5|sonnet|sonnet5|fable|fable5))?[[:space:]]+${cand}([[:space:]]|\$)"; then
                 FLOW="$cand"
@@ -112,7 +116,7 @@ jobs:
             echo "::notice::Docs/release flow: $FLOW"
           fi
 
-      - name: Classify invocation route (review, implement, or fix-pr)
+      - name: Classify invocation route (review, implement, fix-pr, or untrusted-issue)
         if: steps.verify_invocation.outputs.invoked == 'true'
         id: classify_mode
         env:
@@ -120,8 +124,10 @@ jobs:
           PR_URL: ${{ github.event.issue.pull_request.url }}
           FLOW: ${{ steps.resolve_model.outputs.flow }}
           STRIPPED: ${{ steps.verify_invocation.outputs.stripped }}
-          PR_AUTHOR_ASSOC: ${{ github.event.issue.author_association }}
-          PR_AUTHOR_LOGIN: ${{ github.event.issue.user.login }}
+          ISSUE_AUTHOR_ASSOC: ${{ github.event.issue.author_association }}
+          ISSUE_AUTHOR_LOGIN: ${{ github.event.issue.user.login }}
+          PR_AUTHOR_ASSOC: ${{ github.event.pull_request.author_association }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
         run: |
           IS_ISSUE=false
           case "$EVENT_NAME" in
@@ -129,8 +135,34 @@ jobs:
             issue_comment) if [ -z "$PR_URL" ]; then IS_ISSUE=true; fi ;;
           esac
 
+          ISSUE_AUTHOR_TRUSTED=false
+          case "$ISSUE_AUTHOR_ASSOC" in
+            OWNER|MEMBER|COLLABORATOR) ISSUE_AUTHOR_TRUSTED=true ;;
+          esac
+          if [ "$ISSUE_AUTHOR_LOGIN" = "claude[bot]" ]; then
+            ISSUE_AUTHOR_TRUSTED=true
+          fi
+
+          PR_AUTHOR_TRUSTED=false
+          if [ -n "$PR_URL" ]; then
+            PR_AUTHOR_TRUSTED="$ISSUE_AUTHOR_TRUSTED"
+          else
+            case "$PR_AUTHOR_ASSOC" in
+              OWNER|MEMBER|COLLABORATOR) PR_AUTHOR_TRUSTED=true ;;
+            esac
+            if [ "$PR_AUTHOR_LOGIN" = "claude[bot]" ]; then
+              PR_AUTHOR_TRUSTED=true
+            fi
+          fi
+          echo "pr_author_trusted=$PR_AUTHOR_TRUSTED" >> "$GITHUB_OUTPUT"
+
           if [ -n "$FLOW" ] || [ "$IS_ISSUE" = "true" ]; then
-            MODE=implement
+            if [ "$ISSUE_AUTHOR_TRUSTED" = "true" ]; then
+              MODE=implement
+            else
+              MODE=untrusted-issue
+              echo "::warning::Implement route refused: the issue author association is ${ISSUE_AUTHOR_ASSOC:-NONE}. Only an OWNER, MEMBER, or COLLABORATOR author, or the bot login, can start a write-capable run."
+            fi
           else
             case "$EVENT_NAME" in
               pull_request_review|pull_request_review_comment)
@@ -142,17 +174,9 @@ jobs:
                   | awk '{ if (tolower($1) ~ /^(opus|opus5|sonnet|sonnet5|fable|fable5)$/) { print $2 } else { print $1 } }' \
                   | tr '[:upper:]' '[:lower:]')
 
-                PR_AUTHOR_TRUSTED=false
-                case "$PR_AUTHOR_ASSOC" in
-                  OWNER|MEMBER|COLLABORATOR) PR_AUTHOR_TRUSTED=true ;;
-                esac
-                if [ "$PR_AUTHOR_LOGIN" = "claude[bot]" ]; then
-                  PR_AUTHOR_TRUSTED=true
-                fi
-
                 if [ "$KEYWORD" = "review" ]; then
                   MODE=review
-                elif [ "$PR_AUTHOR_TRUSTED" != "true" ]; then
+                elif [ "$ISSUE_AUTHOR_TRUSTED" != "true" ]; then
                   MODE=review
                 else
                   MODE=fix-pr
@@ -179,11 +203,19 @@ jobs:
       timeout_minutes: 90
       go_version: '1.26'
       extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
-    secrets: inherit
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   implement:
     needs: classify
-    if: needs.classify.outputs.invoked == 'true' && needs.classify.outputs.mode == 'implement'
+    if: >
+      needs.classify.outputs.invoked == 'true' &&
+      needs.classify.outputs.mode == 'implement' &&
+      github.event.issue.pull_request == null &&
+      (
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association) ||
+        github.event.issue.user.login == 'claude[bot]'
+      )
     permissions:
       contents: write
       pull-requests: write
@@ -198,7 +230,8 @@ jobs:
       timeout_minutes: 90
       go_version: '1.26'
       extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
-    secrets: inherit
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   fix-pr:
     needs: classify
@@ -223,4 +256,21 @@ jobs:
       timeout_minutes: 90
       go_version: '1.26'
       extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
-    secrets: inherit
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  untrusted-issue:
+    needs: classify
+    if: needs.classify.outputs.invoked == 'true' && needs.classify.outputs.mode == 'untrusted-issue'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Post the fixed refusal comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: This bot does not act on issues opened by authors outside this repository, so it took no action here. A maintainer can file the request as a new issue under their own account and mention the bot on that new issue.
+        run: |
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments" --raw-field body="$COMMENT_BODY"

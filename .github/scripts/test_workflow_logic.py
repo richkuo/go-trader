@@ -8,7 +8,7 @@ HERE = os.path.dirname(__file__)
 CLAUDE_YML = os.path.abspath(os.path.join(HERE, "..", "workflows", "claude.yml"))
 
 VERIFY_STEP = "Verify @claude is an actual invocation (not in a code block or example)"
-CLASSIFY_MODE_STEP = "Classify invocation route (review, implement, or fix-pr)"
+CLASSIFY_MODE_STEP = "Classify invocation route (review, implement, fix-pr, or untrusted-issue)"
 
 PR_URL = "https://api.github.com/repos/o/r/pulls/5"
 
@@ -90,7 +90,7 @@ def _run_block(script, env_overrides, output_key):
         return value
 
 
-def run_classify_mode(event_name, stripped, pr_url="", pr_author_assoc="", pr_author_login="", flow=""):
+def run_classify_mode(event_name, stripped, pr_url="", issue_author_assoc="", issue_author_login="", flow=""):
     script = extract_step_run_block(_read(CLAUDE_YML), CLASSIFY_MODE_STEP)
     return _run_block(
         script,
@@ -99,8 +99,10 @@ def run_classify_mode(event_name, stripped, pr_url="", pr_author_assoc="", pr_au
             "PR_URL": pr_url,
             "FLOW": flow,
             "STRIPPED": stripped,
-            "PR_AUTHOR_ASSOC": pr_author_assoc,
-            "PR_AUTHOR_LOGIN": pr_author_login,
+            "ISSUE_AUTHOR_ASSOC": issue_author_assoc,
+            "ISSUE_AUTHOR_LOGIN": issue_author_login,
+            "PR_AUTHOR_ASSOC": "",
+            "PR_AUTHOR_LOGIN": "",
         },
         "mode",
     )
@@ -116,6 +118,8 @@ def run_verify_invocation(event_name, body, trigger_actor="someuser"):
             "REVIEW_BODY": body,
             "ISSUE_BODY": body,
             "TRIGGER_ACTOR": trigger_actor,
+            "PERL_STRIP_FENCED": "s/```.*?```//gs",
+            "SED_STRIP_INLINE": "s/`[^`]*`//g",
         },
         "invoked",
     )
@@ -140,20 +144,24 @@ CLASSIFY_CASES = [
     ("pull_request_review_surface", "pull_request_review", "@claude fix this", PR_URL, "MEMBER", "", "", "review"),
     ("pull_request_review_comment_surface", "pull_request_review_comment", "@claude fix this", PR_URL, "OWNER", "", "", "review"),
     ("issues_event", "issues", "@claude build this feature", "", "MEMBER", "", "", "implement"),
-    ("docs_release_flow_on_pr", "issue_comment", "@claude sync-docs", PR_URL, "MEMBER", "", "sync-docs", "implement"),
+    ("docs_release_flow_on_issue", "issue_comment", "@claude sync-docs", "", "MEMBER", "", "sync-docs", "implement"),
+    ("docs_release_flow_untrusted_issue_author", "issue_comment", "@claude sync-docs", "", "NONE", "", "sync-docs", "untrusted-issue"),
+    ("untrusted_author_plain_issue_comment", "issue_comment", "@claude implement this", "", "NONE", "", "", "untrusted-issue"),
+    ("untrusted_author_issues_event", "issues", "@claude build this feature", "", "CONTRIBUTOR", "", "", "untrusted-issue"),
+    ("claude_bot_authored_issue", "issues", "@claude build this feature", "", "NONE", "claude[bot]", "", "implement"),
     ("issue_comment_on_issue", "issue_comment", "@claude implement this", "", "MEMBER", "", "", "implement"),
 ]
 
 
 def test_classify_mode_routes(subtests):
-    for case_id, event_name, stripped, pr_url, pr_author_assoc, pr_author_login, flow, expected in CLASSIFY_CASES:
+    for case_id, event_name, stripped, pr_url, issue_author_assoc, issue_author_login, flow, expected in CLASSIFY_CASES:
         with subtests.test(case=case_id):
             assert run_classify_mode(
                 event_name,
                 stripped,
                 pr_url=pr_url,
-                pr_author_assoc=pr_author_assoc,
-                pr_author_login=pr_author_login,
+                issue_author_assoc=issue_author_assoc,
+                issue_author_login=issue_author_login,
                 flow=flow,
             ) == expected
 
