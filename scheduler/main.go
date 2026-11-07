@@ -579,6 +579,8 @@ func main() {
 	} else {
 		server.tuning = tuningManager
 	}
+	feedbackAnalysisManager := startTradeFeedbackAnalysis(server, store, cfg.StatusToken, runTradeFeedbackValidator)
+	defer feedbackAnalysisManager.shutdown()
 	markSchedulerStarted()
 	if tuningManager != nil {
 		go tuningManager.run(shutdownReadOnlyCtx)

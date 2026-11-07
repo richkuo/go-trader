@@ -296,43 +296,44 @@ func (lc LeaderboardSummaryConfig) Key() string {
 type Config struct {
 	regimeTimeframeRaw       string
 	robinhoodCoinRewrites    []robinhoodCoinRewrite
-	ConfigVersion            int                        `json:"config_version,omitempty"`
-	IntervalSeconds          int                        `json:"interval_seconds"`
-	LogDir                   string                     `json:"log_dir"`
-	LogLevel                 string                     `json:"log_level,omitempty"`
-	DBFile                   string                     `json:"db_file,omitempty"`
-	PaperDBFile              string                     `json:"paper_db_file,omitempty"`
-	PaperSources             []PaperSourceConfig        `json:"paper_sources,omitempty"`
-	ReplayLogPath            string                     `json:"replay_log_path,omitempty"`
-	StatusPort               int                        `json:"status_port,omitempty"`
-	StatusToken              string                     `json:"-"`
-	Discord                  DiscordConfig              `json:"discord"`
-	Telegram                 TelegramConfig             `json:"telegram,omitempty"`
-	AutoUpdate               string                     `json:"auto_update,omitempty"`
-	LeaderboardPostTime      string                     `json:"leaderboard_post_time,omitempty"`
-	Strategies               []StrategyConfig           `json:"strategies"`
-	PortfolioRisk            *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
-	Correlation              *CorrelationConfig         `json:"correlation,omitempty"`
-	Regime                   *RegimeConfig              `json:"regime,omitempty"`
-	Platforms                map[string]*PlatformConfig `json:"platforms,omitempty"`
-	LeaderboardSummaries     []LeaderboardSummaryConfig `json:"leaderboard_summaries,omitempty"`
-	SummaryFrequency         map[string]string          `json:"summary_frequency,omitempty"`
-	RiskFreeRate             *float64                   `json:"risk_free_rate,omitempty"`
-	DefaultStopLossATRMult   *float64                   `json:"default_stop_loss_atr_mult,omitempty"`
-	ATRMethod                string                     `json:"atr_method,omitempty"`
-	NotifyTPSLFills          *bool                      `json:"notify_tp_sl_fills,omitempty"`
-	NotifyRatchetTriggers    *bool                      `json:"notify_ratchet_triggers,omitempty"`
-	AlertThrottleInterval    string                     `json:"alert_throttle_interval,omitempty"`
-	KillSwitchResetDMTimeout string                     `json:"kill_switch_reset_dm_timeout,omitempty"`
-	TradingViewExport        TradingViewExportConfig    `json:"tradingview_export,omitempty"`
-	UserDefaults             *UserDefaultsConfig        `json:"user_defaults,omitempty"`
-	Tuning                   *TuningConfig              `json:"tuning,omitempty"`
-	MarketFeed               string                     `json:"market_feed,omitempty"`
-	SharedMarketFeed         *SharedMarketFeedConfig    `json:"shared_market_feed,omitempty"`
-	Role                     string                     `json:"role,omitempty"`
-	Feed                     *FeedRoleConfig            `json:"feed,omitempty"`
-	Egress                   *EgressConfig              `json:"egress,omitempty"`
-	PaperOnly                bool                       `json:"paper_only,omitempty"`
+	ConfigVersion            int                          `json:"config_version,omitempty"`
+	IntervalSeconds          int                          `json:"interval_seconds"`
+	LogDir                   string                       `json:"log_dir"`
+	LogLevel                 string                       `json:"log_level,omitempty"`
+	DBFile                   string                       `json:"db_file,omitempty"`
+	PaperDBFile              string                       `json:"paper_db_file,omitempty"`
+	PaperSources             []PaperSourceConfig          `json:"paper_sources,omitempty"`
+	ReplayLogPath            string                       `json:"replay_log_path,omitempty"`
+	StatusPort               int                          `json:"status_port,omitempty"`
+	StatusToken              string                       `json:"-"`
+	Discord                  DiscordConfig                `json:"discord"`
+	Telegram                 TelegramConfig               `json:"telegram,omitempty"`
+	AutoUpdate               string                       `json:"auto_update,omitempty"`
+	LeaderboardPostTime      string                       `json:"leaderboard_post_time,omitempty"`
+	Strategies               []StrategyConfig             `json:"strategies"`
+	PortfolioRisk            *PortfolioRiskConfig         `json:"portfolio_risk,omitempty"`
+	Correlation              *CorrelationConfig           `json:"correlation,omitempty"`
+	Regime                   *RegimeConfig                `json:"regime,omitempty"`
+	Platforms                map[string]*PlatformConfig   `json:"platforms,omitempty"`
+	LeaderboardSummaries     []LeaderboardSummaryConfig   `json:"leaderboard_summaries,omitempty"`
+	SummaryFrequency         map[string]string            `json:"summary_frequency,omitempty"`
+	RiskFreeRate             *float64                     `json:"risk_free_rate,omitempty"`
+	DefaultStopLossATRMult   *float64                     `json:"default_stop_loss_atr_mult,omitempty"`
+	ATRMethod                string                       `json:"atr_method,omitempty"`
+	NotifyTPSLFills          *bool                        `json:"notify_tp_sl_fills,omitempty"`
+	NotifyRatchetTriggers    *bool                        `json:"notify_ratchet_triggers,omitempty"`
+	AlertThrottleInterval    string                       `json:"alert_throttle_interval,omitempty"`
+	KillSwitchResetDMTimeout string                       `json:"kill_switch_reset_dm_timeout,omitempty"`
+	TradingViewExport        TradingViewExportConfig      `json:"tradingview_export,omitempty"`
+	UserDefaults             *UserDefaultsConfig          `json:"user_defaults,omitempty"`
+	Tuning                   *TuningConfig                `json:"tuning,omitempty"`
+	TradeFeedbackAnalysis    *TradeFeedbackAnalysisConfig `json:"trade_feedback_analysis,omitempty"`
+	MarketFeed               string                       `json:"market_feed,omitempty"`
+	SharedMarketFeed         *SharedMarketFeedConfig      `json:"shared_market_feed,omitempty"`
+	Role                     string                       `json:"role,omitempty"`
+	Feed                     *FeedRoleConfig              `json:"feed,omitempty"`
+	Egress                   *EgressConfig                `json:"egress,omitempty"`
+	PaperOnly                bool                         `json:"paper_only,omitempty"`
 
 	migrationBaseVersion    int
 	migrationBaseVersionSet bool
@@ -1083,6 +1084,9 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 		}
 	}
 	if rawErrs := validateQuoteRawFields(data); len(rawErrs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(rawErrs, "\n  "))
+	}
+	if rawErrs := validateTradeFeedbackAnalysisJSON(data); len(rawErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(rawErrs, "\n  "))
 	}
 	var cfg Config
