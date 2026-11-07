@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -402,6 +403,14 @@ func TestApplyUpgradeTimeoutSendsSIGTERMAndRecoversWithoutOrphans(t *testing.T) 
 	}
 	scriptsDir := filepath.Dir(updateShellScriptPath(t))
 
+	upgradeCmd := applyUpgradeCommand(context.Background())
+	if upgradeCmd.WaitDelay != 0 {
+		t.Fatalf("applyUpgradeCommand WaitDelay = %v, want 0 so a slow recovery after SIGTERM is never killed", upgradeCmd.WaitDelay)
+	}
+	if upgradeCmd.Cancel == nil {
+		t.Fatal("applyUpgradeCommand must send SIGTERM on timeout, not the default kill")
+	}
+
 	runCase := func(mode string, recSleepSec string) {
 		parent := t.TempDir()
 		origin := filepath.Join(parent, "origin.git")
@@ -581,7 +590,7 @@ func TestApplyUpgradeTimeoutSendsSIGTERMAndRecoversWithoutOrphans(t *testing.T) 
 		}
 	}
 
-	runCase("uv", "35")
+	runCase("uv", "3")
 	runCase("git_pull", "")
 	runCase("go_build", "")
 }

@@ -515,8 +515,8 @@ func TestRegimeSideCertificationIntegration(t *testing.T) {
 		if code, out := admitted(); code != 0 || !strings.Contains(out, "probe: OK") {
 			t.Fatalf("a matching active cell must admit the live config, exit=%d\n%s", code, out)
 		}
-		if code, out := paper(); code != 0 {
-			t.Fatalf("paper needs no certification, exit=%d\n%s", code, out)
+		if code, out := paper(); code != 0 || !strings.Contains(out, "probe: OK") {
+			t.Fatalf("paper needs no certification and must pass the probe including the open_side contract, exit=%d\n%s", code, out)
 		}
 	})
 
@@ -690,17 +690,6 @@ func TestRegimeSideConfigAndReloadIntegration(t *testing.T) {
 	root := htfITRoot(t)
 	bin := pyintegrationBinary(t)
 
-	okPath := rsITWriteConfigFile(t, t.TempDir(), rsITStrategy("rs-ok", "paper", "both", false, nil))
-	probe := exec.Command(bin, "probe", "--config", okPath)
-	probe.Dir = root
-	var probeOut bytes.Buffer
-	probe.Stdout, probe.Stderr = &probeOut, &probeOut
-	if err := probe.Start(); err != nil {
-		t.Fatal(err)
-	}
-	probeDone := make(chan error, 1)
-	go func() { probeDone <- probe.Wait() }()
-
 	t.Run("ReloadAppliesFlatAndRefusesOpen", func(t *testing.T) {
 		t.Chdir(root)
 		off := rsITStrategy("rs-r", "paper", "both", false, map[string]any{"regime_side": false})
@@ -818,12 +807,6 @@ func TestRegimeSideConfigAndReloadIntegration(t *testing.T) {
 			if sc.RegimeSide {
 				t.Fatalf("init must not enable regime_side on live strategies, got %s", sc.ID)
 			}
-		}
-	})
-
-	t.Run("ProbeAcceptsAValidPaperConfig", func(t *testing.T) {
-		if err := <-probeDone; err != nil || !strings.Contains(probeOut.String(), "probe: OK") {
-			t.Fatalf("a valid paper regime_side config must pass the probe including the open_side contract: %v\n%s", err, probeOut.String())
 		}
 	})
 }
