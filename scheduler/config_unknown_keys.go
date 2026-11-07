@@ -274,6 +274,12 @@ func validateTradeFeedbackAnalysisJSON(rawData []byte) []string {
 			errs = append(errs, fmt.Sprintf("%s: unknown field %q", tradeFeedbackAnalysisConfigKey, k))
 			continue
 		}
+		if k == "api_model" || k == "api_effort" {
+			if msg := validateTradeFeedbackAPIField(k, obj[k]); msg != "" {
+				errs = append(errs, msg)
+			}
+			continue
+		}
 		lo, hi := tradeFeedbackAnalysisFieldBounds(k)
 		text := strings.TrimSpace(string(obj[k]))
 		n, err := strconv.ParseInt(text, 10, 64)

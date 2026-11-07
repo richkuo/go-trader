@@ -39,7 +39,7 @@ func newTFLEnv(t *testing.T, store *StateStore, cfgs []StrategyConfig, validate 
 	e := newTFAEnv(t, store, cfgs)
 	e.mgr.shutdown()
 	e.ss.feedbackAnalysisAdapters = map[string]tradeFeedbackAnalysisAdapter{
-		tradeFeedbackProviderLocal: tradeFeedbackProductionAdapters()[tradeFeedbackProviderLocal],
+		tradeFeedbackProviderLocal: tradeFeedbackProductionAdapters(e.ss)[tradeFeedbackProviderLocal],
 		tradeFeedbackProviderAPI:   e.adapter,
 	}
 	calls := &tflValidatorCalls{}

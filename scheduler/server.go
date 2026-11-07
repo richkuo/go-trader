@@ -39,6 +39,7 @@ type StatusServer struct {
 	userCloseDefaults CloseDefaultsMap
 
 	feedbackAnalysisSettings tradeFeedbackAnalysisSettings
+	feedbackAnalysisAPI      tradeFeedbackAPISettings
 	feedbackAnalysis         *tradeFeedbackAnalysisManager
 	feedbackAnalysisMeta     func(context.Context, StrategyConfig, string) (tradeFeedbackStrategyMeta, error)
 	feedbackAnalysisAdapters map[string]tradeFeedbackAnalysisAdapter
