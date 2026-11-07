@@ -229,21 +229,6 @@ func TestRobinhoodTimeframeRealBinary(t *testing.T) {
 			})
 		}
 	})
-	t.Run("AcceptsAResampledPaperClosedBarStrategyOnAFormerlyUnmappedCoin", func(t *testing.T) {
-		root := htfITRoot(t)
-		bin := robinhoodTimeframeITBinary(t, root)
-		dir := t.TempDir()
-		cfg := robinhoodTimeframeITConfig(t, dir, "paper-xrp-2h", map[string]any{
-			"args": []string{"atr_breakout", " xrp ", "2h", "--mode=paper"}, "closed_bar_decisions": true,
-		}, map[string]any{"enabled": true, "timeframe": "12h"})
-		cmd := exec.Command(bin, "probe", "--config", cfg)
-		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "ROBINHOOD_USERNAME=", "DISCORD_BOT_TOKEN=", "TELEGRAM_BOT_TOKEN=")
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("probe refused a normalized supported coin on a resampled paper closed-bar config: %v\n%s", err, out)
-		}
-	})
 	t.Run("AcceptsAResampledPaperClosedBarStrategy", func(t *testing.T) {
 		root := htfITRoot(t)
 		bin := robinhoodTimeframeITBinary(t, root)

@@ -95,6 +95,14 @@ func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *str
 
 var applyUpgradeTimeout = 300 * time.Second
 
+func applyUpgradeCommand(ctx context.Context) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "bash", "scripts/update.sh")
+	cmd.Cancel = func() error {
+		return cmd.Process.Signal(syscall.SIGTERM)
+	}
+	return cmd
+}
+
 func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cfg *Config, store *StateStore) {
 	if inContainerRuntime() {
 		notifier.SendOwnerDM(containerUpdateInstruction())
@@ -108,10 +116,7 @@ func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cf
 
 	ctx, cancel := context.WithTimeout(context.Background(), applyUpgradeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", "scripts/update.sh")
-	cmd.Cancel = func() error {
-		return cmd.Process.Signal(syscall.SIGTERM)
-	}
+	cmd := applyUpgradeCommand(ctx)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		notifier.SendOwnerDM(fmt.Sprintf("**update.sh failed**:\n```\n%s\n```\n%v", tailForDM(string(out), 1500), err))
