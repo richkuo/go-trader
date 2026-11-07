@@ -539,7 +539,7 @@ Backtest fee selection ([issue 1916](https://github.com/richkuo/go-trader/issues
 
 `scheduler/` (Go) · `shared_scripts/` · `platforms/` · `shared_tools/`, `shared_strategies/` · `backtest/` · `systemd/`, `scripts/` · `SKILL.md`, `AGENTS.md`.
 
-Python 3.12+ via [uv](https://github.com/astral-sh/uv); Go 1.26.2; systemd.
+Python 3.14+ via [uv](https://github.com/astral-sh/uv); Go 1.27.3; systemd.
 
 ---
 

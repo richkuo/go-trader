@@ -185,7 +185,7 @@ jobs:
       model: ${{ needs.classify.outputs.model }}
       effort: ${{ needs.classify.outputs.effort }}
       timeout_minutes: 90
-      go_version: '1.26'
+      go_version: '1.27'
       extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -212,7 +212,7 @@ jobs:
       model: ${{ needs.classify.outputs.model }}
       effort: ${{ needs.classify.outputs.effort }}
       timeout_minutes: 90
-      go_version: '1.26'
+      go_version: '1.27'
       extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -238,7 +238,7 @@ jobs:
       model: ${{ needs.classify.outputs.model }}
       effort: ${{ needs.classify.outputs.effort }}
       timeout_minutes: 90
-      go_version: '1.26'
+      go_version: '1.27'
       extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
