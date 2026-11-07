@@ -345,27 +345,15 @@ func TestIBKROptionMarksPyIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("startup_probe", func(t *testing.T) {
-		logPath := filepath.Join(t.TempDir(), "qp.log")
-		qpEnv(t, root, map[string]string{"QP_LOG": logPath})
-		cfg := &Config{Strategies: []StrategyConfig{ocSC("ib-om-probe", "ibkr", "BTC")}}
-		if anyRobinhoodOptions(cfg) || len(ibkrOptionsCheckScripts(cfg)) != 1 {
-			t.Fatal("an ibkr-only config must run the ibkr probes and no robinhood probe")
-		}
-		if err := probeCheckScripts(cfg); err != nil {
-			t.Fatalf("probe with the real ibkr scripts: %v", err)
-		}
-		if reads := ibMinuteReads(t, logPath); len(reads) != 0 {
-			t.Fatalf("--probe-only read market data: %v", reads)
-		}
-	})
-
 	t.Run("options_only_scheduler_once", func(t *testing.T) {
 		dir := t.TempDir()
 		dbPath := filepath.Join(dir, "state.db")
 		sc := StrategyConfig{ID: "ib-once", Type: "options", Platform: "ibkr", Script: "shared_scripts/check_options.py",
 			Args: []string{"wheel", "BTC", "--platform=ibkr", "--mode=paper"}, Capital: 100000, MaxDrawdownPct: 50}
 		cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{sc}}
+		if anyRobinhoodOptions(cfg) || len(ibkrOptionsCheckScripts(cfg)) != 1 {
+			t.Fatal("an ibkr-only config must run the ibkr probes and no robinhood probe")
+		}
 		store := openSplitStore(t, cfg)
 		state := NewAppState()
 		expiry := time.Now().UTC().AddDate(0, 0, 20).Format("2006-01-02")
@@ -401,6 +389,9 @@ func TestIBKROptionMarksPyIntegration(t *testing.T) {
 		}
 		if strings.Contains(string(out), "All prices are zero/missing") || strings.Contains(string(out), "network blocked") {
 			t.Fatalf("options-only cycle skipped or reached the network:\n%s", out)
+		}
+		if reads := ibMinuteReads(t, logPath); len(reads) != 0 {
+			t.Fatalf("the startup probe or a cycle with no leg near expiry read 1m settlement data: %v", reads)
 		}
 		db, err := OpenStateDB(dbPath)
 		if err != nil {
