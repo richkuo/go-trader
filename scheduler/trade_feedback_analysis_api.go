@@ -166,7 +166,7 @@ func (a *tradeFeedbackAPIAdapter) Run(ctx context.Context, job *tradeFeedbackAna
 	case errors.As(runErr, &overflow):
 		return tradeFeedbackProviderOutput{}, runErr
 	case parseErr == nil && resp.Error != "":
-		return tradeFeedbackProviderOutput{}, errors.New(resp.Error)
+		return tradeFeedbackProviderOutput{Usage: tradeFeedbackAPIBilledUsage(resp.Usage)}, errors.New(resp.Error)
 	case runErr != nil:
 		return tradeFeedbackProviderOutput{}, fmt.Errorf("%v (stderr: %s)", runErr, firstLine(stderr))
 	case parseErr != nil:
@@ -183,4 +183,14 @@ func (a *tradeFeedbackAPIAdapter) Run(ctx context.Context, job *tradeFeedbackAna
 		out.Usage = resp.Usage
 	}
 	return out, nil
+}
+
+func tradeFeedbackAPIBilledUsage(raw json.RawMessage) json.RawMessage {
+	var usage struct {
+		Calls *int `json:"calls"`
+	}
+	if len(raw) == 0 || !json.Valid(raw) || json.Unmarshal(raw, &usage) != nil || usage.Calls == nil || *usage.Calls <= 0 {
+		return nil
+	}
+	return raw
 }

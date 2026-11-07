@@ -209,7 +209,11 @@ func (m *tradeFeedbackAnalysisManager) process(job *tradeFeedbackAnalysisJob) {
 	}
 	out, err := job.Adapter.Run(ctx, job)
 	if err != nil {
-		fail("provider: " + cause(err))
+		term := tradeFeedbackAnalysisTerminal{Status: tradeFeedbackAnalysisFailed, Error: "provider: " + cause(err)}
+		if len(out.Usage) > 0 && json.Valid(out.Usage) {
+			term.UsageJSON = string(out.Usage)
+		}
+		m.finish(job, term)
 		return
 	}
 	term := tradeFeedbackAnalysisTerminal{Model: out.Model, ModelVerification: out.ModelVerification}

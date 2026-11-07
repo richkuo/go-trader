@@ -107,16 +107,22 @@ func TestTradeFeedbackAnalysisRealAPIProviderOutcomes(t *testing.T) {
 		if v.Model != "claude-opus-5-5" || v.Effort != "xhigh" {
 			t.Fatalf("case %d stored model %q effort %q, want the configured label and effort", i, v.Model, v.Effort)
 		}
-		t.Logf("case %d (%s): %s %q", i, c.mode, v.Status, v.Error)
+		t.Logf("case %d (%s): %s %q usage %s", i, c.mode, v.Status, v.Error, v.Usage)
+		if c.mode == "block" || c.mode == "echo" {
+			if len(v.Usage) != 0 {
+				t.Fatalf("case %d (%s) stored usage %s for a call with no billed reply", i, c.mode, v.Usage)
+			}
+			continue
+		}
+		var usage map[string]interface{}
+		if err := json.Unmarshal(v.Usage, &usage); err != nil || usage["input_tokens"] != float64(1200) || usage["output_tokens"] != float64(300) || usage["calls"] != float64(1) {
+			t.Fatalf("case %d (%s) usage = %s", i, c.mode, v.Usage)
+		}
 		if c.status == tradeFeedbackAnalysisFailed {
 			continue
 		}
 		if v.ModelVerification != "service reported claude-reported-by-stub" {
 			t.Fatalf("case %d model verification = %q", i, v.ModelVerification)
-		}
-		var usage map[string]interface{}
-		if err := json.Unmarshal(v.Usage, &usage); err != nil || usage["output_tokens"] != float64(300) || usage["calls"] != float64(1) {
-			t.Fatalf("case %d usage = %s", i, v.Usage)
 		}
 		wrapped, _ := json.Marshal(result)
 		direct, outcomeDirect, err := runTradeFeedbackValidator(context.Background(), []byte(bundle), wrapped, 60*time.Second)
