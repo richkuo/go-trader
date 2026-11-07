@@ -1,6 +1,6 @@
 ARG GO_IMAGE=golang:1.26.2-bookworm
 ARG PYTHON_IMAGE=python:3.12-slim-bookworm
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.9.5
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.7
 
 FROM ${UV_IMAGE} AS uv
 
