@@ -8,7 +8,6 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STUB_DIR = os.path.join(ROOT, "shared_scripts", "testdata", "quote_precision")
 CHECK_STRATEGY = os.path.join(ROOT, "shared_scripts", "check_strategy.py")
-CHECK_OKX = os.path.join(ROOT, "shared_scripts", "check_okx.py")
 CHECK_ROBINHOOD = os.path.join(ROOT, "shared_scripts", "check_robinhood.py")
 CHECK_TOPSTEP = os.path.join(ROOT, "shared_scripts", "check_topstep.py")
 CHECK_PRICE = os.path.join(ROOT, "shared_scripts", "check_price.py")
@@ -28,8 +27,8 @@ def _run(script, argv, env_extra, stdin=None, tmp_path=None):
     env = dict(os.environ)
     for key in CREDENTIALS:
         env.pop(key, None)
-    for key in ("QP_CLOSE", "QP_QUOTE", "QP_SHAPE", "QP_NOW", "QP_TICKERS", "QP_CLOSES", "QP_CANDLES", "QP_OKX_FILL",
-                "QP_DAILY", "QP_OPTION_QUOTE", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER", "QP_OKX_OPTIONS", "QP_STDOUT_NOISE"):
+    for key in ("QP_CLOSE", "QP_QUOTE", "QP_SHAPE", "QP_NOW", "QP_TICKERS", "QP_CLOSES", "QP_CANDLES",
+                "QP_DAILY", "QP_OPTION_QUOTE", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER", "QP_STDOUT_NOISE"):
         env.pop(key, None)
     env["QP_STUB"] = "1"
     env["PYTHONPATH"] = STUB_DIR
@@ -50,10 +49,6 @@ def _single_document(proc):
 
 CHECK_CASES = {
     "spot_candle_close": (CHECK_STRATEGY, ["sma_crossover", "BTC/USDT", "1h", "--mode=paper"], "close", {}),
-    "okx_spot_adapter_quote": (CHECK_OKX, ["sma_crossover", "BTC", "1h", "--mode=paper", "--inst-type=spot"], "quote", {}),
-    "okx_swap_adapter_quote": (CHECK_OKX, ["sma_crossover", "BTC", "1h", "--mode=paper", "--inst-type=swap"], "quote", {}),
-    "okx_spot_candle_fallback_after_zero_quote": (CHECK_OKX, ["sma_crossover", "BTC", "1h", "--mode=paper", "--inst-type=spot"], "close", {"QP_QUOTE": "0"}),
-    "okx_swap_candle_fallback_after_fetch_error": (CHECK_OKX, ["sma_crossover", "BTC", "1h", "--mode=paper", "--inst-type=swap"], "close", {"QP_QUOTE": "error"}),
     "robinhood_adapter_quote": (CHECK_ROBINHOOD, ["sma_crossover", "DOGE", "1h", "--mode=paper"], "quote", {}),
     "robinhood_candle_fallback_after_missing_quote": (CHECK_ROBINHOOD, ["sma_crossover", "DOGE", "1h", "--mode=paper"], "close", {}),
     "robinhood_candle_fallback_after_quote_error": (CHECK_ROBINHOOD, ["sma_crossover", "DOGE", "1h", "--mode=paper"], "close", {"QP_QUOTE": "error"}),

@@ -24,7 +24,6 @@ func optionsModeCases() []optionsModeCase {
 		{id: "rh-calls-spy", platform: "robinhood", explicit: true, underly: "SPY"},
 		{id: "deribit-calls-btc", platform: "deribit", explicit: true, underly: "BTC"},
 		{id: "ibkr-calls-btc", platform: "ibkr", explicit: true, underly: "BTC"},
-		{id: "okx-calls-btc", platform: "okx", explicit: true, underly: "BTC"},
 		{id: "rh-calls-spy", platform: "robinhood", explicit: false, underly: "SPY"},
 		{id: "calls-btc", platform: "deribit", explicit: false, underly: "BTC"},
 	}
@@ -65,7 +64,7 @@ func optionsModeConfigJSON(t *testing.T, dir string, c optionsModeCase, modeToke
 
 func optionsModeSetCredentials(t *testing.T) {
 	t.Helper()
-	for _, v := range []string{"ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET", "OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"} {
+	for _, v := range []string{"ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET"} {
 		t.Setenv(v, "set-for-test")
 	}
 }
@@ -100,7 +99,7 @@ func TestOptionsModeGateOnLoadAndPromotion(t *testing.T) {
 						if withCreds {
 							optionsModeSetCredentials(t)
 						} else {
-							for _, v := range []string{"ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET", "OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"} {
+							for _, v := range []string{"ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET"} {
 								t.Setenv(v, "")
 							}
 						}

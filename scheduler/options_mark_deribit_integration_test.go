@@ -167,17 +167,7 @@ func TestDeribitDeliveryAndMarkSourceIntegration(t *testing.T) {
 			}
 		}
 	})
-	t.Run("okx_proxy_labels_and_ibkr_routing", func(t *testing.T) {
-		f := &deribitFake{rows: deribitDescendingRows(newest, 120, "", func(string) interface{} { return 61000.0 }),
-			tickers: map[string]string{"ETH-31JUL26-3000-C": `{"result":{"mark_price":0.05,"underlying_price":3100,"greeks":{"delta":0.5,"gamma":0.001,"theta":-2,"vega":3}}}`}}
-		okx := run(t, f, "okx", afterBoundary, settleReq)
-		if okx[0].Settlement == nil || okx[0].Settlement.Source != okxDeribitProxySource {
-			t.Fatalf("okx settlement = %+v", okx[0])
-		}
-		mark := run(t, f, "okx", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), optionLegRequest{Key: "eth", Underlying: "ETH", OptionType: "call", Strike: 3000, Expiry: target, Action: "buy", Quantity: 1, Multiplier: 1})
-		if mark[0].Mark == nil || mark[0].Mark.Source != okxDeribitProxySource {
-			t.Fatalf("okx mark = %+v", mark[0])
-		}
+	t.Run("ibkr_routing", func(t *testing.T) {
 		shared := newOptionPricers()
 		if got := optionPricerFor("ibkr", shared); got != shared.IBKR || got.Name() != "ibkr" {
 			t.Fatalf("ibkr must route to the shared batch provider, got %#v", got)

@@ -686,6 +686,49 @@ class HyperliquidExchangeAdapter:
             _save_ohlcv_cache(result, cache_path)
         return result
 
+    RANGE_MAX_PAGES = 16
+
+    def get_ohlcv_range(self, symbol: str, interval: str, start_ms: int, end_ms: int, max_pages: int = RANGE_MAX_PAGES) -> dict:
+        ivl = self._OHLCV_INTERVAL_MS.get(interval)
+        if ivl is None:
+            raise ValueError(f"unsupported Hyperliquid candle interval {interval!r}")
+        for name, value in (("start_ms", start_ms), ("end_ms", end_ms), ("max_pages", max_pages)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"Hyperliquid candle range {name} must be an integer, got {value!r}")
+        if start_ms < 0 or end_ms < start_ms:
+            raise ValueError(f"Hyperliquid candle range [{start_ms}, {end_ms}] is empty or negative")
+        rows = []
+        cursor = start_ms
+        pages = 0
+        truncated = False
+        stalled = False
+        while cursor <= end_ms:
+            if pages >= max_pages:
+                truncated = True
+                break
+            pages += 1
+            page = self._info.candles_snapshot(symbol, interval, cursor, end_ms + ivl - 1)
+            if not isinstance(page, list):
+                raise RuntimeError(f"Hyperliquid candleSnapshot for {symbol} is not a list")
+            if not page:
+                break
+            page_last = None
+            for c in page:
+                if not isinstance(c, dict):
+                    raise RuntimeError("Hyperliquid candle row is not an object")
+                t = c.get("t")
+                if isinstance(t, bool) or not isinstance(t, int):
+                    raise RuntimeError(f"Hyperliquid candle row {c!r} has no integer open time")
+                if page_last is None or t > page_last:
+                    page_last = t
+                if cursor <= t <= end_ms:
+                    rows.append([t, c.get("o"), c.get("h"), c.get("l"), c.get("c"), c.get("v")])
+            if page_last < cursor:
+                stalled = True
+                break
+            cursor = page_last + ivl
+        return {"rows": rows, "pages": pages, "truncated": truncated, "stalled": stalled}
+
     def get_ohlcv_candles(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
         if interval not in self._OHLCV_INTERVAL_MS:
             raise ValueError(f"unsupported Hyperliquid candle interval {interval!r}")

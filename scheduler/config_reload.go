@@ -409,6 +409,12 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	}
 	cfg.SummaryFrequency = cloneStringMap(next.SummaryFrequency)
 
+	if !reflect.DeepEqual(cfg.TradeFeedbackAnalysis, next.TradeFeedbackAnalysis) {
+		addChange("trade_feedback_analysis: %s %s -> %s %s (applies to analyses admitted after this reload)", cfg.tradeFeedbackAnalysisSettings(), cfg.tradeFeedbackAPISettings(),
+			next.tradeFeedbackAnalysisSettings(), next.tradeFeedbackAPISettings())
+	}
+	cfg.TradeFeedbackAnalysis = next.TradeFeedbackAnalysis.clone()
+
 	cfg.ConfigVersion = next.ConfigVersion
 	cfg.Platforms = next.Platforms
 
@@ -459,6 +465,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	errs = append(errs, egressReloadErrors(cfg, next)...)
 	if cfg.marketFeedMode() != next.marketFeedMode() {
 		errs = append(errs, fmt.Sprintf("market_feed changed (%q -> %q; restart required)", cfg.marketFeedMode(), next.marketFeedMode()))
+	}
+	if cfg.PaperOnly != next.PaperOnly {
+		errs = append(errs, fmt.Sprintf("paper_only changed (%t -> %t; restart required)", cfg.PaperOnly, next.PaperOnly))
 	}
 	if strings.TrimSpace(cfg.Role) != strings.TrimSpace(next.Role) {
 		errs = append(errs, fmt.Sprintf("role changed (%q -> %q; restart required)", cfg.Role, next.Role))

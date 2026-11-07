@@ -59,7 +59,7 @@ func TestOptionsLiveModeRealCheckScriptGate(t *testing.T) {
 					if runErr == nil {
 						t.Fatalf("live args %v exited 0, want a nonzero exit", args)
 					}
-					result, _, err := RunOptionsCheckWithStdin(script, args, optionsModeFourPositions)
+					result, _, err := RunOptionsCheckWithStdin(checkChildPriority(StrategyConfig{Args: args}), script, args, optionsModeFourPositions)
 					if err != nil || result == nil {
 						t.Fatalf("RunOptionsCheckWithStdin(%v) = %v, %v; want a parsed structured error", args, result, err)
 					}
@@ -100,7 +100,7 @@ func TestOptionsLiveModeRealCheckScriptGate(t *testing.T) {
 		for _, tail := range [][]string{{"--mode", "live"}, {"--mode=live"}} {
 			robinhoodStdoutFreshHome(t)
 			args := append(append([]string(nil), base...), tail...)
-			result, stderr, err := RunOptionsCheckWithStdin(script, args, "[]")
+			result, stderr, err := RunOptionsCheckWithStdin(checkChildPriority(StrategyConfig{Args: args}), script, args, "[]")
 			if err != nil || result == nil {
 				t.Fatalf("RunOptionsCheckWithStdin(%v) = %v, %v; stderr:\n%s", args, result, err, stderr)
 			}
@@ -113,7 +113,8 @@ func TestOptionsLiveModeRealCheckScriptGate(t *testing.T) {
 		}
 
 		robinhoodStdoutFreshHome(t)
-		result, stderr, err := RunOptionsCheckWithStdin(script, append(append([]string(nil), base...), "--mode=paper"), "[]")
+		paperArgs := append(append([]string(nil), base...), "--mode=paper")
+		result, stderr, err := RunOptionsCheckWithStdin(checkChildPriority(StrategyConfig{Args: paperArgs}), script, paperArgs, "[]")
 		if err != nil || result == nil {
 			t.Fatalf("paper control: result=%v err=%v stderr:\n%s", result, err, stderr)
 		}

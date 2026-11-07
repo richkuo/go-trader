@@ -344,6 +344,16 @@
                   <button id="tuner-apply" type="button" class="tuner-button primary">Apply</button>
                 </div>
               </section>
+              <section id="feedback-analysis-panel" class="tuner-panel feedback-analysis-panel" hidden>
+                <div class="tuner-header">
+                  <h3>Trade mark analysis</h3>
+                  <span id="feedback-analysis-status" class="tuner-status"></span>
+                </div>
+                <p class="tuner-note">Suggest-only. An analysis reads the saved preferred entry and exit marks of this strategy. It never changes a setting. A valid parameter grid can start one research run after you confirm it.</p>
+                <div id="feedback-analysis-summary" class="feedback-analysis-summary"></div>
+                <div id="feedback-analysis-list" class="feedback-analysis-list"></div>
+                <p id="feedback-analysis-message" class="controls-message" hidden></p>
+              </section>
             </aside>
           </div>
         </section>
@@ -357,6 +367,19 @@
         <div class="tuner-dialog-actions">
           <button value="cancel" type="submit" class="tuner-button secondary">Cancel</button>
           <button id="tuner-confirm-apply" value="apply" type="submit" class="tuner-button primary">Apply</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="feedback-research-dialog" class="tuner-dialog">
+      <form method="dialog" class="tuner-dialog-body">
+        <h3>Start a research run?</h3>
+        <p>Strategy: <strong id="feedback-research-strategy"></strong></p>
+        <p>Parameter grid:</p>
+        <pre id="feedback-research-grid" class="feedback-research-grid"></pre>
+        <p class="tuner-note">This starts one tuning research run with exactly this grid. It changes no setting and applies no result.</p>
+        <div class="tuner-dialog-actions">
+          <button value="cancel" type="submit" class="tuner-button secondary">Cancel</button>
+          <button id="feedback-research-go" value="confirm" type="submit" class="tuner-button primary">Start research</button>
         </div>
       </form>
     </dialog>

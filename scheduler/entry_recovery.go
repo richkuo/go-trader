@@ -395,7 +395,7 @@ func recoverOneEntryIntent(cfg *Config, store *StateStore, mu *sync.RWMutex, job
 		job.noteHold(store, mu, "the venue recovery query failed: "+qerr.Error(), notifier, logger)
 		return
 	}
-	verdict := classifyEntryRecovery(&job.snap, req, res, time.Now())
+	verdict := classifyEntryRecovery(&job.snap, req, res, tradingNow())
 	switch verdict.Kind {
 	case entryRecoveryNoFill:
 		resolveEntryIntentNoFill(store, s, mu, in, verdict.Evidence, logger, job.staleLocked)
@@ -585,7 +585,7 @@ func persistUnbookedEntryProofLocked(store *StateStore, s *StrategyState, in *en
 	proof := ev
 	proof.Outcome = "filled_unbooked"
 	proof.Detail = "the fill was proven but " + conflict
-	proof.ObservedAtMs = time.Now().UnixMilli()
+	proof.ObservedAtMs = tradingNow().UnixMilli()
 	in.EvidenceJSON = marshalEntryJSON(proof)
 	if ev.VenueOrderID != "" {
 		in.VenueOrderID = ev.VenueOrderID

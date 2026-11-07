@@ -28,7 +28,7 @@ TIME_STOP = {"name": "time_stop", "params": {"max_bars": 20}}
 ZSCORE = {"name": "zscore_target", "params": {"lookback": 20, "z_target": 2.0}}
 TIERED = {"name": "tiered_tp_atr", "params": {"tp_tiers": [
     {"atr_multiple": 1.0, "close_fraction": 0.5}, {"atr_multiple": 2.0, "close_fraction": 1.0}]}}
-PLATFORMS = ("hyperliquid", "binanceus", "okx", "okx-perps", "robinhood", "luno")
+PLATFORMS = ("hyperliquid", "binanceus", "robinhood", "luno")
 
 
 def _dynamic_ref():

@@ -268,6 +268,43 @@ def unsupported_reason(resolution: dict) -> str | None:
     return None
 
 
+def research_unsupported_reason(resolution: dict, timeframe) -> str | None:
+    reason = unsupported_reason(resolution)
+    if reason:
+        return reason
+    regime_tf = str(resolution.get("regime_timeframe") or "").strip().lower()
+    if (resolution.get("regime_enabled") and regime_tf
+            and regime_tf != str(timeframe).strip().lower()):
+        return f"unsupported_regime_timeframe_mismatch:{regime_tf}!={timeframe}"
+    return None
+
+
+def research_support(config_path: str, strategy_id: str) -> dict:
+    entries = config_strategy_entries(config_path, strategy_id)
+    _, symbol, timeframe, registry = entries[0]
+    try:
+        resolution = load_strategy_config(
+            config_path, strategy_id,
+            inject_user_defaults=True,
+            include_promotion_baseline=True,
+        )
+    except CloseCapabilityError as exc:
+        return {"supported": False, "status": "close_capability_refused", "reason": str(exc)}
+    except ValueError as exc:
+        return {"supported": False, "status": "config_error", "reason": str(exc)}
+    if not symbol or not timeframe:
+        return {"supported": False, "status": "no_market",
+                "reason": f"strategy {strategy_id!r} has no resolvable symbol/timeframe (args[1]/args[2])"}
+    reason = research_unsupported_reason(resolution, timeframe)
+    if reason:
+        return {"supported": False, "status": "unsupported", "reason": reason}
+    open_name = resolution["open_strategy"]["name"]
+    if open_name not in load_registry(registry).STRATEGY_REGISTRY:
+        return {"supported": False, "status": "unknown_open_strategy",
+                "reason": f"open strategy {open_name!r} not in {registry} registry"}
+    return {"supported": True, "status": "supported", "reason": "", "open_strategy": open_name}
+
+
 def stage1_skip_reason(resolution: dict) -> str | None:
     if (resolution.get("direction") or "long") == "short":
         return "short_direction_long_only_seeder"
@@ -530,17 +567,10 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
                            f"symbol/timeframe (args[1]/args[2])")
         return result
 
-    reason = unsupported_reason(resolution)
+    reason = research_unsupported_reason(resolution, timeframe)
     if reason:
         result["status"] = "unsupported"
         result["reason"] = reason
-        return result
-
-    regime_tf = str(resolution.get("regime_timeframe") or "").strip().lower()
-    if (resolution.get("regime_enabled") and regime_tf
-            and regime_tf != str(timeframe).strip().lower()):
-        result["status"] = "unsupported"
-        result["reason"] = f"unsupported_regime_timeframe_mismatch:{regime_tf}!={timeframe}"
         return result
 
     if open_name not in reg_mod.STRATEGY_REGISTRY:

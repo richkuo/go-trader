@@ -432,6 +432,7 @@ DROPPED = [
     "discord",
     "strategies",
     "replay_log_path",
+    "paper_only",
 ]
 MERGED = ["leaderboard_summaries"]
 CHANNEL_MAPS = ["channels", "trade_alert_channels", "dm_channels"]
@@ -2323,6 +2324,14 @@ nt_undo() {
         esac
     done
     dropin_dir="${UNIT_DIR%/}/${LIVE_UNIT}.d"
+    if update_cpu_dropin_is_managed "$dropin_dir/${UPDATE_CPU_DROPIN_NAME}.conf"; then
+        if rm -f "$dropin_dir/${UPDATE_CPU_DROPIN_NAME}.conf"; then
+            echo "rollback: removed $dropin_dir/${UPDATE_CPU_DROPIN_NAME}.conf"
+        else
+            echo "CRITICAL: could not remove $dropin_dir/${UPDATE_CPU_DROPIN_NAME}.conf" >&2
+            failed=1
+        fi
+    fi
     if [[ -d "$dropin_dir" ]]; then
         rmdir "$dropin_dir" 2>/dev/null || echo "rollback: $dropin_dir still holds files this run did not write; left in place" >&2
     fi

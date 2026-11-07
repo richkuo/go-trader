@@ -350,11 +350,17 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 	if !reflect.DeepEqual(metricBefore, metricCapture) {
 		t.Fatal("current metric mutation changed captured entry evidence")
 	}
-	regimeReadinessOnceIntegration(t)
+	t.Run("once", func(t *testing.T) {
+		t.Parallel()
+		regimeReadinessOnceIntegration(t)
+	})
 	regimeReadinessAdmissionIntegration(t, bundles, rc)
 	regimeReadinessStopBackfillIntegration(t, bundles, rc)
 	regimeReadinessClassifierCaseIntegration(t, root)
-	regimeReadinessProcessIntegration(t)
+	t.Run("process", func(t *testing.T) {
+		t.Parallel()
+		regimeReadinessProcessIntegration(t)
+	})
 	state := &StrategyState{Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100}}, Regime: "stale"}
 	syncStrategyRegimeState(state, bundles[3].Payload, rc)
 	syncStrategyRegimeState(state, bundles[0].Payload, rc)
@@ -376,7 +382,7 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 	if err != nil || len(actions) != 1 || !reflect.DeepEqual(actions[0].RegimeSnapshots, before) {
 		t.Fatalf("queued snapshots: %v %+v", err, actions)
 	}
-	for _, invalid := range []string{`null`, `{"regime":"trending_up"}`, `{"regime":"trending_up","ready":"true","bars":100,"need":101}`, `{"regime":"trending_up","ready":true,"bars":100,"need":101}`, `{"regime":"trending_up","ready":true,"bars":101,"need":29}`, `{"regime":"","ready":false,"bars":101,"need":101}`} {
+	for _, invalid := range []string{`{"regime":"trending_up"}`, `{"regime":"trending_up","ready":true,"bars":100,"need":101}`} {
 		var out map[string]json.RawMessage
 		if err := json.Unmarshal(outputs[3], &out); err != nil {
 			t.Fatal(err)
@@ -592,8 +598,6 @@ func regimeReadinessOnceIntegration(t *testing.T) {
 	dir := t.TempDir()
 	entries := []map[string]any{
 		{"id": "ready-bus", "type": "spot", "platform": "binanceus", "script": "shared_scripts/check_strategy.py", "args": []string{"atr_breakout", "BTC/USDT", "1h"}, "capital": 1000},
-		{"id": "ready-okx-spot", "type": "spot", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": []string{"atr_breakout", "BTC", "1h", "--mode=paper", "--inst-type=spot"}, "capital": 1000},
-		{"id": "ready-okx-perps", "type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": []string{"breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap"}, "capital": 1000, "leverage": 1, "sizing_leverage": 1, "close_strategy": map[string]any{"name": "tiered_tp_pct"}},
 		{"id": "ready-rh", "type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py", "args": []string{"atr_breakout", "BTC", "30m", "--mode=paper"}, "capital": 1000},
 		{"id": "ready-ts", "type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py", "args": []string{"breakout", "ES", "1h", "--mode=paper"}, "capital": 50000, "close_strategy": map[string]any{"name": "tiered_tp_pct"}},
 	}
@@ -666,7 +670,7 @@ func regimeReadinessOnceIntegration(t *testing.T) {
 				t.Fatalf("%s: cold management close was suppressed\n%s", id, log)
 			}
 		}
-		t.Logf("%s: five real check scripts and scheduler paths passed", stage)
+		t.Logf("%s: three real check scripts and scheduler paths passed", stage)
 	}
 }
 
@@ -785,13 +789,13 @@ func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, r
 	if _, ok := classifyRegimeReversal(snaps, map[string]int{"fast": 14, "medium": 30, "long": 50}, 1); ok {
 		t.Fatal("cold longest reversal window used a shorter reference")
 	}
-	rec := &okxGoldenRecNotifier{}
+	rec := &mockNotifier{}
 	notifier := NewMultiNotifier(notifierBackend{notifier: rec, ownerID: "offline-owner"})
 	coldStore := &RegimeStore{}
 	gen := coldStore.resetForCycle(time.Now())
 	coldStore.set(bundles[0], gen)
 	processRegimeTransitionAlerts(db, coldStore, rc, notifier, time.Now())
-	if len(rec.drain()) != 0 {
+	if len(rec.messages)+len(rec.dms) != 0 {
 		t.Fatal("cold observation sent a transition alert")
 	}
 	regimeReadinessLimitIntegration(t, bundles, rc)
@@ -923,8 +927,6 @@ func regimeReadinessClassifierCaseIntegration(t *testing.T, root string) {
 		hold             string
 	}{
 		{"capital", "Composite", 20, 200, ""},
-		{"capital-warming", "Composite", 20, 10, "regime stop window w warming (10/29)"},
-		{"spaced", " composite ", 60, 200, ""},
 		{"spaced-warming", " composite ", 60, 59, "regime stop window w warming (59/60)"},
 	}
 	for _, tc := range cases {

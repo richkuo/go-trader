@@ -86,6 +86,37 @@ fi
 echo "Reloading systemd"
 systemctl daemon-reload
 
+CPU_DROPIN="$(update_cpu_dropin_path "$SERVICE_NAME")"
+if [[ -n "$CPU_DROPIN" ]]; then
+  CPU_BINARY="$(execstart_main_binary "$(systemctl show -p ExecStart --value "$SERVICE_NAME" 2>/dev/null || true)")"
+  CPU_CONFIG="$(update_unit_config_path "$SERVICE_NAME")"
+  if [[ -z "$CPU_BINARY" || ! -x "$CPU_BINARY" ]]; then
+    echo "[cpu] $SERVICE_NAME has no go-trader binary at '${CPU_BINARY:-<none>}' yet; the CPU weight drop-in is unchanged (the next update.sh --restart sets it)"
+  elif [[ -z "$CPU_CONFIG" || ! -f "$CPU_CONFIG" ]]; then
+    echo "[cpu] $SERVICE_NAME has no config at '${CPU_CONFIG:-<none>}' yet; the CPU weight drop-in is unchanged (the next update.sh --restart sets it)"
+  else
+    CPU_PLAN="$(update_cpu_dropin_plan "$SERVICE_NAME" "$CPU_BINARY" "$CPU_DROPIN")"
+    CPU_DECISION="${CPU_PLAN%% *}"
+    CPU_WEIGHT="${CPU_PLAN#* }"
+    case "$CPU_DECISION" in
+      install|replace|remove)
+        if ! update_cpu_dropin_apply "$CPU_DECISION" "$CPU_DROPIN" "$CPU_WEIGHT"; then
+          echo "error: could not $CPU_DECISION the CPU weight drop-in $CPU_DROPIN; $SERVICE_NAME was not enabled or started" >&2
+          exit 1
+        fi
+        echo "[cpu] $CPU_DECISION $CPU_DROPIN${CPU_WEIGHT:+ (CPUWeight=$CPU_WEIGHT)}"
+        systemctl daemon-reload
+        ;;
+      skip-symlink)
+        echo "[cpu] $CPU_DROPIN is a symlink; leaving the operator's link alone" >&2
+        ;;
+      *)
+        echo "[cpu] CPU weight drop-in for $SERVICE_NAME is unchanged${CPU_WEIGHT:+ (CPUWeight=$CPU_WEIGHT)}"
+        ;;
+    esac
+  fi
+fi
+
 echo "Enabling $SERVICE_NAME (will auto-start on boot)"
 systemctl enable "$SERVICE_NAME"
 

@@ -122,24 +122,6 @@ def _check_every_optimizer_grid_combination_validates_through_the_registry():
     assert combos == 972
 
 
-INVALID_PARAMS = [
-    ({"left_span": 0}, "left_span"),
-    ({"right_span": 11}, "right_span"),
-    ({"left_span": 2.5}, "left_span must be an integer"),
-    ({"left_span": True}, "left_span must be an integer"),
-    ({"min_separation": 9, "max_separation": 8}, "min_separation"),
-    ({"max_separation": 101}, "max_separation"),
-    ({"setup_expiry": 0}, "setup_expiry"),
-    ({"volume_threshold": float("nan")}, "volume_threshold"),
-    ({"volume_threshold": float("inf")}, "volume_threshold"),
-    ({"volume_threshold": -0.01}, "volume_threshold"),
-    ({"volume_threshold": 1.5}, "volume_threshold"),
-    ({"volume_threshold": True}, "volume_threshold must be a number"),
-    ({"volume_test": 1}, "volume_test must be a boolean"),
-    ({"volume_test": "true"}, "volume_test must be a boolean"),
-]
-
-
 def _check_largest_declared_support_stays_inside_the_scheduler_candle_limit():
     out = _run(_frame(_long_closes()), left_span=10, right_span=10, max_separation=100, setup_expiry=50)
     assert int(out["obvd_support_bars"].iloc[0]) == 171 <= 200

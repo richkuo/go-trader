@@ -454,17 +454,6 @@ def test_reads_and_defects_stay_inside_the_support_span(subtests):
         _received_out_of_order_rows_hold_only_inside_their_span()
 
 
-INVALID_PARAMS = [
-    {"fast_period": 1}, {"fast_period": 121}, {"slow_period": 2}, {"slow_period": 151},
-    {"fast_period": 55, "slow_period": 55}, {"slow_period": 112}, {"signal_period": 112},
-    {"signal_period": 1}, {"replay_bars": 191}, {"left_span": 0}, {"right_span": 11},
-    {"min_separation": 0}, {"min_separation": 41, "max_separation": 40}, {"max_separation": 101},
-    {"setup_expiry": 0}, {"setup_expiry": 51}, {"replay_bars": 150, "max_separation": 40},
-    {"fast_period": 12.5}, {"fast_period": True}, {"fast_period": "34"}, {"slow_period": float("nan")},
-    {"replay_bars": float("inf")}, {"divergence_test": 1}, {"divergence_test": "true"},
-]
-
-
 def test_support_bound_and_integral_floats_are_accepted():
     df = _walk(400, 1)
     at_bound = dict(DEFAULTS, replay_bars=140, max_separation=40)

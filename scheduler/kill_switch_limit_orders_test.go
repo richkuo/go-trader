@@ -609,7 +609,7 @@ func TestKillSwitchLimitOrderRoster(t *testing.T) {
 	perps := StrategyConfig{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
 		Script: "shared_scripts/check_hyperliquid.py", Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}}
 	scriptless := StrategyConfig{ID: "hl-no-script", Platform: "hyperliquid", Type: "manual"}
-	other := StrategyConfig{ID: "okx-ema", Platform: "okx", Type: "perps", Script: "shared_scripts/check_okx.py"}
+	other := StrategyConfig{ID: "rh-ema", Platform: "robinhood", Type: "perps", Script: "shared_scripts/check_robinhood.py"}
 
 	got := killSwitchLimitOrderRoster([]StrategyConfig{live, paper, perps, scriptless, other})
 

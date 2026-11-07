@@ -85,6 +85,8 @@ func (ss *StatusServer) SetConfigContext(configPath string, cfg *Config) {
 	ss.intervalSeconds = cfg.IntervalSeconds
 	ss.userCloseDefaults = cfg.userDefaultsClose()
 	ss.globalNotifyRatchet = cfg.NotifyRatchetTriggers
+	ss.feedbackAnalysisSettings = cfg.tradeFeedbackAnalysisSettings()
+	ss.feedbackAnalysisAPI = cfg.tradeFeedbackAPISettings()
 	ss.strategiesMu.Unlock()
 }
 

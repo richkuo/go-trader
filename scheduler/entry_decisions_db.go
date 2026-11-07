@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 )
 
 const entryDecisionSchemaDDL = `
@@ -551,7 +550,7 @@ func (sdb *StateDB) transitionEntryIntent(procID string, in *entryIntent, from [
 		return err
 	}
 	marks := make([]string, len(from))
-	args := []interface{}{to, in.EvidenceJSON, in.HoldReason, in.VenueOrderID, in.VenueOrderID, in.RequestJSON, in.RequestJSON, in.ConfirmedQty, in.ConfirmedNotional, in.ConfirmedFee, time.Now().UnixMilli(), in.IntentID, sid}
+	args := []interface{}{to, in.EvidenceJSON, in.HoldReason, in.VenueOrderID, in.VenueOrderID, in.RequestJSON, in.RequestJSON, in.ConfirmedQty, in.ConfirmedNotional, in.ConfirmedFee, tradingNow().UnixMilli(), in.IntentID, sid}
 	for i, f := range from {
 		marks[i] = "?"
 		args = append(args, f)
@@ -626,7 +625,7 @@ func (sdb *StateDB) markEntryIntentReplayDelivered(procID string, in *entryInten
 		return err
 	}
 	_, err = sdb.db.Exec(`UPDATE entry_order_intents SET replay_delivered_seq = MAX(replay_delivered_seq, ?), updated_at_ms = ?
-		WHERE intent_id = ? AND strategy_id = ? AND status = 'committed'`, seq, time.Now().UnixMilli(), in.IntentID, sid)
+		WHERE intent_id = ? AND strategy_id = ? AND status = 'committed'`, seq, tradingNow().UnixMilli(), in.IntentID, sid)
 	if err != nil {
 		return fmt.Errorf("mark entry intent %s replay delivered: %w", in.IntentID, err)
 	}

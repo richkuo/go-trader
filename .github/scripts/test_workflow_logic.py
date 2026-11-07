@@ -8,7 +8,8 @@ HERE = os.path.dirname(__file__)
 CLAUDE_YML = os.path.abspath(os.path.join(HERE, "..", "workflows", "claude.yml"))
 
 VERIFY_STEP = "Verify @claude is an actual invocation (not in a code block or example)"
-CLASSIFY_MODE_STEP = "Classify invocation route (review, implement, or fix-pr)"
+CLASSIFY_MODE_STEP = "Classify invocation route (review, implement, fix-pr, or untrusted-issue)"
+RESOLVE_MODEL_STEP = "Read model shorthand and effort from @claude invocation"
 
 PR_URL = "https://api.github.com/repos/o/r/pulls/5"
 
@@ -69,12 +70,14 @@ def extract_step_run_block(yml_text, step_name):
     return "\n".join(l[min_indent:] if l.strip() != "" else "" for l in body)
 
 
-def _run_block(script, env_overrides, output_key):
+def _run_block(script, env_overrides, output_key, unset_keys=()):
     with tempfile.TemporaryDirectory() as d:
         out_path = os.path.join(d, "github_output")
         open(out_path, "w").close()
         env = dict(os.environ)
         env.update(env_overrides)
+        for key in unset_keys:
+            env.pop(key, None)
         env["GITHUB_OUTPUT"] = out_path
         r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
         value = None
@@ -90,7 +93,7 @@ def _run_block(script, env_overrides, output_key):
         return value
 
 
-def run_classify_mode(event_name, stripped, pr_url="", pr_author_assoc="", pr_author_login="", flow=""):
+def run_classify_mode(event_name, stripped, pr_url="", issue_author_assoc="", issue_author_login="", flow=""):
     script = extract_step_run_block(_read(CLAUDE_YML), CLASSIFY_MODE_STEP)
     return _run_block(
         script,
@@ -99,8 +102,8 @@ def run_classify_mode(event_name, stripped, pr_url="", pr_author_assoc="", pr_au
             "PR_URL": pr_url,
             "FLOW": flow,
             "STRIPPED": stripped,
-            "PR_AUTHOR_ASSOC": pr_author_assoc,
-            "PR_AUTHOR_LOGIN": pr_author_login,
+            "ISSUE_AUTHOR_ASSOC": issue_author_assoc,
+            "ISSUE_AUTHOR_LOGIN": issue_author_login,
         },
         "mode",
     )
@@ -116,6 +119,8 @@ def run_verify_invocation(event_name, body, trigger_actor="someuser"):
             "REVIEW_BODY": body,
             "ISSUE_BODY": body,
             "TRIGGER_ACTOR": trigger_actor,
+            "PERL_STRIP_FENCED": "s/```.*?```//gs",
+            "SED_STRIP_INLINE": "s/`[^`]*`//g",
         },
         "invoked",
     )
@@ -140,20 +145,24 @@ CLASSIFY_CASES = [
     ("pull_request_review_surface", "pull_request_review", "@claude fix this", PR_URL, "MEMBER", "", "", "review"),
     ("pull_request_review_comment_surface", "pull_request_review_comment", "@claude fix this", PR_URL, "OWNER", "", "", "review"),
     ("issues_event", "issues", "@claude build this feature", "", "MEMBER", "", "", "implement"),
-    ("docs_release_flow_on_pr", "issue_comment", "@claude sync-docs", PR_URL, "MEMBER", "", "sync-docs", "implement"),
+    ("docs_release_flow_on_issue", "issue_comment", "@claude sync-docs", "", "MEMBER", "", "sync-docs", "implement"),
+    ("docs_release_flow_untrusted_issue_author", "issue_comment", "@claude sync-docs", "", "NONE", "", "sync-docs", "untrusted-issue"),
+    ("untrusted_author_plain_issue_comment", "issue_comment", "@claude implement this", "", "NONE", "", "", "untrusted-issue"),
+    ("untrusted_author_issues_event", "issues", "@claude build this feature", "", "CONTRIBUTOR", "", "", "untrusted-issue"),
+    ("claude_bot_authored_issue", "issues", "@claude build this feature", "", "NONE", "claude[bot]", "", "implement"),
     ("issue_comment_on_issue", "issue_comment", "@claude implement this", "", "MEMBER", "", "", "implement"),
 ]
 
 
 def test_classify_mode_routes(subtests):
-    for case_id, event_name, stripped, pr_url, pr_author_assoc, pr_author_login, flow, expected in CLASSIFY_CASES:
+    for case_id, event_name, stripped, pr_url, issue_author_assoc, issue_author_login, flow, expected in CLASSIFY_CASES:
         with subtests.test(case=case_id):
             assert run_classify_mode(
                 event_name,
                 stripped,
                 pr_url=pr_url,
-                pr_author_assoc=pr_author_assoc,
-                pr_author_login=pr_author_login,
+                issue_author_assoc=issue_author_assoc,
+                issue_author_login=issue_author_login,
                 flow=flow,
             ) == expected
 
@@ -177,3 +186,30 @@ def test_verify_invocation_fires(subtests):
     for case_id, event_name, body, trigger_actor, expected in VERIFY_CASES:
         with subtests.test(case=case_id):
             assert run_verify_invocation(event_name, body, trigger_actor) == expected
+
+
+def run_resolve_flow(event_name, stripped, pr_url="", docs_release_enabled=None):
+    script = extract_step_run_block(_read(CLAUDE_YML), RESOLVE_MODEL_STEP)
+    env = {"EVENT_NAME": event_name, "STRIPPED": stripped, "PR_URL": pr_url}
+    unset = ()
+    if docs_release_enabled is None:
+        unset = ("DOCS_RELEASE_ENABLED",)
+    else:
+        env["DOCS_RELEASE_ENABLED"] = docs_release_enabled
+    return _run_block(script, env, "flow", unset_keys=unset)
+
+
+RESOLVE_FLOW_CASES = [
+    ("sync_docs_on_pr_comment", "issue_comment", "@claude sync-docs", PR_URL, "true", ""),
+    ("create_release_on_pr_comment", "issue_comment", "@claude create-release", PR_URL, "true", ""),
+    ("sync_docs_on_issue_comment", "issue_comment", "@claude sync-docs", "", "true", "sync-docs"),
+    ("create_release_on_issue_comment", "issue_comment", "@claude opus create-release", "", "true", "create-release"),
+    ("docs_release_disabled_on_issue_comment", "issue_comment", "@claude sync-docs", "", None, ""),
+    ("sync_docs_on_issues_event", "issues", "@claude sync-docs", "", "true", ""),
+]
+
+
+def test_resolve_flow_only_on_plain_issue_comment(subtests):
+    for case_id, event_name, stripped, pr_url, docs_release_enabled, expected in RESOLVE_FLOW_CASES:
+        with subtests.test(case=case_id):
+            assert run_resolve_flow(event_name, stripped, pr_url, docs_release_enabled) == expected

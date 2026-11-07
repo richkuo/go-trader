@@ -483,13 +483,11 @@ func goldenBookings(t *testing.T) map[string]interface{} {
 		out[name] = map[string]interface{}{"result": res, "book": goldenStrategyBook(s)}
 	}
 	hlPaper := StrategyConfig{ID: "hl-book", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=paper"}, Capital: 10000, MaxDrawdownPct: 20, Leverage: 5}
-	okxSwap := StrategyConfig{ID: "okx-book", Platform: "okx", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=paper"}, Capital: 10000, MaxDrawdownPct: 20, Leverage: 4}
-	okxSpot := StrategyConfig{ID: "okx-spot-book", Platform: "okx", Type: "spot", Args: []string{"sma", "ETH", "1h", "--mode=paper"}, Capital: 10000, MaxDrawdownPct: 20}
 	sizing := PerpsSizing{SizingLeverage: 2, ExchangeLeverage: 5}
 	for _, venue := range []struct {
 		name string
 		sc   StrategyConfig
-	}{{"hl", hlPaper}, {"okx_swap", okxSwap}} {
+	}{{"hl", hlPaper}} {
 		venue := venue
 		run(venue.name+"_open_add_close_flip", venue.sc, nil, func(s *StrategyState) interface{} {
 			var steps []interface{}
@@ -542,11 +540,6 @@ func goldenBookings(t *testing.T) map[string]interface{} {
 			return res
 		})
 	}
-	run("okx_spot_open_close", okxSpot, nil, func(s *StrategyState) interface{} {
-		n1, err1 := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 3000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, "long", 0, logger)
-		n2, err2 := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 3100, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, "long", 0, logger)
-		return []interface{}{n1, err1 == nil, n2, err2 == nil}
-	})
 	run("hl_circuit_close_fill", hlPaper, func(s *StrategyState) {
 		s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.2, InitialQuantity: 0.2, AvgCost: 60000, Side: "long", Multiplier: 1, Leverage: 5}
 	}, func(s *StrategyState) interface{} {

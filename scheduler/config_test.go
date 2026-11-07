@@ -29,20 +29,12 @@ func TestEffectiveMarginPerTradeUSDOmittedReturnsZero(t *testing.T) {
 }
 
 func TestLoadConfigLiveCredentialChecksFollowIsLiveArgs(t *testing.T) {
-	for _, v := range []string{"HYPERLIQUID_SECRET_KEY", "OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE", "TOPSTEP_API_KEY", "TOPSTEP_API_SECRET", "TOPSTEP_ACCOUNT_ID", "ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET"} {
+	for _, v := range []string{"HYPERLIQUID_SECRET_KEY", "TOPSTEP_API_KEY", "TOPSTEP_API_SECRET", "TOPSTEP_ACCOUNT_ID", "ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET"} {
 		t.Setenv(v, "")
 	}
 	hl := func(args ...string) map[string]interface{} {
 		return map[string]interface{}{"id": "hl-eth", "type": "perps", "platform": "", "script": "shared_scripts/check_hyperliquid.py",
 			"args": args, "capital": 100.0, "max_drawdown_pct": 10.0, "leverage": 1.0, "direction": "long", "margin_mode": "isolated"}
-	}
-	okx := func(typ string, args ...string) map[string]interface{} {
-		sc := map[string]interface{}{"id": "okx-eth", "type": typ, "platform": "okx", "script": "shared_scripts/check_okx.py",
-			"args": args, "capital": 100.0, "max_drawdown_pct": 10.0}
-		if typ == "perps" {
-			sc["leverage"] = 1.0
-		}
-		return sc
 	}
 	rh := func(args ...string) map[string]interface{} {
 		return map[string]interface{}{"id": "rh-btc", "type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py",
@@ -62,9 +54,6 @@ func TestLoadConfigLiveCredentialChecksFollowIsLiveArgs(t *testing.T) {
 	}{
 		{"hyperliquid empty platform split live", hl("momentum", "ETH", "1h", "--mode", "live"), false,
 			[]string{"strategy[hl-eth]: --mode=live requires HYPERLIQUID_SECRET_KEY env var"}},
-		{"okx perps split live", okx("perps", "momentum", "ETH", "1h", "--mode", "live"), false,
-			[]string{"strategy[okx-eth]: --mode=live requires OKX_API_KEY env var", "strategy[okx-eth]: --mode=live requires OKX_API_SECRET env var", "strategy[okx-eth]: --mode=live requires OKX_PASSPHRASE env var"}},
-		{"okx spot split paper", okx("spot", "momentum", "ETH", "1h", "--mode", "paper"), false, nil},
 		{"robinhood split live", rh("momentum_pro", "BTC", "1h", "--mode", "live"), false, rhWant},
 		{"robinhood equals live", rh("momentum_pro", "BTC", "1h", "--mode=live"), false, rhWant},
 		{"topstep split live", ts("momentum", "ES", "1h", "--mode", "live"), false,

@@ -195,13 +195,6 @@ def _check_a_bad_bar_invalidates_its_dependent_windows_and_recovery_needs_full_h
                                   clean["mfi_value"].iloc[6:].to_numpy())
 
 
-INVALID_PARAMS = [
-    {"lookback": 1}, {"lookback": 199}, {"lookback": 14.5}, {"lookback": True}, {"lookback": float("nan")},
-    {"oversold": -1.0}, {"overbought": 101.0}, {"oversold": 80.0, "overbought": 80.0},
-    {"oversold": float("inf")}, {"overbought": True}, {"oversold": "20"},
-]
-
-
 def _check_supported_bounds_decide_inside_the_200_bar_check_window():
     df = _walk(260, 11)
     for params in ({"lookback": 2, "oversold": 0.0, "overbought": 100.0},
@@ -328,14 +321,6 @@ def _cfg(params, **kw):
                 symbol="BTC", timeframe="4h")
     base.update(kw)
     return ParityConfig(**base)
-
-
-PARITY_PARAMS = [
-    {"lookback": 7, "oversold": 30.0, "overbought": 70.0},
-    {"lookback": 14, "oversold": 20.0, "overbought": 80.0},
-    {"lookback": 2, "oversold": 0.0, "overbought": 100.0},
-    {"lookback": 198, "oversold": 20.0, "overbought": 80.0},
-]
 
 
 def test_candidate_parity_entry_point_runs_offline():

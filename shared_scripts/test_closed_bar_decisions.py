@@ -11,7 +11,6 @@ import pytest
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 CHECK_HL = os.path.join(_REPO_ROOT, "shared_scripts", "check_hyperliquid.py")
 CHECK_SPOT = os.path.join(_REPO_ROOT, "shared_scripts", "check_strategy.py")
-CHECK_OKX = os.path.join(_REPO_ROOT, "shared_scripts", "check_okx.py")
 CHECK_RH = os.path.join(_REPO_ROOT, "shared_scripts", "check_robinhood.py")
 CHECK_TS = os.path.join(_REPO_ROOT, "shared_scripts", "check_topstep.py")
 
@@ -284,10 +283,6 @@ def _fake_ccxt_dir(tmp_path, rows_by_key):
             pass
 
 
-        class okx(Exchange):
-            pass
-
-
         class RateLimitExceeded(Exception):
             pass
 
@@ -356,21 +351,6 @@ def test_binance_spot_direct_acquisition_uses_opening_time_closure(tmp_path):
     assert "closed_bar_decision" not in off
 
 
-def test_okx_direct_acquisition_uses_opening_time_closure(tmp_path):
-    bars = _now_bars(120, spike_at=118)
-    fakes = _fake_ccxt_dir(tmp_path, {"BTC/USDT:USDT|1h": _open_time_rows(bars)})
-    env = _clock_env(tmp_path, fakes)
-    on = _run(CHECK_OKX, ["breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap", "--closed-bar-decisions"], env_extra=env)
-    assert on.returncode == 0, on.stderr + on.stdout
-    out = json.loads(on.stdout)
-    _assert_injected_clock(out["closed_bar_decision"])
-    assert out["closed_bar_decision"]["decision_boundary_ms"] == bars[-2]["t"] + H
-    assert out["signal"] == 1
-    refused = _run(CHECK_OKX, ["funding_skew", "BTC", "1h", "--mode=paper", "--inst-type=swap", "--closed-bar-decisions"], env_extra=env)
-    assert refused.returncode == 1
-    assert "funding_skew" in json.loads(refused.stdout)["error"]
-
-
 def _held_long_tp(open_name):
     refs = json.dumps({"open": {"name": open_name, "params": {}}, "closes": [{"name": "tiered_tp_pct", "params": {}}]})
     return ["--strategy-refs", refs, "--position-side", "long", "--position-avg-cost=50",
@@ -392,26 +372,9 @@ def test_binance_spot_htf_fetch_failure_holds_and_keeps_protection(tmp_path):
     assert out["close_strategy"] == "tiered_tp_pct"
 
 
-def test_okx_decision_regime_fetch_failure_holds_and_keeps_protection(tmp_path):
-    bars = _now_bars(120, spike_at=118)
-    fakes = _fake_ccxt_dir(tmp_path, {"BTC/USDT:USDT|1h": _open_time_rows(bars), "BTC/USDT:USDT|4h": "network_error"})
-    proc = _run(CHECK_OKX, ["breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap", "--closed-bar-decisions",
-                            "--regime-enabled", "--regime-windows-spec-json", SPEC, "--decision-regime-timeframe=4h",
-                            *_held_long_tp("breakout")], env_extra=_clock_env(tmp_path, fakes))
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    out = json.loads(proc.stdout)
-    meta = out["closed_bar_decision"]
-    assert meta["held"] is True
-    assert "BTC 4h candles failed" in meta["hold_reason"]
-    assert out["open_action"] == "none"
-    assert out["close_fraction"] == 1.0
-    assert out["close_strategy"] == "tiered_tp_pct"
-
-
 def test_primary_fetch_failure_stays_a_check_error(subtests, tmp_path):
     for index, (script, argv, key) in enumerate([
             (CHECK_SPOT, ["atr_breakout", "BTC/USDT", "1h", "--mode=paper", "--closed-bar-decisions", "--htf-filter"], "BTC/USDT|1h"),
-            (CHECK_OKX, ["breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap", "--closed-bar-decisions"], "BTC/USDT:USDT|1h"),
         ]):
         with subtests.test(script=script, argv=argv, key=key):
             case_path = tmp_path / f"case{index}"
@@ -962,35 +925,6 @@ def _eom_rows_at(start_ms, rows, *, gap_after=None):
 
 _EOM_FLAT = (100.0, 101.0, 99.0, 100.0, 1000.0)
 _EOM_BREAKOUT = (100.0, 104.0, 100.0, 103.5, 1000.0)
-
-
-def test_eom_okx_swap_paper_check_declares_cadence_and_enters_on_a_valid_window(tmp_path):
-    forming = CLOCK_MS - CLOCK_MS % H
-    rows = [_EOM_FLAT] * 60 + [_EOM_BREAKOUT, (103.5, 103.6, 103.4, 103.5, 500.0)]
-    bars = _eom_rows_at(forming - 61 * H, rows)
-    assert bars[-1]["t"] == forming
-    fakes = _fake_ccxt_dir(tmp_path, {"BTC/USDT:USDT|1h": _open_time_rows(bars)})
-    env = _clock_env(tmp_path, fakes)
-    argv = [_EOM, "BTC", "1h", "--mode=paper", "--inst-type=swap", *_eom_refs()]
-
-    closed = _run(CHECK_OKX, argv + ["--closed-bar-decisions"], env_extra=env)
-    assert closed.returncode == 0, closed.stderr + closed.stdout
-    out = json.loads(closed.stdout)
-    assert out["closed_bar_decision"]["forming_rows_dropped"] == 1
-    assert out["signal"] == 1 and out["open_action"] == "long"
-    assert out["indicator_labels"]["eom_reason"] == "entry_long"
-    assert out["indicators"]["eom_interval_ms"] == H
-    assert out["indicators"]["eom_eval_ts_ms"] == bars[-2]["t"]
-
-    legacy_bars = bars[:-1]
-    legacy_fakes = _fake_ccxt_dir(tmp_path / "legacy", {"BTC/USDT:USDT|1h": _open_time_rows(legacy_bars)})
-    legacy = _run(CHECK_OKX, argv, env_extra={"PYTHONPATH": legacy_fakes})
-    assert legacy.returncode == 0, legacy.stderr + legacy.stdout
-    out = json.loads(legacy.stdout)
-    assert "closed_bar_decision" not in out
-    assert out["signal"] == 1 and out["open_action"] == "long"
-    assert out["indicator_labels"]["eom_reason"] == "entry_long"
-    assert out["indicators"]["eom_eval_ts_ms"] == legacy_bars[-1]["t"]
 
 
 def _fake_topstep_dir(tmp_path, bars):

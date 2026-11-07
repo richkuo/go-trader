@@ -291,27 +291,6 @@ def test_entry_rule_cases_and_diagnostics_follow_the_contract(subtests):
             check()
 
 
-INVALID_PARAMS = [
-    ({"force_period": 1}, "force_period"),
-    ({"force_period": 13.5}, "force_period"),
-    ({"force_period": True}, "force_period"),
-    ({"force_period": float("nan")}, "force_period"),
-    ({"force_period": float("inf")}, "force_period"),
-    ({"force_period": "13"}, "force_period"),
-    ({"trend_period": 1}, "trend_period"),
-    ({"trend_period": False}, "trend_period"),
-    ({"slope_span": 0}, "slope_span"),
-    ({"recursion_length": 129}, "recursion_length"),
-    ({"recursion_length": 198}, "recursion_length"),
-    ({"force_period": 20, "recursion_length": 197}, "recursion_length"),
-    ({"volume_weighting": 2}, "volume_weighting"),
-    ({"volume_weighting": True}, "volume_weighting"),
-    ({"volume_weighting": 0.5}, "volume_weighting"),
-    ({"trend_period": 190, "slope_span": 9}, "required history"),
-    ({"unknown_knob": 1}, "unknown parameters"),
-]
-
-
 def _check_the_largest_allowed_history_is_199_rows():
     for over in ({"recursion_length": 197}, {"trend_period": 190, "slope_span": 8},
                  {"force_period": 19, "recursion_length": 190}):

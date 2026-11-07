@@ -793,6 +793,12 @@ func (ss *StatusServer) handleAPITuningRuns(w http.ResponseWriter, r *http.Reque
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if provenance := r.Header.Get(tradeFeedbackResearchHeader); provenance != "" {
+			if rerr := ss.verifyTradeFeedbackResearchLaunch(r.Context(), provenance, tradeRunSpecView{StrategyIDs: spec.StrategyIDs, Overrides: spec.Overrides}); rerr != nil {
+				writeJSONError(w, rerr.Status, rerr.Msg+"; no tuning run was started")
+				return
+			}
+		}
 		rec, err := ss.tuning.enqueue(spec)
 		if errors.Is(err, errTuningQueueFull) {
 			w.Header().Set("Content-Type", "application/json")

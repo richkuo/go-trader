@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/richkuo/go-trader/shared_scripts/schemas/trade_feedback_analysis.schema.json",
+  "title": "Trade feedback analysis result",
+  "description": "The one result contract both analysis providers return. Limits that JSON Schema cannot express are in x-go-trader-limits and llm_strategy_feedback.py enforces them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "findings", "proposals", "confidence"],
+  "properties": {
+    "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "findings": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["feedback_rowid", "text"],
+        "properties": {
+          "feedback_rowid": {"type": "integer", "minimum": 1},
+          "text": {"type": "string", "minLength": 1, "maxLength": 2000}
+        }
+      }
+    },
+    "proposals": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/param_grid"},
+          {"$ref": "#/$defs/note"}
+        ]
+      }
+    },
+    "confidence": {"enum": ["low", "medium", "high"]}
+  },
+  "$defs": {
+    "scalar": {
+      "oneOf": [
+        {"type": "number"},
+        {"type": "boolean"},
+        {"type": "string", "maxLength": 512}
+      ]
+    },
+    "param_grid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "params", "rationale"],
+      "properties": {
+        "kind": {"const": "param_grid"},
+        "params": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "propertyNames": {"minLength": 1, "maxLength": 128},
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {"$ref": "#/$defs/scalar"}
+          }
+        },
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 2000}
+      }
+    },
+    "note": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "text"],
+      "properties": {
+        "kind": {"const": "note"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 4000}
+      }
+    }
+  },
+  "x-go-trader-limits": {
+    "max_grid_combinations": 4096,
+    "max_result_bytes": 524288
+  }
+}

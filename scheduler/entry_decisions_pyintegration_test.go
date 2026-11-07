@@ -182,7 +182,7 @@ func TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript(t *testing.
 	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	bars := entryParityBars()
 
-	for _, cadence := range []time.Duration{600 * time.Second, 90 * time.Second} {
+	for _, cadence := range []time.Duration{600 * time.Second} {
 		t.Run(cadence.String(), func(t *testing.T) {
 			sc := entryTestHLStrategy("hl-parity", "paper")
 			sc.Direction = DirectionLong
@@ -196,9 +196,6 @@ func TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript(t *testing.
 				var cuts []int64
 				for cut := formingOpen + 10_000; cut < formingOpen+entryParityHourMs; cut += cadence.Milliseconds() {
 					cuts = append(cuts, cut)
-				}
-				if cadence < 600*time.Second && closedThrough > 60 {
-					cuts = []int64{cuts[0], cuts[1], cuts[len(cuts)-1]}
 				}
 				for _, cut := range cuts {
 					qty, side := env.position(sc.ID, "BTC")

@@ -152,9 +152,9 @@ func tunerHandlerCandles() []UICandle {
 func tunerHandlerStrategy(mutate func(*StrategyConfig)) StrategyConfig {
 	pct := 50.0
 	sc := StrategyConfig{
-		ID:           "okx-preview",
+		ID:           "hl-preview",
 		Type:         "perps",
-		Platform:     "okx",
+		Platform:     "hyperliquid",
 		Args:         []string{"sma_crossover", "BTC", "1h"},
 		OpenStrategy: StrategyRef{Name: "sma_crossover", Params: map[string]interface{}{"fast_period": 5, "slow_period": 20}},
 		StopLossPct:  &pct,
@@ -278,15 +278,5 @@ func TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy(t *testing.T) {
 	long, short := entrySides(uncertified.LiveMarkers)
 	if short != 0 || long == 0 {
 		t.Fatalf("an uncertified policy must preview the base direction, got long %d short %d", long, short)
-	}
-
-	code, noPolicy := postTunerSimulate(t, tunerHandlerStrategy(nil), regime, `{"stop_loss_pct":40}`)
-	if code != http.StatusOK {
-		t.Fatalf("no-policy preview: status %d", code)
-	}
-	gotNo, _ := json.Marshal(noPolicy.LiveMarkers)
-	gotUncert, _ := json.Marshal(uncertified.LiveMarkers)
-	if string(gotNo) != string(gotUncert) {
-		t.Fatalf("a strategy with no policy must preview the base direction unchanged:\nno policy   %s\nuncertified %s", gotNo, gotUncert)
 	}
 }

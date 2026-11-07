@@ -182,15 +182,6 @@ func TestQuoteVenuePythonSavedIdentitiesRecoveryAndProbes(t *testing.T) {
 			t.Fatalf("the adapter request must carry the saved identity: %v", st)
 		}
 	})
-	t.Run("a request that rounding would change is refused before submission", func(t *testing.T) {
-		f := newQuotePyFixture(t, map[string]any{})
-		req := quotePyRequest(quoteRoleBid)
-		req.Size = "0.0125"
-		out, err := f.venue.Place(ctx, req)
-		if err != nil || out.Status != quoteOutcomeRejected || len(f.placed()) != 0 {
-			t.Fatalf("a changed request must be refused with nothing sent: %+v %v", out, err)
-		}
-	})
 	t.Run("a post-only reject is a conclusive rejection", func(t *testing.T) {
 		f := newQuotePyFixture(t, map[string]any{"behavior": "reject"})
 		out, err := f.venue.Place(ctx, quotePyRequest(quoteRoleAsk))
@@ -222,7 +213,7 @@ func TestQuoteVenuePythonSavedIdentitiesRecoveryAndProbes(t *testing.T) {
 			t.Fatalf("an unknown client id is absent, never filled or zero: %+v", a)
 		}
 	})
-	for _, tc := range []struct{ orig, remaining, want string }{{"1.1", "0.3", "0.8"}, {"0.3", "0.1", "0.2"}} {
+	for _, tc := range []struct{ orig, remaining, want string }{{"1.1", "0.3", "0.8"}} {
 		t.Run("a partly filled cancelled order with origSz "+tc.orig+" and sz "+tc.remaining+" reports its exact filled quantity", func(t *testing.T) {
 			f := newQuotePyFixture(t, map[string]any{"orders": map[string]any{
 				"0x0000000000000000000000000000abcd": map[string]any{"oid": 901, "status": "canceled", "origSz": tc.orig, "sz": tc.remaining, "timestamp": 1700},

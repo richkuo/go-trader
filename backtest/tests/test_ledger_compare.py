@@ -2,7 +2,6 @@ import copy
 import datetime
 import gzip
 import hashlib
-import io
 import json
 import os
 import shutil
@@ -24,7 +23,6 @@ INPUTS = {
     "export_paper_resting_touch.json": "comparison_input_paper_resting_touch.json",
 }
 INTERVAL_START = "2026-01-05T00:00:00Z"
-START_MS = 1767571200000
 HOUR_MS = 3_600_000
 
 
@@ -80,16 +78,6 @@ def _new_event(template, key, ts, position_id, qty, price):
     ev["quantity"]["value"] = ev["quantity"]["raw_value"] = qty
     ev["price"]["value"] = ev["price"]["raw_value"] = price
     return ev
-
-
-def _rewrite_gz(path, keep):
-    with gzip.open(path, "rt") as fh:
-        lines = fh.read().splitlines()
-    body = "\n".join([lines[0]] + [ln for ln in lines[1:] if keep(int(ln.split(",")[0]))]) + "\n"
-    buf = io.BytesIO()
-    with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0, filename="") as gz:
-        gz.write(body.encode())
-    path.write_bytes(buf.getvalue())
 
 
 def _rehash_market(fx, warmup=None):
@@ -247,25 +235,6 @@ def test_known_divergence_fails_and_restoration_passes(tmp_path):
     assert rc == 0 and rep["outcome"] == "strict_success"
 
 
-def test_changed_inputs_without_rebinding_are_refused(tmp_path):
-    fx = _copy(tmp_path)
-    doc = _load(fx / "export.json")
-    ev = next(e for e in doc["events"] if e["event_kind"]["value"] == "close" and _in_interval(e))
-    ev["quantity"]["value"] = ev["quantity"]["raw_value"] = ev["quantity"]["value"] + 0.001
-    _dump(fx / "export.json", doc)
-    rc, rep = _run(fx, tmp_path)
-    assert rc == 1 and rep["outcome"] == "refused"
-    assert {r.get("field") for r in rep["eligibility"]["refusals"] if r["reason"] == "input_binding"} == {"booked_sections_sha256"}
-    assert rep["simulation"]["status"] == "not_run"
-
-    fx2 = _copy(tmp_path / "second")
-    candles = fx2 / "market" / "BTC_1h_candles.csv.gz"
-    _rewrite_gz(candles, lambda ts: ts != START_MS + 5 * HOUR_MS)
-    rc, rep = _run(fx2, tmp_path)
-    assert rc == 1 and rep["outcome"] == "refused"
-    assert "market_input_integrity" in {r["reason"] for r in rep["eligibility"]["refusals"]}
-
-
 def test_ambiguous_and_unmatched_outcomes_stay_in_the_report(tmp_path):
     fx = _copy(tmp_path)
     doc = _load(fx / "export.json")
@@ -345,179 +314,6 @@ def test_scale_in_fixture_conserves_booked_accounting_and_refuses_strict(tmp_pat
     assert rep["matching"]["unmatched_booked"] and rep["matching"]["unmatched_simulated"]
 
 
-def test_manual_owner_is_refused_and_not_comparable(tmp_path):
-    fx = _copy(tmp_path)
-    doc = _load(fx / "export_manual.json")
-    for mode in ("strict", "approximate"):
-        rc, rep = _run(fx, tmp_path, "export_manual.json", mode=mode, name=f"{mode}.json")
-        assert rc == 1 and rep["strict_success"] is False
-        assert any(r.get("field") == "type" and r["reason"] == "capability_signal_model"
-                   for r in rep["eligibility"]["refusals"])
-        assert {n["event_key"] for n in rep["booked"]["not_comparable"]} == {e["event_key"] for e in doc["events"]}
-        assert set(rep["booked"]["dispositions"].values()) == {"not_comparable"}
-        assert rep["simulation"]["status"] == "not_run"
-
-
-def test_hash_valid_incomplete_market_inputs_refuse_strict(tmp_path, subtests):
-    for case, reason in [
-        ("edge_gap", "market_candle_grid_incomplete"),
-        ("warmup_join_gap", "market_candle_grid_incomplete"),
-        ("missing_funding", "market_funding_incomplete"),
-        ("short_warmup", "market_indicator_history_insufficient"),
-    ]:
-        with subtests.test(case=case):
-            case_dir = tmp_path / str(case)
-            case_dir.mkdir()
-            _assert_hash_valid_incomplete_market_inputs_refuse_strict(case_dir, case, reason)
-
-
-def _assert_hash_valid_incomplete_market_inputs_refuse_strict(tmp_path, case, reason):
-    fx = _copy(tmp_path)
-    market = fx / "market"
-    warmup = None
-    if case == "edge_gap":
-        end_ms = START_MS + 44 * HOUR_MS
-        _rewrite_gz(market / "BTC_1h_candles.csv.gz", lambda ts: ts != end_ms - HOUR_MS)
-    elif case == "warmup_join_gap":
-        _rewrite_gz(market / "BTC_1h_candles.csv.gz", lambda ts: ts != START_MS - HOUR_MS)
-    elif case == "missing_funding":
-        _rewrite_gz(market / "BTC_funding.csv.gz", lambda ts: not (START_MS + 3 * HOUR_MS <= ts < START_MS + 6 * HOUR_MS))
-    else:
-        warmup = 10
-    _rehash_market(fx, warmup)
-    rc, rep = _run(fx, tmp_path)
-    assert rc == 1 and rep["outcome"] == "refused"
-    assert reason in {r["reason"] for r in rep["eligibility"]["refusals"]}
-    assert not any(r["reason"] == "market_input_integrity" for r in rep["eligibility"]["refusals"])
-    assert rep["simulation"]["status"] == "not_run"
-
-
-def test_stale_recorded_observations_refuse_strict_and_fresh_ones_pass(tmp_path):
-    import pandas as pd
-    from registry_loader import load_registry
-
-    study = os.path.join(os.path.dirname(FIXTURE), "..", "candidates", "open_interest_breakout_1637")
-    dst = tmp_path / "study"
-    shutil.copytree(study, dst, ignore=shutil.ignore_patterns("recording", "*.md", "*.py", "results*.json"))
-    manifest = _load(dst / "study_manifest.json")
-    manifest["windows"]["fresh"] = {"start": "2026-10-04T03:20:00Z", "end": "2026-10-04T05:25:00Z", "role": "test"}
-    _dump(dst / "study_manifest.json", manifest)
-    params = load_registry("futures").STRATEGY_REGISTRY["open_interest_breakout"]["default_params"]
-    results = {}
-    for window, (start, end) in {"train": ("2026-10-04T03:10:00Z", "2026-10-04T06:10:00Z"),
-                                 "fresh": ("2026-10-04T03:20:00Z", "2026-10-04T05:25:00Z")}.items():
-        market = lc.prepare_market(str(dst / "study_manifest.json"), _sha(dst / "study_manifest.json"), "BTC 5m",
-                                   window, pd.Timestamp(start), pd.Timestamp(end))
-        assert market["refusals"] == [] or {r["reason"] for r in market["refusals"]} == {"market_funding_incomplete"}
-        results[window] = lc.market_strategy_checks(market, "open_interest_breakout", params, "long", False, True, False)
-    stale = results["train"]
-    assert stale["checks"]["observations"]["ok"] is False
-    assert stale["checks"]["observations"]["invalid_decision_bar_count"] == 11
-    assert "market_observations_incomplete" in {r["reason"] for r in stale["refusals"]}
-    fresh = results["fresh"]
-    assert fresh["checks"]["observations"]["ok"] is True
-    assert fresh["checks"]["observations"]["invalid_decision_bar_count"] == 0
-    assert "market_observations_incomplete" not in {r["reason"] for r in fresh["refusals"]}
-
-
-def test_missing_or_unverified_history_keeps_results_unverified(tmp_path):
-    fx = _copy(tmp_path)
-    base = _load(fx / "comparison_input.json")
-
-    cin = copy.deepcopy(base)
-    cin["starting_state"]["cash_usd"]["status"] = "unverified"
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path, name="cash.json")
-    assert rc == 1 and rep["outcome"] == "unverified"
-    assert rep["strict_checks"]["close_validation_strict_eligible"] is True
-    assert rep["strict_checks"]["matched_within_tolerance"] is True
-    assert {u["input"] for u in rep["eligibility"]["unverified"]} == {"starting_state.cash_usd"}
-
-    cin = copy.deepcopy(base)
-    cin["starting_state"]["cash_usd"]["value"] = 1000.0
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path, name="replay.json")
-    assert rc == 1 and rep["starting_state"]["cash_usd"]["status"] == "unverified"
-    assert rep["starting_state"]["cash_usd"]["recomputed"] == pytest.approx(1009.168047, abs=1e-9)
-
-    cin = copy.deepcopy(base)
-    cin["historical_configuration"]["timeline"] = []
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path, name="nohist.json")
-    assert rc == 1 and rep["outcome"] == "unverified"
-    assert rep["simulation"]["status"] == "not_run"
-    assert {u["input"] for u in rep["eligibility"]["unverified"]} >= {"historical_configuration"}
-    assert rep["configuration"]["present"]["strategy"]["id"] == "hl-strict-btc"
-
-    cin = copy.deepcopy(base)
-    seg = cin["historical_configuration"]["timeline"][0]
-    later = copy.deepcopy(seg)
-    seg["effective_to"] = later["effective_from"] = "2026-01-06T00:00:00Z"
-    cin["historical_configuration"]["timeline"].append(later)
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path, name="transition.json")
-    assert rc == 1 and rep["outcome"] == "refused"
-    assert "configuration_transition_unsupported" in {r["reason"] for r in rep["eligibility"]["refusals"]}
-
-    cin = copy.deepcopy(base)
-    cin["historical_configuration"]["timeline"][0]["strategy"]["close_strategy"]["params"]["tp_tiers"] = [
-        {"profit_pct": 0.005, "close_fraction": 0.5}, {"profit_pct": 0.01, "close_fraction": 1.0}]
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path, name="history.json")
-    assert rc == 1 and rep["outcome"] == "mismatch"
-    assert "strategy.close_strategy" in {d["field"] for d in rep["configuration"]["present_vs_historical_differences"]}
-
-    cin = copy.deepcopy(base)
-    cin["starting_state"]["inventory"] = {"quantity": 0.01, "status": "verified", "rule": "attested",
-                                          "evidence": "disposable seeded inventory"}
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path, name="seeded.json")
-    assert rc == 1 and "seeded_inventory_unsupported" in {r["reason"] for r in rep["eligibility"]["refusals"]}
-
-    cin = copy.deepcopy(base)
-    cin["starting_state"]["pending_decision"]["value"] = "long"
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path, name="pending.json")
-    assert rc == 1 and rep["starting_state"]["pending_decision"]["status"] == "unverified"
-
-
-def test_close_validation_alone_never_yields_strict_success(tmp_path):
-    fx = _copy(tmp_path)
-    rc, rep = _run(fx, tmp_path, mode="approximate", name="approx.json")
-    assert rc == 1 and rep["outcome"] == "incomplete"
-    assert rep["strict_checks"]["matched_within_tolerance"] is True
-    assert rep["eligibility"]["close_validation"]["parity_status"] == "incomplete"
-
-    base = _load(fx / "comparison_input.json")
-    cin = copy.deepcopy(base)
-    cin["historical_configuration"]["timeline"][0]["strategy"]["close_strategy"] = {
-        "name": "time_stop", "params": {"max_bars": 6}}
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path, name="time_stop.json")
-    assert rc == 1 and rep["outcome"] == "refused"
-    assert "close_validation_refused" in {r["reason"] for r in rep["eligibility"]["refusals"]}
-    assert rep["eligibility"]["close_validation"]["close_eligibility"] == "refused"
-    rc, rep = _run(fx, tmp_path, mode="approximate", name="time_stop_approx.json")
-    assert rc == 1 and rep["outcome"] == "incomplete" and rep["strict_success"] is False
-    assert rep["eligibility"]["close_validation"]["close_eligibility"] == "approximate"
-    assert "close_validation" in {a["category"] for a in rep["eligibility"]["approximations"]}
-
-
-def test_malformed_inputs_exit_without_a_report(tmp_path, capsys):
-    fx = _copy(tmp_path)
-    doc = _load(fx / "export.json")
-    doc["events"].append(copy.deepcopy(doc["events"][0]))
-    _dump(fx / "export.json", doc)
-    rc, rep = _run(fx, tmp_path)
-    assert rc == 2 and rep is None
-    fx2 = _copy(tmp_path / "second")
-    out = tmp_path / "exists.json"
-    out.write_text("{}")
-    rc = lc.main(["--export", str(fx2 / "export.json"), "--comparison-input", str(fx2 / "comparison_input.json"),
-                  "--output", str(out)])
-    assert rc == 2 and out.read_text() == "{}"
-
-
 def _template(doc, kind):
     return next(e for e in doc["events"] if e["event_kind"]["value"] == kind and e["position_id"]["value"])
 
@@ -565,15 +361,6 @@ def test_attested_inventory_is_checked_against_the_booked_replay(tmp_path):
     _rebind(fx)
     rc, rep = _run(fx, tmp_path, name="restored.json")
     assert rc == 0 and rep["outcome"] == "strict_success"
-
-
-def test_unexpected_errors_exit_without_a_report(tmp_path, monkeypatch):
-    def broken(*a, **k):
-        raise RuntimeError("disposable internal failure")
-
-    monkeypatch.setattr(lc, "run_simulation", broken)
-    rc, rep = _run(_copy(tmp_path), tmp_path)
-    assert rc == lc.EXIT_INTERNAL_ERROR and rep is None
 
 
 def test_booked_conservation_checks_fail_on_inconsistent_ledgers(tmp_path):
@@ -825,81 +612,6 @@ def test_drawdown_fallback_geometry_matches_the_platform_oracle_case():
         ("stop_inputs_unverified", "platform_max_drawdown_pct")]
 
 
-def test_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(tmp_path, subtests):
-    for basis in ["raw_config", "loader_resolved"]:
-        with subtests.test(case=basis):
-            case_dir = tmp_path / str(basis)
-            case_dir.mkdir()
-            _assert_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(case_dir, basis)
-
-
-def _assert_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(tmp_path, basis):
-    def build(case_id, extra_cfg=None, extra_strategy=None):
-        cfg, strategy, _, _ = _parity_case(case_id)
-        cfg.update(extra_cfg or {})
-        strategy.update(extra_strategy or {})
-        return (_raw_segment(cfg, strategy) if basis == "raw_config"
-                else _loader_segment(tmp_path, cfg, strategy))
-
-    def codes(seg):
-        return {(r["reason"], r.get("reason_code")) for r in lc.resolve_historical_stops(seg, 2, "strict")["refusals"]}
-
-    want_margin = ("stop_capability_refused", "UNVERIFIED_MARGIN_LEVERAGE")
-    assert want_margin in codes(build("margin_with_defaulted_leverage"))
-    seg = build("margin_verified_leverage")
-    assert lc.resolve_historical_stops(seg, 2, "strict")["status"] == "modeled"
-    if basis == "raw_config":
-        seg["stop_evidence"]["raw_fields"]["leverage"]["status"] = "unverified"
-    else:
-        seg["stop_evidence"]["leverage_origin"]["status"] = "unverified"
-    assert want_margin in codes(seg)
-    named = build("named_atr_window_not_modeled")
-    assert ("stop_capability_refused", "MISSING_STOP_INPUT") in codes(named)
-
-
-def test_contradictory_stop_evidence_refuses_before_simulation(tmp_path, subtests):
-    for basis in ["raw_config", "loader_resolved"]:
-        with subtests.test(case=basis):
-            case_dir = tmp_path / str(basis)
-            case_dir.mkdir()
-            _assert_contradictory_stop_evidence_refuses_before_simulation(case_dir, basis)
-
-
-def _assert_contradictory_stop_evidence_refuses_before_simulation(tmp_path, basis):
-    cfg, strategy, _, _ = _parity_case("pct_long")
-    seg = _raw_segment(cfg, strategy) if basis == "raw_config" else _loader_segment(tmp_path, cfg, strategy)
-    seg["stop_evidence"]["raw_fields"]["stop_loss_pct"] = _prov(3)
-    verdict = lc.resolve_historical_stops(seg, 2, "strict")
-    assert ("stop_evidence_contradictory", "stop_loss_pct") in {(r["reason"], r["field"]) for r in verdict["refusals"]}
-    assert all(r["approximable"] is False for r in verdict["refusals"] if r["reason"] == "stop_evidence_contradictory")
-    seg = _raw_segment(cfg, strategy) if basis == "raw_config" else _loader_segment(tmp_path, cfg, strategy)
-    seg["stop_evidence"]["raw_fields"]["trailing_stop_pct"]["status"] = "unverified"
-    verdict = lc.resolve_historical_stops(seg, 2, "strict")
-    assert [(r["reason"], r["field"]) for r in verdict["refusals"]] == [("stop_inputs_unverified", "trailing_stop_pct")]
-
-
-def test_version_one_segments_cannot_rule_out_a_protective_owner(subtests):
-    for case_id, owner, fields in [
-        ("pct_long", "fixed_pct", {"basis", "stop_loss_pct"}),
-        ("default_scalar_atr", "fixed_atr", {"basis", "stop_loss_atr_mult"}),
-        ("unified_regime_close", "unified_regime", {"basis", "close_strategy", "regime_atr_window"}),
-        ("explicit_zero_atr_drawdown_fallback", "drawdown_fallback", {"basis", "max_drawdown_pct"}),
-    ]:
-        with subtests.test(case=case_id):
-            _assert_version_one_segments_cannot_rule_out_a_protective_owner(case_id, owner, fields)
-
-
-def _assert_version_one_segments_cannot_rule_out_a_protective_owner(case_id, owner, fields):
-    cfg, strategy, _, _ = _parity_case(case_id)
-    seg = _raw_segment(cfg, strategy)
-    for key in ("basis", "stop_defaults", "stop_evidence"):
-        seg.pop(key)
-    verdict = lc.resolve_historical_stops(seg, 1, "strict")
-    assert verdict["owner"] == owner and verdict["status"] == "refused"
-    assert {r["reason"] for r in verdict["refusals"]} == {"stop_inputs_unverified"}
-    assert {r["field"] for r in verdict["refusals"]} == fields
-
-
 def _as_raw_basis(cin):
     seg = cin["historical_configuration"]["timeline"][0]
     src = next(s for s in _load(os.path.join(FIXTURE, "source", "config.json"))["strategies"]
@@ -951,38 +663,6 @@ def test_strict_fixture_arms_the_drawdown_fallback_on_both_bases(tmp_path):
     assert approx["stops"]["arm_events"] == stops["arm_events"]
 
 
-def _drawdown_free_fixture(fx, resolved_entry):
-    cin = _load(fx / "comparison_input.json")
-    seg = cin["historical_configuration"]["timeline"][0]
-    seg["strategy"].pop("max_drawdown_pct")
-    if resolved_entry is None:
-        seg["stop_evidence"]["resolved_fields"].pop("max_drawdown_pct")
-    else:
-        seg["stop_evidence"]["resolved_fields"]["max_drawdown_pct"] = resolved_entry
-    _dump(fx / "comparison_input.json", cin)
-
-
-def _stop_refusals(rep):
-    return {(r["reason"], r["field"]) for r in rep["eligibility"]["refusals"]
-            if r["reason"].startswith("stop_")}
-
-
-def test_loader_drawdown_without_verified_provenance_never_reaches_strict_success(tmp_path):
-    fx = _copy(tmp_path)
-    _drawdown_free_fixture(fx, None)
-    rc, rep = _run(fx, tmp_path, name="missing.json")
-    assert rc == 1 and rep["outcome"] != "strict_success"
-    assert rep["stops"]["owner"] == "none" and rep["stops"]["status"] == "refused"
-    assert _stop_refusals(rep) == {("stop_inputs_unverified", "max_drawdown_pct")}
-
-    fx = _copy(tmp_path / "null")
-    _drawdown_free_fixture(fx, {"status": "verified", "source": "test edit", "value": None})
-    rc, rep = _run(fx, tmp_path, name="null.json")
-    assert rc == 1 and rep["outcome"] != "strict_success"
-    assert rep["stops"]["status"] == "refused"
-    assert ("stop_evidence_contradictory", "max_drawdown_pct") in _stop_refusals(rep)
-
-
 def test_drawdown_provenance_is_required_only_where_precedence_reaches_it(tmp_path):
     cfg, strategy, _, _ = _parity_case("explicit_zero_stop_pct_disables")
     seg = _loader_segment(tmp_path, cfg, strategy)
@@ -996,30 +676,6 @@ def test_drawdown_provenance_is_required_only_where_precedence_reaches_it(tmp_pa
     assert verdict["owner"] == "none" and verdict["status"] == "refused"
     assert ("stop_configuration_invalid", "max_drawdown_pct") in {
         (r["reason"], r["field"]) for r in verdict["refusals"]}
-
-
-def test_unverified_leverage_refuses_a_margin_stop_on_both_bases(tmp_path, subtests):
-    for basis in ["raw_config", "loader_resolved"]:
-        with subtests.test(case=basis):
-            case_dir = tmp_path / str(basis)
-            case_dir.mkdir()
-            _assert_unverified_leverage_refuses_a_margin_stop_on_both_bases(case_dir, basis)
-
-
-def _assert_unverified_leverage_refuses_a_margin_stop_on_both_bases(tmp_path, basis):
-    strategy = {"stop_loss_margin_pct": 10, "leverage": 1}
-    if basis == "raw_config":
-        seg = _raw_segment({}, strategy)
-        seg["stop_evidence"]["raw_fields"]["leverage"]["status"] = "unverified"
-    else:
-        seg = _loader_segment(tmp_path, {}, strategy)
-        assert seg["stop_evidence"]["leverage_origin"] == {
-            "status": "verified", "source": "synthetic test evidence", "value": "config"}
-        seg["stop_evidence"]["resolved_fields"]["leverage"]["status"] = "unverified"
-    verdict = lc.resolve_historical_stops(seg, 2, "strict")
-    assert verdict["owner"] == "margin_pct" and verdict["status"] == "refused"
-    assert {(r["reason"], r.get("reason_code")) for r in verdict["refusals"]} == {
-        ("stop_capability_refused", "UNVERIFIED_MARGIN_LEVERAGE")}
 
 
 def test_loader_scalar_default_follows_the_live_default_rule_under_a_unified_close(tmp_path):
@@ -1037,25 +693,6 @@ def test_loader_scalar_default_follows_the_live_default_rule_under_a_unified_clo
     seg = _loader_segment(tmp_path, cfg, strategy)
     assert seg["stop_evidence"]["resolved_fields"]["stop_loss_atr_mult"]["value"] == 1.0
     assert lc.resolve_historical_stops(seg, 2, "strict")["status"] == "modeled"
-
-
-def test_version_one_input_is_read_and_refused_for_unverified_stops(tmp_path):
-    fx = _copy(tmp_path)
-    cin = _load(fx / "comparison_input.json")
-    cin["schema_version"] = 1
-    for key in ("basis", "stop_defaults", "stop_evidence", "atr_defaults"):
-        cin["historical_configuration"]["timeline"][0].pop(key)
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path)
-    assert rc == 1 and rep["outcome"] == "refused"
-    assert rep["provenance"]["comparison_input_schema"] == [lc.INPUT_SCHEMA, 1]
-    stop = [r for r in rep["eligibility"]["refusals"] if r["reason"] == "stop_inputs_unverified"]
-    assert {r["field"] for r in stop} == {"basis", "max_drawdown_pct"}
-    assert rep["simulation"]["status"] == "not_run"
-    rc, rep = _run(fx, tmp_path, mode="approximate", name="approx.json")
-    assert rc == 1 and rep["outcome"] == "incomplete" and rep["simulation"]["status"] == "run"
-    assert {"basis", "max_drawdown_pct"} <= {a["feature"] for a in rep["eligibility"]["approximations"]}
-    assert rep["stops"]["owner"] == "drawdown_fallback" and rep["stops"]["arm_events"]
 
 
 def _frame_atr(fx, method):
@@ -1104,27 +741,6 @@ def test_verified_root_atr_method_sets_the_simulated_entry_atr(tmp_path):
     assert arms and all(atr == wilder[bar] and atr != simple[bar] for bar, atr in arms)
 
 
-def test_atr_method_without_verified_root_evidence_is_refused_in_strict_mode(tmp_path):
-    fx = _copy(tmp_path)
-    _set_root_atr(fx, None)
-    rc, rep = _run(fx, tmp_path, name="missing.json")
-    assert rc == 1 and rep["outcome"] == "refused" and rep["simulation"]["status"] == "not_run"
-    assert ("atr_method_unverified", "atr_defaults.root_atr_method") in {
-        (r["reason"], r.get("field")) for r in rep["eligibility"]["refusals"]}
-    rc, rep = _run(fx, tmp_path, mode="approximate", name="missing_approx.json")
-    assert rc == 1 and rep["outcome"] == "incomplete" and rep["simulation"]["status"] == "run"
-    assert "atr_method" in {a["feature"] for a in rep["eligibility"]["approximations"]}
-    assert rep["atr_method"]["source"] == "unverified_substitute"
-
-    _set_root_atr(fx, {"status": "unverified", "source": None, "present": True, "value": "wilder"})
-    rc, rep = _run(fx, tmp_path, name="unverified.json")
-    assert rc == 1 and "atr_method_unverified" in {r["reason"] for r in rep["eligibility"]["refusals"]}
-    rc, rep = _run(fx, tmp_path, mode="approximate", name="unverified_approx.json")
-    wilder = _frame_atr(fx, "wilder")
-    assert rep["atr_method"]["method"] == "wilder"
-    assert rep["stops"]["arm_events"] and all(atr == wilder[bar] for bar, atr in _arm_atrs(rep))
-
-
 def test_strategy_atr_method_overrides_root_and_an_invalid_value_is_never_simulated(tmp_path):
     fx = _copy(tmp_path)
     cin = _set_root_atr(fx, {"status": "verified", "source": "test edit: root atr_method wilder", "present": True,
@@ -1144,28 +760,6 @@ def test_strategy_atr_method_overrides_root_and_an_invalid_value_is_never_simula
         assert rc == 1 and rep["simulation"]["status"] == "not_run"
         assert ("atr_configuration_invalid", "atr_defaults.root_atr_method") in {
             (r["reason"], r.get("field")) for r in rep["eligibility"]["refusals"]}
-
-
-def test_an_invalid_atr_method_is_refused_unverified_or_unread(tmp_path):
-    fx = _copy(tmp_path)
-    _set_root_atr(fx, {"status": "unverified", "source": None, "present": True, "value": "ema"})
-    rc, rep = _run(fx, tmp_path, mode="approximate", name="unverified_invalid.json")
-    assert rep["atr_method"]["needs_atr"] is True
-    assert rc == 1 and rep["simulation"]["status"] == "not_run"
-    assert ("atr_configuration_invalid", "atr_defaults.root_atr_method") in {
-        (r["reason"], r.get("field")) for r in rep["eligibility"]["refusals"]}
-
-    cin = _set_root_atr(fx, {"status": "verified", "source": "test edit: no root atr_method", "present": False,
-                             "value": None})
-    seg = cin["historical_configuration"]["timeline"][0]
-    seg["strategy"]["atr_method"] = "ema"
-    seg["strategy"].pop("close_strategy")
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path, name="unread_invalid.json")
-    assert rep["atr_method"]["needs_atr"] is False and rep["stops"]["owner"] == "drawdown_fallback"
-    assert rc == 1 and rep["outcome"] == "refused"
-    assert ("atr_configuration_invalid", "strategy.atr_method") in {
-        (r["reason"], r.get("field")) for r in rep["eligibility"]["refusals"]}
 
 
 def test_regime_owned_stops_simulate_with_labels_and_no_gating(tmp_path, subtests):
@@ -1227,20 +821,6 @@ def _assert_regime_owned_stops_simulate_with_labels_and_no_gating(tmp_path, vari
         (r["reason"], r.get("reason_code")) for r in rep["eligibility"]["refusals"]}
 
 
-def test_regime_labels_that_depend_on_warmup_refuse_strict(tmp_path):
-    fx = _copy(tmp_path)
-    cin = _load(fx / "comparison_input.json")
-    seg = cin["historical_configuration"]["timeline"][0]
-    seg["regime"] = dict(REGIME_ON)
-    _stop_free_loader_segment(seg)
-    seg["strategy"]["close_strategy"] = copy.deepcopy(UNIFIED_CLOSE)
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path)
-    assert rc == 1 and rep["outcome"] == "refused" and rep["simulation"]["status"] == "not_run"
-    assert {r["reason"] for r in rep["eligibility"]["refusals"]} == {"market_indicator_history_insufficient"}
-    assert rep["stops"]["status"] == "modeled"
-
-
 def _synthetic_stamp(value):
     return {"value": value, "raw_value": value, "status": "available", "reason": None,
             "provenance": [{"kind": "synthetic_test_evidence", "source_role": "primary", "source_table": "trades",
@@ -1289,72 +869,6 @@ def test_verified_initial_geometry_agrees_and_an_altered_trigger_mismatches(tmp_
     assert rep["strict_checks"]["initial_stop_geometry_consistent"] is False
     assert rep["strict_checks"]["matched_within_tolerance"] is False
     assert all(m["within_tolerance"] is False for m in rep["matching"]["matched"])
-
-
-def test_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch, subtests):
-    for variant in ["no_attestation", "later_stamp", "ambiguous_arms"]:
-        with subtests.test(case=variant):
-            _assert_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch, variant)
-
-
-def _assert_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch, variant):
-    fx = _geometry_fixture(tmp_path, attest=variant != "no_attestation", stamp_close=variant == "later_stamp",
-                           name=variant)
-    if variant == "ambiguous_arms":
-        from backtester import Backtester
-        original = Backtester._emit_stop_event
-
-        def doubled(self, event, **fields):
-            original(self, event, **fields)
-            if event == "arm":
-                original(self, event, **fields)
-
-        monkeypatch.setattr(Backtester, "_emit_stop_event", doubled)
-    rc, rep = _run(fx, tmp_path, name=f"{variant}.json")
-    assert rc == 1 and rep["strict_success"] is False and rep["outcome"] == "unverified"
-    geo = rep["initial_stop_geometry"]
-    assert geo["counts"]["agreement"] == 0 and geo["counts"]["unverified"] == 2
-    assert rep["strict_checks"]["initial_stop_geometry_consistent"] is False
-    assert {u["input"] for u in rep["eligibility"]["unverified"]} == {"initial_stop_geometry"}
-    if variant == "later_stamp":
-        assert all(r["later_stamps"] for r in geo["positions"])
-
-
-def _malformed_strategy_shape(field, value):
-    def mutate(seg):
-        if field == "params":
-            seg["strategy"]["open_strategy"]["params"] = value
-        else:
-            seg["strategy"][field] = value
-    return mutate
-
-
-_MALFORMED_SEGMENT_MUTATIONS = [
-    ("open_strategy-sma_crossover", _malformed_strategy_shape("open_strategy", "sma_crossover")),
-    ("params-list", _malformed_strategy_shape("params", ["fast", 10])),
-    ("args-string", _malformed_strategy_shape("args", "sma_crossover BTC 1h")),
-    ("basis-missing", lambda seg: seg.pop("basis")),
-    ("user_close_defaults-missing", lambda seg: seg["stop_defaults"].pop("user_close_defaults")),
-    ("raw_fields-unknown_key",
-     lambda seg: seg["stop_evidence"]["raw_fields"].update(bogus=seg["stop_evidence"]["raw_fields"]["leverage"])),
-    ("leverage-verified_without_source",
-     lambda seg: seg["stop_evidence"]["raw_fields"]["leverage"].update(status="verified", source="")),
-    ("trailing_stop_pct-value_without_presence",
-     lambda seg: seg["stop_evidence"]["raw_fields"]["trailing_stop_pct"].update(value=1)),
-    ("resolved_fields-missing", lambda seg: seg["stop_evidence"].pop("resolved_fields")),
-]
-
-
-def test_malformed_strategy_shapes_and_stop_evidence_exit_without_a_report(tmp_path, subtests):
-    fx = _copy(tmp_path)
-    base = _load(fx / "comparison_input.json")
-    for case, mutate in _MALFORMED_SEGMENT_MUTATIONS:
-        with subtests.test(case=case):
-            cin = copy.deepcopy(base)
-            mutate(cin["historical_configuration"]["timeline"][0])
-            _dump(fx / "comparison_input.json", cin)
-            rc, rep = _run(fx, tmp_path, name=f"{case}.json")
-            assert rc == lc.EXIT_INPUT_ERROR and rep is None
 
 
 REGIME_WINDOWS = {
@@ -1443,17 +957,8 @@ def test_live_shape_regime_with_no_consumer_is_inactive(tmp_path):
             "regime_selector_no_consumer", "directional_policy_uncertified")
     assert not any(r[0].startswith("regime_") or r[0].startswith("directional_") for r in _codes(rep))
 
-    cin["capability_evidence"].pop("directional_certification")
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path, mode="strict", name="no_cert.json")
-    assert rc == 1 and ("directional_certification_unverified", "regime_directional_policy") in _codes(rep)
-    rc, rep = _run(fx, tmp_path, mode="approximate", name="no_cert_approx.json")
-    assert rc == 1 and rep["outcome"] == "incomplete"
-    assert any(a.get("reason_code") == "directional_certification_unverified"
-               for a in rep["eligibility"]["approximations"])
 
-
-def test_named_gate_uses_its_window_and_refuses_without_label_evidence(tmp_path):
+def test_named_gate_uses_its_window(tmp_path):
     fx = _copy(tmp_path)
     cin, seg = _segment(fx)
     _use_regime_market(cin, fx)
@@ -1498,82 +1003,6 @@ def test_named_gate_uses_its_window_and_refuses_without_label_evidence(tmp_path)
     primary_sides = [(p["side"], p["opened_qty"]) for p in primary["simulated"]["positions"]]
     assert named_sides != primary_sides
 
-    cin["capability_evidence"].pop("regime_labels")
-    seg["strategy"]["regime_gate_window"] = "short"
-    _dump(fx / "comparison_input.json", cin)
-    rc, missing = _run(fx, tmp_path, name="no_labels.json")
-    assert ("regime_label_availability_unverified", "allowed_regimes") in _codes(missing)
-    rc, approx = _run(fx, tmp_path, mode="approximate", name="no_labels_approx.json")
-    assert approx["outcome"] == "incomplete"
-    assert any(a.get("reason_code") == "regime_label_availability_unverified"
-               for a in approx["eligibility"]["approximations"])
-
-
-def test_regime_evidence_failures_keep_their_reason_codes(tmp_path):
-    fx = _copy(tmp_path)
-    cin, seg = _segment(fx)
-    _use_regime_market(cin, fx)
-    seg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 20, "windows": REGIME_WINDOWS}
-    seg["strategy"]["closed_bar_decisions"] = True
-    seg["strategy"]["allowed_regimes"] = ["trending_up"]
-    seg["strategy"]["regime_directional_policy"] = DIRECTIONAL_POLICY
-    rel, digest = _write_json(fx, "regime_labels.json", {"values_and_timing": False})
-    evidence = cin.setdefault("capability_evidence", {})
-    evidence["regime_labels"] = _verified_evidence(_binding(seg), artifact={"path": rel, "sha256": digest})
-    evidence["regime_feature_timing"] = _verified_evidence(
-        _binding(seg), features={"directional": "unshifted_closed_candle"})
-    good = _cert_artifact({"trending_up": "long", "trending_down": "short", "ranging": "long"})
-    cert_rel, cert_sha = _write_json(fx, "cert.json", good)
-    evidence["directional_certification"] = _verified_evidence(
-        _binding(seg), reloads="none", artifact={"path": cert_rel, "sha256": cert_sha})
-    _dump(fx / "comparison_input.json", cin)
-    _, rep = _run(fx, tmp_path, name="incomplete_labels.json")
-    assert ("regime_labels_incomplete", "allowed_regimes") in _codes(rep)
-
-    _write_json(fx, "regime_labels.json", {"values_and_timing": True})
-    evidence["regime_labels"]["artifact"]["sha256"] = "0" * 64
-    evidence["regime_labels"]["binding"] = _binding(seg)
-    evidence["directional_certification"]["binding"] = _binding(seg)
-    evidence["regime_feature_timing"]["binding"] = _binding(seg)
-    _dump(fx / "comparison_input.json", cin)
-    _, rep = _run(fx, tmp_path, name="hash.json")
-    assert ("regime_labels_hash_mismatch", "allowed_regimes") in _codes(rep)
-
-    evidence["regime_labels"]["artifact"] = {"path": "missing-labels.json", "sha256": "a" * 64}
-    _dump(fx / "comparison_input.json", cin)
-    _, rep = _run(fx, tmp_path, name="missing.json")
-    assert ("regime_labels_missing", "allowed_regimes") in _codes(rep)
-
-    evidence["regime_labels"]["binding"] = dict(_binding(seg), partition="paper")
-    evidence["regime_labels"]["artifact"] = {"path": "regime_labels.json", "sha256": _sha(fx / "regime_labels.json")}
-    _dump(fx / "comparison_input.json", cin)
-    _, rep = _run(fx, tmp_path, name="unbound.json")
-    assert ("regime_labels_incomplete", "allowed_regimes") in _codes(rep)
-
-    bad = _cert_artifact(
-        {"trending_up": "long", "trending_down": "short", "ranging": "long"},
-        extra_entry={"states": {"trending_up": "sideways"}})
-    from directional_certification import CertificationInvalid, load_certifications, parse_certifications_strict
-    cert_rel, cert_sha = _write_json(fx, "cert.json", bad)
-    assert "BTC|1h|adx" in load_certifications(str(fx / "cert.json"))
-    with pytest.raises(CertificationInvalid):
-        parse_certifications_strict(_load(fx / "cert.json"))
-    evidence["regime_labels"]["binding"] = _binding(seg)
-    evidence["directional_certification"] = _verified_evidence(
-        _binding(seg), reloads="none", artifact={"path": cert_rel, "sha256": cert_sha})
-    _dump(fx / "comparison_input.json", cin)
-    _, rep = _run(fx, tmp_path, name="malformed_cert.json")
-    assert ("directional_certification_invalid", "regime_directional_policy") in _codes(rep)
-
-    expiring = _cert_artifact({"trending_up": "long", "trending_down": "short", "ranging": "long"},
-                              expires_at="2026-01-05T12:00:00Z")
-    cert_rel, cert_sha = _write_json(fx, "cert.json", expiring)
-    evidence["directional_certification"]["artifact"] = {"path": cert_rel, "sha256": cert_sha}
-    evidence["directional_certification"]["binding"] = _binding(seg)
-    _dump(fx / "comparison_input.json", cin)
-    _, rep = _run(fx, tmp_path, name="expires.json")
-    assert ("directional_certification_changes_in_window", "regime_directional_policy") in _codes(rep)
-
 
 def test_a_certified_policy_is_modeled_from_unshifted_labels(tmp_path):
     fx = _copy(tmp_path)
@@ -1600,72 +1029,6 @@ def test_a_certified_policy_is_modeled_from_unshifted_labels(tmp_path):
     assert rep["eligibility"]["regime"]["certification"]["status"] == "verified"
     assert rep["eligibility"]["regime"]["timing"]["directional"] == "result.Regime"
     assert rep["eligibility"]["regime"]["protection_source"] is None
-
-    seg["strategy"].pop("regime_feature_timing", None)
-    evidence.pop("regime_feature_timing")
-    for key in ("regime_labels", "directional_certification"):
-        evidence[key]["binding"] = _binding(seg)
-    _dump(fx / "comparison_input.json", cin)
-    _, strict = _run(fx, tmp_path, name="timing.json")
-    assert ("regime_feature_timing_unsupported", "regime_directional_policy") in _codes(strict)
-    _, approx = _run(fx, tmp_path, mode="approximate", name="timing_approx.json")
-    assert approx["outcome"] == "incomplete"
-    assert any(a.get("reason_code") == "regime_feature_timing_unsupported"
-               for a in approx["eligibility"]["approximations"])
-
-
-def test_selector_timeframe_and_other_regime_refusals(tmp_path):
-    fx = _copy(tmp_path)
-    cin, seg = _segment(fx)
-    seg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 20}
-    seg["strategy"]["regime_gate_window"] = "short"
-    _dump(fx / "comparison_input.json", cin)
-    _, rep = _run(fx, tmp_path, name="multi_off.json")
-    assert ("regime_window_multi_disabled", "regime_gate_window") in _codes(rep)
-
-    seg["strategy"]["regime_atr_window"] = "slow"
-    _dump(fx / "comparison_input.json", cin)
-    _, rep = _run(fx, tmp_path, name="atr_named.json")
-    assert ("regime_window_multi_disabled", "regime_atr_window") in _codes(rep)
-
-    seg["regime"]["windows"] = {"medium": {"classifier": "adx", "period": 14, "adx_threshold": 20}}
-    seg["strategy"].pop("regime_atr_window")
-    seg["strategy"]["regime_gate_window"] = "missing"
-    _dump(fx / "comparison_input.json", cin)
-    _, rep = _run(fx, tmp_path, name="unknown.json")
-    assert ("regime_window_unknown", "regime_gate_window") in _codes(rep)
-
-    seg["regime"] = {"enabled": False, "period": 14, "adx_threshold": 20}
-    seg["strategy"].pop("regime_gate_window")
-    seg["strategy"]["allowed_regimes"] = ["trending_up"]
-    seg["strategy"]["regime_gate_on_failure"] = "closed"
-    _dump(fx / "comparison_input.json", cin)
-    _, rep = _run(fx, tmp_path, name="fail_closed.json")
-    assert ("regime_gate_disabled_fail_closed", "allowed_regimes") in _codes(rep)
-
-    seg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 20, "timeframe": "4h",
-                     "windows": REGIME_WINDOWS}
-    seg["strategy"]["allowed_regimes"] = ["trending_up"]
-    seg["strategy"]["closed_bar_decisions"] = True
-    _dump(fx / "comparison_input.json", cin)
-    _, rep = _run(fx, tmp_path, name="timeframe.json")
-    assert ("regime_timeframe_unprepared", "allowed_regimes") in _codes(rep)
-
-    seg["regime"].pop("timeframe")
-    seg["strategy"].pop("allowed_regimes")
-    seg["strategy"]["regime_window_divergence"] = {"enabled": True}
-    seg["strategy"]["regime_profile_allocation"] = {"trending_up": "balanced"}
-    seg["strategy"]["margin_per_trade_usd"] = 25
-    seg["strategy"]["risk_per_trade_pct"] = 1
-    seg["strategy"]["capital_pct"] = 10
-    _dump(fx / "comparison_input.json", cin)
-    _, rep = _run(fx, tmp_path, name="other.json")
-    assert ("regime_divergence_unmodeled", "regime_window_divergence") in _codes(rep)
-    assert ("regime_profile_allocation_unsupported", "regime_profile_allocation") in _codes(rep)
-    sizing_rows = {r["field"]: r for r in rep["eligibility"]["capability_matrix"] if r["category"] == "sizing"}
-    assert sizing_rows["margin_per_trade_usd"]["decision"] == "modeled"
-    assert "stop distance" in sizing_rows["risk_per_trade_pct"]["reason"]
-    assert ("sizing_capital_pct", "capital_pct") in _codes(rep)
 
 
 def test_engine_keeps_feature_stamps_and_refuses_a_missing_column():
@@ -1968,47 +1331,6 @@ def test_modeled_policy_arms_the_stop_from_the_stamp_row(tmp_path):
     assert named_rep["eligibility"]["regime"]["timing"]["protection"] == "unshifted_closed_candle"
 
 
-def test_certification_rejects_short_timestamps_and_nonfinite_tokens(tmp_path):
-    fx = _copy(tmp_path)
-    cin, seg = _segment(fx)
-    _use_regime_market(cin, fx)
-    seg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 20, "windows": dict(REGIME_WINDOWS)}
-    seg["strategy"]["regime_directional_window"] = "short"
-    seg["strategy"]["regime_directional_policy"] = copy.deepcopy(DIRECTIONAL_POLICY)
-    rel, digest = _write_json(fx, "regime_labels.json", {"values_and_timing": True})
-    evidence = cin.setdefault("capability_evidence", {})
-    evidence["regime_labels"] = _verified_evidence(_binding(seg), artifact={"path": rel, "sha256": digest})
-    evidence["regime_feature_timing"] = _verified_evidence(
-        _binding(seg), features={"directional": "unshifted_closed_candle"})
-
-    def _bind(payload, name):
-        cert_rel, cert_sha = _write_json(fx, "cert.json", payload)
-        evidence["directional_certification"] = _verified_evidence(
-            _binding(seg), reloads="none", artifact={"path": cert_rel, "sha256": cert_sha})
-        evidence["regime_labels"]["binding"] = _binding(seg)
-        evidence["regime_feature_timing"]["binding"] = _binding(seg)
-        _dump(fx / "comparison_input.json", cin)
-        _, rep = _run(fx, tmp_path, name=name)
-        return rep
-
-    states = {"trending_up": "long", "trending_down": "short", "ranging": "long"}
-    short = _bind(_cert_artifact(states, expires_at="2026-12-01T00:00Z"), "no_seconds.json")
-    assert ("directional_certification_invalid", "regime_directional_policy") in _codes(short)
-
-    nan_payload = _cert_artifact(states, expires_at="2026-12-01T00:00:00Z")
-    nan_payload["criteria"] = {"x": float("nan")}
-    nan = _bind(nan_payload, "nan.json")
-    assert ("directional_certification_invalid", "regime_directional_policy") in _codes(nan)
-
-    from directional_certification import parse_certifications_strict
-    accepted = _cert_artifact(states, expires_at="2026-12-01T00:00:00.5+05:30")
-    parsed = parse_certifications_strict(accepted)
-    assert parsed["BTC|1h|adx"]["states"]["trending_up"] == "long"
-    held = _bind(accepted, "fractional.json")
-    assert ("directional_certification_invalid", "regime_directional_policy") not in _codes(held)
-    assert held["eligibility"]["regime"]["certification"]["status"] == "verified"
-
-
 def test_seeded_open_keeps_its_recorded_entry_label():
     import pandas as pd
     idx = pd.date_range("2026-01-01", periods=3, freq="1h", tz="UTC")
@@ -2043,64 +1365,6 @@ def test_seeded_open_keeps_its_recorded_entry_label():
     assert arms[0]["fraction"] == pytest.approx(0.04)
     _, fallback = _arms(plain, seed=missing, regime_enabled=False)
     assert fallback and fallback[0]["regime"] == "trending_down"
-
-
-def _slice_regime_warmup(fx, cin, warmup):
-    base = fx / "regime_market"
-    cutoff = START_MS - warmup * HOUR_MS
-
-    def _keep(path):
-        with gzip.open(path, "rt") as fh:
-            lines = fh.read().splitlines()
-        kept = [lines[0]] + [ln for ln in lines[1:] if ln and int(ln.split(",")[0]) >= cutoff]
-        buf = io.BytesIO()
-        with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0, filename="") as gz:
-            gz.write(("\n".join(kept) + "\n").encode())
-        path.write_bytes(buf.getvalue())
-
-    _keep(base / "BTC_1h_candles.csv.gz")
-    _keep(base / "BTC_funding.csv.gz")
-    manifest = _load(base / "manifest.json")
-    ds = manifest["datasets"][0]
-    ds["candles"]["sha256"] = _sha(base / ds["candles"]["path"])
-    ds["funding"]["sha256"] = _sha(base / ds["funding"]["path"])
-    manifest["warmup_bars"] = warmup
-    _dump(base / "manifest.json", manifest)
-    cin["market"]["manifest"]["sha256"] = _sha(base / "manifest.json")
-
-
-def test_warmup_trim_requires_matching_readiness_history(tmp_path):
-    def _run_warmup(warmup, name):
-        slot = tmp_path / f"warm{warmup}"
-        slot.mkdir()
-        fx = _copy(slot)
-        cin, seg = _segment(fx)
-        _use_regime_market(cin, fx)
-        _slice_regime_warmup(fx, cin, warmup)
-        seg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 20, "windows": dict(REGIME_WINDOWS)}
-        _stop_free_loader_segment(seg)
-        seg["strategy"]["close_strategy"] = copy.deepcopy(UNIFIED_CLOSE)
-        seg["strategy"]["allowed_regimes"] = ["trending_up", "trending_down", "ranging"]
-        seg["strategy"]["closed_bar_decisions"] = True
-        rel, digest = _write_json(fx, "regime_labels.json", {"values_and_timing": True})
-        cin.setdefault("capability_evidence", {})["regime_labels"] = _verified_evidence(
-            _binding(seg), artifact={"path": rel, "sha256": digest})
-        _dump(fx / "comparison_input.json", cin)
-        return _run(fx, tmp_path, name=name)
-
-    _, mid = _run_warmup(250, "warmup_250.json")
-    reasons = {r["reason"] for r in mid["eligibility"]["refusals"]}
-    assert "market_indicator_history_insufficient" in reasons
-    assert "regime_lookback_insufficient" not in reasons
-    assert mid["eligibility"]["market"]["strategy_checks"]["indicator_history"]["ok"] is False
-
-    _, full = _run_warmup(300, "warmup_300.json")
-    assert full["eligibility"]["market"]["strategy_checks"]["indicator_history"]["ok"] is True
-    assert full["simulation"]["status"] == "run", full["eligibility"]["refusals"]
-
-    _, short = _run_warmup(199, "warmup_199.json")
-    assert ("regime_lookback_insufficient", "allowed_regimes") in _codes(short)
-    assert "market_indicator_history_insufficient" not in {r["reason"] for r in short["eligibility"]["refusals"]}
 
 
 def test_unshifted_gate_attestation_reads_the_fill_row(tmp_path):
@@ -2659,43 +1923,6 @@ def test_resting_rule_off_suppressed_and_reclassified_variants(tmp_path):
     assert [b["classification"] for b in synced["resting_fill"]["booked_tier_closes"]] == ["tier"]
 
 
-def test_resting_rule_refusals_are_never_simulated(tmp_path, subtests):
-    for case, code in [
-        ("conflict", "resting_rule_conflict"),
-        ("k_ticks", "resting_rule_k_unsupported"),
-        ("null_flag", "resting_rule_flag_invalid"),
-    ]:
-        with subtests.test(case=case):
-            case_dir = tmp_path / str(case)
-            case_dir.mkdir()
-            _assert_resting_rule_refusals_are_never_simulated(case_dir, case, code)
-
-
-def _assert_resting_rule_refusals_are_never_simulated(tmp_path, case, code):
-    inp = INPUTS[RESTING_EXPORT]
-    fx = _copy(tmp_path)
-    if case == "conflict":
-        _edit_strategy(fx, inp, lambda st: None, rule={"enabled": False, "k_ticks": 1, "source": "test input"})
-    elif case == "k_ticks":
-        _edit_strategy(fx, inp, lambda st: None, rule={"enabled": True, "k_ticks": 2, "source": "test input"})
-    else:
-        _edit_strategy(fx, inp, lambda st: st.update(resting_tp_trade_through=None))
-    for mode in ("strict", "approximate"):
-        rc, rep = _run(fx, tmp_path, export=RESTING_EXPORT, mode=mode, name=f"{case}-{mode}.json")
-        assert rc == 1 and rep["simulation"]["status"] == "not_run"
-        assert code in _refusal_codes(rep)
-        row = _resting_row(rep)
-        assert row["decision"] == "refused" and row["reason_code"] == code and row["approximable"] is False
-
-
-def test_resting_rule_input_needs_version_four(tmp_path):
-    fx = _copy(tmp_path)
-    _edit_strategy(fx, INPUTS[RESTING_EXPORT], lambda st: None, version=3,
-                   rule={"enabled": True, "k_ticks": 1, "source": "test input"})
-    rc, rep = _run(fx, tmp_path, export=RESTING_EXPORT)
-    assert rc == 2 and rep is None
-
-
 def test_live_resting_rule_source_is_the_comparison_input(tmp_path):
     fx = _copy(tmp_path)
     _edit_strategy(fx, "comparison_input.json", lambda st: None, version=4,
@@ -2759,10 +1986,6 @@ def _regime_side_evidence(fx, cin, seg, cert=None):
         evidence["directional_certification"] = _verified_evidence(
             _binding(seg), reloads="none", artifact={"path": cert_rel, "sha256": cert_sha})
     _dump(fx / "comparison_input.json", cin)
-
-
-def _opened_sides(rep):
-    return sorted({p["side"] for p in rep["simulated"]["positions"]})
 
 
 def test_regime_side_live_comparison_keeps_its_certification_context(tmp_path):

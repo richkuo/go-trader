@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func entryOperatorRepoRoot(t *testing.T) string {
@@ -23,30 +22,6 @@ func entryOperatorRepoRoot(t *testing.T) string {
 		t.Skipf("repository virtualenv missing (%v); run uv sync", err)
 	}
 	return root
-}
-
-func TestEntryOperatorRealOKXQueryErrorRefusesTheRelease(t *testing.T) {
-	root := entryOperatorRepoRoot(t)
-	f := newEntryOperatorFixture(t, "okx-swap")
-	f.backdate()
-	t.Setenv("OKX_API_SECRET", "")
-	t.Setenv("OKX_PASSPHRASE", "")
-	t.Chdir(root)
-	cashBefore := f.cash()
-
-	res, _, err := RunOKXRecoverEntry("shared_scripts/check_okx.py", "BTC", "swap", "gtabc", 1, 2)
-	if err == nil || res == nil {
-		t.Fatalf("the real script must return its parsed result and an error: res=%+v err=%v", res, err)
-	}
-	if res.Account != okxEntryAccountKey("swap") {
-		t.Fatalf("script account %q, scheduler account %q", res.Account, okxEntryAccountKey("swap"))
-	}
-
-	msg := f.command()
-	if !strings.Contains(msg, "venue query failed") || !strings.Contains(msg, "requires live mode") {
-		t.Fatalf("reply %q", msg)
-	}
-	f.assertUnchanged(msg, cashBefore)
 }
 
 const entryHLRecoveryDriver = `import json, runpy, sys, types
@@ -100,12 +75,12 @@ func installEntryHLRecoveryDriver(t *testing.T, root string, entry map[string]an
 func TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease(t *testing.T) {
 	root := entryOperatorRepoRoot(t)
 	t.Run("a found filled entry books once when an unattributed fill lookup fails", func(t *testing.T) {
-		f := newEntryOperatorFixture(t, "hyperliquid")
+		f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid")
 		f.backdate()
 		installEntryHLRecoveryDriver(t, root, map[string]any{"status": "order", "order": map[string]any{"status": "filled",
 			"order": map[string]any{"oid": 901, "origSz": "0.4", "sz": "0", "cloid": f.intent().ClientOrderID}}})
-		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
-		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now().Add(2*entryRecoveryQueryInterval))
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, f.clk.now())
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, f.clk.advance(2*entryRecoveryQueryInterval))
 		if qty, _ := f.env.position(f.sc.ID, "BTC"); math.Abs(qty-0.4) > 1e-9 {
 			t.Fatalf("position %v, want the proven 0.4 booked", qty)
 		}
@@ -117,11 +92,11 @@ func TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease(t *testing.T)
 		}
 	})
 	t.Run("a missing entry stays held when an unattributed fill lookup fails", func(t *testing.T) {
-		f := newEntryOperatorFixture(t, "hyperliquid")
+		f := newEntryOperatorFixture(t, bindEntryTestClock(t, 0), "hyperliquid")
 		f.backdate()
 		installEntryHLRecoveryDriver(t, root, nil)
 		cashBefore := f.cash()
-		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, f.clk.now())
 		if r := f.row(); r.Status != entryIntentSubmitting || !strings.Contains(r.Hold, "lookup failed") {
 			t.Fatalf("row %+v", r)
 		}
@@ -136,16 +111,12 @@ func TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease(t *testing.T)
 func TestEntryAccountKeysMatchTheRecoveryScripts(t *testing.T) {
 	root := entryOperatorRepoRoot(t)
 	useEntryTestHLAccount(t)
-	useEntryTestOKXAccount(t)
 	for _, network := range []string{"", "1"} {
 		t.Setenv("HYPERLIQUID_TESTNET", network)
-		t.Setenv("OKX_SANDBOX", network)
 		driver := `import sys
 sys.path.insert(0, sys.argv[1] + "/shared_scripts")
-import check_hyperliquid, check_okx
+import check_hyperliquid
 print(check_hyperliquid.hyperliquid_account_key(sys.argv[2]))
-print(check_okx.okx_account_key("spot"))
-print(check_okx.okx_account_key("swap"))
 `
 		cmd := exec.Command(filepath.Join(root, ".venv", "bin", "python3"), "-c", driver, root, "0x"+strings.ToUpper(entryTestHLAddress[2:]))
 		cmd.Dir = t.TempDir()
@@ -154,8 +125,8 @@ print(check_okx.okx_account_key("swap"))
 			t.Fatalf("driver: %v", err)
 		}
 		got := strings.Split(strings.TrimSpace(string(out)), "\n")
-		want := []string{hyperliquidEntryAccountKey(), okxEntryAccountKey("spot"), okxEntryAccountKey("swap")}
-		if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		want := []string{hyperliquidEntryAccountKey()}
+		if len(got) != 1 || got[0] != want[0] {
 			t.Fatalf("network %q: script keys %q, scheduler keys %q", network, got, want)
 		}
 	}

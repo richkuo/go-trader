@@ -15,11 +15,6 @@ def _load_script(filename):
     return mod
 
 
-def test_okx_extracts_ccxt_fee_cost():
-    mod = _load_script("check_okx.py")
-    assert mod._extract_fee({"fee": {"cost": "0.25", "currency": "USDT"}}) == 0.25
-
-
 def _load_robinhood_adapter():
     adapter_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "platforms", "robinhood", "adapter.py")
     spec = importlib.util.spec_from_file_location("robinhood_adapter_fee_test", adapter_path)
@@ -50,30 +45,6 @@ def test_topstep_extracts_nested_fee_total_and_ignores_generic_totals_without_fe
         "test_topstep_extracts_nested_fee_total"
     assert mod._extract_fee_value([{"total": "750.00", "value": "0.015"}]) is None, \
         "test_topstep_ignores_generic_nested_totals_without_fee_context"
-
-
-def _okx_execute_fill(monkeypatch, capsys, response):
-    mod = _load_script("check_okx.py")
-    adapter_mod = types.ModuleType("adapter")
-
-    class OKXExchangeAdapter:
-        def market_open(self, symbol, is_buy, size, inst_type="spot"):
-            return dict(response, filled=str(size))
-
-    adapter_mod.OKXExchangeAdapter = OKXExchangeAdapter
-    monkeypatch.setitem(sys.modules, "adapter", adapter_mod)
-
-    mod.run_execute("BTC", "buy", 0.01, "live", "swap")
-    return json.loads(capsys.readouterr().out)["execution"]["fill"]
-
-
-def test_okx_execute_emits_exchange_order_id(monkeypatch, capsys, subtests):
-    with subtests.test(case="order_id"):
-        fill = _okx_execute_fill(monkeypatch, capsys, {"id": "okx-order-123", "average": "50000", "fee": {"cost": "0.25"}})
-        assert fill["oid"] == "okx-order-123"
-    with subtests.test(case="empty_order_id_is_omitted"):
-        fill = _okx_execute_fill(monkeypatch, capsys, {"id": "", "average": "50000"})
-        assert "oid" not in fill
 
 
 def test_robinhood_execute_emits_exchange_order_id(monkeypatch, capsys):

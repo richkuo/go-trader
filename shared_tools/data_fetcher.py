@@ -8,6 +8,7 @@ import pandas as pd
 
 import egress_policy
 from closed_bar import TIMESTAMP_KIND_OPEN, declare_frame_cadence
+from ohlcv_range import page_ccxt_ohlcv
 from storage import store_ohlcv, load_ohlcv
 
 
@@ -61,6 +62,18 @@ def fetch_ohlcv_rows(
     exchange = get_exchange(exchange_id)
     raw = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     return [list(r) for r in (raw or [])]
+
+
+def fetch_ohlcv_range(
+    symbol: str,
+    timeframe: str,
+    start_ms: int,
+    end_ms: int,
+    exchange_id: str = "binanceus",
+    page_limit: int = 500,
+) -> dict:
+    exchange = get_exchange(exchange_id)
+    return page_ccxt_ohlcv(exchange, symbol, timeframe, start_ms, end_ms, page_limit=page_limit)
 
 
 def ohlcv_rows_frame(rows: list) -> pd.DataFrame:

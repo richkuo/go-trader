@@ -125,7 +125,6 @@ func TestAgentInfoSourceInventory(t *testing.T) {
 	})
 	t.Run("ResolveEnvVarPresence", func(t *testing.T) {
 		t.Setenv("HYPERLIQUID_SECRET_KEY", "shh")
-		t.Setenv("OKX_API_KEY", "")
 		out := resolveEnvVarPresence(agentInfoEnvVars)
 		got := map[string]bool{}
 		for _, v := range out {
@@ -133,9 +132,6 @@ func TestAgentInfoSourceInventory(t *testing.T) {
 		}
 		if !got["HYPERLIQUID_SECRET_KEY"] {
 			t.Error("HYPERLIQUID_SECRET_KEY should be marked set")
-		}
-		if got["OKX_API_KEY"] {
-			t.Error("empty OKX_API_KEY should be marked not set")
 		}
 	})
 }

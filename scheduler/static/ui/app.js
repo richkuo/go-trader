@@ -246,6 +246,15 @@
     correlationContent: document.getElementById("correlation-content"),
     deadStrategiesContent: document.getElementById("dead-strategies-content"),
     closingStrategiesContent: document.getElementById("closing-strategies-content"),
+    feedbackPanel: document.getElementById("feedback-analysis-panel"),
+    feedbackStatus: document.getElementById("feedback-analysis-status"),
+    feedbackSummary: document.getElementById("feedback-analysis-summary"),
+    feedbackList: document.getElementById("feedback-analysis-list"),
+    feedbackMessage: document.getElementById("feedback-analysis-message"),
+    feedbackResearchDialog: document.getElementById("feedback-research-dialog"),
+    feedbackResearchStrategy: document.getElementById("feedback-research-strategy"),
+    feedbackResearchGrid: document.getElementById("feedback-research-grid"),
+    feedbackResearchGo: document.getElementById("feedback-research-go"),
   };
 
   function isMobileSidebar() {
@@ -2036,9 +2045,13 @@
     els.tradeHistoryTable.hidden = false;
     els.tradeHistoryBody.innerHTML = trades.map(function (trade) {
       const sideClass = tradeSideClass(trade);
-      const rowClass = tradeRowClass(trade);
+      const positionID = trade.position_id ? String(trade.position_id) : "";
+      const rowClass = (tradeRowClass(trade) + (positionID ? " trade-history-row-link" : " trade-history-row-legacy")).trim();
+      const rowAttrs = positionID
+        ? " tabindex=\"0\" role=\"link\" data-position-id=\"" + escapeHTML(positionID) + "\" title=\"Open this position's review window\""
+        : " title=\"This row has no position id, so it cannot open a review window\"";
       return (
-        "<tr class=\"" + escapeHTML(rowClass) + "\">" +
+        "<tr class=\"" + escapeHTML(rowClass) + "\"" + rowAttrs + ">" +
         "<td>" + escapeHTML(fmtTradeTime(trade.time)) + "</td>" +
         "<td class=\"" + escapeHTML(sideClass) + "\">" + escapeHTML(tradeSideLabel(trade)) + "</td>" +
         "<td>" + escapeHTML(fmtMoney(trade.price)) + "</td>" +
@@ -2049,6 +2062,31 @@
         "</tr>"
       );
     }).join("");
+  }
+
+  function tradeReviewURL(strategyID, positionID) {
+    return "/dashboard/trade.html?strategy=" + encodeURIComponent(strategyID) +
+      "&position=" + encodeURIComponent(positionID);
+  }
+
+  function openTradeReview(row) {
+    if (!row || !state.activeID) return;
+    const positionID = row.getAttribute("data-position-id");
+    if (!positionID) return;
+    window.open(tradeReviewURL(state.activeID, positionID), "_blank", "noopener");
+  }
+
+  function initTradeHistoryActivation() {
+    els.tradeHistoryBody.addEventListener("click", function (event) {
+      openTradeReview(event.target.closest("tr[data-position-id]"));
+    });
+    els.tradeHistoryBody.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const row = event.target.closest("tr[data-position-id]");
+      if (!row) return;
+      event.preventDefault();
+      openTradeReview(row);
+    });
   }
 
   function humanizeRegimeLabel(label) {
@@ -2717,7 +2755,8 @@
     els.statusGrid.innerHTML = "<dt>Message</dt><dd>" + escapeHTML(err.message) + "</dd>";
   }
 
-  async function refreshAll() {
+  async function refreshAll(options) {
+    const tick = !!(options && options.tick);
     try {
       if (state.viewMode === "table") {
         await Promise.all([refreshOverview(), refreshOpsPanels()]);
@@ -2730,6 +2769,7 @@
         refreshRegimeStorePanel(),
         refreshTransitionsPanel(),
         loadTunerConfig(),
+        refreshFeedbackAnalysis({ tick: tick }),
         loadSparklines(filteredStrategies().map(function (s) {
           return s.id;
         })),
@@ -2744,8 +2784,318 @@
     const ms = Number(els.interval.value);
     if (ms > 0) {
       state.timer = setInterval(function () {
-        refreshAll().catch(handleRefreshError);
+        refreshAll({ tick: true }).catch(handleRefreshError);
       }, ms);
+    }
+  }
+
+  const feedbackState = { submitting: false, apiSubmitting: false, partitionFetched: "all", cache: null };
+
+  function feedbackNode(tag, className, text) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text !== undefined && text !== null) el.textContent = String(text);
+    return el;
+  }
+
+  function setFeedbackMessage(text, kind) {
+    if (!els.feedbackMessage) return;
+    els.feedbackMessage.textContent = text || "";
+    els.feedbackMessage.hidden = !text;
+    els.feedbackMessage.className = "controls-message" + (kind ? " " + kind : "");
+  }
+
+  function feedbackAnalysesURL(id) {
+    return "/api/strategies/" + encodeURIComponent(id) + "/trade-feedback/analyses";
+  }
+
+  function deepFreeze(value) {
+    if (value && typeof value === "object" && !Object.isFrozen(value)) {
+      Object.freeze(value);
+      Object.keys(value).forEach(function (key) { deepFreeze(value[key]); });
+    }
+    return value;
+  }
+
+  function feedbackCacheKey(id, partition) {
+    return JSON.stringify([id, partition]);
+  }
+
+  function feedbackHistorySignature(data) {
+    return stableJSON({
+      available: !!data.available,
+      reason: data.reason || "",
+      providers: data.providers || [],
+      analyses: (data.analyses || []).map(function (a) {
+        return [a.request_id, a.status, a.progress || ""];
+      }),
+    });
+  }
+
+  async function feedbackHistoryUnchanged(id, cached) {
+    const hist = await getJSONForPartition(feedbackAnalysesURL(id) + "?view=history");
+    if (state.activeID !== id || !partitionStillSelected(hist.partition)) return true;
+    return feedbackCacheKey(id, hist.partition) === cached.key &&
+      !!hist.data.input_signature && hist.data.input_signature === cached.inputSignature &&
+      feedbackHistorySignature(hist.data) === cached.historySignature;
+  }
+
+  async function refreshFeedbackAnalysis(options) {
+    if (!els.feedbackPanel) return;
+    const id = state.activeID;
+    if (!id) {
+      els.feedbackPanel.hidden = true;
+      return;
+    }
+    els.feedbackPanel.hidden = false;
+    try {
+      const cached = feedbackState.cache;
+      if (options && options.tick && cached && cached.key === feedbackCacheKey(id, state.partitionFilter) &&
+          await feedbackHistoryUnchanged(id, cached)) {
+        return;
+      }
+      const fetched = await getJSONForPartition(feedbackAnalysesURL(id));
+      if (state.activeID !== id || !partitionStillSelected(fetched.partition)) return;
+      feedbackState.partitionFetched = fetched.partition;
+      feedbackState.cache = {
+        key: feedbackCacheKey(id, fetched.partition),
+        inputSignature: fetched.data.input_signature || "",
+        historySignature: feedbackHistorySignature(fetched.data),
+      };
+      renderFeedbackAnalysis(id, fetched.data);
+    } catch (err) {
+      if (state.activeID !== id) return;
+      feedbackState.cache = null;
+      els.feedbackStatus.textContent = "Unavailable";
+      els.feedbackSummary.replaceChildren(feedbackNode("p", "tuner-note", apiFeedbackError(err)));
+      els.feedbackList.replaceChildren();
+    }
+  }
+
+  function apiFeedbackError(err) {
+    const text = (err && err.message) || "request failed";
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && parsed.error) return parsed.error;
+    } catch (e) {
+      return text;
+    }
+    return text;
+  }
+
+  function renderFeedbackAnalysis(id, data) {
+    els.feedbackStatus.textContent = data.available ? "Ready" : "Unavailable";
+    const sel = data.selection || {};
+    const summary = [];
+    summary.push(feedbackNode("p", "", "Included marks: " + (sel.included || 0) + " of " + (sel.candidates || 0) + " candidates (limit " + (sel.max_positions || 0) + ")"));
+    if (sel.error) summary.push(feedbackNode("p", "tuner-note", "Selection: " + sel.error));
+    (sel.exclusions || []).forEach(function (x) {
+      summary.push(feedbackNode("p", "tuner-note", "Excluded mark " + x.feedback_rowid + " (" + x.position_id + "): " + x.reason));
+    });
+    if (!data.available && data.reason) summary.push(feedbackNode("p", "tuner-note", data.reason));
+    (data.providers || []).forEach(function (p) {
+      summary.push(feedbackNode("p", "tuner-note", "Provider " + p.id + ": " + (p.available ? "available" + (p.reason ? " (" + p.reason + ")" : "") : (p.reason || "unavailable"))));
+      if (p.id === "claude_code" && p.available && data.available) summary.push(renderFeedbackLocalCommand(id));
+    });
+    const apiAction = renderFeedbackAPIAction(id, data);
+    if (apiAction) summary.push(apiAction);
+    const research = data.research || {};
+    if (!research.supported) {
+      summary.push(feedbackNode("p", "tuner-note", "Research: " + (research.status || "unknown") + (research.reason ? " (" + research.reason + ")" : "")));
+    }
+    els.feedbackSummary.replaceChildren.apply(els.feedbackSummary, summary);
+    const items = (data.analyses || []).map(function (a) { return renderFeedbackAnalysisItem(id, a); });
+    if (!items.length) items.push(feedbackNode("p", "tuner-note", "No analyses yet."));
+    els.feedbackList.replaceChildren.apply(els.feedbackList, items);
+  }
+
+  function renderFeedbackAPIAction(id, data) {
+    const provider = (data.providers || []).find(function (p) { return p.id === "anthropic_api"; });
+    if (!provider) return null;
+    const sel = data.selection || {};
+    const box = feedbackNode("div", "feedback-analysis-proposal");
+    const button = feedbackNode("button", "tuner-button secondary", "Analyze with the Anthropic API…");
+    button.type = "button";
+    let blocked = "";
+    if (!data.available) blocked = data.reason || "analysis is unavailable";
+    else if (!provider.available) blocked = provider.reason || "the Anthropic API provider is unavailable";
+    else if (!(sel.included > 0)) blocked = "there are no usable saved marks to analyze";
+    button.disabled = !!blocked || feedbackState.submitting || feedbackState.apiSubmitting;
+    button.addEventListener("click", function () { submitFeedbackAPIAnalysis(id, sel.included || 0, provider.reason || ""); });
+    box.appendChild(button);
+    if (blocked) box.appendChild(feedbackNode("p", "tuner-note", "Anthropic API: " + blocked));
+    return box;
+  }
+
+  async function submitFeedbackAPIAnalysis(strategyID, included, settings) {
+    if (feedbackState.apiSubmitting || state.activeID !== strategyID) return;
+    const question = "Send " + included + " saved mark(s) of " + strategyID + " to the Anthropic API" +
+      (settings ? " (" + settings + ")" : "") + "? This is one paid call. It is never retried by itself, and the result changes no setting.";
+    if (!window.confirm(question)) {
+      setFeedbackMessage("Cancelled. No analysis request was sent.", "");
+      return;
+    }
+    feedbackState.apiSubmitting = true;
+    try {
+      const resp = await postJSON(feedbackAnalysesURL(strategyID), { provider: "anthropic_api" });
+      setFeedbackMessage("Analysis " + (resp.request_id || "") + " is accepted. Its progress shows below.", "success");
+    } catch (err) {
+      setFeedbackMessage("The analysis was not started: " + apiFeedbackError(err), "error");
+    } finally {
+      feedbackState.apiSubmitting = false;
+      refreshFeedbackAnalysis().catch(function () {});
+    }
+  }
+
+  function feedbackShellQuote(text) {
+    return "'" + String(text).replace(/'/g, "'\\''") + "'";
+  }
+
+  function renderFeedbackLocalCommand(id) {
+    const box = feedbackNode("div", "feedback-analysis-local");
+    box.appendChild(feedbackNode("p", "", "Local Claude Code analysis: run this in your go-trader checkout. Set GO_TRADER_STATUS_TOKEN in that shell yourself; the dashboard never shows it."));
+    const command = "GO_TRADER_DASHBOARD_URL=" + feedbackShellQuote(window.location.origin) +
+      " claude " + feedbackShellQuote("/go-trader-trade-feedback " + id);
+    const pre = feedbackNode("pre", "feedback-research-grid", command);
+    pre.dataset.feedbackLocalCommand = "true";
+    box.appendChild(pre);
+    const button = feedbackNode("button", "tuner-button secondary", "Copy command");
+    button.type = "button";
+    button.addEventListener("click", function () {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) {
+        setFeedbackMessage("Copy is not available here. Select the command and copy it.", "error");
+        return;
+      }
+      navigator.clipboard.writeText(command).then(function () {
+        setFeedbackMessage("Command copied. It holds no token.", "success");
+      }, function () {
+        setFeedbackMessage("Copy failed. Select the command and copy it.", "error");
+      });
+    });
+    box.appendChild(button);
+    return box;
+  }
+
+  function renderFeedbackAnalysisItem(id, a) {
+    const item = feedbackNode("div", "feedback-analysis-item");
+    item.dataset.requestId = a.request_id;
+    const status = a.status + (a.progress ? " (" + a.progress + ")" : "");
+    item.appendChild(feedbackNode("h4", "", a.request_id + ": " + status));
+    item.appendChild(feedbackNode("p", "tuner-note", "Provider " + a.provider + ", model " + (a.model || "-") +
+      (a.model_verification ? " [" + a.model_verification + "]" : "") + ", marks " + (a.feedback_rowids || []).join(", ")));
+    if (a.error) item.appendChild(feedbackNode("p", "controls-message error", a.error));
+    if (a.result_text) item.appendChild(feedbackNode("pre", "feedback-research-grid", a.result_text));
+    const result = a.result && typeof a.result === "object" ? a.result : null;
+    if (result) {
+      if (typeof result.summary === "string") item.appendChild(feedbackNode("p", "", result.summary));
+      if (typeof result.confidence === "string") item.appendChild(feedbackNode("p", "tuner-note", "Confidence: " + result.confidence));
+      if (Array.isArray(result.findings) && result.findings.length) {
+        const ul = feedbackNode("ul");
+        result.findings.forEach(function (f) {
+          ul.appendChild(feedbackNode("li", "", "Mark " + (f && f.feedback_rowid) + ": " + (f && f.text)));
+        });
+        item.appendChild(ul);
+      }
+    }
+    const validation = a.validation && typeof a.validation === "object" ? a.validation : {};
+    (validation.reasons || []).forEach(function (r) {
+      item.appendChild(feedbackNode("p", "tuner-note", "Validation: " + r));
+    });
+    const proposals = result && Array.isArray(result.proposals) ? result.proposals : [];
+    const research = {};
+    (a.research || []).forEach(function (r) { research[r.index] = r; });
+    proposals.forEach(function (p, index) {
+      const box = feedbackNode("div", "feedback-analysis-proposal");
+      if (p && p.kind === "param_grid") {
+        box.appendChild(feedbackNode("p", "", "Proposal " + index + ": parameter grid"));
+        box.appendChild(feedbackNode("pre", "feedback-research-grid", JSON.stringify(p.params, null, 2)));
+        if (typeof p.rationale === "string") box.appendChild(feedbackNode("p", "tuner-note", p.rationale));
+        const r = research[index] || { available: false, reason: "no research decision" };
+        const button = feedbackNode("button", "tuner-button secondary", "Start research…");
+        button.type = "button";
+        button.dataset.proposalIndex = String(index);
+        button.disabled = !r.available || feedbackState.submitting;
+        button.addEventListener("click", function () { confirmFeedbackResearch(id, a, index); });
+        box.appendChild(button);
+        if (!r.available && r.reason) box.appendChild(feedbackNode("p", "tuner-note", r.reason));
+      } else {
+        box.appendChild(feedbackNode("p", "", "Proposal " + index + ": note"));
+        box.appendChild(feedbackNode("p", "tuner-note", p && p.text));
+      }
+      item.appendChild(box);
+    });
+    return item;
+  }
+
+  function showFeedbackResearchDialog() {
+    return new Promise(function (resolve) {
+      const dialog = els.feedbackResearchDialog;
+      const onClose = function () {
+        dialog.removeEventListener("close", onClose);
+        resolve(dialog.returnValue);
+      };
+      dialog.returnValue = "";
+      dialog.addEventListener("close", onClose);
+      dialog.showModal();
+    });
+  }
+
+  async function confirmFeedbackResearch(strategyID, analysis, index) {
+    if (feedbackState.submitting) return;
+    const proposal = analysis.result && analysis.result.proposals && analysis.result.proposals[index];
+    if (!proposal || proposal.kind !== "param_grid") return;
+    const frozen = deepFreeze({
+      strategyID: strategyID,
+      requestID: analysis.request_id,
+      index: index,
+      bundle: analysis.bundle_sha256,
+      params: JSON.parse(JSON.stringify(proposal.params)),
+    });
+    els.feedbackResearchStrategy.textContent = frozen.strategyID;
+    els.feedbackResearchGrid.textContent = JSON.stringify(frozen.params, null, 2);
+    const choice = await showFeedbackResearchDialog();
+    if (choice !== "confirm") {
+      setFeedbackMessage("Cancelled. No research request was sent.", "");
+      return;
+    }
+    feedbackState.submitting = true;
+    els.feedbackList.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+    try {
+      const fresh = await getJSONForPartition(feedbackAnalysesURL(frozen.strategyID));
+      const match = (fresh.data.analyses || []).find(function (x) { return x.request_id === frozen.requestID; });
+      const decision = match && (match.research || []).find(function (r) { return r.index === frozen.index; });
+      const current = match && match.result && match.result.proposals && match.result.proposals[frozen.index];
+      if (state.activeID !== frozen.strategyID || !match || !decision || !decision.available ||
+          match.bundle_sha256 !== frozen.bundle || !current || stableJSON(current.params) !== stableJSON(frozen.params)) {
+        setFeedbackMessage("The marks, the settings or the analysis changed. Nothing was sent. Review the proposal and confirm again.", "error");
+        if (state.activeID === frozen.strategyID) renderFeedbackAnalysis(frozen.strategyID, fresh.data);
+        return;
+      }
+      const overrides = {};
+      overrides[frozen.strategyID] = { params: frozen.params };
+      const res = await fetch("/api/tuning/runs", {
+        method: "POST",
+        headers: Object.assign({
+          "Content-Type": "application/json",
+          "X-Trade-Feedback-Analysis": frozen.requestID + ":" + frozen.index + ":" + frozen.bundle,
+        }, authHeaders()),
+        body: JSON.stringify({ strategy_ids: [frozen.strategyID], overrides: overrides }),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        let msg = text;
+        try { msg = JSON.parse(text).error || text; } catch (e) { msg = text; }
+        setFeedbackMessage("Research was not started: " + msg, "error");
+        return;
+      }
+      let run = {};
+      try { run = JSON.parse(text); } catch (e) { run = {}; }
+      setFeedbackMessage("Research run " + (run.id || "") + " is queued. Open /tuning to follow it.", "success");
+    } catch (err) {
+      setFeedbackMessage("Research was not started: " + apiFeedbackError(err), "error");
+    } finally {
+      feedbackState.submitting = false;
+      refreshFeedbackAnalysis().catch(function () {});
     }
   }
 
@@ -2800,6 +3150,7 @@
   }
 
   initSidebar();
+  initTradeHistoryActivation();
   if (els.tunerForm) {
     els.tunerForm.addEventListener("input", onTunerFieldChange);
     els.tunerForm.addEventListener("change", onTunerFieldChange);

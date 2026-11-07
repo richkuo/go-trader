@@ -319,9 +319,6 @@ func TestAPICashflow(t *testing.T) {
 		if err := sdb.UpsertCashflowJournalState("hyperliquid", "0xabc", CashflowJournalState{BaselineSet: true, BaselineAccountValue: 1000}); err != nil {
 			t.Fatalf("upsert hl: %v", err)
 		}
-		if err := sdb.UpsertCashflowJournalState("okx", "acct1", CashflowJournalState{BaselineSet: true, Incomplete: true}); err != nil {
-			t.Fatalf("upsert okx: %v", err)
-		}
 		if err := sdb.InsertCashflowJournalEntry("hyperliquid", "0xabc", 1700000000000, "fill", 12.5, "BTC", 13, 0.5, "d1"); err != nil {
 			t.Fatalf("insert entry: %v", err)
 		}
@@ -334,12 +331,12 @@ func TestAPICashflow(t *testing.T) {
 		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		if len(resp.Wallets) != 2 {
-			t.Fatalf("wallets = %d, want 2", len(resp.Wallets))
+		if len(resp.Wallets) != 1 {
+			t.Fatalf("wallets = %d, want 1", len(resp.Wallets))
 		}
-		hl, okx := resp.Wallets[0], resp.Wallets[1]
-		if hl.Platform != "hyperliquid" || okx.Platform != "okx" {
-			t.Fatalf("wallet order = [%s, %s], want [hyperliquid, okx]", hl.Platform, okx.Platform)
+		hl := resp.Wallets[0]
+		if hl.Platform != "hyperliquid" {
+			t.Fatalf("wallet order = [%s], want [hyperliquid]", hl.Platform)
 		}
 		if hl.ShadowOnly || !hl.LiveBasisEligible {
 			t.Errorf("HL wallet shadow_only=%v live_basis_eligible=%v, want false/true", hl.ShadowOnly, hl.LiveBasisEligible)
@@ -349,12 +346,6 @@ func TestAPICashflow(t *testing.T) {
 		}
 		if hl.SettledSum != 10 || hl.EntryCount != 2 || hl.LastEventMs != 1700000001000 {
 			t.Errorf("HL aggregates = sum %v count %d last %d, want 10/2/1700000001000", hl.SettledSum, hl.EntryCount, hl.LastEventMs)
-		}
-		if !okx.ShadowOnly || okx.LiveBasisEligible {
-			t.Errorf("OKX wallet shadow_only=%v live_basis_eligible=%v, want true/false (#1100 shadow phases)", okx.ShadowOnly, okx.LiveBasisEligible)
-		}
-		if okx.Basis != "" {
-			t.Errorf("OKX wallet basis = %q, want empty (shadow-only wallets carry no runtime basis)", okx.Basis)
 		}
 	})
 	t.Run("APICashflowRuntimeBasisOverridesEligibility", func(t *testing.T) {

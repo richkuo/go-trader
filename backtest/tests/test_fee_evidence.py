@@ -164,8 +164,8 @@ def test_refuses_the_same_row_with_different_evidence(tmp_path, subtests):
         case_dir.mkdir()
         with open(os.path.join(FIXTURE, "export_live_doge.json")) as fh:
             doc = json.load(fh)
-        doc["selection"]["platform"] = "okx"
-        bad = case_dir / "export_okx.json"
+        doc["selection"]["platform"] = "binanceus"
+        bad = case_dir / "export_binanceus.json"
         bad.write_text(json.dumps(doc))
         proc = subprocess.run(
             [sys.executable, TOOL, "--export", os.path.join(FIXTURE, "export_live.json"), "--export", str(bad)],
@@ -173,4 +173,4 @@ def test_refuses_the_same_row_with_different_evidence(tmp_path, subtests):
         assert proc.returncode == 1
         out = json.loads(proc.stdout)
         assert list(out) == ["error"]
-        assert "platform 'okx'" in out["error"]
+        assert "platform 'binanceus'" in out["error"]

@@ -357,8 +357,6 @@ _AUTOMATIC_FEE_CASES = [
     ("rh-sma", "spot", None, "robinhood", 0.0),
     ("cfg-rh", "spot", "robinhood", "robinhood", 0.0),
     ("hl-but-rh", "spot", "robinhood", "robinhood", 0.0),
-    ("okx-perp", "perps", None, "okx-perps", 0.0005),
-    ("okx-spot", "spot", None, "okx", 0.001),
     ("luno-spot", "spot", None, "luno", 0.01),
     ("hl-perp", "perps", None, "hyperliquid", 0.00045),
     ("hl-manual", "manual", None, "hyperliquid", 0.00045),
@@ -408,8 +406,6 @@ def test_unsupported_automatic_selection_exits_before_data_access(monkeypatch, c
 _EXPLICIT_PLATFORM_CASES = [
     ("rh-sma", "spot", "binanceus", 0.001, ["'robinhood'", "'spot'", "binanceus"]),
     ("rh-sma", "spot", "robinhood", 0.0, None),
-    ("okx-perp", "perps", "okx-perps", 0.0005, None),
-    ("okx-perp", "perps", "okx", 0.001, ["'okx'", "'perps'", "'okx-perps'", "--platform okx "]),
     ("hl-perp", "perps", "hyperliquid", 0.00045, None),
     ("plain-manual", "manual", "binanceus", 0.001, ["'binanceus'", "'manual'", "--platform binanceus"]),
 ]
@@ -435,43 +431,7 @@ def test_explicit_platform_controls_config_selection_and_warns_on_a_proxy(monkey
                 _assert_engine_costs(run, commission)
 
 
-def _funding_unavailable(*a, **k):
-    raise RuntimeError("fixture: funding history unavailable")
-
-
 def test_explicit_proxy_keeps_funding_tier_and_stop_scope(monkeypatch, capsys, tmp_path, subtests):
-    with subtests.test("automatic okx perps requests no hyperliquid funding"):
-        with monkeypatch.context() as mp:
-            path = _fee_config(tmp_path, "okx-perp", "perps")
-            run = _main_config(mp, capsys, path, "okx-perp")
-            assert run["code"] is None, run["out"]
-            assert run["kwargs"]["platform"] == "okx-perps"
-            assert run["funding_calls"] == []
-    with subtests.test("explicit hyperliquid proxy prices hyperliquid funding"):
-        with monkeypatch.context() as mp:
-            path = _fee_config(tmp_path, "okx-perp", "perps")
-            run = _main_config(mp, capsys, path, "okx-perp", "--platform", "hyperliquid",
-                               funding=_funding_unavailable)
-            assert run["funding_calls"], run["out"]
-            assert run["kwargs"]["stop_platform"] == "okx"
-    with subtests.test("explicit departure from hyperliquid keeps the loaded stop identity"):
-        with monkeypatch.context() as mp:
-            path = _fee_config(tmp_path, "hl-perp", "perps")
-            run = _main_config(mp, capsys, path, "hl-perp", "--platform", "okx-perps")
-            assert run["code"] is None, run["out"]
-            assert run["funding_calls"] == []
-            assert run["kwargs"]["stop_platform"] == "hyperliquid"
-            assert run["kwargs"]["stop_loss_atr_mult"] == 1.0
-            assert len(_selection_warnings(run["out"])) == 1
-    with subtests.test("funding-input strategy keeps its funding requirement"):
-        with monkeypatch.context() as mp:
-            path = _fee_config(tmp_path, "okx-fund", "perps",
-                               args=["funding_skew", "BTC/USDT", "1h"],
-                               open_strategy={"name": "funding_skew", "params": {}})
-            run = _main_config(mp, capsys, path, "okx-fund", "--registry", "futures",
-                               funding=_funding_unavailable)
-            assert run["kwargs"]["platform"] == "okx-perps"
-            assert run["funding_calls"], run["out"]
     with subtests.test("config validation still refuses an explicit proxy"):
         with monkeypatch.context() as mp:
             path = _fee_config(tmp_path, "rh-hedge", "spot",
@@ -540,7 +500,6 @@ def _manifest(tmp_path, venue="hyperliquid"):
 _MANIFEST_PRECEDENCE_CASES = [
     ("rh-man", "spot", ()),
     ("rh-man", "spot", ("--platform", "robinhood")),
-    ("okx-man", "perps", ("--platform", "luno")),
     ("deribit-man", "options", ()),
 ]
 

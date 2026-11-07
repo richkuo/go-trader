@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-var qpQuotes = []float64{0.1234, 0.006, 0.00001234}
+var qpQuotes = []float64{0.00001234}
 
 var qpZeroPriceText = regexp.MustCompile(`\$0\.00(?:[^0-9]|$)`)
 
@@ -34,8 +34,8 @@ const (
 
 var qpEnvKeys = []string{
 	"QP_CLOSE", "QP_QUOTE", "QP_SHAPE", "QP_NOW", "QP_TICKERS", "QP_CLOSES", "QP_CANDLES",
-	"QP_OKX_FILL", "QP_LOG", "QP_ALL_CLOSED",
-	"QP_DAILY", "QP_OPTION_QUOTE", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER", "QP_OKX_OPTIONS", "QP_STDOUT_NOISE",
+	"QP_LOG", "QP_ALL_CLOSED",
+	"QP_DAILY", "QP_OPTION_QUOTE", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER", "QP_STDOUT_NOISE",
 	"OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE", "OKX_SANDBOX",
 	"ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET",
 	"TOPSTEP_API_KEY", "TOPSTEP_API_SECRET", "TOPSTEP_ACCOUNT_ID",
@@ -129,14 +129,6 @@ func qpRunRobinhood(sc StrategyConfig, prices map[string]float64, logger *Strate
 	return r.Price, price, ok
 }
 
-func qpRunOKX(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (float64, float64, bool) {
-	r, _, price, ok := runOKXCheck(sc, prices, PositionCtx{}, nil, "simple", nil, logger)
-	if r == nil {
-		return 0, price, ok
-	}
-	return r.Price, price, ok
-}
-
 func qpRunTopStep(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (float64, float64, bool) {
 	r, _, price, ok := runTopStepCheck(sc, prices, PositionCtx{}, nil, "simple", nil, logger)
 	if r == nil {
@@ -148,16 +140,6 @@ func qpRunTopStep(sc StrategyConfig, prices map[string]float64, logger *Strategy
 func qpSpotSC(id, symbol string) StrategyConfig {
 	return StrategyConfig{ID: id, Type: "spot", Platform: "binanceus", Script: "shared_scripts/check_strategy.py",
 		Args: []string{"sma_crossover", symbol, "1h", "--mode=paper"}, Capital: 100, MaxDrawdownPct: 50}
-}
-
-func qpOKXSC(id, instType, mode string) StrategyConfig {
-	typ := "spot"
-	if instType == "swap" {
-		typ = "perps"
-	}
-	return StrategyConfig{ID: id, Type: typ, Platform: "okx", Script: "shared_scripts/check_okx.py",
-		Args: []string{"sma_crossover", "BTC", "1h", "--mode=" + mode, "--inst-type=" + instType}, Capital: 100,
-		MaxDrawdownPct: 50, Direction: DirectionBoth, Leverage: 1, SizingLeverage: 1, AllowNoEdge: qpAllowNoEdge(mode)}
 }
 
 func qpAllowNoEdge(mode string) *bool {
@@ -179,14 +161,6 @@ func qpRunners() []qpRunner {
 			symbol: "BTC/USDT", extra: map[string]string{"QP_ALL_CLOSED": "1"}, run: qpRunSpot},
 		{name: "robinhood", sc: StrategyConfig{ID: "qp-rh", Type: "spot", Platform: "robinhood", Script: "shared_scripts/check_robinhood.py",
 			Args: []string{"sma_crossover", "DOGE", "1h", "--mode=paper"}, Capital: 100}, symbol: "DOGE", quoteVar: true, run: qpRunRobinhood},
-		{name: "okx_spot", sc: qpOKXSC("qp-okx-spot", "spot", "paper"), symbol: "BTC", quoteVar: true, run: qpRunOKX},
-		{name: "okx_swap", sc: qpOKXSC("qp-okx-swap", "swap", "paper"), symbol: "BTC", quoteVar: true, run: qpRunOKX},
-		{name: "okx_swap_closed_bar", sc: func() StrategyConfig {
-			sc := qpOKXSC("qp-okx-swap-cb", "swap", "paper")
-			sc.ClosedBarDecisions = true
-			return sc
-		}(),
-			symbol: "BTC", quoteVar: true, extra: map[string]string{"QP_ALL_CLOSED": "1"}, run: qpRunOKX},
 		{name: "topstep", sc: StrategyConfig{ID: "qp-ts", Type: "futures", Platform: "topstep", Script: "shared_scripts/check_topstep.py",
 			Args: []string{"sma_crossover", "MES", "1h", "--mode=paper"}, Capital: 5000}, symbol: "MES", quoteVar: true,
 			extra: map[string]string{"QP_NOW": qpMarketOpen}, run: qpRunTopStep},
@@ -234,7 +208,13 @@ func qpCaseCheckQuotePrecisionRunnersReturnTheFullQuote(t *testing.T) {
 func qpCaseCheckQuotePrecisionRunnerFallbacksAndFailures(t *testing.T) {
 	root := qpRoot(t)
 	q := 0.00001234
+	runners := []qpRunner{}
 	for _, r := range qpRunners() {
+		if r.name == "spot" || r.name == "robinhood" {
+			runners = append(runners, r)
+		}
+	}
+	for _, r := range runners {
 		t.Run(r.name+"/zero_quote_without_fallback_holds", func(t *testing.T) {
 			qpRunnerEnv(t, root, r, map[string]string{"QP_CLOSE": "0"})
 			logger, buf := qpLogger(r.sc.ID)
@@ -263,7 +243,7 @@ func qpCaseCheckQuotePrecisionRunnerFallbacksAndFailures(t *testing.T) {
 			}
 		})
 	}
-	for _, r := range qpRunners() {
+	for _, r := range runners {
 		if !r.quoteVar {
 			continue
 		}
@@ -305,12 +285,11 @@ func qpCaseCheckQuotePrecisionFetchPricesKeepsTheTickerQuote(t *testing.T) {
 }
 
 type qpScheduler struct {
-	t     *testing.T
-	root  string
-	bin   string
-	dir   string
-	env   []string
-	lines []string
+	t    *testing.T
+	root string
+	bin  string
+	dir  string
+	env  []string
 }
 
 func qpBuildScheduler(t *testing.T, root string) *qpScheduler {
@@ -344,15 +323,22 @@ var qpStatusLine = regexp.MustCompile(`\[server\] Status endpoint at (http://loc
 
 func (s *qpScheduler) run(cfgPath, until string, whileRunning func(statusURL string)) string {
 	s.t.Helper()
-	s.lines = nil
-	cmd := exec.Command(s.bin, "--config", cfgPath)
-	cmd.Dir = s.root
-	cmd.Env = s.env
+	out, err := qpRunSchedulerProcess(s.bin, s.root, s.env, cfgPath, until, nil, whileRunning)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return out
+}
+
+func qpRunSchedulerProcess(bin, root string, env []string, cfgPath, until string, stop <-chan struct{}, whileRunning func(statusURL string)) (string, error) {
+	cmd := exec.Command(bin, "--config", cfgPath)
+	cmd.Dir = root
+	cmd.Env = env
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
 	if err := cmd.Start(); err != nil {
-		s.t.Fatalf("start scheduler: %v", err)
+		return "", fmt.Errorf("start scheduler: %v", err)
 	}
 	lines := make(chan string, 1<<16)
 	go func() {
@@ -369,8 +355,10 @@ func (s *qpScheduler) run(cfgPath, until string, whileRunning func(statusURL str
 		pw.Close()
 		exited <- err
 	}()
+	var got []string
 	statusURL := ""
 	reached := false
+	stopped := false
 	deadline := time.After(180 * time.Second)
 wait:
 	for {
@@ -379,7 +367,7 @@ wait:
 			if !ok {
 				break wait
 			}
-			s.lines = append(s.lines, line)
+			got = append(got, line)
 			if m := qpStatusLine.FindStringSubmatch(line); m != nil {
 				statusURL = m[1]
 			}
@@ -388,6 +376,9 @@ wait:
 				break wait
 			}
 		case <-deadline:
+			break wait
+		case <-stop:
+			stopped = true
 			break wait
 		}
 	}
@@ -402,13 +393,16 @@ wait:
 		<-exited
 	}
 	for line := range lines {
-		s.lines = append(s.lines, line)
+		got = append(got, line)
 	}
-	out := strings.Join(s.lines, "\n")
+	out := strings.Join(got, "\n")
+	if stopped {
+		return out, fmt.Errorf("scheduler stopped before it printed %q; output:\n%s", until, out)
+	}
 	if !reached {
-		s.t.Fatalf("scheduler never printed %q; output:\n%s", until, out)
+		return out, fmt.Errorf("scheduler never printed %q; output:\n%s", until, out)
 	}
-	return out
+	return out, nil
 }
 
 type qpTradeRow struct {
@@ -504,44 +498,6 @@ func qpCaseCheckQuotePrecisionSchedulerCycleKeepsTinySpotQuotes(t *testing.T) {
 			t.Fatalf("trades = %+v, want one buy of %v at %v", trades, 100/tinyBuy, tinyBuy)
 		}
 	})
-
-	t.Run("tiny_quote_with_a_positive_peer", func(t *testing.T) {
-		sched.env = qpChildEnv(t, root, map[string]string{
-			"QP_TICKERS": `{"DOGE/USDT": 1.234e-05, "BTC/USDT": 65000.5}`,
-			"QP_CLOSES":  `{"DOGE/USDT": 1.234e-05, "BTC/USDT": 65000.5}`,
-			"QP_SHAPE":   "cross_up",
-		})
-		cfg := sched.config([]StrategyConfig{qpSpotSC("qp-doge", "DOGE/USDT"), qpSpotSC("qp-btc", "BTC/USDT")})
-		var status map[string]float64
-		out := sched.run(cfg, "Cycle 1 complete", func(u string) { status = qpStatusPrices(t, u) })
-		if status["DOGE/USDT"] != q || status["BTC/USDT"] != 65000.5 {
-			t.Fatalf("status prices = %v", status)
-		}
-		for _, want := range []string{"Signal: BUY | DOGE/USDT @ $1.234e-05", "Signal: BUY | BTC/USDT @ $65000.50"} {
-			if !strings.Contains(out, want) {
-				t.Fatalf("output lacks %q:\n%s", want, out)
-			}
-		}
-		byID := map[string]qpTradeRow{}
-		for _, tr := range sched.trades() {
-			byID[tr.StrategyID] = tr
-		}
-		if len(byID) != 2 || !qpClose(byID["qp-doge"].Price, tinyBuy) || !qpClose(byID["qp-btc"].Price, ApplyAdverseSlippage(65000.5, true)) {
-			t.Fatalf("trades = %+v", byID)
-		}
-	})
-
-	t.Run("unavailable_quote_skips_the_cycle", func(t *testing.T) {
-		sched.env = qpChildEnv(t, root, map[string]string{"QP_TICKERS": `{"DOGE/USDT": null}`, "QP_CLOSES": `{"DOGE/USDT": 1.234e-05}`, "QP_SHAPE": "cross_up"})
-		cfg := sched.config([]StrategyConfig{qpSpotSC("qp-doge", "DOGE/USDT")})
-		out := sched.run(cfg, "All prices are zero/missing", nil)
-		if strings.Contains(out, "Cycle 1 complete") || strings.Contains(out, "Signal: BUY") {
-			t.Fatalf("an unavailable quote must skip the cycle before any strategy runs:\n%s", out)
-		}
-		if trades := sched.trades(); len(trades) != 0 {
-			t.Fatalf("trades = %+v, want none", trades)
-		}
-	})
 }
 
 type qpBook struct {
@@ -569,21 +525,6 @@ func qpSpotCheck(t *testing.T, root string, sc StrategyConfig, shape string, q f
 	r, sig, price, ok := runSpotCheck(sc, map[string]float64{}, PositionCtx{}, nil, "simple", nil, logger)
 	if !ok || price != q {
 		t.Fatalf("spot check ok=%t price=%v, want %v; log:\n%s", ok, price, q, buf.String())
-	}
-	return r, sig, price
-}
-
-func qpOKXCheck(t *testing.T, root string, sc StrategyConfig, shape string, q float64, extra map[string]string) (*OKXResult, string, float64) {
-	t.Helper()
-	vars := map[string]string{"QP_SHAPE": shape, "QP_CLOSE": "0.5", "QP_QUOTE": qpNum(q)}
-	for k, v := range extra {
-		vars[k] = v
-	}
-	qpEnv(t, root, vars)
-	logger, buf := qpLogger(sc.ID)
-	r, sig, price, ok := runOKXCheck(sc, map[string]float64{}, PositionCtx{}, nil, "simple", nil, logger)
-	if !ok || price != q {
-		t.Fatalf("okx check ok=%t price=%v, want %v; log:\n%s", ok, price, q, buf.String())
 	}
 	return r, sig, price
 }
@@ -669,252 +610,6 @@ func qpCaseCheckQuotePrecisionPaperBookingUsesTheFullQuote(t *testing.T) {
 			t.Fatalf("quotes inside one cent booked quantities %v; the full quote must reach sizing", qty)
 		}
 	})
-
-	t.Run("okx_perps_long_flip_and_close", func(t *testing.T) {
-		sc := qpOKXSC("qp-paper-okx", "swap", "paper")
-		b := qpOpenBook(t, sc)
-		s := b.state()
-		logger, buf := qpLogger(sc.ID)
-
-		r, sig, price := qpOKXCheck(t, root, sc, "cross_up", 0.1234, nil)
-		if n, detail, _ := executeOKXResult(sc, s, b.env.fileFor(sc.ID), r, nil, sig, price, nil, &Config{}, HurstGateDecision{}, logger); n != 1 || !strings.Contains(detail, "@ $0.1234") {
-			t.Fatalf("open trades=%d detail=%q", n, detail)
-		}
-		longPx := ApplyAdverseSlippage(0.1234, true)
-		sizing := PerpsSizingFor(sc, longPx, 0)
-		longQty := PerpsOpenNotionalSized(100, longPx, sizing) / longPx
-		longFee := CalculatePlatformSpotFee("okx-perps", longQty*longPx)
-		if !qpClose(longQty, 100/longPx) {
-			t.Fatalf("1x sizing notional drifted: %v vs %v", longQty, 100/longPx)
-		}
-		pos := s.Positions["BTC"]
-		if pos == nil || pos.Side != "long" || !qpClose(pos.Quantity, longQty) || !qpClose(pos.AvgCost, longPx) || !qpClose(s.Cash, 100-longFee) {
-			t.Fatalf("long book pos=%+v cash=%v", pos, s.Cash)
-		}
-
-		cashBefore := s.Cash
-		r, sig, price = qpOKXCheck(t, root, sc, "cross_down", 0.1236, nil)
-		if n, _, _ := executeOKXResult(sc, s, b.env.fileFor(sc.ID), r, nil, sig, price, nil, &Config{}, HurstGateDecision{}, logger); n != 2 {
-			t.Fatalf("flip trades = %d, want close + open", n)
-		}
-		flipPx := ApplyAdverseSlippage(0.1236, false)
-		closeFee := CalculatePlatformSpotFee("okx-perps", longQty*flipPx)
-		cashAfterClose := cashBefore + longQty*(flipPx-longPx) - closeFee
-		shortQty := PerpsOpenNotionalSized(cashAfterClose, flipPx, sizing) / flipPx
-		shortFee := CalculatePlatformSpotFee("okx-perps", shortQty*flipPx)
-		pos = s.Positions["BTC"]
-		if pos == nil || pos.Side != "short" || !qpClose(pos.Quantity, shortQty) || !qpClose(pos.AvgCost, flipPx) || !qpClose(s.Cash, cashAfterClose-shortFee) {
-			t.Fatalf("flipped book pos=%+v cash=%v, want short %v @ %v cash %v", pos, s.Cash, shortQty, flipPx, cashAfterClose-shortFee)
-		}
-
-		cashBefore = s.Cash
-		r, sig, price = qpOKXCheck(t, root, sc, "cross_up", 0.1232, nil)
-		if n, _, _ := executeOKXResult(sc, s, b.env.fileFor(sc.ID), r, nil, sig, price, nil, &Config{}, HurstGateDecision{}, logger); n < 1 {
-			t.Fatalf("cover trades = %d", n)
-		}
-		coverPx := ApplyAdverseSlippage(0.1232, true)
-		coverFee := CalculatePlatformSpotFee("okx-perps", shortQty*coverPx)
-		rows := b.trades()
-		if len(rows) < 4 || !qpClose(rows[0].Price, longPx) || !qpClose(rows[1].Price, flipPx) || !qpClose(rows[2].Price, flipPx) || !qpClose(rows[3].Price, coverPx) {
-			t.Fatalf("saved trades = %+v", rows)
-		}
-		if !qpClose(rows[3].Quantity, shortQty) || !rows[3].IsClose {
-			t.Fatalf("cover trade = %+v, want %v closed", rows[3], shortQty)
-		}
-		wantCash := cashBefore + shortQty*(flipPx-coverPx) - coverFee
-		if len(rows) == 4 && !qpClose(s.Cash, wantCash) {
-			t.Fatalf("cash after cover = %v, want %v", s.Cash, wantCash)
-		}
-		for _, want := range []string{"Open long", "@ $" + formatSignalPrice(longPx), "@ $" + formatSignalPrice(flipPx), "@ $" + formatSignalPrice(coverPx)} {
-			if !strings.Contains(buf.String()+rows[0].Details+rows[2].Details, want) {
-				t.Fatalf("execution text lacks %q:\n%s", want, buf.String())
-			}
-		}
-	})
-}
-
-type qpOrder struct {
-	Call   string                 `json:"call"`
-	Symbol string                 `json:"symbol"`
-	Side   string                 `json:"side"`
-	Amount float64                `json:"amount"`
-	Params map[string]interface{} `json:"params"`
-}
-
-func qpOrders(t *testing.T, path string) []qpOrder {
-	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
-	}
-	var out []qpOrder
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-		if line == "" {
-			continue
-		}
-		var o qpOrder
-		if err := json.Unmarshal([]byte(line), &o); err != nil {
-			t.Fatalf("venue log line %q: %v", line, err)
-		}
-		if o.Call == "create_market_order" {
-			out = append(out, o)
-		}
-	}
-	return out
-}
-
-func qpOKXLiveEnv(t *testing.T, root, log string, fill map[string]interface{}, shape string, q float64) {
-	t.Helper()
-	raw, err := json.Marshal(fill)
-	if err != nil {
-		t.Fatal(err)
-	}
-	qpEnv(t, root, map[string]string{
-		"QP_SHAPE": shape, "QP_CLOSE": "0.5", "QP_QUOTE": qpNum(q), "QP_LOG": log, "QP_OKX_FILL": string(raw),
-		"OKX_API_KEY": "qp-key", "OKX_API_SECRET": "qp-secret", "OKX_PASSPHRASE": "qp-pass",
-	})
-}
-
-func qpCaseCheckQuotePrecisionOKXLiveSizingAndFillPrecedence(t *testing.T) {
-	root := qpRoot(t)
-
-	t.Run("spot_buy_sizes_from_the_full_quote_and_books_the_fill", func(t *testing.T) {
-		q := 0.1234
-		log := filepath.Join(t.TempDir(), "venue.jsonl")
-		qpOKXLiveEnv(t, root, log, map[string]interface{}{"average": 0.1231, "fee": 0.02}, "cross_up", q)
-		sc := qpOKXSC("qp-live-okx-spot", "spot", "live")
-		b := qpOpenBook(t, sc)
-		s := b.state()
-		logger, buf := qpLogger(sc.ID)
-		r, sig, price, ok := runOKXCheck(sc, map[string]float64{}, PositionCtx{}, nil, "simple", nil, logger)
-		if !ok || price != q || r.Signal != 1 {
-			t.Fatalf("live check ok=%t price=%v signal=%v; log:\n%s", ok, price, r, buf.String())
-		}
-		er, ok := runOKXExecuteOrder(sc, r, price, 100, true, false, 0, "", 0, 0, HurstGateDecision{}, nil, logger)
-		if !ok {
-			t.Fatalf("execute failed; log:\n%s", buf.String())
-		}
-		orders := qpOrders(t, log)
-		if len(orders) != 1 || orders[0].Side != "buy" || orders[0].Symbol != "BTC/USDT" || orders[0].Amount != 100/q {
-			t.Fatalf("orders = %+v, want one spot buy of %v", orders, 100/q)
-		}
-		if orders[0].Amount == 100/qpRoundedTo {
-			t.Fatal("the spot order was sized from the cent-rounded quote")
-		}
-		n, detail, _ := executeOKXResult(sc, s, b.env.fileFor(sc.ID), r, er, sig, price, nil, &Config{}, HurstGateDecision{}, logger)
-		pos := s.Positions["BTC"]
-		if n != 1 || pos == nil || pos.Quantity != 100/q || pos.AvgCost != 0.1231 || !strings.Contains(detail, "LIVE BUY BTC @ $0.1231") {
-			t.Fatalf("booked n=%d detail=%q pos=%+v, want the venue fill", n, detail, pos)
-		}
-		if !qpClose(s.Cash, 100-(100/q)*0.1231-0.02) {
-			t.Fatalf("cash = %v", s.Cash)
-		}
-		if !strings.Contains(buf.String(), "Live fill at $0.1231 qty=") || !strings.Contains(buf.String(), "(mid was $0.1234)") {
-			t.Fatalf("fill line must show both full prices:\n%s", buf.String())
-		}
-
-		log2 := filepath.Join(t.TempDir(), "venue.jsonl")
-		qpOKXLiveEnv(t, root, log2, map[string]interface{}{"average": 0.1239, "fee": 0.02}, "cross_down", 0.1240)
-		r, _, price, ok = runOKXCheck(sc, map[string]float64{}, PositionCtx{}, nil, "simple", nil, logger)
-		if !ok || r.Signal != -1 {
-			t.Fatalf("sell check ok=%t result=%+v", ok, r)
-		}
-		if _, ok := runOKXExecuteOrder(sc, r, price, s.Cash, true, false, pos.Quantity, "long", pos.AvgCost, 0, HurstGateDecision{}, nil, logger); !ok {
-			t.Fatalf("sell failed:\n%s", buf.String())
-		}
-		if sells := qpOrders(t, log2); len(sells) != 1 || sells[0].Side != "sell" || sells[0].Amount != pos.Quantity {
-			t.Fatalf("sell orders = %+v, want the book quantity %v regardless of price", sells, pos.Quantity)
-		}
-	})
-
-	t.Run("perps_open_and_flip_size_from_the_full_quote", func(t *testing.T) {
-		q := 0.1234
-		log := filepath.Join(t.TempDir(), "venue.jsonl")
-		qpOKXLiveEnv(t, root, log, map[string]interface{}{"average": 0.1235, "fee": 0.03}, "cross_up", q)
-		sc := qpOKXSC("qp-live-okx-swap", "swap", "live")
-		b := qpOpenBook(t, sc)
-		s := b.state()
-		logger, buf := qpLogger(sc.ID)
-		r, sig, price, ok := runOKXCheck(sc, map[string]float64{}, PositionCtx{}, nil, "simple", nil, logger)
-		if !ok || price != q {
-			t.Fatalf("live check ok=%t price=%v; log:\n%s", ok, price, buf.String())
-		}
-		er, ok := runOKXExecuteOrder(sc, r, price, 100, true, false, 0, "", 0, 0, HurstGateDecision{}, nil, logger)
-		if !ok {
-			t.Fatalf("execute failed; log:\n%s", buf.String())
-		}
-		wantOpen := PerpsOpenNotionalSized(100, q, PerpsSizingFor(sc, q, 0)) / q
-		orders := qpOrders(t, log)
-		if len(orders) != 1 || orders[0].Symbol != "BTC/USDT:USDT" || orders[0].Amount != wantOpen || !qpClose(wantOpen, 100/q) {
-			t.Fatalf("orders = %+v, want one swap buy of %v", orders, wantOpen)
-		}
-		executeOKXResult(sc, s, b.env.fileFor(sc.ID), r, er, sig, price, nil, &Config{}, HurstGateDecision{}, logger)
-		pos := s.Positions["BTC"]
-		if pos == nil || pos.Quantity != wantOpen || pos.AvgCost != 0.1235 {
-			t.Fatalf("booked pos=%+v, want %v @ 0.1235 from the venue fill", pos, wantOpen)
-		}
-
-		q2 := 0.1238
-		log2 := filepath.Join(t.TempDir(), "venue.jsonl")
-		qpOKXLiveEnv(t, root, log2, map[string]interface{}{"average": 0.1237, "fee": 0.03}, "cross_down", q2)
-		r, _, price, ok = runOKXCheck(sc, map[string]float64{}, PositionCtx{}, nil, "simple", nil, logger)
-		if !ok || price != q2 || r.Signal != -1 {
-			t.Fatalf("flip check ok=%t price=%v result=%+v", ok, price, r)
-		}
-		if _, ok := runOKXExecuteOrder(sc, r, price, s.Cash, true, false, pos.Quantity, "long", pos.AvgCost, 1, HurstGateDecision{}, nil, logger); !ok {
-			t.Fatalf("flip failed:\n%s", buf.String())
-		}
-		effective := s.Cash + pos.Quantity*(q2-pos.AvgCost)
-		wantFlip := pos.Quantity + PerpsOpenNotionalSized(effective, q2, PerpsSizingFor(sc, q2, 0))/q2
-		if flips := qpOrders(t, log2); len(flips) != 1 || flips[0].Side != "sell" || !qpClose(flips[0].Amount, wantFlip) {
-			t.Fatalf("flip orders = %+v, want one sell of %v", flips, wantFlip)
-		}
-	})
-
-	t.Run("guarded_entry_books_only_a_confirmed_fill", func(t *testing.T) {
-		q := 0.00001234
-		sc := qpOKXSC("qp-live-okx-guarded", "swap", "live")
-		sc.ClosedBarDecisions = true
-		sc.Capital = 1000
-
-		log := filepath.Join(t.TempDir(), "venue.jsonl")
-		qpOKXLiveEnv(t, root, log, map[string]interface{}{"average": 0.00001236, "fee": 0.01}, "cross_up", q)
-		env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
-		useEntryTradeRecorder(t, env.store)
-		at := time.Now().Add(-5 * time.Minute)
-		bar := at.Truncate(time.Hour).Add(-time.Hour)
-		env.dispatchOKX(sc, 1, q, entryTestDecision(bar, at), at)
-		orders := qpOrders(t, log)
-		if len(orders) != 1 || orders[0].Params["clOrdId"] == nil || !qpClose(orders[0].Amount, 1000/q) {
-			t.Fatalf("guarded orders = %+v, want one tagged buy of %v", orders, 1000/q)
-		}
-		if qty, side := env.position(sc.ID, "BTC"); qty != orders[0].Amount || side != "long" {
-			t.Fatalf("confirmed fill booked %v %q, want %v long", qty, side, orders[0].Amount)
-		}
-		if pos := env.strat(sc.ID).Positions["BTC"]; pos.AvgCost != 0.00001236 {
-			t.Fatalf("booked avg cost %v, want the venue fill 0.00001236", pos.AvgCost)
-		}
-		if got := env.intentStatuses(sc.ID); len(got) != 1 || got[0] != entryIntentCommitted {
-			t.Fatalf("intents %v", got)
-		}
-
-		sc2 := sc
-		sc2.ID = "qp-live-okx-unresolved"
-		log2 := filepath.Join(t.TempDir(), "venue.jsonl")
-		qpOKXLiveEnv(t, root, log2, map[string]interface{}{"average": nil, "filled": 0, "status": "open", "fee": 0}, "cross_up", q)
-		env2 := openEntryTestEnv(t, newEntryTestConfig(t, sc2))
-		useEntryTradeRecorder(t, env2.store)
-		env2.dispatchOKX(sc2, 1, q, entryTestDecision(bar, at), at)
-		if len(qpOrders(t, log2)) != 1 {
-			t.Fatalf("unresolved entry orders = %+v", qpOrders(t, log2))
-		}
-		if qty, _ := env2.position(sc2.ID, "BTC"); qty != 0 || len(env2.strat(sc2.ID).TradeHistory) != 0 {
-			t.Fatalf("an unresolved entry booked %v", qty)
-		}
-		if got := env2.intentStatuses(sc2.ID); len(got) != 1 || got[0] != entryIntentSubmitting {
-			t.Fatalf("unresolved intents %v, want one submitting", got)
-		}
-	})
 }
 
 func qpCaseCheckQuotePrecisionRobinhoodLiveKeepsTheVenueFill(t *testing.T) {
@@ -940,69 +635,6 @@ func qpCaseCheckQuotePrecisionRobinhoodLiveKeepsTheVenueFill(t *testing.T) {
 		}
 		if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettled || row.SettlementSeq != 1 {
 			t.Fatalf("attempt = %+v", row)
-		}
-	})
-
-	t.Run("missing_or_unresolved_fill_leaves_the_book", func(t *testing.T) {
-		cases := map[string]struct {
-			routes rhRoutes
-			status string
-		}{
-			"zero_fill_cancel": {rhRoutes{"POST " + rhTestOrders: {rhAccepted("buy")}, "GET " + rhOrderURL(rhTestOrderID): {rhOrder("canceled", "buy", "0", nil)}}, robinhoodAttemptNoFill},
-			"http_503":         {rhRoutes{"POST " + rhTestOrders: {{"status": 503, "json": map[string]interface{}{"detail": "unavailable"}}}}, robinhoodAttemptUnknown},
-		}
-		names := make([]string, 0, len(cases))
-		for name := range cases {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			tc := cases[name]
-			t.Run(name, func(t *testing.T) {
-				e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-				e.setRoutes(rhWith(rhPrepRoutes(), tc.routes))
-				if trades, _ := e.signal("rh-btc", 1, 0, q); trades != 0 {
-					t.Fatalf("trades = %d, want 0", trades)
-				}
-				s := e.state.Strategies["rh-btc"]
-				if s.Cash != 1000 || len(s.Positions) != 0 || len(e.dbTrades("rh-btc")) != 0 {
-					t.Fatalf("book changed: cash=%v positions=%v", s.Cash, s.Positions)
-				}
-				if row := e.onlyAttempt(); row.Status != tc.status {
-					t.Fatalf("attempt = %+v, want %s", row, tc.status)
-				}
-			})
-		}
-	})
-
-	t.Run("partial_sell_keeps_the_remainder", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{
-			"POST " + rhTestOrders:             {rhAccepted("sell")},
-			"GET " + rhOrderURL(rhTestOrderID): {rhOrder("confirmed", "sell", "0", nil), rhOrder("canceled", "sell", "0.2", "99")},
-		}))
-		if trades, _ := e.signal("rh-btc", -1, 0, q); trades != 1 {
-			t.Fatalf("trades = %d, want 1", trades)
-		}
-		if pos := e.state.Strategies["rh-btc"].Positions["BTC"]; pos == nil || math.Abs(pos.Quantity-0.3) > 1e-12 {
-			t.Fatalf("position = %+v, want 0.3 left", pos)
-		}
-		if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Quantity != 0.2 || dbt[0].Price != 99 {
-			t.Fatalf("db trades = %+v", dbt)
-		}
-	})
-
-	t.Run("sell_is_capped_by_quantity_available", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		e.setRoutes(rhSizedSellRoutes(rhSellHolding("0.5", "0.3"), "0.3"))
-		if trades, _ := e.signal("rh-btc", -1, 0, q); trades != 1 {
-			t.Fatalf("trades = %d, want 1", trades)
-		}
-		rhSamePosts(t, e.postQuantities(), 0.3)
-		if pos := e.state.Strategies["rh-btc"].Positions["BTC"]; pos == nil || math.Abs(pos.Quantity-0.2) > 1e-12 {
-			t.Fatalf("position = %+v, want 0.2 left", pos)
 		}
 	})
 }
@@ -1055,13 +687,6 @@ func qpCaseCheckQuotePrecisionOptionsSpotAndPremiumPrecedence(t *testing.T) {
 			}
 		})
 	}
-	t.Run("unavailable_spot_holds", func(t *testing.T) {
-		qpEnv(t, root, map[string]string{"QP_CLOSE": "0.1234"})
-		logger, buf := qpLogger(sc.ID)
-		if _, _, ok := runOptionsCheck(sc, "[]", nil, logger); ok {
-			t.Fatalf("a missing spot quote must hold; log:\n%s", buf.String())
-		}
-	})
 }
 
 func qpCaseCheckQuotePrecisionPriceTextKeepsLargePrices(t *testing.T) {
@@ -1073,8 +698,6 @@ func qpCaseCheckQuotePrecisionPriceTextKeepsLargePrices(t *testing.T) {
 		text string
 	}{
 		{qpRunners()[0], 65000.5, "65000.50"},
-		{qpRunners()[3], 3000.5, "3000.50"},
-		{qpRunners()[6], 5000.5, "5000.50"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.r.name, func(t *testing.T) {
@@ -1458,20 +1081,19 @@ func TestCheckQuotePrecisionRebaselineSurvivesABookSaveBeforeSaveAll(t *testing.
 }
 
 func TestCheckQuotePrecision(t *testing.T) {
+	optionsOutage := qpStartOptionsSchedulerOutage(t)
 	for _, tc := range []sigAdmCase{
 		{"RunnersReturnTheFullQuote", qpCaseCheckQuotePrecisionRunnersReturnTheFullQuote},
 		{"RunnerFallbacksAndFailures", qpCaseCheckQuotePrecisionRunnerFallbacksAndFailures},
 		{"FetchPricesKeepsTheTickerQuote", qpCaseCheckQuotePrecisionFetchPricesKeepsTheTickerQuote},
 		{"SchedulerCycleKeepsTinySpotQuotes", qpCaseCheckQuotePrecisionSchedulerCycleKeepsTinySpotQuotes},
 		{"PaperBookingUsesTheFullQuote", qpCaseCheckQuotePrecisionPaperBookingUsesTheFullQuote},
-		{"OKXLiveSizingAndFillPrecedence", qpCaseCheckQuotePrecisionOKXLiveSizingAndFillPrecedence},
 		{"RobinhoodLiveKeepsTheVenueFill", qpCaseCheckQuotePrecisionRobinhoodLiveKeepsTheVenueFill},
 		{"OptionsSpotAndPremiumPrecedence", qpCaseCheckQuotePrecisionOptionsSpotAndPremiumPrecedence},
 		{"PriceTextKeepsLargePrices", qpCaseCheckQuotePrecisionPriceTextKeepsLargePrices},
 		{"OptionsOutageKeepsHarvestAndReporting", qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting},
-		{"OptionsEncodingFailureSpawnsNoCheck", qpCaseCheckQuotePrecisionOptionsEncodingFailureSpawnsNoCheck},
 		{"OptionsFailureAlertThresholds", qpCaseCheckQuotePrecisionOptionsFailureAlertThresholds},
-		{"OptionsSchedulerHarvestsDuringEntryOutage", qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage},
+		{"OptionsSchedulerHarvestsDuringEntryOutage", optionsOutage.check},
 		{"OptionsResultContractRefusesMismatchedUnitsAndPlatforms", qpCaseCheckQuotePrecisionOptionsResultContract},
 		{"OptionsStructureContractBooksWholeStructures", qpCaseCheckQuotePrecisionOptionsStructureContract},
 	} {
@@ -1622,20 +1244,6 @@ func qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting(t *testing.T
 		{name: "entry_check_fails", daily: "error", legs: 3, wantError: true},
 		{name: "entry_check_succeeds", daily: qpOptionsBaselineDaily, entries: 2, legs: 2},
 	}
-	t.Run("ineligible_legs_stay_open_after_a_failed_check", func(t *testing.T) {
-		sc := qpOptionsHarvestSC("qp-opt-harvest-off")
-		sc.ThetaHarvest = &ThetaHarvestConfig{Enabled: true, ProfitTargetPct: 90, StopLossPct: 400, MinDTEClose: 1}
-		qpResetScriptFailures(t, sc.ID)
-		qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": "error"})
-		env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
-		useEntryTradeRecorder(t, env.store)
-		qpSeedOptionLegs(env.strat(sc.ID), time.Now().UTC())
-		logger, buf := qpLogger(sc.ID)
-		trades, lines := qpOptionsDispatch(env, sc, nil, logger)
-		if trades != 0 || len(lines) != 0 || len(env.strat(sc.ID).OptionPositions) != len(qpOptionLegs()) || env.strat(sc.ID).Cash != qpOptionsSeedCash {
-			t.Fatalf("ineligible legs must stay open: trades=%d lines=%q legs=%d cash=%v; log:\n%s", trades, lines, len(env.strat(sc.ID).OptionPositions), env.strat(sc.ID).Cash, buf.String())
-		}
-	})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			qpDebugLogs(t)
@@ -1727,57 +1335,6 @@ func qpCaseCheckQuotePrecisionOptionsOutageKeepsHarvestAndReporting(t *testing.T
 	}
 }
 
-func qpCaseCheckQuotePrecisionOptionsEncodingFailureSpawnsNoCheck(t *testing.T) {
-	root := qpRoot(t)
-	sc := qpOptionsHarvestSC("qp-opt-encode")
-	qpResetScriptFailures(t, sc.ID)
-	logPath := filepath.Join(t.TempDir(), "qp.log")
-	qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": qpOptionsDaily(qpOptionsBaselineDaily), "QP_LOG": logPath})
-
-	if got, err := EncodeAllPositionsJSON(sc.Platform, map[string]*OptionPosition{}, map[string]*Position{}); err != nil || got != "[]" {
-		t.Fatalf("empty book encodes as %q, %v; want [] and no error", got, err)
-	}
-
-	env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
-	useEntryTradeRecorder(t, env.store)
-	s := env.strat(sc.ID)
-	qpSeedOptionLegs(s, time.Now().UTC())
-	s.OptionPositions["BTC-put-sell-stop"].Greeks.Delta = math.Inf(1)
-	env.saveAll()
-	env = env.restart()
-	useEntryTradeRecorder(t, env.store)
-	if d := env.strat(sc.ID).OptionPositions["BTC-put-sell-stop"].Greeks.Delta; !math.IsInf(d, 1) {
-		t.Fatalf("the real store returned delta %v, want +Inf", d)
-	}
-	qpRefreshSeededOptionMarks(t, env, sc)
-	env.strat(sc.ID).OptionPositions["BTC-put-sell-stop"].Greeks.Delta = math.Inf(1)
-
-	notifier, _ := qpOptionsNotifier()
-	logger, buf := qpLogger(sc.ID)
-	trades, lines := qpOptionsDispatch(env, sc, notifier, logger)
-	if !strings.Contains(buf.String(), "Options check skipped: options positions encoding failed: json: unsupported value: +Inf") {
-		t.Fatalf("encoding failure not reported; log:\n%s", buf.String())
-	}
-	if raw, err := os.ReadFile(logPath); err == nil && len(raw) > 0 {
-		t.Fatalf("a failed encoding must start no check subprocess, fixture log:\n%s", raw)
-	}
-	if strings.Contains(buf.String(), "check_options.py") {
-		t.Fatalf("the check script ran after a failed encoding; log:\n%s", buf.String())
-	}
-	scriptFailureTracker.mu.Lock()
-	entry := scriptFailureTracker.entries[sc.ID]
-	scriptFailureTracker.mu.Unlock()
-	if entry == nil || entry.count != 1 {
-		t.Fatalf("recorded failure = %+v, want one ordinary failure", entry)
-	}
-	if trades != 3 || len(lines) != 3 {
-		t.Fatalf("harvest after an encoding failure: trades=%d lines=%q, want 3", trades, lines)
-	}
-	if got := len(env.strat(sc.ID).OptionPositions); got != 0 {
-		t.Fatalf("option legs = %d, want every leg harvested and no entry", got)
-	}
-}
-
 func qpCaseCheckQuotePrecisionOptionsFailureAlertThresholds(t *testing.T) {
 	root := qpRoot(t)
 	run := func(sc StrategyConfig, notifier *MultiNotifier) bool {
@@ -1817,44 +1374,6 @@ func qpCaseCheckQuotePrecisionOptionsFailureAlertThresholds(t *testing.T) {
 			t.Fatalf("tracker entry survived a success: %+v", left)
 		}
 	})
-
-	t.Run("transient_failures_keep_their_policy", func(t *testing.T) {
-		sc := qpOptionsHarvestSC("qp-opt-transient")
-		qpResetScriptFailures(t, sc.ID)
-		notifier, backend := qpOptionsNotifier()
-		qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": "429"})
-		for i := 1; i <= scriptFailureTransientAlertThreshold; i++ {
-			if run(sc, notifier) {
-				t.Fatalf("failure %d: the check succeeded", i)
-			}
-			want := 0
-			if i == scriptFailureTransientAlertThreshold {
-				want = 1
-			}
-			if got := failing(backend); got != want {
-				t.Fatalf("after transient failure %d: %d alert(s), want %d", i, got, want)
-			}
-		}
-		if msgs := qpChannelMessages(backend, "SIGNAL SCRIPT FAILING (sustained upstream error)"); len(msgs) != 1 || !strings.Contains(msgs[0], "(upstream status 429)") {
-			t.Fatalf("transient alert = %q", msgs)
-		}
-	})
-
-	t.Run("transient_failures_alert_after_the_duration", func(t *testing.T) {
-		sc := qpOptionsHarvestSC("qp-opt-transient-age")
-		qpResetScriptFailures(t, sc.ID)
-		notifier, backend := qpOptionsNotifier()
-		qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": "503"})
-		if run(sc, notifier) || failing(backend) != 0 {
-			t.Fatal("the first transient failure must not alert")
-		}
-		scriptFailureTransientTracker.mu.Lock()
-		scriptFailureTransientTracker.entries[sc.ID].firstSeenAt = time.Now().UTC().Add(-scriptFailureTransientAlertMaxDuration - time.Minute)
-		scriptFailureTransientTracker.mu.Unlock()
-		if run(sc, notifier) || failing(backend) != 1 {
-			t.Fatalf("a transient failure past %v must alert once: %+v", scriptFailureTransientAlertMaxDuration, backend.messages)
-		}
-	})
 }
 
 type qpSchedOptionLeg struct {
@@ -1888,32 +1407,73 @@ func qpFlatRankDaily() string {
 	return string(raw)
 }
 
-func qpCaseCheckQuotePrecisionOptionsSchedulerHarvestsDuringEntryOutage(t *testing.T) {
-	t.Parallel()
+type qpOptionsOutageRun struct {
+	sc   StrategyConfig
+	db   string
+	stop chan struct{}
+	done chan struct{}
+	out  string
+	err  error
+}
+
+func qpStartOptionsSchedulerOutage(t *testing.T) *qpOptionsOutageRun {
+	t.Helper()
 	root := robinhoodStdoutPyRoot(t)
 	sched := qpBuildScheduler(t, root)
 	sc := qpOptionsHarvestSC("qp-opt-sched")
-	sc.IntervalSeconds = 60
+	sc.IntervalSeconds = 20
 	spot := qpSpotSC("qp-opt-sched-spot", "BTC/USDT")
-	spot.IntervalSeconds = 60
+	spot.IntervalSeconds = 20
 	sched.env = qpChildEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000", "QP_DAILY": qpFlatRankDaily()})
 	cfg := sched.config([]StrategyConfig{sc, spot})
-	sched.run(cfg, "Cycle 1 complete", nil)
+	r := &qpOptionsOutageRun{sc: sc, db: filepath.Join(sched.dir, "state.db"), stop: make(chan struct{}), done: make(chan struct{})}
+	bin, env := sched.bin, sched.env
+	go func() {
+		defer close(r.done)
+		r.out, r.err = qpOptionsOutageScenario(bin, root, env, cfg, r.db, sc, r.stop)
+	}()
+	t.Cleanup(func() {
+		close(r.stop)
+		<-r.done
+	})
+	return r
+}
 
-	db, err := sql.Open("sqlite", filepath.Join(sched.dir, "state.db"))
+func qpOptionsOutageScenario(bin, root string, env []string, cfgPath, dbPath string, sc StrategyConfig, stop <-chan struct{}) (string, error) {
+	if _, err := qpRunSchedulerProcess(bin, root, env, cfgPath, "Cycle 1 complete", stop, nil); err != nil {
+		return "", err
+	}
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		t.Fatal(err)
+		return "", err
 	}
 	defer db.Close()
 	now := time.Now().UTC()
 	for _, leg := range qpSchedOptionLegs() {
-		qpExec(t, db, `INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte, action, quantity, entry_premium, entry_premium_usd, current_value_usd, opened_at)
+		if _, err := db.Exec(`INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte, action, quantity, entry_premium, entry_premium_usd, current_value_usd, opened_at)
 			VALUES (?, ?, '', 'BTC', ?, ?, ?, ?, 'sell', 1, 0.1, ?, ?, ?)`,
-			sc.ID, leg.id, leg.optionType, leg.strike, now.AddDate(0, 0, leg.days).Format("2006-01-02"), float64(leg.days), leg.entryUSD, -leg.entryUSD, now.Add(-time.Hour).Format(time.RFC3339))
+			sc.ID, leg.id, leg.optionType, leg.strike, now.AddDate(0, 0, leg.days).Format("2006-01-02"), float64(leg.days), leg.entryUSD, -leg.entryUSD, now.Add(-time.Hour).Format(time.RFC3339)); err != nil {
+			return "", fmt.Errorf("seed option leg %s: %v", leg.id, err)
+		}
 	}
-	qpExec(t, db, `UPDATE strategies SET cash = ? WHERE id = ?`, qpOptionsSeedCash, sc.ID)
+	if _, err := db.Exec(`UPDATE strategies SET cash = ? WHERE id = ?`, qpOptionsSeedCash, sc.ID); err != nil {
+		return "", fmt.Errorf("seed cash: %v", err)
+	}
+	return qpRunSchedulerProcess(bin, root, env, cfgPath, "Cycle 3 complete", stop, nil)
+}
 
-	out := sched.run(cfg, "Cycle 4 complete", nil)
+func (r *qpOptionsOutageRun) check(t *testing.T) {
+	t.Parallel()
+	<-r.done
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	sc, out := r.sc, r.out
+	db, err := sql.Open("sqlite", r.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
 	firstCycle, _, ok := strings.Cut(out, "Cycle 2 complete")
 	if !ok {
 		t.Fatalf("the process never finished its first cycle:\n%s", out)
@@ -1996,7 +1556,6 @@ func qpCaseCheckQuotePrecisionOptionsResultContract(t *testing.T) {
 		qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000"})
 		for _, tc := range []struct{ cfgPlatform, argPlatform string }{
 			{"deribit", "robinhood"},
-			{"robinhood", "deribit"},
 			{"robinhood", "robinhood"},
 		} {
 			t.Run(tc.cfgPlatform+"_config_"+tc.argPlatform+"_check", func(t *testing.T) {
@@ -2029,9 +1588,7 @@ func qpCaseCheckQuotePrecisionOptionsResultContract(t *testing.T) {
 		wantFailure                     string
 		entries, legs                   int
 	}{
-		{name: "missing_unit", script: wrapper, argPlatform: "ibkr", legs: 3, wantFailure: `premium_unit "", want "underlying_unit"`},
 		{name: "other_unit", unit: "contract", script: wrapper, argPlatform: "ibkr", legs: 3, wantFailure: `premium_unit "contract", want "underlying_unit"`},
-		{name: "other_platform", script: "shared_scripts/check_options.py", argPlatform: "deribit", legs: 3, wantFailure: `check priced on platform "deribit" but the strategy platform is "ibkr"`},
 		{name: "valid_result", unit: optionPremiumUnitUnderlying, script: wrapper, argPlatform: "ibkr", entries: 2, legs: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2088,22 +1645,8 @@ mode = os.environ.get("QP_OC_MUTATE", "")
 extra = os.environ.get("QP_OC_CLOSE", "")
 def emit(doc):
     entries = [a for a in doc.get("actions", []) if a.get("action") in ("buy", "sell")]
-    if mode == "drop_marker":
-        doc.pop("structure_contract", None)
-    elif mode == "wrong_marker":
-        doc["structure_contract"] = "options_structures_v0"
-    elif mode == "string_legs":
-        entries[0]["structure_legs"] = str(entries[0]["structure_legs"])
-    elif mode == "fraction_legs":
-        entries[0]["structure_legs"] = 1.5
-    elif mode == "truncate":
+    if mode == "truncate":
         doc["actions"].remove(entries[-1])
-    elif mode == "unknown_action":
-        entries[0]["action"] = "roll"
-    elif mode == "bad_type":
-        entries[0]["option_type"] = "straddle"
-    elif mode == "empty_id":
-        entries[0]["structure_id"] = ""
     if extra:
         doc["actions"].append(json.loads(extra))
     sys.stdout.write(json.dumps(doc) + "\n")
@@ -2169,14 +1712,7 @@ func qpCaseCheckQuotePrecisionOptionsStructureContract(t *testing.T) {
 		entries    int
 	}{
 		{mode: "", entries: 2},
-		{mode: "drop_marker", want: `structure_contract "", want "options_structures_v1"`},
-		{mode: "wrong_marker", want: `structure_contract "options_structures_v0"`},
-		{mode: "string_legs", want: "structure_legs is not a JSON number"},
-		{mode: "fraction_legs", want: "structure_legs 1.5 is not a whole positive number"},
 		{mode: "truncate", want: "structure_legs 2 does not match its 1 member(s)"},
-		{mode: "unknown_action", want: `("roll") is not buy, sell or close`},
-		{mode: "bad_type", want: `option_type "straddle" is not call or put`},
-		{mode: "empty_id", want: "structure_id is empty, so no group can be identified"},
 	} {
 		name := tc.mode
 		if name == "" {

@@ -116,9 +116,6 @@ def test_every_solo_and_batch_check_refuses_the_candidate_in_any_mode_and_refere
             proc = _run("check_hyperliquid.py", [NAME, "BTC", "5m", "--mode=paper"])
             assert proc.returncode == 1 and REFUSED in _payload(proc)["error"], proc.stdout[-2000:]
             assert "Fetching" not in proc.stderr
-            proc = _run("check_okx.py", [NAME, "BTC", "5m", "--inst-type=swap", "--mode=paper"])
-            assert proc.returncode == 1 and REFUSED in _payload(proc)["error"], proc.stdout[-2000:] + proc.stderr[-2000:]
-            assert "Fetching" not in proc.stderr
             slots = [
                 {"id": "paper", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"]},
                 {"id": "acked", "strategy": NAME, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True},

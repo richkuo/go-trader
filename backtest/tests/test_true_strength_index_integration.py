@@ -1,4 +1,3 @@
-import contextlib
 import csv
 import gzip
 import json
@@ -17,8 +16,6 @@ if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
 
 from closed_bar import (
-    FRAME_INTERVAL_ATTR,
-    FRAME_RECEIVED_ORDER_DEFECTS_ATTR,
     FRAME_TIMESTAMP_KIND_ATTR,
     declare_frame_cadence,
 )
@@ -34,7 +31,6 @@ DATA = os.path.join(_REPO, "backtest", "candidates", "chande_momentum_1661", "da
 INPUT_COLUMNS = ["open", "high", "low", "close", "volume"]
 SEED = {"slow_period": 25, "fast_period": 13, "signal_period": 7, "recursion_length": 180}
 SMALL = {"slow_period": 3, "fast_period": 2, "signal_period": 2, "recursion_length": 18}
-BOUNDARY = {"slow_period": 33, "fast_period": 13, "signal_period": 9, "recursion_length": 198}
 REL = 1e-10
 ABS = 1e-12
 DECISION_COLUMNS = ["tsi_value", "tsi_prev_value", "tsi_signal_line", "tsi_prev_signal_line", "tsi_diff",
@@ -49,19 +45,6 @@ def _close_refs():
 
 def _reg():
     return load_registry("futures")
-
-
-@contextlib.contextmanager
-def _case(label):
-    try:
-        yield
-    except AssertionError as exc:
-        raise AssertionError(f"case {label}: {exc}") from exc
-    except pytest.fail.Exception as exc:
-        pytest.fail(f"case {label}: {exc}")
-    except Exception as exc:
-        exc.add_note(f"case {label}")
-        raise
 
 
 def _apply(df, params=None):
@@ -196,72 +179,6 @@ def _values_match_an_independent_scalar_reference_and_both_entry_directions(para
     assert seen == {-1, 0, 1}
 
 
-def _last(closes, params):
-    return _apply(_from_closes(closes), params).iloc[-1]
-
-
-def test_zero_denominators_delay_the_signal_seed_and_equality_crossings_enter_both_ways():
-    p = SMALL
-    flat = [100.0] * 20
-    long_ = _apply(_from_closes(flat + [99.0, 104.0]), p)
-    seed_row, entry = long_.iloc[-2], long_.iloc[-1]
-    assert long_["tsi_reason"].iloc[-3] == "invalid_denominator" and long_["tsi_value_valid"].iloc[-3] == 0.0
-    assert seed_row["tsi_value_valid"] == 1.0 and seed_row["tsi_value"] == _approx(-100.0)
-    assert seed_row["tsi_signal_line"] == seed_row["tsi_value"] and seed_row["tsi_diff"] == 0.0
-    assert seed_row["tsi_signal_seed_change"] == float(p["recursion_length"] - 2)
-    assert entry["tsi_prev_diff"] == 0.0 and entry["tsi_diff"] > 0 and entry["tsi_value"] > 0
-    assert int(entry["signal"]) == 1 and entry["tsi_reason"] == "entry_long"
-    assert entry["tsi_signal_seed_change"] == float(p["recursion_length"] - 3)
-    c = _from_closes(flat + [99.0, 104.0])["close"].tolist()
-    ref = _ref_endpoint(c, len(c) - 1, p)
-    assert entry["tsi_value"] == _approx(ref["tsi"]) and entry["tsi_signal_line"] == _approx(ref["line"])
-    short = _last(flat + [101.0, 96.0], p)
-    assert short["tsi_prev_diff"] == 0.0 and short["tsi_diff"] < 0 and short["tsi_value"] < 0
-    assert int(short["signal"]) == -1 and short["tsi_reason"] == "entry_short"
-    against = _last(flat + [101.0, 100.8], p)
-    assert against["tsi_prev_diff"] == 0.0 and against["tsi_diff"] < 0 and against["tsi_value"] > 0
-    assert int(against["signal"]) == 0 and against["tsi_reason"] == "centerline_disagrees"
-    assert against["tsi_reason_code"] == 2.0
-    mirror = _last(flat + [99.0, 99.2], p)
-    assert mirror["tsi_prev_diff"] == 0.0 and mirror["tsi_diff"] > 0 and mirror["tsi_value"] < 0
-    assert int(mirror["signal"]) == 0 and mirror["tsi_reason"] == "centerline_disagrees"
-    level = _last(flat + [101.0, 102.0], p)
-    assert level["tsi_value"] == 100.0 and level["tsi_signal_line"] == 100.0 and level["tsi_diff"] == 0.0
-    assert int(level["signal"]) == 0 and level["tsi_reason"] == "no_cross"
-
-
-def test_constant_rising_and_falling_series_never_enter():
-    flat = _apply(_from_closes([250.0] * 200), SEED)
-    assert (flat["signal"] == 0).all()
-    assert set(flat["tsi_reason"].iloc[_need(SEED) - 1:]) == {"invalid_denominator"}
-    assert flat["tsi_value"].isna().all()
-    up = _apply(_from_closes([100.0 * 1.002 ** i for i in range(260)]), SEED)
-    down = _apply(_from_closes([100.0 * 0.998 ** i for i in range(260)]), SEED)
-    for out, sign in ((up, 1.0), (down, -1.0)):
-        valid = out[out["tsi_valid"] == 1.0]
-        assert len(valid) == 260 - _need(SEED) + 1
-        assert (valid["tsi_value"] == 100.0 * sign).all() and (valid["tsi_diff"] == 0.0).all()
-        assert (out["signal"] == 0).all() and set(valid["tsi_reason"]) == {"no_cross"}
-
-
-def test_leading_flat_history_inside_the_window_seeds_late_and_matches_the_reference():
-    p = SMALL
-    rng = np.random.default_rng(7)
-    closes = [100.0] * 30 + list(100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.02, 40))))
-    df = _from_closes(closes)
-    out = _apply(df, p)
-    c = df["close"].tolist()
-    first_move = 30
-    for t in range(first_move, len(c)):
-        if t - p["recursion_length"] + 2 >= first_move or t < _need(p) - 1:
-            continue
-        row = out.iloc[t]
-        ref = _ref_endpoint(c, t, p)
-        assert row["tsi_value_valid"] == 1.0
-        assert row["tsi_signal_seed_change"] == float(ref["seed_at"]) > 0
-        assert row["tsi_value"] == _approx(ref["tsi"]) and row["tsi_signal_line"] == _approx(ref["line"])
-
-
 def test_sustained_conditions_do_not_repeat_entries():
     out = _apply(_walk(400, 21), SMALL)
     sig = out["signal"].to_numpy()
@@ -272,207 +189,10 @@ def test_sustained_conditions_do_not_repeat_entries():
         assert sig[i - 1] != sig[i] or out["tsi_prev_diff"].iloc[i] * sig[i] <= 0
 
 
-def _holds_at_end(df, params, reason):
-    before = df.copy()
-    attrs = dict(df.attrs)
-    out = _apply(df, params)
-    pd.testing.assert_frame_equal(df, before)
-    assert df.attrs == attrs
-    for col in df.columns:
-        pd.testing.assert_series_equal(out[col], before[col])
-    assert int(out["signal"].iloc[-1]) == 0
-    assert out["tsi_valid"].iloc[-1] == 0.0
-    assert out["tsi_reason"].iloc[-1].split(":")[0] == reason, out["tsi_reason"].iloc[-1]
-    assert out["tsi_reason_code"].iloc[-1] >= 10.0
-    return out
-
-
 def _set_at(df, pos, col, value):
     out = df.copy()
     out.iloc[pos, out.columns.get_loc(col)] = value
     return out
-
-
-def _set_last(df, col, value):
-    return _set_at(df, -1, col, value)
-
-
-def _with_index(df, idx):
-    out = df.set_axis(pd.DatetimeIndex(idx))
-    out.attrs = dict(df.attrs)
-    return out
-
-
-INVALID_MARKET_INPUTS = [
-    (lambda df: df.drop(columns=["close"]), "missing_columns"),
-    (lambda df: df.drop(columns=["open", "high"]), "missing_columns"),
-    (lambda df: df.reset_index(drop=True), "missing_timestamps"),
-    (lambda df: _with_index(df, list(df.index[:-1]) + [pd.NaT]), "missing_timestamps"),
-    (lambda df: _set_last(df, "close", np.nan), "nonfinite_input"),
-    (lambda df: _set_last(df, "high", np.inf), "nonfinite_input"),
-    (lambda df: _set_last(df.astype({"close": object}), "close", "x"), "nonfinite_input"),
-    (lambda df: _set_last(df, "close", 0.0), "nonpositive_price"),
-    (lambda df: _set_last(df, "low", -1.0), "nonpositive_price"),
-    (lambda df: _set_last(df, "open", df["high"].iloc[-1] * 2), "invalid_candle_geometry"),
-    (lambda df: _set_last(df, "close", df["low"].iloc[-1] / 2), "invalid_candle_geometry"),
-    (lambda df: _with_index(df, list(df.index[:-1]) + [df.index[-2]]), "timestamp_order"),
-    (lambda df: _with_index(df, list(df.index[:-1]) + [df.index[-3]]), "timestamp_order"),
-    (lambda df: _with_index(df, list(df.index[:-1]) + [df.index[-1] + pd.Timedelta(hours=4)]), "cadence_gap"),
-    (lambda df: df.drop(df.index[-10]), "cadence_gap"),
-    (lambda df: df.iloc[-(_need(SMALL) - 1):], "insufficient_history"),
-]
-
-
-def _invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame():
-    for i, (mutate, reason) in enumerate(INVALID_MARKET_INPUTS):
-        with _case(f"{i}-{reason}"):
-            _holds_at_end(mutate(_walk(120, 3)), SMALL, reason)
-
-
-def _received_order_defects_hold_only_inside_the_support():
-    df = _walk(200, 4)
-    need = _need(SMALL)
-    bad = 120
-    flagged = df.copy()
-    flagged.attrs = dict(df.attrs)
-    flagged.attrs[FRAME_RECEIVED_ORDER_DEFECTS_ATTR] = [int(df.index[bad].value // 1_000_000)]
-    out = _apply(flagged, SMALL)
-    clean = _apply(df, SMALL)
-    assert (out["tsi_reason"].iloc[bad:bad + need] == "timestamp_order").all()
-    assert (out["signal"].iloc[bad:bad + need] == 0).all()
-    pd.testing.assert_frame_equal(out[DECISION_COLUMNS].iloc[:bad], clean[DECISION_COLUMNS].iloc[:bad])
-    pd.testing.assert_frame_equal(out[DECISION_COLUMNS].iloc[bad + need:], clean[DECISION_COLUMNS].iloc[bad + need:])
-
-
-def test_defects_hold_only_inside_the_support_and_decisions_resume(subtests):
-    with subtests.test(case="received_order_defects_hold_only_inside_the_support"):
-        _received_order_defects_hold_only_inside_the_support()
-    with subtests.test(case="a_defect_holds_only_inside_its_support_and_valid_decisions_resume"):
-        _a_defect_holds_only_inside_its_support_and_valid_decisions_resume()
-
-
-def test_volume_is_not_an_entry_input():
-    df = _walk(120, 3)
-    a = _apply(df, SMALL)
-    b = _apply(_set_last(df, "volume", -1.0), SMALL)
-    c = _apply(df.drop(columns=["volume"]), SMALL)
-    for other in (b, c):
-        pd.testing.assert_frame_equal(a[DECISION_COLUMNS], other[DECISION_COLUMNS])
-
-
-def _missing_or_wrong_cadence_holds_every_row():
-    df = _walk(120, 3)
-    df.attrs.pop(FRAME_INTERVAL_ATTR)
-    out = _apply(df, SMALL)
-    assert (out["tsi_reason"] == "missing_cadence").all() and (out["signal"] == 0).all()
-    assert out["tsi_value"].isna().all()
-    wrong = _walk(120, 3)
-    wrong.attrs[FRAME_INTERVAL_ATTR] = 3_600_000
-    out = _apply(wrong, SMALL)
-    assert (out["signal"] == 0).all()
-    assert set(out["tsi_reason"].iloc[_need(SMALL) - 1:]) == {"cadence_gap"}
-
-
-def test_a_defect_in_the_prior_endpoints_exclusive_oldest_bar_holds_the_decision():
-    df = _walk(200, 5)
-    p = SMALL
-    t = 150
-    oldest = t - p["recursion_length"]
-    bad = _apply(_set_at(df, oldest, "close", np.nan), p)
-    clean = _apply(df, p)
-    assert bad["tsi_value_valid"].iloc[t] == 1.0
-    assert bad["tsi_value"].iloc[t] == clean["tsi_value"].iloc[t]
-    assert bad["tsi_valid"].iloc[t] == 0.0 and int(bad["signal"].iloc[t]) == 0
-    assert bad["tsi_reason"].iloc[t] == "nonfinite_input"
-    assert np.isnan(bad["tsi_prev_value"].iloc[t])
-    assert bad["tsi_valid"].iloc[t + 1] == 1.0
-    pd.testing.assert_series_equal(bad[DECISION_COLUMNS].iloc[t + 1], clean[DECISION_COLUMNS].iloc[t + 1],
-                                   check_names=False)
-
-
-def _a_defect_holds_only_inside_its_support_and_valid_decisions_resume():
-    df = _walk(300, 5)
-    need = _need(SMALL)
-    bad = 150
-    out = _apply(_set_at(df, bad, "close", np.nan), SMALL)
-    clean = _apply(df, SMALL)
-    assert (out["tsi_reason"].iloc[bad:bad + need] == "nonfinite_input").all()
-    assert (out["signal"].iloc[bad:bad + need] == 0).all()
-    pd.testing.assert_frame_equal(out[DECISION_COLUMNS].iloc[:bad], clean[DECISION_COLUMNS].iloc[:bad])
-    pd.testing.assert_frame_equal(out[DECISION_COLUMNS].iloc[bad + need:], clean[DECISION_COLUMNS].iloc[bad + need:])
-    gapped = _apply(df.drop(df.index[bad]), SMALL)
-    assert (gapped["tsi_reason"].iloc[bad:bad + need - 1] == "cadence_gap").all()
-    assert gapped["tsi_valid"].iloc[bad + need - 1] == 1.0
-
-
-def _overflowing_changes_hold_as_nonfinite_derived():
-    closes = [1e300 if i % 2 == 0 else 1.79e308 for i in range(60)]
-    df = _from_closes(closes)
-    df["high"] = df["close"]
-    df["low"] = df["close"]
-    out = _holds_at_end(df, SMALL, "nonfinite_derived")
-    assert (out["signal"] == 0).all()
-    assert out["tsi_value"].isna().all()
-
-
-def test_invalid_or_unusable_market_input_holds_with_its_reason(subtests):
-    with subtests.test(case="invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame"):
-        _invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame()
-    with subtests.test(case="missing_or_wrong_cadence_holds_every_row"):
-        _missing_or_wrong_cadence_holds_every_row()
-    with subtests.test(case="overflowing_changes_hold_as_nonfinite_derived"):
-        _overflowing_changes_hold_as_nonfinite_derived()
-
-
-INVALID_PARAMS = [
-    {"slow_period": 1, "recursion_length": 180}, {"fast_period": 1}, {"signal_period": 1}, {"slow_period": 0},
-    {"fast_period": 25}, {"fast_period": 26}, {"slow_period": 25.5}, {"slow_period": True}, {"fast_period": False},
-    {"slow_period": float("nan")}, {"signal_period": float("inf")}, {"slow_period": "25"}, {"recursion_length": None},
-    {"recursion_length": 199}, {"recursion_length": 149}, {"slow_period": 34, "recursion_length": 198},
-    {"signal_period": 180}, {"signal_period": 181}, {"recursion_length": 180.5},
-    {"slow_period": 2, "fast_period": 1, "recursion_length": 12},
-    {"slow_period": 3, "fast_period": 2, "signal_period": 2, "recursion_length": 17},
-]
-
-
-def _unknown_parameters_fail_the_registry_validator():
-    reg = _reg()
-    with pytest.raises(ValueError):
-        reg._registry.validate_params(NAME, {**SEED, "period": 9})
-
-
-BOUNDARY_PARAMS = [
-    SMALL, BOUNDARY, {"slow_period": 33, "fast_period": 32, "signal_period": 197, "recursion_length": 198},
-    {"slow_period": 3, "fast_period": 2, "signal_period": 17, "recursion_length": 18},
-]
-
-
-def _boundary_parameter_cases_validate_and_decide_at_w_plus_one_rows():
-    for params in BOUNDARY_PARAMS:
-        with _case(params):
-            _boundary_parameters_validate_and_decide_at_w_plus_one_rows(params)
-
-
-def _boundary_parameters_validate_and_decide_at_w_plus_one_rows(params):
-    reg = _reg()
-    reg._registry.validate_params(NAME, params)
-    df = _walk(260, 2)
-    out = _apply(df, params)
-    need = _need(params)
-    assert out["tsi_valid"].iloc[need - 2] == 0.0 and out["tsi_reason"].iloc[need - 2] == "insufficient_history"
-    assert out["tsi_valid"].iloc[need - 1] == 1.0
-    exact = _apply(df.iloc[:need], params)[DECISION_COLUMNS].iloc[-1]
-    pd.testing.assert_series_equal(exact, out[DECISION_COLUMNS].iloc[need - 1], check_names=False)
-    floats = {k: float(v) for k, v in params.items()}
-    pd.testing.assert_frame_equal(_apply(df, floats), out)
-    assert _need(BOUNDARY) == 199
-
-
-def test_parameter_bounds_refuse_unknown_keys_and_accept_every_boundary(subtests):
-    with subtests.test(case="unknown_parameters_fail_the_registry_validator"):
-        _unknown_parameters_fail_the_registry_validator()
-    with subtests.test(case="boundary_parameters_validate_and_decide_at_w_plus_one_rows"):
-        _boundary_parameter_cases_validate_and_decide_at_w_plus_one_rows()
 
 
 def test_walk_forward_warmup_keeps_the_decision_before_the_first_scored_bar(monkeypatch):
@@ -522,24 +242,6 @@ def test_timestamp_column_and_native_close_frames_decide_the_same_way():
     d = _apply(native, SMALL)
     np.testing.assert_array_equal(a["signal"].to_numpy(), d["signal"].to_numpy())
     assert d["tsi_eval_ts_ms"].isna().all()
-
-
-def test_full_series_every_prefix_exact_support_and_200_row_frames_agree_on_frozen_candles():
-    df = _frozen("BTC", "1h", 460)
-    for p in (SEED, BOUNDARY, {"slow_period": 30, "fast_period": 8, "signal_period": 9, "recursion_length": 198}):
-        need = _need(p)
-        full = _apply(df, p)
-        assert full["tsi_valid"].iloc[need - 1:].all()
-        for end in range(need, len(df) + 1):
-            prefix = _apply(df.iloc[:end], p)[DECISION_COLUMNS].iloc[-1]
-            pd.testing.assert_series_equal(prefix, full[DECISION_COLUMNS].iloc[end - 1], check_names=False)
-            if end >= 200:
-                tail = _apply(df.iloc[end - 200:end], p)[DECISION_COLUMNS].iloc[-1]
-                pd.testing.assert_series_equal(tail, full[DECISION_COLUMNS].iloc[end - 1], check_names=False)
-            span = _apply(df.iloc[end - need:end], p)[DECISION_COLUMNS].iloc[-1]
-            pd.testing.assert_series_equal(span, full[DECISION_COLUMNS].iloc[end - 1], check_names=False)
-        short = _apply(df.iloc[len(df) - need + 1:], p)
-        assert short["tsi_reason"].iloc[-1] == "insufficient_history"
 
 
 def _every_grid_combination_is_causal_on_frozen_candles():

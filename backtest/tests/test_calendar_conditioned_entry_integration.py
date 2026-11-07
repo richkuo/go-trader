@@ -407,15 +407,6 @@ def _missing_history_columns_and_timing_hold_with_reasons():
     assert set(out["cce_reason"]) == {"missing_timestamps"} and len(out) == len(df)
 
 
-INVALID_PARAMS = [
-    {"training_bars": True}, {"training_bars": "4368"}, {"training_bars": None}, {"training_bars": 4368.5},
-    {"training_bars": float("nan")}, {"holding_bars": 0}, {"holding_bars": 4368}, {"refit_bars": 0},
-    {"refit_bars": 5000}, {"min_effective_obs": 1}, {"confidence": 0.0}, {"confidence": 1.0},
-    {"confidence": float("inf")}, {"confidence": True}, {"cost_hurdle": -0.001}, {"cost_hurdle": float("nan")},
-    {"expected_interval_ms": 7_000_000}, {"expected_interval_ms": 3_600_000.5},
-]
-
-
 def _backtest(df, p=P, stop=3.0, direction="both", mode="approximate"):
     signals = ensure_atr_indicator(_reg().apply_strategy(NAME, df, dict(p)))
     bt = Backtester(initial_capital=1000.0, platform="hyperliquid",

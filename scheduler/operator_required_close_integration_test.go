@@ -96,12 +96,6 @@ type orcFixture struct {
 	now      time.Time
 }
 
-func orcOKXSpot(id string) StrategyConfig {
-	sc := entryOKXTestStrategy(id, "spot")
-	sc.MaxDrawdownPct = 10
-	return sc
-}
-
 func orcRobinhoodOptions(id string) StrategyConfig {
 	return StrategyConfig{ID: id, Type: "options", Platform: "robinhood", Script: "shared_scripts/check_options.py",
 		Args: []string{"vol_mean_reversion", "SPY", "--mode=live"}, Capital: 1000, MaxDrawdownPct: 10}
@@ -124,7 +118,7 @@ func newORCFixture(t *testing.T, strategies ...StrategyConfig) *orcFixture {
 	f.rec = &orcRecorder{f: f}
 	f.notifier = NewMultiNotifier(notifierBackend{
 		notifier: f.rec,
-		channels: map[string]string{"okx": orcChannelID, "robinhood": orcChannelID},
+		channels: map[string]string{"robinhood": orcChannelID},
 		ownerID:  orcOwnerID,
 	})
 	return f
@@ -164,16 +158,6 @@ func (f *orcFixture) config(id string) *StrategyConfig {
 	return nil
 }
 
-func (f *orcFixture) openSpot(id string, qty float64) {
-	f.env.mu.Lock()
-	defer f.env.mu.Unlock()
-	s := f.env.strat(id)
-	if s.Positions == nil {
-		s.Positions = map[string]*Position{}
-	}
-	s.Positions[orcSymbol] = &Position{Symbol: orcSymbol, Quantity: qty, AvgCost: 100, Side: "long", OpenedAt: f.clock()}
-}
-
 func (f *orcFixture) openOption(id, optID string, qty float64) {
 	f.env.mu.Lock()
 	defer f.env.mu.Unlock()
@@ -183,6 +167,15 @@ func (f *orcFixture) openOption(id, optID string, qty float64) {
 	}
 	s.OptionPositions[optID] = &OptionPosition{ID: optID, Underlying: "SPY", OptionType: "call", Strike: 500, Expiry: "2026-06-19",
 		Action: "buy", Quantity: qty, EntryPremiumUSD: 100, CurrentValueUSD: 100, OpenedAt: f.clock()}
+}
+
+func (f *orcFixture) optionQty(id, optID string) float64 {
+	f.env.mu.RLock()
+	defer f.env.mu.RUnlock()
+	if op := f.env.strat(id).OptionPositions[optID]; op != nil {
+		return op.Quantity
+	}
+	return 0
 }
 
 func (f *orcFixture) fireDrawdownErr(id string) error {
@@ -334,19 +327,19 @@ func (f *orcFixture) assertNoLockedSends() {
 
 func TestOperatorRequiredClose(t *testing.T) {
 	t.Run("ReminderThrottleSurvivesRestart", func(t *testing.T) {
-		f := newORCFixture(t, orcOKXSpot("okx-a"))
-		f.openSpot("okx-a", 0.5)
-		f.fireDrawdown("okx-a")
+		f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+		f.openOption("rh-a", "opt-a", 2)
+		f.fireDrawdown("rh-a")
 		fired := f.clock()
 
-		e := f.entry("okx-a", PlatformPendingCloseOKXSpot)
+		e := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
 		if e == nil || !e.OperatorRequired || !strings.HasPrefix(e.Episode, "orc-") || !e.FiredAt.Equal(fired) || !e.LastNotifiedAt.IsZero() {
 			t.Fatalf("the fire must create an operator-required entry with an episode, the fire time and no stamp: %+v", e)
 		}
-		if len(e.Symbols) != 1 || e.Symbols[0].Symbol != orcSymbol || e.Symbols[0].Size != 0.5 {
+		if len(e.Symbols) != 1 || e.Symbols[0].Symbol != "opt-a" || e.Symbols[0].Size != 2 {
 			t.Fatalf("the entry must hold the own-book leg: %+v", e.Symbols)
 		}
-		if qty, _ := f.env.position("okx-a", orcSymbol); qty != 0 {
+		if qty := f.optionQty("rh-a", "opt-a"); qty != 0 {
 			t.Fatalf("the fire must still close the virtual book, got %v", qty)
 		}
 
@@ -355,16 +348,16 @@ func TestOperatorRequiredClose(t *testing.T) {
 			t.Fatalf("the first drain must log one CRITICAL line marked due:\n%s", log)
 		}
 		msg := f.rec.lastChannel()
-		for _, want := range []string{"okx-a", "go-trader-clear-operator-close", DefaultAlertThrottleInterval.String(), "alert_throttle_interval", "virtual size at fire", "episode " + e.Episode, "CB until"} {
+		for _, want := range []string{"rh-a", "go-trader-clear-operator-close", DefaultAlertThrottleInterval.String(), "alert_throttle_interval", "virtual size at fire", "episode " + e.Episode, "CB until"} {
 			if !strings.Contains(msg, want) {
 				t.Fatalf("the warning must contain %q:\n%s", want, msg)
 			}
 		}
-		stamp := f.entry("okx-a", PlatformPendingCloseOKXSpot).LastNotifiedAt
+		stamp := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions).LastNotifiedAt
 		if !stamp.Equal(fired) {
 			t.Fatalf("the drain must stamp the trading-clock time %s, got %s", fired, stamp)
 		}
-		if got := f.storedPendingJSON("okx-a"); !strings.Contains(got, `"last_notified_at":"`+fired.Format(time.RFC3339)) {
+		if got := f.storedPendingJSON("rh-a"); !strings.Contains(got, `"last_notified_at":"`+fired.Format(time.RFC3339)) {
 			t.Fatalf("the stamp must be saved at once, stored %s", got)
 		}
 
@@ -377,7 +370,7 @@ func TestOperatorRequiredClose(t *testing.T) {
 		}
 
 		f.restart()
-		got := f.entry("okx-a", PlatformPendingCloseOKXSpot)
+		got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
 		if got == nil || !got.LastNotifiedAt.Equal(stamp) || got.Episode != e.Episode || !got.FiredAt.Equal(fired) {
 			t.Fatalf("restart must keep the stamp, episode and fire time: %+v", got)
 		}
@@ -390,78 +383,78 @@ func TestOperatorRequiredClose(t *testing.T) {
 		f.assertNoLockedSends()
 	})
 	t.Run("MixedDueEntriesListOnlyTheDueOne", func(t *testing.T) {
-		f := newORCFixture(t, orcOKXSpot("okx-a"), orcOKXSpot("okx-b"))
-		f.openSpot("okx-a", 0.5)
-		f.fireDrawdown("okx-a")
+		f := newORCFixture(t, orcRobinhoodOptions("rh-a"), orcRobinhoodOptions("rh-b"))
+		f.openOption("rh-a", "opt-a", 2)
+		f.fireDrawdown("rh-a")
 		f.drainExpect("first strategy", 1, 1)
-		stampA := f.entry("okx-a", PlatformPendingCloseOKXSpot).LastNotifiedAt
+		stampA := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions).LastNotifiedAt
 
 		f.advance(time.Hour)
-		f.openSpot("okx-b", 0.25)
-		f.fireDrawdown("okx-b")
+		f.openOption("rh-b", "opt-b", 1)
+		f.fireDrawdown("rh-b")
 		log := f.drainExpect("mixed drain", 1, 1)
 		msg := f.rec.lastChannel()
-		if !strings.Contains(msg, "okx-b") || strings.Contains(msg, "okx-a") || !strings.Contains(msg, "1 strategy-platform pair hit") {
+		if !strings.Contains(msg, "rh-b") || strings.Contains(msg, "rh-a") || !strings.Contains(msg, "1 strategy-platform pair hit") {
 			t.Fatalf("the message must list only the due entry:\n%s", msg)
 		}
 		if orcCriticalLines(log) != 2 {
 			t.Fatalf("both entries must log a CRITICAL line:\n%s", log)
 		}
-		if got := f.entry("okx-a", PlatformPendingCloseOKXSpot).LastNotifiedAt; !got.Equal(stampA) {
+		if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions).LastNotifiedAt; !got.Equal(stampA) {
 			t.Fatalf("the entry that was not due must keep its stamp %s, got %s", stampA, got)
 		}
-		if got := f.entry("okx-b", PlatformPendingCloseOKXSpot).LastNotifiedAt; !got.Equal(f.clock()) {
+		if got := f.entry("rh-b", PlatformPendingCloseRobinhoodOptions).LastNotifiedAt; !got.Equal(f.clock()) {
 			t.Fatalf("the due entry must be stamped, got %s", got)
 		}
 		f.assertNoLockedSends()
 	})
 	t.Run("NewFireSendsAtOnceAndKeepsEarlierLegs", func(t *testing.T) {
-		t.Run("okx_spot", func(t *testing.T) {
-			f := newORCFixture(t, orcOKXSpot("okx-a"))
-			f.openSpot("okx-a", 1.0)
-			f.fireLossStreak("okx-a")
+		t.Run("robinhood_options_repeated_leg", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 2)
+			f.fireLossStreak("rh-a")
 			f.drainExpect("first fire", 1, 1)
-			first := f.entry("okx-a", PlatformPendingCloseOKXSpot)
+			first := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
 
 			f.advance(2 * time.Hour)
-			f.openSpot("okx-a", 0.5)
-			f.fireLossStreak("okx-a")
-			second := f.entry("okx-a", PlatformPendingCloseOKXSpot)
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
+			second := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
 			if second.Episode == first.Episode || !second.LastNotifiedAt.IsZero() || !second.FiredAt.Equal(f.clock()) {
 				t.Fatalf("a contributing fire must write a new episode and reset the stamp: first %+v second %+v", first, second)
 			}
-			if len(second.Symbols) != 1 || second.Symbols[0].Size != 1.5 {
-				t.Fatalf("a re-buy of 0.5 after an uncleared 1.0 fire must show 1.5: %+v", second.Symbols)
+			if len(second.Symbols) != 1 || second.Symbols[0].Size != 3 {
+				t.Fatalf("a re-buy of 1 after an uncleared 2 fire must show 3: %+v", second.Symbols)
 			}
 			f.drainExpect("drain after the second fire inside the window", 1, 1)
-			if !strings.Contains(f.rec.lastChannel(), "BTC (virtual size at fire 1.500000)") || !strings.Contains(f.rec.lastChannel(), "summed across the fires not cleared") {
+			if !strings.Contains(f.rec.lastChannel(), "opt-a (virtual size at fire 3.000000)") || !strings.Contains(f.rec.lastChannel(), "summed across the fires not cleared") {
 				t.Fatalf("the warning must show the summed size:\n%s", f.rec.lastChannel())
 			}
 
 			f.advance(2 * time.Hour)
-			f.openSpot("okx-a", 0.5)
-			f.fireLossStreak("okx-a")
-			third := f.entry("okx-a", PlatformPendingCloseOKXSpot)
-			if third.Episode == second.Episode || !third.LastNotifiedAt.IsZero() || len(third.Symbols) != 1 || third.Symbols[0].Size != 2.0 {
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
+			third := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
+			if third.Episode == second.Episode || !third.LastNotifiedAt.IsZero() || len(third.Symbols) != 1 || third.Symbols[0].Size != 4 {
 				t.Fatalf("a fire with the same fresh leg must add it, write a new episode and reset the stamp: %+v", third)
 			}
 			f.drainExpect("drain after an identical-leg fire inside the window", 1, 1)
-			stamped := f.entry("okx-a", PlatformPendingCloseOKXSpot)
+			stamped := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
 
 			f.advance(2 * time.Hour)
-			f.fireLossStreak("okx-a")
-			after := f.entry("okx-a", PlatformPendingCloseOKXSpot)
+			f.fireLossStreak("rh-a")
+			after := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
 			if after.Episode != stamped.Episode || !after.LastNotifiedAt.Equal(stamped.LastNotifiedAt) || !operatorCloseLegsEqual(after.Symbols, stamped.Symbols) {
 				t.Fatalf("a flat-book fire must leave the summed entry unchanged: before %+v after %+v", stamped, after)
 			}
 			f.drainExpect("drain inside the window after a flat-book fire", 0, 0)
 			f.assertNoLockedSends()
 		})
-		t.Run("okx_spot_clear_between_fires", func(t *testing.T) {
-			f := newORCFixture(t, orcOKXSpot("okx-a"))
-			f.openSpot("okx-a", 1.0)
-			f.fireLossStreak("okx-a")
-			ack, prompt := prepareOperatorRequiredCloseAck(f.env.state, &f.env.mu, "okx-a", "")
+		t.Run("robinhood_options_clear_between_fires", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 2)
+			f.fireLossStreak("rh-a")
+			ack, prompt := prepareOperatorRequiredCloseAck(f.env.state, &f.env.mu, "rh-a", "")
 			if ack == nil {
 				t.Fatalf("prepare refused: %s", prompt)
 			}
@@ -469,9 +462,9 @@ func TestOperatorRequiredClose(t *testing.T) {
 				t.Fatalf("the clear must succeed, got %q", msg)
 			}
 			f.advance(2 * time.Hour)
-			f.openSpot("okx-a", 0.5)
-			f.fireLossStreak("okx-a")
-			if got := f.entry("okx-a", PlatformPendingCloseOKXSpot); got == nil || len(got.Symbols) != 1 || got.Symbols[0].Size != 0.5 {
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); got == nil || len(got.Symbols) != 1 || got.Symbols[0].Size != 1 {
 				t.Fatalf("a fire after a clear must show only its own leg: %+v", got)
 			}
 		})
@@ -504,8 +497,8 @@ func TestOperatorRequiredClose(t *testing.T) {
 		})
 	})
 	t.Run("FlatBookFireAddsNothing", func(t *testing.T) {
-		f := newORCFixture(t, orcOKXSpot("okx-a"), orcRobinhoodOptions("rh-opt"), orcOKXSpot("okx-old"))
-		for _, c := range []struct{ id, platform string }{{"okx-a", PlatformPendingCloseOKXSpot}, {"rh-opt", PlatformPendingCloseRobinhoodOptions}} {
+		f := newORCFixture(t, orcRobinhoodOptions("rh-opt"), orcRobinhoodOptions("rh-old"))
+		for _, c := range []struct{ id, platform string }{{"rh-opt", PlatformPendingCloseRobinhoodOptions}} {
 			log := captureORCStdout(t, func() { f.fireDrawdown(c.id) })
 			if !strings.Contains(log, "circuit breaker fired with a flat own book; no new leg was added") {
 				t.Fatalf("%s: a flat-book fire must log the WARN line:\n%s", c.id, log)
@@ -518,13 +511,13 @@ func TestOperatorRequiredClose(t *testing.T) {
 			t.Fatalf("no entry means no CRITICAL line:\n%s", log)
 		}
 
-		f.openSpot("okx-old", 0.5)
-		f.fireLossStreak("okx-old")
+		f.openOption("rh-old", "opt-a", 1)
+		f.fireLossStreak("rh-old")
 		f.drainExpect("older entry", 1, 1)
-		before := f.entry("okx-old", PlatformPendingCloseOKXSpot)
+		before := f.entry("rh-old", PlatformPendingCloseRobinhoodOptions)
 		f.advance(2 * time.Hour)
-		f.fireLossStreak("okx-old")
-		after := f.entry("okx-old", PlatformPendingCloseOKXSpot)
+		f.fireLossStreak("rh-old")
+		after := f.entry("rh-old", PlatformPendingCloseRobinhoodOptions)
 		if after.Episode != before.Episode || !after.LastNotifiedAt.Equal(before.LastNotifiedAt) || !after.FiredAt.Equal(before.FiredAt) || !operatorCloseLegsEqual(after.Symbols, before.Symbols) {
 			t.Fatalf("a flat-book fire must leave the earlier entry unchanged: before %+v after %+v", before, after)
 		}
@@ -532,22 +525,22 @@ func TestOperatorRequiredClose(t *testing.T) {
 		f.assertNoLockedSends()
 	})
 	t.Run("ExpiryKeepsTheEntry", func(t *testing.T) {
-		f := newORCFixture(t, orcOKXSpot("okx-a"))
-		f.openSpot("okx-a", 0.5)
-		f.fireDrawdown("okx-a")
+		f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+		f.openOption("rh-a", "opt-a", 1)
+		f.fireDrawdown("rh-a")
 		f.drainExpect("first drain", 1, 1)
 
 		f.advance(DefaultCBDrawdownCooldown + time.Hour)
-		sc := f.config("okx-a")
+		sc := f.config("rh-a")
 		f.env.mu.Lock()
-		s := f.env.strat("okx-a")
+		s := f.env.strat("rh-a")
 		ok, reason := CheckRisk(sc, s, s.RiskState.PeakValue, map[string]float64{orcSymbol: 100}, nil, nil)
 		cb := s.RiskState.CircuitBreaker
 		f.env.mu.Unlock()
 		if !ok || cb {
 			t.Fatalf("the circuit breaker must unlatch after its cooldown: allowed=%v reason=%q latched=%v", ok, reason, cb)
 		}
-		if e := f.entry("okx-a", PlatformPendingCloseOKXSpot); e == nil || !e.OperatorRequired {
+		if e := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); e == nil || !e.OperatorRequired {
 			t.Fatal("circuit-breaker expiry must keep the operator-required entry")
 		}
 		f.drainExpect("reminder after expiry", 1, 1)
@@ -560,38 +553,38 @@ func TestOperatorRequiredClose(t *testing.T) {
 	})
 	t.Run("DeliveryAndSaveFailures", func(t *testing.T) {
 		t.Run("save_failure_keeps_the_memory_stamp", func(t *testing.T) {
-			f := newORCFixture(t, orcOKXSpot("okx-a"))
-			f.openSpot("okx-a", 0.5)
-			f.fireDrawdown("okx-a")
-			f.env.fileFor("okx-a").readOnly = true
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireDrawdown("rh-a")
+			f.env.fileFor("rh-a").readOnly = true
 			log := f.drainExpect("drain with a failed save", 1, 1)
-			if !strings.Contains(log, "[CRITICAL] operator-required-close: strategy okx-a: saving the reminder stamp failed") {
+			if !strings.Contains(log, "[CRITICAL] operator-required-close: strategy rh-a: saving the reminder stamp failed") {
 				t.Fatalf("a failed stamp save must log CRITICAL:\n%s", log)
 			}
-			stamp := f.entry("okx-a", PlatformPendingCloseOKXSpot).LastNotifiedAt
+			stamp := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions).LastNotifiedAt
 			if !stamp.Equal(f.clock()) {
 				t.Fatalf("the memory stamp must stay after a failed save, got %s", stamp)
 			}
 			f.advance(time.Hour)
 			f.drainExpect("drain inside the window after a failed save", 0, 0)
-			f.env.fileFor("okx-a").readOnly = false
+			f.env.fileFor("rh-a").readOnly = false
 			f.env.saveAll()
 			f.restart()
-			if got := f.entry("okx-a", PlatformPendingCloseOKXSpot); got == nil || !got.LastNotifiedAt.Equal(stamp) {
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); got == nil || !got.LastNotifiedAt.Equal(stamp) {
 				t.Fatalf("the cycle save must persist the stamp: %+v", got)
 			}
 			f.drainExpect("drain after restart", 0, 0)
 			f.assertNoLockedSends()
 		})
 		t.Run("restart_before_the_save_repeats_once", func(t *testing.T) {
-			f := newORCFixture(t, orcOKXSpot("okx-a"))
-			f.openSpot("okx-a", 0.5)
-			f.fireDrawdown("okx-a")
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireDrawdown("rh-a")
 			f.env.saveAll()
-			f.env.fileFor("okx-a").readOnly = true
+			f.env.fileFor("rh-a").readOnly = true
 			f.drainExpect("drain with a failed save", 1, 1)
 			f.restart()
-			if got := f.entry("okx-a", PlatformPendingCloseOKXSpot); got == nil || !got.LastNotifiedAt.IsZero() {
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); got == nil || !got.LastNotifiedAt.IsZero() {
 				t.Fatalf("the restart must load the unstamped entry: %+v", got)
 			}
 			f.advance(time.Minute)
@@ -600,32 +593,32 @@ func TestOperatorRequiredClose(t *testing.T) {
 			f.drainExpect("quiet after the repeat", 0, 0)
 		})
 		t.Run("no_backend_stamps_nothing", func(t *testing.T) {
-			f := newORCFixture(t, orcOKXSpot("okx-a"))
-			f.openSpot("okx-a", 0.5)
-			f.fireDrawdown("okx-a")
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireDrawdown("rh-a")
 			f.notifier = NewMultiNotifier()
 			log := f.drainExpect("drain with no backend", 0, 0)
 			if !strings.Contains(log, "no notification backend is configured; the warning for 1 entry was not sent and nothing was stamped") || orcCriticalLines(log) != 1 {
 				t.Fatalf("a drain with no backend must log both CRITICAL lines:\n%s", log)
 			}
-			if got := f.entry("okx-a", PlatformPendingCloseOKXSpot); !got.LastNotifiedAt.IsZero() {
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); !got.LastNotifiedAt.IsZero() {
 				t.Fatalf("a drain with no backend must stamp nothing: %+v", got)
 			}
 			captureORCStdout(t, func() { drainOperatorRequiredPendingCloses(f.env.state, nil, &f.env.mu, f.env.store) })
-			if got := f.entry("okx-a", PlatformPendingCloseOKXSpot); !got.LastNotifiedAt.IsZero() {
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); !got.LastNotifiedAt.IsZero() {
 				t.Fatalf("a nil notifier must stamp nothing: %+v", got)
 			}
 		})
 		t.Run("every_destination_failing_retries", func(t *testing.T) {
-			f := newORCFixture(t, orcOKXSpot("okx-a"))
-			f.openSpot("okx-a", 0.5)
-			f.fireDrawdown("okx-a")
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireDrawdown("rh-a")
 			f.rec.failChannel, f.rec.failDM = true, true
 			log := f.drainExpect("drain where every send fails", 0, 0)
 			if !strings.Contains(log, "the warning reached no channel and no owner DM; nothing was stamped and the next drain retries") {
 				t.Fatalf("a fully failed send must log CRITICAL:\n%s", log)
 			}
-			if got := f.entry("okx-a", PlatformPendingCloseOKXSpot); !got.LastNotifiedAt.IsZero() {
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); !got.LastNotifiedAt.IsZero() {
 				t.Fatalf("a fully failed send must stamp nothing: %+v", got)
 			}
 			attempts := f.rec.attempts
@@ -637,7 +630,7 @@ func TestOperatorRequiredClose(t *testing.T) {
 			f.rec.failChannel = false
 			f.advance(time.Minute)
 			f.drainExpect("partial delivery", 1, 0)
-			if got := f.entry("okx-a", PlatformPendingCloseOKXSpot); !got.LastNotifiedAt.Equal(f.clock()) {
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); !got.LastNotifiedAt.Equal(f.clock()) {
 				t.Fatalf("partial delivery must stamp the entry: %+v", got)
 			}
 			f.advance(time.Minute)
@@ -645,13 +638,13 @@ func TestOperatorRequiredClose(t *testing.T) {
 			f.assertNoLockedSends()
 		})
 		t.Run("backward_clock_is_due", func(t *testing.T) {
-			f := newORCFixture(t, orcOKXSpot("okx-a"))
-			f.openSpot("okx-a", 0.5)
-			f.fireDrawdown("okx-a")
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireDrawdown("rh-a")
 			f.drainExpect("first drain", 1, 1)
 			earlier := f.advance(-time.Hour)
 			f.drainExpect("drain on a clock that moved back", 1, 1)
-			if got := f.entry("okx-a", PlatformPendingCloseOKXSpot); !got.LastNotifiedAt.Equal(earlier) {
+			if got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions); !got.LastNotifiedAt.Equal(earlier) {
 				t.Fatalf("the stamp must move to the earlier time: %+v", got)
 			}
 			f.advance(time.Minute)
@@ -659,24 +652,22 @@ func TestOperatorRequiredClose(t *testing.T) {
 		})
 	})
 	t.Run("KillSwitchFireStillClearsBothKeys", func(t *testing.T) {
-		f := newORCFixture(t, orcOKXSpot("okx-a"), orcRobinhoodOptions("rh-opt"))
-		f.openSpot("okx-a", 0.5)
-		f.fireDrawdown("okx-a")
+		f := newORCFixture(t, orcRobinhoodOptions("rh-opt"))
 		f.openOption("rh-opt", "opt-a", 1)
 		f.fireDrawdown("rh-opt")
 		f.env.mu.Lock()
-		f.env.strat("okx-a").RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 1}}})
+		f.env.strat("rh-opt").RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 1}}})
 		f.env.mu.Unlock()
 		f.env.saveAll()
 
 		f.env.mu.Lock()
-		for _, id := range []string{"okx-a", "rh-opt"} {
+		for _, id := range []string{"rh-opt"} {
 			f.env.strat(id).RiskState.clearPendingCircuitClosesForKillSwitch()
 		}
 		f.env.mu.Unlock()
 		f.env.saveAll()
 		f.restart()
-		for _, id := range []string{"okx-a", "rh-opt"} {
+		for _, id := range []string{"rh-opt"} {
 			if got := f.pendingJSON(id); got != "" {
 				t.Fatalf("%s: the kill-switch clear must remove every pending close, kept %s", id, got)
 			}
@@ -684,19 +675,14 @@ func TestOperatorRequiredClose(t *testing.T) {
 		f.drainExpect("drain after the kill-switch clear", 0, 0)
 	})
 	t.Run("CommandDispatch", func(t *testing.T) {
-		f := newORCFixture(t, orcOKXSpot("okx-a"), orcRobinhoodOptions("rh-opt"), orcOKXSpot("auto-1"), orcOKXSpot("both"))
-		f.openSpot("okx-a", 0.5)
-		f.fireDrawdown("okx-a")
+		f := newORCFixture(t, orcRobinhoodOptions("rh-opt"), orcRobinhoodOptions("auto-1"))
 		f.openOption("rh-opt", "opt-a", 1)
 		f.fireDrawdown("rh-opt")
 		f.env.mu.Lock()
 		auto := f.env.strat("auto-1")
-		for _, key := range []string{PlatformPendingCloseRobinhood, PlatformPendingCloseOKX, PlatformPendingCloseHyperliquid, PlatformPendingCloseTopStep, PlatformPendingCloseOKXSpot} {
+		for _, key := range []string{PlatformPendingCloseRobinhood, PlatformPendingCloseHyperliquid, PlatformPendingCloseTopStep} {
 			auto.RiskState.setPendingCircuitClose(key, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 1}}})
 		}
-		both := f.env.strat("both")
-		both.RiskState.setPendingCircuitClose(PlatformPendingCloseOKXSpot, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: orcSymbol, Size: 1}}, OperatorRequired: true, Episode: "orc-both-spot"})
-		both.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhoodOptions, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "opt-z", Size: 1}}, OperatorRequired: true, Episode: "orc-both-opt"})
 		f.env.mu.Unlock()
 		f.env.saveAll()
 
@@ -717,7 +703,7 @@ func TestOperatorRequiredClose(t *testing.T) {
 			t.Fatal("the command must be an owner-only ops command")
 		}
 
-		ids := []string{"okx-a", "rh-opt", "auto-1", "both"}
+		ids := []string{"rh-opt", "auto-1"}
 		snapshot := func() map[string][2]string {
 			out := map[string][2]string{}
 			for _, id := range ids {
@@ -741,18 +727,15 @@ func TestOperatorRequiredClose(t *testing.T) {
 			label, user, guild, strategy, platform, want string
 			c                                            *orcCommander
 		}{
-			{"non-owner", "intruder", "", "okx-a", "", "not authorized", owner},
-			{"guild", orcOwnerID, "guild-1", "okx-a", "", "only available in a DM", owner},
-			{"owner unset", orcOwnerID, "", "okx-a", "", "owner is not configured", f.commander("")},
+			{"non-owner", "intruder", "", "rh-opt", "", "not authorized", owner},
+			{"guild", orcOwnerID, "guild-1", "rh-opt", "", "only available in a DM", owner},
+			{"owner unset", orcOwnerID, "", "rh-opt", "", "owner is not configured", f.commander("")},
 			{"missing strategy", orcOwnerID, "", "", "", "usage: /go-trader-clear-operator-close", owner},
 			{"unknown strategy", orcOwnerID, "", "nope", "", "is not in the running state", owner},
 			{"no entry", orcOwnerID, "", "auto-1", "", "has no operator-required circuit-breaker entry", owner},
-			{"non-operator okx_spot entry", orcOwnerID, "", "auto-1", PlatformPendingCloseOKXSpot, "has no operator-required circuit-breaker entry under okx_spot", owner},
-			{"unknown platform", orcOwnerID, "", "okx-a", "binanceus", "is not okx_spot or robinhood_options", owner},
-			{"ambiguous platform", orcOwnerID, "", "both", "", "Run the command again with the platform option", owner},
-			{"wrong platform for the strategy", orcOwnerID, "", "okx-a", PlatformPendingCloseRobinhoodOptions, "has no operator-required circuit-breaker entry under robinhood_options", owner},
+			{"unknown platform", orcOwnerID, "", "rh-opt", "binanceus", "is not okx_spot or robinhood_options", owner},
 		}
-		for _, key := range []string{PlatformPendingCloseRobinhood, PlatformPendingCloseOKX, PlatformPendingCloseHyperliquid, PlatformPendingCloseTopStep} {
+		for _, key := range []string{PlatformPendingCloseRobinhood, PlatformPendingCloseHyperliquid, PlatformPendingCloseTopStep} {
 			refusals = append(refusals, struct {
 				label, user, guild, strategy, platform, want string
 				c                                            *orcCommander
@@ -765,40 +748,40 @@ func TestOperatorRequiredClose(t *testing.T) {
 			}
 			assertUnchanged(r.label, msg)
 		}
-		if msg := owner.run(orcOwnerID, "", orcCommandOpts("auto-1", ""), "", nil); !strings.Contains(msg, "Other pending closes (hyperliquid, okx, okx_spot, robinhood, topstep) have automatic close owners") {
+		if msg := owner.run(orcOwnerID, "", orcCommandOpts("auto-1", ""), "", nil); !strings.Contains(msg, "Other pending closes (hyperliquid, robinhood, topstep) have automatic close owners") {
 			t.Fatalf("the refusal must list the automatic pending closes in sorted order: %q", msg)
 		}
 
 		notReady := f.commander(orcOwnerID)
 		notReady.d.ss.stateDB = nil
-		if msg := notReady.run(orcOwnerID, "", orcCommandOpts("okx-a", ""), "", nil); msg != "status server not ready" {
+		if msg := notReady.run(orcOwnerID, "", orcCommandOpts("rh-opt", ""), "", nil); msg != "status server not ready" {
 			t.Fatalf("a missing store must refuse, got %q", msg)
 		}
 		assertUnchanged("store not ready", "")
 
-		msg := owner.run(orcOwnerID, "", orcCommandOpts("okx-a", ""), "no", nil)
+		msg := owner.run(orcOwnerID, "", orcCommandOpts("rh-opt", ""), "no", nil)
 		if !strings.HasPrefix(msg, "Cancelled: no confirmation received") {
 			t.Fatalf("a non-confirm reply must cancel, got %q", msg)
 		}
 		assertUnchanged("cancel", msg)
-		entry := f.entry("okx-a", PlatformPendingCloseOKXSpot)
+		entry := f.entry("rh-opt", PlatformPendingCloseRobinhoodOptions)
 		prompt := owner.lastPrompt()
-		for _, want := range []string{"`okx-a`", "OKX spot (`okx_spot`)", entry.Episode, "BTC (virtual size at fire 0.500000)", "does NOT read the venue", "Reply `confirm`"} {
+		for _, want := range []string{"`rh-opt`", "Robinhood options (`robinhood_options`)", entry.Episode, "opt-a (virtual size at fire 1.000000)", "does NOT read the venue", "Reply `confirm`"} {
 			if !strings.Contains(prompt, want) {
 				t.Fatalf("the confirm prompt must show %q:\n%s", want, prompt)
 			}
 		}
 
-		f.env.fileFor("okx-a").readOnly = true
+		f.env.fileFor("rh-opt").readOnly = true
 		saveLog := ""
 		saveLog = captureORCStdout(t, func() {
-			msg = owner.run(orcOwnerID, "", orcCommandOpts("okx-a", ""), "confirm", nil)
+			msg = owner.run(orcOwnerID, "", orcCommandOpts("rh-opt", ""), "confirm", nil)
 		})
 		if !strings.Contains(msg, "saving the clear failed") || !strings.Contains(msg, "The entry is restored") || !strings.Contains(saveLog, "saving the operator clear failed") {
 			t.Fatalf("a failed save must restore and refuse, got %q\n%s", msg, saveLog)
 		}
-		f.env.fileFor("okx-a").readOnly = false
-		if got := f.entry("okx-a", PlatformPendingCloseOKXSpot); got == nil || got.Episode != entry.Episode || !operatorCloseLegsEqual(got.Symbols, entry.Symbols) {
+		f.env.fileFor("rh-opt").readOnly = false
+		if got := f.entry("rh-opt", PlatformPendingCloseRobinhoodOptions); got == nil || got.Episode != entry.Episode || !operatorCloseLegsEqual(got.Symbols, entry.Symbols) {
 			t.Fatalf("a failed save must restore the exact entry: %+v", got)
 		}
 		assertUnchanged("save failure", msg)
@@ -806,71 +789,59 @@ func TestOperatorRequiredClose(t *testing.T) {
 		before = snapshot()
 
 		auditLog := captureORCStdout(t, func() {
-			msg = owner.run(orcOwnerID, "", orcCommandOpts("okx-a", PlatformPendingCloseOKXSpot), "confirm", nil)
+			msg = owner.run(orcOwnerID, "", orcCommandOpts("rh-opt", PlatformPendingCloseRobinhoodOptions), "confirm", nil)
 		})
-		if !strings.HasPrefix(msg, "Cleared the operator-required entry for `okx-a` [okx_spot]") {
+		if !strings.HasPrefix(msg, "Cleared the operator-required entry for `rh-opt` [robinhood_options]") {
 			t.Fatalf("the confirmed clear must succeed, got %q", msg)
 		}
-		if !strings.Contains(auditLog, "[CRITICAL] operator-required-close: strategy okx-a platform okx_spot cleared by operator "+orcOwnerID) {
+		if !strings.Contains(auditLog, "[CRITICAL] operator-required-close: strategy rh-opt platform robinhood_options cleared by operator "+orcOwnerID) {
 			t.Fatalf("the clear must log the audit line:\n%s", auditLog)
 		}
-		if f.entry("okx-a", PlatformPendingCloseOKXSpot) != nil || f.storedPendingJSON("okx-a") != "" {
-			t.Fatalf("the clear must remove the entry from memory and the database: %q", f.storedPendingJSON("okx-a"))
-		}
-
-		msg = owner.run(orcOwnerID, "", orcCommandOpts("rh-opt", ""), "confirm", nil)
-		if !strings.HasPrefix(msg, "Cleared the operator-required entry for `rh-opt` [robinhood_options]") {
-			t.Fatalf("the options clear must succeed, got %q", msg)
-		}
-		msg = owner.run(orcOwnerID, "", orcCommandOpts("both", PlatformPendingCloseRobinhoodOptions), "confirm", nil)
-		if !strings.HasPrefix(msg, "Cleared") || f.entry("both", PlatformPendingCloseOKXSpot) == nil || f.entry("both", PlatformPendingCloseRobinhoodOptions) != nil {
-			t.Fatalf("a named platform must clear only that entry, got %q", msg)
+		if f.entry("rh-opt", PlatformPendingCloseRobinhoodOptions) != nil || f.storedPendingJSON("rh-opt") != "" {
+			t.Fatalf("the clear must remove the entry from memory and the database: %q", f.storedPendingJSON("rh-opt"))
 		}
 		if got := f.storedPendingJSON("auto-1"); got != before["auto-1"][1] {
 			t.Fatalf("automatic entries must stay as they are: %s", got)
 		}
 
 		f.restart()
-		if f.entry("okx-a", PlatformPendingCloseOKXSpot) != nil || f.entry("rh-opt", PlatformPendingCloseRobinhoodOptions) != nil {
+		if f.entry("rh-opt", PlatformPendingCloseRobinhoodOptions) != nil {
 			t.Fatal("cleared entries must stay cleared after a restart")
 		}
 		f.advance(DefaultAlertThrottleInterval)
-		f.drainExpect("drain after the clears lists only the remaining entry", 1, 1)
-		if msg := f.rec.lastChannel(); strings.Contains(msg, "okx-a") || strings.Contains(msg, "rh-opt") || !strings.Contains(msg, "both") {
-			t.Fatalf("only the remaining entry may be warned:\n%s", msg)
-		}
+		f.drainExpect("drain after the clears", 0, 0)
 		owner.assertNoLockedPrompt()
 		f.assertNoLockedSends()
 	})
 	t.Run("ConfirmationInterleavings", func(t *testing.T) {
 		t.Run("drain_stamp_during_confirm_still_clears", func(t *testing.T) {
-			f := newORCFixture(t, orcOKXSpot("okx-a"))
-			f.openSpot("okx-a", 0.5)
-			f.fireLossStreak("okx-a")
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
 			c := f.commander(orcOwnerID)
-			msg := c.run(orcOwnerID, "", orcCommandOpts("okx-a", ""), "confirm", func() {
+			msg := c.run(orcOwnerID, "", orcCommandOpts("rh-a", ""), "confirm", func() {
 				drainOperatorRequiredPendingCloses(f.env.state, f.notifier, &f.env.mu, f.env.store)
 			})
 			if !strings.HasPrefix(msg, "Cleared") {
 				t.Fatalf("a reminder stamp is not a change of scope, got %q", msg)
 			}
-			if f.entry("okx-a", PlatformPendingCloseOKXSpot) != nil {
+			if f.entry("rh-a", PlatformPendingCloseRobinhoodOptions) != nil {
 				t.Fatal("the entry must be cleared")
 			}
 			c.assertNoLockedPrompt()
 			f.assertNoLockedSends()
 		})
 		t.Run("identical_leg_fire_during_confirm_refuses", func(t *testing.T) {
-			f := newORCFixture(t, orcOKXSpot("okx-a"))
-			f.openSpot("okx-a", 0.5)
-			f.fireLossStreak("okx-a")
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
 			f.drainExpect("first", 1, 1)
 			c := f.commander(orcOwnerID)
 			var hookErr error
-			msg := c.run(orcOwnerID, "", orcCommandOpts("okx-a", ""), "confirm", func() {
+			msg := c.run(orcOwnerID, "", orcCommandOpts("rh-a", ""), "confirm", func() {
 				f.advance(2 * time.Hour)
-				f.openSpot("okx-a", 0.5)
-				hookErr = f.fireLossStreakErr("okx-a")
+				f.openOption("rh-a", "opt-a", 1)
+				hookErr = f.fireLossStreakErr("rh-a")
 			})
 			if hookErr != nil {
 				t.Fatal(hookErr)
@@ -878,12 +849,49 @@ func TestOperatorRequiredClose(t *testing.T) {
 			if !strings.Contains(msg, "changed while you were confirming") {
 				t.Fatalf("a new fire during the confirm must refuse, got %q", msg)
 			}
-			got := f.entry("okx-a", PlatformPendingCloseOKXSpot)
+			got := f.entry("rh-a", PlatformPendingCloseRobinhoodOptions)
 			if got == nil || !got.LastNotifiedAt.IsZero() || !got.FiredAt.Equal(f.clock()) {
 				t.Fatalf("the new entry must stay with a zero stamp: %+v", got)
 			}
-			if f.storedPendingJSON("okx-a") == "" {
+			if f.storedPendingJSON("rh-a") == "" {
 				t.Fatal("a refused clear must not remove the stored entry")
+			}
+			c.assertNoLockedPrompt()
+		})
+		t.Run("kill_switch_clear_during_confirm_refuses", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
+			c := f.commander(orcOwnerID)
+			msg := c.run(orcOwnerID, "", orcCommandOpts("rh-a", ""), "confirm", func() {
+				f.env.mu.Lock()
+				f.env.strat("rh-a").RiskState.clearPendingCircuitClosesForKillSwitch()
+				f.env.mu.Unlock()
+			})
+			if !strings.Contains(msg, "changed while you were confirming") {
+				t.Fatalf("a kill-switch clear during the confirm must refuse, got %q", msg)
+			}
+			c.assertNoLockedPrompt()
+		})
+		t.Run("another_clear_that_finishes_first_wins", func(t *testing.T) {
+			f := newORCFixture(t, orcRobinhoodOptions("rh-a"))
+			f.openOption("rh-a", "opt-a", 1)
+			f.fireLossStreak("rh-a")
+			c := f.commander(orcOwnerID)
+			var inner string
+			msg := c.run(orcOwnerID, "", orcCommandOpts("rh-a", ""), "confirm", func() {
+				ack, prep := prepareOperatorRequiredCloseAck(f.env.state, &f.env.mu, "rh-a", "")
+				if ack == nil {
+					inner = prep
+					return
+				}
+				inner = applyOperatorRequiredCloseAck(f.env.state, &f.env.mu, f.env.store, "other-session", *ack)
+			})
+			if !strings.HasPrefix(inner, "Cleared") {
+				t.Fatalf("the clear that finished first must succeed, got %q", inner)
+			}
+			if !strings.Contains(msg, "changed while you were confirming") {
+				t.Fatalf("the slower clear must refuse, got %q", msg)
 			}
 			c.assertNoLockedPrompt()
 		})
@@ -906,43 +914,6 @@ func TestOperatorRequiredClose(t *testing.T) {
 			}
 			if got := f.entry("rh-opt", PlatformPendingCloseRobinhoodOptions); got == nil || len(got.Symbols) != 2 {
 				t.Fatalf("the merged entry must stay: %+v", got)
-			}
-			c.assertNoLockedPrompt()
-		})
-		t.Run("kill_switch_clear_during_confirm_refuses", func(t *testing.T) {
-			f := newORCFixture(t, orcOKXSpot("okx-a"))
-			f.openSpot("okx-a", 0.5)
-			f.fireLossStreak("okx-a")
-			c := f.commander(orcOwnerID)
-			msg := c.run(orcOwnerID, "", orcCommandOpts("okx-a", ""), "confirm", func() {
-				f.env.mu.Lock()
-				f.env.strat("okx-a").RiskState.clearPendingCircuitClosesForKillSwitch()
-				f.env.mu.Unlock()
-			})
-			if !strings.Contains(msg, "changed while you were confirming") {
-				t.Fatalf("a kill-switch clear during the confirm must refuse, got %q", msg)
-			}
-			c.assertNoLockedPrompt()
-		})
-		t.Run("another_clear_that_finishes_first_wins", func(t *testing.T) {
-			f := newORCFixture(t, orcOKXSpot("okx-a"))
-			f.openSpot("okx-a", 0.5)
-			f.fireLossStreak("okx-a")
-			c := f.commander(orcOwnerID)
-			var inner string
-			msg := c.run(orcOwnerID, "", orcCommandOpts("okx-a", ""), "confirm", func() {
-				ack, prep := prepareOperatorRequiredCloseAck(f.env.state, &f.env.mu, "okx-a", "")
-				if ack == nil {
-					inner = prep
-					return
-				}
-				inner = applyOperatorRequiredCloseAck(f.env.state, &f.env.mu, f.env.store, "other-session", *ack)
-			})
-			if !strings.HasPrefix(inner, "Cleared") {
-				t.Fatalf("the clear that finished first must succeed, got %q", inner)
-			}
-			if !strings.Contains(msg, "changed while you were confirming") {
-				t.Fatalf("the slower clear must refuse, got %q", msg)
 			}
 			c.assertNoLockedPrompt()
 		})

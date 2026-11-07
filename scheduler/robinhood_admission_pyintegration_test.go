@@ -98,7 +98,7 @@ func TestRobinhoodSpotCoinAdmissionRealBinary(t *testing.T) {
 		}
 	})
 	t.Run("normalized-supported-coin-passes", func(t *testing.T) {
-		cfg := robinhoodAdmissionConfig(t, dir, "uni", []string{"atr_breakout", " uni ", "4h", "--mode=paper"}, map[string]any{"htf_filter": true})
+		cfg := robinhoodAdmissionConfig(t, dir, "uni", []string{"atr_breakout", " uni ", "4h", "--mode=paper"}, map[string]any{"htf_filter": true, "closed_bar_decisions": true})
 		for _, argv := range [][]string{{"probe", "--config", cfg}, {"inspect", "--config", cfg, "--all"}} {
 			if log, err := robinhoodAdmissionRun(t, root, bin, argv...); err != nil {
 				t.Fatalf("%s refused a normalized supported coin: %v\n%s", argv[0], err, log)

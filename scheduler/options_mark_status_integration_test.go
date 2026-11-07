@@ -15,14 +15,12 @@ func TestOptionMarkOperatorOutputIntegration(t *testing.T) {
 		"b-unknown": {ID: "b-unknown", Underlying: "SPY", CurrentValueUSD: -300},
 		"c-pending": {ID: "c-pending", Underlying: "SPY", CurrentValueUSD: -50, MarkUpdatedAt: now.Add(-50 * time.Hour), MarkSource: "robinhood_black_scholes",
 			MarkError: "settlement pending: no daily bar for SPY on expected session 2026-01-16"},
-		"d-proxy": {ID: "d-proxy", Underlying: "BTC", CurrentValueUSD: 10, MarkUpdatedAt: now.Add(-3 * time.Minute), MarkSource: okxDeribitProxySource},
 	}}
 	lines := collectPositions(sc, ss, nil)
 	want := []string{
 		"rh-status OPT a-good ($-120.00) mark 25m ago (robinhood_quote)",
 		"rh-status OPT b-unknown ($-300.00) mark unknown",
 		"rh-status OPT c-pending ($-50.00) mark 2d2h ago (robinhood_black_scholes) | settlement pending: no daily bar for SPY on expected session 2026-01-16",
-		"rh-status OPT d-proxy ($10.00) mark 3m ago (deribit_proxy)",
 	}
 	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("position lines =\n%s\nwant\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))

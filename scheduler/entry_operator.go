@@ -398,7 +398,7 @@ func resolveEntryAttemptByOperator(deps entryOperatorDeps, operatorID, strategyI
 	if why != "" {
 		return refuse("%s.", why)
 	}
-	if time.Now().UnixMilli() <= releasable {
+	if tradingNow().UnixMilli() <= releasable {
 		return refuse("the venue deadline plus grace has not passed; retry after %s.", formatClosedBarMs(releasable))
 	}
 	if !entryAccountBound(&snap) {
@@ -415,7 +415,7 @@ func resolveEntryAttemptByOperator(deps entryOperatorDeps, operatorID, strategyI
 	if qerr != nil {
 		return refuse("the venue query failed: %v.", qerr)
 	}
-	checked := time.Now()
+	checked := tradingNow()
 	audit, why := proveEntryAbsence(&snap, req, res, checked)
 	if why != "" {
 		return refuse("%s.", why)

@@ -179,7 +179,7 @@ PYSTUB
 }
 
 make_deployment() {
-    local name="$1" port="$2" layout="${3:-plain}"
+    local name="$1" port="$2" layout="${3:-plain}" paper_only="${4:-}"
     local src="/root/gt-$ID-$name" unit="go-trader-$ID-$name.service" outside="/srv/gt-$ID-$name"
     CREATED_DIRS+=("$src" "$outside")
     CREATED_UNITS+=("$unit")
@@ -197,9 +197,9 @@ make_deployment() {
         git -C "$src" -c user.email=fixture@example.invalid -c user.name=fixture add -A
         git -C "$src" -c user.email=fixture@example.invalid -c user.name=fixture commit -qm fixture
     fi
-    "$PY3" - "$src/scheduler/config.json" "$port" "$layout" "$outside" "$name" <<'PY'
+    "$PY3" - "$src/scheduler/config.json" "$port" "$layout" "$outside" "$name" "$paper_only" <<'PY'
 import json, sys
-path, port, layout, outside, name = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+path, port, layout, outside, name, paper_only = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 def strat(sid, extra=None):
     s = {"id": sid, "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py",
          "args": ["vwap", "ETH", "1h", "--mode=paper"], "capital": 100, "leverage": 2, "margin_per_trade_usd": 10}
@@ -217,6 +217,8 @@ if layout == "live":
     cfg["strategies"].append({"id": "hl-%s-live" % name, "type": "perps", "platform": "hyperliquid",
                               "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "ETH", "1h", "--mode=live"],
                               "capital": 100, "leverage": 2, "margin_per_trade_usd": 10})
+if paper_only == "paper_only":
+    cfg["paper_only"] = True
 json.dump(cfg, open(path, "w"), indent=2)
 PY
     cat > "$src/.env" <<ENV
@@ -426,7 +428,7 @@ scenario_apply() {
     local port=$((BASE_PORT + 3)) unit="go-trader-$ID-live.service" inst="l-$ID" src="/root/gt-$ID-live"
     local peer="go-trader-$ID-peer.service" peer_port=$((BASE_PORT + 4))
     INSTANCES+=("$inst")
-    make_deployment live "$port" split
+    make_deployment live "$port" split paper_only
     make_deployment peer "$peer_port"
     local peer_pid src_version
     peer_pid=$(unit_prop "$peer" MainPID)
@@ -464,6 +466,9 @@ scenario_apply() {
     [[ "$(unit_prop "$tunit" User)" == "go-trader" ]] || fail "$tunit does not run as go-trader"
     [[ "$(unit_prop "$tunit" ProtectSystem)" == "strict" ]] || fail "$tunit lacks ProtectSystem=strict"
     [[ "$(unit_prop "$tunit" PrivateTmp)" == "yes" ]] || fail "$tunit lacks PrivateTmp"
+    local cpu_dropin="/etc/systemd/system/$tunit.d/40-go-trader-cpu.conf"
+    [[ "$(cat "$cpu_dropin" 2>/dev/null)" == $'[Service]\nCPUWeight=20' ]] || fail "install-service.sh did not write the managed CPU weight drop-in for the paper_only target"
+    [[ "$(unit_prop "$tunit" CPUWeight)" == "20" ]] || fail "$tunit CPUWeight is $(unit_prop "$tunit" CPUWeight), want 20"
     local tpid
     tpid=$(unit_prop "$tunit" MainPID)
     [[ "$(health_field "$port" pid)" == "$tpid" ]] || fail "health pid differs from $tunit MainPID"
@@ -516,6 +521,7 @@ PY
     scycle=$(sql "$src/scheduler/state.db" "SELECT cycle_count FROM app_state WHERE id = 1")
     [[ "$scycle" -ge "$tcycle" ]] || fail "source cycle_count $scycle is older than the target's $tcycle"
     ls -d "/opt/go-trader-$inst".rolled-back-* >/dev/null 2>&1 || fail "the target tree was not kept aside"
+    [[ ! -e "$cpu_dropin" && ! -e "${cpu_dropin%/*}" ]] || fail "the rollback left the managed CPU weight drop-in or its directory"
     expect_exit 0 tool rollback --instance "$inst"
     grep -q "already closed" "$WORK/last.out" || fail "a repeated rollback did not report already closed"
 
@@ -523,7 +529,9 @@ PY
     expect_exit 0 tool apply --unit "$unit" --instance "$inst"
     [[ "$(systemctl is-active "go-trader@$inst.service")" == "active" ]] || fail "re-apply did not start the target"
     [[ -n "$(sql "/opt/go-trader-$inst/scheduler/state.db" "SELECT 1 FROM trades WHERE details = 'fixture-trade-$ID'")" ]] || fail "re-apply lost the returned trade"
+    [[ "$(unit_prop "go-trader@$inst.service" CPUWeight)" == "20" ]] || fail "re-apply did not set CPUWeight=20"
     expect_exit 0 tool rollback --instance "$inst"
+    [[ ! -e "$cpu_dropin" ]] || fail "the second rollback left the managed CPU weight drop-in"
     assert_source_running "$unit" "$port"
     systemctl stop "$peer"
     echo "apply/rollback OK"
@@ -761,6 +769,25 @@ scenario_confirm() {
     expect_exit 17 tool apply --unit "$unit" --instance "$inst" --confirm-live go-trader-other.service
     [[ ! -e "$STATE_ROOT/$inst" && ! -e "/opt/go-trader-$inst" ]] || fail "a refused live apply changed the host"
     [[ "$(unit_prop "$unit" MainPID)" == "$pid_before" ]] || fail "a refused live apply touched $unit"
+    local since
+    mkdir -p "/etc/systemd/system/$unit.d"
+    printf '[Service]\nCPUWeight=20\n' >"/etc/systemd/system/$unit.d/40-go-trader-cpu.conf"
+    systemctl daemon-reload
+    sleep 1
+    since=$(date +%s)
+    systemctl restart "$unit"
+    wait_health "$unit" "$port"
+    wait_unit_log "$unit" "$since" "[priority]" || fail "$unit printed no [priority] line after the restart"
+    wait_unit_log "$unit" "$since" "$CPU_LIVE_WARN" || fail "a live process under CPUWeight=20 printed no cpu WARN"
+    [[ "$(unit_log_count "$unit" "$since" "$CPU_LIVE_WARN")" == "1" ]] || fail "a live process under CPUWeight=20 must print the cpu WARN once"
+    rm -rf "/etc/systemd/system/$unit.d"
+    systemctl daemon-reload
+    sleep 1
+    since=$(date +%s)
+    systemctl restart "$unit"
+    wait_health "$unit" "$port"
+    wait_unit_log "$unit" "$since" "[priority]" || fail "$unit printed no [priority] line after the drop-in removal"
+    [[ "$(unit_log_count "$unit" "$since" "$CPU_LIVE_WARN")" == "0" ]] || fail "a live process at the default CPU weight printed the cpu WARN"
     systemctl stop "$unit"
     echo "live confirmation OK"
 }
@@ -891,6 +918,23 @@ tree_version() {
 
 root_owned() {
     find "$1" -xdev -user root -print | head -n 20
+}
+
+CPU_LIVE_WARN="[WARN] cpu: this process runs live strategies, but its cgroup"
+
+unit_log_count() {
+    local unit="$1" since="$2" text="$3" n
+    n=$( { journalctl --namespace=+go-trader -u "$unit" --since "@$since" --no-pager -o short-precise 2>/dev/null; journalctl -u "$unit" --since "@$since" --no-pager -o short-precise 2>/dev/null; } | sort -u | grep -cF -- "$text") || true
+    printf '%s' "${n:-0}"
+}
+
+wait_unit_log() {
+    local unit="$1" since="$2" text="$3" i
+    for i in $(seq 1 30); do
+        [[ "$(unit_log_count "$unit" "$since" "$text")" != "0" ]] && return 0
+        sleep 1
+    done
+    return 1
 }
 
 advance_origin() {
@@ -1034,6 +1078,12 @@ PY
     [[ ! -e "$WORK/planted" ]] || fail "root built and ran an untracked scheduler file"
     grep -q "untracked files are never built" "$WORK/last.out" || fail "the update did not build from the exported sources"
     grep -q "probe: runs as go-trader under the unit sandbox" "$WORK/last.out" || fail "the update did not run the probe as go-trader"
+    grep -q "\[cpu\] $tunit config class: live" "$WORK/last.out" || fail "the update did not classify the roster without paper_only as live"
+    [[ ! -e "/etc/systemd/system/$tunit.d/40-go-trader-cpu.conf" ]] || fail "the update wrote a CPU weight drop-in for a config without paper_only"
+    case "$(unit_prop "$tunit" CPUWeight)" in
+        "[not set]"|100|"") ;;
+        *) fail "$tunit CPUWeight is $(unit_prop "$tunit" CPUWeight) without paper_only" ;;
+    esac
     [[ "$(cat "$tree/scheduler/zz_probe.uid" 2>/dev/null)" == "$(id -u go-trader)" ]] || fail "the probe did not run the script named by the service's config as go-trader"
     runuser -u go-trader -- sh -c "rm -f '$tree/scheduler/zz_probe.py' '$tree/scheduler/zz_probe.uid' && ln -sfn '$cfg_link' '$tree/scheduler/config.json'"
     rm -f "$tree/scheduler/zz_planted.go" "$tree/scheduler/.gitignore"
@@ -1307,7 +1357,7 @@ scenario_update_recovery() {
     chmod 0755 "$WORK"
     mkdir -p "$rec_root"
     chmod 0755 "$rec_root"
-    make_deployment rec "$port" split
+    make_deployment rec "$port" split paper_only
     br=$(git -C "$src" symbolic-ref --short HEAD)
     git init -q --bare -b "$br" "$origin"
     git -C "$src" remote add origin "$origin"
@@ -1320,8 +1370,15 @@ scenario_update_recovery() {
 
     stale_sha=$(root_git "$tree" rev-parse HEAD)
     v1_sha=$(advance_origin "$origin" "release v1")
+    rm -f "/etc/systemd/system/$tunit.d/40-go-trader-cpu.conf"
+    rmdir "/etc/systemd/system/$tunit.d" 2>/dev/null || true
+    systemctl daemon-reload
     expect_exit 0 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
     wait_health "$tunit" "$port"
+    grep -qF "[update] cpu: wrote /etc/systemd/system/$tunit.d/40-go-trader-cpu.conf (CPUWeight=20, install)" "$WORK/last.out" || fail "update.sh did not write the CPU weight drop-in for the paper_only instance"
+    [[ "$(unit_prop "$tunit" CPUWeight)" == "20" ]] || fail "$tunit CPUWeight is $(unit_prop "$tunit" CPUWeight) after update.sh, want 20"
+    wait_unit_log "$tunit" 0 "[priority] paper-only process" || fail "$tunit printed no paper-only [priority] line"
+    [[ "$(unit_log_count "$tunit" 0 "$CPU_LIVE_WARN")" == "0" ]] || fail "a paper_only process under CPUWeight=20 printed the live cpu WARN"
     v1_ver=$(health_field "$port" version)
     [[ "$(root_git "$tree" rev-parse HEAD)" == "$v1_sha" ]] || fail "tree did not advance to v1"
 

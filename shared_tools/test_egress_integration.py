@@ -363,13 +363,6 @@ def test_ccxt_clients_route_through_proxy(tmp_path, servers, subtests):
                 RESULTS["binanceus_proxy"] = [mark(binanceus.httpsProxy), mark(binanceus.socksProxy)]
                 RESULTS["binanceus_session"] = session_state(binanceus.session)
                 attempt("binanceus", lambda: binanceus.fetch_ticker("BTC/USDT"))
-                sys.path.remove(os.path.join(REPO, "platforms", "binanceus"))
-                del sys.modules["adapter"]
-                sys.path.insert(0, os.path.join(REPO, "platforms", "okx"))
-                import adapter as okx_adapter
-                okx = okx_adapter.OKXExchangeAdapter()
-                RESULTS["okx_proxy"] = [mark(okx._exchange.httpsProxy), mark(okx._exchange.socksProxy)]
-                attempt("okx", lambda: okx._exchange.fetch_ticker("BTC/USDT"))
                 import ccxt
                 kraken = ccxt.kraken({"enableRateLimit": False})
                 RESULTS["kraken_proxy"] = [mark(kraken.httpsProxy), mark(kraken.socksProxy)]
@@ -380,16 +373,14 @@ def test_ccxt_clients_route_through_proxy(tmp_path, servers, subtests):
             results = _results(result)
             expected_pair = [None, "policy-url"] if kind.startswith("socks") else ["policy-url", None]
             assert results["binanceus_proxy"] == expected_pair
-            assert results["okx_proxy"] == expected_pair
             assert results["kraken_proxy"] == expected_pair
             assert results["binanceus_session"] == {"trust_env": False, "proxies": {"http": "policy-url", "https": "policy-url"}}
-            for label in ("binanceus", "okx", "kraken"):
+            for label in ("binanceus", "kraken"):
                 assert results[label]["ok"] is False
             _assert_routed(proxy, kind, "api.binance.us")
-            _assert_routed(proxy, kind, "www.okx.com")
             _assert_routed(proxy, kind, "api.kraken.com")
             outcome = _outcome(result)
-            assert outcome["requests"] >= 3
+            assert outcome["requests"] >= 2
             assert outcome["proxy_failures"] == outcome["requests"]
             assert outcome["last_error"]
 

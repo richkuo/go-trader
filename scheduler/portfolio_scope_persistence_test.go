@@ -413,16 +413,16 @@ func TestPartitionChannelRouting(t *testing.T) {
 	})
 	t.Run("SendToPartitionChannels", func(t *testing.T) {
 		paperHL := StrategyConfig{ID: "hl-paper", Type: "perps", Platform: "hyperliquid", Args: []string{"--mode=paper"}}
-		liveOKX := StrategyConfig{ID: "okx-live", Type: "perps", Platform: "okx", Args: []string{"--mode=live"}}
+		liveRH := StrategyConfig{ID: "rh-live", Type: "spot", Platform: "robinhood", Args: []string{"--mode=live"}}
 
 		mockMerged := &mockNotifier{}
 		mnMerged := NewMultiNotifier(notifierBackend{
 			notifier: mockMerged,
-			channels: map[string]string{"hyperliquid": "C", "okx": "C-okx-live"},
+			channels: map[string]string{"hyperliquid": "C", "robinhood": "C-rh-live"},
 		})
 		mnMerged.ReloadConfig(&Config{
-			Discord:    DiscordConfig{Channels: map[string]string{"hyperliquid": "C", "okx": "C-okx-live"}},
-			Strategies: []StrategyConfig{paperHL, liveOKX},
+			Discord:    DiscordConfig{Channels: map[string]string{"hyperliquid": "C", "robinhood": "C-rh-live"}},
+			Strategies: []StrategyConfig{paperHL, liveRH},
 		})
 		mnMerged.SendToPartitionChannels(defaultPaperPartition, "paper message")
 		if len(mockMerged.messages) != 1 || mockMerged.messages[0].channelID != "C" {
@@ -446,10 +446,10 @@ func TestPartitionChannelRouting(t *testing.T) {
 		mockUnused := &mockNotifier{}
 		mnUnused := NewMultiNotifier(notifierBackend{
 			notifier: mockUnused,
-			channels: map[string]string{"hyperliquid-paper": "P", "okx-paper": "O"},
+			channels: map[string]string{"hyperliquid-paper": "P", "robinhood-paper": "O"},
 		})
 		mnUnused.ReloadConfig(&Config{
-			Discord:    DiscordConfig{Channels: map[string]string{"hyperliquid-paper": "P", "okx-paper": "O"}},
+			Discord:    DiscordConfig{Channels: map[string]string{"hyperliquid-paper": "P", "robinhood-paper": "O"}},
 			Strategies: []StrategyConfig{paperHL},
 		})
 		mnUnused.SendToPartitionChannels(defaultPaperPartition, "paper message")
@@ -470,14 +470,14 @@ func TestPartitionChannelRouting(t *testing.T) {
 		mockEmpty := &mockNotifier{}
 		mnEmpty := NewMultiNotifier(notifierBackend{
 			notifier: mockEmpty,
-			channels: map[string]string{"okx": "C-okx-live"},
+			channels: map[string]string{"robinhood": "C-rh-live"},
 		})
 		mnEmpty.ReloadConfig(&Config{
-			Discord:    DiscordConfig{Channels: map[string]string{"okx": "C-okx-live"}},
+			Discord:    DiscordConfig{Channels: map[string]string{"robinhood": "C-rh-live"}},
 			Strategies: []StrategyConfig{paperHL},
 		})
 		mnEmpty.SendToPartitionChannels(defaultPaperPartition, "paper message")
-		if len(mockEmpty.messages) != 1 || mockEmpty.messages[0].channelID != "C-okx-live" {
+		if len(mockEmpty.messages) != 1 || mockEmpty.messages[0].channelID != "C-rh-live" {
 			t.Fatalf("unresolved paper strategies must fall through to every channel; got %+v", mockEmpty.messages)
 		}
 
@@ -493,8 +493,8 @@ func TestPartitionChannelRouting(t *testing.T) {
 	})
 	t.Run("PaperScopeChannelValues", func(t *testing.T) {
 		paperHL := StrategyConfig{ID: "hl-paper", Type: "perps", Platform: "hyperliquid", Args: []string{"--mode=paper"}}
-		paperOKX := StrategyConfig{ID: "okx-paper", Type: "perps", Platform: "okx", Args: []string{"--mode=paper"}}
-		liveOKX := StrategyConfig{ID: "okx-live", Type: "perps", Platform: "okx", Args: []string{"--mode=live"}}
+		paperRH := StrategyConfig{ID: "rh-paper", Type: "spot", Platform: "robinhood", Args: []string{"--mode=paper"}}
+		liveRH := StrategyConfig{ID: "rh-live", Type: "spot", Platform: "robinhood", Args: []string{"--mode=live"}}
 		sourcedHL := StrategyConfig{ID: "hl-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"--mode=paper"}, PaperSource: "btc"}
 		cases := []struct {
 			name     string
@@ -505,8 +505,8 @@ func TestPartitionChannelRouting(t *testing.T) {
 		}{
 			{
 				name:     "bare platform plus live-only",
-				channels: map[string]string{"hyperliquid": "C", "okx": "C-okx-live"},
-				strats:   []StrategyConfig{paperHL, liveOKX},
+				channels: map[string]string{"hyperliquid": "C", "robinhood": "C-rh-live"},
+				strats:   []StrategyConfig{paperHL, liveRH},
 				want:     []string{"C"},
 			},
 			{
@@ -517,24 +517,24 @@ func TestPartitionChannelRouting(t *testing.T) {
 			},
 			{
 				name:     "unused paper key omitted",
-				channels: map[string]string{"hyperliquid-paper": "P", "okx-paper": "O"},
+				channels: map[string]string{"hyperliquid-paper": "P", "robinhood-paper": "O"},
 				strats:   []StrategyConfig{paperHL},
 				want:     []string{"P"},
 			},
 			{
 				name:     "no paper strategy",
-				channels: map[string]string{"hyperliquid": "C", "okx": "C-okx-live"},
-				strats:   []StrategyConfig{liveOKX},
+				channels: map[string]string{"hyperliquid": "C", "robinhood": "C-rh-live"},
+				strats:   []StrategyConfig{liveRH},
 			},
 			{
 				name:     "paper strategy with no matching channel",
-				channels: map[string]string{"okx": "C-okx-live"},
+				channels: map[string]string{"robinhood": "C-rh-live"},
 				strats:   []StrategyConfig{paperHL},
 			},
 			{
 				name:     "dedupes shared value",
-				channels: map[string]string{"hyperliquid": "C", "okx": "C"},
-				strats:   []StrategyConfig{paperHL, paperOKX},
+				channels: map[string]string{"hyperliquid": "C", "robinhood": "C"},
+				strats:   []StrategyConfig{paperHL, paperRH},
 				want:     []string{"C"},
 			},
 			{

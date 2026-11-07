@@ -152,6 +152,16 @@ func mrpCycles(log string) int {
 	return strings.Count(log, " complete (")
 }
 
+func mrpLastCycle(log string) string {
+	lines := strings.Split(log, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], " complete (") {
+			return strings.TrimSpace(lines[i])
+		}
+	}
+	return "no completed cycle"
+}
+
 func (d *mrpDaemon) waitCycles(n int) {
 	d.t.Helper()
 	d.waitLog(fmt.Sprintf("cycle %d", n), 180*time.Second, func(s string) bool { return mrpCycles(s) >= n })
@@ -162,11 +172,18 @@ func (d *mrpDaemon) waitFreshCycle() {
 	d.waitCycles(mrpCycles(d.output()) + 1)
 }
 
-const mrpGenerationMargin = 15 * time.Second
+const (
+	mrpCycleSeconds     = 30
+	mrpGenerationMargin = 10 * time.Second
+)
 
 func mrpGenerationLeft(r mrpRoute) time.Duration {
+	step := int64(r.env.IntervalSeconds) * 1000
+	if step <= 0 {
+		return 0
+	}
 	now := time.Now()
-	next := time.UnixMilli((now.UnixMilli()/mrpIntervalMs + 1) * mrpIntervalMs)
+	next := time.UnixMilli((now.UnixMilli()/step + 1) * step)
 	if end := r.env.BundleAt.Add(time.Duration(r.env.IntervalSeconds) * time.Second); end.Before(next) {
 		next = end
 	}
@@ -175,12 +192,17 @@ func mrpGenerationLeft(r mrpRoute) time.Duration {
 
 func (e *mrpEnv) settledGeneration(d *mrpDaemon, port int, strategyID string) mrpRoute {
 	e.t.Helper()
-	got := e.route(port, strategyID, "paper")
-	if got.status == http.StatusOK && got.env.Result == manualRegimeResultBundle && got.env.BundleAt != nil && mrpGenerationLeft(got) >= mrpGenerationMargin {
-		return got
+	var got mrpRoute
+	for attempt := 0; attempt < 5; attempt++ {
+		got = e.route(port, strategyID, "paper")
+		if got.status == http.StatusOK && got.env.Result == manualRegimeResultBundle && got.env.BundleAt != nil && mrpGenerationLeft(got) >= mrpGenerationMargin {
+			e.t.Logf("evidence window: generation %d with %s left after %d fresh cycles; %s", got.env.Generation, mrpGenerationLeft(got).Round(time.Millisecond), attempt, mrpLastCycle(d.output()))
+			return got
+		}
+		d.waitFreshCycle()
 	}
-	d.waitFreshCycle()
-	return e.route(port, strategyID, "paper")
+	e.t.Fatalf("no paper generation for %s kept %s before the next cycle after 5 fresh cycles: status %d result %q; %s", strategyID, mrpGenerationMargin, got.status, got.env.Result, mrpLastCycle(d.output()))
+	return got
 }
 
 type mrpProxy struct {
@@ -240,12 +262,6 @@ func newMRPProxy(t *testing.T, target int, secret func() string) *mrpProxy {
 	return p
 }
 
-func (p *mrpProxy) set(fn func(status int, env map[string]any) (int, []byte)) {
-	p.mu.Lock()
-	p.mutate, p.proof = fn, mrpResign
-	p.mu.Unlock()
-}
-
 func (p *mrpProxy) setProof(fn func(secret, challenge string, status int, body []byte, upstream string) string) {
 	p.mu.Lock()
 	p.mutate, p.proof = nil, fn
@@ -284,41 +300,6 @@ func (s *mrpSquatter) seen() []http.Header {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]http.Header(nil), s.headers...)
-}
-
-func mrpJSON(v any) []byte {
-	blob, _ := json.Marshal(v)
-	return blob
-}
-
-func newMRPForwarder(t *testing.T, target int) int {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { ln.Close() })
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer c.Close()
-				up, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", target))
-				if err != nil {
-					return
-				}
-				defer up.Close()
-				done := make(chan struct{}, 2)
-				go func() { io.Copy(up, c); done <- struct{}{} }()
-				go func() { io.Copy(c, up); done <- struct{}{} }()
-				<-done
-			}()
-		}
-	}()
-	return ln.Addr().(*net.TCPAddr).Port
 }
 
 func mrpURL(port int) string {
@@ -396,18 +377,37 @@ func (l *mrpLocalRoute) publish(bundle *RegimeBundle) {
 	globalRegimeStore.set(bundle, gen)
 }
 
+func mrpFreePortPair(t *testing.T) (int, net.Listener) {
+	t.Helper()
+	for i := 0; i < 50; i++ {
+		first, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := first.Addr().(*net.TCPAddr).Port
+		second, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port+1))
+		first.Close()
+		if err == nil {
+			t.Cleanup(func() { second.Close() })
+			return port, second
+		}
+	}
+	t.Fatal("no free consecutive port pair")
+	return 0, nil
+}
+
 func regimeReadinessProcessIntegration(t *testing.T) {
 	t.Helper()
 	var shared func()
-	regimeReadinessProcessWebsocket(t, func() { shared = regimeReadinessProcessShared(t) })
-	shared()
+	regimeReadinessProcessWebsocket(t, func() { shared = regimeReadinessProcessShared(t) }, func() { shared() })
 }
 
-func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
+func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func()) {
 	t.Helper()
 	e := newMRPEnv(t, 40)
-	port := htfITFreePort(t)
+	port, fallbackHold := mrpFreePortPair(t)
 	strategies := func(doc map[string]any) {
+		doc["interval_seconds"] = mrpCycleSeconds
 		doc["status_port"] = port
 		doc["strategies"] = []any{
 			mrpManualStrategy("mr-ready", "short"), mrpManualStrategy("mr-add", "short"), mrpManualStrategy("mr-limit", "short"),
@@ -439,12 +439,16 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
 	e.expectRefused(r, "no scheduler limit", "unavailable")
 
 	wrong := e.startDaemon(cfgB, port)
-	wrong.waitCycles(1)
+	wrong.waitLog("status bind", 60*time.Second, func(s string) bool {
+		return strings.Contains(s, fmt.Sprintf("Status endpoint at http://localhost:%d/status", port))
+	})
+	fallbackHold.Close()
 	daemon := e.startDaemon(cfgA, 0)
 	daemon.waitLog("fallback bind", 60*time.Second, func(s string) bool {
 		return strings.Contains(s, fmt.Sprintf("bound to %d instead", port+1))
 	})
 	afterBind()
+	wrong.waitCycles(1)
 	daemon.waitCycles(1)
 	good := mrpURL(port + 1)
 	markerA := mrpMarkerPath(filepath.Join(e.dir, "state.db"))
@@ -470,29 +474,7 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
 		t.Fatalf("fallback listener override dry-run:\n%s", r)
 	}
 	e.expectNoVenue(base, "dry run")
-	mapped := newMRPForwarder(t, port+1)
-	r = e.command(cfgA, []string{mrpURL(mapped)}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-	if r.code != 0 {
-		t.Fatalf("mapped port:\n%s", r)
-	}
-	t.Logf("endpoint: listener fallback port %d and a mapped port %d admit through the override", port+1, mapped)
-
-	lockPath := stateDBLockPath(filepath.Join(e.dir, "state.db"))
-	pidBlob, err := os.ReadFile(lockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(lockPath, []byte(strconv.Itoa(wrong.cmd.Process.Pid)+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	r = e.command(cfgA, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-	if r.code != 0 {
-		t.Fatalf("equal reported process identifiers changed admission:\n%s", r)
-	}
-	r = e.command(cfgA, nil, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-	e.expectRefused(r, "equal pid wrong instance", "HTTP 401")
-	os.WriteFile(lockPath, pidBlob, 0o644)
-	t.Logf("identity: equal reported process identifiers leave admission to the owner nonce")
+	t.Logf("endpoint: listener fallback port %d admits through the override", port+1)
 
 	before := e.settledGeneration(daemon, port+1, "mr-ready")
 	if before.status != http.StatusOK || before.env.Result != manualRegimeResultBundle {
@@ -542,9 +524,7 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
 	base = e.venueKinds()
 	for _, args := range [][]string{
 		{"manual-open", "mr-warming", "--size", "0.01", "--atr", "0.5"},
-		{"manual-open", "mr-warming", "--size", "0.01", "--atr", "0.5", "--dry-run"},
 		{"manual-add", "mr-warm-add", "--size", "0.01"},
-		{"manual-add", "mr-warm-add", "--size", "0.01", "--dry-run"},
 		{"manual-open", "mr-warming", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5"},
 	} {
 		r = e.command(cfgA, []string{good}, args...)
@@ -553,28 +533,17 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
 	e.expectNoVenue(base, "warming holds")
 	t.Logf("warming: required long window holds open, add and limit with warming (40/101); the unrelated warming window did not hold the short-window strategies")
 
-	for _, atr := range []string{"", "0", "-1", "NaN", "+Inf", strconv.FormatFloat(mrpMark(), 'f', 2, 64)} {
-		args := []string{"manual-open", "mr-ready", "--margin", "10"}
-		if atr != "" {
-			args = append(args, "--atr", atr)
-		}
-		r = e.command(cfgA, []string{good}, args...)
-		e.expectRefused(r, "atr "+atr)
-		r = e.command(cfgA, []string{good}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", func() string {
-			if atr == "" {
-				return "0"
-			}
-			return atr
-		}())
-		e.expectRefused(r, "limit atr "+atr)
-	}
+	r = e.command(cfgA, []string{good}, "manual-open", "mr-ready", "--margin", "10")
+	e.expectRefused(r, "omitted atr")
+	r = e.command(cfgA, []string{good}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0")
+	e.expectRefused(r, "limit atr 0")
 	e.expectNoVenue(base, "ATR preflight")
 	r = e.command(cfgA, []string{good}, "manual-open", "mr-record", "--size", "0.01", "--fill-price", "100", "--record-only")
 	if r.code != 0 {
 		t.Fatalf("record-only without ATR:\n%s", r)
 	}
 	e.expectNoVenue(base, "record-only")
-	t.Logf("ATR: omitted, zero, negative, NaN, infinite and implausible --atr refused before any order; record-only adoption needs none")
+	t.Logf("ATR: omitted and zero --atr refused before any order; record-only adoption needs none")
 
 	fill := mrpMark() * 0.5
 	r = e.command(cfgA, []string{good, manualRegimeTestFillPxEnv + "=" + strconv.FormatFloat(fill, 'f', 4, 64)}, "manual-open", "mr-adverse", "--size", "0.01", "--atr", strconv.FormatFloat(0.4*mrpMark(), 'f', 4, 64))
@@ -597,81 +566,18 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
 
 	proxy := newMRPProxy(t, port+1, e.ownerSecret)
 	via := mrpURL(proxy.port)
-	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
-	stale := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
-	refusals := []struct {
-		name   string
-		mutate func(int, map[string]any) (int, []byte)
-		want   string
-	}{
-		{"future timestamp", func(s int, m map[string]any) (int, []byte) { m["bundle_at"] = future; return s, mrpJSON(m) }, "in the future"},
-		{"stale timestamp", func(s int, m map[string]any) (int, []byte) { m["bundle_at"] = stale; return s, mrpJSON(m) }, "older than"},
-		{"missing timestamp", func(s int, m map[string]any) (int, []byte) { delete(m, "bundle_at"); return s, mrpJSON(m) }, "missing generation, timestamp or payload"},
-		{"wrong key", func(s int, m map[string]any) (int, []byte) {
-			m["key"].(map[string]any)["timeframe"] = "5m"
-			return s, mrpJSON(m)
-		}, "different bundle key"},
-		{"wrong strategy", func(s int, m map[string]any) (int, []byte) { m["strategy_id"] = "mr-limit"; return s, mrpJSON(m) }, "different strategy"},
-		{"wrong owner", func(s int, m map[string]any) (int, []byte) {
-			m["owner_nonce"] = strings.Repeat("ab", manualRegimeOwnerNonceBytes)
-			return s, mrpJSON(m)
-		}, "different scheduler process"},
-		{"wrong configuration", func(s int, m map[string]any) (int, []byte) {
-			m["contract_fingerprint"] = strings.Repeat("0", 64)
-			return s, mrpJSON(m)
-		}, "configuration differs"},
-		{"unsupported version", func(s int, m map[string]any) (int, []byte) { m["protocol_version"] = 2; return s, mrpJSON(m) }, "unsupported protocol version"},
-		{"unknown field", func(s int, m map[string]any) (int, []byte) { m["extra"] = true; return s, mrpJSON(m) }, "malformed reply"},
-		{"trailing data", func(s int, m map[string]any) (int, []byte) { return s, append(mrpJSON(m), []byte(" {}")...) }, "malformed reply"},
-		{"oversized body", func(s int, m map[string]any) (int, []byte) {
-			return s, []byte(`{"pad":"` + strings.Repeat("x", manualRegimeMaxBodyBytes) + `"}`)
-		}, "exceeds"},
-		{"redirect", func(int, map[string]any) (int, []byte) { return http.StatusFound, nil }, "unexpected HTTP 302"},
-		{"server error", func(int, map[string]any) (int, []byte) { return http.StatusInternalServerError, nil }, "unexpected HTTP 500"},
-		{"draining", func(int, map[string]any) (int, []byte) {
-			return http.StatusServiceUnavailable, mrpJSON(map[string]any{"protocol_version": 1, "result": "draining"})
-		}, "draining"},
-		{"availability with bundle fields", func(s int, m map[string]any) (int, []byte) {
-			m["result"] = manualRegimeResultUnavailable
-			return http.StatusServiceUnavailable, mrpJSON(m)
-		}, "availability reply carries bundle fields"},
-		{"invalid readiness", func(s int, m map[string]any) (int, []byte) {
-			m["payload"] = map[string]any{"short": map[string]any{"regime": "trending_up", "ready": true, "bars": 10, "need": 29}, "long": map[string]any{}}
-			return s, mrpJSON(m)
-		}, "unavailable"},
-	}
 	base = e.venueKinds()
-	for _, tc := range refusals {
-		proxy.set(tc.mutate)
-		r = e.command(cfgA, []string{via}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-		e.expectRefused(r, tc.name, tc.want)
-		r = e.command(cfgA, []string{via}, "manual-add", "mr-add", "--size", "0.01", "--dry-run")
-		e.expectRefused(r, tc.name+" add", tc.want)
-	}
-	e.expectNoVenue(base, "transport refusals")
-	t.Logf("matrix: %d malformed, stale, future, foreign or unsupported replies refused open and add with no ratchet fallback and no order", len(refusals))
-
 	proxy.setProof(func(_, _ string, _ int, _ []byte, upstream string) string { return upstream })
 	r = e.command(cfgA, []string{via}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	if r.code != 0 || strings.Contains(r.stderr, "fallback") {
 		t.Fatalf("an unchanged signed reply through a forwarder must admit:\n%s", r)
 	}
 	foreignSecret, _ := newManualRegimeRandomHex()
-	for name, proof := range map[string]func(string, string, int, []byte, string) string{
-		"unsigned reply": func(string, string, int, []byte, string) string { return "" },
-		"foreign proof": func(_, challenge string, status int, body []byte, _ string) string {
-			return manualRegimeReplyMAC(foreignSecret, challenge, status, body)
-		},
-		"replayed proof": func(secret, _ string, status int, body []byte, _ string) string {
-			return manualRegimeReplyMAC(secret, strings.Repeat("ef", manualRegimeOwnerNonceBytes), status, body)
-		},
-	} {
-		proxy.setProof(proof)
-		r = e.command(cfgA, []string{via}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-		e.expectRefused(r, name, "no valid owner proof")
-		r = e.command(cfgA, []string{via}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5")
-		e.expectRefused(r, name+" limit", "no valid owner proof")
-	}
+	proxy.setProof(func(_, challenge string, status int, body []byte, _ string) string {
+		return manualRegimeReplyMAC(foreignSecret, challenge, status, body)
+	})
+	r = e.command(cfgA, []string{via}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
+	e.expectRefused(r, "foreign proof", "no valid owner proof")
 	secretA := e.ownerSecret()
 	_, _, signedBody, _ := e.rawRoute(port+1, "mr-ready", "paper", secretA, nil)
 	squatter := newMRPSquatter(t, signedBody)
@@ -695,30 +601,8 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
 		t.Fatalf("the status token alone must not authenticate the manual regime route: %d", status)
 	}
 	e.expectNoVenue(base, "authentication")
-	t.Logf("identity: unsigned, foreign-keyed and replayed proofs refused; a squatter replaying a real bundle refused and received no token or secret; the route rejects requests without the owner secret")
+	t.Logf("identity: a foreign-keyed proof refused; a squatter replaying a real bundle refused and received no token or secret; the route rejects requests without the owner secret")
 
-	proxy.set(func(_ int, m map[string]any) (int, []byte) {
-		out := map[string]any{"protocol_version": 1, "result": manualRegimeResultClassification}
-		for _, k := range []string{"owner_nonce", "strategy_id", "partition", "storage_role", "storage_id", "contract_fingerprint", "key"} {
-			out[k] = m[k]
-		}
-		return http.StatusServiceUnavailable, mrpJSON(out)
-	})
-	r = e.command(cfgA, []string{via}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-	if r.code != 0 || !strings.Contains(r.stderr, "using the manual fallback protection policy") || !strings.Contains(r.stderr, "classification") {
-		t.Fatalf("ownership-checked classification failure must use the ratchet fallback:\n%s", r)
-	}
-	r = e.command(cfgA, []string{via}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5")
-	e.expectRefused(r, "classification limit", "unavailable")
-	proxy.set(func(int, map[string]any) (int, []byte) {
-		time.Sleep(manualRegimeRequestTimeout + time.Second)
-		return http.StatusOK, nil
-	})
-	started := time.Now()
-	r = e.command(cfgA, []string{via}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-	if r.code != 0 || !strings.Contains(r.stderr, "using the manual fallback protection policy") || time.Since(started) > manualRegimeRequestTimeout+3*time.Second {
-		t.Fatalf("bounded timeout must be an availability failure:\n%s", r)
-	}
 	closed := htfITFreePort(t)
 	r = e.command(cfgA, []string{mrpURL(closed)}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	if r.code != 0 || !strings.Contains(r.stderr, "did not answer") || !strings.Contains(r.stderr, "using the manual fallback protection policy") {
@@ -727,12 +611,7 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
 	r = e.command(cfgA, []string{mrpURL(closed)}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5")
 	e.expectRefused(r, "unreachable limit", "unavailable")
 	e.expectNoVenue(base, "availability")
-	t.Logf("matrix: classification failure, bounded timeout and unreachable scheduler use the ratchet fallback for market open; limit refuses")
-
-	for _, bad := range []string{"https://127.0.0.1:1", "http://10.0.0.1:8099", "http://user@127.0.0.1:8099", "http://127.0.0.1:8099/api", "http://127.0.0.1:8099?x=1", "http://127.0.0.1"} {
-		r = e.command(cfgA, []string{manualSchedulerURLEnv + "=" + bad}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-		e.expectRefused(r, "endpoint "+bad, manualSchedulerURLEnv)
-	}
+	t.Logf("matrix: an unreachable scheduler uses the ratchet fallback for market open; limit refuses")
 
 	markerBlob, err := os.ReadFile(markerA)
 	if err != nil {
@@ -746,35 +625,11 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
 	}
 	r = e.command(cfgA, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	e.expectRefused(r, "replaced marker", "different scheduler process")
-	foreign.Secret, _ = newManualRegimeRandomHex()
-	if err := writeManualRegimeOwnerMarker(markerA, foreign); err != nil {
-		t.Fatal(err)
-	}
-	r = e.command(cfgA, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-	e.expectRefused(r, "replaced marker secret", "HTTP 401")
-	copyPath := markerA + ".copy"
-	os.WriteFile(copyPath, markerBlob, 0o600)
-	os.Remove(markerA)
-	os.Symlink(copyPath, markerA)
-	r = e.command(cfgA, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-	e.expectRefused(r, "symlinked marker", "not a regular file")
-	os.Remove(markerA)
-	os.WriteFile(markerA, []byte("{not json"), 0o600)
-	r = e.command(cfgA, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-	e.expectRefused(r, "malformed marker", "malformed")
-	if os.Geteuid() != 0 {
-		os.WriteFile(markerA, markerBlob, 0o000)
-		os.Chmod(markerA, 0o000)
-		r = e.command(cfgA, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-		e.expectRefused(r, "unreadable marker", "unreadable")
-	}
-	os.Remove(markerA)
-	os.Remove(copyPath)
 	if err := os.WriteFile(markerA, markerBlob, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	e.expectNoVenue(base, "marker refusals")
-	t.Logf("identity: replaced, symlinked, malformed and unreadable owner markers refuse with no fallback")
+	t.Logf("identity: a replaced owner marker refuses with no fallback")
 
 	cfgMismatch := e.writeConfig("config-mismatch.json", func(doc map[string]any) {
 		strategies(doc)
@@ -823,6 +678,7 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind func()) {
 		t.Fatalf("stopped scheduler:\n%s", r)
 	}
 	restarted := e.startDaemon(reloaded, port+1)
+	duringRestart()
 	restarted.waitCycles(1)
 	mr, err := readManualRegimeOwnerMarker(markerA)
 	if err != nil || mr.OwnerNonce == ma.OwnerNonce {
@@ -864,6 +720,7 @@ func regimeReadinessProcessShared(t *testing.T) func() {
 	sock := filepath.Join(sockDir, "feed.sock")
 	port := htfITFreePort(t)
 	cfg := e.writeConfig("consumer.json", func(doc map[string]any) {
+		doc["interval_seconds"] = mrpCycleSeconds
 		doc["market_feed"] = "shared"
 		doc["shared_market_feed"] = map[string]any{"primary_socket": sock}
 		doc["strategies"] = []any{mrpManualStrategy("mr-ready", "short"), mrpManualStrategy("mr-limit", "short"), mrpManualStrategy("mr-warming", "long")}

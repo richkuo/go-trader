@@ -100,22 +100,6 @@ def _grid_fits_the_live_window():
             assert bool(out["aroon_valid"].iloc[period + 1])
 
 
-INVALID_PARAMS = [
-    ({"period": True}, "period"),
-    ({"period": 2.5}, "period must be an integer"),
-    ({"period": 1}, "period"),
-    ({"period": 199}, "period"),
-    ({"period": "25"}, "period"),
-    ({"period": None}, "period"),
-    ({"strength": False}, "strength"),
-    ({"strength": -0.1}, "strength"),
-    ({"strength": 100.01}, "strength"),
-    ({"strength": float("nan")}, "strength"),
-    ({"strength": float("inf")}, "strength"),
-    ({"strength": "70"}, "strength must be a number"),
-]
-
-
 def test_crossing_entry_rule_strength_and_extrema(subtests):
     with subtests.test(case="rising_and_falling_without_a_crossing"):
         _rising_and_falling_series_hold_without_a_crossing()

@@ -12,7 +12,6 @@ HYPERLIQUID_SOLO = ("check_hyperliquid.py", ["vortex_trend", "BTC", "4h"])
 SOLO_SCRIPTS = [
     HYPERLIQUID_SOLO,
     ("check_topstep.py", ["rsi", "ES", "1h"]),
-    ("check_okx.py", ["rsi", "BTC", "1h", "--inst-type=swap"]),
     ("check_robinhood.py", ["rsi", "BTC", "1h"]),
     ("check_strategy.py", ["rsi", "BTC/USDT", "1h"]),
 ]

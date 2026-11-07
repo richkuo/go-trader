@@ -16,7 +16,7 @@ func invertCaseInvertOpenSignalEchoAndResolver(t *testing.T) {
 		sc.Direction = DirectionShort
 	})
 	var refs string
-	runHyperliquidCheckFn = func(script string, args []string) (*HyperliquidResult, string, error) {
+	runHyperliquidCheckFn = func(_ pythonChildPriority, script string, args []string) (*HyperliquidResult, string, error) {
 		for i, arg := range args {
 			if arg == "--strategy-refs" && i+1 < len(args) {
 				refs = args[i+1]
@@ -35,7 +35,7 @@ func invertCaseInvertOpenSignalEchoAndResolver(t *testing.T) {
 		t.Fatalf("refs %s missing invert_open_signal", refs)
 	}
 
-	runHyperliquidCheckFn = func(string, []string) (*HyperliquidResult, string, error) {
+	runHyperliquidCheckFn = func(pythonChildPriority, string, []string) (*HyperliquidResult, string, error) {
 		return &HyperliquidResult{
 			Strategy: "breakout", Symbol: "ETH", Timeframe: "1h", Signal: -1, Price: 2000, Mode: "paper",
 		}, "", nil
@@ -45,7 +45,7 @@ func invertCaseInvertOpenSignalEchoAndResolver(t *testing.T) {
 	}
 
 	plain := hlBatchStrategy("hl-plain", "breakout", "ETH", "1h")
-	runHyperliquidCheckFn = func(string, []string) (*HyperliquidResult, string, error) {
+	runHyperliquidCheckFn = func(pythonChildPriority, string, []string) (*HyperliquidResult, string, error) {
 		return &HyperliquidResult{
 			Strategy: "breakout", Symbol: "ETH", Timeframe: "1h", Signal: 1, Price: 2000, Mode: "paper",
 			StrategyDecisionFields: StrategyDecisionFields{OpenSignalInverted: true},
@@ -182,7 +182,7 @@ func invertCaseInvertedCloseReachesLiveAndPaper(t *testing.T) {
 				posCtx.OnChainTPBlocked = hlOnChainTPBlockedTiersUnplaced
 			}
 			var refs string
-			runHyperliquidCheckFn = func(script string, args []string) (*HyperliquidResult, string, error) {
+			runHyperliquidCheckFn = func(_ pythonChildPriority, script string, args []string) (*HyperliquidResult, string, error) {
 				for i, arg := range args {
 					if arg == "--strategy-refs" && i+1 < len(args) {
 						refs = args[i+1]
@@ -237,7 +237,7 @@ func invertCaseInvertedScaleInCloseIsNotAnAdd(t *testing.T) {
 		sc.Direction = DirectionShort
 		sc.Args = []string{"breakout", "ETH", "1h", "--mode=live"}
 	})
-	runHyperliquidCheckFn = func(string, []string) (*HyperliquidResult, string, error) {
+	runHyperliquidCheckFn = func(pythonChildPriority, string, []string) (*HyperliquidResult, string, error) {
 		return &HyperliquidResult{
 			Strategy: "breakout", Symbol: "ETH", Timeframe: "1h", Signal: 1, Price: 2000, Mode: "live",
 			StrategyDecisionFields: StrategyDecisionFields{CloseFraction: 1, OpenSignalInverted: true},
@@ -295,7 +295,7 @@ func invertCaseManualInvertDoesNotChangeCloseEval(t *testing.T) {
 		InvertSignal: true, CloseStrategy: &StrategyRef{Name: "atr_stop"},
 	}
 	var refs string
-	runHyperliquidCheckFn = func(script string, args []string) (*HyperliquidResult, string, error) {
+	runHyperliquidCheckFn = func(_ pythonChildPriority, script string, args []string) (*HyperliquidResult, string, error) {
 		for i, arg := range args {
 			if arg == "--strategy-refs" && i+1 < len(args) {
 				refs = args[i+1]

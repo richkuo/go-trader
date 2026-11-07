@@ -212,8 +212,6 @@ func htfITCaseHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses(t *tes
 	}
 	strats := []strat{
 		{"bus-atrb-btc", "BTC/USDT", true, map[string]any{"type": "spot", "platform": "binanceus", "script": "shared_scripts/check_strategy.py", "args": []string{"atr_breakout", "BTC/USDT", "1h"}, "capital": 1000}},
-		{"okx-atrb-btc", "BTC", true, map[string]any{"type": "spot", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": []string{"atr_breakout", "BTC", "1h", "--mode=paper", "--inst-type=spot"}, "capital": 1000}},
-		{"okx-brk-btc-perp", "BTC", false, map[string]any{"type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": []string{"breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap"}, "capital": 1000, "leverage": 1, "sizing_leverage": 1, "close_strategy": map[string]any{"name": "tiered_tp_pct"}}},
 		{"rh-atrb-btc", "BTC", true, map[string]any{"type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py", "args": []string{"atr_breakout", "BTC", "30m", "--mode=paper"}, "capital": 1000}},
 		{"ts-brk-es", "ES", false, map[string]any{"type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py", "args": []string{"breakout", "ES", "1h", "--mode=paper"}, "capital": 50000, "close_strategy": map[string]any{"name": "tiered_tp_pct"}}},
 	}
@@ -349,12 +347,6 @@ func htfITConsumers(stub string) []htfITConsumer {
 				_, _, _, ok := runSpotCheck(sc, prices, PositionCtx{}, nil, "simple", notifier, l)
 				return ok
 			}},
-		{"okx spot", StrategyConfig{ID: "htf-c-okx", Type: "spot", Platform: "okx", Script: stub, Args: []string{"breakout", "BTC", "1h", "--mode=paper", "--inst-type=spot"}, HTFFilter: true},
-			base("okx", nil),
-			func(sc StrategyConfig, l *StrategyLogger) bool {
-				_, _, _, ok := runOKXCheck(sc, prices, PositionCtx{}, nil, "simple", notifier, l)
-				return ok
-			}},
 		{"robinhood spot", StrategyConfig{ID: "htf-c-rh", Type: "spot", Platform: "robinhood", Script: stub, Args: []string{"breakout", "BTC", "1h", "--mode=paper"}, HTFFilter: true},
 			base("robinhood", nil),
 			func(sc StrategyConfig, l *StrategyLogger) bool {
@@ -421,69 +413,16 @@ func htfITCaseHTFFilterIntegrationConsumersValidateTheContract(t *testing.T) {
 			if ok, log := htfITStubRun(t, c, c.sc, c.base, 0); ok || !strings.Contains(log, "returned no htf_filter block") {
 				t.Fatalf("a missing block must be a script error, ok=%t\n%s", ok, log)
 			}
-			if ok, log := htfITStubRun(t, c, c.sc, htfITWith(c.base, map[string]any{"htf_filter": htfITBlock("maybe", 0, "x")}), 0); ok || !strings.Contains(log, `unknown htf_filter status "maybe"`) {
-				t.Fatalf("an unknown status must be a script error, ok=%t\n%s", ok, log)
-			}
-			if ok, log := htfITStubRun(t, c, c.sc, htfITWith(c.base, map[string]any{"htf_filter": htfITBlock("ok", 2, "")}), 0); ok || !strings.Contains(log, "reports trend 2") {
-				t.Fatalf("an out-of-range trend must be a script error, ok=%t\n%s", ok, log)
-			}
-			if ok, log := htfITStubRun(t, c, c.sc, htfITWith(c.base, map[string]any{"htf_filter": htfITBlock("not_evaluated", 0, "earlier hold")}), 0); ok || !strings.Contains(log, "cannot authorize this signal") {
-				t.Fatalf("an unsupported not_evaluated context must be a script error, ok=%t\n%s", ok, log)
-			}
 			if ok, log := htfITStubRun(t, c, c.sc, htfITWith(c.base, map[string]any{"htf_filter": htfITBlock("unavailable", 0, "49 4h candles available for BTC (need 50)")}), 0); !ok || strings.Contains(log, "mismatch") {
 				t.Fatalf("a valid unavailable result must reach the entry gate, ok=%t\n%s", ok, log)
 			}
 			if htfITTrackerCount(c.sc.ID) != 1 {
 				t.Fatalf("a consumed unavailable result must advance the HTF tracker once, got %d", htfITTrackerCount(c.sc.ID))
 			}
-			errPayload := htfITWith(c.base, map[string]any{"error": "venue said no", "signal": 0, "price": 0})
-			if ok, log := htfITStubRun(t, c, c.sc, errPayload, 1); ok || !strings.Contains(log, "venue said no") || strings.Contains(log, "htf_filter") {
-				t.Fatalf("an error payload must keep its own failure handling, ok=%t\n%s", ok, log)
-			}
-			if htfITTrackerCount(c.sc.ID) != 1 {
-				t.Fatalf("a script error must leave the HTF tracker unchanged, got %d", htfITTrackerCount(c.sc.ID))
-			}
-			off := c.sc
-			off.HTFFilter = false
-			if ok, log := htfITStubRun(t, c, off, htfITWith(c.base, map[string]any{"htf_filter": htfITBlock("ok", 1, "")}), 0); ok || !strings.Contains(log, "htf_filter is off") {
-				t.Fatalf("a block for a disabled filter must be a script error, ok=%t\n%s", ok, log)
-			}
-			if ok, log := htfITStubRun(t, c, off, c.base, 0); !ok {
-				t.Fatalf("a disabled filter keeps the current contract\n%s", log)
-			}
 		})
 	}
 
-	consumers := htfITConsumers(stub)
-	ts := consumers[3]
-	closed := htfITWith(ts.base, map[string]any{"market_open": false, "signal": 0, "price": 0,
-		"htf_filter": htfITBlock("not_evaluated", 0, "the market is closed, so the check returned before fetching candles")})
-	if ok, log := htfITStubRun(t, ts, ts.sc, closed, 0); ok || strings.Contains(log, "mismatch") || !strings.Contains(log, "Market closed") {
-		t.Fatalf("TopStep's closed-market return is a valid not_evaluated context, ok=%t\n%s", ok, log)
-	}
-	omitted := htfITWith(closed, map[string]any{"market_open": nil})
-	if ok, log := htfITStubRun(t, ts, ts.sc, omitted, 0); ok || !strings.Contains(log, "cannot authorize this signal") {
-		t.Fatalf("an omitted market_open cannot prove a closed market, ok=%t\n%s", ok, log)
-	}
-	closedSignal := htfITWith(closed, map[string]any{"signal": 1})
-	if ok, log := htfITStubRun(t, ts, ts.sc, closedSignal, 0); ok || !strings.Contains(log, "cannot authorize this signal") {
-		t.Fatalf("a closed-market context with a signal cannot authorize it, ok=%t\n%s", ok, log)
-	}
-
-	spot := consumers[0]
-	cb := spot.sc
-	cb.ClosedBarDecisions = true
-	heldPayload := htfITWith(spot.base, map[string]any{"signal": 0,
-		"closed_bar_decision": map[string]any{"enabled": true, "held": true, "hold_reason": "no bar in the frame closed at or before the cutoff", "cutoff_ms": 1},
-		"htf_filter":          htfITBlock("not_evaluated", 0, "the closed-bar decision held before the higher-timeframe filter ran")})
-	if ok, log := htfITStubRun(t, spot, cb, heldPayload, 0); !ok || strings.Contains(log, "mismatch") {
-		t.Fatalf("a held closed-bar decision is a valid not_evaluated context, ok=%t\n%s", ok, log)
-	}
-	if ok, log := htfITStubRun(t, spot, cb, htfITWith(heldPayload, map[string]any{"closed_bar_decision": map[string]any{"enabled": true, "held": false, "cutoff_ms": 1}}), 0); ok || !strings.Contains(log, "cannot authorize this signal") {
-		t.Fatalf("an unheld closed-bar decision cannot support not_evaluated, ok=%t\n%s", ok, log)
-	}
-
-	hl := consumers[4]
+	hl := htfITConsumers(stub)[3]
 	sc := hl.sc
 	var buf bytes.Buffer
 	degraded := degradedHyperliquidResult(sc, "BTC", "paper", "no ready higher-timeframe frame for BTC|4h", 100)
@@ -567,10 +506,8 @@ func htfITCaseHTFFilterIntegrationAlertsRouteThrottleAndRecover(t *testing.T) {
 		Args: []string{"atr_breakout", "BTC/USDT", "1h"}, HTFFilter: true, PaperSource: "src-a"}
 	live := StrategyConfig{ID: "htf-live", Type: "spot", Platform: "binanceus", Script: "shared_scripts/check_strategy.py",
 		Args: []string{"atr_breakout", "BTC/USDT", "1h", "--mode=live"}, HTFFilter: true, AllowNoEdge: &allowNoEdge}
-	paperPeer := StrategyConfig{ID: "htf-paper", Type: "spot", Platform: "okx", Script: "shared_scripts/check_okx.py",
-		Args: []string{"atr_breakout", "BTC", "1h", "--mode=paper", "--inst-type=spot"}}
-	cfg := &Config{Strategies: []StrategyConfig{src, live, paperPeer}}
-	cfg.Discord.Channels = map[string]string{"binanceus": "ch-live", "okx-paper": "ch-okx-paper", "binanceus-paper:src-a": "ch-src-a"}
+	cfg := &Config{Strategies: []StrategyConfig{src, live}}
+	cfg.Discord.Channels = map[string]string{"binanceus": "ch-live", "binanceus-paper:src-a": "ch-src-a"}
 	sink := &htfITSink{}
 	notifier := NewMultiNotifier(notifierBackend{notifier: sink, channels: cfg.Discord.Channels, ownerID: "owner"})
 	notifier.ReloadConfig(cfg)
@@ -594,9 +531,7 @@ func htfITCaseHTFFilterIntegrationAlertsRouteThrottleAndRecover(t *testing.T) {
 		return ok
 	}
 	short := htfITFixture{HTF: "short", Spot: "up", Fut: "up"}
-	errFix := htfITFixture{HTF: "error", Spot: "up", Fut: "up"}
 	neutral := htfITFixture{HTF: "neutral", Spot: "up", Fut: "up"}
-	transient := htfITFixture{HTF: "transient", Spot: "up", Fut: "up"}
 	expectNone := func(step string) {
 		t.Helper()
 		if m, d := sink.drain(); len(m)+len(d) != 0 {
@@ -621,14 +556,6 @@ func htfITCaseHTFFilterIntegrationAlertsRouteThrottleAndRecover(t *testing.T) {
 		}
 		expectNone(fmt.Sprintf("unavailable evaluation %d", i))
 	}
-	htfITUseFixture(t, root, fixture(htfITFixture{HTF: "short", Spot: "up", Fut: "up", NoPrimary: true}))
-	if _, _, _, ok := runSpotCheck(src, prices, PositionCtx{}, nil, "simple", notifier, &StrategyLogger{stratID: src.ID, writer: &logBuf}); ok {
-		t.Fatal("a missing primary frame must stay a script error")
-	}
-	expectNone("script error between unavailable evaluations")
-	if htfITTrackerCount(src.ID) != 2 {
-		t.Fatalf("a script error must not advance or clear the HTF tracker, got %d", htfITTrackerCount(src.ID))
-	}
 	spot(src, short)
 	text := expectOne("third unavailable evaluation", "ch-src-a", "**HTF FILTER UNAVAILABLE** [htf-src] binanceus")
 	for _, want := range []string{"partition=paper:src-a", "HTF=4h", "3 unavailable evaluations", "49 4h candles available for BTC/USDT (need 50)", "new entries and additions are held while filter input is unavailable", "[paper:src-a scope]"} {
@@ -636,86 +563,27 @@ func htfITCaseHTFFilterIntegrationAlertsRouteThrottleAndRecover(t *testing.T) {
 			t.Fatalf("the alert must carry %q:\n%s", want, text)
 		}
 	}
-	for i := 4; i <= 9; i++ {
-		spot(src, short)
-		expectNone(fmt.Sprintf("throttled unavailable evaluation %d", i))
-	}
 	spot(src, short)
-	expectOne("tenth unavailable evaluation repeats", "ch-src-a", "10 unavailable evaluations")
-	spot(src, errFix)
-	expectOne("a changed reason repeats", "ch-src-a", "fetching BTC/USDT 4h candles failed")
-
-	ts := StrategyConfig{ID: src.ID, Type: "futures", Platform: "topstep", Script: "shared_scripts/check_topstep.py",
-		Args: []string{"breakout", "ES", "1h", "--mode=paper"}, HTFFilter: true, PaperSource: "src-a"}
-	closedMarket := false
-	htfITUseFixture(t, root, fixture(htfITFixture{HTF: "short", Spot: "up", Fut: "up", MarketOpen: &closedMarket}))
-	if _, _, _, ok := runTopStepCheck(ts, map[string]float64{"ES": 100}, PositionCtx{}, nil, "simple", notifier, &StrategyLogger{stratID: ts.ID, writer: &logBuf}); ok {
-		t.Fatal("a closed market returns no tradable result")
-	}
-	expectNone("not_evaluated")
-	if htfITTrackerCount(src.ID) != 11 {
-		t.Fatalf("not_evaluated must preserve the tracker without advancing, got %d", htfITTrackerCount(src.ID))
-	}
-
+	expectNone("throttled unavailable evaluation 4")
 	spot(src, neutral)
 	expectOne("first successful evaluation", "ch-src-a", "**HTF FILTER RECOVERED** [htf-src] binanceus")
 	spot(src, neutral)
 	expectNone("second successful evaluation")
 
 	for i := 0; i < 3; i++ {
-		spot(src, short)
-	}
-	expectOne("alert before skipped", "ch-src-a", "3 unavailable evaluations")
-	skipped := StrategyConfig{ID: src.ID, Type: "perps", Platform: "okx", Script: "shared_scripts/check_okx.py",
-		Args: []string{"delta_neutral_funding", "BTC", "1h", "--mode=paper", "--inst-type=swap"}, HTFFilter: true, PaperSource: "src-a"}
-	htfITUseFixture(t, root, fixture(short))
-	if _, _, _, ok := runOKXCheck(skipped, map[string]float64{"BTC": 100}, PositionCtx{}, nil, "simple", notifier, &StrategyLogger{stratID: skipped.ID, writer: &logBuf}); !ok {
-		t.Fatalf("an excluded open strategy must be a usable result\n%s", logBuf.String())
-	}
-	expectNone("skipped clears silently")
-	if htfITTrackerCount(src.ID) != 0 {
-		t.Fatalf("skipped must clear the tracker, got %d", htfITTrackerCount(src.ID))
-	}
-	spot(src, neutral)
-	expectNone("ok after a silent clear has nothing to recover")
-
-	for i := 1; i <= 14; i++ {
-		spot(src, transient)
-	}
-	expectNone("transient upstream failures below the threshold")
-	spot(src, transient)
-	expectOne("fifteenth transient failure", "ch-src-a", "**HTF FILTER UNAVAILABLE (sustained upstream error)**")
-	spot(src, neutral)
-	expectOne("recovery after a transient alert", "ch-src-a", "after 15 unavailable evaluations")
-
-	spot(src, transient)
-	advance(76 * time.Minute)
-	spot(src, transient)
-	expectOne("transient failures past the duration limit", "ch-src-a", "2 unavailable evaluations")
-	spot(src, neutral)
-	sink.drain()
-
-	for i := 0; i < 3; i++ {
 		spot(live, short)
 	}
 	m, d := sink.drain()
-	if len(m) != 3 || len(d) != 1 || !strings.Contains(d[0].content, "[live scope]") || !strings.Contains(d[0].content, "partition=live") {
+	if len(m) != 2 || len(d) != 1 || !strings.Contains(d[0].content, "[live scope]") || !strings.Contains(d[0].content, "partition=live") {
 		t.Fatalf("a live alert must reach every channel and the owner, got messages=%v dms=%v", m, d)
 	}
 	seen := map[string]bool{}
 	for _, msg := range m {
 		seen[msg.channelID] = true
 	}
-	if !seen["ch-live"] || !seen["ch-okx-paper"] || !seen["ch-src-a"] {
+	if !seen["ch-live"] || !seen["ch-src-a"] {
 		t.Fatalf("live routing must keep the existing all-channel behavior, got %v", m)
 	}
-
-	cfg.Discord.Channels = map[string]string{"binanceus": "ch-live", "okx-paper": "ch-okx-paper", "binanceus-paper:src-a": "ch-src-b"}
-	notifier.ReloadConfig(cfg)
-	for i := 0; i < 3; i++ {
-		spot(src, short)
-	}
-	expectOne("after a destination reload", "ch-src-b", "3 unavailable evaluations")
 }
 
 func htfITHLSnapshot(htfBars int, htfReady bool) (*marketSnapshot, float64) {

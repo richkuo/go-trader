@@ -19,8 +19,8 @@ FOUR_POSITIONS = json.dumps([
 ])
 CAP_REASON = "Max positions reached (4/4)"
 QP_KEYS = (
-    "QP_CLOSE", "QP_QUOTE", "QP_SHAPE", "QP_NOW", "QP_TICKERS", "QP_CLOSES", "QP_CANDLES", "QP_OKX_FILL",
-    "QP_DAILY", "QP_OPTION_QUOTE", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER", "QP_OKX_OPTIONS",
+    "QP_CLOSE", "QP_QUOTE", "QP_SHAPE", "QP_NOW", "QP_TICKERS", "QP_CLOSES", "QP_CANDLES",
+    "QP_DAILY", "QP_OPTION_QUOTE", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER",
     "QP_STDOUT_NOISE", "QP_ALL_CLOSED",
 )
 
@@ -151,7 +151,6 @@ VOL_PLATFORMS = {
     "deribit": ("BTC", 365, [0.631, 78.8]),
     "ibkr": ("BTC", 365, [0.631, 78.8]),
     "luno": ("BTC", 365, [0.631, 78.8]),
-    "okx": ("BTC", 365, [0.631, 78.8]),
     "robinhood": ("SPY", 252, [0.5243, 78.8]),
 }
 READ_FAILED = "volatility unavailable: daily history read failed"
@@ -341,7 +340,6 @@ def _venue_ok(platform, mark, spot, out):
 
 VENUES = {
     "deribit": {},
-    "okx": {"QP_OKX_OPTIONS": "1"},
 }
 VENUE_FAILURES = {
     "deribit": {
@@ -351,14 +349,6 @@ VENUE_FAILURES = {
         "missing_mark": ("missing", "option quote unavailable: deribit mark is not positive"),
         "zero_mark": ("0", "option quote unavailable: deribit mark is not positive"),
         "nan_mark": ("nan", "option quote unavailable: deribit mark is not positive"),
-    },
-    "okx": {
-        "read_error": ("error", "option quote unavailable: okx ticker read failed"),
-        "rate_limited": ("429", "option quote unavailable: okx ticker read failed (upstream status 429)"),
-        "server_error": ("503", "option quote unavailable: okx ticker read failed (upstream status 503)"),
-        "missing_mark": ("missing", "option quote unavailable: okx mark is not positive"),
-        "zero_mark": ("0", "option quote unavailable: okx mark is not positive"),
-        "nan_mark": ("nan", "option quote unavailable: okx mark is not positive"),
     },
 }
 
@@ -394,11 +384,6 @@ def test_venue_quotes_price_without_volatility_and_never_substitute(tmp_path, su
                 proc, _ = _run(["protective_puts", "BTC", f"--platform={platform}"], run_dir, "[]",
                                extra=dict(base, QP_OPTION_QUOTE=quote))
                 _handled_error(proc, want)
-    with subtests.test(platform="okx", case="no_listed_option"):
-        run_dir = tmp_path / "okx-unlisted"
-        run_dir.mkdir()
-        proc, _ = _run(["protective_puts", "BTC", "--platform=okx"], run_dir, "[]", extra={"QP_QUOTE": spot, "QP_OKX_OPTIONS": "empty"})
-        _handled_error(proc, "option quote unavailable: no listed okx option matches")
 
 
 def test_rank_free_model_entries_price_from_measured_volatility(tmp_path, subtests):

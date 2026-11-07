@@ -42,6 +42,7 @@ var knownSubcommands = []string{
 	"robinhood-login",
 	"notify-broker",
 	"egress-anchor",
+	"cpu-class",
 }
 
 func validateDaemonInvocation(extra []string) error {
@@ -121,6 +122,8 @@ func main() {
 			os.Exit(runQuoteReplay(os.Args[2:]))
 		case "robinhood-login":
 			os.Exit(runRobinhoodLogin(os.Args[2:]))
+		case "cpu-class":
+			os.Exit(runCPUClass(os.Args[2:]))
 		}
 	}
 
@@ -306,6 +309,12 @@ func main() {
 	if msg := CheckStatePresence(cfg.DBFile, cfg.Strategies); msg != "" && !AllowMissingState() {
 		fmt.Fprintln(os.Stderr, msg)
 		missingStateWarning = msg
+	}
+	if !readOnlyReport {
+		fmt.Println(configurePaperChildPriority(cfg.Strategies, cfg.PaperOnly))
+		if w := liveProcessCPUWeightWarning(cfg); w != "" {
+			fmt.Println(w)
+		}
 	}
 	if paper, ok := storageLayoutCfg.spec(storageRolePaper); ok {
 		if _, statErr := os.Stat(paper.Canonical); statErr != nil {
@@ -570,6 +579,8 @@ func main() {
 	} else {
 		server.tuning = tuningManager
 	}
+	feedbackAnalysisManager := startTradeFeedbackAnalysis(server, store, cfg.StatusToken, runTradeFeedbackValidator)
+	defer feedbackAnalysisManager.shutdown()
 	markSchedulerStarted()
 	if tuningManager != nil {
 		go tuningManager.run(shutdownReadOnlyCtx)
@@ -1000,7 +1011,7 @@ func main() {
 			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier, cfg.Regime)
 		}
 
-		recoverEntryIntents(cfg, state, store, &mu, notifier, logMgr, time.Now())
+		recoverEntryIntents(cfg, state, store, &mu, notifier, logMgr, tradingNow())
 		recoverRobinhoodOrders(cfg, state, store, &mu, notifier, logMgr, time.Now())
 		notifyRobinhoodHeldBooks(state, cfg.Strategies, &mu, notifier, time.Now())
 
@@ -3096,7 +3107,7 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 	args = appendAllowNoEdgeArg(args, sc)
 	logger.Running(sc.Script, args)
 
-	result, stderr, err := RunSpotCheck(sc.Script, args)
+	result, stderr, err := RunSpotCheck(checkChildPriority(sc), sc.Script, args)
 	if err != nil {
 		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
@@ -3247,7 +3258,7 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier,
 	}
 	logger.Running(sc.Script, args)
 
-	result, stderr, err := RunOptionsCheckWithStdin(sc.Script, args, posJSON)
+	result, stderr, err := RunOptionsCheckWithStdin(checkChildPriority(sc), sc.Script, args, posJSON)
 	if err != nil {
 		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
@@ -3533,9 +3544,9 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	if marketStdin != nil && feed != nil && feed.StdinRun != nil {
 		result, stderr, err = runHyperliquidCheckStdout(feed.StdinRun(sc.Script, args, marketStdin))
 	} else if marketStdin != nil {
-		result, stderr, err = runHyperliquidCheckWithStdinFn(sc.Script, args, marketStdin)
+		result, stderr, err = runHyperliquidCheckWithStdinFn(checkChildPriority(*sc), sc.Script, args, marketStdin)
 	} else {
-		result, stderr, err = runHyperliquidCheckFn(sc.Script, args)
+		result, stderr, err = runHyperliquidCheckFn(checkChildPriority(*sc), sc.Script, args)
 	}
 	errMsg, mode := "", scriptFailureCrash
 	switch {
@@ -4107,7 +4118,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 	args = appendAllowNoEdgeArg(args, sc)
 	logger.Running(sc.Script, args)
 
-	result, stderr, err := RunTopStepCheck(sc.Script, args)
+	result, stderr, err := RunTopStepCheck(checkChildPriority(sc), sc.Script, args)
 	if err != nil {
 		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
@@ -4316,7 +4327,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 	args = appendAllowNoEdgeArg(args, sc)
 	logger.Running(sc.Script, args)
 
-	result, stderr, err := RunRobinhoodCheck(sc.Script, args)
+	result, stderr, err := RunRobinhoodCheck(checkChildPriority(sc), sc.Script, args)
 	if err != nil {
 		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
@@ -4746,7 +4757,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	args = appendAllowNoEdgeArg(args, sc)
 	logger.Running(sc.Script, args)
 
-	result, stderr, err := RunOKXCheck(sc.Script, args)
+	result, stderr, err := RunOKXCheck(checkChildPriority(sc), sc.Script, args)
 	return completeOKXCheck(sc, args, result, stderr, err, prices, notifier, logger)
 }
 

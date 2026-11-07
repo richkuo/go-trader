@@ -375,8 +375,6 @@ _CONFIG_AUTOMATIC_PLATFORM_CASES = [
     ("hl-strat", "perps", None, "hyperliquid"),
     ("rh-strat", "spot", None, "robinhood"),
     ("hl-strat", "spot", "robinhood", "robinhood"),
-    ("okx-strat", "perps", None, "okx-perps"),
-    ("okx-strat", "spot", None, "okx"),
     ("luno-strat", "spot", None, "luno"),
 ]
 
@@ -476,8 +474,6 @@ def _assert_parity_engine_costs(df, report, engine, metrics, commission, slippag
 
 _PARITY_ENGINE_FEE_CASES = [
     ("rh-strat", "spot", None, "robinhood", 0.0),
-    ("okx-strat", "perps", None, "okx-perps", 0.0005),
-    ("okx-strat", "spot", None, "okx", 0.001),
     ("luno-strat", "spot", None, "luno", 0.01),
     ("hl-strat", "perps", None, "hyperliquid", 0.00045),
     ("test-strat", "manual", "hyperliquid", "hyperliquid", 0.00045),
@@ -503,32 +499,6 @@ def test_config_mode_fills_charge_the_resolved_fee_in_the_real_engine(tmp_path, 
 
 
 def test_config_mode_platform_scope_and_refusals(tmp_path, monkeypatch, capsys, subtests):
-    df = _ohlcv(300)
-    with subtests.test("automatic okx perps requests no hyperliquid funding"):
-        with monkeypatch.context() as mp:
-            calls = _guard_funding(mp)
-            cfg = config_from_live_config(_write_live_config(tmp_path, "perps", "okx-strat"), "okx-strat")
-            assert cfg.funding_mode == "charge"
-            parity_diff.extract_fills_report(df, cfg)
-            assert calls == []
-    with subtests.test("explicit hyperliquid proxy prices hyperliquid funding"):
-        with monkeypatch.context() as mp:
-            calls = _guard_funding(mp, allow=True)
-            cfg = config_from_live_config(_write_live_config(tmp_path, "perps", "okx-strat"),
-                                          "okx-strat", platform="hyperliquid")
-            assert cfg.stop_kwargs["stop_platform"] == "okx"
-            cfg.funding_mode = "partial"
-            report = parity_diff.extract_fills_report(df, cfg)
-            assert calls
-            assert report["funding"]["available"] is False
-    with subtests.test("explicit okx-perps on okx perps is silent; okx warns"):
-        path = _write_live_config(tmp_path, "perps", "okx-strat")
-        capsys.readouterr()
-        assert config_from_live_config(path, "okx-strat", platform="okx-perps").platform == "okx-perps"
-        assert "platform selection" not in capsys.readouterr().err
-        assert config_from_live_config(path, "okx-strat", platform="okx").platform == "okx"
-        err = capsys.readouterr().err
-        assert err.count("[WARN] platform selection") == 1 and "'okx-perps'" in err
     with subtests.test("refused automatic selection warns even for an equal explicit key"):
         path = _write_live_config(tmp_path, "manual")
         capsys.readouterr()

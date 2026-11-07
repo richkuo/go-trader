@@ -408,18 +408,6 @@ def test_defects_hold_only_inside_their_span_and_recovery_matches_a_clean_frame(
         _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame()
 
 
-INVALID_PARAMS = [
-    {"range_period": 0}, {"range_period": -3}, {"range_period": 10.5}, {"range_period": True},
-    {"range_period": "10"}, {"range_period": float("nan")}, {"smoothing_period": 0}, {"smoothing_period": 2.5},
-    {"smoothing_period": False}, {"signal_period": 0}, {"signal_period": float("inf")}, {"recursion_length": 0},
-    {"recursion_length": 23}, {"smoothing_period": 8}, {"signal_period": 8},
-    {"recursion_length": 189, "range_period": 10}, {"recursion_length": 60, "range_period": 139},
-    {"oversold": -100.0}, {"overbought": 100.0}, {"oversold": 40.0, "overbought": 40.0},
-    {"oversold": 50.0, "overbought": 40.0}, {"oversold": float("nan")}, {"overbought": float("inf")},
-    {"oversold": "-40"}, {"overbought": True},
-]
-
-
 BOUNDARY_PARAMS = [
     dict(DEFAULTS, recursion_length=24),
     dict(DEFAULTS, recursion_length=188, range_period=10),

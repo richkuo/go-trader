@@ -166,19 +166,20 @@ def new_session():
     return egress_policy.pin_requests_session(requests.Session())
 
 
-def build_llm_call(model, api_url=ANTHROPIC_API_URL, timeout=PER_CALL_TIMEOUT_S, usage=None):
+def build_llm_call(model, api_url=ANTHROPIC_API_URL, timeout=PER_CALL_TIMEOUT_S, usage=None,
+                   effort=EFFORT, max_tokens=MAX_TOKENS_PER_CALL, reply_info=None):
     api_key = os.environ.get(API_KEY_ENV, "")
     if not api_key:
         raise RuntimeError(f"{API_KEY_ENV} is not set")
     session = new_session()
 
     def llm_call(system, user, schema=None):
-        output_config = {"effort": EFFORT}
+        output_config = {"effort": effort}
         if schema is not None:
             output_config["format"] = {"type": "json_schema", "schema": schema}
         payload = json.dumps({
             "model": model,
-            "max_tokens": MAX_TOKENS_PER_CALL,
+            "max_tokens": max_tokens,
             "output_config": output_config,
             "system": system,
             "messages": [{"role": "user", "content": user}],
@@ -195,12 +196,15 @@ def build_llm_call(model, api_url=ANTHROPIC_API_URL, timeout=PER_CALL_TIMEOUT_S,
             raise RuntimeError("API response is not a JSON object")
         record_usage(usage, body.get("usage"))
         stop_reason = body.get("stop_reason")
+        if reply_info is not None:
+            reply_info["model"] = body.get("model")
+            reply_info["stop_reason"] = stop_reason
         if stop_reason == "refusal":
             details = body.get("stop_details")
             category = details.get("category") if isinstance(details, dict) else None
             raise RuntimeError(f"model refused (category: {category or 'unspecified'})")
         if stop_reason == "max_tokens":
-            raise RuntimeError(f"reply cut off at max_tokens={MAX_TOKENS_PER_CALL}")
+            raise RuntimeError(f"reply cut off at max_tokens={max_tokens}")
         if stop_reason != "end_turn":
             raise RuntimeError(f"unexpected stop_reason {stop_reason!r}")
         parts = body.get("content") or []

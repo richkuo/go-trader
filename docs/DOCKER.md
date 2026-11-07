@@ -531,7 +531,7 @@ GO_TRADER_TAG=local docker compose -f compose.yaml -f compose.build.yaml up -d
 
 Set `GO_TRADER_BUILD_VERSION` and `GO_TRADER_BUILD_COMMIT` (a full 40-character commit id) to stamp the build.
 The build uses only the files listed in `.dockerignore` and copies no config, database, log, secret or Git file into the image.
-To test an image, run `scripts/test_container_image.sh` (see the script for its variables); CI runs it on `linux/amd64` and `linux/arm64`.
+To test an image, run `scripts/test_container_image.sh` (see the script for its variables); CI runs it on `linux/amd64` for every pull request, and on `linux/amd64` and `linux/arm64` for every `main` push and release.
 
 ## Troubleshooting
 
