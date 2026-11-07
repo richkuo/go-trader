@@ -17,7 +17,7 @@ jobs:
       update: ${{ steps.diff.outputs.update }}
       migrate: ${{ steps.diff.outputs.migrate }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
           persist-credentials: false
@@ -36,9 +36,9 @@ jobs:
     if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
@@ -68,14 +68,14 @@ jobs:
     if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: uv sync --compile-bytecode
@@ -94,14 +94,14 @@ jobs:
     if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: uv sync --compile-bytecode
@@ -120,14 +120,14 @@ jobs:
     if: ${{ needs.changes.outputs.merge_paper == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: uv sync
@@ -146,14 +146,14 @@ jobs:
     if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: |
@@ -262,9 +262,9 @@ jobs:
     if: ${{ needs.changes.outputs.update == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
@@ -284,9 +284,9 @@ jobs:
     if: ${{ needs.changes.outputs.migrate == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
@@ -306,9 +306,9 @@ jobs:
     if: ${{ needs.changes.outputs.update == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
@@ -328,9 +328,9 @@ jobs:
     outputs:
       python: ${{ steps.python.outputs.result }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: uv sync
@@ -346,7 +346,7 @@ jobs:
           uv run python3 scripts/check_pytest_shards.py collect default --out "$RUNNER_TEMP/pytest-collect/default.json"
           uv run python3 scripts/check_pytest_shards.py collect shared_scripts --out "$RUNNER_TEMP/pytest-collect/shared_scripts.json" -- shared_scripts/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pytest-collect
           path: ${{ runner.temp }}/pytest-collect/
@@ -382,9 +382,9 @@ jobs:
           - {suite: default, group: 2, splits: 2, paths: ''}
           - {suite: shared_scripts, group: 1, splits: 1, paths: shared_scripts/}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: uv sync
@@ -401,7 +401,7 @@ jobs:
             --durations-path="scripts/pytest_durations/$SUITE.json" \
             --report-log="$RUNNER_TEMP/pytest-shards/$SUITE-$GROUP-of-$SPLITS.jsonl"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: pytest-shard-${{ matrix.suite }}-${{ matrix.group }}-of-${{ matrix.splits }}
@@ -414,16 +414,16 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: pytest-collect
           path: ${{ runner.temp }}/pytest-collect
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: pytest-shard-*
           path: ${{ runner.temp }}/pytest-shards
@@ -443,7 +443,7 @@ jobs:
             --collected "$RUNNER_TEMP/pytest-collect/shared_scripts.json" --logs "$RUNNER_TEMP/pytest-shards" \
             --durations scripts/pytest_durations/shared_scripts.json --durations-out "$RUNNER_TEMP/pytest-durations/shared_scripts.json"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: pytest-durations
