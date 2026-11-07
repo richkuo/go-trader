@@ -3,7 +3,7 @@
 Guardrails only;mechanism: SKILL.md,docs/POST_UPDATE_HISTORY.md. <17,000 B (target 16,500),1 root file+`AGENTS.md` symlink. Shorten,drop no guardrail.
 
 ## Env
-- Go 1.27.3. Python: `uv run --no-sync python`;scheduler `.venv/bin/python3`;`uv sync`/worktree. systemd: `ProtectSystem=strict`,no `PATH`/`UV_CACHE_DIR` injected,secrets `/opt/go-trader/.env`,config `/var/lib/go-trader[/<instance>]/config.json`;`scheduler/config.json`=transition symlink
+- Go 1.26.2. Python: `uv run --no-sync python`;scheduler `.venv/bin/python3`;`uv sync`/worktree. systemd: `ProtectSystem=strict`,no `PATH`/`UV_CACHE_DIR` injected,secrets `/opt/go-trader/.env`,config `/var/lib/go-trader[/<instance>]/config.json`;`scheduler/config.json`=transition symlink
 
 ## Priorities
 - **Always best solution**: cost/compute/time/effort/code never narrow;branch+PR,issue-claim vs code,destructive-action safety win. **ETAs: runs only**;complexity=scope+risk

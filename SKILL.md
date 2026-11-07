@@ -33,14 +33,14 @@ git --version
 rsync --version
 ```
 
-Requirements: Python 3.14+, `uv`, Go 1.27.3, Git, `rsync`.
+Requirements: Python 3.12+, `uv`, Go 1.26.2, Git, `rsync`.
 
 ```bash
 # Linux: system-wide, so root and the service account both find them
 curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
-curl -sL https://go.dev/dl/go1.27.3.linux-amd64.tar.gz | sudo tar -C /usr/local -xzf -
+curl -sL https://go.dev/dl/go1.26.2.linux-amd64.tar.gz | sudo tar -C /usr/local -xzf -
 # macOS
-brew install uv go@1.27
+brew install uv go@1.26
 ```
 
 Install `uv` and Go where every account can run them. `scripts/update.sh` looks for `uv` on `PATH`, then at `/usr/local/bin/uv`, `/usr/bin/uv` and `/opt/homebrew/bin/uv`, and for Go on `PATH`, then at `/opt/homebrew/bin/go` and `/usr/local/go/bin/go`. It never looks in a home directory. The per-user installer puts `uv` in `~/.local/bin`, which only that account can use: a copy in `/root/.local/bin` is not visible under `sudo`, and the `go-trader` service account cannot run it. `scripts/shared-feed-convert.sh plan` and `scripts/migrate-service-layout.py plan` check that both tools run as root and as the service account, and refuse with this fix before any build.

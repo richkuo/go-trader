@@ -37,7 +37,7 @@ func TestUpdateShellProbeReadsUnitDirectionalCertPath1906(t *testing.T) {
 	}
 
 	goStub := "#!/usr/bin/env bash\n" +
-		"if [[ \"$1\" == \"version\" ]]; then echo 'go version go1.27.3'; exit 0; fi\n" +
+		"if [[ \"$1\" == \"version\" ]]; then echo 'go version go1.26.2'; exit 0; fi\n" +
 		"dir=. out= ver=dev\n" +
 		"while [[ $# -gt 0 ]]; do\n" +
 		"  case \"$1\" in\n" +
@@ -93,7 +93,7 @@ func TestUpdateShellRecoveryProbeSkipsRegimeSideAdmission1906(t *testing.T) {
 	oldRecord := filepath.Join(t.TempDir(), "old-probe-admission")
 
 	goStub := "#!/usr/bin/env bash\n" +
-		"if [[ \"$1\" == \"version\" ]]; then echo 'go version go1.27.3'; exit 0; fi\n" +
+		"if [[ \"$1\" == \"version\" ]]; then echo 'go version go1.26.2'; exit 0; fi\n" +
 		"dir=. out= ver=dev\n" +
 		"while [[ $# -gt 0 ]]; do\n" +
 		"  case \"$1\" in\n" +

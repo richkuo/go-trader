@@ -1,5 +1,5 @@
-ARG GO_IMAGE=golang:1.27.3-bookworm
-ARG PYTHON_IMAGE=python:3.14-slim-bookworm
+ARG GO_IMAGE=golang:1.26.2-bookworm
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.7
 
 FROM ${UV_IMAGE} AS uv
@@ -28,7 +28,7 @@ COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never \
-    UV_PYTHON=/usr/local/bin/python3.14 \
+    UV_PYTHON=/usr/local/bin/python3.12 \
     UV_PROJECT_ENVIRONMENT=/app/.venv
 WORKDIR /app
 COPY pyproject.toml uv.lock .python-version ./

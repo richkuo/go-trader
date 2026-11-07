@@ -515,7 +515,7 @@ func TestApplyUpgradeTimeoutSendsSIGTERMAndRecoversWithoutOrphans(t *testing.T) 
 			}
 		case "go_build":
 			goStub := "#!/usr/bin/env bash\n" +
-				"if [[ \"$1\" == \"version\" || \"$1\" == \"--version\" ]]; then echo 'go version go1.27.3'; exit 0; fi\n" +
+				"if [[ \"$1\" == \"version\" || \"$1\" == \"--version\" ]]; then echo 'go version go1.26.2'; exit 0; fi\n" +
 				"echo $$ > " + childPidFile + "\n" +
 				"sleep 30\n" +
 				"exit 1\n"
@@ -628,7 +628,7 @@ func setupUpdateShellTestRepo(t *testing.T) (string, string, string, string, []s
 		t.Fatal(err)
 	}
 	goStub := "#!/usr/bin/env bash\n" +
-		"if [[ \"$1\" == \"version\" ]]; then echo 'go version go1.27.3'; exit 0; fi\n" +
+		"if [[ \"$1\" == \"version\" ]]; then echo 'go version go1.26.2'; exit 0; fi\n" +
 		"dir=. out= ver=dev\n" +
 		"while [[ $# -gt 0 ]]; do\n" +
 		"  case \"$1\" in\n" +
@@ -1823,7 +1823,7 @@ func TestUpdateShellCPUWeightDropIn(t *testing.T) {
 			}
 		}
 		goStub := "#!/usr/bin/env bash\n" +
-			"if [[ \"$1\" == \"version\" ]]; then echo 'go version go1.27.3'; exit 0; fi\n" +
+			"if [[ \"$1\" == \"version\" ]]; then echo 'go version go1.26.2'; exit 0; fi\n" +
 			"dir=. out= ver=dev\n" +
 			"while [[ $# -gt 0 ]]; do\n" +
 			"  case \"$1\" in\n" +
