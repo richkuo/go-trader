@@ -658,7 +658,11 @@ type tradeFeedbackAdmission struct {
 }
 
 type tradeFeedbackAnalysisSubmit struct {
-	Provider string `json:"provider"`
+	Provider       string          `json:"provider"`
+	Model          *string         `json:"model,omitempty"`
+	BundleSHA256   *string         `json:"bundle_sha256,omitempty"`
+	FeedbackRowIDs *[]int64        `json:"feedback_rowids,omitempty"`
+	Result         json.RawMessage `json:"result,omitempty"`
 }
 
 // tradeFeedbackAnalysisAdapter is one provider branch. Prepare runs before
@@ -671,7 +675,7 @@ type tradeFeedbackAnalysisAdapter interface {
 }
 
 func tradeFeedbackProductionAdapters() map[string]tradeFeedbackAnalysisAdapter {
-	return map[string]tradeFeedbackAnalysisAdapter{}
+	return map[string]tradeFeedbackAnalysisAdapter{tradeFeedbackProviderLocal: tradeFeedbackLocalAdapter{}}
 }
 
 func tradeFeedbackKnownProvider(p string) bool {
@@ -798,6 +802,9 @@ func decodeTradeFeedbackAnalysisSubmit(w http.ResponseWriter, r *http.Request) (
 	if !tradeFeedbackKnownProvider(req.Provider) {
 		return req, reviewErr(http.StatusBadRequest, "provider must be one of %s", strings.Join(tradeFeedbackKnownProviders, ", "))
 	}
+	if req.Provider != tradeFeedbackProviderLocal && req.hasLocalFields() {
+		return req, reviewErr(http.StatusBadRequest, "model, bundle_sha256, feedback_rowids and result are accepted only with provider %s", tradeFeedbackProviderLocal)
+	}
 	return req, nil
 }
 
@@ -828,11 +835,7 @@ func (ss *StatusServer) handleAPIStrategyTradeFeedbackBundle(w http.ResponseWrit
 	if !ss.requireFeedbackAnalysisToken(w, r) {
 		return
 	}
-	if _, ok := ss.strategyConfig(id); !ok {
-		writeJSONError(w, http.StatusNotFound, "strategy not found")
-		return
-	}
-	writeJSONError(w, http.StatusServiceUnavailable, "the local Claude Code provider is not installed in this build, so the bundle pull endpoint is unavailable")
+	ss.serveTradeFeedbackBundle(w, r, id)
 }
 
 func (ss *StatusServer) submitTradeFeedbackAnalysis(w http.ResponseWriter, r *http.Request, id string) {
