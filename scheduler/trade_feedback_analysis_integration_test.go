@@ -1255,8 +1255,8 @@ func TestTradeFeedbackAnalysisHistoryPollSkipsBundleBuild(t *testing.T) {
 	if metaCount() != beforeHistory {
 		t.Fatalf("history views loaded metadata %d times", metaCount()-beforeHistory)
 	}
-	if perView, perMark := historyBytes/ticks, uint64(evidenceBytes)/marks; perView >= perMark {
-		t.Fatalf("one history view allocated %d bytes, at least the evidence of one mark (%d bytes)", perView, perMark)
+	if perView := historyBytes / ticks; perView*20 >= fullBytes {
+		t.Fatalf("one history view allocated %d bytes, more than a twentieth of the full view (%d bytes)", perView, fullBytes)
 	}
 	for i, rec := range bodies {
 		if rec.Code != http.StatusOK {
