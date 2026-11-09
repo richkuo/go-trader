@@ -1592,14 +1592,11 @@ def test_every_spot_registered_study_candidate_has_a_spot_case():
         assert name in CASES, name
 
 
-def _now_floor(step):
-    import time
-    now = int(time.time() * 1000)
-    return now - now % step
+SPOT_START_MS = 1_793_620_800_000 + 2 * 3_600_000
 
 
 def spot_rows(side=1, *, n=220, step=FOUR_H, at=None, closed_last=False):
-    end = _now_floor(step) - (step if closed_last else 0)
+    end = SPOT_START_MS - SPOT_START_MS % step - (step if closed_last else 0)
     bars = vsb_bars(n, step, side, at=at)
     start = end - (n - 1) * step
     return [[start + i * step, b["o"], b["h"], b["l"], b["c"], b["v"]] for i, b in enumerate(bars)]
@@ -1609,7 +1606,8 @@ def spot_check(tmp_path, rows, argv, symbol="BTC/USDT", tf="4h"):
     fixture = tmp_path / f"spot-{len(list(tmp_path.iterdir()))}.json"
     fixture.write_text(json.dumps({"ccxt": {f"{symbol}|{tf}": rows}, "tickers": {symbol: rows[-1][4]}}))
     environ = env()
-    environ.update({"PYTHONPATH": HTF_OFFLINE, "HTF_OFFLINE_FIXTURE": str(fixture)})
+    environ.update({"PYTHONPATH": HTF_OFFLINE, "HTF_OFFLINE_FIXTURE": str(fixture),
+                    "HTF_OFFLINE_START_MS": str(SPOT_START_MS)})
     proc = subprocess.run([sys.executable, CHECK_SPOT] + argv, capture_output=True, text=True, cwd=REPO, env=environ,
                           timeout=240)
     assert "network blocked by the htf offline fixture" not in proc.stderr, proc.stderr

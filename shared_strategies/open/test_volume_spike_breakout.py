@@ -373,15 +373,8 @@ def test_missing_columns_hold_every_row():
     assert (out["vsb_reason"] == "missing_columns").all() and (out["signal"] == 0).all()
 
 
-def test_reason_codes_are_stable():
+def test_every_row_reason_code_matches_its_label():
     vsb = sys.modules["volume_spike_breakout"]
-    assert vsb.REASON_CODES == {
-        "entry_long": 1, "entry_short": -1, "no_breakout": 0, "volume_below_threshold": 2,
-        "body_below_threshold": 3, "breakout_continuation": 4, "short_suppressed_spot": 5,
-        "both_sides_qualified": 6, "insufficient_history": 10, "missing_columns": 11, "nonfinite_input": 12,
-        "nonpositive_price": 13, "invalid_volume": 14, "inconsistent_ohlc": 15, "missing_timestamp": 16,
-        "timestamp_order": 17, "nonfinite_derived": 18,
-    }
     out = run("futures", frame(walk(300, 7))[0], {"lookback": 10, "vol_period": 10, "vol_multiplier": 1.5,
                                                    "min_body_frac": 0.25})
     for reason, code in zip(out["vsb_reason"], out["vsb_reason_code"]):

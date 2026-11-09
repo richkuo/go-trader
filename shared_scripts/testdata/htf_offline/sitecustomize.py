@@ -8,6 +8,7 @@ import time
 
 _FIXTURE_PATH = os.environ.get("HTF_OFFLINE_FIXTURE", "")
 _NICE_DIR = os.environ.get("HTF_OFFLINE_NICE_DIR", "")
+_START_MS = os.environ.get("HTF_OFFLINE_START_MS", "")
 
 
 def _load():
@@ -162,6 +163,15 @@ def _start_nice_recorder():
 
     atexit.register(write)
 
+
+def _shift_clock(start_ms):
+    real_time = time.time
+    offset = start_ms / 1000.0 - real_time()
+    time.time = lambda: real_time() + offset
+
+
+if _START_MS:
+    _shift_clock(int(_START_MS))
 
 if _NICE_DIR:
     _start_nice_recorder()
