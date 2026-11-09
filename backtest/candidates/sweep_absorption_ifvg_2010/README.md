@@ -25,7 +25,11 @@ Frozen study for the production-refused research candidate `sweep_absorption_ifv
 1. Run `go-trader record-observations --kinds trade_flow --coins BTC,ETH,HYPE --out-dir <empty dir>` from
    before the train window start through the test window end, then copy the closed run into `data/recording/`
    and pin the `run.manifest.json` sha256 in `study_manifest.json`.
-2. Pin taker-fill side evidence for every coin into `data/side_evidence/side_evidence.json`.
+2. Pin taker-fill side evidence for every coin into `data/side_evidence/side_evidence.json`, or set
+   `side_evidence` to a list of pinned per-segment files from the cumulative_volume_delta_divergence_1638
+   `side_evidence.py` procedure. The driver reads every file. Each required coin needs at least 30
+   taker-identified trades, no side disagreement and no fill content mismatch, else the `side_evidence` gate
+   holds the verdict at INCONCLUSIVE.
 3. Capture sealed market payloads of an explicit-paper shared-feed run of the candidate over part of the
    recording into `data/sealed_payloads/` for the sealed-versus-replayed decision proof.
 4. Write `data/offline_5m.json` and `data/offline_15m.json` (schema v7): candles, funding, the trade-flow series

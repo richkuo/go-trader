@@ -499,3 +499,90 @@ def test_study_sealed_versus_replayed_proof_accepts_equal_decisions_and_refuses_
     (proof_dir / "index.json").write_text(json.dumps({"payloads": payloads}))
     compared, mismatches = study.sealed_replay_proof(str(tmp_path), study_doc, {"5m": manifest})
     assert compared == 3 and len(mismatches) == 1 and "tampered.json" in mismatches[0]
+
+
+def _side_doc(rows):
+    trades = [{"coin": coin, "trade": {"coin": coin, "side": side},
+               "facts": {"taker_side": taker, "fill_matches_trade": match}} for coin, side, taker, match in rows]
+    return {"segment": "segment-00001.ndjson", "evidence_version": "hyperliquid-trades-side-aggressor/1638-v1",
+            "trades": trades}
+
+
+def _run_side_evidence_study(tmp_path, docs):
+    import offline_manifest as om
+    study = _load("_sai_study_driver_for_side", os.path.join(STUDY_DIR, "run_study.py"))
+    with open(os.path.join(STUDY_DIR, "study_manifest.json")) as fh:
+        doc = json.load(fh)
+    spec_path = os.path.join(STUDY_DIR, "candidate_spec.json")
+    doc["spec"] = {"path": spec_path, "sha256": om.sha256_file(spec_path)}
+    side_dir = tmp_path / "data" / "side_evidence"
+    side_dir.mkdir(parents=True)
+    refs = []
+    for n, side in enumerate(docs):
+        p = side_dir / f"side_{n}.json"
+        p.write_text(json.dumps(side))
+        refs.append({"path": f"data/side_evidence/side_{n}.json", "sha256": om.sha256_file(str(p))})
+    doc["side_evidence"] = refs
+    manifest_path = tmp_path / "study_manifest.json"
+    manifest_path.write_text(json.dumps(doc))
+    return study.run(str(manifest_path), str(tmp_path / "results.json"), str(tmp_path / "REPORT.md"))
+
+
+def _side_gates(results):
+    return [g for g in results["gates"] if g["gate"] == "side_evidence"]
+
+
+def _agreeing(coin, n=30):
+    return [(coin, "B" if k % 2 else "A", "B" if k % 2 else "A", True) for k in range(n)]
+
+
+def test_side_evidence_content_gates_every_required_coin(tmp_path):
+    good = _agreeing("BTC") + _agreeing("ETH") + _agreeing("HYPE")
+    ok = _run_side_evidence_study(tmp_path / "ok", [_side_doc(good[:45]), _side_doc(good[45:])])
+    assert _side_gates(ok) == [] and ok["side_evidence"]["verified"] is True
+
+    flipped = good[:-1] + [("HYPE", "B", "A", True)]
+    disagree = _run_side_evidence_study(tmp_path / "disagree", [_side_doc(flipped)])
+    gates = _side_gates(disagree)
+    assert [g["coin"] for g in gates] == ["HYPE"] and "1 side disagreements" in gates[0]["reason"]
+    assert disagree["verdict"] == "INCONCLUSIVE" and disagree["economic_scoring_ran"] is False
+
+    no_hype = _run_side_evidence_study(tmp_path / "no_hype", [_side_doc(_agreeing("BTC") + _agreeing("ETH"))])
+    gates = _side_gates(no_hype)
+    assert [g["coin"] for g in gates] == ["HYPE"] and gates[0]["reason"].startswith("HYPE: 0 taker-identified")
+    assert no_hype["verdict"] == "INCONCLUSIVE" and no_hype["economic_scoring_ran"] is False
+
+    thin = _run_side_evidence_study(tmp_path / "thin", [_side_doc(_agreeing("BTC", 29) + _agreeing("ETH")
+                                                                  + _agreeing("HYPE"))])
+    gates = _side_gates(thin)
+    assert [g["coin"] for g in gates] == ["BTC"] and "29 taker-identified" in gates[0]["reason"]
+    assert thin["verdict"] == "INCONCLUSIVE" and thin["economic_scoring_ran"] is False
+
+
+def test_research_arms_are_withheld_when_the_reference_arm_disagrees_with_the_backtester(tmp_path, monkeypatch):
+    import offline_manifest as om
+    study = _load("_sai_study_driver_for_agreement", os.path.join(STUDY_DIR, "run_study.py"))
+    path = _synthetic_study(str(tmp_path), ["flat", "flat", "long", "short", "long", "long", "short", "long"])
+    manifest = om.load_manifest(path, verify=True)
+    with open(os.path.join(STUDY_DIR, "candidate_spec.json")) as fh:
+        spec = json.load(fh)
+    spec = dict(spec, datasets={"coins": ["BTC"], "intervals": ["5m"], "htf_interval": "1h"},
+                grid={k: [DEFAULT_PARAMS[k]] for k in spec["grid"]},
+                minimum_independent_positions={"train": 1, "test": 1})
+    real_simulate = study.arms.simulate
+
+    def extra_reference_entry(bars, setups, arm, **kw):
+        sim = real_simulate(bars, setups, arm, **kw)
+        if arm == study.arms.REFERENCE_ARM and sim["trades"]:
+            sim = dict(sim, trades=list(sim["trades"]) + [dict(sim["trades"][-1], fill_bar=10**6)])
+        return sim
+
+    monkeypatch.setattr(study.arms, "simulate", extra_reference_entry)
+    scored = study.score({}, spec, str(tmp_path), {"5m": manifest})
+    for window in ("train", "test"):
+        e = scored["datasets"]["BTC 5m"][window]
+        assert e["adapter_agreement"] is False
+        refusal = e["research_arms"]
+        assert refusal["scored"] is False and refusal["reason"] == "reference arm entries differ from the Backtester"
+        assert set(refusal) == {"scored", "reason", "reference_entries", "backtester_entries"}
+        assert len(refusal["reference_entries"]) == len(refusal["backtester_entries"]) + 1

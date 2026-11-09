@@ -43,6 +43,7 @@ CANDIDATE = "sweep_absorption_ifvg"
 CONTROLS = ("amd_ifvg", "liquidity_sweeps")
 CAPITAL = 10_000.0
 CONTROL_WINDOW = 200
+MIN_SIDE_TAKERS = 30
 SOURCE_FILES = (
     "shared_strategies/open/sweep_absorption_ifvg.py",
     "shared_strategies/open/cumulative_volume_delta_divergence.py",
@@ -96,6 +97,38 @@ def _file_gate(base, ref, gate):
     return None
 
 
+def verify_side_evidence(base, refs, coins):
+    per_coin = {c: {"sampled": 0, "taker_identified": 0, "side_equals_taker": 0, "side_differs_from_taker": 0,
+                    "fill_content_mismatch": 0} for c in coins}
+    files = []
+    for ref in refs:
+        with open(_rel(base, ref["path"])) as fh:
+            doc = json.load(fh)
+        files.append({"path": ref["path"], "segment": doc.get("segment"), "evidence_version": doc.get("evidence_version"),
+                      "sampled": len(doc["trades"])})
+        for r in doc["trades"]:
+            row = per_coin.get(r["trade"]["coin"])
+            if row is None:
+                continue
+            row["sampled"] += 1
+            if not r["facts"]["fill_matches_trade"]:
+                row["fill_content_mismatch"] += 1
+            taker = r["facts"]["taker_side"]
+            if taker is None:
+                continue
+            row["taker_identified"] += 1
+            if taker == r["trade"]["side"]:
+                row["side_equals_taker"] += 1
+            else:
+                row["side_differs_from_taker"] += 1
+    for row in per_coin.values():
+        row["verified"] = (row["taker_identified"] >= MIN_SIDE_TAKERS and row["side_differs_from_taker"] == 0
+                           and row["fill_content_mismatch"] == 0)
+    return {"files": files, "coins": per_coin, "verified": all(r["verified"] for r in per_coin.values()),
+            "rule": f"each required coin is verified when at least {MIN_SIDE_TAKERS} of its trades identify a taker, "
+                    "every taker agrees with the trade side field and every matched fill carries the trade's content"}
+
+
 def preflight(study, spec, base):
     gates = []
     rec = study["recording"]
@@ -119,10 +152,22 @@ def preflight(study, spec, base):
                     gates.append({"gate": "source_b_recording", "path": rec["path"],
                                   "reason": "the recording is not economic evidence: "
                                             + "; ".join(recording["report"].get("refusals") or [])})
-    for ref, gate in ((study["side_evidence"], "side_evidence"), (study["sealed_payloads"], "sealed_replay_proof")):
-        g = _file_gate(base, ref, gate)
-        if g:
-            gates.append(g)
+    side_refs = study["side_evidence"]
+    side_refs = side_refs if isinstance(side_refs, list) else [side_refs]
+    side_file_gates = [g for g in (_file_gate(base, ref, "side_evidence") for ref in side_refs) if g]
+    gates.extend(side_file_gates)
+    side_summary = None
+    if not side_file_gates:
+        side_summary = verify_side_evidence(base, side_refs, spec["datasets"]["coins"])
+        for coin, row in sorted(side_summary["coins"].items()):
+            if not row["verified"]:
+                gates.append({"gate": "side_evidence", "coin": coin,
+                              "reason": f"{coin}: {row['taker_identified']} taker-identified trades "
+                                        f"(minimum {MIN_SIDE_TAKERS}), {row['side_differs_from_taker']} side "
+                                        f"disagreements, {row['fill_content_mismatch']} fill content mismatches"})
+    g = _file_gate(base, study["sealed_payloads"], "sealed_replay_proof")
+    if g:
+        gates.append(g)
     manifests = {}
     for interval in spec["datasets"]["intervals"]:
         ref = study["offline_manifests"][interval]
@@ -159,7 +204,7 @@ def preflight(study, spec, base):
                               "reason": "missing " + ", ".join(["dataset"] if ds is None else missing)})
         if not problems:
             manifests[interval] = manifest
-    return gates, manifests, recording
+    return gates, manifests, recording, side_summary
 
 
 def _sealed_frame(market, coin, tf, cutoff, keep):
@@ -464,8 +509,14 @@ def score(study, spec, base, manifests):
                 real = real_backtest(manifest, ds, win, sig, CANDIDATE, params, spec, 1.0)
                 real_entries = [(int(wframe.index.get_loc(pd.Timestamp(pos["entry_date"]))), pos["side"])
                                 for pos in positions_of(real.get("trades"))]
-                entry["research_arms"] = research
-                entry["adapter_agreement"] = ref_entries == real_entries
+                agreement = ref_entries == real_entries
+                entry["adapter_agreement"] = agreement
+                if agreement:
+                    entry["research_arms"] = research
+                else:
+                    entry["research_arms"] = {"scored": False,
+                                              "reason": "reference arm entries differ from the Backtester",
+                                              "reference_entries": ref_entries, "backtester_entries": real_entries}
                 out["datasets"].setdefault(f"{coin} {interval}", {})[window] = entry
     return out
 
@@ -506,7 +557,7 @@ def verdict(spec, gates, scored):
 
 def run(study_path=STUDY_MANIFEST, results_path=RESULTS, report_path=REPORT):
     study, spec, base = load_study(study_path)
-    gates, manifests, recording = preflight(study, spec, base)
+    gates, manifests, recording, side_summary = preflight(study, spec, base)
     proof = None
     if not gates:
         compared, mismatches = sealed_replay_proof(base, study, manifests)
@@ -534,6 +585,7 @@ def run(study_path=STUDY_MANIFEST, results_path=RESULTS, report_path=REPORT):
         "support_bars": {i: max_support_bars(spec, i) for i in spec["datasets"]["intervals"]},
         "arm_matrix": [arms.arm_label(a) for a in arms.arm_matrix()],
         "controls": ["absorption_disabled"] + list(CONTROLS),
+        "side_evidence": side_summary,
         "economic_scoring_ran": scored is not None,
         "sealed_replay_proof": proof,
         "scored": scored,

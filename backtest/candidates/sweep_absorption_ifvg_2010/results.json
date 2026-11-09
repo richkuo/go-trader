@@ -94,6 +94,7 @@
   "schema": "sweep_absorption_ifvg_results/1",
   "scored": null,
   "sealed_replay_proof": null,
+  "side_evidence": null,
   "source": {
     "choice": "B",
     "contract": {
@@ -114,7 +115,7 @@
     "backtest/backtester.py": "cdd968576eef3bc48613697137c1b88d803f1d0e5ae804eb8de59b98b0b8e279",
     "backtest/candidates/sweep_absorption_ifvg_2010/arms.py": "a56b510194790648e637c0a82d55a653410e4c653d8457326e3e31f032956535",
     "backtest/candidates/sweep_absorption_ifvg_2010/candidate_spec.json": "b63b7fa7cc6cbe6b49e9b8e7de3ce8711d7b569e6ffcfb8472e427637a326fba",
-    "backtest/candidates/sweep_absorption_ifvg_2010/run_study.py": "3ee38db828cf574f87557fc112ad8308e0926de34f154d121e4bd3ac432be590",
+    "backtest/candidates/sweep_absorption_ifvg_2010/run_study.py": "acd5d44ca2d1ebab7f0b8c5fce7c686bad83cb739a89cfda9bf0a1d4567396be",
     "backtest/offline_manifest.py": "6b0dc97757f943cba72ea0c12b13e1f7f814e406ac45bfdf534f97955603efee",
     "backtest/trade_flow_replay.py": "badd02d175995110d694845e45ce58611df002b80f3660f5ad62b24a61dc79b4",
     "scheduler/market_feed_requirements.go": "efa9f979768c2c4b515a648f348c80ab5261cbe0ca14e2a8b9088e2d45f6afb2",
