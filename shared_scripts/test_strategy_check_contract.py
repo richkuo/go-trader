@@ -1720,9 +1720,15 @@ def quote_stub_check(tmp_path, script, argv, shape):
 
 
 @pytest.mark.parametrize("name", sorted(SPOT_CASES))
-def test_okx_and_topstep_checks_export_the_reason_label_and_full_precision_diagnostics(name, tmp_path):
+def test_futures_routes_refuse_missing_mode_and_okx_and_topstep_export_full_precision_diagnostics(name, tmp_path):
     case = SPOT_CASES[name]
     params = json.dumps(case.venue_params)
+    refused = run([name, "BTC", CASES[name].tf, "--market-stdin", "--strategy-refs", refs(CASES[name])],
+                  CASES[name].solo())
+    assert refused.returncode == 1
+    error = payload(refused)["error"]
+    assert f"open strategy '{name}' is edge_status=no_edge" in error and "missing mode" in error
+    assert payload(refused)["signal"] == 0 and "Fetching" not in refused.stderr
     rows = [
         (CHECK_OKX, ["BTC", "1h", "--inst-type=swap"], "cross_up", 1, "entry_long"),
         (CHECK_OKX, ["BTC", "1h", "--inst-type=swap"], "cross_down", -1, "entry_short"),
