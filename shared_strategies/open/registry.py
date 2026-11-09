@@ -101,6 +101,12 @@ from order_book_imbalance import (
     obi_param_validator,
     order_book_imbalance_core,
 )
+from volume_spike_breakout import (
+    DEFAULT_PARAMS as DEFAULT_VSB_PARAMS,
+    volume_spike_breakout_futures,
+    volume_spike_breakout_spot,
+    vsb_param_validator,
+)
 from inventory_market_making import (
     QUOTE_CONTRACT,
     QUOTE_POLICY_SPEC,
@@ -250,6 +256,26 @@ def _validate_short_entries(name: str, short_entries, default_params: dict,
                 f"{name}: {where} ships allow_short={params['allow_short']!r} "
                 f"but short_entries=False; declare short_entries=True"
             )
+
+
+VARIANT_KEYS: Tuple[str, ...] = ("default_params", "description", "fn")
+
+
+def _validate_variant_functions(name: str, variants: Dict[str, Dict[str, Any]], quote) -> None:
+    for platform, spec in sorted(variants.items()):
+        if not isinstance(spec, dict):
+            raise ValueError(f"{name}: variants[{platform!r}] must be a dict, got {spec!r}")
+        unknown = sorted(set(spec) - set(VARIANT_KEYS))
+        if unknown:
+            raise ValueError(f"{name}: variants[{platform!r}] has unknown keys {unknown}; expected a subset of "
+                             f"{list(VARIANT_KEYS)}")
+        if "fn" not in spec:
+            continue
+        if quote:
+            raise ValueError(f"{name}: a quote capability cannot bind a platform function; its scalar refusal "
+                             "is the only registered function")
+        if not callable(spec["fn"]):
+            raise ValueError(f"{name}: variants[{platform!r}].fn must be callable, got {spec['fn']!r}")
 
 
 def _validate_edge_metadata(name: str, edge_status, edge_source, edge_ref) -> None:
@@ -432,6 +458,7 @@ def register(
         raise ValueError(
             f"{name}: variants keys {sorted(bad_v)} not in platforms {platforms}"
         )
+    _validate_variant_functions(name, variants, quote)
     _validate_short_entries(name, short_entries, default_params, platforms, variants)
     if param_validator is not None and not callable(param_validator):
         raise ValueError(f"{name}: param_validator must be callable, got {param_validator!r}")
@@ -451,7 +478,19 @@ def register(
 
     def decorator(fn):
         wrapped = _validated(name, fn, default_params, constraint_list) if constraint_list else fn
+        platform_fns = {}
+        for platform, spec in sorted(variants.items()):
+            if "fn" not in spec:
+                continue
+            if inspect.signature(spec["fn"]) != inspect.signature(fn):
+                raise ValueError(
+                    f"{name}: variants[{platform!r}].fn signature {inspect.signature(spec['fn'])} differs from the "
+                    f"registered function signature {inspect.signature(fn)}"
+                )
+            platform_fns[platform] = (_validated(name, spec["fn"], default_params, constraint_list)
+                                      if constraint_list else spec["fn"])
         STRATEGIES[name] = {
+            "platform_fns": platform_fns,
             "fn": _quote_scalar_refusal(name, fn) if quote else wrapped,
             "description": description,
             "default_params": dict(default_params),
@@ -500,7 +539,7 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
         entry = STRATEGIES[name]
         variant = entry["variants"].get(platform, {})
         out[name] = {
-            "fn": entry["fn"],
+            "fn": entry["platform_fns"].get(platform, entry["fn"]),
             "description": variant.get("description", entry["description"]),
             "default_params": {
                 **entry["default_params"],
@@ -1773,6 +1812,35 @@ def chaikin_money_flow_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataF
 
 
 @register(
+    "volume_spike_breakout",
+    "RESEARCH, no-edge (#2008) \u2014 rolling-range breakout with a relative volume spike on the same closed bar: the qualified long condition at bar N is close strictly above the highest high of the prior lookback bars (N-lookback..N-1), volume strictly above vol_multiplier times the mean volume of the prior vol_period bars (N-vol_period..N-1), and, when min_body_frac > 0, a candle body |close-open| / (high-low) of at least min_body_frac (a zero-range bar fails). A long fires only when that condition is true on N and false on N-1, both bars fully valid; the futures evaluator mirrors it short below the prior lowest low, and the spot evaluator never emits a short entry. Invalid or missing prices, volume or timestamps hold with a vsb_reason; volume is never invented. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    dict(DEFAULT_VSB_PARAMS),
+    platforms=("spot", "futures"),
+    variants={
+        "spot": {"fn": volume_spike_breakout_spot},
+        "futures": {"fn": volume_spike_breakout_futures},
+    },
+    constraints=[
+        "lookback >= 2",
+        "lookback <= 100",
+        "vol_period >= 2",
+        "vol_period <= 100",
+        "vol_multiplier >= 1",
+        "min_body_frac >= 0",
+        "min_body_frac < 1",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/volume_spike_breakout_2008/REPORT.md",
+    short_entries=True,
+    param_validator=vsb_param_validator,
+)
+def volume_spike_breakout_strategy(df: pd.DataFrame, lookback=20, vol_period=20, vol_multiplier=2.0,
+                                   min_body_frac=0.0) -> pd.DataFrame:
+    return volume_spike_breakout_futures(df, lookback, vol_period, vol_multiplier, min_body_frac)
+
+
+@register(
     "open_interest_breakout",
     "RESEARCH, no-edge (#1637) \u2014 open-interest breakout confirmation: long on the first closed bar whose close is strictly above the prior price_lookback high while Hyperliquid open interest in base-coin units rose by strictly more than oi_change_threshold over oi_lookback bars; short mirrors below the prior low with the same rising-interest rule. Open interest comes only from supplied observations (open_interest_observations), each endpoint the latest sample at or before the bar close and no older than max_observation_age_ms; missing, stale, gapped or thin data gives a reasoned hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {
@@ -2995,6 +3063,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "momentum_pro", "mean_reversion_pro", "rsi_bb_combo", "atr_band_revert", "mtf_confluence",
         "vol_momentum", "regime_adaptive", "regime_adaptive_htf",
         "analog_retrieval",
+        "volume_spike_breakout",
         "hold",
     ],
     "futures": [
@@ -3039,6 +3108,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "perpetual_premium_reversion",
         "order_book_imbalance",
         "inventory_market_making",
+        "volume_spike_breakout",
         "hold",
     ],
 }

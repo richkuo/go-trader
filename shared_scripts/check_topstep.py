@@ -21,7 +21,8 @@ from htf_filter import (
 )
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 
-TEXT_INDICATOR_COLUMNS = ("eom_reason",)
+TEXT_INDICATOR_COLUMNS = ("eom_reason", "vsb_reason")
+FULL_PRECISION_INDICATOR_PREFIXES = ("vsb_",)
 
 
 def _make_dataframe(candles):
@@ -267,7 +268,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 try:
                     fval = float(val)
                     if math.isfinite(fval):
-                        indicators[col] = round(fval, 6)
+                        indicators[col] = (fval if col.startswith(FULL_PRECISION_INDICATOR_PREFIXES)
+                                           else round(fval, 6))
                 except (ValueError, TypeError):
                     pass
 

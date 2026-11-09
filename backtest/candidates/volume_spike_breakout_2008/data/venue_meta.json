@@ -1,0 +1,1591 @@
+{
+ "collateralToken": 0,
+ "marginTables": [
+  [
+   50,
+   {
+    "description": "",
+    "marginTiers": [
+     {
+      "lowerBound": "0.0",
+      "maxLeverage": 50
+     }
+    ]
+   }
+  ],
+  [
+   51,
+   {
+    "description": "tiered 10x",
+    "marginTiers": [
+     {
+      "lowerBound": "0.0",
+      "maxLeverage": 10
+     },
+     {
+      "lowerBound": "3000000.0",
+      "maxLeverage": 5
+     }
+    ]
+   }
+  ],
+  [
+   52,
+   {
+    "description": "tiered 10x (2)",
+    "marginTiers": [
+     {
+      "lowerBound": "0.0",
+      "maxLeverage": 10
+     },
+     {
+      "lowerBound": "20000000.0",
+      "maxLeverage": 5
+     }
+    ]
+   }
+  ],
+  [
+   53,
+   {
+    "description": "tiered 20x",
+    "marginTiers": [
+     {
+      "lowerBound": "0.0",
+      "maxLeverage": 20
+     },
+     {
+      "lowerBound": "40000000.0",
+      "maxLeverage": 10
+     }
+    ]
+   }
+  ],
+  [
+   54,
+   {
+    "description": "tiered 20x (2)",
+    "marginTiers": [
+     {
+      "lowerBound": "0.0",
+      "maxLeverage": 20
+     },
+     {
+      "lowerBound": "70000000.0",
+      "maxLeverage": 10
+     }
+    ]
+   }
+  ],
+  [
+   55,
+   {
+    "description": "tiered 25x",
+    "marginTiers": [
+     {
+      "lowerBound": "0.0",
+      "maxLeverage": 25
+     },
+     {
+      "lowerBound": "100000000.0",
+      "maxLeverage": 15
+     }
+    ]
+   }
+  ],
+  [
+   56,
+   {
+    "description": "tiered 40x",
+    "marginTiers": [
+     {
+      "lowerBound": "0.0",
+      "maxLeverage": 40
+     },
+     {
+      "lowerBound": "150000000.0",
+      "maxLeverage": 20
+     }
+    ]
+   }
+  ]
+ ],
+ "universe": [
+  {
+   "marginTableId": 56,
+   "maxLeverage": 40,
+   "name": "BTC",
+   "szDecimals": 5
+  },
+  {
+   "marginTableId": 55,
+   "maxLeverage": 25,
+   "name": "ETH",
+   "szDecimals": 4
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "ATOM",
+   "szDecimals": 2
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 20,
+   "maxLeverage": 20,
+   "name": "MATIC",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "DYDX",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 54,
+   "maxLeverage": 20,
+   "name": "SOL",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "AVAX",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 51,
+   "maxLeverage": 10,
+   "name": "BNB",
+   "szDecimals": 3
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "APE",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "OP",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "LTC",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 51,
+   "maxLeverage": 10,
+   "name": "ARB",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "DOGE",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "INJ",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "SUI",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "kPEPE",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "CRV",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "LDO",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "LINK",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "STX",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 20,
+   "maxLeverage": 20,
+   "name": "RNDR",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "CFX",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 10,
+   "maxLeverage": 10,
+   "name": "FTM",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "GMX",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "SNX",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 53,
+   "maxLeverage": 20,
+   "name": "XRP",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "BCH",
+   "szDecimals": 3
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "APT",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "AAVE",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "COMP",
+   "szDecimals": 2
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 51,
+   "maxLeverage": 10,
+   "name": "MKR",
+   "szDecimals": 4
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "WLD",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "FXS",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginMode": "strictIsolated",
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "HPOS",
+   "onlyIsolated": true,
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginMode": "strictIsolated",
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "RLB",
+   "onlyIsolated": true,
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginMode": "strictIsolated",
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "UNIBOT",
+   "onlyIsolated": true,
+   "szDecimals": 3
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "YGG",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 51,
+   "maxLeverage": 10,
+   "name": "TRX",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 51,
+   "maxLeverage": 10,
+   "name": "kSHIB",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "UNI",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "SEI",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "RUNE",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginMode": "strictIsolated",
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "OX",
+   "onlyIsolated": true,
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginMode": "strictIsolated",
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "FRIEND",
+   "onlyIsolated": true,
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginMode": "strictIsolated",
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "SHIA",
+   "onlyIsolated": true,
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "CYBER",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "ZRO",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "BLZ",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 51,
+   "maxLeverage": 10,
+   "name": "DOT",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "BANANA",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "TRB",
+   "szDecimals": 2
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "FTT",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 10,
+   "maxLeverage": 10,
+   "name": "LOOM",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "OGN",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "RDNT",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "ARK",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "BNT",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "CANTO",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "REQ",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "BIGTIME",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "KAS",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "ORBS",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "BLUR",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "TIA",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "BSV",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "ADA",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 51,
+   "maxLeverage": 10,
+   "name": "TON",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "MINA",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "POLYX",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "GAS",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "PENDLE",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "STG",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "FET",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 10,
+   "maxLeverage": 10,
+   "name": "STRAX",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "NEAR",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "MEME",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "ORDI",
+   "szDecimals": 2
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "BADGER",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "NEO",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "ZEN",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "FIL",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "PYTH",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "SUSHI",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "ILV",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "IMX",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "kBONK",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "GMT",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "SUPER",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "USTC",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginMode": "strictIsolated",
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "NFTI",
+   "onlyIsolated": true,
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 51,
+   "maxLeverage": 10,
+   "name": "JUP",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "kLUNC",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "RSR",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "GALA",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "JTO",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "NTRN",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "ACE",
+   "szDecimals": 2
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "MAV",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "WIF",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "CAKE",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "PEOPLE",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "ENS",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "ETC",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "XAI",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "MANTA",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "UMA",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 51,
+   "maxLeverage": 10,
+   "name": "ONDO",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "ALT",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "ZETA",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "DYM",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "MAVIA",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "W",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginMode": "strictIsolated",
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "PANDORA",
+   "onlyIsolated": true,
+   "szDecimals": 5
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "STRK",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "PIXEL",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "AI",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "TAO",
+   "szDecimals": 3
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "AR",
+   "szDecimals": 2
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "MYRO",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "kFLOKI",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "BOME",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "ETHFI",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "ENA",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "MNT",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "TNSR",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "SAGA",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "MERL",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "HBAR",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "POPCAT",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "OMNI",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "EIGEN",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "REZ",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "NOT",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "TURBO",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "BRETT",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "IO",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "ZK",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "BLAST",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "LISTA",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "MEW",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "RENDER",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "kDOGS",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "POL",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "CATI",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "CELO",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "HMSTR",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "SCR",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "NEIROETH",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "kNEIRO",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "GOAT",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "MOODENG",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "GRASS",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "PURR",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "PNUT",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "XLM",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "CHILLGUY",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "SAND",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "IOTA",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "ALGO",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "HYPE",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "ME",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "MOVE",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "VIRTUAL",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "PENGU",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "USUAL",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "FARTCOIN",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "AI16Z",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "AIXBT",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "ZEREBRO",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "BIO",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "GRIFFAIN",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "SPX",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "S",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "MORPHO",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "TRUMP",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "MELANIA",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "ANIME",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "VINE",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "VVV",
+   "szDecimals": 2
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "JELLY",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "BERA",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "TST",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "LAYER",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "IP",
+   "szDecimals": 1
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "OM",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "KAITO",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "NIL",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 51,
+   "maxLeverage": 10,
+   "name": "PAXG",
+   "szDecimals": 3
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "PROMPT",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "BABY",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "WCT",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "HYPER",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "ZORA",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "INIT",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "DOOD",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "LAUNCHCOIN",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "NXPC",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "SOPH",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "RESOLV",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "SYRUP",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "PUMP",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "PROVE",
+   "szDecimals": 0
+  },
+  {
+   "isDelisted": true,
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "YZY",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 51,
+   "maxLeverage": 10,
+   "name": "XPL",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "WLFI",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "LINEA",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "SKY",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "ASTER",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "AVNT",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "STBL",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "0G",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "HEMI",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "APEX",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "2Z",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 52,
+   "maxLeverage": 10,
+   "name": "ZEC",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "MON",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "MET",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "MEGA",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "CC",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "ICP",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "AERO",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "STABLE",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "FOGO",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "LIT",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "XMR",
+   "szDecimals": 3
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "AXS",
+   "szDecimals": 1
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "DASH",
+   "szDecimals": 2
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "SKR",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "AZTEC",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "CHIP",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 5,
+   "maxLeverage": 5,
+   "name": "GRAM",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "CASHCAT",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "PONS",
+   "szDecimals": 0
+  },
+  {
+   "marginTableId": 3,
+   "maxLeverage": 3,
+   "name": "USELESS",
+   "szDecimals": 0
+  }
+ ]
+}

@@ -194,7 +194,14 @@ def _premium_fixture() -> pd.DataFrame:
     return df
 
 
+def _volume_spike_fixture() -> pd.DataFrame:
+    df = _DF[["open", "high", "low", "close", "volume"]].copy()
+    df.iloc[::11, df.columns.get_loc("volume")] = df["volume"].iloc[::11].to_numpy() * 4.0
+    return df
+
+
 STRATEGY_FIXTURES = {
+    "volume_spike_breakout": _volume_spike_fixture,
     "volume_profile_reclaim": _vpr_fixture,
     "perpetual_premium_reversion": _premium_fixture,
     "cumulative_volume_delta_divergence": _cvd_fixture,

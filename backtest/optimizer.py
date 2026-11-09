@@ -152,6 +152,15 @@ def strategy_warmup_bars(strategy_name: str, param_grid: List[dict], param_range
             for merged in ({**defaults, **p} for p in param_grid)
         )
         return max(history, max_indicator_lookback(param_ranges))
+    if strategy_name == "volume_spike_breakout":
+        if _OPEN_STRATEGIES not in sys.path:
+            sys.path.insert(0, _OPEN_STRATEGIES)
+        from volume_spike_breakout import DEFAULT_PARAMS, required_history_bars
+        history = max(
+            required_history_bars(merged["lookback"], merged["vol_period"])
+            for merged in ({**DEFAULT_PARAMS, **p} for p in param_grid)
+        )
+        return max(history, max_indicator_lookback(param_ranges))
     lookback = max_indicator_lookback(param_ranges)
     if strategy_name in RECURSION_HISTORY_STRATEGIES:
         if _OPEN_STRATEGIES not in sys.path:
@@ -835,6 +844,12 @@ DEFAULT_PARAM_RANGES = {
         "flow_window": [10, 20, 40, 80],
         "breakout_window": [10, 20, 40, 80],
         "flow_threshold": [0.0, 0.05, 0.10, 0.20],
+    },
+    "volume_spike_breakout": {
+        "lookback": [10, 20, 40, 80, 100],
+        "vol_period": [10, 20, 40, 80, 100],
+        "vol_multiplier": [1.0, 1.5, 2.0, 3.0],
+        "min_body_frac": [0.0, 0.25, 0.5],
     },
     "open_interest_breakout": {
         "price_lookback": [10, 20, 40],

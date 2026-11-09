@@ -14,6 +14,11 @@ import pytest
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 CHECK_HL = os.path.join(REPO, "shared_scripts", "check_hyperliquid.py")
+CHECK_SPOT = os.path.join(REPO, "shared_scripts", "check_strategy.py")
+CHECK_OKX = os.path.join(REPO, "shared_scripts", "check_okx.py")
+CHECK_TOPSTEP = os.path.join(REPO, "shared_scripts", "check_topstep.py")
+HTF_OFFLINE = os.path.join(REPO, "shared_scripts", "testdata", "htf_offline")
+QUOTE_STUB = os.path.join(REPO, "shared_scripts", "testdata", "quote_precision")
 CREDENTIAL_PREFIXES = ("HYPERLIQUID", "OKX", "ROBINHOOD", "TOPSTEP", "PROJECTX")
 REPLACED_PER_STRATEGY_TESTS = (
     "test_an_already_closed_final_bar_is_the_decision_bar",
@@ -438,6 +443,7 @@ class Case:
     eval_tp: Optional[Dict[str, Any]] = None
     batch_entry: Optional[Callable] = None
     batch_check: Optional[Callable] = None
+    entry_defect: Optional[Callable] = None
 
     def reason(self):
         return f"{self.prefix}_reason"
@@ -505,6 +511,48 @@ AMA_COLUMNS = ("ama_value", "ama_prev_value", "ama_slope_ref", "ama_slope", "ama
 ERP_COLUMNS = ("erp_ema", "erp_slope", "erp_bull_power", "erp_bear_power", "erp_setup_side", "erp_setup_age",
                "erp_valid", "erp_reason_code", "erp_eval_ts_ms", "erp_close")
 FISHER_COLUMNS = ("fisher_value", "fisher_trigger", "fisher_prev_trigger", "fisher_valid", "fisher_reason_code")
+
+
+VSB_PARAMS = {"lookback": 20, "vol_period": 20, "vol_multiplier": 2.0, "min_body_frac": 0.0}
+VSB_TP = {"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}
+VSB_COLUMNS = ("vsb_range_high", "vsb_range_low", "vsb_base_volume", "vsb_rel_vol", "vsb_body_frac",
+               "vsb_long_qualified", "vsb_short_qualified", "vsb_prev_long_qualified", "vsb_prev_short_qualified",
+               "vsb_valid", "vsb_reason_code", "vsb_required_history", "vsb_short_entries")
+
+
+def vsb_volume(i):
+    return 1000.0 + 7.0 * (i % 13)
+
+
+def vsb_bars(n, step, side=1, *, jump=8.0, start=400.0, spike=5000.0, at=None):
+    at = n - 1 if at is None else at
+    out = []
+    for i in range(n):
+        c, v = start, vsb_volume(i)
+        if i == at:
+            c, v = start + side * jump, spike
+        out.append({"t": T0 + i * step, "T": T0 + (i + 1) * step - 1, "o": start, "h": max(start, c) + 0.5,
+                    "l": min(start, c) - 0.5, "c": c, "v": v})
+    return out
+
+
+def vsb_identity(ind, bars):
+    assert ind["vsb_rel_vol"] == bars[-1]["v"] / ind["vsb_base_volume"] > ind["vsb_vol_multiplier"]
+    assert ind["vsb_rel_vol"] != round(ind["vsb_rel_vol"], 6)
+    assert ind["vsb_base_volume"] == sum(b["v"] for b in bars[-21:-1]) / 20
+    assert ind["vsb_range_high"] == 400.5 and ind["vsb_range_low"] == 399.5
+
+
+def vsb_reconstruct(ind):
+    if ind.get("vsb_valid") != 1.0:
+        return 0
+    long_ = ind["vsb_long_qualified"] == 1.0 and ind["vsb_prev_long_qualified"] == 0.0
+    short = ind["vsb_short_qualified"] == 1.0 and ind["vsb_prev_short_qualified"] == 0.0
+    if long_ == short:
+        return 0
+    if long_:
+        return 1
+    return -1 if ind["vsb_short_entries"] == 1.0 else 0
 
 
 CASE_LIST = [
@@ -629,6 +677,24 @@ CASE_LIST = [
                    "round": False, "timeframe": "1h", "label": "entry_long", "label_match": True,
                    "identity": tsi_identity},
         fallback_with_params=False,
+    ),
+    Case(
+        name="volume_spike_breakout", prefix="vsb", params=VSB_PARAMS, tf="4h",
+        ref="backtest/candidates/volume_spike_breakout_2008/REPORT.md",
+        solo=lambda: _solo4h(vsb_bars(220, FOUR_H)), solo_short=lambda: _solo4h(vsb_bars(220, FOUR_H, -1)),
+        entry=lambda side=1: vsb_bars(260, H, side), tp=VSB_TP, helds=(HELD_LONG, HELD_SHORT),
+        eval_spec={"closed": False,
+                   "indicators": {"vsb_lookback": 20.0, "vsb_required_history": 22.0, "vsb_valid": 1.0,
+                                  "vsb_short_entries": 1.0},
+                   "labels": {"vsb_reason": "entry_long"}, "signal": 1, "open_action": "long",
+                   "short_label": "entry_short"},
+        peers=("breakout", "chaikin_money_flow_breakout", "donchian_breakout", "session_breakout", "volume_weighted"),
+        batch_peer="breakout", batch_bad=({**VSB_PARAMS, "lookback": 1}, "lookback"), solo_signal=1,
+        batch_signals=(0, 1), reconstruct=vsb_reconstruct, opposite_entry_closes=True,
+        evaluator={"sides": (1, -1), "bars": lambda side: vsb_bars(260, H, side), "columns": VSB_COLUMNS,
+                   "full": True, "round": False, "timeframe": "1h", "label": None, "label_match": True,
+                   "identity": vsb_identity},
+        entry_defect=lambda: [dict(b, v=0.0) if i == 259 else b for i, b in enumerate(vsb_bars(260, H))],
     ),
 ]
 
@@ -1119,11 +1185,14 @@ EXEMPT = {
 }
 
 
+CONTRACT_PLATFORM_SETS = (("futures",), ("spot", "futures"))
+
+
 def contract_selector(registry):
     return sorted(
         name for name, entry in registry.STRATEGIES.items()
         if entry.get("edge_status") == "no_edge"
-        and tuple(entry.get("platforms") or ()) == ("futures",)
+        and tuple(entry.get("platforms") or ()) in CONTRACT_PLATFORM_SETS
         and entry.get("short_entries") is True
         and str(entry.get("edge_ref") or "").startswith("backtest/candidates/")
         and not entry.get("quote")
@@ -1471,3 +1540,205 @@ def test_closed_bar_close_fallback_closes_on_an_opposite_entry(name):
         assert out["signal"] == close_signal, entry_side
         kept = json.loads(run(argv + same_side, stdin).stdout)
         assert kept["close_fraction"] == 0.0, entry_side
+
+
+@pytest.mark.parametrize("name", cases_with("entry_defect"))
+def test_an_invalid_entry_bar_holds_the_entry_while_the_close_owner_and_protection_inputs_still_run(name):
+    case = CASES[name]
+    bars = case.entry_defect()
+    mark = bars[-1]["c"]
+    strategy_refs = json.dumps({"open": {"name": name, "params": dict(case.params)}, "closes": [case.tp]})
+    for held_args, side_signal in ((held("long", mark / 1.05), -1), (held("short", mark * 1.05), 1)):
+        for flags in ([], ["--closed-bar-decisions"]):
+            cutoff = boundary(bars) if flags else None
+            proc = run([name, "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200",
+                        "--strategy-refs", strategy_refs, *flags, *held_args],
+                       envelope(bars, H, "BTC|1h", cutoff=cutoff))
+            assert proc.returncode == 0, (flags, proc.stderr[-2000:])
+            out = json.loads(proc.stdout)
+            assert not out.get("error"), out
+            assert out["open_action"] == "none", (flags, out)
+            assert out["indicator_labels"][case.reason()] == "invalid_volume", (flags, out["indicator_labels"])
+            assert out["indicators"][f"{case.prefix}_valid"] == 0.0
+            assert f"{case.prefix}_rel_vol" not in out["indicators"]
+            assert out["close_fraction"] == 1.0 and out["close_strategy"] == case.tp["name"], (flags, out)
+            assert out["signal"] == side_signal
+            assert out["indicators"]["atr"] > 0
+            assert "fill" not in out and "order" not in out
+
+
+@dataclasses.dataclass(frozen=True)
+class SpotCase:
+    name: str
+    prefix: str
+    params: Dict[str, Any]
+    tp: Dict[str, Any]
+    columns: Tuple[str, ...]
+    suppressed: str
+    venue_params: Dict[str, Any]
+
+
+SPOT_CASES = {
+    "volume_spike_breakout": SpotCase("volume_spike_breakout", "vsb", VSB_PARAMS, VSB_TP, VSB_COLUMNS,
+                                      "short_suppressed_spot", dict(VSB_PARAMS, vol_multiplier=1.0)),
+}
+
+
+def test_every_spot_registered_study_candidate_has_a_spot_case():
+    registry = strategies()._registry
+    spot = sorted(n for n in contract_selector(registry) if "spot" in registry.STRATEGIES[n]["platforms"])
+    assert spot == sorted(SPOT_CASES)
+    for name in spot:
+        assert name in CASES, name
+
+
+SPOT_START_MS = 1_793_620_800_000 + 2 * 3_600_000
+
+
+def spot_rows(side=1, *, n=220, step=FOUR_H, at=None, closed_last=False):
+    end = SPOT_START_MS - SPOT_START_MS % step - (step if closed_last else 0)
+    bars = vsb_bars(n, step, side, at=at)
+    start = end - (n - 1) * step
+    return [[start + i * step, b["o"], b["h"], b["l"], b["c"], b["v"]] for i, b in enumerate(bars)]
+
+
+def spot_check(tmp_path, rows, argv, symbol="BTC/USDT", tf="4h"):
+    fixture = tmp_path / f"spot-{len(list(tmp_path.iterdir()))}.json"
+    fixture.write_text(json.dumps({"ccxt": {f"{symbol}|{tf}": rows}, "tickers": {symbol: rows[-1][4]}}))
+    environ = env()
+    environ.update({"PYTHONPATH": HTF_OFFLINE, "HTF_OFFLINE_FIXTURE": str(fixture),
+                    "HTF_OFFLINE_START_MS": str(SPOT_START_MS)})
+    proc = subprocess.run([sys.executable, CHECK_SPOT] + argv, capture_output=True, text=True, cwd=REPO, env=environ,
+                          timeout=240)
+    assert "network blocked by the htf offline fixture" not in proc.stderr, proc.stderr
+    return proc
+
+
+@functools.lru_cache(maxsize=None)
+def spot_strategies():
+    tools = os.path.join(REPO, "shared_tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    path = os.path.join(REPO, "shared_strategies", "open", "spot", "strategies.py")
+    spec = importlib.util.spec_from_file_location("_strategy_check_contract_spot_strategies", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def spot_frame(rows):
+    df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df.index = pd.to_datetime(df["timestamp"], unit="ms")
+    return df
+
+
+def spot_refs(case, closes=None, params=None):
+    return json.dumps({"open": {"name": case.name, "params": dict(case.params if params is None else params)},
+                       "closes": [case.tp] if closes is None else closes})
+
+
+def spot_open_with_edge():
+    registry = spot_strategies()._registry
+    return next(n for n in registry.PLATFORM_ORDER["spot"]
+                if registry.STRATEGIES[n].get("edge_status") is None and n != "hold")
+
+
+@pytest.mark.parametrize("name", sorted(SPOT_CASES))
+def test_spot_check_admits_paper_and_acknowledged_evaluation_and_matches_the_spot_evaluator(name, tmp_path):
+    case = SPOT_CASES[name]
+    rows = spot_rows(1)
+    base = [name, "BTC/USDT", "4h", "--ohlcv-limit", "200", "--strategy-refs", spot_refs(case)]
+    refused = spot_check(tmp_path, rows, base)
+    assert refused.returncode == 1
+    error = payload(refused)["error"]
+    assert f"open strategy '{name}' is edge_status=no_edge" in error and "missing mode" in error
+    assert payload(refused)["signal"] == 0 and "Fetching" not in refused.stderr
+    want = spot_strategies().apply_strategy(name, spot_frame(rows[-200:]), dict(case.params)).iloc[-1]
+    outs = []
+    for extra in (["--mode=paper"], ["--mode=live", "--allow-no-edge"]):
+        proc = spot_check(tmp_path, rows, base + extra)
+        assert proc.returncode == 0, (extra, proc.stderr[-2000:])
+        out = payload(proc)
+        assert not out.get("error"), out
+        assert (out["signal"], out["open_action"]) == (1, "long"), extra
+        assert out["open_strategy"] == name and out["close_strategies"] == [case.tp["name"]]
+        assert out["indicator_labels"][f"{case.prefix}_reason"] == want[f"{case.prefix}_reason"] == "entry_long"
+        for col in case.columns:
+            assert out["indicators"][col] == float(want[col]), col
+        assert out["indicators"][f"{case.prefix}_short_entries"] == 0.0
+        assert "fill" not in out and "order" not in out
+        outs.append(out)
+    assert outs[0]["indicators"] == outs[1]["indicators"]
+    short = payload(spot_check(tmp_path, spot_rows(-1), base + ["--mode=paper"]))
+    assert (short["signal"], short["open_action"]) == (0, "none")
+    assert short["indicator_labels"][f"{case.prefix}_reason"] == case.suppressed
+    assert short["indicators"][f"{case.prefix}_short_qualified"] == 1.0
+    fallback = json.dumps({"open": {"name": spot_open_with_edge()}, "closes": [{"name": name}]})
+    live = spot_check(tmp_path, rows, [spot_open_with_edge(), "BTC/USDT", "4h", "--mode=live", "--strategy-refs",
+                                       fallback])
+    assert live.returncode == 1
+    assert f"close strategy '{name}' is edge_status=no_edge" in payload(live)["error"]
+    paper = spot_check(tmp_path, rows, [spot_open_with_edge(), "BTC/USDT", "4h", "--mode=paper", "--strategy-refs",
+                                        fallback])
+    assert paper.returncode == 0, paper.stderr[-2000:]
+    assert payload(paper)["close_strategies"] == [name]
+
+
+@pytest.mark.parametrize("name", sorted(SPOT_CASES))
+def test_spot_closed_bar_decisions_select_the_last_closed_candle(name, tmp_path):
+    case = SPOT_CASES[name]
+    label = f"{case.prefix}_reason"
+    argv = [name, "BTC/USDT", "4h", "--mode=paper", "--ohlcv-limit", "200", "--strategy-refs", spot_refs(case)]
+    forming_spike = spot_rows(1, n=221)
+    closed = payload(spot_check(tmp_path, forming_spike, argv + ["--closed-bar-decisions"]))
+    assert not closed.get("error"), closed
+    assert closed["closed_bar_decision"]["held"] is False
+    assert closed["signal"] == 0 and closed["indicator_labels"][label] == "no_breakout"
+    legacy = payload(spot_check(tmp_path, forming_spike, argv))
+    assert legacy["signal"] == 1 and legacy["indicator_labels"][label] == "entry_long"
+    closed_spike = spot_rows(1, n=221, at=219)
+    decided = payload(spot_check(tmp_path, closed_spike, argv + ["--closed-bar-decisions"]))
+    assert decided["closed_bar_decision"]["held"] is False
+    assert decided["signal"] == 1 and decided["indicator_labels"][label] == "entry_long"
+    want = spot_strategies().apply_strategy(name, spot_frame(closed_spike[-201:-1]), dict(case.params)).iloc[-1]
+    for col in case.columns:
+        assert decided["indicators"][col] == float(want[col]), col
+
+
+def quote_stub_check(tmp_path, script, argv, shape):
+    environ = env()
+    for key in [k for k in environ if k.startswith("QP_")]:
+        environ.pop(key)
+    environ.update({"QP_STUB": "1", "PYTHONPATH": QUOTE_STUB, "HOME": str(tmp_path), "QP_SHAPE": shape,
+                    "QP_CLOSE": "100", "QP_NOW": "2026-10-21T12:00:00-04:00"})
+    proc = subprocess.run([sys.executable, script] + argv, capture_output=True, text=True, cwd=REPO, env=environ,
+                          timeout=240)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    return payload(proc)
+
+
+@pytest.mark.parametrize("name", sorted(SPOT_CASES))
+def test_futures_routes_refuse_missing_mode_and_okx_and_topstep_export_full_precision_diagnostics(name, tmp_path):
+    case = SPOT_CASES[name]
+    params = json.dumps(case.venue_params)
+    refused = run([name, "BTC", CASES[name].tf, "--market-stdin", "--strategy-refs", refs(CASES[name])],
+                  CASES[name].solo())
+    assert refused.returncode == 1
+    error = payload(refused)["error"]
+    assert f"open strategy '{name}' is edge_status=no_edge" in error and "missing mode" in error
+    assert payload(refused)["signal"] == 0 and "Fetching" not in refused.stderr
+    rows = [
+        (CHECK_OKX, ["BTC", "1h", "--inst-type=swap"], "cross_up", 1, "entry_long"),
+        (CHECK_OKX, ["BTC", "1h", "--inst-type=swap"], "cross_down", -1, "entry_short"),
+        (CHECK_OKX, ["BTC", "1h", "--inst-type=spot"], "cross_up", 1, "entry_long"),
+        (CHECK_OKX, ["BTC", "1h", "--inst-type=spot"], "cross_down", 0, case.suppressed),
+        (CHECK_TOPSTEP, ["MES", "1h"], "cross_up", 1, "entry_long"),
+        (CHECK_TOPSTEP, ["MES", "1h"], "cross_down", -1, "entry_short"),
+    ]
+    for script, argv, shape, signal, reason in rows:
+        out = quote_stub_check(tmp_path, script, [name] + argv + ["--mode=paper", "--params", params], shape)
+        assert not out.get("error"), (script, argv, shape, out)
+        assert out["signal"] == signal, (script, argv, shape)
+        assert out["indicator_labels"][f"{case.prefix}_reason"] == reason, (script, argv, shape)
+        rel = out["indicators"][f"{case.prefix}_rel_vol"]
+        assert rel > case.venue_params["vol_multiplier"] and rel != round(rel, 6), (script, argv, shape)
