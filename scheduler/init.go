@@ -127,6 +127,7 @@ var knownShortNames = map[string]string{
 	"perpetual_premium_reversion":        "premrev",
 	"order_book_imbalance":               "obimb",
 	"inventory_market_making":            "invmm",
+	"sweep_absorption_ifvg":              "sweepabs",
 }
 
 var registeredOpenStrategyPlatforms = map[string][]string{
@@ -217,6 +218,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"perpetual_premium_reversion":        {"futures"},
 	"order_book_imbalance":               {"futures"},
 	"inventory_market_making":            {"futures"},
+	"sweep_absorption_ifvg":              {"futures"},
 }
 
 func openStrategyRegisteredFor(name, registryPlatform string) bool {
@@ -288,6 +290,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"volume_profile_reclaim":             true,
 	"perpetual_premium_reversion":        true,
 	"order_book_imbalance":               true,
+	"sweep_absorption_ifvg":              true,
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {

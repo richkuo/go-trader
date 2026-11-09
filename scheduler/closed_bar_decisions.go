@@ -41,6 +41,7 @@ var closedBarRequiredOpenStrategies = map[string]string{
 	calendarConditionedEntryStrategyName: "its last-bar decision maps the next bar's UTC weekday/hour cell from the verified closed-bar boundary; without it the Hyperliquid check holds every entry and close-fallback signal, and other venues would decide on the forming bar and enter one cell late",
 	"stochastic_momentum_index":          "its last-bar decision needs the verified closed-bar cutoff; without it the Hyperliquid check holds every entry and close-fallback signal, and other venues would decide on the forming bar",
 	"klinger_divergence":                 "its last-bar pivot confirmation and signal-line cross need the verified closed-bar cutoff; without it the Hyperliquid check holds every entry and close-fallback signal, and other venues would decide on the forming bar's volume",
+	sweepAbsorptionStrategyName:          "its sweep, displacement and retest decisions, its trade-flow deadlines and its one-hour swing structure need the verified closed-bar cutoff and boundary; without them the Hyperliquid check holds every entry and close-fallback signal",
 }
 
 func closedBarRequiredOpenStrategyErrors(sc StrategyConfig) []string {

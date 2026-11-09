@@ -128,7 +128,7 @@ def mapping_mismatches(go, py):
 
 def test_go_no_edge_metadata_equals_python_registry():
     go, py = go_no_edge_metadata(), python_no_edge_metadata()
-    assert len(py) == 71
+    assert len(py) == 72
     assert mapping_mismatches(go, py) == []
     assert OPEN_REGISTRY.DISCOVERY_HIDDEN_STRATEGIES == frozenset(py)
     for source, ref in py.values():
@@ -181,10 +181,57 @@ def test_go_production_refusal_equals_python_registry():
         "perpetual_premium_reversion": "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
         "order_book_imbalance": "backtest/candidates/order_book_imbalance_1635/REPORT.md",
         "inventory_market_making": "backtest/candidates/inventory_market_making_1636/REPORT.md",
+        "sweep_absorption_ifvg": "backtest/candidates/sweep_absorption_ifvg_2010/REPORT.md",
     }
     assert go == py
     for name in py:
         assert OPEN_REGISTRY.STRATEGIES[name]["edge_status"] == OPEN_REGISTRY.EDGE_STATUS_NO_EDGE
+
+
+def go_trade_flow_strategy_names():
+    block = _go_block(_go_source("market_feed_trades.go"), "var tradeFlowStrategyNames = map[string]bool{")
+    entries = re.findall(r'^\s*"(\w+)":\s*true,\s*$', block, re.M)
+    assert len(entries) == len([line for line in block.splitlines() if line.strip()]), (
+        "unparsed line in tradeFlowStrategyNames")
+    return set(entries)
+
+
+def test_trade_flow_strategy_set_is_one_set_in_go_the_check_script_and_the_backtester():
+    market_payload = _load("_parity_market_payload", "shared_tools", "market_payload.py")
+    py = set(market_payload.TRADE_FLOW_STRATEGIES)
+    assert py == {"cumulative_volume_delta_divergence", "sweep_absorption_ifvg"}
+    assert go_trade_flow_strategy_names() == py
+    for name in py:
+        assert OPEN_REGISTRY.STRATEGIES[name]["production_refused"] is True
+    for rel in (("shared_scripts", "check_hyperliquid.py"), ("backtest", "run_backtest.py")):
+        source = open(os.path.join(REPO, *rel)).read()
+        assert "TRADE_FLOW_STRATEGIES" in source, rel
+        assert '"cumulative_volume_delta_divergence"}' not in source, rel
+
+
+def test_sweep_absorption_support_equals_the_go_parity_fixture():
+    sys.path.insert(0, os.path.join(REPO, "shared_tools"))
+    sys.path.insert(0, os.path.join(REPO, "shared_strategies", "open"))
+    module = _load("_parity_sweep_absorption", "shared_strategies", "open", "sweep_absorption_ifvg.py")
+    with open(os.path.join(SCHEDULER, "testdata", "sweep_absorption_support_parity.json")) as fh:
+        doc = json.load(fh)
+    assert doc["schema"] == "sweep_absorption_support_parity/1"
+    defaults = OPEN_REGISTRY.STRATEGIES["sweep_absorption_ifvg"]["default_params"]
+    assert defaults == module.DEFAULT_PARAMS
+    for case in doc["cases"]:
+        if "error_contains" in case:
+            with pytest.raises(ValueError, match=re.escape(case["error_contains"])):
+                module.support_for_params(case["params"])
+            continue
+        got = module.support_for_params(case["params"])
+        assert {k: got[k] for k in case["support"]} == case["support"], case["name"]
+        assert set(case["support"]) == set(got), case["name"]
+    source = _go_source("sweep_absorption_ifvg.go")
+    for key, value in (("session_start_hour_utc", 0), ("session_end_hour_utc", 8), ("sweep_window", 24),
+                       ("max_sweep_bars", 6), ("gap_window", 12), ("confirm_window", 6), ("setup_expiry", 12),
+                       ("expected_interval_ms", "300_000")):
+        assert re.search(rf'\{{"{key}", {value}, ', source), key
+        assert defaults[key] == int(str(value).replace("_", "")), key
 
 
 def test_v20_auto_acknowledgement_exclusions_are_registered_no_edge_names():

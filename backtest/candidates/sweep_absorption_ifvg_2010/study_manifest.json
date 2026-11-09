@@ -1,0 +1,26 @@
+{
+  "schema": "sweep_absorption_ifvg_study/1",
+  "study": "sweep_absorption_ifvg_2010",
+  "spec": {"path": "candidate_spec.json", "sha256": "b63b7fa7cc6cbe6b49e9b8e7de3ce8711d7b569e6ffcfb8472e427637a326fba"},
+  "source": "B",
+  "recording": {
+    "path": "data/recording",
+    "sha256": null,
+    "how": "go-trader record-observations --kinds trade_flow on BTC, ETH and HYPE from before the train window start through the test window end; copy the closed run (run.manifest.json and every segment) here and pin the run manifest sha256"
+  },
+  "side_evidence": {
+    "path": "data/side_evidence/side_evidence.json",
+    "sha256": null,
+    "how": "taker-fill side verification over the recording, as in the cumulative_volume_delta_divergence_1638 side_evidence.py procedure, for every coin"
+  },
+  "sealed_payloads": {
+    "path": "data/sealed_payloads/index.json",
+    "sha256": null,
+    "how": "sealed market payloads captured from an explicit-paper shared-feed run of the candidate over part of the recording, for the sealed-versus-replayed decision proof"
+  },
+  "offline_manifests": {
+    "5m": {"path": "data/offline_5m.json", "sha256": null},
+    "15m": {"path": "data/offline_15m.json", "sha256": null}
+  },
+  "offline_manifest_shape": "offline_candle_manifest/v7 with the spec windows, warmup_bars at least the support horizon, and per coin: candles, funding, trade_flow (series replayed from the recording by backtest/trade_flow_replay.py) and htf_candles (pinned one-hour candles)"
+}

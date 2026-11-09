@@ -1,0 +1,139 @@
+{
+  "arm_matrix": [
+    "market+atr+tiered",
+    "market+atr+pool",
+    "market+structural+tiered",
+    "market+structural+pool",
+    "ce_limit+atr+tiered",
+    "ce_limit+atr+pool",
+    "ce_limit+structural+tiered",
+    "ce_limit+structural+pool"
+  ],
+  "candidate": "sweep_absorption_ifvg",
+  "controls": [
+    "absorption_disabled",
+    "amd_ifvg",
+    "liquidity_sweeps"
+  ],
+  "coverage_rule": {
+    "denominator": "every bar of the scoring window inside the post-session horizon (bar offsets 0 to post_bars - 1 after the session end) of a reference session whose start lies inside the dataset; frozen before results are read",
+    "floor": 0.8,
+    "numerator": "post-session horizon bars whose required evidence (every trade-flow minute from the reference session start through the bar before the decision, complete, unrevoked and summing to the candle volumes at the decision deadline) is usable",
+    "per": "every required dataset and scoring window"
+  },
+  "economic_scoring_ran": false,
+  "gates": [
+    {
+      "dataset": "BTC 15m",
+      "gate": "dataset",
+      "reason": "needs candles, funding, trade_flow and htf_candles in data/offline_15m.json"
+    },
+    {
+      "dataset": "BTC 5m",
+      "gate": "dataset",
+      "reason": "needs candles, funding, trade_flow and htf_candles in data/offline_5m.json"
+    },
+    {
+      "dataset": "ETH 15m",
+      "gate": "dataset",
+      "reason": "needs candles, funding, trade_flow and htf_candles in data/offline_15m.json"
+    },
+    {
+      "dataset": "ETH 5m",
+      "gate": "dataset",
+      "reason": "needs candles, funding, trade_flow and htf_candles in data/offline_5m.json"
+    },
+    {
+      "dataset": "HYPE 15m",
+      "gate": "dataset",
+      "reason": "needs candles, funding, trade_flow and htf_candles in data/offline_15m.json"
+    },
+    {
+      "dataset": "HYPE 5m",
+      "gate": "dataset",
+      "reason": "needs candles, funding, trade_flow and htf_candles in data/offline_5m.json"
+    },
+    {
+      "gate": "offline_manifest_15m",
+      "path": "data/offline_15m.json",
+      "reason": "not acquired: the file does not exist"
+    },
+    {
+      "gate": "offline_manifest_5m",
+      "path": "data/offline_5m.json",
+      "reason": "not acquired: the file does not exist"
+    },
+    {
+      "gate": "sealed_replay_proof",
+      "path": "data/sealed_payloads/index.json",
+      "reason": "not acquired: the file does not exist"
+    },
+    {
+      "gate": "side_evidence",
+      "path": "data/side_evidence/side_evidence.json",
+      "reason": "not acquired: the file does not exist"
+    },
+    {
+      "gate": "source_b_recording",
+      "path": "data/recording",
+      "reason": "no forward trade-flow recording has been captured for this study"
+    }
+  ],
+  "minimum_independent_positions": {
+    "test": 30,
+    "train": 10
+  },
+  "required_datasets": [
+    "BTC 5m",
+    "ETH 5m",
+    "HYPE 5m",
+    "BTC 15m",
+    "ETH 15m",
+    "HYPE 15m"
+  ],
+  "schema": "sweep_absorption_ifvg_results/1",
+  "scored": null,
+  "sealed_replay_proof": null,
+  "source": {
+    "choice": "B",
+    "contract": {
+      "decimal_scale": 8,
+      "identity": "venue+namespace+coin+time+tid",
+      "interval_ms": 60000,
+      "max_event_gap_ms": 30000,
+      "reorder_grace_ms": 5000,
+      "side_evidence": "hyperliquid-trades-side-aggressor/1638-v1",
+      "source": "hyperliquid_ws_trades",
+      "time_basis": "event_time_receipt_cutoff",
+      "units": "base"
+    },
+    "label": "forward recording of the public Hyperliquid trades WebSocket stream through the existing trade-flow recorder (go-trader record-observations --kinds trade_flow) and the independent Python replay (backtest/trade_flow_replay.py)",
+    "recording_run_id": null
+  },
+  "source_files": {
+    "backtest/backtester.py": "cdd968576eef3bc48613697137c1b88d803f1d0e5ae804eb8de59b98b0b8e279",
+    "backtest/candidates/sweep_absorption_ifvg_2010/arms.py": "a56b510194790648e637c0a82d55a653410e4c653d8457326e3e31f032956535",
+    "backtest/candidates/sweep_absorption_ifvg_2010/candidate_spec.json": "b63b7fa7cc6cbe6b49e9b8e7de3ce8711d7b569e6ffcfb8472e427637a326fba",
+    "backtest/candidates/sweep_absorption_ifvg_2010/run_study.py": "3ee38db828cf574f87557fc112ad8308e0926de34f154d121e4bd3ac432be590",
+    "backtest/offline_manifest.py": "6b0dc97757f943cba72ea0c12b13e1f7f814e406ac45bfdf534f97955603efee",
+    "backtest/trade_flow_replay.py": "badd02d175995110d694845e45ce58611df002b80f3660f5ad62b24a61dc79b4",
+    "scheduler/market_feed_requirements.go": "efa9f979768c2c4b515a648f348c80ab5261cbe0ca14e2a8b9088e2d45f6afb2",
+    "scheduler/market_feed_trades.go": "d9bb9eb3690f5f4f15595a368894a7463fae6b3af31fd6017c262bf5ac851b7e",
+    "scheduler/sweep_absorption_ifvg.go": "83938ad620a7d8685c255a90f85eb1e03a4f3b8f0a190c14cef0c00e01a557b4",
+    "shared_scripts/check_hyperliquid.py": "98969bc0a330f9f6d74e52e57ff9975edad7f1f00d47c7f83f90dfb469f11992",
+    "shared_strategies/open/cumulative_volume_delta_divergence.py": "3235fdb3a432c55bfb999e5b7f11118c0eab4c5fc32e34f9e2c61c6a8037879a",
+    "shared_strategies/open/registry.py": "2970da0d9460aa2a769d6277c48e27e9448c9d0541e41998641a9bc0ce774c54",
+    "shared_strategies/open/sweep_absorption_ifvg.py": "731fdc0c80b4401c68edc8e17a24ee38988e5c0b8c4ad2e42acab874e5a3ffa4",
+    "shared_tools/market_payload.py": "cd1ff0fdeb33b6b6f093624538f1e1352fcb274681695440db7079f1985808a3"
+  },
+  "spec_sha256": "b63b7fa7cc6cbe6b49e9b8e7de3ce8711d7b569e6ffcfb8472e427637a326fba",
+  "study": "sweep_absorption_ifvg_2010",
+  "support_bars": {
+    "15m": 80,
+    "5m": 144
+  },
+  "verdict": "INCONCLUSIVE",
+  "verdict_reasons": [
+    "missing or failed evidence gates: dataset, offline_manifest_15m, offline_manifest_5m, sealed_replay_proof, side_evidence, source_b_recording"
+  ]
+}

@@ -54,6 +54,7 @@ from closed_bar import (
 )
 from hl_user_fills import apply_user_fills_lookup
 from market_payload import (
+    TRADE_FLOW_STRATEGIES,
     MarketPayloadError as MarketPayloadBaseError,
     market_decision_cutoff_ms,
     market_frame_rows,
@@ -124,12 +125,12 @@ def _position_ctx_from_args(args):
 TP_MODEL_RESTING_LIMIT = "resting_limit"
 
 FULL_PRECISION_INDICATOR_PREFIXES = ("eom_", "mfi_", "ama_", "dt_", "erp_", "stc_", "rcr_", "trix_", "cpr_", "mir_",
-                                     "cce_", "smi_", "efp_", "tsi_", "klinger_", "vsb_")
+                                     "cce_", "smi_", "efp_", "tsi_", "klinger_", "vsb_", "sai_")
 
 TEXT_INDICATOR_COLUMNS = ("eom_reason", "ama_reason", "dt_reason", "erp_reason", "stc_reason", "rcr_reason",
                           "trix_reason", "cpr_reason", "mir_reason", "cce_reason", "smi_reason", "efp_reason",
                           "tsi_reason", "klinger_reason", "cvd_reason", "meb_reason", "bll_reason", "vpr_reason",
-                          "ppr_reason", "obi_reason", "vsb_reason")
+                          "ppr_reason", "obi_reason", "vsb_reason", "sai_reason")
 
 BATCH_PROTOCOL_VERSION = 1
 
@@ -513,16 +514,45 @@ def _shared_open_interest(shared, symbol):
     return market_observation(market, symbol, "open_interest", MarketPayloadError)
 
 
-TRADE_FLOW_STRATEGY = "cumulative_volume_delta_divergence"
-
-
 def _shared_trade_flow(shared, symbol):
     market = shared.get("market")
     if market is None:
         return {"available": False, "kind": "trade_flow", "coin": symbol,
-                "reason": "cumulative_volume_delta_divergence reads trade flow only from the sealed market "
+                "reason": "trade-flow strategies read trade flow only from the sealed market "
                           "feed payload; this check has none and never fetches it"}
     return market_trade_flow(market, symbol, MarketPayloadError)
+
+
+SWEEP_ABSORPTION_STRATEGY = "sweep_absorption_ifvg"
+SWEEP_ABSORPTION_HTF = "1h"
+SWEEP_ABSORPTION_HTF_MS = 3_600_000
+
+
+def _shared_htf_candles(shared, symbol, boundary_ms=None):
+    def unavailable_htf(reason):
+        return {"available": False, "kind": "htf_candles", "interval_ms": SWEEP_ABSORPTION_HTF_MS, "reason": reason}
+
+    market = shared.get("market")
+    if market is None:
+        return unavailable_htf("sweep_absorption_ifvg reads one-hour candles only from the sealed market feed "
+                               "payload; this check has none and never fetches them")
+    cutoff = int(boundary_ms or shared["closed"].get("cutoff_ms") or market_decision_cutoff_ms(market, MarketPayloadError))
+    cache = shared["decision_cache"]
+    key = ("sai_htf", symbol, cutoff)
+    if key not in cache:
+        try:
+            rows, timing = market_frame_rows_with_timing(market, symbol, SWEEP_ABSORPTION_HTF, MarketPayloadError)
+            timings = sealed_frame_timings(rows, timing, SWEEP_ABSORPTION_HTF)
+            sel = select_closed(rows, timings, timeframe=SWEEP_ABSORPTION_HTF, cutoff_ms=cutoff,
+                                rule=RULE_HYPERLIQUID_NATIVE, min_rows=1)
+            cache[key] = {"available": True, "kind": "htf_candles", "interval_ms": SWEEP_ABSORPTION_HTF_MS,
+                          "timestamp_kind": "open", "boundary_ms": int(sel.boundary_ms),
+                          "input_sha256": sel.input_sha256,
+                          "rows": [[int(t.open_ms)] + [float(x) for x in row[1:6]]
+                                   for row, t in zip(sel.rows, sel.timings)]}
+        except (MarketPayloadError, ClosedBarHold) as e:
+            cache[key] = unavailable_htf(f"higher timeframe {SWEEP_ABSORPTION_HTF}: {e}")
+    return cache[key]
 
 
 VOLUME_PROFILE_STRATEGY = "volume_profile_reclaim"
@@ -579,7 +609,10 @@ def _shared_macro_inputs(shared, symbol, params):
 
 
 def _sealed_protection_inputs(shared, symbol, name, params):
-    if name == TRADE_FLOW_STRATEGY:
+    if name == SWEEP_ABSORPTION_STRATEGY:
+        return {"trade_flow_observations": _shared_trade_flow(shared, symbol),
+                "htf_candles": _shared_htf_candles(shared, symbol)}
+    if name in TRADE_FLOW_STRATEGIES:
         return {"trade_flow_observations": _shared_trade_flow(shared, symbol)}
     if name == VOLUME_PROFILE_STRATEGY:
         return {"volume_profile_observations": _shared_volume_profile(shared, symbol)}
@@ -1008,6 +1041,9 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
                 decision_params["volume_profile_observations"] = _shared_volume_profile(shared, symbol)
             if funding_aware_name == PREMIUM_STRATEGY:
                 decision_params["premium_observations"] = _shared_premium(shared, symbol)
+            if funding_aware_name == SWEEP_ABSORPTION_STRATEGY:
+                decision_params["trade_flow_observations"] = _shared_trade_flow(shared, symbol)
+                decision_params["htf_candles"] = _shared_htf_candles(shared, symbol, boundary)
         if not hold:
             regime_view = _shared_decision_regime(shared, selection)
             hold = regime_view["hold"]
@@ -1053,8 +1089,10 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
                 strategy_params["funding_records"] = records
         if funding_aware_name == OPEN_INTEREST_STRATEGY:
             strategy_params["open_interest_observations"] = _shared_open_interest(shared, symbol)
-        if funding_aware_name == TRADE_FLOW_STRATEGY:
+        if funding_aware_name in TRADE_FLOW_STRATEGIES:
             strategy_params["trade_flow_observations"] = _shared_trade_flow(shared, symbol)
+        if funding_aware_name == SWEEP_ABSORPTION_STRATEGY:
+            strategy_params["htf_candles"] = _shared_htf_candles(shared, symbol)
         if funding_aware_name == VOLUME_PROFILE_STRATEGY:
             strategy_params["volume_profile_observations"] = _shared_volume_profile(shared, symbol)
         if funding_aware_name == PREMIUM_STRATEGY:

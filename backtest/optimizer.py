@@ -152,6 +152,11 @@ def strategy_warmup_bars(strategy_name: str, param_grid: List[dict], param_range
             for merged in ({**defaults, **p} for p in param_grid)
         )
         return max(history, max_indicator_lookback(param_ranges))
+    if strategy_name == "sweep_absorption_ifvg":
+        if _OPEN_STRATEGIES not in sys.path:
+            sys.path.insert(0, _OPEN_STRATEGIES)
+        from sweep_absorption_ifvg import support_for_params
+        return max(support_for_params(p)["decision_bars"] for p in param_grid)
     if strategy_name == "volume_spike_breakout":
         if _OPEN_STRATEGIES not in sys.path:
             sys.path.insert(0, _OPEN_STRATEGIES)
@@ -912,6 +917,15 @@ DEFAULT_PARAM_RANGES = {
         "setup_expiry": [3, 6, 12],
         "session_hours": [4],
         "delta_confirmation": [True],
+    },
+    "sweep_absorption_ifvg": {
+        "sweep_atr_mult": [0.0, 0.1, 0.25],
+        "absorption_threshold": [0.0, 0.05, 0.1],
+        "min_fvg_atr": [0.1, 0.25],
+        "min_displacement_atr": [0.25, 0.5],
+        "setup_expiry": [6, 12],
+        "entry_level": [0.5],
+        "absorption_filter": [True],
     },
     "volume_profile_reclaim": {
         "profile_bins": [32, 64, 128],

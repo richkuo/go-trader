@@ -1,5 +1,7 @@
 MARKET_PAYLOAD_VERSION = 4
 
+TRADE_FLOW_STRATEGIES = frozenset({"cumulative_volume_delta_divergence", "sweep_absorption_ifvg"})
+
 
 class MarketPayloadError(Exception):
     pass

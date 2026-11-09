@@ -1119,6 +1119,26 @@ func cvdSessionWindowMs(sc StrategyConfig, intervalMs int64) (int64, error) {
 	return window, nil
 }
 
+var tradeFlowStrategyNames = map[string]bool{
+	"cumulative_volume_delta_divergence": true,
+	"sweep_absorption_ifvg":              true,
+}
+
 func feedStrategyUsesTradeFlow(sc StrategyConfig) bool {
-	return strings.TrimSpace(effectiveOpenStrategy(sc)) == cumulativeVolumeDeltaStrategyName
+	return tradeFlowStrategyNames[strings.TrimSpace(effectiveOpenStrategy(sc))]
+}
+
+func tradeFlowWindowMs(sc StrategyConfig, intervalMs int64) (int64, error) {
+	switch name := strings.TrimSpace(effectiveOpenStrategy(sc)); name {
+	case cumulativeVolumeDeltaStrategyName:
+		return cvdSessionWindowMs(sc, intervalMs)
+	case sweepAbsorptionStrategyName:
+		s, err := sweepAbsorptionStrategySupport(sc, intervalMs)
+		if err != nil {
+			return 0, err
+		}
+		return s.FlowWindowMs, nil
+	default:
+		return 0, fmt.Errorf("strategy %q has no trade-flow window", name)
+	}
 }

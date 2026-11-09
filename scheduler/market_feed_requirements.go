@@ -76,6 +76,9 @@ type feedStrategyRequirement struct {
 	HTF            marketFeedKey
 	HasHTF         bool
 	HTFLookback    int
+	ResearchHTF    marketFeedKey
+	HasResearchHTF bool
+	ResearchHTFRow int
 	Regime         marketFeedKey
 	HasRegime      bool
 	RegimeLookback int
@@ -338,11 +341,23 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 				req.addObservation(openInterestKeyFor(symbol), window)
 			}
 		}
+		if feedStrategyUsesResearchHTF(sc) {
+			intervalMs, _ := hlCandleIntervalMs(timeframe)
+			support, serr := sweepAbsorptionStrategySupport(sc, intervalMs)
+			if serr != nil {
+				errs = append(errs, fmt.Sprintf("strategy[%s] %s: %v", sc.ID, sweepAbsorptionStrategyName, serr))
+			} else {
+				entry.ResearchHTF = feedKeyFor(symbol, sweepAbsorptionHTFTimeframe)
+				entry.HasResearchHTF = true
+				entry.ResearchHTFRow = int(support.HTFRows)
+				req.addKey(entry.ResearchHTF, entry.ResearchHTFRow)
+			}
+		}
 		if feedStrategyUsesTradeFlow(sc) {
 			intervalMs, _ := hlCandleIntervalMs(timeframe)
-			window, werr := cvdSessionWindowMs(sc, intervalMs)
+			window, werr := tradeFlowWindowMs(sc, intervalMs)
 			if werr != nil {
-				errs = append(errs, fmt.Sprintf("strategy[%s] %s: %v", sc.ID, cumulativeVolumeDeltaStrategyName, werr))
+				errs = append(errs, fmt.Sprintf("strategy[%s] %s: %v", sc.ID, strings.TrimSpace(effectiveOpenStrategy(sc)), werr))
 			} else {
 				entry.TradeFlow = true
 				entry.TradeWindowMs = window
@@ -412,7 +427,7 @@ func validateMarketFeedConfig(cfg *Config) error {
 		}
 		if ids := tradeFlowStrategyIDs(cfg); len(ids) > 0 {
 			return fmt.Errorf("market_feed=%q cannot supply trade-flow observations for %s (strategies %s); use market_feed %q or %q",
-				marketFeedREST, cumulativeVolumeDeltaStrategyName, strings.Join(ids, ", "), marketFeedWebsocket, marketFeedShared)
+				marketFeedREST, strings.Join(tradeFlowStrategyNamesSorted(), ", "), strings.Join(ids, ", "), marketFeedWebsocket, marketFeedShared)
 		}
 		if ids := premiumStrategyIDs(cfg); len(ids) > 0 {
 			return fmt.Errorf("market_feed=%q cannot supply synchronized quote and oracle records for %s (strategies %s); its transport samples only at deadlines and cannot meet the frozen 60 s premium sample contract; use market_feed %q or %q",
@@ -615,6 +630,15 @@ func premiumStrategyIDs(cfg *Config) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func tradeFlowStrategyNamesSorted() []string {
+	out := make([]string, 0, len(tradeFlowStrategyNames))
+	for name := range tradeFlowStrategyNames {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func tradeFlowStrategyIDs(cfg *Config) []string {

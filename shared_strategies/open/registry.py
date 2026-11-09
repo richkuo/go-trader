@@ -107,6 +107,11 @@ from volume_spike_breakout import (
     volume_spike_breakout_spot,
     vsb_param_validator,
 )
+from sweep_absorption_ifvg import (
+    DEFAULT_PARAMS as DEFAULT_SAI_PARAMS,
+    sai_param_validator,
+    sweep_absorption_ifvg_core,
+)
 from inventory_market_making import (
     QUOTE_CONTRACT,
     QUOTE_POLICY_SPEC,
@@ -3032,6 +3037,51 @@ def order_book_imbalance_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "sweep_absorption_ifvg",
+    "RESEARCH, production-refused, frozen study INCONCLUSIVE (#2010: the complete trade-flow recording, required datasets and coverage gates are missing) \u2014 liquidity sweep with order-flow absorption and an inverse fair value gap retest on closed candles. The half-open UTC session [session_start_hour_utc, session_end_hour_utc) (a cross-midnight session belongs to its start date) fixes its low and high once its last bar closes. Long: within sweep_window bars after the session end, the first bar whose low is below the session low by at least sweep_atr_mult x the bar's closed simple 14-bar ATR starts the sweep; it must close back above the session low within max_sweep_bars bars (lowest low = sweep wick). The most recent bearish three-bar fair value gap whose third bar closes in the gap_window bars before the sweep start, at least min_fvg_atr x ATR wide, is the zone. Session-anchored signed aggressor volume (supplied Hyperliquid trade_flow_observations, every minute complete, unrevoked and summing to the candle volume by the decision deadline) must keep its minimum over the sweep bars strictly above the delta at the session-low bar, with the change divided by the observed volume between them above absorption_threshold (absorption_filter=false is the price-only control with identical data eligibility). The first close above the gap top within confirm_window bars after the reclaim must have a bullish body of at least min_displacement_atr x ATR and a confirmed one-hour higher-low swing structure (strict 2/2 pivots in the last 24 hours, from supplied htf_candles); it arms the setup. A later bar within setup_expiry bars that reaches the entry_level of the zone (0.5 = consequent encroachment) enters once; a close below the wick, a bar wholly below the zone, revoked flow, expiry or the next session clears it. Shorts mirror every rule. Missing flow, higher-timeframe candles or decision timing hold the entry with a reason. Entry-only; research use only: paper evaluation needs exactly one explicit --mode=paper on the Hyperliquid perps shared or websocket feed route with closed_bar_decisions, and live use is refused with or without allow_no_edge until a separate reviewed promotion",
+    dict(DEFAULT_SAI_PARAMS),
+    platforms=("futures",),
+    constraints=[
+        "session_start_hour_utc >= 0",
+        "session_start_hour_utc <= 23",
+        "session_end_hour_utc >= 0",
+        "session_end_hour_utc <= 23",
+        "sweep_window >= 1",
+        "sweep_window <= 96",
+        "max_sweep_bars >= 1",
+        "max_sweep_bars <= 24",
+        "sweep_atr_mult >= 0",
+        "sweep_atr_mult <= 5",
+        "absorption_threshold >= 0",
+        "absorption_threshold < 1",
+        "gap_window >= 1",
+        "gap_window <= 48",
+        "min_fvg_atr >= 0",
+        "min_fvg_atr <= 10",
+        "confirm_window >= 1",
+        "confirm_window <= 48",
+        "min_displacement_atr >= 0",
+        "min_displacement_atr <= 10",
+        "setup_expiry >= 1",
+        "setup_expiry <= 96",
+        "entry_level >= 0",
+        "entry_level <= 1",
+        "expected_interval_ms >= 60000",
+        "expected_interval_ms <= 1800000",
+    ],
+    edge_status="no_edge",
+    edge_source="study_inconclusive",
+    edge_ref="backtest/candidates/sweep_absorption_ifvg_2010/REPORT.md",
+    short_entries=True,
+    param_validator=sai_param_validator,
+    production_refused=True,
+    paper_route=RESEARCH_PAPER_ROUTE,
+)
+def sweep_absorption_ifvg_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return sweep_absorption_ifvg_core(df, **params)
+
+
+@register(
     "inventory_market_making",
     "RESEARCH, production-refused quote capability (#1861, parent #1636): inventory-aware two-sided post-only market making on Hyperliquid perps. At each due deadline the pure Go quote policy (scheduler/quote_policy.go) reads the frozen deadline book evidence and the settled quote snapshot: normalized inventory x = clamp((q x m - target) / cap, -1, 1), per-second log-return variance over the volatility window, s = sqrt(v x max(lifetime, cycle)), skew a = clamp(risk_aversion x x x s, +/- max_skew), reservation r = m x (1 - a), half-spread h = max(min_spread / 2, fee and reserve floor, volatility_multiplier x s); quotes r -/+ m x h rounded to the native grid, the inventory-increasing side tapered near the cap and held above half the maximum spread, the reducing side reduce-only, and an inventory-age exit through inventory_quote_exit. It has no scalar candle signal: scalar checks, candle backtests, the optimizer and parity runs refuse it, and only the internally admitted quote-replay runner evaluates it; a configured explicit-paper quote owner loads under a scheduler engine hold (quote_engine_unavailable) until a forward paper quote engine exists, and live use is refused until a separate reviewed promotion",
     inventory_market_making_default_params(),
@@ -3109,6 +3159,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "order_book_imbalance",
         "inventory_market_making",
         "volume_spike_breakout",
+        "sweep_absorption_ifvg",
         "hold",
     ],
 }
