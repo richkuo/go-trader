@@ -37,6 +37,9 @@ from htf_filter import (
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 from stdout_contract import json_stdout
 
+TEXT_INDICATOR_COLUMNS = ("vsb_reason",)
+FULL_PRECISION_INDICATOR_PREFIXES = ("vsb_",)
+
 
 def _make_dataframe(candles):
     import pandas as pd
@@ -337,6 +340,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 pass
 
             indicators = {}
+            indicator_labels = {}
             skip_cols = {
                 "open", "high", "low", "close", "volume",
                 "timestamp", "signal", "position", "datetime",
@@ -345,11 +349,16 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 if col in skip_cols:
                     continue
                 val = last.get(col)
+                if col in TEXT_INDICATOR_COLUMNS:
+                    if isinstance(val, str):
+                        indicator_labels[col] = val
+                    continue
                 if val is not None:
                     try:
                         fval = float(val)
                         if math.isfinite(fval):
-                            indicators[col] = round(fval, 6)
+                            indicators[col] = (fval if col.startswith(FULL_PRECISION_INDICATOR_PREFIXES)
+                                               else round(fval, 6))
                     except (ValueError, TypeError):
                         pass
 
@@ -367,6 +376,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 "platform": "robinhood",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
+            if indicator_labels:
+                output["indicator_labels"] = indicator_labels
             if decision:
                 output.update(decision)
             if htf_block is not None:

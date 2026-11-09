@@ -31,6 +31,9 @@ from htf_filter import (
 )
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 
+TEXT_INDICATOR_COLUMNS = ("vsb_reason",)
+FULL_PRECISION_INDICATOR_PREFIXES = ("vsb_",)
+
 
 def _arg_value(flag, default=None):
     prefix = flag + "="
@@ -383,6 +386,7 @@ def main():
             signal = decision["signal"]
 
         indicators = {}
+        indicator_labels = {}
         indicator_cols = []
         if last is not None:
             indicator_cols = [c for c in result_df.columns
@@ -390,11 +394,16 @@ def main():
                                            "timestamp", "signal", "position", "datetime")]
         for col in indicator_cols:
             val = last.get(col)
+            if col in TEXT_INDICATOR_COLUMNS:
+                if isinstance(val, str):
+                    indicator_labels[col] = val
+                continue
             if val is not None:
                 try:
                     fval = float(val)
                     if math.isfinite(fval):
-                        indicators[col] = round(fval, 6)
+                        indicators[col] = (fval if col.startswith(FULL_PRECISION_INDICATOR_PREFIXES)
+                                           else round(fval, 6))
                 except (ValueError, TypeError):
                     pass
 
@@ -410,6 +419,8 @@ def main():
             "regime": stdout_regime,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+        if indicator_labels:
+            output["indicator_labels"] = indicator_labels
         if decision:
             output.update(decision)
         if htf_block is not None:

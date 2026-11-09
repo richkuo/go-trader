@@ -78,6 +78,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"triple_ema_bidir":             {"fee_audit_m5", noEdgeRefLimbo},
 	"trix_momentum":                {"study_fail", "backtest/candidates/trix_momentum_1659/REPORT.md"},
 	"true_strength_index":          {"study_fail", "backtest/candidates/true_strength_index_1667/REPORT.md"},
+	"volume_spike_breakout":        {"unvalidated", "backtest/candidates/volume_spike_breakout_2008/REPORT.md"},
 	"ultimate_oscillator":          {"study_inconclusive", "backtest/candidates/ultimate_oscillator_1664/REPORT.md"},
 	"vol_momentum":                 {"study_fail", "docs/research/vol_momentum_1021.md"},
 	"volume_weighted":              {"fee_audit_m5", noEdgeRefFeeAudit},

@@ -259,7 +259,7 @@ def _install():
     def load_markets(self, reload=False, params=None):
         return {}
 
-    for cls in (ccxt.Exchange, ccxt.binance, ccxt.binanceus, ccxt.luno):
+    for cls in (ccxt.Exchange, ccxt.binance, ccxt.binanceus, ccxt.luno, ccxt.okx):
         cls.fetch_ticker = fetch_ticker
         cls.fetch_ohlcv = fetch_ohlcv
         cls.load_markets = load_markets
