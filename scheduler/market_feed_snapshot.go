@@ -152,6 +152,9 @@ func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMa
 		if entry.HasLeader {
 			raise(entry.Leader, entry.LeaderLookback)
 		}
+		if entry.HasResearchHTF {
+			raise(entry.ResearchHTF, entry.ResearchHTFRow)
+		}
 		if entry.FundingScalar || entry.FundingRecords {
 			f := funding[entry.Coin]
 			f.Scalar = f.Scalar || entry.FundingScalar
@@ -477,6 +480,7 @@ type marketPayloadFrameSpec struct {
 	Key      marketFeedKey
 	Required int
 	Timing   bool
+	Optional bool
 }
 
 func marketPayloadFor(s *marketSnapshot, frames []marketPayloadFrameSpec, coins []string) (*marketPayload, error) {
@@ -494,6 +498,9 @@ func marketPayloadFor(s *marketSnapshot, frames []marketPayloadFrameSpec, coins 
 	for _, spec := range frames {
 		frame, ok := s.frameWithTiming(spec.Key, spec.Required, spec.Timing)
 		if !ok {
+			if spec.Optional {
+				continue
+			}
 			return nil, fmt.Errorf("sealed snapshot has no ready frame for %s", spec.Key)
 		}
 		payload.Frames[spec.Key.PayloadID()] = frame

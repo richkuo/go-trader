@@ -1142,6 +1142,27 @@ def bll_research_market(side_input=True):
     return _research_market(frames, eth_bars[-1]["t"] + H // 2, "ETH", eth[-1])
 
 
+SAI_PARAMS = {"expected_interval_ms": 300_000}
+
+
+def sai_research_market(side_input=True):
+    import importlib.util
+    path = os.path.join(REPO, "backtest", "candidates", "sweep_absorption_ifvg_2010", "scenario.py")
+    spec = importlib.util.spec_from_file_location("_check_contract_sai_scenario", path)
+    scn = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scn)
+    every, intervals = scn.build(["flat", "long"])
+    last = scn.bar_index(1, scn.RETEST_BAR)
+    bars = every[last - 240:last + 2]
+    cutoff = bars[-2]["T"] + 1 + 2_000
+    hours = [{"t": r[0], "T": r[0] + scn.HOUR - 1, "o": r[1], "h": r[2], "l": r[3], "c": r[4], "v": r[5]}
+             for r in scn.htf_rows(every[:last + 2])][-40:]
+    flows = {"BTC|trade_flow": scn.flow_payload([iv for iv in intervals if iv["finalized_ms"] <= cutoff
+                                                 and iv["start_ms"] >= bars[0]["t"]], cutoff=cutoff)}
+    return _research_market({"BTC|5m": frame(bars, scn.STEP), "BTC|1h": frame(hours, scn.HOUR)}, cutoff, "BTC",
+                            bars[-2]["c"], **({"trade_flows": flows} if side_input else {}))
+
+
 @dataclasses.dataclass(frozen=True)
 class ResearchCase:
     name: str
@@ -1155,6 +1176,7 @@ class ResearchCase:
     reason: str
     unavailable: str
     closed: bool = False
+    required_closed: bool = False
 
 
 RESEARCH_CASE_LIST = [
@@ -1170,6 +1192,8 @@ RESEARCH_CASE_LIST = [
                  meb_research_market, 1, "entry_long", "quotes_unavailable", closed=True),
     ResearchCase("bitcoin_lead_lag", "bll", "ETH", "1h", BLL_PARAMS, TP_3PCT, bll_research_market,
                  1, "entry_long", "leader_unavailable", closed=True),
+    ResearchCase("sweep_absorption_ifvg", "sai", "BTC", "5m", SAI_PARAMS, TP_3PCT, sai_research_market,
+                 1, "entry_long", "trade_flow_unavailable", closed=True, required_closed=True),
 ]
 RESEARCH_CASES = {case.name: case for case in RESEARCH_CASE_LIST}
 
@@ -1275,7 +1299,10 @@ def test_research_explicit_paper_evaluation_runs_on_complete_sealed_input_and_ev
         assert proc.returncode == 0, (extra, proc.stderr[-2000:])
         out = payload(proc)
         assert not out.get("error"), (extra, out.get("error"))
-        assert out["signal"] == case.signal and out["indicator_labels"][label] == case.reason, (extra, out)
+        if case.required_closed and "--closed-bar-decisions" not in extra:
+            assert out["signal"] == 0 and out["indicator_labels"][label] == "decision_time_missing", (extra, out)
+        else:
+            assert out["signal"] == case.signal and out["indicator_labels"][label] == case.reason, (extra, out)
         assert out["open_strategy"] == case.name and out["close_strategies"] == [case.close["name"]], extra
         assert "fill" not in out and "order" not in out and "Fetching" not in proc.stderr, extra
         outs.append(out)
@@ -1291,20 +1318,22 @@ def test_research_explicit_paper_evaluation_runs_on_complete_sealed_input_and_ev
         {"open": {"name": "breakout"}, "closes": [{"name": case.name, "params": dict(case.params)}]})], stdin)
     assert proc.returncode == 1 and "sealed inputs attach only to the open strategy" in payload(proc)["error"]
     missing = {"v": 2, "market": case.market(side_input=False)}
-    proc = run(base + ["--mode=paper"], missing)
+    proc = run(base + ["--mode=paper"] + (["--closed-bar-decisions"] if case.required_closed else []), missing)
     assert proc.returncode == 0, proc.stderr[-2000:]
     held = payload(proc)
     assert held["signal"] == 0 and held["indicator_labels"][label] == case.unavailable, held
     assert "Fetching" not in proc.stderr
+    closed_slot = {"closed_bar_decisions": True} if case.required_closed else {}
     slots = [{"id": "paper", "strategy": case.name, "mode": "paper", "mode_args": ["--mode=paper"],
-              "strategy_refs": strategy_refs},
+              "strategy_refs": strategy_refs, **closed_slot},
              {"id": "acked", "strategy": case.name, "mode": "live", "mode_args": ["--mode=live"],
-              "allow_no_edge": True, "strategy_refs": strategy_refs}]
+              "allow_no_edge": True, "strategy_refs": strategy_refs, **closed_slot}]
     proc = run(["--batch-check", f"--symbol={case.symbol}", f"--timeframe={case.tf}", "--market-stdin"],
                dict(stdin, slots=slots))
     results = {r["id"]: r for r in payload(proc)["results"]}
+    solo = outs[2] if case.required_closed else outs[0]
     for key in ("signal", "open_action", "indicators", "indicator_labels"):
-        assert results["paper"].get(key) == outs[0].get(key), key
+        assert results["paper"].get(key) == solo.get(key), key
     assert f"open strategy '{case.name}' is production_refused" in results["acked"]["error"]
 
 

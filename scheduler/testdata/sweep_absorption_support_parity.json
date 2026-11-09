@@ -1,0 +1,184 @@
+{
+  "schema": "sweep_absorption_support_parity/1",
+  "cases": [
+    {
+      "name": "defaults_5m",
+      "params": {},
+      "support": {
+        "session_ms": 28800000,
+        "session_bars": 96,
+        "prelude_bars": 96,
+        "post_bars": 47,
+        "decision_bars": 144,
+        "flow_window_ms": 43260000,
+        "htf_rows": 32
+      }
+    },
+    {
+      "name": "defaults_15m",
+      "params": {
+        "expected_interval_ms": 900000
+      },
+      "support": {
+        "session_ms": 28800000,
+        "session_bars": 32,
+        "prelude_bars": 32,
+        "post_bars": 47,
+        "decision_bars": 80,
+        "flow_window_ms": 72060000,
+        "htf_rows": 40
+      }
+    },
+    {
+      "name": "defaults_30m",
+      "params": {
+        "expected_interval_ms": 1800000
+      },
+      "error_contains": "retention cap"
+    },
+    {
+      "name": "short_session_1m",
+      "params": {
+        "expected_interval_ms": 60000,
+        "session_start_hour_utc": 0,
+        "session_end_hour_utc": 2,
+        "sweep_window": 12,
+        "setup_expiry": 6
+      },
+      "support": {
+        "session_ms": 7200000,
+        "session_bars": 120,
+        "prelude_bars": 120,
+        "post_bars": 29,
+        "decision_bars": 150,
+        "flow_window_ms": 9060000,
+        "htf_rows": 29
+      }
+    },
+    {
+      "name": "cross_midnight_15m",
+      "params": {
+        "expected_interval_ms": 900000,
+        "session_start_hour_utc": 22,
+        "session_end_hour_utc": 6
+      },
+      "support": {
+        "session_ms": 28800000,
+        "session_bars": 32,
+        "prelude_bars": 32,
+        "post_bars": 47,
+        "decision_bars": 80,
+        "flow_window_ms": 72060000,
+        "htf_rows": 40
+      }
+    },
+    {
+      "name": "edge_200_bars_5m",
+      "params": {
+        "sweep_window": 56,
+        "max_sweep_bars": 6,
+        "confirm_window": 6,
+        "setup_expiry": 36
+      },
+      "support": {
+        "session_ms": 28800000,
+        "session_bars": 96,
+        "prelude_bars": 96,
+        "post_bars": 103,
+        "decision_bars": 200,
+        "flow_window_ms": 60060000,
+        "htf_rows": 37
+      }
+    },
+    {
+      "name": "over_200_bars_5m",
+      "params": {
+        "sweep_window": 57,
+        "max_sweep_bars": 6,
+        "confirm_window": 6,
+        "setup_expiry": 36
+      },
+      "error_contains": "decision window"
+    },
+    {
+      "name": "over_200_bars_1m",
+      "params": {
+        "expected_interval_ms": 60000
+      },
+      "error_contains": "decision window"
+    },
+    {
+      "name": "wide_gap_prelude_15m",
+      "params": {
+        "expected_interval_ms": 900000,
+        "session_start_hour_utc": 0,
+        "session_end_hour_utc": 4,
+        "gap_window": 48
+      },
+      "support": {
+        "session_ms": 14400000,
+        "session_bars": 16,
+        "prelude_bars": 62,
+        "post_bars": 47,
+        "decision_bars": 110,
+        "flow_window_ms": 57660000,
+        "htf_rows": 40
+      }
+    },
+    {
+      "name": "over_24h_15m",
+      "params": {
+        "expected_interval_ms": 900000,
+        "session_start_hour_utc": 0,
+        "session_end_hour_utc": 20,
+        "sweep_window": 4,
+        "max_sweep_bars": 2,
+        "confirm_window": 4,
+        "setup_expiry": 8
+      },
+      "error_contains": "more than 24 hours"
+    },
+    {
+      "name": "over_flow_cap_30m",
+      "params": {
+        "expected_interval_ms": 1800000,
+        "session_start_hour_utc": 0,
+        "session_end_hour_utc": 20,
+        "sweep_window": 16,
+        "max_sweep_bars": 4,
+        "confirm_window": 4,
+        "setup_expiry": 8
+      },
+      "error_contains": "retention cap"
+    },
+    {
+      "name": "empty_session",
+      "params": {
+        "session_start_hour_utc": 8,
+        "session_end_hour_utc": 8
+      },
+      "error_contains": "empty"
+    },
+    {
+      "name": "interval_not_dividing_hour",
+      "params": {
+        "expected_interval_ms": 420000
+      },
+      "error_contains": "divide one hour"
+    },
+    {
+      "name": "hour_out_of_range",
+      "params": {
+        "session_end_hour_utc": 24
+      },
+      "error_contains": "must be in"
+    },
+    {
+      "name": "non_integer_window",
+      "params": {
+        "sweep_window": 2.5
+      },
+      "error_contains": "must be an integer"
+    }
+  ]
+}

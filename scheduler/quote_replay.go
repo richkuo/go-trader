@@ -606,7 +606,7 @@ func quoteReplayConfigRefusal(cfg *Config, spec *quoteReplaySpec, stateDir strin
 		}
 		for _, id := range sortedStrategyRequirementIDs(req) {
 			e := req.Strategies[id]
-			if e.MacroEvents || e.TradeFlow || e.OpenInterest || e.Premium || e.VolumeProfile || e.HasHTF || e.HasRegime || e.HasLeader || e.FundingScalar || e.FundingRecords {
+			if e.MacroEvents || e.TradeFlow || e.OpenInterest || e.Premium || e.VolumeProfile || e.HasHTF || e.HasResearchHTF || e.HasRegime || e.HasLeader || e.FundingScalar || e.FundingRecords {
 				errs = append(errs, fmt.Sprintf("strategy %s needs inputs the replay does not freeze", id))
 			}
 		}

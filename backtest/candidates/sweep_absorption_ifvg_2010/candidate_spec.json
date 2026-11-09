@@ -1,0 +1,139 @@
+{
+  "schema": "candidate_spec/sweep_absorption_ifvg/1",
+  "study": "sweep_absorption_ifvg_2010",
+  "issue": 2010,
+  "candidate": "sweep_absorption_ifvg",
+  "frozen": "Committed before any study window is read or scored. A later change to any field below is a new study.",
+  "registry_defaults": {
+    "session_start_hour_utc": 0,
+    "session_end_hour_utc": 8,
+    "sweep_window": 24,
+    "max_sweep_bars": 6,
+    "sweep_atr_mult": 0.1,
+    "absorption_threshold": 0.05,
+    "absorption_filter": true,
+    "gap_window": 12,
+    "min_fvg_atr": 0.25,
+    "confirm_window": 6,
+    "min_displacement_atr": 0.5,
+    "setup_expiry": 12,
+    "entry_level": 0.5,
+    "expected_interval_ms": 300000
+  },
+  "signal_contract": {
+    "bars": "Closed candles only. Opening-time timestamps; native close stamps (open + interval - 1) are normalized to opening times. Every row from the support start through the decision row must be finite, consistent and spaced exactly expected_interval_ms apart, else the decision holds with a reason.",
+    "atr": "Simple mean of the last 14 true ranges ending at the named bar (the true range needs the previous close). Each threshold reads its own event bar's closed ATR: the sweep threshold reads the sweep-start bar, the gap size reads the gap's third bar, the displacement body reads the confirmation bar.",
+    "session": "Half-open UTC window [session_start_hour_utc, session_end_hour_utc) of whole hours. A window across UTC midnight belongs to its start date. Equal start and end hours are refused. The session low (long) and high (short) are the extreme of all session bars, earliest bar on a tie, and become usable only after the last session bar closes. Every session bar must be present.",
+    "sweep": "Long: the first bar inside the first sweep_window bars after the session end whose low is below the session low by at least sweep_atr_mult x ATR(that bar) starts the sweep. The sweep ends at the first bar, the start bar included, that closes strictly above the session low; it must end within max_sweep_bars bars or the attempt fails (sweep_not_reclaimed). The lowest low of the sweep bars is the sweep wick (earliest on a tie). One sweep attempt per side per reference session; a failed attempt is final. Short mirrors with the session high.",
+    "delta_mode": "session_anchored",
+    "absorption": "Cumulative signed aggressor volume (buy minus sell, base units) from the session start. Long: the minimum cumulative delta at the close of each sweep bar (earliest on a tie) must be strictly above the cumulative delta at the close of the session-low bar (else absorption_new_delta_extreme), and (minimum - delta at the session-low bar) divided by the observed total volume of the bars after the session-low bar through the minimum bar must be strictly above absorption_threshold (else absorption_failed). Zero observed volume holds (zero_flow_volume). Short mirrors with the maximum and the session-high bar. absorption_filter=false skips both delta tests and keeps every evidence requirement.",
+    "gap": "Long: a bearish three-bar fair value gap (low of bar k-2 strictly above high of bar k) whose third bar k satisfies sweep_start - gap_window <= k <= sweep_start - 1, with top - bottom >= min_fvg_atr x ATR(k). The most recent such k is selected; none means no_gap. Short mirrors with a bullish gap.",
+    "displacement": "Long: within confirm_window bars after the reclaim bar (the confirmation is never the reclaim bar), the first close strictly above the gap top must have a bullish body (close - open) of at least min_displacement_atr x ATR(that bar), else displacement_weak; a close below the sweep wick first ends the attempt (wick_broken); no such close ends it (no_displacement).",
+    "arming_checks_at_confirmation_deadline": "At the confirmation bar's close: every trade-flow minute from the session start through the reclaim bar must be present, complete, finalized and unrevoked at that deadline, and each bar's minute totals must equal its candle volume (else flow_unavailable or flow_volume_mismatch, final); the absorption tests; the one-hour bias. Then the setup is armed with its frozen evidence hash.",
+    "htf_bias": {
+      "interval": "1h",
+      "pivot_left": 2,
+      "pivot_right": 2,
+      "tie_rule": "strict pivots; equal neighbours are not pivots",
+      "search_hours": 24,
+      "rule": "At decision time T the last closed one-hour boundary B = floor(T / 1h) x 1h is used. Pivots whose opening time is at least B - 24h and whose right-hand confirmation bars closed by B are usable. Long needs the last two usable pivot lows strictly rising and not the last two pivot highs strictly falling; short mirrors. Every one-hour bar from B - 24h - 2h through B - 1h must be present, else htf_unavailable holds the session.",
+      "look_ahead_guard": "The per-hour state is indexed by candle opening time and shifted by one row (.shift(1)) before reindex with forward fill at B, so an hour is used only after it closes, including at exact hour boundaries."
+    },
+    "retest": "Long: a later bar within setup_expiry bars after the confirmation bar whose low reaches entry_price = gap top - entry_level x (gap top - gap bottom) (0.5 = consequent encroachment) emits signal +1 once; the fill belongs to the next bar's open. A close below the sweep wick (wick_broken), a bar wholly below the gap bottom (retest_failed), a revoked evidence minute at that bar's deadline (setup_cleared_flow), the last expiry bar without a touch (setup_expired) or the next session start (session_reset) clears the setup. Both sides entering at one decision hold (opposing_entries). Short mirrors.",
+    "event_order_per_bar": ["expiry", "evidence recheck", "wick break", "wholly beyond the zone", "retest touch"],
+    "holds": "Missing or unsupported trade flow, unverified side evidence, unavailable one-hour candles, insufficient history and a missing or mismatched decision time hold the entry with a reason; close and protection evaluation continue. Invalid parameters are refused before evaluation."
+  },
+  "support": {
+    "max_decision_bars": 200,
+    "flow_retention_cap_ms": 93600000,
+    "formula": {
+      "prelude_bars": "max(session_bars, gap_window + 14)",
+      "post_bars": "sweep_window + max_sweep_bars + confirm_window + setup_expiry - 1",
+      "decision_bars": "prelude_bars + post_bars + 1 alignment row (must be <= 200)",
+      "flow_window_ms": "session_ms + post_bars x interval + interval + 60000 (must be <= 26 h)",
+      "htf_rows": "24 + 2 + ceil(post_bars x interval / 1h) + 2"
+    },
+    "parity_fixture": "scheduler/testdata/sweep_absorption_support_parity.json"
+  },
+  "source": {
+    "choice": "B",
+    "label": "forward recording of the public Hyperliquid trades WebSocket stream through the existing trade-flow recorder (go-trader record-observations --kinds trade_flow) and the independent Python replay (backtest/trade_flow_replay.py)",
+    "reason": "Source B keeps the verified receipt-cutoff time basis, trade identity and side-evidence contract the sealed live payload uses, so the sealed and replayed decisions are comparable; the requester-pays archive (source A) has no importer, no checked record shape and no proved parity with the websocket contract.",
+    "contract": {
+      "source": "hyperliquid_ws_trades",
+      "units": "base",
+      "time_basis": "event_time_receipt_cutoff",
+      "identity": "venue+namespace+coin+time+tid",
+      "side_evidence": "hyperliquid-trades-side-aggressor/1638-v1",
+      "interval_ms": 60000,
+      "reorder_grace_ms": 5000,
+      "max_event_gap_ms": 30000,
+      "decimal_scale": 8
+    },
+    "replay_proof": "Sealed payload intervals and the independently replayed series must give equal candidate decisions and diagnostics at the same cutoffs before any economic scoring."
+  },
+  "datasets": {
+    "coins": ["BTC", "ETH", "HYPE"],
+    "intervals": ["5m", "15m"],
+    "htf_interval": "1h"
+  },
+  "windows": {
+    "train": {"start": "2026-11-16T00:00:00Z", "end": "2027-01-15T00:00:00Z", "role": "selection only"},
+    "test": {"start": "2027-01-15T00:00:00Z", "end": "2027-03-15T00:00:00Z", "role": "held-out; scored once with the frozen selection"}
+  },
+  "grid": {
+    "sweep_atr_mult": [0.0, 0.1, 0.25],
+    "absorption_threshold": [0.0, 0.05, 0.1],
+    "min_fvg_atr": [0.1, 0.25],
+    "min_displacement_atr": [0.25, 0.5],
+    "setup_expiry": [6, 12],
+    "entry_level": [0.5],
+    "absorption_filter": [true]
+  },
+  "selection_rule": "Per interval, over the train window with every coin pooled: the grid combination with the highest summed primary-arm net return at base cost among combinations with at least 10 independent positions; ties by lower maximum drawdown, then canonical JSON of the parameters.",
+  "independent_position": "A primary-arm entry from a distinct (reference session, side) setup whose holding period does not overlap the previous counted position on the same dataset; partial exits stay one position.",
+  "minimum_independent_positions": {"train": 10, "test": 30},
+  "coverage": {
+    "floor": 0.8,
+    "numerator": "post-session horizon bars whose required evidence (every trade-flow minute from the reference session start through the bar before the decision, complete, unrevoked and summing to the candle volumes at the decision deadline) is usable",
+    "denominator": "every bar of the scoring window inside the post-session horizon (bar offsets 0 to post_bars - 1 after the session end) of a reference session whose start lies inside the dataset; frozen before results are read",
+    "per": "every required dataset and scoring window"
+  },
+  "execution": {
+    "existing_owner_stack": {
+      "open": "market at bar N+1 open",
+      "close_strategies": [{"name": "tiered_tp_atr", "params": {"tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 0.5}]}}],
+      "trailing_stop_atr_mult": 1.0,
+      "risk_per_trade_pct": 0.5,
+      "direction": "both",
+      "intrabar_resolution": "ohlc_walk",
+      "funding": "charge",
+      "engine": "backtest/backtester.py (real backtester)"
+    },
+    "arm_matrix": {
+      "entry": {"market": "fill at bar N+1 open with half spread and slippage", "ce_limit": "resting limit at entry_price rounded to the tick on the passive side, placed after the retest decision bar closes; fills only on a later bar that trades through it by at least one tick (at the open on a gap, else at the limit); maker fee; cancelled by a close beyond the sweep wick; expires after 6 bars; candle fills are a queue assumption"},
+      "stop": {"atr": "fill -/+ 1.0 x ATR(decision bar)", "structural": "sweep wick -/+ 2 ticks; refused when the stop is not beyond the fill"},
+      "target": {"tiered": "50% at fill +/- 1.5 x ATR(decision bar)", "pool": "50% at the nearest opposing pool beyond the fill: the reference session's opposite extreme or the last confirmed one-hour swing at the decision; none means trail only"},
+      "trail": "every arm trails the remainder at best price -/+ 1.0 x ATR(decision bar), updated at each bar close and applied from the next bar, never loosening the initial stop",
+      "ordering": "ohlc_walk: bullish bar open-low-high-close, bearish bar open-high-low-close; a gap beyond the stop fills at the open",
+      "max_hold_bars": 96,
+      "sizing": "risk 0.5% of current equity / stop distance at the simulated fill, capped by equity x 1.0 leverage, floored to the venue lot; below the 10 USD minimum the entry is skipped",
+      "engine": "study-local simulator (arms.py); scored only after its reference arm (market + atr + tiered) reproduces the real backtester's entry schedule and sides"
+    },
+    "primary_arm": "market + existing owner stack on the real backtester",
+    "secondary_arms": "every other arm of the 2 x 2 x 2 matrix; secondary arms never rescue a failed primary verdict",
+    "kelly": "diagnostic only, from realized win rate and payoff"
+  },
+  "controls": {
+    "absorption_disabled": "the selected parameters with absorption_filter=false and identical data eligibility",
+    "price_only": ["amd_ifvg", "liquidity_sweeps"],
+    "price_only_rule": "registry default parameters evaluated on causal prefixes of at most 200 bars ending at each decision bar; entries outside the candidate's eligible decisions are dropped; same execution stack, costs and funding"
+  },
+  "costs": {"base_multiplier": 1.0, "stress_multiplier": 2.0, "funding": "charge"},
+  "verdict": {
+    "PASS": "Every required dataset, timing, side evidence and coverage gate passes, every held-out dataset has at least 30 independent primary-arm positions, the pooled primary-arm held-out net return is positive at base and at stress cost, and the pooled primary-arm held-out return minus maximum drawdown is above the same measure of each price-only control and of the absorption-disabled control.",
+    "FAIL": "All evidence and sample gates pass and any PASS economic condition fails.",
+    "INCONCLUSIVE": "Any source, required dataset, timing, side evidence, replay proof or coverage gate is unavailable or below its floor, or any held-out dataset misses the independent-position minimum. Unknown intervals are never zero volume and no coin or interval is dropped to reach PASS."
+  },
+  "research_only": "Suggest-only. No verdict writes live defaults, config or pull requests; live use stays refused for every verdict."
+}

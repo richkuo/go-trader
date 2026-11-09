@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 from atr import ensure_atr_indicator, normalize_atr_method
 from closed_bar import bind_fixed_interval_params
 from data_fetcher import get_exchange, load_cached_data
+from market_payload import TRADE_FLOW_STRATEGIES
 from storage import store_ohlcv
 from directional_certification import (
     config_directional_classifier,
@@ -31,7 +32,9 @@ FUNDING_COLUMN_STRATEGIES = {"funding_skew", "delta_neutral_funding"}
 
 OBSERVATION_INPUT_STRATEGIES = {"open_interest_breakout"}
 
-TRADE_FLOW_INPUT_STRATEGIES = {"cumulative_volume_delta_divergence"}
+TRADE_FLOW_INPUT_STRATEGIES = TRADE_FLOW_STRATEGIES
+
+HTF_CANDLE_INPUT_STRATEGIES = {"sweep_absorption_ifvg"}
 
 MACRO_EVENT_INPUT_STRATEGIES = {"macro_event_breakout"}
 
@@ -1890,6 +1893,9 @@ def run_single_backtest(
         if strategy_name in TRADE_FLOW_INPUT_STRATEGIES and manifest_dataset_entry.get("trade_flow") is None:
             raise SystemExit(f"--manifest: {strategy_name} reads recorded trade flow as an entry input; dataset "
                              f"{manifest_dataset} attaches no trade_flow series (schema {om.SCHEMA_V3})")
+        if strategy_name in HTF_CANDLE_INPUT_STRATEGIES and manifest_dataset_entry.get("htf_candles") is None:
+            raise SystemExit(f"--manifest: {strategy_name} reads pinned one-hour candles as an entry input; dataset "
+                             f"{manifest_dataset} attaches no htf_candles series (schema {om.SCHEMA_V7})")
         if strategy_name in VOLUME_PROFILE_INPUT_STRATEGIES and manifest_dataset_entry.get("volume_profile") is None:
             raise SystemExit(f"--manifest: {strategy_name} reads executed-trade volume profiles as an entry input; dataset "
                              f"{manifest_dataset} attaches no volume_profile series (schema {om.SCHEMA_V5})")
@@ -1976,6 +1982,11 @@ def run_single_backtest(
                     manifest, manifest_dataset_entry, window_spec)
                 observation_params = {"trade_flow_observations": flow_obs}
                 print(f"  Trade-flow coverage: {flow_cov}")
+            if strategy_name in HTF_CANDLE_INPUT_STRATEGIES:
+                htf_obs, htf_cov = om.attach_htf_candles(
+                    manifest, manifest_dataset_entry, window_spec, int(df["timestamp"].iloc[0]))
+                observation_params = {**observation_params, "htf_candles": htf_obs}
+                print(f"  HTF candle coverage: {htf_cov}")
             if strategy_name in VOLUME_PROFILE_INPUT_STRATEGIES:
                 profile_obs, profile_cov = om.attach_volume_profile(
                     manifest, manifest_dataset_entry, window_spec)

@@ -299,7 +299,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     import pandas as pd
     from data_fetcher import load_cached_data
     from backtester import Backtester, validate_close_capabilities
-    from run_backtest import (FUNDING_COLUMN_STRATEGIES, MACRO_EVENT_INPUT_STRATEGIES, OBSERVATION_INPUT_STRATEGIES,
+    from run_backtest import (FUNDING_COLUMN_STRATEGIES, HTF_CANDLE_INPUT_STRATEGIES, MACRO_EVENT_INPUT_STRATEGIES,
+                              OBSERVATION_INPUT_STRATEGIES,
                               PREMIUM_INPUT_STRATEGIES, TRADE_FLOW_INPUT_STRATEGIES, VOLUME_PROFILE_INPUT_STRATEGIES,
                               _attach_funding_if_needed, _build_profile_label_series, attach_macro_event_inputs)
 
@@ -399,6 +400,14 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                     f"{dataset['key']} attaches no trade_flow series")
             flow_obs, flow_cov = om.attach_trade_flow(manifest, dataset, manifest_window)
             observation_params = {"trade_flow_observations": flow_obs}
+        htf_cov = None
+        if name in HTF_CANDLE_INPUT_STRATEGIES:
+            if dataset.get("htf_candles") is None:
+                raise ValueError(
+                    f"{name} reads pinned one-hour candles as an entry input; manifest dataset "
+                    f"{dataset['key']} attaches no htf_candles series (schema offline_candle_manifest/v7)")
+            htf_obs, htf_cov = om.attach_htf_candles(manifest, dataset, manifest_window, int(df["timestamp"].iloc[0]))
+            observation_params = {**observation_params, "htf_candles": htf_obs}
         profile_cov = None
         if name in VOLUME_PROFILE_INPUT_STRATEGIES:
             if dataset.get("volume_profile") is None:
@@ -434,6 +443,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             "open_interest_sha256": (dataset.get("open_interest") or {}).get("sha256"),
             "trade_flow_coverage": flow_cov,
             "trade_flow_sha256": (dataset.get("trade_flow") or {}).get("sha256"),
+            "htf_candles_coverage": htf_cov,
+            "htf_candles_sha256": (dataset.get("htf_candles") or {}).get("sha256"),
             "volume_profile_coverage": profile_cov,
             "volume_profile_sha256": (dataset.get("volume_profile") or {}).get("sha256"),
             "funding_entry_coverage": funding_entry_cov,

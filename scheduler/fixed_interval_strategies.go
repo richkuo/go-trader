@@ -20,6 +20,7 @@ var fixedIntervalStrategyDefaults = map[string]int64{
 	"bitcoin_lead_lag":                   3_600_000,
 	"volume_profile_reclaim":             900_000,
 	"perpetual_premium_reversion":        60_000,
+	"sweep_absorption_ifvg":              300_000,
 }
 
 type fixedIntervalUse struct {

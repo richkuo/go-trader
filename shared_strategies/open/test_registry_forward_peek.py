@@ -200,7 +200,25 @@ def _volume_spike_fixture() -> pd.DataFrame:
     return df
 
 
+def _sai_scenario():
+    path = os.path.join(_HERE, "..", "..", "backtest", "candidates", "sweep_absorption_ifvg_2010", "scenario.py")
+    return _load("_forward_peek_sai_scenario", path)
+
+
+def _sai_fixture() -> pd.DataFrame:
+    scn = _sai_scenario()
+    bars, intervals = scn.build(["flat", "long", "short", "long", "short", "long"])
+    df = scn.frame(bars)
+    per_bar = {}
+    for iv in intervals:
+        per_bar.setdefault(iv["start_ms"] - iv["start_ms"] % scn.STEP, []).append(float(iv["buy"]) / float(iv["total"]))
+    opens = df.index.as_unit("ms").asi8
+    df["sai_buy_frac"] = [round(sum(per_bar[int(t)]) / len(per_bar[int(t)]), 4) for t in opens]
+    return df
+
+
 STRATEGY_FIXTURES = {
+    "sweep_absorption_ifvg": _sai_fixture,
     "volume_spike_breakout": _volume_spike_fixture,
     "volume_profile_reclaim": _vpr_fixture,
     "perpetual_premium_reversion": _premium_fixture,
@@ -292,6 +310,50 @@ def _with_trade_flow(fn):
         payload, volumes = _trade_flow_from_bars(out)
         out["volume"] = volumes
         return fn(out, **params, trade_flow_observations=payload)
+    return wrapped
+
+
+def _sai_inputs_from_bars(df: pd.DataFrame):
+    from decimal import ROUND_HALF_EVEN, Decimal
+    opens = df.index.as_unit("ms").asi8.astype(np.int64)
+    interval = int(opens[1] - opens[0])
+    parts = interval // 60_000
+    intervals, volumes = [], []
+    for i, open_ms in enumerate(opens):
+        per = (Decimal(repr(round(float(df["volume"].iloc[i]), 4))) / parts).quantize(Decimal("0.0001"))
+        buy = (per * Decimal(repr(float(df["sai_buy_frac"].iloc[i])))).quantize(Decimal("0.0001"), rounding=ROUND_HALF_EVEN)
+        for k in range(parts):
+            start = int(open_ms + k * 60_000)
+            intervals.append({"start_ms": start, "end_ms": start + 60_000, "buy": _cvd_dec(buy),
+                              "sell": _cvd_dec(per - buy), "total": _cvd_dec(per), "trades": 4,
+                              "records_hash": "0" * 64, "session": 1, "finalized_ms": start + 66_000,
+                              "status": "complete", "invalid_ms": None})
+        volumes.append(float(per * parts))
+    flow = {"available": True, "kind": "trade_flow", "coin": "FIX", "source": "hyperliquid_ws_trades",
+            "units": "base", "time_basis": "event_time_receipt_cutoff", "identity": "venue+namespace+coin+time+tid",
+            "side_evidence": "hyperliquid-trades-side-aggressor/1638-v1", "interval_ms": 60_000,
+            "reorder_grace_ms": 5_000, "max_event_gap_ms": 30_000, "decimal_scale": 8,
+            "bar_interval_ms": interval, "intervals": intervals, "gaps": []}
+    hours = {}
+    for i, open_ms in enumerate(opens):
+        key = int(open_ms) - int(open_ms) % 3_600_000
+        o, h, lo, c = (float(df[col].iloc[i]) for col in ("open", "high", "low", "close"))
+        if key not in hours:
+            hours[key] = [key, o, h, lo, c, volumes[i]]
+        else:
+            row = hours[key]
+            row[2], row[3], row[4], row[5] = max(row[2], h), min(row[3], lo), c, row[5] + volumes[i]
+    htf = {"available": True, "kind": "htf_candles", "interval_ms": 3_600_000, "timestamp_kind": "open",
+           "rows": [hours[k] for k in sorted(hours)]}
+    return flow, htf, volumes
+
+
+def _with_sai_inputs(fn):
+    def wrapped(df, **params):
+        flow, htf, volumes = _sai_inputs_from_bars(df)
+        out = df.drop(columns=["sai_buy_frac"]).copy()
+        out["volume"] = volumes
+        return fn(out, **params, trade_flow_observations=flow, htf_candles=htf)
     return wrapped
 
 
@@ -432,6 +494,7 @@ def _with_volume_profile(fn):
 
 
 STRATEGY_INPUTS = {
+    "sweep_absorption_ifvg": _with_sai_inputs,
     "volume_profile_reclaim": _with_volume_profile,
     "perpetual_premium_reversion": _with_premium,
     "macro_event_breakout": _with_macro_events,

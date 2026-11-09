@@ -41,6 +41,7 @@ from . import test_camarilla_pivot_reversal_integration as cpr
 from . import test_chande_momentum_backtest as cmo
 from . import test_connors_rsi_backtest as crsi
 from . import test_cumulative_volume_delta_divergence_integration as cvd
+from . import test_sweep_absorption_ifvg_integration as sai
 from . import test_dual_thrust_backtest as dt
 from . import test_elder_force_pullback_integration as efp
 from . import test_elder_ray_pullback_integration as erp
@@ -743,6 +744,15 @@ CASES = {
         **_uncovered("capability", "parity", "composer", "sim_fills", "check_time", "time_stop_fills",
                      reason=SIDE_INPUT),
     ),
+    "sweep_absorption_ifvg": Case(
+        registration=Registration(study="sweep_absorption_ifvg_2010", validator=True, production_refused=True,
+                                  defaults=(lambda: sai.DEFAULT_PARAMS,),
+                                  combos=("grid", None, 72, True, {"expected_interval_ms": 300_000},
+                                          ({"expected_interval_ms": 900_000}, {"absorption_filter": False})),
+                                  discovery=sai.STUDY_DIR, catalog=os.path.join(sai.STUDY_DIR, "evidence")),
+        **_uncovered("capability", "parity", "composer", "sim_fills", "check_time", "time_stop_fills",
+                     reason=SIDE_INPUT),
+    ),
     "dual_thrust": Case(
         registration=Registration(study="dual_thrust_1642", validator=True),
         parity=(
@@ -1161,7 +1171,7 @@ def test_production_refused_set_is_the_side_input_cases_plus_the_non_candle_capa
     refused = _fut()._registry.production_refused_strategies()
     assert refused == frozenset({"cumulative_volume_delta_divergence", "bitcoin_lead_lag", "macro_event_breakout",
                                  "volume_profile_reclaim", "perpetual_premium_reversion", "order_book_imbalance",
-                                 "inventory_market_making"})
+                                 "inventory_market_making", "sweep_absorption_ifvg"})
     table = {name for name, case in CASES.items() if case.registration.production_refused}
     assert refused == frozenset(table) | OTHER_PRODUCTION_REFUSED
 
