@@ -1830,7 +1830,7 @@ def chaikin_money_flow_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataF
         "min_body_frac < 1",
     ],
     edge_status="no_edge",
-    edge_source="unvalidated",
+    edge_source="study_fail",
     edge_ref="backtest/candidates/volume_spike_breakout_2008/REPORT.md",
     short_entries=True,
     param_validator=vsb_param_validator,

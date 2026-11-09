@@ -3,7 +3,9 @@
 Research candidate `volume_spike_breakout`, registered for spot and futures with
 `edge_status="no_edge"`, `short_entries=True` and `edge_ref` set to
 [`REPORT.md`](REPORT.md). Its `edge_source` was `unvalidated` until the frozen
-study below produced a verdict. Ordinary no-edge admission applies: discovery
+study below produced its verdict, FAIL; it is now `study_fail`. The source
+hashes in `REPORT.md` were taken at scoring time, before that one metadata edit
+in `shared_strategies/open/registry.py`; the edit changes no evaluation. Ordinary no-edge admission applies: discovery
 hides it, an explicit `--mode=paper` check evaluates it, and live or missing
 mode needs `allow_no_edge: true`. A study verdict changes no admission, default
 or live configuration. Nothing in this directory writes a live default, a
@@ -114,7 +116,7 @@ uv run --no-sync python backtest/candidates/volume_spike_breakout_2008/run_study
 
 `run_study.py` refuses to score when `protocol.json` differs from its frozen
 sha256 (`1ee4ebffc89c3ad97a68a0c87aa9e503c4f0518ae9156d4bac60c7bb52a32b2c`).
-`--render-only` re-renders `REPORT.md` from the committed `results.json`.
+`--render-only` re-renders `REPORT.md` from the committed `results.json`; the committed `REPORT.md` is that render (a full run renders the same lines with the arms in protocol order instead of sorted order).
 
 ### Inputs and prior use
 
