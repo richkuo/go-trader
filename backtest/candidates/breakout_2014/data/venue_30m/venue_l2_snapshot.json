@@ -1,0 +1,32 @@
+{
+ "BNB": {
+  "best_ask": 690.77,
+  "best_bid": 690.76,
+  "half_spread_bps": 0.07238351682548266,
+  "time": 1794298856755
+ },
+ "BTC": {
+  "best_ask": 74748.0,
+  "best_bid": 74747.0,
+  "half_spread_bps": 0.0668918692932874,
+  "time": 1794298856755
+ },
+ "ETH": {
+  "best_ask": 2112.5,
+  "best_bid": 2112.4,
+  "half_spread_bps": 0.2366919927096714,
+  "time": 1794298857317
+ },
+ "HYPE": {
+  "best_ask": 74.289,
+  "best_bid": 74.288,
+  "half_spread_bps": 0.06730516836420004,
+  "time": 1794298857317
+ },
+ "SOL": {
+  "best_ask": 85.746,
+  "best_bid": 85.745,
+  "half_spread_bps": 0.058312098010424106,
+  "time": 1794298857317
+ }
+}

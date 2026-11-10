@@ -1,0 +1,300 @@
+{
+  "adoption_order": [
+    "all",
+    "30m",
+    "1h"
+  ],
+  "adoption_rule": {
+    "funding_windows": [
+      "is",
+      "oos",
+      "stitched"
+    ],
+    "judged_window": "oos",
+    "min_oos_clusters": 30,
+    "stitched_window": "stitched",
+    "text": "a set is adopted when its primary arm beats control on oos mean Sharpe and mean ddadj, has a shallower stitched worst drawdown and a stitched mean return not lower than control, has at least 30 pooled oos clusters, and the venue verdict is not fail. A dataset with a funding_incomplete or missing leg in is, oos or stitched, or a failing fidelity row, leaves the set and the statistics are recomputed once. When all is adopted the suggestion uses all; else each adopted interval set."
+  },
+  "arm_configs": {
+    "control": {},
+    "gate_p21": {
+      "add_regime_windows": {
+        "comp_p21": {
+          "classifier": "composite",
+          "period": 21
+        }
+      },
+      "strategy_overrides": {
+        "allowed_regimes": [
+          "trending_up_clean"
+        ],
+        "regime_gate_window": "comp_p21"
+      }
+    },
+    "gate_p350": {
+      "strategy_overrides": {
+        "allowed_regimes": [
+          "trending_up_clean"
+        ]
+      }
+    }
+  },
+  "arms": {
+    "control": {
+      "config": "arms/control.json",
+      "config_name": "control",
+      "control": "control",
+      "entries": "long (policy off, as live)",
+      "family": "primary",
+      "gate_window": "composite_medium",
+      "policy": false,
+      "role": "control",
+      "short_entries": "no short entry exists"
+    },
+    "gate_p21": {
+      "config": "arms/gate_p21.json",
+      "config_name": "gate_p21",
+      "control": "control",
+      "entries": "long (policy off, as live)",
+      "family": "primary",
+      "gate_window": "comp_p21",
+      "policy": false,
+      "role": "gate",
+      "short_entries": "no short entry exists"
+    },
+    "gate_p350": {
+      "config": "arms/gate_p350.json",
+      "config_name": "gate_p350",
+      "control": "control",
+      "entries": "long (policy off, as live)",
+      "family": "primary",
+      "gate_window": "composite_medium",
+      "policy": false,
+      "role": "gate",
+      "short_entries": "no short entry exists"
+    },
+    "policy_control": {
+      "config": "arms/control.json",
+      "config_name": "control",
+      "control": "policy_control",
+      "entries": "per composite_medium label (research replay of the configured policy)",
+      "family": "policy",
+      "gate_window": "composite_medium",
+      "policy": true,
+      "role": "control",
+      "short_entries": "no gate"
+    },
+    "policy_gate_p21": {
+      "config": "arms/gate_p21.json",
+      "config_name": "gate_p21",
+      "control": "policy_control",
+      "entries": "per composite_medium label",
+      "family": "policy",
+      "gate_window": "comp_p21",
+      "policy": true,
+      "role": "gate",
+      "short_entries": "one label set blocks both sides: a short fires only when the period 21 label is trending_up_clean"
+    },
+    "policy_gate_p350": {
+      "config": "arms/gate_p350.json",
+      "config_name": "gate_p350",
+      "control": "policy_control",
+      "entries": "long in effect",
+      "family": "policy",
+      "gate_window": "composite_medium",
+      "policy": true,
+      "role": "gate",
+      "short_entries": "every short is blocked: the gate passes only on trending_up_clean, where the policy is long"
+    }
+  },
+  "audit_rerun": {
+    "arms": {
+      "ref_long": "baseline",
+      "ref_long_p21": "comp_up_clean_p21"
+    },
+    "datasets": [
+      "BTC/USDT 1h",
+      "ETH/USDT 1h",
+      "SOL/USDT 1h"
+    ],
+    "driver": "backtest/candidates/breakout_1165/driver_common.py",
+    "funding_mode": "off",
+    "headline": "backtest/candidates/breakout_1165/audit_window_headline.json",
+    "start": "2025-06-10"
+  },
+  "cache_parity": {
+    "arms": [
+      "control",
+      "gate_p21"
+    ],
+    "coin": "BTC",
+    "interval": "1h",
+    "window": "is"
+  },
+  "capital_usd": 1000.0,
+  "coins": [
+    "BNB",
+    "BTC",
+    "ETH",
+    "HYPE",
+    "SOL"
+  ],
+  "dataset_sets": {
+    "1h": [
+      "1h"
+    ],
+    "30m": [
+      "30m"
+    ],
+    "all": [
+      "30m",
+      "1h"
+    ]
+  },
+  "deployed_copy": "deployed_breakout_sanitized.json",
+  "fee_drag": "commission paid divided by starting capital, from execution.fees_usd, per dataset then averaged; funding drag is minus the funding PnL over starting capital",
+  "fee_platform": "hyperliquid",
+  "fidelity": {
+    "agreement_threshold": 0.95,
+    "engine_arm_for_window": {
+      "comp_p21": "gate_p21",
+      "composite_medium": "control"
+    },
+    "engine_check_every": 25,
+    "lookback": 3011,
+    "min_agreement_bars": 30,
+    "proxy_windows": [
+      "is",
+      "oos"
+    ],
+    "venue_windows": {
+      "1h": [
+        "tail"
+      ],
+      "30m": [
+        "tail"
+      ]
+    }
+  },
+  "funding_mode": "charge",
+  "intervals": [
+    "30m",
+    "1h"
+  ],
+  "intrabar_resolution": "ohlc_walk",
+  "issue": 2014,
+  "proxy": {
+    "acquisition": {
+      "exchange": "binanceus",
+      "start": "2022-08-01"
+    },
+    "candle_source": "Binance US spot USDT pairs through ccxt (proxy for Hyperliquid perpetual prices); Hyperliquid fees and funding",
+    "dataset_windows": [
+      "is",
+      "oos",
+      "stitched"
+    ],
+    "judged_windows": [
+      "oos",
+      "2023H2",
+      "2024",
+      "2025H1",
+      "stitched"
+    ],
+    "pinned_end": "2026-11-10",
+    "selection_window": "is",
+    "window_roles": {
+      "2023H2": "held-out; replaces 2023, which has no venue funding before 2023-05-12",
+      "2024": "held-out",
+      "2025H1": "held-out, trimmed so it cannot overlap is",
+      "is": "selection",
+      "oos": "judged",
+      "stitched": "continuous audit frame of the first study"
+    },
+    "windows": {
+      "2023H2": [
+        "2023-07-01",
+        "2024-01-01"
+      ],
+      "2024": [
+        "2024-01-01",
+        "2025-01-01"
+      ],
+      "2025H1": [
+        "2025-01-01",
+        "2025-06-10"
+      ],
+      "is": [
+        "2025-06-10",
+        "2026-01-01"
+      ],
+      "oos": [
+        "2026-01-01",
+        "2026-11-10"
+      ],
+      "stitched": [
+        "2025-06-10",
+        "2026-11-10"
+      ]
+    }
+  },
+  "reference_arms": {
+    "ref_long": "backtest/candidates/breakout_1165/baseline.json",
+    "ref_long_p21": "backtest/candidates/breakout_1165/comp_up_clean_p21.json"
+  },
+  "reference_windows": [
+    "is",
+    "oos",
+    "stitched"
+  ],
+  "registry": "futures",
+  "selection_rule": {
+    "min_is_clusters": 10,
+    "text": "on is only, per dataset set: a gate arm is shortlisted when it beats its family control on mean Sharpe and mean drawdown-adjusted return, its M1 verdict is not degenerate or no data, it has at least 10 pooled position clusters and no funding_incomplete leg. The primary arm of a set is the shortlisted primary-family arm with the highest mean Sharpe (then mean ddadj). The policy family is research evidence and never adopted. Every config arm is scored on every judged window, but the verdict reads only the frozen primary arm."
+  },
+  "status": "frozen before any window was scored; run_study.py lock records this file's sha256 and every scoring command refuses a different file",
+  "strategy_type": "perps",
+  "study": "breakout_2014",
+  "suggest_only": "no command writes a live or paper config, a registry default or edge_status, and none sends an order",
+  "timing": {
+    "coin": "BTC",
+    "interval": "1h"
+  },
+  "venue": {
+    "bridge_manifests": {
+      "1h": "bridge_manifest_1h.json",
+      "30m": "bridge_manifest_30m.json"
+    },
+    "candle_source": "Hyperliquid mainnet perpetual candles from the public info API (candleSnapshot), closed bars only, frozen once",
+    "common_windows": {
+      "1h": "common",
+      "30m": "tail"
+    },
+    "cost_multipliers": {
+      "base": 1.0,
+      "stress": 2.0
+    },
+    "manifests": {
+      "1h": "venue_manifest_1h.json",
+      "30m": "venue_manifest_30m.json"
+    },
+    "verdict_window": "tail",
+    "warmup_bars": 400,
+    "window_rule": "tail starts at the first acquired candle plus 400 bars, rounded up to a UTC day, and ends at the pinned end; the 1h manifest also scores common, the 30m tail dates",
+    "windows": {
+      "1h": [
+        "common",
+        "tail"
+      ],
+      "30m": [
+        "tail"
+      ]
+    }
+  },
+  "venue_rule": {
+    "min_clusters": 30,
+    "text": "on the venue tail window, over the venue datasets of the set whose proxy dataset is kept: inconclusive if coverage is incomplete or the gate arm has fewer than 30 pooled clusters at cost x1; pass if it beats control on mean Sharpe and mean ddadj at cost x1 and x2; fail if it loses on both at cost x1; else inconclusive. The venue verdict acts as a veto: adoption needs it not fail."
+  },
+  "warmup_bars": 3011,
+  "warmup_rule": "the live fetch depth of the deployed regime block: required_ohlcv_limit takes the largest period over every configured window (composite_long 1500), 2 x 1500 + 1 + 10 = 3011, so every consumed proxy label has live depth"
+}

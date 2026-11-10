@@ -214,9 +214,13 @@ the live scheduler sees reproduces the labels this evidence scored.
 ### The wiring itself (operator config, out-of-tree per #1056)
 
 The live config lives at `/var/lib/go-trader[/<instance>]/config.json`, not
-in the repo, so the deployment is an operator edit. The exact shape — pinned
-by `scheduler/regime_comp_up_clean_gate_test.go` so it can never silently
-drift from what was validated:
+in the repo, so the deployment is an operator edit. The exact shape is held
+by the `comp_up_clean_p21` preset (`scheduler/discord_regime_gate_command.go`,
+`regimeGatePresets`) that `apply-regime-gate` writes. `TestUIApplyRegimeGate`
+(`scheduler/ui_structural_test.go`) checks that an apply sets
+`regime_gate_window: comp_p21` and a non-empty `allowed_regimes`; it does not
+assert the period or the label. The dedicated test file this paragraph named
+before was deleted; its last commit is `be917d0f`:
 
 ```jsonc
 "regime": {
@@ -232,7 +236,7 @@ drift from what was validated:
 ```
 
 Deployment constraints (all enforced by config validation / hot-reload
-guards, tested in the same file):
+guards):
 
 - **Set `regime_gate_window` explicitly.** Without it the gate reads the
   PRIMARY window ("medium" when present) — if that's an existing ADX window,
@@ -271,8 +275,8 @@ guards, tested in the same file):
    is one asset class (BTC/ETH/SOL × 1h/4h) on the audit frame.
 4. **Steps 1–5 changed no live config.** The wiring follow-on is **#1197**
    (Step 6 above): the live-label fidelity bar passed on all 12 rows, the
-   operator config shape + gate semantics are pinned by
-   `scheduler/regime_comp_up_clean_gate_test.go`, and the config edit itself
+   operator config shape is held by the `comp_up_clean_p21` preset (see
+   "The wiring itself" above), and the config edit itself
    is operator-side (out-of-tree, #1056). The other named follow-on — the
    `squeeze_momentum` re-run of this directory (#983, same DD conclusion,
    -58.5%) — ran as **#1198** via the strategy-parameterized drivers
@@ -281,3 +285,8 @@ guards, tested in the same file):
 
 A positive result still ships as evidence, not a config change (#995 step 4
 symmetry: documented, not deployed).
+
+The numbers in this folder predate the funding charge (`--funding` now
+defaults to `charge`), and their legs hold no funding block. The follow-up on
+the deployed Hyperliquid perps shape (30m and 1h, BTC/ETH/SOL/BNB/HYPE, the
+`trailing_tp_ratchet_regime` close) is `backtest/candidates/breakout_2014/`.

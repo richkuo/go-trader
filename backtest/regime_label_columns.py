@@ -159,7 +159,70 @@ def prepared_window_keys(plan: dict) -> set:
             for field in ("gate", "directional", "atr")}
 
 
-def attach_regime_label_columns(df, plan: dict, *, regime_frame=None):
+_LABEL_SUFFIXES = ("", "_ready", "_bars", "_need")
+_OHLCV = ("open", "high", "low", "close", "volume")
+
+
+def label_frame_sha256(df) -> str:
+    import hashlib
+
+    import numpy as np
+
+    h = hashlib.sha256()
+    h.update(np.ascontiguousarray(df.index.asi8).tobytes())
+    for col in _OHLCV:
+        h.update(col.encode())
+        h.update(np.ascontiguousarray(df[col].to_numpy(dtype="float64")).tobytes())
+    return h.hexdigest()
+
+
+def label_cache_key(frame_sha: str, limit: int, period: int, adx: float,
+                     window_key: str, window_spec) -> str:
+    import hashlib
+    import json
+
+    body = json.dumps({"frame": frame_sha, "limit": limit, "period": period, "adx_threshold": adx,
+                       "window": window_key, "spec": window_spec},
+                      sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def _attach_cached_labels(df, columns: dict, spec, period: int, adx: float, limit: int,
+                          label_cache) -> None:
+    from regime import bounded_window_labels, primary_regime_window_key
+
+    resolved = {}
+    for col, window_key in columns.items():
+        key = window_key
+        if spec and window_key in ("", "default"):
+            key = primary_regime_window_key(spec)
+        resolved[col] = key
+    frame_sha = label_frame_sha256(df)
+    keys = {}
+    for key in sorted(set(resolved.values())):
+        window_spec = spec.get(key) if spec else None
+        if spec and window_spec is None:
+            raise ValueError(f"label cache: window {key!r} is not in the windows spec")
+        keys[key] = label_cache_key(frame_sha, limit, period, adx, key, window_spec)
+    missing = [key for key in sorted(keys) if keys[key] not in label_cache]
+    if missing:
+        probe = df.loc[:, list(_OHLCV)].copy()
+        cut = {key: spec[key] for key in missing} if spec else None
+        tmp = {f"_cache_{i}": key for i, key in enumerate(missing)}
+        bounded_window_labels(probe, period=period, adx_threshold=adx, windows_spec=cut,
+                              limit=limit, columns=tmp)
+        for name, key in tmp.items():
+            label_cache[keys[key]] = {suffix: probe[name + suffix].tolist() for suffix in _LABEL_SUFFIXES}
+    for col, key in resolved.items():
+        entry = label_cache[keys[key]]
+        for suffix in _LABEL_SUFFIXES:
+            values = entry[suffix]
+            if len(values) != len(df):
+                raise ValueError(f"label cache entry for {key!r} has {len(values)} rows, frame has {len(df)}")
+            df[col + suffix] = list(values)
+
+
+def attach_regime_label_columns(df, plan: dict, *, regime_frame=None, label_cache=None):
     """Write one unshifted column per distinct window.
 
     `regime_frame` is the regime-timeframe candle frame. Labels are built
@@ -180,7 +243,11 @@ def attach_regime_label_columns(df, plan: dict, *, regime_frame=None):
     for key in keys:
         columns[column_name(key)] = spec_window_key(spec, key)
     target = df
-    if regime_frame is not None:
+    if label_cache is not None:
+        if regime_frame is not None:
+            raise ValueError("label_cache cannot be combined with regime_frame")
+        _attach_cached_labels(target, columns, spec, period, adx, limit, label_cache)
+    elif regime_frame is not None:
         labeled = regime_frame.copy().sort_index()
         bounded_window_labels(
             labeled, period=period, adx_threshold=adx, windows_spec=spec,
