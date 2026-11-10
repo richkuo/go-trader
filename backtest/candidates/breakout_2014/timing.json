@@ -1,0 +1,39 @@
+{
+  "dataset": "BTC 1h",
+  "effective_range": {
+    "frame_bars": 7931,
+    "scored_bars": 4920,
+    "scored_first_bar": "2025-06-10 00:00:00",
+    "scored_last_bar": "2025-12-31 23:00:00",
+    "warmup_first_bar": "2025-02-04 13:00:00"
+  },
+  "label_calls": [
+    {
+      "bars": 7931,
+      "seconds": 1264.4578928947449,
+      "windows": [
+        "composite_medium",
+        "medium"
+      ]
+    }
+  ],
+  "label_frame_bars": 7931,
+  "label_seconds": 1264.5,
+  "leg_seconds": 1265.5,
+  "leg_trades": 96,
+  "machine": {
+    "cpus": 10,
+    "load_avg": [
+      48.216796875,
+      127.8408203125,
+      156.22998046875
+    ]
+  },
+  "measured_at_utc": "2026-11-10T09:31:10Z",
+  "projected_fidelity_bars_upper": 390368,
+  "projected_label_window_bars": 2392128,
+  "projected_process_hours_fidelity_upper": 8.6,
+  "projected_process_hours_labels": 53.0,
+  "seconds_per_window_bar": 0.07972,
+  "window": "is"
+}

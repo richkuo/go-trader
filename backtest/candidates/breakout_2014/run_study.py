@@ -1607,7 +1607,7 @@ def time_leg_cmd(cache_db: str, work_dir: str) -> None:
         return r
     regime.bounded_window_labels = timed
     t0 = time.time()
-    labels = DiskLabelCache(os.path.join(work_dir, "labels"))
+    labels = DiskLabelCache(os.path.join(work_dir, "labels_timing"))
     cand = build_arm_candidate(proto, "control", coin, tf)
     leg = ew.run_candidate_leg(_WORKER["reg"], cand, proxy_symbol(coin), tf, window, proto["capital_usd"],
                                keep_trades=True, funding_mode=proto["funding_mode"], warmup_bars=proto["warmup_bars"],
@@ -1646,8 +1646,8 @@ def time_leg_cmd(cache_db: str, work_dir: str) -> None:
            "seconds_per_window_bar": round(per_window_bar, 5), "leg_trades": leg["trades"],
            "projected_label_window_bars": proj_bars,
            "projected_fidelity_bars_upper": fid,
-           "projected_cpu_hours_labels": round(proj_bars * per_window_bar / 3600, 1),
-           "projected_cpu_hours_fidelity_upper": round(fid * per_window_bar / 3600, 1),
+           "projected_process_hours_labels": round(proj_bars * per_window_bar / 3600, 1),
+           "projected_process_hours_fidelity_upper": round(fid * per_window_bar / 3600, 1),
            "machine": {"cpus": os.cpu_count(), "load_avg": list(os.getloadavg())},
            "measured_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     write_json(TIMING_PATH, out)
@@ -1668,7 +1668,7 @@ def cache_parity_cmd(cache_db: str, work_dir: str) -> None:
         legs = {}
         for mode in ("uncached", "cached"):
             t0 = time.time()
-            cache = DiskLabelCache(os.path.join(work_dir, "labels_parity")) if mode == "cached" else None
+            cache = DiskLabelCache(os.path.join(work_dir, "labels")) if mode == "cached" else None
             leg = ew.run_candidate_leg(_WORKER["reg"], copy.deepcopy(cand), proxy_symbol(coin), tf, window,
                                        proto["capital_usd"], keep_trades=True, funding_mode=proto["funding_mode"],
                                        warmup_bars=proto["warmup_bars"], regime_label_cache=cache)
