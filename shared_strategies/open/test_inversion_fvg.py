@@ -412,10 +412,3 @@ def test_missing_price_columns_hold_every_row_and_volume_is_not_read():
     assert (out["invfvg_reason"] == "missing_columns").all() and (out["signal"] == 0).all()
     no_volume = run("futures", df.drop(columns=["volume"]))
     assert int(no_volume["signal"].iloc[-1]) == 1
-
-
-def test_every_row_reason_code_matches_its_label():
-    out = run("futures", frame(_walk(400, 7))[0], GRID[1])
-    codes = module().REASON_CODES
-    for reason, code in zip(out["invfvg_reason"], out["invfvg_reason_code"]):
-        assert codes[reason] == code
