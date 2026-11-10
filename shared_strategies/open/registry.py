@@ -107,6 +107,12 @@ from volume_spike_breakout import (
     volume_spike_breakout_spot,
     vsb_param_validator,
 )
+from inversion_fvg import (
+    DEFAULT_PARAMS as DEFAULT_INVFVG_PARAMS,
+    inversion_fvg_futures,
+    inversion_fvg_spot,
+    invfvg_param_validator,
+)
 from sweep_absorption_ifvg import (
     DEFAULT_PARAMS as DEFAULT_SAI_PARAMS,
     sai_param_validator,
@@ -1846,6 +1852,36 @@ def volume_spike_breakout_strategy(df: pd.DataFrame, lookback=20, vol_period=20,
 
 
 @register(
+    "inversion_fvg",
+    "RESEARCH, no-edge (#2012) \u2014 candle-only inversion fair value gap (iFVG) retest: a three-bar gap at bar k (bullish when low[k] > high[k-2], zone [high[k-2], low[k]]; bearish when high[k] < low[k-2], zone [high[k], low[k-2]]) at least min_fvg_atr times the closed simple 14-bar ATR wide inverts on the first close strictly beyond its far side within max_gap_age bars (a bearish gap closed above becomes a long zone, a bullish gap closed below becomes a short zone, once per gap). The armed zone (latest inversion per side, greatest gap bar on ties) fires on the first later bar within retest_window bars whose range contains the entry level (bottom + entry_level x width for a long, top - entry_level x width for a short) while the close holds the zone; a close through the zone clears it, each qualifying retest consumes its zone, both sides on one bar hold. The futures evaluator emits mirrored shorts; the spot evaluator never emits a short entry. A decision needs max_gap_age + retest_window + 15 clean closed bars (at most 200); invalid prices or timestamps hold with an invfvg_reason. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    dict(DEFAULT_INVFVG_PARAMS),
+    platforms=("spot", "futures"),
+    variants={
+        "spot": {"fn": inversion_fvg_spot},
+        "futures": {"fn": inversion_fvg_futures},
+    },
+    constraints=[
+        "min_fvg_atr >= 0",
+        "min_fvg_atr <= 10",
+        "max_gap_age >= 1",
+        "max_gap_age <= 200",
+        "retest_window >= 1",
+        "retest_window <= 200",
+        "entry_level >= 0",
+        "entry_level <= 1",
+    ],
+    edge_status="no_edge",
+    edge_source="unvalidated",
+    edge_ref="backtest/candidates/inversion_fvg_2012/REPORT.md",
+    short_entries=True,
+    param_validator=invfvg_param_validator,
+)
+def inversion_fvg_strategy(df: pd.DataFrame, min_fvg_atr=0.25, max_gap_age=48, retest_window=24,
+                           entry_level=0.5) -> pd.DataFrame:
+    return inversion_fvg_futures(df, min_fvg_atr, max_gap_age, retest_window, entry_level)
+
+
+@register(
     "open_interest_breakout",
     "RESEARCH, no-edge (#1637) \u2014 open-interest breakout confirmation: long on the first closed bar whose close is strictly above the prior price_lookback high while Hyperliquid open interest in base-coin units rose by strictly more than oi_change_threshold over oi_lookback bars; short mirrors below the prior low with the same rising-interest rule. Open interest comes only from supplied observations (open_interest_observations), each endpoint the latest sample at or before the bar close and no older than max_observation_age_ms; missing, stale, gapped or thin data gives a reasoned hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {
@@ -3114,6 +3150,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "vol_momentum", "regime_adaptive", "regime_adaptive_htf",
         "analog_retrieval",
         "volume_spike_breakout",
+        "inversion_fvg",
         "hold",
     ],
     "futures": [
@@ -3159,6 +3196,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "order_book_imbalance",
         "inventory_market_making",
         "volume_spike_breakout",
+        "inversion_fvg",
         "sweep_absorption_ifvg",
         "hold",
     ],

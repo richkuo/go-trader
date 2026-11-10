@@ -37,8 +37,8 @@ from htf_filter import (
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 from stdout_contract import json_stdout
 
-TEXT_INDICATOR_COLUMNS = ("vsb_reason",)
-FULL_PRECISION_INDICATOR_PREFIXES = ("vsb_",)
+TEXT_INDICATOR_COLUMNS = ("vsb_reason", "invfvg_reason")
+FULL_PRECISION_INDICATOR_PREFIXES = ("vsb_", "invfvg_")
 
 
 def _make_dataframe(candles):
