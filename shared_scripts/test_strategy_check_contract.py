@@ -15,6 +15,7 @@ import pytest
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 CHECK_HL = os.path.join(REPO, "shared_scripts", "check_hyperliquid.py")
 CHECK_SPOT = os.path.join(REPO, "shared_scripts", "check_strategy.py")
+CHECK_ROBINHOOD = os.path.join(REPO, "shared_scripts", "check_robinhood.py")
 CHECK_OKX = os.path.join(REPO, "shared_scripts", "check_okx.py")
 CHECK_TOPSTEP = os.path.join(REPO, "shared_scripts", "check_topstep.py")
 HTF_OFFLINE = os.path.join(REPO, "shared_scripts", "testdata", "htf_offline")
@@ -444,6 +445,8 @@ class Case:
     batch_entry: Optional[Callable] = None
     batch_check: Optional[Callable] = None
     entry_defect: Optional[Callable] = None
+    entry_defect_reason: Optional[str] = None
+    entry_defect_absent: Optional[str] = None
 
     def reason(self):
         return f"{self.prefix}_reason"
@@ -553,6 +556,70 @@ def vsb_reconstruct(ind):
     if long_:
         return 1
     return -1 if ind["vsb_short_entries"] == 1.0 else 0
+
+
+IFVG_PARAMS = {"min_fvg_atr": 0.25, "max_gap_age": 48, "retest_window": 24, "entry_level": 0.5}
+IFVG_TP = {"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}
+IFVG_COLUMNS = ("invfvg_long_qualified", "invfvg_short_qualified", "invfvg_valid", "invfvg_reason_code",
+                "invfvg_required_history", "invfvg_short_entries", "invfvg_min_fvg_atr", "invfvg_max_gap_age",
+                "invfvg_retest_window", "invfvg_entry_level")
+IFVG_BASE = 400.1234567
+IFVG_PATTERN = ((0.0, 0.0, -1.0, -1.0), (-1.25, -1.25, -2.25, -1.5), (-1.5, -1.0, -2.0, -1.5),
+                (-1.5, -1.0, -2.0, -1.5), (-1.5, 0.5, -2.0, 0.0), (0.0, 0.25, -0.9, -0.4))
+IFVG_FLAT = (0.0, 0.5, -0.5, 0.0)
+IFVG_TAIL = (-0.4, 0.1, -0.9, -0.4)
+
+
+def ifvg_bars(n, step, side=1, *, at=None):
+    at = n - 1 if at is None else at
+    start = at - len(IFVG_PATTERN) + 1
+    out = []
+    for i in range(n):
+        if i < start:
+            rel = IFVG_FLAT
+        elif i <= at:
+            rel = IFVG_PATTERN[i - start]
+        else:
+            rel = IFVG_TAIL
+        o, h, low, c = rel if side == 1 else (-rel[0], -rel[2], -rel[1], -rel[3])
+        out.append({"t": T0 + i * step, "T": T0 + (i + 1) * step - 1, "o": IFVG_BASE + o, "h": IFVG_BASE + h,
+                    "l": IFVG_BASE + low, "c": IFVG_BASE + c, "v": vsb_volume(i)})
+    return out
+
+
+def ifvg_identity(ind, bars):
+    side = "long" if ind["invfvg_long_qualified"] == 1.0 else "short"
+    k = len(bars) - 5
+    if side == "long":
+        bottom, top = bars[k]["h"], bars[k - 2]["l"]
+        level = bottom + 0.5 * (top - bottom)
+    else:
+        bottom, top = bars[k - 2]["h"], bars[k]["l"]
+        level = top - 0.5 * (top - bottom)
+    assert ind[f"invfvg_{side}_zone_bottom"] == bottom and ind[f"invfvg_{side}_zone_top"] == top
+    assert ind[f"invfvg_{side}_level"] == level and level != round(level, 6)
+    assert ind[f"invfvg_{side}_gap_ts_ms"] == float(bars[k]["T"])
+    assert ind[f"invfvg_{side}_armed_ts_ms"] == float(bars[k + 3]["T"])
+    assert ind[f"invfvg_{side}_bars_since_armed"] == 1.0
+    assert ind[f"invfvg_{side}_gap_atr"] > 0
+
+
+def ifvg_reconstruct(ind):
+    if ind.get("invfvg_valid") != 1.0:
+        return 0
+    long_ = ind["invfvg_long_qualified"] == 1.0
+    short = ind["invfvg_short_qualified"] == 1.0
+    if long_ == short:
+        return 0
+    if long_:
+        return 1
+    return -1 if ind["invfvg_short_entries"] == 1.0 else 0
+
+
+def ifvg_defect_bars():
+    bars = ifvg_bars(260, H)
+    bars[-1] = dict(bars[-1], c=bars[-1]["h"] + 1.0)
+    return bars
 
 
 CASE_LIST = [
@@ -695,6 +762,26 @@ CASE_LIST = [
                    "full": True, "round": False, "timeframe": "1h", "label": None, "label_match": True,
                    "identity": vsb_identity},
         entry_defect=lambda: [dict(b, v=0.0) if i == 259 else b for i, b in enumerate(vsb_bars(260, H))],
+        entry_defect_reason="invalid_volume", entry_defect_absent="vsb_rel_vol",
+    ),
+    Case(
+        name="inversion_fvg", prefix="invfvg", params=IFVG_PARAMS, tf="4h",
+        ref="backtest/candidates/inversion_fvg_2012/REPORT.md",
+        solo=lambda: _solo4h(ifvg_bars(220, FOUR_H)), solo_short=lambda: _solo4h(ifvg_bars(220, FOUR_H, -1)),
+        entry=lambda side=1: ifvg_bars(260, H, side), tp=IFVG_TP, helds=(HELD_LONG, HELD_SHORT),
+        eval_spec={"closed": False,
+                   "indicators": {"invfvg_max_gap_age": 48.0, "invfvg_required_history": 87.0, "invfvg_valid": 1.0,
+                                  "invfvg_short_entries": 1.0, "invfvg_long_qualified": 1.0},
+                   "labels": {"invfvg_reason": "entry_long"}, "signal": 1, "open_action": "long",
+                   "short_label": "entry_short"},
+        peers=("breakout", "donchian_breakout", "amd_ifvg"),
+        batch_peer="breakout", batch_bad=({**IFVG_PARAMS, "max_gap_age": 150, "retest_window": 48}, "max_gap_age"),
+        solo_signal=1, batch_signals=(0, 1), reconstruct=ifvg_reconstruct, opposite_entry_closes=True,
+        evaluator={"sides": (1, -1), "bars": lambda side: ifvg_bars(260, H, side), "columns": IFVG_COLUMNS,
+                   "full": True, "round": False, "timeframe": "1h", "label": None, "label_match": True,
+                   "identity": ifvg_identity},
+        entry_defect=ifvg_defect_bars, entry_defect_reason="inconsistent_ohlc",
+        entry_defect_absent="invfvg_long_zone_bottom",
     ),
 ]
 
@@ -1587,9 +1674,9 @@ def test_an_invalid_entry_bar_holds_the_entry_while_the_close_owner_and_protecti
             out = json.loads(proc.stdout)
             assert not out.get("error"), out
             assert out["open_action"] == "none", (flags, out)
-            assert out["indicator_labels"][case.reason()] == "invalid_volume", (flags, out["indicator_labels"])
+            assert out["indicator_labels"][case.reason()] == case.entry_defect_reason, (flags, out["indicator_labels"])
             assert out["indicators"][f"{case.prefix}_valid"] == 0.0
-            assert f"{case.prefix}_rel_vol" not in out["indicators"]
+            assert case.entry_defect_absent not in out["indicators"]
             assert out["close_fraction"] == 1.0 and out["close_strategy"] == case.tp["name"], (flags, out)
             assert out["signal"] == side_signal
             assert out["indicators"]["atr"] > 0
@@ -1605,11 +1692,30 @@ class SpotCase:
     columns: Tuple[str, ...]
     suppressed: str
     venue_params: Dict[str, Any]
+    bars: Callable
+    closed_hold_label: str
+    venue_shapes: Tuple[str, str]
+    venue_precision: Callable
+
+
+def vsb_venue_precision(ind, venue_params):
+    rel = ind["vsb_rel_vol"]
+    return rel > venue_params["vol_multiplier"] and rel != round(rel, 6)
+
+
+def ifvg_venue_precision(ind, venue_params):
+    side = "long" if ind["invfvg_long_qualified"] == 1.0 else "short"
+    level = ind[f"invfvg_{side}_level"]
+    return ind[f"invfvg_{side}_zone_bottom"] <= level <= ind[f"invfvg_{side}_zone_top"] and level != round(level, 6)
 
 
 SPOT_CASES = {
     "volume_spike_breakout": SpotCase("volume_spike_breakout", "vsb", VSB_PARAMS, VSB_TP, VSB_COLUMNS,
-                                      "short_suppressed_spot", dict(VSB_PARAMS, vol_multiplier=1.0)),
+                                      "short_suppressed_spot", dict(VSB_PARAMS, vol_multiplier=1.0), vsb_bars,
+                                      "no_breakout", ("cross_up", "cross_down"), vsb_venue_precision),
+    "inversion_fvg": SpotCase("inversion_fvg", "invfvg", IFVG_PARAMS, IFVG_TP, IFVG_COLUMNS,
+                              "short_suppressed_spot", dict(IFVG_PARAMS), ifvg_bars, "zone_armed_this_bar",
+                              ("ifvg_up", "ifvg_down"), ifvg_venue_precision),
 }
 
 
@@ -1624,9 +1730,9 @@ def test_every_spot_registered_study_candidate_has_a_spot_case():
 SPOT_START_MS = 1_793_620_800_000 + 2 * 3_600_000
 
 
-def spot_rows(side=1, *, n=220, step=FOUR_H, at=None, closed_last=False):
+def spot_rows(case, side=1, *, n=220, step=FOUR_H, at=None, closed_last=False):
     end = SPOT_START_MS - SPOT_START_MS % step - (step if closed_last else 0)
-    bars = vsb_bars(n, step, side, at=at)
+    bars = case.bars(n, step, side, at=at)
     start = end - (n - 1) * step
     return [[start + i * step, b["o"], b["h"], b["l"], b["c"], b["v"]] for i, b in enumerate(bars)]
 
@@ -1675,7 +1781,7 @@ def spot_open_with_edge():
 @pytest.mark.parametrize("name", sorted(SPOT_CASES))
 def test_spot_check_admits_paper_and_acknowledged_evaluation_and_matches_the_spot_evaluator(name, tmp_path):
     case = SPOT_CASES[name]
-    rows = spot_rows(1)
+    rows = spot_rows(case, 1)
     base = [name, "BTC/USDT", "4h", "--ohlcv-limit", "200", "--strategy-refs", spot_refs(case)]
     refused = spot_check(tmp_path, rows, base)
     assert refused.returncode == 1
@@ -1698,7 +1804,7 @@ def test_spot_check_admits_paper_and_acknowledged_evaluation_and_matches_the_spo
         assert "fill" not in out and "order" not in out
         outs.append(out)
     assert outs[0]["indicators"] == outs[1]["indicators"]
-    short = payload(spot_check(tmp_path, spot_rows(-1), base + ["--mode=paper"]))
+    short = payload(spot_check(tmp_path, spot_rows(case, -1), base + ["--mode=paper"]))
     assert (short["signal"], short["open_action"]) == (0, "none")
     assert short["indicator_labels"][f"{case.prefix}_reason"] == case.suppressed
     assert short["indicators"][f"{case.prefix}_short_qualified"] == 1.0
@@ -1718,14 +1824,14 @@ def test_spot_closed_bar_decisions_select_the_last_closed_candle(name, tmp_path)
     case = SPOT_CASES[name]
     label = f"{case.prefix}_reason"
     argv = [name, "BTC/USDT", "4h", "--mode=paper", "--ohlcv-limit", "200", "--strategy-refs", spot_refs(case)]
-    forming_spike = spot_rows(1, n=221)
+    forming_spike = spot_rows(case, 1, n=221)
     closed = payload(spot_check(tmp_path, forming_spike, argv + ["--closed-bar-decisions"]))
     assert not closed.get("error"), closed
     assert closed["closed_bar_decision"]["held"] is False
-    assert closed["signal"] == 0 and closed["indicator_labels"][label] == "no_breakout"
+    assert closed["signal"] == 0 and closed["indicator_labels"][label] == case.closed_hold_label
     legacy = payload(spot_check(tmp_path, forming_spike, argv))
     assert legacy["signal"] == 1 and legacy["indicator_labels"][label] == "entry_long"
-    closed_spike = spot_rows(1, n=221, at=219)
+    closed_spike = spot_rows(case, 1, n=221, at=219)
     decided = payload(spot_check(tmp_path, closed_spike, argv + ["--closed-bar-decisions"]))
     assert decided["closed_bar_decision"]["held"] is False
     assert decided["signal"] == 1 and decided["indicator_labels"][label] == "entry_long"
@@ -1756,18 +1862,21 @@ def test_futures_routes_refuse_missing_mode_and_okx_and_topstep_export_full_prec
     error = payload(refused)["error"]
     assert f"open strategy '{name}' is edge_status=no_edge" in error and "missing mode" in error
     assert payload(refused)["signal"] == 0 and "Fetching" not in refused.stderr
+    up, down = case.venue_shapes
     rows = [
-        (CHECK_OKX, ["BTC", "1h", "--inst-type=swap"], "cross_up", 1, "entry_long"),
-        (CHECK_OKX, ["BTC", "1h", "--inst-type=swap"], "cross_down", -1, "entry_short"),
-        (CHECK_OKX, ["BTC", "1h", "--inst-type=spot"], "cross_up", 1, "entry_long"),
-        (CHECK_OKX, ["BTC", "1h", "--inst-type=spot"], "cross_down", 0, case.suppressed),
-        (CHECK_TOPSTEP, ["MES", "1h"], "cross_up", 1, "entry_long"),
-        (CHECK_TOPSTEP, ["MES", "1h"], "cross_down", -1, "entry_short"),
+        (CHECK_OKX, ["BTC", "1h", "--inst-type=swap"], up, 1, "entry_long"),
+        (CHECK_OKX, ["BTC", "1h", "--inst-type=swap"], down, -1, "entry_short"),
+        (CHECK_OKX, ["BTC", "1h", "--inst-type=spot"], up, 1, "entry_long"),
+        (CHECK_OKX, ["BTC", "1h", "--inst-type=spot"], down, 0, case.suppressed),
+        (CHECK_TOPSTEP, ["MES", "1h"], up, 1, "entry_long"),
+        (CHECK_TOPSTEP, ["MES", "1h"], down, -1, "entry_short"),
+        (CHECK_ROBINHOOD, ["BTC", "1h"], up, 1, "entry_long"),
+        (CHECK_ROBINHOOD, ["BTC", "1h"], down, 0, case.suppressed),
     ]
     for script, argv, shape, signal, reason in rows:
         out = quote_stub_check(tmp_path, script, [name] + argv + ["--mode=paper", "--params", params], shape)
         assert not out.get("error"), (script, argv, shape, out)
         assert out["signal"] == signal, (script, argv, shape)
         assert out["indicator_labels"][f"{case.prefix}_reason"] == reason, (script, argv, shape)
-        rel = out["indicators"][f"{case.prefix}_rel_vol"]
-        assert rel > case.venue_params["vol_multiplier"] and rel != round(rel, 6), (script, argv, shape)
+        assert case.venue_precision(out["indicators"], case.venue_params), (script, argv, shape, out["indicators"])
+        assert "fill" not in out and "order" not in out, (script, argv, shape)

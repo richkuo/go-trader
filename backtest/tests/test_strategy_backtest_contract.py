@@ -593,6 +593,113 @@ def _vsb_short():
     return out, _vsb_signals(out), _time_stop_bt(_vsb_bt, 6, stop_loss_atr_mult=None, stop_loss_pct=0.5)
 
 
+IFVG_NAME = "inversion_fvg"
+IFVG_STUDY = os.path.join(_REPO, "backtest", "candidates", "inversion_fvg_2012")
+IFVG_DEFAULTS = {"min_fvg_atr": 0.25, "max_gap_age": 48, "retest_window": 24, "entry_level": 0.5}
+IFVG_SMALL = {"min_fvg_atr": 0.25, "max_gap_age": 10, "retest_window": 10, "entry_level": 0.5}
+IFVG_ANY = {"min_fvg_atr": 0.0, "max_gap_age": 10, "retest_window": 10, "entry_level": 0.5}
+IFVG_MAX = {"min_fvg_atr": 0.0, "max_gap_age": 96, "retest_window": 89, "entry_level": 0.75}
+IFVG_GRID = {"min_fvg_atr": [0.0, 0.25, 0.5, 1.0], "max_gap_age": [24, 48, 96], "retest_window": [12, 24, 48],
+             "entry_level": [0.25, 0.5, 0.75]}
+IFVG_CLOSE = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}]
+
+
+def _ifvg_frame(rows):
+    df = pd.DataFrame(rows, columns=["open", "high", "low", "close"], dtype=float)
+    df["volume"] = 10.0
+    df.index = pd.date_range("2026-01-01", periods=len(df), freq="4h")
+    return df
+
+
+def _ifvg_flat(px, n=1):
+    return [(px, px + 0.5, px - 0.5, px)] * n
+
+
+def _ifvg_mirror(rows):
+    return [(200.0 - o, 200.0 - lo, 200.0 - h, 200.0 - c) for o, h, lo, c in rows]
+
+
+def _ifvg_long_rows(tail=0):
+    rows = (_ifvg_flat(100.0, 40) + [(100.0, 100.0, 99.0, 99.0), (99.0, 99.25, 98.25, 98.5)]
+            + [(98.5, 99.0, 98.0, 98.5)] * 2 + [(98.5, 100.5, 98.0, 100.0), (100.0, 100.25, 99.3, 99.6)])
+    return rows + [(99.6, 100.1, 99.1, 99.6)] * tail
+
+
+def _ifvg_event(side, tail=0):
+    rows = _ifvg_long_rows(tail)
+    return _ifvg_frame(rows if side == 1 else _ifvg_mirror(rows))
+
+
+def _ifvg_defect():
+    rows = _ifvg_long_rows()
+    o, h, lo, c = rows[-1]
+    rows[-1] = (o, lo, h, c)
+    return _ifvg_frame(rows)
+
+
+def _ifvg_walk(n, seed=11, freq="4h", sigma=0.02):
+    rng = np.random.default_rng(seed)
+    close = 100.0 * np.exp(np.cumsum(rng.normal(0.0, sigma, n)))
+    open_ = np.concatenate([[100.0], close[:-1]])
+    wick = rng.uniform(0.0005, 0.01, (n, 2))
+    df = pd.DataFrame({"open": open_, "high": np.maximum(open_, close) * (1 + wick[:, 0]),
+                       "low": np.minimum(open_, close) * (1 - wick[:, 1]), "close": close,
+                       "volume": rng.uniform(50.0, 150.0, n)})
+    df.index = pd.date_range("2026-01-01", periods=n, freq=freq)
+    return df
+
+
+def _ifvg_walk_with_old_defect(n=640, seed=13, at=60):
+    df = _ifvg_walk(n, seed)
+    df.iloc[at, df.columns.get_loc("high")] = float(df["low"].iloc[at]) * 0.99
+    return df
+
+
+def _ifvg_cfg(registry, params=IFVG_SMALL, **kw):
+    fut = registry == "futures"
+    base = dict(strategy_name=IFVG_NAME, params=dict(params), registry=registry,
+                platform="hyperliquid" if fut else "binanceus", symbol="BTC" if fut else "BTC/USDT",
+                timeframe="4h", close_refs=_copy_refs(IFVG_CLOSE), direction="both" if fut else None,
+                stop_kwargs={"stop_loss_atr_mult": 1.0}, comparison_mode="strict",
+                strategy_type="perps" if fut else "spot")
+    base.update(kw)
+    return ParityConfig(**base)
+
+
+def _ifvg_bt(params=IFVG_SMALL, **kw):
+    base = dict(initial_capital=1000.0, platform="hyperliquid",
+                open_strategy={"name": IFVG_NAME, "params": dict(params)},
+                close_strategies=[{"name": "time_stop", "params": {"max_bars": 3}}],
+                stop_loss_atr_mult=1.0, direction="both", comparison_mode="approximate")
+    base.update(kw)
+    return Backtester(**base)
+
+
+def _ifvg_signals(df, params=IFVG_SMALL):
+    return ensure_atr_indicator(_apply(IFVG_NAME, df, params))
+
+
+IFVG_LONG_BAR = 45
+
+
+def _ifvg_long():
+    df = _ifvg_event(1, tail=8)
+    return df, _ifvg_signals(df), _ifvg_bt()
+
+
+IFVG_SHORT_BAR = 45
+IFVG_REVERSE_BAR = IFVG_SHORT_BAR + 4
+
+
+def _ifvg_short():
+    rows = _ifvg_mirror(_ifvg_long_rows())
+    rows += [(100.4, 100.6, 99.4, 99.5), (99.5, 99.6, 99.0, 99.2), (99.2, 100.2, 99.1, 100.0),
+             (100.0, 100.1, 99.65, 99.9)] + [(99.9, 100.4, 99.4, 99.9)] * 6
+    df = _ifvg_frame(rows)
+    return df, _ifvg_signals(df, IFVG_ANY), _time_stop_bt(lambda **kw: _ifvg_bt(IFVG_ANY, **kw), 6,
+                                                          stop_loss_atr_mult=None, stop_loss_pct=0.5)
+
+
 WINDOWS = (200,)
 ENTRY_PARITY = (("compared", 1), ("clean", None))
 COMPOSED_PARITY = (("no_mismatches", None), ("clean", None), ("opens_both", None), ("closes_both", None))
@@ -1099,6 +1206,47 @@ CASES = {
         time_stop_fills=TimeStopFills(_vsb_long, 20, True, _vsb_short, 20, 23, 27, True),
         spot_route=SpotRoute(VSB_SMALL, VSB_CLOSE, lambda: _vsb_event(1), lambda: _vsb_event(-1),
                              lambda: _vsb_walk(900, seed=3), _vsb_defect, 1.0, "vsb_reason", "short_suppressed_spot"),
+        **_uncovered("check_time", reason=NotCovered(
+            "the evaluator reads no decision-time attribute: closed-bar selection is the check scripts' "
+            "closed_bar_decisions selector, covered by the check contract")),
+    ),
+    "inversion_fvg": Case(
+        registration=Registration(study="inversion_fvg_2012", validator=True, platforms=("spot", "futures"),
+                                  defaults=(lambda: IFVG_DEFAULTS,
+                                            lambda: _seed_json(os.path.join(IFVG_STUDY, "candidate_seed.json"))["params"],
+                                            lambda: _protocol(IFVG_STUDY)["candidate"]["seed"]),
+                                  grid=lambda: _protocol(IFVG_STUDY)["candidate"]["grid"],
+                                  combos=("grid", None, 108, True, {}), grid_values_validate=True,
+                                  discovery=IFVG_STUDY, catalog=os.path.join(IFVG_STUDY, "evidence")),
+        capability=IFVG_CLOSE,
+        parity=(
+            Parity("futures_owner", lambda: _ifvg_walk(520), _one(lambda: _ifvg_cfg("futures")), (200, None),
+                   OWNER_PARITY),
+            Parity("spot_owner", lambda: _ifvg_walk(520), _one(lambda: _ifvg_cfg("spot")), (200, None),
+                   (("compared", 1), ("no_mismatches", None), ("clean", None), ("eligible", None),
+                    ("opens_any", None), ("no_short_opens", None))),
+            Parity("seed", lambda: _ifvg_walk(640, seed=7),
+                   (("futures", lambda: _ifvg_cfg("futures", IFVG_DEFAULTS)),
+                    ("spot", lambda: _ifvg_cfg("spot", IFVG_DEFAULTS))),
+                   (200, None), (("compared", 1), ("no_mismatches", None), ("clean", None), ("opens_any", None))),
+            Parity("max_support", lambda: _ifvg_walk(640, seed=5),
+                   (("futures", lambda: _ifvg_cfg("futures", IFVG_MAX)), ("spot", lambda: _ifvg_cfg("spot", IFVG_MAX))),
+                   (200, None), (("compared", 1), ("no_mismatches", None), ("clean", None), ("opens_any", None))),
+            Parity("old_defect_recovery", _ifvg_walk_with_old_defect,
+                   (("futures", lambda: _ifvg_cfg("futures", IFVG_DEFAULTS)),
+                    ("spot", lambda: _ifvg_cfg("spot", IFVG_DEFAULTS))),
+                   (200, None), (("compared", 1), ("no_mismatches", None), ("opens_any", None))),
+            Parity("batched", lambda: _ifvg_walk(320), _one(lambda: _ifvg_cfg("futures", batched=True)), (200,),
+                   OWNER_BATCHED_PARITY),
+        ),
+        composer=Composer(IFVG_SMALL, IFVG_CLOSE, lambda: _ifvg_event(1), lambda: _ifvg_event(-1), 1.0),
+        sim_fills=SimFills(IFVG_SMALL, IFVG_CLOSE, lambda: _ifvg_walk(900, seed=3), "4h", 3,
+                           frozenset({"tiered_tp_pct"}), False, True),
+        time_stop_fills=TimeStopFills(_ifvg_long, IFVG_LONG_BAR, True, _ifvg_short, IFVG_SHORT_BAR,
+                                      IFVG_REVERSE_BAR, IFVG_SHORT_BAR + 7, True),
+        spot_route=SpotRoute(IFVG_SMALL, IFVG_CLOSE, lambda: _ifvg_event(1), lambda: _ifvg_event(-1),
+                             lambda: _ifvg_walk(900, seed=3), _ifvg_defect, 1.0, "invfvg_reason",
+                             "short_suppressed_spot"),
         **_uncovered("check_time", reason=NotCovered(
             "the evaluator reads no decision-time attribute: closed-bar selection is the check scripts' "
             "closed_bar_decisions selector, covered by the check contract")),

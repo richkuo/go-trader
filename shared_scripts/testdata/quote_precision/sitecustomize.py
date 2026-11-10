@@ -30,6 +30,12 @@ def _closes(close, n):
         return [close * (0.8 - 0.0001 * i) for i in range(n - 1)] + [close]
     if shape == "cross_down":
         return [close * (1.25 + 0.0001 * i) for i in range(n - 1)] + [close]
+    if shape == "ifvg_up":
+        tail = [97.5, 97.5, 97.5, 97.5, 103.0]
+        return [close * 1.0151517] * (n - len(tail) - 1) + [close * x / 100.0 for x in tail] + [close]
+    if shape == "ifvg_down":
+        tail = [102.5, 102.5, 102.5, 102.5, 97.0]
+        return [close * 0.9851517] * (n - len(tail) - 1) + [close * x / 100.0 for x in tail] + [close]
     return [close * (1.0 + 0.04 * math.sin(i / 4.0) + 0.0005 * (i - n)) for i in range(n - 1)] + [close]
 
 
