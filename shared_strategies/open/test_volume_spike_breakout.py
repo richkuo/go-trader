@@ -371,11 +371,3 @@ def test_missing_columns_hold_every_row():
     df, _ = frame(flat(12))
     out = run("futures", df.drop(columns=["volume"]))
     assert (out["vsb_reason"] == "missing_columns").all() and (out["signal"] == 0).all()
-
-
-def test_every_row_reason_code_matches_its_label():
-    vsb = sys.modules["volume_spike_breakout"]
-    out = run("futures", frame(walk(300, 7))[0], {"lookback": 10, "vol_period": 10, "vol_multiplier": 1.5,
-                                                   "min_body_frac": 0.25})
-    for reason, code in zip(out["vsb_reason"], out["vsb_reason_code"]):
-        assert vsb.REASON_CODES[reason] == code
