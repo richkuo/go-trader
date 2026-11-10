@@ -118,6 +118,7 @@ var knownShortNames = map[string]string{
 	"williams_r_reversal":          "wrr",
 	"ultimate_oscillator":          "uo",
 	"volume_spike_breakout":        "vsbo",
+	"inversion_fvg":                "invfvg",
 	"hold":                         "hold",
 
 	"cumulative_volume_delta_divergence": "cvddiv",
@@ -205,6 +206,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"ultimate_oscillator":          {"futures"},
 	"vol_momentum":                 {"spot", "futures"},
 	"volume_spike_breakout":        {"spot", "futures"},
+	"inversion_fvg":                {"spot", "futures"},
 	"volume_weighted":              {"spot", "futures"},
 	"vortex_trend":                 {"futures"},
 	"vwap_rejection_st":            {"futures"},
@@ -283,6 +285,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"true_strength_index":          true,
 	"klinger_divergence":           true,
 	"volume_spike_breakout":        true,
+	"inversion_fvg":                true,
 
 	"cumulative_volume_delta_divergence": true,
 	"macro_event_breakout":               true,

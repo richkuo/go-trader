@@ -166,6 +166,15 @@ def strategy_warmup_bars(strategy_name: str, param_grid: List[dict], param_range
             for merged in ({**DEFAULT_PARAMS, **p} for p in param_grid)
         )
         return max(history, max_indicator_lookback(param_ranges))
+    if strategy_name == "inversion_fvg":
+        if _OPEN_STRATEGIES not in sys.path:
+            sys.path.insert(0, _OPEN_STRATEGIES)
+        from inversion_fvg import DEFAULT_PARAMS, required_history_bars
+        history = max(
+            required_history_bars(merged["max_gap_age"], merged["retest_window"])
+            for merged in ({**DEFAULT_PARAMS, **p} for p in param_grid)
+        )
+        return max(history, max_indicator_lookback(param_ranges))
     lookback = max_indicator_lookback(param_ranges)
     if strategy_name in RECURSION_HISTORY_STRATEGIES:
         if _OPEN_STRATEGIES not in sys.path:
@@ -855,6 +864,12 @@ DEFAULT_PARAM_RANGES = {
         "vol_period": [10, 20, 40, 80, 100],
         "vol_multiplier": [1.0, 1.5, 2.0, 3.0],
         "min_body_frac": [0.0, 0.25, 0.5],
+    },
+    "inversion_fvg": {
+        "min_fvg_atr": [0.0, 0.25, 0.5, 1.0],
+        "max_gap_age": [24, 48, 96],
+        "retest_window": [12, 24, 48],
+        "entry_level": [0.25, 0.5, 0.75],
     },
     "open_interest_breakout": {
         "price_lookback": [10, 20, 40],

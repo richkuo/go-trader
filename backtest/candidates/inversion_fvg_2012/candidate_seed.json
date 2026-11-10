@@ -1,0 +1,25 @@
+{
+  "name": "inversion_fvg",
+  "params": {
+    "min_fvg_atr": 0.25,
+    "max_gap_age": 48,
+    "retest_window": 24,
+    "entry_level": 0.5
+  },
+  "direction": "both",
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "profit_pct": 0.02,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "stop_loss_atr_mult": 1.0,
+  "comparison_mode": "strict"
+}
