@@ -1,0 +1,13 @@
+{
+  "runs": [
+    {
+      "finished_utc": "2026-11-10T13:47:14Z",
+      "protocol_sha256": "a68c58e20ac58392d59622152e9a3698fc06eef60dc3483daf307094c90bcdf2",
+      "selection_sha256": "4fa050c6f4b28924375f1dad2e6d9bd0aeded5882030017f3aea5ad1671478c9",
+      "source_commit": "d85b4f268d78ce67d3772916bc926746af3449fb",
+      "started_utc": "2026-11-10T10:54:07Z",
+      "units": 81,
+      "units_scored_this_run": 81
+    }
+  ]
+}
