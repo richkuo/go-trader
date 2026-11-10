@@ -229,7 +229,7 @@ def render() -> None:
         L.append("")
     L.append("## Disclosures")
     L.append("")
-    for line in proto_disclosures(proto, res, timing):
+    for line in proto_disclosures(proto, res, timing) + run_disclosures(sel, ver):
         L.append(f"- {line}")
     L.append("")
     L.append("## Reproduction")
@@ -266,6 +266,29 @@ def proto_disclosures(proto: dict, res: dict, timing) -> list:
     if timing:
         out.append(f"Run-time projection measured before the full run: {timing['seconds_per_window_bar']} s per labelled "
                    f"window-bar on {timing['dataset']} `{timing['window']}`.")
+    return out
+
+
+def run_disclosures(sel: dict, ver: dict) -> list:
+    out = []
+    runs = load("run_log.json") or {"runs": []}
+    out.append(f"`run_log.json` records {len(runs['runs'])} judge run(s). An earlier `judge` start ran at reduced CPU "
+               "priority and was stopped before any unit finished, so it wrote no judged result.")
+    s30 = sel["sets"].get("30m")
+    if s30 and not s30["primary_arm"]:
+        g, c = s30["arms"]["gate_p21"], s30["arms"]["control"]
+        failed = sorted(k for k, v in s30["checks"]["gate_p21"].items() if not v)
+        out.append(f"On `is`, `gate_p21` did not shortlist on the 30m set alone ({', '.join(failed)}: mean ddadj "
+                   f"{fmt(g['mean_ddadj'], 4)} against control {fmt(c['mean_ddadj'], 4)}). The frozen rule adopts the "
+                   "`all` set when it passes, so the suggested config still gates the 30m strategies.")
+    out.append("The first-study rerun keeps every committed trade count but not the committed returns; it ran on the "
+               "newly frozen candles with today's engine, and this study does not trace the difference.")
+    out.append("The Backtester constructor fix in this change (regime stop labels validated against the ATR-window "
+               "vocabulary) was needed before any deployed-shape leg could run; every leg here ran with it.")
+    hype = [k for k in ver.get("sets", {}).values() if k.get("datasets") and any("HYPE" in d for d in k["datasets"])]
+    if not hype:
+        out.append("HYPE is scored on venue candles only: Binance US lists HYPE/USDT from 2025-06-06, which leaves no "
+                   "3,011-bar warm-up before `is`, so HYPE is not in the suggested config.")
     return out
 
 
