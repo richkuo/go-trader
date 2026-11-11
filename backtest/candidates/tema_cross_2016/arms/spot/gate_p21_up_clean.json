@@ -1,0 +1,137 @@
+{
+  "allowed_regimes": [
+    "trending_up_clean"
+  ],
+  "direction": "long",
+  "name": "tema_cross",
+  "params": {},
+  "regime_enabled": true,
+  "regime_gate_window": "comp_p21",
+  "regime_label_windows": {
+    "adx_threshold": 20.0,
+    "classifiers": {
+      "atr": "adx",
+      "directional": "adx",
+      "gate": "composite"
+    },
+    "limit": 711,
+    "lookbacks": {
+      "atr": 350,
+      "directional": 350,
+      "gate": 21
+    },
+    "named": {
+      "atr": false,
+      "directional": false,
+      "gate": true
+    },
+    "parser_labels": {
+      "atr": null,
+      "directional": null,
+      "gate": [
+        "ranging_directional",
+        "ranging_directional_down",
+        "ranging_directional_up",
+        "ranging_quiet",
+        "ranging_volatile",
+        "trending_down_choppy",
+        "trending_down_clean",
+        "trending_up_choppy",
+        "trending_up_clean"
+      ]
+    },
+    "period": 14,
+    "primary": "medium",
+    "source": "bounded_window_labels",
+    "timeframe": "",
+    "vocabularies": {
+      "atr": [
+        "ranging",
+        "trending_down",
+        "trending_up"
+      ],
+      "directional": [
+        "ranging",
+        "trending_down",
+        "trending_up"
+      ],
+      "gate": [
+        "ranging_directional",
+        "ranging_directional_down",
+        "ranging_directional_up",
+        "ranging_quiet",
+        "ranging_volatile",
+        "trending_down_choppy",
+        "trending_down_clean",
+        "trending_up_choppy",
+        "trending_up_clean"
+      ]
+    },
+    "windows": {
+      "atr": "medium",
+      "directional": "medium",
+      "gate": "comp_p21"
+    },
+    "windows_spec": {
+      "comp_p21": {
+        "classifier": "composite",
+        "period": 21
+      },
+      "composite_medium": {
+        "classifier": "composite",
+        "period": 350,
+        "thresholds": {
+          "adx": 20,
+          "range_pct": 0.03,
+          "return_pct": 0.02
+        }
+      },
+      "medium": {
+        "classifier": "adx",
+        "period": 350
+      }
+    }
+  },
+  "regime_vocabularies": {
+    "atr": [
+      "ranging",
+      "trending_down",
+      "trending_up"
+    ],
+    "directional": [
+      "ranging",
+      "trending_down",
+      "trending_up"
+    ],
+    "gate": [
+      "ranging_directional",
+      "ranging_directional_down",
+      "ranging_directional_up",
+      "ranging_quiet",
+      "ranging_volatile",
+      "trending_down_choppy",
+      "trending_down_clean",
+      "trending_up_choppy",
+      "trending_up_clean"
+    ]
+  },
+  "regime_windows_spec": {
+    "comp_p21": {
+      "classifier": "composite",
+      "period": 21
+    },
+    "composite_medium": {
+      "classifier": "composite",
+      "period": 350,
+      "thresholds": {
+        "adx": 20,
+        "range_pct": 0.03,
+        "return_pct": 0.02
+      }
+    },
+    "medium": {
+      "classifier": "adx",
+      "period": 350
+    }
+  }
+}
