@@ -295,8 +295,10 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             regime_side: bool = False,
             allow_uncertified_regime_side: bool = False,
             regime_side_certification: Optional[dict] = None,
-            regime_label_cache=None) -> Optional[dict]:
-    from atr import ensure_atr_indicator
+            regime_label_cache=None,
+            htf_filter: bool = False,
+            atr_method: str = "simple") -> Optional[dict]:
+    from atr import ensure_atr_indicator, normalize_atr_method
     import pandas as pd
     from data_fetcher import load_cached_data
     from backtester import Backtester, validate_close_capabilities
@@ -311,6 +313,16 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                                 comparison_mode=comparison_mode,
                                 platform=FEE_PLATFORM, phase="preflight")
     warmup_bars = validate_warmup_bars(warmup_bars)
+    atr_method = normalize_atr_method(atr_method)
+    if not isinstance(htf_filter, bool):
+        raise ValueError(f"htf_filter must be a boolean, got {htf_filter!r}")
+    if htf_filter:
+        conflicts = [label for label, value in (
+            ("profile_allocation", profile_allocation), ("regime_side", regime_side),
+            ("invert_signal", invert_signal), ("regime_directional_policy", regime_directional_policy))
+            if value]
+        if conflicts:
+            raise ValueError("htf_filter cannot be combined with " + ", ".join(conflicts))
     if warmup_bars and manifest_ctx is not None:
         raise ValueError("warmup_bars applies to the cached path only; the manifest owns its warmup")
     if warmup_bars and name in FUNDING_COLUMN_STRATEGIES:
@@ -507,14 +519,25 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             else:
                 df_signals["signal__" + p] = res["signal"].values
         if close_strategies:
-            df_signals = ensure_atr_indicator(df_signals)
+            df_signals = ensure_atr_indicator(df_signals, method=atr_method)
         df_signals["_profile_label"] = _build_profile_label_series(
             df_signals, profile_allocation["window_spec"]).values
     else:
         df_signals = reg.apply_strategy(name, strategy_df, {**(strat_params or {}), **observation_params}
                                         if observation_params else strat_params)
         if close_strategies:
-            df_signals = ensure_atr_indicator(df_signals)
+            df_signals = ensure_atr_indicator(df_signals, method=atr_method)
+
+    htf_info = None
+    if htf_filter:
+        from htf_trend import apply_frozen_htf_filter
+        if manifest_window is not None:
+            first_scored = pd.Timestamp(int(manifest_window["start_ms"]), unit="ms")
+        elif warmup_start is not None:
+            first_scored = warmup_start
+        else:
+            first_scored = df_signals.index[0]
+        df_signals, htf_info = apply_frozen_htf_filter(df_signals, timeframe, first_scored)
 
     label_columns = None
     feature_labels = {}
@@ -574,6 +597,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         commission_pct=commission_pct,
         intrabar_resolution=intrabar_resolution,
         comparison_mode=comparison_mode,
+        atr_method=atr_method,
     )
     if slippage_pct is not None:
         bt_kwargs["slippage_pct"] = slippage_pct
@@ -612,6 +636,10 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     leg["close_validation"] = results.get("close_validation")
     if leader_info is not None:
         leg["leader"] = leader_info
+    if htf_info is not None:
+        leg["htf_filter"] = htf_info
+    if atr_method != "simple":
+        leg["atr_method"] = atr_method
     if keep_trades:
         leg["trade_samples"] = trade_samples_from_results(results)
     if keep_positions:
@@ -867,6 +895,7 @@ def validate_candidate(candidate: dict) -> dict:
                 "trend_regime": normalized_rdp}
 
     _validate_candidate_regime_side(candidate, direction, close_refs, ctype)
+    _validate_candidate_htf_and_atr(candidate)
 
     rp = candidate.get("regime_period")
     rt = candidate.get("regime_adx_threshold")
@@ -936,6 +965,23 @@ def _validate_candidate_regime_side(candidate: dict, direction: str, close_refs,
         raise ValueError(f"candidate.regime_side needs a base direction, got {direction!r}")
 
 
+def _validate_candidate_htf_and_atr(candidate: dict) -> None:
+    htf = candidate.get("htf_filter")
+    if htf is not None and not isinstance(htf, bool):
+        raise ValueError("candidate.htf_filter must be a JSON boolean")
+    if htf:
+        conflicts = [k for k in ("regime_side", "profile_allocation", "invert_signal",
+                                 "regime_directional_policy") if candidate.get(k)]
+        if conflicts:
+            raise ValueError("candidate.htf_filter cannot be combined with " + ", ".join(conflicts))
+    if candidate.get("atr_method") is not None:
+        from atr import normalize_atr_method
+        try:
+            candidate["atr_method"] = normalize_atr_method(candidate["atr_method"])
+        except ValueError as exc:
+            raise ValueError(f"candidate.atr_method: {exc}") from exc
+
+
 def candidate_stop_kwargs(candidate: dict) -> Optional[dict]:
     if candidate.get("stop_context") is None:
         return None
@@ -956,7 +1002,9 @@ def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
                       manifest_ctx: Optional[dict] = None,
                       funding_mode: str = "charge",
                       warmup_bars: int = 0,
-                      regime_label_cache=None) -> Optional[dict]:
+                      regime_label_cache=None,
+                      commission_pct: Optional[float] = None,
+                      slippage_pct: Optional[float] = None) -> Optional[dict]:
     return run_leg(
         reg, candidate["name"], candidate.get("params"),
         symbol, timeframe, window, capital=capital,
@@ -986,6 +1034,10 @@ def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
         allow_uncertified_regime_side=bool(candidate.get("allow_uncertified_regime_side")),
         regime_side_certification=candidate.get("regime_side_certification"),
         regime_label_cache=regime_label_cache,
+        htf_filter=bool(candidate.get("htf_filter")),
+        atr_method=candidate.get("atr_method") or "simple",
+        commission_pct=commission_pct,
+        slippage_pct=slippage_pct,
     )
 
 
