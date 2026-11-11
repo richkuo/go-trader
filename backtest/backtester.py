@@ -2680,6 +2680,9 @@ class Backtester:
             "max_drawdown_pct": max_drawdown_pct,
             "trailing_stop_min_move_pct": trailing_stop_min_move_pct,
         }
+        stop_label_kwargs = {}
+        if regime_feature_labels and "atr" in regime_feature_labels:
+            stop_label_kwargs["regime_labels"] = regime_feature_labels["atr"]
         self._stop_context = build_stop_capability_context(
             platform=stop_platform or platform,
             strategy_type=strategy_type,
@@ -2688,6 +2691,7 @@ class Backtester:
             regime_windows_spec=regime_windows_spec,
             risk_per_trade_pct=risk_per_trade_pct,
             capability_context=capability_context,
+            **stop_label_kwargs,
         )
         self._close_validation = validate_close_capabilities(
             close_refs=close_strategies,

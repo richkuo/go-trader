@@ -1,0 +1,7 @@
+{
+  "coverage_sha256": "7a99c6ecfef632110afbe440e9e7c6a1ca990a7b760bce43b4c515c2260e8446",
+  "locked_at_utc": "2026-11-10T08:32:46Z",
+  "note": "written by run_study.py lock before any window was scored",
+  "protocol_sha256": "a68c58e20ac58392d59622152e9a3698fc06eef60dc3483daf307094c90bcdf2",
+  "source_commit": "aa4a3a5e72749fb77047968cff35831f3d44b0a5+uncommitted-changes"
+}

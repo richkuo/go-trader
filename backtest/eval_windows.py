@@ -294,7 +294,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             warmup_bars: int = 0,
             regime_side: bool = False,
             allow_uncertified_regime_side: bool = False,
-            regime_side_certification: Optional[dict] = None) -> Optional[dict]:
+            regime_side_certification: Optional[dict] = None,
+            regime_label_cache=None) -> Optional[dict]:
     from atr import ensure_atr_indicator
     import pandas as pd
     from data_fetcher import load_cached_data
@@ -528,7 +529,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                 f"{timeframe!r}; refusing to score a named window without the "
                 "regime-timeframe candles")
         df_signals, label_columns = attach_regime_label_columns(
-            df_signals, regime_label_plan)
+            df_signals, regime_label_plan, label_cache=regime_label_cache)
         feature_labels = feature_label_kwargs(regime_label_plan)
         if regime_windows_spec is None:
             regime_windows_spec = regime_label_plan.get("windows_spec")
@@ -954,7 +955,8 @@ def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
                       intrabar_resolution: str = "ohlc_walk",
                       manifest_ctx: Optional[dict] = None,
                       funding_mode: str = "charge",
-                      warmup_bars: int = 0) -> Optional[dict]:
+                      warmup_bars: int = 0,
+                      regime_label_cache=None) -> Optional[dict]:
     return run_leg(
         reg, candidate["name"], candidate.get("params"),
         symbol, timeframe, window, capital=capital,
@@ -983,6 +985,7 @@ def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
         regime_side=bool(candidate.get("regime_side")),
         allow_uncertified_regime_side=bool(candidate.get("allow_uncertified_regime_side")),
         regime_side_certification=candidate.get("regime_side_certification"),
+        regime_label_cache=regime_label_cache,
     )
 
 
