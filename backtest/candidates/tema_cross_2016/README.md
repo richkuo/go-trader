@@ -5,6 +5,16 @@ the two Hyperliquid perps shapes that run today? The verdict per frame and every
 Everything here is suggest-only: no command writes a live or paper config, a registry default or `edge_status`, and
 none sends an order.
 
+## Verdict
+
+| frame | verdict | why |
+|---|---|---|
+| `spot` | negative | Every judged arm (`bar_4h`, `p_13_34_89`, `gate_cm_up`, the `gate_cm_up` + `p_13_34_89` combination) keeps a positive net return per position at base and stress cost on the pooled `oos`, `2023H2`, `2024` and `2025H1` windows (best: `bar_4h` +0.475%, stress +0.375%, 246 positions), but none passes the Benjamini-Hochberg correction over 36 arms (lowest decision p-value 0.143). |
+| `paper` | negative | The baseline has a measurable gross edge (+0.075% per position, p 0.0025), but fees and slippage remove it: the judged arms `gate_cm_up` and `bar_1h` lose 0.16% to 0.18% per position after costs. |
+| `live` | inconclusive | The live-rule check of the higher-timeframe trend (60 fetched buckets against the frozen series) agrees on 94.7% to 94.9% of bucket closes in `2024` and `2025H1`, under the frozen 0.95 bar, so ETH leaves the statistics and no dataset remains. Before that exclusion every judged live arm loses money after costs (`live_long` -0.139%, `bar_1h` -0.126% per position). |
+
+No perps frame is positive, so no suggested config is written. The frames disagree (spot net-positive but not significant; perps net-negative); the perps frames decide. `gate_adx_up` and `gate_p21_up_clean` opened no position on `is` in any frame, so both are degenerate gates for this entry. Details and every number: `REPORT.md`.
+
 ## Frames
 
 | frame | shape | datasets | baselines |

@@ -2160,6 +2160,15 @@ def suggest_cmd() -> None:
             }
             if fr.get("venue"):
                 item["venue"] = venue_verdict(proto, res, frame, arm, keep)
+            if excluded:
+                every = set(frame_all_datasets(proto, frame))
+                diag = {}
+                for kind in ("net", "stress", "gross"):
+                    rows = pooled_rows(samples, frame, arm, kind, pooled_w, every)
+                    diag[f"{kind}_per_trade_pct"] = (round(statistics.fmean(r["value"] for r in rows), 6)
+                                                     if rows else None)
+                    diag[f"{kind}_trades"] = len(rows)
+                item["diagnostic_without_exclusions"] = diag
             arms[arm] = item
             tests.append((frame, arm, item["p_decision"]))
         frames_out[frame] = {"excluded": {f"{c} {t}": v for (c, t), v in sorted(excluded.items())},
@@ -2197,6 +2206,10 @@ def suggest_cmd() -> None:
         elif not fo["arms"]:
             fo.update({"verdict": "negative", "arm": None,
                        "reason": "no filter arm met the frozen is shortlist rule, so no arm was judged"})
+        elif not half_ok:
+            fo.update({"verdict": "inconclusive", "arm": None,
+                       "reason": f"coverage not met: {len(fo['kept_datasets'])} of {fo['datasets_total']} datasets "
+                                 "remain after the frozen exclusions"})
         elif floor_only:
             fo.update({"verdict": "inconclusive", "arm": None,
                        "reason": "judged arms passed every other check but missed a sample or dataset floor: "

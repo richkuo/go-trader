@@ -87,7 +87,16 @@ def render() -> None:
         else:
             L.append(f"| {frame} | **{fo['verdict']}** | - | - | - | - | - | - | - | - | {fo.get('reason', '')} |")
     L.append("")
-    L.append(f"Frames agree: {fmt(ver['frames_agree'])}. {ver['suggestion_basis']}.")
+    for frame in ("spot", "paper", "live"):
+        for arm, it in sorted(ver["frames"][frame]["arms"].items()):
+            d = it.get("diagnostic_without_exclusions")
+            if d:
+                L.append(f"- {frame} `{arm}` before the exclusions (diagnostic only, not a verdict input): net "
+                         f"{pct(d['net_per_trade_pct'])}%/trade over {d['net_trades']} positions, stress "
+                         f"{pct(d['stress_per_trade_pct'])}%, gross {pct(d['gross_per_trade_pct'])}%.")
+    L.append("")
+    basis = ver["suggestion_basis"]
+    L.append(f"Frames agree: {fmt(ver['frames_agree'])}. {basis[0].upper() + basis[1:]}.")
     if ver["suggested_configs"]:
         L.append(f"Suggested configs: {', '.join('`' + s + '`' for s in ver['suggested_configs'])}.")
     else:
