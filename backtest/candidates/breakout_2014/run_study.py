@@ -60,6 +60,20 @@ ENGINE_FILES = (
     "shared_strategies/open/registry.py",
     "shared_strategies/close/trailing_tp_ratchet.py",
 )
+LABELLER_FILES = (
+    "backtest/regime_label_columns.py",
+    "shared_tools/regime.py",
+    "shared_tools/atr.py",
+    "shared_strategies/open/adx_trend.py",
+    "shared_strategies/open/indicators_core.py",
+)
+VALIDATOR_FILES = (
+    "backtest/regime_bounded_window_validate.py",
+    "backtest/regime_calibrate.py",
+    "backtest/regime_diagnostics.py",
+    "backtest/regime_hmm.py",
+    "backtest/regime_stats.py",
+)
 for _p in (os.path.join(REPO, "shared_tools"), BACKTEST):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -152,6 +166,26 @@ def protocol_sha256() -> str:
 
 def engine_sha256() -> dict:
     return {p: sha256_file(os.path.join(REPO, p)) for p in ENGINE_FILES}
+
+
+def files_digest(paths: tuple) -> str:
+    return sha256_bytes(json.dumps({p: sha256_file(os.path.join(REPO, p)) for p in paths},
+                                   sort_keys=True).encode())
+
+
+def labeller_sha256() -> str:
+    return files_digest(LABELLER_FILES)
+
+
+def label_cache_root(work_dir: str, name: str = "labels") -> str:
+    return os.path.join(work_dir, name, labeller_sha256())
+
+
+def checkpoint_fresh(path: str, fingerprint: str):
+    if not os.path.exists(path):
+        return None
+    held = load_json(path)
+    return held if held.get("fingerprint") == fingerprint else None
 
 
 def refuse_default_db(path: str) -> str:
@@ -723,7 +757,7 @@ def worker_init(base_db: str, work_dir: str) -> None:
     from registry_loader import load_registry
     _WORKER["proto"] = protocol()
     _WORKER["reg"] = load_registry(_WORKER["proto"]["registry"])
-    _WORKER["labels"] = DiskLabelCache(os.path.join(work_dir, "labels"))
+    _WORKER["labels"] = DiskLabelCache(label_cache_root(work_dir))
     _WORKER["manifests"] = load_manifests(verify=True)
 
 
@@ -741,9 +775,15 @@ def unit_id(unit: dict) -> str:
     return "_".join(parts)
 
 
-def unit_fingerprint(unit: dict, proto_sha: str, eng: dict, arms_sha: dict) -> str:
-    return sha256_bytes(json.dumps({"unit": unit, "protocol": proto_sha, "engine": eng, "arms": arms_sha},
-                                   sort_keys=True).encode())
+def unit_fingerprint(unit: dict, proto_sha: str, eng: dict, arms_sha: dict, labeller: str) -> str:
+    return sha256_bytes(json.dumps({"unit": unit, "protocol": proto_sha, "engine": eng, "arms": arms_sha,
+                                    "labeller": labeller}, sort_keys=True).encode())
+
+
+def fidelity_fingerprint(unit: dict, proto_sha: str, eng: dict, arms_sha: dict, labeller: str,
+                         validator: str) -> str:
+    return sha256_bytes(json.dumps({"unit": unit, "protocol": proto_sha, "engine": eng, "arms": arms_sha,
+                                    "labeller": labeller, "validator": validator}, sort_keys=True).encode())
 
 
 def arms_sha256(proto: dict) -> dict:
@@ -826,10 +866,9 @@ def run_unit(unit: dict) -> dict:
 
 def run_unit_checkpointed(task):
     unit, path, fingerprint = task
-    if os.path.exists(path):
-        held = load_json(path)
-        if held.get("fingerprint") == fingerprint:
-            return {"unit": unit_id(unit), "status": "cached", "seconds": held.get("seconds")}
+    held = checkpoint_fresh(path, fingerprint)
+    if held is not None:
+        return {"unit": unit_id(unit), "status": "cached", "seconds": held.get("seconds")}
     res = run_unit(unit)
     res["fingerprint"] = fingerprint
     res["pid"] = os.getpid()
@@ -924,12 +963,13 @@ def unit_weight(unit: dict) -> float:
 
 def run_units(units: list, phase: str, work_dir: str, base_db: str, workers: int) -> list:
     proto = protocol()
-    proto_sha, eng, arms = protocol_sha256(), engine_sha256(), arms_sha256(proto)
+    proto_sha, eng, arms, lab = protocol_sha256(), engine_sha256(), arms_sha256(proto), labeller_sha256()
     ckdir = os.path.join(work_dir, "ckpt", phase)
     os.makedirs(ckdir, exist_ok=True)
     tasks = []
     for u in sorted(units, key=unit_weight, reverse=True):
-        tasks.append((u, os.path.join(ckdir, unit_id(u) + ".json"), unit_fingerprint(u, proto_sha, eng, arms)))
+        tasks.append((u, os.path.join(ckdir, unit_id(u) + ".json"),
+                      unit_fingerprint(u, proto_sha, eng, arms, lab)))
     done = []
     ctx = multiprocessing.get_context("spawn")
     started = time.time()
@@ -1191,6 +1231,9 @@ def judge_cmd(cache_db: str, work_dir: str, workers: int) -> None:
     probe = network_probe()
     log = load_json(RUN_LOG_PATH) if os.path.exists(RUN_LOG_PATH) else {"runs": []}
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    log.setdefault("starts", []).append({"started_utc": started, "protocol_sha256": protocol_sha256(),
+                                         "source_commit": git_head()})
+    write_json(RUN_LOG_PATH, log)
     t0 = time.time()
     records = run_units(judge_units(proto, cov), "judge", work_dir, cache_db, workers)
     sel_records = run_units(select_units(proto, cov), "select", work_dir, cache_db, workers)
@@ -1326,8 +1369,8 @@ def fidelity_engine_labels(proto: dict, unit: dict, ext, labels: MutableMapping)
 
 
 def run_fidelity_unit(task):
-    unit, path = task
-    if os.path.exists(path):
+    unit, path, fingerprint = task
+    if checkpoint_fresh(path, fingerprint) is not None:
         return {"unit": unit, "status": "cached"}
     from regime import compute_regime_composite
     from regime_bounded_window_validate import validate_frames
@@ -1345,7 +1388,7 @@ def run_fidelity_unit(task):
                           agreement_threshold=proto["fidelity"]["agreement_threshold"],
                           min_agreement_bars=proto["fidelity"]["min_agreement_bars"])
     drift = rep["handrule"]["label_drift"]
-    engine, limit = fidelity_engine_labels(proto, unit, ext, DiskLabelCache(os.path.join(_FID["work_dir"], "labels")))
+    engine, limit = fidelity_engine_labels(proto, unit, ext, DiskLabelCache(label_cache_root(_FID["work_dir"])))
     check = {"engine_labels_found": engine is not None, "sampled": 0, "equal": 0, "mismatches": []}
     if engine is not None:
         every = proto["fidelity"]["engine_check_every"]
@@ -1368,7 +1411,7 @@ def run_fidelity_unit(task):
            "lookback": lookback, "shortest_bounded_slice": shortest, "eval_bars": len(window),
            "first_bar": str(window.index[0]), "last_bar": str(window.index[-1]),
            "period": spec["period"], "thresholds": spec["thresholds"], "engine_check": check,
-           "seconds": round(time.time() - t0, 1)}
+           "seconds": round(time.time() - t0, 1), "fingerprint": fingerprint}
     write_json(path, out)
     return {"unit": unit, "status": "scored", "seconds": out["seconds"]}
 
@@ -1396,17 +1439,19 @@ def fidelity_cmd(work_dir: str, workers: int) -> None:
     units = fidelity_units(proto, cov, sel)
     ckdir = os.path.join(work_dir, "ckpt", "fidelity")
     os.makedirs(ckdir, exist_ok=True)
+    proto_sha, eng, arms = protocol_sha256(), engine_sha256(), arms_sha256(proto)
+    lab, val = labeller_sha256(), files_digest(VALIDATOR_FILES)
     tasks = []
     for u in units:
         name = f"{u['group']}_{u['interval']}_{u['coin']}_{u['window']}_{u['regime_window']}.json"
-        tasks.append((u, os.path.join(ckdir, name)))
+        tasks.append((u, os.path.join(ckdir, name), fidelity_fingerprint(u, proto_sha, eng, arms, lab, val)))
     ctx = multiprocessing.get_context("spawn")
     with ctx.Pool(processes=workers, initializer=fidelity_init, initargs=(work_dir,)) as pool:
         for i, res in enumerate(pool.imap_unordered(run_fidelity_unit, tasks), 1):
             u = res["unit"]
             print(f"[fidelity] {i}/{len(tasks)} {u['group']} {u['coin']} {u['interval']} {u['window']} "
                   f"{u['regime_window']} {res['status']}", flush=True)
-    rows = [load_json(t[1]) for t in tasks]
+    rows = [{k: v for k, v in load_json(t[1]).items() if k != "fingerprint"} for t in tasks]
     rows.sort(key=lambda r: (r["unit"]["group"], r["unit"]["coin"], r["unit"]["interval"], r["unit"]["window"],
                              r["unit"]["regime_window"]))
     bad = [r for r in rows if r["engine_check"]["engine_labels_found"] and
@@ -1607,7 +1652,7 @@ def time_leg_cmd(cache_db: str, work_dir: str) -> None:
         return r
     regime.bounded_window_labels = timed
     t0 = time.time()
-    labels = DiskLabelCache(os.path.join(work_dir, "labels_timing"))
+    labels = DiskLabelCache(label_cache_root(work_dir, "labels_timing"))
     cand = build_arm_candidate(proto, "control", coin, tf)
     leg = ew.run_candidate_leg(_WORKER["reg"], cand, proxy_symbol(coin), tf, window, proto["capital_usd"],
                                keep_trades=True, funding_mode=proto["funding_mode"], warmup_bars=proto["warmup_bars"],
@@ -1668,7 +1713,7 @@ def cache_parity_cmd(cache_db: str, work_dir: str) -> None:
         legs = {}
         for mode in ("uncached", "cached"):
             t0 = time.time()
-            cache = DiskLabelCache(os.path.join(work_dir, "labels")) if mode == "cached" else None
+            cache = DiskLabelCache(label_cache_root(work_dir)) if mode == "cached" else None
             leg = ew.run_candidate_leg(_WORKER["reg"], copy.deepcopy(cand), proxy_symbol(coin), tf, window,
                                        proto["capital_usd"], keep_trades=True, funding_mode=proto["funding_mode"],
                                        warmup_bars=proto["warmup_bars"], regime_label_cache=cache)

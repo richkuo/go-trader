@@ -51,6 +51,10 @@ go -C scheduler build -o <scratch>/go-trader . && <scratch>/go-trader inspect --
 ```
 
 `--work-dir` holds the label cache and one checkpoint per dataset and window; a rerun with the same `--work-dir`
-reuses checkpoints whose protocol, engine-file and arm hashes match, so an interrupted `select`, `judge` or
-`fidelity` resumes where it stopped. `select` writes `selection.json` once and `judge` refuses to start without it.
-`fidelity` reads the label cache that `judge` wrote to check the engine labels against the validator.
+reuses checkpoints whose protocol, engine-file, labeller-file and arm hashes match (`fidelity` checkpoints also
+match the validator-file hash), so an interrupted `select`, `judge` or `fidelity` resumes where it stopped. The label
+cache sits under `labels/<labeller hash>`, where the hash covers `LABELLER_FILES` in `run_study.py`, so a labeller
+change starts an empty cache and never reads labels an older labeller wrote. `select` writes `selection.json` once
+and `judge` refuses to start without it. `fidelity` reads the label cache that `judge` wrote to check the engine
+labels against the validator. `judge` records each start in `run_log.json` before it scores; a start with no matching
+run is a stopped start, and `REPORT.md` reports it.

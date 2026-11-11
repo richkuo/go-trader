@@ -229,7 +229,7 @@ def render() -> None:
         L.append("")
     L.append("## Disclosures")
     L.append("")
-    for line in proto_disclosures(proto, res, timing) + run_disclosures(sel, ver):
+    for line in proto_disclosures(proto, res, timing) + run_disclosures(proto, cov, sel, res, ver):
         L.append(f"- {line}")
     L.append("")
     L.append("## Reproduction")
@@ -269,11 +269,84 @@ def proto_disclosures(proto: dict, res: dict, timing) -> list:
     return out
 
 
-def run_disclosures(sel: dict, ver: dict) -> list:
+EXCHANGE_NAMES = {"binanceus": "Binance US"}
+
+
+def stopped_start_lines(runs: dict) -> list:
+    finished = [r["started_utc"] for r in runs.get("runs", [])]
+    last = max(finished) if finished else None
+    stopped = [st for st in runs.get("starts", []) if st["started_utc"] not in finished]
+    stopped += runs.get("stopped_starts", [])
+    out = []
+    for st in stopped:
+        when = st.get("started_utc")
+        lead = "An earlier" if when is None or (last is not None and when < last) else "A later"
+        cause = st.get("cause") or (f"at {when} did not finish" if when else "did not finish")
+        if st.get("units_finished") == 0:
+            cause += " before any unit finished"
+        out.append(f"{lead} `judge` start {cause}, so it wrote no judged result.")
+    return out
+
+
+def audit_rerun_line(rows: dict) -> str:
+    missing = sorted(k for k, r in rows.items() if not r.get("rerun") or not r.get("difference"))
+    diffs = {k: r["difference"] for k, r in rows.items() if k not in missing}
+    trades_off = sorted(k for k, d in diffs.items() if d.get("trades") != 0)
+    returns_off = sorted(k for k, d in diffs.items() if d.get("return_pct") != 0)
+    if not diffs:
+        return "The first-study rerun produced no leg to compare with the committed legs."
+    if trades_off:
+        text = (f"The first-study rerun changes the committed trade count on {len(trades_off)} of {len(diffs)} legs "
+                f"({', '.join(trades_off)})")
+    else:
+        text = "The first-study rerun keeps every committed trade count"
+    if not returns_off:
+        text += " and every committed return" if not trades_off else "; it keeps every committed return"
+    elif len(returns_off) == len(diffs):
+        text += " but not the committed returns" if not trades_off else " and the committed returns"
+    else:
+        text += f"; the committed return differs on {len(returns_off)} of {len(diffs)} legs ({', '.join(returns_off)})"
+    if trades_off or returns_off:
+        text += "; it ran on the newly frozen candles with today's engine, and this study does not trace the difference"
+    if missing:
+        text += f"; {len(missing)} leg(s) did not rerun ({', '.join(missing)})"
+    return text + "."
+
+
+def proxy_warmup_exclusions(proto: dict, cov: dict, ver: dict) -> list:
+    manifest = load("study_manifest.json") or {}
+    files = manifest.get("files") or {}
+    warm = proto["warmup_bars"]
+    set_datasets = [d for a in ver.get("sets", {}).values() for d in (a.get("datasets") or [])]
+    out = []
+    for coin in sorted({r["coin"] for r in cov["rows"]}):
+        proxy = [r for r in cov["rows"] if r["group"] == "proxy" and r["coin"] == coin]
+        venue = [r for r in cov["rows"] if r["group"] == "venue" and r["coin"] == coin]
+        if not proxy or any(r["status"] != "excluded" or not r["reason"].startswith("is: warm-up prefix lacks")
+                            for r in proxy):
+            continue
+        if not venue or any(r["status"] != "included" for r in venue):
+            continue
+        if any(d.split("/")[0] == coin for d in set_datasets):
+            continue
+        firsts = [v for v in files.values()
+                  if v.get("kind") == "candles" and v.get("symbol", "").split("/")[0] == coin]
+        if not firsts:
+            continue
+        first = min(firsts, key=lambda v: v["first_ms"])
+        if first["first_bar"][:10] <= str(manifest.get("acquisition_start") or ""):
+            continue
+        exchange = EXCHANGE_NAMES.get(first["exchange"], first["exchange"])
+        out.append(f"{coin} is scored on venue candles only: {exchange} lists {first['symbol']} from "
+                   f"{first['first_bar'][:10]}, which leaves no {warm:,}-bar warm-up before `is`, so {coin} is not in "
+                   "the suggested config.")
+    return out
+
+
+def run_disclosures(proto: dict, cov: dict, sel: dict, res: dict, ver: dict) -> list:
     out = []
     runs = load("run_log.json") or {"runs": []}
-    out.append(f"`run_log.json` records {len(runs['runs'])} judge run(s). An earlier `judge` start ran at reduced CPU "
-               "priority and was stopped before any unit finished, so it wrote no judged result.")
+    out.append(" ".join([f"`run_log.json` records {len(runs['runs'])} judge run(s)."] + stopped_start_lines(runs)))
     s30 = sel["sets"].get("30m")
     if s30 and not s30["primary_arm"]:
         g, c = s30["arms"]["gate_p21"], s30["arms"]["control"]
@@ -281,16 +354,11 @@ def run_disclosures(sel: dict, ver: dict) -> list:
         out.append(f"On `is`, `gate_p21` did not shortlist on the 30m set alone ({', '.join(failed)}: mean ddadj "
                    f"{fmt(g['mean_ddadj'], 4)} against control {fmt(c['mean_ddadj'], 4)}). The frozen rule adopts the "
                    "`all` set when it passes, so the suggested config still gates the 30m strategies.")
-    out.append("The first-study rerun keeps every committed trade count but not the committed returns; it ran on the "
-               "newly frozen candles with today's engine, and this study does not trace the difference.")
+    out.append(audit_rerun_line(res["audit_rerun"]))
     out.append("The Backtester constructor fix in this change (regime stop labels validated against the ATR-window "
                "vocabulary) was needed before any deployed-shape leg could run; every leg here ran with it.")
-    hype = [k for k in ver.get("sets", {}).values() if k.get("datasets") and any("HYPE" in d for d in k["datasets"])]
-    if not hype:
-        out.append("HYPE is scored on venue candles only: Binance US lists HYPE/USDT from 2025-06-06, which leaves no "
-                   "3,011-bar warm-up before `is`, so HYPE is not in the suggested config.")
+    out.extend(proxy_warmup_exclusions(proto, cov, ver))
     return out
-
 
 if __name__ == "__main__":
     render()

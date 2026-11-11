@@ -4,13 +4,15 @@ import json
 import sys
 
 import pandas as pd
+import pytest
 
 import run_backtest
-from backtester import Backtester
-from regime import bounded_window_labels, prepare_check_regime
+from backtester import Backtester, CloseCapabilityError
+from regime import bounded_window_labels, prepare_check_regime, valid_labels_for_classifier
 from regime_label_columns import (
     attach_regime_label_columns,
     column_name,
+    feature_label_kwargs,
     resolve_feature_windows,
 )
 
@@ -291,3 +293,36 @@ def test_parity_named_directional_and_atr_windows_against_the_default_run():
     assert list(named_atr["live_signal"]) == list(default["live_signal"]), case
 
 
+
+
+def _composite_trail_backtester(primary_classifier, atr_classifier):
+    composite = {"adx": 20, "range_pct": 0.03, "return_pct": 0.02}
+    windows = {
+        "medium": {"classifier": primary_classifier, "period": 350},
+        "trail": {"classifier": atr_classifier, "period": 350},
+    }
+    for w in windows.values():
+        if w["classifier"] == "composite":
+            w["thresholds"] = dict(composite)
+    plan = resolve_feature_windows(
+        {"regime_atr_window": "trail"}, {"enabled": True, "windows": windows})
+    labels = sorted(valid_labels_for_classifier("composite"))
+    return Backtester(
+        initial_capital=1000, platform="hyperliquid", strategy_type="perps",
+        regime_enabled=True, regime_windows_spec=plan["windows_spec"],
+        trailing_stop_atr_mult_regime={
+            "trend_regime": {label: {"atr_multiple": 2.5} for label in labels}},
+        **feature_label_kwargs(plan),
+    )
+
+
+def test_regime_stop_block_uses_the_atr_window_vocabulary():
+    bt = _composite_trail_backtester("adx", "composite")
+    owner = bt._stop_context.resolved_stop_owner
+    assert owner["name"] == "trailing_atr_regime"
+    composite = tuple(sorted(valid_labels_for_classifier("composite")))
+    assert tuple(owner["parameters"]["regime_labels"]) == composite
+    assert tuple(bt._regime_atr_labels) == composite
+    with pytest.raises(CloseCapabilityError) as refused:
+        _composite_trail_backtester("composite", "adx")
+    assert refused.value.reason_code == "MISSING_STOP_INPUT"

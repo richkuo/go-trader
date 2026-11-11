@@ -9,5 +9,13 @@
       "units": 81,
       "units_scored_this_run": 81
     }
+  ],
+  "stopped_starts": [
+    {
+      "cause": "ran at reduced CPU priority and was stopped",
+      "recorded": "added by hand after the finished run, from the pull request record; judge did not log its starts then",
+      "started_utc": null,
+      "units_finished": 0
+    }
   ]
 }
