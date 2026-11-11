@@ -29,7 +29,7 @@ def pct(v, nd=3):
 
 
 def arm_row(arm: str, fam: str, s: dict) -> str:
-    return (f"| {arm} | {fam} | {s['datasets']} | {s['trades']} | {fmt(s.get('trades_per_year'), 1)} "
+    return (f"| {arm} | {fam} | {s['datasets']} | {s.get('positions', 0)} | {fmt(s.get('trades_per_year'), 1)} "
             f"| {pct(s.get('gross_per_trade_pct'))} | {pct(s.get('net_per_trade_pct'))} "
             f"| {pct(s.get('stress_per_trade_pct'))} | {pct(s.get('cost_drag_per_trade_pct'))} "
             f"| {fmt(s.get('fee_drag_pct'))} | {fmt(s.get('funding_drag_pct'))} | {fmt(s.get('worst_max_dd_pct'))} "
@@ -37,7 +37,7 @@ def arm_row(arm: str, fam: str, s: dict) -> str:
             f"| {s.get('long_positions', 0)}/{s.get('short_positions', 0)} | {s.get('clusters', 0)} |")
 
 
-ARM_HEADER = ["| arm | family | datasets | trades | trades/yr | gross %/trade | net %/trade | stress %/trade "
+ARM_HEADER = ["| arm | family | datasets | trades (positions) | trades/yr | gross %/trade | net %/trade | stress %/trade "
               "| cost drag %/trade | fee drag %/leg | funding drag %/leg | worst DD % | mean ddadj | mean return % "
               "| positions L/S | clusters |",
               "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -56,6 +56,7 @@ def render() -> None:
     cpar = load("cache_parity.json")
     timing = load("timing.json")
     runlog = load("run_log.json")
+    amend = load("protocol_amendment.json")
     if not (proto and cov and sel and noise and res and fid and ver):
         raise SystemExit("render needs coverage_report.json, selection.json, noise_gate.json, results.json, "
                          "fidelity.json and verdict.json")
@@ -92,6 +93,10 @@ def render() -> None:
     else:
         L.append("No suggested config is written.")
     L.append("")
+    if amend:
+        L += ["## Protocol amendment (before any judged window)", "",
+              f"Written {amend['written_at_utc']}; read before it: {amend['read_before_this_amendment']}.", "",
+              f"- Change: {amend['change']}", f"- Reason: {amend['reason']}", f"- Unchanged: {amend['unchanged']}.", ""]
     L += ["## What `direction: both` does for `tema_cross`", "",
           "`tema_cross` is registered with `short_entries=False`, but that flag is catalog metadata only: no scheduler "
           "file, no `load_strategy_config` path and no backtester path reads it. The strategy emits `+1` on a bullish "
@@ -110,13 +115,17 @@ def render() -> None:
                  f"| {fmt(st['cluster_permutation']['p_value'], 4)} | {st['cluster_permutation'].get('clusters')} "
                  f"| {st['verdict']} |")
     L.append("")
-    L += ["## Selection window (`is`, written once to `selection.json` before any judged window)", ""]
+    L += ["## Selection window (`is`, written once to `selection.json` before any judged window)", "",
+          "The shortlist and picks come from `selection.json`; the table numbers are the position-level `is` "
+          "summaries in `results.json` (trades = opened positions).", ""]
+    sw = proto["proxy"]["selection_window"]
     for frame in ("spot", "paper", "live"):
         s = sel["frames"][frame]
         fr = proto["frames"][frame]
         L += [f"### {frame}", "", fr["description"] + ".", ""] + ARM_HEADER
-        for arm in sorted(s["arms"], key=lambda a: (fr["arms"][a]["family"] != "control", fr["arms"][a]["family"], a)):
-            L.append(arm_row(arm, fr["arms"][arm]["family"], s["arms"][arm]))
+        is_rows = res["proxy"][frame][sw]
+        for arm in sorted(is_rows, key=lambda a: (fr["arms"][a]["family"] != "control", fr["arms"][a]["family"], a)):
+            L.append(arm_row(arm, fr["arms"][arm]["family"], is_rows[arm]))
         L.append("")
         L += ["| arm | control | control mean ddadj | failed checks | shortlisted |", "|---|---|---|---|---|"]
         for arm, c in sorted(s["checks"].items()):

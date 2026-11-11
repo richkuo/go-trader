@@ -1,0 +1,50 @@
+{
+  "dataset": "BTC/USDT 1h",
+  "engine_sha256": {
+    "backtest/backtester.py": "2a015993da10db22e9414ab5f13b2999ea312c5d4ed76416e2be1aca290adda1",
+    "backtest/eval_windows.py": "44979406e09e40cb297fe6cd604b6f5e583c90baa0647d9fade5b4c1b032391d",
+    "backtest/htf_trend.py": "e9dda3d4163b9fb1ab3ae1166f54eba40e6e8b36eb0ad5fa40371b7e802c0a5a",
+    "backtest/offline_manifest.py": "6b0dc97757f943cba72ea0c12b13e1f7f814e406ac45bfdf534f97955603efee",
+    "backtest/regime_label_columns.py": "3c53a51ee95783329441a9c349288eb6989a7919c692f66315d6f2379c54ec3e",
+    "backtest/run_backtest.py": "40fd710f963da46374376e76bd77fb04a3372e8f8d188da56402d0ff5e208e6c",
+    "backtest/tune_live.py": "36a722b6bbfa1629a7157827cd9ecc1221dedc0af62c745f2e5e01333c7666c9",
+    "shared_strategies/close/trailing_tp_ratchet.py": "08e0151276fce1b7a79be21660a6d56d50ec7b852d3666389e3bfc8502d7f90f",
+    "shared_strategies/open/registry.py": "f0cdce0e7011ea9322754d88cbe42c06e77b03ac6e315bdd5db27334a1a30b0d",
+    "shared_tools/atr.py": "496a4f41f1c0509795b1a96446e56f0da85099eafcc293f2a8045b16a3dd9283",
+    "shared_tools/funding_fetcher.py": "875f0a3c83edc849e307affe1ad6a91fcc340624eecc349883da04d94947b91e",
+    "shared_tools/htf_filter.py": "5e87e66426edf7795b3d3f1234057d55efa4a643cc417ecc8b702ac8c5640723",
+    "shared_tools/regime.py": "91f579aec90d52c71db68a3f06fc98bdcdd60bf0213393ed44960d8965726eae"
+  },
+  "frame": "paper",
+  "identical": true,
+  "network_calls": 0,
+  "range": [
+    "2025-06-10",
+    "2026-01-01"
+  ],
+  "rows": {
+    "control": {
+      "identical": true,
+      "seconds": {
+        "cached": 619.6,
+        "uncached": 993.5
+      },
+      "sha256_cached": "4f53554abffe4fb4f1470f16d2993e664bc096c7c8f28a72eab41a30c944804b",
+      "sha256_uncached": "4f53554abffe4fb4f1470f16d2993e664bc096c7c8f28a72eab41a30c944804b",
+      "trades": 72
+    },
+    "gate_p21_up_clean": {
+      "identical": true,
+      "seconds": {
+        "cached": 404.1,
+        "uncached": 6575.4
+      },
+      "sha256_cached": "5a5f9caae0da129231f1be7f0f90171ca83305804c6ec1c725c7983279ccd08e",
+      "sha256_uncached": "5a5f9caae0da129231f1be7f0f90171ca83305804c6ec1c725c7983279ccd08e",
+      "trades": 0
+    }
+  },
+  "source_commit": "ab79a8ffb471fcd8dc6a78b6b6edcaf1eb76d956+uncommitted-changes",
+  "warmup_bars": 3011,
+  "window": "is"
+}

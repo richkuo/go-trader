@@ -1311,19 +1311,31 @@ def dataset_key(coin: str, tf: str, group: str) -> str:
     return f"{proxy_symbol(coin)} {tf}" if group == "proxy" else f"{coin} {tf}"
 
 
-def samples_of(leg: dict, ds: str, window: str, field: str) -> list:
+def position_return_pct(p: dict, measure: str):
+    notional = float(p.get("entry_notional") or 0.0)
+    if notional <= 0:
+        return None
+    if measure == "price":
+        sign = -1.0 if p.get("side") == "short" else 1.0
+        return 100.0 * sign * (float(p["exit_notional"]) - notional) / notional
+    return 100.0 * float(p["net_pnl"]) / notional
+
+
+def samples_of(leg: dict, ds: str, window: str, measure: str) -> list:
     if leg is None:
         return []
-    positions = (leg.get("execution") or {}).get("position_list") or []
-    span = {}
-    for p in positions:
-        span.setdefault(p["entry_date"], (p["entry_date"], p["exit_date"], p["side"]))
     out = []
-    for s in leg.get("trade_samples") or []:
-        sp = span.get(s["entry_date"], (s["entry_date"], s["entry_date"], "long"))
-        out.append({"dataset": ds, "window": window, "entry": s["entry_date"], "exit": sp[1], "side": sp[2],
-                    "value": float(s[field])})
+    for p in (leg.get("execution") or {}).get("position_list") or []:
+        v = position_return_pct(p, measure)
+        if v is None:
+            continue
+        out.append({"dataset": ds, "window": window, "entry": str(p["entry_date"]), "exit": str(p["exit_date"]),
+                    "side": p.get("side") or "long", "closes": int(p.get("closes") or 1), "value": round(v, 6)})
     return out
+
+
+def leg_measure(kind: str) -> str:
+    return "price" if kind == "gross" else "net"
 
 
 def summarize(proto: dict, legs: dict, gross_legs: dict = None, stress_legs: dict = None) -> dict:
@@ -1336,7 +1348,7 @@ def summarize(proto: dict, legs: dict, gross_legs: dict = None, stress_legs: dic
                     "gross_per_trade_pct": None, "stress_per_trade_pct": None, "trades_per_year": None,
                     "funding_incomplete_legs": 0, "traded_datasets": 0, "per_dataset": {}})
         return out
-    per, spans, net_vals = {}, [], []
+    per, spans, net_vals, rec_vals = {}, [], [], []
     span_days = 0.0
     for ds, leg in sorted(present.items()):
         ex = leg.get("execution") or {}
@@ -1355,25 +1367,36 @@ def summarize(proto: dict, legs: dict, gross_legs: dict = None, stress_legs: dic
             item["candle_coverage_complete"] = leg["manifest"]["candle_coverage"]["complete"]
             item["funding_coverage_complete"] = leg["manifest"]["funding_coverage"].get("complete")
             item["rejected_entries"] = ex.get("rejected_entries")
-        net = [float(s["pnl_pct_net"]) for s in leg.get("trade_samples") or []]
+        net = [r["value"] for r in samples_of(leg, ds, "", "net")]
         item["net_per_trade_pct"] = round(statistics.fmean(net), 6) if net else None
+        rec = [float(x["pnl_pct_net"]) for x in leg.get("trade_samples") or []]
+        item["net_per_record_pct"] = round(statistics.fmean(rec), 6) if rec else None
         net_vals += net
+        rec_vals += rec
         span_days += float(leg.get("span_days") or 0.0)
         per[ds] = item
         spans += item["position_spans"]
     vals = list(per.values())
     trades = sum(v["trades"] for v in vals)
 
-    def pooled(src, field):
+    def pooled(src, measure):
         if not src:
             return None, 0
         xs = []
         for ds in sorted(present):
-            xs += [float(s[field]) for s in (src.get(ds) or {}).get("trade_samples") or []]
+            xs += [r["value"] for r in samples_of(src.get(ds), ds, "", measure)]
         return (round(statistics.fmean(xs), 6) if xs else None), len(xs)
 
-    gross, gross_n = pooled(gross_legs, "pnl_pct")
-    stress, stress_n = pooled(stress_legs, "pnl_pct_net")
+    def pooled_records(src, field):
+        if not src:
+            return None
+        xs = []
+        for ds in sorted(present):
+            xs += [float(x[field]) for x in (src.get(ds) or {}).get("trade_samples") or []]
+        return round(statistics.fmean(xs), 6) if xs else None
+
+    gross, gross_n = pooled(gross_legs, "price")
+    stress, stress_n = pooled(stress_legs, "net")
     netm = round(statistics.fmean(net_vals), 6) if net_vals else None
     out.update({
         "mean_return_pct": round(statistics.mean(v["return_pct"] for v in vals), 4),
@@ -1386,9 +1409,13 @@ def summarize(proto: dict, legs: dict, gross_legs: dict = None, stress_legs: dic
         "short_positions": sum(v["short_positions"] or 0 for v in vals),
         "clusters": position_clusters(spans),
         "span_days": round(span_days, 2),
-        "trades_per_year": round(trades / (span_days / 365.25), 2) if span_days else None,
+        "trades_per_year": round(len(spans) / (span_days / 365.25), 2) if span_days else None,
+        "records_per_year": round(trades / (span_days / 365.25), 2) if span_days else None,
+        "per_trade_unit": "opened position (all close records of one entry, notional-weighted)",
         "net_per_trade_pct": netm, "gross_per_trade_pct": gross, "gross_trades": gross_n,
         "stress_per_trade_pct": stress, "stress_trades": stress_n,
+        "net_per_record_pct": round(statistics.fmean(rec_vals), 6) if rec_vals else None,
+        "gross_per_record_pct": pooled_records(gross_legs, "pnl_pct"),
         "cost_drag_per_trade_pct": round(gross - netm, 6) if gross is not None and netm is not None else None,
         "fee_drag_pct": round(statistics.mean(v["fee_drag_pct"] for v in vals), 4),
         "funding_drag_pct": round(statistics.mean(v["funding_drag_pct"] for v in vals), 4),
@@ -1600,7 +1627,7 @@ def noise_gate_cmd(cache_db: str, work_dir: str, workers: int) -> None:
         dsw = {w: included_proxy(cov, frame, w) for w in proto["proxy"]["noise_windows"]}
         for arm in fr["noise_baselines"]:
             dsw_arm = {w: [d for d in v if d in arm_datasets(proto, frame, arm)] for w, v in dsw.items()}
-            rows = pooled_values(proto, idx, frame, arm, proto["proxy"]["noise_windows"], "gross", "pnl_pct", dsw_arm)
+            rows = pooled_values(proto, idx, frame, arm, proto["proxy"]["noise_windows"], "gross", "price", dsw_arm)
             st = cluster_stats(rows, proto["statistics"]["n_resamples"], proto["statistics"]["seed"])
             st["datasets_by_window"] = {w: [f"{c} {t}" for c, t in v] for w, v in dsw_arm.items()}
             out[f"{frame}:{arm}"] = st
@@ -1609,7 +1636,8 @@ def noise_gate_cmd(cache_db: str, work_dir: str, workers: int) -> None:
     write_json(NOISE_PATH, {"protocol_sha256": protocol_sha256(), "selection_sha256": sha256_file(SELECTION_PATH),
                             "protocol_lock": held, "source_commit": git_head(), "network_probe": probe,
                             "windows": proto["proxy"]["noise_windows"],
-                            "field": "per-trade pnl_pct of the zero-cost (gross) leg", "baselines": out,
+                            "field": "per-position price return of the zero-cost (gross) leg: side x (exit notional - entry notional) / entry notional over all close records of one entry",
+                            "amendment": "protocol_amendment.json", "baselines": out,
                             "written_at_utc": now_utc()})
     print(f"wrote {NOISE_PATH}")
 
@@ -1652,7 +1680,8 @@ def judge_cmd(cache_db: str, work_dir: str, workers: int) -> None:
     t0 = time.time()
     units = judge_units(proto, cov, sel)
     idx = run_units(units, "judge", work_dir, cache_db, workers)
-    sel_arms = {f: [a for a in judged_arms(proto, sel, f)] for f in proto["frames"]}
+    sel_arms = {f: selection_arms(proto, f) + (["combo"] if sel["frames"][f]["combo"] else [])
+                for f in proto["frames"]}
     idx.update(run_units(select_units(proto, cov, sel_arms), "select-reuse", work_dir, cache_db, workers))
     noise_idx = run_units(noise_units(proto, cov), "noise-reuse", work_dir, cache_db, workers)
     idx.update(noise_idx)
@@ -1664,11 +1693,11 @@ def judge_cmd(cache_db: str, work_dir: str, workers: int) -> None:
         for w in [proto["proxy"]["selection_window"]] + proto["proxy"]["judged_windows"]:
             ok = set(included_proxy(cov, frame, w))
             proxy[frame][w] = {}
-            for arm in arms:
+            for arm in (sel_arms[frame] if w == proto["proxy"]["selection_window"] else arms):
                 ds = [d for d in arm_datasets(proto, frame, arm) if d in ok]
                 proxy[frame][w][arm] = arm_summary(proto, idx, frame, "proxy", w, arm, ds)
         for arm in arms:
-            for kind, field in (("net", "pnl_pct_net"), ("gross", "pnl_pct"), ("stress", "pnl_pct_net")):
+            for kind, field in (("net", "net"), ("gross", "price"), ("stress", "net")):
                 rows = []
                 for w in proto["proxy"]["pooled_windows"] + [proto["proxy"]["selection_window"]]:
                     ok = set(included_proxy(cov, frame, w))
@@ -2288,8 +2317,9 @@ def time_leg_cmd(cache_db: str, work_dir: str) -> None:
         for w2 in proto["proxy"]["judged_windows"]:
             jd_units += proxy_units(proto, cov, f, w2, ctrl[f], ["net"])
         jd_units += manifest_units(proto, cov, f, ctrl[f])
+    seen = set()
     for name, units in (("select", sel_units), ("noise_gate", nz_units), ("judge_baselines", jd_units)):
-        seen, bars = set(), 0
+        bars = 0
         for u in units:
             key = (u["frame"], u["group"], u["coin"], u["interval"], u["window"])
             if key in seen:
@@ -2313,8 +2343,8 @@ def time_leg_cmd(cache_db: str, work_dir: str) -> None:
            "label_calls": calls, "label_seconds": round(label_s, 1),
            "seconds_per_window_bar": round(per_window_bar, 5), "stages": stage,
            "projected_process_hours_total": round(total, 1),
-           "note": "label window-bars count each distinct (frame, group, dataset, window) frame once per label "
-                   "window that any of its arms reads; venue and bridge frames are approximated from the manifest "
+           "note": "label window-bars count each distinct (frame, group, dataset, window) frame once, in the first "
+                   "stage that labels it, per label window that any of its arms reads; venue and bridge frames are approximated from the manifest "
                    "spans; the judge stage adds label windows only for shortlisted gate arms on a new window",
            "machine": {"cpus": os.cpu_count(), "load_avg": list(os.getloadavg())},
            "measured_at_utc": now_utc()}
@@ -2445,7 +2475,14 @@ def htf_parity_leg(cache_db: str, work_dir: str) -> dict:
         storage.store_ohlcv(rows.reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]],
                             "binanceus", proxy_symbol(coin), hp["exchange_htf"])
         ex_trend = run_backtest._htf_trend_series(proxy_symbol(coin), ltf_timeframe, ltf_df.index)
-        injected["equal"] = bool((ex_trend.to_numpy() == trend.to_numpy()).all())
+        diff = ex_trend.to_numpy() != trend.to_numpy()
+        scored = ltf_df.index >= pd.Timestamp(window[0])
+        cached = run_backtest._load_htf_cache(proxy_symbol(coin), hp["exchange_htf"])
+        injected.update({"equal": bool(not diff.any()), "mismatch_bars": int(diff.sum()),
+                         "mismatch_bars_scored": int((diff & scored).sum()),
+                         "last_mismatch_bar": str(ltf_df.index[diff][-1]) if diff.any() else None,
+                         "existing_path_cache_first_bucket": str(cached.index.min()),
+                         "derived_first_bucket": str(first)})
         return ex_trend, cov, htf_df
     htf_trend.frozen_htf_trend = from_existing
     try:
@@ -2456,7 +2493,9 @@ def htf_parity_leg(cache_db: str, work_dir: str) -> dict:
     b = json.dumps(existing_leg, sort_keys=True, default=str)
     return {"dataset": f"{proxy_symbol(coin)} {tf}", "window": w, "arm": "htf", "identical": a == b,
             "sha256_derived": sha256_bytes(a.encode()), "sha256_existing_path": sha256_bytes(b.encode()),
-            "trades": derived_leg["trades"], "existing_trend_equal_on_leg_frame": injected.get("equal"),
+            "trades": derived_leg["trades"], "existing_trend_vs_derived": injected,
+            "note": "the existing path reads the cached exchange 4h history (the frozen file from its first bar), so its "
+                    "EMA has a longer seed than the derived input; the two legs are compared byte for byte",
             "htf_block": derived_leg.get("htf_filter"), "fetch_calls": len(NETWORK_CALLS)}
 
 

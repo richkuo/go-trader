@@ -1,0 +1,8 @@
+{
+  "amends": "protocol.json (locked; its sha256 is unchanged and still enforced)",
+  "change": "the per-trade unit of every per-trade statistic is the opened position (all close records of one entry), not the close record. net %/trade = net_pnl / entry_notional (fees, slippage and funding); stress %/trade = the same on the stress leg; gross %/trade = side x (exit notional - entry notional) / entry notional on the zero-cost leg (price only, no funding, the gross_edge_noise.py convention per position). The noise gate, the pooled verdict samples, the sample floors (100 trades, 30 clusters) and trades per year count positions. Record-level means stay in results.json as net_per_record_pct and gross_per_record_pct.",
+  "read_before_this_amendment": "only the is window (select stage); no judged window (oos, 2023H2, 2024, 2025H1, stitched, venue, bridge) of any arm had been scored",
+  "reason": "the deployed ratchet ladders close part of a position at a tier and the rest later, so one position can produce several close records. A mean over records weights a partly closed position more than a position closed at once. On the is window the paper control had 893 records from 675 positions: the record mean was +0.164% net and the position mean was -0.048% net, while five of its eight legs lost money. A record-level verdict would overstate the edge of any arm that closes in parts.",
+  "unchanged": "the selection rule (mean drawdown-adjusted return, record-count and cluster floors on is) and selection.json, the arms, windows, costs, family size, correction, venue rule and fidelity rule",
+  "written_at_utc": "2026-11-11T08:40:21Z"
+}
