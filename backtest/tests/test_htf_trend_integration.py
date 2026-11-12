@@ -50,10 +50,18 @@ frame = load_cached_data("ETH/USDT", "30m")
 existing = run_backtest._htf_trend_series("ETH/USDT", "30m", frame.index)
 derived, cov, _ = frozen_htf_trend(frame, "30m")
 
+def last_bucket_sign(f):
+    _, _, h = frozen_htf_trend(f, "30m")
+    c = h["close"].astype(float)
+    e = c.ewm(span=HTF_EMA_PERIOD, adjust=False).mean()
+    return int(np.sign(c.iloc[-1] - e.iloc[-1])), float(c.iloc[-1])
+
+from htf_filter import HTF_EMA_PERIOD
+sign_before, last_close_before = last_bucket_sign(frame)
 changed = frame.copy()
-changed.iloc[-3:, changed.columns.get_loc("close")] *= 1.5
+changed.iloc[-3:, changed.columns.get_loc("close")] *= (0.5 if sign_before > 0 else 1.5)
 derived_changed, _, _ = frozen_htf_trend(changed, "30m")
-cut = changed.index[-8]
+sign_after, last_close_after = last_bucket_sign(changed)
 
 from registry_loader import load_registry
 import eval_windows as ew
@@ -74,7 +82,9 @@ print(json.dumps({
     "equal": bool((existing.to_numpy() == derived.to_numpy()).all()),
     "nonzero": int((derived != 0).sum()),
     "rows": int(len(derived)),
-    "prefix_unchanged": bool((derived[derived.index < cut] == derived_changed[derived_changed.index < cut]).all()),
+    "series_unchanged": bool((derived.to_numpy() == derived_changed.to_numpy()).all()),
+    "last_close_changed": last_close_after != last_close_before,
+    "last_sign_flipped": sign_before != 0 and sign_after == -sign_before,
     "dropped": cov["buckets_dropped_unclosed"],
     "plain_trades": plain["trades"], "filt_trades": filt["trades"],
     "htf": filt["htf_filter"], "atr_method": filt.get("atr_method"),
@@ -99,7 +109,9 @@ def test_frozen_htf_trend_matches_cache_path_and_filters_a_real_leg_offline(tmp_
     out = _run(tmp_path)
     assert out["equal"] is True
     assert out["nonzero"] > out["rows"] // 2
-    assert out["prefix_unchanged"] is True
+    assert out["last_close_changed"] is True
+    assert out["last_sign_flipped"] is True
+    assert out["series_unchanged"] is True
     assert out["dropped"] == 0
     assert out["network_calls"] == 0
     htf = out["htf"]
