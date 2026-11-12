@@ -96,6 +96,7 @@ def _attach_funding_if_needed(df, strategy_name, symbol, since,
                 print(f"  Funding: {have}/{len(out)} bars covered (HL hourly, coin={coin})")
     return out
 from htf_filter import get_default_htf, apply_htf_filter
+from htf_trend import htf_trend_from_candles
 from registry_loader import load_registry, refuse_quote_capability
 from lead_lag_history import (LEADER_INPUT_STRATEGIES, LeaderDataUnavailable, cached_leader_params,
                               manifest_leader_params, refuse_leader_input_strategy)
@@ -468,15 +469,7 @@ def _htf_trend_series(symbol: str, timeframe: str, ltf_index: pd.Index,
                 f"fetched and continues from there, so rerun when the exchange serves {symbol} "
                 f"{htf} candles for that range, or disable --htf-filter")
 
-    htf_index = _htf_index_like(htf_df.index, ltf_index)
-    closes = htf_df["close"].astype(float)
-    ema = closes.ewm(span=ema_period, adjust=False).mean()
-    trend = pd.Series(
-        np.where(closes > ema, 1, np.where(closes < ema, -1, 0)),
-        index=htf_index,
-        dtype=int,
-    )
-    return trend.shift(1).reindex(ltf_index, method="ffill").fillna(0).astype(int)
+    return htf_trend_from_candles(htf_df, ltf_index, ema_period=ema_period)
 
 
 _HTF_INTERVALS = {

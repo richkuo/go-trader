@@ -1,0 +1,136 @@
+{
+  "schema": "offline_candle_manifest/v1",
+  "study": "breakout_2014",
+  "venue": "hyperliquid",
+  "provenance": {
+    "kind": "proxy",
+    "label": "Binance US spot candles (the frozen proxy files under data/proxy) on the venue windows, with the venue funding, meta, spread and execution specification; only the candle source differs from the venue manifest"
+  },
+  "interval": "30m",
+  "warmup_bars": 400,
+  "windows": {
+    "tail": {
+      "start": "2026-08-07",
+      "end": "2026-11-10",
+      "role": "venue verdict window: first acquired candle plus 400 warm-up bars, rounded up to a UTC day, to the pinned end; scored once with the frozen selection"
+    }
+  },
+  "acquisition": {
+    "source": "no acquisition: candles are the frozen data/proxy files, funding, meta and L2 snapshot are the venue files",
+    "start": "2022-08-01",
+    "end": "2026-11-10",
+    "note": "bridge between the proxy and venue groups"
+  },
+  "costs": {
+    "taker_fee_pct": 0.00045,
+    "maker_fee_pct": 0.00015,
+    "slippage_bps": 5.0,
+    "min_notional_usd": 10.0,
+    "min_notional_margin": 0.03
+  },
+  "venue_reference": {
+    "meta": {
+      "path": "data/venue_30m/venue_meta.json",
+      "sha256": "1a506b2411d3f8a76d8ae614929e5fe41e87363a341d245b45faa2046b8f1cc8"
+    },
+    "l2_snapshot": {
+      "path": "data/venue_30m/venue_l2_snapshot.json",
+      "sha256": "b9e547a8596100e7be6edb01a71fad2fa5e7b3a578cbedf90acfdd755b43273a"
+    },
+    "documents": [
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps base-tier taker and maker fee",
+        "quote": "Perps fee tiers Base rate Diamond Platinum Gold Silver Bronze Wood Tier 14d weighted volume ($) Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker 0 0.045% 0.015%",
+        "quote_sha256": "8cca42ca08eea9e26b2affe200d4d958dda0d5e0310ba162a8e1f5c9554f3bd9"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/error-responses",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps minimum order value",
+        "quote": "Order MinTradeNtl Order must have minimum value of $10.",
+        "quote_sha256": "28b93383786330e253affaed0d14b98ff3f683d9a66f0111d346f94650a2850d"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "lot size from meta szDecimals",
+        "quote": "Sizes are rounded to the szDecimals of that asset. For example, if szDecimals = 3 then 1.001 is a valid size but 1.0001 is not. szDecimals for an asset is found in the meta response to the info endpoint",
+        "quote_sha256": "9ae73e64e273ae0d0d329a2cd68cdf562ee50b583d581876b5a83bd5309dbc5f"
+      }
+    ]
+  },
+  "datasets": [
+    {
+      "coin": "BNB",
+      "symbol": "BNB/USDT",
+      "size_decimals": 3,
+      "half_spread_bps": 0.0724,
+      "candles": {
+        "path": "data/proxy/BNB_30m_candles.csv.gz",
+        "sha256": "929838162636c32dee0aef177df5ca48ee5544277a4878a9ba2a19c80ac37ae9"
+      },
+      "funding": {
+        "path": "data/venue_30m/BNB_funding.csv.gz",
+        "sha256": "a9c0e3530006ad9db7f4b766a52177a401c66fd4ee06886a6bb9793edf937a53"
+      }
+    },
+    {
+      "coin": "BTC",
+      "symbol": "BTC/USDT",
+      "size_decimals": 5,
+      "half_spread_bps": 0.0669,
+      "candles": {
+        "path": "data/proxy/BTC_30m_candles.csv.gz",
+        "sha256": "7fbe31529fb097330dcab3e264b8d73443cd3f1f7aa8abe35fd5a2bf3bae9420"
+      },
+      "funding": {
+        "path": "data/venue_30m/BTC_funding.csv.gz",
+        "sha256": "e0f2610b5beb90667fa727f0c4a87052d28b8320da695876080abc469b2d5c14"
+      }
+    },
+    {
+      "coin": "ETH",
+      "symbol": "ETH/USDT",
+      "size_decimals": 4,
+      "half_spread_bps": 0.2367,
+      "candles": {
+        "path": "data/proxy/ETH_30m_candles.csv.gz",
+        "sha256": "f7b1243d574a951f41fd04504a328fa3648335b53f0ad957ad580062fa0d103e"
+      },
+      "funding": {
+        "path": "data/venue_30m/ETH_funding.csv.gz",
+        "sha256": "0fc8d1fcf85a848121032a31bfe799f3232c89b116ac0e5815fd7e8efd7a6b03"
+      }
+    },
+    {
+      "coin": "HYPE",
+      "symbol": "HYPE/USDT",
+      "size_decimals": 2,
+      "half_spread_bps": 0.0673,
+      "candles": {
+        "path": "data/proxy/HYPE_30m_candles.csv.gz",
+        "sha256": "9f939d9b2295102f045be219201dbccfe485426ace879e6e53fdf5ef7367824a"
+      },
+      "funding": {
+        "path": "data/venue_30m/HYPE_funding.csv.gz",
+        "sha256": "166b98421cdec50732ded35cba386345990e992ac9a0d0300dabd425be4ad98b"
+      }
+    },
+    {
+      "coin": "SOL",
+      "symbol": "SOL/USDT",
+      "size_decimals": 2,
+      "half_spread_bps": 0.0583,
+      "candles": {
+        "path": "data/proxy/SOL_30m_candles.csv.gz",
+        "sha256": "47fc45d1818a3af834ae6f01d02a66b371a246dd1a378e361828efe21179b02a"
+      },
+      "funding": {
+        "path": "data/venue_30m/SOL_funding.csv.gz",
+        "sha256": "a68a343d333ee24f771dbd68d1c14e6e1d5be29a1ebcafb72689ed587cbbff87"
+      }
+    }
+  ]
+}

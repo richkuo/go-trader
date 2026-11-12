@@ -1,0 +1,415 @@
+{
+  "amendment": "protocol_amendment.json",
+  "baselines": {
+    "live:live_both": {
+      "bootstrap": {
+        "hi": 0.191297,
+        "lo": -0.050971,
+        "n_resamples": 10000,
+        "point": 0.068577
+      },
+      "cluster_permutation": {
+        "clusters": 552,
+        "mean": 0.068577,
+        "n": 552,
+        "n_resamples": 10000,
+        "p_value": 0.136986
+      },
+      "datasets_by_window": {
+        "2023H2": [
+          "ETH 30m"
+        ],
+        "2024": [
+          "ETH 30m"
+        ],
+        "2025H1": [
+          "ETH 30m"
+        ],
+        "is": [
+          "ETH 30m"
+        ],
+        "oos": [
+          "ETH 30m"
+        ]
+      },
+      "n": 552,
+      "permutation": {
+        "mean": 0.068577,
+        "n": 552,
+        "n_resamples": 10000,
+        "p_value": 0.136986
+      },
+      "sign_test": {
+        "n": 552,
+        "n_neg": 256,
+        "n_pos": 296,
+        "n_zero": 0,
+        "p_value": 0.096836
+      },
+      "summary": {
+        "max": 10.054284,
+        "mean": 0.068577,
+        "median": 0.033839,
+        "min": -3.77815,
+        "n": 552,
+        "n_neg": 256,
+        "n_pos": 296,
+        "n_zero": 0
+      },
+      "verdict": "indistinguishable_from_zero",
+      "wilcoxon": {
+        "n": 552,
+        "p_value": 0.507338,
+        "w": 73828.0,
+        "z": -0.663
+      }
+    },
+    "live:live_long": {
+      "bootstrap": {
+        "hi": 0.266604,
+        "lo": -0.056014,
+        "n_resamples": 10000,
+        "point": 0.099671
+      },
+      "cluster_permutation": {
+        "clusters": 362,
+        "mean": 0.099671,
+        "n": 362,
+        "n_resamples": 10000,
+        "p_value": 0.119388
+      },
+      "datasets_by_window": {
+        "2023H2": [
+          "ETH 30m"
+        ],
+        "2024": [
+          "ETH 30m"
+        ],
+        "2025H1": [
+          "ETH 30m"
+        ],
+        "is": [
+          "ETH 30m"
+        ],
+        "oos": [
+          "ETH 30m"
+        ]
+      },
+      "n": 362,
+      "permutation": {
+        "mean": 0.099671,
+        "n": 362,
+        "n_resamples": 10000,
+        "p_value": 0.119388
+      },
+      "sign_test": {
+        "n": 362,
+        "n_neg": 170,
+        "n_pos": 192,
+        "n_zero": 0,
+        "p_value": 0.269684
+      },
+      "summary": {
+        "max": 10.054284,
+        "mean": 0.099671,
+        "median": 0.05393,
+        "min": -3.77815,
+        "n": 362,
+        "n_neg": 170,
+        "n_pos": 192,
+        "n_zero": 0
+      },
+      "verdict": "indistinguishable_from_zero",
+      "wilcoxon": {
+        "n": 362,
+        "p_value": 0.728348,
+        "w": 32159.0,
+        "z": -0.3473
+      }
+    },
+    "paper:control": {
+      "bootstrap": {
+        "hi": 0.128789,
+        "lo": 0.02275,
+        "n_resamples": 10000,
+        "point": 0.074935
+      },
+      "cluster_permutation": {
+        "clusters": 998,
+        "mean": 0.074935,
+        "n": 3889,
+        "n_resamples": 10000,
+        "p_value": 0.028897
+      },
+      "datasets_by_window": {
+        "2023H2": [
+          "BNB 1h",
+          "BNB 30m",
+          "BTC 1h",
+          "BTC 30m",
+          "ETH 1h",
+          "ETH 30m",
+          "SOL 1h",
+          "SOL 30m"
+        ],
+        "2024": [
+          "BNB 1h",
+          "BNB 30m",
+          "BTC 1h",
+          "BTC 30m",
+          "ETH 1h",
+          "ETH 30m",
+          "SOL 1h",
+          "SOL 30m"
+        ],
+        "2025H1": [
+          "BNB 1h",
+          "BNB 30m",
+          "BTC 1h",
+          "BTC 30m",
+          "ETH 1h",
+          "ETH 30m",
+          "SOL 1h",
+          "SOL 30m"
+        ],
+        "is": [
+          "BNB 1h",
+          "BNB 30m",
+          "BTC 1h",
+          "BTC 30m",
+          "ETH 1h",
+          "ETH 30m",
+          "SOL 1h",
+          "SOL 30m"
+        ],
+        "oos": [
+          "BNB 1h",
+          "BNB 30m",
+          "BTC 1h",
+          "BTC 30m",
+          "ETH 1h",
+          "ETH 30m",
+          "SOL 1h",
+          "SOL 30m"
+        ]
+      },
+      "n": 3889,
+      "permutation": {
+        "mean": 0.074935,
+        "n": 3889,
+        "n_resamples": 10000,
+        "p_value": 0.0025
+      },
+      "sign_test": {
+        "n": 3889,
+        "n_neg": 1943,
+        "n_pos": 1946,
+        "n_zero": 0,
+        "p_value": 0.974416
+      },
+      "summary": {
+        "max": 12.137861,
+        "mean": 0.074935,
+        "median": 0.022354,
+        "min": -8.340265,
+        "n": 3889,
+        "n_neg": 1943,
+        "n_pos": 1946,
+        "n_zero": 0
+      },
+      "verdict": "distinguishable_positive",
+      "wilcoxon": {
+        "n": 3889,
+        "p_value": 0.050691,
+        "w": 3645218.0,
+        "z": -1.9541
+      }
+    },
+    "spot:spot_control": {
+      "bootstrap": {
+        "hi": 0.485757,
+        "lo": 0.120817,
+        "n_resamples": 10000,
+        "point": 0.298924
+      },
+      "cluster_permutation": {
+        "clusters": 467,
+        "mean": 0.298924,
+        "n": 1628,
+        "n_resamples": 10000,
+        "p_value": 0.014799
+      },
+      "datasets_by_window": {
+        "2023H2": [
+          "BTC 1h",
+          "BTC 4h",
+          "ETH 1h",
+          "ETH 4h",
+          "SOL 1h",
+          "SOL 4h"
+        ],
+        "2024": [
+          "BTC 1h",
+          "BTC 4h",
+          "ETH 1h",
+          "ETH 4h",
+          "SOL 1h",
+          "SOL 4h"
+        ],
+        "2025H1": [
+          "BTC 1h",
+          "BTC 4h",
+          "ETH 1h",
+          "ETH 4h",
+          "SOL 1h",
+          "SOL 4h"
+        ],
+        "is": [
+          "BTC 1h",
+          "BTC 4h",
+          "ETH 1h",
+          "ETH 4h",
+          "SOL 1h",
+          "SOL 4h"
+        ],
+        "oos": [
+          "BTC 1h",
+          "BTC 4h",
+          "ETH 1h",
+          "ETH 4h",
+          "SOL 1h",
+          "SOL 4h"
+        ]
+      },
+      "n": 1628,
+      "permutation": {
+        "mean": 0.298924,
+        "n": 1628,
+        "n_resamples": 10000,
+        "p_value": 0.0003
+      },
+      "sign_test": {
+        "n": 1626,
+        "n_neg": 1157,
+        "n_pos": 469,
+        "n_zero": 2,
+        "p_value": 0.0
+      },
+      "summary": {
+        "max": 41.612432,
+        "mean": 0.298924,
+        "median": -0.442547,
+        "min": -8.08895,
+        "n": 1628,
+        "n_neg": 1157,
+        "n_pos": 469,
+        "n_zero": 2
+      },
+      "verdict": "distinguishable_positive",
+      "wilcoxon": {
+        "n": 1626,
+        "p_value": 0.0,
+        "w": 477120.0,
+        "z": -9.7304
+      }
+    }
+  },
+  "field": "per-position price return of the zero-cost (gross) leg: side x (exit notional - entry notional) / entry notional over all close records of one entry",
+  "network_probe": {
+    "socket_connect": "refused: frozen study run: network access is blocked",
+    "unfrozen_symbol_load": "refused: frozen study run: network access is blocked"
+  },
+  "protocol_lock": {
+    "arms_sha256": {
+      "live/bar_1h.json": "e93657dca55b7c4cd3f6f6033781cadf29828433aec2656b576e37e8b9279f98",
+      "live/gate_adx_up.json": "d960a6390d5c6a1e79bfc20147af9a765094186b01a61627bad8412c63f4f30c",
+      "live/gate_cm_not_down.json": "f05befb47b2f4ba90d7fc0e257052cb02924a8b13e48f7886db309a6302d2964",
+      "live/gate_cm_up.json": "fc29d674a4dc41282af56c7a16e0324a81033105976ebb033c8ee59e3ab152ff",
+      "live/gate_p21_up_clean.json": "7891b75760aee61764321b04a9fa9e70a96718dd808836fd9de05d1163930fcb",
+      "live/live_both.json": "7ed7567131a364b1370b93d646030de4fe185b29e64a89cfa0fdde093898f6a5",
+      "live/live_both_nohtf.json": "a4771f6ffec6ca504656f7000e8c6b7e5e5ad0db3d9f1d064d7d1b085b7b320b",
+      "live/live_long.json": "9e6162276603425083c7b12031ed3f2dc1b96bbfc742d1e0b55b7908ddb97dfc",
+      "live/live_long_nohtf.json": "01f3475fdb38f8d1d9b34cb31fce075d6287d9a9b9c30a6ff8f80028b0d928a0",
+      "live/p_13_34_89.json": "4bdf09976159f462ba980a7fcde85d00bcc4f44331dd6cea544327106b8370ee",
+      "live/p_21_55_144.json": "a713257b896f40c30d37b37a45a61f08b59b5f5a54dbb23d31473ac390671485",
+      "live/p_34_89_233.json": "735073ca74825100a79e50882088414717d768a530143b520a2a0a9205176ec8",
+      "live/p_55_144_377.json": "c51228e0f2fc7a117a8862b576d220708cb81ea216c74d48e45ac6551d81bd38",
+      "live/p_8_21_55.json": "1b5593363e95377ca245570767e06e22a1d30b070025485fa04fe202275767e1",
+      "paper/control.json": "640e7fa2e52706c140c66148d8e97ee41f2d241c999c93586d207810dd361b94",
+      "paper/gate_adx_up.json": "f0d9c798eb0d382fda9d8fee32d4617cf075cdec38d80457dd1868d38f149ac1",
+      "paper/gate_cm_not_down.json": "e87e7be914cf1ae24f7954eb9696437b98bf97277dbc7e3344492754a189f0a4",
+      "paper/gate_cm_up.json": "33d48d5cb955491925d18837d6377e0d37e47b6892e16286b07e2f78123a9f19",
+      "paper/gate_p21_up_clean.json": "d28777b35414d7d63b137e8b43d70c51d044e5ba6132a14932ae429ad22ff6df",
+      "paper/htf.json": "1d6a0daf9e9b9c84ce939ed83d93598df9d88ad80d299d89f2a308f400ef8f3a",
+      "paper/p_13_34_89.json": "2744f1ea2516b928f2df98a74177af0ea8a1f6cff352026ce7fe6590ec3daa46",
+      "paper/p_21_55_144.json": "7246790ba63d9ff28223a6d006af93ac8261bc2856f034885b6af753f9b2cba1",
+      "paper/p_34_89_233.json": "8453022596b52dc5a1621a5fb24f52edb48c5df933ab347753a733756d168176",
+      "paper/p_55_144_377.json": "541f752127521e44575d12dabb6a6e644315dc7f1bcf8b102e5223887e5abcca",
+      "paper/p_8_21_55.json": "c70fbbf3d6fd12ceaa7b145a7553bedc0b60c2a99099afe145813fdbfe6309cc",
+      "spot/gate_adx_up.json": "46ec92f7daccd80b186bf063bae351741d48d35cba0b406ee6abdcd0de59efc4",
+      "spot/gate_cm_not_down.json": "b6f7c22c8b24f91d819de4feef0cf27c3be0f09e12785727d6688537a69a6a6c",
+      "spot/gate_cm_up.json": "cb03560eb25a64536d0f7f02ed44200123f86028cf8724446986b0d4c38de2a3",
+      "spot/gate_p21_up_clean.json": "0e29ac740b21109ae83b53792a4847fa87a7e5b4bfa0bfeb46c726558683c0a1",
+      "spot/htf.json": "967883674fb94dd060f1314f64c3e5af32b9e8112c2ed45675c52edcff921fcf",
+      "spot/p_13_34_89.json": "56f861a62cad071f20a2ccfc1e1175458bc8b7f3d0a2519df5a4cbd1971b07a6",
+      "spot/p_21_55_144.json": "189407fc6f98446edbed549be3986675816938d64acd65443a478ab567cc336a",
+      "spot/p_34_89_233.json": "c466f7679c9446ff91d7e87ba28d8847dce94d5f30e3fe9fa8f0f47ab33a898d",
+      "spot/p_55_144_377.json": "949737d29136bae4947231205e2eed13f0979a8791090abfbf168aa613b929ad",
+      "spot/p_8_21_55.json": "ea53df7323d91254f13496eaa2fae220ee017332d603df9d54138483910e4a8f",
+      "spot/spot_control.json": "b1c238d70832f777e73832afc334ee1fa631c8645896e5af6c9d52cfbee37fac"
+    },
+    "coverage_sha256": "358abe4ca0f31ae14062bce1033a0bc719a4bd7acc90adeb54e07d43424173cd",
+    "htf_parity_signals": {
+      "bucket_closes_identical": true,
+      "cache_cut_at_first_bucket": "2025-04-08 04:00:00",
+      "dataset": "ETH/USDT 30m",
+      "derived_coverage": {
+        "buckets_closed": 1607,
+        "buckets_dropped_unclosed": 0,
+        "closed_buckets_with_missing_slots": 1,
+        "dropped_bucket_opens": [],
+        "ema_period": 50,
+        "first_bucket": "2025-04-08 04:00:00",
+        "htf_timeframe": "4h",
+        "last_bucket": "2025-12-31 20:00:00"
+      },
+      "exchange_htf_file": "proxy/ETH_4h_candles.csv.gz",
+      "exchange_htf_rows_cached": 3483,
+      "fetch_calls": 0,
+      "filtered_signal_identical": true,
+      "filtered_signal_mismatch_bars": 0,
+      "frame_bars": 12851,
+      "frame_first_bar": "2025-04-08 06:30:00",
+      "frame_last_bar": "2025-12-31 23:30:00",
+      "measured_at_utc": "2026-11-11T05:36:45Z",
+      "signals_filtered": {
+        "long": 120,
+        "short": 50
+      },
+      "signals_raw": {
+        "long": 189,
+        "short": 189
+      },
+      "trend_identical": true,
+      "trend_mismatch_bars": 0,
+      "warmup_bars": 3011,
+      "window": "is"
+    },
+    "locked_at_utc": "2026-11-11T06:15:09Z",
+    "note": "written by run_study.py lock before any window was scored",
+    "protocol_sha256": "6bb0b2f6be953b9f3ba87e1c01a851674ee3664952aad608ef8a205ded3ea956",
+    "smoke_sha256": "da6ec4c7b434f2c43c05875626dc72ab521d2533ce1f5f84c6eb4faaedf0ab4d",
+    "source_commit": "296ea9cc845ad1d2bf13eb3f212fd0017f64c760+uncommitted-changes"
+  },
+  "protocol_sha256": "6bb0b2f6be953b9f3ba87e1c01a851674ee3664952aad608ef8a205ded3ea956",
+  "selection_sha256": "93e16d3524805c82daae5b91650a2cef75f9f34f932b28d79ae122a80612ec32",
+  "source_commit": "e6bfebd920ae8b1a9d9a34713056b8c2318d4376",
+  "windows": [
+    "is",
+    "oos",
+    "2023H2",
+    "2024",
+    "2025H1"
+  ],
+  "written_at_utc": "2026-11-11T10:54:16Z"
+}
