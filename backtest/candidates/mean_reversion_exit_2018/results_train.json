@@ -1,0 +1,1564 @@
+{
+  "samples_sha256": "d90005b00ddf0feffb1f01a840de8098d231396d73b2a71f800149b5ee8d6cbe",
+  "units": {
+    "train_b2_proxy_BTC_1h_train": {
+      "arms": {
+        "paired_b2_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 486,
+            "matched": 342,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 342,
+            "skipped_partial_closes": 104,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 483,
+            "matched": 342,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 342,
+            "skipped_partial_closes": 152,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 478,
+            "matched": 342,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 342,
+            "skipped_partial_closes": 215,
+            "unmatched": []
+          }
+        },
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 477,
+            "matched": 342,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 342,
+            "skipped_partial_closes": 48,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "d61d3751b53ddeb9f655b695dbbb9b73bd352653b81672c616a235356fc1e160",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 17040,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 23:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 17040,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.36739910540000004
+        },
+        "indicator_first_bar": "2023-06-14 08:00:00",
+        "scored_bars": 17040,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 477,
+        "exit_reasons": {
+          "sl": 182,
+          "tiered_tp_atr_regime:ranging_volatile:1": 160
+        },
+        "long_positions": 60,
+        "positions": 342,
+        "rejected_entries": 0,
+        "short_positions": 282,
+        "skipped_partial_closes": 87,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 671.1,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_b2_w150",
+          "paired_b2_w125",
+          "paired_b2_w175"
+        ],
+        "coin": "BTC",
+        "costs": [
+          "base"
+        ],
+        "frame": "b2",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    },
+    "train_b2_proxy_BTC_4h_train": {
+      "arms": {
+        "paired_b2_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 112,
+            "matched": 83,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 83,
+            "skipped_partial_closes": 30,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 113,
+            "matched": 83,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 83,
+            "skipped_partial_closes": 34,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 114,
+            "matched": 83,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 83,
+            "skipped_partial_closes": 38,
+            "unmatched": []
+          }
+        },
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 112,
+            "matched": 83,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 83,
+            "skipped_partial_closes": 13,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "0732049e619ac85feb8737021fd31cbc138654e339c058898366dee406184b83",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 4260,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 20:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 4260,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.36739910540000004
+        },
+        "indicator_first_bar": "2023-04-25 08:00:00",
+        "scored_bars": 4260,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 20:00:00"
+      },
+      "schedule": {
+        "close_records": 112,
+        "exit_reasons": {
+          "sl": 45,
+          "tiered_tp_atr_regime:ranging_volatile:1": 38
+        },
+        "long_positions": 17,
+        "positions": 83,
+        "rejected_entries": 0,
+        "short_positions": 66,
+        "skipped_partial_closes": 32,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 60.1,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_b2_w150",
+          "paired_b2_w125",
+          "paired_b2_w175"
+        ],
+        "coin": "BTC",
+        "costs": [
+          "base"
+        ],
+        "frame": "b2",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    },
+    "train_b2_proxy_ETH_1h_train": {
+      "arms": {
+        "paired_b2_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 508,
+            "matched": 365,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 365,
+            "skipped_partial_closes": 158,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 502,
+            "matched": 365,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 365,
+            "skipped_partial_closes": 187,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 507,
+            "matched": 365,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 365,
+            "skipped_partial_closes": 196,
+            "unmatched": []
+          }
+        },
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 517,
+            "matched": 365,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 365,
+            "skipped_partial_closes": 150,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "a5066a023c6fe3d724b21b963f58211d99d174ba230c91967eb2bc627c15db9a",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 17040,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 23:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 17040,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.35729566840000004
+        },
+        "indicator_first_bar": "2023-06-14 08:00:00",
+        "scored_bars": 17040,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 517,
+        "exit_reasons": {
+          "sl": 203,
+          "tiered_tp_atr_regime:ranging_volatile:1": 162
+        },
+        "long_positions": 70,
+        "positions": 365,
+        "rejected_entries": 0,
+        "short_positions": 295,
+        "skipped_partial_closes": 107,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 739.6,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_b2_w150",
+          "paired_b2_w125",
+          "paired_b2_w175"
+        ],
+        "coin": "ETH",
+        "costs": [
+          "base"
+        ],
+        "frame": "b2",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    },
+    "train_b2_proxy_ETH_4h_train": {
+      "arms": {
+        "paired_b2_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 118,
+            "matched": 88,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 88,
+            "skipped_partial_closes": 19,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 120,
+            "matched": 88,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 88,
+            "skipped_partial_closes": 22,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 120,
+            "matched": 88,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 88,
+            "skipped_partial_closes": 13,
+            "unmatched": []
+          }
+        },
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 118,
+            "matched": 88,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 88,
+            "skipped_partial_closes": 6,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "3c70dba830e46eede575de0731f670dc7ebb7fd251a18a76510764a304554e7c",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 4260,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 20:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 4260,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.35729566840000004
+        },
+        "indicator_first_bar": "2023-04-25 08:00:00",
+        "scored_bars": 4260,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 20:00:00"
+      },
+      "schedule": {
+        "close_records": 118,
+        "exit_reasons": {
+          "sl": 48,
+          "tiered_tp_atr_regime:ranging_volatile:1": 40
+        },
+        "long_positions": 14,
+        "positions": 88,
+        "rejected_entries": 0,
+        "short_positions": 74,
+        "skipped_partial_closes": 26,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 113.2,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_b2_w150",
+          "paired_b2_w125",
+          "paired_b2_w175"
+        ],
+        "coin": "ETH",
+        "costs": [
+          "base"
+        ],
+        "frame": "b2",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    },
+    "train_b2_proxy_SOL_1h_train": {
+      "arms": {
+        "paired_b2_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 474,
+            "matched": 326,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 326,
+            "skipped_partial_closes": 87,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 479,
+            "matched": 326,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 326,
+            "skipped_partial_closes": 152,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 480,
+            "matched": 326,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 326,
+            "skipped_partial_closes": 184,
+            "unmatched": []
+          }
+        },
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 469,
+            "matched": 326,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 326,
+            "skipped_partial_closes": 77,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "a1423c04c80f8879be362c3fea94e88ac9c9375a34978ef94e0383683fc1a2de",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 17040,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 23:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 17040,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.39560665079999996
+        },
+        "indicator_first_bar": "2023-06-14 08:00:00",
+        "scored_bars": 17040,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 469,
+        "exit_reasons": {
+          "sl": 147,
+          "tiered_tp_atr_regime:ranging_volatile:1": 179
+        },
+        "long_positions": 70,
+        "positions": 326,
+        "rejected_entries": 0,
+        "short_positions": 256,
+        "skipped_partial_closes": 80,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 640.9,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_b2_w150",
+          "paired_b2_w125",
+          "paired_b2_w175"
+        ],
+        "coin": "SOL",
+        "costs": [
+          "base"
+        ],
+        "frame": "b2",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    },
+    "train_b2_proxy_SOL_4h_train": {
+      "arms": {
+        "paired_b2_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 88,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 16,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 90,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 16,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 86,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 16,
+            "unmatched": []
+          }
+        },
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 88,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 10,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "efe460b06afe0fbd1c094f7094d202a349b2882bf72f0996114b82e308e1343f",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 4260,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 20:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 4260,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.39560665079999996
+        },
+        "indicator_first_bar": "2023-04-25 08:00:00",
+        "scored_bars": 4260,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 20:00:00"
+      },
+      "schedule": {
+        "close_records": 88,
+        "exit_reasons": {
+          "sl": 35,
+          "tiered_tp_atr_regime:ranging_volatile:1": 25
+        },
+        "long_positions": 12,
+        "positions": 60,
+        "rejected_entries": 0,
+        "short_positions": 48,
+        "skipped_partial_closes": 13,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 43.2,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_b2_w150",
+          "paired_b2_w125",
+          "paired_b2_w175"
+        ],
+        "coin": "SOL",
+        "costs": [
+          "base"
+        ],
+        "frame": "b2",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    },
+    "train_ratchet_proxy_BNB_1h_train": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 123,
+            "matched": 81,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 81,
+            "skipped_partial_closes": 54,
+            "unmatched": []
+          }
+        },
+        "paired_r_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 113,
+            "matched": 81,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 81,
+            "skipped_partial_closes": 38,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 111,
+            "matched": 81,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 81,
+            "skipped_partial_closes": 27,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 101,
+            "matched": 81,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 81,
+            "skipped_partial_closes": 21,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "cac11beb91f1410bc44853869dd43f4208edfb7c375e12f0f96f1f4b97bd327c",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 17040,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 23:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 17040,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.05597857230000002
+        },
+        "indicator_first_bar": "2023-06-14 08:00:00",
+        "scored_bars": 17040,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 123,
+        "exit_reasons": {
+          "sl": 76,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 5
+        },
+        "long_positions": 81,
+        "positions": 81,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 69,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 288.8,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w125",
+          "paired_r_w175"
+        ],
+        "coin": "BNB",
+        "costs": [
+          "base"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    },
+    "train_ratchet_proxy_BNB_30m_train": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 235,
+            "matched": 168,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 168,
+            "skipped_partial_closes": 92,
+            "unmatched": []
+          }
+        },
+        "paired_r_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 222,
+            "matched": 168,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 168,
+            "skipped_partial_closes": 66,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 210,
+            "matched": 168,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 168,
+            "skipped_partial_closes": 60,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 209,
+            "matched": 168,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 168,
+            "skipped_partial_closes": 80,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "cc6b7e6a15cbaebf652f1a32726edef954ce961af5624f9de8058cead9a6d5bb",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 34080,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 23:30:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 34080,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.05597857230000002
+        },
+        "indicator_first_bar": "2023-06-22 16:00:00",
+        "scored_bars": 34080,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 23:30:00"
+      },
+      "schedule": {
+        "close_records": 235,
+        "exit_reasons": {
+          "sl": 161,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 7
+        },
+        "long_positions": 168,
+        "positions": 168,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 86,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 622.8,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w125",
+          "paired_r_w175"
+        ],
+        "coin": "BNB",
+        "costs": [
+          "base"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    },
+    "train_ratchet_proxy_BTC_1h_train": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 128,
+            "matched": 84,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 84,
+            "skipped_partial_closes": 74,
+            "unmatched": []
+          }
+        },
+        "paired_r_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 122,
+            "matched": 84,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 84,
+            "skipped_partial_closes": 71,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 123,
+            "matched": 84,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 84,
+            "skipped_partial_closes": 71,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 115,
+            "matched": 84,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 84,
+            "skipped_partial_closes": 48,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "9086bc85ee4fa0c853ad4633214881a43067f86fd37012f5992c6ae8e1165f9c",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 17040,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 23:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 17040,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.36739910540000004
+        },
+        "indicator_first_bar": "2023-06-14 08:00:00",
+        "scored_bars": 17040,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 128,
+        "exit_reasons": {
+          "sl": 75,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 9
+        },
+        "long_positions": 84,
+        "positions": 84,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 67,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 473.3,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w125",
+          "paired_r_w175"
+        ],
+        "coin": "BTC",
+        "costs": [
+          "base"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    },
+    "train_ratchet_proxy_BTC_30m_train": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 302,
+            "matched": 192,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 192,
+            "skipped_partial_closes": 175,
+            "unmatched": []
+          }
+        },
+        "paired_r_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 290,
+            "matched": 192,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 192,
+            "skipped_partial_closes": 190,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 272,
+            "matched": 192,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 192,
+            "skipped_partial_closes": 168,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 262,
+            "matched": 192,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 192,
+            "skipped_partial_closes": 172,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "c3bc16a5c6d7ee74f2e5462e90959f77fe4916bb8ff5b77d807ee5f7651600f6",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 34080,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 23:30:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 34080,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.36739910540000004
+        },
+        "indicator_first_bar": "2023-06-22 16:00:00",
+        "scored_bars": 34080,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 23:30:00"
+      },
+      "schedule": {
+        "close_records": 302,
+        "exit_reasons": {
+          "sl": 173,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 19
+        },
+        "long_positions": 192,
+        "positions": 192,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 177,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 1153.5,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w125",
+          "paired_r_w175"
+        ],
+        "coin": "BTC",
+        "costs": [
+          "base"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    },
+    "train_ratchet_proxy_ETH_1h_train": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 129,
+            "matched": 82,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 82,
+            "skipped_partial_closes": 45,
+            "unmatched": []
+          }
+        },
+        "paired_r_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 126,
+            "matched": 82,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 82,
+            "skipped_partial_closes": 43,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 120,
+            "matched": 82,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 82,
+            "skipped_partial_closes": 33,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 117,
+            "matched": 82,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 82,
+            "skipped_partial_closes": 41,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "b83f05d7e7a7ffeea3d293cee21fa7423e495178e0e35685d16e9f97e9d7a1f0",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 17040,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 23:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 17040,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.35729566840000004
+        },
+        "indicator_first_bar": "2023-06-14 08:00:00",
+        "scored_bars": 17040,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 129,
+        "exit_reasons": {
+          "sl": 67,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 15
+        },
+        "long_positions": 82,
+        "positions": 82,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 76,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 450.5,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w125",
+          "paired_r_w175"
+        ],
+        "coin": "ETH",
+        "costs": [
+          "base"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    },
+    "train_ratchet_proxy_ETH_30m_train": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 255,
+            "matched": 169,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 169,
+            "skipped_partial_closes": 103,
+            "unmatched": []
+          }
+        },
+        "paired_r_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 243,
+            "matched": 169,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 169,
+            "skipped_partial_closes": 114,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 238,
+            "matched": 169,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 169,
+            "skipped_partial_closes": 92,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 232,
+            "matched": 169,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 169,
+            "skipped_partial_closes": 84,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "076bbf1a8f67a8582b17a19693b184d367764a8ff81fe90780b20c26377101e4",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 34080,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 23:30:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 34080,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.35729566840000004
+        },
+        "indicator_first_bar": "2023-06-22 16:00:00",
+        "scored_bars": 34080,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 23:30:00"
+      },
+      "schedule": {
+        "close_records": 255,
+        "exit_reasons": {
+          "sl": 147,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 22
+        },
+        "long_positions": 169,
+        "positions": 169,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 113,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 1089.4,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w125",
+          "paired_r_w175"
+        ],
+        "coin": "ETH",
+        "costs": [
+          "base"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    },
+    "train_ratchet_proxy_SOL_1h_train": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 121,
+            "matched": 78,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 78,
+            "skipped_partial_closes": 36,
+            "unmatched": []
+          }
+        },
+        "paired_r_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 116,
+            "matched": 78,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 78,
+            "skipped_partial_closes": 23,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 110,
+            "matched": 78,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 78,
+            "skipped_partial_closes": 22,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 106,
+            "matched": 78,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 78,
+            "skipped_partial_closes": 16,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "1748b5c3d348f0e07cfd36cbcb5b42afe713ab36cad4c5ba3d78babacfcd290b",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 17040,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 23:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 17040,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.39560665079999996
+        },
+        "indicator_first_bar": "2023-06-14 08:00:00",
+        "scored_bars": 17040,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 121,
+        "exit_reasons": {
+          "sl": 70,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 8
+        },
+        "long_positions": 78,
+        "positions": 78,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 72,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 398.8,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w125",
+          "paired_r_w175"
+        ],
+        "coin": "SOL",
+        "costs": [
+          "base"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    },
+    "train_ratchet_proxy_SOL_30m_train": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 209,
+            "matched": 138,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 138,
+            "skipped_partial_closes": 66,
+            "unmatched": []
+          }
+        },
+        "paired_r_w125": {
+          "base": {
+            "censored": 0,
+            "close_records": 205,
+            "matched": 138,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 138,
+            "skipped_partial_closes": 78,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 197,
+            "matched": 138,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 138,
+            "skipped_partial_closes": 75,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 193,
+            "matched": 138,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 138,
+            "skipped_partial_closes": 50,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "589b8e58caa9693318a1b943d6529f7db3f0306bbeef77af64daa313519a6443",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 34080,
+          "first_bar": "2023-07-01 00:00:00",
+          "last_bar": "2025-06-09 23:30:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 34080,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": false,
+          "expected_hours": 17040,
+          "max_gap_hours": 1,
+          "missing_hours": 3,
+          "present_hours": 17037,
+          "sum_rate": 0.39560665079999996
+        },
+        "indicator_first_bar": "2023-06-22 16:00:00",
+        "scored_bars": 34080,
+        "scored_first_bar": "2023-07-01 00:00:00",
+        "scored_last_bar": "2025-06-09 23:30:00"
+      },
+      "schedule": {
+        "close_records": 209,
+        "exit_reasons": {
+          "sl": 117,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 21
+        },
+        "long_positions": 138,
+        "positions": 138,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 66,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 942.0,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w125",
+          "paired_r_w175"
+        ],
+        "coin": "SOL",
+        "costs": [
+          "base"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "paired",
+        "phase": "train",
+        "window": "train"
+      }
+    }
+  },
+  "window": {
+    "end": "2025-06-10",
+    "role": "training: neighbour shortlist only",
+    "start": "2023-07-01"
+  }
+}
