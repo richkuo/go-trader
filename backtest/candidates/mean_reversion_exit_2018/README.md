@@ -98,3 +98,8 @@ Run the long stages with `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMU
   guard fails closed: a modified or renamed locked file stays blocking at any position. `run_study.py` is pinned in
   `code_sha256` of the lock, so the code is left unchanged. Commit allowed outputs before a scoring command or
   `checks-post` runs.
+- The `report_deterministic` case of `checks-post` (`run_study.py`) sets `ok` only from two renders giving the same
+  text. It records `matches_committed_report` but does not include it in `ok`, so `checks-post` can pass while the
+  committed `REPORT.md` is stale or missing. `run_study.py` is pinned in `code_sha256` of the lock, so the code is
+  left unchanged. Read `report_deterministic.matches_committed_report` in `checks_post.json`, not only `ok`; it is
+  true for the committed `REPORT.md`.
