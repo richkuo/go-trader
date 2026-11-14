@@ -45,7 +45,6 @@
         "--mode=paper"
       ],
       "capital": 1000.0,
-      "circuit_breaker": false,
       "close_strategy": {
         "name": "tiered_tp_atr_regime",
         "params": {
@@ -215,7 +214,6 @@
         "--mode=paper"
       ],
       "capital": 1000.0,
-      "circuit_breaker": false,
       "close_strategy": {
         "name": "tiered_tp_atr_regime",
         "params": {
@@ -385,7 +383,6 @@
         "--mode=paper"
       ],
       "capital": 1000.0,
-      "circuit_breaker": false,
       "close_strategy": {
         "name": "tiered_tp_atr_regime",
         "params": {
@@ -555,7 +552,6 @@
         "--mode=paper"
       ],
       "capital": 1000.0,
-      "circuit_breaker": false,
       "close_strategy": {
         "name": "tiered_tp_atr_regime",
         "params": {
@@ -725,7 +721,6 @@
         "--mode=paper"
       ],
       "capital": 1000.0,
-      "circuit_breaker": false,
       "close_strategy": {
         "name": "tiered_tp_atr_regime",
         "params": {
@@ -895,7 +890,6 @@
         "--mode=paper"
       ],
       "capital": 1000.0,
-      "circuit_breaker": false,
       "close_strategy": {
         "name": "tiered_tp_atr_regime",
         "params": {

@@ -21,6 +21,12 @@ under both exits: over the continuous interval the suggested arm returns -75.5% 
 the strategy profitable; `mean_reversion` stays `no_edge`. No ratchet configuration is suggested. Fleet defaults,
 `config.example.json`, registry defaults, quarantine status and `edge_status` are unchanged.
 
+The committed suggested configuration has no `circuit_breaker` key, so the per-strategy circuit breaker stays at its
+default (on). The arm files set `"circuit_breaker": false` only as a harness field: the backtester does not read it,
+so no scored result depends on it, and the study measured nothing about the breaker. `verdict` copies the locked arm
+template, so a rerun of `verdict` writes `"circuit_breaker": false` back into every strategy block of the suggested
+file; remove it again before the file is used for anything.
+
 ## Design in short
 
 - Frozen protocol (`protocol.json`) and lock (`protocol_lock.json`) committed before any train, judge or continuous
@@ -81,3 +87,14 @@ uv run --no-sync python $S checks-post
 
 A rerun with the same `--work-dir` reuses every unit whose protocol, code, input, arm and selection hashes match.
 Run the long stages with `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1`.
+
+## Known limitations
+
+- The dirty-file guard in `lock_commit_status` (`run_study.py`) reads `git status --porcelain` through `git()`, which
+  strips the whole output. The leading space of the first line (for example ` M`) is lost, and `line[3:]` then drops
+  the first character of that path. When the first listed path is an allowed output (`scoring_log.json`,
+  `checks_post.json`, `README.md`, `REPORT.md`, `render_report.py`, a scoring output or a `suggested_*` file), the
+  guard reports it as blocking, and every scoring command and the `lock_committed` case of `checks-post` refuse. The
+  guard fails closed: a modified or renamed locked file stays blocking at any position. `run_study.py` is pinned in
+  `code_sha256` of the lock, so the code is left unchanged. Commit allowed outputs before a scoring command or
+  `checks-post` runs.
