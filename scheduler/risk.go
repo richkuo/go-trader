@@ -1677,14 +1677,14 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		return false, fmt.Sprintf("%s (%d in a row, threshold %d)", RiskReasonConsecutiveLosses, r.ConsecutiveLosses, lossStreakThreshold)
 	}
 
-	recordCircuitBreakerSuppression(s, cbEnabled, lossStreakThreshold, logger)
+	recordCircuitBreakerSuppression(sc, s, cbEnabled, lossStreakThreshold, logger)
 
 	return true, ""
 }
 
 var circuitBreakerSuppressedWarned sync.Map
 
-func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, lossStreakThreshold int, logger *StrategyLogger) {
+func recordCircuitBreakerSuppression(sc *StrategyConfig, s *StrategyState, cbEnabled bool, lossStreakThreshold int, logger *StrategyLogger) {
 	if s == nil {
 		return
 	}
@@ -1708,6 +1708,9 @@ func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, lossStrea
 	if logger != nil {
 		logger.Warn("WARNING: circuit breaker is DISABLED (circuit_breaker:false) and a halt threshold was crossed (%s) — NO circuit breaker fired. This strategy is trading WITHOUT the drawdown/consecutive-loss auto-halt and positions are NOT being auto-closed on this condition. This is a warning only (nothing was closed); re-enable circuit_breaker to restore protection.",
 			strings.Join(reasons, "; "))
+	}
+	if sc == nil || portfolioScopeFor(*sc) != ScopeLive {
+		return
 	}
 	queueCircuitBreakerSuppressionAlert(s.ID, reasons)
 }

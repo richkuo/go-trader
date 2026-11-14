@@ -1,0 +1,80 @@
+{
+ "AVAX": {
+  "best_ask": 7.5185,
+  "best_bid": 7.5181,
+  "half_spread_bps": 0.26601758376284806,
+  "time": 1794678185254
+ },
+ "BTC": {
+  "best_ask": 65908.0,
+  "best_bid": 65907.0,
+  "half_spread_bps": 0.07586390016310739,
+  "time": 1794678185254
+ },
+ "DOGE": {
+  "best_ask": 0.060612,
+  "best_bid": 0.060609,
+  "half_spread_bps": 0.24748187195255456,
+  "time": 1794678185254
+ },
+ "ENA": {
+  "best_ask": 0.121,
+  "best_bid": 0.12097,
+  "half_spread_bps": 1.2398231185685105,
+  "time": 1794678184727
+ },
+ "ETH": {
+  "best_ask": 1847.1,
+  "best_bid": 1847.0,
+  "half_spread_bps": 0.27070193010451543,
+  "time": 1794678185813
+ },
+ "HYPE": {
+  "best_ask": 66.161,
+  "best_bid": 66.146,
+  "half_spread_bps": 1.1337268625243235,
+  "time": 1794678183637
+ },
+ "NEAR": {
+  "best_ask": 3.1545,
+  "best_bid": 3.1543,
+  "half_spread_bps": 0.3170174993659301,
+  "time": 1794678184265
+ },
+ "PUMP": {
+  "best_ask": 0.003054,
+  "best_bid": 0.003053,
+  "half_spread_bps": 1.6374652038639252,
+  "time": 1794678184192
+ },
+ "SOL": {
+  "best_ask": 73.005,
+  "best_bid": 73.004,
+  "half_spread_bps": 0.06848892876401892,
+  "time": 1794678185813
+ },
+ "UNI": {
+  "best_ask": 5.0498,
+  "best_bid": 5.0493,
+  "half_spread_bps": 0.4950936222045638,
+  "time": 1794678184727
+ },
+ "WLD": {
+  "best_ask": 0.26657,
+  "best_bid": 0.26652,
+  "half_spread_bps": 0.937927929617785,
+  "time": 1794678185254
+ },
+ "XRP": {
+  "best_ask": 0.96393,
+  "best_bid": 0.96392,
+  "half_spread_bps": 0.05187125554350437,
+  "time": 1794678184265
+ },
+ "kPEPE": {
+  "best_ask": 0.003989,
+  "best_bid": 0.003985,
+  "half_spread_bps": 5.016302984700941,
+  "time": 1794678184727
+ }
+}
