@@ -1,0 +1,3122 @@
+{
+  "native_windows": {
+    "1h": [
+      "2026-05-03",
+      "2026-11-10"
+    ],
+    "30m": [
+      "2026-08-07",
+      "2026-11-10"
+    ]
+  },
+  "network_probe": {
+    "cache_load": "refused: mean_reversion_exit_2018 scoring: network access is blocked",
+    "socket_connect": "refused: mean_reversion_exit_2018 scoring: network access is blocked",
+    "venue_fetch": "refused: mean_reversion_exit_2018 scoring: network access is blocked"
+  },
+  "samples_sha256": "9017cfc529f52fb489efb5d10eec6f242f59ef37e728170a6c8b8a8fd65c0fef",
+  "selection_sha256": "a022e61e134b78936ce3bff8d50ba6bce5bf951816ed2ee2b3ac1e2021b86c0a",
+  "units": {
+    "judge_b2_proxy_BTC_1h_judge": {
+      "arms": {
+        "paired_b2_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 331,
+            "matched": 241,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 241,
+            "skipped_partial_closes": 134,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 322,
+            "matched": 241,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 241,
+            "skipped_partial_closes": 77,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 329,
+            "matched": 241,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 241,
+            "skipped_partial_closes": 151,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 326,
+            "matched": 241,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 241,
+            "skipped_partial_closes": 96,
+            "unmatched": []
+          }
+        },
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 323,
+            "matched": 241,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 241,
+            "skipped_partial_closes": 55,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 315,
+            "matched": 241,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 241,
+            "skipped_partial_closes": 55,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "588883aecd1e4019def9f65069f2756cc11a5e385d9846c9211466ef607b3ef9",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 12432,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 23:00:00",
+          "max_gap_bars": 9,
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.10896865290000002
+        },
+        "indicator_first_bar": "2025-05-24 08:00:00",
+        "scored_bars": 12423,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 323,
+        "exit_reasons": {
+          "sl": 132,
+          "tiered_tp_atr_regime:ranging_volatile:1": 109
+        },
+        "long_positions": 50,
+        "positions": 241,
+        "rejected_entries": 0,
+        "short_positions": 191,
+        "skipped_partial_closes": 77,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 802.3,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_b2_w150",
+          "paired_b2_w175"
+        ],
+        "coin": "BTC",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "b2",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    },
+    "judge_b2_proxy_BTC_4h_judge": {
+      "arms": {
+        "paired_b2_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 79,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 16,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 78,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 19,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 80,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 16,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 81,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 17,
+            "unmatched": []
+          }
+        },
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 78,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 8,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 78,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 19,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "9cb99501bc8c21c6d8d4b9256fd508c22fa7a28730271bffc12dfbee8061a715",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 3108,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 20:00:00",
+          "max_gap_bars": 2,
+          "missing_bars": 2,
+          "present_bars": 3106,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.10896865290000002
+        },
+        "indicator_first_bar": "2025-04-04 08:00:00",
+        "scored_bars": 3106,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 20:00:00"
+      },
+      "schedule": {
+        "close_records": 78,
+        "exit_reasons": {
+          "sl": 31,
+          "tiered_tp_atr_regime:ranging_volatile:1": 29
+        },
+        "long_positions": 14,
+        "positions": 60,
+        "rejected_entries": 0,
+        "short_positions": 46,
+        "skipped_partial_closes": 22,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 121.5,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_b2_w150",
+          "paired_b2_w175"
+        ],
+        "coin": "BTC",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "b2",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    },
+    "judge_b2_proxy_ETH_1h_judge": {
+      "arms": {
+        "paired_b2_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 342,
+            "matched": 248,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 248,
+            "skipped_partial_closes": 68,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 339,
+            "matched": 248,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 248,
+            "skipped_partial_closes": 60,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 341,
+            "matched": 248,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 248,
+            "skipped_partial_closes": 84,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 333,
+            "matched": 248,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 248,
+            "skipped_partial_closes": 70,
+            "unmatched": []
+          }
+        },
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 348,
+            "matched": 248,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 248,
+            "skipped_partial_closes": 57,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 336,
+            "matched": 248,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 248,
+            "skipped_partial_closes": 51,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "98437582d3455e6da91ac521114bc7892387648de532d29d99f105263ce0dba9",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 12432,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 23:00:00",
+          "max_gap_bars": 9,
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.10914220540000003
+        },
+        "indicator_first_bar": "2025-05-24 08:00:00",
+        "scored_bars": 12423,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 348,
+        "exit_reasons": {
+          "sl": 123,
+          "tiered_tp_atr_regime:ranging_volatile:1": 125
+        },
+        "long_positions": 52,
+        "positions": 248,
+        "rejected_entries": 0,
+        "short_positions": 196,
+        "skipped_partial_closes": 62,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 659.7,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_b2_w150",
+          "paired_b2_w175"
+        ],
+        "coin": "ETH",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "b2",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    },
+    "judge_b2_proxy_ETH_4h_judge": {
+      "arms": {
+        "paired_b2_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 80,
+            "matched": 58,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 58,
+            "skipped_partial_closes": 15,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 78,
+            "matched": 58,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 58,
+            "skipped_partial_closes": 8,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 80,
+            "matched": 58,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 58,
+            "skipped_partial_closes": 56,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 79,
+            "matched": 58,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 58,
+            "skipped_partial_closes": 20,
+            "unmatched": []
+          }
+        },
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 74,
+            "matched": 58,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 58,
+            "skipped_partial_closes": 12,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 72,
+            "matched": 58,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 58,
+            "skipped_partial_closes": 12,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "d474395ece3d035b0e544f783d32ca7574f0f454f57e67d5e0a4b8b7968bd971",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 3108,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 20:00:00",
+          "max_gap_bars": 2,
+          "missing_bars": 2,
+          "present_bars": 3106,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.10914220540000003
+        },
+        "indicator_first_bar": "2025-04-04 08:00:00",
+        "scored_bars": 3106,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 20:00:00"
+      },
+      "schedule": {
+        "close_records": 74,
+        "exit_reasons": {
+          "sl": 27,
+          "tiered_tp_atr_regime:ranging_volatile:1": 31
+        },
+        "long_positions": 14,
+        "positions": 58,
+        "rejected_entries": 0,
+        "short_positions": 44,
+        "skipped_partial_closes": 12,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 109.7,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_b2_w150",
+          "paired_b2_w175"
+        ],
+        "coin": "ETH",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "b2",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    },
+    "judge_b2_proxy_SOL_1h_judge": {
+      "arms": {
+        "paired_b2_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 327,
+            "matched": 233,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 233,
+            "skipped_partial_closes": 102,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 322,
+            "matched": 233,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 233,
+            "skipped_partial_closes": 81,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 331,
+            "matched": 233,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 233,
+            "skipped_partial_closes": 119,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 324,
+            "matched": 233,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 233,
+            "skipped_partial_closes": 123,
+            "unmatched": []
+          }
+        },
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 309,
+            "matched": 233,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 233,
+            "skipped_partial_closes": 36,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 310,
+            "matched": 233,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 233,
+            "skipped_partial_closes": 41,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "f71b797bccc2e6f0f26b362165ebe1ac3616c4189b867705a78b657b3779eade",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 12432,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 23:00:00",
+          "max_gap_bars": 9,
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.04463814450000002
+        },
+        "indicator_first_bar": "2025-05-24 08:00:00",
+        "scored_bars": 12423,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 309,
+        "exit_reasons": {
+          "sl": 117,
+          "tiered_tp_atr_regime:ranging_volatile:1": 116
+        },
+        "long_positions": 46,
+        "positions": 233,
+        "rejected_entries": 0,
+        "short_positions": 187,
+        "skipped_partial_closes": 32,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 758.2,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_b2_w150",
+          "paired_b2_w175"
+        ],
+        "coin": "SOL",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "b2",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    },
+    "judge_b2_proxy_SOL_4h_judge": {
+      "arms": {
+        "paired_b2_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 90,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 20,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 92,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 42,
+            "unmatched": []
+          }
+        },
+        "paired_b2_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 94,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 25,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 92,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 40,
+            "unmatched": []
+          }
+        },
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 88,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 15,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 88,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 32,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "484c527435a9bbe102fe70fbc6cd10b1c151fa2c6a2a7403277ef43fa17d6cc5",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 3108,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 20:00:00",
+          "max_gap_bars": 2,
+          "missing_bars": 2,
+          "present_bars": 3106,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.04463814450000002
+        },
+        "indicator_first_bar": "2025-04-04 08:00:00",
+        "scored_bars": 3106,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 20:00:00"
+      },
+      "schedule": {
+        "close_records": 88,
+        "exit_reasons": {
+          "sl": 29,
+          "tiered_tp_atr_regime:ranging_volatile:1": 31
+        },
+        "long_positions": 10,
+        "positions": 60,
+        "rejected_entries": 0,
+        "short_positions": 50,
+        "skipped_partial_closes": 17,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 118.9,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_b2_w150",
+          "paired_b2_w175"
+        ],
+        "coin": "SOL",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "b2",
+        "group": "proxy",
+        "interval": "4h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    },
+    "judge_ratchet_native_BNB_1h_tail": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 37,
+            "matched": 24,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 24,
+            "skipped_partial_closes": 12,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 36,
+            "matched": 24,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 24,
+            "skipped_partial_closes": 15,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 34,
+            "matched": 24,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 24,
+            "skipped_partial_closes": 19,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 33,
+            "matched": 24,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 24,
+            "skipped_partial_closes": 23,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 33,
+            "matched": 24,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 24,
+            "skipped_partial_closes": 22,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 33,
+            "matched": 24,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 24,
+            "skipped_partial_closes": 24,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "b24b75e69c64b1c06d7467c6cbf03833c8c8e707a2a6807710bb1a0656455d65",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 4584,
+          "first_bar": "2026-05-03 00:00:00",
+          "last_bar": "2026-11-09 23:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 4584,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 4584,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 4584,
+          "sum_rate": 0.040123555000000005
+        },
+        "indicator_first_bar": "2026-04-16 08:00:00",
+        "scored_bars": 4584,
+        "scored_first_bar": "2026-05-03 00:00:00",
+        "scored_last_bar": "2026-11-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 37,
+        "exit_reasons": {
+          "sl": 21,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 3
+        },
+        "long_positions": 24,
+        "positions": 24,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 19,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 92.6,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "BNB",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "native",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "tail"
+      }
+    },
+    "judge_ratchet_native_BNB_30m_tail": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 23,
+            "matched": 15,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 15,
+            "skipped_partial_closes": 2,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 22,
+            "matched": 15,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 15,
+            "skipped_partial_closes": 11,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 22,
+            "matched": 15,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 15,
+            "skipped_partial_closes": 29,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 19,
+            "matched": 15,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 15,
+            "skipped_partial_closes": 16,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 21,
+            "matched": 15,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 15,
+            "skipped_partial_closes": 9,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 19,
+            "matched": 15,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 15,
+            "skipped_partial_closes": 13,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "36497ff91cea0f930d986ed12f0f816c5cc00d094224cb8ac524a4da1a7e145d",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 4560,
+          "first_bar": "2026-08-07 00:00:00",
+          "last_bar": "2026-11-09 23:30:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 4560,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 2280,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 2280,
+          "sum_rate": 0.0229661017
+        },
+        "indicator_first_bar": "2026-07-29 16:00:00",
+        "scored_bars": 4560,
+        "scored_first_bar": "2026-08-07 00:00:00",
+        "scored_last_bar": "2026-11-09 23:30:00"
+      },
+      "schedule": {
+        "close_records": 23,
+        "exit_reasons": {
+          "sl": 14,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 1
+        },
+        "long_positions": 15,
+        "positions": 15,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 3,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 85.2,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "BNB",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "native",
+        "interval": "30m",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "tail"
+      }
+    },
+    "judge_ratchet_native_BTC_1h_tail": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 30,
+            "matched": 20,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 20,
+            "skipped_partial_closes": 15,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 30,
+            "matched": 20,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 20,
+            "skipped_partial_closes": 16,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 28,
+            "matched": 20,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 20,
+            "skipped_partial_closes": 16,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 28,
+            "matched": 20,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 20,
+            "skipped_partial_closes": 25,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 27,
+            "matched": 20,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 20,
+            "skipped_partial_closes": 18,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 26,
+            "matched": 20,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 20,
+            "skipped_partial_closes": 14,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "cff32fe4f8612261becb41f760753dc5c8384fc948b9fd770b8fd5723cdea735",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 4584,
+          "first_bar": "2026-05-03 00:00:00",
+          "last_bar": "2026-11-09 23:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 4584,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 4584,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 4584,
+          "sum_rate": 0.0399892998
+        },
+        "indicator_first_bar": "2026-04-16 08:00:00",
+        "scored_bars": 4584,
+        "scored_first_bar": "2026-05-03 00:00:00",
+        "scored_last_bar": "2026-11-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 30,
+        "exit_reasons": {
+          "sl": 19,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 1
+        },
+        "long_positions": 20,
+        "positions": 20,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 15,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 76.0,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "BTC",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "native",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "tail"
+      }
+    },
+    "judge_ratchet_native_BTC_30m_tail": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 42,
+            "matched": 26,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 26,
+            "skipped_partial_closes": 35,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 38,
+            "matched": 26,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 26,
+            "skipped_partial_closes": 43,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 38,
+            "matched": 26,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 26,
+            "skipped_partial_closes": 58,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 35,
+            "matched": 26,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 26,
+            "skipped_partial_closes": 69,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 41,
+            "matched": 26,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 26,
+            "skipped_partial_closes": 89,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 39,
+            "matched": 26,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 26,
+            "skipped_partial_closes": 83,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "bc181bba7e66941a674f5440e13d682607e64817c1e8752aab45eeb830d4fa9a",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 4560,
+          "first_bar": "2026-08-07 00:00:00",
+          "last_bar": "2026-11-09 23:30:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 4560,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 2280,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 2280,
+          "sum_rate": 0.023383940600000003
+        },
+        "indicator_first_bar": "2026-07-29 16:00:00",
+        "scored_bars": 4560,
+        "scored_first_bar": "2026-08-07 00:00:00",
+        "scored_last_bar": "2026-11-09 23:30:00"
+      },
+      "schedule": {
+        "close_records": 42,
+        "exit_reasons": {
+          "sl": 23,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 3
+        },
+        "long_positions": 26,
+        "positions": 26,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 47,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 117.3,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "BTC",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "native",
+        "interval": "30m",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "tail"
+      }
+    },
+    "judge_ratchet_native_ETH_1h_tail": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 44,
+            "matched": 29,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 29,
+            "skipped_partial_closes": 25,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 43,
+            "matched": 29,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 29,
+            "skipped_partial_closes": 16,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 42,
+            "matched": 29,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 29,
+            "skipped_partial_closes": 13,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 42,
+            "matched": 29,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 29,
+            "skipped_partial_closes": 16,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 40,
+            "matched": 29,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 29,
+            "skipped_partial_closes": 12,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 39,
+            "matched": 29,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 29,
+            "skipped_partial_closes": 19,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "2af13690c83530ad6b1b1e3f0e10e9aef533d71dcd1324bc9f5fb02af77211e8",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 4584,
+          "first_bar": "2026-05-03 00:00:00",
+          "last_bar": "2026-11-09 23:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 4584,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 4584,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 4584,
+          "sum_rate": 0.04061885180000001
+        },
+        "indicator_first_bar": "2026-04-16 08:00:00",
+        "scored_bars": 4584,
+        "scored_first_bar": "2026-05-03 00:00:00",
+        "scored_last_bar": "2026-11-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 44,
+        "exit_reasons": {
+          "sl": 25,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 4
+        },
+        "long_positions": 29,
+        "positions": 29,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 29,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 104.7,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "ETH",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "native",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "tail"
+      }
+    },
+    "judge_ratchet_native_ETH_30m_tail": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 48,
+            "matched": 30,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 30,
+            "skipped_partial_closes": 41,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 46,
+            "matched": 30,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 30,
+            "skipped_partial_closes": 46,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 43,
+            "matched": 30,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 30,
+            "skipped_partial_closes": 17,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 42,
+            "matched": 30,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 30,
+            "skipped_partial_closes": 34,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 38,
+            "matched": 30,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 30,
+            "skipped_partial_closes": 43,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 38,
+            "matched": 30,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 30,
+            "skipped_partial_closes": 45,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "81bf1442ef306c1ee03325da4b9f92f0d14b63211b888afeb6daf111d2bcf171",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 4560,
+          "first_bar": "2026-08-07 00:00:00",
+          "last_bar": "2026-11-09 23:30:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 4560,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 2280,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 2280,
+          "sum_rate": 0.022484317200000003
+        },
+        "indicator_first_bar": "2026-07-29 16:00:00",
+        "scored_bars": 4560,
+        "scored_first_bar": "2026-08-07 00:00:00",
+        "scored_last_bar": "2026-11-09 23:30:00"
+      },
+      "schedule": {
+        "close_records": 48,
+        "exit_reasons": {
+          "sl": 26,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 4
+        },
+        "long_positions": 30,
+        "positions": 30,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 43,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 120.0,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "ETH",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "native",
+        "interval": "30m",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "tail"
+      }
+    },
+    "judge_ratchet_native_HYPE_1h_tail": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 44,
+            "matched": 28,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 28,
+            "skipped_partial_closes": 12,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 43,
+            "matched": 28,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 28,
+            "skipped_partial_closes": 14,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 35,
+            "matched": 28,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 28,
+            "skipped_partial_closes": 42,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 35,
+            "matched": 28,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 28,
+            "skipped_partial_closes": 41,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 36,
+            "matched": 28,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 28,
+            "skipped_partial_closes": 43,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 36,
+            "matched": 28,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 28,
+            "skipped_partial_closes": 40,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "1538bd91ddc78af4bbe4c6664b882d503fe24764f3ca207f0393ff6cad345bbc",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 4584,
+          "first_bar": "2026-05-03 00:00:00",
+          "last_bar": "2026-11-09 23:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 4584,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 4584,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 4584,
+          "sum_rate": 0.055024123400000007
+        },
+        "indicator_first_bar": "2026-04-16 08:00:00",
+        "scored_bars": 4584,
+        "scored_first_bar": "2026-05-03 00:00:00",
+        "scored_last_bar": "2026-11-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 44,
+        "exit_reasons": {
+          "sl": 27,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 1
+        },
+        "long_positions": 28,
+        "positions": 28,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 15,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 152.9,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "HYPE",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "native",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "tail"
+      }
+    },
+    "judge_ratchet_native_HYPE_30m_tail": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 30,
+            "matched": 19,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 19,
+            "skipped_partial_closes": 24,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 30,
+            "matched": 19,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 19,
+            "skipped_partial_closes": 33,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 29,
+            "matched": 19,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 19,
+            "skipped_partial_closes": 23,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 28,
+            "matched": 19,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 19,
+            "skipped_partial_closes": 36,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 28,
+            "matched": 19,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 19,
+            "skipped_partial_closes": 21,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 28,
+            "matched": 19,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 19,
+            "skipped_partial_closes": 35,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "f53de09373d8c2df221bd1ce40fe47fcbd66a7a07c3d8bdc11ec6e0a72b53746",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 4560,
+          "first_bar": "2026-08-07 00:00:00",
+          "last_bar": "2026-11-09 23:30:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 4560,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 2280,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 2280,
+          "sum_rate": 0.028528448900000003
+        },
+        "indicator_first_bar": "2026-07-29 16:00:00",
+        "scored_bars": 4560,
+        "scored_first_bar": "2026-08-07 00:00:00",
+        "scored_last_bar": "2026-11-09 23:30:00"
+      },
+      "schedule": {
+        "close_records": 30,
+        "exit_reasons": {
+          "sl": 15,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 4
+        },
+        "long_positions": 19,
+        "positions": 19,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 36,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 46.0,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "HYPE",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "native",
+        "interval": "30m",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "tail"
+      }
+    },
+    "judge_ratchet_native_SOL_1h_tail": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 30,
+            "matched": 24,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 24,
+            "skipped_partial_closes": 1,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 27,
+            "matched": 24,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 24,
+            "skipped_partial_closes": 1,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 27,
+            "matched": 24,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 24,
+            "skipped_partial_closes": 14,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 25,
+            "matched": 24,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 24,
+            "skipped_partial_closes": 0,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 26,
+            "matched": 24,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 24,
+            "skipped_partial_closes": 14,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 26,
+            "matched": 24,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 24,
+            "skipped_partial_closes": 0,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "1a18d3e8aaeac74a6ab63869567cdfc40becc6701ed79fd3cfc1512adc423f8b",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 4584,
+          "first_bar": "2026-05-03 00:00:00",
+          "last_bar": "2026-11-09 23:00:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 4584,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 4584,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 4584,
+          "sum_rate": 0.0263186086
+        },
+        "indicator_first_bar": "2026-04-16 08:00:00",
+        "scored_bars": 4584,
+        "scored_first_bar": "2026-05-03 00:00:00",
+        "scored_last_bar": "2026-11-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 30,
+        "exit_reasons": {
+          "sl": 23,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 1
+        },
+        "long_positions": 24,
+        "positions": 24,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 1,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 148.4,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "SOL",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "native",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "tail"
+      }
+    },
+    "judge_ratchet_native_SOL_30m_tail": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 34,
+            "matched": 27,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 27,
+            "skipped_partial_closes": 18,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 34,
+            "matched": 27,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 27,
+            "skipped_partial_closes": 15,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 34,
+            "matched": 27,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 27,
+            "skipped_partial_closes": 5,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 34,
+            "matched": 27,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 27,
+            "skipped_partial_closes": 5,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 34,
+            "matched": 27,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 27,
+            "skipped_partial_closes": 6,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 33,
+            "matched": 27,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 27,
+            "skipped_partial_closes": 6,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "4c52dbc7733287282a79d816023e773a3630de90119daf6c1750f48ba9e2b356",
+      "range": {
+        "candles": {
+          "complete": true,
+          "expected_bars": 4560,
+          "first_bar": "2026-08-07 00:00:00",
+          "last_bar": "2026-11-09 23:30:00",
+          "max_gap_bars": 0,
+          "missing_bars": 0,
+          "present_bars": 4560,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 2280,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 2280,
+          "sum_rate": 0.0196048063
+        },
+        "indicator_first_bar": "2026-07-29 16:00:00",
+        "scored_bars": 4560,
+        "scored_first_bar": "2026-08-07 00:00:00",
+        "scored_last_bar": "2026-11-09 23:30:00"
+      },
+      "schedule": {
+        "close_records": 34,
+        "exit_reasons": {
+          "sl": 22,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 5
+        },
+        "long_positions": 27,
+        "positions": 27,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 14,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 109.7,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "SOL",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "native",
+        "interval": "30m",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "tail"
+      }
+    },
+    "judge_ratchet_proxy_BNB_1h_judge": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 97,
+            "matched": 64,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 64,
+            "skipped_partial_closes": 48,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 97,
+            "matched": 64,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 64,
+            "skipped_partial_closes": 49,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 89,
+            "matched": 64,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 64,
+            "skipped_partial_closes": 57,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 90,
+            "matched": 64,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 64,
+            "skipped_partial_closes": 62,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 84,
+            "matched": 64,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 64,
+            "skipped_partial_closes": 59,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 83,
+            "matched": 64,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 64,
+            "skipped_partial_closes": 63,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "ac4581f0473c1b2d1e833d69676219f1177101c96b9ab785f2bc7f0df24e4839",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 12432,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 23:00:00",
+          "max_gap_bars": 9,
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.09571083230000002
+        },
+        "indicator_first_bar": "2025-05-24 08:00:00",
+        "scored_bars": 12423,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 97,
+        "exit_reasons": {
+          "sl": 58,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 6
+        },
+        "long_positions": 64,
+        "positions": 64,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 59,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 445.2,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "BNB",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    },
+    "judge_ratchet_proxy_BNB_30m_judge": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 189,
+            "matched": 123,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 123,
+            "skipped_partial_closes": 56,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 181,
+            "matched": 123,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 123,
+            "skipped_partial_closes": 47,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 182,
+            "matched": 123,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 123,
+            "skipped_partial_closes": 58,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 176,
+            "matched": 123,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 123,
+            "skipped_partial_closes": 53,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 172,
+            "matched": 123,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 123,
+            "skipped_partial_closes": 70,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 169,
+            "matched": 123,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 123,
+            "skipped_partial_closes": 64,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "174d029775a468acc66fb15495fe0f97ea21a630995ca6bd1f48c02515257a38",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 24864,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 23:30:00",
+          "max_gap_bars": 18,
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.09571083230000002
+        },
+        "indicator_first_bar": "2025-06-01 16:00:00",
+        "scored_bars": 24846,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 23:30:00"
+      },
+      "schedule": {
+        "close_records": 189,
+        "exit_reasons": {
+          "sl": 107,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 16
+        },
+        "long_positions": 123,
+        "positions": 123,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 60,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 1174.8,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "BNB",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    },
+    "judge_ratchet_proxy_BTC_1h_judge": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 91,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 33,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 89,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 45,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 90,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 51,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 89,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 62,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 89,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 49,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 87,
+            "matched": 60,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 60,
+            "skipped_partial_closes": 60,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "af3cded36f19631dee6d08c091a366439c8c9cf10ed09f774a73abfe101e83f2",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 12432,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 23:00:00",
+          "max_gap_bars": 9,
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.10896865290000002
+        },
+        "indicator_first_bar": "2025-05-24 08:00:00",
+        "scored_bars": 12423,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 91,
+        "exit_reasons": {
+          "sl": 50,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 10
+        },
+        "long_positions": 60,
+        "positions": 60,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 53,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 437.7,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "BTC",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    },
+    "judge_ratchet_proxy_BTC_30m_judge": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 217,
+            "matched": 139,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 139,
+            "skipped_partial_closes": 135,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 208,
+            "matched": 139,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 139,
+            "skipped_partial_closes": 124,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 205,
+            "matched": 139,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 139,
+            "skipped_partial_closes": 156,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 198,
+            "matched": 139,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 139,
+            "skipped_partial_closes": 179,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 200,
+            "matched": 139,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 139,
+            "skipped_partial_closes": 181,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 196,
+            "matched": 139,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 139,
+            "skipped_partial_closes": 245,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "f90b33271d40510d45556eaf6a59e4b6bab6cd306d3cb818a1d0f005e768c466",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 24864,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 23:30:00",
+          "max_gap_bars": 18,
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.10896865290000002
+        },
+        "indicator_first_bar": "2025-06-01 16:00:00",
+        "scored_bars": 24846,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 23:30:00"
+      },
+      "schedule": {
+        "close_records": 217,
+        "exit_reasons": {
+          "sl": 124,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 15
+        },
+        "long_positions": 139,
+        "positions": 139,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 222,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 1184.6,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "BTC",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    },
+    "judge_ratchet_proxy_ETH_1h_judge": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 116,
+            "matched": 62,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 62,
+            "skipped_partial_closes": 61,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 115,
+            "matched": 62,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 62,
+            "skipped_partial_closes": 62,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 106,
+            "matched": 62,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 62,
+            "skipped_partial_closes": 78,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 105,
+            "matched": 62,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 62,
+            "skipped_partial_closes": 100,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 106,
+            "matched": 62,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 62,
+            "skipped_partial_closes": 85,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 104,
+            "matched": 62,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 62,
+            "skipped_partial_closes": 55,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "ed1554aaa9fec342e84bd823d44d224cacd04b01760883e638cea3288f07631d",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 12432,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 23:00:00",
+          "max_gap_bars": 9,
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.10914220540000003
+        },
+        "indicator_first_bar": "2025-05-24 08:00:00",
+        "scored_bars": 12423,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 116,
+        "exit_reasons": {
+          "sl": 48,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 14
+        },
+        "long_positions": 62,
+        "positions": 62,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 61,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 421.2,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "ETH",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    },
+    "judge_ratchet_proxy_ETH_30m_judge": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 187,
+            "matched": 120,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 120,
+            "skipped_partial_closes": 89,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 183,
+            "matched": 120,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 120,
+            "skipped_partial_closes": 105,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 177,
+            "matched": 120,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 120,
+            "skipped_partial_closes": 78,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 168,
+            "matched": 120,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 120,
+            "skipped_partial_closes": 89,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 171,
+            "matched": 120,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 120,
+            "skipped_partial_closes": 79,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 163,
+            "matched": 120,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 120,
+            "skipped_partial_closes": 63,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "7935977c7ade2e25d6ff28b5146fb5c0fea8d4783df499ee3ef4ebdb799e6d17",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 24864,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 23:30:00",
+          "max_gap_bars": 18,
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.10914220540000003
+        },
+        "indicator_first_bar": "2025-06-01 16:00:00",
+        "scored_bars": 24846,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 23:30:00"
+      },
+      "schedule": {
+        "close_records": 187,
+        "exit_reasons": {
+          "sl": 100,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 20
+        },
+        "long_positions": 120,
+        "positions": 120,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 112,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 1132.7,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "ETH",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    },
+    "judge_ratchet_proxy_SOL_1h_judge": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 72,
+            "matched": 46,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 46,
+            "skipped_partial_closes": 37,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 70,
+            "matched": 46,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 46,
+            "skipped_partial_closes": 35,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 68,
+            "matched": 46,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 46,
+            "skipped_partial_closes": 61,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 67,
+            "matched": 46,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 46,
+            "skipped_partial_closes": 43,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 66,
+            "matched": 46,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 46,
+            "skipped_partial_closes": 57,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 64,
+            "matched": 46,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 46,
+            "skipped_partial_closes": 39,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "7b92c111367ab69b1a388082a73dae89eab07bd11078cf8ca56e808dd5ab52ff",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 12432,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 23:00:00",
+          "max_gap_bars": 9,
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.04463814450000002
+        },
+        "indicator_first_bar": "2025-05-24 08:00:00",
+        "scored_bars": 12423,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 23:00:00"
+      },
+      "schedule": {
+        "close_records": 72,
+        "exit_reasons": {
+          "sl": 37,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 9
+        },
+        "long_positions": 46,
+        "positions": 46,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 27,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 265.2,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "SOL",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "1h",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    },
+    "judge_ratchet_proxy_SOL_30m_judge": {
+      "arms": {
+        "paired_incumbent": {
+          "base": {
+            "censored": 0,
+            "close_records": 175,
+            "matched": 117,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 117,
+            "skipped_partial_closes": 47,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 171,
+            "matched": 117,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 117,
+            "skipped_partial_closes": 49,
+            "unmatched": []
+          }
+        },
+        "paired_r_w150": {
+          "base": {
+            "censored": 0,
+            "close_records": 157,
+            "matched": 117,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 117,
+            "skipped_partial_closes": 62,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 156,
+            "matched": 117,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 117,
+            "skipped_partial_closes": 56,
+            "unmatched": []
+          }
+        },
+        "paired_r_w175": {
+          "base": {
+            "censored": 0,
+            "close_records": 157,
+            "matched": 117,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 117,
+            "skipped_partial_closes": 82,
+            "unmatched": []
+          },
+          "stress": {
+            "censored": 0,
+            "close_records": 155,
+            "matched": 117,
+            "rejected_entries": 0,
+            "reruns": 0,
+            "scheduled": 117,
+            "skipped_partial_closes": 45,
+            "unmatched": []
+          }
+        }
+      },
+      "fingerprint": "1d14ba94ef10e709c62c7c36ac3ba5922326adfd16c57ba7a582beb02f5da0e7",
+      "range": {
+        "candles": {
+          "complete": false,
+          "expected_bars": 24864,
+          "first_bar": "2025-06-10 00:00:00",
+          "last_bar": "2026-11-09 23:30:00",
+          "max_gap_bars": 18,
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "warmup_bars": 400,
+          "warmup_missing_bars": 0
+        },
+        "funding": {
+          "available": true,
+          "complete": true,
+          "expected_hours": 12432,
+          "max_gap_hours": 0,
+          "missing_hours": 0,
+          "present_hours": 12432,
+          "sum_rate": 0.04463814450000002
+        },
+        "indicator_first_bar": "2025-06-01 16:00:00",
+        "scored_bars": 24846,
+        "scored_first_bar": "2025-06-10 00:00:00",
+        "scored_last_bar": "2026-11-09 23:30:00"
+      },
+      "schedule": {
+        "close_records": 175,
+        "exit_reasons": {
+          "sl": 103,
+          "trailing_tp_ratchet_regime:ranging_volatile:3": 14
+        },
+        "long_positions": 117,
+        "positions": 117,
+        "rejected_entries": 0,
+        "short_positions": 0,
+        "skipped_partial_closes": 60,
+        "stop_warmup_skipped": 0
+      },
+      "seconds": 1087.9,
+      "unit": {
+        "arms": [
+          "paired_incumbent",
+          "paired_r_w150",
+          "paired_r_w175"
+        ],
+        "coin": "SOL",
+        "costs": [
+          "base",
+          "stress"
+        ],
+        "frame": "ratchet",
+        "group": "proxy",
+        "interval": "30m",
+        "kind": "paired",
+        "phase": "judge",
+        "window": "judge"
+      }
+    }
+  },
+  "window": {
+    "end": "2026-11-10",
+    "role": "judgment: paired verdict statistics",
+    "start": "2025-06-10"
+  }
+}

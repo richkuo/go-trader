@@ -1,0 +1,1359 @@
+{
+  "inputs": {
+    "proxy_manifest_1h.json": "9819be33d989280d1d01d3cba9e61ae791f88b74f4f85647460aac3f3b925631",
+    "proxy_manifest_30m.json": "435921c123eee18cbc900297cd1a3552d8638acd666dbaa4566a0d9111a92a08",
+    "proxy_manifest_4h.json": "1afc267bf5dfed146c21b31612acecb76ed4deac3a4f89bd411228124399898a",
+    "study_manifest.json": "06efbfe9ee712356f135d4a565375a4dfc5da9cd953112566bcdc9a572df167a",
+    "venue_manifest_1h.json": "942e62458f8dcb2377ab8886ae2bf43807b23f2df3293964497615aa35b994da",
+    "venue_manifest_30m.json": "3eb371eb75e7282ec826de75a507d85252ca8470a19d979aaca872006f86c9a7"
+  },
+  "network_calls": 0,
+  "protocol_sha256": "3247b07ccc23d7e8992376e71ce2be6f7c9ffb60bcad96ce6c06083d0870f7ca",
+  "rows": [
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 4584,
+        "first_bar": "2026-05-03 00:00:00",
+        "last_bar": "2026-11-09 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4584,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BNB",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 4584,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "native",
+      "interval": "1h",
+      "provenance": "venue",
+      "reason": "complete warm-up and funding",
+      "start": "2026-05-03",
+      "status": "included",
+      "warmup_first_bar": "2026-04-16 08:00:00",
+      "window": "tail"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 4560,
+        "first_bar": "2026-08-07 00:00:00",
+        "last_bar": "2026-11-09 23:30:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4560,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BNB",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 2280,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "native",
+      "interval": "30m",
+      "provenance": "venue",
+      "reason": "complete warm-up and funding",
+      "start": "2026-08-07",
+      "status": "included",
+      "warmup_first_bar": "2026-07-29 16:00:00",
+      "window": "tail"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 4584,
+        "first_bar": "2026-05-03 00:00:00",
+        "last_bar": "2026-11-09 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4584,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BTC",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 4584,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "native",
+      "interval": "1h",
+      "provenance": "venue",
+      "reason": "complete warm-up and funding",
+      "start": "2026-05-03",
+      "status": "included",
+      "warmup_first_bar": "2026-04-16 08:00:00",
+      "window": "tail"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 4560,
+        "first_bar": "2026-08-07 00:00:00",
+        "last_bar": "2026-11-09 23:30:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4560,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BTC",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 2280,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "native",
+      "interval": "30m",
+      "provenance": "venue",
+      "reason": "complete warm-up and funding",
+      "start": "2026-08-07",
+      "status": "included",
+      "warmup_first_bar": "2026-07-29 16:00:00",
+      "window": "tail"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 4584,
+        "first_bar": "2026-05-03 00:00:00",
+        "last_bar": "2026-11-09 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4584,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "ETH",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 4584,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "native",
+      "interval": "1h",
+      "provenance": "venue",
+      "reason": "complete warm-up and funding",
+      "start": "2026-05-03",
+      "status": "included",
+      "warmup_first_bar": "2026-04-16 08:00:00",
+      "window": "tail"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 4560,
+        "first_bar": "2026-08-07 00:00:00",
+        "last_bar": "2026-11-09 23:30:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4560,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "ETH",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 2280,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "native",
+      "interval": "30m",
+      "provenance": "venue",
+      "reason": "complete warm-up and funding",
+      "start": "2026-08-07",
+      "status": "included",
+      "warmup_first_bar": "2026-07-29 16:00:00",
+      "window": "tail"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 4584,
+        "first_bar": "2026-05-03 00:00:00",
+        "last_bar": "2026-11-09 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4584,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "HYPE",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 4584,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "native",
+      "interval": "1h",
+      "provenance": "venue",
+      "reason": "complete warm-up and funding",
+      "start": "2026-05-03",
+      "status": "included",
+      "warmup_first_bar": "2026-04-16 08:00:00",
+      "window": "tail"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 4560,
+        "first_bar": "2026-08-07 00:00:00",
+        "last_bar": "2026-11-09 23:30:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4560,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "HYPE",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 2280,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "native",
+      "interval": "30m",
+      "provenance": "venue",
+      "reason": "complete warm-up and funding",
+      "start": "2026-08-07",
+      "status": "included",
+      "warmup_first_bar": "2026-07-29 16:00:00",
+      "window": "tail"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 4584,
+        "first_bar": "2026-05-03 00:00:00",
+        "last_bar": "2026-11-09 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4584,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "SOL",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 4584,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "native",
+      "interval": "1h",
+      "provenance": "venue",
+      "reason": "complete warm-up and funding",
+      "start": "2026-05-03",
+      "status": "included",
+      "warmup_first_bar": "2026-04-16 08:00:00",
+      "window": "tail"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 4560,
+        "first_bar": "2026-08-07 00:00:00",
+        "last_bar": "2026-11-09 23:30:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4560,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "SOL",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 2280,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "native",
+      "interval": "30m",
+      "provenance": "venue",
+      "reason": "complete warm-up and funding",
+      "start": "2026-08-07",
+      "status": "included",
+      "warmup_first_bar": "2026-07-29 16:00:00",
+      "window": "tail"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 29472,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2026-11-09 23:00:00",
+        "max_gap_bars": 9,
+        "missing_bars": 9,
+        "present_bars": 29463,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BNB",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 29472,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 9 missing candles in the window scored as they are",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-14 08:00:00",
+      "window": "continuous"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 12432,
+        "first_bar": "2025-06-10 00:00:00",
+        "last_bar": "2026-11-09 23:00:00",
+        "max_gap_bars": 9,
+        "missing_bars": 9,
+        "present_bars": 12423,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BNB",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 12432,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 9 missing candles in the window scored as they are",
+      "start": "2025-06-10",
+      "status": "included",
+      "warmup_first_bar": "2025-05-24 08:00:00",
+      "window": "judge"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 17040,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2025-06-09 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 17040,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BNB",
+      "end": "2025-06-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 17040,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-14 08:00:00",
+      "window": "train"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 58944,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2026-11-09 23:30:00",
+        "max_gap_bars": 18,
+        "missing_bars": 18,
+        "present_bars": 58926,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BNB",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 29472,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 18 missing candles in the window scored as they are",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-22 16:00:00",
+      "window": "continuous"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 24864,
+        "first_bar": "2025-06-10 00:00:00",
+        "last_bar": "2026-11-09 23:30:00",
+        "max_gap_bars": 18,
+        "missing_bars": 18,
+        "present_bars": 24846,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BNB",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 12432,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 18 missing candles in the window scored as they are",
+      "start": "2025-06-10",
+      "status": "included",
+      "warmup_first_bar": "2025-06-01 16:00:00",
+      "window": "judge"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 34080,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2025-06-09 23:30:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 34080,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BNB",
+      "end": "2025-06-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 17040,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-22 16:00:00",
+      "window": "train"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 29472,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2026-11-09 23:00:00",
+        "max_gap_bars": 9,
+        "missing_bars": 9,
+        "present_bars": 29463,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BTC",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 29472,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 9 missing candles in the window scored as they are",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-14 08:00:00",
+      "window": "continuous"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 12432,
+        "first_bar": "2025-06-10 00:00:00",
+        "last_bar": "2026-11-09 23:00:00",
+        "max_gap_bars": 9,
+        "missing_bars": 9,
+        "present_bars": 12423,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BTC",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 12432,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 9 missing candles in the window scored as they are",
+      "start": "2025-06-10",
+      "status": "included",
+      "warmup_first_bar": "2025-05-24 08:00:00",
+      "window": "judge"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 17040,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2025-06-09 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 17040,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BTC",
+      "end": "2025-06-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 17040,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-14 08:00:00",
+      "window": "train"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 58944,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2026-11-09 23:30:00",
+        "max_gap_bars": 18,
+        "missing_bars": 18,
+        "present_bars": 58926,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BTC",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 29472,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 18 missing candles in the window scored as they are",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-22 16:00:00",
+      "window": "continuous"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 24864,
+        "first_bar": "2025-06-10 00:00:00",
+        "last_bar": "2026-11-09 23:30:00",
+        "max_gap_bars": 18,
+        "missing_bars": 18,
+        "present_bars": 24846,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BTC",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 12432,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 18 missing candles in the window scored as they are",
+      "start": "2025-06-10",
+      "status": "included",
+      "warmup_first_bar": "2025-06-01 16:00:00",
+      "window": "judge"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 34080,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2025-06-09 23:30:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 34080,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BTC",
+      "end": "2025-06-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 17040,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-22 16:00:00",
+      "window": "train"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 7368,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2026-11-09 20:00:00",
+        "max_gap_bars": 2,
+        "missing_bars": 2,
+        "present_bars": 7366,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BTC",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 29472,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "4h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 2 missing candles in the window scored as they are",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-04-25 08:00:00",
+      "window": "continuous"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 3108,
+        "first_bar": "2025-06-10 00:00:00",
+        "last_bar": "2026-11-09 20:00:00",
+        "max_gap_bars": 2,
+        "missing_bars": 2,
+        "present_bars": 3106,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BTC",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 12432,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "proxy",
+      "interval": "4h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 2 missing candles in the window scored as they are",
+      "start": "2025-06-10",
+      "status": "included",
+      "warmup_first_bar": "2025-04-04 08:00:00",
+      "window": "judge"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 4260,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2025-06-09 20:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4260,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "BTC",
+      "end": "2025-06-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 17040,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "4h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-04-25 08:00:00",
+      "window": "train"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 29472,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2026-11-09 23:00:00",
+        "max_gap_bars": 9,
+        "missing_bars": 9,
+        "present_bars": 29463,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "ETH",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 29472,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 9 missing candles in the window scored as they are",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-14 08:00:00",
+      "window": "continuous"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 12432,
+        "first_bar": "2025-06-10 00:00:00",
+        "last_bar": "2026-11-09 23:00:00",
+        "max_gap_bars": 9,
+        "missing_bars": 9,
+        "present_bars": 12423,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "ETH",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 12432,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 9 missing candles in the window scored as they are",
+      "start": "2025-06-10",
+      "status": "included",
+      "warmup_first_bar": "2025-05-24 08:00:00",
+      "window": "judge"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 17040,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2025-06-09 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 17040,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "ETH",
+      "end": "2025-06-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 17040,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-14 08:00:00",
+      "window": "train"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 58944,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2026-11-09 23:30:00",
+        "max_gap_bars": 18,
+        "missing_bars": 18,
+        "present_bars": 58926,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "ETH",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 29472,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 18 missing candles in the window scored as they are",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-22 16:00:00",
+      "window": "continuous"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 24864,
+        "first_bar": "2025-06-10 00:00:00",
+        "last_bar": "2026-11-09 23:30:00",
+        "max_gap_bars": 18,
+        "missing_bars": 18,
+        "present_bars": 24846,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "ETH",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 12432,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 18 missing candles in the window scored as they are",
+      "start": "2025-06-10",
+      "status": "included",
+      "warmup_first_bar": "2025-06-01 16:00:00",
+      "window": "judge"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 34080,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2025-06-09 23:30:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 34080,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "ETH",
+      "end": "2025-06-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 17040,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-22 16:00:00",
+      "window": "train"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 7368,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2026-11-09 20:00:00",
+        "max_gap_bars": 2,
+        "missing_bars": 2,
+        "present_bars": 7366,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "ETH",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 29472,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "4h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 2 missing candles in the window scored as they are",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-04-25 08:00:00",
+      "window": "continuous"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 3108,
+        "first_bar": "2025-06-10 00:00:00",
+        "last_bar": "2026-11-09 20:00:00",
+        "max_gap_bars": 2,
+        "missing_bars": 2,
+        "present_bars": 3106,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "ETH",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 12432,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "proxy",
+      "interval": "4h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 2 missing candles in the window scored as they are",
+      "start": "2025-06-10",
+      "status": "included",
+      "warmup_first_bar": "2025-04-04 08:00:00",
+      "window": "judge"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 4260,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2025-06-09 20:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4260,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "ETH",
+      "end": "2025-06-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 17040,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "4h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-04-25 08:00:00",
+      "window": "train"
+    },
+    {
+      "coin": "HYPE",
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "HYPE 1h window continuous: 0 bars before the window start, 400 warm-up bars required",
+      "status": "excluded",
+      "window": "continuous"
+    },
+    {
+      "coin": "HYPE",
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "HYPE 1h window judge: 85 bars before the window start, 400 warm-up bars required",
+      "status": "excluded",
+      "window": "judge"
+    },
+    {
+      "coin": "HYPE",
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "HYPE 1h window train: 0 bars before the window start, 400 warm-up bars required",
+      "status": "excluded",
+      "window": "train"
+    },
+    {
+      "coin": "HYPE",
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "HYPE 30m window continuous: 0 bars before the window start, 400 warm-up bars required",
+      "status": "excluded",
+      "window": "continuous"
+    },
+    {
+      "coin": "HYPE",
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "HYPE 30m window judge: 170 bars before the window start, 400 warm-up bars required",
+      "status": "excluded",
+      "window": "judge"
+    },
+    {
+      "coin": "HYPE",
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "HYPE 30m window train: 0 bars before the window start, 400 warm-up bars required",
+      "status": "excluded",
+      "window": "train"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 29472,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2026-11-09 23:00:00",
+        "max_gap_bars": 9,
+        "missing_bars": 9,
+        "present_bars": 29463,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "SOL",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 29472,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 9 missing candles in the window scored as they are",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-14 08:00:00",
+      "window": "continuous"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 12432,
+        "first_bar": "2025-06-10 00:00:00",
+        "last_bar": "2026-11-09 23:00:00",
+        "max_gap_bars": 9,
+        "missing_bars": 9,
+        "present_bars": 12423,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "SOL",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 12432,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 9 missing candles in the window scored as they are",
+      "start": "2025-06-10",
+      "status": "included",
+      "warmup_first_bar": "2025-05-24 08:00:00",
+      "window": "judge"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 17040,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2025-06-09 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 17040,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "SOL",
+      "end": "2025-06-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 17040,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "1h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-14 08:00:00",
+      "window": "train"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 58944,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2026-11-09 23:30:00",
+        "max_gap_bars": 18,
+        "missing_bars": 18,
+        "present_bars": 58926,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "SOL",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 29472,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 18 missing candles in the window scored as they are",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-22 16:00:00",
+      "window": "continuous"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 24864,
+        "first_bar": "2025-06-10 00:00:00",
+        "last_bar": "2026-11-09 23:30:00",
+        "max_gap_bars": 18,
+        "missing_bars": 18,
+        "present_bars": 24846,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "SOL",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 12432,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 18 missing candles in the window scored as they are",
+      "start": "2025-06-10",
+      "status": "included",
+      "warmup_first_bar": "2025-06-01 16:00:00",
+      "window": "judge"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 34080,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2025-06-09 23:30:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 34080,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "SOL",
+      "end": "2025-06-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 17040,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "30m",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-06-22 16:00:00",
+      "window": "train"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 7368,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2026-11-09 20:00:00",
+        "max_gap_bars": 2,
+        "missing_bars": 2,
+        "present_bars": 7366,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "SOL",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 29472,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "4h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 2 missing candles in the window scored as they are",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-04-25 08:00:00",
+      "window": "continuous"
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_bars": 3108,
+        "first_bar": "2025-06-10 00:00:00",
+        "last_bar": "2026-11-09 20:00:00",
+        "max_gap_bars": 2,
+        "missing_bars": 2,
+        "present_bars": 3106,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "SOL",
+      "end": "2026-11-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 12432,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 0
+      },
+      "group": "proxy",
+      "interval": "4h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding; 2 missing candles in the window scored as they are",
+      "start": "2025-06-10",
+      "status": "included",
+      "warmup_first_bar": "2025-04-04 08:00:00",
+      "window": "judge"
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_bars": 4260,
+        "first_bar": "2023-07-01 00:00:00",
+        "last_bar": "2025-06-09 20:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4260,
+        "warmup_bars": 400,
+        "warmup_missing_bars": 0
+      },
+      "coin": "SOL",
+      "end": "2025-06-10",
+      "funding": {
+        "complete": true,
+        "expected_hours": 17040,
+        "first_missing_ms": null,
+        "missing_hours": 0,
+        "venue_absent_hours": 3
+      },
+      "group": "proxy",
+      "interval": "4h",
+      "provenance": "proxy",
+      "reason": "complete warm-up and funding",
+      "start": "2023-07-01",
+      "status": "included",
+      "warmup_first_bar": "2023-04-25 08:00:00",
+      "window": "train"
+    }
+  ],
+  "study": "mean_reversion_exit_2018"
+}

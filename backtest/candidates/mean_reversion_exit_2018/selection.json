@@ -1,0 +1,73 @@
+{
+  "frames": {
+    "b2": {
+      "judged": [
+        "paired_b2_w150",
+        "paired_b2_w175"
+      ],
+      "ranked": [
+        "paired_b2_w175",
+        "paired_b2_w125"
+      ],
+      "scores": {
+        "paired_b2_w125": {
+          "matched_positions": 1264,
+          "pooled_mean_delta_pct": 0.032633580143951346
+        },
+        "paired_b2_w150": {
+          "matched_positions": 1264,
+          "pooled_mean_delta_pct": 0.04105312196865304
+        },
+        "paired_b2_w175": {
+          "matched_positions": 1264,
+          "pooled_mean_delta_pct": 0.05406660111902267
+        }
+      },
+      "shortlisted_neighbour": "paired_b2_w175",
+      "top_neighbour": "paired_b2_w175",
+      "unjudged": [
+        "paired_b2_w125"
+      ]
+    },
+    "ratchet": {
+      "judged": [
+        "paired_r_w150",
+        "paired_r_w175"
+      ],
+      "ranked": [
+        "paired_r_w175",
+        "paired_r_w125"
+      ],
+      "scores": {
+        "paired_r_w125": {
+          "matched_positions": 992,
+          "pooled_mean_delta_pct": 0.01301116912943654
+        },
+        "paired_r_w150": {
+          "matched_positions": 992,
+          "pooled_mean_delta_pct": 0.02101584446761697
+        },
+        "paired_r_w175": {
+          "matched_positions": 992,
+          "pooled_mean_delta_pct": 0.029401519304745244
+        }
+      },
+      "shortlisted_neighbour": "paired_r_w175",
+      "top_neighbour": "paired_r_w175",
+      "unjudged": [
+        "paired_r_w125"
+      ]
+    }
+  },
+  "head": "9a3b51aad18ad384b12893eb3ca9889bfc758a1b",
+  "lock_sha256": "239286642cd74f5b475a5ef620ceb94e366097fd742df55c95d8c0a98fa10792",
+  "network_probe": {
+    "cache_load": "refused: mean_reversion_exit_2018 scoring: network access is blocked",
+    "socket_connect": "refused: mean_reversion_exit_2018 scoring: network access is blocked",
+    "venue_fetch": "refused: mean_reversion_exit_2018 scoring: network access is blocked"
+  },
+  "rule": "The primary arm (widening 1.5) is always judged. Rank the two neighbours by the pooled training paired mean delta at base cost over every included proxy dataset of the frame (both sides for b2). Shortlist the higher one only if it has at least 30 matched positions and a pooled mean delta above 0; a tie within 1e-12 goes to the smaller widening. The other neighbour stays unjudged.",
+  "study": "mean_reversion_exit_2018",
+  "train_samples_sha256": "d90005b00ddf0feffb1f01a840de8098d231396d73b2a71f800149b5ee8d6cbe",
+  "written_utc": "2026-11-14T18:58:42Z"
+}
