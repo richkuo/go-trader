@@ -1,0 +1,1745 @@
+{
+  "excluded": [
+    {
+      "coin": "AI",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "AI16Z",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "ARK",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "BADGER",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "BLAST",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "BLZ",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "BNT",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "BTC",
+      "day_ntl_vlm": "4155319598.2039031982",
+      "reason": "original study coin"
+    },
+    {
+      "coin": "CANTO",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "CATI",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "CHILLGUY",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "CYBER",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "DOOD",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "ETH",
+      "day_ntl_vlm": "1228682700.1512594223",
+      "reason": "original study coin"
+    },
+    {
+      "coin": "FRIEND",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "FTM",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "FTT",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "FXS",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "HPOS",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "ILV",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "IP",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "JELLY",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "LAUNCHCOIN",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "LISTA",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "LOOM",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "MATIC",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "MAV",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "MAVIA",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "MEW",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "MKR",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "MYRO",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "NEIROETH",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "NFTI",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "NTRN",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "OGN",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "OM",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "OMNI",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "ORBS",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "OX",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "PANDORA",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "PIXEL",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "PROMPT",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "RDNT",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "REQ",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "RLB",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "RNDR",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "SCR",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "SHIA",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "SOL",
+      "day_ntl_vlm": "407819482.8951900601",
+      "reason": "original study coin"
+    },
+    {
+      "coin": "STG",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "STRAX",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "TON",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "TST",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "UNIBOT",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "USTC",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "VINE",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "YZY",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "ZEREBRO",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    },
+    {
+      "coin": "kDOGS",
+      "day_ntl_vlm": "0.0",
+      "reason": "isDelisted"
+    }
+  ],
+  "forbidden_inputs": "the screen reads only liquidity, listing and coverage information; it never computes a strategy signal, position, cluster or return",
+  "liquidity_response": {
+    "path": "data/venue/meta_and_asset_ctxs.json",
+    "sha256": "b396a97dd66cc21d70cbd1556097364cdc8b5fd5eb37ac863f89824191d71da4"
+  },
+  "liquidity_source": "the dayNtlVlm (24h notional volume, USD) field of one recorded metaAndAssetCtxs response; the observation time and the raw response are frozen in data/venue/",
+  "max_coins": 10,
+  "named_candidates": {
+    "BNB": {
+      "rank": 14,
+      "reasons": [
+        "ranked below the last selection; not screened"
+      ],
+      "selected": false
+    },
+    "HYPE": {
+      "rank": 1,
+      "reasons": [],
+      "selected": true
+    }
+  },
+  "not_screened": [
+    {
+      "coin": "BNB",
+      "day_ntl_vlm": 12466573.926509995,
+      "rank": 14
+    },
+    {
+      "coin": "SUI",
+      "day_ntl_vlm": 11889509.752204001,
+      "rank": 15
+    },
+    {
+      "coin": "VVV",
+      "day_ntl_vlm": 10777247.05220999,
+      "rank": 16
+    },
+    {
+      "coin": "LINK",
+      "day_ntl_vlm": 9982410.669019997,
+      "rank": 17
+    },
+    {
+      "coin": "INJ",
+      "day_ntl_vlm": 9344185.683319997,
+      "rank": 18
+    },
+    {
+      "coin": "ZRO",
+      "day_ntl_vlm": 9309511.104069998,
+      "rank": 19
+    },
+    {
+      "coin": "GRAM",
+      "day_ntl_vlm": 9224951.094300002,
+      "rank": 20
+    },
+    {
+      "coin": "FARTCOIN",
+      "day_ntl_vlm": 8842524.826616002,
+      "rank": 21
+    },
+    {
+      "coin": "XPL",
+      "day_ntl_vlm": 7704888.912757,
+      "rank": 22
+    },
+    {
+      "coin": "AAVE",
+      "day_ntl_vlm": 7673789.895799999,
+      "rank": 23
+    },
+    {
+      "coin": "TAO",
+      "day_ntl_vlm": 7490590.537640003,
+      "rank": 24
+    },
+    {
+      "coin": "ADA",
+      "day_ntl_vlm": 7039410.285099998,
+      "rank": 25
+    },
+    {
+      "coin": "ONDO",
+      "day_ntl_vlm": 6018882.088270001,
+      "rank": 26
+    },
+    {
+      "coin": "ARB",
+      "day_ntl_vlm": 5281218.995056998,
+      "rank": 27
+    },
+    {
+      "coin": "BERA",
+      "day_ntl_vlm": 5214248.371595001,
+      "rank": 28
+    },
+    {
+      "coin": "JUP",
+      "day_ntl_vlm": 5025886.632129998,
+      "rank": 29
+    },
+    {
+      "coin": "SOPH",
+      "day_ntl_vlm": 4939292.872685001,
+      "rank": 30
+    },
+    {
+      "coin": "USELESS",
+      "day_ntl_vlm": 4602162.424070001,
+      "rank": 31
+    },
+    {
+      "coin": "CRV",
+      "day_ntl_vlm": 4517894.282242001,
+      "rank": 32
+    },
+    {
+      "coin": "LTC",
+      "day_ntl_vlm": 4474031.92063,
+      "rank": 33
+    },
+    {
+      "coin": "ASTER",
+      "day_ntl_vlm": 4185645.274960001,
+      "rank": 34
+    },
+    {
+      "coin": "GRASS",
+      "day_ntl_vlm": 4123121.299035999,
+      "rank": 35
+    },
+    {
+      "coin": "TRUMP",
+      "day_ntl_vlm": 4095931.122676,
+      "rank": 36
+    },
+    {
+      "coin": "XLM",
+      "day_ntl_vlm": 3947822.4871799997,
+      "rank": 37
+    },
+    {
+      "coin": "ETHFI",
+      "day_ntl_vlm": 3824180.423554999,
+      "rank": 38
+    },
+    {
+      "coin": "AERO",
+      "day_ntl_vlm": 3542186.4325399986,
+      "rank": 39
+    },
+    {
+      "coin": "CASHCAT",
+      "day_ntl_vlm": 3212167.2995869997,
+      "rank": 40
+    },
+    {
+      "coin": "BCH",
+      "day_ntl_vlm": 3206246.3790600006,
+      "rank": 41
+    },
+    {
+      "coin": "PONS",
+      "day_ntl_vlm": 3031734.8112399997,
+      "rank": 42
+    },
+    {
+      "coin": "TRX",
+      "day_ntl_vlm": 2909860.7878300003,
+      "rank": 43
+    },
+    {
+      "coin": "MON",
+      "day_ntl_vlm": 2773582.313233,
+      "rank": 44
+    },
+    {
+      "coin": "DOT",
+      "day_ntl_vlm": 2752798.293326999,
+      "rank": 45
+    },
+    {
+      "coin": "APT",
+      "day_ntl_vlm": 2663873.334364999,
+      "rank": 46
+    },
+    {
+      "coin": "FET",
+      "day_ntl_vlm": 2615246.2352,
+      "rank": 47
+    },
+    {
+      "coin": "ICP",
+      "day_ntl_vlm": 2293048.163249999,
+      "rank": 48
+    },
+    {
+      "coin": "INIT",
+      "day_ntl_vlm": 2197849.9376470004,
+      "rank": 49
+    },
+    {
+      "coin": "SKR",
+      "day_ntl_vlm": 2113411.1551079997,
+      "rank": 50
+    },
+    {
+      "coin": "PAXG",
+      "day_ntl_vlm": 2092788.7125999997,
+      "rank": 51
+    },
+    {
+      "coin": "HBAR",
+      "day_ntl_vlm": 1903430.6921239994,
+      "rank": 52
+    },
+    {
+      "coin": "TIA",
+      "day_ntl_vlm": 1898811.2582289993,
+      "rank": 53
+    },
+    {
+      "coin": "PENGU",
+      "day_ntl_vlm": 1821609.4397220002,
+      "rank": 54
+    },
+    {
+      "coin": "STRK",
+      "day_ntl_vlm": 1806932.0901139996,
+      "rank": 55
+    },
+    {
+      "coin": "kBONK",
+      "day_ntl_vlm": 1796300.3454570002,
+      "rank": 56
+    },
+    {
+      "coin": "VIRTUAL",
+      "day_ntl_vlm": 1779010.646275,
+      "rank": 57
+    },
+    {
+      "coin": "MORPHO",
+      "day_ntl_vlm": 1760076.7027000005,
+      "rank": 58
+    },
+    {
+      "coin": "WLFI",
+      "day_ntl_vlm": 1698394.0278369996,
+      "rank": 59
+    },
+    {
+      "coin": "FIL",
+      "day_ntl_vlm": 1629431.8408810003,
+      "rank": 60
+    },
+    {
+      "coin": "SPX",
+      "day_ntl_vlm": 1605959.743214,
+      "rank": 61
+    },
+    {
+      "coin": "IMX",
+      "day_ntl_vlm": 1383497.042255,
+      "rank": 62
+    },
+    {
+      "coin": "OP",
+      "day_ntl_vlm": 1269383.8977590003,
+      "rank": 63
+    },
+    {
+      "coin": "kSHIB",
+      "day_ntl_vlm": 1244748.3925249998,
+      "rank": 64
+    },
+    {
+      "coin": "CC",
+      "day_ntl_vlm": 1043825.938984,
+      "rank": 65
+    },
+    {
+      "coin": "PURR",
+      "day_ntl_vlm": 996200.2357709997,
+      "rank": 66
+    },
+    {
+      "coin": "CHIP",
+      "day_ntl_vlm": 976919.6892620001,
+      "rank": 67
+    },
+    {
+      "coin": "WIF",
+      "day_ntl_vlm": 878777.4099599997,
+      "rank": 68
+    },
+    {
+      "coin": "CFX",
+      "day_ntl_vlm": 854658.3382139999,
+      "rank": 69
+    },
+    {
+      "coin": "EIGEN",
+      "day_ntl_vlm": 853489.2546639999,
+      "rank": 70
+    },
+    {
+      "coin": "USUAL",
+      "day_ntl_vlm": 843715.425038,
+      "rank": 71
+    },
+    {
+      "coin": "LDO",
+      "day_ntl_vlm": 837351.7673399996,
+      "rank": 72
+    },
+    {
+      "coin": "MNT",
+      "day_ntl_vlm": 828899.6281099998,
+      "rank": 73
+    },
+    {
+      "coin": "RUNE",
+      "day_ntl_vlm": 795546.4506309999,
+      "rank": 74
+    },
+    {
+      "coin": "SEI",
+      "day_ntl_vlm": 789844.3274799999,
+      "rank": 75
+    },
+    {
+      "coin": "POL",
+      "day_ntl_vlm": 774947.837013,
+      "rank": 76
+    },
+    {
+      "coin": "AR",
+      "day_ntl_vlm": 772884.5525900002,
+      "rank": 77
+    },
+    {
+      "coin": "STX",
+      "day_ntl_vlm": 727881.9093419998,
+      "rank": 78
+    },
+    {
+      "coin": "2Z",
+      "day_ntl_vlm": 679517.9508440001,
+      "rank": 79
+    },
+    {
+      "coin": "W",
+      "day_ntl_vlm": 673561.4704059998,
+      "rank": 80
+    },
+    {
+      "coin": "PYTH",
+      "day_ntl_vlm": 661950.3193699997,
+      "rank": 81
+    },
+    {
+      "coin": "ATOM",
+      "day_ntl_vlm": 622282.7964209998,
+      "rank": 82
+    },
+    {
+      "coin": "AVNT",
+      "day_ntl_vlm": 610082.210595,
+      "rank": 83
+    },
+    {
+      "coin": "CAKE",
+      "day_ntl_vlm": 582830.44513,
+      "rank": 84
+    },
+    {
+      "coin": "PENDLE",
+      "day_ntl_vlm": 578976.4713000002,
+      "rank": 85
+    },
+    {
+      "coin": "RENDER",
+      "day_ntl_vlm": 548966.16153,
+      "rank": 86
+    },
+    {
+      "coin": "APEX",
+      "day_ntl_vlm": 514613.64458,
+      "rank": 87
+    },
+    {
+      "coin": "PNUT",
+      "day_ntl_vlm": 508857.859364,
+      "rank": 88
+    },
+    {
+      "coin": "LINEA",
+      "day_ntl_vlm": 504678.1542700001,
+      "rank": 89
+    },
+    {
+      "coin": "DASH",
+      "day_ntl_vlm": 472538.9237800001,
+      "rank": 90
+    },
+    {
+      "coin": "GALA",
+      "day_ntl_vlm": 471061.456914,
+      "rank": 91
+    },
+    {
+      "coin": "ACE",
+      "day_ntl_vlm": 463638.0261330001,
+      "rank": 92
+    },
+    {
+      "coin": "ENS",
+      "day_ntl_vlm": 461562.5526400001,
+      "rank": 93
+    },
+    {
+      "coin": "STABLE",
+      "day_ntl_vlm": 443941.6276259999,
+      "rank": 94
+    },
+    {
+      "coin": "JTO",
+      "day_ntl_vlm": 443748.0503099999,
+      "rank": 95
+    },
+    {
+      "coin": "GMX",
+      "day_ntl_vlm": 440121.0396930001,
+      "rank": 96
+    },
+    {
+      "coin": "MEGA",
+      "day_ntl_vlm": 420362.628864,
+      "rank": 97
+    },
+    {
+      "coin": "ALGO",
+      "day_ntl_vlm": 418132.2714880001,
+      "rank": 98
+    },
+    {
+      "coin": "KAS",
+      "day_ntl_vlm": 413047.045537,
+      "rank": 99
+    },
+    {
+      "coin": "KAITO",
+      "day_ntl_vlm": 409913.70142,
+      "rank": 100
+    },
+    {
+      "coin": "DYM",
+      "day_ntl_vlm": 374106.4394559999,
+      "rank": 101
+    },
+    {
+      "coin": "S",
+      "day_ntl_vlm": 367745.6380730001,
+      "rank": 102
+    },
+    {
+      "coin": "IOTA",
+      "day_ntl_vlm": 367095.8526870001,
+      "rank": 103
+    },
+    {
+      "coin": "MET",
+      "day_ntl_vlm": 362553.2194899997,
+      "rank": 104
+    },
+    {
+      "coin": "ZK",
+      "day_ntl_vlm": 360646.7052579999,
+      "rank": 105
+    },
+    {
+      "coin": "SYRUP",
+      "day_ntl_vlm": 356522.8570600001,
+      "rank": 106
+    },
+    {
+      "coin": "NIL",
+      "day_ntl_vlm": 336450.419854,
+      "rank": 107
+    },
+    {
+      "coin": "POPCAT",
+      "day_ntl_vlm": 325226.186456,
+      "rank": 108
+    },
+    {
+      "coin": "REZ",
+      "day_ntl_vlm": 312742.360179,
+      "rank": 109
+    },
+    {
+      "coin": "ETC",
+      "day_ntl_vlm": 288870.096859,
+      "rank": 110
+    },
+    {
+      "coin": "SKY",
+      "day_ntl_vlm": 287797.776142,
+      "rank": 111
+    },
+    {
+      "coin": "BABY",
+      "day_ntl_vlm": 278825.718544,
+      "rank": 112
+    },
+    {
+      "coin": "0G",
+      "day_ntl_vlm": 237266.4472700001,
+      "rank": 113
+    },
+    {
+      "coin": "MERL",
+      "day_ntl_vlm": 235726.472009,
+      "rank": 114
+    },
+    {
+      "coin": "APE",
+      "day_ntl_vlm": 228543.724931,
+      "rank": 115
+    },
+    {
+      "coin": "NXPC",
+      "day_ntl_vlm": 226889.02469,
+      "rank": 116
+    },
+    {
+      "coin": "IO",
+      "day_ntl_vlm": 213185.804865,
+      "rank": 117
+    },
+    {
+      "coin": "TURBO",
+      "day_ntl_vlm": 210864.448937,
+      "rank": 118
+    },
+    {
+      "coin": "MINA",
+      "day_ntl_vlm": 201925.5181329999,
+      "rank": 119
+    },
+    {
+      "coin": "SAND",
+      "day_ntl_vlm": 172073.136585,
+      "rank": 120
+    },
+    {
+      "coin": "XTEN",
+      "day_ntl_vlm": 166845.2354200001,
+      "rank": 121
+    },
+    {
+      "coin": "AZTEC",
+      "day_ntl_vlm": 161008.8877200001,
+      "rank": 122
+    },
+    {
+      "coin": "SUPER",
+      "day_ntl_vlm": 159921.65728,
+      "rank": 123
+    },
+    {
+      "coin": "RSR",
+      "day_ntl_vlm": 159581.5896050001,
+      "rank": 124
+    },
+    {
+      "coin": "MEME",
+      "day_ntl_vlm": 159219.032058,
+      "rank": 125
+    },
+    {
+      "coin": "PROVE",
+      "day_ntl_vlm": 155258.15009,
+      "rank": 126
+    },
+    {
+      "coin": "ALT",
+      "day_ntl_vlm": 146404.192464,
+      "rank": 127
+    },
+    {
+      "coin": "MELANIA",
+      "day_ntl_vlm": 144458.0962350001,
+      "rank": 128
+    },
+    {
+      "coin": "PEOPLE",
+      "day_ntl_vlm": 143046.46423,
+      "rank": 129
+    },
+    {
+      "coin": "DYDX",
+      "day_ntl_vlm": 142168.618263,
+      "rank": 130
+    },
+    {
+      "coin": "ZEN",
+      "day_ntl_vlm": 139816.651324,
+      "rank": 131
+    },
+    {
+      "coin": "COMP",
+      "day_ntl_vlm": 139579.05292,
+      "rank": 132
+    },
+    {
+      "coin": "AXS",
+      "day_ntl_vlm": 139261.389451,
+      "rank": 133
+    },
+    {
+      "coin": "HMSTR",
+      "day_ntl_vlm": 138367.31113,
+      "rank": 134
+    },
+    {
+      "coin": "SAGA",
+      "day_ntl_vlm": 133036.5411500001,
+      "rank": 135
+    },
+    {
+      "coin": "STBL",
+      "day_ntl_vlm": 122732.905807,
+      "rank": 136
+    },
+    {
+      "coin": "ANIME",
+      "day_ntl_vlm": 120474.966983,
+      "rank": 137
+    },
+    {
+      "coin": "MOODENG",
+      "day_ntl_vlm": 118494.855222,
+      "rank": 138
+    },
+    {
+      "coin": "SNX",
+      "day_ntl_vlm": 114774.536931,
+      "rank": 139
+    },
+    {
+      "coin": "BIO",
+      "day_ntl_vlm": 114264.061133,
+      "rank": 140
+    },
+    {
+      "coin": "ORDI",
+      "day_ntl_vlm": 107500.974395,
+      "rank": 141
+    },
+    {
+      "coin": "ZORA",
+      "day_ntl_vlm": 106539.682415,
+      "rank": 142
+    },
+    {
+      "coin": "BRETT",
+      "day_ntl_vlm": 102850.920857,
+      "rank": 143
+    },
+    {
+      "coin": "GRIFFAIN",
+      "day_ntl_vlm": 96573.032291,
+      "rank": 144
+    },
+    {
+      "coin": "HYPER",
+      "day_ntl_vlm": 94747.212099,
+      "rank": 145
+    },
+    {
+      "coin": "HEMI",
+      "day_ntl_vlm": 93894.885694,
+      "rank": 146
+    },
+    {
+      "coin": "FOGO",
+      "day_ntl_vlm": 89237.46785,
+      "rank": 147
+    },
+    {
+      "coin": "kFLOKI",
+      "day_ntl_vlm": 88291.934151,
+      "rank": 148
+    },
+    {
+      "coin": "BANANA",
+      "day_ntl_vlm": 87745.59696,
+      "rank": 149
+    },
+    {
+      "coin": "YGG",
+      "day_ntl_vlm": 75983.22946,
+      "rank": 150
+    },
+    {
+      "coin": "AIXBT",
+      "day_ntl_vlm": 75926.07075,
+      "rank": 151
+    },
+    {
+      "coin": "ZETA",
+      "day_ntl_vlm": 75666.366556,
+      "rank": 152
+    },
+    {
+      "coin": "BLUR",
+      "day_ntl_vlm": 74016.518212,
+      "rank": 153
+    },
+    {
+      "coin": "RESOLV",
+      "day_ntl_vlm": 71585.551627,
+      "rank": 154
+    },
+    {
+      "coin": "NEO",
+      "day_ntl_vlm": 68996.793147,
+      "rank": 155
+    },
+    {
+      "coin": "TRB",
+      "day_ntl_vlm": 68414.05211,
+      "rank": 156
+    },
+    {
+      "coin": "SUSHI",
+      "day_ntl_vlm": 67477.912284,
+      "rank": 157
+    },
+    {
+      "coin": "XAI",
+      "day_ntl_vlm": 66458.981514,
+      "rank": 158
+    },
+    {
+      "coin": "CELO",
+      "day_ntl_vlm": 65887.640486,
+      "rank": 159
+    },
+    {
+      "coin": "BOME",
+      "day_ntl_vlm": 64681.455065,
+      "rank": 160
+    },
+    {
+      "coin": "MANTA",
+      "day_ntl_vlm": 63657.923088,
+      "rank": 161
+    },
+    {
+      "coin": "MOVE",
+      "day_ntl_vlm": 63041.68371,
+      "rank": 162
+    },
+    {
+      "coin": "BIGTIME",
+      "day_ntl_vlm": 62368.8136800001,
+      "rank": 163
+    },
+    {
+      "coin": "kLUNC",
+      "day_ntl_vlm": 60358.530266,
+      "rank": 164
+    },
+    {
+      "coin": "kNEIRO",
+      "day_ntl_vlm": 57843.797736,
+      "rank": 165
+    },
+    {
+      "coin": "LAYER",
+      "day_ntl_vlm": 56256.480922,
+      "rank": 166
+    },
+    {
+      "coin": "GOAT",
+      "day_ntl_vlm": 54923.782817,
+      "rank": 167
+    },
+    {
+      "coin": "BSV",
+      "day_ntl_vlm": 54576.08803,
+      "rank": 168
+    },
+    {
+      "coin": "GAS",
+      "day_ntl_vlm": 53414.824554,
+      "rank": 169
+    },
+    {
+      "coin": "GMT",
+      "day_ntl_vlm": 51659.225622,
+      "rank": 170
+    },
+    {
+      "coin": "WCT",
+      "day_ntl_vlm": 49760.134922,
+      "rank": 171
+    },
+    {
+      "coin": "ME",
+      "day_ntl_vlm": 38448.928875,
+      "rank": 172
+    },
+    {
+      "coin": "UMA",
+      "day_ntl_vlm": 34512.152512,
+      "rank": 173
+    },
+    {
+      "coin": "POLYX",
+      "day_ntl_vlm": 27553.661506,
+      "rank": 174
+    },
+    {
+      "coin": "NOT",
+      "day_ntl_vlm": 26563.074848,
+      "rank": 175
+    },
+    {
+      "coin": "TNSR",
+      "day_ntl_vlm": 14897.526047,
+      "rank": 176
+    }
+  ],
+  "observed_at_utc": "2026-11-14T17:36:09Z",
+  "rosters": {
+    "descriptive_1h": [
+      "HYPE",
+      "XRP",
+      "NEAR",
+      "PUMP",
+      "kPEPE",
+      "ENA",
+      "UNI",
+      "AVAX",
+      "WLD",
+      "DOGE",
+      "BTC",
+      "ETH",
+      "SOL"
+    ],
+    "forward_4h": [
+      "BTC",
+      "ETH",
+      "SOL"
+    ],
+    "primary_4h": [
+      "HYPE",
+      "XRP",
+      "NEAR",
+      "PUMP",
+      "kPEPE",
+      "ENA",
+      "UNI",
+      "AVAX",
+      "WLD",
+      "DOGE"
+    ]
+  },
+  "rule": "walk the ranking in order; screen each coin's 4h candles and hourly funding; select a coin when every requirement holds; stop after max_coins selections; coins below the last selection are not screened",
+  "screened": [
+    {
+      "candles": {
+        "complete": true,
+        "expected_window_bars": 2556,
+        "first_bar": "2025-07-01 00:00:00",
+        "interval": "4h",
+        "invalid_bars": 0,
+        "last_bar": "2026-10-31 20:00:00",
+        "present_warmup_bars": 300,
+        "present_window_bars": 2556,
+        "reasons": [],
+        "rows": 2928,
+        "warmup_bars": 300,
+        "warmup_range": [
+          "2025-07-13 00:00:00",
+          "2025-08-31 20:00:00"
+        ],
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "coin": "HYPE",
+      "day_ntl_vlm": 845546544.7093296,
+      "fetched_candles_sha256": "0938b196e66b70b502e0cd11f7598b797c2891815d69add11ac142abf72de06d",
+      "fetched_funding_sha256": "26acc9484d96aa33e8464da2fa4e88a3fbb1e1be84de2ef47324b5c001b1cd6a",
+      "funding": {
+        "complete": true,
+        "expected_hours": 10224,
+        "missing_hours": 0,
+        "present_hours": 10224,
+        "reasons": [],
+        "rows": 11712,
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "rank": 1,
+      "selected": true,
+      "sz_decimals": 2
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_window_bars": 2556,
+        "first_bar": "2025-07-01 00:00:00",
+        "interval": "4h",
+        "invalid_bars": 0,
+        "last_bar": "2026-10-31 20:00:00",
+        "present_warmup_bars": 300,
+        "present_window_bars": 2556,
+        "reasons": [],
+        "rows": 2928,
+        "warmup_bars": 300,
+        "warmup_range": [
+          "2025-07-13 00:00:00",
+          "2025-08-31 20:00:00"
+        ],
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "coin": "ZEC",
+      "day_ntl_vlm": 351954681.5773002,
+      "fetched_candles_sha256": "0124dca99d81568cf881045f815802b5c67520f6efbe43cac437ae39e674ccd4",
+      "fetched_funding_sha256": "a8fd001360f626153426ac384c76a822ae24a02c0e4cf5ce823bf8c54c7abc70",
+      "funding": {
+        "complete": false,
+        "expected_hours": 10224,
+        "missing_hours": 758,
+        "present_hours": 9466,
+        "reasons": [
+          "758 funding hours missing (first 2025-09-01 00:00:00)"
+        ],
+        "rows": 9466,
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "rank": 2,
+      "selected": false,
+      "sz_decimals": 2
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_window_bars": 2556,
+        "first_bar": "2025-07-01 00:00:00",
+        "interval": "4h",
+        "invalid_bars": 0,
+        "last_bar": "2026-10-31 20:00:00",
+        "present_warmup_bars": 300,
+        "present_window_bars": 2556,
+        "reasons": [],
+        "rows": 2928,
+        "warmup_bars": 300,
+        "warmup_range": [
+          "2025-07-13 00:00:00",
+          "2025-08-31 20:00:00"
+        ],
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "coin": "XRP",
+      "day_ntl_vlm": 109465193.90782999,
+      "fetched_candles_sha256": "02ecc107c1b9640409a03c7979c68155b5405fd6517ca6ec1567713ac3efca0a",
+      "fetched_funding_sha256": "856a947681802844a34048c788748d800c72197b540964ad0b945531bd0b3ceb",
+      "funding": {
+        "complete": true,
+        "expected_hours": 10224,
+        "missing_hours": 0,
+        "present_hours": 10224,
+        "reasons": [],
+        "rows": 11712,
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "rank": 3,
+      "selected": true,
+      "sz_decimals": 0
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_window_bars": 2556,
+        "first_bar": "2025-07-01 00:00:00",
+        "interval": "4h",
+        "invalid_bars": 0,
+        "last_bar": "2026-10-31 20:00:00",
+        "present_warmup_bars": 300,
+        "present_window_bars": 2556,
+        "reasons": [],
+        "rows": 2928,
+        "warmup_bars": 300,
+        "warmup_range": [
+          "2025-07-13 00:00:00",
+          "2025-08-31 20:00:00"
+        ],
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "coin": "NEAR",
+      "day_ntl_vlm": 67100240.71309999,
+      "fetched_candles_sha256": "54a4fd1789f648d4f2b7890acb39b6e3ffb1250a5743cfb78c967f8fcd97b8b2",
+      "fetched_funding_sha256": "42eaffdcd739957e8cb3a081660f3be25b410a655c69a45bdd49a7ca010fbdef",
+      "funding": {
+        "complete": true,
+        "expected_hours": 10224,
+        "missing_hours": 0,
+        "present_hours": 10224,
+        "reasons": [],
+        "rows": 11712,
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "rank": 4,
+      "selected": true,
+      "sz_decimals": 1
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_window_bars": 2556,
+        "first_bar": "2025-07-10 00:00:00",
+        "interval": "4h",
+        "invalid_bars": 0,
+        "last_bar": "2026-10-31 20:00:00",
+        "present_warmup_bars": 300,
+        "present_window_bars": 2556,
+        "reasons": [],
+        "rows": 2874,
+        "warmup_bars": 300,
+        "warmup_range": [
+          "2025-07-13 00:00:00",
+          "2025-08-31 20:00:00"
+        ],
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "coin": "PUMP",
+      "day_ntl_vlm": 43905372.092532046,
+      "fetched_candles_sha256": "72ddffc7f01b6878a1ac64651d4d3b4f4746be672a3227629ebdfe14ef489af9",
+      "fetched_funding_sha256": "e85b0da8d7d58898de548bc3863743ee6a482846513f9d762efbd062b8619564",
+      "funding": {
+        "complete": true,
+        "expected_hours": 10224,
+        "missing_hours": 0,
+        "present_hours": 10224,
+        "reasons": [],
+        "rows": 11492,
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "rank": 5,
+      "selected": true,
+      "sz_decimals": 0
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_window_bars": 2556,
+        "first_bar": "2025-07-01 00:00:00",
+        "interval": "4h",
+        "invalid_bars": 0,
+        "last_bar": "2026-10-31 20:00:00",
+        "present_warmup_bars": 300,
+        "present_window_bars": 2556,
+        "reasons": [],
+        "rows": 2928,
+        "warmup_bars": 300,
+        "warmup_range": [
+          "2025-07-13 00:00:00",
+          "2025-08-31 20:00:00"
+        ],
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "coin": "kPEPE",
+      "day_ntl_vlm": 37199898.395522006,
+      "fetched_candles_sha256": "a9de7ecd475ee32f9b92fa502bdf05da6b063b722a7679aa41cb0d917321980e",
+      "fetched_funding_sha256": "5236ca5a1dec1a67cb6ddeba646f368ca18326711b13a13afe99777937619adc",
+      "funding": {
+        "complete": true,
+        "expected_hours": 10224,
+        "missing_hours": 0,
+        "present_hours": 10224,
+        "reasons": [],
+        "rows": 11712,
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "rank": 6,
+      "selected": true,
+      "sz_decimals": 0
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_window_bars": 2556,
+        "first_bar": "2025-12-22 12:00:00",
+        "interval": "4h",
+        "invalid_bars": 0,
+        "last_bar": "2026-10-31 20:00:00",
+        "present_warmup_bars": 0,
+        "present_window_bars": 1881,
+        "reasons": [
+          "675 window bars missing (first 2025-09-01 00:00:00)",
+          "300 warm-up bars missing (first 2025-07-13 00:00:00)"
+        ],
+        "rows": 1881,
+        "warmup_bars": 300,
+        "warmup_range": [
+          "2025-07-13 00:00:00",
+          "2025-08-31 20:00:00"
+        ],
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "coin": "LIT",
+      "day_ntl_vlm": 33623722.221200004,
+      "fetched_candles_sha256": "07be64544fb053225470dc0a4b67223b01adc75b6c3d3bfb39ede98727b75eaf",
+      "fetched_funding_sha256": "1372e171a8f6c96090c4f56d6d4ff058b6ae529e132d5f023014e9c0c0e860d1",
+      "funding": {
+        "complete": false,
+        "expected_hours": 10224,
+        "missing_hours": 2704,
+        "present_hours": 7520,
+        "reasons": [
+          "2704 funding hours missing (first 2025-09-01 00:00:00)"
+        ],
+        "rows": 7520,
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "rank": 7,
+      "selected": false,
+      "sz_decimals": 0
+    },
+    {
+      "candles": {
+        "complete": false,
+        "expected_window_bars": 2556,
+        "first_bar": "2025-08-01 20:00:00",
+        "interval": "4h",
+        "invalid_bars": 0,
+        "last_bar": "2026-10-31 20:00:00",
+        "present_warmup_bars": 181,
+        "present_window_bars": 2556,
+        "reasons": [
+          "119 warm-up bars missing (first 2025-07-13 00:00:00)"
+        ],
+        "rows": 2737,
+        "warmup_bars": 300,
+        "warmup_range": [
+          "2025-07-13 00:00:00",
+          "2025-08-31 20:00:00"
+        ],
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "coin": "XMR",
+      "day_ntl_vlm": 26938655.788930014,
+      "fetched_candles_sha256": "923346fdc2ab97894ccc1f78ff61d739caccf7343ae7b0ad094b3c0d8929399d",
+      "fetched_funding_sha256": "49af6aaf8a50bacb88968da69d2d8a4aa62a1ed8b01bf400ea5f7861859b6ba2",
+      "funding": {
+        "complete": false,
+        "expected_hours": 10224,
+        "missing_hours": 3273,
+        "present_hours": 6951,
+        "reasons": [
+          "3273 funding hours missing (first 2025-09-01 00:00:00)"
+        ],
+        "rows": 6951,
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "rank": 8,
+      "selected": false,
+      "sz_decimals": 3
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_window_bars": 2556,
+        "first_bar": "2025-07-01 00:00:00",
+        "interval": "4h",
+        "invalid_bars": 0,
+        "last_bar": "2026-10-31 20:00:00",
+        "present_warmup_bars": 300,
+        "present_window_bars": 2556,
+        "reasons": [],
+        "rows": 2928,
+        "warmup_bars": 300,
+        "warmup_range": [
+          "2025-07-13 00:00:00",
+          "2025-08-31 20:00:00"
+        ],
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "coin": "ENA",
+      "day_ntl_vlm": 21693260.357080005,
+      "fetched_candles_sha256": "c082f43f35df3bd7fa8b432b4cd0c881da469e69b530daec21970aea75ab6e04",
+      "fetched_funding_sha256": "94b95568aa06a2c00117d2f5d5e612bd5cd451af49cc8c8530ca919500cb84fc",
+      "funding": {
+        "complete": true,
+        "expected_hours": 10224,
+        "missing_hours": 0,
+        "present_hours": 10224,
+        "reasons": [],
+        "rows": 11712,
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "rank": 9,
+      "selected": true,
+      "sz_decimals": 0
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_window_bars": 2556,
+        "first_bar": "2025-07-01 00:00:00",
+        "interval": "4h",
+        "invalid_bars": 0,
+        "last_bar": "2026-10-31 20:00:00",
+        "present_warmup_bars": 300,
+        "present_window_bars": 2556,
+        "reasons": [],
+        "rows": 2928,
+        "warmup_bars": 300,
+        "warmup_range": [
+          "2025-07-13 00:00:00",
+          "2025-08-31 20:00:00"
+        ],
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "coin": "UNI",
+      "day_ntl_vlm": 21357861.5659,
+      "fetched_candles_sha256": "a1f1451c98a731fed8711e5ad778c0fdfbe4ddfd981ea4d3871c49439524bf94",
+      "fetched_funding_sha256": "df7524f3dd40b1f806e8edd3798f5b7c35ea04cf890b949c6fb3b7c65c7fe4ec",
+      "funding": {
+        "complete": true,
+        "expected_hours": 10224,
+        "missing_hours": 0,
+        "present_hours": 10224,
+        "reasons": [],
+        "rows": 11712,
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "rank": 10,
+      "selected": true,
+      "sz_decimals": 1
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_window_bars": 2556,
+        "first_bar": "2025-07-01 00:00:00",
+        "interval": "4h",
+        "invalid_bars": 0,
+        "last_bar": "2026-10-31 20:00:00",
+        "present_warmup_bars": 300,
+        "present_window_bars": 2556,
+        "reasons": [],
+        "rows": 2928,
+        "warmup_bars": 300,
+        "warmup_range": [
+          "2025-07-13 00:00:00",
+          "2025-08-31 20:00:00"
+        ],
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "coin": "AVAX",
+      "day_ntl_vlm": 16627282.126797002,
+      "fetched_candles_sha256": "45244f175b978d2809e914b8b47a46731eda953d5b1edcf8fdf0c8153bdfbcb3",
+      "fetched_funding_sha256": "0795333d25fcb3169ee46f3478f2af512abfe646ddec1a36e55ab8e8c1b07528",
+      "funding": {
+        "complete": true,
+        "expected_hours": 10224,
+        "missing_hours": 0,
+        "present_hours": 10224,
+        "reasons": [],
+        "rows": 11712,
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "rank": 11,
+      "selected": true,
+      "sz_decimals": 2
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_window_bars": 2556,
+        "first_bar": "2025-07-01 00:00:00",
+        "interval": "4h",
+        "invalid_bars": 0,
+        "last_bar": "2026-10-31 20:00:00",
+        "present_warmup_bars": 300,
+        "present_window_bars": 2556,
+        "reasons": [],
+        "rows": 2928,
+        "warmup_bars": 300,
+        "warmup_range": [
+          "2025-07-13 00:00:00",
+          "2025-08-31 20:00:00"
+        ],
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "coin": "WLD",
+      "day_ntl_vlm": 14247643.235193003,
+      "fetched_candles_sha256": "db9069959313497dbb23fe9434d5dc03457a808172e9a8c55bcc68eca827e0d9",
+      "fetched_funding_sha256": "52ef90e62213a0c1f9f028ce1112dfa4a76c329f8b7e76a677ba5dec300ce4ac",
+      "funding": {
+        "complete": true,
+        "expected_hours": 10224,
+        "missing_hours": 0,
+        "present_hours": 10224,
+        "reasons": [],
+        "rows": 11712,
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "rank": 12,
+      "selected": true,
+      "sz_decimals": 1
+    },
+    {
+      "candles": {
+        "complete": true,
+        "expected_window_bars": 2556,
+        "first_bar": "2025-07-01 00:00:00",
+        "interval": "4h",
+        "invalid_bars": 0,
+        "last_bar": "2026-10-31 20:00:00",
+        "present_warmup_bars": 300,
+        "present_window_bars": 2556,
+        "reasons": [],
+        "rows": 2928,
+        "warmup_bars": 300,
+        "warmup_range": [
+          "2025-07-13 00:00:00",
+          "2025-08-31 20:00:00"
+        ],
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "coin": "DOGE",
+      "day_ntl_vlm": 13385208.295115998,
+      "fetched_candles_sha256": "e8a4e555a5f50043e5b750d1a826d6acb36ed2f20f1953b7d86b2150e8087cf9",
+      "fetched_funding_sha256": "9ba08993909e2fcce70d5aa7f45e67596e8a8f0646ec9ed34ca7ba73b9b3fa4e",
+      "funding": {
+        "complete": true,
+        "expected_hours": 10224,
+        "missing_hours": 0,
+        "present_hours": 10224,
+        "reasons": [],
+        "rows": 11712,
+        "window": [
+          "2025-09-01 00:00:00",
+          "2026-11-01 00:00:00"
+        ]
+      },
+      "rank": 13,
+      "selected": true,
+      "sz_decimals": 0
+    }
+  ],
+  "selected": [
+    "HYPE",
+    "XRP",
+    "NEAR",
+    "PUMP",
+    "kPEPE",
+    "ENA",
+    "UNI",
+    "AVAX",
+    "WLD",
+    "DOGE"
+  ],
+  "study": "dual_thrust_2019"
+}

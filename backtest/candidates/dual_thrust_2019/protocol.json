@@ -1,0 +1,271 @@
+{
+  "study": "dual_thrust_2019",
+  "issue": 2019,
+  "confirms": "dual_thrust_1642 venue_4h group (verdict inconclusive: 18 held-out position clusters < 30; every performance check passed)",
+  "status": "frozen before acquisition; run_study.py lock records this file's sha256, the screen, the input inventory, every input file and every scoring source file before any leg is scored, and run refuses any difference",
+  "candidate": "dual_thrust",
+  "comparators": [
+    "breakout",
+    "session_breakout"
+  ],
+  "registry": "futures",
+  "fee_platform": "hyperliquid",
+  "strategy_type": "perps",
+  "capital_usd": 1000.0,
+  "intrabar_resolution": "ohlc_walk",
+  "contract": {
+    "direction": "both",
+    "close_strategies": [
+      {
+        "name": "tiered_tp_pct",
+        "params": {
+          "tp_tiers": [
+            {
+              "profit_pct": 0.03,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      }
+    ],
+    "stop_loss_atr_mult": 1.0,
+    "comparison_mode": "strict"
+  },
+  "contract_note": "The candidate, both comparators and all eight M1 incumbents run under this one contract (the dual_thrust_1642 matched contract): direction both, one tiered_tp_pct close at +3% for the full position, one fixed 1.0 x entry-ATR stop, strict close capability checks, ohlc_walk, $1,000 per leg and the manifest execution specification.",
+  "candidate_params": {
+    "lookback_sessions": 7,
+    "k_long": 1.0,
+    "k_short": 0.75,
+    "session_start_hour": 0
+  },
+  "expected_interval_ms": {
+    "1h": 3600000,
+    "4h": 14400000
+  },
+  "comparator_params": {
+    "breakout": {
+      "atr_multiplier": 1.5,
+      "atr_period": 14,
+      "lookback": 20
+    },
+    "session_breakout": {
+      "atr_multiplier": 0.0,
+      "atr_period": 14,
+      "lookback": 1,
+      "session": "asian",
+      "vol_period": 20,
+      "volume_threshold": 1.5
+    }
+  },
+  "incumbents": [
+    "momentum_pro",
+    "chart_pattern",
+    "squeeze_momentum",
+    "mean_reversion_pro",
+    "donchian_breakout",
+    "ichimoku_cloud",
+    "range_scalper",
+    "sma_crossover"
+  ],
+  "incumbent_params": {
+    "chart_pattern": {
+      "htf_gate_ema_fast": 20,
+      "htf_gate_ema_slow": 40,
+      "htf_gate_factor": 0,
+      "htf_gate_mode": "veto",
+      "pivot_lookback": 5,
+      "tolerance": 0.03,
+      "vol_multiplier": 1.5,
+      "vol_period": 20
+    },
+    "donchian_breakout": {
+      "entry_period": 20,
+      "exit_period": 10
+    },
+    "ichimoku_cloud": {
+      "kijun_period": 26,
+      "senkou_b_period": 52,
+      "tenkan_period": 9
+    },
+    "mean_reversion_pro": {
+      "adx_max": 25.0,
+      "adx_period": 14,
+      "confirm_window": 3,
+      "entry_std": 2.0,
+      "lookback": 30,
+      "rsi_overbought": 70.0,
+      "rsi_oversold": 30.0,
+      "rsi_period": 14,
+      "touch_entry": 0,
+      "turn_entry": 0
+    },
+    "momentum_pro": {
+      "adx_period": 14,
+      "adx_threshold": 20.0,
+      "ema_fast": 20,
+      "ema_long": 200,
+      "ema_mid": 50,
+      "pullback_touch_buffer_pct": 0.0,
+      "pullback_window": 6,
+      "vol_mult": 1.2,
+      "vol_period": 20
+    },
+    "range_scalper": {
+      "bb_period": 14,
+      "bb_std": 1.5,
+      "bw_threshold": 0.008,
+      "rsi_ob": 70,
+      "rsi_os": 30,
+      "rsi_period": 7,
+      "vol_ratio": 0.8
+    },
+    "sma_crossover": {
+      "fast_period": 20,
+      "slow_period": 50
+    },
+    "squeeze_momentum": {
+      "bb_period": 20,
+      "bb_std": 2.0,
+      "kc_mult": 1.5,
+      "kc_period": 20,
+      "mom_lookback": 12
+    }
+  },
+  "references": {
+    "original_results": {
+      "path": "backtest/candidates/dual_thrust_1642/results.json",
+      "sha256": "515660319f55072f4f5ff0fe17a04058b386bea78a203bc8b32b4ecda2933ffe",
+      "candidate_params_from": "groups.venue_4h.selected_params",
+      "comparator_params_from": "groups.venue_4h.comparator_params",
+      "incumbents_from": "incumbents"
+    },
+    "original_protocol": {
+      "path": "backtest/candidates/dual_thrust_1642/protocol.json",
+      "sha256": "69360a0c033bfca8b21aa9e6b1f74f8fd8ec35622de0c64075a05151646ac2b4",
+      "contract_from": "contract"
+    },
+    "original_venue_manifest": {
+      "path": "backtest/candidates/dual_thrust_1642/venue_manifest.json",
+      "sha256": "8e21fa954d56207fc0a36994a8fa6283f711a9a8e18774844459ca63b52f7bae",
+      "costs_from": "costs",
+      "documents_from": "venue_reference.documents"
+    },
+    "incumbent_params_source": {
+      "commit": "d0c719b18a26a2ce2b0fa69ea284029baf5da7e1",
+      "file": "shared_strategies/open/registry.py",
+      "sha256": "b90b4b6595d4daa13cf4b48c6e0cf7756c7c785fe667e61b3ae643cde31f65ae",
+      "note": "the original results.json records this commit and this registry.py sha256; incumbent_params are the default_params of the eight incumbents read from that commit, and every leg receives them explicitly"
+    }
+  },
+  "costs": {
+    "taker_fee_pct": 0.00045,
+    "maker_fee_pct": 0.00015,
+    "slippage_bps": 5.0,
+    "min_notional_usd": 10.0,
+    "min_notional_margin": 0.03
+  },
+  "cost_multipliers": {
+    "base": 1.0,
+    "stress": 2.0
+  },
+  "stress_note": "cost x2 doubles the per-coin half spread and the slippage; fees stay fixed",
+  "warmup_bars": 300,
+  "warmup_note": "the 300 consecutive bars immediately before each window feed indicators only; the evaluator neither scores nor trades them",
+  "populations": {
+    "primary_4h": {
+      "role": "primary: the sole verdict population",
+      "interval": "4h",
+      "window": [
+        "2025-09-01",
+        "2026-11-01"
+      ],
+      "manifest": "venue_primary_4h.json",
+      "window_name": "primary",
+      "roster": "the coins the screen selects (screen.json), excluding BTC, ETH and SOL"
+    },
+    "forward_4h": {
+      "role": "descriptive: original coins on bars after every original window; contributes nothing to the verdict",
+      "interval": "4h",
+      "window": [
+        "2026-10-01",
+        "2026-11-01"
+      ],
+      "manifest": "venue_forward_4h.json",
+      "window_name": "forward",
+      "roster": [
+        "BTC",
+        "ETH",
+        "SOL"
+      ],
+      "start_note": "the original venue test window ended on 2026-09-01 and its proxy oos window on 2026-10-01; forward scoring starts at 2026-10-01"
+    },
+    "descriptive_1h": {
+      "role": "descriptive: the 1h arm; contributes nothing to the verdict",
+      "interval": "1h",
+      "window": [
+        "2026-06-01",
+        "2026-11-01"
+      ],
+      "manifest": "venue_descriptive_1h.json",
+      "window_name": "descriptive",
+      "roster": "the selected primary coins plus BTC, ETH and SOL; a 1h coverage failure is recorded and never removes a primary coin"
+    }
+  },
+  "acquisition": {
+    "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)",
+    "candles_4h": [
+      "2025-07-01",
+      "2026-11-01"
+    ],
+    "candles_1h": [
+      "2026-05-01",
+      "2026-11-01"
+    ],
+    "funding": [
+      "2025-07-01",
+      "2026-11-01"
+    ],
+    "errors": "a request that fails after its retries stops the acquisition before any file is written; no coin is skipped or replaced because of a fetch error"
+  },
+  "screen": {
+    "liquidity_source": "the dayNtlVlm (24h notional volume, USD) field of one recorded metaAndAssetCtxs response; the observation time and the raw response are frozen in data/venue/",
+    "universe": "every perpetual in that response's meta universe (the main dex) without isDelisted",
+    "excluded_coins": [
+      "BTC",
+      "ETH",
+      "SOL"
+    ],
+    "rank": "dayNtlVlm descending, ties broken by coin name ascending; a non-finite volume is excluded",
+    "max_coins": 10,
+    "rule": "walk the ranking in order; screen each coin's 4h candles and hourly funding; select a coin when every requirement holds; stop after max_coins selections; coins below the last selection are not screened",
+    "requirements": [
+      "listing history and warm-up: the 300 4h bars immediately before 2025-09-01 are all present on the UTC 4h grid",
+      "candles: every 4h bar in [2025-09-01, 2026-11-01) is present on the grid, with no extra bar, and every warm-up and window bar has finite positive open, high, low and close, high >= max(open, close), low <= min(open, close) and finite volume >= 0",
+      "funding: every UTC hour in [2025-09-01, 2026-11-01) has a finite funding rate"
+    ],
+    "named_candidates": "HYPE and BNB receive the same screen with no priority",
+    "forbidden_inputs": "the screen reads only liquidity, listing and coverage information; it never computes a strategy signal, position, cluster or return",
+    "fixed_after_screen": "no coin or window is added, removed, replaced or extended after the screen; a failure to establish a primary roster is kept as evidence and yields an inconclusive verdict"
+  },
+  "sample_rules": {
+    "cluster_definition": "candidate base-cost positions pooled across the primary datasets, sorted by entry time; a position whose entry is at or before the running end of the current cluster (overlapping or touching holding spans) joins it, otherwise it starts a new cluster; per-coin cluster counts are reported separately and never summed into the pooled total",
+    "min_primary_clusters": 30
+  },
+  "verdict_rule": {
+    "population": "primary_4h only; forward_4h and descriptive_1h never contribute datasets, clusters, metrics or checks",
+    "order": [
+      "1. evidence: inconclusive when the primary manifest provenance is not venue; the manifest roster differs from the screen roster; any primary dataset fails the candle, warm-up or funding checks; any candidate, comparator or incumbent leg is missing, errored, duplicated or unexpected at either cost; any leg's candle or funding coverage is incomplete; any required metric is non-finite; or the candidate entry audit fails",
+      "2. sample: inconclusive when pooled candidate base-cost clusters < 30",
+      "3. performance: pass only when every check is true; fail when any check is false"
+    ],
+    "checks": {
+      "net_positive_base": "candidate summed net PnL > 0 at cost x1",
+      "net_positive_stress": "candidate summed net PnL > 0 at cost x2",
+      "m1_pass_base": "eval_windows.score_candidate verdict pass at cost x1 against the median of all eight incumbents per dataset (incumbent evidence is checked complete before the median is taken)",
+      "beats_breakout_sharpe_base": "candidate mean Sharpe > breakout mean Sharpe at cost x1, compared before display rounding",
+      "beats_session_breakout_sharpe_base": "candidate mean Sharpe > session_breakout mean Sharpe at cost x1, compared before display rounding"
+    }
+  },
+  "calendar_overlap": "the primary window repeats the original venue test calendar from 2025-09-01 to 2026-09-01 (12 of its 14 months) on different coins, and its warm-up reads July and August 2025 bars that fall in the original train calendar; crypto returns are correlated across coins, so the confirmation is cross-sectional and not independent in time",
+  "metadata": "no outcome changes registry metadata (edge_status stays no_edge, edge_source stays study_fail), strategy defaults, live or paper configuration, acknowledgements or deployment decisions; every command is suggest-only and sends no order"
+}
