@@ -1,0 +1,481 @@
+{
+  "audit": {
+    "candidate": {
+      "direction": "long",
+      "name": "chart_pattern",
+      "params": {}
+    },
+    "factors": [
+      0,
+      4,
+      5,
+      6
+    ],
+    "registry": "spot"
+  },
+  "contracts": {
+    "ratchet_both": {
+      "direction": "both",
+      "kind": "ratchet",
+      "per_dataset_identical": true,
+      "resolved": {
+        "allowed_regimes": null,
+        "atr_method": "simple",
+        "carried_by_study": {
+          "atr_method": "copied from the resolution (build_candidate does not copy it)",
+          "closed_bar_decisions": "True in the configuration; the candidate has no field for it, so the study's finite-frame signal path models it (closed-bar frame of the last 200 candles, next-bar fill)",
+          "htf_filter": "false in the configuration; copied when true",
+          "regime_period": "build_candidate writes regime_period 14 and regime_adx_threshold 20; validate_candidate refuses them without a gate consumer, so the study drops them; run_candidate_leg then uses the same defaults (14, 20)"
+        },
+        "close": [
+          {
+            "name": "trailing_tp_ratchet_regime",
+            "params": {
+              "use_defaults": true
+            }
+          }
+        ],
+        "direction": "both",
+        "htf_filter": false,
+        "invert_signal": false,
+        "leverage": 1,
+        "max_drawdown_pct_engine": 0.5,
+        "params_except_factor": {},
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "regime": {
+          "adx_threshold": 20.0,
+          "classifier": {
+            "atr": "adx",
+            "directional": "adx",
+            "gate": "adx"
+          },
+          "enabled": true,
+          "gate_on_failure": "open",
+          "label_limit": 200,
+          "labels": [
+            "ranging",
+            "trending_down",
+            "trending_up"
+          ],
+          "period": 14,
+          "windows": {
+            "atr": "default",
+            "directional": "default",
+            "gate": "default"
+          }
+        },
+        "regime_directional_policy": null,
+        "resolved_per_label": {
+          "ranging": {
+            "errors": [],
+            "tiers": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "trailing_stop_atr_multiple": 2.0
+          },
+          "trending_down": {
+            "errors": [],
+            "tiers": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trailing_stop_atr_multiple": 2.5
+          },
+          "trending_up": {
+            "errors": [],
+            "tiers": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trailing_stop_atr_multiple": 2.5
+          }
+        },
+        "resolved_stop_owner": "trailing_stop_atr_mult_regime (use_defaults)",
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": {
+          "use_defaults": true
+        },
+        "type": "perps",
+        "unsupported_or_unmodeled": [
+          "shared-wallet pool sizing",
+          "forming-candle decisions",
+          "venue lot and minimum-notional gates on the proxy path"
+        ]
+      }
+    },
+    "ratchet_long": {
+      "direction": "long",
+      "kind": "ratchet",
+      "per_dataset_identical": true,
+      "resolved": {
+        "allowed_regimes": null,
+        "atr_method": "simple",
+        "carried_by_study": {
+          "atr_method": "copied from the resolution (build_candidate does not copy it)",
+          "closed_bar_decisions": "True in the configuration; the candidate has no field for it, so the study's finite-frame signal path models it (closed-bar frame of the last 200 candles, next-bar fill)",
+          "htf_filter": "false in the configuration; copied when true",
+          "regime_period": "build_candidate writes regime_period 14 and regime_adx_threshold 20; validate_candidate refuses them without a gate consumer, so the study drops them; run_candidate_leg then uses the same defaults (14, 20)"
+        },
+        "close": [
+          {
+            "name": "trailing_tp_ratchet_regime",
+            "params": {
+              "use_defaults": true
+            }
+          }
+        ],
+        "direction": "long",
+        "htf_filter": false,
+        "invert_signal": false,
+        "leverage": 1,
+        "max_drawdown_pct_engine": 0.5,
+        "params_except_factor": {},
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "regime": {
+          "adx_threshold": 20.0,
+          "classifier": {
+            "atr": "adx",
+            "directional": "adx",
+            "gate": "adx"
+          },
+          "enabled": true,
+          "gate_on_failure": "open",
+          "label_limit": 200,
+          "labels": [
+            "ranging",
+            "trending_down",
+            "trending_up"
+          ],
+          "period": 14,
+          "windows": {
+            "atr": "default",
+            "directional": "default",
+            "gate": "default"
+          }
+        },
+        "regime_directional_policy": null,
+        "resolved_per_label": {
+          "ranging": {
+            "errors": [],
+            "tiers": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "trailing_stop_atr_multiple": 2.0
+          },
+          "trending_down": {
+            "errors": [],
+            "tiers": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trailing_stop_atr_multiple": 2.5
+          },
+          "trending_up": {
+            "errors": [],
+            "tiers": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trailing_stop_atr_multiple": 2.5
+          }
+        },
+        "resolved_stop_owner": "trailing_stop_atr_mult_regime (use_defaults)",
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": {
+          "use_defaults": true
+        },
+        "type": "perps",
+        "unsupported_or_unmodeled": [
+          "shared-wallet pool sizing",
+          "forming-candle decisions",
+          "venue lot and minimum-notional gates on the proxy path"
+        ]
+      }
+    },
+    "ratchet_short": {
+      "direction": "short",
+      "kind": "ratchet",
+      "per_dataset_identical": true,
+      "resolved": {
+        "allowed_regimes": null,
+        "atr_method": "simple",
+        "carried_by_study": {
+          "atr_method": "copied from the resolution (build_candidate does not copy it)",
+          "closed_bar_decisions": "True in the configuration; the candidate has no field for it, so the study's finite-frame signal path models it (closed-bar frame of the last 200 candles, next-bar fill)",
+          "htf_filter": "false in the configuration; copied when true",
+          "regime_period": "build_candidate writes regime_period 14 and regime_adx_threshold 20; validate_candidate refuses them without a gate consumer, so the study drops them; run_candidate_leg then uses the same defaults (14, 20)"
+        },
+        "close": [
+          {
+            "name": "trailing_tp_ratchet_regime",
+            "params": {
+              "use_defaults": true
+            }
+          }
+        ],
+        "direction": "short",
+        "htf_filter": false,
+        "invert_signal": false,
+        "leverage": 1,
+        "max_drawdown_pct_engine": 0.5,
+        "params_except_factor": {},
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "regime": {
+          "adx_threshold": 20.0,
+          "classifier": {
+            "atr": "adx",
+            "directional": "adx",
+            "gate": "adx"
+          },
+          "enabled": true,
+          "gate_on_failure": "open",
+          "label_limit": 200,
+          "labels": [
+            "ranging",
+            "trending_down",
+            "trending_up"
+          ],
+          "period": 14,
+          "windows": {
+            "atr": "default",
+            "directional": "default",
+            "gate": "default"
+          }
+        },
+        "regime_directional_policy": null,
+        "resolved_per_label": {
+          "ranging": {
+            "errors": [],
+            "tiers": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "trailing_stop_atr_multiple": 2.0
+          },
+          "trending_down": {
+            "errors": [],
+            "tiers": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trailing_stop_atr_multiple": 2.5
+          },
+          "trending_up": {
+            "errors": [],
+            "tiers": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trailing_stop_atr_multiple": 2.5
+          }
+        },
+        "resolved_stop_owner": "trailing_stop_atr_mult_regime (use_defaults)",
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": {
+          "use_defaults": true
+        },
+        "type": "perps",
+        "unsupported_or_unmodeled": [
+          "shared-wallet pool sizing",
+          "forming-candle decisions",
+          "venue lot and minimum-notional gates on the proxy path"
+        ]
+      }
+    },
+    "ref_long": {
+      "direction": "long",
+      "kind": "open_as_close",
+      "per_dataset_identical": true,
+      "resolved": {
+        "allowed_regimes": null,
+        "atr_method": "simple",
+        "close": null,
+        "direction": "long",
+        "htf_filter": false,
+        "params_except_factor": {},
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": null,
+        "type": "perps"
+      }
+    },
+    "ref_short": {
+      "direction": "short",
+      "kind": "open_as_close",
+      "per_dataset_identical": true,
+      "resolved": {
+        "allowed_regimes": null,
+        "atr_method": "simple",
+        "close": null,
+        "direction": "short",
+        "htf_filter": false,
+        "params_except_factor": {},
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": null,
+        "type": "perps"
+      }
+    }
+  },
+  "frame_length_bars": 200,
+  "refused": {
+    "ref_both": {
+      "error": "candidate has direction='both' but no close_strategies. The plain signal path runs one leg at a time (long/flat, or short/flat under direction='short'), so the short side of a 'both' candidate would be silently dropped. Add close_strategies",
+      "protocol_reason": "eval_windows.validate_candidate refuses direction both without close_strategies (the plain signal path runs one leg at a time); a sum of ref_long and ref_short is a diagnostic, never one bidirectional book",
+      "refused_by": "eval_windows.validate_candidate"
+    }
+  }
+}

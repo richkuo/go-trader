@@ -1,0 +1,18 @@
+{
+  "entries": [
+    {
+      "command": "judge",
+      "finished_utc": "2026-11-14T20:21:33Z",
+      "legs": 2058,
+      "network_calls": 3,
+      "network_probe": {
+        "name_resolution": "refused: frozen study run: network access is blocked",
+        "socket_connect": "refused: frozen study run: network access is blocked",
+        "unfrozen_symbol_load": "refused: frozen study run: network access is blocked"
+      },
+      "source_commit": "ab5214ca216e5923a3f8f5c104e161fca4d41033+uncommitted-changes",
+      "started_utc": "2026-11-14T19:43:48Z",
+      "workers": 8
+    }
+  ]
+}

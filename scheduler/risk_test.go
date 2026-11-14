@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"strings"
@@ -1407,6 +1408,150 @@ func TestManualMarkBasisPeakAdjustment(t *testing.T) {
 			if gotPeak != tc.wantPeak {
 				t.Errorf("peak = %v, want %v", gotPeak, tc.wantPeak)
 			}
+		})
+	}
+}
+
+func TestCheckRisk_CircuitBreakerSuppressionDMLiveOnly(t *testing.T) {
+	resetSuppression := func() {
+		drainCircuitBreakerSuppressionAlerts()
+		circuitBreakerSuppressedWarned.Range(func(k, _ any) bool {
+			circuitBreakerSuppressedWarned.Delete(k)
+			return true
+		})
+	}
+	resetSuppression()
+	t.Cleanup(resetSuppression)
+
+	disabled := false
+	enabled := true
+	newConfigs := func() []*StrategyConfig {
+		return []*StrategyConfig{
+			{ID: "cb-live", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h", "--mode=live"}, CircuitBreaker: &disabled},
+			{ID: "cb-paper", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h", "--mode=paper"}, CircuitBreaker: &disabled},
+			{ID: "cb-paper-src", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h", "--mode=paper"}, PaperSource: "src", CircuitBreaker: &disabled},
+		}
+	}
+	for _, sc := range newConfigs() {
+		if sc.ID == "cb-live" && portfolioScopeFor(*sc) != ScopeLive {
+			t.Fatalf("%s must classify live", sc.ID)
+		}
+		if sc.ID != "cb-live" && portfolioScopeFor(*sc) != ScopePaper {
+			t.Fatalf("%s must classify paper", sc.ID)
+		}
+	}
+
+	cases := []struct {
+		name        string
+		losses      int
+		pv          float64
+		wantReasons []string
+	}{
+		{"drawdown", 0, 700, []string{"drawdown 30.0% > 20.0%"}},
+		{"consecutive losses", 5, 1000, []string{"5 consecutive losses"}},
+		{"both", 5, 700, []string{"drawdown 30.0% > 20.0%", "5 consecutive losses"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetSuppression()
+			configs := newConfigs()
+			states := make(map[string]*StrategyState, len(configs))
+			logs := make(map[string]*bytes.Buffer, len(configs))
+			loggers := make(map[string]*StrategyLogger, len(configs))
+			for _, sc := range configs {
+				states[sc.ID] = &StrategyState{
+					ID: sc.ID, Platform: sc.Platform, Type: sc.Type,
+					RiskState: RiskState{PeakValue: 1000, MaxDrawdownPct: 20, DailyPnLDate: todayUTC(), ConsecutiveLosses: tc.losses},
+				}
+				logs[sc.ID] = &bytes.Buffer{}
+				loggers[sc.ID] = &StrategyLogger{stratID: sc.ID, writer: logs[sc.ID]}
+			}
+			runAll := func(pv float64) {
+				t.Helper()
+				for _, sc := range configs {
+					if allowed, reason := CheckRisk(sc, states[sc.ID], pv, nil, loggers[sc.ID], nil); !allowed && !sc.CircuitBreakerEnabled() {
+						t.Fatalf("%s: disabled breaker must not block: reason=%q", sc.ID, reason)
+					}
+				}
+			}
+			warnCount := func(id string) int {
+				return strings.Count(logs[id].String(), "circuit breaker is DISABLED")
+			}
+			assertLiveAlertOnly := func(stage string) {
+				t.Helper()
+				alerts := drainCircuitBreakerSuppressionAlerts()
+				if len(alerts) != 1 {
+					t.Fatalf("%s: queued alerts = %+v, want exactly one live alert", stage, alerts)
+				}
+				if alerts[0].StrategyID != "cb-live" {
+					t.Fatalf("%s: alert StrategyID = %q, want cb-live", stage, alerts[0].StrategyID)
+				}
+				if strings.Join(alerts[0].Reasons, "|") != strings.Join(tc.wantReasons, "|") {
+					t.Fatalf("%s: alert Reasons = %q, want %q", stage, alerts[0].Reasons, tc.wantReasons)
+				}
+			}
+			assertMarkers := func(stage string, want bool) {
+				t.Helper()
+				for _, sc := range configs {
+					if _, ok := circuitBreakerSuppressedWarned.Load(sc.ID); ok != want {
+						t.Fatalf("%s: %s marker present=%v, want %v", stage, sc.ID, ok, want)
+					}
+				}
+			}
+
+			runAll(tc.pv)
+			assertLiveAlertOnly("first breach")
+			assertMarkers("first breach", true)
+			for _, sc := range configs {
+				if got := warnCount(sc.ID); got != 1 {
+					t.Fatalf("first breach: %s WARN lines = %d, want 1", sc.ID, got)
+				}
+			}
+
+			runAll(tc.pv)
+			if alerts := drainCircuitBreakerSuppressionAlerts(); len(alerts) != 0 {
+				t.Fatalf("same episode: queued alerts = %+v, want none", alerts)
+			}
+			for _, sc := range configs {
+				if got := warnCount(sc.ID); got != 1 {
+					t.Fatalf("same episode: %s WARN lines = %d, want 1", sc.ID, got)
+				}
+			}
+
+			for _, s := range states {
+				s.RiskState.ConsecutiveLosses = 0
+			}
+			runAll(1000)
+			assertMarkers("recovery", false)
+			if alerts := drainCircuitBreakerSuppressionAlerts(); len(alerts) != 0 {
+				t.Fatalf("recovery: queued alerts = %+v, want none", alerts)
+			}
+
+			for _, s := range states {
+				s.RiskState.ConsecutiveLosses = tc.losses
+			}
+			runAll(tc.pv)
+			assertLiveAlertOnly("breach after recovery")
+			assertMarkers("breach after recovery", true)
+
+			for _, sc := range configs {
+				sc.CircuitBreaker = &enabled
+			}
+			runAll(tc.pv)
+			assertMarkers("breaker re-enabled", false)
+			if alerts := drainCircuitBreakerSuppressionAlerts(); len(alerts) != 0 {
+				t.Fatalf("breaker re-enabled: queued alerts = %+v, want none", alerts)
+			}
+
+			for _, sc := range configs {
+				sc.CircuitBreaker = &disabled
+				states[sc.ID].RiskState.CircuitBreaker = false
+				states[sc.ID].RiskState.CircuitBreakerUntil = time.Time{}
+				states[sc.ID].RiskState.ConsecutiveLosses = tc.losses
+			}
+			runAll(tc.pv)
+			assertLiveAlertOnly("breach after re-enable")
+			assertMarkers("breach after re-enable", true)
 		})
 	}
 }

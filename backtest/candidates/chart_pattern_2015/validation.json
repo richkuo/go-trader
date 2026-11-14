@@ -1,0 +1,564 @@
+{
+  "frame_length_bars": 200,
+  "network_calls": 3,
+  "network_probe": {
+    "name_resolution": "refused: frozen study run: network access is blocked",
+    "socket_connect": "refused: frozen study run: network access is blocked",
+    "unfrozen_symbol_load": "refused: frozen study run: network access is blocked"
+  },
+  "protocol_sha256": "06bb9dc650fb35f2647cd54a40dcc20c24e66f8f65235b268e5b183353b291d5",
+  "replay": {
+    "decomposition": {
+      "compared": 1344,
+      "mismatch_count": 0,
+      "mismatches": [],
+      "passed": true
+    },
+    "finite_vs_full_frame": {
+      "note": "diagnostic: how far the historical full-frame path and the live-shaped finite frame disagree on the same candles",
+      "rows": [
+        {
+          "dataset": "BTC 1h",
+          "factor": 0,
+          "finite_frame_signals": 192,
+          "finite_long": 99,
+          "full_frame_signals": 178,
+          "full_long": 84,
+          "same_bar_same_side": 155,
+          "window": "is"
+        },
+        {
+          "dataset": "BTC 1h",
+          "factor": 4,
+          "finite_frame_signals": 108,
+          "finite_long": 48,
+          "full_frame_signals": 104,
+          "full_long": 46,
+          "same_bar_same_side": 79,
+          "window": "is"
+        },
+        {
+          "dataset": "BTC 1h",
+          "factor": 0,
+          "finite_frame_signals": 300,
+          "finite_long": 157,
+          "full_frame_signals": 296,
+          "full_long": 152,
+          "same_bar_same_side": 262,
+          "window": "oos"
+        },
+        {
+          "dataset": "BTC 1h",
+          "factor": 4,
+          "finite_frame_signals": 164,
+          "finite_long": 77,
+          "full_frame_signals": 183,
+          "full_long": 85,
+          "same_bar_same_side": 142,
+          "window": "oos"
+        },
+        {
+          "dataset": "BTC 1h",
+          "factor": 0,
+          "finite_frame_signals": 394,
+          "finite_long": 211,
+          "full_frame_signals": 383,
+          "full_long": 203,
+          "same_bar_same_side": 322,
+          "window": "2024"
+        },
+        {
+          "dataset": "BTC 1h",
+          "factor": 4,
+          "finite_frame_signals": 219,
+          "finite_long": 126,
+          "full_frame_signals": 247,
+          "full_long": 142,
+          "same_bar_same_side": 166,
+          "window": "2024"
+        },
+        {
+          "dataset": "ETH 1h",
+          "factor": 0,
+          "finite_frame_signals": 183,
+          "finite_long": 89,
+          "full_frame_signals": 191,
+          "full_long": 94,
+          "same_bar_same_side": 156,
+          "window": "is"
+        },
+        {
+          "dataset": "ETH 1h",
+          "factor": 4,
+          "finite_frame_signals": 90,
+          "finite_long": 45,
+          "full_frame_signals": 115,
+          "full_long": 54,
+          "same_bar_same_side": 75,
+          "window": "is"
+        },
+        {
+          "dataset": "ETH 1h",
+          "factor": 0,
+          "finite_frame_signals": 304,
+          "finite_long": 159,
+          "full_frame_signals": 284,
+          "full_long": 145,
+          "same_bar_same_side": 257,
+          "window": "oos"
+        },
+        {
+          "dataset": "ETH 1h",
+          "factor": 4,
+          "finite_frame_signals": 166,
+          "finite_long": 85,
+          "full_frame_signals": 168,
+          "full_long": 84,
+          "same_bar_same_side": 124,
+          "window": "oos"
+        },
+        {
+          "dataset": "ETH 1h",
+          "factor": 0,
+          "finite_frame_signals": 366,
+          "finite_long": 190,
+          "full_frame_signals": 366,
+          "full_long": 195,
+          "same_bar_same_side": 307,
+          "window": "2024"
+        },
+        {
+          "dataset": "ETH 1h",
+          "factor": 4,
+          "finite_frame_signals": 183,
+          "finite_long": 93,
+          "full_frame_signals": 208,
+          "full_long": 116,
+          "same_bar_same_side": 135,
+          "window": "2024"
+        },
+        {
+          "dataset": "SOL 1h",
+          "factor": 0,
+          "finite_frame_signals": 170,
+          "finite_long": 99,
+          "full_frame_signals": 169,
+          "full_long": 97,
+          "same_bar_same_side": 138,
+          "window": "is"
+        },
+        {
+          "dataset": "SOL 1h",
+          "factor": 4,
+          "finite_frame_signals": 98,
+          "finite_long": 48,
+          "full_frame_signals": 98,
+          "full_long": 51,
+          "same_bar_same_side": 65,
+          "window": "is"
+        },
+        {
+          "dataset": "SOL 1h",
+          "factor": 0,
+          "finite_frame_signals": 280,
+          "finite_long": 145,
+          "full_frame_signals": 264,
+          "full_long": 131,
+          "same_bar_same_side": 233,
+          "window": "oos"
+        },
+        {
+          "dataset": "SOL 1h",
+          "factor": 4,
+          "finite_frame_signals": 155,
+          "finite_long": 70,
+          "full_frame_signals": 166,
+          "full_long": 74,
+          "same_bar_same_side": 123,
+          "window": "oos"
+        },
+        {
+          "dataset": "SOL 1h",
+          "factor": 0,
+          "finite_frame_signals": 320,
+          "finite_long": 164,
+          "full_frame_signals": 321,
+          "full_long": 171,
+          "same_bar_same_side": 270,
+          "window": "2024"
+        },
+        {
+          "dataset": "SOL 1h",
+          "factor": 4,
+          "finite_frame_signals": 173,
+          "finite_long": 89,
+          "full_frame_signals": 193,
+          "full_long": 103,
+          "same_bar_same_side": 141,
+          "window": "2024"
+        }
+      ]
+    },
+    "full_frame_causality": {
+      "compared": 540,
+      "mismatches": 1,
+      "passed": false,
+      "rows": [
+        {
+          "bars": 4920,
+          "dataset": "BTC 1h",
+          "examples": [],
+          "full_frame_signals": 178,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "is"
+        },
+        {
+          "bars": 7503,
+          "dataset": "BTC 1h",
+          "examples": [],
+          "full_frame_signals": 296,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "oos"
+        },
+        {
+          "bars": 8784,
+          "dataset": "BTC 1h",
+          "examples": [],
+          "full_frame_signals": 383,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "2024"
+        },
+        {
+          "bars": 1230,
+          "dataset": "BTC 4h",
+          "examples": [],
+          "full_frame_signals": 37,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "is"
+        },
+        {
+          "bars": 1876,
+          "dataset": "BTC 4h",
+          "examples": [],
+          "full_frame_signals": 60,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "oos"
+        },
+        {
+          "bars": 2196,
+          "dataset": "BTC 4h",
+          "examples": [
+            {
+              "bar": "2024-03-11 04:00:00",
+              "cut_frame": 0,
+              "full_frame": 1
+            }
+          ],
+          "full_frame_signals": 77,
+          "mismatches": 1,
+          "reproduced_on_cut_frame": 29,
+          "sampled": 30,
+          "window": "2024"
+        },
+        {
+          "bars": 4920,
+          "dataset": "ETH 1h",
+          "examples": [],
+          "full_frame_signals": 191,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "is"
+        },
+        {
+          "bars": 7503,
+          "dataset": "ETH 1h",
+          "examples": [],
+          "full_frame_signals": 284,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "oos"
+        },
+        {
+          "bars": 8784,
+          "dataset": "ETH 1h",
+          "examples": [],
+          "full_frame_signals": 366,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "2024"
+        },
+        {
+          "bars": 1230,
+          "dataset": "ETH 4h",
+          "examples": [],
+          "full_frame_signals": 32,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "is"
+        },
+        {
+          "bars": 1876,
+          "dataset": "ETH 4h",
+          "examples": [],
+          "full_frame_signals": 56,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "oos"
+        },
+        {
+          "bars": 2196,
+          "dataset": "ETH 4h",
+          "examples": [],
+          "full_frame_signals": 88,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "2024"
+        },
+        {
+          "bars": 4920,
+          "dataset": "SOL 1h",
+          "examples": [],
+          "full_frame_signals": 169,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "is"
+        },
+        {
+          "bars": 7503,
+          "dataset": "SOL 1h",
+          "examples": [],
+          "full_frame_signals": 264,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "oos"
+        },
+        {
+          "bars": 8784,
+          "dataset": "SOL 1h",
+          "examples": [],
+          "full_frame_signals": 321,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "2024"
+        },
+        {
+          "bars": 1230,
+          "dataset": "SOL 4h",
+          "examples": [],
+          "full_frame_signals": 32,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "is"
+        },
+        {
+          "bars": 1876,
+          "dataset": "SOL 4h",
+          "examples": [],
+          "full_frame_signals": 56,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "oos"
+        },
+        {
+          "bars": 2196,
+          "dataset": "SOL 4h",
+          "examples": [],
+          "full_frame_signals": 68,
+          "mismatches": 0,
+          "reproduced_on_cut_frame": 30,
+          "sampled": 30,
+          "window": "2024"
+        }
+      ],
+      "rule": "a full-frame signal at bar N must equal chart_pattern_core on the same window frame cut at bar N; a mismatch means the historical path read candles after the decision bar or depended on where the window frame ends",
+      "windows": [
+        "is",
+        "oos",
+        "2024"
+      ]
+    },
+    "future_invariance": {
+      "compared": 448,
+      "mismatch_count": 0,
+      "mismatches": [],
+      "passed": true
+    },
+    "htf_visibility": {
+      "compared": 896,
+      "mismatch_count": 0,
+      "mismatches": [],
+      "passed": true
+    },
+    "next_bar_fill": {
+      "compared": 174,
+      "legs": [
+        {
+          "contract": "ref_long",
+          "dataset": "BTC 1h",
+          "mismatch_count": 0,
+          "mismatches": [],
+          "positions": 10
+        },
+        {
+          "contract": "ref_short",
+          "dataset": "ETH 1h",
+          "mismatch_count": 0,
+          "mismatches": [],
+          "positions": 8
+        },
+        {
+          "contract": "ratchet_both",
+          "dataset": "SOL 30m",
+          "mismatch_count": 0,
+          "mismatches": [],
+          "positions": 156
+        }
+      ],
+      "mismatches": 0,
+      "passed": true,
+      "rule": "every opened position's entry bar follows a bar whose finite-frame signal (factor 4) points the same way, so a signal at bar N fills at bar N+1"
+    },
+    "signal_check_path": {
+      "compared": 1344,
+      "mismatch_count": 0,
+      "mismatches": [],
+      "passed": true,
+      "path": "shared_scripts/check_hyperliquid.py build_shared_signal_state(df=frame, ohlcv_limit=frame length, regime_enabled) + evaluate_signal_slot (prebuilt frame, no adapter, no network)"
+    }
+  },
+  "signal_files_sha256": {
+    "shared_strategies/open/chart_patterns.py": "b83c269c938cd9e9013a82095893a84c9a26e3675cccc62f466c1749f55986e8",
+    "shared_strategies/open/futures/strategies.py": "3cd3907e2cac5574cfe2839adec33c21db6503cc8e1d57ad6d932d1a59e0b1d7",
+    "shared_strategies/open/indicators_core.py": "6b2770a42821fb0b5d7499e5f19857746ef6598f4b1d70c35505d776b18a704a",
+    "shared_strategies/open/mtf_confluence.py": "1171dad1aa79000a88e801b8e5d0cc5743a23b7cc26ef2923404ddcfa52ad357",
+    "shared_strategies/open/registry.py": "f0cdce0e7011ea9322754d88cbe42c06e77b03ac6e315bdd5db27334a1a30b0d",
+    "shared_strategies/open/spot/strategies.py": "0a40fe1abf06399588f893154e71988b0dd3f6eaddfc4660c6fe59116ea13db9",
+    "shared_tools/strategy_composition.py": "19ce28010602a34774644de566ac40529797feba4cc1f83017d58142f8e6bd56"
+  },
+  "study": "chart_pattern_2015",
+  "study_manifest_sha256": "2bba27a4871b1ccd401c8262f6d48580c9c296273c81fc4ed801758468618f8c",
+  "table_sources": {
+    "15cf1c7615da38b377342845d7adc8614d97647740474c996082a179a3c23b7d": {
+      "dataset": "HYPE 1h",
+      "kind": "venue",
+      "path": "backtest/candidates/breakout_2014/data/venue_1h/HYPE_1h_candles.csv.gz"
+    },
+    "1b014c521a88f473c543ce874a37a0ba6ea2c0e90b7817eaa72444bb0e45022d": {
+      "dataset": "HYPE 1h",
+      "kind": "proxy",
+      "path": "backtest/candidates/breakout_2014/data/proxy/HYPE_1h_candles.csv.gz"
+    },
+    "1daa22186a43784be032391c0e954b055902c37fad38edfa6e135a395f4b7be4": {
+      "dataset": "BTC 1h",
+      "kind": "proxy",
+      "path": "backtest/candidates/breakout_2014/data/proxy/BTC_1h_candles.csv.gz"
+    },
+    "38f83b510183f56c17a8cad7ddea23e916072e6983fc495ab5c49a9cbdec9d1f": {
+      "dataset": "BTC 1h",
+      "kind": "venue",
+      "path": "backtest/candidates/breakout_2014/data/venue_1h/BTC_1h_candles.csv.gz"
+    },
+    "47fc45d1818a3af834ae6f01d02a66b371a246dd1a378e361828efe21179b02a": {
+      "dataset": "SOL 30m",
+      "kind": "proxy",
+      "path": "backtest/candidates/breakout_2014/data/proxy/SOL_30m_candles.csv.gz"
+    },
+    "4c439c27bceea5d3b7e887684157c00e9fab9c5a7d6d03939f0b0091d0ddc690": {
+      "dataset": "BNB 30m",
+      "kind": "venue",
+      "path": "backtest/candidates/breakout_2014/data/venue_30m/BNB_30m_candles.csv.gz"
+    },
+    "53897b74957a46aaa6c1986e99a9791bde57758d59affe0567ddf9b1b5ef42a4": {
+      "dataset": "SOL 1h",
+      "kind": "proxy",
+      "path": "backtest/candidates/breakout_2014/data/proxy/SOL_1h_candles.csv.gz"
+    },
+    "5739957b190ae2def73bba8bddb0636775c756c3e99ba4093ff597c4044a8ca9": {
+      "dataset": "BNB 1h",
+      "kind": "venue",
+      "path": "backtest/candidates/breakout_2014/data/venue_1h/BNB_1h_candles.csv.gz"
+    },
+    "5c57fdeb434788f95303e095b9edbd3278cf813f1e56be03e10a2002e98375c6": {
+      "dataset": "BTC 30m",
+      "kind": "venue",
+      "path": "backtest/candidates/breakout_2014/data/venue_30m/BTC_30m_candles.csv.gz"
+    },
+    "68b1934d8fd43ed2da3426dea536e70b2a68bb2555fea4d355dee9f3e7aca051": {
+      "dataset": "SOL 30m",
+      "kind": "venue",
+      "path": "backtest/candidates/breakout_2014/data/venue_30m/SOL_30m_candles.csv.gz"
+    },
+    "7fbe31529fb097330dcab3e264b8d73443cd3f1f7aa8abe35fd5a2bf3bae9420": {
+      "dataset": "BTC 30m",
+      "kind": "proxy",
+      "path": "backtest/candidates/breakout_2014/data/proxy/BTC_30m_candles.csv.gz"
+    },
+    "929838162636c32dee0aef177df5ca48ee5544277a4878a9ba2a19c80ac37ae9": {
+      "dataset": "BNB 30m",
+      "kind": "proxy",
+      "path": "backtest/candidates/breakout_2014/data/proxy/BNB_30m_candles.csv.gz"
+    },
+    "9ba7be50a196409c32fa707b2930eb194d0a7aeac1ae7e4338ce1ef7a4f934c3": {
+      "dataset": "SOL 1h",
+      "kind": "venue",
+      "path": "backtest/candidates/breakout_2014/data/venue_1h/SOL_1h_candles.csv.gz"
+    },
+    "9ee5babe8215309d6a1f20d1c82f194b569711e0f3a67dfc32e57147c22d5913": {
+      "dataset": "ETH 1h",
+      "kind": "venue",
+      "path": "backtest/candidates/breakout_2014/data/venue_1h/ETH_1h_candles.csv.gz"
+    },
+    "9f939d9b2295102f045be219201dbccfe485426ace879e6e53fdf5ef7367824a": {
+      "dataset": "HYPE 30m",
+      "kind": "proxy",
+      "path": "backtest/candidates/breakout_2014/data/proxy/HYPE_30m_candles.csv.gz"
+    },
+    "ab0243a7211c7e4c8146134704ad7ff2ac85e31939016747707a69486f97d0c7": {
+      "dataset": "ETH 1h",
+      "kind": "proxy",
+      "path": "backtest/candidates/breakout_2014/data/proxy/ETH_1h_candles.csv.gz"
+    },
+    "ad1ed48f97010d16dc2601ba753b60625d0fd3c241617dc5d23d5f12925fa280": {
+      "dataset": "ETH 30m",
+      "kind": "venue",
+      "path": "backtest/candidates/breakout_2014/data/venue_30m/ETH_30m_candles.csv.gz"
+    },
+    "c37747692da0730f5d5481ea26ba3000a2549d1017529917d6cdc3f88759e0dd": {
+      "dataset": "BNB 1h",
+      "kind": "proxy",
+      "path": "backtest/candidates/breakout_2014/data/proxy/BNB_1h_candles.csv.gz"
+    },
+    "cff55eaed23c0c77cb83edae26b8f166e90813b5b4ccab64f9329852f5c42a5f": {
+      "dataset": "HYPE 30m",
+      "kind": "venue",
+      "path": "backtest/candidates/breakout_2014/data/venue_30m/HYPE_30m_candles.csv.gz"
+    },
+    "f7b1243d574a951f41fd04504a328fa3648335b53f0ad957ad580062fa0d103e": {
+      "dataset": "ETH 30m",
+      "kind": "proxy",
+      "path": "backtest/candidates/breakout_2014/data/proxy/ETH_30m_candles.csv.gz"
+    }
+  },
+  "written_utc": "2026-11-14T19:36:38Z"
+}
