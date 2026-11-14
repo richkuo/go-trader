@@ -1,0 +1,207 @@
+{
+  "acquisition": {
+    "acquired_at": "2026-11-14T17:43:06Z",
+    "end": "2026-11-01",
+    "note": "written by run_study.py acquire; the venue serves only the most recent 5,000 candles per interval",
+    "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)",
+    "start": "2025-07-01"
+  },
+  "costs": {
+    "maker_fee_pct": 0.00015,
+    "min_notional_margin": 0.03,
+    "min_notional_usd": 10.0,
+    "slippage_bps": 5.0,
+    "taker_fee_pct": 0.00045
+  },
+  "datasets": [
+    {
+      "candles": {
+        "path": "data/venue/HYPE_4h_candles.csv.gz",
+        "sha256": "16f3181d31bfcb2c64a313065f14306e19e5cc3cfa7131d16ae19a65eac3bb11"
+      },
+      "coin": "HYPE",
+      "funding": {
+        "path": "data/venue/HYPE_funding.csv.gz",
+        "sha256": "65f1de6a9770ab14b6daea30d082217abca7bb51e6655c5922041411c34e5968"
+      },
+      "half_spread_bps": 1.1337,
+      "size_decimals": 2,
+      "symbol": "HYPE/USDT"
+    },
+    {
+      "candles": {
+        "path": "data/venue/XRP_4h_candles.csv.gz",
+        "sha256": "3f0a5f39062d88373a4a02a5183eef9f6ebe3421d7a8e74fd83066bc686094f9"
+      },
+      "coin": "XRP",
+      "funding": {
+        "path": "data/venue/XRP_funding.csv.gz",
+        "sha256": "580e2599b02f2f60bdbc94f2d83a6c4691c41cac49e5d4b97a653b6ca5f205f4"
+      },
+      "half_spread_bps": 0.0519,
+      "size_decimals": 0,
+      "symbol": "XRP/USDT"
+    },
+    {
+      "candles": {
+        "path": "data/venue/NEAR_4h_candles.csv.gz",
+        "sha256": "ca670730cc7dbcda09fcd150c0c8b8a3da9186423c197f00a06befb63bea4d5a"
+      },
+      "coin": "NEAR",
+      "funding": {
+        "path": "data/venue/NEAR_funding.csv.gz",
+        "sha256": "0c0e8df6be23b772519d5f5bc7f5d1bc2d618da7a5296905b185c345c1237020"
+      },
+      "half_spread_bps": 0.317,
+      "size_decimals": 1,
+      "symbol": "NEAR/USDT"
+    },
+    {
+      "candles": {
+        "path": "data/venue/PUMP_4h_candles.csv.gz",
+        "sha256": "0a146c19cffddefbda41fcdc21e6f8ed474dc796c4f746dc3478471ae9d4de78"
+      },
+      "coin": "PUMP",
+      "funding": {
+        "path": "data/venue/PUMP_funding.csv.gz",
+        "sha256": "8a51484a4e4f1bdfb50f4b9dee75b6b76ba69fa8771989e7af72a4e9e4a55a6a"
+      },
+      "half_spread_bps": 1.6375,
+      "size_decimals": 0,
+      "symbol": "PUMP/USDT"
+    },
+    {
+      "candles": {
+        "path": "data/venue/kPEPE_4h_candles.csv.gz",
+        "sha256": "6f9c6d612ccf24d8b68a9ac33d0c98d0020a3c8be8dc3515c38fecf71abb04a4"
+      },
+      "coin": "kPEPE",
+      "funding": {
+        "path": "data/venue/kPEPE_funding.csv.gz",
+        "sha256": "f73517aa710aed17c20a2c78b796322ac28eb52cf735706e301308ed857378e8"
+      },
+      "half_spread_bps": 5.0163,
+      "size_decimals": 0,
+      "symbol": "kPEPE/USDT"
+    },
+    {
+      "candles": {
+        "path": "data/venue/ENA_4h_candles.csv.gz",
+        "sha256": "4a604f2de5caeb9d791e7adfadc953cf3f4383353509c44c5ff38dca59c6dbe9"
+      },
+      "coin": "ENA",
+      "funding": {
+        "path": "data/venue/ENA_funding.csv.gz",
+        "sha256": "c00c4015a806f8067100517f4d4f7d84aaea6feb9e86b41fdececaad5c8f072b"
+      },
+      "half_spread_bps": 1.2398,
+      "size_decimals": 0,
+      "symbol": "ENA/USDT"
+    },
+    {
+      "candles": {
+        "path": "data/venue/UNI_4h_candles.csv.gz",
+        "sha256": "de01853c604751c56fb6d827d848718c8e51202d1ec5d38f73fec6a4e9275a2a"
+      },
+      "coin": "UNI",
+      "funding": {
+        "path": "data/venue/UNI_funding.csv.gz",
+        "sha256": "6af1a6535c79e333f1cac5effc94ee9cc5ca20e6b57e8137b5290286a01ff606"
+      },
+      "half_spread_bps": 0.4951,
+      "size_decimals": 1,
+      "symbol": "UNI/USDT"
+    },
+    {
+      "candles": {
+        "path": "data/venue/AVAX_4h_candles.csv.gz",
+        "sha256": "6162e90663bcb0965b795c055871ebb28223a2620377222226a327529281b58f"
+      },
+      "coin": "AVAX",
+      "funding": {
+        "path": "data/venue/AVAX_funding.csv.gz",
+        "sha256": "9477bb407656f75f7788667acdc48b7e3f2a55efed702cd246c57942426770c0"
+      },
+      "half_spread_bps": 0.266,
+      "size_decimals": 2,
+      "symbol": "AVAX/USDT"
+    },
+    {
+      "candles": {
+        "path": "data/venue/WLD_4h_candles.csv.gz",
+        "sha256": "f5136a6f8d6af0a80fa712bfee1fe9aed1eed86c18d0dfd12d63e86c6d89bdc8"
+      },
+      "coin": "WLD",
+      "funding": {
+        "path": "data/venue/WLD_funding.csv.gz",
+        "sha256": "43d1d23efb944af9143362cbc0a88fa723488f5de55e047b1b39058c7a1bc92b"
+      },
+      "half_spread_bps": 0.9379,
+      "size_decimals": 1,
+      "symbol": "WLD/USDT"
+    },
+    {
+      "candles": {
+        "path": "data/venue/DOGE_4h_candles.csv.gz",
+        "sha256": "7444a57e0cbd078b244c77a1c955bb43ec6929f64ec300f4da2c51d9d6a59dc4"
+      },
+      "coin": "DOGE",
+      "funding": {
+        "path": "data/venue/DOGE_funding.csv.gz",
+        "sha256": "86ea8ebc4ae46982511162bdd318435488471dcb0616985427df25bb354035ec"
+      },
+      "half_spread_bps": 0.2475,
+      "size_decimals": 0,
+      "symbol": "DOGE/USDT"
+    }
+  ],
+  "interval": "4h",
+  "provenance": {
+    "kind": "venue",
+    "label": "Hyperliquid mainnet perpetual candles from the public info API (candleSnapshot); closed bars only"
+  },
+  "schema": "offline_candle_manifest/v1",
+  "study": "dual_thrust_2019",
+  "venue": "hyperliquid",
+  "venue_reference": {
+    "documents": [
+      {
+        "quote": "Perps fee tiers Base rate Diamond Platinum Gold Silver Bronze Wood Tier 14d weighted volume ($) Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker 0 0.045% 0.015%",
+        "quote_sha256": "8cca42ca08eea9e26b2affe200d4d958dda0d5e0310ba162a8e1f5c9554f3bd9",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps base-tier taker and maker fee",
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees"
+      },
+      {
+        "quote": "Order MinTradeNtl Order must have minimum value of $10.",
+        "quote_sha256": "28b93383786330e253affaed0d14b98ff3f683d9a66f0111d346f94650a2850d",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps minimum order value",
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/error-responses"
+      },
+      {
+        "quote": "Sizes are rounded to the szDecimals of that asset. For example, if szDecimals = 3 then 1.001 is a valid size but 1.0001 is not. szDecimals for an asset is found in the meta response to the info endpoint",
+        "quote_sha256": "9ae73e64e273ae0d0d329a2cd68cdf562ee50b583d581876b5a83bd5309dbc5f",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "lot size from meta szDecimals",
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size"
+      }
+    ],
+    "l2_snapshot": {
+      "path": "data/venue/venue_l2_snapshot.json",
+      "sha256": "2cce484a880a1b98d400bd1beab8f6fa2ee275498ff0eda69d1f07a8e81c3055"
+    },
+    "meta": {
+      "path": "data/venue/venue_meta.json",
+      "sha256": "1a506b2411d3f8a76d8ae614929e5fe41e87363a341d245b45faa2046b8f1cc8"
+    }
+  },
+  "warmup_bars": 300,
+  "windows": {
+    "primary": {
+      "end": "2026-11-01",
+      "role": "primary: the sole verdict population",
+      "start": "2025-09-01"
+    }
+  }
+}

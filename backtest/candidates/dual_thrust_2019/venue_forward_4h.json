@@ -1,0 +1,109 @@
+{
+  "acquisition": {
+    "acquired_at": "2026-11-14T17:43:06Z",
+    "end": "2026-11-01",
+    "note": "written by run_study.py acquire; the venue serves only the most recent 5,000 candles per interval",
+    "source": "POST https://api.hyperliquid.xyz/info: metaAndAssetCtxs (liquidity and venue meta), candleSnapshot (closed bars only), fundingHistory through shared_tools/funding_fetcher.py, l2Book (one snapshot per coin for the half spread)",
+    "start": "2025-07-01"
+  },
+  "costs": {
+    "maker_fee_pct": 0.00015,
+    "min_notional_margin": 0.03,
+    "min_notional_usd": 10.0,
+    "slippage_bps": 5.0,
+    "taker_fee_pct": 0.00045
+  },
+  "datasets": [
+    {
+      "candles": {
+        "path": "data/venue/BTC_4h_candles.csv.gz",
+        "sha256": "7764ca98d0a78f3dfd6622f2da9724a12611ead76d1af3ceca2fe6b0678680d1"
+      },
+      "coin": "BTC",
+      "funding": {
+        "path": "data/venue/BTC_funding.csv.gz",
+        "sha256": "c35aca259a13fbfbfa959d3c7bf7a50e4fbb8c3de82169a7e53ee757e4e8c8fe"
+      },
+      "half_spread_bps": 0.0759,
+      "size_decimals": 5,
+      "symbol": "BTC/USDT"
+    },
+    {
+      "candles": {
+        "path": "data/venue/ETH_4h_candles.csv.gz",
+        "sha256": "3a99226a9afb7710b045d6d6c2ad8e9777c967b25302d482a15c46d250ba3910"
+      },
+      "coin": "ETH",
+      "funding": {
+        "path": "data/venue/ETH_funding.csv.gz",
+        "sha256": "6d51304affd576affc9756eda65cefce801d01eb1e9a9624172e4bfae428b4e8"
+      },
+      "half_spread_bps": 0.2707,
+      "size_decimals": 4,
+      "symbol": "ETH/USDT"
+    },
+    {
+      "candles": {
+        "path": "data/venue/SOL_4h_candles.csv.gz",
+        "sha256": "8ce4b105ec03c242ad5e4a19cdf63d5e9120c8b0fefbfefb2823a9c3276425fc"
+      },
+      "coin": "SOL",
+      "funding": {
+        "path": "data/venue/SOL_funding.csv.gz",
+        "sha256": "ba288b82d48187ab4c1476606914ceba1fa1d5ed31935bcf31d8a892a88c12e0"
+      },
+      "half_spread_bps": 0.0685,
+      "size_decimals": 2,
+      "symbol": "SOL/USDT"
+    }
+  ],
+  "interval": "4h",
+  "provenance": {
+    "kind": "venue",
+    "label": "Hyperliquid mainnet perpetual candles from the public info API (candleSnapshot); closed bars only"
+  },
+  "schema": "offline_candle_manifest/v1",
+  "study": "dual_thrust_2019",
+  "venue": "hyperliquid",
+  "venue_reference": {
+    "documents": [
+      {
+        "quote": "Perps fee tiers Base rate Diamond Platinum Gold Silver Bronze Wood Tier 14d weighted volume ($) Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker 0 0.045% 0.015%",
+        "quote_sha256": "8cca42ca08eea9e26b2affe200d4d958dda0d5e0310ba162a8e1f5c9554f3bd9",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps base-tier taker and maker fee",
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees"
+      },
+      {
+        "quote": "Order MinTradeNtl Order must have minimum value of $10.",
+        "quote_sha256": "28b93383786330e253affaed0d14b98ff3f683d9a66f0111d346f94650a2850d",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps minimum order value",
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/error-responses"
+      },
+      {
+        "quote": "Sizes are rounded to the szDecimals of that asset. For example, if szDecimals = 3 then 1.001 is a valid size but 1.0001 is not. szDecimals for an asset is found in the meta response to the info endpoint",
+        "quote_sha256": "9ae73e64e273ae0d0d329a2cd68cdf562ee50b583d581876b5a83bd5309dbc5f",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "lot size from meta szDecimals",
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size"
+      }
+    ],
+    "l2_snapshot": {
+      "path": "data/venue/venue_l2_snapshot.json",
+      "sha256": "2cce484a880a1b98d400bd1beab8f6fa2ee275498ff0eda69d1f07a8e81c3055"
+    },
+    "meta": {
+      "path": "data/venue/venue_meta.json",
+      "sha256": "1a506b2411d3f8a76d8ae614929e5fe41e87363a341d245b45faa2046b8f1cc8"
+    }
+  },
+  "warmup_bars": 300,
+  "windows": {
+    "forward": {
+      "end": "2026-11-01",
+      "role": "descriptive: original coins on bars after every original window; contributes nothing to the verdict",
+      "start": "2026-10-01"
+    }
+  }
+}

@@ -246,18 +246,42 @@ def post_info(payload: dict):
     return om._post_info(payload)
 
 
+FETCH_ATTEMPTS = 6
+FETCH_BACKOFF_S = 20
+
+
 def fetch_candles(coin: str, interval: str, start: str, end: str) -> list:
     import offline_manifest as om
-    df = om._fetch_hl_candles(coin, interval, to_ms(start), to_ms(end))
-    return [[int(r.timestamp), r.open, r.high, r.low, r.close, r.volume] for r in df.itertuples(index=False)]
+    last = None
+    for attempt in range(FETCH_ATTEMPTS):
+        try:
+            df = om._fetch_hl_candles(coin, interval, to_ms(start), to_ms(end))
+            time.sleep(1)
+            return [[int(r.timestamp), r.open, r.high, r.low, r.close, r.volume] for r in df.itertuples(index=False)]
+        except om.ManifestError as exc:
+            last = exc
+            print(f"[retry] {coin} {interval} candles attempt {attempt + 1}: {exc}", flush=True)
+            time.sleep(FETCH_BACKOFF_S * (attempt + 1))
+    raise SystemExit(f"{coin} {interval} candle acquisition failed after {FETCH_ATTEMPTS} attempts: {last}; "
+                     "nothing was written")
 
 
 def fetch_funding(coin: str, start: str, end: str, db_path: str) -> list:
     from funding_fetcher import load_cached_funding
-    box = {}
-    df = load_cached_funding(coin, start, end_date=end, db_path=db_path, source_box=box)
-    if box.get("fetch_error"):
-        raise SystemExit(f"{coin} funding acquisition failed: {box['fetch_error']}; nothing was written")
+    df, last = None, None
+    for attempt in range(FETCH_ATTEMPTS):
+        box = {}
+        attempt_db = f"{db_path}.{coin}.{attempt}"
+        df = load_cached_funding(coin, start, end_date=end, db_path=attempt_db, source_box=box)
+        if not box.get("fetch_error"):
+            break
+        last = box["fetch_error"]
+        print(f"[retry] {coin} funding attempt {attempt + 1}: {last[:160]}", flush=True)
+        time.sleep(FETCH_BACKOFF_S * (attempt + 1))
+    else:
+        raise SystemExit(f"{coin} funding acquisition failed after {FETCH_ATTEMPTS} attempts: {last}; "
+                         "nothing was written")
+    time.sleep(2)
     if df is None or df.empty:
         return []
     s, e = to_ms(start), to_ms(end)
