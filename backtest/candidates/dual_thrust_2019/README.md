@@ -24,4 +24,8 @@ uv run --no-sync python backtest/candidates/dual_thrust_2019/run_study.py verify
 uv run --no-sync python backtest/candidates/dual_thrust_2019/run_study.py render
 ```
 
-`run` refuses an existing cache, a missing or changed lock, an unregistered input, uncommitted locked files and changed scoring sources; check out the lock's source commit to reproduce on a later tree. Without `--out` it refuses to replace `results.json`.
+`run` refuses an existing cache, a missing or changed lock, an unregistered input, uncommitted locked files and changed scoring sources. Without `--out` it refuses to replace `results.json`.
+
+Run `run` at the lock commit `f4d188bef7556a0e3aa7908b7b3ca941e22346ae`, and `verify` at the pull request head. Do not use the working-tree `source_commit` that `protocol_lock.json` records: that commit has no inputs and no lock. Where the runner's refusal text says "the lock's source commit", use the lock commit.
+
+`run` and `verify` also check that the lock commit holds no scored file. This repository squash-merges pull requests, so on `main` one commit holds both `protocol_lock.json` and `results.json`, and both commands refuse there with "results.json already exists in the lock commit". The branch commits stay reachable through the pull request ref: `git fetch origin pull/2026/head`, then `git checkout f4d188bef7556a0e3aa7908b7b3ca941e22346ae` for `run`, or `git checkout FETCH_HEAD` for `verify`.

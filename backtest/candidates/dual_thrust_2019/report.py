@@ -1,9 +1,34 @@
+import ast
 import json
 import os
 
 import run_study as rs
 
+PR = 2026
 CMD = "uv run --no-sync python backtest/candidates/dual_thrust_2019/run_study.py"
+
+
+def unhashed_backtest_imports() -> list:
+    hashed = set(rs.source_files())
+    queue = sorted(f for f in hashed if f.startswith("backtest/"))
+    seen = set(queue)
+    while queue:
+        rel = queue.pop()
+        with open(os.path.join(rs.REPO, rel)) as fh:
+            tree = ast.parse(fh.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module]
+            else:
+                continue
+            for name in names:
+                dep = f"backtest/{name.split('.')[0]}.py"
+                if dep not in seen and os.path.exists(os.path.join(rs.REPO, dep)):
+                    seen.add(dep)
+                    queue.append(dep)
+    return sorted(seen - hashed)
 
 
 def sentence(text: str) -> str:
@@ -124,9 +149,12 @@ def render(paths: rs.Paths) -> None:
              f"rounding, minimum notional ${k['min_notional_usd']:.0f} with a {k['min_notional_margin']} margin. Stress "
              "(cost x2) doubles spread and slippage; fees stay fixed. Hourly funding is charged from the frozen series.")
     drift = res["references"].get("evaluator_sources_changed_since_original") or []
+    unhashed = unhashed_backtest_imports()
     L.append(f"- Evaluator source files that differ from the original study's recorded versions: "
              + (", ".join(f"`{p}`" for p in drift) if drift else "none")
-             + ". The current lock records every scoring source hash. Registry default parameters that differ from "
+             + f". The lock hashes {len(held['source_sha256'])} scoring source files. Backtest modules that the hashed "
+             "backtest files import, directly or through each other, and that the lock does not hash: " + ", ".join(f"`{p}`" for p in unhashed)
+             + "; `run` does not refuse a change to these files. Registry default parameters that differ from "
              "the frozen values: " + (json.dumps(res["references"]["current_default_params_differ"], sort_keys=True)
                                       if res["references"]["current_default_params_differ"] else "none") + ".")
     L.append("")
@@ -303,6 +331,7 @@ def render(paths: rs.Paths) -> None:
 
 def readme(paths: rs.Paths, proto: dict, res: dict) -> None:
     v = res["verdict"]
+    lock_commit = (res.get("lock_git") or {}).get("lock_commit")
     L = ["# dual_thrust_2019", "",
          "Frozen confirmation of the `dual_thrust_1642` Hyperliquid 4h settings on additional coins (issue 2019). "
          f"Primary verdict: **{v['outcome']}** ({v['reason']}). Every number is in `REPORT.md`; this file lists what "
@@ -325,7 +354,14 @@ def readme(paths: rs.Paths, proto: dict, res: dict) -> None:
          f"{CMD} verify --work-dir <fresh-empty-directory>",
          f"{CMD} render", "```", "",
          "`run` refuses an existing cache, a missing or changed lock, an unregistered input, uncommitted locked files "
-         "and changed scoring sources; check out the lock's source commit to reproduce on a later tree. Without "
-         "`--out` it refuses to replace `results.json`.", ""]
+         "and changed scoring sources. Without `--out` it refuses to replace `results.json`.", "",
+         f"Run `run` at the lock commit `{lock_commit}`, and `verify` at the pull request head. Do not use the "
+         "working-tree `source_commit` that `protocol_lock.json` records: that commit has no inputs and no lock. "
+         "Where the runner's refusal text says \"the lock's source commit\", use the lock commit.", "",
+         "`run` and `verify` also check that the lock commit holds no scored file. This repository squash-merges pull "
+         "requests, so on `main` one commit holds both `protocol_lock.json` and `results.json`, and both commands refuse "
+         "there with \"results.json already exists in the lock commit\". The branch commits stay reachable through the "
+         f"pull request ref: `git fetch origin pull/{PR}/head`, then `git checkout {lock_commit}` for `run`, or "
+         "`git checkout FETCH_HEAD` for `verify`.", ""]
     with open(os.path.join(paths.root, "README.md"), "w") as fh:
         fh.write("\n".join(L))
