@@ -1,0 +1,8 @@
+{
+  "direction": "short",
+  "name": "chart_pattern",
+  "params": {
+    "htf_gate_factor": 3
+  },
+  "type": "perps"
+}

@@ -1,0 +1,2793 @@
+{
+  "frame_length_bars": 200,
+  "network_blocked": true,
+  "network_calls": 0,
+  "protocol_sha256": "06bb9dc650fb35f2647cd54a40dcc20c24e66f8f65235b268e5b183353b291d5",
+  "rows": [
+    {
+      "coin": "BNB",
+      "group": "bridge_1h",
+      "interval": "1h",
+      "kind": "bridge",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 4575,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.040123555000000005
+          },
+          "reason": "9 missing proxy candles in the window are scored as they are (bridge rule)",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "BTC",
+      "group": "bridge_1h",
+      "interval": "1h",
+      "kind": "bridge",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 4575,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.0399892998
+          },
+          "reason": "9 missing proxy candles in the window are scored as they are (bridge rule)",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "ETH",
+      "group": "bridge_1h",
+      "interval": "1h",
+      "kind": "bridge",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 4575,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.04061885180000001
+          },
+          "reason": "9 missing proxy candles in the window are scored as they are (bridge rule)",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "HYPE",
+      "group": "bridge_1h",
+      "interval": "1h",
+      "kind": "bridge",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 4575,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.055024123400000007
+          },
+          "reason": "9 missing proxy candles in the window are scored as they are (bridge rule)",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "SOL",
+      "group": "bridge_1h",
+      "interval": "1h",
+      "kind": "bridge",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 9,
+            "missing_bars": 9,
+            "present_bars": 4575,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.0263186086
+          },
+          "reason": "9 missing proxy candles in the window are scored as they are (bridge rule)",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "BNB",
+      "group": "bridge_30m",
+      "interval": "30m",
+      "kind": "bridge",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 18,
+            "missing_bars": 18,
+            "present_bars": 4542,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.0229661017
+          },
+          "reason": "18 missing proxy candles in the window are scored as they are (bridge rule)",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "BTC",
+      "group": "bridge_30m",
+      "interval": "30m",
+      "kind": "bridge",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 18,
+            "missing_bars": 18,
+            "present_bars": 4542,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.023383940600000003
+          },
+          "reason": "18 missing proxy candles in the window are scored as they are (bridge rule)",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "ETH",
+      "group": "bridge_30m",
+      "interval": "30m",
+      "kind": "bridge",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 18,
+            "missing_bars": 18,
+            "present_bars": 4542,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.022484317200000003
+          },
+          "reason": "18 missing proxy candles in the window are scored as they are (bridge rule)",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "HYPE",
+      "group": "bridge_30m",
+      "interval": "30m",
+      "kind": "bridge",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 18,
+            "missing_bars": 18,
+            "present_bars": 4542,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.028528448900000003
+          },
+          "reason": "18 missing proxy candles in the window are scored as they are (bridge rule)",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "SOL",
+      "group": "bridge_30m",
+      "interval": "30m",
+      "kind": "bridge",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": false,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 18,
+            "missing_bars": 18,
+            "present_bars": 4542,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.0196048063
+          },
+          "reason": "18 missing proxy candles in the window are scored as they are (bridge rule)",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "BNB",
+      "group": "proxy_1h",
+      "interval": "1h",
+      "kind": "proxy",
+      "section": "perps",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 8760,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 7,
+          "present_bars": 8753,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 3672
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 8784,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 8784,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 12425
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 3840,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 3840,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 21209
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 4920,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 4920,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 7512,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 9,
+          "present_bars": 7503,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 29969
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 12432,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        }
+      }
+    },
+    {
+      "coin": "BTC",
+      "group": "proxy_1h",
+      "interval": "1h",
+      "kind": "proxy",
+      "section": "perps",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 8760,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 7,
+          "present_bars": 8753,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 3672
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 8784,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 8784,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 12425
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 3840,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 3840,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 21209
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 4920,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 4920,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 7512,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 9,
+          "present_bars": 7503,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 29969
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 12432,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        }
+      }
+    },
+    {
+      "coin": "ETH",
+      "group": "proxy_1h",
+      "interval": "1h",
+      "kind": "proxy",
+      "section": "perps",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 8760,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 7,
+          "present_bars": 8753,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 3672
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 8784,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 8784,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 12425
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 3840,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 3840,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 21209
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 4920,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 4920,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 7512,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 9,
+          "present_bars": 7503,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 29969
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 12432,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        }
+      }
+    },
+    {
+      "coin": "HYPE",
+      "group": "proxy_1h",
+      "interval": "1h",
+      "kind": "proxy",
+      "section": "perps",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 8760,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2024-12-05 10:00:00.004000",
+          "missing_bars": 8760,
+          "present_bars": 0,
+          "reason": "warm-up lacks 400 consecutive bars (400 missing, first 2022-12-15 08:00:00); no candles in the window; 8760 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2024-12-05 10:00:00.004000)",
+          "start": "2023-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 8760,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": "2022-12-15 08:00:00",
+            "missing": 400,
+            "ok": false,
+            "rows_before_start": 0
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 8784,
+          "first_unpriced_hour": "2024-01-01 00:00:00",
+          "first_venue_rate": "2024-12-05 10:00:00.004000",
+          "missing_bars": 8784,
+          "present_bars": 0,
+          "reason": "warm-up lacks 400 consecutive bars (400 missing, first 2023-12-15 08:00:00); no candles in the window; 8146 unpriced funding hours (first 2024-01-01 00:00:00; venue funding starts 2024-12-05 10:00:00.004000)",
+          "start": "2024-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 8146,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": "2023-12-15 08:00:00",
+            "missing": 400,
+            "ok": false,
+            "rows_before_start": 0
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 3840,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2024-12-05 10:00:00.004000",
+          "missing_bars": 3755,
+          "present_bars": 85,
+          "reason": "warm-up lacks 400 consecutive bars (400 missing, first 2024-12-15 08:00:00)",
+          "start": "2025-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": "2024-12-15 08:00:00",
+            "missing": 400,
+            "ok": false,
+            "rows_before_start": 0
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 4920,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2024-12-05 10:00:00.004000",
+          "missing_bars": 0,
+          "present_bars": 4920,
+          "reason": "warm-up lacks 400 consecutive bars (315 missing, first 2025-05-24 08:00:00)",
+          "start": "2025-06-10",
+          "status": "excluded",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": "2025-05-24 08:00:00",
+            "missing": 315,
+            "ok": false,
+            "rows_before_start": 85
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 7512,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2024-12-05 10:00:00.004000",
+          "missing_bars": 9,
+          "present_bars": 7503,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 5005
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 12432,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2024-12-05 10:00:00.004000",
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "reason": "warm-up lacks 400 consecutive bars (315 missing, first 2025-05-24 08:00:00)",
+          "start": "2025-06-10",
+          "status": "excluded",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": "2025-05-24 08:00:00",
+            "missing": 315,
+            "ok": false,
+            "rows_before_start": 85
+          }
+        }
+      }
+    },
+    {
+      "coin": "SOL",
+      "group": "proxy_1h",
+      "interval": "1h",
+      "kind": "proxy",
+      "section": "perps",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 8760,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 7,
+          "present_bars": 8753,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 3672
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 8784,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 8784,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 12425
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 3840,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 3840,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 21209
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 4920,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 4920,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 7512,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 9,
+          "present_bars": 7503,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 29969
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 12432,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 9,
+          "present_bars": 12423,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 25049
+          }
+        }
+      }
+    },
+    {
+      "coin": "BNB",
+      "group": "proxy_30m",
+      "interval": "30m",
+      "kind": "proxy",
+      "section": "perps",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 17520,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 14,
+          "present_bars": 17506,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 7344
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 17568,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 17568,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 24850
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 7680,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 7680,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 42418
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 9840,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 9840,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 15024,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 18,
+          "present_bars": 15006,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 59938
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 24864,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        }
+      }
+    },
+    {
+      "coin": "BTC",
+      "group": "proxy_30m",
+      "interval": "30m",
+      "kind": "proxy",
+      "section": "perps",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 17520,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 14,
+          "present_bars": 17506,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 7344
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 17568,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 17568,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 24850
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 7680,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 7680,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 42418
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 9840,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 9840,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 15024,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 18,
+          "present_bars": 15006,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 59938
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 24864,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        }
+      }
+    },
+    {
+      "coin": "ETH",
+      "group": "proxy_30m",
+      "interval": "30m",
+      "kind": "proxy",
+      "section": "perps",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 17520,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 14,
+          "present_bars": 17506,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 7344
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 17568,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 17568,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 24850
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 7680,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 7680,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 42418
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 9840,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 9840,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 15024,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 18,
+          "present_bars": 15006,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 59938
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 24864,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        }
+      }
+    },
+    {
+      "coin": "HYPE",
+      "group": "proxy_30m",
+      "interval": "30m",
+      "kind": "proxy",
+      "section": "perps",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 17520,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2024-12-05 10:00:00.004000",
+          "missing_bars": 17520,
+          "present_bars": 0,
+          "reason": "warm-up lacks 400 consecutive bars (400 missing, first 2022-12-23 16:00:00); no candles in the window; 8760 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2024-12-05 10:00:00.004000)",
+          "start": "2023-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 8760,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": "2022-12-23 16:00:00",
+            "missing": 400,
+            "ok": false,
+            "rows_before_start": 0
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 17568,
+          "first_unpriced_hour": "2024-01-01 00:00:00",
+          "first_venue_rate": "2024-12-05 10:00:00.004000",
+          "missing_bars": 17568,
+          "present_bars": 0,
+          "reason": "warm-up lacks 400 consecutive bars (400 missing, first 2023-12-23 16:00:00); no candles in the window; 8146 unpriced funding hours (first 2024-01-01 00:00:00; venue funding starts 2024-12-05 10:00:00.004000)",
+          "start": "2024-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 8146,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": "2023-12-23 16:00:00",
+            "missing": 400,
+            "ok": false,
+            "rows_before_start": 0
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 7680,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2024-12-05 10:00:00.004000",
+          "missing_bars": 7510,
+          "present_bars": 170,
+          "reason": "warm-up lacks 400 consecutive bars (400 missing, first 2024-12-23 16:00:00)",
+          "start": "2025-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": "2024-12-23 16:00:00",
+            "missing": 400,
+            "ok": false,
+            "rows_before_start": 0
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 9840,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2024-12-05 10:00:00.004000",
+          "missing_bars": 0,
+          "present_bars": 9840,
+          "reason": "warm-up lacks 400 consecutive bars (230 missing, first 2025-06-01 16:00:00)",
+          "start": "2025-06-10",
+          "status": "excluded",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": "2025-06-01 16:00:00",
+            "missing": 230,
+            "ok": false,
+            "rows_before_start": 170
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 15024,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2024-12-05 10:00:00.004000",
+          "missing_bars": 18,
+          "present_bars": 15006,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 10010
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 24864,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2024-12-05 10:00:00.004000",
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "reason": "warm-up lacks 400 consecutive bars (230 missing, first 2025-06-01 16:00:00)",
+          "start": "2025-06-10",
+          "status": "excluded",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": "2025-06-01 16:00:00",
+            "missing": 230,
+            "ok": false,
+            "rows_before_start": 170
+          }
+        }
+      }
+    },
+    {
+      "coin": "SOL",
+      "group": "proxy_30m",
+      "interval": "30m",
+      "kind": "proxy",
+      "section": "perps",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 17520,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 14,
+          "present_bars": 17506,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "excluded",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 7344
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 17568,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 17568,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 24850
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 7680,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 7680,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 42418
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 9840,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "present_bars": 9840,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 15024,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 18,
+          "present_bars": 15006,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 59938
+          }
+        },
+        "stitched": {
+          "end": "2026-11-10",
+          "expected_bars": 24864,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 18,
+          "present_bars": 24846,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true,
+            "rows_before_start": 50098
+          }
+        }
+      }
+    },
+    {
+      "coin": "BNB",
+      "group": "venue_1h",
+      "interval": "1h",
+      "kind": "venue",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4584,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.040123555000000005
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "BTC",
+      "group": "venue_1h",
+      "interval": "1h",
+      "kind": "venue",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4584,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.0399892998
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "ETH",
+      "group": "venue_1h",
+      "interval": "1h",
+      "kind": "venue",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4584,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.04061885180000001
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "HYPE",
+      "group": "venue_1h",
+      "interval": "1h",
+      "kind": "venue",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4584,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.055024123400000007
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "SOL",
+      "group": "venue_1h",
+      "interval": "1h",
+      "kind": "venue",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4584,
+            "first_bar": "2026-05-03 00:00:00",
+            "last_bar": "2026-11-09 23:00:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4584,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 4584,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 4584,
+            "sum_rate": 0.0263186086
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-05-03",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "BNB",
+      "group": "venue_30m",
+      "interval": "30m",
+      "kind": "venue",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4560,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.0229661017
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "BTC",
+      "group": "venue_30m",
+      "interval": "30m",
+      "kind": "venue",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4560,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.023383940600000003
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "ETH",
+      "group": "venue_30m",
+      "interval": "30m",
+      "kind": "venue",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4560,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.022484317200000003
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "HYPE",
+      "group": "venue_30m",
+      "interval": "30m",
+      "kind": "venue",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4560,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.028528448900000003
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "SOL",
+      "group": "venue_30m",
+      "interval": "30m",
+      "kind": "venue",
+      "section": "perps",
+      "windows": {
+        "tail": {
+          "candles": {
+            "complete": true,
+            "expected_bars": 4560,
+            "first_bar": "2026-08-07 00:00:00",
+            "last_bar": "2026-11-09 23:30:00",
+            "max_gap_bars": 0,
+            "missing_bars": 0,
+            "present_bars": 4560,
+            "warmup_bars": 400,
+            "warmup_missing_bars": 0
+          },
+          "end": "2026-11-10",
+          "funding": {
+            "available": true,
+            "complete": true,
+            "expected_hours": 2280,
+            "max_gap_hours": 0,
+            "missing_hours": 0,
+            "present_hours": 2280,
+            "sum_rate": 0.0196048063
+          },
+          "reason": "complete candles, warm-up and funding",
+          "start": "2026-08-07",
+          "status": "included"
+        }
+      }
+    },
+    {
+      "coin": "BTC",
+      "group": "audit",
+      "interval": "1h",
+      "kind": "proxy",
+      "section": "audit",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 8760,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 7,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 8753,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 8784,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 8784,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2025H1": {
+          "end": "2025-07-01",
+          "expected_bars": 4344,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 4344,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 3840,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 3840,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 4920,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 4920,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 7512,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 9,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 7503,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "oos_982": {
+          "end": "2026-07-01",
+          "expected_bars": 4344,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 4344,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "coin": "BTC",
+      "group": "audit",
+      "interval": "4h",
+      "kind": "proxy",
+      "section": "audit",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 2190,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 1,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 2189,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 2196,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 2196,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2025H1": {
+          "end": "2025-07-01",
+          "expected_bars": 1086,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 1086,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 960,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 960,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 1230,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 1230,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 1878,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 2,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 1876,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "oos_982": {
+          "end": "2026-07-01",
+          "expected_bars": 1086,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 1086,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "coin": "ETH",
+      "group": "audit",
+      "interval": "1h",
+      "kind": "proxy",
+      "section": "audit",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 8760,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 7,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 8753,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 8784,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 8784,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2025H1": {
+          "end": "2025-07-01",
+          "expected_bars": 4344,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 4344,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 3840,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 3840,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 4920,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 4920,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 7512,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 9,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 7503,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "oos_982": {
+          "end": "2026-07-01",
+          "expected_bars": 4344,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 4344,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "coin": "ETH",
+      "group": "audit",
+      "interval": "4h",
+      "kind": "proxy",
+      "section": "audit",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 2190,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 1,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 2189,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 2196,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 2196,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2025H1": {
+          "end": "2025-07-01",
+          "expected_bars": 1086,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 1086,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 960,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 960,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 1230,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 1230,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 1878,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 2,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 1876,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "oos_982": {
+          "end": "2026-07-01",
+          "expected_bars": 1086,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 1086,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "coin": "SOL",
+      "group": "audit",
+      "interval": "1h",
+      "kind": "proxy",
+      "section": "audit",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 8760,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 7,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 8753,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 8784,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 8784,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2025H1": {
+          "end": "2025-07-01",
+          "expected_bars": 4344,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 4344,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 3840,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 3840,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 4920,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 4920,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 7512,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 9,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 7503,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "oos_982": {
+          "end": "2026-07-01",
+          "expected_bars": 4344,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 4344,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "coin": "SOL",
+      "group": "audit",
+      "interval": "4h",
+      "kind": "proxy",
+      "section": "audit",
+      "windows": {
+        "2023": {
+          "end": "2024-01-01",
+          "expected_bars": 2190,
+          "first_unpriced_hour": "2023-01-01 00:00:00",
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 1,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 2189,
+          "reason": "3144 unpriced funding hours (first 2023-01-01 00:00:00; venue funding starts 2023-05-12 00:00:00.048000)",
+          "start": "2023-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 3144,
+          "venue_absent_hours": 569,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2024": {
+          "end": "2025-01-01",
+          "expected_bars": 2196,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 2196,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2024-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 1,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2025H1": {
+          "end": "2025-07-01",
+          "expected_bars": 1086,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 1086,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "2025H1t": {
+          "end": "2025-06-10",
+          "expected_bars": 960,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 960,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "is": {
+          "end": "2026-01-01",
+          "expected_bars": 1230,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 1230,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2025-06-10",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "oos": {
+          "end": "2026-11-10",
+          "expected_bars": 1878,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 2,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 1876,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        },
+        "oos_982": {
+          "end": "2026-07-01",
+          "expected_bars": 1086,
+          "first_unpriced_hour": null,
+          "first_venue_rate": "2023-05-12 00:00:00.048000",
+          "missing_bars": 0,
+          "note": "the audit path loads the window with no warm-up; unpriced funding hours make the charged-funding leg funding_incomplete (eval_windows verdict funding_incomplete)",
+          "present_bars": 1086,
+          "reason": "complete warm-up prefix, candles present, every scored hour priced or proven venue-absent",
+          "start": "2026-01-01",
+          "status": "included",
+          "unpriced_funding_hours": 0,
+          "venue_absent_hours": 0,
+          "warmup": {
+            "first_missing": null,
+            "missing": 0,
+            "ok": true
+          }
+        }
+      }
+    }
+  ],
+  "study": "chart_pattern_2015",
+  "study_manifest_sha256": "2bba27a4871b1ccd401c8262f6d48580c9c296273c81fc4ed801758468618f8c",
+  "warmup_bars": 400
+}
