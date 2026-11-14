@@ -8,26 +8,44 @@ PR = 2026
 CMD = "uv run --no-sync python backtest/candidates/dual_thrust_2019/run_study.py"
 
 
-def unhashed_backtest_imports() -> list:
+def path_join_target(node) -> str:
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "join"):
+        return ""
+    parts = [a.value for a in node.args if isinstance(a, ast.Constant) and isinstance(a.value, str) and a.value != ".."]
+    if not parts or not parts[-1].endswith(".py"):
+        return ""
+    return os.path.normpath(os.path.join(*parts))
+
+
+def unhashed_loadable_files() -> list:
     hashed = set(rs.source_files())
-    queue = sorted(f for f in hashed if f.startswith("backtest/"))
+    queue = sorted(hashed)
     seen = set(queue)
     while queue:
         rel = queue.pop()
         with open(os.path.join(rs.REPO, rel)) as fh:
             tree = ast.parse(fh.read())
+        found = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 names = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 names = [node.module]
             else:
+                target = path_join_target(node)
+                if target:
+                    found.append(target)
                 continue
             for name in names:
-                dep = f"backtest/{name.split('.')[0]}.py"
-                if dep not in seen and os.path.exists(os.path.join(rs.REPO, dep)):
-                    seen.add(dep)
-                    queue.append(dep)
+                parts = name.split(".")
+                for d in ("", "backtest", "shared_tools", os.path.dirname(rel)):
+                    for k in range(1, len(parts) + 1):
+                        base = os.path.join(d, *parts[:k])
+                        found.extend((base + ".py", os.path.join(base, "__init__.py")))
+        for dep in found:
+            if dep not in seen and os.path.isfile(os.path.join(rs.REPO, dep)):
+                seen.add(dep)
+                queue.append(dep)
     return sorted(seen - hashed)
 
 
@@ -149,11 +167,13 @@ def render(paths: rs.Paths) -> None:
              f"rounding, minimum notional ${k['min_notional_usd']:.0f} with a {k['min_notional_margin']} margin. Stress "
              "(cost x2) doubles spread and slippage; fees stay fixed. Hourly funding is charged from the frozen series.")
     drift = res["references"].get("evaluator_sources_changed_since_original") or []
-    unhashed = unhashed_backtest_imports()
+    unhashed = unhashed_loadable_files()
     L.append(f"- Evaluator source files that differ from the original study's recorded versions: "
              + (", ".join(f"`{p}`" for p in drift) if drift else "none")
-             + f". The lock hashes {len(held['source_sha256'])} scoring source files. Backtest modules that the hashed "
-             "backtest files import, directly or through each other, and that the lock does not hash: " + ", ".join(f"`{p}`" for p in unhashed)
+             + f". The lock hashes {len(held['source_sha256'])} scoring source files. Repository files that the hashed "
+             "files can load, by import or by file path, directly or through each other, and that the lock does not "
+             "hash (found by a scan of the import statements and the file paths in the code, so the list can name files "
+             "that a scoring run does not load): " + ", ".join(f"`{p}`" for p in unhashed)
              + "; `run` does not refuse a change to these files. Registry default parameters that differ from "
              "the frozen values: " + (json.dumps(res["references"]["current_default_params_differ"], sort_keys=True)
                                       if res["references"]["current_default_params_differ"] else "none") + ".")
