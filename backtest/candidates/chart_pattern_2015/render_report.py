@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import hashlib
 import json
 import os
 import sys
@@ -69,6 +70,7 @@ def _audit_section(proto, verdict):
     if verdict is None:
         return lines + ["Not scored yet.", ""]
     a = verdict["audit"]
+    leg982 = a["memos"]["legacy_cost"]["windows"].get("oos_982", {})
     rows = []
     for f in sorted(a["comparison"], key=lambda x: int(x[1:])):
         for w in ("is", "oos", "2023", "2024", "2025H1"):
@@ -76,15 +78,19 @@ def _audit_section(proto, verdict):
             cur = a["memos"]["current"]["windows"].get(w, {}).get(f, {})
             rows.append([f, w, c["982"] or "-", c["1282"] or "not documented", c["current"] or "-",
                          _f(cur.get("mean_sharpe")), _f(cur.get("mean_bar_sharpe")),
-                         c["current_funding_off"] or "-", c["legacy_cost"] or "-"])
+                         c["current_funding_off"] or "-", c["legacy_cost"] or "-",
+                         (leg982.get(f, {}).get("verdict") or "-") if w == "oos" else "-"])
     lines += _table(["factor", "window", "982", "1282", "current", "current mean Sharpe", "current bar Sharpe",
-                     "diag: funding off", "diag: 982 costs"], rows)
+                     "diag: funding off", "diag: 982 costs", "diag: 982 costs, 982 dates"], rows)
+    s982, e982 = proto["windows"]["oos_982"]
     lines += ["", "Columns: `982` and `1282` are the documented verdicts. `current` is the current-default rerun "
               "(Hyperliquid taker fee 0.045 percent, 0.05 percent slippage, perps accounting, charged funding, oos "
               "to 2026-11-10). `funding_incomplete` means the window has hours before the first Hyperliquid "
               "funding rate (2023-05-12), so the current harness refuses a verdict. The two diagnostic memos are "
               "labeled references: `funding off` keeps current fees, `982 costs` uses the issue 982 cost model "
-              "(0.1 percent commission, 0.05 percent slippage, no funding).", ""]
+              "(0.1 percent commission, 0.05 percent slippage, no funding). `982 costs, 982 dates` is the `982 costs` "
+              f"diagnostic on the oos dates issue 982 could read (`oos_982`, {s982} to {e982}); it is set on the oos "
+              "rows only.", ""]
     lines += ["### What changed against issue 982", ""]
     lines += _explain_changes(proto, a)
     lines += ["### Current-default rerun per window", ""]
@@ -114,7 +120,15 @@ def _explain_changes(proto, a):
     for f in sorted(a["comparison"], key=lambda x: int(x[1:])):
         for w in ("is", "oos", "2023", "2024", "2025H1"):
             c = a["comparison"][f][w]
-            if c["982"] is None or c["current"] is None or c["982"].lower() == c["current"].lower():
+            if c["982"] is None:
+                continue
+            diags = [c["legacy_cost"], c["current_funding_off"]]
+            if w == "oos":
+                diags.append(leg.get("oos_982", {}).get(f, {}).get("verdict"))
+            same = c["current"] is not None and c["982"].lower() == c["current"].lower()
+            flips = c["current"] is not None and not same
+            contradicted = any(d is not None and d.lower() != c["982"].lower() for d in diags)
+            if not flips and not contradicted:
                 continue
             parts = []
             h_sh = hist["mean_sharpe"].get(f[1:], {}).get(w)
@@ -136,9 +150,11 @@ def _explain_changes(proto, a):
                          f"bar {_f(o.get('mean_bar_sharpe'))}): adds the fee change")
             parts.append(f"current {n.get('verdict', '-')} (Sharpe {_f(n.get('mean_sharpe'))} vs bar "
                          f"{_f(n.get('mean_bar_sharpe'))}): adds charged funding")
-            out.append(f"- {f} {w}: " + "; ".join(parts) + ".")
+            head = f"- {f} {w}" + (" (the current verdict equals issue 982, but a diagnostic verdict contradicts "
+                                   "it)" if same else "")
+            out.append(head + ": " + "; ".join(parts) + ".")
     if not out:
-        out.append("- No current verdict differs from issue 982.")
+        out.append("- No current or diagnostic verdict differs from issue 982.")
     out.append("")
     out.append("A step that keeps the verdict and moves the Sharpe means attributes that movement to the named "
                "change; a step that flips the verdict names the change that flips it. The engine change is the "
@@ -287,6 +303,20 @@ def _resolution_section(res):
     return lines
 
 
+def _drivers_changed_after_lock(lock):
+    repo = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+    changed = []
+    for rel, digest in sorted((lock.get("driver_sha256") or {}).items()):
+        path = os.path.join(repo, rel)
+        if not os.path.exists(path):
+            changed.append(rel)
+            continue
+        with open(path, "rb") as fh:
+            if hashlib.sha256(fh.read()).hexdigest() != digest:
+                changed.append(rel)
+    return changed
+
+
 def render(root: str) -> str:
     proto = _load(root, "protocol.json")
     verdict = _load(root, "verdict.json")
@@ -308,6 +338,10 @@ def render(root: str) -> str:
     if lock:
         lines += [f"Protocol lock: `{lock['protocol_sha256']}` at {lock['locked_at_utc']} "
                   f"(source commit `{lock['source_commit']}`).", ""]
+        changed = _drivers_changed_after_lock(lock)
+        lines += ["Driver files that differ from the digests in the lock: "
+                  + (", ".join(f"`{p}`" for p in changed) if changed else "none")
+                  + ". The README section \"Driver change after the lock\" describes each change.", ""]
     results = _load(root, "results.json")
     if results:
         lines += [f"Results: {len(results['legs'])} legs, source commit `{results['source_commit']}`. Refused network "

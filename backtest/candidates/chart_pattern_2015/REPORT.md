@@ -31,35 +31,36 @@ Suggested parameter lines: none (no opt-in result).
 
 ## Audit reference (spot registry, long, open-as-close, full frame)
 
-| factor | window | 982 | 1282 | current | current mean Sharpe | current bar Sharpe | diag: funding off | diag: 982 costs |
-|---|---|---|---|---|---|---|---|---|
-| f0 | is | FAIL | not documented | fail | -0.52 | -0.20 | fail | fail |
-| f0 | oos | PASS | not documented | fail | -0.30 | -0.14 | fail | fail |
-| f0 | 2023 | FAIL | not documented | funding_incomplete | 1.26 | 1.38 | fail | fail |
-| f0 | 2024 | PASS | not documented | pass | 0.96 | 0.64 | pass | pass |
-| f0 | 2025H1 | FAIL | not documented | fail | -0.55 | -0.40 | fail | fail |
-| f4 | is | PASS | PASS | pass | -0.02 | -0.20 | pass | pass |
-| f4 | oos | PASS | PASS | pass | 0.39 | -0.14 | pass | pass |
-| f4 | 2023 | PASS | PASS | funding_incomplete | 1.47 | 1.38 | pass | pass |
-| f4 | 2024 | FAIL | FAIL | fail | 0.28 | 0.64 | fail | fail |
-| f4 | 2025H1 | PASS | PASS | pass | 0.50 | -0.40 | pass | pass |
-| f5 | is | PASS | not documented | pass | 0.07 | -0.20 | pass | pass |
-| f5 | oos | FAIL | FAIL | pass | 0.13 | -0.14 | pass | pass |
-| f5 | 2023 | PASS | not documented | funding_incomplete | 1.49 | 1.38 | pass | pass |
-| f5 | 2024 | FAIL | not documented | fail | 0.48 | 0.64 | fail | fail |
-| f5 | 2025H1 | PASS | not documented | pass | 0.20 | -0.40 | pass | pass |
-| f6 | is | PASS | not documented | pass | 0.31 | -0.20 | pass | pass |
-| f6 | oos | FAIL | FAIL | pass | -0.09 | -0.14 | pass | pass |
-| f6 | 2023 | PASS | not documented | funding_incomplete | 1.60 | 1.38 | pass | pass |
-| f6 | 2024 | FAIL | not documented | fail | 0.36 | 0.64 | fail | fail |
-| f6 | 2025H1 | PASS | not documented | pass | -0.10 | -0.40 | pass | pass |
+| factor | window | 982 | 1282 | current | current mean Sharpe | current bar Sharpe | diag: funding off | diag: 982 costs | diag: 982 costs, 982 dates |
+|---|---|---|---|---|---|---|---|---|---|
+| f0 | is | FAIL | not documented | fail | -0.52 | -0.20 | fail | fail | - |
+| f0 | oos | PASS | not documented | fail | -0.30 | -0.14 | fail | fail | pass |
+| f0 | 2023 | FAIL | not documented | funding_incomplete | 1.26 | 1.38 | fail | fail | - |
+| f0 | 2024 | PASS | not documented | pass | 0.96 | 0.64 | pass | pass | - |
+| f0 | 2025H1 | FAIL | not documented | fail | -0.55 | -0.40 | fail | fail | - |
+| f4 | is | PASS | PASS | pass | -0.02 | -0.20 | pass | pass | - |
+| f4 | oos | PASS | PASS | pass | 0.39 | -0.14 | pass | pass | fail |
+| f4 | 2023 | PASS | PASS | funding_incomplete | 1.47 | 1.38 | pass | pass | - |
+| f4 | 2024 | FAIL | FAIL | fail | 0.28 | 0.64 | fail | fail | - |
+| f4 | 2025H1 | PASS | PASS | pass | 0.50 | -0.40 | pass | pass | - |
+| f5 | is | PASS | not documented | pass | 0.07 | -0.20 | pass | pass | - |
+| f5 | oos | FAIL | FAIL | pass | 0.13 | -0.14 | pass | pass | fail |
+| f5 | 2023 | PASS | not documented | funding_incomplete | 1.49 | 1.38 | pass | pass | - |
+| f5 | 2024 | FAIL | not documented | fail | 0.48 | 0.64 | fail | fail | - |
+| f5 | 2025H1 | PASS | not documented | pass | 0.20 | -0.40 | pass | pass | - |
+| f6 | is | PASS | not documented | pass | 0.31 | -0.20 | pass | pass | - |
+| f6 | oos | FAIL | FAIL | pass | -0.09 | -0.14 | pass | pass | fail |
+| f6 | 2023 | PASS | not documented | funding_incomplete | 1.60 | 1.38 | pass | pass | - |
+| f6 | 2024 | FAIL | not documented | fail | 0.36 | 0.64 | fail | fail | - |
+| f6 | 2025H1 | PASS | not documented | pass | -0.10 | -0.40 | pass | pass | - |
 
-Columns: `982` and `1282` are the documented verdicts. `current` is the current-default rerun (Hyperliquid taker fee 0.045 percent, 0.05 percent slippage, perps accounting, charged funding, oos to 2026-11-10). `funding_incomplete` means the window has hours before the first Hyperliquid funding rate (2023-05-12), so the current harness refuses a verdict. The two diagnostic memos are labeled references: `funding off` keeps current fees, `982 costs` uses the issue 982 cost model (0.1 percent commission, 0.05 percent slippage, no funding).
+Columns: `982` and `1282` are the documented verdicts. `current` is the current-default rerun (Hyperliquid taker fee 0.045 percent, 0.05 percent slippage, perps accounting, charged funding, oos to 2026-11-10). `funding_incomplete` means the window has hours before the first Hyperliquid funding rate (2023-05-12), so the current harness refuses a verdict. The two diagnostic memos are labeled references: `funding off` keeps current fees, `982 costs` uses the issue 982 cost model (0.1 percent commission, 0.05 percent slippage, no funding). `982 costs, 982 dates` is the `982 costs` diagnostic on the oos dates issue 982 could read (`oos_982`, 2026-01-01 to 2026-07-01); it is set on the oos rows only.
 
 ### What changed against issue 982
 
 - f0 oos: 982 PASS (Sharpe -0.61 vs bar -0.75); 982 costs on the 982 dates (oos_982) pass (Sharpe -0.67 vs bar -0.76): the engine change on the same dates; 982 costs on the full oos fail (Sharpe -0.34 vs bar -0.16): adds the data-range change; current fees without funding fail (Sharpe -0.23 vs bar -0.08): adds the fee change; current fail (Sharpe -0.30 vs bar -0.14): adds charged funding.
 - f0 2023: 982 FAIL (Sharpe 1.33 vs bar 1.46); 982 costs fail (Sharpe 1.33 vs bar 1.46): the engine and data change at the 982 cost model; current fees without funding fail (Sharpe 1.44 vs bar 1.56): adds the fee change; current funding_incomplete (Sharpe 1.26 vs bar 1.38): adds charged funding.
+- f4 oos (the current verdict equals issue 982, but a diagnostic verdict contradicts it): 982 PASS (Sharpe -0.67 vs bar -0.75); 982 costs on the 982 dates (oos_982) fail (Sharpe -0.84 vs bar -0.76): the engine change on the same dates; 982 costs on the full oos pass (Sharpe 0.45 vs bar -0.16): adds the data-range change; current fees without funding pass (Sharpe 0.48 vs bar -0.08): adds the fee change; current pass (Sharpe 0.39 vs bar -0.14): adds charged funding.
 - f4 2023: 982 PASS (Sharpe 1.67 vs bar 1.46); 982 costs pass (Sharpe 1.67 vs bar 1.46): the engine and data change at the 982 cost model; current fees without funding pass (Sharpe 1.69 vs bar 1.56): adds the fee change; current funding_incomplete (Sharpe 1.47 vs bar 1.38): adds charged funding.
 - f5 oos: 982 FAIL (Sharpe -0.87 vs bar -0.75); 982 costs on the 982 dates (oos_982) fail (Sharpe -0.98 vs bar -0.76): the engine change on the same dates; 982 costs on the full oos pass (Sharpe 0.20 vs bar -0.16): adds the data-range change; current fees without funding pass (Sharpe 0.22 vs bar -0.08): adds the fee change; current pass (Sharpe 0.13 vs bar -0.14): adds charged funding.
 - f5 2023: 982 PASS (Sharpe 1.70 vs bar 1.46); 982 costs pass (Sharpe 1.69 vs bar 1.46): the engine and data change at the 982 cost model; current fees without funding pass (Sharpe 1.72 vs bar 1.56): adds the fee change; current funding_incomplete (Sharpe 1.49 vs bar 1.38): adds charged funding.
@@ -525,5 +526,7 @@ Refused contract `ref_both`: eval_windows.validate_candidate refuses direction b
 - Prior exposure: The windows is, oos, 2023, 2024 and 2025H1 were examined by issue 982 (2026-07-01) and issue 1282 (2026-07-10) for this strategy and these factors on the spot long audit datasets. The oos window has since accrued four months. The perps datasets (30m, 1h, BNB, HYPE, short and bidirectional books, the ratchet close) were not examined for chart_pattern before this study, but their calendar windows overlap the examined ones.
 
 Protocol lock: `06bb9dc650fb35f2647cd54a40dcc20c24e66f8f65235b268e5b183353b291d5` at 2026-11-14T19:37:04Z (source commit `ab5214ca216e5923a3f8f5c104e161fca4d41033+uncommitted-changes`).
+
+Driver files that differ from the digests in the lock: `backtest/candidates/chart_pattern_2015/render_report.py`, `backtest/candidates/chart_pattern_2015/run_study.py`. The README section "Driver change after the lock" describes each change.
 
 Results: 2058 legs, source commit `ab5214ca216e5923a3f8f5c104e161fca4d41033+uncommitted-changes`. Refused network attempts in the main process: 3 (the deliberate probe of a socket, a name lookup and an unfrozen symbol). Every scoring worker runs with the same block on its own copy of the throwaway cache.

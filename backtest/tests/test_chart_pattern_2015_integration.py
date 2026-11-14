@@ -107,16 +107,13 @@ records = [{"time": h + 48, "rate": 1.25e-05} for h in hours]
 def run(contract, factor):
     cand = rs.arm_candidate(proto, contract, factor, "BTC", "1h")
     ff = rs.FiniteFrameRegistry(reg, table, rs.to_ms(win[0]))
-    try:
-        leg = ew.run_candidate_leg(ff, cand, "BTC/USDT", "1h", win, proto["capital_usd"], keep_trades=True,
-                                   funding_mode="charge", warmup_bars=proto["frame"]["warmup_bars"])
-    except Exception as exc:
-        return {"refused": type(exc).__name__}
+    leg = ew.run_candidate_leg(ff, cand, "BTC/USDT", "1h", win, proto["capital_usd"], keep_trades=True,
+                               funding_mode="charge", warmup_bars=proto["frame"]["warmup_bars"])
     return {"leg": leg, "calls": ff.calls, "equity": rs.daily_equity(rs._EQUITY.get("last"))}
 
 unfunded = run("ref_long", 4)
-out["unfunded"] = {"refused": unfunded.get("refused"),
-                   "funding_incomplete": bool((unfunded.get("leg") or {}).get("funding_incomplete"))}
+out["unfunded"] = {"funding_incomplete": unfunded["leg"].get("funding_incomplete") is True,
+                   "unpriced_hours": int((unfunded["leg"].get("funding") or {}).get("unpriced_held_hours") or 0)}
 storage.store_funding_fetch("hyperliquid", "BTC", records, [], observed_through_ms=None,
                             db_path=os.environ[rs.CACHE_ENV])
 storage.store_funding_coverage("hyperliquid", "BTC", hours[0], hours[-1] + step, db_path=os.environ[rs.CACHE_ENV])
@@ -191,13 +188,71 @@ for r in inc["legs"]:
 v_inc = rs.verdict_from(proto_small, inc, samp, sel, val_ok, {})
 out["verdict"]["funding_incomplete_outcome"] = v_inc["members"]["ref_long|proxy_1h|f4"]["outcome"]
 
+def keyed_row(section, contract, memo, group, window, arm, coin, interval, leg_obj):
+    return {"section": section, "contract": contract, "memo": memo, "group": group, "kind": "proxy", "coin": coin,
+            "interval": interval, "window": window, "arm": arm, "leg": rs.compact_leg(leg_obj)}
+
+leg_1h = legs[("ref_long", 0)]["leg"]
+leg_4h = legs[("ratchet_both", 4)]["leg"]
+leg_inc = legs[("ref_long", 4)]["leg"]
+audit_rows = []
+for interval, leg_obj in (("1h", leg_1h), ("4h", leg_4h)):
+    for f in proto["audit"]["factors"]:
+        audit_rows.append(keyed_row("audit", None, "current", "audit", "is", f"f{f}", "BTC", interval, leg_obj))
+    for name in ew.INCUMBENTS:
+        audit_rows.append(keyed_row("audit", None, "current", "audit", "is", f"inc:{name}", "BTC", interval, leg_inc))
+perps_rows, keyed_samples = [], {}
+for g, interval, src_key in (("proxy_30m", "30m", ("ratchet_both", 4)), ("proxy_1h", "1h", ("ref_long", 0))):
+    for w in proto["perps"]["judged_windows"]:
+        for f in (0, 4):
+            r = keyed_row("perps", "ref_long", None, g, w, f"f{f}", "BTC", interval, legs[src_key]["leg"])
+            perps_rows.append(r)
+            keyed_samples[rs.leg_key(r)] = {"positions": [], "daily_equity": legs[src_key]["equity"]}
+keyed = {"legs": audit_rows + perps_rows}
+proto_keyed = copy.deepcopy(proto)
+for name, memo in proto_keyed["audit"]["memos"].items():
+    memo["windows"] = ["is"] if name == "current" else []
+v_keyed = rs.verdict_from(proto_keyed, keyed, keyed_samples, sel, val_ok, {})
+idx_keyed = rs.index_results(keyed)
+f4_is = v_keyed["audit"]["memos"]["current"]["windows"]["is"]["f4"]
+out["keying"] = {
+    "returns_differ": rs.compact_leg(leg_1h)["return_pct"] != rs.compact_leg(leg_4h)["return_pct"],
+    "audit_scored": f4_is["scored_datasets"],
+    "audit_mean_sharpe": f4_is["mean_sharpe"],
+    "expected_mean_sharpe": round((rs.compact_leg(leg_1h)["sharpe"] + rs.compact_leg(leg_4h)["sharpe"]) / 2, 3),
+    "perps_30m": sorted(idx_keyed[("perps", "ref_long", "proxy_30m", "oos", "f4")]),
+    "perps_1h": sorted(idx_keyed[("perps", "ref_long", "proxy_1h", "oos", "f4")]),
+    "perps_30m_positions": v_keyed["members"]["ref_long|proxy_30m|f4"]["positions"],
+    "perps_1h_positions": v_keyed["members"]["ref_long|proxy_1h|f4"]["positions"],
+    "expected_30m_positions": len(proto["perps"]["judged_windows"]) * rs.compact_leg(leg_4h)["positions"],
+    "expected_1h_positions": len(proto["perps"]["judged_windows"]) * rs.compact_leg(leg_1h)["positions"],
+}
+dup = {"legs": keyed["legs"] + [dict(keyed["legs"][0])]}
+try:
+    rs.verdict_from(proto_keyed, dup, keyed_samples, sel, val_ok, {})
+    out["keying"]["duplicate_refused"] = None
+except rs.StudyError as exc:
+    out["keying"]["duplicate_refused"] = str(exc)
+
 rs.write_json(rs.VERDICT_PATH, v_ok)
 rs.write_json(rs.SELECTION_PATH, {"selection": {}, "rule": "fixture"})
 spec2 = importlib.util.spec_from_file_location("render2015", os.path.join(os.path.dirname(sys.argv[3]),
                                                                          "render_report.py"))
 render = importlib.util.module_from_spec(spec2)
 spec2.loader.exec_module(render)
-out["render_identical"] = render.render(study) == render.render(study)
+rs.render_cmd(check=False)
+out["render"] = {"report_written": open(rs.REPORT_PATH).read() == render.render(study)}
+rs.render_cmd(check=True)
+out["render"]["fresh_check_passed"] = True
+stale = json.load(open(rs.VERDICT_PATH))
+stale["family_size"] = stale["family_size"] + 1
+rs.write_json(rs.VERDICT_PATH, stale)
+try:
+    rs.render_cmd(check=True)
+    out["render"]["stale_check_refused"] = False
+except rs.StudyError:
+    out["render"]["stale_check_refused"] = True
+rs.write_json(rs.VERDICT_PATH, v_ok)
 
 with open(rs.SAMPLES_PATH, "ab") as fh:
     fh.write(b"0")
@@ -288,7 +343,8 @@ def test_real_backtester_legs_fill_next_bar_and_aggregate_closes(study):
 
 def test_funding_refusal(study):
     u = study["unfunded"]
-    assert u["refused"] is not None or u["funding_incomplete"] is True
+    assert u["funding_incomplete"] is True
+    assert u["unpriced_hours"] > 0
     assert study["verdict"]["funding_incomplete_outcome"] == "inconclusive"
 
 
@@ -299,7 +355,19 @@ def test_verdict_rules_and_report_regeneration(study):
     assert v["empty_group"] == "inconclusive" and v["empty_group_usable"] == 0
     assert v["bad_replay"] == ["inconclusive"]
     assert v["suggested"] == 0
-    assert study["render_identical"] is True
+    assert study["render"] == {"report_written": True, "fresh_check_passed": True, "stale_check_refused": True}
+
+
+def test_result_rows_keyed_by_coin_and_interval(study):
+    k = study["keying"]
+    assert k["returns_differ"] is True
+    assert k["audit_scored"] == 2
+    assert k["audit_mean_sharpe"] == k["expected_mean_sharpe"]
+    assert k["perps_30m"] == ["BTC 30m"] and k["perps_1h"] == ["BTC 1h"]
+    assert k["perps_30m_positions"] == k["expected_30m_positions"]
+    assert k["perps_1h_positions"] == k["expected_1h_positions"]
+    assert k["expected_30m_positions"] != k["expected_1h_positions"]
+    assert k["duplicate_refused"] is not None and "two legs" in k["duplicate_refused"]
 
 
 def test_changed_inputs_and_incompatible_artifacts_refused(study):

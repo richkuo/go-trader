@@ -39,7 +39,10 @@ The spot long audit reference keeps the issue 982 and issue 1282 factor 4 verdic
 (PASS, PASS, FAIL, PASS) under current defaults; `2023` is `funding_incomplete` under charged funding (Hyperliquid
 funding starts 2023-05-12) and PASS in both labeled diagnostics. The issue 982 cost diagnostic reproduces the issue 982
 2023 Sharpe means within 0.01 (bar 1.46). Factor 0 `oos` flips to fail and factors 5 and 6 `oos` flip to pass; the diagnostics place both
-flips on the four months of new `oos` data. The paired factor 4 minus factor 0 daily difference on the audit datasets
+flips on the four months of new `oos` data. The factor 4 `oos` PASS holds only because of the same four months: on the
+issue 982 dates and cost model (`oos_982`) factor 4 fails (mean Sharpe -0.84 against bar -0.76, where issue 982
+recorded -0.67 against -0.75), so the engine and cache change on the same dates flips it to fail and the new data flips it
+back to pass. The paired factor 4 minus factor 0 daily difference on the audit datasets
 is +0.0154 percent (p 0.3287). The audit conclusion is **inconclusive**: one of 540 sampled
 full-frame signals changes when the frame is cut at its decision bar, so the historical full-frame path is not causal,
 and the audit contract cannot support a perps opt-in in any case.
@@ -101,8 +104,18 @@ selection.
 
 ## Driver change after the lock
 
-One fix landed in `run_study.py` after `protocol_lock.json` and after `judge`, before the final `verdict.json`:
-`index_results` keyed result rows by coin only, so the 1h and 4h audit legs of one coin overwrote each other in the
-audit scoring. It now keys rows by coin and interval and refuses a duplicate. No leg was rescored (leg fingerprints do
-not include the driver), `results.json` is unchanged, and `verdict` and `render` were rerun. The `driver_sha256`
-recorded in `protocol_lock.json` is the driver before this fix.
+Both driver files changed after `protocol_lock.json`, so neither matches its `driver_sha256` in the lock (the lock
+records the files before these changes). `REPORT.md` names every driver file whose digest differs from the lock; that
+line is computed at render time, so `render --check` refuses a report that names the wrong set.
+
+- `run_study.py`, after `judge` and before the final `verdict.json`: `index_results` keyed result rows by coin only, so
+  the 1h and 4h audit legs of one coin overwrote each other in the audit scoring. It now keys rows by coin and interval
+  and refuses a duplicate, and its three readers (the perps usable-member set and the audit incumbent and candidate
+  loops) read the coin and interval from the row. No leg was rescored (leg fingerprints do not include the driver),
+  `results.json` is unchanged, and `verdict` and `render` were rerun.
+- `render_report.py`, after `verdict`: two wording changes before review (the network lines now say "refused network
+  attempts in the main process" with the probe named, and that every scoring worker runs with the same block), and
+  three changes after review (the audit table adds the `982 costs, 982 dates` column, "What changed against issue 982"
+  also lists a factor and window whose current verdict equals issue 982 when a diagnostic verdict contradicts it, which
+  adds the factor 4 `oos` line, and the report names the driver files that differ from the lock). The renderer scores
+  nothing: every number in `REPORT.md` comes from the committed JSON artifacts.
