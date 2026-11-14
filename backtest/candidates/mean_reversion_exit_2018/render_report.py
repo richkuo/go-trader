@@ -70,6 +70,21 @@ def render() -> str:
     if sugg:
         L.append("Suggested offline configs (suggest-only, not applied): " + ", ".join(f"`{s}`" for s in sorted(sugg))
                  + ".")
+        L.append("")
+        for ukey, u in sorted(verdict["units"].items()):
+            if not u.get("suggested_arm"):
+                continue
+            g = u["arms"][u["suggested_arm"]]["continuous"]
+            parts = []
+            for cost, c in sorted(g["costs"].items()):
+                parts.append(f"{cost} {f(c['candidate_pooled_return_pct'], 1)}% (incumbent "
+                             f"{f(c['incumbent_pooled_return_pct'], 1)}%)")
+            loss = all(c["candidate_net_pnl_usd"] < 0 for c in g["costs"].values())
+            L.append(f"**Absolute result of `{ukey}`:** the suggested arm `{g['arm']}` returns " + ", ".join(parts)
+                     + f" of the pooled initial capital over the continuous interval. "
+                     + ("It still loses money at both costs: the gain is relative to the incumbent exit, and the "
+                        "complete strategy is unprofitable under both exits." if loss else
+                        "The absolute result is shown per dataset in the continuous section."))
     else:
         L.append("No unit is positive, so no suggested configuration is written. Fleet defaults, "
                  "`config.example.json`, registry defaults, quarantine status and `edge_status` are unchanged.")

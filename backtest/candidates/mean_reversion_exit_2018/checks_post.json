@@ -1,0 +1,35 @@
+{
+  "cases": {
+    "continuous_reconciled": {
+      "ok": true,
+      "runs": 156
+    },
+    "lock_committed": {
+      "head": "d20a6849c3bd69aaba4f0a7e06a299705c7f9b43",
+      "lock_commit": "9a3b51aad18ad384b12893eb3ca9889bfc758a1b",
+      "ok": true
+    },
+    "report_deterministic": {
+      "equal": true,
+      "matches_committed_report": true,
+      "ok": true
+    },
+    "scoring_isolated": {
+      "events": 3,
+      "ok": true
+    },
+    "verdict_repeatable": {
+      "matches_verdict_json": {
+        "b2/proxy/both": true,
+        "ratchet/native/long": true,
+        "ratchet/proxy/long": true
+      },
+      "ok": true,
+      "repeat_equal": true
+    }
+  },
+  "lock_protocol_sha256": "3247b07ccc23d7e8992376e71ce2be6f7c9ffb60bcad96ce6c06083d0870f7ca",
+  "lock_sha256": "239286642cd74f5b475a5ef620ceb94e366097fd742df55c95d8c0a98fa10792",
+  "measured_at_utc": "2026-11-14T20:17:30Z",
+  "ok": true
+}
