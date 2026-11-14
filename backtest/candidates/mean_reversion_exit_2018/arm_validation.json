@@ -1,0 +1,5533 @@
+{
+  "arms_sha256": {
+    "b2/cont_b2_w125.json": "b18dc4724cb415fc1886d89e761654d93e082814786cdfb27879d94e12057ddb",
+    "b2/cont_b2_w150.json": "be59abbdedc8b0a5f258163a20a3e038a1f3edd10532ecac1df2235a772820c9",
+    "b2/cont_b2_w175.json": "226b7d13fdf3bfac199eb15e4aa90bc76709cb82496a6350ec2e0b26c1fbccf5",
+    "b2/cont_historical.json": "1ee410f0792f13ea78fe1b6ab7db858217acf9f7b0fcdc3b19394443a24ea40e",
+    "b2/cont_incumbent.json": "0e0924ad2c3f4e65c53e135bcaae225418aba9a7485d6d0939252041da632f9b",
+    "b2/paired_b2_w125.json": "0bb4a3e863f73b89178cc3dbf22b66c45f809666a96041b9e894b7e8daa2537e",
+    "b2/paired_b2_w150.json": "310c09aa2b2e2d819cb718dde2553a5c830669109dbce3b32146b26d023e3b0b",
+    "b2/paired_b2_w175.json": "44d3b7e28feb698a9a8f4fc7a8bb4fa92e69b7a23b62b4c5ddb2727a8f983e75",
+    "b2/paired_incumbent.json": "efc123b27f8e26c598c928fb6a055142948df61249bbda34bc0f8a483ba03c4a",
+    "ratchet/cont_incumbent.json": "6a29533cd338f8bcff4e4c0be38c614ffbf9a2adce73f4f5c4c5f09384827432",
+    "ratchet/cont_r_w125.json": "4c093f5d12c33bb3e28238584aee981a2bc661187ac0d5473c5f12730b818fb0",
+    "ratchet/cont_r_w150.json": "5178b853fe20bb3a941cfa2aea10528be69eb93f74c25dd9a8105e68a9414175",
+    "ratchet/cont_r_w175.json": "0b60f3307c5016885b3ea940c11168eed13cc82464f343fb809844dcc7c517bf",
+    "ratchet/paired_incumbent.json": "bf17b5516f4f419e83e8b6257c03d27f3a4873cbe074ed10bae99dc3ec38703f",
+    "ratchet/paired_r_w125.json": "7973293039d6c1824bbb11b1873cfed700dfabc12a204082662db4961425a1e9",
+    "ratchet/paired_r_w150.json": "6018ddbbf0f34b4fc898f8d86aa7e57f66202b9f2f29859d755324cd45f74f8f",
+    "ratchet/paired_r_w175.json": "62e253d4449feb1a4916a76dcddaec772d4a7b31ab7bc72b179c7783d4f7dfaa"
+  },
+  "failures": [],
+  "frames": {
+    "b2": {
+      "arms": {
+        "cont_b2_w125": {
+          "allowed_regimes": [
+            "null"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "b2_table": {
+            "ranging_directional": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.625,
+                  0.5
+                ],
+                [
+                  1.25,
+                  1.0
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  1.5,
+                  0.4
+                ],
+                [
+                  3.0,
+                  0.8
+                ],
+                [
+                  5.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  2.5,
+                  0.25
+                ],
+                [
+                  4.0,
+                  0.5
+                ],
+                [
+                  5.5,
+                  0.75
+                ],
+                [
+                  7.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  1.5,
+                  0.4
+                ],
+                [
+                  3.0,
+                  0.8
+                ],
+                [
+                  5.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  2.5,
+                  0.25
+                ],
+                [
+                  4.0,
+                  0.5
+                ],
+                [
+                  5.5,
+                  0.75
+                ],
+                [
+                  7.0,
+                  1.0
+                ]
+              ]
+            }
+          },
+          "close": {
+            "name": "tiered_tp_atr_regime",
+            "params": {
+              "trend_regime": {
+                "ranging_directional": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_directional_down": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_directional_up": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_quiet": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_volatile": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.625,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.25,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_down_choppy": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 1.5,
+                      "close_fraction": 0.4
+                    },
+                    {
+                      "atr_multiple": 3.0,
+                      "close_fraction": 0.8
+                    },
+                    {
+                      "atr_multiple": 5.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_down_clean": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 2.5,
+                      "close_fraction": 0.25
+                    },
+                    {
+                      "atr_multiple": 4.0,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 5.5,
+                      "close_fraction": 0.75
+                    },
+                    {
+                      "atr_multiple": 7.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_up_choppy": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 1.5,
+                      "close_fraction": 0.4
+                    },
+                    {
+                      "atr_multiple": 3.0,
+                      "close_fraction": 0.8
+                    },
+                    {
+                      "atr_multiple": 5.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_up_clean": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 2.5,
+                      "close_fraction": 0.25
+                    },
+                    {
+                      "atr_multiple": 4.0,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 5.5,
+                      "close_fraction": 0.75
+                    },
+                    {
+                      "atr_multiple": 7.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "datasets": 6,
+          "direction": [
+            "both"
+          ],
+          "label_limit": [
+            200
+          ],
+          "stop_owners": [
+            "unified_regime"
+          ]
+        },
+        "cont_b2_w150": {
+          "allowed_regimes": [
+            "null"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "b2_table": {
+            "ranging_directional": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.75,
+                  0.5
+                ],
+                [
+                  1.5,
+                  1.0
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  1.5,
+                  0.4
+                ],
+                [
+                  3.0,
+                  0.8
+                ],
+                [
+                  5.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  2.5,
+                  0.25
+                ],
+                [
+                  4.0,
+                  0.5
+                ],
+                [
+                  5.5,
+                  0.75
+                ],
+                [
+                  7.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  1.5,
+                  0.4
+                ],
+                [
+                  3.0,
+                  0.8
+                ],
+                [
+                  5.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  2.5,
+                  0.25
+                ],
+                [
+                  4.0,
+                  0.5
+                ],
+                [
+                  5.5,
+                  0.75
+                ],
+                [
+                  7.0,
+                  1.0
+                ]
+              ]
+            }
+          },
+          "close": {
+            "name": "tiered_tp_atr_regime",
+            "params": {
+              "trend_regime": {
+                "ranging_directional": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_directional_down": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_directional_up": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_quiet": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_volatile": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.75,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.5,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_down_choppy": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 1.5,
+                      "close_fraction": 0.4
+                    },
+                    {
+                      "atr_multiple": 3.0,
+                      "close_fraction": 0.8
+                    },
+                    {
+                      "atr_multiple": 5.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_down_clean": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 2.5,
+                      "close_fraction": 0.25
+                    },
+                    {
+                      "atr_multiple": 4.0,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 5.5,
+                      "close_fraction": 0.75
+                    },
+                    {
+                      "atr_multiple": 7.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_up_choppy": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 1.5,
+                      "close_fraction": 0.4
+                    },
+                    {
+                      "atr_multiple": 3.0,
+                      "close_fraction": 0.8
+                    },
+                    {
+                      "atr_multiple": 5.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_up_clean": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 2.5,
+                      "close_fraction": 0.25
+                    },
+                    {
+                      "atr_multiple": 4.0,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 5.5,
+                      "close_fraction": 0.75
+                    },
+                    {
+                      "atr_multiple": 7.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "datasets": 6,
+          "direction": [
+            "both"
+          ],
+          "label_limit": [
+            200
+          ],
+          "stop_owners": [
+            "unified_regime"
+          ]
+        },
+        "cont_b2_w175": {
+          "allowed_regimes": [
+            "null"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "b2_table": {
+            "ranging_directional": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.875,
+                  0.5
+                ],
+                [
+                  1.75,
+                  1.0
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  1.5,
+                  0.4
+                ],
+                [
+                  3.0,
+                  0.8
+                ],
+                [
+                  5.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  2.5,
+                  0.25
+                ],
+                [
+                  4.0,
+                  0.5
+                ],
+                [
+                  5.5,
+                  0.75
+                ],
+                [
+                  7.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  1.5,
+                  0.4
+                ],
+                [
+                  3.0,
+                  0.8
+                ],
+                [
+                  5.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  2.5,
+                  0.25
+                ],
+                [
+                  4.0,
+                  0.5
+                ],
+                [
+                  5.5,
+                  0.75
+                ],
+                [
+                  7.0,
+                  1.0
+                ]
+              ]
+            }
+          },
+          "close": {
+            "name": "tiered_tp_atr_regime",
+            "params": {
+              "trend_regime": {
+                "ranging_directional": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_directional_down": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_directional_up": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_quiet": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_volatile": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.875,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.75,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_down_choppy": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 1.5,
+                      "close_fraction": 0.4
+                    },
+                    {
+                      "atr_multiple": 3.0,
+                      "close_fraction": 0.8
+                    },
+                    {
+                      "atr_multiple": 5.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_down_clean": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 2.5,
+                      "close_fraction": 0.25
+                    },
+                    {
+                      "atr_multiple": 4.0,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 5.5,
+                      "close_fraction": 0.75
+                    },
+                    {
+                      "atr_multiple": 7.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_up_choppy": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 1.5,
+                      "close_fraction": 0.4
+                    },
+                    {
+                      "atr_multiple": 3.0,
+                      "close_fraction": 0.8
+                    },
+                    {
+                      "atr_multiple": 5.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_up_clean": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 2.5,
+                      "close_fraction": 0.25
+                    },
+                    {
+                      "atr_multiple": 4.0,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 5.5,
+                      "close_fraction": 0.75
+                    },
+                    {
+                      "atr_multiple": 7.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "datasets": 6,
+          "direction": [
+            "both"
+          ],
+          "label_limit": [
+            200
+          ],
+          "stop_owners": [
+            "unified_regime"
+          ]
+        },
+        "cont_historical": {
+          "allowed_regimes": [
+            "null"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "b2_table": {
+            "ranging_directional": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  1.5,
+                  0.4
+                ],
+                [
+                  3.0,
+                  0.8
+                ],
+                [
+                  5.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  2.5,
+                  0.25
+                ],
+                [
+                  4.0,
+                  0.5
+                ],
+                [
+                  5.5,
+                  0.75
+                ],
+                [
+                  7.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  1.5,
+                  0.4
+                ],
+                [
+                  3.0,
+                  0.8
+                ],
+                [
+                  5.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  2.5,
+                  0.25
+                ],
+                [
+                  4.0,
+                  0.5
+                ],
+                [
+                  5.5,
+                  0.75
+                ],
+                [
+                  7.0,
+                  1.0
+                ]
+              ]
+            }
+          },
+          "close": {
+            "name": "tiered_tp_atr_regime",
+            "params": {
+              "use_defaults": true
+            }
+          },
+          "datasets": 6,
+          "direction": [
+            "both"
+          ],
+          "label_limit": [
+            200
+          ],
+          "stop_owners": [
+            "fixed_atr"
+          ]
+        },
+        "cont_incumbent": {
+          "allowed_regimes": [
+            "null"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "b2_table": {
+            "ranging_directional": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  1.5,
+                  0.4
+                ],
+                [
+                  3.0,
+                  0.8
+                ],
+                [
+                  5.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  2.5,
+                  0.25
+                ],
+                [
+                  4.0,
+                  0.5
+                ],
+                [
+                  5.5,
+                  0.75
+                ],
+                [
+                  7.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  1.5,
+                  0.4
+                ],
+                [
+                  3.0,
+                  0.8
+                ],
+                [
+                  5.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "reason": null,
+              "stop": 1.5,
+              "tiers": [
+                [
+                  2.5,
+                  0.25
+                ],
+                [
+                  4.0,
+                  0.5
+                ],
+                [
+                  5.5,
+                  0.75
+                ],
+                [
+                  7.0,
+                  1.0
+                ]
+              ]
+            }
+          },
+          "close": {
+            "name": "tiered_tp_atr_regime",
+            "params": {
+              "trend_regime": {
+                "ranging_directional": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_directional_down": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_directional_up": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_quiet": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "ranging_volatile": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 0.5,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 1.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_down_choppy": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 1.5,
+                      "close_fraction": 0.4
+                    },
+                    {
+                      "atr_multiple": 3.0,
+                      "close_fraction": 0.8
+                    },
+                    {
+                      "atr_multiple": 5.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_down_clean": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 2.5,
+                      "close_fraction": 0.25
+                    },
+                    {
+                      "atr_multiple": 4.0,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 5.5,
+                      "close_fraction": 0.75
+                    },
+                    {
+                      "atr_multiple": 7.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_up_choppy": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 1.5,
+                      "close_fraction": 0.4
+                    },
+                    {
+                      "atr_multiple": 3.0,
+                      "close_fraction": 0.8
+                    },
+                    {
+                      "atr_multiple": 5.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                },
+                "trending_up_clean": {
+                  "stop_loss_atr": 1.5,
+                  "tp_tiers": [
+                    {
+                      "atr_multiple": 2.5,
+                      "close_fraction": 0.25
+                    },
+                    {
+                      "atr_multiple": 4.0,
+                      "close_fraction": 0.5
+                    },
+                    {
+                      "atr_multiple": 5.5,
+                      "close_fraction": 0.75
+                    },
+                    {
+                      "atr_multiple": 7.0,
+                      "close_fraction": 1.0
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "datasets": 6,
+          "direction": [
+            "both"
+          ],
+          "label_limit": [
+            200
+          ],
+          "stop_owners": [
+            "unified_regime"
+          ]
+        },
+        "paired_b2_w125": {
+          "allowed_regimes": [
+            "[\"ranging_volatile\"]"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "close": {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 0.625,
+                  "close_fraction": 0.5
+                },
+                {
+                  "atr_multiple": 1.25,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          },
+          "datasets": 6,
+          "direction": [
+            "both"
+          ],
+          "label_limit": [
+            200
+          ],
+          "stop_owners": [
+            "fixed_atr"
+          ]
+        },
+        "paired_b2_w150": {
+          "allowed_regimes": [
+            "[\"ranging_volatile\"]"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "close": {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 0.75,
+                  "close_fraction": 0.5
+                },
+                {
+                  "atr_multiple": 1.5,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          },
+          "datasets": 6,
+          "direction": [
+            "both"
+          ],
+          "label_limit": [
+            200
+          ],
+          "stop_owners": [
+            "fixed_atr"
+          ]
+        },
+        "paired_b2_w175": {
+          "allowed_regimes": [
+            "[\"ranging_volatile\"]"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "close": {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 0.875,
+                  "close_fraction": 0.5
+                },
+                {
+                  "atr_multiple": 1.75,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          },
+          "datasets": 6,
+          "direction": [
+            "both"
+          ],
+          "label_limit": [
+            200
+          ],
+          "stop_owners": [
+            "fixed_atr"
+          ]
+        },
+        "paired_incumbent": {
+          "allowed_regimes": [
+            "[\"ranging_volatile\"]"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "b2_table": {
+            "ranging_directional": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  0.5,
+                  0.5
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  1.5,
+                  0.4
+                ],
+                [
+                  3.0,
+                  0.8
+                ],
+                [
+                  5.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  2.5,
+                  0.25
+                ],
+                [
+                  4.0,
+                  0.5
+                ],
+                [
+                  5.5,
+                  0.75
+                ],
+                [
+                  7.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  1.5,
+                  0.4
+                ],
+                [
+                  3.0,
+                  0.8
+                ],
+                [
+                  5.0,
+                  1.0
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "reason": null,
+              "stop": null,
+              "tiers": [
+                [
+                  2.5,
+                  0.25
+                ],
+                [
+                  4.0,
+                  0.5
+                ],
+                [
+                  5.5,
+                  0.75
+                ],
+                [
+                  7.0,
+                  1.0
+                ]
+              ]
+            }
+          },
+          "close": {
+            "name": "tiered_tp_atr_regime",
+            "params": {
+              "use_defaults": true
+            }
+          },
+          "datasets": 6,
+          "direction": [
+            "both"
+          ],
+          "label_limit": [
+            200
+          ],
+          "stop_owners": [
+            "fixed_atr"
+          ]
+        }
+      },
+      "checks": {
+        "cont_b2_w125": {
+          "expected_changed": [
+            "ranging_volatile"
+          ],
+          "labels_changed_vs_defaults": [
+            "ranging_volatile"
+          ],
+          "ok": true,
+          "stop_owner": [
+            "unified_regime"
+          ],
+          "stops": [
+            1.5
+          ],
+          "target_ladder_ok": true
+        },
+        "cont_b2_w150": {
+          "expected_changed": [
+            "ranging_volatile"
+          ],
+          "labels_changed_vs_defaults": [
+            "ranging_volatile"
+          ],
+          "ok": true,
+          "stop_owner": [
+            "unified_regime"
+          ],
+          "stops": [
+            1.5
+          ],
+          "target_ladder_ok": true
+        },
+        "cont_b2_w175": {
+          "expected_changed": [
+            "ranging_volatile"
+          ],
+          "labels_changed_vs_defaults": [
+            "ranging_volatile"
+          ],
+          "ok": true,
+          "stop_owner": [
+            "unified_regime"
+          ],
+          "stops": [
+            1.5
+          ],
+          "target_ladder_ok": true
+        },
+        "cont_historical": {
+          "labels_changed_vs_defaults": [],
+          "ok": true,
+          "stop_owner": [
+            "fixed_atr"
+          ],
+          "volatile": [
+            [
+              0.5,
+              0.5
+            ],
+            [
+              1.0,
+              1.0
+            ]
+          ]
+        },
+        "cont_incumbent": {
+          "expected_changed": [],
+          "labels_changed_vs_defaults": [],
+          "ok": true,
+          "stop_owner": [
+            "unified_regime"
+          ],
+          "stops": [
+            1.5
+          ],
+          "target_ladder_ok": true
+        },
+        "paired_arms_differ_only_in_close": true,
+        "paired_b2_w125": {
+          "ok": true,
+          "scalar_ladder": [
+            [
+              0.625,
+              0.5
+            ],
+            [
+              1.25,
+              1.0
+            ]
+          ],
+          "stop_owner": [
+            "fixed_atr"
+          ]
+        },
+        "paired_b2_w150": {
+          "ok": true,
+          "scalar_ladder": [
+            [
+              0.75,
+              0.5
+            ],
+            [
+              1.5,
+              1.0
+            ]
+          ],
+          "stop_owner": [
+            "fixed_atr"
+          ]
+        },
+        "paired_b2_w175": {
+          "ok": true,
+          "scalar_ladder": [
+            [
+              0.875,
+              0.5
+            ],
+            [
+              1.75,
+              1.0
+            ]
+          ],
+          "stop_owner": [
+            "fixed_atr"
+          ]
+        },
+        "paired_incumbent": {
+          "labels_changed_vs_defaults": [],
+          "ok": true,
+          "stop_owner": [
+            "fixed_atr"
+          ],
+          "volatile": [
+            [
+              0.5,
+              0.5
+            ],
+            [
+              1.0,
+              1.0
+            ]
+          ]
+        }
+      }
+    },
+    "ratchet": {
+      "arms": {
+        "cont_incumbent": {
+          "allowed_regimes": [
+            "null"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "close": {
+            "name": "trailing_tp_ratchet_regime",
+            "params": {
+              "tp_tiers": {
+                "ranging_directional": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_down": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_up": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_quiet": [
+                  {
+                    "atr_multiple": 0.75,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "ranging_volatile": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "trending_down_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_down_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ]
+              }
+            }
+          },
+          "datasets": 10,
+          "direction": [
+            "long"
+          ],
+          "label_limit": [
+            200
+          ],
+          "ratchet_table": {
+            "ranging_directional": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "errors": [],
+              "tiers": [
+                [
+                  0.75,
+                  0.4,
+                  1.0
+                ],
+                [
+                  1.5,
+                  0.8,
+                  0.75
+                ],
+                [
+                  2.0,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.4,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.8,
+                  0.75
+                ],
+                [
+                  3.0,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            }
+          },
+          "stop_owners": [
+            "trailing_atr_regime"
+          ],
+          "trailing_table": {
+            "errors": [],
+            "values": {
+              "ranging_directional": 1.5,
+              "ranging_directional_down": 1.5,
+              "ranging_directional_up": 1.5,
+              "ranging_quiet": 1.0,
+              "ranging_volatile": 1.25,
+              "trending_down_choppy": 2.25,
+              "trending_down_clean": 2.5,
+              "trending_up_choppy": 2.25,
+              "trending_up_clean": 2.5
+            }
+          }
+        },
+        "cont_r_w125": {
+          "allowed_regimes": [
+            "null"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "close": {
+            "name": "trailing_tp_ratchet_regime",
+            "params": {
+              "tp_tiers": {
+                "ranging_directional": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_down": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_up": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_quiet": [
+                  {
+                    "atr_multiple": 0.75,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "ranging_volatile": [
+                  {
+                    "atr_multiple": 1.25,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 3.75,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "trending_down_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_down_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ]
+              }
+            }
+          },
+          "datasets": 10,
+          "direction": [
+            "long"
+          ],
+          "label_limit": [
+            200
+          ],
+          "ratchet_table": {
+            "ranging_directional": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "errors": [],
+              "tiers": [
+                [
+                  0.75,
+                  0.4,
+                  1.0
+                ],
+                [
+                  1.5,
+                  0.8,
+                  0.75
+                ],
+                [
+                  2.0,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.25,
+                  0.4,
+                  1.0
+                ],
+                [
+                  2.5,
+                  0.8,
+                  0.75
+                ],
+                [
+                  3.75,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            }
+          },
+          "stop_owners": [
+            "trailing_atr_regime"
+          ],
+          "trailing_table": {
+            "errors": [],
+            "values": {
+              "ranging_directional": 1.5,
+              "ranging_directional_down": 1.5,
+              "ranging_directional_up": 1.5,
+              "ranging_quiet": 1.0,
+              "ranging_volatile": 1.25,
+              "trending_down_choppy": 2.25,
+              "trending_down_clean": 2.5,
+              "trending_up_choppy": 2.25,
+              "trending_up_clean": 2.5
+            }
+          }
+        },
+        "cont_r_w150": {
+          "allowed_regimes": [
+            "null"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "close": {
+            "name": "trailing_tp_ratchet_regime",
+            "params": {
+              "tp_tiers": {
+                "ranging_directional": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_down": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_up": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_quiet": [
+                  {
+                    "atr_multiple": 0.75,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "ranging_volatile": [
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "trending_down_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_down_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ]
+              }
+            }
+          },
+          "datasets": 10,
+          "direction": [
+            "long"
+          ],
+          "label_limit": [
+            200
+          ],
+          "ratchet_table": {
+            "ranging_directional": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "errors": [],
+              "tiers": [
+                [
+                  0.75,
+                  0.4,
+                  1.0
+                ],
+                [
+                  1.5,
+                  0.8,
+                  0.75
+                ],
+                [
+                  2.0,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.5,
+                  0.4,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.8,
+                  0.75
+                ],
+                [
+                  4.5,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            }
+          },
+          "stop_owners": [
+            "trailing_atr_regime"
+          ],
+          "trailing_table": {
+            "errors": [],
+            "values": {
+              "ranging_directional": 1.5,
+              "ranging_directional_down": 1.5,
+              "ranging_directional_up": 1.5,
+              "ranging_quiet": 1.0,
+              "ranging_volatile": 1.25,
+              "trending_down_choppy": 2.25,
+              "trending_down_clean": 2.5,
+              "trending_up_choppy": 2.25,
+              "trending_up_clean": 2.5
+            }
+          }
+        },
+        "cont_r_w175": {
+          "allowed_regimes": [
+            "null"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "close": {
+            "name": "trailing_tp_ratchet_regime",
+            "params": {
+              "tp_tiers": {
+                "ranging_directional": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_down": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_up": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_quiet": [
+                  {
+                    "atr_multiple": 0.75,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "ranging_volatile": [
+                  {
+                    "atr_multiple": 1.75,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.5,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 5.25,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "trending_down_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_down_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ]
+              }
+            }
+          },
+          "datasets": 10,
+          "direction": [
+            "long"
+          ],
+          "label_limit": [
+            200
+          ],
+          "ratchet_table": {
+            "ranging_directional": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "errors": [],
+              "tiers": [
+                [
+                  0.75,
+                  0.4,
+                  1.0
+                ],
+                [
+                  1.5,
+                  0.8,
+                  0.75
+                ],
+                [
+                  2.0,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.75,
+                  0.4,
+                  1.0
+                ],
+                [
+                  3.5,
+                  0.8,
+                  0.75
+                ],
+                [
+                  5.25,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            }
+          },
+          "stop_owners": [
+            "trailing_atr_regime"
+          ],
+          "trailing_table": {
+            "errors": [],
+            "values": {
+              "ranging_directional": 1.5,
+              "ranging_directional_down": 1.5,
+              "ranging_directional_up": 1.5,
+              "ranging_quiet": 1.0,
+              "ranging_volatile": 1.25,
+              "trending_down_choppy": 2.25,
+              "trending_down_clean": 2.5,
+              "trending_up_choppy": 2.25,
+              "trending_up_clean": 2.5
+            }
+          }
+        },
+        "paired_incumbent": {
+          "allowed_regimes": [
+            "[\"ranging_volatile\"]"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "close": {
+            "name": "trailing_tp_ratchet_regime",
+            "params": {
+              "tp_tiers": {
+                "ranging_directional": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_down": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_up": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_quiet": [
+                  {
+                    "atr_multiple": 0.75,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "ranging_volatile": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "trending_down_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_down_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ]
+              }
+            }
+          },
+          "datasets": 10,
+          "direction": [
+            "long"
+          ],
+          "label_limit": [
+            200
+          ],
+          "ratchet_table": {
+            "ranging_directional": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "errors": [],
+              "tiers": [
+                [
+                  0.75,
+                  0.4,
+                  1.0
+                ],
+                [
+                  1.5,
+                  0.8,
+                  0.75
+                ],
+                [
+                  2.0,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.4,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.8,
+                  0.75
+                ],
+                [
+                  3.0,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            }
+          },
+          "stop_owners": [
+            "trailing_atr_regime"
+          ],
+          "trailing_table": {
+            "errors": [],
+            "values": {
+              "ranging_directional": 1.5,
+              "ranging_directional_down": 1.5,
+              "ranging_directional_up": 1.5,
+              "ranging_quiet": 1.0,
+              "ranging_volatile": 1.25,
+              "trending_down_choppy": 2.25,
+              "trending_down_clean": 2.5,
+              "trending_up_choppy": 2.25,
+              "trending_up_clean": 2.5
+            }
+          }
+        },
+        "paired_r_w125": {
+          "allowed_regimes": [
+            "[\"ranging_volatile\"]"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "close": {
+            "name": "trailing_tp_ratchet_regime",
+            "params": {
+              "tp_tiers": {
+                "ranging_directional": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_down": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_up": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_quiet": [
+                  {
+                    "atr_multiple": 0.75,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "ranging_volatile": [
+                  {
+                    "atr_multiple": 1.25,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 3.75,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "trending_down_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_down_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ]
+              }
+            }
+          },
+          "datasets": 10,
+          "direction": [
+            "long"
+          ],
+          "label_limit": [
+            200
+          ],
+          "ratchet_table": {
+            "ranging_directional": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "errors": [],
+              "tiers": [
+                [
+                  0.75,
+                  0.4,
+                  1.0
+                ],
+                [
+                  1.5,
+                  0.8,
+                  0.75
+                ],
+                [
+                  2.0,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.25,
+                  0.4,
+                  1.0
+                ],
+                [
+                  2.5,
+                  0.8,
+                  0.75
+                ],
+                [
+                  3.75,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            }
+          },
+          "stop_owners": [
+            "trailing_atr_regime"
+          ],
+          "trailing_table": {
+            "errors": [],
+            "values": {
+              "ranging_directional": 1.5,
+              "ranging_directional_down": 1.5,
+              "ranging_directional_up": 1.5,
+              "ranging_quiet": 1.0,
+              "ranging_volatile": 1.25,
+              "trending_down_choppy": 2.25,
+              "trending_down_clean": 2.5,
+              "trending_up_choppy": 2.25,
+              "trending_up_clean": 2.5
+            }
+          }
+        },
+        "paired_r_w150": {
+          "allowed_regimes": [
+            "[\"ranging_volatile\"]"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "close": {
+            "name": "trailing_tp_ratchet_regime",
+            "params": {
+              "tp_tiers": {
+                "ranging_directional": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_down": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_up": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_quiet": [
+                  {
+                    "atr_multiple": 0.75,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "ranging_volatile": [
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "trending_down_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_down_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ]
+              }
+            }
+          },
+          "datasets": 10,
+          "direction": [
+            "long"
+          ],
+          "label_limit": [
+            200
+          ],
+          "ratchet_table": {
+            "ranging_directional": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "errors": [],
+              "tiers": [
+                [
+                  0.75,
+                  0.4,
+                  1.0
+                ],
+                [
+                  1.5,
+                  0.8,
+                  0.75
+                ],
+                [
+                  2.0,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.5,
+                  0.4,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.8,
+                  0.75
+                ],
+                [
+                  4.5,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            }
+          },
+          "stop_owners": [
+            "trailing_atr_regime"
+          ],
+          "trailing_table": {
+            "errors": [],
+            "values": {
+              "ranging_directional": 1.5,
+              "ranging_directional_down": 1.5,
+              "ranging_directional_up": 1.5,
+              "ranging_quiet": 1.0,
+              "ranging_volatile": 1.25,
+              "trending_down_choppy": 2.25,
+              "trending_down_clean": 2.5,
+              "trending_up_choppy": 2.25,
+              "trending_up_clean": 2.5
+            }
+          }
+        },
+        "paired_r_w175": {
+          "allowed_regimes": [
+            "[\"ranging_volatile\"]"
+          ],
+          "atr_method": [
+            "simple"
+          ],
+          "close": {
+            "name": "trailing_tp_ratchet_regime",
+            "params": {
+              "tp_tiers": {
+                "ranging_directional": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_down": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_directional_up": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.25,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.5,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.8
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.75,
+                    "trailing_mult_after": 0.6
+                  }
+                ],
+                "ranging_quiet": [
+                  {
+                    "atr_multiple": 0.75,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "ranging_volatile": [
+                  {
+                    "atr_multiple": 1.75,
+                    "close_fraction": 0.4,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.5,
+                    "close_fraction": 0.8,
+                    "trailing_mult_after": 0.75
+                  },
+                  {
+                    "atr_multiple": 5.25,
+                    "close_fraction": 1.0,
+                    "trailing_mult_after": 0.75
+                  }
+                ],
+                "trending_down_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_down_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_choppy": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 2.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ],
+                "trending_up_clean": [
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.5
+                  },
+                  {
+                    "atr_multiple": 4.5,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 1.0
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 0.0,
+                    "trailing_mult_after": 0.8
+                  }
+                ]
+              }
+            }
+          },
+          "datasets": 10,
+          "direction": [
+            "long"
+          ],
+          "label_limit": [
+            200
+          ],
+          "ratchet_table": {
+            "ranging_directional": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_down": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_directional_up": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.0,
+                  0.25,
+                  1.0
+                ],
+                [
+                  2.0,
+                  0.5,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.75,
+                  0.8
+                ],
+                [
+                  4.5,
+                  0.75,
+                  0.6
+                ]
+              ]
+            },
+            "ranging_quiet": {
+              "errors": [],
+              "tiers": [
+                [
+                  0.75,
+                  0.4,
+                  1.0
+                ],
+                [
+                  1.5,
+                  0.8,
+                  0.75
+                ],
+                [
+                  2.0,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "ranging_volatile": {
+              "errors": [],
+              "tiers": [
+                [
+                  1.75,
+                  0.4,
+                  1.0
+                ],
+                [
+                  3.5,
+                  0.8,
+                  0.75
+                ],
+                [
+                  5.25,
+                  1.0,
+                  0.75
+                ]
+              ]
+            },
+            "trending_down_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_down_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_choppy": {
+              "errors": [],
+              "tiers": [
+                [
+                  2.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  2.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  3.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            },
+            "trending_up_clean": {
+              "errors": [],
+              "tiers": [
+                [
+                  3.0,
+                  0.0,
+                  1.5
+                ],
+                [
+                  4.5,
+                  0.0,
+                  1.0
+                ],
+                [
+                  6.0,
+                  0.0,
+                  0.8
+                ]
+              ]
+            }
+          },
+          "stop_owners": [
+            "trailing_atr_regime"
+          ],
+          "trailing_table": {
+            "errors": [],
+            "values": {
+              "ranging_directional": 1.5,
+              "ranging_directional_down": 1.5,
+              "ranging_directional_up": 1.5,
+              "ranging_quiet": 1.0,
+              "ranging_volatile": 1.25,
+              "trending_down_choppy": 2.25,
+              "trending_down_clean": 2.5,
+              "trending_up_choppy": 2.25,
+              "trending_up_clean": 2.5
+            }
+          }
+        }
+      },
+      "checks": {
+        "cont_incumbent": {
+          "every_label_has_exits": true,
+          "expected_changed": [],
+          "labels_changed_vs_defaults": [],
+          "ok": true,
+          "target_ladder_ok": true,
+          "trail_equals_defaults": true
+        },
+        "cont_r_w125": {
+          "every_label_has_exits": true,
+          "expected_changed": [
+            "ranging_volatile"
+          ],
+          "labels_changed_vs_defaults": [
+            "ranging_volatile"
+          ],
+          "ok": true,
+          "target_ladder_ok": true,
+          "trail_equals_defaults": true
+        },
+        "cont_r_w150": {
+          "every_label_has_exits": true,
+          "expected_changed": [
+            "ranging_volatile"
+          ],
+          "labels_changed_vs_defaults": [
+            "ranging_volatile"
+          ],
+          "ok": true,
+          "target_ladder_ok": true,
+          "trail_equals_defaults": true
+        },
+        "cont_r_w175": {
+          "every_label_has_exits": true,
+          "expected_changed": [
+            "ranging_volatile"
+          ],
+          "labels_changed_vs_defaults": [
+            "ranging_volatile"
+          ],
+          "ok": true,
+          "target_ladder_ok": true,
+          "trail_equals_defaults": true
+        },
+        "directional_fallback": {
+          "bare_key_only_serves_sublabels": true,
+          "sublabels": {
+            "ranging_directional_down": [
+              [
+                1.0,
+                0.25,
+                1.0
+              ],
+              [
+                2.0,
+                0.5,
+                1.0
+              ],
+              [
+                3.0,
+                0.75,
+                0.8
+              ],
+              [
+                4.5,
+                0.75,
+                0.6
+              ]
+            ],
+            "ranging_directional_up": [
+              [
+                1.0,
+                0.25,
+                1.0
+              ],
+              [
+                2.0,
+                0.5,
+                1.0
+              ],
+              [
+                3.0,
+                0.75,
+                0.8
+              ],
+              [
+                4.5,
+                0.75,
+                0.6
+              ]
+            ]
+          }
+        },
+        "paired_arms_differ_only_in_close": true,
+        "paired_incumbent": {
+          "every_label_has_exits": true,
+          "expected_changed": [],
+          "labels_changed_vs_defaults": [],
+          "ok": true,
+          "target_ladder_ok": true,
+          "trail_equals_defaults": true
+        },
+        "paired_r_w125": {
+          "every_label_has_exits": true,
+          "expected_changed": [
+            "ranging_volatile"
+          ],
+          "labels_changed_vs_defaults": [
+            "ranging_volatile"
+          ],
+          "ok": true,
+          "target_ladder_ok": true,
+          "trail_equals_defaults": true
+        },
+        "paired_r_w150": {
+          "every_label_has_exits": true,
+          "expected_changed": [
+            "ranging_volatile"
+          ],
+          "labels_changed_vs_defaults": [
+            "ranging_volatile"
+          ],
+          "ok": true,
+          "target_ladder_ok": true,
+          "trail_equals_defaults": true
+        },
+        "paired_r_w175": {
+          "every_label_has_exits": true,
+          "expected_changed": [
+            "ranging_volatile"
+          ],
+          "labels_changed_vs_defaults": [
+            "ranging_volatile"
+          ],
+          "ok": true,
+          "target_ladder_ok": true,
+          "trail_equals_defaults": true
+        }
+      }
+    }
+  },
+  "go_inspect": {
+    "b2/cont_b2_w125.json": {
+      "allowed_regimes": [
+        "[]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "max_drawdown_pct (fallback)"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 6,
+      "trailing_regime_preserved": true
+    },
+    "b2/cont_b2_w150.json": {
+      "allowed_regimes": [
+        "[]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "max_drawdown_pct (fallback)"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 6,
+      "trailing_regime_preserved": true
+    },
+    "b2/cont_b2_w175.json": {
+      "allowed_regimes": [
+        "[]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "max_drawdown_pct (fallback)"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 6,
+      "trailing_regime_preserved": true
+    },
+    "b2/cont_historical.json": {
+      "allowed_regimes": [
+        "[]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "stop_loss_atr_mult"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 6,
+      "trailing_regime_preserved": true
+    },
+    "b2/cont_incumbent.json": {
+      "allowed_regimes": [
+        "[]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "max_drawdown_pct (fallback)"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 6,
+      "trailing_regime_preserved": true
+    },
+    "b2/paired_b2_w125.json": {
+      "allowed_regimes": [
+        "[\"ranging_volatile\"]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "stop_loss_atr_mult"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 6,
+      "trailing_regime_preserved": true
+    },
+    "b2/paired_b2_w150.json": {
+      "allowed_regimes": [
+        "[\"ranging_volatile\"]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "stop_loss_atr_mult"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 6,
+      "trailing_regime_preserved": true
+    },
+    "b2/paired_b2_w175.json": {
+      "allowed_regimes": [
+        "[\"ranging_volatile\"]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "stop_loss_atr_mult"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 6,
+      "trailing_regime_preserved": true
+    },
+    "b2/paired_incumbent.json": {
+      "allowed_regimes": [
+        "[\"ranging_volatile\"]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "stop_loss_atr_mult"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 6,
+      "trailing_regime_preserved": true
+    },
+    "ratchet/cont_incumbent.json": {
+      "allowed_regimes": [
+        "[]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "trailing_stop_atr_mult_regime"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 10,
+      "trailing_regime_preserved": true
+    },
+    "ratchet/cont_r_w125.json": {
+      "allowed_regimes": [
+        "[]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "trailing_stop_atr_mult_regime"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 10,
+      "trailing_regime_preserved": true
+    },
+    "ratchet/cont_r_w150.json": {
+      "allowed_regimes": [
+        "[]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "trailing_stop_atr_mult_regime"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 10,
+      "trailing_regime_preserved": true
+    },
+    "ratchet/cont_r_w175.json": {
+      "allowed_regimes": [
+        "[]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "trailing_stop_atr_mult_regime"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 10,
+      "trailing_regime_preserved": true
+    },
+    "ratchet/paired_incumbent.json": {
+      "allowed_regimes": [
+        "[\"ranging_volatile\"]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "trailing_stop_atr_mult_regime"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 10,
+      "trailing_regime_preserved": true
+    },
+    "ratchet/paired_r_w125.json": {
+      "allowed_regimes": [
+        "[\"ranging_volatile\"]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "trailing_stop_atr_mult_regime"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 10,
+      "trailing_regime_preserved": true
+    },
+    "ratchet/paired_r_w150.json": {
+      "allowed_regimes": [
+        "[\"ranging_volatile\"]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "trailing_stop_atr_mult_regime"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 10,
+      "trailing_regime_preserved": true
+    },
+    "ratchet/paired_r_w175.json": {
+      "allowed_regimes": [
+        "[\"ranging_volatile\"]"
+      ],
+      "close_strategy_preserved": true,
+      "exit_code": 0,
+      "go_stop_display_sources": [
+        "trailing_stop_atr_mult_regime"
+      ],
+      "ids_match": true,
+      "ok": true,
+      "stderr_tail": "",
+      "strategies": 10,
+      "trailing_regime_preserved": true
+    }
+  },
+  "measured_at_utc": "2026-11-14T17:44:31Z",
+  "ok": true,
+  "protocol_sha256": "3247b07ccc23d7e8992376e71ce2be6f7c9ffb60bcad96ce6c06083d0870f7ca",
+  "source_commit": "ab5214ca216e5923a3f8f5c104e161fca4d41033"
+}

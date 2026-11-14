@@ -1,0 +1,2325 @@
+{
+  "config_version": 20,
+  "regime": {
+    "enabled": true,
+    "period": 20,
+    "windows": {
+      "medium": {
+        "classifier": "composite",
+        "period": 20
+      }
+    }
+  },
+  "strategies": [
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "BNB",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "tp_tiers": {
+            "ranging_directional": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_down": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_up": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_quiet": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "ranging_volatile": [
+              {
+                "atr_multiple": 1.25,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 3.75,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "trending_down_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_down_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ]
+          }
+        }
+      },
+      "direction": "long",
+      "id": "mr-exit-2018-ratchet-paired-r-w125-bnb-1h",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 1.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 1.0
+          },
+          "ranging_volatile": {
+            "atr_multiple": 1.25
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "BNB",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "tp_tiers": {
+            "ranging_directional": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_down": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_up": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_quiet": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "ranging_volatile": [
+              {
+                "atr_multiple": 1.25,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 3.75,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "trending_down_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_down_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ]
+          }
+        }
+      },
+      "direction": "long",
+      "id": "mr-exit-2018-ratchet-paired-r-w125-bnb-30m",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 1.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 1.0
+          },
+          "ranging_volatile": {
+            "atr_multiple": 1.25
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "BTC",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "tp_tiers": {
+            "ranging_directional": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_down": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_up": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_quiet": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "ranging_volatile": [
+              {
+                "atr_multiple": 1.25,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 3.75,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "trending_down_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_down_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ]
+          }
+        }
+      },
+      "direction": "long",
+      "id": "mr-exit-2018-ratchet-paired-r-w125-btc-1h",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 1.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 1.0
+          },
+          "ranging_volatile": {
+            "atr_multiple": 1.25
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "BTC",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "tp_tiers": {
+            "ranging_directional": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_down": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_up": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_quiet": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "ranging_volatile": [
+              {
+                "atr_multiple": 1.25,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 3.75,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "trending_down_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_down_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ]
+          }
+        }
+      },
+      "direction": "long",
+      "id": "mr-exit-2018-ratchet-paired-r-w125-btc-30m",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 1.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 1.0
+          },
+          "ranging_volatile": {
+            "atr_multiple": 1.25
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "ETH",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "tp_tiers": {
+            "ranging_directional": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_down": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_up": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_quiet": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "ranging_volatile": [
+              {
+                "atr_multiple": 1.25,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 3.75,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "trending_down_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_down_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ]
+          }
+        }
+      },
+      "direction": "long",
+      "id": "mr-exit-2018-ratchet-paired-r-w125-eth-1h",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 1.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 1.0
+          },
+          "ranging_volatile": {
+            "atr_multiple": 1.25
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "ETH",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "tp_tiers": {
+            "ranging_directional": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_down": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_up": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_quiet": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "ranging_volatile": [
+              {
+                "atr_multiple": 1.25,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 3.75,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "trending_down_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_down_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ]
+          }
+        }
+      },
+      "direction": "long",
+      "id": "mr-exit-2018-ratchet-paired-r-w125-eth-30m",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 1.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 1.0
+          },
+          "ranging_volatile": {
+            "atr_multiple": 1.25
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "HYPE",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "tp_tiers": {
+            "ranging_directional": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_down": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_up": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_quiet": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "ranging_volatile": [
+              {
+                "atr_multiple": 1.25,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 3.75,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "trending_down_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_down_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ]
+          }
+        }
+      },
+      "direction": "long",
+      "id": "mr-exit-2018-ratchet-paired-r-w125-hype-1h",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 1.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 1.0
+          },
+          "ranging_volatile": {
+            "atr_multiple": 1.25
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "HYPE",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "tp_tiers": {
+            "ranging_directional": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_down": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_up": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_quiet": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "ranging_volatile": [
+              {
+                "atr_multiple": 1.25,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 3.75,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "trending_down_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_down_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ]
+          }
+        }
+      },
+      "direction": "long",
+      "id": "mr-exit-2018-ratchet-paired-r-w125-hype-30m",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 1.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 1.0
+          },
+          "ranging_volatile": {
+            "atr_multiple": 1.25
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "SOL",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "tp_tiers": {
+            "ranging_directional": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_down": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_up": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_quiet": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "ranging_volatile": [
+              {
+                "atr_multiple": 1.25,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 3.75,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "trending_down_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_down_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ]
+          }
+        }
+      },
+      "direction": "long",
+      "id": "mr-exit-2018-ratchet-paired-r-w125-sol-1h",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 1.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 1.0
+          },
+          "ranging_volatile": {
+            "atr_multiple": 1.25
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "SOL",
+        "30m",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {
+          "tp_tiers": {
+            "ranging_directional": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_down": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_directional_up": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.25,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.5,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.8
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.75,
+                "trailing_mult_after": 0.6
+              }
+            ],
+            "ranging_quiet": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "ranging_volatile": [
+              {
+                "atr_multiple": 1.25,
+                "close_fraction": 0.4,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.8,
+                "trailing_mult_after": 0.75
+              },
+              {
+                "atr_multiple": 3.75,
+                "close_fraction": 1.0,
+                "trailing_mult_after": 0.75
+              }
+            ],
+            "trending_down_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_down_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_choppy": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 2.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ],
+            "trending_up_clean": [
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.5
+              },
+              {
+                "atr_multiple": 4.5,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 1.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 0.0,
+                "trailing_mult_after": 0.8
+              }
+            ]
+          }
+        }
+      },
+      "direction": "long",
+      "id": "mr-exit-2018-ratchet-paired-r-w125-sol-30m",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "trailing_stop_atr_mult_regime": {
+        "trend_regime": {
+          "ranging_directional": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_down": {
+            "atr_multiple": 1.5
+          },
+          "ranging_directional_up": {
+            "atr_multiple": 1.5
+          },
+          "ranging_quiet": {
+            "atr_multiple": 1.0
+          },
+          "ranging_volatile": {
+            "atr_multiple": 1.25
+          },
+          "trending_down_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_down_clean": {
+            "atr_multiple": 2.5
+          },
+          "trending_up_choppy": {
+            "atr_multiple": 2.25
+          },
+          "trending_up_clean": {
+            "atr_multiple": 2.5
+          }
+        }
+      },
+      "type": "perps"
+    }
+  ]
+}

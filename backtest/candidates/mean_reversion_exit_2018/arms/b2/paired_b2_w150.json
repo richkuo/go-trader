@@ -1,0 +1,261 @@
+{
+  "config_version": 20,
+  "regime": {
+    "enabled": true,
+    "period": 20,
+    "windows": {
+      "medium": {
+        "classifier": "composite",
+        "period": 20
+      }
+    }
+  },
+  "strategies": [
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "BTC",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "tiered_tp_atr",
+        "params": {
+          "tp_tiers": [
+            {
+              "atr_multiple": 0.75,
+              "close_fraction": 0.5
+            },
+            {
+              "atr_multiple": 1.5,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      },
+      "direction": "both",
+      "id": "mr-exit-2018-b2-paired-b2-w150-btc-1h",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "stop_loss_atr_mult": 1.5,
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "BTC",
+        "4h",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "tiered_tp_atr",
+        "params": {
+          "tp_tiers": [
+            {
+              "atr_multiple": 0.75,
+              "close_fraction": 0.5
+            },
+            {
+              "atr_multiple": 1.5,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      },
+      "direction": "both",
+      "id": "mr-exit-2018-b2-paired-b2-w150-btc-4h",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "stop_loss_atr_mult": 1.5,
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "ETH",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "tiered_tp_atr",
+        "params": {
+          "tp_tiers": [
+            {
+              "atr_multiple": 0.75,
+              "close_fraction": 0.5
+            },
+            {
+              "atr_multiple": 1.5,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      },
+      "direction": "both",
+      "id": "mr-exit-2018-b2-paired-b2-w150-eth-1h",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "stop_loss_atr_mult": 1.5,
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "ETH",
+        "4h",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "tiered_tp_atr",
+        "params": {
+          "tp_tiers": [
+            {
+              "atr_multiple": 0.75,
+              "close_fraction": 0.5
+            },
+            {
+              "atr_multiple": 1.5,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      },
+      "direction": "both",
+      "id": "mr-exit-2018-b2-paired-b2-w150-eth-4h",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "stop_loss_atr_mult": 1.5,
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "SOL",
+        "1h",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "tiered_tp_atr",
+        "params": {
+          "tp_tiers": [
+            {
+              "atr_multiple": 0.75,
+              "close_fraction": 0.5
+            },
+            {
+              "atr_multiple": 1.5,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      },
+      "direction": "both",
+      "id": "mr-exit-2018-b2-paired-b2-w150-sol-1h",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "stop_loss_atr_mult": 1.5,
+      "type": "perps"
+    },
+    {
+      "allowed_regimes": [
+        "ranging_volatile"
+      ],
+      "args": [
+        "mean_reversion",
+        "SOL",
+        "4h",
+        "--mode=paper"
+      ],
+      "capital": 1000.0,
+      "circuit_breaker": false,
+      "close_strategy": {
+        "name": "tiered_tp_atr",
+        "params": {
+          "tp_tiers": [
+            {
+              "atr_multiple": 0.75,
+              "close_fraction": 0.5
+            },
+            {
+              "atr_multiple": 1.5,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      },
+      "direction": "both",
+      "id": "mr-exit-2018-b2-paired-b2-w150-sol-4h",
+      "initial_capital": 1000.0,
+      "interval_seconds": 300,
+      "leverage": 1,
+      "open_strategy": {
+        "name": "mean_reversion",
+        "params": {}
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "stop_loss_atr_mult": 1.5,
+      "type": "perps"
+    }
+  ]
+}

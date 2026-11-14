@@ -1,0 +1,252 @@
+{
+  "study": "mean_reversion_exit_2018",
+  "issue": 2018,
+  "implementation_base": "ab5214ca216e5923a3f8f5c104e161fca4d41033",
+  "question": "Does a wider ranging_volatile take-profit ladder improve mean_reversion results after current execution costs and a 2x spread and slippage stress, measured separately for the historical B2 tiered close and for a defined trailing-ratchet close?",
+  "suggest_only": "No command sends an order. No command writes an operational live or paper configuration, a registry default, a quarantine status or edge_status. A suggested per-strategy close configuration is an offline artifact written only for a positive frame; promotion needs a separate decision.",
+  "deployment_context": "The operator observation in the issue (mean_reversion on Hyperliquid perps at 30m and 1h with a regime ratchet close, 2026-11-10) has no sanitized source in the repository. Both frames are declared research contexts. No setting is inferred from the unverified deployment.",
+  "inputs": {
+    "source_study": "backtest/candidates/tema_cross_2016",
+    "copy": [
+      "data/proxy/BNB_1h_candles.csv.gz",
+      "data/proxy/BNB_30m_candles.csv.gz",
+      "data/proxy/BNB_funding.csv.gz",
+      "data/proxy/BTC_1h_candles.csv.gz",
+      "data/proxy/BTC_30m_candles.csv.gz",
+      "data/proxy/BTC_4h_candles.csv.gz",
+      "data/proxy/BTC_funding.csv.gz",
+      "data/proxy/ETH_1h_candles.csv.gz",
+      "data/proxy/ETH_30m_candles.csv.gz",
+      "data/proxy/ETH_4h_candles.csv.gz",
+      "data/proxy/ETH_funding.csv.gz",
+      "data/proxy/HYPE_1h_candles.csv.gz",
+      "data/proxy/HYPE_30m_candles.csv.gz",
+      "data/proxy/HYPE_funding.csv.gz",
+      "data/proxy/SOL_1h_candles.csv.gz",
+      "data/proxy/SOL_30m_candles.csv.gz",
+      "data/proxy/SOL_4h_candles.csv.gz",
+      "data/proxy/SOL_funding.csv.gz",
+      "data/venue_1h/BNB_1h_candles.csv.gz",
+      "data/venue_1h/BNB_funding.csv.gz",
+      "data/venue_1h/BTC_1h_candles.csv.gz",
+      "data/venue_1h/BTC_funding.csv.gz",
+      "data/venue_1h/ETH_1h_candles.csv.gz",
+      "data/venue_1h/ETH_funding.csv.gz",
+      "data/venue_1h/HYPE_1h_candles.csv.gz",
+      "data/venue_1h/HYPE_funding.csv.gz",
+      "data/venue_1h/SOL_1h_candles.csv.gz",
+      "data/venue_1h/SOL_funding.csv.gz",
+      "data/venue_1h/venue_l2_snapshot.json",
+      "data/venue_1h/venue_meta.json",
+      "data/venue_30m/BNB_30m_candles.csv.gz",
+      "data/venue_30m/BNB_funding.csv.gz",
+      "data/venue_30m/BTC_30m_candles.csv.gz",
+      "data/venue_30m/BTC_funding.csv.gz",
+      "data/venue_30m/ETH_30m_candles.csv.gz",
+      "data/venue_30m/ETH_funding.csv.gz",
+      "data/venue_30m/HYPE_30m_candles.csv.gz",
+      "data/venue_30m/HYPE_funding.csv.gz",
+      "data/venue_30m/SOL_30m_candles.csv.gz",
+      "data/venue_30m/SOL_funding.csv.gz",
+      "data/venue_30m/venue_l2_snapshot.json",
+      "data/venue_30m/venue_meta.json",
+      "venue_manifest_1h.json",
+      "venue_manifest_30m.json"
+    ],
+    "pinned_end": "2026-11-10",
+    "note": "Inputs are byte copies of the tema_cross_2016 frozen files (themselves byte copies of breakout_2014 plus the Binance US 4h acquisition), verified against the source manifest hashes. No new acquisition runs. Proxy candles are Binance US spot USDT pairs; native candles are Hyperliquid perpetual candles from the public info API; funding is Hyperliquid hourly funding. The venue meta and L2 snapshot give lot sizes and half spreads."
+  },
+  "proxy_manifests": {
+    "intervals": ["1h", "30m", "4h"],
+    "coins": ["BNB", "BTC", "ETH", "HYPE", "SOL"],
+    "coins_4h": ["BTC", "ETH", "SOL"],
+    "warmup_bars": 400,
+    "provenance_label": "Binance US spot USDT candles (proxy for Hyperliquid perpetual prices) with Hyperliquid hourly funding, the venue meta lot sizes and the L2 snapshot half spreads",
+    "half_spread_source": "the per-coin half_spread_bps of the tema_cross_2016 bridge manifest of the same interval; 4h reuses the 1h values",
+    "costs_source": "venue_manifest_1h.json costs (Hyperliquid base-tier taker 0.045%, maker 0.015%, 5 bps slippage, 10 USD minimum notional)",
+    "venue_reference": "data/venue_1h/venue_meta.json and data/venue_1h/venue_l2_snapshot.json"
+  },
+  "windows": {
+    "parity": {"start": "2023-01-01", "end": "2023-07-01", "role": "engine parity and replay fidelity checks before the lock; outside every scored window"},
+    "train": {"start": "2023-07-01", "end": "2025-06-10", "role": "training: neighbour shortlist only"},
+    "judge": {"start": "2025-06-10", "end": "2026-11-10", "role": "judgment: paired verdict statistics"},
+    "continuous": {"start": "2023-07-01", "end": "2026-11-10", "role": "one continuous complete-policy run per dataset from a flat book; overlaps train and judge"}
+  },
+  "native": {
+    "group": "native",
+    "manifests": {"1h": "venue_manifest_1h.json", "30m": "venue_manifest_30m.json"},
+    "window": "tail",
+    "windows": {"1h": ["2026-05-03", "2026-11-10"], "30m": ["2026-08-07", "2026-11-10"]},
+    "role": "native Hyperliquid candles; judged with the frozen training shortlist of the ratchet frame and run continuously over the same tail window; a separate validity decision from the proxy group; inside the proxy judgment window"
+  },
+  "initial_state": "Every run starts flat with 1000 USD of strategy cash, sizing leverage 1 and exchange leverage 1, isolated margin; no position, cash or label is carried across windows.",
+  "capital_usd": 1000.0,
+  "return_denominator": "initial capital: 1000 USD per dataset run; a pooled return divides the summed net PnL by 1000 USD times the number of runs",
+  "engine": {
+    "intrabar_resolution": "ohlc_walk",
+    "fee_platform": "hyperliquid",
+    "atr_method": "simple",
+    "atr_period": 14,
+    "comparison_mode": "strict",
+    "cost_model": "execution_spec from the offline manifest: taker and maker fee, per-side half spread plus slippage, entry quantity floored to the venue lot, entries below the 10 USD minimum rejected, partial closes floored and skipped below the lot or minimum"
+  },
+  "costs": {
+    "base": {"cost_multiplier": 1.0},
+    "stress": {"cost_multiplier": 2.0},
+    "text": "base: taker 0.045%, maker 0.015% (resting take-profit tiers), half spread from the L2 snapshot, 5 bps slippage; stress: the half spread and the slippage times 2, fees unchanged. Funding is charged from the frozen Hyperliquid series in both legs and is reported separately.",
+    "decision": "an arm must pass the improvement test at both costs (intersection-union: the decision p-value is the larger of the two)"
+  },
+  "funding": {
+    "treatment": "Hyperliquid hourly funding attached as a per-bar accrual from the frozen series (offline_manifest.attach_funding_cost); a held hour with no rate charges nothing.",
+    "coverage_rule": "A dataset-window is excluded (inconclusive) when any hour inside it lacks a funding rate, except hours the source manifest records as venue-absent (the venue published no rate). Missing rates are never replaced with invented zero rates."
+  },
+  "coverage_rule": {
+    "include": "A dataset-window is included when its 400 warm-up bars are present and consecutive, the window holds candles, missing candles inside the window are at most 1% of the expected bars (they are scored as they are and listed), and funding is complete under the funding coverage rule.",
+    "exclude": "Anything else is excluded and makes that dataset-window inconclusive; it never enters a statistic.",
+    "max_missing_bar_fraction": 0.01
+  },
+  "regime": {
+    "enabled": true,
+    "period": 20,
+    "windows": {"medium": {"classifier": "composite", "period": 20}},
+    "source": "backtest/research/regime_1152_config_b2_mr.json and regime_1152_config_ratchet_mr.json (composite classifier, period 20, regime.windows.medium)",
+    "target_regime": "ranging_volatile"
+  },
+  "open_strategy": {
+    "registry": "futures",
+    "name": "mean_reversion",
+    "params": {},
+    "resolved_params": {"lookback": 30, "entry_std": 1.5, "exit_std": 0.5},
+    "edge_status": "no_edge (unchanged)",
+    "short_semantics": "The registry declares short_entries=False: signal -1 is the z-score exit cross. Under direction both with a close evaluator the engine opens a short on it. The historical B2 frame keeps direction both as 1152 did; the ratchet frame is long only."
+  },
+  "frames": {
+    "b2": {
+      "label": "historical B2 confirmation",
+      "direction": "both",
+      "groups": {"proxy": [["BTC", "1h"], ["BTC", "4h"], ["ETH", "1h"], ["ETH", "4h"], ["SOL", "1h"], ["SOL", "4h"]]},
+      "changes_from_history": [
+        "fees: Hyperliquid taker 0.045% and maker 0.015% from the execution specification (1152 used binanceus fees, later the hyperliquid flat fee)",
+        "price rules: execution_spec half spread plus 5 bps slippage, venue lot flooring and the 10 USD minimum (1152 used the flat default slippage and no lot rule)",
+        "intra-bar: ohlc_walk (the 1152 report used bar_close; its 2026-07-10 addendum reran under ohlc_walk)",
+        "funding: the frozen Hyperliquid series (1152 read the shared cache)",
+        "candles: the frozen Binance US files pinned to 2026-11-10 (1152 read the shared cache snapshot of 2026-07-02)",
+        "platform: hyperliquid perps stop owner model (the 1152 configs named no platform)",
+        "windows: frozen finite train and judge ranges (1152 used is 2025-06-10 to 2026-01-01 and an open-ended oos)"
+      ],
+      "paired": {
+        "gate": ["ranging_volatile"],
+        "incumbent": "paired_incumbent",
+        "arms": {
+          "primary": "paired_b2_w150",
+          "neighbours": ["paired_b2_w125", "paired_b2_w175"]
+        }
+      },
+      "continuous": {
+        "incumbent": "cont_incumbent",
+        "arms": {"paired_b2_w150": "cont_b2_w150", "paired_b2_w125": "cont_b2_w125", "paired_b2_w175": "cont_b2_w175"},
+        "equivalence": {"historical": "cont_historical", "unified": "cont_incumbent"}
+      },
+      "arm_definitions": {
+        "incumbent_close": {"name": "tiered_tp_atr_regime", "params": {"use_defaults": true}},
+        "incumbent_stop": {"stop_loss_atr_mult": 1.5},
+        "incumbent_volatile_ladder": [[0.5, 0.5], [1.0, 1.0]],
+        "widening": {"paired_b2_w125": 1.25, "paired_b2_w150": 1.5, "paired_b2_w175": 1.75},
+        "candidate_ladders": {
+          "paired_b2_w125": [[0.625, 0.5], [1.25, 1.0]],
+          "paired_b2_w150": [[0.75, 0.5], [1.5, 1.0]],
+          "paired_b2_w175": [[0.875, 0.5], [1.75, 1.0]]
+        },
+        "paired_form": "scalar tiered_tp_atr with the candidate ladder and the inherited scalar 1.5 ATR stop; exact for gated entries, because every gated entry is stamped ranging_volatile",
+        "continuous_form": "unified tiered_tp_atr_regime trend_regime block listing all nine composite labels: every label keeps stop_loss_atr 1.5 and the use_defaults ladder of its group (clean, choppy, ranging); only ranging_volatile takes the candidate ladder. The scalar stop field is removed because the unified block owns the stop; cont_historical keeps the original scalar form and must trade identically to cont_incumbent."
+      }
+    },
+    "ratchet": {
+      "label": "perps ratchet research frame",
+      "direction": "long",
+      "groups": {
+        "proxy": [["BNB", "1h"], ["BNB", "30m"], ["BTC", "1h"], ["BTC", "30m"], ["ETH", "1h"], ["ETH", "30m"], ["HYPE", "1h"], ["HYPE", "30m"], ["SOL", "1h"], ["SOL", "30m"]],
+        "native": [["BNB", "1h"], ["BNB", "30m"], ["BTC", "1h"], ["BTC", "30m"], ["ETH", "1h"], ["ETH", "30m"], ["HYPE", "1h"], ["HYPE", "30m"], ["SOL", "1h"], ["SOL", "30m"]]
+      },
+      "paired": {
+        "gate": ["ranging_volatile"],
+        "incumbent": "paired_incumbent",
+        "arms": {
+          "primary": "paired_r_w150",
+          "neighbours": ["paired_r_w125", "paired_r_w175"]
+        }
+      },
+      "continuous": {
+        "incumbent": "cont_incumbent",
+        "arms": {"paired_r_w150": "cont_r_w150", "paired_r_w125": "cont_r_w125", "paired_r_w175": "cont_r_w175"}
+      },
+      "arm_definitions": {
+        "source": "backtest/research/regime_1152_config_ratchet_mr.json resolved to explicit tables",
+        "incumbent_close": "trailing_tp_ratchet_regime with an explicit tp_tiers table for all nine composite labels equal to DEFAULT_RATCHET_TIERS_BY_GROUP",
+        "incumbent_trail": "trailing_stop_atr_mult_regime with an explicit trend_regime table for all nine composite labels equal to REGIME_ATR_DEFAULTS_TRAILING (ranging_volatile 1.25 ATR)",
+        "incumbent_volatile_ladder": [[1.0, 0.4, 1.0], [2.0, 0.8, 0.75], [3.0, 1.0, 0.75]],
+        "widening": {"paired_r_w125": 1.25, "paired_r_w150": 1.5, "paired_r_w175": 1.75},
+        "candidate_ladders": {
+          "paired_r_w125": [[1.25, 0.4, 1.0], [2.5, 0.8, 0.75], [3.75, 1.0, 0.75]],
+          "paired_r_w150": [[1.5, 0.4, 1.0], [3.0, 0.8, 0.75], [4.5, 1.0, 0.75]],
+          "paired_r_w175": [[1.75, 0.4, 1.0], [3.5, 0.8, 0.75], [5.25, 1.0, 0.75]]
+        },
+        "relation_to_b2": "Both frames test the same relative widening (trigger multiples times 1.25, 1.5 and 1.75) of the ranging_volatile ladder only. The ratchet ladder keeps its own cumulative fractions (40%, 80%, 100%), post-trigger trails (1.0, 0.75, 0.75 ATR) and the regime trail as initial stop owner; the B2 0.75/1.5 ladder and its fixed 1.5 ATR stop are not copied into the ratchet. A B2 result cannot authorize a ratchet suggestion.",
+        "paired_form": "the same explicit tables with allowed_regimes [ranging_volatile] added",
+        "continuous_form": "the same explicit tables without the gate"
+      }
+    }
+  },
+  "direction_handling": {
+    "b2": "One combined direction-both run per dataset: one position at a time on shared capital, so a long blocks a short and the reverse; long and short paired attribution split the positions of that run and are not independent strategies. The verdict unit is the configured direction both; each side also takes the dataset harm check.",
+    "ratchet": "Long only; the verdict unit is long."
+  },
+  "paired_method": {
+    "schedule": "The incumbent paired arm runs free over the window at base cost with entries gated to ranging_volatile (the decision-bar label). Its opened positions (all close records of one entry grouped by entry bar and side) form the schedule. The same schedule serves both costs and every arm.",
+    "replay": "Each scheduled entry is replayed once per arm and cost on the real Backtester with the resolved arm configuration: every signal is zeroed except the scheduled signal bar, so the arms share entry timing, side, ATR, regime stamp, sizing (1000 USD) and lot rules. The replay frame starts 250 bars before the signal bar and ends 2000 bars after it, with the full window frame as indicator history; a replay that reaches the frame end with an end_of_data close before the window end runs again on the frame to the window end.",
+    "unit": "opened position: the summed cash PnL net of fees plus funding over all close records of the position, divided by the original entry notional (summed shares times entry price), in percent; computed from the unrounded engine trade objects",
+    "match": "A scheduled entry is matched for an arm and cost when the replay opens exactly one position at the scheduled fill bar and side. Unmatched entries are listed and never imputed.",
+    "paired_delta": "candidate net percent minus incumbent net percent on the same scheduled entry and cost",
+    "training_costs": ["base"],
+    "judgment_costs": ["base", "stress"]
+  },
+  "selection": {
+    "window": "train",
+    "rule": "The primary arm (widening 1.5) is always judged. Rank the two neighbours by the pooled training paired mean delta at base cost over every included proxy dataset of the frame (both sides for b2). Shortlist the higher one only if it has at least 30 matched positions and a pooled mean delta above 0; a tie within 1e-12 goes to the smaller widening. The other neighbour stays unjudged.",
+    "persist": "selection.json is written once before the first judged run; judge refuses a missing or changed selection and cannot add arms."
+  },
+  "statistics": {
+    "alpha": 0.05,
+    "test": "one-sided synchronized calendar-block bootstrap with a centered null on the pooled position-weighted mean paired delta: p = (1 + #{T* - T >= T}) / (1 + R)",
+    "blocks": "7-day calendar blocks from the window start (UTC); a position belongs to the block of its fill bar",
+    "synchronization": "one draw matrix of block indices (with replacement) per window, numpy default_rng(seed), shared by every coin, interval, side, arm and cost, so cross-sectional and cross-timeframe dependence inside a week is resampled together",
+    "seed": 2018,
+    "resamples": 10000,
+    "dataset_harm": "per arm, cost and dataset (and per side for b2): one-sided p = (1 + #{T*_d - T_d <= T_d}) / (1 + R) with the same draws; tested only with at least 10 matched positions; Holm over the datasets and sides of that arm and cost; any rejection is a significant negative dataset",
+    "family": "every searched hypothesis: 3 arms in each of the 3 verdict units (b2 proxy both, ratchet proxy long, ratchet native long), m = 9. Unjudged arms take p = 1. Holm step-down at alpha 0.05 over the decision p-values.",
+    "sample_floors": {"min_matched_positions": 30, "min_effective_blocks": 20, "min_match_coverage": 0.95, "harm_min_positions": 10}
+  },
+  "continuous_rule": {
+    "metrics": "absolute return on initial capital, Sharpe from UTC day-end equity (simple daily returns, ddof 1, times sqrt(365), the last day closes at the terminal-settled equity), worst drawdown from the bar equity path plus the terminal-settled point with the running peak starting at the initial capital",
+    "gate": "At both costs the candidate's summed net PnL over the group's included datasets must exceed the incumbent's, and in every included dataset the candidate's worst drawdown must be no more than 2.0 percentage points deeper than the incumbent's. Absolute profitability is reported and labelled; it is not required.",
+    "terminal": "the engine's bar equity samples end before its synthetic end_of_data liquidation; the study appends the terminal settlement (fee and slippage of that close) as its own point and reconciles the final equity to 1000 USD plus the summed trade PnL net of fees plus funding"
+  },
+  "verdict_rule": {
+    "unit": "frame, evidence group and configured direction",
+    "positive": "at least one judged arm: valid inputs, sample floors and match coverage at both costs, pooled mean delta above 0 at both costs, Holm-rejected decision p-value, no significant negative dataset (or side), and the continuous gate passed",
+    "negative": "the evidence is valid and adequate for the primary arm, and no judged arm passes",
+    "inconclusive": "no included dataset, or the primary arm misses a sample floor or the match coverage at either cost",
+    "suggestion": "suggested_<frame>_<group>_config.json is written only for a positive unit: the complete continuous arm configuration of the passing arm (the best decision p-value if two pass) with every other regime setting, labelled with any absolute loss. Fleet defaults and config.example.json do not change."
+  },
+  "prior_inspection": [
+    "Issue 1152 scored mean_reversion with these B2 and ratchet ladders on Binance US BTC, ETH and SOL at 1h and 4h over 2025-06-10 to 2026-01-01 and 2026-01-01 to about 2026-07-05; those ranges sit inside this judgment window. The issue text quotes its results (B2 b2_rv_wider in-sample +0.005, out-of-sample +0.050 per entry, later ohlc_walk positive_but_not_significant; ratchet rv_wider +0.012 and +0.023, later -0.004 and +0.016).",
+    "During this build one timing run of the historical B2 incumbent on proxy BTC 1h over 2026-05-03 to 2026-11-10 (inside the judgment window) was executed before the lock; its free-run result (-29.81% return, 94 positions) was seen. No candidate arm ran on train, judge or continuous data before the lock.",
+    "The tema_cross_2016 and breakout_2014 studies read these candle and funding files with other strategies; no mean_reversion exit result on them was read."
+  ],
+  "disclosures": [
+    "Native Hyperliquid candles cover only the last 5,000 bars before the pinned end, so native evidence spans 2026-08-07 to 2026-11-10 at 30m and 2026-05-03 to 2026-11-10 at 1h; proxy evidence is never described as native confirmation.",
+    "HYPE proxy candles start 2025-06-06, so HYPE proxy has no 400-bar warm-up before the train, judge or continuous start and is excluded; HYPE enters only through native candles.",
+    "Regime labels, ATR and signals come from the same candles as the fills; the composite labeller reads a bounded 200-bar window.",
+    "The continuous interval overlaps the train and judge intervals; continuous results are reported separately from the paired statistics."
+  ]
+}
