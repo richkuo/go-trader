@@ -1,0 +1,25 @@
+{
+  "engine_digest": "e021e99b76fa012aa2c18570a6ff699fa1cba6190d8c562609ee270282706d55",
+  "engine_sha256": {
+    "backtest/auto_suggest.py": "246ec3e9af683cd4b12d63bb12520809adffeb6e7d954d638166e750b7bb2b9b",
+    "backtest/backtester.py": "2a015993da10db22e9414ab5f13b2999ea312c5d4ed76416e2be1aca290adda1",
+    "backtest/candidates/regime_adaptive_2017/protocol.json": "a28e98acc455405dbbd33c4592e6f7c7c0a0a97d205e74a2c50b14172abbfc9e",
+    "backtest/candidates/regime_adaptive_2017/run_study.py": "477d536a1c6c55e7a42705143fc7b0fc851ce00966586d2f2840a5a21ad0cd5b",
+    "backtest/eval_windows.py": "44979406e09e40cb297fe6cd604b6f5e583c90baa0647d9fade5b4c1b032391d",
+    "backtest/gross_edge_noise.py": "cc8486392e68f26f63e99cfe2fb744ceea5d00656569902418390a320f0393f3",
+    "backtest/htf_trend.py": "e9dda3d4163b9fb1ab3ae1166f54eba40e6e8b36eb0ad5fa40371b7e802c0a5a",
+    "backtest/regime_label_columns.py": "3c53a51ee95783329441a9c349288eb6989a7919c692f66315d6f2379c54ec3e",
+    "backtest/regime_stats.py": "81f2e764d5cb0e8ce297f290552060e25bf6e002ceda5da3e177bde0fb518700",
+    "backtest/run_backtest.py": "40fd710f963da46374376e76bd77fb04a3372e8f8d188da56402d0ff5e208e6c",
+    "shared_strategies/close/trailing_tp_ratchet.py": "08e0151276fce1b7a79be21660a6d56d50ec7b852d3666389e3bfc8502d7f90f",
+    "shared_strategies/open/regime_adaptive.py": "008af606de83f69f11f7fc8eb3be74987db5c48fc9e1b409a6432a0e2ece8e03",
+    "shared_tools/data_fetcher.py": "7152b6c0aef3f0bccbdede8ac31f8d0d2c34dd67e96cd082f9e531f1f51d29a0",
+    "shared_tools/funding_fetcher.py": "875f0a3c83edc849e307affe1ad6a91fcc340624eecc349883da04d94947b91e",
+    "shared_tools/regime.py": "91f579aec90d52c71db68a3f06fc98bdcdd60bf0213393ed44960d8965726eae",
+    "shared_tools/storage.py": "9786b008a0dd05f33102d53164722762222b22fa2c969391e9774e0df71dd1a9"
+  },
+  "git_head": "ab5214ca216e5923a3f8f5c104e161fca4d41033",
+  "locked_at": "2026-11-12T06:00:50Z",
+  "manifest_sha256": "faed7e9e8ad3d31816ea910d61f5c20a9ed50e43491e5c1a490bdf0f987df62e",
+  "protocol_sha256": "a28e98acc455405dbbd33c4592e6f7c7c0a0a97d205e74a2c50b14172abbfc9e"
+}
