@@ -619,13 +619,21 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 	}
 	warming := fmt.Sprintf("warming (%d/101)", longWindow.Bars)
 	base = e.venueKinds()
-	for _, args := range [][]string{
+	warmingArgs := [][]string{
 		{"manual-open", "mr-warming", "--size", "0.01", "--atr", "0.5"},
 		{"manual-add", "mr-warm-add", "--size", "0.01"},
 		{"manual-open", "mr-warming", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5"},
-	} {
-		r = e.command(cfgA, []string{good}, args...)
-		e.expectRefused(r, strings.Join(args, " "), warming)
+	}
+	warmingRuns := make([]mrpRun, 0, len(warmingArgs))
+	for _, args := range warmingArgs {
+		warmingRuns = append(warmingRuns, e.command(cfgA, []string{good}, args...))
+	}
+	afterWarming := e.route(port+1, "mr-ready", "paper")
+	if afterWarming.env.Generation != before.env.Generation || afterWarming.env.BundleAt == nil || !afterWarming.env.BundleAt.Equal(*before.env.BundleAt) {
+		t.Fatalf("a cycle ran during the warming evidence window: %d -> %d\n%s", before.env.Generation, afterWarming.env.Generation, mrpTimeline(daemon.output()))
+	}
+	for i, args := range warmingArgs {
+		e.expectRefused(warmingRuns[i], strings.Join(args, " "), warming)
 	}
 	e.expectNoVenue(base, "warming holds")
 	t.Logf("warming: required long window holds open, add and limit with %s from the settled generation; the unrelated warming window did not hold the short-window strategies", warming)
