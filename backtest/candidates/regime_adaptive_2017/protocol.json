@@ -1,0 +1,209 @@
+{
+  "issue": 2017,
+  "title": "Entry filters for regime_adaptive after fees and funding",
+  "capital_usd": 1000.0,
+  "warmup_bars": 500,
+  "pinned_end": "2026-10-01",
+  "funding_mode": "charge",
+  "fee_platform": "hyperliquid",
+  "atr_method": "simple",
+  "intrabar_resolution": "ohlc_walk",
+  "costs": {
+    "commission_pct": 0.00045,
+    "slippage_pct": 0.0005,
+    "stress_slippage_multiplier": 2,
+    "gross_commission_pct": 0.0,
+    "gross_slippage_pct": 0.0,
+    "text": "Base cost is the Hyperliquid taker fee 0.045% and the default slippage 0.05%. Stress cost doubles slippage and keeps the taker fee. Gross cost sets commission and slippage to zero. All three still request funding_mode charge. Stress is a robustness check of the same hypothesis, so it does not add a hypothesis to the family."
+  },
+  "returns": {
+    "position_unit": "positions_from_results groups close records by entry_date and side",
+    "net_position_pct": "net_pnl / entry_notional * 100, and net_pnl is trade pnl plus funding_pnl",
+    "fee_drag_position_pct": "fees / entry_notional * 100",
+    "gross_position_pct": "net position percent plus fee drag percent, so gross is after funding and before commission and slippage",
+    "leg_return_pct": "Backtester total_return_pct on the 1000 USD cash book",
+    "selection_score": "mean of leg ddadj across the arm datasets; ddadj is eval_windows.dd_adjusted_return (total return divided by the absolute max drawdown) with the liquidated floor -100",
+    "annualization": "per-position means are not annualized; positions per year divide the pooled position count by the sum of the included windows' calendar lengths in 365.25-day years",
+    "text": "The verdict requires the mean per-position net return and the mean leg total return to stay above zero at base cost and at stress cost. Gross is reported and is not itself the verdict."
+  },
+  "statistics": {
+    "alpha": 0.05,
+    "method": "cluster_sign_flip_permutation",
+    "correction": "auto_suggest.apply_family_correction",
+    "resamples": 10000,
+    "seed": 1066,
+    "min_positions": 30,
+    "min_clusters": 10,
+    "cluster": "symbol plus the ISO year and week of entry_date",
+    "plateau_ratio": 0.5,
+    "z_grid": [1.5, 2.0, 2.5, 3.0],
+    "z_default": 2.0,
+    "text": "One hypothesis is one searched arm on one frame and one direction, plus a combination when the frozen rule builds one. Unjudged searched arms enter the correction with p=1. The tested sample is the pooled base-cost net position returns on the judgment windows. Training rows are not part of that sample."
+  },
+  "windows": {
+    "train": ["2024-01-01", "2025-01-01"],
+    "judge_2023": ["2023-08-07", "2024-01-01"],
+    "judge_2025a": ["2025-01-01", "2025-06-10"],
+    "judge_is": ["2025-06-10", "2026-01-01"],
+    "judge_oos": ["2026-01-01", "2026-10-01"],
+    "continuous": ["2023-08-07", "2026-10-01"]
+  },
+  "judgment_windows": ["judge_2023", "judge_2025a", "judge_is", "judge_oos"],
+  "window_rules": {
+    "initial_state": "The book starts flat on the first scored bar. Indicator rows use the warm-up prefix. A position opened inside the prefix is not carried into the book.",
+    "disjoint": "train, judge_2023, judge_2025a, judge_is and judge_oos share no dates. judge_2025a ends where judge_is starts, so the pair does not copy the overlapping M1 is and 2025H1 windows. continuous overlaps train and every judgment window. It is the drawdown path only and is not a selection sample or a significance sample.",
+    "judge_2023_start": "Proxy funding prints start on 2023-05-12. A 500-bar warm-up on 4h reaches back about 84 days, so judge_2023 and continuous start on 2023-08-07 and the warm-up stays inside the funding file.",
+    "prior_reads": "Issues 1282 and 1315 already measured regime_adaptive on the M1 windows is, oos, 2023, 2024 and 2025H1. Those calendars overlap this study. The lock does not make them unseen. The 2023 window here is the later part of that year, not the M1 year that starts on 2023-01-01. The original screen net of -8.46% used the binanceus fee model. The corrected screen on is+oos reported +3.92% gross, -4.33% net and 8.24 percentage points of fee drag. This study does not reuse those samples or that fee model as its own measurements."
+  },
+  "symbols": ["BTC", "ETH", "SOL"],
+  "symbol_quote": "USDT",
+  "inputs": {
+    "study": "tema_cross_2016",
+    "root": "backtest/candidates/tema_cross_2016/data",
+    "proxy_timeframes": ["30m", "1h", "4h"],
+    "venue_timeframes": ["30m", "1h"],
+    "text": "Scoring reads these files by hash and loads them into a new cache. It does not copy them into this study and it does not fetch. Proxy candles are Binance US. Venue candles are Hyperliquid perpetual candles. A proxy result is not native-venue proof."
+  },
+  "frames": {
+    "audit": {
+      "registry": "spot",
+      "directions": ["long"],
+      "decision": "historical_audit",
+      "intervals": ["1h", "4h"],
+      "bar_interval": "4h",
+      "bar_compare_interval": "1h",
+      "close": "signal exit from regime_adaptive, with no separate close strategy, matching the fee_audit path",
+      "text": "Spot-registry long entries on BTC, ETH and SOL at 1h and 4h. Candles are the Binance US cache files. Fees are the corrected Hyperliquid schedule. Funding is charged because run_leg prices a Hyperliquid frame when no stop context overrides strategy_type, which is the fee_audit convention. This is not a spot-exchange execution model and it is not a native Hyperliquid candle study. The audit verdict uses this path because it is the historical measurement path."
+    },
+    "perps": {
+      "registry": "futures",
+      "directions": ["long", "short", "both"],
+      "decision": "native_and_lot",
+      "intervals": ["30m", "1h"],
+      "bar_interval": "1h",
+      "bar_compare_interval": "30m",
+      "leverage": 1,
+      "book": "1000 USD strategy cash, one book per run, no perps_sizing and no isolated liquidation model",
+      "text": "Futures-registry entries at 30m and 1h. Each direction is its own run, so long, short and both do not share cash or position order. The both run sequences both sides on one cash book. The 2026-11-10 note of a Hyperliquid perps deployment at 30m and 1h with direction both is unverified and names no symbol, stop, size or leverage. This frame is a research context, not that deployment. A perps verdict needs native Hyperliquid candles covering every judgment window, including warm-up, and a lot and minimum execution spec. The scored book is the proxy cache path, which has neither. The proxy measurements are reported and cannot change the perps verdict."
+    }
+  },
+  "perps_regime": {
+    "enabled": true,
+    "period": 20,
+    "adx_threshold": 20.0,
+    "atr_window": "atr_composite",
+    "directional_window": "atr_composite",
+    "windows": {
+      "atr_composite": {
+        "classifier": "composite",
+        "period": 20,
+        "thresholds": {"return_eff": 0.05, "range_eff": 0.03, "adx": 20.0, "efficiency": 0.5}
+      },
+      "gate_adx": {"classifier": "adx", "period": 14, "adx_threshold": 20.0},
+      "gate_composite": {
+        "classifier": "composite",
+        "period": 20,
+        "thresholds": {"return_eff": 0.05, "range_eff": 0.03, "adx": 20.0, "efficiency": 0.5}
+      }
+    },
+    "text": "The close reads the atr_composite labels. A gate arm changes only regime_gate_window. Composite thresholds are the strategy defaults, including adx 20 rather than the classifier default 25. The strategy's own ADX period is capped at 14; this window period is 20. They are different classifiers."
+  },
+  "close_labels": [
+    "trending_up_clean",
+    "trending_up_choppy",
+    "trending_down_clean",
+    "trending_down_choppy",
+    "ranging_quiet",
+    "ranging_volatile",
+    "ranging_directional",
+    "ranging_directional_up",
+    "ranging_directional_down"
+  ],
+  "label_ladder": {
+    "trending_up_clean": "clean",
+    "trending_down_clean": "clean",
+    "trending_up_choppy": "choppy",
+    "trending_down_choppy": "choppy",
+    "ranging_quiet": "ranging_quiet",
+    "ranging_volatile": "ranging_volatile",
+    "ranging_directional": "ranging_directional",
+    "ranging_directional_up": "ranging_directional",
+    "ranging_directional_down": "ranging_directional"
+  },
+  "tier_ladders": {
+    "clean": [
+      {"atr_multiple": 3.0, "trailing_mult_after": 1.5, "close_fraction": 0.0},
+      {"atr_multiple": 4.5, "trailing_mult_after": 1.0, "close_fraction": 0.0},
+      {"atr_multiple": 6.0, "trailing_mult_after": 0.8, "close_fraction": 0.0}
+    ],
+    "choppy": [
+      {"atr_multiple": 2.0, "trailing_mult_after": 1.5, "close_fraction": 0.0},
+      {"atr_multiple": 2.5, "trailing_mult_after": 1.0, "close_fraction": 0.0},
+      {"atr_multiple": 3.0, "trailing_mult_after": 0.8, "close_fraction": 0.0}
+    ],
+    "ranging_quiet": [
+      {"atr_multiple": 0.75, "trailing_mult_after": 1.0, "close_fraction": 0.4},
+      {"atr_multiple": 1.5, "trailing_mult_after": 0.75, "close_fraction": 0.8},
+      {"atr_multiple": 2.0, "trailing_mult_after": 0.75, "close_fraction": 1.0}
+    ],
+    "ranging_volatile": [
+      {"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.4},
+      {"atr_multiple": 2.0, "trailing_mult_after": 0.75, "close_fraction": 0.8},
+      {"atr_multiple": 3.0, "trailing_mult_after": 0.75, "close_fraction": 1.0}
+    ],
+    "ranging_directional": [
+      {"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.25},
+      {"atr_multiple": 2.0, "trailing_mult_after": 1.0, "close_fraction": 0.5},
+      {"atr_multiple": 3.0, "trailing_mult_after": 0.8, "close_fraction": 0.75},
+      {"atr_multiple": 4.5, "trailing_mult_after": 0.6, "close_fraction": 0.75}
+    ]
+  },
+  "trail_atr": {
+    "trending_up_clean": 2.5,
+    "trending_down_clean": 2.5,
+    "trending_up_choppy": 2.25,
+    "trending_down_choppy": 2.25,
+    "ranging_quiet": 1.0,
+    "ranging_volatile": 1.25,
+    "ranging_directional": 1.5,
+    "ranging_directional_up": 1.5,
+    "ranging_directional_down": 1.5
+  },
+  "close_source": "The ladders are the trailing_tp_ratchet default groups and the trail multiples are the regime trailing defaults, copied from commit ab5214ca so a later default edit cannot move this study. The perps close is trailing_tp_ratchet_regime. Every close label has an explicit ladder and an explicit trail.",
+  "arms": [
+    {"name": "control", "family": "baseline", "search": false},
+    {"name": "gate_adx_up", "family": "gate", "search": true, "gate_window": "gate_adx", "allowed_regimes": ["trending_up"], "gate_on_failure": "closed"},
+    {"name": "gate_adx_range", "family": "gate", "search": true, "gate_window": "gate_adx", "allowed_regimes": ["ranging"], "gate_on_failure": "closed"},
+    {"name": "gate_comp_up_clean", "family": "gate", "search": true, "gate_window": "gate_composite", "allowed_regimes": ["trending_up_clean"], "gate_on_failure": "closed"},
+    {"name": "gate_comp_up", "family": "gate", "search": true, "gate_window": "gate_composite", "allowed_regimes": ["trending_up_clean", "trending_up_choppy"], "gate_on_failure": "closed"},
+    {"name": "gate_comp_mr", "family": "gate", "search": true, "gate_window": "gate_composite", "allowed_regimes": ["ranging_quiet", "ranging_volatile"], "gate_on_failure": "closed", "branch": "mean-reversion labels only"},
+    {"name": "htf", "family": "htf", "search": true, "htf_filter": true},
+    {"name": "z_1_5", "family": "threshold", "search": true, "z": 1.5, "params": {"mr_entry_z": 1.5}, "branch": "mean-reversion z crossing only; the clean-trend breakout does not read mr_entry_z"},
+    {"name": "z_2_5", "family": "threshold", "search": true, "z": 2.5, "params": {"mr_entry_z": 2.5}, "branch": "mean-reversion z crossing only; the clean-trend breakout does not read mr_entry_z"},
+    {"name": "z_3_0", "family": "threshold", "search": true, "z": 3.0, "params": {"mr_entry_z": 3.0}, "branch": "mean-reversion z crossing only; the clean-trend breakout does not read mr_entry_z"},
+    {"name": "bar", "family": "bar", "search": true}
+  ],
+  "selection": {
+    "training_window": "train",
+    "training_cost": "base",
+    "objective": "training drawdown-adjusted return only",
+    "beat_control": "A gate, higher-timeframe or threshold arm is a pick only when it is eligible and its score is strictly above the control score on the same datasets.",
+    "bar": "The bar arm is a pick only when it is eligible, its score is positive, and its score is strictly above the control score on the compare interval.",
+    "threshold_plateau": "The best eligible threshold arm must beat its adjacent z-grid neighbor. The default z 2.0 is the control score. When the winner score is positive, the best neighbor score must be at least half of the winner. Otherwise the threshold family has no pick.",
+    "tie": "Higher pooled training position count, then the arm name in ascending order.",
+    "sample_floor": "Eligible means no leg error, complete funding, at least 30 positions and at least 10 clusters.",
+    "combination": "After the picks, if two or more of gate, htf and threshold have a pick, build one combo that applies those picks together on the control datasets. The bar arm stays out of the combo because its interval differs. The combo does not change the picks.",
+    "suggestion_arm": "The combo when it exists. Otherwise the single pick among gate, htf and threshold. Otherwise the bar pick when it is the only pick. Otherwise none. A bar pick beside one filter pick is judged and is not the suggestion. Judgment cannot replace this arm.",
+    "shortlist": "The control, each family pick, and the combo when built. Every other arm stays unjudged.",
+    "costs_by_phase": "Training scores base cost only. The shortlist is scored at gross, base and stress on the judgment windows and on the continuous window."
+  },
+  "verdict": {
+    "positive": "The frame's decision context holds, the suggestion arm clears the held-out sample floor with complete funding and no leg error, mean per-position net return and mean leg return stay above zero at base and stress, and the base-cost position test passes the family correction.",
+    "negative": "The decision context holds and the evidence is complete, and either no suggestion arm was named or the suggestion arm clears the sample floor and then fails the return test or the correction.",
+    "inconclusive": "Coverage, native provenance, the lot and minimum spec, the sample floor, funding or a leg error cannot support a decision.",
+    "m1": "Incumbent-relative scores use eval_windows.compute_incumbent_legs and score_candidate at base cost on the judgment windows for long and short. Direction both has no M1 claim because the plain incumbent path does not model both sides. An M1 pass is not the profitability verdict.",
+    "suggest": "Write a suggested config only for a positive verdict, and only for that frame and direction. An audit positive result does not suggest a perps config."
+  },
+  "m1_directions": ["long", "short"],
+  "orders": "No command in this study sends an order."
+}
