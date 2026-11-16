@@ -1,5 +1,7 @@
 
 from dataclasses import dataclass
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -601,15 +603,22 @@ def detect_cup_and_handle(
 _HTF_GATE_MODES = ("veto", "align")
 
 
-def _htf_gate_trend(
+def _htf_gate_min_buckets(ema_slow) -> int:
+    return int(math.ceil(ema_slow)) + 1
+
+
+def _htf_gate_frame(
     df: pd.DataFrame,
     htf_factor: int,
     ema_fast: int = 20,
     ema_slow: int = 40,
-) -> pd.Series:
+) -> tuple:
     htf, visible_at = _resample_htf(df, htf_factor)
     if len(htf) == 0:
-        return pd.Series(0, index=df.index, dtype=int)
+        return (
+            pd.Series(0, index=df.index, dtype=int),
+            pd.Series(0, index=df.index, dtype=int),
+        )
     htf_close = htf["close"]
     fast = htf_close.ewm(span=ema_fast, adjust=False).mean()
     slow = htf_close.ewm(span=ema_slow, adjust=False).mean()
@@ -618,11 +627,26 @@ def _htf_gate_trend(
         np.where(warm & (fast > slow), 1, np.where(warm & (fast < slow), -1, 0)),
         index=htf.index,
     )
-    return (
+    trend = (
         _project_to_native(trend_htf, visible_at, df.index)
         .fillna(0)
         .astype(int)
     )
+    buckets = (
+        _project_to_native(pd.Series(np.arange(1, len(htf) + 1), index=htf.index), visible_at, df.index)
+        .fillna(0)
+        .astype(int)
+    )
+    return trend, buckets
+
+
+def _htf_gate_trend(
+    df: pd.DataFrame,
+    htf_factor: int,
+    ema_fast: int = 20,
+    ema_slow: int = 40,
+) -> pd.Series:
+    return _htf_gate_frame(df, htf_factor, ema_fast, ema_slow)[0]
 
 
 _VOLUME_DETECTORS = {"bull_flag", "bear_flag"}
@@ -693,10 +717,16 @@ def chart_pattern_core(
             result.iloc[idx, result.columns.get_loc("signal")] = match.signal
 
     if htf_gate_factor and int(htf_gate_factor) > 1:
-        trend = _htf_gate_trend(
-            result, int(htf_gate_factor), htf_gate_ema_fast, htf_gate_ema_slow
+        factor = int(htf_gate_factor)
+        trend, buckets = _htf_gate_frame(
+            result, factor, htf_gate_ema_fast, htf_gate_ema_slow
         )
+        min_buckets = _htf_gate_min_buckets(htf_gate_ema_slow)
         result["htf_gate_trend"] = trend
+        result["htf_gate_buckets"] = buckets
+        result["htf_gate_warm"] = (buckets >= min_buckets).astype(int)
+        result["htf_gate_candles"] = n
+        result["htf_gate_min_candles"] = factor * min_buckets
         sig = result["signal"]
         if htf_gate_mode == "align":
             blocked = ((sig == 1) & (trend != 1)) | ((sig == -1) & (trend != -1))

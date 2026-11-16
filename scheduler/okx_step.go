@@ -116,6 +116,7 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 			logHTFFilterHold(signalStr, htfWhy, logger)
 			result.Signal = 0
 		}
+		applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, result.CloseFraction, okxPosQty, okxPosSide, allowsLong, allowsShort, signalStr, logger)
 		if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, allowsLong, allowsShort) {
 			logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 			result.Signal = 0

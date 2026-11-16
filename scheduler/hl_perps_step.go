@@ -224,6 +224,7 @@ func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 			logHTFFilterHold(signalStr, htfWhy, logger)
 			result.Signal = 0
 		}
+		applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc), signalStr, logger)
 		if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 			logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 			result.Signal = 0

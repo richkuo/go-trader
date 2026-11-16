@@ -83,3 +83,42 @@ class TestHTFGate:
             partial["htf_gate_trend"].values
             == full["htf_gate_trend"].values[: k + 1]
         ).all()
+
+
+def _gate_frame(n, offset):
+    start = pd.Timestamp("2024-01-01", tz="UTC") + pd.Timedelta(hours=offset)
+    close = 100 + np.cumsum(np.random.default_rng(offset).normal(0, 1, n))
+    return pd.DataFrame(
+        {"open": close, "high": close + 1, "low": close - 1, "close": close, "volume": 100.0},
+        index=pd.date_range(start, periods=n, freq="1h"),
+    )
+
+
+class TestHTFGateWarmBoundary:
+    def test_min_visible_buckets_and_refusal_boundary_over_every_start_offset(self):
+        for factor, ema_slow in ((4, 40), (4, 49), (4, 50), (5, 40), (6, 40)):
+            boundary = factor * (ema_slow + 1)
+            for frame in (150, 200, boundary - 1, boundary):
+                visible, warm = [], []
+                for offset in range(factor):
+                    out = chart_pattern_core(
+                        _gate_frame(frame, offset),
+                        htf_gate_factor=factor,
+                        htf_gate_ema_slow=ema_slow,
+                    )
+                    last = out.iloc[-1]
+                    assert int(last["htf_gate_candles"]) == frame
+                    assert int(last["htf_gate_min_candles"]) == boundary
+                    assert int(last["htf_gate_warm"]) == int(last["htf_gate_buckets"] > ema_slow)
+                    if not last["htf_gate_warm"]:
+                        assert (out["htf_gate_trend"].iloc[-factor:] == 0).all()
+                    visible.append(int(last["htf_gate_buckets"]))
+                    warm.append(bool(last["htf_gate_warm"]))
+                assert min(visible) == frame // factor, (factor, ema_slow, frame, visible)
+                assert all(warm) == (frame // factor > ema_slow), (factor, ema_slow, frame)
+                assert all(warm) == (frame >= boundary), (factor, ema_slow, frame)
+
+    def test_inactive_gate_adds_no_warmth_columns(self):
+        for factor in (0, 1):
+            out = chart_pattern_core(_gate_frame(200, 0), htf_gate_factor=factor)
+            assert not any(c.startswith("htf_gate_") for c in out.columns)
