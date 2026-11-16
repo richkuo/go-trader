@@ -13,6 +13,17 @@ Reloads no longer reopen the request or weight startup allowance and never clear
 `scripts/update.sh --restart` promotes a staged feed config (`<resolved config path>.staged`): it copies both config versions into the recovery snapshot, probes the new binary against the copy, promotes it after the binary swap, keeps `<config>.prev`, removes the staged file after the health check, and on any failure restores the old config before the old binary's recovery probe and restart.
 Operator action: for each REST backup feed (`go-trader@feed-backup`), copy its live config to `<resolved config path>.staged`, add a weight policy to `feed.request_budget` (for example the request-baseline-derived values, or a conservative `weight_per_minute` with `weight_reserve` left for live traffic), then run `bash scripts/update.sh --restart` for that deployment; without a staged policy the update stops at the probe and changes nothing. Then run `bash scripts/shared-feed-convert.sh calibrate`. Add a websocket feed policy or `market_feed_weight_budget` only after the upgrade, because the old decoder rejects the new fields. Container deployments choose the config per image: mount a config with the weight policy together with the new image.
 
+### Issue 2036: the feed service alerts on a candle key that stays not ready
+
+Runtime default; there is no opt-out, no config key, no schema change, no seal or wire change and no upgrade step.
+Before this change a `role: feed` service drained per-key bootstrap, recovery, repair and funding failures to its log. Its owner alerts covered missed seals, sealing recovery, the request budget and host rate-limit pauses, and the consumer `MARKET FEED DEGRADED` and `SHARED MARKET FEED KEY FALLBACK` alerts fired only for keys a due strategy needed.
+Now the feed keeps one in-memory episode per candle key of its installed union (full `host|namespace|symbol|timeframe` identity). After three eligible stored seals show the key with `ready: false` it sends one `**MARKET FEED KEY UNREADY**` owner DM, and at the next eligible ready seal one `**MARKET FEED KEY READY AGAIN**` DM. Each names the source, instance, deadline and, per key, the sealed status, detail and bars/required; keys that cross at one deadline share one message.
+A websocket feed observes every stored seal; a REST feed observes a key only at deadlines where the key is due. Missed, failed, late and duplicate seals change nothing, and a seal prepared before a reload replaced the requirements changes nothing. A reload keeps retained keys' episodes and drops removed keys' episodes with a log line and no alert; a restart starts empty.
+Each transition writes a `[feed-key-alert]` log line and goes through the bounded asynchronous sender that the rate-limit alerts use, so a blocked Discord send never delays a seal or a reload; a full queue logs the dropped message and the episode does not retry.
+A transition too long for one Discord message is split into at most 5 DMs of 1980 bytes or fewer; the log line keeps every key and its full detail.
+The embedded `market_feed: websocket` owner, non-candle inputs, the consumer alerts, seal bytes and the trading and protection paths do not change.
+Operator action: none. Deploy the feed services with `bash scripts/update.sh --restart`.
+
 ### Issue 2023: shared consumers fill a not-ready candle key from the backup seal
 
 Runtime default; there is no opt-out key, no config change and no schema change.
