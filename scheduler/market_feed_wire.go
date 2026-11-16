@@ -872,33 +872,8 @@ func (doc *feedSealDoc) snapshot() *marketSnapshot {
 		snap.observations[key] = entry
 	}
 	for _, k := range doc.Keys {
-		key := marketFeedKey{Host: k.Host, Namespace: k.Namespace, Symbol: k.Symbol, Timeframe: k.Timeframe}
-		bars := make([]feedBar, 0, len(k.Bars))
-		for _, b := range k.Bars {
-			bars = append(bars, feedBar{OpenMs: b.OpenMs, CloseMs: b.CloseMs, HasClose: b.HasClose, Open: b.Open, High: b.High, Low: b.Low, Close: b.Close, Volume: b.Volume})
-		}
-		r := k.Readiness
-		snap.keys[key] = &marketSnapshotKey{
-			Key:        key,
-			IntervalMs: k.IntervalMs,
-			Bars:       bars,
-			Readiness: feedKeyReadiness{
-				Key:           key,
-				Bars:          r.Bars,
-				Required:      r.Required,
-				Ready:         r.Ready,
-				Stale:         r.Stale,
-				StaleReason:   r.StaleReason,
-				CoverageShort: r.CoverageShort,
-				Status:        feedKeyStatus(r.Status),
-				Detail:        r.Detail,
-				FirstOpenMs:   r.FirstOpenMs,
-				LastOpenMs:    r.LastOpenMs,
-				LastCloseMs:   r.LastCloseMs,
-				LastRecvAt:    feedMsTime(r.LastRecvAtMs),
-				Source:        r.Source,
-			},
-		}
+		key, entry := k.snapshotKey()
+		snap.keys[key] = entry
 	}
 	for _, m := range doc.Mids {
 		snap.mids[m.Coin] = feedMid{Px: m.Px, RecvAt: feedMsTime(m.RecvAtMs), Source: m.Source}
@@ -922,6 +897,36 @@ func (doc *feedSealDoc) snapshot() *marketSnapshot {
 		}
 	}
 	return snap
+}
+
+func (k feedSealKey) snapshotKey() (marketFeedKey, *marketSnapshotKey) {
+	key := marketFeedKey{Host: k.Host, Namespace: k.Namespace, Symbol: k.Symbol, Timeframe: k.Timeframe}
+	bars := make([]feedBar, 0, len(k.Bars))
+	for _, b := range k.Bars {
+		bars = append(bars, feedBar{OpenMs: b.OpenMs, CloseMs: b.CloseMs, HasClose: b.HasClose, Open: b.Open, High: b.High, Low: b.Low, Close: b.Close, Volume: b.Volume})
+	}
+	r := k.Readiness
+	return key, &marketSnapshotKey{
+		Key:        key,
+		IntervalMs: k.IntervalMs,
+		Bars:       bars,
+		Readiness: feedKeyReadiness{
+			Key:           key,
+			Bars:          r.Bars,
+			Required:      r.Required,
+			Ready:         r.Ready,
+			Stale:         r.Stale,
+			StaleReason:   r.StaleReason,
+			CoverageShort: r.CoverageShort,
+			Status:        feedKeyStatus(r.Status),
+			Detail:        r.Detail,
+			FirstOpenMs:   r.FirstOpenMs,
+			LastOpenMs:    r.LastOpenMs,
+			LastCloseMs:   r.LastCloseMs,
+			LastRecvAt:    feedMsTime(r.LastRecvAtMs),
+			Source:        r.Source,
+		},
+	}
 }
 
 func writeFeedFrame(w io.Writer, payload []byte) error {

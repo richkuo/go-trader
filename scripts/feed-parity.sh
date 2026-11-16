@@ -18,16 +18,27 @@ Joins the market feed's [feed-seal] records with each shared-mode scheduler's
     cadence as active and no consumer start ([feed-audit] event=start) fell
     between them (missing coverage),
   - a consumer's seal hash differs from the feed's hash for that key and instance,
+  - a consumer's backup_hash (the backup seal that filled candle keys the
+    primary seal had missing or not ready) differs from the backup feed's hash
+    for that key and backup_instance, or no feed input logged that seal,
+  - two consumers on the same primary seal and the same backup seal disagree on
+    a candle key (one filled it, the other lists it unready),
   - two consumers built different market payloads from the same seal and frame
     specification, or a consumer audited a key the feed never sealed.
+Payloads are grouped by the primary instance and hash, plus the backup instance,
+backup hash and filled keys when the frame specification reads a filled key.
 Accepted exceptions are listed and do not fail the run: degraded keys (no
 compatible seal, reason logged), skipped keys (the key passed its give-up time
 before the consumer evaluated it, for example after a restart), keys served by
-the backup endpoint (failover), consumers served by different sources or
-instances for one key (source-switch race), and REST mark fallback coins.
-Pass every feed (primary and backup) as a feed input so each served seal is
-checked against the feed that sealed it. scripts/feed-source-compare.sh
-compares closed bars between the two sources.
+the backup endpoint (failover), candle keys filled from the backup seal
+(per-key fill), a key that one consumer filled and another left unready when
+they used different backup seals or one had none (fill difference), consumers
+served by different sources or instances for one key (source-switch race), and
+REST mark fallback coins. Records without the backup_instance, backup_hash,
+filled and unready fields (older consumers) read as no fill.
+Pass every feed (primary and backup) as a feed input so each served seal and
+each backup seal is checked against the feed that sealed it.
+scripts/feed-source-compare.sh compares closed bars between the two sources.
 
 Journal inputs read the unit's own LogNamespace (journalctl --namespace=+<ns>).
 --since/--until are passed to journalctl; file inputs are read whole.
@@ -118,6 +129,19 @@ def fields(line):
             v = v[1:-1]
         out[k] = v
     return out
+
+
+def id_list(value):
+    if not value or value == "none":
+        return set()
+    return {v for v in value.split(",") if v}
+
+
+def backup_id(f):
+    h = f.get("backup_hash", "none")
+    if not h or h == "none":
+        return None
+    return (f.get("backup_instance", "none"), h)
 
 
 feeds = []
@@ -246,13 +270,21 @@ for label, recs in audits.items():
         seal = seals.get((f.get("instance"), k))
         if seal is None:
             failures.append(f"consumer {label}: key {k} was served by instance {f.get('instance')} but no feed input logged that seal")
-            continue
-        if seal[1]["hash"] != f.get("hash"):
+        elif seal[1]["hash"] != f.get("hash"):
             failures.append(f"consumer {label}: key {k} hash {f.get('hash', '')[:12]} differs from feed {seal[0]} hash {seal[1]['hash'][:12]}")
+        bid = backup_id(f)
+        if bid is None:
+            continue
+        bseal = seals.get((bid[0], k))
+        if bseal is None:
+            failures.append(f"consumer {label}: key {k} filled {f.get('filled', 'none')} from backup instance {bid[0]} but no feed input logged that seal")
+        elif bseal[1]["hash"] != bid[1]:
+            failures.append(f"consumer {label}: key {k} backup_hash {bid[1][:12]} differs from feed {bseal[0]} hash {bseal[1]['hash'][:12]}")
 
 labels = sorted(audits)
 same_source = 0
 switch = 0
+fill_diff = 0
 for i, a in enumerate(labels):
     for b in labels[i + 1:]:
         for k in sorted(set(audits[a]) & set(audits[b])):
@@ -266,16 +298,33 @@ for i, a in enumerate(labels):
             same_source += 1
             if fa.get("hash") != fb.get("hash"):
                 failures.append(f"key {k}: {a} and {b} report different hashes from the same source and instance")
+                continue
+            ba, bb = backup_id(fa), backup_id(fb)
+            for x, y, fx, fy in ((a, b, fa, fb), (b, a, fb, fa)):
+                for cid in sorted(id_list(fx.get("filled")) & id_list(fy.get("unready"))):
+                    if ba is not None and ba == bb:
+                        failures.append(f"key {k}: {x} filled {cid} and {y} lists it unready from the same primary seal and the same backup seal {ba[0]}/{ba[1][:12]}")
+                    else:
+                        fill_diff += 1
+                        exceptions.append(f"key {k}: {x} filled {cid} from backup {(fx.get('backup_instance') or 'none')} and {y} left it unready with backup {(fy.get('backup_instance') or 'none')} (fill difference)")
 
 payload_matches = 0
 for spec, per in sorted(payloads.items()):
     if len(per) < 2:
         continue
     key = spec[0]
+    spec_ids = {part.rsplit(":", 1)[0] for part in spec[1].split(",") if part}
     served = {}
     for lbl in per:
         f = audits.get(lbl, {}).get(key)
-        served[lbl] = (f.get("instance"), f.get("hash")) if f else None
+        if not f:
+            served[lbl] = None
+            continue
+        ident = (f.get("instance"), f.get("hash"))
+        used = tuple(sorted(id_list(f.get("filled")) & spec_ids))
+        if used:
+            ident = ident + (backup_id(f), used)
+        served[lbl] = ident
     groups = defaultdict(list)
     for lbl, sha in per.items():
         groups[served[lbl]].append((lbl, sha))
@@ -299,11 +348,18 @@ for label in labels:
         if f.get("status") == "sealed":
             served[(f.get("endpoint", "?"), f.get("source", "?"))].append(k)
     served_text = ", ".join(f"{ep}/{src}={len(ks)}" for (ep, src), ks in sorted(served.items())) or "none"
-    print(f"feed-parity: consumer {label}: {len(recs)} audited keys ({sealed} sealed, {len(recs) - sealed - skipped} degraded, {skipped} skipped); served by {served_text}")
+    fills = defaultdict(list)
+    for k, f in sorted(recs.items()):
+        if f.get("status") == "sealed":
+            for cid in sorted(id_list(f.get("filled"))):
+                fills[(cid, f.get("backup_instance", "none"))].append(k)
+    print(f"feed-parity: consumer {label}: {len(recs)} audited keys ({sealed} sealed, {len(recs) - sealed - skipped} degraded, {skipped} skipped); served by {served_text}; backup fills {sum(len(ks) for ks in fills.values())}")
     for (ep, src), ks in sorted(served.items()):
         if ep != "primary":
             exceptions.append(f"consumer {label}: {len(ks)} key(s) served by the {ep} endpoint (source {src}): {', '.join(map(str, ks[:20]))}{' ...' if len(ks) > 20 else ''}")
-print(f"feed-parity: {same_source} cross-consumer same-source key matches, {switch} source-switch exceptions, {payload_matches} shared payload specs matched")
+    for (cid, inst), ks in sorted(fills.items()):
+        exceptions.append(f"consumer {label}: {cid} filled from backup instance {inst} at {len(ks)} key(s): {', '.join(map(str, ks[:20]))}{' ...' if len(ks) > 20 else ''}")
+print(f"feed-parity: {same_source} cross-consumer same-source key matches, {switch} source-switch exceptions, {fill_diff} fill-difference exceptions, {payload_matches} shared payload specs matched")
 for line in fallbacks:
     print("feed-parity: EXCEPTION " + line)
 for line in exceptions:

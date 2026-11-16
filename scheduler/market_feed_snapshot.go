@@ -83,6 +83,7 @@ type marketSnapshotKey struct {
 	IntervalMs int64
 	Bars       []feedBar
 	Readiness  feedKeyReadiness
+	FilledFrom string
 }
 
 type marketSnapshot struct {

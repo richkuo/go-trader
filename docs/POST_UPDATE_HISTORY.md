@@ -2,6 +2,17 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 2023: shared consumers fill a not-ready candle key from the backup seal
+
+Runtime default; there is no opt-out key, no config change and no schema change.
+Before this change a scheduler on `market_feed: shared` used the whole primary seal for a deadline when that seal decoded, so a candle key that was missing or sealed not ready there held its strategies' entries (and degraded their checks) until the primary had the key ready again, even when the backup seal for the same deadline had it ready.
+Now, after the primary seals, the consumer finds the required candle keys that are missing or not ready in that seal and asks the backup once for the same deadline, bounded by the give-up time (`deadline + 32s`). Each such key takes the backup entry only when that entry is ready; a ready primary entry is never replaced, also when its lookback is short. Every other input (mids, funding, observations and the snapshot identity) stays on the primary, and no seal is changed.
+The `[feed-audit]` line adds `backup_instance=`, `backup_generation=`, `backup_hash=`, `filled=`, `unready=` and `fill_request=` before `gaps=`; `/status` adds `key_fallbacks` and the filled and not-ready keys of the last report. One `SHARED MARKET FEED KEY FALLBACK` alert starts an episode and one `SHARED MARKET FEED KEY FALLBACK ENDED` alert ends it when a later cycle selects the ready primary entry; a reload that drops the key closes it silently.
+`scripts/feed-parity.sh` checks each `backup_hash` against the backup feed's seal, groups payloads by both seal identities, and fails when two consumers on identical seals disagree on a key; pass both feeds as feed inputs.
+A cycle with a fill waits up to the give-up time for the backup seal, the same bound as a whole-seal failover; strategies on ready primary keys in that cycle wait too.
+Every shared consumer must run the new binary: deploy with `bash scripts/update.sh --restart`. An older consumer holds where a new one fills, and `feed-parity.sh` reads its lines as no fill. A deployment without `backup_socket` gets no fill and no failover; removing `backup_socket` turns both off and needs a restart.
+Operator action: none.
+
 ### Issue 1987 (part 2): `paper_only` key and a CPU weight for paper template instances
 
 Opt-in; a new root config key `paper_only` and a new read-only `cpu-class` subcommand; there is no schema change.
