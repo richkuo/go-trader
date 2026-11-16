@@ -3358,6 +3358,10 @@ It runs the cheap checks of the CI `checks` job in order (`syntax`, `test-budget
 The CI `checks` job steps call the same subcommands, so the local result and the CI result come from one copy of the logic; change a check only in the script.
 It runs under macOS bash 3.2 and BSD awk as well as on the Ubuntu runner, so keep it free of `mapfile` and GNU-only flags.
 
+**Runner image.** Every `ci.yml` job names the literal `ubuntu-26.04` runner label, never `ubuntu-latest`, so a label move never changes the image under a pull request (`ubuntu-latest` moved to Ubuntu 26.04 on 2026-11-16 and broke three jobs, #2041).
+Issue #2041 ran the same scripts and fixtures on `ubuntu-24.04` and on `ubuntu-26.04` in separate runs before it moved every job to `ubuntu-26.04`; its pull request links both runs.
+To move to another image, run the full workflow once on the new literal label with unchanged scripts, then change every `runs-on` in `ci.yml` together. Shell-suite jobs never use a runner matrix (`TestShellSuiteCIWiring` refuses `strategy:` and `matrix:` there).
+
 **Docs-only pull requests.** The `changes` job in `ci.yml` and in `container.yml` runs `scripts/ci_code_changed.sh`, which reads the pull request merge commit and sets `code=false` only when every changed path is one of `CLAUDE.md`, `AGENTS.md`, `README.md`, `SKILL.md`, `docs/POST_UPDATE_HISTORY.md` or `docs/DOCKER.md`.
 No test reads these files, and the container image does not hold them.
 With `code=false`, every Go, Python-backed, shell-suite, Python and container image job is skipped, and `checks` still runs (it holds the CLAUDE.md size and layout check).
