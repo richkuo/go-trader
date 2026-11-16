@@ -242,7 +242,9 @@ func prepareMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycleMa
 		}
 		if err := o.recoverKeyOnce(ctx, cr.Key); err != nil {
 			o.logf("[feed] %s: cycle recovery failed: %v", cr.Key, err)
-			o.raiseAlert(cr.Key, "recovery_failed", err.Error())
+			if !feedRateLimitErr(err) {
+				o.raiseAlert(cr.Key, "recovery_failed", err.Error())
+			}
 		}
 	}
 	o.EnsureFunding(ctx, o.earliestFrameBarMs(reqs))

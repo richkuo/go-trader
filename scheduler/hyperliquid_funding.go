@@ -39,36 +39,73 @@ func hlPostInfoTo(ctx context.Context, baseURL string, payload any, maxBytes int
 			reqType = t
 		}
 	}
-	if err := feedBudgetAcquire(ctx, reqType); err != nil {
+	reply, err := hlInfoPost(ctx, baseURL, reqType, body, hlFundingFetchTimeout, maxBytes)
+	if err != nil {
 		return nil, err
 	}
-	reqCtx, cancel := context.WithTimeout(ctx, hlFundingFetchTimeout)
+	if reply.Status != http.StatusOK {
+		return nil, fmt.Errorf("http %d from %s/info", reply.Status, baseURL)
+	}
+	if reply.ReadErr != nil {
+		return nil, reply.ReadErr
+	}
+	if reply.TooLarge {
+		return nil, fmt.Errorf("%s/info response exceeds %d bytes", baseURL, maxBytes)
+	}
+	return reply.Body, nil
+}
+
+type hlInfoReply struct {
+	Status   int
+	Body     []byte
+	ReadErr  error
+	TooLarge bool
+}
+
+var hlInfoBeforeSendHook func(ctx context.Context, reqType string)
+
+func hlInfoPost(ctx context.Context, baseURL, reqType string, body []byte, timeout time.Duration, maxBytes int64) (hlInfoReply, error) {
+	permit, err := feedBudgetAcquire(ctx, baseURL, reqType)
+	if err != nil {
+		return hlInfoReply{}, err
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+"/info", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("build info request: %w", err)
+		return hlInfoReply{}, fmt.Errorf("build %s request: %w", reqType, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := egressHTTPClient(hlFundingFetchTimeout)
+	if hook := hlInfoBeforeSendHook; hook != nil {
+		hook(ctx, reqType)
+	}
+	if err := permit.beginSend(); err != nil {
+		return hlInfoReply{}, err
+	}
+	client := egressHTTPClient(timeout)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("http request: %w", err)
+		permit.finish(0, "")
+		return hlInfoReply{}, fmt.Errorf("http request: %w", err)
 	}
 	defer resp.Body.Close()
+	permit.finish(resp.StatusCode, resp.Header.Get("Retry-After"))
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return hlInfoReply{Status: resp.StatusCode}, fmt.Errorf("http %d from %s/info %s: %w", resp.StatusCode, baseURL, reqType, errHLInfoRateLimited)
+	}
+	reply := hlInfoReply{Status: resp.StatusCode}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("http %d from %s/info", resp.StatusCode, baseURL)
+		return reply, nil
 	}
 	if maxBytes <= 0 {
-		return io.ReadAll(resp.Body)
+		reply.Body, reply.ReadErr = io.ReadAll(resp.Body)
+		return reply, nil
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
-	if err != nil {
-		return nil, err
+	reply.Body, reply.ReadErr = io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if reply.ReadErr == nil && int64(len(reply.Body)) > maxBytes {
+		reply.TooLarge = true
 	}
-	if int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("%s/info response exceeds %d bytes", baseURL, maxBytes)
-	}
-	return data, nil
+	return reply, nil
 }
 
 func hlParseNumeric(raw json.RawMessage) (float64, error) {

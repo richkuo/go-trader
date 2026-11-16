@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -222,34 +220,17 @@ func fetchHyperliquidCandleSnapshot(ctx context.Context, coin, interval string, 
 	if err != nil {
 		return nil, fmt.Errorf("marshal candleSnapshot request: %w", err)
 	}
-	if err := feedBudgetAcquire(ctx, "candleSnapshot"); err != nil {
+	reply, err := hlInfoPost(ctx, hlMainnetURL, "candleSnapshot", body, hlCandleFetchTimeout, 0)
+	if err != nil {
 		return nil, err
 	}
-	reqCtx, cancel := context.WithTimeout(ctx, hlCandleFetchTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, hlMainnetURL+"/info", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("build candleSnapshot request: %w", err)
+	if reply.Status != http.StatusOK {
+		return nil, fmt.Errorf("http %d from %s/info candleSnapshot", reply.Status, hlMainnetURL)
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := egressHTTPClient(hlCandleFetchTimeout)
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("http request: %w", err)
+	if reply.ReadErr != nil {
+		return nil, fmt.Errorf("read candleSnapshot response: %w", reply.ReadErr)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, fmt.Errorf("http %d from %s/info candleSnapshot: %w", resp.StatusCode, hlMainnetURL, errHLInfoRateLimited)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("http %d from %s/info candleSnapshot", resp.StatusCode, hlMainnetURL)
-	}
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read candleSnapshot response: %w", err)
-	}
-	return parseHyperliquidCandleRaws(data)
+	return parseHyperliquidCandleRaws(reply.Body)
 }
 
 type hlCandleHistory struct {

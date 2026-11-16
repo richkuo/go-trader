@@ -121,7 +121,14 @@ func hlLotMetadataLedgerContext(ctx context.Context) context.Context {
 		return ctx
 	}
 	local := newFeedRequestLedger(&feedBudgetConfig{PerMinute: hlLotMetadataLedgerPerMinute, Startup: 1}, true, nil)
+	local.closeOnSuccess = true
 	return withFeedLedger(ctx, local)
+}
+
+func (c *hlLotMetadataCache) requestLedger() *feedRequestLedger {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return feedLedgerFrom(c.baseCtx)
 }
 
 func (c *hlLotMetadataCache) configure(ctx context.Context) {
@@ -191,7 +198,7 @@ func (c *hlLotMetadataCache) Ensure(coin string) {
 }
 
 func (c *hlLotMetadataCache) refresh(base context.Context, endpoint string) (*hlLotSnapshot, error) {
-	ctx, cancel := context.WithTimeout(withFeedReason(base, string(feedRestLotMeta)), hlLotMetadataFetchTimeout)
+	ctx, cancel := context.WithTimeout(withFeedInput(withFeedReason(base, string(feedRestLotMeta)), string(feedRestLotMeta)), hlLotMetadataFetchTimeout)
 	defer cancel()
 	data, err := c.fetch(ctx, endpoint)
 	if err != nil {

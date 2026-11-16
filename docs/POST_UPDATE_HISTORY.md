@@ -2,6 +2,17 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 2029: feed reads pause per venue host after an HTTP 429
+
+Runtime default; there is no opt-out, no config field, no schema change, no seal or wire change and no upgrade step.
+Before this change only the closed-bar correction read mapped HTTP 429 to a rate limit and paused (correction reads only, 60s). Bootstrap, repair, recovery, funding, accounting funding, mids and lot metadata reads kept sending into the limit, the REST backup retried a failed refresh or mids read after 1s, and each failed key raised its own owner alert kind (only logged).
+Now every feed `/info` read goes through one transport that admits the request on the ledger with the host it sends to, rechecks the pause right before the send, and maps HTTP 429 to the rate-limit error. A 429 pauses that ledger's reads to that host until 60s after the latest 429 (enforcing and log-only ledgers, feed role and embedded owner); a testnet-host 429 never pauses mainnet reads. The pause lives in memory: it survives SIGHUP and a restart clears it.
+A key refused by the pause seals with the new readiness status `rate_limited` and turns ready only after a later successful fetch; funding, accounting funding and mids carry the same mark. An older consumer reads `rate_limited` as not ready because readiness keeps its `ready` flag.
+New alerts: one `**MARKET FEED RATE LIMITED**` and one `**MARKET FEED RATE LIMIT RECOVERED**` owner DM per episode, in both deployments, through a bounded asynchronous sender. The five per-key alert kinds are no longer raised for rate-limit errors. The budget alert state does not change on a seal that saw a pause refusal.
+New status fields: `request_budget.rate_limit` and totals `rate_limited`, `paused`, `paused_by_reason` (feed `/health` and `/status`), `config_path` on feed `/health` (token-gated), `role`, `config_path` and `feed_rate_limit` on scheduler `/health` (token-gated), `market_feed.rate_limit` in the embedded `/status`, new `[feed-budget]` fields and `[feed-ratelimit]` log lines.
+`agent-info` (JSON output only) adds `feed_rate_limit` from one loopback `GET /health` of the configured status port, or `unavailable` with the reason; `--bootstrap-md` output is unchanged.
+Operator action: none.
+
 ### Issue 1987 (part 2): `paper_only` key and a CPU weight for paper template instances
 
 Opt-in; a new root config key `paper_only` and a new read-only `cpu-class` subcommand; there is no schema change.
