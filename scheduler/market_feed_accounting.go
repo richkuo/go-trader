@@ -26,6 +26,8 @@ type feedAccountingFunding struct {
 	ToMs      int64
 	FetchedAt time.Time
 	Err       string
+
+	rateLimited bool
 }
 
 type feedSealAccountingFunding struct {
@@ -95,7 +97,7 @@ func (o *marketFeedOwner) EnsureAccountingFunding(ctx context.Context) {
 				start = s
 			}
 		}
-		cov, err := hlFundingRecordsCoverage(ctx, coin, start, now, feedAccountingMaxPasses)
+		cov, err := hlFundingRecordsCoverage(withFeedInput(ctx, "accounting_funding:"+coin), coin, start, now, feedAccountingMaxPasses)
 		var next feedAccountingFunding
 		if err == nil {
 			next, err = mergeAccountingCoverage(existing, cov, windowStart)
@@ -107,10 +109,14 @@ func (o *marketFeedOwner) EnsureAccountingFunding(ctx context.Context) {
 				next = feedAccountingFunding{}
 			}
 			next.Err = err.Error()
+			next.rateLimited = (existing != nil && existing.rateLimited) || feedRateLimitErr(err)
 			o.logf("[feed] accounting funding %s: %s", coin, next.Err)
-			o.raiseAlert(feedKeyFor(coin, ""), "accounting_funding_failed", next.Err)
+			if !feedRateLimitErr(err) {
+				o.raiseAlert(feedKeyFor(coin, ""), "accounting_funding_failed", next.Err)
+			}
 		} else {
 			next.Err = ""
+			next.rateLimited = false
 		}
 		next.FetchedAt = now
 		o.feedMu.Lock()

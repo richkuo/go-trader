@@ -23,7 +23,7 @@ func newKeyFillHarness(t *testing.T, ctx context.Context, intervalMs int64, fail
 	t.Helper()
 	origCandles := fetchHyperliquidCandleSnapshotFn
 	fetchHyperliquidCandleSnapshotFn = func(ctx context.Context, coin, interval string, startMs, endMs int64) ([]hlCandleRaw, error) {
-		if err := feedBudgetAcquire(ctx, "candleSnapshot"); err != nil {
+		if _, err := feedBudgetAcquire(ctx, hlMainnetURL, "candleSnapshot"); err != nil {
 			return nil, err
 		}
 		if failAlways[coin] || (failWithoutLedger[coin] && feedLedgerFrom(ctx) == nil) {
@@ -42,7 +42,7 @@ func newKeyFillHarness(t *testing.T, ctx context.Context, intervalMs int64, fail
 	}
 	origMids := fetchHyperliquidMidsCtxFn
 	fetchHyperliquidMidsCtxFn = func(ctx context.Context, coins []string) (map[string]float64, error) {
-		if err := feedBudgetAcquire(ctx, "allMids"); err != nil {
+		if _, err := feedBudgetAcquire(ctx, hlMainnetURL, "allMids"); err != nil {
 			return nil, err
 		}
 		out := make(map[string]float64, len(coins))

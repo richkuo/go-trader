@@ -23,7 +23,7 @@ func TestSharedFeedFailover(t *testing.T) {
 	var candleCalls atomic.Int64
 	origCandles := fetchHyperliquidCandleSnapshotFn
 	fetchHyperliquidCandleSnapshotFn = func(ctx context.Context, coin, interval string, startMs, endMs int64) ([]hlCandleRaw, error) {
-		if err := feedBudgetAcquire(ctx, "candleSnapshot"); err != nil {
+		if _, err := feedBudgetAcquire(ctx, hlMainnetURL, "candleSnapshot"); err != nil {
 			return nil, err
 		}
 		candleCalls.Add(1)
@@ -42,7 +42,7 @@ func TestSharedFeedFailover(t *testing.T) {
 	}
 	origMids := fetchHyperliquidMidsCtxFn
 	fetchHyperliquidMidsCtxFn = func(ctx context.Context, coins []string) (map[string]float64, error) {
-		if err := feedBudgetAcquire(ctx, "allMids"); err != nil {
+		if _, err := feedBudgetAcquire(ctx, hlMainnetURL, "allMids"); err != nil {
 			return nil, err
 		}
 		return map[string]float64{"BTC": 101, "ETH": 11}, nil

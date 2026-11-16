@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -167,6 +172,17 @@ type agentInfo struct {
 	Strategies   []agentStrategyInfo `json:"strategies"`
 	Role         string              `json:"role"`
 	Feed         *agentFeedInfo      `json:"feed,omitempty"`
+
+	FeedRateLimit *agentFeedRateLimit `json:"feed_rate_limit,omitempty"`
+}
+
+type agentFeedRateLimit struct {
+	SourceURL string                    `json:"source_url"`
+	Status    string                    `json:"status"`
+	Reason    string                    `json:"reason,omitempty"`
+	PID       int                       `json:"pid,omitempty"`
+	Version   string                    `json:"version,omitempty"`
+	Ledgers   []feedRateLimitLedgerView `json:"ledgers,omitempty"`
 }
 
 type agentFeedInfo struct {
@@ -189,11 +205,16 @@ func runAgentInfo(args []string) int {
 	}
 
 	var info agentInfo
+	expectRole, statusPort := configRoleScheduler, 0
 	if role, roleErr := peekConfigRole(*configPath); roleErr == nil && role == configRoleFeed {
+		expectRole = configRoleFeed
 		feedCfg, err := loadFeedRoleConfig(*configPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agent-info: warning: could not load feed config %s: %v\n", *configPath, err)
 			feedCfg = nil
+		}
+		if feedCfg != nil {
+			statusPort = feedCfg.StatusPort
 		}
 		info = buildFeedAgentInfo(feedCfg, Version, time.Now().UTC())
 	} else {
@@ -206,6 +227,9 @@ func runAgentInfo(args []string) int {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agent-info: warning: could not load config %s: %v\n", *configPath, err)
 			cfg = nil
+		}
+		if cfg != nil {
+			statusPort = resolveStatusPort(0, cfg.StatusPort)
 		}
 		info = buildAgentInfo(cfg, Version, time.Now().UTC())
 	}
@@ -220,6 +244,8 @@ func runAgentInfo(args []string) int {
 		return 0
 	}
 
+	info.FeedRateLimit = queryAgentFeedRateLimit(expectRole, *configPath, statusPort, os.Getenv("STATUS_AUTH_TOKEN"))
+
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(info); err != nil {
@@ -227,6 +253,99 @@ func runAgentInfo(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+const (
+	agentFeedRateLimitTimeout  = 2 * time.Second
+	agentFeedRateLimitMaxBytes = 1 << 20
+)
+
+func resolvedConfigPath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
+	}
+	return abs
+}
+
+type agentHealthReply struct {
+	PID           int                        `json:"pid"`
+	Version       string                     `json:"version"`
+	Role          string                     `json:"role"`
+	ConfigPath    string                     `json:"config_path"`
+	RequestBudget *feedBudgetStatus          `json:"request_budget"`
+	FeedRateLimit *[]feedRateLimitLedgerView `json:"feed_rate_limit"`
+}
+
+func queryAgentFeedRateLimit(expectRole, configPath string, port int, token string) *agentFeedRateLimit {
+	out := &agentFeedRateLimit{Status: "unavailable"}
+	if port <= 0 {
+		out.Reason = "no config: the status port is unknown"
+		return out
+	}
+	origin := "http://localhost:" + strconv.Itoa(port)
+	out.SourceURL = origin + "/health"
+	ep, err := parseManualRegimeEndpoint(origin)
+	if err != nil {
+		out.Reason = "loopback endpoint: " + err.Error()
+		return out
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), agentFeedRateLimitTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, out.SourceURL, nil)
+	if err != nil {
+		out.Reason = "build request: " + err.Error()
+		return out
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := ep.client().Do(req)
+	if err != nil {
+		out.Reason = "connect error or timeout: " + err.Error()
+		return out
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, agentFeedRateLimitMaxBytes+1))
+	if err != nil || len(data) > agentFeedRateLimitMaxBytes {
+		out.Reason = fmt.Sprintf("unreadable reply (HTTP %d)", resp.StatusCode)
+		return out
+	}
+	var reply agentHealthReply
+	if err := json.Unmarshal(data, &reply); err != nil {
+		out.Reason = fmt.Sprintf("unreadable reply (HTTP %d): %v", resp.StatusCode, err)
+		return out
+	}
+	out.PID, out.Version = reply.PID, reply.Version
+	if reply.Role != expectRole {
+		out.Reason = fmt.Sprintf("role mismatch: the process on port %d reports role %q, this config is role %q", port, reply.Role, expectRole)
+		return out
+	}
+	if want := resolvedConfigPath(configPath); reply.ConfigPath != want {
+		if reply.ConfigPath == "" {
+			out.Reason = "the reply has no config path (older binary, or the status token is missing or wrong)"
+		} else {
+			out.Reason = fmt.Sprintf("config path mismatch: the process on port %d runs %s, this config is %s", port, reply.ConfigPath, want)
+		}
+		return out
+	}
+	switch {
+	case expectRole == configRoleFeed && reply.RequestBudget != nil && reply.RequestBudget.RateLimit != nil:
+		out.Ledgers = []feedRateLimitLedgerView{{Name: "feed", Enforced: reply.RequestBudget.Enforced, RateLimit: reply.RequestBudget.RateLimit}}
+	case expectRole == configRoleScheduler && reply.FeedRateLimit != nil:
+		out.Ledgers = append([]feedRateLimitLedgerView{}, (*reply.FeedRateLimit)...)
+	default:
+		out.Reason = "the reply has no rate-limit field (older binary, or the status token is missing or wrong)"
+		return out
+	}
+	out.Status = "ok"
+	return out
 }
 
 func loadConfigSnapshot(path string) (*Config, error) {

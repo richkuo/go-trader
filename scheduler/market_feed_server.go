@@ -72,6 +72,7 @@ type feedSealer struct {
 	missedStreak  int
 	wake          chan struct{}
 	alertHook     func(string)
+	rateLimitSend func(string)
 	prepareFn     feedPrepareFunc
 	ledger        *feedRequestLedger
 	budgetShort   bool
@@ -115,10 +116,11 @@ func (s *feedSealer) budgetLines(key int64, before feedBudgetTotals, rep feedPre
 	}
 	delta := s.ledger.snapshot().since(before)
 	st := s.ledger.status()
-	line := fmt.Sprintf("[feed-budget] key=%d source=%s instance=%s requests=%d refused=%d by_reason=%s by_type=%s refused_by_reason=%s window_used=%d per_minute=%d startup_left=%d enforced=%t refreshed=%d refused_keys=%s failed_keys=%s",
+	line := fmt.Sprintf("[feed-budget] key=%d source=%s instance=%s requests=%d refused=%d by_reason=%s by_type=%s refused_by_reason=%s window_used=%d per_minute=%d startup_left=%d enforced=%t refreshed=%d refused_keys=%s failed_keys=%s rate_limited=%d paused=%d paused_by_reason=%s paused_keys=%s rate_limit=%s",
 		key, s.source, s.instance, delta.Total, delta.Refused, formatFeedCounts(delta.ByReason), formatFeedCounts(delta.ByType),
 		formatFeedCounts(delta.RefusedByReason), st.WindowUsed, st.PerMinute, st.StartupLeft, st.Enforced, rep.Refreshed,
-		joinFeedNames(rep.Refused), joinFeedNames(rep.Failed))
+		joinFeedNames(rep.Refused), joinFeedNames(rep.Failed), delta.RateLimited, delta.Paused, formatFeedCounts(delta.PausedByReason),
+		joinFeedNames(rep.Paused), formatFeedRateLimitStatus(st.RateLimit))
 	return delta, []string{line}
 }
 
@@ -145,6 +147,9 @@ func joinFeedNames(names []string) string {
 
 func (s *feedSealer) budgetAlert(key int64, delta feedBudgetTotals, rep feedPrepareReport) {
 	if s.ledger == nil || !s.ledger.status().Enforced {
+		return
+	}
+	if delta.Paused > 0 || delta.RateLimited > 0 {
 		return
 	}
 	s.mu.Lock()
@@ -293,7 +298,24 @@ func (s *feedSealer) run(ctx context.Context) {
 	}
 }
 
+func (s *feedSealer) reportRateLimit(key int64) {
+	if s.ledger == nil {
+		return
+	}
+	for _, ev := range s.ledger.rateLimitReport(feedRateLimitOutstanding(s.owner)) {
+		s.logf("[feed-ratelimit] key=%d source=%s instance=%s %s", key, s.source, s.instance, ev.logLine())
+		send := s.rateLimitSend
+		if send == nil {
+			send = s.alertHook
+		}
+		if send != nil {
+			send(formatFeedRateLimitAlert(ev, s.source, s.instance))
+		}
+	}
+}
+
 func (s *feedSealer) sealOne(ctx context.Context, key int64) {
+	defer s.reportRateLimit(key)
 	hard := s.hardDeadline(key)
 	startedAt := s.now()
 	if startedAt.After(s.sealAt(key).Add(s.prepare)) {

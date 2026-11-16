@@ -814,6 +814,8 @@ func main() {
 	deadlineFeed := cfg.marketFeedDeadlineScheduled()
 	fmt.Println(marketFeedStartupLine(cfg))
 	var feedOwner *marketFeedOwner
+	var feedLedger *feedRequestLedger
+	var feedRateLimitSender *feedAlertSender
 	feedOwnerCtx := shutdownReadOnlyCtx
 	var feedReq feedRequirements
 	var sharedClient *sharedFeedClient
@@ -843,8 +845,14 @@ func main() {
 		}
 		feedReq = derived
 		feedOwner = newMarketFeedOwner(nil, func(format string, a ...any) { fmt.Printf(format+"\n", a...) })
-		feedLedger := newFeedRequestLedger(nil, false, nil)
+		feedLedger = newFeedRequestLedger(nil, false, nil)
 		feedOwner.SetRequestLedger(feedLedger)
+		feedRateLimitSender = newFeedAlertSender(func(msg string) {
+			if notifier != nil && notifier.HasOwner() {
+				notifier.SendOwnerDM(msg)
+			}
+		}, func(format string, a ...any) { fmt.Printf(format+"\n", a...) })
+		defer feedRateLimitSender.drain(feedAlertSenderDrainBound)
 		feedOwnerCtx = withFeedLedger(shutdownReadOnlyCtx, feedLedger)
 		fmt.Printf("[feed] closed-bar correction: re-read at close%s, counted as request reason correction\n",
 			formatFeedCorrectionOffsets(feedCorrectionOffsets))
@@ -1142,6 +1150,11 @@ func main() {
 			cycleFeedReqs = cycleRequirementsForDue(dueStrategies, feedReq)
 			evalID := cycleEvaluationID(evaluationMarks, cycle)
 			feedCtx.Snapshot = sealCycleMarketSnapshot(feedOwnerCtx, feedOwner, cycleFeedReqs, evalID, time.Now().UTC())
+			for _, ev := range feedLedger.rateLimitReport(feedRateLimitOutstanding(feedOwner)) {
+				fmt.Printf("[feed-ratelimit] evaluation=%s %s\n", evalID, ev.logLine())
+				fmt.Printf("[feed] %s\n", formatFeedRateLimitAlert(ev, marketFeedWebsocket, "scheduler"))
+				feedRateLimitSender.enqueue(formatFeedRateLimitAlert(ev, marketFeedWebsocket, "scheduler"))
+			}
 			globalMarketFeedStatus.setSnapshotID(evalID)
 			if line := marketSnapshotLogLine(feedCtx.Snapshot, cycleFeedReqs); line != "" {
 				logOnChangef("feed-snapshot", marketSnapshotHealth(feedCtx.Snapshot, cycleFeedReqs), "%s\n", line)
@@ -2332,6 +2345,7 @@ func main() {
 								logHTFFilterHold(signalStr, htfWhy, logger)
 								result.Signal = 0
 							}
+							applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, &result.CloseFraction, rhPosQty, rhPosSide, true, false, signalStr, logger)
 							if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
 								logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 								result.Signal = 0
@@ -2403,6 +2417,7 @@ func main() {
 							logHTFFilterHold(signalStr, htfWhy, logger)
 							result.Signal = 0
 						}
+						applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, &result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false, signalStr, logger)
 						if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
 							logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 							result.Signal = 0
@@ -2550,6 +2565,7 @@ func main() {
 							logHTFFilterHold(signalStr, htfWhy, logger)
 							result.Signal = 0
 						}
+						applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, &result.CloseFraction, tsContracts, tsPosSide, true, true, signalStr, logger)
 						if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
 							logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 							result.Signal = 0
