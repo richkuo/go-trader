@@ -629,9 +629,10 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 			notifier.SendOwnerDM(msg)
 		}
 	}
-	rateLimitSender := newFeedAlertSender(sealer.alertHook, feedLogf)
-	defer rateLimitSender.drain(feedAlertSenderDrainBound)
-	sealer.rateLimitSend = rateLimitSender.enqueue
+	alertSender := newFeedAlertSender(sealer.alertHook, feedLogf)
+	defer alertSender.drain(feedAlertSenderDrainBound)
+	sealer.rateLimitSend = alertSender.enqueue
+	sealer.keyAlertSend = alertSender.enqueue
 	sealer.setGeneration(feedRequirements{}, cadences, startedAt)
 
 	rt := &feedRuntime{
