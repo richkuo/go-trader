@@ -602,6 +602,50 @@ func TestSharedFeedFailoverKeyFill(t *testing.T) {
 		}
 	})
 
+	t.Run("slow_backup_after_timeout", func(t *testing.T) {
+		stall := h.stalled("st")
+		slow := h.feed(feedSourceREST, "inst-slow", newLedger(), feedConsumer{Loaded: true, Req: backupNeed, Cadences: []int{60}})
+		slowSock := h.listen("sl", slow)
+		k3 := (time.Now().UTC().Unix()/60 + 1) * 60
+		h.seal(primary, k3)
+		c, dials := keyFillClient(pSock, stall)
+		giveUpIn := func(d time.Duration) time.Time {
+			c.prepare = time.Now().Add(d).Sub(time.Unix(k3, 0)) - c.grace - feedClientSlack
+			return c.giveUpAt(k3)
+		}
+		_, cycle := consumerOf(map[marketFeedKey]int{btc: 200, eth: 150})
+
+		giveUpIn(3 * time.Second)
+		if _, rep := c.Fetch(ctx, k3, cycle); !strings.Contains(rep.FillRequest, feedErrTransport) || dials(stall) != 1 {
+			t.Fatalf("timed-out fill report %+v, want a transport failure that marks the backup slow", rep)
+		}
+
+		c.endpoints[1].Socket = slowSock
+		sealedAt := make(chan time.Time, 1)
+		go func() {
+			time.Sleep(4 * time.Second)
+			h.seal(slow, k3)
+			sealedAt <- time.Now()
+		}()
+		giveUpIn(20 * time.Second)
+		started := time.Now()
+		snap, rep := c.Fetch(ctx, k3, cycle)
+		elapsed := time.Since(started)
+		t.Logf("slow backup cycle waited %s: fill_request=%q attempts=%v", elapsed.Round(time.Millisecond), rep.FillRequest, rep.Attempts)
+		if rep.FillRequest != feedFetchSealed || len(rep.Filled) != 1 || rep.Filled[0] != eth.PayloadID() || snap.keyFailed(eth) {
+			t.Fatalf("slow backup report %+v, want ETH filled after the backup answered pending and then sealed", rep)
+		}
+		if at := <-sealedAt; elapsed < feedClientProbeFloor+time.Second || time.Since(at) < 0 {
+			t.Fatalf("the fill ended after %s, want it to outlast the %s probe budget and follow the backup seal", elapsed, feedClientProbeFloor)
+		}
+		c.mu.Lock()
+		cleared := c.fillSlow == ""
+		c.mu.Unlock()
+		if !cleared {
+			t.Fatal("a backup that answers must restore the full fill bound")
+		}
+	})
+
 	t.Run("no_request_at_give_up", func(t *testing.T) {
 		c, dials := keyFillClient(pSock, bSock)
 		var passed atomic.Bool

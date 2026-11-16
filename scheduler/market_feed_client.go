@@ -489,26 +489,34 @@ func (c *sharedFeedClient) fetchFill(ctx context.Context, ep sharedFeedEndpoint,
 	slow := c.fillSlow
 	c.mu.Unlock()
 	bound := giveUp
+	probing := false
 	if slow != "" {
 		if probe := c.clock().Add(feedClientProbeFloor); probe.Before(bound) {
-			bound = probe
+			bound, probing = probe, true
 		}
 	}
 	fctx, cancel := c.clockDeadlineCtx(ctx, bound)
 	doc, h, err := c.fetchFrom(fctx, ep, key, bound)
 	cancel()
+	answered := h.Status != ""
+	var ee *feedEndpointError
+	if probing && answered && errors.As(err, &ee) && ee.Kind == feedErrPendingLimit && c.clock().Before(giveUp) {
+		probing = false
+		fctx, cancel = c.clockDeadlineCtx(ctx, giveUp)
+		doc, h, err = c.fetchFrom(fctx, ep, key, giveUp)
+		cancel()
+	}
 	c.recordEndpoint(ep, key, h, err, report)
 	c.mu.Lock()
 	c.fillSlow = ""
-	var ee *feedEndpointError
-	if errors.As(err, &ee) && (ee.Kind == feedErrTransport || ee.Kind == feedErrPendingLimit) {
+	if !answered && errors.As(err, &ee) && ee.Kind == feedErrTransport {
 		c.fillSlow = ee.Kind
 	}
 	c.mu.Unlock()
 	if err != nil {
 		report.Attempts = append(report.Attempts, fmt.Sprintf("%s=%v", name, err))
 		report.FillRequest = err.Error()
-		if slow != "" {
+		if probing {
 			report.FillRequest = fmt.Sprintf("probe %s after an earlier fill request ended %s: %v", feedClientProbeFloor, slow, err)
 		}
 		return nil
