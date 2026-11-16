@@ -18,8 +18,6 @@ skip() {
 [[ "$(ps -o comm= -p 1 2>/dev/null)" == "systemd" ]] || skip "systemd as PID 1 required"
 command -v systemd-run >/dev/null 2>&1 || skip "systemd-run required"
 command -v runuser >/dev/null 2>&1 || skip "runuser required"
-PY3=$(command -v python3) || skip "python3 required"
-"$PY3" -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 12) else 1)' || skip "python3 3.12 required"
 [[ -n "${FIXTURE_UV:-}" && -x "${FIXTURE_UV}" ]] || skip "FIXTURE_UV must name a uv binary"
 [[ ! -e /nonexistent ]] || skip "/nonexistent exists on this host, so the home-folder check would prove nothing"
 
@@ -27,6 +25,9 @@ fail() {
     echo "FAIL: $*" >&2
     exit 1
 }
+
+PY_PIN=$(tr -d '[:space:]' < "$REPO_ROOT/.python-version") || fail "cannot read $REPO_ROOT/.python-version"
+[[ "$PY_PIN" =~ ^3\.[0-9]+$ ]] || fail "$REPO_ROOT/.python-version holds '$PY_PIN', want <major>.<minor>"
 
 ID="rhfixture-$$-$RANDOM"
 USER_NAME="gt${ID//[^a-z0-9]/}"
@@ -58,9 +59,23 @@ import sys
 print(json.dumps({symbol: 100.0 for symbol in sys.argv[1:]}))
 PYSTUB
 
-echo "== build the service virtualenv"
+echo "== install the project's pinned Python $PY_PIN inside the deployment"
+PY_DIR="$DEPLOY/python"
+(cd / && UV_PYTHON_INSTALL_DIR="$PY_DIR" UV_PYTHON_BIN_DIR="$DEPLOY/python-bin" \
+    "$FIXTURE_UV" python install "$PY_PIN") || fail "uv python install $PY_PIN into $PY_DIR failed"
+PY3=$(cd / && UV_PYTHON_INSTALL_DIR="$PY_DIR" UV_PYTHON_PREFERENCE=only-managed UV_PYTHON_DOWNLOADS=never \
+    "$FIXTURE_UV" python find "$PY_PIN") || fail "uv cannot find the managed Python $PY_PIN in $PY_DIR"
+[[ "$(readlink -f "$PY3")" == "$PY_DIR"/* ]] || fail "the managed Python $PY3 resolves to $(readlink -f "$PY3"), outside $PY_DIR"
+"$PY3" -c 'import sys; want = tuple(int(p) for p in sys.argv[1].split(".")); sys.exit(0 if sys.version_info[:2] == want else 1)' "$PY_PIN" || \
+    fail "the managed Python $PY3 is not the project pin $PY_PIN"
+"$PY3" --version
+
+echo "== build the service virtualenv from the managed Python"
 (cd "$DEPLOY" && UV_PROJECT_ENVIRONMENT="$DEPLOY/.venv" UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never \
+    UV_PYTHON_INSTALL_DIR="$PY_DIR" UV_PYTHON_PREFERENCE=only-managed \
     "$FIXTURE_UV" sync --frozen --no-dev --no-install-project --python "$PY3") || fail "uv sync for the service virtualenv failed"
+[[ "$(readlink -f "$DEPLOY/.venv/bin/python3")" == "$PY_DIR"/* ]] || \
+    fail "the service virtualenv runs $(readlink -f "$DEPLOY/.venv/bin/python3"), not the managed Python in $PY_DIR"
 
 cat > "$DEPLOY/routes.json" <<'JSON'
 {
@@ -86,6 +101,8 @@ cat > "$STATE/config.json" <<JSON
 JSON
 chown -R "$USER_NAME:$USER_NAME" "$DEPLOY" "$STATE"
 chmod 755 "$DEPLOY"
+runuser -u "$USER_NAME" -- "$DEPLOY/.venv/bin/python3" -c 'import sys; want = tuple(int(p) for p in sys.argv[1].split(".")); sys.exit(0 if sys.version_info[:2] == want else 1)' "$PY_PIN" || \
+    fail "the service user cannot run the managed Python $PY_PIN through the service virtualenv"
 runuser -u "$USER_NAME" -- "$DEPLOY/.venv/bin/python3" -c 'import robin_stocks, pyotp, pandas, yfinance' || fail "the service user cannot import the Robinhood dependencies"
 
 run_unit() {

@@ -2231,4 +2231,175 @@ out=$(run_nt_folds --rollback 2>&1) && rc=0 || rc=$?
 [[ "$rc" == "0" ]] || { echo "$out" >&2; fail "rollback of an interrupted journal exits 0 (rc=$rc)"; }
 nt_nothing_created "rollback of an interrupted journal"
 
+echo "== source order: reversed --source arguments fold in source-id order"
+setup srcreverse
+add_source coin-btc 8101 C-btc
+add_source coin-eth 8102 C-eth
+BTC_CANON=$(update_canonical_db_path "$BASE/coin-btc/state.db")
+ETH_CANON=$(update_canonical_db_path "$BASE/coin-eth/state.db")
+PAPER_CANON=$(update_canonical_db_path "$PAPER_DB")
+live_canon=$(update_canonical_db_path "$LIVE_DB")
+staged="$LIVE_CFG.merge-staged"
+out=$(run_merge_args --source eth=coin-eth --source btc=coin-btc 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a reversed two-source dry run exits 0 (rc=$rc)"; }
+assert_contains "$out" "folding 2 deployment(s) mode=dry-run" "a reversed two-source dry run folds both deployments"
+assert_contains "$out" "VERDICT: READY" "a reversed two-source dry run verdict"
+assert_contains "$out" "$live_canon.lock $live_canon.manual-action.lock $BTC_CANON.lock $BTC_CANON.manual-action.lock $ETH_CANON.lock $ETH_CANON.manual-action.lock" "reversed arguments keep the lock order primary, then every source by id"
+assert_eq "$(json_get "$staged" strategies.1.id)" "hl-x-paper-btc" "reversed arguments stage the btc alias first"
+assert_eq "$(json_get "$staged" strategies.2.id)" "hl-x-paper-eth" "reversed arguments stage the eth alias second"
+assert_eq "$(json_get "$staged" paper_sources.0.id)" "btc" "reversed arguments keep paper_sources ordered by id"
+assert_eq "$(json_get "$staged" paper_sources.1.id)" "eth" "reversed arguments keep the eth entry second"
+out=$(run_merge_args --source eth=coin-eth --paper paper --source btc=coin-btc 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a reversed --paper and two-source dry run exits 0 (rc=$rc)"; }
+assert_contains "$out" "folding 3 deployment(s) mode=dry-run" "a reversed mixed dry run folds every deployment"
+assert_contains "$out" "$live_canon.lock $live_canon.manual-action.lock $PAPER_CANON.lock $PAPER_CANON.manual-action.lock $BTC_CANON.lock $BTC_CANON.manual-action.lock $ETH_CANON.lock $ETH_CANON.manual-action.lock" "a mixed run locks the primary, the default paper partition, then every source by id"
+assert_eq "$(json_get "$staged" strategies.1.id)" "hl-x-paper" "the default paper partition is staged first"
+assert_eq "$(json_get "$staged" strategies.2.id)" "hl-x-paper-btc" "the btc source follows the default paper partition"
+assert_eq "$(json_get "$staged" strategies.3.id)" "hl-x-paper-eth" "the eth source comes last"
+assert_eq "$(json_get "$staged" strategies.2.paper_source)" "btc" "the btc alias names its partition"
+assert_eq "$(json_get "$staged" paper_sources.0.id)" "btc" "the mixed run keeps paper_sources ordered by id"
+
+nt_setup ntreverse
+out=$(run_nt --new-target paper --source eth=coin-eth --source btc=coin-btc --status-port "$NT_PORT" 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a reversed new-target dry run exits 0 (rc=$rc)"; }
+assert_contains "$out" "folding 2 deployment(s) mode=dry-run" "a reversed new-target dry run folds both deployments"
+assert_contains "$out" "new target: root settings from coin-btc" "the first source by id gives the root settings"
+stage=$(stage_dir_from "$out")
+assert_eq "$(json_get "$stage/config.json" paper_sources.0.id)" "btc" "a reversed new target orders paper_sources by id"
+assert_eq "$(json_get "$stage/config.json" strategies.0.id)" "hl-x-paper-btc" "a reversed new target stages the btc alias first"
+assert_eq "$(json_get "$stage/config.json" strategies.1.id)" "hl-x-paper-eth" "a reversed new target stages the eth alias second"
+rm -rf "$stage"
+
+echo "== source parse failures refuse before any operational work"
+PARSE_SHIM="$T/parse-shim"
+PARSE_LOGS="$T/parse-logs"
+PARSE_TMP="$T/parse-tmp"
+mkdir -p "$PARSE_SHIM" "$PARSE_LOGS" "$PARSE_TMP"
+cat > "$PARSE_SHIM/sort" <<'EOS'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SORT_SHIM_LOG"
+rows=()
+while IFS= read -r row; do
+    rows+=("$row")
+done
+case "$SORT_SHIM_KIND" in
+    fail-empty) exit 7 ;;
+    fail-partial) printf '%s\n' "${rows[0]}"; exit 7 ;;
+    fail-full) printf '%s\n' "${rows[@]}"; exit 7 ;;
+    short) printf '%s\n' "${rows[0]}" ;;
+    altered) printf '%s\n' "${rows[0]}x" "${rows[@]:1}" ;;
+    duplicate) printf '%s\n' "${rows[0]}" "${rows[@]:0:${#rows[@]}-1}" ;;
+    extra) printf '%s\n' "${rows[@]}" "zz=coin-zz" ;;
+    *) echo "sort shim: unknown SORT_SHIM_KIND '$SORT_SHIM_KIND'" >&2; exit 99 ;;
+esac
+EOS
+chmod +x "$PARSE_SHIM/sort"
+PARSE_KINDS=(fail-empty fail-partial fail-full short altered duplicate extra)
+PARSE_MODES=(dry-run --apply --diff --rollback)
+
+parse_tree_state() {
+    python3 - "$F" <<'PY'
+import hashlib
+import os
+import stat
+import sys
+
+root = sys.argv[1]
+rows = []
+for d, dirs, files in os.walk(root):
+    dirs.sort()
+    for name in sorted(dirs + files):
+        p = os.path.join(d, name)
+        st = os.lstat(p)
+        if stat.S_ISREG(st.st_mode) and st.st_size <= 8 << 20:
+            with open(p, "rb") as fh:
+                what = hashlib.sha256(fh.read()).hexdigest()
+        elif stat.S_ISREG(st.st_mode):
+            what = "size=%d mtime=%d" % (st.st_size, st.st_mtime_ns)
+        elif stat.S_ISLNK(st.st_mode):
+            what = "link=" + os.readlink(p)
+        else:
+            what = "other"
+        rows.append("%s mode=%o uid=%d gid=%d %s" % (os.path.relpath(p, root), st.st_mode, st.st_uid, st.st_gid, what))
+print("\n".join(rows))
+PY
+}
+
+parse_wrap_effects() {
+    local bin
+    for bin in "$OPT"/go-trader-*/go-trader "$F/bin/systemctl" "$F/bin/build"; do
+        [[ -e "$bin" ]] || continue
+        mv "$bin" "$bin.real"
+        cat > "$bin" <<EOS
+#!/usr/bin/env bash
+printf '%s\n' "\$0 \$*" >> "$PARSE_LOGS/effects.log"
+exec "$bin.real" "\$@"
+EOS
+        chmod +x "$bin"
+    done
+}
+
+run_nt_parse() {
+    run_nt --new-target paper --status-port "$NT_PORT" "$@"
+}
+
+parse_case() {
+    local runner="$1" kind="$2" mode="$3" before after what
+    shift 3
+    what="$runner $kind $mode $*"
+    [[ "$mode" != "dry-run" ]] || mode=""
+    : > "$PARSE_LOGS/sort.log"
+    : > "$PARSE_LOGS/effects.log"
+    before=$(parse_tree_state)
+    out=$(PATH="$PARSE_SHIM:$PATH" TMPDIR="$PARSE_TMP" SORT_SHIM_KIND="$kind" SORT_SHIM_LOG="$PARSE_LOGS/sort.log" \
+        "$runner" "$@" ${mode:+"$mode"} 2>&1) && rc=0 || rc=$?
+    assert_rc "$rc" "25" "$what: a source parse failure exits 25"
+    assert_contains "$out" "REFUSED (exit 25): source parse: " "$what: the refusal is named"
+    assert_eq "$(cat "$PARSE_LOGS/sort.log")" "-t = -k1,1" "$what: sort runs once with a separate '=' separator argument"
+    [[ "$out" != *"deployment(s) mode="* ]] || fail "$what: the run reached the fold"
+    [[ ! -s "$PARSE_LOGS/effects.log" ]] || fail "$what: a deployment binary, service command or build ran: $(cat "$PARSE_LOGS/effects.log")"
+    [[ -z "$(ls -A "$PARSE_TMP")" ]] || fail "$what: temporary files survived the refusal: $(ls -A "$PARSE_TMP")"
+    after=$(parse_tree_state)
+    if [[ "$after" != "$before" ]]; then
+        diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") >&2 || true
+        fail "$what: a deployment, config, database, lock, journal, alignment file or drop-in changed"
+    fi
+}
+
+parse_matrix() {
+    local runner="$1" paper="$2" kind mode
+    for kind in "${PARSE_KINDS[@]}"; do
+        for mode in "${PARSE_MODES[@]}"; do
+            parse_case "$runner" "$kind" "$mode" --source btc=coin-btc --source eth=coin-eth
+            parse_case "$runner" "$kind" "$mode" --paper "$paper" --source btc=coin-btc --source eth=coin-eth
+        done
+    done
+}
+
+setup parsefresh
+add_source coin-btc 8101 C-btc
+add_source coin-eth 8102 C-eth
+parse_wrap_effects
+parse_matrix run_merge_args paper
+
+setup parseapplied
+add_source coin-btc 8101 C-btc
+add_source coin-eth 8102 C-eth
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "the apply before the parse refusals exits 0 (rc=$rc)"; }
+parse_wrap_effects
+parse_matrix run_merge_args paper
+
+nt_setup parsent
+nt_add_source coin-p 8103 C-p
+parse_wrap_effects
+parse_matrix run_nt_parse coin-p
+
+nt_setup parsentapplied
+nt_add_source coin-p 8103 C-p
+out=$(run_nt_folds --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "the new-target apply before the parse refusals exits 0 (rc=$rc)"; }
+parse_wrap_effects
+parse_matrix run_nt_parse coin-p
+
 echo "OK: merge-paper-instance tests passed"
