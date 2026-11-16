@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -451,7 +452,17 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 	s.sendKeyAlerts(keyAlerts)
 }
 
-func (s *feedSealer) observeKeyEpisodesLocked(deadline int64, rev uint64, coverage feedRequirements, doc *feedSealDoc) []string {
+type feedKeyAlertEntry struct {
+	full  string
+	short string
+}
+
+type feedKeyAlert struct {
+	log  string
+	send []string
+}
+
+func (s *feedSealer) observeKeyEpisodesLocked(deadline int64, rev uint64, coverage feedRequirements, doc *feedSealDoc) []feedKeyAlert {
 	if rev != s.reqsRev || doc == nil || len(coverage.Order) == 0 {
 		return nil
 	}
@@ -459,7 +470,7 @@ func (s *feedSealer) observeKeyEpisodesLocked(deadline int64, rev uint64, covera
 	for _, k := range doc.Keys {
 		sealed[marketFeedKey{Host: k.Host, Namespace: k.Namespace, Symbol: k.Symbol, Timeframe: k.Timeframe}] = k.Readiness
 	}
-	var unready, ready []string
+	var unready, ready []feedKeyAlertEntry
 	for _, key := range coverage.Order {
 		if s.source == feedSourceREST && !feedKeyDueAt(coverage.KeyCadences[key], deadline) {
 			continue
@@ -471,7 +482,7 @@ func (s *feedSealer) observeKeyEpisodesLocked(deadline int64, rev uint64, covera
 		ep := s.keyEpisodes[key]
 		if r.Ready {
 			if ep != nil && ep.alerted {
-				ready = append(ready, formatFeedKeyEpisodeEntry(key, r))
+				ready = append(ready, newFeedKeyAlertEntry(key, r))
 			}
 			delete(s.keyEpisodes, key)
 			continue
@@ -485,32 +496,116 @@ func (s *feedSealer) observeKeyEpisodesLocked(deadline int64, rev uint64, covera
 		}
 		if ep.streak >= scriptFailureAlertThreshold && !ep.alerted {
 			ep.alerted = true
-			unready = append(unready, formatFeedKeyEpisodeEntry(key, r))
+			unready = append(unready, newFeedKeyAlertEntry(key, r))
 		}
 	}
-	sort.Strings(unready)
-	sort.Strings(ready)
+	sort.Slice(unready, func(i, j int) bool { return unready[i].full < unready[j].full })
+	sort.Slice(ready, func(i, j int) bool { return ready[i].full < ready[j].full })
 	at := time.Unix(deadline, 0).UTC().Format(time.RFC3339)
-	var msgs []string
+	var alerts []feedKeyAlert
 	if len(unready) > 0 {
-		msgs = append(msgs, fmt.Sprintf("**MARKET FEED KEY UNREADY** [%s] deadline %d (%s): %d candle key(s) sealed not ready at %d consecutive eligible deadlines. Consumers hold entries on these keys unless another feed supplies ready inputs; protection continues on verified inputs (instance %s). Keys: %s",
-			s.source, deadline, at, len(unready), scriptFailureAlertThreshold, s.instance, strings.Join(unready, "; ")))
+		alerts = append(alerts, buildFeedKeyAlert(fmt.Sprintf("**MARKET FEED KEY UNREADY** [%s] deadline %d (%s): %d candle key(s) sealed not ready at %d consecutive eligible deadlines. Consumers hold entries on these keys unless another feed supplies ready inputs; protection continues on verified inputs (instance %s).",
+			s.source, deadline, at, len(unready), scriptFailureAlertThreshold, s.instance), unready))
 	}
 	if len(ready) > 0 {
-		msgs = append(msgs, fmt.Sprintf("**MARKET FEED KEY READY AGAIN** [%s] deadline %d (%s): %d candle key(s) sealed ready again (instance %s). Keys: %s",
-			s.source, deadline, at, len(ready), s.instance, strings.Join(ready, "; ")))
+		alerts = append(alerts, buildFeedKeyAlert(fmt.Sprintf("**MARKET FEED KEY READY AGAIN** [%s] deadline %d (%s): %d candle key(s) sealed ready again (instance %s).",
+			s.source, deadline, at, len(ready), s.instance), ready))
+	}
+	return alerts
+}
+
+const (
+	feedKeyAlertMaxLen    = discordSplitThreshold
+	feedKeyAlertDetailMax = 160
+	feedKeyAlertMaxParts  = 5
+)
+
+func newFeedKeyAlertEntry(key marketFeedKey, r feedSealReadiness) feedKeyAlertEntry {
+	format := func(detail string) string {
+		return fmt.Sprintf("%s status=%s detail=%q bars=%d/%d", key.String(), r.Status, detail, r.Bars, r.Required)
+	}
+	return feedKeyAlertEntry{full: format(r.Detail), short: format(clipFeedAlertText(r.Detail, feedKeyAlertDetailMax))}
+}
+
+func clipFeedAlertText(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:0]
+	}
+	cut := max - 3
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
+}
+
+func buildFeedKeyAlert(head string, entries []feedKeyAlertEntry) feedKeyAlert {
+	full := make([]string, len(entries))
+	for i, e := range entries {
+		full[i] = e.full
+	}
+	log := head + " Keys: " + strings.Join(full, "; ")
+	if len(log) <= feedKeyAlertMaxLen {
+		return feedKeyAlert{log: log, send: []string{log}}
+	}
+	return feedKeyAlert{log: log, send: packFeedKeyAlertParts(head, entries)}
+}
+
+func packFeedKeyAlertParts(head string, entries []feedKeyAlertEntry) []string {
+	label := func(part, parts int) string { return fmt.Sprintf(" Part %d/%d. Keys: ", part, parts) }
+	omittedNote := func(n int) string {
+		return fmt.Sprintf("; and %d more key(s) not listed here; the [feed-key-alert] log line lists every key", n)
+	}
+	room := feedKeyAlertMaxLen - len(head) - len(label(feedKeyAlertMaxParts, feedKeyAlertMaxParts)) - len(omittedNote(len(entries)))
+	if room < 1 {
+		room = 1
+	}
+	var groups [][]string
+	var cur []string
+	curLen := 0
+	listed := 0
+	for _, e := range entries {
+		item := clipFeedAlertText(e.short, room)
+		add := len(item)
+		if len(cur) > 0 {
+			add += len("; ")
+		}
+		if len(cur) > 0 && curLen+add > room {
+			groups = append(groups, cur)
+			cur, curLen = nil, 0
+			add = len(item)
+			if len(groups) == feedKeyAlertMaxParts {
+				break
+			}
+		}
+		cur = append(cur, item)
+		curLen += add
+		listed++
+	}
+	if len(cur) > 0 && len(groups) < feedKeyAlertMaxParts {
+		groups = append(groups, cur)
+	}
+	omitted := len(entries) - listed
+	msgs := make([]string, len(groups))
+	for i, g := range groups {
+		msg := head + label(i+1, len(groups)) + strings.Join(g, "; ")
+		if i == len(groups)-1 && omitted > 0 {
+			msg += omittedNote(omitted)
+		}
+		msgs[i] = clipFeedAlertText(msg, feedKeyAlertMaxLen)
 	}
 	return msgs
 }
 
-func formatFeedKeyEpisodeEntry(key marketFeedKey, r feedSealReadiness) string {
-	return fmt.Sprintf("%s status=%s detail=%q bars=%d/%d", key.String(), r.Status, r.Detail, r.Bars, r.Required)
-}
-
-func (s *feedSealer) sendKeyAlerts(msgs []string) {
-	for _, msg := range msgs {
-		s.logf("[feed-key-alert] %s", msg)
-		if s.keyAlertSend != nil {
+func (s *feedSealer) sendKeyAlerts(alerts []feedKeyAlert) {
+	for _, a := range alerts {
+		s.logf("[feed-key-alert] %s", a.log)
+		if s.keyAlertSend == nil {
+			continue
+		}
+		for _, msg := range a.send {
 			s.keyAlertSend(msg)
 		}
 	}

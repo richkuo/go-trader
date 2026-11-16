@@ -252,6 +252,55 @@ func kaExpectOne(t *testing.T, label, prefix string, msgs []string, contains ...
 	return msgs[0]
 }
 
+func kaCheckParts(t *testing.T, f *kaFixture, label, prefix string, msgs []string, keys []marketFeedKey, logMark string) {
+	t.Helper()
+	if len(msgs) < 2 {
+		t.Fatalf("%s: %d message(s), want the alert split into parts", label, len(msgs))
+	}
+	listed := map[string]int{}
+	omitted := 0
+	for i, m := range msgs {
+		if len(m) > discordCharLimit {
+			t.Fatalf("%s: part %d is %d bytes, over %d", label, i+1, len(m), discordCharLimit)
+		}
+		if !strings.HasPrefix(m, prefix) || !strings.Contains(m, fmt.Sprintf("%d candle key(s)", len(keys))) ||
+			!strings.Contains(m, fmt.Sprintf(" Part %d/%d. Keys: ", i+1, len(msgs))) {
+			t.Fatalf("%s: part %d = %q, want the prefix, the total key count and its part label", label, i+1, m)
+		}
+		for _, key := range keys {
+			listed[key.String()] += strings.Count(m, key.String()+" status=")
+		}
+		if j := strings.Index(m, "; and "); j >= 0 {
+			if _, err := fmt.Sscanf(m[j:], "; and %d more key(s)", &omitted); err != nil || i != len(msgs)-1 {
+				t.Fatalf("%s: part %d has a malformed or misplaced omitted note: %q", label, i+1, m[j:])
+			}
+		}
+	}
+	named := 0
+	for _, key := range keys {
+		c := listed[key.String()]
+		if c > 1 {
+			t.Fatalf("%s: key %s is listed %d times", label, key, c)
+		}
+		named += c
+	}
+	if named+omitted != len(keys) {
+		t.Fatalf("%s: %d listed + %d omitted, want %d keys", label, named, omitted, len(keys))
+	}
+	lines := f.logsContaining("[feed-key-alert] " + prefix)
+	if len(lines) != 1 {
+		t.Fatalf("%s: %d [feed-key-alert] log line(s), want one full record", label, len(lines))
+	}
+	for _, key := range keys {
+		if !strings.Contains(lines[0], key.String()+" status=") {
+			t.Fatalf("%s: the log line does not name %s", label, key)
+		}
+	}
+	if strings.Count(lines[0], logMark) != len(keys) {
+		t.Fatalf("%s: the log line carries %q %d time(s), want %d", label, logMark, strings.Count(lines[0], logMark), len(keys))
+	}
+}
+
 const kaStep = int64(600)
 
 func TestFeedKeyAlertIntegration(t *testing.T) {
@@ -470,6 +519,51 @@ func TestFeedKeyAlertIntegration(t *testing.T) {
 		}
 		breakAlt = false
 		kaExpectOne(t, "alt recovers", kaReady, g.seal(k+3*kaStep), alt.String()+" status=ready")
+	})
+
+	t.Run("OversizedAlertsSplitWithinDiscordLimit", func(t *testing.T) {
+		f := newKAFixture(t, feedSourceWebsocket, start)
+		keys := make([]marketFeedKey, 30)
+		for i := range keys {
+			keys[i] = feedKeyFor(fmt.Sprintf("K%02d", i), "1m")
+		}
+		f.install(kaRequirements(100, 60, keys...), 60)
+		detail := "refresh failed: " + strings.Repeat("venue outage text ", 8)
+		if len(detail) < 150 {
+			t.Fatalf("fixture detail is %d bytes, want at least 150", len(detail))
+		}
+		broken := true
+		f.afterPrepare = func(int64) {
+			if broken {
+				for _, key := range keys {
+					f.owner.markKeyUnready(key, feedStatusFailed, detail)
+				}
+			}
+		}
+		kaExpectNone(t, "many fail 1", f.seal(k))
+		kaExpectNone(t, "many fail 2", f.seal(k+kaStep))
+		kaCheckParts(t, f, "many fail 3", kaUnready, f.seal(k+2*kaStep), keys, fmt.Sprintf("detail=%q", detail))
+		broken = false
+		kaCheckParts(t, f, "many recover", kaReady, f.seal(k+3*kaStep), keys, "status=ready")
+
+		g := newKAFixture(t, feedSourceWebsocket, start)
+		btc := feedKeyFor("BTC", "1m")
+		g.install(kaRequirements(100, 60, btc), 60)
+		huge := "refresh failed: " + strings.Repeat("long venue error body ", 120)
+		if len(huge) <= discordCharLimit {
+			t.Fatalf("fixture detail is %d bytes, want more than %d", len(huge), discordCharLimit)
+		}
+		g.afterPrepare = func(int64) { g.owner.markKeyUnready(btc, feedStatusFailed, huge) }
+		kaExpectNone(t, "huge fail 1", g.seal(k))
+		kaExpectNone(t, "huge fail 2", g.seal(k+kaStep))
+		msg := kaExpectOne(t, "huge fail 3", kaUnready, g.seal(k+2*kaStep), "1 candle key(s)", btc.String()+" status=failed detail=")
+		if len(msg) > discordCharLimit {
+			t.Fatalf("single-key alert is %d bytes, over %d", len(msg), discordCharLimit)
+		}
+		full := g.logsContaining("[feed-key-alert] " + kaUnready)
+		if len(full) != 1 || !strings.Contains(full[0], fmt.Sprintf("detail=%q", huge)) {
+			t.Fatalf("single-key log = %d line(s), want one line with the full detail", len(full))
+		}
 	})
 
 	t.Run("ReloadCleanupRetentionAndInFlightSeals", func(t *testing.T) {
