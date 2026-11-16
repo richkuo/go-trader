@@ -158,32 +158,89 @@ PY_HELPER=$(cat <<'PY'
 import json
 import os
 import re
+import secrets
+import stat
 import sys
 
+def open_parent(path):
+    return os.open(os.path.dirname(os.path.abspath(path)) or "/", os.O_RDONLY | os.O_DIRECTORY)
+
+def open_nofollow(path):
+    dfd = open_parent(path)
+    try:
+        fd = os.open(os.path.basename(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+    except OSError as e:
+        sys.exit(f"{path} cannot be opened without following a symlink ({e.strerror})")
+    finally:
+        os.close(dfd)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        os.close(fd)
+        sys.exit(f"{path} is not a regular file with exactly one link")
+    return fd, st
+
+def read_nofollow(path):
+    fd, st = open_nofollow(path)
+    with os.fdopen(fd, "rb") as f:
+        return f.read(), st
+
 def load(path):
-    with open(path) as f:
-        return json.load(f)
+    data, _ = read_nofollow(path)
+    return json.loads(data)
+
+def write_atomic(path, data, mode, owner=None):
+    dfd = open_parent(path)
+    base = os.path.basename(path)
+    tmp = f".{base}.tmp-shared-feed.{secrets.token_hex(8)}"
+    try:
+        try:
+            cur = os.stat(base, dir_fd=dfd, follow_symlinks=False)
+        except FileNotFoundError:
+            cur = None
+        if cur is not None and not stat.S_ISREG(cur.st_mode):
+            sys.exit(f"{path} exists and is not a regular file; nothing was written")
+        if owner is None and cur is not None:
+            owner = (cur.st_uid, cur.st_gid)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+            if owner is not None and os.geteuid() == 0:
+                os.fchown(fd, owner[0], owner[1])
+            os.fchmod(fd, mode)
+        finally:
+            os.close(fd)
+        os.replace(tmp, base, src_dir_fd=dfd, dst_dir_fd=dfd)
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=dfd)
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        os.close(dfd)
 
 def dump(obj, path, mode):
-    tmp = path + ".tmp-shared-feed"
+    write_atomic(path, (json.dumps(obj, indent=2, ensure_ascii=False) + "\n").encode(), mode)
+
+def safe_copy(src, dest):
+    data, st = read_nofollow(src)
+    write_atomic(dest, data, st.st_mode & 0o7777, (st.st_uid, st.st_gid))
+
+def chown_ref(ref, target):
+    rst = os.stat(ref, follow_symlinks=False)
+    fd, _ = open_nofollow(target)
     try:
-        os.unlink(tmp)
-    except FileNotFoundError:
-        pass
-    owner = None
-    try:
-        st = os.stat(path)
-        owner = (st.st_uid, st.st_gid)
-    except FileNotFoundError:
-        pass
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(obj, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-        if owner is not None:
-            os.fchown(f.fileno(), owner[0], owner[1])
-        os.fchmod(f.fileno(), mode)
-    os.replace(tmp, path)
+        os.fchown(fd, rst.st_uid, rst.st_gid)
+    finally:
+        os.close(fd)
+
+def mode_of(path):
+    fd, st = open_nofollow(path)
+    os.close(fd)
+    print(format(st.st_mode & 0o777, "o"))
 
 def is_live_args(args):
     args = args or []
@@ -256,8 +313,9 @@ def revert_feed_keys(path, backup_path):
             c[key] = b[key]
         else:
             c.pop(key, None)
-    mode = os.stat(path).st_mode & 0o777
-    dump(c, path, mode)
+    fd, st = open_nofollow(path)
+    os.close(fd)
+    dump(c, path, st.st_mode & 0o777)
 
 def feed_keys_match(path, backup_path):
     c = load(path)
@@ -274,8 +332,9 @@ def set_budget(path, budget):
     if missing:
         sys.exit(f"budget is missing {', '.join(missing)}; a backup budget always carries all five fields")
     c["feed"]["request_budget"] = {k: b[k] for k in BUDGET_FIELDS}
-    mode = os.stat(path).st_mode & 0o777
-    dump(c, path, mode)
+    fd, st = open_nofollow(path)
+    os.close(fd)
+    dump(c, path, st.st_mode & 0o777)
 
 def budget_of(path):
     b = (load(path).get("feed") or {}).get("request_budget") or {}
@@ -318,6 +377,9 @@ op = sys.argv[1]
 args = sys.argv[2:]
 {
     "summary": summary,
+    "copy": safe_copy,
+    "chown-ref": chown_ref,
+    "mode-of": mode_of,
     "write-shared": write_shared,
     "write-feed": write_feed,
     "replace-consumer": replace_consumer,
@@ -347,7 +409,7 @@ prepare_shadow_dir() {
 write_shadow() {
     local cfg="$1" shadow="$2"
     py write-shared "$cfg" "$shadow" "$(feed_socket primary)" "$(feed_socket backup)" 0600
-    chown --reference="$SHADOW_DIR" "$shadow"
+    py chown-ref "$SHADOW_DIR" "$shadow"
 }
 
 unit_prop() { systemctl show "$1" -p "$2" --value 2>/dev/null | head -n 1 || true; }
@@ -363,7 +425,12 @@ unit_config_path() {
     elif [[ "$cfg" != /* ]]; then
         cfg="${wd%/}/$cfg"
     fi
-    readlink -f "$cfg" 2>/dev/null || printf '%s' "$cfg"
+    local resolved
+    resolved=$(readlink -f "$cfg" 2>/dev/null) || resolved="$cfg"
+    if [[ "$resolved" != "$cfg" && "$resolved" != "$CONVERT_ROOT/var/lib/go-trader/"* ]]; then
+        die 2 "$unit: its config path $cfg resolves through a symlink to $resolved, outside $CONVERT_ROOT/var/lib/go-trader; the script reads a symlinked consumer config only inside the go-trader config root. Nothing changed"
+    fi
+    printf '%s' "$resolved"
 }
 
 unit_user() {
@@ -615,25 +682,42 @@ probe_feed_candidate() {
     probe_as_tree_owner "$(feed_dir "$1")" "$2"
 }
 
+root_work_dir() {
+    install -d -m 0755 "$STATE_DIR"
+    mktemp -d "$STATE_DIR/work.XXXXXX"
+}
+
 apply_backup_budget() {
-    local budget="$1" config candidate out rc
+    local budget="$1" config work candidate out rc
     config=$(feed_config backup)
-    candidate="$config.candidate-shared-feed"
-    rm -f "$candidate"
-    cp -p "$config" "$candidate"
-    py set-budget "$candidate" "$budget" || { rm -f "$candidate"; return 1; }
+    work=$(root_work_dir) || return 1
+    candidate="$work/candidate.json"
+    py copy "$config" "$candidate" || { rm -rf "$work"; return 1; }
+    py set-budget "$candidate" "$budget" || { rm -rf "$work"; return 1; }
     set +e
     out=$(probe_feed_candidate backup "$candidate" 2>&1)
     rc=$?
     set -e
     if [[ $rc -ne 0 ]]; then
         printf '%s\n' "$out" | sed 's/^/[shared-feed]   /' >&2
-        rm -f "$candidate"
+        rm -rf "$work"
         warn "the candidate budget $budget failed the backup binary's probe (exit $rc); $config is unchanged and no SIGHUP was sent"
         return 1
     fi
-    mv -f "$candidate" "$config"
+    py copy "$candidate" "$config" || { rm -rf "$work"; return 1; }
+    rm -rf "$work"
     systemctl kill -s HUP "$(feed_unit backup)"
+}
+
+grant_plan_probe_read() {
+    local tmp="$1" gid="$2" f
+    chown "0:$gid" "$tmp"
+    chmod 0710 "$tmp"
+    for f in "$tmp"/*.json; do
+        [[ "$f" == "$tmp/feed-backup.json" ]] && continue
+        chown "0:$gid" "$f"
+        chmod 0640 "$f"
+    done
 }
 
 build_temp_probe() {
@@ -686,7 +770,7 @@ cmd_plan() {
         tmp=$(mktemp -d)
     fi
     build_temp_probe "$tmp" "$budget"
-    [[ -z "$owner" ]] || chown -R "$owner" "$tmp"
+    [[ -z "$owner" ]] || grant_plan_probe_read "$tmp" "${owner#*:}"
     set +e
     probe_out=$(probe_as_tree_owner "$first_wd" "$tmp/feed-backup.json" 2>&1)
     rc=$?
@@ -813,8 +897,9 @@ cmd_feeds() {
             if [[ "$name" == "backup" ]]; then
                 budget=$(new_backup_budget) || die 2 "$(new_backup_budget_hint)"
             fi
-            local candidate="$config.candidate-shared-feed" probe_out probe_rc
-            rm -f "$candidate"
+            local work candidate probe_out probe_rc
+            work=$(root_work_dir) || die 20 "could not create a root work directory under $STATE_DIR; $config was not written"
+            candidate="$work/candidate.json"
             py write-feed "$candidate" "$first_cfg" "$(feed_source "$name")" "$(feed_socket "$name")" "${!portvar}" "$list" "$budget"
             set +e
             probe_out=$(probe_as_tree_owner "$first_wd" "$candidate" 2>&1)
@@ -822,10 +907,11 @@ cmd_feeds() {
             set -e
             if [[ $probe_rc -ne 0 ]]; then
                 printf '%s\n' "$probe_out" | sed 's/^/[shared-feed]   /' >&2
-                rm -f "$candidate"
+                rm -rf "$work"
                 die 20 "the candidate $(feed_unit "$name") config failed the probe (exit $probe_rc); $config was not written"
             fi
-            mv -f "$candidate" "$config"
+            py copy "$candidate" "$config" || { rm -rf "$work"; die 20 "could not install the probed $(feed_unit "$name") config at $config"; }
+            rm -rf "$work"
         fi
         ln -sfn "$config" "$dir/scheduler/config.json"
         local envfile
@@ -1013,7 +1099,7 @@ cmd_consumers() {
     list=$(printf '%s\n' "${entries[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
     keep=$(mktemp -d)
     for name in "${FEEDS[@]}"; do
-        cp -p "$(feed_config "$name")" "$keep/$name.json"
+        py copy "$(feed_config "$name")" "$keep/$name.json"
     done
     CONSUMERS_KEEP="$keep"
     guard_set consumers
@@ -1046,8 +1132,7 @@ consumers_fail() {
     undo_begin
     local restore_failed="" prev
     for name in "${FEEDS[@]}"; do
-        cp -p "$keep/$name.json" "$(feed_config "$name").restore-shared-feed"
-        mv -f "$(feed_config "$name").restore-shared-feed" "$(feed_config "$name")"
+        py copy "$keep/$name.json" "$(feed_config "$name")"
         if ! systemctl is-active --quiet "$(feed_unit "$name")"; then
             log "$(feed_unit "$name") is not running; it loads its previous consumer list when it starts"
             continue
@@ -1082,8 +1167,7 @@ calibrate_fail() {
     config=$(feed_config backup)
     if [[ -n "$CAL_KEEP" && -f "$CAL_KEEP" ]]; then
         if ! cmp -s "$CAL_KEEP" "$config"; then
-            cp -p "$CAL_KEEP" "$config.restore-shared-feed"
-            mv -f "$config.restore-shared-feed" "$config"
+            py copy "$CAL_KEEP" "$config"
             systemctl kill -s HUP "$(feed_unit backup)" || true
         fi
         sum=$(sha256sum "$config" | awk '{print $1}')
@@ -1127,8 +1211,8 @@ cmd_calibrate() {
     [[ "$(py budget-complete "$(feed_config backup)")" == "yes" ]] || opt_budget_json >/dev/null \
         || die 2 "$(feed_config backup) has no complete weight policy; pass all five budget flags (--per-minute, --startup, --weight-per-minute, --weight-startup, --weight-reserve). Nothing changed"
     prior=$(py budget-of "$(feed_config backup)")
-    CAL_KEEP=$(mktemp)
-    cp -p "$(feed_config backup)" "$CAL_KEEP"
+    CAL_KEEP="$(mktemp -d)/config.json"
+    py copy "$(feed_config backup)" "$CAL_KEEP"
     guard_set calibrate
     if [[ -n "$OPT_PER_MINUTE" || -n "$OPT_WEIGHT_PER_MINUTE" ]]; then
         budget=$(python3 - "$prior" "$OPT_PER_MINUTE" "$OPT_STARTUP" "$OPT_WEIGHT_PER_MINUTE" "$OPT_WEIGHT_STARTUP" "$OPT_WEIGHT_RESERVE" <<'PY'
@@ -1325,14 +1409,13 @@ restore_consumer() {
         mode="keys"
     fi
     if [[ "$mode" == "byte" ]]; then
-        cp -p "$backup" "$cfg.restore-shared-feed"
-        mv -f "$cfg.restore-shared-feed" "$cfg"
+        py copy "$backup" "$cfg"
     else
         local kept
         kept="${cfg}.pre-rollback.$(date -u +%Y%m%dT%H%M%SZ)"
-        cp -p "$cfg" "$kept"
+        py copy "$cfg" "$kept"
         py revert-feed-keys "$cfg" "$backup"
-        chown --reference="$kept" "$cfg"
+        py chown-ref "$kept" "$cfg"
         log "$unit: the config changed after the switch (for example a paper fold), so only market_feed and shared_market_feed are reverted; the changed config is kept as $kept"
     fi
     [[ -z "$shadow" ]] || write_shadow "$cfg" "$shadow"
@@ -1473,12 +1556,12 @@ cmd_switch() {
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
     backup="${cfg}.pre-shared-feed.${stamp}"
     pre=$(update_file_fingerprint "$cfg")
-    cp -p "$cfg" "$backup"
+    py copy "$cfg" "$backup"
     old_pid=$(unit_prop "$unit" MainPID)
     journal_add "switch $unit config=$cfg backup=$backup pre=$pre pid=$old_pid begin"
     guard_set switch "$unit"
-    py write-shared "$cfg" "$cfg" "$(feed_socket primary)" "$(feed_socket backup)" "$(stat -c '%a' "$backup")"
-    chown --reference="$backup" "$cfg"
+    py write-shared "$cfg" "$cfg" "$(feed_socket primary)" "$(feed_socket backup)" "$(py mode-of "$backup")"
+    py chown-ref "$backup" "$cfg"
     post=$(update_file_fingerprint "$cfg")
     journal_add "switch $unit config=$cfg backup=$backup pre=$pre post=$post pid=$old_pid written"
     local name tmp state waited

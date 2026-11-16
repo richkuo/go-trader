@@ -73,7 +73,7 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 	},
 	"test_shared_feed_convert_budget.sh": {
 		ciStep: true,
-		marker: "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config)",
+		marker: "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink)",
 	},
 	"test_feed_parity.sh": {
 		ciStep: true,

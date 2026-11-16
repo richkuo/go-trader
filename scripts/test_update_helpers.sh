@@ -2837,8 +2837,8 @@ fcfg_root=$(cd "$fcfg_root" && pwd -P)
         || ff "a regular staged config was refused: $(cat "$fcfg_root/ok.err")"
     cmp -s "$fcfg_root/snap2/feed_config.candidate" "$fcfg_root/live/config.json.staged" || ff "the candidate copy differs from the staged bytes"
     cmp -s "$fcfg_root/snap2/feed_config.live" "$fcfg_root/live/config.json" || ff "the live copy differs from the live bytes"
-    [[ "$(stat -f %Lp "$fcfg_root/snap2/feed_config.live" 2>/dev/null || stat -c %a "$fcfg_root/snap2/feed_config.live")" == "640" ]] || ff "the live copy did not keep the live mode"
-    [[ "$(stat -f %Lp "$fcfg_root/snap2/feed_config.candidate" 2>/dev/null || stat -c %a "$fcfg_root/snap2/feed_config.candidate")" == "600" ]] || ff "the candidate copy is not private"
+    [[ "$(python3 -c 'import os, sys; print(format(os.stat(sys.argv[1]).st_mode & 0o7777, "o"))' "$fcfg_root/snap2/feed_config.live")" == "640" ]] || ff "the live copy did not keep the live mode"
+    [[ "$(python3 -c 'import os, sys; print(format(os.stat(sys.argv[1]).st_mode & 0o7777, "o"))' "$fcfg_root/snap2/feed_config.candidate")" == "600" ]] || ff "the candidate copy is not private"
     echo "OK: feed config: a regular staged file is copied byte for byte into the snapshot"
 
     cand_sha=$(sed -n 's/^feed_config_candidate_sha=//p' "$fcfg_root/snap2/feed_config.env")
@@ -2869,7 +2869,7 @@ fcfg_root=$(cd "$fcfg_root" && pwd -P)
     update_feed_config_install "$fcfg_root/snap2/feed_config.candidate" "$live" "$live" "$cand_sha" 2>"$fcfg_root/promote.err" \
         || ff "a normal promotion failed: $(cat "$fcfg_root/promote.err")"
     cmp -s "$live" "$fcfg_root/snap2/feed_config.candidate" || ff "the promoted bytes differ from the candidate"
-    [[ "$(stat -f %Lp "$live" 2>/dev/null || stat -c %a "$live")" == "640" ]] || ff "promotion did not keep the live mode"
+    [[ "$(python3 -c 'import os, sys; print(format(os.stat(sys.argv[1]).st_mode & 0o7777, "o"))' "$live")" == "640" ]] || ff "promotion did not keep the live mode"
     [[ -z "$(ls -A "$fcfg_root/live" | grep '^\.go-trader-config\.')" ]] || ff "promotion left a temporary file"
     update_feed_config_restore "$fcfg_root/snap2" 2>"$fcfg_root/restore.err" || ff "restore failed: $(cat "$fcfg_root/restore.err")"
     cmp -s "$live" "$fcfg_root/snap2/feed_config.live" || ff "restore did not bring back the live bytes"

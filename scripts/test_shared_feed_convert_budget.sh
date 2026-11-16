@@ -124,6 +124,58 @@ grep -q "sha256 $original" "$WORK/calibrate.out" || fail "calibrate_fail did not
 grep -qx 'kill -s HUP go-trader@feed-backup.service' "$SYSTEMCTL_LOG" || fail "calibrate_fail sent no SIGHUP after the restore"
 ok "a calibration failure restores a byte-identical config and reloads the backup"
 
+TARGET="$WORK/root-only-target"
+printf 'ROOT-ONLY\n' >"$TARGET"
+chmod 0600 "$TARGET"
+target_sum=$(sha "$TARGET")
+target_mode() { python3 -c 'import os,sys; print(format(os.stat(sys.argv[1]).st_mode & 0o7777, "o"))' "$1"; }
+ln -sfn "$TARGET" "$CONFIG.candidate-shared-feed"
+ln -sfn "$TARGET" "$CONFIG.restore-shared-feed"
+: >"$SYSTEMCTL_LOG"
+apply_backup_budget '{"per_minute":160,"startup":60,"weight_per_minute":650,"weight_startup":300,"weight_reserve":200}' >/dev/null 2>&1 \
+    || fail "a safe budget change failed with symlinks planted in the config directory"
+[[ "$(py budget-of "$CONFIG")" == '{"per_minute":160,"startup":60,"weight_per_minute":650,"weight_startup":300,"weight_reserve":200}' ]] \
+    || fail "the budget change did not land on the real config: $(py budget-of "$CONFIG")"
+[[ "$(sha "$TARGET")" == "$target_sum" && "$(target_mode "$TARGET")" == "600" ]] || fail "a budget change wrote through a planted symlink"
+[[ -L "$CONFIG.candidate-shared-feed" && ! -L "$CONFIG" ]] || fail "a budget change replaced the planted symlink or left the config as a symlink"
+ok "a budget change with symlinks planted in the config directory completes on the real config and leaves the symlink target unchanged"
+
+kept_sum=$(sha "$CONFIG")
+CAL_KEEP="$WORK/calibrate-keep-2.json"
+cp -p "$CONFIG" "$CAL_KEEP"
+py set-budget "$CONFIG" '{"per_minute":9,"startup":9,"weight_per_minute":9,"weight_startup":9,"weight_reserve":9}'
+rc=0
+(calibrate_fail "fixture failure with a planted restore symlink") >"$WORK/calibrate-2.out" 2>&1 || rc=$?
+[[ $rc -eq 24 ]] || fail "calibrate_fail exited $rc, want 24"
+[[ "$(sha "$CONFIG")" == "$kept_sum" ]] || fail "calibrate_fail did not restore the kept bytes past a planted restore symlink"
+[[ "$(sha "$TARGET")" == "$target_sum" && "$(target_mode "$TARGET")" == "600" ]] || fail "calibrate_fail wrote through a planted symlink"
+ok "a calibration failure restores the kept bytes and never writes through a planted restore symlink"
+
+mv "$CONFIG" "$CONFIG.real"
+ln -s "$TARGET" "$CONFIG"
+rc=0
+apply_backup_budget '{"per_minute":170,"startup":60,"weight_per_minute":650,"weight_startup":300,"weight_reserve":200}' >/dev/null 2>&1 || rc=$?
+[[ $rc -ne 0 ]] || fail "a budget change read a config that was swapped to a symlink"
+[[ "$(sha "$TARGET")" == "$target_sum" && -L "$CONFIG" ]] || fail "a budget change touched the symlink target or replaced the swapped symlink"
+rm "$CONFIG"
+mv "$CONFIG.real" "$CONFIG"
+rm -f "$CONFIG.candidate-shared-feed" "$CONFIG.restore-shared-feed"
+ok "a config swapped to a symlink is refused before root reads or writes through it"
+
+PLAN_TMP=$(mktemp -d "$WORK/plan-probe.XXXXXX")
+printf '{}\n' >"$PLAN_TMP/feed-backup.json"
+printf '{}\n' >"$PLAN_TMP/go-trader@a.json"
+chmod 0600 "$PLAN_TMP/feed-backup.json" "$PLAN_TMP/go-trader@a.json"
+(
+    chown() { printf '%s\n' "$*" >>"$WORK/plan-chown.log"; }
+    grant_plan_probe_read "$PLAN_TMP" 4243
+)
+[[ "$(cat "$WORK/plan-chown.log")" == "0:4243 $PLAN_TMP"$'\n'"0:4243 $PLAN_TMP/go-trader@a.json" ]] \
+    || fail "the plan probe grant changed owners beyond root:<group> on the directory and the shadow files: $(cat "$WORK/plan-chown.log")"
+[[ "$(target_mode "$PLAN_TMP")" == "710" && "$(target_mode "$PLAN_TMP/go-trader@a.json")" == "640" && "$(target_mode "$PLAN_TMP/feed-backup.json")" == "600" ]] \
+    || fail "plan probe modes: dir $(target_mode "$PLAN_TMP"), shadow $(target_mode "$PLAN_TMP/go-trader@a.json"), feed $(target_mode "$PLAN_TMP/feed-backup.json")"
+ok "the plan probe directory stays root-owned and unwritable by the owner; the owner gets group read on the shadow configs only"
+
 TREE="$WORK/consumer-tree"
 mkdir -p "$TREE"
 cat >"$TREE/go-trader" <<SH
@@ -225,4 +277,4 @@ grep -q "not a whole number" "$WORK/cal-hostile.out" || fail "calibrate did not 
 [[ "$(sha "$CONFIG")" == "$before" ]] || fail "calibrate changed the config after a non-numeric /health value"
 ok "a non-numeric /health value stops calibrate, runs no command and keeps the config"
 
-echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner)"
+echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink)"
