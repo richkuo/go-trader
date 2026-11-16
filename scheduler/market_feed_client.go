@@ -130,6 +130,7 @@ type sharedFeedClient struct {
 	lastGaps string
 	last     *sharedFeedFetchReport
 	fallback map[marketFeedKey]*feedKeyFallback
+	fillSlow string
 }
 
 func newSharedFeedClient(cfg *Config) *sharedFeedClient {
@@ -461,6 +462,9 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 	if report.Status == feedFetchSealed && served == 0 {
 		c.updateFallbackEpisodes(key, snap, filled, primaryReady, &report)
 	}
+	if report.Status == feedFetchSealed && served > 0 {
+		c.fillSlow = ""
+	}
 	cp := report
 	cp.Alerts = nil
 	c.last = &cp
@@ -481,13 +485,32 @@ func (c *sharedFeedClient) fetchFill(ctx context.Context, ep sharedFeedEndpoint,
 		report.FillRequest = err.Error()
 		return nil
 	}
-	fctx, cancel := c.clockDeadlineCtx(ctx, giveUp)
-	doc, h, err := c.fetchFrom(fctx, ep, key, giveUp)
+	c.mu.Lock()
+	slow := c.fillSlow
+	c.mu.Unlock()
+	bound := giveUp
+	if slow != "" {
+		if probe := c.clock().Add(feedClientProbeFloor); probe.Before(bound) {
+			bound = probe
+		}
+	}
+	fctx, cancel := c.clockDeadlineCtx(ctx, bound)
+	doc, h, err := c.fetchFrom(fctx, ep, key, bound)
 	cancel()
 	c.recordEndpoint(ep, key, h, err, report)
+	c.mu.Lock()
+	c.fillSlow = ""
+	var ee *feedEndpointError
+	if errors.As(err, &ee) && (ee.Kind == feedErrTransport || ee.Kind == feedErrPendingLimit) {
+		c.fillSlow = ee.Kind
+	}
+	c.mu.Unlock()
 	if err != nil {
 		report.Attempts = append(report.Attempts, fmt.Sprintf("%s=%v", name, err))
 		report.FillRequest = err.Error()
+		if slow != "" {
+			report.FillRequest = fmt.Sprintf("probe %s after an earlier fill request ended %s: %v", feedClientProbeFloor, slow, err)
+		}
 		return nil
 	}
 	report.Attempts = append(report.Attempts, name+"=sealed")
