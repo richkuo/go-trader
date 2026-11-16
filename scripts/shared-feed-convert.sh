@@ -155,6 +155,7 @@ journal_field() {
 }
 
 PY_HELPER=$(cat <<'PY'
+import errno
 import json
 import os
 import re
@@ -162,8 +163,44 @@ import secrets
 import stat
 import sys
 
+def open_dir_walk(path):
+    parts = [p for p in os.path.abspath(path).split("/") if p]
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    hops = 0
+    while parts:
+        part = parts.pop(0)
+        if part == ".":
+            continue
+        if part == "..":
+            os.close(fd)
+            sys.exit(f"{path}: a symlink target with .. is not followed")
+        try:
+            nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        except OSError as e:
+            if e.errno not in (errno.ELOOP, errno.ENOTDIR):
+                os.close(fd)
+                sys.exit(f"{path}: cannot open the directory {part} ({e.strerror})")
+            lst = os.stat(part, dir_fd=fd, follow_symlinks=False)
+            here = os.fstat(fd)
+            if not stat.S_ISLNK(lst.st_mode) or lst.st_uid != 0 or here.st_uid != 0 or here.st_mode & 0o022:
+                os.close(fd)
+                sys.exit(f"{path}: the path component {part} is a symlink or not a directory in a directory another account can change; nothing is read or written through it")
+            hops += 1
+            if hops > 40:
+                os.close(fd)
+                sys.exit(f"{path}: too many symlinks")
+            target = os.readlink(part, dir_fd=fd)
+            parts = [p for p in target.split("/") if p] + parts
+            if target.startswith("/"):
+                os.close(fd)
+                fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+            continue
+        os.close(fd)
+        fd = nfd
+    return fd
+
 def open_parent(path):
-    return os.open(os.path.dirname(os.path.abspath(path)) or "/", os.O_RDONLY | os.O_DIRECTORY)
+    return open_dir_walk(os.path.dirname(os.path.abspath(path)) or "/")
 
 def open_nofollow(path):
     dfd = open_parent(path)
@@ -425,10 +462,23 @@ unit_config_path() {
     elif [[ "$cfg" != /* ]]; then
         cfg="${wd%/}/$cfg"
     fi
-    local resolved
-    resolved=$(readlink -f "$cfg" 2>/dev/null) || resolved="$cfg"
-    if [[ "$resolved" != "$cfg" && "$resolved" != "$CONVERT_ROOT/var/lib/go-trader/"* ]]; then
-        die 2 "$unit: its config path $cfg resolves through a symlink to $resolved, outside $CONVERT_ROOT/var/lib/go-trader; the script reads a symlinked consumer config only inside the go-trader config root. Nothing changed"
+    local resolved own instance
+    if ! resolved=$(readlink -f "$cfg" 2>/dev/null); then
+        resolved="$cfg"
+        [[ -L "$cfg" ]] && resolved=""
+    fi
+    if [[ -L "$cfg" || "$resolved" != "$cfg" ]]; then
+        instance="${unit%.service}"
+        if [[ "$instance" == go-trader@* ]]; then
+            instance="${instance#go-trader@}"
+            own="$CONVERT_ROOT/var/lib/go-trader/$instance/config.json"
+        else
+            own="$CONVERT_ROOT/var/lib/go-trader/config.json"
+        fi
+        own="$(readlink -f "$(dirname "$own")" 2>/dev/null || dirname "$own")/config.json"
+        if [[ "$resolved" != "$own" || "$instance" == feed-* || "$instance" == shared-feed ]]; then
+            die 2 "$unit: its config path $cfg resolves through a symlink to $resolved; the script follows a consumer config symlink only to the unit's own $own. Nothing changed"
+        fi
     fi
     printf '%s' "$resolved"
 }
@@ -710,13 +760,13 @@ apply_backup_budget() {
 }
 
 grant_plan_probe_read() {
-    local tmp="$1" gid="$2" f
-    chown "0:$gid" "$tmp"
-    chmod 0710 "$tmp"
+    local tmp="$1" owner="$2" f
+    chown 0:0 "$tmp"
+    chmod 0711 "$tmp"
     for f in "$tmp"/*.json; do
         [[ "$f" == "$tmp/feed-backup.json" ]] && continue
-        chown "0:$gid" "$f"
-        chmod 0640 "$f"
+        chmod 0600 "$f"
+        chown "$owner" "$f"
     done
 }
 
@@ -770,7 +820,7 @@ cmd_plan() {
         tmp=$(mktemp -d)
     fi
     build_temp_probe "$tmp" "$budget"
-    [[ -z "$owner" ]] || grant_plan_probe_read "$tmp" "${owner#*:}"
+    [[ -z "$owner" ]] || grant_plan_probe_read "$tmp" "$owner"
     set +e
     probe_out=$(probe_as_tree_owner "$first_wd" "$tmp/feed-backup.json" 2>&1)
     rc=$?

@@ -168,13 +168,44 @@ printf '{}\n' >"$PLAN_TMP/go-trader@a.json"
 chmod 0600 "$PLAN_TMP/feed-backup.json" "$PLAN_TMP/go-trader@a.json"
 (
     chown() { printf '%s\n' "$*" >>"$WORK/plan-chown.log"; }
-    grant_plan_probe_read "$PLAN_TMP" 4243
+    grant_plan_probe_read "$PLAN_TMP" 4242:4243
 )
-[[ "$(cat "$WORK/plan-chown.log")" == "0:4243 $PLAN_TMP"$'\n'"0:4243 $PLAN_TMP/go-trader@a.json" ]] \
-    || fail "the plan probe grant changed owners beyond root:<group> on the directory and the shadow files: $(cat "$WORK/plan-chown.log")"
-[[ "$(target_mode "$PLAN_TMP")" == "710" && "$(target_mode "$PLAN_TMP/go-trader@a.json")" == "640" && "$(target_mode "$PLAN_TMP/feed-backup.json")" == "600" ]] \
+[[ "$(cat "$WORK/plan-chown.log")" == "0:0 $PLAN_TMP"$'\n'"4242:4243 $PLAN_TMP/go-trader@a.json" ]] \
+    || fail "the plan probe grant changed owners beyond root on the directory and the probe user on the shadow files: $(cat "$WORK/plan-chown.log")"
+[[ "$(target_mode "$PLAN_TMP")" == "711" && "$(target_mode "$PLAN_TMP/go-trader@a.json")" == "600" && "$(target_mode "$PLAN_TMP/feed-backup.json")" == "600" ]] \
     || fail "plan probe modes: dir $(target_mode "$PLAN_TMP"), shadow $(target_mode "$PLAN_TMP/go-trader@a.json"), feed $(target_mode "$PLAN_TMP/feed-backup.json")"
-ok "the plan probe directory stays root-owned and unwritable by the owner; the owner gets group read on the shadow configs only"
+ok "the plan probe directory stays root-owned and unwritable by the owner; only the probe user can read each shadow config, and no group can"
+
+mkdir -p "$WORK/real-dir"
+ln -s "$WORK/real-dir" "$WORK/link-dir"
+printf '{"a":1}\n' >"$WORK/src.json"
+rc=0
+py copy "$WORK/src.json" "$WORK/link-dir/out.json" 2>"$WORK/walk.err" || rc=$?
+[[ $rc -ne 0 && ! -e "$WORK/real-dir/out.json" ]] || fail "a write went through a directory symlink placed in a directory a normal account owns"
+grep -q "in a directory another account can change" "$WORK/walk.err" || fail "no parent symlink refusal: $(cat "$WORK/walk.err")"
+ok "a symlinked parent directory that a normal account controls is refused, and nothing is written through it"
+
+ucp_check() {
+    local unit="$1" target="$2" link="$WORK/ucp/$3"
+    mkdir -p "$(dirname "$link")"
+    ln -sfn "$target" "$link"
+    (
+        unit_prop() { printf '/opt/whatever'; }
+        update_execstart_config_path() { printf '%s' "$link"; }
+        unit_config_path "$unit"
+    ) 2>"$WORK/ucp.err"
+}
+mkdir -p "$ROOT/var/lib/go-trader/inst1"
+printf '{}\n' >"$ROOT/var/lib/go-trader/inst1/config.json"
+got=$(ucp_check go-trader@inst1.service "$ROOT/var/lib/go-trader/inst1/config.json" a/config.json) \
+    || fail "a symlink to the unit's own config was refused: $(cat "$WORK/ucp.err")"
+[[ "$got" == "$(cd "$ROOT/var/lib/go-trader/inst1" && pwd -P)/config.json" ]] || fail "unit_config_path returned $got"
+for target in "$CONFIG" "$ROOT/var/lib/go-trader/inst2/config.json" "$STATE_DIR/convert.journal"; do
+    if ucp_check go-trader@inst1.service "$target" b/config.json >/dev/null; then
+        fail "a consumer config symlink to $target was accepted"
+    fi
+done
+ok "a consumer config symlink resolves only to the unit's own config, never into a feed, another unit or the shared-feed state"
 
 TREE="$WORK/consumer-tree"
 mkdir -p "$TREE"
@@ -277,4 +308,4 @@ grep -q "not a whole number" "$WORK/cal-hostile.out" || fail "calibrate did not 
 [[ "$(sha "$CONFIG")" == "$before" ]] || fail "calibrate changed the config after a non-numeric /health value"
 ok "a non-numeric /health value stops calibrate, runs no command and keeps the config"
 
-echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink)"
+echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the unit's own config)"
