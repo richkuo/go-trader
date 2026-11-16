@@ -308,4 +308,100 @@ grep -q "not a whole number" "$WORK/cal-hostile.out" || fail "calibrate did not 
 [[ "$(sha "$CONFIG")" == "$before" ]] || fail "calibrate changed the config after a non-numeric /health value"
 ok "a non-numeric /health value stops calibrate, runs no command and keeps the config"
 
-echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the unit's own config)"
+CANON=$(cd "$WORK" && pwd -P)
+LEGACY="$CANON/legacy"
+VICTIM="$CANON/victim"
+OTHER="$ROOT/var/lib/go-trader/inst2/config.json"
+mkdir -p "$LEGACY/scheduler" "$VICTIM" "$(dirname "$OTHER")"
+cat >"$LEGACY/scheduler/config.json" <<'JSON'
+{"strategies": [{"id": "hl-sma-btc", "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py", "args": ["sma_crossover", "BTC", "1h", "--mode=paper"]}]}
+JSON
+cp "$LEGACY/scheduler/config.json" "$VICTIM/config.json"
+cp "$LEGACY/scheduler/config.json" "$OTHER"
+chmod 0640 "$VICTIM/config.json" "$OTHER"
+victim_sum=$(sha "$VICTIM/config.json")
+other_sum=$(sha "$OTHER")
+LUNIT=go-trader-legacy.service
+switch_journal() {
+    printf '%s\n' "verify pass at=1" \
+        "budget calibrated per_minute=120 startup=60 weight_per_minute=600 weight_startup=400 weight_reserve=200 peak=10 weight_peak=300 bootstrap=5 bootstrap_weight=100 baseline_peak=none fixed=no at=2" \
+        "consumer $LUNIT config=$LEGACY/scheduler/config.json shadow=$SHADOW_DIR/go-trader-legacy.json" \
+        "consumers-set units=$LUNIT at=3" >"$JOURNAL"
+}
+legacy_units() {
+    unit_prop() {
+        case "$2" in
+            WorkingDirectory) [[ "$1" == "$LUNIT" ]] && printf '%s' "$LEGACY" || printf '%s' "$CANON/elsewhere" ;;
+            *) printf '' ;;
+        esac
+    }
+    update_execstart_config_path() { :; }
+}
+switch_journal
+got=$(legacy_units; consumer_config_now "$LUNIT" "$LEGACY/scheduler/config.json" && echo same) || fail "an unchanged legacy config path was refused"
+[[ "$got" == "same" ]] || fail "consumer_config_now printed $got"
+ok "an unchanged regular consumer config path passes the switch and rollback recheck"
+
+mv "$LEGACY/scheduler" "$LEGACY/scheduler.real"
+ln -s "$VICTIM" "$LEGACY/scheduler"
+rc=0
+(legacy_units; SELECTED=("$LUNIT"); cmd_switch) >"$WORK/sw1.out" 2>&1 || rc=$?
+[[ $rc -eq 20 ]] || fail "switch through a swapped consumer directory exited $rc, want 20: $(cat "$WORK/sw1.out")"
+grep -q "no longer resolves to $LEGACY/scheduler/config.json" "$WORK/sw1.out" || fail "switch did not name the changed path: $(cat "$WORK/sw1.out")"
+[[ "$(sha "$VICTIM/config.json")" == "$victim_sum" && "$(target_mode "$VICTIM/config.json")" == "640" ]] || fail "switch changed the config behind a swapped directory"
+compgen -G "$VICTIM/config.json.pre-shared-feed.*" >/dev/null && fail "switch wrote a pre-switch copy into the folder behind a swapped directory"
+ok "switch refuses a consumer whose config directory became a symlink after 'consumers'; the target config keeps its bytes and mode and gets no pre-switch copy"
+
+printf 'BACKUP\n' >"$WORK/legacy-backup.json"
+printf '%s\n' "switch $LUNIT config=$LEGACY/scheduler/config.json backup=$WORK/legacy-backup.json pre=$(sha "$WORK/legacy-backup.json") post=$victim_sum pid=1 written" >>"$JOURNAL"
+rc=0
+(legacy_units; SELECTED=("$LUNIT"); OPT_ALL=0; cmd_rollback) >"$WORK/rb1.out" 2>&1 || rc=$?
+[[ $rc -eq 30 ]] || fail "rollback through a swapped consumer directory exited $rc, want 30: $(cat "$WORK/rb1.out")"
+grep -q "nothing is restored through a changed path" "$WORK/rb1.out" || fail "rollback did not refuse at the path recheck: $(cat "$WORK/rb1.out")"
+[[ "$(sha "$VICTIM/config.json")" == "$victim_sum" ]] || fail "rollback wrote the config behind a swapped directory"
+compgen -G "$VICTIM/config.json.pre-rollback.*" >/dev/null && fail "rollback wrote a copy into the folder behind a swapped directory"
+ok "rollback refuses a consumer whose config directory became a symlink after the switch, and writes nothing behind it"
+
+rm "$LEGACY/scheduler"
+mv "$LEGACY/scheduler.real" "$LEGACY/scheduler"
+mv "$LEGACY/scheduler/config.json" "$LEGACY/scheduler/config.json.real"
+ln -s "$OTHER" "$LEGACY/scheduler/config.json"
+switch_journal
+rc=0
+(legacy_units; SELECTED=("$LUNIT"); cmd_switch) >"$WORK/sw2.out" 2>&1 || rc=$?
+[[ $rc -eq 20 ]] || fail "switch through a config symlink into another unit exited $rc, want 20: $(cat "$WORK/sw2.out")"
+[[ "$(sha "$OTHER")" == "$other_sum" ]] || fail "switch changed another unit's config"
+compgen -G "$OTHER.pre-shared-feed.*" >/dev/null && fail "switch wrote a pre-switch copy beside another unit's config"
+rc=0
+(legacy_units; scheduler_units() { printf '%s\n' "$LUNIT"; }; check_selection "$LUNIT") >"$WORK/sel2.out" 2>&1 || rc=$?
+[[ $rc -eq 2 ]] || fail "plan and feeds selection of a config symlink into another unit exited $rc, want 2: $(cat "$WORK/sel2.out")"
+grep -q "ERROR $LUNIT: its config path" "$WORK/sel2.out" || fail "the selection refusal did not name $LUNIT: $(cat "$WORK/sel2.out")"
+ok "a consumer config symlink into another unit's state folder is refused by the plan and feeds selection and by switch; that config does not change"
+
+INST1_DIR="$CANON/inst1-tree"
+mkdir -p "$INST1_DIR/scheduler"
+ln -sfn "$ROOT/var/lib/go-trader/inst1/config.json" "$INST1_DIR/scheduler/config.json"
+own_now=$(
+    unit_prop() { [[ "$2" == WorkingDirectory ]] && printf '%s' "$INST1_DIR" || printf ''; }
+    update_execstart_config_path() { :; }
+    unit_config_path go-trader@inst1.service
+) || fail "the migrated-layout symlink to the unit's own config was refused"
+(
+    unit_prop() { [[ "$2" == WorkingDirectory ]] && printf '%s' "$INST1_DIR" || printf ''; }
+    update_execstart_config_path() { :; }
+    consumer_config_now go-trader@inst1.service "$own_now"
+) 2>"$WORK/own.err" || fail "the recheck refused the migrated-layout path it recorded: $(cat "$WORK/own.err")"
+ok "a migrated-layout config symlink to the unit's own state folder passes the switch and rollback recheck"
+
+rc=0
+(
+    scheduler_units() { printf '%s\n' "$LUNIT" go-trader-plain.service; }
+    legacy_units
+    print_inventory
+) >"$WORK/inv.out" 2>&1 || rc=$?
+[[ $rc -eq 0 ]] || fail "the inventory stopped on a refused unit that is not selected (exit $rc): $(cat "$WORK/inv.out")"
+grep -q "$LUNIT: refused as a consumer: $LUNIT: its config path" "$WORK/inv.out" || fail "the inventory did not report the refused unit: $(cat "$WORK/inv.out")"
+grep -q "go-trader-plain.service user=" "$WORK/inv.out" || fail "the inventory stopped before the next unit: $(cat "$WORK/inv.out")"
+ok "the inventory reports a refused unit that is not selected and continues to the next unit"
+
+echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues)"

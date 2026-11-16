@@ -267,7 +267,11 @@ def safe_copy(src, dest):
     write_atomic(dest, data, st.st_mode & 0o7777, (st.st_uid, st.st_gid))
 
 def chown_ref(ref, target):
-    rst = os.stat(ref, follow_symlinks=False)
+    dfd = open_parent(ref)
+    try:
+        rst = os.stat(os.path.basename(os.path.abspath(ref)), dir_fd=dfd, follow_symlinks=False)
+    finally:
+        os.close(dfd)
     fd, _ = open_nofollow(target)
     try:
         os.fchown(fd, rst.st_uid, rst.st_gid)
@@ -483,6 +487,12 @@ unit_config_path() {
     printf '%s' "$resolved"
 }
 
+consumer_config_now() {
+    local unit="$1" recorded="$2" now
+    now=$(unit_config_path "$unit") || return 1
+    [[ -n "$now" && "$now" == "$recorded" ]] || { warn "$unit: its config path resolves to ${now:-nothing} now, but the journal records $recorded"; return 1; }
+}
+
 unit_user() {
     local u
     u=$(unit_prop "$1" User)
@@ -584,7 +594,7 @@ check_selection() {
         seen="${seen}${unit}"$'\n'
         case "$known" in *$'\n'"$unit"$'\n'*) ;; *) die 11 "$unit is not an active go-trader scheduler unit (signal-mode and bare-process deployments are not supported)" ;; esac
         wd=$(unit_prop "$unit" WorkingDirectory)
-        cfg=$(unit_config_path "$unit")
+        cfg=$(unit_config_path "$unit") || exit $?
         [[ -f "$cfg" ]] || die 11 "$unit: config $cfg does not exist"
         summary=$(py summary "$cfg") || die 11 "$unit: config $cfg does not parse"
         [[ "$(journal_field "$summary" covered)" -gt 0 ]] || die 12 "$unit: no Hyperliquid perps or manual strategy uses check_hyperliquid.py, so the shared feed covers nothing"
@@ -608,7 +618,7 @@ check_selection() {
     done
     id "$FEED_USER" >/dev/null 2>&1 || die 15 "consumer user $FEED_USER does not exist"
     for unit in "${CONSUMERS[@]}"; do
-        cfg=$(unit_config_path "$unit")
+        cfg=$(unit_config_path "$unit") || exit $?
         if [[ "$FEED_USER" != "root" ]] && ! runuser -u "$FEED_USER" -- test -r "$cfg" 2>/dev/null; then
             die 15 "$FEED_USER cannot read $cfg; the feed must read each consumer config after the switch"
         fi
@@ -666,7 +676,10 @@ print_inventory() {
     log "scheduler units on this host:"
     while IFS= read -r unit; do
         [[ -n "$unit" ]] || continue
-        cfg=$(unit_config_path "$unit")
+        if ! cfg=$(unit_config_path "$unit" 2>&1); then
+            log "  $unit: refused as a consumer: ${cfg#"[shared-feed] ERROR "}"
+            continue
+        fi
         wd=$(unit_prop "$unit" WorkingDirectory)
         summary=$(py summary "$cfg" 2>/dev/null || echo "config unreadable")
         ver=$(health_get "$(journal_field "$summary" status_port)" version)
@@ -774,7 +787,7 @@ build_temp_probe() {
     local tmp="$1" budget="$2" unit cfg
     local -a shadows=()
     for unit in "${CONSUMERS[@]}"; do
-        cfg=$(unit_config_path "$unit")
+        cfg=$(unit_config_path "$unit") || exit $?
         py write-shared "$cfg" "$tmp/${unit%.service}.json" "$(feed_socket primary)" "$(feed_socket backup)" 0600
         shadows+=("$tmp/${unit%.service}.json")
     done
@@ -841,7 +854,7 @@ cmd_plan() {
         log "  feed units get a User=$FEED_USER Group=$FEED_GROUP drop-in, because the consumers run as $FEED_USER"
     fi
     for unit in "${CONSUMERS[@]}"; do
-        cfg=$(unit_config_path "$unit")
+        cfg=$(unit_config_path "$unit") || exit $?
         summary=$(py summary "$cfg")
         [[ "$(journal_field "$summary" live)" == "no" ]] && papers=$((papers + 1))
         log "  $unit: $cfg gets market_feed \"shared\", primary_socket $(feed_socket primary), backup_socket $(feed_socket backup); restart required$([[ "$(journal_field "$summary" live)" == "yes" ]] && echo "; LIVE: needs --confirm-live $unit")"
@@ -901,7 +914,7 @@ cmd_feeds() {
     pick_ports
     local first_wd first_cfg origin unit cfg shadow name
     first_wd=$(unit_prop "${CONSUMERS[0]}" WorkingDirectory)
-    first_cfg=$(unit_config_path "${CONSUMERS[0]}")
+    first_cfg=$(unit_config_path "${CONSUMERS[0]}") || exit $?
     origin=$(consumer_origin "$first_wd") \
         || die 20 "could not read the git origin of $first_wd (the git error above names the cause); the feed deployments clone it so update.sh can update them later. Nothing changed"
     prepare_shadow_dir
@@ -1010,7 +1023,7 @@ cmd_feeds() {
 
 consumer_entry() {
     local unit="$1" cfg shadow
-    cfg=$(unit_config_path "$unit")
+    cfg=$(unit_config_path "$unit") || exit $?
     shadow="$SHADOW_DIR/${unit%.service}.json"
     journal_add "consumer $unit config=$cfg shadow=$shadow"
     if [[ "$(py is-shared "$cfg" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]]; then
@@ -1454,6 +1467,7 @@ restore_consumer() {
     post=$(journal_field "$rec" post)
     shadow=$(journal_field "$(journal_last "consumer $unit")" shadow)
     [[ -n "$cfg" && -f "$backup" ]] || { warn "$unit: no saved config recorded"; return 1; }
+    consumer_config_now "$unit" "$cfg" || { warn "$unit: its config path no longer resolves to the recorded $cfg; nothing is restored through a changed path, so restore $backup by hand"; return 1; }
     [[ "$(update_file_fingerprint "$backup")" == "$pre" ]] || { warn "$unit: $backup no longer matches the recorded pre-switch fingerprint"; return 1; }
     if [[ -n "$post" && "$(update_file_fingerprint "$cfg")" != "$post" ]]; then
         mode="keys"
@@ -1581,6 +1595,7 @@ cmd_switch() {
     [[ -n "$crec" ]] && in_current_consumers "$unit" || die 20 "$unit is not a current consumer; add it with 'consumers' (or 'feeds') first"
     cfg=$(journal_field "$crec" config)
     shadow=$(journal_field "$crec" shadow)
+    consumer_config_now "$unit" "$cfg" || die 20 "$unit: its config path no longer resolves to $cfg, the path that 'consumers' or 'feeds' recorded; root writes no config through a changed path. Nothing changed"
     srec=$(journal_last "switch $unit")
     if [[ "$(py is-shared "$cfg" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]]; then
         if [[ -n "$srec" && "$srec" != *" done" && "$srec" != *" rolled_back "* ]]; then
