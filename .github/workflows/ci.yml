@@ -212,6 +212,12 @@ jobs:
             --marker 'PASS: quote replay harness (recorder output replays through the real quote coordinator with an equal independent ledger; resume reproduces records; the frozen study scores every split; depth-only, raw-trade-gap, tampered, altered, credentialed and archive-cache inputs refused or unscored; ordinary discovery unchanged)' \
             -- bash scripts/test_quote_replay.sh
 
+      - name: Feed parity audit suite
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'PASS: feed-parity audit (per-key backup fills from one backup seal pass; wrong or unlogged backup seals, same-seal fill contradictions and every earlier failure rule fail)' \
+            -- bash scripts/test_feed_parity.sh
+
       - name: Allow unprivileged user namespaces for the ledger capture worker
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 

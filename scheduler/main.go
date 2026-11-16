@@ -921,6 +921,9 @@ func main() {
 				fmt.Fprintf(os.Stderr, "[reload] ERROR: market feed requirements rejected; keeping the previous requirements: %v\n", reqErr)
 			} else {
 				feedReq = nextReq
+				if closed := sharedClient.closeFallbackEpisodes(feedReq); len(closed) > 0 {
+					fmt.Printf("[reload] shared market feed key fallback closed without an alert for %s: the reloaded config no longer needs these keys\n", strings.Join(closed, ","))
+				}
 				fmt.Printf("[reload] shared market feed requirements refreshed (%d keys); each seal is checked against them\n", len(nextReq.Order))
 				checkSharedFeedCoverage(sharedClient, "reload", feedReq, feedConsumerCadences(cfg), notifier)
 			}

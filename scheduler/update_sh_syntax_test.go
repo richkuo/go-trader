@@ -71,6 +71,10 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		ciStep: true,
 		marker: "PASS: volume-profile replay harness (sealed profile sessions, hand-calculated value areas and decisions match the independent recording replay; tampered, truncated, contradicted and unclosed recordings refused)",
 	},
+	"test_feed_parity.sh": {
+		ciStep: true,
+		marker: "PASS: feed-parity audit (per-key backup fills from one backup seal pass; wrong or unlogged backup seals, same-seal fill contradictions and every earlier failure rule fail)",
+	},
 	"test_book_replay.sh": {
 		ciStep: true,
 		marker: "PASS: l2_book replay harness (sealed book payloads match the independent recording replay; mixed v3 runs keep every importer; tampered, truncated, unclosed, dropped, mislabeled and contradicted recordings refused)",
