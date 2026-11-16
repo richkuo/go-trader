@@ -124,4 +124,105 @@ grep -q "sha256 $original" "$WORK/calibrate.out" || fail "calibrate_fail did not
 grep -qx 'kill -s HUP go-trader@feed-backup.service' "$SYSTEMCTL_LOG" || fail "calibrate_fail sent no SIGHUP after the restore"
 ok "a calibration failure restores a byte-identical config and reloads the backup"
 
-echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config)"
+TREE="$WORK/consumer-tree"
+mkdir -p "$TREE"
+cat >"$TREE/go-trader" <<SH
+#!/bin/sh
+echo "\$*" >>"$WORK/direct-probe.log"
+exit 0
+SH
+chmod +x "$TREE/go-trader"
+(
+    update_tree_foreign_owner() { printf '4242:4243'; }
+    update_probe_as_owner() { printf '%s\n' "$*" >>"$WORK/owner-probe.log"; }
+    probe_as_tree_owner "$TREE" "$CONFIG"
+) >/dev/null 2>&1 || fail "the owner probe path failed"
+[[ "$(cat "$WORK/owner-probe.log")" == "$TREE 4242:4243 $TREE/go-trader stdin:$CONFIG" ]] \
+    || fail "a tree owned by another user was not probed as that owner with the config on stdin: $(cat "$WORK/owner-probe.log" 2>/dev/null)"
+[[ ! -e "$WORK/direct-probe.log" ]] || fail "the tree's binary ran directly although another user owns the tree"
+ok "a consumer tree owned by another user is probed as that owner, and its binary never runs as the caller"
+(
+    update_tree_foreign_owner() { :; }
+    probe_as_tree_owner "$TREE" "$CONFIG"
+) >/dev/null 2>&1 || fail "the direct probe path failed"
+[[ "$(cat "$WORK/direct-probe.log")" == "probe --config $CONFIG" ]] || fail "a tree the caller owns was not probed directly: $(cat "$WORK/direct-probe.log" 2>/dev/null)"
+ok "a tree the caller owns is probed directly, as before"
+[[ "$(grep -c 'go-trader probe --config' "$SCRIPT_DIR/shared-feed-convert.sh")" == "2" ]] \
+    || fail "shared-feed-convert.sh runs a tree binary outside probe_as_tree_owner and run_probe_live"
+
+HEALTH_MODE="$WORK/health.mode"
+HEALTH_PORT_FILE="$WORK/health.port"
+python3 - "$CONFIG" "$HEALTH_MODE" "$HEALTH_PORT_FILE" <<'PY' &
+import http.server, json, sys
+config, mode_path, port_path = sys.argv[1:4]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+    def do_GET(self):
+        mode = open(mode_path).read().strip()
+        b = json.load(open(config))["feed"]["request_budget"]
+        charged = {"hostile": "PWD[$(touch " + mode_path + ".pwned)]", "low": 4}.get(mode, 23)
+        body = {"request_budget": {"per_minute": b["per_minute"], "window_used": 4,
+                "totals": {"refused": 0, "by_reason": {"bootstrap": 3}},
+                "weight": {"participation": "enabled", "ceiling": 1200, "weight_per_minute": b["weight_per_minute"],
+                           "charged": charged, "pending": 0, "in_flight": 0,
+                           "totals": {"refused": 0, "reserved_by_reason": {"bootstrap": 30}}}}}
+        data = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+open(port_path, "w").write(str(srv.server_address[1]))
+srv.serve_forever()
+PY
+HEALTH_PID=$!
+trap 'kill "$HEALTH_PID" 2>/dev/null || true; rm -rf "$WORK"' EXIT
+for _ in $(seq 1 50); do [[ -s "$HEALTH_PORT_FILE" ]] && break; sleep 0.1; done
+[[ -s "$HEALTH_PORT_FILE" ]] || fail "the fixture health server did not start"
+need_root() { :; }
+printf 'feeds ready at=1\nport backup %s\n' "$(cat "$HEALTH_PORT_FILE")" >"$JOURNAL"
+largest=$(calibrate_largest_read) || fail "the real probe printed no largest_read"
+[[ "$largest" =~ ^[1-9][0-9]*$ ]] || fail "largest_read is $largest"
+
+echo normal >"$HEALTH_MODE"
+py set-budget "$CONFIG" '{"per_minute":120,"startup":60,"weight_per_minute":600,"weight_startup":400,"weight_reserve":200}'
+rc=0
+(OPT_WINDOW=2 cmd_calibrate) >"$WORK/cal-floor.out" 2>&1 || rc=$?
+[[ $rc -eq 0 ]] || fail "calibrate with a measured weight peak of 23 exited $rc: $(cat "$WORK/cal-floor.out")"
+wpm=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["feed"]["request_budget"]["weight_per_minute"])' "$CONFIG")
+[[ $wpm -ge $((largest + 2)) && $wpm -ge 35 ]] || fail "calibrate wrote weight_per_minute $wpm, below the largest read $largest plus the mids keep"
+ok "a measured weight peak of 23 calibrates weight_per_minute to $wpm, at least the largest single read $largest plus the mids keep (2)"
+
+echo low >"$HEALTH_MODE"
+py set-budget "$CONFIG" '{"per_minute":120,"startup":60,"weight_per_minute":600,"weight_startup":400,"weight_reserve":200}'
+rc=0
+(OPT_WINDOW=2 cmd_calibrate) >"$WORK/cal-low.out" 2>&1 || rc=$?
+[[ $rc -eq 0 ]] || fail "calibrate with a measured weight peak of 4 exited $rc: $(cat "$WORK/cal-low.out")"
+wpm=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["feed"]["request_budget"]["weight_per_minute"])' "$CONFIG")
+[[ $wpm -eq $((largest + 2)) ]] || fail "calibrate with a weight peak of 4 wrote weight_per_minute $wpm, want the floor $((largest + 2))"
+ok "a measured weight peak of 4 (1.5x = 6) is raised to the floor $wpm, the largest single read $largest plus the mids keep (2)"
+
+echo normal >"$HEALTH_MODE"
+py set-budget "$CONFIG" '{"per_minute":120,"startup":60,"weight_per_minute":5,"weight_startup":5,"weight_reserve":1190}'
+before=$(sha "$CONFIG")
+rc=0
+(OPT_WINDOW=2 cmd_calibrate) >"$WORK/cal-nofit.out" 2>&1 || rc=$?
+[[ $rc -eq 24 ]] || fail "calibrate with no room for the largest read exited $rc, want 24: $(cat "$WORK/cal-nofit.out")"
+grep -q "does not fit the 1200 ceiling less weight_reserve 1190" "$WORK/cal-nofit.out" || fail "calibrate did not name the floor that does not fit: $(cat "$WORK/cal-nofit.out")"
+[[ "$(sha "$CONFIG")" == "$before" ]] || fail "calibrate wrote a smaller policy when the floor did not fit"
+ok "calibrate fails with a clear message and keeps the config when the largest read does not fit the ceiling less the reserve"
+
+echo hostile >"$HEALTH_MODE"
+py set-budget "$CONFIG" '{"per_minute":120,"startup":60,"weight_per_minute":600,"weight_startup":400,"weight_reserve":200}'
+before=$(sha "$CONFIG")
+rc=0
+(OPT_WINDOW=2 cmd_calibrate) >"$WORK/cal-hostile.out" 2>&1 || rc=$?
+[[ $rc -eq 24 ]] || fail "calibrate on a non-numeric /health value exited $rc, want 24: $(cat "$WORK/cal-hostile.out")"
+[[ ! -e "$HEALTH_MODE.pwned" ]] || fail "a /health value ran a command in calibrate arithmetic"
+grep -q "not a whole number" "$WORK/cal-hostile.out" || fail "calibrate did not name the non-numeric value: $(cat "$WORK/cal-hostile.out")"
+[[ "$(sha "$CONFIG")" == "$before" ]] || fail "calibrate changed the config after a non-numeric /health value"
+ok "a non-numeric /health value stops calibrate, runs no command and keeps the config"
+
+echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner)"

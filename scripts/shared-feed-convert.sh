@@ -558,9 +558,14 @@ print_inventory() {
     done < <(scheduler_units)
 }
 
-run_probe() {
-    local tmp="$1" binary="$2" name="$3"
-    (cd "$tmp" && "$binary" probe --config "$tmp/feed-$name.json")
+probe_as_tree_owner() {
+    local tree="$1" config="$2" owner
+    owner=$(update_tree_foreign_owner "$tree")
+    if [[ -n "$owner" ]]; then
+        update_probe_as_owner "$tree" "$owner" "$tree/go-trader" "stdin:$config"
+        return
+    fi
+    (cd "$tree" && ./go-trader probe --config "$config")
 }
 
 validate_budget_opts() {
@@ -607,14 +612,7 @@ new_backup_budget_hint() {
 }
 
 probe_feed_candidate() {
-    local name="$1" candidate="$2" dir owner
-    dir=$(feed_dir "$name")
-    owner=$(update_tree_foreign_owner "$dir")
-    if [[ -n "$owner" ]]; then
-        update_probe_as_owner "$dir" "$owner" "$dir/go-trader" "$candidate"
-        return
-    fi
-    (cd "$dir" && ./go-trader probe --config "$candidate")
+    probe_as_tree_owner "$(feed_dir "$1")" "$2"
 }
 
 apply_backup_budget() {
@@ -677,10 +675,20 @@ cmd_plan() {
         budget=$(new_backup_budget) || die 2 "$(new_backup_budget_hint)"
         log "the probe uses the budget $budget"
     fi
-    tmp=$(mktemp -d)
+    local owner
+    owner=$(update_tree_foreign_owner "$first_wd")
+    if [[ -n "$owner" ]]; then
+        [[ "${owner%%:*}" == "$(id -u "$FEED_USER" 2>/dev/null)" ]] \
+            || die 16 "$first_wd belongs to uid ${owner%%:*}, but the consumers run as $FEED_USER; the plan probe runs the tree's binary only as its owner, and that owner must be the consumers' user to read their configs. Nothing changed"
+        install -d -m 0755 "$STATE_DIR"
+        tmp=$(mktemp -d "$STATE_DIR/plan-probe.XXXXXX")
+    else
+        tmp=$(mktemp -d)
+    fi
     build_temp_probe "$tmp" "$budget"
+    [[ -z "$owner" ]] || chown -R "$owner" "$tmp"
     set +e
-    probe_out=$(run_probe "$tmp" "$first_wd/go-trader" backup 2>&1)
+    probe_out=$(probe_as_tree_owner "$first_wd" "$tmp/feed-backup.json" 2>&1)
     rc=$?
     set -e
     rm -rf "$tmp"
@@ -809,7 +817,7 @@ cmd_feeds() {
             rm -f "$candidate"
             py write-feed "$candidate" "$first_cfg" "$(feed_source "$name")" "$(feed_socket "$name")" "${!portvar}" "$list" "$budget"
             set +e
-            probe_out=$(cd "$first_wd" && ./go-trader probe --config "$candidate" 2>&1)
+            probe_out=$(probe_as_tree_owner "$first_wd" "$candidate" 2>&1)
             probe_rc=$?
             set -e
             if [[ $probe_rc -ne 0 ]]; then
@@ -1085,12 +1093,27 @@ calibrate_fail() {
     die 24 "$1; the backup keeps its previous config byte for byte (sha256 ${sum:-unknown}) and its previous budget"
 }
 
+health_num() {
+    local v
+    v=$(health_get "$1" "$2")
+    [[ -z "$v" ]] && return 0
+    [[ "$v" =~ ^[0-9]{1,15}$ ]] || { warn "the backup's /health field $2 is not a whole number: ${v:0:40}"; return 1; }
+    printf '%s' "$v"
+}
+
 calibrate_weight_peak() {
     local port="$1" charged pending inflight
-    charged=$(health_get "$port" request_budget.weight.charged)
-    pending=$(health_get "$port" request_budget.weight.pending)
-    inflight=$(health_get "$port" request_budget.weight.in_flight)
+    charged=$(health_num "$port" request_budget.weight.charged) || return 1
+    pending=$(health_num "$port" request_budget.weight.pending) || return 1
+    inflight=$(health_num "$port" request_budget.weight.in_flight) || return 1
     printf '%s' $(( ${charged:-0} + ${pending:-0} + ${inflight:-0} ))
+}
+
+calibrate_largest_read() {
+    local v
+    v=$(run_probe_live backup | sed -n 's/^probe: weight estimate .*largest_read=\([0-9]*\)$/\1/p' | tail -n 1)
+    [[ "$v" =~ ^[1-9][0-9]{0,8}$ ]] || return 1
+    printf '%s' "$v"
 }
 
 cmd_calibrate() {
@@ -1121,28 +1144,32 @@ PY
         apply_backup_budget "$budget" || calibrate_fail "the fixed budget $budget failed the probe"
         sleep 5
     fi
-    refused_before=$(health_get "$port" request_budget.totals.refused)
-    wrefused_before=$(health_get "$port" request_budget.weight.totals.refused)
+    local nonnum="the backup's /health returned a value that is not a whole number; nothing is computed from it"
+    refused_before=$(health_num "$port" request_budget.totals.refused) || calibrate_fail "$nonnum"
+    wrefused_before=$(health_num "$port" request_budget.weight.totals.refused) || calibrate_fail "$nonnum"
     log "sampling the backup's request window and weight use for ${window}s (longest cadence ${cad:-unknown}s)"
     while [[ $sampled -lt $window ]]; do
-        used=$(health_get "$port" request_budget.window_used)
+        used=$(health_num "$port" request_budget.window_used) || calibrate_fail "$nonnum"
         [[ -n "$used" && "$used" -gt "$peak" ]] && peak="$used"
-        wused=$(calibrate_weight_peak "$port")
+        wused=$(calibrate_weight_peak "$port") || calibrate_fail "$nonnum"
         [[ -n "$wused" && "$wused" -gt "$wpeak" ]] && wpeak="$wused"
         sleep 2
         sampled=$((sampled + 2))
     done
-    refused=$(health_get "$port" request_budget.totals.refused)
+    refused=$(health_num "$port" request_budget.totals.refused) || calibrate_fail "$nonnum"
     [[ "${refused:-0}" == "${refused_before:-0}" ]] || calibrate_fail "the backup refused $((refused - refused_before)) request(s) during calibration; raise the budget and re-run"
-    wrefused=$(health_get "$port" request_budget.weight.totals.refused)
+    wrefused=$(health_num "$port" request_budget.weight.totals.refused) || calibrate_fail "$nonnum"
     [[ "${wrefused:-0}" == "${wrefused_before:-0}" ]] || calibrate_fail "the backup's weight allocation refused $((wrefused - wrefused_before)) read(s) during calibration; raise the weight policy and re-run"
     [[ "$(health_get "$port" request_budget.weight.participation)" == "enabled" ]] || calibrate_fail "the backup reports no weight participation; its binary or config predates the weight policy"
-    ceiling=$(health_get "$port" request_budget.weight.ceiling)
+    ceiling=$(health_num "$port" request_budget.weight.ceiling) || calibrate_fail "$nonnum"
     [[ "$ceiling" =~ ^[1-9][0-9]*$ ]] || calibrate_fail "the backup reports no weight ceiling"
-    bootstrap=$(health_get "$port" request_budget.totals.by_reason.bootstrap)
+    bootstrap=$(health_num "$port" request_budget.totals.by_reason.bootstrap) || calibrate_fail "$nonnum"
     bootstrap="${bootstrap:-0}"
-    wboot=$(health_get "$port" request_budget.weight.totals.reserved_by_reason.bootstrap)
+    wboot=$(health_num "$port" request_budget.weight.totals.reserved_by_reason.bootstrap) || calibrate_fail "$nonnum"
     wboot="${wboot:-0}"
+    local largest wfloor
+    largest=$(calibrate_largest_read) || calibrate_fail "the backup probe printed no largest_read in its weight estimate, so the smallest safe weight_per_minute is unknown"
+    wfloor=$((largest + 2))
     if [[ -n "$OPT_PER_MINUTE" ]]; then
         per_minute="$OPT_PER_MINUTE"
         startup="$OPT_STARTUP"
@@ -1160,10 +1187,12 @@ PY
         wpm="$OPT_WEIGHT_PER_MINUTE"
         wst="$OPT_WEIGHT_STARTUP"
         [[ $wpeak -le $((wpm + wst)) ]] || calibrate_fail "measured weight peak $wpeak does not fit weight_per_minute $wpm + weight_startup $wst"
+        [[ $wpm -ge $wfloor ]] || calibrate_fail "weight_per_minute $wpm is below $wfloor, the largest single read of the current union ($largest) plus the mids keep (2); a key added later by reload could never be read"
     else
         wpm=$(( (wpeak * 3 + 1) / 2 ))
+        [[ $wpm -ge $wfloor ]] || wpm=$wfloor
         wst=$(( (wboot * 3 + 1) / 2 ))
-        [[ $wpm -le $((ceiling - wrs)) ]] || calibrate_fail "1.5 times the measured weight peak ($wpm) does not fit the $ceiling ceiling less weight_reserve $wrs"
+        [[ $wpm -le $((ceiling - wrs)) ]] || calibrate_fail "weight_per_minute $wpm (the larger of 1.5 times the measured weight peak and the largest single read $largest plus the mids keep) does not fit the $ceiling ceiling less weight_reserve $wrs"
         [[ $((wpm + wst)) -le $((ceiling - wrs)) ]] || wst=$((ceiling - wrs - wpm))
     fi
     if [[ -n "$OPT_LEDGER" ]]; then

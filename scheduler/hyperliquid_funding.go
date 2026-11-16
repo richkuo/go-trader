@@ -123,7 +123,7 @@ func hlInfoPost(ctx context.Context, call hlInfoCall) error {
 		permit.retain()
 		return err
 	}
-	if bound > 0 && rows > bound {
+	if bound > 0 && rows > permit.rowBound(bound) {
 		permit.violation(bound, rows)
 		return fmt.Errorf("%s/info %s returned %d rows, over its %d-row bound; the reservation is kept and the excess is charged as debt", call.BaseURL, call.Type, rows, bound)
 	}

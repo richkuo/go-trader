@@ -1644,6 +1644,9 @@ if [[ -n "$feed_cfg_candidate" ]]; then
     if update_should_fail_at config_promote_before; then
         fail "forced failure before promoting the staged feed config"
     fi
+    feed_cfg_live_now=$(update_feed_config_live_path "$repo_root") || feed_cfg_live_now=""
+    [[ "$feed_cfg_live_now" == "$feed_cfg_live" ]] \
+        || fail "the live feed config now resolves to ${feed_cfg_live_now:-nothing}, not the $feed_cfg_live recorded in the snapshot; refusing to promote"
     feed_live_sha=$(sed -n 's/^feed_config_live_sha=//p' "$recovery_dir/feed_config.env")
     feed_cand_sha=$(sed -n 's/^feed_config_candidate_sha=//p' "$recovery_dir/feed_config.env")
     update_feed_config_install "$recovery_dir/feed_config.live" "$feed_cfg_live.prev" "$feed_cfg_live" "$feed_live_sha" \

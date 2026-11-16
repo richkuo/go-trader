@@ -449,8 +449,9 @@ type feedFunding struct {
 	Source     string
 	Err        string
 
-	rateLimited bool
-	weightHeld  bool
+	rateLimited    bool
+	weightHeld     bool
+	waitingForBars bool
 }
 
 type feedRestReason string

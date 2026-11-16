@@ -18,6 +18,7 @@ import (
 
 type wtRequest struct {
 	Type      string
+	Coin      string
 	At        time.Time
 	StartTime int64
 	EndTime   int64
@@ -36,6 +37,7 @@ type wtVenue struct {
 	malformed     map[string]bool
 	fundingRows   int
 	fundingOutset bool
+	noCandles     map[string]bool
 	gate          map[string]chan struct{}
 	enter         map[string]chan struct{}
 }
@@ -79,22 +81,25 @@ func (v *wtVenue) hold(reqType string) (entered <-chan struct{}, release func())
 func (v *wtVenue) handle(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Type      string           `json:"type"`
+		Coin      string           `json:"coin"`
 		StartTime int64            `json:"startTime"`
 		EndTime   *int64           `json:"endTime"`
 		Req       *json.RawMessage `json:"req"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	rec := wtRequest{Type: body.Type, StartTime: body.StartTime}
+	rec := wtRequest{Type: body.Type, Coin: body.Coin, StartTime: body.StartTime}
 	if body.EndTime != nil {
 		rec.EndTime, rec.HasEnd = *body.EndTime, true
 	}
 	if body.Req != nil {
 		var inner struct {
-			StartTime int64 `json:"startTime"`
-			EndTime   int64 `json:"endTime"`
+			Coin      string `json:"coin"`
+			StartTime int64  `json:"startTime"`
+			EndTime   int64  `json:"endTime"`
 		}
 		_ = json.Unmarshal(*body.Req, &inner)
 		rec.StartTime, rec.EndTime, rec.HasEnd = inner.StartTime, inner.EndTime, true
+		rec.Coin = inner.Coin
 	}
 	v.mu.Lock()
 	rec.At = v.clock()
@@ -105,6 +110,7 @@ func (v *wtVenue) handle(w http.ResponseWriter, r *http.Request) {
 	malformed := v.malformed[body.Type]
 	extra, fixedRows, floor := v.candleExtra, v.candleRows, v.candleFloorMs
 	fundingRows, outset := v.fundingRows, v.fundingOutset
+	empty := v.noCandles[rec.Coin]
 	v.mu.Unlock()
 	if gate != nil {
 		enter <- struct{}{}
@@ -131,7 +137,11 @@ func (v *wtVenue) handle(w http.ResponseWriter, r *http.Request) {
 		for open := first; open <= rec.EndTime && len(rows) < 5000; open += step {
 			rows = append(rows, map[string]any{"t": open, "T": open + step - 1, "o": "100", "h": "102", "l": "99", "c": "101", "v": "5"})
 		}
-		if fixedRows > 0 {
+		if empty {
+			rows = rows[:0]
+			extra = 0
+		}
+		if fixedRows > 0 && !empty {
 			rows = rows[:0]
 			for i := 0; i < fixedRows; i++ {
 				open := first + int64(i)*step
@@ -390,6 +400,63 @@ func TestFeedWeightSenderLifecycle(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("logs %v lack the above-cap violation line", logs)
+		}
+	})
+
+	t.Run("RepricedReadsSettleAtTheCapAndAlertOnce", func(t *testing.T) {
+		clock := &hlLotTestClock{now: base}
+		venue := newWTVenue(t, clock.Now)
+		ledger := newFeedRequestLedger(wtPolicy(1100, 0, 0), true, clock.Now)
+		ctx := wtCtx(ledger, string(feedRestRefresh), "BTC|1m")
+		start, end := base.Add(-58*time.Minute).UnixMilli(), base.UnixMilli()
+		venue.set(func(v *wtVenue) { v.candleRows = 60; v.candleExtra = 1 })
+		if _, err := fetchHyperliquidCandleSnapshot(ctx, "BTC", "1m", start, end); err == nil {
+			t.Fatal("the first 61-row response was accepted against its 60-row bound")
+		}
+		if events := ledger.weightReport(nil); len(events) != 1 || events[0].State != "repriced_at_cap" {
+			t.Fatalf("first violation report = %+v, want one repriced summary", events)
+		}
+		debt := ledger.weightStatus().Totals.Debt
+		before := ledger.weightStatus().Totals.Reserved
+		bars, err := fetchHyperliquidCandleSnapshot(ctx, "BTC", "1m", start, end)
+		if err != nil || len(bars) == 0 {
+			t.Fatalf("a 61-row read priced at the cap = %d bar(s), err %v; want it settled and its bars returned", len(bars), err)
+		}
+		capCost, _ := hlInfoWeightAtCap("candleSnapshot")
+		st := ledger.weightStatus()
+		if st.Totals.Reserved-before != capCost || st.Totals.Debt != debt || st.Violations[0].State != "repriced_at_cap" {
+			t.Fatalf("weight after the capped read = %+v, want %d reserved, debt unchanged at %d and the state still repriced", st, capCost, debt)
+		}
+		if again := ledger.weightReport(nil); len(again) != 0 {
+			t.Fatalf("report after the capped read = %+v, want no second violation alert", again)
+		}
+	})
+
+	t.Run("ViolationAlertOnAnOwnerWithoutPolicyNeverSaysRefused", func(t *testing.T) {
+		clock := &hlLotTestClock{now: base}
+		venue := newWTVenue(t, clock.Now)
+		ledger := newFeedRequestLedger(nil, false, clock.Now)
+		ctx := wtCtx(ledger, string(feedRestRefresh), "BTC|1m")
+		end := base.UnixMilli()
+		venue.set(func(v *wtVenue) { v.candleRows = 5001 })
+		if _, err := fetchHyperliquidCandleSnapshot(ctx, "BTC", "1m", base.Add(-6000*time.Minute).UnixMilli(), end); err == nil {
+			t.Fatal("a 5001-row response was accepted")
+		}
+		events := ledger.weightReport(nil)
+		if len(events) != 1 || events[0].State != "blocked" || events[0].Enforced {
+			t.Fatalf("violation report = %+v, want one unenforced blocked summary", events)
+		}
+		msg := formatFeedWeightAlert(events[0], feedSourceWebsocket, "fixture")
+		if strings.Contains(msg, "refused") && !strings.Contains(msg, "not refused") || !strings.Contains(msg, "no weight policy") {
+			t.Fatalf("alert %q claims later reads are refused on an owner with no weight policy", msg)
+		}
+		sent := len(venue.requests("candleSnapshot"))
+		venue.set(func(v *wtVenue) { v.candleRows = 0 })
+		if _, err := fetchHyperliquidCandleSnapshot(ctx, "BTC", "1m", base.Add(-58*time.Minute).UnixMilli(), end); err != nil {
+			t.Fatalf("a later read on the owner with no weight policy err = %v, want it sent as the alert says", err)
+		}
+		if len(venue.requests("candleSnapshot")) != sent+1 {
+			t.Fatal("the later read did not reach the venue")
 		}
 	})
 
@@ -673,6 +740,105 @@ func TestFeedWeightOwners(t *testing.T) {
 		seal(k + 120)
 		if len(alerts) != 0 {
 			t.Fatalf("alerts on a clean seal = %q, want none", alerts)
+		}
+	})
+
+	t.Run("FundingRecordsWaitForTheFirstBar", func(t *testing.T) {
+		start := base
+		clock := &hlLotTestClock{now: start.Add(-time.Minute)}
+		venue := newWTVenue(t, clock.Now)
+		venue.set(func(v *wtVenue) { v.noCandles = map[string]bool{"AAA": true}; v.fundingRows = 3 })
+		req := rlRequirements(5, 60, "AAA", "BTC")
+		req.Funding["AAA"] = feedFundingNeed{Records: true}
+		req.Funding["BTC"] = feedFundingNeed{Scalar: true}
+		ledger := newFeedRequestLedger(wtPolicy(600, 400, 200), true, clock.Now)
+		ledger.openStartup()
+		ctx := withFeedLedger(context.Background(), ledger)
+		owner := newMarketFeedOwner(clock.Now, nil)
+		owner.SetRequestLedger(ledger)
+		<-owner.ApplyGeneration(ctx, req)
+		sealer := newFeedSealer(owner, feedSourceREST, "fixture", clock.Now, nil)
+		sealer.ledger = ledger
+		src := newFeedRESTSource(owner, nil)
+		src.backoff = time.Millisecond
+		sealer.prepareFn = src.prepare
+		sealer.setGeneration(req, []int{60}, start.Add(-time.Hour))
+		seal := func(key int64) *feedSeal {
+			t.Helper()
+			clock.mu.Lock()
+			clock.now = time.Unix(key, 0).UTC().Add(2 * time.Second)
+			clock.mu.Unlock()
+			sealer.sealOne(ctx, key)
+			sealer.mu.Lock()
+			defer sealer.mu.Unlock()
+			return sealer.ring[key]
+		}
+		aaaFunding := func() []wtRequest {
+			var out []wtRequest
+			for _, r := range venue.requests("fundingHistory") {
+				if r.Coin == "AAA" {
+					out = append(out, r)
+				}
+			}
+			return out
+		}
+		k := start.Unix()
+		for _, d := range []int64{k, k + 60} {
+			s := seal(d)
+			if s == nil {
+				t.Fatalf("deadline %d stored no seal", d)
+			}
+			if r := rlKeyStatus(t, owner, feedKeyFor("BTC", "1m")); !r.Ready {
+				t.Fatalf("deadline %d: BTC = %+v, want refreshed and ready", d, r)
+			}
+			if n := len(aaaFunding()); n != 0 {
+				t.Fatalf("deadline %d: %d AAA fundingHistory request(s) reached the venue, want none while AAA has no bars", d, n)
+			}
+			if refused := ledger.weightStatus().Totals.Refused; refused != 0 {
+				t.Fatalf("deadline %d: %d weight refusal(s), want none", d, refused)
+			}
+		}
+		owner.feedMu.Lock()
+		held := owner.funding["AAA"]
+		owner.feedMu.Unlock()
+		if held == nil || held.HasRecords || !held.waitingForBars || !strings.Contains(held.Err, "wait for the first candle bar") {
+			t.Fatalf("AAA funding entry = %+v, want held with the missing-bars reason", held)
+		}
+		for _, a := range owner.DrainAlerts() {
+			if a.Kind == "funding_failed" {
+				t.Fatalf("a funding read held for missing bars raised %+v", a)
+			}
+		}
+
+		btcAvg := 0
+		for _, r := range venue.requests("fundingHistory") {
+			if r.Coin == "BTC" && r.HasEnd && r.EndTime-r.StartTime == int64(hlFundingAvgWindowDays)*86_400_000 {
+				btcAvg++
+			}
+		}
+		if btcAvg == 0 || len(venue.requests("metaAndAssetCtxs")) == 0 {
+			t.Fatalf("BTC scalar reads: %d 7-day average request(s), %d metaAndAssetCtxs request(s); want both sent", btcAvg, len(venue.requests("metaAndAssetCtxs")))
+		}
+
+		venue.set(func(v *wtVenue) { v.noCandles = nil })
+		seal(k + 120)
+		owner.feedMu.Lock()
+		var firstClose int64
+		if st := owner.keys[feedKeyFor("AAA", "1m")]; st != nil && len(st.Bars) > 0 {
+			first := len(st.Bars) - 5
+			if first < 0 {
+				first = 0
+			}
+			firstClose = st.Bars[first].CloseMs
+		}
+		got := owner.funding["AAA"]
+		owner.feedMu.Unlock()
+		reads := aaaFunding()
+		if firstClose == 0 || len(reads) == 0 || reads[0].StartTime != firstClose {
+			t.Fatalf("after AAA got bars: frame start %d, AAA funding reads %+v; want the first read to start at the frame start", firstClose, reads)
+		}
+		if got == nil || !got.HasRecords || got.Err != "" || got.waitingForBars {
+			t.Fatalf("AAA funding after bars = %+v, want settled records", got)
 		}
 	})
 

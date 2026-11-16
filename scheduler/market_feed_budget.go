@@ -490,8 +490,12 @@ func (l *feedRequestLedger) acquireSpec(spec feedAcquireSpec, silent bool) (*fee
 	l.wOpenSteady += cost - startupPart
 	l.wTotals.Reserved += cost
 	l.wTotals.ReservedByReason[spec.reason] += cost
+	atCap := false
+	if b := l.wBounds[spec.reqType]; b != nil && b.atCap && !b.blocked {
+		atCap = true
+	}
 	return &feedRequestPermit{l: l, host: spec.host, reason: spec.reason, reqType: spec.reqType, input: spec.input,
-		cost: cost, startupPart: startupPart, epoch: epoch, wState: feedPermitPending}, nil
+		cost: cost, startupPart: startupPart, epoch: epoch, wState: feedPermitPending, atCap: atCap}, nil
 }
 
 func (l *feedRequestLedger) recordLocked(reason, reqType string) {

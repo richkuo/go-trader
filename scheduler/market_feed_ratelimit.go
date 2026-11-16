@@ -107,6 +107,17 @@ type feedRequestPermit struct {
 	startupPart int
 	epoch       int
 	wState      int
+	atCap       bool
+}
+
+func (p *feedRequestPermit) rowBound(callBound int) int {
+	if p == nil || !p.atCap {
+		return callBound
+	}
+	if c := hlInfoRowCap(p.reqType); c > 0 {
+		return c
+	}
+	return callBound
 }
 
 func (l *feedRequestLedger) hostLocked(host string) *feedHostPause {

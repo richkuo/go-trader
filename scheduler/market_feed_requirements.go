@@ -646,20 +646,29 @@ func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[s
 				}
 			}
 		}
+		waitingForBars := false
 		if need.Records && entry.Err == "" {
-			startMs := earliestBarMs[coin]
-			records, err := hlFundingRecordsSince(ctx, coin, startMs, now)
-			if err != nil {
-				entry.Err, fetchErr = err.Error(), err
+			startMs, ok := earliestBarMs[coin]
+			if !ok || startMs <= 0 {
+				waitingForBars = true
+				entry.Err = fmt.Sprintf("funding records for %s wait for the first candle bar of its key; no fundingHistory read is sent without a frame start", coin)
 			} else {
-				entry.Records, entry.HasRecords = records, true
+				records, err := hlFundingRecordsSince(ctx, coin, startMs, now)
+				if err != nil {
+					entry.Err, fetchErr = err.Error(), err
+				} else {
+					entry.Records, entry.HasRecords = records, true
+				}
 			}
 		}
 		if entry.Err != "" {
 			entry.rateLimited = wasLimited || feedRateLimitErr(fetchErr)
 			entry.weightHeld = errors.Is(fetchErr, errFeedWeightRefused)
-			o.logf("[feed] funding %s: %s", coin, entry.Err)
-			if !feedRateLimitErr(fetchErr) && !entry.weightHeld {
+			entry.waitingForBars = waitingForBars
+			if !waitingForBars || existing == nil || !existing.waitingForBars {
+				o.logf("[feed] funding %s: %s", coin, entry.Err)
+			}
+			if !feedRateLimitErr(fetchErr) && !entry.weightHeld && !waitingForBars {
 				o.raiseAlert(feedKeyFor(coin, ""), "funding_failed", entry.Err)
 			}
 		}

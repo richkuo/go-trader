@@ -49,7 +49,6 @@ var hlWeightAssumptions = []string{
 	"A4: a candle response holds at most floor(span/interval)+2 bars (the bar that contains the start and the forming bar)",
 	"A5: the 5000-candle and 500-element statements cap one response",
 	"A6: a 1M bar lasts at least 28 days, so the 1M row bound uses 28 days",
-	"A7: the 1200 ceiling is per IP address; the venue page states an aggregated limit per minute without naming the scope",
 }
 
 func hlInfoWeightRuleFor(reqType string) (hlInfoWeightRule, bool) {
@@ -158,7 +157,7 @@ func hlWeightTableLine() string {
 			parts = append(parts, fmt.Sprintf("%s=%d", t, r.Base))
 		}
 	}
-	return fmt.Sprintf("weight table: ceiling=%d/min %s; checked %s from %s, %s, %s; assumptions A1-A7 (%s)",
+	return fmt.Sprintf("weight table: ceiling=%d/min per IP (documented) %s; checked %s from %s, %s, %s; assumptions A1-A6 (%s)",
 		hlRESTWeightCeiling, strings.Join(parts, " "), hlWeightCheckedOn, hlWeightSourceRateLimits, hlWeightSourceInfo, hlWeightSourcePerps,
 		strings.Join(hlWeightAssumptions, "; "))
 }
@@ -313,14 +312,17 @@ func (p *feedRequestPermit) violation(bound, observed int) {
 		b = &feedWeightBound{}
 		l.wBounds[p.reqType] = b
 	}
-	b.epoch++
-	b.bound, b.observed, b.at, b.alerted = bound, observed, now, false
+	prevAtCap, prevBlocked := b.atCap, b.blocked
 	state := "repriced_at_cap"
 	if observed > hlInfoRowCap(p.reqType) {
 		b.blocked = true
 		state = "blocked"
 	} else {
 		b.atCap = true
+	}
+	if b.atCap != prevAtCap || b.blocked != prevBlocked {
+		b.epoch++
+		b.bound, b.observed, b.at, b.alerted = bound, observed, now, false
 	}
 	l.signalLocked()
 	logf := l.logf
@@ -339,6 +341,7 @@ type feedWeightEvent struct {
 	Bound    int
 	Observed int
 	State    string
+	Enforced bool
 }
 
 func (l *feedRequestLedger) weightReport(outstanding []string) []feedWeightEvent {
@@ -363,7 +366,7 @@ func (l *feedRequestLedger) weightReport(outstanding []string) []feedWeightEvent
 		if b.blocked {
 			state = "blocked"
 		}
-		out = append(out, feedWeightEvent{Kind: feedWeightEventViolation, Type: t, Bound: b.bound, Observed: b.observed, State: state})
+		out = append(out, feedWeightEvent{Kind: feedWeightEventViolation, Type: t, Bound: b.bound, Observed: b.observed, State: state, Enforced: l.weight != nil})
 	}
 	ep := &l.wEpisode
 	if !ep.open {
@@ -399,8 +402,12 @@ func (ev feedWeightEvent) logLine() string {
 func formatFeedWeightAlert(ev feedWeightEvent, source, instance string) string {
 	switch ev.Kind {
 	case feedWeightEventViolation:
+		after := map[string]string{"blocked": "refused until restart", "repriced_at_cap": "priced at the response cap"}[ev.State]
+		if !ev.Enforced {
+			after = map[string]string{"blocked": "still sent, because this owner has no weight policy; their weight is recorded but not enforced", "repriced_at_cap": "recorded at the response cap, but not refused, because this owner has no weight policy"}[ev.State]
+		}
 		return fmt.Sprintf("**MARKET FEED WEIGHT BOUND VIOLATED** [%s] a %s response returned %d rows over its %d-row bound; the excess is charged as debt and later %s reads are %s (instance %s).",
-			source, ev.Type, ev.Observed, ev.Bound, ev.Type, map[string]string{"blocked": "refused until restart", "repriced_at_cap": "priced at the response cap"}[ev.State], instance)
+			source, ev.Type, ev.Observed, ev.Bound, ev.Type, after, instance)
 	case feedWeightEventRecover:
 		return fmt.Sprintf("**MARKET FEED WEIGHT RECOVERED** [%s] a required read succeeded and no weight-refused input is outstanding (refused inputs %s; %d refused request(s); instance %s).",
 			source, joinFeedNames(ev.Inputs), ev.Refused, instance)
@@ -410,7 +417,7 @@ func formatFeedWeightAlert(ev feedWeightEvent, source, instance string) string {
 }
 
 func estimateFeedUnionWeight(union feedRequirements) string {
-	bootstrap, refresh := 0, 0
+	bootstrap, refresh, largest := 0, 0, 0
 	for _, key := range union.Order {
 		rows := union.Keys[key] + hlCandleGapMargin + 2
 		if rows > hlCandleRowCap {
@@ -418,6 +425,7 @@ func estimateFeedUnionWeight(union feedRequirements) string {
 		}
 		if w, err := hlInfoWeight("candleSnapshot", rows); err == nil {
 			bootstrap += w
+			largest = max(largest, w)
 		}
 		if w, err := hlInfoWeight("candleSnapshot", 3); err == nil {
 			refresh += w
@@ -435,13 +443,15 @@ func estimateFeedUnionWeight(union feedRequirements) string {
 	for _, need := range union.Funding {
 		if need.Scalar {
 			scalar += ctxW + avgW
+			largest = max(largest, ctxW, avgW)
 		}
 		if need.Records {
 			records++
+			largest = max(largest, pageW)
 		}
 	}
-	return fmt.Sprintf("weight estimate (informational, first passes only): bootstrap=%d for %d keys; refresh=%d per deadline for candles plus mids=%d; funding scalar=%d per refresh; funding records for %d coin(s) and accounting funding at up to %d per page",
-		bootstrap, len(union.Order), refresh, mids, scalar, records, pageW)
+	return fmt.Sprintf("weight estimate (informational, first passes only): bootstrap=%d for %d keys; refresh=%d per deadline for candles plus mids=%d; funding scalar=%d per refresh; funding records for %d coin(s) and accounting funding at up to %d per page; largest_read=%d",
+		bootstrap, len(union.Order), refresh, mids, scalar, records, pageW, largest)
 }
 
 func formatMarketFeedWeightBudget(b *feedWeightBudgetConfig) string {

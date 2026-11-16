@@ -2812,4 +2812,69 @@ print("yes" if mod.cpu_dropin_is_managed(sys.argv[2]) else "no")
 )
 rm -rf "$cpu_root"
 
+fcfg_root=$(mktemp -d)
+fcfg_root=$(cd "$fcfg_root" && pwd -P)
+(
+    ff() { echo "FAIL: feed config: $*" >&2; exit 1; }
+    feed_json='{"role":"feed","feed":{"source":"rest"}}'
+    mkdir -p "$fcfg_root/live" "$fcfg_root/secret" "$fcfg_root/snap1" "$fcfg_root/snap2" "$fcfg_root/target"
+    printf '%s\n' "$feed_json" >"$fcfg_root/live/config.json"
+    chmod 0640 "$fcfg_root/live/config.json"
+    printf 'TOP-SECRET\n' >"$fcfg_root/secret/shadow"
+
+    ln -s "$fcfg_root/secret/shadow" "$fcfg_root/live/config.json.staged"
+    if update_feed_config_snapshot "$fcfg_root/snap1" "$fcfg_root/live/config.json" "$fcfg_root/live/config.json.staged" 2>"$fcfg_root/staged.err"; then
+        ff "a staged config swapped to a symlink after the checks was copied"
+    fi
+    [[ ! -e "$fcfg_root/snap1/feed_config.candidate" ]] || ff "a candidate copy exists after the symlink refusal"
+    ! grep -rq TOP-SECRET "$fcfg_root/snap1" || ff "the symlink target was read into the snapshot"
+    grep -q "without following a symlink" "$fcfg_root/staged.err" || ff "no symlink refusal: $(cat "$fcfg_root/staged.err")"
+    echo "OK: feed config: a staged symlink is refused; nothing outside the config directory is read or copied"
+
+    rm -f "$fcfg_root/live/config.json.staged"
+    printf '{"role":"feed","feed":{"source":"rest","request_budget":{"per_minute":1}}}\n' >"$fcfg_root/live/config.json.staged"
+    update_feed_config_snapshot "$fcfg_root/snap2" "$fcfg_root/live/config.json" "$fcfg_root/live/config.json.staged" 2>"$fcfg_root/ok.err" \
+        || ff "a regular staged config was refused: $(cat "$fcfg_root/ok.err")"
+    cmp -s "$fcfg_root/snap2/feed_config.candidate" "$fcfg_root/live/config.json.staged" || ff "the candidate copy differs from the staged bytes"
+    cmp -s "$fcfg_root/snap2/feed_config.live" "$fcfg_root/live/config.json" || ff "the live copy differs from the live bytes"
+    [[ "$(stat -f %Lp "$fcfg_root/snap2/feed_config.live" 2>/dev/null || stat -c %a "$fcfg_root/snap2/feed_config.live")" == "640" ]] || ff "the live copy did not keep the live mode"
+    [[ "$(stat -f %Lp "$fcfg_root/snap2/feed_config.candidate" 2>/dev/null || stat -c %a "$fcfg_root/snap2/feed_config.candidate")" == "600" ]] || ff "the candidate copy is not private"
+    echo "OK: feed config: a regular staged file is copied byte for byte into the snapshot"
+
+    cand_sha=$(sed -n 's/^feed_config_candidate_sha=//p' "$fcfg_root/snap2/feed_config.env")
+    live="$fcfg_root/live/config.json"
+    mv "$fcfg_root/live" "$fcfg_root/live.real"
+    ln -s "$fcfg_root/target" "$fcfg_root/live"
+    if update_feed_config_install "$fcfg_root/snap2/feed_config.candidate" "$live" "$fcfg_root/live.real/config.json" "$cand_sha" 2>"$fcfg_root/dir.err"; then
+        ff "promotion wrote through a config directory swapped to a symlink"
+    fi
+    [[ -z "$(ls -A "$fcfg_root/target")" ]] || ff "promotion wrote into the symlink target: $(ls -A "$fcfg_root/target")"
+    grep -q "is missing or is a symlink" "$fcfg_root/dir.err" || ff "no directory symlink refusal: $(cat "$fcfg_root/dir.err")"
+    rm "$fcfg_root/live"
+    mv "$fcfg_root/live.real" "$fcfg_root/live"
+
+    printf 'TARGET\n' >"$fcfg_root/target/config.json"
+    mv "$live" "$fcfg_root/live/config.json.real"
+    ln -s "$fcfg_root/target/config.json" "$live"
+    if update_feed_config_install "$fcfg_root/snap2/feed_config.candidate" "$live" "$live" "$cand_sha" 2>"$fcfg_root/file.err"; then
+        ff "promotion wrote through a live config swapped to a symlink"
+    fi
+    [[ "$(cat "$fcfg_root/target/config.json")" == "TARGET" ]] || ff "promotion changed the symlink target"
+    [[ -L "$live" ]] || ff "promotion replaced the symlink"
+    [[ -z "$(ls -A "$fcfg_root/target" | grep -v '^config.json$')" ]] || ff "promotion left a file in the symlink target"
+    rm "$live"
+    mv "$fcfg_root/live/config.json.real" "$live"
+    echo "OK: feed config: promotion refuses a live config or directory swapped to a symlink and writes nothing outside the config directory"
+
+    update_feed_config_install "$fcfg_root/snap2/feed_config.candidate" "$live" "$live" "$cand_sha" 2>"$fcfg_root/promote.err" \
+        || ff "a normal promotion failed: $(cat "$fcfg_root/promote.err")"
+    cmp -s "$live" "$fcfg_root/snap2/feed_config.candidate" || ff "the promoted bytes differ from the candidate"
+    [[ "$(stat -f %Lp "$live" 2>/dev/null || stat -c %a "$live")" == "640" ]] || ff "promotion did not keep the live mode"
+    [[ -z "$(ls -A "$fcfg_root/live" | grep '^\.go-trader-config\.')" ]] || ff "promotion left a temporary file"
+    update_feed_config_restore "$fcfg_root/snap2" 2>"$fcfg_root/restore.err" || ff "restore failed: $(cat "$fcfg_root/restore.err")"
+    cmp -s "$live" "$fcfg_root/snap2/feed_config.live" || ff "restore did not bring back the live bytes"
+    echo "OK: feed config: a normal promotion and its restore keep the bytes and the mode"
+) || exit 1
+rm -rf "$fcfg_root"
+
 echo "OK: update_helpers tests passed"
