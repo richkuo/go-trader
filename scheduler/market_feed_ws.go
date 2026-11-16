@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -399,7 +400,7 @@ func (o *marketFeedOwner) repairAfterConnect(ctx context.Context) {
 		}
 		if err := o.fetchAndMerge(ctx, key, feedRestRepair); err != nil {
 			o.logf("[feed] %s: reconnect repair failed: %v", key, err)
-			if !feedRateLimitErr(err) {
+			if !feedRateLimitErr(err) && !errors.Is(err, errFeedWeightRefused) {
 				o.raiseAlert(key, "repair_failed", err.Error())
 			}
 			continue

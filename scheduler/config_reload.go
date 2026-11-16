@@ -466,6 +466,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	if cfg.marketFeedMode() != next.marketFeedMode() {
 		errs = append(errs, fmt.Sprintf("market_feed changed (%q -> %q; restart required)", cfg.marketFeedMode(), next.marketFeedMode()))
 	}
+	if cur, nxt := formatMarketFeedWeightBudget(cfg.MarketFeedWeightBudget), formatMarketFeedWeightBudget(next.MarketFeedWeightBudget); cur != nxt {
+		errs = append(errs, fmt.Sprintf("market_feed_weight_budget changed (%s -> %s; restart required: the embedded owner's ledger keeps its policy)", cur, nxt))
+	}
 	if cfg.PaperOnly != next.PaperOnly {
 		errs = append(errs, fmt.Sprintf("paper_only changed (%t -> %t; restart required)", cfg.PaperOnly, next.PaperOnly))
 	}

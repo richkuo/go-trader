@@ -21,19 +21,28 @@ Subcommands:
   plan [--consumer <unit>]...
         Read-only. Lists every scheduler unit and, with --consumer, checks the
         selection and prints the full target. Changes nothing on the host.
-  feeds --consumer <unit>... [--per-minute <n> --startup <n>]
+  feeds --consumer <unit>... [--per-minute <n> --startup <n>
+        --weight-per-minute <n> --weight-startup <n> --weight-reserve <n>]
         Creates /opt/go-trader-feed-primary (websocket) and
         /opt/go-trader-feed-backup (rest) from the first consumer's tree, writes
         their configs over read-only shadow copies of the consumer configs,
         installs go-trader@feed-primary and go-trader@feed-backup, and waits for
-        both to seal. No consumer config changes. A re-run with another
+        both to seal. No consumer config changes. A new backup needs all five
+        budget flags: the request limits and an explicit venue weight policy
+        that fits the venue weight ceiling less weight_reserve; the
+        candidate config is probed before it is written. A re-run with another
         selection resets the list only while no switched consumer uses the
         feeds; otherwise use consumers.
-  calibrate [--per-minute <n> --startup <n>] [--baseline-ledger <file>] [--window <seconds>]
-        Measures the backup's peak request use over the window (default two
-        periods of the longest cadence) and writes its request_budget: the
-        measured values times 1.5, or the fixed operator values. Fixed values
-        are refused when the measured peak plus the mids reserve does not fit.
+  calibrate [--per-minute <n> --startup <n>] [--weight-per-minute <n>
+        --weight-startup <n> --weight-reserve <n>] [--baseline-ledger <file>] [--window <seconds>]
+        Measures the backup's peak request use and its Go-reported peak weight
+        over the window (default two periods of the longest cadence) and writes
+        its full request_budget: the measured values times 1.5, or the fixed
+        operator values. Fixed request values are refused when the measured
+        peak plus the mids reserve does not fit; fixed weight values are
+        refused when the measured weight peak does not fit. Every change is
+        probed as a candidate before the config is replaced and the backup gets
+        SIGHUP; a failure restores the byte copy of the previous config.
         verify and switch refuse until calibrate passes.
   verify [--accept-differences]
         Both feeds healthy and scripts/feed-source-compare.sh exits 0. A
@@ -70,7 +79,8 @@ runs), 20-29 stage failures, 30 rollback failed.
 EOF
 }
 
-STATE_DIR="/var/lib/go-trader/shared-feed"
+CONVERT_ROOT="${SHARED_FEED_CONVERT_ROOT:-}"
+STATE_DIR="$CONVERT_ROOT/var/lib/go-trader/shared-feed"
 JOURNAL="$STATE_DIR/convert.journal"
 SHADOW_DIR="$STATE_DIR/shadow"
 FEEDS=(primary backup)
@@ -97,8 +107,8 @@ need_tools() {
     done
 }
 
-feed_dir() { printf '/opt/go-trader-feed-%s' "$1"; }
-feed_config() { printf '/var/lib/go-trader/feed-%s/config.json' "$1"; }
+feed_dir() { printf '%s/opt/go-trader-feed-%s' "$CONVERT_ROOT" "$1"; }
+feed_config() { printf '%s/var/lib/go-trader/feed-%s/config.json' "$CONVERT_ROOT" "$1"; }
 feed_unit() { printf 'go-trader@feed-%s.service' "$1"; }
 feed_socket() { printf '/run/go-trader-feed-%s/feed.sock' "$1"; }
 feed_source() { [[ "$1" == "primary" ]] && printf 'websocket' || printf 'rest'; }
@@ -204,15 +214,15 @@ def write_shared(src, dst, primary, backup, mode):
     c["shared_market_feed"] = {"primary_socket": primary, "backup_socket": backup}
     dump(c, dst, int(mode, 8))
 
-def write_feed(path, consumer_cfg, source, socket, port, consumers, per_minute, startup):
+def write_feed(path, consumer_cfg, source, socket, port, consumers, budget):
     base = load(consumer_cfg)
     out = {"role": "feed", "config_version": base.get("config_version"), "status_port": int(port)}
     for key in ("log_level", "discord", "telegram", "alert_throttle_interval"):
         if key in base:
             out[key] = base[key]
     feed = {"source": source, "socket_path": socket, "consumer_configs": json.loads(consumers)}
-    if per_minute and int(per_minute) > 0:
-        feed["request_budget"] = {"per_minute": int(per_minute), "startup": int(startup)}
+    if budget:
+        feed["request_budget"] = json.loads(budget)
     out["feed"] = feed
     out["strategies"] = []
     dump(out, path, 0o600)
@@ -255,10 +265,25 @@ def feed_keys_match(path, backup_path):
     same = all(c.get(k) == b.get(k) for k in ("market_feed", "shared_market_feed"))
     print("yes" if same else "no")
 
-def set_budget(path, per_minute, startup):
+BUDGET_FIELDS = ("per_minute", "startup", "weight_per_minute", "weight_startup", "weight_reserve")
+
+def set_budget(path, budget):
     c = load(path)
-    c["feed"]["request_budget"] = {"per_minute": int(per_minute), "startup": int(startup)}
-    dump(c, path, 0o600)
+    b = json.loads(budget)
+    missing = [k for k in BUDGET_FIELDS if not isinstance(b.get(k), int)]
+    if missing:
+        sys.exit(f"budget is missing {', '.join(missing)}; a backup budget always carries all five fields")
+    c["feed"]["request_budget"] = {k: b[k] for k in BUDGET_FIELDS}
+    mode = os.stat(path).st_mode & 0o777
+    dump(c, path, mode)
+
+def budget_of(path):
+    b = (load(path).get("feed") or {}).get("request_budget") or {}
+    print(json.dumps({k: b.get(k) for k in BUDGET_FIELDS}, separators=(",", ":")))
+
+def budget_complete(path):
+    b = (load(path).get("feed") or {}).get("request_budget") or {}
+    print("yes" if all(isinstance(b.get(k), int) for k in BUDGET_FIELDS) else "no")
 
 def get(url_json_path, dotted):
     c = json.load(open(url_json_path))
@@ -301,6 +326,8 @@ args = sys.argv[2:]
     "revert-feed-keys": revert_feed_keys,
     "feed-keys-match": feed_keys_match,
     "set-budget": set_budget,
+    "budget-of": budget_of,
+    "budget-complete": budget_complete,
     "get": get,
     "feed-consumer-state": feed_consumer_state,
     "ledger-caps": ledger_caps,
@@ -536,8 +563,83 @@ run_probe() {
     (cd "$tmp" && "$binary" probe --config "$tmp/feed-$name.json")
 }
 
+validate_budget_opts() {
+    if [[ -n "$OPT_PER_MINUTE$OPT_STARTUP" ]]; then
+        [[ "$OPT_PER_MINUTE" =~ ^[1-9][0-9]*$ && "$OPT_STARTUP" =~ ^[1-9][0-9]*$ ]] || die 2 "--per-minute and --startup must both be positive integers"
+    fi
+    if [[ -n "$OPT_WEIGHT_PER_MINUTE$OPT_WEIGHT_STARTUP$OPT_WEIGHT_RESERVE" ]]; then
+        [[ "$OPT_WEIGHT_PER_MINUTE" =~ ^[0-9]+$ && "$OPT_WEIGHT_STARTUP" =~ ^[0-9]+$ && "$OPT_WEIGHT_RESERVE" =~ ^[0-9]+$ ]] \
+            || die 2 "--weight-per-minute, --weight-startup and --weight-reserve must all be set, as whole numbers of venue weight"
+        [[ ${#OPT_WEIGHT_PER_MINUTE} -le 9 && ${#OPT_WEIGHT_STARTUP} -le 9 && ${#OPT_WEIGHT_RESERVE} -le 9 ]] \
+            || die 2 "a weight flag has too many digits; the binary's probe checks each value against the venue weight ceiling"
+    fi
+}
+
+opt_budget_json() {
+    [[ -n "$OPT_PER_MINUTE" && -n "$OPT_WEIGHT_PER_MINUTE" ]] || return 1
+    printf '{"per_minute":%s,"startup":%s,"weight_per_minute":%s,"weight_startup":%s,"weight_reserve":%s}' \
+        "$OPT_PER_MINUTE" "$OPT_STARTUP" "$OPT_WEIGHT_PER_MINUTE" "$OPT_WEIGHT_STARTUP" "$OPT_WEIGHT_RESERVE"
+}
+
+journal_budget_json() {
+    local rec="$1" f v out="" sep=""
+    [[ "$rec" == "budget calibrated "* ]] || return 1
+    for f in per_minute startup weight_per_minute weight_startup weight_reserve; do
+        v=$(journal_field "$rec" "$f")
+        [[ "$v" =~ ^[0-9]+$ ]] || return 1
+        out="$out$sep\"$f\":$v"
+        sep=","
+    done
+    printf '{%s}' "$out"
+}
+
+new_backup_budget() {
+    local budget
+    if budget=$(opt_budget_json); then
+        printf '%s' "$budget"
+        return 0
+    fi
+    journal_budget_json "$(journal_stage "budget")"
+}
+
+new_backup_budget_hint() {
+    printf 'a new backup feed needs an explicit safe initial budget: --per-minute <n> --startup <n> --weight-per-minute <n> --weight-startup <n> --weight-reserve <n> (the probe refuses weight_per_minute + weight_startup above the venue weight ceiling less weight_reserve). Nothing changed'
+}
+
+probe_feed_candidate() {
+    local name="$1" candidate="$2" dir owner
+    dir=$(feed_dir "$name")
+    owner=$(update_tree_foreign_owner "$dir")
+    if [[ -n "$owner" ]]; then
+        update_probe_as_owner "$dir" "$owner" "$dir/go-trader" "$candidate"
+        return
+    fi
+    (cd "$dir" && ./go-trader probe --config "$candidate")
+}
+
+apply_backup_budget() {
+    local budget="$1" config candidate out rc
+    config=$(feed_config backup)
+    candidate="$config.candidate-shared-feed"
+    rm -f "$candidate"
+    cp -p "$config" "$candidate"
+    py set-budget "$candidate" "$budget" || { rm -f "$candidate"; return 1; }
+    set +e
+    out=$(probe_feed_candidate backup "$candidate" 2>&1)
+    rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        printf '%s\n' "$out" | sed 's/^/[shared-feed]   /' >&2
+        rm -f "$candidate"
+        warn "the candidate budget $budget failed the backup binary's probe (exit $rc); $config is unchanged and no SIGHUP was sent"
+        return 1
+    fi
+    mv -f "$candidate" "$config"
+    systemctl kill -s HUP "$(feed_unit backup)"
+}
+
 build_temp_probe() {
-    local tmp="$1" unit cfg
+    local tmp="$1" budget="$2" unit cfg
     local -a shadows=()
     for unit in "${CONSUMERS[@]}"; do
         cfg=$(unit_config_path "$unit")
@@ -546,10 +648,10 @@ build_temp_probe() {
     done
     local list
     list=$(printf '%s\n' "${shadows[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
-    python3 - "$tmp/feed-backup.json" "$list" <<'PY'
+    python3 - "$tmp/feed-backup.json" "$list" "$budget" <<'PY'
 import json, sys
 json.dump({"role": "feed", "status_port": 8191, "feed": {"source": "rest", "socket_path": "/run/go-trader-feed-backup/feed.sock",
-           "consumer_configs": json.loads(sys.argv[2]), "request_budget": {"per_minute": 1000, "startup": 1000}}, "strategies": []},
+           "consumer_configs": json.loads(sys.argv[2]), "request_budget": json.loads(sys.argv[3])}, "strategies": []},
           open(sys.argv[1], "w"), indent=2)
 PY
 }
@@ -567,8 +669,16 @@ cmd_plan() {
     origin=$(consumer_origin "$first_wd") \
         || die 19 "could not read the git origin of $first_wd (the git error above names the cause); feeds clones it for both feed trees"
     log "feed trees clone $origin (the origin of $first_wd)"
+    local budget
+    if [[ -f "$(feed_config backup)" && "$(py budget-complete "$(feed_config backup)")" == "yes" ]] && ! opt_budget_json >/dev/null; then
+        budget=$(py budget-of "$(feed_config backup)")
+        log "the probe uses the existing backup budget $budget"
+    else
+        budget=$(new_backup_budget) || die 2 "$(new_backup_budget_hint)"
+        log "the probe uses the budget $budget"
+    fi
     tmp=$(mktemp -d)
-    build_temp_probe "$tmp"
+    build_temp_probe "$tmp" "$budget"
     set +e
     probe_out=$(run_probe "$tmp" "$first_wd/go-trader" backup 2>&1)
     rc=$?
@@ -659,7 +769,7 @@ cmd_feeds() {
         entry=$(consumer_entry "$unit")
         entries+=("$entry")
     done
-    local list per_minute startup keys list_changed=0
+    local list budget keys list_changed=0
     local -a relist=()
     list=$(printf '%s\n' "${entries[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
     for name in "${FEEDS[@]}"; do
@@ -672,25 +782,10 @@ cmd_feeds() {
             update_git "$(dirname "$dir")" clone --quiet "$origin" "$dir" || die 20 "git clone of $origin into $dir failed (see the git error above)"
         fi
         install -d -m 0755 "$(dirname "$config")"
-        per_minute=""
-        startup=""
-        if [[ "$name" == "backup" ]]; then
-            local rec
-            rec=$(journal_last "budget")
-            if [[ -n "$rec" ]]; then
-                per_minute=$(journal_field "$rec" per_minute)
-                startup=$(journal_field "$rec" startup)
-            elif [[ -n "$OPT_PER_MINUTE" ]]; then
-                per_minute="$OPT_PER_MINUTE"
-                startup="$OPT_STARTUP"
-            else
-                per_minute=1000
-                startup=1000
-            fi
-        fi
+        budget=""
         if [[ -f "$config" && -n "$(journal_last "feed $name")" ]]; then
-            if [[ "$name" == "backup" && -n "$OPT_PER_MINUTE" && "$(feed_budget_matches "$config" "$OPT_PER_MINUTE" "$OPT_STARTUP")" != "yes" ]]; then
-                die 20 "$config exists with another request budget; --per-minute and --startup apply only to a new feed, and 'calibrate --per-minute $OPT_PER_MINUTE --startup $OPT_STARTUP' changes an existing one. Nothing changed for the backup"
+            if [[ "$name" == "backup" ]] && opt_budget_json >/dev/null && [[ "$(feed_budget_matches "$config" "$(opt_budget_json)")" != "yes" ]]; then
+                die 20 "$config exists with another request budget; the budget flags apply only to a new feed, and 'calibrate' with the same flags changes an existing one. Nothing changed for the backup"
             fi
             case "$(feed_list_state "$config" "$list")" in
                 same)
@@ -707,9 +802,23 @@ cmd_feeds() {
                     ;;
             esac
         else
-            py write-feed "$config" "$first_cfg" "$(feed_source "$name")" "$(feed_socket "$name")" "${!portvar}" "$list" "$per_minute" "$startup"
+            if [[ "$name" == "backup" ]]; then
+                budget=$(new_backup_budget) || die 2 "$(new_backup_budget_hint)"
+            fi
+            local candidate="$config.candidate-shared-feed" probe_out probe_rc
+            rm -f "$candidate"
+            py write-feed "$candidate" "$first_cfg" "$(feed_source "$name")" "$(feed_socket "$name")" "${!portvar}" "$list" "$budget"
+            set +e
+            probe_out=$(cd "$first_wd" && ./go-trader probe --config "$candidate" 2>&1)
+            probe_rc=$?
+            set -e
+            if [[ $probe_rc -ne 0 ]]; then
+                printf '%s\n' "$probe_out" | sed 's/^/[shared-feed]   /' >&2
+                rm -f "$candidate"
+                die 20 "the candidate $(feed_unit "$name") config failed the probe (exit $probe_rc); $config was not written"
+            fi
+            mv -f "$candidate" "$config"
         fi
-        [[ "$name" == "backup" && -z "$(journal_last budget)" ]] && journal_add "budget provisional per_minute=$per_minute startup=$startup"
         ln -sfn "$config" "$dir/scheduler/config.json"
         local envfile
         envfile=$(update_systemd_envfile_check_path "$(unit_prop "${CONSUMERS[0]}" EnvironmentFiles)")
@@ -783,10 +892,12 @@ PY
 }
 
 feed_budget_matches() {
-    python3 - "$1" "$2" "$3" <<'PY'
+    python3 - "$1" "$2" <<'PY'
 import json, sys
+fields = ("per_minute", "startup", "weight_per_minute", "weight_startup", "weight_reserve")
 b = json.load(open(sys.argv[1]))["feed"].get("request_budget") or {}
-print("yes" if str(b.get("per_minute")) == sys.argv[2] and str(b.get("startup")) == sys.argv[3] else "no")
+want = json.loads(sys.argv[2])
+print("yes" if all(b.get(k) == want.get(k) for k in fields) else "no")
 PY
 }
 
@@ -955,43 +1066,83 @@ feed_port() {
     printf '%s' "${rec##* }"
 }
 
-PREV_PER_MINUTE=""
-PREV_STARTUP=""
+CAL_KEEP=""
 
 calibrate_fail() {
     undo_begin
-    py set-budget "$(feed_config backup)" "$PREV_PER_MINUTE" "$PREV_STARTUP"
-    systemctl kill -s HUP "$(feed_unit backup)" || true
-    die 24 "$1; the backup keeps its previous budget per_minute=$PREV_PER_MINUTE startup=$PREV_STARTUP"
+    local config sum=""
+    config=$(feed_config backup)
+    if [[ -n "$CAL_KEEP" && -f "$CAL_KEEP" ]]; then
+        if ! cmp -s "$CAL_KEEP" "$config"; then
+            cp -p "$CAL_KEEP" "$config.restore-shared-feed"
+            mv -f "$config.restore-shared-feed" "$config"
+            systemctl kill -s HUP "$(feed_unit backup)" || true
+        fi
+        sum=$(sha256sum "$config" | awk '{print $1}')
+        rm -f "$CAL_KEEP"
+        CAL_KEEP=""
+    fi
+    die 24 "$1; the backup keeps its previous config byte for byte (sha256 ${sum:-unknown}) and its previous budget"
+}
+
+calibrate_weight_peak() {
+    local port="$1" charged pending inflight
+    charged=$(health_get "$port" request_budget.weight.charged)
+    pending=$(health_get "$port" request_budget.weight.pending)
+    inflight=$(health_get "$port" request_budget.weight.in_flight)
+    printf '%s' $(( ${charged:-0} + ${pending:-0} + ${inflight:-0} ))
 }
 
 cmd_calibrate() {
     need_root
     [[ -n "$(journal_stage "feeds ready")" ]] || die 20 "run 'feeds' first$(reset_note "feeds ready")"
     local port window cad sampled=0 peak=0 used refused_before refused bootstrap per_minute startup cap_peak="" cap_cold=""
+    local wpeak=0 wused wrefused_before wrefused wboot wpm wst wrs ceiling budget prior
     port=$(feed_port backup)
     cad=$(max_cadence)
     window="${OPT_WINDOW:-$(( ${cad:-300} * 2 ))}"
-    PREV_PER_MINUTE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["feed"]["request_budget"]["per_minute"])' "$(feed_config backup)")
-    PREV_STARTUP=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["feed"]["request_budget"]["startup"])' "$(feed_config backup)")
+    [[ "$(py budget-complete "$(feed_config backup)")" == "yes" ]] || opt_budget_json >/dev/null \
+        || die 2 "$(feed_config backup) has no complete weight policy; pass all five budget flags (--per-minute, --startup, --weight-per-minute, --weight-startup, --weight-reserve). Nothing changed"
+    prior=$(py budget-of "$(feed_config backup)")
+    CAL_KEEP=$(mktemp)
+    cp -p "$(feed_config backup)" "$CAL_KEEP"
     guard_set calibrate
-    if [[ -n "$OPT_PER_MINUTE" ]]; then
-        py set-budget "$(feed_config backup)" "$OPT_PER_MINUTE" "$OPT_STARTUP"
-        systemctl kill -s HUP "$(feed_unit backup)"
+    if [[ -n "$OPT_PER_MINUTE" || -n "$OPT_WEIGHT_PER_MINUTE" ]]; then
+        budget=$(python3 - "$prior" "$OPT_PER_MINUTE" "$OPT_STARTUP" "$OPT_WEIGHT_PER_MINUTE" "$OPT_WEIGHT_STARTUP" "$OPT_WEIGHT_RESERVE" <<'PY'
+import json, sys
+b = json.loads(sys.argv[1])
+names = ("per_minute", "startup", "weight_per_minute", "weight_startup", "weight_reserve")
+for name, v in zip(names, sys.argv[2:]):
+    if v:
+        b[name] = int(v)
+print(json.dumps(b, separators=(",", ":")))
+PY
+)
+        apply_backup_budget "$budget" || calibrate_fail "the fixed budget $budget failed the probe"
         sleep 5
     fi
     refused_before=$(health_get "$port" request_budget.totals.refused)
-    log "sampling the backup's request window for ${window}s (longest cadence ${cad:-unknown}s)"
+    wrefused_before=$(health_get "$port" request_budget.weight.totals.refused)
+    log "sampling the backup's request window and weight use for ${window}s (longest cadence ${cad:-unknown}s)"
     while [[ $sampled -lt $window ]]; do
         used=$(health_get "$port" request_budget.window_used)
         [[ -n "$used" && "$used" -gt "$peak" ]] && peak="$used"
+        wused=$(calibrate_weight_peak "$port")
+        [[ -n "$wused" && "$wused" -gt "$wpeak" ]] && wpeak="$wused"
         sleep 2
         sampled=$((sampled + 2))
     done
     refused=$(health_get "$port" request_budget.totals.refused)
     [[ "${refused:-0}" == "${refused_before:-0}" ]] || calibrate_fail "the backup refused $((refused - refused_before)) request(s) during calibration; raise the budget and re-run"
+    wrefused=$(health_get "$port" request_budget.weight.totals.refused)
+    [[ "${wrefused:-0}" == "${wrefused_before:-0}" ]] || calibrate_fail "the backup's weight allocation refused $((wrefused - wrefused_before)) read(s) during calibration; raise the weight policy and re-run"
+    [[ "$(health_get "$port" request_budget.weight.participation)" == "enabled" ]] || calibrate_fail "the backup reports no weight participation; its binary or config predates the weight policy"
+    ceiling=$(health_get "$port" request_budget.weight.ceiling)
+    [[ "$ceiling" =~ ^[1-9][0-9]*$ ]] || calibrate_fail "the backup reports no weight ceiling"
     bootstrap=$(health_get "$port" request_budget.totals.by_reason.bootstrap)
     bootstrap="${bootstrap:-0}"
+    wboot=$(health_get "$port" request_budget.weight.totals.reserved_by_reason.bootstrap)
+    wboot="${wboot:-0}"
     if [[ -n "$OPT_PER_MINUTE" ]]; then
         per_minute="$OPT_PER_MINUTE"
         startup="$OPT_STARTUP"
@@ -1002,6 +1153,18 @@ cmd_calibrate() {
         [[ $per_minute -ge $((peak + 2)) ]] || per_minute=$((peak + 2))
         startup=$(( (bootstrap * 3 + 1) / 2 ))
         [[ $startup -ge 1 ]] || startup=1
+    fi
+    wrs=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["weight_reserve"])' "$prior")
+    [[ -z "$OPT_WEIGHT_RESERVE" ]] || wrs="$OPT_WEIGHT_RESERVE"
+    if [[ -n "$OPT_WEIGHT_PER_MINUTE" ]]; then
+        wpm="$OPT_WEIGHT_PER_MINUTE"
+        wst="$OPT_WEIGHT_STARTUP"
+        [[ $wpeak -le $((wpm + wst)) ]] || calibrate_fail "measured weight peak $wpeak does not fit weight_per_minute $wpm + weight_startup $wst"
+    else
+        wpm=$(( (wpeak * 3 + 1) / 2 ))
+        wst=$(( (wboot * 3 + 1) / 2 ))
+        [[ $wpm -le $((ceiling - wrs)) ]] || calibrate_fail "1.5 times the measured weight peak ($wpm) does not fit the $ceiling ceiling less weight_reserve $wrs"
+        [[ $((wpm + wst)) -le $((ceiling - wrs)) ]] || wst=$((ceiling - wrs - wpm))
     fi
     if [[ -n "$OPT_LEDGER" ]]; then
         local report
@@ -1014,13 +1177,16 @@ cmd_calibrate() {
         [[ $per_minute -le $cap_peak ]] || per_minute=$cap_peak
         if [[ -n "$cap_cold" && $startup -gt $cap_cold ]]; then startup=$cap_cold; fi
     fi
-    py set-budget "$(feed_config backup)" "$per_minute" "$startup"
-    systemctl kill -s HUP "$(feed_unit backup)"
+    budget=$(printf '{"per_minute":%s,"startup":%s,"weight_per_minute":%s,"weight_startup":%s,"weight_reserve":%s}' "$per_minute" "$startup" "$wpm" "$wst" "$wrs")
+    apply_backup_budget "$budget" || calibrate_fail "the calibrated budget $budget failed the probe"
     sleep 5
     [[ "$(health_get "$port" request_budget.per_minute)" == "$per_minute" ]] || calibrate_fail "the backup did not apply per_minute $per_minute after SIGHUP"
-    journal_add "budget calibrated per_minute=$per_minute startup=$startup peak=$peak bootstrap=$bootstrap baseline_peak=${cap_peak:-none} fixed=$([[ -n "$OPT_PER_MINUTE" ]] && echo yes || echo no) at=$(date -u +%s)"
+    [[ "$(health_get "$port" request_budget.weight.weight_per_minute)" == "$wpm" ]] || calibrate_fail "the backup did not apply weight_per_minute $wpm after SIGHUP"
+    journal_add "budget calibrated per_minute=$per_minute startup=$startup weight_per_minute=$wpm weight_startup=$wst weight_reserve=$wrs peak=$peak weight_peak=$wpeak bootstrap=$bootstrap bootstrap_weight=$wboot baseline_peak=${cap_peak:-none} fixed=$([[ -n "$OPT_PER_MINUTE$OPT_WEIGHT_PER_MINUTE" ]] && echo yes || echo no) at=$(date -u +%s)"
     guard_clear
-    log "calibrate OK: per_minute=$per_minute startup=$startup (measured peak $peak, bootstrap $bootstrap). Next: verify"
+    rm -f "$CAL_KEEP"
+    CAL_KEEP=""
+    log "calibrate OK: per_minute=$per_minute startup=$startup weight_per_minute=$wpm weight_startup=$wst weight_reserve=$wrs (measured peak $peak requests and $wpeak weight, bootstrap $bootstrap requests and $wboot weight). Next: verify"
 }
 
 common_retained_keys() {
@@ -1043,7 +1209,7 @@ PY
 }
 
 budget_calibrated() {
-    [[ "$(journal_stage "budget")" == "budget calibrated "* ]]
+    journal_budget_json "$(journal_stage "budget")" >/dev/null
 }
 
 cmd_verify() {
@@ -1423,23 +1589,32 @@ cmd_status() {
     done < <(current_consumers)
 }
 
-[[ $# -gt 0 ]] || { usage; exit 2; }
-SUBCOMMAND="$1"
-shift
 declare -a SELECTED=()
 OPT_PER_MINUTE=""
 OPT_STARTUP=""
+OPT_WEIGHT_PER_MINUTE=""
+OPT_WEIGHT_STARTUP=""
+OPT_WEIGHT_RESERVE=""
 OPT_LEDGER=""
 OPT_WINDOW=""
 OPT_CONFIRM_LIVE=""
 OPT_DROPIN=0
 OPT_ACCEPT_DIFF=0
 OPT_ALL=0
+
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
+
+[[ $# -gt 0 ]] || { usage; exit 2; }
+SUBCOMMAND="$1"
+shift
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --consumer) SELECTED+=("${2:-}"); shift 2 ;;
         --per-minute) OPT_PER_MINUTE="${2:-}"; shift 2 ;;
         --startup) OPT_STARTUP="${2:-}"; shift 2 ;;
+        --weight-per-minute) OPT_WEIGHT_PER_MINUTE="${2:-}"; shift 2 ;;
+        --weight-startup) OPT_WEIGHT_STARTUP="${2:-}"; shift 2 ;;
+        --weight-reserve) OPT_WEIGHT_RESERVE="${2:-}"; shift 2 ;;
         --baseline-ledger) OPT_LEDGER="${2:-}"; shift 2 ;;
         --window) OPT_WINDOW="${2:-}"; shift 2 ;;
         --confirm-live) OPT_CONFIRM_LIVE="${2:-}"; shift 2 ;;
@@ -1450,9 +1625,7 @@ while [[ $# -gt 0 ]]; do
         *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
-if [[ -n "$OPT_PER_MINUTE$OPT_STARTUP" ]]; then
-    [[ "$OPT_PER_MINUTE" =~ ^[1-9][0-9]*$ && "$OPT_STARTUP" =~ ^[1-9][0-9]*$ ]] || die 2 "--per-minute and --startup must both be positive integers"
-fi
+validate_budget_opts
 [[ -z "$OPT_WINDOW" || "$OPT_WINDOW" =~ ^[1-9][0-9]*$ ]] || die 2 "--window must be a positive number of seconds"
 
 case "$SUBCOMMAND" in

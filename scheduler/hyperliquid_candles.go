@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"sort"
 	"strconv"
 	"time"
@@ -220,17 +219,23 @@ func fetchHyperliquidCandleSnapshot(ctx context.Context, coin, interval string, 
 	if err != nil {
 		return nil, fmt.Errorf("marshal candleSnapshot request: %w", err)
 	}
-	reply, err := hlInfoPost(ctx, hlMainnetURL, "candleSnapshot", body, hlCandleFetchTimeout, 0)
+	bound, err := hlCandleRowBound(interval, startMs, endMs)
 	if err != nil {
 		return nil, err
 	}
-	if reply.Status != http.StatusOK {
-		return nil, fmt.Errorf("http %d from %s/info candleSnapshot", reply.Status, hlMainnetURL)
+	var out []hlCandleRaw
+	err = hlInfoPost(ctx, hlInfoCall{
+		BaseURL: hlMainnetURL, Type: "candleSnapshot", Body: body, Timeout: hlCandleFetchTimeout, RowBound: bound,
+		Decode: func(data []byte) (int, error) {
+			raws, derr := parseHyperliquidCandleRaws(data)
+			out = raws
+			return len(raws), derr
+		},
+	})
+	if err != nil {
+		return nil, err
 	}
-	if reply.ReadErr != nil {
-		return nil, fmt.Errorf("read candleSnapshot response: %w", reply.ReadErr)
-	}
-	return parseHyperliquidCandleRaws(reply.Body)
+	return out, nil
 }
 
 type hlCandleHistory struct {

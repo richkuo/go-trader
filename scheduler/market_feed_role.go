@@ -493,13 +493,13 @@ type feedRuntime struct {
 
 func formatFeedBudgetConfig(source string, b *feedBudgetConfig) string {
 	if b == nil {
-		return fmt.Sprintf("request budget: none configured (source %s counts requests without a limit)", source)
+		return fmt.Sprintf("request budget: none configured (source %s counts requests without a limit); %s", source, formatFeedWeightPolicy(nil))
 	}
 	mode := "enforced"
 	if source != feedSourceREST {
 		mode = "logged only"
 	}
-	return fmt.Sprintf("request budget: per_minute=%d startup=%d (%s, source %s)", b.PerMinute, b.Startup, mode, source)
+	return fmt.Sprintf("request budget: per_minute=%d startup=%d requests (%s, source %s); %s", b.PerMinute, b.Startup, mode, source, formatFeedWeightPolicy(b.weightPolicy()))
 }
 
 func newFeedInstanceID(now time.Time) string {
@@ -613,6 +613,7 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	ledger.logf = feedLogf
 	ctx := withFeedLedger(baseCtx, ledger)
 	fmt.Printf("[feed] %s\n", formatFeedBudgetConfig(cfg.Feed.Source, cfg.Feed.RequestBudget))
+	fmt.Printf("[feed] %s\n", hlWeightTableLine())
 
 	owner := newMarketFeedOwner(nil, feedLogf)
 	globalMarketFeedStatus.setOwner(owner)
@@ -819,8 +820,7 @@ func (rt *feedRuntime) reload() {
 		return
 	}
 	rt.ledger.setLimits(next.Feed.RequestBudget)
-	fmt.Printf("[reload] %s\n", formatFeedBudgetConfig(next.Feed.Source, next.Feed.RequestBudget))
-	rt.ledger.openStartup()
+	fmt.Printf("[reload] %s; startup allowances, charged history, reservations and host pauses are kept\n", formatFeedBudgetConfig(next.Feed.Source, next.Feed.RequestBudget))
 	select {
 	case <-rt.owner.ApplyGeneration(rt.ctx, union):
 	case <-rt.ctx.Done():
@@ -979,6 +979,8 @@ func runFeedProbe(configPath string) int {
 		return ExitProbeFailure
 	}
 	fmt.Printf("probe: %s\n", formatFeedBudgetConfig(cfg.Feed.Source, cfg.Feed.RequestBudget))
+	fmt.Printf("probe: %s\n", hlWeightTableLine())
+	fmt.Printf("probe: %s\n", estimateFeedUnionWeight(union))
 	for _, key := range union.Order {
 		fmt.Printf("probe: key %s lookback=%d cadences=%s\n", key.PayloadID(), union.Keys[key], formatCadences(union.KeyCadences[key]))
 	}

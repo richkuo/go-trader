@@ -1960,3 +1960,325 @@ func TestUpdateShellCPUWeightDropIn(t *testing.T) {
 		}
 	})
 }
+
+func TestUpdateShellFeedConfigTransaction(t *testing.T) {
+	t.Parallel()
+	const liveCfg = "{\n  \"role\": \"feed\",\n  \"feed\": {\n    \"source\": \"rest\",\n    \"request_budget\": {\"per_minute\": 120, \"startup\": 60}\n  }\n}\n"
+	const candidateCfg = "{\n  \"role\": \"feed\",\n  \"feed\": {\n    \"source\": \"rest\",\n    \"request_budget\": {\"per_minute\": 120, \"startup\": 60, \"weight_per_minute\": 600, \"weight_startup\": 400, \"weight_reserve\": 200}\n  }\n}\n"
+	const probeLogic = "cfg=scheduler/config.json\n" +
+		"if [[ \"$2\" == \"--config\" ]]; then cfg=\"$3\"; fi\n"
+	oldStub := "#!/usr/bin/env bash\n" +
+		"if [[ \"$1\" == \"version\" ]]; then echo v1; exit 0; fi\n" +
+		"if [[ \"$1\" == \"probe\" ]]; then\n" + probeLogic +
+		"  if grep -q weight_per_minute \"$cfg\"; then echo \"old probe: feed block: json: unknown field weight_per_minute\" >&2; echo \"old fail $cfg\" >>\"$FEED_TX_LOG\"; exit 1; fi\n" +
+		"  echo \"old ok $cfg\" >>\"$FEED_TX_LOG\"; exit 0\n" +
+		"fi\n" +
+		"if [[ \"$1\" == \"agent-info\" || \"$1\" == \"cpu-class\" ]]; then exit 0; fi\n" +
+		"exec sleep 60\n"
+	type feedTx struct {
+		deploy, live, staged, recRoot string
+		out                           string
+		err                           error
+		log                           []string
+	}
+	setup := func(t *testing.T, role string, stage bool) (*feedTx, func(extraEnv ...string) *feedTx) {
+		t.Helper()
+		bash, deploy, _, recRoot, baseEnv := setupUpdateShellTestRepo(t)
+		parent := filepath.Dir(deploy)
+		binDir := filepath.Join(parent, "bin")
+		unitDir := filepath.Join(parent, "units")
+		txLog := filepath.Join(parent, "feed-tx.log")
+		goStub := "#!/usr/bin/env bash\n" +
+			"if [[ \"$1\" == \"version\" ]]; then echo 'go version go1.26.2'; exit 0; fi\n" +
+			"dir=. out= ver=dev\n" +
+			"while [[ $# -gt 0 ]]; do\n" +
+			"  case \"$1\" in\n" +
+			"    -C) dir=\"$2\"; shift 2 ;;\n" +
+			"    -o) out=\"$2\"; shift 2 ;;\n" +
+			"    -ldflags) ver=\"${2#*main.Version=}\"; ver=\"${ver%% *}\"; shift 2 ;;\n" +
+			"    *) shift ;;\n" +
+			"  esac\n" +
+			"done\n" +
+			"case \"$out\" in /*) ;; *) out=\"$dir/$out\" ;; esac\n" +
+			"cat > \"$out\" <<STUB\n" +
+			"#!/usr/bin/env bash\n" +
+			"if [[ \"\\$1\" == \"version\" ]]; then echo \"$ver\"; exit 0; fi\n" +
+			"if [[ \"\\$1\" == \"probe\" ]]; then\n" +
+			"  cfg=scheduler/config.json\n" +
+			"  if [[ \"\\$2\" == \"--config\" ]]; then cfg=\"\\$3\"; fi\n" +
+			"  if grep -q '\"source\": \"rest\"' \"\\$cfg\" && ! grep -q weight_per_minute \"\\$cfg\"; then echo \"new probe: feed.request_budget.weight_per_minute, weight_startup and weight_reserve are required\" >&2; echo \"new fail \\$cfg\" >>\"\\$FEED_TX_LOG\"; exit 1; fi\n" +
+			"  echo \"new ok \\$cfg\" >>\"\\$FEED_TX_LOG\"; exit 0\n" +
+			"fi\n" +
+			"if [[ \"\\$1\" == \"agent-info\" || \"\\$1\" == \"cpu-class\" ]]; then exit 0; fi\n" +
+			"exec sleep 60\n" +
+			"STUB\n" +
+			"chmod +x \"$out\"\n"
+		if err := os.WriteFile(filepath.Join(binDir, "go"), []byte(goStub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		stopped := filepath.Join(parent, "unit-stopped")
+		systemctlStub := "#!/usr/bin/env bash\n" +
+			"case \"$*\" in\n" +
+			"  --version) echo 'systemd 255 (255.4-1ubuntu8)' ;;\n" +
+			"  stop\\ *) touch \"" + stopped + "\" ;;\n" +
+			"  start\\ *|restart\\ *) rm -f \"" + stopped + "\" ;;\n" +
+			"  *is-active*) exit 0 ;;\n" +
+			"  *MainPID*) if [[ -e \"" + stopped + "\" ]]; then echo 0; else echo $$; fi ;;\n" +
+			"  *\"-p LoadState --value\"*) echo loaded ;;\n" +
+			"  *\"-p User --value\"*) id -un ;;\n" +
+			"  *\"-p Group --value\"*) echo ;;\n" +
+			"  *\"-p WorkingDirectory --value\"*) echo \"$PWD\" ;;\n" +
+			"  *\"-p ExecStart --value\"*) echo \"{ path=$PWD/go-trader ; argv[]=$PWD/go-trader --config $PWD/scheduler/config.json ; }\" ;;\n" +
+			"esac\n" +
+			"exit 0\n"
+		if err := os.WriteFile(filepath.Join(binDir, "systemctl"), []byte(systemctlStub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(deploy, "go-trader"), []byte(oldStub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		stateDir := filepath.Join(parent, "state", "feed-backup")
+		if err := os.MkdirAll(stateDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		live := filepath.Join(stateDir, "config.json")
+		body := liveCfg
+		if role == "scheduler" {
+			body = "{}\n"
+		}
+		if err := os.WriteFile(live, []byte(body), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(deploy, "scheduler", "config.json")
+		if err := os.Remove(link); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(live, link); err != nil {
+			t.Fatal(err)
+		}
+		tx := &feedTx{deploy: deploy, live: live, staged: live + ".staged", recRoot: recRoot}
+		if stage {
+			if err := os.WriteFile(tx.staged, []byte(candidateCfg), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		run := func(extraEnv ...string) *feedTx {
+			args := []string{filepath.Join(deploy, "scripts", "update.sh"), "--restart", "--unit", "go-trader@feed-backup"}
+			for _, e := range extraEnv {
+				if e == "--no-restart" {
+					args = []string{filepath.Join(deploy, "scripts", "update.sh")}
+				}
+			}
+			cmd := exec.Command(bash, args...)
+			cmd.Dir = deploy
+			cmd.Env = append(append([]string{}, baseEnv...), "UPDATE_SYSTEMD_UNIT_DIR="+unitDir, "FEED_TX_LOG="+txLog)
+			for _, e := range extraEnv {
+				if e != "--no-restart" {
+					cmd.Env = append(cmd.Env, e)
+				}
+			}
+			out, err := cmd.CombinedOutput()
+			res := *tx
+			res.out, res.err = string(out), err
+			if data, readErr := os.ReadFile(txLog); readErr == nil {
+				res.log = strings.Split(strings.TrimSpace(string(data)), "\n")
+			}
+			return &res
+		}
+		return tx, run
+	}
+	readFile := func(t *testing.T, path string) string {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	version := func(t *testing.T, deploy string) string {
+		t.Helper()
+		out, err := exec.Command(filepath.Join(deploy, "go-trader"), "version").CombinedOutput()
+		if err != nil {
+			t.Fatalf("go-trader version: %v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	exists := func(path string) bool {
+		_, err := os.Lstat(path)
+		return err == nil
+	}
+
+	t.Run("NoCandidateFailsAtProbeWithBinaryAndConfigUnchanged", func(t *testing.T) {
+		t.Parallel()
+		tx, run := setup(t, "feed", false)
+		res := run()
+		if res.err == nil {
+			t.Fatalf("update succeeded without a weight policy:\n%s", res.out)
+		}
+		if !strings.Contains(res.out, "probe rejected") || !strings.Contains(res.out, tx.live+".staged") {
+			t.Fatalf("want the probe refusal and the staging hint naming %s.staged:\n%s", tx.live, res.out)
+		}
+		if got := version(t, tx.deploy); got != "v1" {
+			t.Fatalf("binary version = %q, want v1 unchanged", got)
+		}
+		if got := readFile(t, tx.live); got != liveCfg {
+			t.Fatalf("live config changed:\n%s", got)
+		}
+		if exists(tx.live + ".prev") {
+			t.Fatalf("a .prev copy exists although nothing was promoted")
+		}
+	})
+
+	t.Run("ValidCandidateIsProbedPromotedAndUnstaged", func(t *testing.T) {
+		t.Parallel()
+		tx, run := setup(t, "feed", true)
+		res := run()
+		if res.err != nil {
+			t.Fatalf("update failed: %v\n%s", res.err, res.out)
+		}
+		if got := version(t, tx.deploy); got == "v1" {
+			t.Fatalf("binary was not swapped:\n%s", res.out)
+		}
+		if got := readFile(t, tx.live); got != candidateCfg {
+			t.Fatalf("live config = %q, want the candidate", got)
+		}
+		if got := readFile(t, tx.live+".prev"); got != liveCfg {
+			t.Fatalf(".prev = %q, want the previous bytes", got)
+		}
+		if exists(tx.staged) {
+			t.Fatalf("the staged file was kept after a healthy update")
+		}
+		info, err := os.Stat(tx.live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o640 {
+			t.Fatalf("promoted mode = %04o, want the live file's 0640", info.Mode().Perm())
+		}
+		var newProbe string
+		for _, line := range res.log {
+			if strings.HasPrefix(line, "new ") {
+				newProbe = line
+			}
+		}
+		if !strings.HasPrefix(newProbe, "new ok ") || !strings.HasSuffix(newProbe, "feed_config.candidate") {
+			t.Fatalf("the new binary must probe the root-held candidate copy, log: %v", res.log)
+		}
+	})
+
+	for _, failAt := range []string{"config_promote_after", "verify_health"} {
+		failAt := failAt
+		t.Run("FailureAfterPromotionRestoresConfigBeforeOldProbe_"+failAt, func(t *testing.T) {
+			t.Parallel()
+			tx, run := setup(t, "feed", true)
+			res := run("GO_TRADER_UPDATE_FAIL_AT=" + failAt)
+			if res.err == nil || !strings.Contains(res.out, "recovery: complete") {
+				t.Fatalf("want a failed update with complete recovery, err=%v\n%s", res.err, res.out)
+			}
+			if !strings.Contains(res.out, "config=ok") || !strings.Contains(res.out, "probe=ok") {
+				t.Fatalf("want config=ok and probe=ok in the recovery summary:\n%s", res.out)
+			}
+			if got := version(t, tx.deploy); got != "v1" {
+				t.Fatalf("binary version = %q, want v1 restored", got)
+			}
+			if got := readFile(t, tx.live); got != liveCfg {
+				t.Fatalf("live config = %q, want the original bytes", got)
+			}
+			if got := readFile(t, tx.staged); got != candidateCfg {
+				t.Fatalf("staged file = %q, want it kept", got)
+			}
+			last := res.log[len(res.log)-1]
+			if last != "old ok scheduler/config.json" {
+				t.Fatalf("the recovery probe of the old binary must pass on the restored config, log: %v", res.log)
+			}
+		})
+	}
+
+	t.Run("FailureBeforePromotionNeverTouchesConfig", func(t *testing.T) {
+		t.Parallel()
+		tx, run := setup(t, "feed", true)
+		res := run("GO_TRADER_UPDATE_FAIL_AT=config_promote_before")
+		if res.err == nil || !strings.Contains(res.out, "recovery: complete") {
+			t.Fatalf("want a failed update with complete recovery, err=%v\n%s", res.err, res.out)
+		}
+		if got := readFile(t, tx.live); got != liveCfg {
+			t.Fatalf("live config = %q, want it untouched", got)
+		}
+		if exists(tx.live + ".prev") {
+			t.Fatalf("a .prev copy exists although the promotion never ran")
+		}
+		if got := version(t, tx.deploy); got != "v1" {
+			t.Fatalf("binary version = %q, want v1 restored", got)
+		}
+	})
+
+	t.Run("RestoreConfigFailureBlocksProbeAndService", func(t *testing.T) {
+		t.Parallel()
+		tx, run := setup(t, "feed", true)
+		res := run("GO_TRADER_UPDATE_FAIL_AT=verify_health,restore_config")
+		if res.err == nil || !strings.Contains(res.out, "recovery: INCOMPLETE") {
+			t.Fatalf("want an INCOMPLETE recovery, err=%v\n%s", res.err, res.out)
+		}
+		for _, want := range []string{"config=failed", "probe=blocked", "service=blocked"} {
+			if !strings.Contains(res.out, want) {
+				t.Fatalf("recovery summary lacks %s:\n%s", want, res.out)
+			}
+		}
+		entries, err := os.ReadDir(tx.recRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		marker := false
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".incomplete") {
+				marker = true
+			}
+		}
+		if !marker {
+			t.Fatalf("no incomplete-recovery marker in %s", tx.recRoot)
+		}
+		for _, line := range res.log {
+			if strings.HasPrefix(line, "old ") {
+				t.Fatalf("the old binary was probed although the config restore failed, log: %v", res.log)
+			}
+		}
+	})
+
+	t.Run("StagedRefusals", func(t *testing.T) {
+		t.Parallel()
+		tx, run := setup(t, "feed", true)
+		res := run("--no-restart")
+		if res.err == nil || !strings.Contains(res.out, "promoted only by the transaction") {
+			t.Fatalf("want a refusal without --restart:\n%s", res.out)
+		}
+		if got := version(t, tx.deploy); got != "v1" || readFile(t, tx.live) != liveCfg {
+			t.Fatalf("a refused update changed the binary or the config")
+		}
+		if err := os.Remove(tx.staged); err != nil {
+			t.Fatal(err)
+		}
+		other := filepath.Join(filepath.Dir(tx.live), "elsewhere.json")
+		if err := os.WriteFile(other, []byte(candidateCfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(other, tx.staged); err != nil {
+			t.Fatal(err)
+		}
+		res = run()
+		if res.err == nil || !strings.Contains(res.out, "is a symlink") {
+			t.Fatalf("want a symlink refusal:\n%s", res.out)
+		}
+
+		stx, srun := setup(t, "scheduler", false)
+		if err := os.WriteFile(stx.staged, []byte(candidateCfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		res = srun()
+		if res.err == nil || !strings.Contains(res.out, "is a scheduler config") {
+			t.Fatalf("want a scheduler-role refusal:\n%s", res.out)
+		}
+		if readFile(t, stx.live) != "{}\n" {
+			t.Fatalf("a refused scheduler update changed the config")
+		}
+	})
+}

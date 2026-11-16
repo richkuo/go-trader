@@ -1009,7 +1009,8 @@ scenario_update() {
     [[ "$uvp" != /root/* && "$uvp" != /home/* ]] || fail "go-trader resolved uv from a home directory: $uvp"
     helper update_tool_runs_as go-trader go >/dev/null || fail "go-trader cannot run go"
     helper update_tool_runs_as root uv >/dev/null || fail "root cannot run uv"
-    expect_exit 0 git_isolated bash "$SCRIPT_DIR/shared-feed-convert.sh" plan --consumer "$tunit"
+    expect_exit 0 git_isolated bash "$SCRIPT_DIR/shared-feed-convert.sh" plan --consumer "$tunit" \
+        --per-minute 120 --startup 400 --weight-per-minute 600 --weight-startup 400 --weight-reserve 200
     grep -q "feed trees clone $origin (the origin of $tree)" "$WORK/last.out" || fail "shared-feed plan did not read the origin of $tree"
     if grep -q "no git origin" "$WORK/last.out"; then fail "shared-feed plan reported no git origin"; fi
 

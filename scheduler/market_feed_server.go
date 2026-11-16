@@ -110,17 +110,22 @@ func (s *feedSealer) prepareFor(ctx context.Context, key int64, reqs cycleMarket
 	return feedPrepareReport{}
 }
 
-func (s *feedSealer) budgetLines(key int64, before feedBudgetTotals, rep feedPrepareReport) (feedBudgetTotals, []string) {
+func (s *feedSealer) budgetLines(key int64, before feedBudgetTotals, beforeWeight feedWeightTotals, rep feedPrepareReport) (feedBudgetTotals, []string) {
 	if s.ledger == nil {
 		return feedBudgetTotals{}, nil
 	}
 	delta := s.ledger.snapshot().since(before)
+	wDelta := s.ledger.weightSnapshot().since(beforeWeight)
 	st := s.ledger.status()
-	line := fmt.Sprintf("[feed-budget] key=%d source=%s instance=%s requests=%d refused=%d by_reason=%s by_type=%s refused_by_reason=%s window_used=%d per_minute=%d startup_left=%d enforced=%t refreshed=%d refused_keys=%s failed_keys=%s rate_limited=%d paused=%d paused_by_reason=%s paused_keys=%s rate_limit=%s",
+	w := st.Weight
+	line := fmt.Sprintf("[feed-budget] key=%d source=%s instance=%s requests=%d refused=%d by_reason=%s by_type=%s refused_by_reason=%s window_used=%d per_minute=%d startup_left=%d enforced=%t refreshed=%d refused_keys=%s failed_keys=%s rate_limited=%d paused=%d paused_by_reason=%s paused_keys=%s rate_limit=%s weight=%s weight_per_minute=%d weight_startup_left=%d weight_reserve=%d weight_charged=%d weight_steady_used=%d weight_pending=%d weight_in_flight=%d weight_reserved=%d weight_settled=%d weight_retained=%d weight_refunded=%d weight_debt=%d weight_refused=%d weight_refused_by_cause=%s weight_refused_keys=%s",
 		key, s.source, s.instance, delta.Total, delta.Refused, formatFeedCounts(delta.ByReason), formatFeedCounts(delta.ByType),
 		formatFeedCounts(delta.RefusedByReason), st.WindowUsed, st.PerMinute, st.StartupLeft, st.Enforced, rep.Refreshed,
 		joinFeedNames(rep.Refused), joinFeedNames(rep.Failed), delta.RateLimited, delta.Paused, formatFeedCounts(delta.PausedByReason),
-		joinFeedNames(rep.Paused), formatFeedRateLimitStatus(st.RateLimit))
+		joinFeedNames(rep.Paused), formatFeedRateLimitStatus(st.RateLimit),
+		w.Participation, w.PerMinute, w.StartupLeft, w.Reserve, w.Charged, w.SteadyUsed, w.Pending, w.InFlight,
+		wDelta.Reserved, wDelta.Settled, wDelta.Retained, wDelta.Refunded, wDelta.Debt, wDelta.Refused, formatFeedCounts(wDelta.RefusedByCause),
+		joinFeedNames(rep.WeightRefused))
 	return delta, []string{line}
 }
 
@@ -314,7 +319,24 @@ func (s *feedSealer) reportRateLimit(key int64) {
 	}
 }
 
+func (s *feedSealer) reportWeight(key int64) {
+	if s.ledger == nil {
+		return
+	}
+	for _, ev := range s.ledger.weightReport(s.owner.weightRefusedInputs()) {
+		s.logf("[feed-weight] key=%d source=%s instance=%s %s", key, s.source, s.instance, ev.logLine())
+		send := s.rateLimitSend
+		if send == nil {
+			send = s.alertHook
+		}
+		if send != nil {
+			send(formatFeedWeightAlert(ev, s.source, s.instance))
+		}
+	}
+}
+
 func (s *feedSealer) sealOne(ctx context.Context, key int64) {
+	defer s.reportWeight(key)
 	defer s.reportRateLimit(key)
 	hard := s.hardDeadline(key)
 	startedAt := s.now()
@@ -333,13 +355,15 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 	coverage := s.coverage
 	s.mu.Unlock()
 	var before feedBudgetTotals
+	var beforeWeight feedWeightTotals
 	if s.ledger != nil {
 		before = s.ledger.snapshot()
+		beforeWeight = s.ledger.weightSnapshot()
 	}
 	prepCtx, cancel := context.WithDeadline(ctx, s.sealAt(key).Add(s.prepare))
 	rep := s.prepareFor(prepCtx, key, reqs, coverage)
 	cancel()
-	delta, budgetLines := s.budgetLines(key, before, rep)
+	delta, budgetLines := s.budgetLines(key, before, beforeWeight, rep)
 	for _, line := range budgetLines {
 		s.logf("%s", line)
 	}

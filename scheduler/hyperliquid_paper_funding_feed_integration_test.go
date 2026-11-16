@@ -26,7 +26,9 @@ func paperFundingFeedStrategies() []StrategyConfig {
 func withFundingHistoryFn(t *testing.T, fn func(ctx context.Context, coin string, startMs int64) ([]feedFundingRecord, error)) {
 	t.Helper()
 	prev := fetchHyperliquidFundingHistoryFn
-	fetchHyperliquidFundingHistoryFn = fn
+	fetchHyperliquidFundingHistoryFn = func(ctx context.Context, coin string, startMs, _ int64) ([]feedFundingRecord, error) {
+		return fn(ctx, coin, startMs)
+	}
 	t.Cleanup(func() { fetchHyperliquidFundingHistoryFn = prev })
 }
 

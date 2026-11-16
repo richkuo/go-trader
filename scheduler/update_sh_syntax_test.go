@@ -71,6 +71,10 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		ciStep: true,
 		marker: "PASS: volume-profile replay harness (sealed profile sessions, hand-calculated value areas and decisions match the independent recording replay; tampered, truncated, contradicted and unclosed recordings refused)",
 	},
+	"test_shared_feed_convert_budget.sh": {
+		ciStep: true,
+		marker: "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config)",
+	},
 	"test_feed_parity.sh": {
 		ciStep: true,
 		marker: "PASS: feed-parity audit (per-key backup fills from one backup seal pass; wrong or unlogged backup seals, same-seal fill contradictions and every earlier failure rule fail)",

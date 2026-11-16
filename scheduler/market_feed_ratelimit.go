@@ -88,15 +88,25 @@ type feedRateLimitEvent struct {
 	RetryAfter string
 }
 
+const (
+	feedPermitPending = iota + 1
+	feedPermitInFlight
+	feedPermitClosed
+)
+
 type feedRequestPermit struct {
-	l       *feedRequestLedger
-	host    string
-	reason  string
-	reqType string
-	input   string
-	began   time.Time
-	sending bool
-	done    bool
+	l           *feedRequestLedger
+	host        string
+	reason      string
+	reqType     string
+	input       string
+	began       time.Time
+	sending     bool
+	done        bool
+	cost        int
+	startupPart int
+	epoch       int
+	wState      int
 }
 
 func (l *feedRequestLedger) hostLocked(host string) *feedHostPause {
@@ -132,7 +142,20 @@ func (p *feedRequestPermit) beginSend() error {
 	now := l.clock().UTC()
 	if err := l.pauseRefusalLocked(p.host, p.reason, p.input, now); err != nil {
 		p.done = true
+		l.releaseLocked(p)
 		return err
+	}
+	if refusal := l.revalidateLocked(p, now); refusal != nil {
+		p.done = true
+		l.releaseLocked(p)
+		spec := feedAcquireSpec{host: p.host, reason: p.reason, reqType: p.reqType, input: p.input}
+		l.countWeightRefusalLocked(spec, refusal.Cause, now)
+		return refusal
+	}
+	if p.wState == feedPermitPending {
+		l.wPending -= p.cost
+		l.wInFlight += p.cost
+		p.wState = feedPermitInFlight
 	}
 	l.hostLocked(p.host).inflight++
 	p.began = now
@@ -151,6 +174,9 @@ func (p *feedRequestPermit) finish(status int, retryAfter string) {
 	h := l.hostLocked(p.host)
 	if h.inflight > 0 {
 		h.inflight--
+	}
+	if status != 200 {
+		l.chargeLocked(p, now, p.cost)
 	}
 	var line string
 	switch {
@@ -469,6 +495,43 @@ func (o *marketFeedOwner) rateLimitedInputs() []string {
 	return out
 }
 
+func (o *marketFeedOwner) setMidsWeightHeld(held bool) {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	o.midsWeightHeld = held
+}
+
+func (o *marketFeedOwner) weightRefusedInputs() []string {
+	if o == nil {
+		return nil
+	}
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	var out []string
+	for key, st := range o.keys {
+		if st.weightHeld {
+			out = append(out, key.PayloadID())
+		}
+	}
+	for coin, f := range o.funding {
+		if f != nil && f.weightHeld {
+			if need, ok := o.fundingNeeds[coin]; ok && (need.Scalar || need.Records) {
+				out = append(out, "funding:"+coin)
+			}
+		}
+	}
+	for coin, f := range o.accountingFunding {
+		if f != nil && f.weightHeld && o.accountingCoins[coin] {
+			out = append(out, "accounting_funding:"+coin)
+		}
+	}
+	if o.midsWeightHeld && len(o.midCoins) > 0 {
+		out = append(out, "mids")
+	}
+	sort.Strings(out)
+	return out
+}
+
 func feedRateLimitOutstanding(o *marketFeedOwner) map[string][]string {
 	return map[string][]string{feedHostOf(hlMainnetURL): o.rateLimitedInputs()}
 }
@@ -483,6 +546,7 @@ type feedRateLimitLedgerView struct {
 	Name      string                    `json:"name"`
 	Enforced  bool                      `json:"enforced"`
 	RateLimit []feedRateLimitHostStatus `json:"rate_limit"`
+	Weight    *feedWeightStatus         `json:"weight,omitempty"`
 }
 
 func schedulerFeedRateLimitView() []feedRateLimitLedgerView {
@@ -493,11 +557,11 @@ func schedulerFeedRateLimitView() []feedRateLimitLedgerView {
 	}
 	if feedLedger != nil {
 		st := feedLedger.status()
-		out = append(out, feedRateLimitLedgerView{Name: "feed", Enforced: st.Enforced, RateLimit: st.RateLimit})
+		out = append(out, feedRateLimitLedgerView{Name: "feed", Enforced: st.Enforced, RateLimit: st.RateLimit, Weight: &st.Weight})
 	}
 	if lot := hlLotMetadata.requestLedger(); lot != nil && lot != feedLedger {
 		st := lot.status()
-		out = append(out, feedRateLimitLedgerView{Name: "lot_metadata", Enforced: st.Enforced, RateLimit: st.RateLimit})
+		out = append(out, feedRateLimitLedgerView{Name: "lot_metadata", Enforced: st.Enforced, RateLimit: st.RateLimit, Weight: &st.Weight})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	if out == nil {

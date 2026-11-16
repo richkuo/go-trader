@@ -2062,7 +2062,108 @@ update_probe_as_owner() {
         -E PYTHONDONTWRITEBYTECODE=1)
     [[ ${#rw[@]} -gt 0 ]] && args+=(-p "ReadWritePaths=${rw[*]}")
     [[ ${#extra[@]} -gt 0 ]] && args+=("${extra[@]}")
+    if [[ "$config" == stdin:* ]]; then
+        systemd-run "${args[@]}" -- /bin/sh -c 'd=$(mktemp -d) && cat >"$d/config.json" && exec "$1" probe --config "$d/config.json"' sh "$binary" <"${config#stdin:}"
+        return
+    fi
     systemd-run "${args[@]}" -- /bin/sh -c 'd=$(mktemp -d) && cp -- "$2" "$d/config.json" && exec "$1" probe --config "$d/config.json"' sh "$binary" "$config" </dev/null
+}
+
+update_feed_config_live_path() {
+    local link="${1%/}/scheduler/config.json"
+    [[ -e "$link" ]] || return 1
+    python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$link"
+}
+
+update_feed_staged_candidate() {
+    local deploy="$1" restart="$2" live staged
+    live=$(update_feed_config_live_path "$deploy") || return 0
+    staged="$live.staged"
+    [[ -e "$staged" || -L "$staged" ]] || return 0
+    if [[ "$(update_deployment_role_for_config "$live")" != "feed" ]]; then
+        echo "[update] $staged exists, but $live is a scheduler config; a staged config is promoted only for a role=feed deployment. Remove $staged; nothing changed" >&2
+        return 1
+    fi
+    if [[ -L "$staged" ]]; then
+        echo "[update] $staged is a symlink; stage the candidate feed config as a regular file. Nothing changed" >&2
+        return 1
+    fi
+    if [[ ! -f "$staged" ]]; then
+        echo "[update] $staged is not a regular file. Nothing changed" >&2
+        return 1
+    fi
+    if [[ "$restart" != "1" ]]; then
+        echo "[update] $staged is a staged feed config; it is promoted only by the transaction of 'update.sh --restart'. Nothing changed" >&2
+        return 1
+    fi
+    if [[ "$(update_deployment_role_for_config "$staged")" != "feed" ]]; then
+        echo "[update] $staged is not a role=feed config (or not valid JSON); nothing changed" >&2
+        return 1
+    fi
+    printf '%s\n%s' "$live" "$staged"
+}
+
+update_feed_config_install() {
+    local src="$1" dest="$2" ref="$3" want="$4"
+    python3 - "$src" "$dest" "$ref" "$want" <<'PY'
+import hashlib, os, sys, tempfile
+src, dest, ref, want = sys.argv[1:5]
+with open(src, "rb") as f:
+    data = f.read()
+if hashlib.sha256(data).hexdigest() != want:
+    sys.exit(f"{src} does not match its recorded sha256 {want}")
+st = os.stat(ref)
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest), prefix=".go-trader-config.")
+try:
+    view = memoryview(data)
+    while view:
+        n = os.write(fd, view)
+        view = view[n:]
+    os.fsync(fd)
+    if os.geteuid() == 0:
+        os.fchown(fd, st.st_uid, st.st_gid)
+    os.fchmod(fd, st.st_mode & 0o7777)
+    os.close(fd)
+    fd = -1
+    os.rename(tmp, dest)
+except BaseException:
+    if fd >= 0:
+        os.close(fd)
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    raise
+with open(dest, "rb") as f:
+    if hashlib.sha256(f.read()).hexdigest() != want:
+        sys.exit(f"{dest} does not match sha256 {want} after the rename")
+PY
+}
+
+update_feed_config_snapshot() {
+    local snap_dir="$1" live="$2" staged="$3" live_sha cand_sha
+    cp -p -- "$live" "$snap_dir/feed_config.live" || return 1
+    (umask 077 && cat -- "$staged" >"$snap_dir/feed_config.candidate") || return 1
+    live_sha=$(update_file_fingerprint "$snap_dir/feed_config.live") || return 1
+    cand_sha=$(update_file_fingerprint "$snap_dir/feed_config.candidate") || return 1
+    [[ "$live_sha" == "$(update_file_fingerprint "$live")" ]] || return 1
+    {
+        printf 'feed_config_path=%q\n' "$live"
+        printf 'feed_config_staged=%q\n' "$staged"
+        printf 'feed_config_live_sha=%q\n' "$live_sha"
+        printf 'feed_config_candidate_sha=%q\n' "$cand_sha"
+    } >"$snap_dir/feed_config.env"
+}
+
+update_feed_config_restore() {
+    local snap_dir="$1" feed_config_path="" feed_config_live_sha=""
+    [[ -f "$snap_dir/feed_config.env" && -f "$snap_dir/feed_config.live" ]] || return 1
+    source "$snap_dir/feed_config.env"
+    [[ -n "$feed_config_path" && -n "$feed_config_live_sha" ]] || return 1
+    if [[ "$(update_file_fingerprint "$feed_config_path")" == "$feed_config_live_sha" ]]; then
+        return 0
+    fi
+    update_feed_config_install "$snap_dir/feed_config.live" "$feed_config_path" "$snap_dir/feed_config.live" "$feed_config_live_sha"
 }
 
 update_owner_runs_venv() {

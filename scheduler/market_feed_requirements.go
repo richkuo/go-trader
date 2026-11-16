@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -412,9 +415,45 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 	return req, nil
 }
 
+func validateMarketFeedWeightBudgetJSON(data []byte) []string {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil
+	}
+	raw, ok := root["market_feed_weight_budget"]
+	if !ok || string(raw) == "null" {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var probe feedWeightBudgetConfig
+	if err := dec.Decode(&probe); err != nil {
+		return []string{fmt.Sprintf("market_feed_weight_budget: %v (allowed fields: weight_per_minute, weight_startup, weight_reserve)", err)}
+	}
+	return nil
+}
+
+func marketFeedWeightBudgetErrors(cfg *Config) []string {
+	b := cfg.MarketFeedWeightBudget
+	if b == nil {
+		return nil
+	}
+	if cfg.marketFeedMode() != marketFeedWebsocket {
+		return []string{fmt.Sprintf("market_feed_weight_budget applies only to the embedded websocket owner (market_feed %q); market_feed is %q", marketFeedWebsocket, cfg.marketFeedMode())}
+	}
+	errs := feedWeightPolicyErrors("market_feed_weight_budget", b.WeightPerMinute, b.WeightStartup, b.WeightReserve, false)
+	if len(errs) == 0 && b.WeightPerMinute == nil {
+		errs = append(errs, "market_feed_weight_budget is empty: set weight_per_minute, weight_startup and weight_reserve, or remove the block")
+	}
+	return errs
+}
+
 func validateMarketFeedConfig(cfg *Config) error {
 	if cfg == nil {
 		return nil
+	}
+	if errs := marketFeedWeightBudgetErrors(cfg); len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	switch cfg.marketFeedMode() {
 	case marketFeedREST:
@@ -618,8 +657,9 @@ func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[s
 		}
 		if entry.Err != "" {
 			entry.rateLimited = wasLimited || feedRateLimitErr(fetchErr)
+			entry.weightHeld = errors.Is(fetchErr, errFeedWeightRefused)
 			o.logf("[feed] funding %s: %s", coin, entry.Err)
-			if !feedRateLimitErr(fetchErr) {
+			if !feedRateLimitErr(fetchErr) && !entry.weightHeld {
 				o.raiseAlert(feedKeyFor(coin, ""), "funding_failed", entry.Err)
 			}
 		}

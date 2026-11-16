@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -28,6 +29,7 @@ type feedAccountingFunding struct {
 	Err       string
 
 	rateLimited bool
+	weightHeld  bool
 }
 
 type feedSealAccountingFunding struct {
@@ -77,7 +79,7 @@ func (o *marketFeedOwner) EnsureAccountingFunding(ctx context.Context) {
 	if len(coins) == 0 {
 		return
 	}
-	ctx = withFeedKeep(withFeedReason(ctx, string(feedRestAccountingFunding)), feedAccountingKeep)
+	ctx = withFeedKeepWeight(withFeedKeep(withFeedReason(ctx, string(feedRestAccountingFunding)), feedAccountingKeep), feedAccountingKeepWeight())
 	now := o.now()
 	windowStart := now.UTC().Add(-feedAccountingWindow).UnixMilli()
 	for _, coin := range coins {
@@ -110,13 +112,15 @@ func (o *marketFeedOwner) EnsureAccountingFunding(ctx context.Context) {
 			}
 			next.Err = err.Error()
 			next.rateLimited = (existing != nil && existing.rateLimited) || feedRateLimitErr(err)
+			next.weightHeld = errors.Is(err, errFeedWeightRefused)
 			o.logf("[feed] accounting funding %s: %s", coin, next.Err)
-			if !feedRateLimitErr(err) {
+			if !feedRateLimitErr(err) && !next.weightHeld {
 				o.raiseAlert(feedKeyFor(coin, ""), "accounting_funding_failed", next.Err)
 			}
 		} else {
 			next.Err = ""
 			next.rateLimited = false
+			next.weightHeld = false
 		}
 		next.FetchedAt = now
 		o.feedMu.Lock()
@@ -125,6 +129,11 @@ func (o *marketFeedOwner) EnsureAccountingFunding(ctx context.Context) {
 		}
 		o.feedMu.Unlock()
 	}
+}
+
+func feedAccountingKeepWeight() int {
+	w, _ := hlInfoWeight("allMids", 0)
+	return feedAccountingKeep * w
 }
 
 func accountingRefreshDue(existing *feedAccountingFunding, now time.Time) bool {

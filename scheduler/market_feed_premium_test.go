@@ -89,7 +89,7 @@ func TestPremiumObservationPipeline(t *testing.T) {
 		infoCalls.Add(1)
 		return 0, fmt.Errorf("no private fetch is allowed")
 	}
-	fetchHyperliquidFundingHistoryFn = func(context.Context, string, int64) ([]feedFundingRecord, error) {
+	fetchHyperliquidFundingHistoryFn = func(context.Context, string, int64, int64) ([]feedFundingRecord, error) {
 		infoCalls.Add(1)
 		return nil, fmt.Errorf("no private fetch is allowed")
 	}

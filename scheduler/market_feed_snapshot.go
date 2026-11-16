@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -243,7 +244,7 @@ func prepareMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycleMa
 		}
 		if err := o.recoverKeyOnce(ctx, cr.Key); err != nil {
 			o.logf("[feed] %s: cycle recovery failed: %v", cr.Key, err)
-			if !feedRateLimitErr(err) {
+			if !feedRateLimitErr(err) && !errors.Is(err, errFeedWeightRefused) {
 				o.raiseAlert(cr.Key, "recovery_failed", err.Error())
 			}
 		}

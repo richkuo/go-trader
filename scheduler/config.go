@@ -330,6 +330,7 @@ type Config struct {
 	TradeFeedbackAnalysis    *TradeFeedbackAnalysisConfig `json:"trade_feedback_analysis,omitempty"`
 	MarketFeed               string                       `json:"market_feed,omitempty"`
 	SharedMarketFeed         *SharedMarketFeedConfig      `json:"shared_market_feed,omitempty"`
+	MarketFeedWeightBudget   *feedWeightBudgetConfig      `json:"market_feed_weight_budget,omitempty"`
 	Role                     string                       `json:"role,omitempty"`
 	Feed                     *FeedRoleConfig              `json:"feed,omitempty"`
 	Egress                   *EgressConfig                `json:"egress,omitempty"`
@@ -1103,6 +1104,7 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 	unknownErrs := validateStrategyJSONKeys(data)
 	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
 	unknownErrs = append(unknownErrs, validateEgressJSON(data)...)
+	unknownErrs = append(unknownErrs, validateMarketFeedWeightBudgetJSON(data)...)
 	if len(unknownErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
 	}
