@@ -399,7 +399,9 @@ func (o *marketFeedOwner) repairAfterConnect(ctx context.Context) {
 		}
 		if err := o.fetchAndMerge(ctx, key, feedRestRepair); err != nil {
 			o.logf("[feed] %s: reconnect repair failed: %v", key, err)
-			o.raiseAlert(key, "repair_failed", err.Error())
+			if !feedRateLimitErr(err) {
+				o.raiseAlert(key, "repair_failed", err.Error())
+			}
 			continue
 		}
 		o.MarkKeyRecovered(key)

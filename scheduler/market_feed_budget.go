@@ -22,16 +22,20 @@ type feedBudgetConfig struct {
 type feedLedgerCtxKey struct{}
 type feedReasonCtxKey struct{}
 type feedKeepCtxKey struct{}
+type feedInputCtxKey struct{}
 
 type feedRequestLedger struct {
-	mu          sync.Mutex
-	clock       func() time.Time
-	enforce     bool
-	perMinute   int
-	startup     int
-	startupLeft int
-	window      []time.Time
-	totals      feedBudgetTotals
+	mu             sync.Mutex
+	clock          func() time.Time
+	logf           func(string, ...any)
+	enforce        bool
+	perMinute      int
+	startup        int
+	startupLeft    int
+	window         []time.Time
+	totals         feedBudgetTotals
+	hosts          map[string]*feedHostPause
+	closeOnSuccess bool
 }
 
 type feedBudgetTotals struct {
@@ -40,15 +44,19 @@ type feedBudgetTotals struct {
 	ByReason        map[string]int `json:"by_reason"`
 	ByType          map[string]int `json:"by_type"`
 	RefusedByReason map[string]int `json:"refused_by_reason"`
+	RateLimited     int            `json:"rate_limited"`
+	Paused          int            `json:"paused"`
+	PausedByReason  map[string]int `json:"paused_by_reason"`
 }
 
 type feedBudgetStatus struct {
-	Enforced    bool             `json:"enforced"`
-	PerMinute   int              `json:"per_minute"`
-	Startup     int              `json:"startup"`
-	StartupLeft int              `json:"startup_left"`
-	WindowUsed  int              `json:"window_used"`
-	Totals      feedBudgetTotals `json:"totals"`
+	Enforced    bool                      `json:"enforced"`
+	PerMinute   int                       `json:"per_minute"`
+	Startup     int                       `json:"startup"`
+	StartupLeft int                       `json:"startup_left"`
+	WindowUsed  int                       `json:"window_used"`
+	Totals      feedBudgetTotals          `json:"totals"`
+	RateLimit   []feedRateLimitHostStatus `json:"rate_limit"`
 }
 
 func newFeedBudgetTotals() feedBudgetTotals {
@@ -56,6 +64,7 @@ func newFeedBudgetTotals() feedBudgetTotals {
 		ByReason:        map[string]int{},
 		ByType:          map[string]int{},
 		RefusedByReason: map[string]int{},
+		PausedByReason:  map[string]int{},
 	}
 }
 
@@ -63,7 +72,13 @@ func newFeedRequestLedger(cfg *feedBudgetConfig, enforce bool, clock func() time
 	if clock == nil {
 		clock = func() time.Time { return time.Now().UTC() }
 	}
-	l := &feedRequestLedger{clock: clock, enforce: enforce, totals: newFeedBudgetTotals()}
+	l := &feedRequestLedger{
+		clock:   clock,
+		logf:    func(format string, a ...any) { fmt.Printf(format+"\n", a...) },
+		enforce: enforce,
+		totals:  newFeedBudgetTotals(),
+		hosts:   make(map[string]*feedHostPause),
+	}
 	l.setLimits(cfg)
 	return l
 }
@@ -97,25 +112,29 @@ func (l *feedRequestLedger) pruneLocked(now time.Time) {
 	}
 }
 
-func (l *feedRequestLedger) acquire(reason, reqType string, keep int) error {
+func (l *feedRequestLedger) acquire(host, reason, reqType, input string, keep int) (*feedRequestPermit, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.clock().UTC()
+	if err := l.pauseRefusalLocked(host, reason, input, now); err != nil {
+		return nil, err
+	}
 	l.pruneLocked(now)
+	permit := &feedRequestPermit{l: l, host: host, reason: reason, reqType: reqType, input: input}
 	if reason == string(feedRestBootstrap) && l.startupLeft > 0 {
 		l.startupLeft--
 		l.recordLocked(reason, reqType)
-		return nil
+		return permit, nil
 	}
 	if l.enforce && len(l.window)+keep >= l.perMinute {
 		l.totals.Refused++
 		l.totals.RefusedByReason[reason]++
-		return fmt.Errorf("%w: %d of %d requests used in the last %s (reason %s, %s)",
+		return nil, fmt.Errorf("%w: %d of %d requests used in the last %s (reason %s, %s)",
 			errFeedBudgetExhausted, len(l.window), l.perMinute, feedBudgetWindow, reason, reqType)
 	}
 	l.window = append(l.window, now)
 	l.recordLocked(reason, reqType)
-	return nil
+	return permit, nil
 }
 
 func (l *feedRequestLedger) recordLocked(reason, reqType string) {
@@ -133,7 +152,8 @@ func (l *feedRequestLedger) snapshot() feedBudgetTotals {
 func (l *feedRequestLedger) status() feedBudgetStatus {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.pruneLocked(l.clock().UTC())
+	now := l.clock().UTC()
+	l.pruneLocked(now)
 	return feedBudgetStatus{
 		Enforced:    l.enforce,
 		PerMinute:   l.perMinute,
@@ -141,12 +161,17 @@ func (l *feedRequestLedger) status() feedBudgetStatus {
 		StartupLeft: l.startupLeft,
 		WindowUsed:  len(l.window),
 		Totals:      copyFeedBudgetTotals(l.totals),
+		RateLimit:   l.rateLimitStatusLocked(now),
 	}
 }
 
 func copyFeedBudgetTotals(t feedBudgetTotals) feedBudgetTotals {
 	out := newFeedBudgetTotals()
 	out.Total, out.Refused = t.Total, t.Refused
+	out.RateLimited, out.Paused = t.RateLimited, t.Paused
+	for k, v := range t.PausedByReason {
+		out.PausedByReason[k] = v
+	}
 	for k, v := range t.ByReason {
 		out.ByReason[k] = v
 	}
@@ -163,6 +188,13 @@ func (t feedBudgetTotals) since(prev feedBudgetTotals) feedBudgetTotals {
 	out := newFeedBudgetTotals()
 	out.Total = t.Total - prev.Total
 	out.Refused = t.Refused - prev.Refused
+	out.RateLimited = t.RateLimited - prev.RateLimited
+	out.Paused = t.Paused - prev.Paused
+	for k, v := range t.PausedByReason {
+		if d := v - prev.PausedByReason[k]; d != 0 {
+			out.PausedByReason[k] = d
+		}
+	}
 	for k, v := range t.ByReason {
 		if d := v - prev.ByReason[k]; d != 0 {
 			out.ByReason[k] = d
@@ -212,6 +244,10 @@ func withFeedKeep(ctx context.Context, keep int) context.Context {
 	return context.WithValue(ctx, feedKeepCtxKey{}, keep)
 }
 
+func withFeedInput(ctx context.Context, input string) context.Context {
+	return context.WithValue(ctx, feedInputCtxKey{}, input)
+}
+
 func feedLedgerFrom(ctx context.Context) *feedRequestLedger {
 	if ctx == nil {
 		return nil
@@ -220,20 +256,24 @@ func feedLedgerFrom(ctx context.Context) *feedRequestLedger {
 	return l
 }
 
-func feedBudgetAcquire(ctx context.Context, reqType string) error {
+func feedBudgetAcquire(ctx context.Context, baseURL, reqType string) (*feedRequestPermit, error) {
 	l := feedLedgerFrom(ctx)
 	if l == nil {
-		return nil
+		return nil, nil
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	reason, _ := ctx.Value(feedReasonCtxKey{}).(string)
 	if reason == "" {
 		reason = "other"
 	}
+	input, _ := ctx.Value(feedInputCtxKey{}).(string)
+	if input == "" {
+		input = reason
+	}
 	keep, _ := ctx.Value(feedKeepCtxKey{}).(int)
-	return l.acquire(reason, reqType, keep)
+	return l.acquire(feedHostOf(baseURL), reason, reqType, input, keep)
 }
 
 func feedBudgetConfigErrors(field string, cfg *feedBudgetConfig, required bool) []string {

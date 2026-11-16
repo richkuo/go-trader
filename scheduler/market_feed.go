@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -43,6 +44,7 @@ const (
 	feedStatusInvalid       feedKeyStatus = "invalid"
 	feedStatusFailed        feedKeyStatus = "failed"
 	feedStatusBudget        feedKeyStatus = "budget_exhausted"
+	feedStatusRateLimited   feedKeyStatus = "rate_limited"
 	feedStatusNotDue        feedKeyStatus = "not_due"
 )
 
@@ -174,6 +176,8 @@ type feedKeyState struct {
 	LastInvalid   string
 	seq           uint64
 	corr          feedKeyCorrection
+	rlSeq         uint64
+	bootstrapped  bool
 }
 
 func newFeedKeyState(key marketFeedKey, intervalMs int64, required int) *feedKeyState {
@@ -378,7 +382,7 @@ func keyReadiness(s *feedKeyState, now time.Time, connected bool) feedKeyReadine
 		out.LastOpenMs = s.Bars[len(s.Bars)-1].OpenMs
 		out.LastCloseMs = s.Bars[len(s.Bars)-1].CloseMs
 	}
-	if s.Status == feedStatusFailed || s.Status == feedStatusBudget {
+	if s.Status == feedStatusFailed || s.Status == feedStatusBudget || s.Status == feedStatusRateLimited {
 		return out
 	}
 	if s.Status == feedStatusRepairing {
@@ -443,6 +447,8 @@ type feedFunding struct {
 	FetchedAt  time.Time
 	Source     string
 	Err        string
+
+	rateLimited bool
 }
 
 type feedRestReason string
@@ -522,6 +528,9 @@ type marketFeedOwner struct {
 	corrPauseUntil time.Time
 	corrRunning    bool
 	requestLedger  *feedRequestLedger
+
+	fetchSeq        uint64
+	midsRateLimited bool
 
 	alerts chan feedAlert
 	clock  func() time.Time
@@ -744,7 +753,7 @@ func (o *marketFeedOwner) repairSpan(key marketFeedKey) (startMs int64, required
 	if st == nil {
 		return 0, 0, 0, false
 	}
-	if len(st.Bars) == 0 {
+	if len(st.Bars) == 0 || (!st.bootstrapped && len(st.Bars) < feedReadyFloor(st.Required)) {
 		return 0, st.Required, st.IntervalMs, true
 	}
 	return st.Bars[len(st.Bars)-1].OpenMs, st.Required, st.IntervalMs, true
@@ -755,7 +764,8 @@ func (o *marketFeedOwner) fetchAndMerge(ctx context.Context, key marketFeedKey, 
 	if !ok {
 		return fmt.Errorf("feed key %s is not tracked", key)
 	}
-	ctx = withFeedReason(ctx, string(reason))
+	fetchSeq := o.beginKeyFetch()
+	ctx = withFeedInput(withFeedReason(ctx, string(reason)), key.PayloadID())
 	requestedAt := o.now()
 	var raws []hlCandleRaw
 	var err error
@@ -771,7 +781,13 @@ func (o *marketFeedOwner) fetchAndMerge(ctx context.Context, key marketFeedKey, 
 		}
 		raws, err = fetchHyperliquidCandleSnapshotFn(ctx, key.Symbol, key.Timeframe, windowStart, endMs)
 	}
-	o.countRestCall(reason)
+	if !errors.Is(err, errFeedHostPaused) {
+		o.countRestCall(reason)
+	}
+	if feedRateLimitErr(err) {
+		o.markKeyRateLimited(key, err.Error())
+		return err
+	}
 	if err != nil {
 		o.feedMu.Lock()
 		if st := o.keys[key]; st != nil {
@@ -792,6 +808,11 @@ func (o *marketFeedOwner) fetchAndMerge(ctx context.Context, key marketFeedKey, 
 	}
 	mergeRestRows(st, raws, requestedAt)
 	drainPendingSocketBars(st)
+	if st.rlSeq >= fetchSeq {
+		return fmt.Errorf("feed key %s: this fetch started before the latest rate-limit mark, so the key stays %s until a later fetch succeeds: %w",
+			key, feedStatusRateLimited, errFeedHostPaused)
+	}
+	st.rlSeq = 0
 	if len(st.Bars) == 0 {
 		st.Status = feedStatusFailed
 		st.StatusDetail = "the venue returned no candles"
@@ -800,6 +821,7 @@ func (o *marketFeedOwner) fetchAndMerge(ctx context.Context, key marketFeedKey, 
 	st.CoverageShort = len(st.Bars) < st.Required
 	st.Status = feedStatusReady
 	st.StatusDetail = ""
+	st.bootstrapped = true
 	if st.CoverageShort {
 		st.StatusDetail = fmt.Sprintf("venue history is shorter than required (%d of %d bars)", len(st.Bars), st.Required)
 	}
@@ -838,17 +860,18 @@ func (o *marketFeedOwner) connectedForReadinessLocked(now time.Time) bool {
 }
 
 type marketFeedHealth struct {
-	Mode         string                `json:"mode"`
-	Connected    bool                  `json:"connected"`
-	Generation   uint64                `json:"generation"`
-	LastSnapshot string                `json:"last_snapshot,omitempty"`
-	Metrics      feedMetrics           `json:"metrics"`
-	Keys         []marketFeedHealthKey `json:"keys"`
-	Mids         []marketFeedHealthMid `json:"mids,omitempty"`
-	Observations []marketFeedHealthObs `json:"observations,omitempty"`
-	Shared       *sharedFeedStatus     `json:"shared,omitempty"`
-	Correction   *feedCorrectionHealth `json:"correction,omitempty"`
-	Requests     *feedBudgetTotals     `json:"requests,omitempty"`
+	Mode         string                    `json:"mode"`
+	Connected    bool                      `json:"connected"`
+	Generation   uint64                    `json:"generation"`
+	LastSnapshot string                    `json:"last_snapshot,omitempty"`
+	Metrics      feedMetrics               `json:"metrics"`
+	Keys         []marketFeedHealthKey     `json:"keys"`
+	Mids         []marketFeedHealthMid     `json:"mids,omitempty"`
+	Observations []marketFeedHealthObs     `json:"observations,omitempty"`
+	Shared       *sharedFeedStatus         `json:"shared,omitempty"`
+	Correction   *feedCorrectionHealth     `json:"correction,omitempty"`
+	Requests     *feedBudgetTotals         `json:"requests,omitempty"`
+	RateLimit    []feedRateLimitHostStatus `json:"rate_limit,omitempty"`
 }
 
 type marketFeedHealthKey struct {
@@ -921,6 +944,7 @@ func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 	if o.requestLedger != nil {
 		totals := o.requestLedger.snapshot()
 		health.Requests = &totals
+		health.RateLimit = o.requestLedger.rateLimitStatus()
 	}
 	perKey := make(map[marketFeedKey]feedKeyCorrection, len(o.keys))
 	for k, st := range o.keys {

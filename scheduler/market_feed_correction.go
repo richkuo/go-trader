@@ -429,7 +429,7 @@ func (o *marketFeedOwner) runCorrectionJob(ctx context.Context, job feedCorrecti
 	if job.retry {
 		reason = feedRestCorrectionRetry
 	}
-	rctx, cancel := context.WithTimeout(withFeedReason(ctx, string(reason)), feedCorrectionReadTimeout)
+	rctx, cancel := context.WithTimeout(withFeedInput(withFeedReason(ctx, string(reason)), "correction:"+job.key.PayloadID()), feedCorrectionReadTimeout)
 	requestedAt := o.now()
 	raws, err := fetchHyperliquidCandleSnapshotFn(rctx, job.key.Symbol, job.key.Timeframe, job.fromOpenMs, requestedAt.UnixMilli())
 	cancel()
@@ -437,7 +437,9 @@ func (o *marketFeedOwner) runCorrectionJob(ctx context.Context, job feedCorrecti
 		o.releaseCorrection(job)
 		return
 	}
-	refused := errors.Is(err, errFeedBudgetExhausted)
+	var paused *feedHostPausedError
+	hostPaused := errors.As(err, &paused)
+	refused := errors.Is(err, errFeedBudgetExhausted) || hostPaused
 	if !refused {
 		o.countRestCall(reason)
 	}
@@ -457,6 +459,9 @@ func (o *marketFeedOwner) runCorrectionJob(ctx context.Context, job feedCorrecti
 	}
 	if err != nil {
 		o.correctionFailedLocked(st, err, refused, reason)
+		if hostPaused && paused.Until.After(st.corr.retryAt) {
+			st.corr.retryAt = paused.Until
+		}
 		if errors.Is(err, errHLInfoRateLimited) {
 			o.correction.RateLimited++
 			o.corrPauseUntil = o.now().Add(feedCorrectionRatePause)
@@ -521,6 +526,7 @@ func (o *marketFeedOwner) runCorrection(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
+		o.syncCorrectionPause(feedLedgerFrom(ctx))
 		for _, job := range o.correctionPass(cap(sem) - len(sem)) {
 			job := job
 			select {
@@ -535,6 +541,18 @@ func (o *marketFeedOwner) runCorrection(ctx context.Context) {
 				o.releaseCorrection(job)
 			}
 		}
+	}
+}
+
+func (o *marketFeedOwner) syncCorrectionPause(l *feedRequestLedger) {
+	until := l.pausedUntil(feedHostOf(hlMainnetURL))
+	if until.IsZero() {
+		return
+	}
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	if until.After(o.corrPauseUntil) {
+		o.corrPauseUntil = until
 	}
 }
 

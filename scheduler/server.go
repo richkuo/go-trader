@@ -314,9 +314,12 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":  "ok",
 		"version": Version,
 		"pid":     pid,
+		"role":    configRoleScheduler,
 	}
 	if statusBearerAuthorized(r, ss.statusToken) {
 		resp["run_evidence"] = globalRunEvidence.healthView()
+		resp["config_path"] = resolvedConfigPath(ss.configPath)
+		resp["feed_rate_limit"] = schedulerFeedRateLimitView()
 	}
 	if mainLoopOverdue(time.Now()) {
 		resp["status"] = "unhealthy"

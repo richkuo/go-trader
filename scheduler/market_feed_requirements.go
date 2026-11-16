@@ -517,7 +517,9 @@ func (o *marketFeedOwner) ApplyGeneration(ctx context.Context, req feedRequireme
 				defer cancel()
 				if err := o.fetchAndMerge(bootstrapCtx, key, feedRestBootstrap); err != nil {
 					o.logf("[feed] %s: bootstrap failed: %v", key, err)
-					o.raiseAlert(key, "bootstrap_failed", err.Error())
+					if !feedRateLimitErr(err) {
+						o.raiseAlert(key, "bootstrap_failed", err.Error())
+					}
 					return
 				}
 				o.logf("[feed] %s: bootstrap complete", key)
@@ -571,7 +573,7 @@ func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[s
 	if len(needs) == 0 {
 		return
 	}
-	ctx = withFeedReason(ctx, string(feedRestFunding))
+	base := withFeedReason(ctx, string(feedRestFunding))
 	coins := make([]string, 0, len(needs))
 	for coin := range needs {
 		coins = append(coins, coin)
@@ -582,21 +584,24 @@ func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[s
 		need := needs[coin]
 		o.feedMu.Lock()
 		existing := o.funding[coin]
+		wasLimited := existing != nil && existing.rateLimited
 		fresh := existing != nil && existing.Err == "" && now.Sub(existing.FetchedAt) < feedFundingTTL &&
 			(!need.Scalar || existing.HasScalar) && (!need.Records || existing.HasRecords)
 		o.feedMu.Unlock()
 		if fresh {
 			continue
 		}
+		ctx := withFeedInput(base, "funding:"+coin)
 		entry := &feedFunding{FetchedAt: now, Source: "rest"}
+		var fetchErr error
 		if need.Scalar {
 			current, err := fetchHyperliquidFundingRateFn(ctx, coin)
 			if err != nil {
-				entry.Err = err.Error()
+				entry.Err, fetchErr = err.Error(), err
 			} else {
 				avg, avgErr := hlFundingAverage7d(ctx, coin, now)
 				if avgErr != nil {
-					entry.Err = avgErr.Error()
+					entry.Err, fetchErr = avgErr.Error(), avgErr
 				} else {
 					entry.Current, entry.Avg7d, entry.HasScalar = current, avg, true
 				}
@@ -606,14 +611,17 @@ func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[s
 			startMs := earliestBarMs[coin]
 			records, err := hlFundingRecordsSince(ctx, coin, startMs, now)
 			if err != nil {
-				entry.Err = err.Error()
+				entry.Err, fetchErr = err.Error(), err
 			} else {
 				entry.Records, entry.HasRecords = records, true
 			}
 		}
 		if entry.Err != "" {
+			entry.rateLimited = wasLimited || feedRateLimitErr(fetchErr)
 			o.logf("[feed] funding %s: %s", coin, entry.Err)
-			o.raiseAlert(feedKeyFor(coin, ""), "funding_failed", entry.Err)
+			if !feedRateLimitErr(fetchErr) {
+				o.raiseAlert(feedKeyFor(coin, ""), "funding_failed", entry.Err)
+			}
 		}
 		o.feedMu.Lock()
 		o.funding[coin] = entry

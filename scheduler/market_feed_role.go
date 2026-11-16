@@ -610,6 +610,7 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	baseCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ledger := newFeedRequestLedger(cfg.Feed.RequestBudget, cfg.Feed.Source == feedSourceREST, nil)
+	ledger.logf = feedLogf
 	ctx := withFeedLedger(baseCtx, ledger)
 	fmt.Printf("[feed] %s\n", formatFeedBudgetConfig(cfg.Feed.Source, cfg.Feed.RequestBudget))
 
@@ -628,6 +629,9 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 			notifier.SendOwnerDM(msg)
 		}
 	}
+	rateLimitSender := newFeedAlertSender(sealer.alertHook, feedLogf)
+	defer rateLimitSender.drain(feedAlertSenderDrainBound)
+	sealer.rateLimitSend = rateLimitSender.enqueue
 	sealer.setGeneration(feedRequirements{}, cadences, startedAt)
 
 	rt := &feedRuntime{
@@ -850,6 +854,12 @@ func (rt *feedRuntime) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"role":     configRoleFeed,
 		"instance": rt.instance,
 		"source":   rt.sealer.source,
+	}
+	rt.mu.Lock()
+	token := rt.cfg.StatusToken
+	rt.mu.Unlock()
+	if statusBearerAuthorized(r, token) {
+		resp["config_path"] = resolvedConfigPath(rt.configPath)
 	}
 	if draining {
 		resp["status"] = "draining"
