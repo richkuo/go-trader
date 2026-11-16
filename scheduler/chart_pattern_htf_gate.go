@@ -204,9 +204,24 @@ func chartPatternHTFGateConfigErrors(cfg *Config) []string {
 			if err := chartPatternHTFGateUseError(sc, use, cfg); err != nil {
 				errs = append(errs, fmt.Sprintf("strategy %s: %s strategy %s %v", sc.ID, use.Role, chartPatternStrategyName, err))
 			}
+			if use.Role != edgeRefRoleOpen || sc.RegimeProfileAllocation == nil {
+				continue
+			}
+			for _, profile := range sortedKeys(sc.RegimeProfileAllocation.ParamSets) {
+				merged := chartPatternProfileParams(use.Params, sc.RegimeProfileAllocation.ParamSets[profile])
+				if err := chartPatternHTFGateUseError(sc, fixedIntervalUse{Role: use.Role, Name: use.Name, Params: merged}, cfg); err != nil {
+					errs = append(errs, fmt.Sprintf("strategy %s: %s strategy %s with regime_profile_allocation.param_sets[%q] merged over its params %v", sc.ID, use.Role, chartPatternStrategyName, profile, err))
+				}
+			}
 		}
 	}
 	return errs
+}
+
+func chartPatternProfileParams(base, overrides map[string]interface{}) map[string]interface{} {
+	scratch := StrategyConfig{OpenStrategy: StrategyRef{Params: base}}
+	applyRegimeProfileParams(&scratch, &RegimeProfileAllocation{ParamSets: map[string]map[string]interface{}{"": overrides}}, "")
+	return scratch.OpenStrategy.Params
 }
 
 func chartPatternIndicatorInt(indicators map[string]interface{}, key string) (int64, bool) {
@@ -231,20 +246,31 @@ func chartPatternIndicatorInt(indicators map[string]interface{}, key string) (in
 	return int64(f), true
 }
 
-func applyChartPatternHTFGateHold(sc StrategyConfig, indicators map[string]interface{}, signal *int, closeFraction, posQty float64, posSide string, allowsLong, allowsShort bool, signalStr string, logger *StrategyLogger) {
+func applyChartPatternHTFGateHold(sc StrategyConfig, indicators map[string]interface{}, signal *int, closeFraction *float64, posQty float64, posSide string, allowsLong, allowsShort bool, signalStr string, logger *StrategyLogger) {
 	gate, active := chartPatternOpenHTFGate(sc)
-	if !active || signal == nil {
+	if !active || signal == nil || closeFraction == nil {
 		return
 	}
-	blocks := pausedBlocksSignal(*signal, closeFraction, posQty, posSide, allowsLong, allowsShort)
+	blocks := pausedBlocksSignal(*signal, *closeFraction, posQty, posSide, allowsLong, allowsShort)
+	reverses := blocks && posQty > 0 && ((*signal == -1 && posSide != "short") || (*signal == 1 && posSide == "short"))
+	hold := func(reason string) {
+		if reverses {
+			*closeFraction = 1.0
+			if logger != nil {
+				logger.Warn("Chart pattern HTF gate: %s reversal closes the open %s position and opens no new side — %s (#2032)", signalStr, posSide, reason)
+			}
+			return
+		}
+		if logger != nil {
+			logger.Warn("Chart pattern HTF gate: %s signal suppressed — %s (#2032)", signalStr, reason)
+		}
+		*signal = 0
+	}
 	warm, ok := chartPatternIndicatorInt(indicators, chartPatternHTFGateWarmIndicator)
 	if !ok || (warm != 0 && warm != 1) {
 		if blocks {
-			if logger != nil {
-				logger.Warn("Chart pattern HTF gate: %s signal suppressed — %s=%d is active but the check returned no valid %s indicator, so it cannot show the higher-timeframe trend was warm; entries and additions are held, and closes, stops, ratchet and protection continue (redeploy with scripts/update.sh so Go and Python match) (#2032)",
-					signalStr, chartPatternHTFGateFactorParam, gate.Factor, chartPatternHTFGateWarmIndicator)
-			}
-			*signal = 0
+			hold(fmt.Sprintf("%s=%d is active but the check returned no valid %s indicator, so it cannot show the higher-timeframe trend was warm; entries and additions are held, and closes, stops, ratchet and protection continue (redeploy with scripts/update.sh so Go and Python match)",
+				chartPatternHTFGateFactorParam, gate.Factor, chartPatternHTFGateWarmIndicator))
 		}
 		return
 	}
@@ -262,9 +288,6 @@ func applyChartPatternHTFGateHold(sc StrategyConfig, indicators map[string]inter
 			chartPatternHTFGateFactorParam, gate.Factor, chartPatternHTFGateEMASlowParam, gate.EMASlow, chartPatternHTFGateModeParam, gate.Mode, candles, buckets, needed, gate.EMASlow+1)
 	}
 	if blocks {
-		if logger != nil {
-			logger.Warn("Chart pattern HTF gate: %s signal suppressed — the higher-timeframe trend is cold this cycle (#2032)", signalStr)
-		}
-		*signal = 0
+		hold("the higher-timeframe trend is cold this cycle")
 	}
 }

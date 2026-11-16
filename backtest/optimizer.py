@@ -1091,7 +1091,7 @@ DEFAULT_PARAM_RANGES = {
         "pivot_lookback": [3, 5, 7],
         "tolerance": [0.02, 0.03, 0.05],
         "vol_multiplier": [1.2, 1.5, 2.0],
-        "htf_gate_factor": [0, 6, 10],
+        "htf_gate_factor": [0, 2, 4],
     },
     "liquidity_sweeps": {
         "swing_lookback": [10, 20, 30],

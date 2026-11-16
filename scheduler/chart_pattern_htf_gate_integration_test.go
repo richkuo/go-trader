@@ -126,3 +126,38 @@ func TestChartPatternHTFGateResolvesTheFrameEachCheckPathRequests(t *testing.T) 
 		t.Fatalf("a batch-eligible slot must resolve the batch key frame: key=%+v ok=%v frame=%d err=%v", key, ok, frame, frameErr)
 	}
 }
+
+func chartPatternGateProfileHL(id string, base, trend, rng map[string]interface{}) map[string]interface{} {
+	sc := chartPatternGateHL(id, "paper", base)
+	sc["regime_profile_allocation"] = map[string]interface{}{
+		"window":          "default",
+		"profiles":        map[string]interface{}{"trending_up": "trend", "trending_down": "trend", "ranging": "range"},
+		"param_sets":      map[string]interface{}{"trend": trend, "range": rng},
+		"confirm_bars":    12,
+		"initial_profile": "range",
+	}
+	return sc
+}
+
+func TestChartPatternHTFGateChecksEveryRegimeProfileParamSet(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	_, err := chartPatternGateLoad(t, chartPatternGateRegimeOn, chartPatternGateProfileHL("hl-cpat-prof-trend",
+		map[string]interface{}{}, map[string]interface{}{"htf_gate_factor": 5}, map[string]interface{}{}))
+	if err == nil ||
+		!strings.Contains(err.Error(), "strategy hl-cpat-prof-trend: open strategy chart_pattern with regime_profile_allocation.param_sets[\"trend\"] merged over its params htf_gate_factor=5") ||
+		!strings.Contains(err.Error(), "at least 205 candles") ||
+		strings.Contains(err.Error(), "param_sets[\"range\"]") {
+		t.Fatalf("a profile that sets factor 5 on the 200-candle regime frame must be refused and named, got %v", err)
+	}
+	_, err = chartPatternGateLoad(t, chartPatternGateRegimeOn, chartPatternGateProfileHL("hl-cpat-prof-merge",
+		map[string]interface{}{"htf_gate_factor": 4}, map[string]interface{}{"htf_gate_ema_slow": 50}, map[string]interface{}{"htf_gate_ema_slow": 40}))
+	if err == nil ||
+		!strings.Contains(err.Error(), "param_sets[\"trend\"] merged over its params htf_gate_factor=4 (htf_gate_mode=\"veto\", explicit htf_gate_ema_slow=50)") ||
+		!strings.Contains(err.Error(), "at least 204 candles") {
+		t.Fatalf("the base factor 4 merged with the profile htf_gate_ema_slow 50 must be refused, got %v", err)
+	}
+	if _, err := chartPatternGateLoad(t, chartPatternGateRegimeOn, chartPatternGateProfileHL("hl-cpat-prof-ok",
+		map[string]interface{}{"htf_gate_factor": 4}, map[string]interface{}{"htf_gate_ema_slow": 40}, map[string]interface{}{"htf_gate_factor": 0})); err != nil {
+		t.Fatalf("profiles whose merged params warm on 200 candles must load: %v", err)
+	}
+}

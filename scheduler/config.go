@@ -1898,7 +1898,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	errs = append(errs, regressionChannelParamErrors(cfg.Strategies)...)
 	errs = append(errs, camarillaPivotReversalParamErrors(cfg.Strategies)...)
 	errs = append(errs, calendarConditionedEntryHistoryErrors(cfg.Strategies, cfg.Regime)...)
-	errs = append(errs, chartPatternHTFGateConfigErrors(cfg)...)
 
 	errs = append(errs, validatePaperSourcesConfig(cfg)...)
 
@@ -2497,6 +2496,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 	errs = append(errs, validateRegimeWindowsConfig(cfg)...)
 	errs = append(errs, validateStrategyRegimeVocabulary(cfg)...)
+	errs = append(errs, chartPatternHTFGateConfigErrors(cfg)...)
 	errs = append(errs, validateRegimeTransitionsConfig(cfg)...)
 	errs = append(errs, validateHurstGateConfigs(cfg)...)
 

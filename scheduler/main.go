@@ -2329,7 +2329,7 @@ func main() {
 								logHTFFilterHold(signalStr, htfWhy, logger)
 								result.Signal = 0
 							}
-							applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false, signalStr, logger)
+							applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, &result.CloseFraction, rhPosQty, rhPosSide, true, false, signalStr, logger)
 							if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
 								logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 								result.Signal = 0
@@ -2401,7 +2401,7 @@ func main() {
 							logHTFFilterHold(signalStr, htfWhy, logger)
 							result.Signal = 0
 						}
-						applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false, signalStr, logger)
+						applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, &result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false, signalStr, logger)
 						if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
 							logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 							result.Signal = 0
@@ -2549,7 +2549,7 @@ func main() {
 							logHTFFilterHold(signalStr, htfWhy, logger)
 							result.Signal = 0
 						}
-						applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true, signalStr, logger)
+						applyChartPatternHTFGateHold(sc, result.Indicators, &result.Signal, &result.CloseFraction, tsContracts, tsPosSide, true, true, signalStr, logger)
 						if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
 							logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 							result.Signal = 0
