@@ -8,7 +8,7 @@ on:
 
 jobs:
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.diff.outputs.code }}
       quote: ${{ steps.diff.outputs.quote }}
@@ -34,7 +34,7 @@ jobs:
   go:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -66,7 +66,7 @@ jobs:
   go-python-integration:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -92,7 +92,7 @@ jobs:
   go-python-integration-robinhood-quote-precision:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -118,7 +118,7 @@ jobs:
   go-python-integration-merge-paper-instance:
     needs: changes
     if: ${{ needs.changes.outputs.merge_paper == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -144,7 +144,7 @@ jobs:
   shell-suites:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -260,7 +260,7 @@ jobs:
   shell-suites-migrate-1:
     needs: changes
     if: ${{ needs.changes.outputs.update == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -282,7 +282,7 @@ jobs:
   shell-suites-migrate-2:
     needs: changes
     if: ${{ needs.changes.outputs.migrate == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -304,7 +304,7 @@ jobs:
   shell-suites-migrate-3:
     needs: changes
     if: ${{ needs.changes.outputs.update == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -324,7 +324,7 @@ jobs:
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='update_recovery' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
   checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       python: ${{ steps.python.outputs.result }}
     steps:
@@ -373,7 +373,7 @@ jobs:
     name: python-shard (${{ matrix.suite }} ${{ matrix.group }}/${{ matrix.splits }})
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -412,7 +412,7 @@ jobs:
   python:
     needs: [changes, checks, python-shard]
     if: ${{ !cancelled() && needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
