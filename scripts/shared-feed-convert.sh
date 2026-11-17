@@ -496,13 +496,19 @@ state_dir_listed_elsewhere() {
 }
 
 state_config_for_dir() {
-    local unit="$1" rel="$2" base
+    local unit="$1" rel="$2"
     [[ "$rel" == go-trader || "$rel" == go-trader/* ]] || return 0
     [[ "$rel" != */../* && "$rel" != */.. && "$rel" != *//* && "$rel" != go-trader/*/* && "$rel" != */. ]] || return 0
     case "${rel#go-trader/}" in feed-*|shared-feed|shared) return 0 ;; esac
     state_dir_listed_elsewhere "$unit" "$rel" && return 0
-    base="$CONVERT_ROOT/var/lib"
-    printf '%s/%s/config.json\n' "$(readlink -f "$base" 2>/dev/null || printf '%s' "$base")" "$rel"
+    printf '%s/var/lib/%s/config.json\n' "$CONVERT_ROOT" "$rel"
+}
+
+own_state_config_matches() {
+    local own="$1" resolved="$2"
+    [[ -n "$resolved" && ! -L "$own" ]] || return 1
+    py walk-check "$own" 2>/dev/null || return 1
+    [[ "$(readlink -f "$own" 2>/dev/null)" == "$resolved" ]]
 }
 
 unit_own_state_configs() {
@@ -534,10 +540,10 @@ unit_config_path() {
     if [[ -e "$cfg" || -L "$cfg" ]] && ! py walk-check "$cfg" 2>/dev/null; then
         die 2 "$unit: its config path $cfg passes through a folder symlink that another account can change; nothing is read or written through it. Nothing changed"
     fi
-    if [[ -L "$cfg" || "$resolved" != "$cfg" ]]; then
+    if [[ -L "$cfg" ]]; then
         local entry matched=0
         while IFS= read -r entry; do
-            [[ -n "$resolved" && "$resolved" == "$entry" ]] && matched=1
+            own_state_config_matches "$entry" "$resolved" && matched=1
         done < <(unit_own_state_configs "$unit")
         if [[ $matched -eq 0 ]]; then
             die 2 "$unit: its config path $cfg resolves through a symlink to ${resolved:-nothing}; the script follows a consumer config symlink only to the unit's own state config: /var/lib/go-trader/config.json for go-trader.service, /var/lib/go-trader/<instance>/config.json for go-trader@<instance>.service, or <StateDirectory>/config.json for a go-trader StateDirectory= of the unit. Nothing changed"

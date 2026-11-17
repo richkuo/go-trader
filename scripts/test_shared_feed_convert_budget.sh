@@ -419,7 +419,7 @@ host_units() {
             WorkingDirectory)
                 case "$1" in
                     go-trader.service) printf '%s' "$MAIN_TREE" ;;
-                    "$LUNIT") printf '%s' "$LEGACY" ;;
+                    "$LUNIT") printf '%s' "${LEGACY_WD:-$LEGACY}" ;;
                     go-trader@inst1.service) printf '%s' "$INST1_DIR" ;;
                     *) printf '%s' "$CANON/b-tree" ;;
                 esac
@@ -664,4 +664,15 @@ rm "$INST1_STATE"
 mv "$INST1_SAVED" "$INST1_STATE"
 ok "a template instance whose state folder was replaced by a symlink is refused by selection (exit 2) and by switch (exit 20); the target keeps its bytes and mode and gets no pre-switch copy"
 
-echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, or into its own go-trader StateDirectory, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues; a config path with a control character, a symlinked state folder or a shared state folder is refused; switch, its failure restore and rollback succeed on the migrated layout and a legacy tree)"
+LEGACY_WD="$WORK/legacy"
+got=$(host_units; unit_config_path "$LUNIT") || fail "a legacy unit whose working directory passes through a root-owned folder symlink was refused"
+[[ "$got" == "$LEGACY/scheduler/config.json" ]] || fail "the legacy unit through a root-owned folder symlink resolved to $got"
+success_layout "$LUNIT" "$LEGACY/scheduler/config.json" "legacy tree through a root-owned folder symlink"
+unset LEGACY_WD
+if [[ "$WORK" != "$CANON" ]]; then
+    ok "a legacy unit whose working directory passes through a root-owned folder symlink ($WORK resolves to $CANON) is accepted, and switch, its failure restore and rollback succeed"
+else
+    ok "a legacy unit whose working directory is canonical is accepted, and switch, its failure restore and rollback succeed (no root-owned folder symlink on this host's temp path)"
+fi
+
+echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, or into its own go-trader StateDirectory, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues; a config path with a control character, a symlinked state folder or a shared state folder is refused; switch, its failure restore and rollback succeed on the migrated layout and a legacy tree, also through a root-owned folder symlink)"
