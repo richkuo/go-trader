@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -31,7 +32,7 @@ type hlInfoWeightRule struct {
 
 var hlInfoWeightRules = map[string]hlInfoWeightRule{
 	"candleSnapshot": {Type: "candleSnapshot", Base: 20, RowStep: 60, RowCap: hlCandleRowCap,
-		Basis: "documented: all other documented info requests have weight 20; candleSnapshot has an additional rate limit weight per 60 items returned; only the most recent 5000 candles are available"},
+		Basis: "documented: all other documented info requests have weight 20; candleSnapshot has an additional rate limit weight per 60 items returned; only the most recent 5000 candles are available; local: the 5000-row cap is a request-safety cap enforced by limiting the request window"},
 	"fundingHistory": {Type: "fundingHistory", Base: 20, RowStep: 20, RowCap: hlFundingRowCap,
 		Basis: "documented: all other documented info requests have weight 20; fundingHistory has an additional rate limit weight per 20 items returned; responses that take a time range only return 500 elements"},
 	"allMids": {Type: "allMids", Base: 2,
@@ -47,7 +48,7 @@ var hlWeightAssumptions = []string{
 	"A2: a sent request is charged its full reserved cost whatever its outcome; the venue does not state how failed requests are charged",
 	"A3: at most one funding record per coin per hour",
 	"A4: a candle response holds at most floor(span/interval)+2 bars (the bar that contains the start and the forming bar)",
-	"A5: the 5000-candle and 500-element statements cap one response",
+	"A5: a candle request is sent only when its A4 bound is at most 5000 rows, so the candle cap is enforced by limiting the request window; the 500-element statement caps one fundingHistory response",
 	"A6: a 1M bar lasts at least 28 days, so the 1M row bound uses 28 days",
 }
 
@@ -105,6 +106,8 @@ func hlCandleBoundIntervalMs(interval string) (int64, error) {
 	return ms, nil
 }
 
+var errHLCandleWindowTooWide = errors.New("candle request window is wider than one response may hold, so it is not sent")
+
 func hlCandleRowBound(interval string, startMs, endMs int64) (int, error) {
 	ms, err := hlCandleBoundIntervalMs(interval)
 	if err != nil {
@@ -113,19 +116,29 @@ func hlCandleRowBound(interval string, startMs, endMs int64) (int, error) {
 	if endMs < startMs {
 		return 0, fmt.Errorf("candle request end %d is before its start %d", endMs, startMs)
 	}
-	bars := (endMs-startMs)/ms + 2
-	if bars > hlCandleRowCap || bars < 0 {
-		return hlCandleRowCap, nil
+	span := endMs - startMs
+	bars := span/ms + 2
+	if span < 0 || bars < 0 || bars > hlCandleRowCap {
+		return 0, fmt.Errorf("%s candle window %d to %d is above the %d-row cap: %w", interval, startMs, endMs, hlCandleRowCap, errHLCandleWindowTooWide)
 	}
 	return int(bars), nil
 }
 
 func hlCandleWindowFits(interval string, startMs, endMs int64) bool {
-	ms, err := hlCandleBoundIntervalMs(interval)
-	if err != nil || endMs < startMs {
-		return true
+	_, err := hlCandleRowBound(interval, startMs, endMs)
+	return !errors.Is(err, errHLCandleWindowTooWide)
+}
+
+func hlCandleMaxSpanBars(interval string) (int64, error) {
+	intervalMs, ok := hlCandleIntervalMs(interval)
+	if !ok || intervalMs <= 0 {
+		return 0, fmt.Errorf("unsupported Hyperliquid interval %q", interval)
 	}
-	return (endMs-startMs)/ms+2 <= hlCandleRowCap
+	boundMs, err := hlCandleBoundIntervalMs(interval)
+	if err != nil {
+		return 0, err
+	}
+	return boundMs * (hlCandleRowCap - 2) / intervalMs, nil
 }
 
 func hlFundingRowBound(startMs, endMs int64) (int, error) {

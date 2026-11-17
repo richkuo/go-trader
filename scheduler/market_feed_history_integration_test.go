@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -84,6 +85,7 @@ func (v *fhVenue) handle(w http.ResponseWriter, r *http.Request) {
 		Type string `json:"type"`
 		Req  struct {
 			Coin      string `json:"coin"`
+			Interval  string `json:"interval"`
 			StartTime int64  `json:"startTime"`
 			EndTime   int64  `json:"endTime"`
 		} `json:"req"`
@@ -93,6 +95,10 @@ func (v *fhVenue) handle(w http.ResponseWriter, r *http.Request) {
 	if body.Type != "candleSnapshot" {
 		w.Write([]byte(`[]`))
 		return
+	}
+	step, ok := hlCandleIntervalMs(body.Req.Interval)
+	if !ok || step <= 0 {
+		step = fhStep
 	}
 	coin := body.Req.Coin
 	v.mu.Lock()
@@ -124,11 +130,11 @@ func (v *fhVenue) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row := func(open int64) map[string]any {
-		return map[string]any{"t": open, "T": open + fhStep - 1, "o": "100", "h": "102", "l": "99", "c": "101", "v": "5"}
+		return map[string]any{"t": open, "T": open + step - 1, "o": "100", "h": "102", "l": "99", "c": "101", "v": "5"}
 	}
-	first := (body.Req.StartTime + fhStep - 1) / fhStep * fhStep
+	first := (body.Req.StartTime + step - 1) / step * step
 	rows := []map[string]any{}
-	for open := first; open <= body.Req.EndTime && (mode == "deep" || len(rows) < hlCandleMaxCandles); open += fhStep {
+	for open := first; open <= body.Req.EndTime && (mode == "deep" || len(rows) < hlCandleMaxCandles); open += step {
 		if mode == "boundary" && open < from {
 			continue
 		}
@@ -163,10 +169,15 @@ type fhEnv struct {
 
 func newFHEnv(t *testing.T, start time.Time) *fhEnv {
 	t.Helper()
+	return newFHEnvWithPolicy(t, start, nil)
+}
+
+func newFHEnvWithPolicy(t *testing.T, start time.Time, policy *feedBudgetConfig) *fhEnv {
+	t.Helper()
 	e := &fhEnv{t: t, clock: &hlLotTestClock{now: start}}
 	e.venue = newFHVenue(t)
 	useHLInfoURLs(t, e.venue.srv.URL, e.venue.srv.URL)
-	e.ledger = newFeedRequestLedger(nil, false, e.clock.Now)
+	e.ledger = newFeedRequestLedger(policy, policy != nil, e.clock.Now)
 	e.ctx = withFeedLedger(context.Background(), e.ledger)
 	e.owner = e.newOwner()
 	return e
@@ -535,6 +546,221 @@ func TestFeedHistoryCompletion(t *testing.T) {
 		}
 		for _, a := range e.owner.DrainAlerts() {
 			t.Fatalf("unexpected alert %+v", a)
+		}
+	})
+
+	t.Run("MonthlyWideningStaysWithinTheRowBound", func(t *testing.T) {
+		e := newFHEnv(t, fhBase)
+		monthMs, _ := hlCandleIntervalMs("1M")
+		e.venue.setBoundary("AAA", fhBase.UnixMilli()-40*monthMs)
+		key := feedKeyFor("AAA", "1M")
+		req := feedRequirements{Keys: map[marketFeedKey]int{key: 1200}, Funding: map[string]feedFundingNeed{},
+			Strategies:  map[string]feedStrategyRequirement{"s-AAA": {ID: "s-AAA", Signal: key, SignalLookback: 1200, Coin: "AAA"}},
+			KeyCadences: map[marketFeedKey][]int{key: {60}}}
+		req.finalize()
+		e.apply(e.owner, req)
+		reqs := e.venue.requests("AAA")
+		if len(reqs) != 3 {
+			t.Fatalf("1M widening sent %d request(s) %+v, want three passes", len(reqs), reqs)
+		}
+		for i, r := range reqs {
+			if _, err := hlCandleRowBound("1M", r.Start, r.End); err != nil {
+				t.Fatalf("1M pass %d window %+v: %v", i, r, err)
+			}
+		}
+		maxSpan, err := hlCandleMaxSpanBars("1M")
+		if err != nil || maxSpan != 4514 {
+			t.Fatalf("1M span limit = %d, err %v; want 4514", maxSpan, err)
+		}
+		if last := reqs[len(reqs)-1]; last.End-last.Start != maxSpan*monthMs {
+			t.Fatalf("last 1M window spans %d nominal months, want %d", (last.End-last.Start)/monthMs, maxSpan)
+		}
+		if r := e.ready(e.owner, key); !r.Ready || !r.CoverageShort || r.HistoryErr != "" {
+			t.Fatalf("AAA|1M = %+v, want ready with coverage_short on the confirmed boundary", r)
+		}
+		if w := e.ledger.weightStatus(); len(w.Violations) != 0 {
+			t.Fatalf("weight status = %+v, want no row-bound violation", w)
+		}
+		if got := e.owner.DrainAlerts(); len(got) != 0 {
+			t.Fatalf("alerts = %+v, want none", got)
+		}
+	})
+
+	t.Run("DelayedCorrectionIsSkippedBeforeReservation", func(t *testing.T) {
+		e := newFHEnvWithPolicy(t, fhBase, wtPolicy(1100, 0, 0))
+		e.venue.set("AAA", "deep")
+		key := feedKeyFor("AAA", "1m")
+		e.apply(e.owner, rlRequirements(100, 60, "AAA"))
+		if r := e.ready(e.owner, key); !r.Ready {
+			t.Fatalf("AAA = %+v, want ready before the correction", r)
+		}
+		e.clock.Advance(90 * time.Second)
+		jobs := e.owner.correctionPass(10)
+		if len(jobs) != 1 {
+			t.Fatalf("correction jobs = %d, want 1", len(jobs))
+		}
+		e.clock.Advance(6001 * time.Minute)
+		if _, err := hlCandleRowBound("1m", jobs[0].fromOpenMs, e.clock.Now().UnixMilli()); !errors.Is(err, errHLCandleWindowTooWide) {
+			t.Fatalf("delayed correction window err = %v, want it above the row cap", err)
+		}
+		before := e.state(e.owner, key)
+		ledgerBefore := e.ledger.status()
+		sent := e.venue.count("AAA")
+		e.owner.runCorrectionJob(e.ctx, jobs[0])
+
+		if got := e.venue.count("AAA"); got != sent {
+			t.Fatalf("venue saw %d correction request(s), want none", got-sent)
+		}
+		ledgerAfter := e.ledger.status()
+		if ledgerAfter.Weight.Totals.Reserved != ledgerBefore.Weight.Totals.Reserved ||
+			ledgerAfter.Weight.Totals.ReservedByReason["correction"] != ledgerBefore.Weight.Totals.ReservedByReason["correction"] ||
+			ledgerAfter.Totals.Total != ledgerBefore.Totals.Total || len(ledgerAfter.Weight.Violations) != 0 {
+			t.Fatalf("ledger moved for a skipped correction: before %+v, after %+v", ledgerBefore, ledgerAfter)
+		}
+		if lines := e.logsContaining("status=skipped"); len(lines) != 1 || !strings.Contains(lines[0], key.String()) {
+			t.Fatalf("skip lines = %q, want one for %s", lines, key)
+		}
+		after := e.state(e.owner, key)
+		if after.corr.inflight || after.corr.failures != 0 || !after.corr.retryAt.IsZero() || after.corr.lastErr == "" {
+			t.Fatalf("correction state after the skip = %+v, want no in-flight read, no failure or backoff, and the reason kept", after.corr)
+		}
+		if !reflect.DeepEqual(after.Bars, before.Bars) || !after.LastRecvAt.Equal(before.LastRecvAt) || after.Status != before.Status {
+			t.Fatalf("key data changed on a skipped correction: status %s -> %s, last recv %s -> %s, %d -> %d bars",
+				before.Status, after.Status, before.LastRecvAt, after.LastRecvAt, len(before.Bars), len(after.Bars))
+		}
+		e.owner.feedMu.Lock()
+		stats := e.owner.correction
+		e.owner.feedMu.Unlock()
+		if stats.Reads != 0 || stats.Retries != 0 || stats.Failed != 0 || stats.Refused != 0 {
+			t.Fatalf("correction stats after the skip = %+v, want no read, retry, failure or refusal", stats)
+		}
+
+		sent = e.venue.count("AAA")
+		if err := e.owner.fetchAndMerge(e.ctx, key, feedRestRefresh); err != nil {
+			t.Fatalf("a candle read after the skip err = %v, want it sent", err)
+		}
+		reqs := e.venue.requests("AAA")
+		if len(reqs) != sent+1 {
+			t.Fatalf("read after the skip sent %d request(s), want one capped reload", len(reqs)-sent)
+		}
+		if _, err := hlCandleRowBound("1m", reqs[sent].Start, reqs[sent].End); err != nil {
+			t.Fatalf("reload window %+v: %v", reqs[sent], err)
+		}
+		if w := e.ledger.weightStatus(); len(w.Violations) != 0 {
+			t.Fatalf("weight status = %+v, want no row-bound violation", w)
+		}
+
+		formingOpen := e.clock.Now().UnixMilli() / fhStep * fhStep
+		newOpen := formingOpen + fhStep
+		e.clock.Advance(time.Duration(newOpen+fhStep-e.clock.Now().UnixMilli()) * time.Millisecond)
+		e.owner.IngestSocketCandle(key, hlCandleRaw{OpenMs: newOpen, CloseMs: newOpen + fhStep - 1, HasClose: true,
+			Open: 100, High: 102, Low: 99, Close: 101, Volume: 4}, e.clock.Now())
+		e.clock.Advance(6 * time.Second)
+		jobs = e.owner.correctionPass(10)
+		if len(jobs) != 1 {
+			t.Fatalf("correction jobs for the newer closed bar = %d, want 1", len(jobs))
+		}
+		sent = e.venue.count("AAA")
+		e.owner.runCorrectionJob(e.ctx, jobs[0])
+		if got := e.venue.count("AAA"); got != sent+1 {
+			t.Fatalf("normal correction sent %d request(s), want one", got-sent)
+		}
+		e.owner.feedMu.Lock()
+		stats = e.owner.correction
+		e.owner.feedMu.Unlock()
+		if stats.Reads != 1 || stats.Corrected != 1 {
+			t.Fatalf("correction stats after a normal read = %+v, want one read and one corrected bar", stats)
+		}
+		if lines := e.logsContaining("status=corrected"); len(lines) != 1 {
+			t.Fatalf("corrected lines = %q, want one", lines)
+		}
+		final := e.state(e.owner, key)
+		last := final.Bars[len(final.Bars)-1]
+		if last.OpenMs != newOpen || last.Volume != 5 || last.Source != feedBarSourceREST {
+			t.Fatalf("newest bar = %+v, want the closed bar at %d corrected to the venue volume and no forming bar written", last, newOpen)
+		}
+		if w := e.ledger.weightStatus(); len(w.Violations) != 0 {
+			t.Fatalf("weight status = %+v, want no row-bound violation", w)
+		}
+	})
+
+	t.Run("EverySentWindowFitsTheRowBound", func(t *testing.T) {
+		e := newFHEnvWithPolicy(t, fhBase, wtPolicy(1100, 0, 0))
+		coins := []string{"AAA", "BBB", "CCC"}
+		for _, coin := range coins {
+			e.venue.set(coin, "deep")
+		}
+		req := rlRequirements(100, 60, coins...)
+		aaa := feedKeyFor("AAA", "1m")
+		e.apply(e.owner, req)
+		e.owner.SetConnected(true)
+		fits := func(coin string, from int) []fhRequest {
+			t.Helper()
+			reqs := e.venue.requests(coin)[from:]
+			for _, r := range reqs {
+				if _, err := hlCandleRowBound("1m", r.Start, r.End); err != nil {
+					t.Fatalf("%s request %+v: %v", coin, r, err)
+				}
+			}
+			return reqs
+		}
+
+		e.clock.Advance(4997 * time.Minute)
+		sent := e.venue.count("AAA")
+		if err := e.owner.fetchAndMerge(e.ctx, aaa, feedRestRefresh); err != nil {
+			t.Fatal(err)
+		}
+		reqs := fits("AAA", sent)
+		if len(reqs) != 1 {
+			t.Fatalf("AAA incremental refresh sent %d request(s), want one", len(reqs))
+		}
+		if bound, _ := hlCandleRowBound("1m", reqs[0].Start, reqs[0].End); bound != hlCandleRowCap {
+			t.Fatalf("AAA incremental window bound = %d, want exactly %d", bound, hlCandleRowCap)
+		}
+		if len(e.logsContaining("status=reload")) != 0 {
+			t.Fatalf("an at-bound incremental window was reloaded: %q", e.logsContaining("status=reload"))
+		}
+
+		cSent := e.venue.count("CCC")
+		prepared := make(chan struct{})
+		go func() {
+			prepareMarketSnapshot(e.ctx, e.owner, fullCycleRequirements(rlRequirements(100, 60, "CCC")))
+			close(prepared)
+		}()
+		fhWait(t, prepared, "seal preparation")
+		if got := fits("CCC", cSent); len(got) != 1 {
+			t.Fatalf("CCC seal preparation sent %d request(s), want one incremental read", len(got))
+		}
+
+		e.owner.SetConnected(false)
+		e.owner.SetConnected(true)
+		bSent := e.venue.count("BBB")
+		repaired := make(chan struct{})
+		go func() {
+			e.owner.repairAfterConnect(e.ctx)
+			close(repaired)
+		}()
+		fhWait(t, repaired, "reconnect repair")
+		if got := fits("BBB", bSent); len(got) != 1 {
+			t.Fatalf("BBB reconnect repair sent %d request(s), want one incremental read", len(got))
+		}
+
+		e.clock.Advance(4998 * time.Minute)
+		sent = e.venue.count("AAA")
+		if err := e.owner.fetchAndMerge(e.ctx, aaa, feedRestRefresh); err != nil {
+			t.Fatal(err)
+		}
+		if got := fits("AAA", sent); len(got) != 1 || !e.fullWindow(got[0], 100) {
+			t.Fatalf("AAA after a gap one bar past the bound sent %+v, want one capped full load", got)
+		}
+		if len(e.logsContaining("status=reload")) != 1 {
+			t.Fatalf("reload lines = %q, want one", e.logsContaining("status=reload"))
+		}
+		for _, coin := range coins {
+			fits(coin, 0)
+		}
+		if w := e.ledger.weightStatus(); len(w.Violations) != 0 {
+			t.Fatalf("weight status = %+v, want no row-bound violation", w)
 		}
 	})
 
