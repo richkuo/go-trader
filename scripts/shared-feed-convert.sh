@@ -506,13 +506,19 @@ unit_own_state_configs() {
 }
 
 unit_config_path() {
-    local unit="$1" cfg resolved own other name
+    local unit="$1" cfg resolved other name
     cfg=$(unit_raw_config_path "$unit")
     [[ -n "$cfg" ]] || { printf ''; return 0; }
     resolved=$(canonical_config_path "$cfg")
+    if [[ "$cfg$resolved" == *[[:cntrl:]]* ]]; then
+        die 2 "$unit: its config path holds a control character; nothing is read or written through it. Nothing changed"
+    fi
     if [[ -L "$cfg" || "$resolved" != "$cfg" ]]; then
-        own=$(unit_own_state_configs "$unit")
-        if [[ -z "$resolved" ]] || ! grep -qxF -- "$resolved" <<<"$own"; then
+        local entry matched=0
+        while IFS= read -r entry; do
+            [[ -n "$resolved" && "$resolved" == "$entry" ]] && matched=1
+        done < <(unit_own_state_configs "$unit")
+        if [[ $matched -eq 0 ]]; then
             die 2 "$unit: its config path $cfg resolves through a symlink to ${resolved:-nothing}; the script follows a consumer config symlink only to the unit's own state config: /var/lib/go-trader/config.json for go-trader.service, /var/lib/go-trader/<instance>/config.json for go-trader@<instance>.service, or <StateDirectory>/config.json for a go-trader StateDirectory= of the unit. Nothing changed"
         fi
     fi

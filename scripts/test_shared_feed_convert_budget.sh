@@ -502,4 +502,84 @@ rm "$LEGACY/scheduler/config.json"
 mv "$LEGACY/scheduler/config.json.real" "$LEGACY/scheduler/config.json"
 ok "a non-template unit follows a config symlink only into its own go-trader StateDirectory; a missing, shared, feed, other or escaping StateDirectory and the go-trader.service config are refused"
 
-echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, or into its own go-trader StateDirectory, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues)"
+rc=0
+(
+    host_units
+    unit_prop() { [[ "$2" == ExecStart ]] && printf '%s' "$ROOT/var/lib/go-trader/inst1/config.json"$'\n'"$CANON/evil/config.json" || printf ''; }
+    unit_config_path go-trader@inst1.service
+) >"$WORK/cntrl.out" 2>&1 || rc=$?
+[[ $rc -eq 2 ]] || fail "a config path with a newline exited $rc, want 2: $(cat "$WORK/cntrl.out")"
+grep -q "holds a control character" "$WORK/cntrl.out" || fail "the newline path was not refused by name: $(cat "$WORK/cntrl.out")"
+ok "a config path that holds a newline is refused before any ownership comparison"
+
+success_layout() {
+    local unit="$1" cfg="$2" label="$3" shadow pre mode uid rc=0 name
+    shadow="$SHADOW_DIR/${unit%.service}.json"
+    mkdir -p "$SHADOW_DIR"
+    cp "$WORK/consumer-template.json" "$cfg"
+    chmod 0640 "$cfg"
+    pre=$(sha "$cfg")
+    mode=$(target_mode "$cfg")
+    uid=$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_uid)' "$cfg")
+    py write-shared "$cfg" "$shadow" "$(feed_socket primary)" "$(feed_socket backup)" 0600
+    for name in primary backup; do
+        mkdir -p "$(dirname "$(feed_config "$name")")"
+        python3 - "$(feed_config "$name")" "$shadow" <<'PY'
+import json, sys
+json.dump({"role": "feed", "feed": {"source": "rest", "consumer_configs": [sys.argv[2]]}, "strategies": []}, open(sys.argv[1], "w"), indent=2)
+PY
+        chmod 0600 "$(feed_config "$name")"
+    done
+    printf '%s\n' "verify pass at=1" \
+        "budget calibrated per_minute=120 startup=60 weight_per_minute=600 weight_startup=400 weight_reserve=200 peak=10 weight_peak=300 bootstrap=5 bootstrap_weight=100 baseline_peak=none fixed=no at=2" \
+        "consumer $unit config=$cfg shadow=$shadow" "consumers-set units=$unit at=3" >"$JOURNAL"
+    rm -f "$WORK/at-reload.json"
+    (
+        host_units
+        reload_feed() { [[ -e "$WORK/at-reload.json" ]] || cp "$cfg" "$WORK/at-reload.json"; }
+        http_to_file() { printf '{"consumers":[{"path":"%s","loaded":true}]}' "$cfg" >"$2"; }
+        wait_active_fresh() { printf '4242'; }
+        FAIL_AFTER=feeds-reload
+        SELECTED=("$unit")
+        cmd_switch
+    ) >"$WORK/succ-sw.out" 2>&1 || rc=$?
+    [[ $rc -eq 26 ]] || fail "$label: switch with a forced failure after the feed reload exited $rc, want 26: $(cat "$WORK/succ-sw.out")"
+    [[ "$(py is-shared "$WORK/at-reload.json" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]] || fail "$label: switch did not write shared mode before the feed reload"
+    [[ "$(sha "$cfg")" == "$pre" && "$(target_mode "$cfg")" == "$mode" ]] || fail "$label: the switch failure restore left different bytes or mode"
+    [[ "$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_uid)' "$cfg")" == "$uid" ]] || fail "$label: the restore changed the config owner"
+    local copy
+    copy=$(compgen -G "$cfg.pre-shared-feed.*" | head -n 1)
+    [[ -n "$copy" && "$(sha "$copy")" == "$pre" ]] || fail "$label: no byte-identical pre-switch copy beside the config"
+    grep -q "^switch $unit .* rolled_back mode=byte restarted=yes" "$JOURNAL" || fail "$label: the journal has no byte restore record: $(cat "$JOURNAL")"
+    for name in primary backup; do
+        [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["feed"]["consumer_configs"])' "$(feed_config "$name")")" == "['$shadow']" ]] \
+            || fail "$label: $(feed_unit "$name") was not repointed back to the shadow config"
+    done
+
+    local backup="$cfg.pre-shared-feed.manual" post
+    py copy "$cfg" "$backup"
+    py write-shared "$cfg" "$cfg" "$(feed_socket primary)" "$(feed_socket backup)" "$(py mode-of "$backup")"
+    py chown-ref "$backup" "$cfg"
+    post=$(sha "$cfg")
+    for name in primary backup; do py replace-consumer "$(feed_config "$name")" "$shadow" "$cfg"; done
+    printf '%s\n' "switch $unit config=$cfg backup=$backup pre=$pre post=$post pid=1 written" >>"$JOURNAL"
+    rc=0
+    (
+        host_units
+        wait_active_fresh() { printf '4242'; }
+        SELECTED=("$unit")
+        OPT_ALL=0
+        cmd_rollback
+    ) >"$WORK/succ-rb.out" 2>&1 || rc=$?
+    [[ $rc -eq 0 ]] || fail "$label: rollback exited $rc: $(cat "$WORK/succ-rb.out")"
+    [[ "$(sha "$cfg")" == "$pre" && "$(target_mode "$cfg")" == "$mode" ]] || fail "$label: rollback left different bytes or mode"
+    [[ "$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_uid)' "$cfg")" == "$uid" ]] || fail "$label: rollback changed the config owner"
+    grep -q "restored (byte) and healthy" "$WORK/succ-rb.out" || fail "$label: rollback did not report the byte restore: $(cat "$WORK/succ-rb.out")"
+}
+cp "$LEGACY/scheduler/config.json" "$WORK/consumer-template.json"
+success_layout go-trader@inst1.service "$(cd "$ROOT/var/lib/go-trader/inst1" && pwd -P)/config.json" "migrated layout"
+ok "migrated layout: switch writes shared mode, a forced failure after the feed reload restores the byte-identical config, owner and mode, and rollback of a written switch restores it too"
+success_layout "$LUNIT" "$LEGACY/scheduler/config.json" "legacy tree"
+ok "legacy tree: the same switch, failure restore and rollback succeed with byte-identical bytes, owner and mode"
+
+echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, or into its own go-trader StateDirectory, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues; a config path with a control character is refused; switch, its failure restore and rollback succeed on the migrated layout and a legacy tree)"
