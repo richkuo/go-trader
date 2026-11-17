@@ -614,6 +614,75 @@ func TestFeedHistoryCompletion(t *testing.T) {
 		}
 	})
 
+	t.Run("PendingRaiseRepairsOnCoveredLookback", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			gap  time.Duration
+		}{{"short", 10 * time.Minute}, {"wide", 6000 * time.Minute}} {
+			t.Run(tc.name, func(t *testing.T) {
+				e := newFHEnv(t, fhBase)
+				key := feedKeyFor("AAA", "1m")
+				e.apply(e.owner, rlRequirements(100, 60, "AAA"))
+				e.owner.SetConnected(true)
+				e.venue.set("AAA", "500")
+				e.apply(e.owner, rlRequirements(200, 60, "AAA"))
+				if st := e.state(e.owner, key); st.historyLookback != 100 || st.historyTarget != 200 || st.historyFailures != 1 {
+					t.Fatalf("after the failed raise: history %d target %d failures %d, want 100 covered and the 200 load failed", st.historyLookback, st.historyTarget, st.historyFailures)
+				}
+				bars := e.state(e.owner, key).Bars
+				lastBefore := bars[len(bars)-1].OpenMs
+				e.owner.SetConnected(false)
+				e.clock.Advance(tc.gap)
+				e.owner.SetConnected(true)
+				e.venue.set("AAA", "deep")
+				sent := e.venue.count("AAA")
+				repaired := make(chan struct{})
+				go func() {
+					e.owner.repairAfterConnect(e.ctx)
+					close(repaired)
+				}()
+				fhWait(t, repaired, "reconnect repair")
+				reqs := e.venue.requests("AAA")
+				if tc.name == "short" {
+					if len(reqs) != sent+1 || reqs[sent].Start != lastBefore-fhStep {
+						t.Fatalf("repair requests = %+v, want one incremental read from the repair anchor (%d)", reqs[sent:], lastBefore)
+					}
+					if r := e.ready(e.owner, key); !r.Ready || r.Required != 100 || r.HistoryLookback != 100 || !strings.Contains(r.Detail, "200-bar load is pending") {
+						t.Fatalf("after repair = %+v, want ready on the covered 100 with the 200 load pending", r)
+					}
+				} else {
+					if len(reqs) != sent || len(e.logsContaining("status=reload")) != 1 {
+						t.Fatalf("repair sent %+v with reload lines %q, want nothing sent and one reload", reqs[sent:], e.logsContaining("status=reload"))
+					}
+					if r := e.ready(e.owner, key); r.Ready {
+						t.Fatalf("before the capped load = %+v, want not ready", r)
+					}
+				}
+				if errs := runFeedHistoryPass(t, e.owner, e.ctx); len(errs) != 0 {
+					t.Fatal(errs)
+				}
+				if r := e.ready(e.owner, key); !r.Ready || r.HistoryLookback != 200 || r.Required != 200 {
+					t.Fatalf("after the history pass = %+v, want 200 covered", r)
+				}
+			})
+		}
+		t.Run("NoCoveredLookback", func(t *testing.T) {
+			e := newFHEnv(t, fhBase)
+			key := feedKeyFor("AAA", "1m")
+			e.venue.set("AAA", "500")
+			e.apply(e.owner, rlRequirements(100, 60, "AAA"))
+			e.socketBars(e.owner, key, 40)
+			e.venue.set("AAA", "ok")
+			sent := e.venue.count("AAA")
+			if err := e.owner.fetchIncremental(e.ctx, key, feedRestRepair); !errors.Is(err, errFeedHistoryPending) {
+				t.Fatalf("repair read err = %v, want history pending", err)
+			}
+			if got := e.venue.count("AAA"); got != sent {
+				t.Fatalf("repair read sent %d request(s) for a key with no covered lookback", got-sent)
+			}
+		})
+	})
+
 	t.Run("BlockedHistoryDoesNotBlockSealOrRepair", func(t *testing.T) {
 		e := newFHEnv(t, fhBase)
 		bKey, cKey := feedKeyFor("BBB", "1m"), feedKeyFor("CCC", "1m")

@@ -106,6 +106,9 @@ func (o *marketFeedOwner) admitKeyFetchLocked(key marketFeedKey, reason feedRest
 		return nil, fmt.Errorf("feed key %s: %w", key, errFeedKeyInflight)
 	}
 	full := st.needsHistory()
+	if full && incrementalOnly && len(st.Bars) > 0 && st.historyLookback > 0 {
+		full = false
+	}
 	if !full && !hlCandleWindowFits(key.Timeframe, st.incrementalAnchor()-st.IntervalMs, now.UnixMilli()) {
 		o.logf("[feed-history] key=%s status=reload anchor_open=%d: the incremental window is wider than one %d-row response, so the stored bars are dropped and a capped full-history load owns this key",
 			key, st.incrementalAnchor(), hlCandleRowCap)
