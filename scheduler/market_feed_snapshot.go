@@ -200,7 +200,7 @@ func (o *marketFeedOwner) publishedKey(key marketFeedKey) bool {
 }
 
 func (o *marketFeedOwner) recoverKeyOnce(ctx context.Context, key marketFeedKey) error {
-	return o.fetchAndMerge(ctx, key, feedRestRecovery)
+	return o.fetchIncremental(ctx, key, feedRestRecovery)
 }
 
 func (o *marketFeedOwner) earliestFrameBarMs(reqs cycleMarketRequirements) map[string]int64 {
@@ -243,6 +243,9 @@ func prepareMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycleMa
 			continue
 		}
 		if err := o.recoverKeyOnce(ctx, cr.Key); err != nil {
+			if feedFetchTypedResult(err) {
+				continue
+			}
 			o.logf("[feed] %s: cycle recovery failed: %v", cr.Key, err)
 			if !feedRateLimitErr(err) && !errors.Is(err, errFeedWeightRefused) {
 				o.raiseAlert(cr.Key, "recovery_failed", err.Error())
@@ -397,6 +400,9 @@ func (s *marketSnapshot) frameWithTiming(key marketFeedKey, required int, timing
 	if !entry.Readiness.Ready {
 		return marketFrame{}, false
 	}
+	if required > 0 && entry.Readiness.Required < required {
+		return marketFrame{}, false
+	}
 	bars := entry.Bars
 	if required > 0 && len(bars) > required {
 		bars = bars[len(bars)-required:]
@@ -437,6 +443,20 @@ func (s *marketSnapshot) frameWithTiming(key marketFeedKey, required int, timing
 		frame.Timing = t
 	}
 	return frame, true
+}
+
+func (s *marketSnapshot) coverageGap(key marketFeedKey, required int) (int, bool) {
+	if s == nil || required <= 0 {
+		return 0, false
+	}
+	entry, ok := s.keys[key]
+	if !ok || entry == nil || !entry.Readiness.Ready {
+		return 0, false
+	}
+	if entry.Readiness.Required < required {
+		return entry.Readiness.Required, true
+	}
+	return 0, false
 }
 
 func (s *marketSnapshot) keyFailed(key marketFeedKey) bool {
@@ -504,6 +524,9 @@ func marketPayloadFor(s *marketSnapshot, frames []marketPayloadFrameSpec, coins 
 		if !ok {
 			if spec.Optional {
 				continue
+			}
+			if covered, gap := s.coverageGap(spec.Key, spec.Required); gap {
+				return nil, fmt.Errorf("sealed snapshot frame for %s covers a %d-bar history lookback, below the %d bars this consumer needs", spec.Key, covered, spec.Required)
 			}
 			return nil, fmt.Errorf("sealed snapshot has no ready frame for %s", spec.Key)
 		}

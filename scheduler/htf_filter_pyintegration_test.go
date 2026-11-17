@@ -622,7 +622,11 @@ func htfITHLSnapshot(htfBars int, htfReady bool) (*marketSnapshot, float64) {
 		if !ready {
 			status = feedStatusFailed
 		}
-		entry.Readiness = feedKeyReadiness{Key: key, Bars: total, Required: total, Ready: ready, Status: status, Source: "test", LastRecvAt: sealedAt}
+		required := total
+		if tf == "4h" && required < hlFeedHTFLookback+1 {
+			required = hlFeedHTFLookback + 1
+		}
+		entry.Readiness = feedKeyReadiness{Key: key, Bars: total, Required: required, CoverageShort: total < required, Ready: ready, Status: status, Source: "test", LastRecvAt: sealedAt}
 		snap.keys[key] = entry
 		if spike {
 			mark = entry.Bars[total-1].Close

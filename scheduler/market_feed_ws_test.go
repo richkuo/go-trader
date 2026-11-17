@@ -257,6 +257,7 @@ func TestMarketFeedSocketLifecycle(t *testing.T) {
 		})
 
 		t.Run("reconnect repairs the key before it serves again", func(t *testing.T) {
+			base := (time.Now().UnixMilli()/testFeedIntervalMs - 40) * testFeedIntervalMs
 			fs := newFeedSocketServer(t)
 			hlFeedWebsocketURLOverride = fs.url()
 			defer func() { hlFeedWebsocketURLOverride = "" }()

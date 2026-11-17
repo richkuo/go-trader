@@ -411,6 +411,20 @@ def feed_consumer_state(status_path, consumer):
             return
     print("absent")
 
+def feed_keys_ready(status_path):
+    s = json.load(open(status_path))
+    mf = s.get("market_feed")
+    if not isinstance(mf, dict) or not isinstance(mf.get("keys"), list):
+        print("unreadable: /status has no market_feed.keys")
+        return
+    waiting = sorted("%s=%s" % (k.get("key"), k.get("status")) for k in mf["keys"] if k.get("ready") is not True)
+    print("not_ready: " + " ".join(waiting) if waiting else "ready")
+
+def feed_max_cadence(status_path):
+    s = json.load(open(status_path))
+    cads = [c for k in s.get("consumers") or [] for c in (k.get("cadences") or []) if isinstance(c, int) and c > 0]
+    print(max(cads) if cads else "")
+
 def ledger_caps(report_path):
     text = open(report_path).read()
     peak = re.search(r"summed steady load:.*?peak=(\d+)", text)
@@ -437,6 +451,8 @@ args = sys.argv[2:]
     "budget-complete": budget_complete,
     "get": get,
     "feed-consumer-state": feed_consumer_state,
+    "feed-keys-ready": feed_keys_ready,
+    "feed-max-cadence": feed_max_cadence,
     "ledger-caps": ledger_caps,
 }[op](*args)
 PY
@@ -1336,6 +1352,36 @@ calibrate_weight_peak() {
     printf '%s' $(( ${charged:-0} + ${pending:-0} + ${inflight:-0} ))
 }
 
+wait_backup_steady() {
+    local port="$1" base="$2" tmp waited=0 timeout="$2" state="" since="" seal cad
+    tmp=$(mktemp)
+    while :; do
+        state=""
+        if http_to_file "http://127.0.0.1:${port}/status" "$tmp"; then
+            state=$(py feed-keys-ready "$tmp" 2>/dev/null || true)
+            cad=$(py feed-max-cadence "$tmp" 2>/dev/null || true)
+            [[ "$cad" =~ ^[1-9][0-9]{0,6}$ ]] && timeout=$((base + cad))
+        fi
+        if [[ "$state" == "ready" ]]; then
+            [[ -n "$since" ]] || since=$(date -u +%s)
+            seal=$(health_get "$port" last_seal_key)
+            if [[ "$seal" =~ ^[0-9]{1,15}$ && $seal -gt $since ]]; then
+                rm -f "$tmp"
+                return 0
+            fi
+            state="every key ready since $since, but no deadline after that is sealed yet (last sealed ${seal:-none})"
+        else
+            since=""
+        fi
+        [[ $waited -lt $timeout ]] || break
+        sleep 5
+        waited=$((waited + 5))
+    done
+    rm -f "$tmp"
+    printf '%s' "${state:-unreadable: no /status answer}" | tr -c '[:print:]' ' ' | cut -c1-400
+    return 1
+}
+
 calibrate_largest_read() {
     local v
     v=$(run_probe_live backup | sed -n 's/^probe: weight estimate .*largest_read=\([0-9]*\)$/\1/p' | tail -n 1)
@@ -1348,11 +1394,15 @@ cmd_calibrate() {
     [[ -n "$(journal_stage "feeds ready")" ]] || die 20 "run 'feeds' first$(reset_note "feeds ready")"
     local port window cad sampled=0 peak=0 used refused_before refused bootstrap per_minute startup cap_peak="" cap_cold=""
     local wpeak=0 wused wrefused_before wrefused wboot wpm wst wrs ceiling budget prior
+    local steady_base="${SHARED_FEED_CONVERT_SEAL_TIMEOUT:-900}" steady
     port=$(feed_port backup)
-    cad=$(max_cadence)
-    window="${OPT_WINDOW:-$(( ${cad:-300} * 2 ))}"
     [[ "$(py budget-complete "$(feed_config backup)")" == "yes" ]] || opt_budget_json >/dev/null \
         || die 2 "$(feed_config backup) has no complete weight policy; pass all five budget flags (--per-minute, --startup, --weight-per-minute, --weight-startup, --weight-reserve). Nothing changed"
+    log "waiting until every backup key is ready and a later deadline is sealed (up to ${steady_base}s plus the longest cadence), so calibration measures the steady feed"
+    steady=$(wait_backup_steady "$port" "$steady_base") \
+        || die 24 "the backup is not steady: ${steady}; a backup that is still loading history or has not sealed a deadline since cannot be measured. Nothing changed"
+    cad=$(max_cadence)
+    window="${OPT_WINDOW:-$(( ${cad:-300} * 2 ))}"
     prior=$(py budget-of "$(feed_config backup)")
     CAL_KEEP="$(mktemp -d)/config.json"
     py copy "$(feed_config backup)" "$CAL_KEEP"
@@ -1372,6 +1422,7 @@ PY
         sleep 5
     fi
     local nonnum="the backup's /health returned a value that is not a whole number; nothing is computed from it"
+    local dpeak=0 wdpeak=0 dused
     refused_before=$(health_num "$port" request_budget.totals.refused) || calibrate_fail "$nonnum"
     wrefused_before=$(health_num "$port" request_budget.weight.totals.refused) || calibrate_fail "$nonnum"
     log "sampling the backup's request window and weight use for ${window}s (longest cadence ${cad:-unknown}s)"
@@ -1380,6 +1431,12 @@ PY
         [[ -n "$used" && "$used" -gt "$peak" ]] && peak="$used"
         wused=$(calibrate_weight_peak "$port") || calibrate_fail "$nonnum"
         [[ -n "$wused" && "$wused" -gt "$wpeak" ]] && wpeak="$wused"
+        dused=$(health_num "$port" request_budget.demand_peak) || calibrate_fail "$nonnum"
+        [[ -n "$dused" ]] || calibrate_fail "the backup reports no request demand_peak; its binary predates the read-time demand measure"
+        [[ "$dused" -gt "$dpeak" ]] && dpeak="$dused"
+        dused=$(health_num "$port" request_budget.weight.demand_peak) || calibrate_fail "$nonnum"
+        [[ -n "$dused" ]] || calibrate_fail "the backup reports no weight demand_peak; its binary predates the read-time demand measure"
+        [[ "$dused" -gt "$wdpeak" ]] && wdpeak="$dused"
         sleep 2
         sampled=$((sampled + 2))
     done
@@ -1387,6 +1444,8 @@ PY
     [[ "${refused:-0}" == "${refused_before:-0}" ]] || calibrate_fail "the backup refused $((refused - refused_before)) request(s) during calibration; raise the budget and re-run"
     wrefused=$(health_num "$port" request_budget.weight.totals.refused) || calibrate_fail "$nonnum"
     [[ "${wrefused:-0}" == "${wrefused_before:-0}" ]] || calibrate_fail "the backup's weight allocation refused $((wrefused - wrefused_before)) read(s) during calibration; raise the weight policy and re-run"
+    [[ $dpeak -le $peak ]] || peak=$dpeak
+    [[ $wdpeak -le $wpeak ]] || wpeak=$wdpeak
     [[ "$(health_get "$port" request_budget.weight.participation)" == "enabled" ]] || calibrate_fail "the backup reports no weight participation; its binary or config predates the weight policy"
     ceiling=$(health_num "$port" request_budget.weight.ceiling) || calibrate_fail "$nonnum"
     [[ "$ceiling" =~ ^[1-9][0-9]*$ ]] || calibrate_fail "the backup reports no weight ceiling"
@@ -1438,11 +1497,11 @@ PY
     sleep 5
     [[ "$(health_get "$port" request_budget.per_minute)" == "$per_minute" ]] || calibrate_fail "the backup did not apply per_minute $per_minute after SIGHUP"
     [[ "$(health_get "$port" request_budget.weight.weight_per_minute)" == "$wpm" ]] || calibrate_fail "the backup did not apply weight_per_minute $wpm after SIGHUP"
-    journal_add "budget calibrated per_minute=$per_minute startup=$startup weight_per_minute=$wpm weight_startup=$wst weight_reserve=$wrs peak=$peak weight_peak=$wpeak bootstrap=$bootstrap bootstrap_weight=$wboot baseline_peak=${cap_peak:-none} fixed=$([[ -n "$OPT_PER_MINUTE$OPT_WEIGHT_PER_MINUTE" ]] && echo yes || echo no) at=$(date -u +%s)"
+    journal_add "budget calibrated per_minute=$per_minute startup=$startup weight_per_minute=$wpm weight_startup=$wst weight_reserve=$wrs peak=$peak weight_peak=$wpeak demand_peak=$dpeak weight_demand_peak=$wdpeak bootstrap=$bootstrap bootstrap_weight=$wboot baseline_peak=${cap_peak:-none} fixed=$([[ -n "$OPT_PER_MINUTE$OPT_WEIGHT_PER_MINUTE" ]] && echo yes || echo no) at=$(date -u +%s)"
     guard_clear
     rm -f "$CAL_KEEP"
     CAL_KEEP=""
-    log "calibrate OK: per_minute=$per_minute startup=$startup weight_per_minute=$wpm weight_startup=$wst weight_reserve=$wrs (measured peak $peak requests and $wpeak weight, bootstrap $bootstrap requests and $wboot weight). Next: verify"
+    log "calibrate OK: per_minute=$per_minute startup=$startup weight_per_minute=$wpm weight_startup=$wst weight_reserve=$wrs (measured peak $peak requests and $wpeak weight, read-time demand peak $dpeak requests and $wdpeak weight, bootstrap $bootstrap requests and $wboot weight). Next: verify"
 }
 
 common_retained_keys() {

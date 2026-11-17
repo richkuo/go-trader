@@ -554,24 +554,13 @@ func (s *feedAlertSender) drain(bound time.Duration) bool {
 	return true
 }
 
-func (o *marketFeedOwner) beginKeyFetch() uint64 {
-	o.feedMu.Lock()
-	defer o.feedMu.Unlock()
-	o.fetchSeq++
-	return o.fetchSeq
-}
-
-func (o *marketFeedOwner) markKeyRateLimited(key marketFeedKey, detail string) {
-	o.feedMu.Lock()
-	defer o.feedMu.Unlock()
-	if st := o.keys[key]; st != nil {
-		st.Status = feedStatusRateLimited
-		st.StatusDetail = detail
-		if o.fetchSeq == 0 {
-			o.fetchSeq = 1
-		}
-		st.rlSeq = o.fetchSeq
+func (o *marketFeedOwner) markRateLimitedLocked(st *feedKeyState, detail string) {
+	st.Status = feedStatusRateLimited
+	st.StatusDetail = detail
+	if o.fetchSeq == 0 {
+		o.fetchSeq = 1
 	}
+	st.rlSeq = o.fetchSeq
 }
 
 func (o *marketFeedOwner) setMidsRateLimited(limited bool) {

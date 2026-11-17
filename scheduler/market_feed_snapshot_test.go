@@ -12,6 +12,8 @@ func feedOwnerWithHistory(t *testing.T, key marketFeedKey, required, bars int, n
 	st := newFeedKeyState(key, testFeedIntervalMs, required)
 	base := now.UnixMilli() - int64(bars)*testFeedIntervalMs
 	mergeRestRows(st, testRawSeries(base, bars), now.Add(-time.Second))
+	st.historyLookback = required
+	st.historyShort = bars < required
 	st.Status = feedStatusReady
 	st.LastRecvAt = now
 	owner.keys[key] = st

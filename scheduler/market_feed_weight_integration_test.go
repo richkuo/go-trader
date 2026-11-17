@@ -870,7 +870,8 @@ func TestFeedWeightOwners(t *testing.T) {
 			t.Fatalf("report while still refused = %+v, want no duplicate summary", events)
 		}
 		ledger.setLimits((&feedWeightBudgetConfig{WeightPerMinute: feedIntPtr(500), WeightStartup: feedIntPtr(0), WeightReserve: feedIntPtr(0)}).budget())
-		prepareMarketSnapshot(ctx, owner, reqs)
+		clock.Advance(feedHistoryRefusalFloor + feedHistoryJitterSpan(feedHistoryRefusalFloor))
+		runFeedHistoryPass(t, owner, ctx)
 		events = ledger.weightReport(owner.weightRefusedInputs())
 		if len(events) != 1 || events[0].Kind != feedWeightEventRecover {
 			t.Fatalf("report after recovery = %+v, want one recovery summary", events)

@@ -405,7 +405,8 @@ func TestFeedRateLimitPause(t *testing.T) {
 		if events := ledger.rateLimitReport(feedRateLimitOutstanding(owner)); len(events) != 0 {
 			t.Fatalf("report after expiry with no fetch = %+v, want no alert", events)
 		}
-		prepareMarketSnapshot(ctx, owner, reqs)
+		clock.Advance(feedHistoryJitterSpan(feedHistoryRefusalFloor))
+		runFeedHistoryPass(t, owner, ctx)
 		for _, key := range []marketFeedKey{btc, eth} {
 			if r := rlKeyStatus(t, owner, key); !r.Ready {
 				t.Fatalf("after the recovery fetch %s = %+v, want ready", key, r)

@@ -514,6 +514,10 @@ func (o *marketFeedOwner) ApplyGeneration(ctx context.Context, req feedRequireme
 		}
 		if st := o.keys[key]; st != nil {
 			st.raiseRequired(lookback)
+			st.historyTarget = lookback
+			if !st.needsHistory() {
+				st.historyErr = ""
+			}
 			continue
 		}
 		o.keys[key] = newFeedKeyState(key, intervalMs, lookback)
@@ -532,36 +536,40 @@ func (o *marketFeedOwner) ApplyGeneration(ctx context.Context, req feedRequireme
 	o.subVersion++
 	o.applySeq++
 	token := o.applySeq
-	pending := make([]marketFeedKey, 0, len(req.Order))
+	now := o.now()
+	pending := make([]*feedFetchTicket, 0, len(req.Order))
 	for _, key := range req.Order {
 		st := o.keys[key]
-		if st == nil {
+		if st == nil || !st.needsHistory() {
 			continue
 		}
-		if st.Status == feedStatusBootstrapping || len(st.Bars) < feedReadyFloor(st.Required) {
-			pending = append(pending, key)
+		t, err := o.admitKeyFetchLocked(key, feedRestBootstrap, false, now)
+		if err != nil {
+			o.logf("[feed] %s: bootstrap not started by this generation: %v", key, err)
+			continue
 		}
+		pending = append(pending, t)
 	}
 	o.feedMu.Unlock()
 
 	go func() {
 		defer close(done)
 		var wg sync.WaitGroup
-		for _, key := range pending {
-			key := key
+		for _, t := range pending {
+			t := t
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				bootstrapCtx, cancel := context.WithTimeout(ctx, feedBootstrapKeyBudget)
 				defer cancel()
-				if err := o.fetchAndMerge(bootstrapCtx, key, feedRestBootstrap); err != nil {
-					o.logf("[feed] %s: bootstrap failed: %v", key, err)
-					if !feedRateLimitErr(err) {
-						o.raiseAlert(key, "bootstrap_failed", err.Error())
+				if err := o.executeKeyFetch(bootstrapCtx, t); err != nil {
+					o.logf("[feed] %s: bootstrap failed: %v", t.key, err)
+					if !feedRateLimitErr(err) && !feedFetchTypedResult(err) {
+						o.raiseAlert(t.key, "bootstrap_failed", err.Error())
 					}
 					return
 				}
-				o.logf("[feed] %s: bootstrap complete", key)
+				o.logf("[feed] %s: bootstrap complete", t.key)
 			}()
 		}
 		wg.Wait()

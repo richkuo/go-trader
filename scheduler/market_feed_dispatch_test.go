@@ -42,6 +42,7 @@ func feedDispatchFixtureWithRegime(t *testing.T, rc *RegimeConfig) (*marketFeedC
 			})
 		}
 		mergeRestRows(st, rows, now.Add(-time.Second))
+		st.historyLookback = lookback
 		st.Status = feedStatusReady
 		st.LastRecvAt = now
 		owner.keys[key] = st

@@ -429,6 +429,7 @@ func bllOwner(t *testing.T, req feedRequirements, now time.Time) *marketFeedOwne
 			}
 		}
 		mergeRestRows(st, rows, now.Add(-time.Second))
+		st.historyLookback = lookback
 		st.Status = feedStatusReady
 		st.LastRecvAt = now
 		owner.keys[key] = st
