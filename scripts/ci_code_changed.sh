@@ -45,7 +45,7 @@ gate_patterns() {
         scripts/install-service.sh 'systemd/*' go-trader.service scripts/run_ci_shell_suite.sh
         'scheduler/market_feed*.go' scheduler/hyperliquid_balance.go scheduler/hyperliquid_candles.go
         scheduler/hyperliquid_funding.go scheduler/hyperliquid_marks.go scheduler/hyperliquid_lot_metadata.go 'scheduler/egress*.go' scheduler/main.go scheduler/version.go
-        'scheduler/probe*.go' scheduler/server.go scheduler/go.mod scheduler/go.sum)
+        'scheduler/probe*.go' scheduler/server.go 'scheduler/config*.go' scheduler/go.mod scheduler/go.sum)
       ;;
     *)
       pats=()

@@ -19,7 +19,7 @@ for f in CLAUDE.md SKILL.md README.md scheduler/executor.go docs/backtesting-reg
   scheduler/main.go scheduler/probe_cmd.go scheduler/storage_inspect.go scheduler/singleton_lock.go scheduler/inspect_cmd.go \
   scheduler/market_feed_role.go scheduler/version.go .github/workflows/ci.yml scripts/shared-feed-convert.sh \
   scheduler/market_feed_ws.go scheduler/hyperliquid_balance.go scripts/fixtures/shared_feed_venue.py \
-  scripts/test_migrate_service_layout_fixture.sh systemd/go-trader@.service; do
+  scripts/test_migrate_service_layout_fixture.sh systemd/go-trader@.service scheduler/config_reload.go; do
   printf 'base\n' >"$tmp/repo/$f"
 done
 g add -A
@@ -103,6 +103,7 @@ check "venue endpoint definition, pull request" pull_request merge "code=true qu
 check "local venue helper, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=false migrate=false shared_feed=true" 'echo x >>scripts/fixtures/shared_feed_venue.py'
 check "service fixture, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=true shared_feed=true" 'echo x >>scripts/test_migrate_service_layout_fixture.sh'
 check "template unit, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true shared_feed=true" 'echo x >>systemd/go-trader@.service'
+check "shared feed config reload, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=false shared_feed=true" 'echo x >>scheduler/config_reload.go'
 check "workflow, pull request" pull_request merge "$all" 'echo x >>.github/workflows/ci.yml'
 
 for wf in .github/workflows/ci.yml .github/workflows/container.yml; do
@@ -170,4 +171,4 @@ fi
 if [ "$fail" != 0 ]; then
   exit 1
 fi
-echo "PASS: ci change detector (docs-only pull request merges skip; code, push, no event, test-read doc, renames and non-merge heads run; each suite gate fires on its own paths (the shared feed root proof on conversion, feed implementation, venue endpoint, template unit and fixture changes), on the workflow and the detector, and on every push; both workflows wire the code output and ci.yml gates jobs and steps only on declared outputs)"
+echo "PASS: ci change detector (docs-only pull request merges skip; code, push, no event, test-read doc, renames and non-merge heads run; each suite gate fires on its own paths (the shared feed root proof on conversion, feed implementation, venue endpoint, config parse and reload, template unit and fixture changes), on the workflow and the detector, and on every push; both workflows wire the code output and ci.yml gates jobs and steps only on declared outputs)"

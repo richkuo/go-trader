@@ -90,9 +90,19 @@ cleanup() {
     rm -rf "$WORK"
 }
 trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+SF_STAGE_PID=""
+on_signal() {
+    trap '' HUP INT TERM
+    if [[ -n "$SF_STAGE_PID" ]]; then
+        kill -"$1" "$SF_STAGE_PID" 2>/dev/null || true
+        wait "$SF_STAGE_PID" 2>/dev/null || true
+        SF_STAGE_PID=""
+    fi
+    exit "$2"
+}
+trap 'on_signal HUP 129' HUP
+trap 'on_signal INT 130' INT
+trap 'on_signal TERM 143' TERM
 
 tool() {
     "$PY3" "$TOOL" "$@"
@@ -1032,6 +1042,7 @@ scenario_update() {
         --per-minute 120 --startup 400 --weight-per-minute 600 --weight-startup 400 --weight-reserve 200
     grep -q "feed trees clone $origin (the origin of $tree)" "$WORK/last.out" || fail "shared-feed plan did not read the origin of $tree"
     if grep -q "no git origin" "$WORK/last.out"; then fail "shared-feed plan reported no git origin"; fi
+    [[ "$FEED_STATE_PRESENT" == "1" ]] || rm -rf /var/lib/go-trader/shared-feed
 
     if git_isolated git -C "$tree" rev-parse HEAD >/dev/null 2>&1; then
         fail "root git reads $tree with no system or global config and no SUDO_UID; the case would prove nothing"
@@ -1733,14 +1744,24 @@ sf_start_venue() {
     fail "the local venue did not answer on 127.0.0.1:$port within 20s"
 }
 
+sf_stage_run() {
+    local rc=0
+    : >"$WORK/empty.gitconfig"
+    env -u SUDO_UID GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" timeout --kill-after=60 "$SF_STAGE_TIMEOUT" "$@" &
+    SF_STAGE_PID=$!
+    wait "$SF_STAGE_PID" || rc=$?
+    SF_STAGE_PID=""
+    return "$rc"
+}
+
 sf_convert() {
-    git_isolated timeout --kill-after=60 "$SF_STAGE_TIMEOUT" bash "$SCRIPT_DIR/shared-feed-convert.sh" "$@"
+    sf_stage_run bash "$SCRIPT_DIR/shared-feed-convert.sh" "$@"
 }
 
 sf_convert_failing() {
     local at="$1"
     shift
-    git_isolated env SHARED_FEED_CONVERT_FAIL_AFTER="$at" timeout --kill-after=60 "$SF_STAGE_TIMEOUT" bash "$SCRIPT_DIR/shared-feed-convert.sh" "$@"
+    sf_stage_run env SHARED_FEED_CONVERT_FAIL_AFTER="$at" bash "$SCRIPT_DIR/shared-feed-convert.sh" "$@"
 }
 
 sf_stage() {
@@ -1866,7 +1887,7 @@ sf_run() {
         command -v "$t" >/dev/null 2>&1 || skip "$t required for the shared-feed scenarios"
     done
     conflicts=$(sf_host_conflicts)
-    [[ -z "$conflicts" ]] || fail "refusing the shared-feed scenario before any change: this host already has shared-feed resources (${conflicts%; }); run it on an isolated host"
+    [[ -z "$conflicts" ]] || fail "refusing the shared-feed scenario before any change: shared-feed resources appeared after the start-of-run check (${conflicts%; }); an earlier scenario of this run or another process left them"
     SF_ACTIVE=1
     if [[ "$layout" == "migrated" ]]; then off=30; else off=33; fi
     vport=$((BASE_PORT + off))
@@ -1888,7 +1909,7 @@ sf_run() {
     git -C "$src" push -q -u origin "$br"
 
     if [[ "$layout" == "migrated" ]]; then
-        inst="s-$ID"
+        inst="sf-$ID"
         INSTANCES+=("$inst")
         expect_exit 0 tool apply --unit "$unit" --instance "$inst"
         cunit="go-trader@$inst.service"
