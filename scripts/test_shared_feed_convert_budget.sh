@@ -582,4 +582,86 @@ ok "migrated layout: switch writes shared mode, a forced failure after the feed 
 success_layout "$LUNIT" "$LEGACY/scheduler/config.json" "legacy tree"
 ok "legacy tree: the same switch, failure restore and rollback succeed with byte-identical bytes, owner and mode"
 
-echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, or into its own go-trader StateDirectory, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues; a config path with a control character is refused; switch, its failure restore and rollback succeed on the migrated layout and a legacy tree)"
+SHARED_STATE="$ROOT/var/lib/go-trader/shared/config.json"
+mkdir -p "$(dirname "$SHARED_STATE")"
+cp "$WORK/consumer-template.json" "$SHARED_STATE"
+template_units() {
+    scheduler_units() { printf '%s\n' go-trader@inst1.service go-trader@inst3.service ${EXTRA_UNIT:-}; }
+    unit_prop() {
+        case "$2" in
+            WorkingDirectory)
+                case "$1" in
+                    go-trader@inst1.service) printf '%s' "$INST1_DIR" ;;
+                    "$LUNIT") printf '%s' "$LEGACY" ;;
+                    *) printf '%s' "$CANON/other-$1" ;;
+                esac
+                ;;
+            StateDirectory)
+                case "$1" in
+                    go-trader@inst1.service) printf 'go-trader/inst1 go-trader/shared' ;;
+                    go-trader@inst3.service) printf 'go-trader/inst3 go-trader/shared' ;;
+                    go-trader-twin.service) printf 'go-trader/legacy' ;;
+                    "$LUNIT") printf 'go-trader/legacy' ;;
+                esac
+                ;;
+            *) printf '' ;;
+        esac
+    }
+    update_execstart_config_path() { :; }
+}
+ln -sfn "$SHARED_STATE" "$INST1_DIR/scheduler/config.json"
+rc=0
+(template_units; unit_config_path go-trader@inst1.service) >"$WORK/shared-dir.out" 2>&1 || rc=$?
+[[ $rc -eq 2 ]] || fail "a template instance config symlink into go-trader/shared exited $rc, want 2: $(cat "$WORK/shared-dir.out")"
+ln -sfn "$ROOT/var/lib/go-trader/inst1/config.json" "$INST1_DIR/scheduler/config.json"
+got=$(template_units; unit_config_path go-trader@inst1.service) || fail "go-trader@inst1.service with its own state config was refused next to go-trader/shared"
+[[ "$got" == "$(cd "$ROOT/var/lib/go-trader/inst1" && pwd -P)/config.json" ]] || fail "go-trader@inst1.service resolved to $got"
+mv "$LEGACY/scheduler/config.json" "$LEGACY/scheduler/config.json.real"
+ln -s "$LEG_STATE" "$LEGACY/scheduler/config.json"
+got=$(template_units; scheduler_units() { printf '%s\n' "$LUNIT"; }; unit_config_path "$LUNIT") \
+    || fail "a unit that alone lists StateDirectory=go-trader/legacy was refused its own state config"
+[[ "$got" == "$(cd "$(dirname "$LEG_STATE")" && pwd -P)/config.json" ]] || fail "the StateDirectory unit resolved to $got"
+rc=0
+(template_units; scheduler_units() { printf '%s\n' "$LUNIT" go-trader-twin.service; }; unit_config_path "$LUNIT") >"$WORK/twin.out" 2>&1 || rc=$?
+[[ $rc -eq 2 ]] || fail "a StateDirectory that another active unit also lists was accepted as own (exit $rc): $(cat "$WORK/twin.out")"
+rm "$LEGACY/scheduler/config.json"
+mv "$LEGACY/scheduler/config.json.real" "$LEGACY/scheduler/config.json"
+ok "the template's shared folder and a StateDirectory that another active unit also lists are never an own config home; an instance's own state config still passes"
+
+INST1_STATE="$ROOT/var/lib/go-trader/inst1"
+INST1_SAVED="$ROOT/var/lib/go-trader/inst1.saved"
+REDIRECT="$CANON/redirect-target"
+mkdir -p "$REDIRECT"
+cp "$WORK/consumer-template.json" "$REDIRECT/config.json"
+chmod 0640 "$REDIRECT/config.json"
+redirect_sum=$(sha "$REDIRECT/config.json")
+inst1_recorded="$(cd "$INST1_STATE" && pwd -P)/config.json"
+mv "$INST1_STATE" "$INST1_SAVED"
+ln -s "$REDIRECT" "$INST1_STATE"
+direct_units() {
+    template_units
+    unit_prop() {
+        case "$2" in
+            ExecStart) printf '%s' "$INST1_STATE/config.json" ;;
+            StateDirectory) printf 'go-trader/inst1 go-trader/shared' ;;
+            *) printf '' ;;
+        esac
+    }
+    update_execstart_config_path() { printf '%s' "$1"; }
+}
+rc=0
+(direct_units; scheduler_units() { printf '%s\n' go-trader@inst1.service; }; check_selection go-trader@inst1.service) >"$WORK/redir-sel.out" 2>&1 || rc=$?
+[[ $rc -eq 2 ]] || fail "selection through a symlinked instance state folder exited $rc, want 2: $(cat "$WORK/redir-sel.out")"
+printf '%s\n' "verify pass at=1" \
+    "budget calibrated per_minute=120 startup=60 weight_per_minute=600 weight_startup=400 weight_reserve=200 peak=10 weight_peak=300 bootstrap=5 bootstrap_weight=100 baseline_peak=none fixed=no at=2" \
+    "consumer go-trader@inst1.service config=$inst1_recorded shadow=$SHADOW_DIR/go-trader@inst1.json" "consumers-set units=go-trader@inst1.service at=3" >"$JOURNAL"
+rc=0
+(direct_units; SELECTED=(go-trader@inst1.service); cmd_switch) >"$WORK/redir-sw.out" 2>&1 || rc=$?
+[[ $rc -eq 20 ]] || fail "switch through a symlinked instance state folder exited $rc, want 20: $(cat "$WORK/redir-sw.out")"
+[[ "$(sha "$REDIRECT/config.json")" == "$redirect_sum" && "$(target_mode "$REDIRECT/config.json")" == "640" ]] || fail "switch changed the config behind a symlinked state folder"
+compgen -G "$REDIRECT/config.json.pre-shared-feed.*" >/dev/null && fail "switch wrote a pre-switch copy behind a symlinked state folder"
+rm "$INST1_STATE"
+mv "$INST1_SAVED" "$INST1_STATE"
+ok "a template instance whose state folder was replaced by a symlink is refused by selection (exit 2) and by switch (exit 20); the target keeps its bytes and mode and gets no pre-switch copy"
+
+echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, or into its own go-trader StateDirectory, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues; a config path with a control character, a symlinked state folder or a shared state folder is refused; switch, its failure restore and rollback succeed on the migrated layout and a legacy tree)"

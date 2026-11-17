@@ -278,6 +278,9 @@ def chown_ref(ref, target):
     finally:
         os.close(fd)
 
+def walk_check(path):
+    os.close(open_parent(path))
+
 def mode_of(path):
     fd, st = open_nofollow(path)
     os.close(fd)
@@ -421,6 +424,7 @@ args = sys.argv[2:]
     "copy": safe_copy,
     "chown-ref": chown_ref,
     "mode-of": mode_of,
+    "walk-check": walk_check,
     "write-shared": write_shared,
     "write-feed": write_feed,
     "replace-consumer": replace_consumer,
@@ -478,29 +482,43 @@ canonical_config_path() {
     printf '%s' "$resolved"
 }
 
+state_dir_listed_elsewhere() {
+    local unit="$1" rel="$2" other d
+    local -a ds=()
+    while IFS= read -r other; do
+        [[ -n "$other" && "$other" != "$unit" ]] || continue
+        read -r -a ds <<<"$(unit_prop "$other" StateDirectory)" || true
+        for d in "${ds[@]+"${ds[@]}"}"; do
+            [[ "$d" == "$rel" ]] && return 0
+        done
+    done < <(scheduler_units)
+    return 1
+}
+
 state_config_for_dir() {
-    local rel="$1" own
+    local unit="$1" rel="$2" base
     [[ "$rel" == go-trader || "$rel" == go-trader/* ]] || return 0
-    [[ "$rel" != */../* && "$rel" != */.. && "$rel" != *//* && "$rel" != go-trader/*/* ]] || return 0
-    case "${rel#go-trader/}" in feed-*|shared-feed) return 0 ;; esac
-    own="$CONVERT_ROOT/var/lib/$rel/config.json"
-    printf '%s/config.json\n' "$(readlink -f "$(dirname "$own")" 2>/dev/null || dirname "$own")"
+    [[ "$rel" != */../* && "$rel" != */.. && "$rel" != *//* && "$rel" != go-trader/*/* && "$rel" != */. ]] || return 0
+    case "${rel#go-trader/}" in feed-*|shared-feed|shared) return 0 ;; esac
+    state_dir_listed_elsewhere "$unit" "$rel" && return 0
+    base="$CONVERT_ROOT/var/lib"
+    printf '%s/%s/config.json\n' "$(readlink -f "$base" 2>/dev/null || printf '%s' "$base")" "$rel"
 }
 
 unit_own_state_configs() {
     local unit="$1" instance dir
     local -a dirs=()
     case "$unit" in
-        go-trader.service) state_config_for_dir go-trader ;;
+        go-trader.service) state_config_for_dir "$unit" go-trader ;;
         go-trader@?*.service)
             instance="${unit%.service}"
             instance="${instance#go-trader@}"
-            [[ "$instance" != */* ]] && state_config_for_dir "go-trader/$instance"
+            [[ "$instance" != */* ]] && state_config_for_dir "$unit" "go-trader/$instance"
             ;;
     esac
     read -r -a dirs <<<"$(unit_prop "$unit" StateDirectory)" || true
     for dir in "${dirs[@]+"${dirs[@]}"}"; do
-        state_config_for_dir "$dir"
+        state_config_for_dir "$unit" "$dir"
     done
     return 0
 }
@@ -512,6 +530,9 @@ unit_config_path() {
     resolved=$(canonical_config_path "$cfg")
     if [[ "$cfg$resolved" == *[[:cntrl:]]* ]]; then
         die 2 "$unit: its config path holds a control character; nothing is read or written through it. Nothing changed"
+    fi
+    if [[ -e "$cfg" || -L "$cfg" ]] && ! py walk-check "$cfg" 2>/dev/null; then
+        die 2 "$unit: its config path $cfg passes through a folder symlink that another account can change; nothing is read or written through it. Nothing changed"
     fi
     if [[ -L "$cfg" || "$resolved" != "$cfg" ]]; then
         local entry matched=0
