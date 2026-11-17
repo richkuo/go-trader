@@ -29,6 +29,14 @@ type fpArrival struct {
 	owner  string
 }
 
+type fpPark struct {
+	owner    string
+	taken    bool
+	entered  chan struct{}
+	release  chan struct{}
+	recorded chan int
+}
+
 type fpVenue struct {
 	t   *testing.T
 	srv *httptest.Server
@@ -38,6 +46,7 @@ type fpVenue struct {
 	hold     chan struct{}
 	entered  chan struct{}
 	status   map[string]int
+	park     *fpPark
 }
 
 func newFPVenue(t *testing.T) *fpVenue {
@@ -88,11 +97,29 @@ func (v *fpVenue) handle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		weight = 20
 	}
+	owner := r.Header.Get(feedWeightTestOwnerHdr)
 	v.mu.Lock()
-	v.arrivals = append(v.arrivals, fpArrival{at: now, weight: weight, typ: body.Type, owner: r.Header.Get("X-Test-Owner")})
+	park := v.park
+	if park != nil && (park.taken || park.owner != owner || body.Type != "candleSnapshot") {
+		park = nil
+	}
+	if park != nil {
+		park.taken = true
+	}
+	v.mu.Unlock()
+	if park != nil {
+		close(park.entered)
+		<-park.release
+	}
+	v.mu.Lock()
+	v.arrivals = append(v.arrivals, fpArrival{at: now, weight: weight, typ: body.Type, owner: owner})
+	index := len(v.arrivals) - 1
 	hold, entered := v.hold, v.entered
 	st := v.status[body.Type]
 	v.mu.Unlock()
+	if park != nil {
+		park.recorded <- index
+	}
 	if hold != nil && body.Type == "candleSnapshot" {
 		select {
 		case entered <- struct{}{}:
@@ -117,6 +144,20 @@ func (v *fpVenue) snapshot() []fpArrival {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	return append([]fpArrival(nil), v.arrivals...)
+}
+
+func (v *fpVenue) sentBy(owner string) int {
+	v.t.Helper()
+	n := 0
+	for i, a := range v.snapshot() {
+		if a.owner == "" {
+			v.t.Fatalf("venue arrival %d (%s) carries no owner tag, so it cannot be attributed to a process", i, a.typ)
+		}
+		if a.owner == owner {
+			n++
+		}
+	}
+	return n
 }
 
 func (v *fpVenue) maxWindow() int {
@@ -204,6 +245,16 @@ func (e *fpEnv) env(extra ...string) []string {
 	return append(env, extra...)
 }
 
+func (e *fpEnv) processEnv(name string, extra ...string) []string {
+	env := []string{}
+	for _, kv := range e.env(extra...) {
+		if !strings.HasPrefix(kv, feedWeightTestOwnerEnv+"=") {
+			env = append(env, kv)
+		}
+	}
+	return append(env, feedWeightTestOwnerEnv+"="+name)
+}
+
 type fpProc struct {
 	t      *testing.T
 	name   string
@@ -280,7 +331,7 @@ func (e *fpEnv) start(name, cfg string, extra ...string) *fpProc {
 	p := &fpProc{t: e.t, name: name, exited: make(chan struct{})}
 	p.cmd = exec.Command(e.bin, "--config", cfg)
 	p.cmd.Dir = e.root
-	p.cmd.Env = e.env(extra...)
+	p.cmd.Env = e.processEnv(name, extra...)
 	p.cmd.Stdout = p
 	p.cmd.Stderr = p
 	if err := p.cmd.Start(); err != nil {
@@ -318,6 +369,37 @@ func (e *fpEnv) install(t *testing.T, cfg string) {
 	e.setOffset(feedBudgetWindow + time.Second)
 	p.waitFor("reason=initial_install ended", 30*time.Second)
 	p.stop()
+}
+
+func (e *fpEnv) installLeavingALateArrival(t *testing.T, cfg string) func() int {
+	t.Helper()
+	park := &fpPark{owner: "install", entered: make(chan struct{}), release: make(chan struct{}), recorded: make(chan int, 1)}
+	var once sync.Once
+	release := func() { once.Do(func() { close(park.release) }) }
+	t.Cleanup(release)
+	p := e.start("install", cfg)
+	p.waitFor("[feed-weight-shared] registered owner=", 60*time.Second)
+	e.venue.mu.Lock()
+	e.venue.park = park
+	e.venue.mu.Unlock()
+	e.setOffset(feedBudgetWindow + time.Second)
+	p.waitFor("reason=initial_install ended", 30*time.Second)
+	select {
+	case <-park.entered:
+	case <-time.After(60 * time.Second):
+		t.Fatalf("the install process sent no candle request to hold in the venue handler:\n%s", p.output())
+	}
+	p.stop()
+	return func() int {
+		release()
+		select {
+		case i := <-park.recorded:
+			return i
+		case <-time.After(30 * time.Second):
+			t.Fatalf("the held install request was never recorded")
+		}
+		return -1
+	}
 }
 
 func TestFeedWeightSharedProcesses(t *testing.T) {
@@ -364,12 +446,16 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 			t.Run(strings.ReplaceAll(tc.point, ":", "_"), func(t *testing.T) {
 				e := newFPEnv(t)
 				cfg := e.feedConfig("x", 2, 600, 100, 100)
-				e.install(t, cfg)
+				recordLate := e.installLeavingALateArrival(t, cfg)
 				before := len(e.venue.snapshot())
 				recBefore := e.record()
 				x := e.start("x", cfg, feedWeightTestKillEnv+"="+tc.point)
 				if code := x.waitExit(120 * time.Second); code != 128+int(syscall.SIGKILL) {
 					t.Fatalf("exit %d, want SIGKILL:\n%s", code, x.output())
+				}
+				late := recordLate()
+				if late < before {
+					t.Fatalf("the held install request was recorded at arrival %d, before the count of %d taken after the install exited", late, before)
 				}
 				rec := e.record()
 				me := rec.Owners[e.ownerKey(cfg)]
@@ -379,10 +465,11 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 					states = append(states, p.State)
 					permitWeight += p.Cost
 				}
-				sent := len(e.venue.snapshot()) > before
+				sent := e.venue.sentBy("x") > 0
 				if sent != tc.sent {
-					t.Fatalf("venue arrivals after the crash: sent=%t, want %t", sent, tc.sent)
+					t.Fatalf("venue arrivals from the crashed incarnation: sent=%t, want %t", sent, tc.sent)
 				}
+				t.Logf("held install arrival recorded at index %d after the post-install count %d; arrivals after that count %d; arrivals from x %d", late, before, len(e.venue.snapshot())-before, e.venue.sentBy("x"))
 				if tc.wantState == "" && len(me.Permits) != 0 {
 					t.Fatalf("a crash before any commit left permits %v", states)
 				}
@@ -484,12 +571,11 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 		if len(rec.Hosts) != 1 {
 			t.Fatalf("the committed pause is missing: %+v", rec.Hosts)
 		}
-		mark := len(e.venue.snapshot())
 		b := e.start("b", bCfg)
 		b.waitFor("[feed-weight-shared] registered owner=", 60*time.Second)
 		time.Sleep(3 * time.Second)
-		if time.Since(pausedAt) < feedRateLimitPause && len(e.venue.snapshot()) != mark {
-			t.Fatalf("a peer started after the pause sent %d request(s) inside the pause", len(e.venue.snapshot())-mark)
+		if n := e.venue.sentBy("b"); time.Since(pausedAt) < feedRateLimitPause && n != 0 {
+			t.Fatalf("a peer started after the pause sent %d request(s) inside the pause", n)
 		}
 		if !strings.Contains(b.output(), "paused") {
 			t.Fatalf("the peer shows no paused host:\n%s", b.output())

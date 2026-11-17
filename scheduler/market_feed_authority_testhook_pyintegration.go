@@ -5,12 +5,15 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"trading-scheduler/internal/egresspolicy"
 )
 
 const (
@@ -18,7 +21,20 @@ const (
 	feedWeightTestClockEnv = "GO_TRADER_TEST_FEED_WEIGHT_CLOCK"
 	feedWeightTestKillEnv  = "GO_TRADER_TEST_FEED_WEIGHT_KILL"
 	feedWeightTestFailEnv  = "GO_TRADER_TEST_FEED_WEIGHT_FAIL"
+	feedWeightTestOwnerEnv = "GO_TRADER_TEST_FEED_WEIGHT_OWNER"
+	feedWeightTestOwnerHdr = "X-Test-Owner"
 )
+
+type feedTestOwnerTransport struct {
+	owner string
+	base  http.RoundTripper
+}
+
+func (t feedTestOwnerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set(feedWeightTestOwnerHdr, t.owner)
+	return t.base.RoundTrip(r)
+}
 
 type feedFileClockState struct {
 	Boot         string `json:"boot"`
@@ -100,6 +116,13 @@ func init() {
 	}
 	if p := os.Getenv(feedWeightTestClockEnv); p != "" {
 		newFeedBootClock = func() feedBootClock { return feedFileBootClock{path: p} }
+	}
+	if o := os.Getenv(feedWeightTestOwnerEnv); o != "" {
+		if os.Getenv(egresspolicy.EnvProxy) != "" {
+			fmt.Fprintf(os.Stderr, "%s cannot run with %s\n", feedWeightTestOwnerEnv, egresspolicy.EnvProxy)
+			os.Exit(1)
+		}
+		http.DefaultTransport = feedTestOwnerTransport{owner: o, base: http.DefaultTransport}
 	}
 	kill := parseFeedTestPoint(os.Getenv(feedWeightTestKillEnv))
 	fail := parseFeedTestPoint(os.Getenv(feedWeightTestFailEnv))
