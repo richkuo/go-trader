@@ -407,6 +407,18 @@ func (o *marketFeedOwner) releaseCorrection(job feedCorrectionJob) {
 	}
 }
 
+func (o *marketFeedOwner) skipCorrection(job feedCorrectionJob, err error) {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	if o.keys[job.key] != job.st {
+		return
+	}
+	job.st.corr.inflight = false
+	job.st.corr.lastErr = err.Error()
+	o.logf("[feed-correction] key=%s status=skipped from_open_ms=%d error=%q: the window is not sent, and the next pass selects the bars due then",
+		job.key, job.fromOpenMs, err.Error())
+}
+
 func (o *marketFeedOwner) correctionFailedLocked(st *feedKeyState, err error, refused bool, attempt feedRestReason) {
 	st.corr.failures++
 	st.corr.lastErr = err.Error()
@@ -435,6 +447,10 @@ func (o *marketFeedOwner) runCorrectionJob(ctx context.Context, job feedCorrecti
 	cancel()
 	if ctx.Err() != nil {
 		o.releaseCorrection(job)
+		return
+	}
+	if errors.Is(err, errHLCandleWindowTooWide) {
+		o.skipCorrection(job, err)
 		return
 	}
 	var paused *feedHostPausedError

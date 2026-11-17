@@ -254,7 +254,10 @@ func hlFetchCandleHistory(ctx context.Context, coin, interval string, limit int,
 	}
 	endMs := now.UTC().UnixMilli()
 	requested := int64(limit) + hlCandleGapMargin
-	maxSpan := int64(hlCandleRowCap - 2)
+	maxSpan, err := hlCandleMaxSpanBars(interval)
+	if err != nil {
+		return hlCandleHistory{}, err
+	}
 	var result []hlCandleRaw
 	prevCount := -1
 	staleWidens := 0

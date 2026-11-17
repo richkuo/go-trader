@@ -594,6 +594,12 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 		if after := faTree(t, e.auth); after != before {
 			t.Fatalf("the probe changed the state directory")
 		}
+		if !strings.Contains(string(out), "probe: weight table:") || !strings.Contains(string(out), hlWeightAssumptions[4]) {
+			t.Fatalf("the staged probe does not print the revised A5 %q:\n%s", hlWeightAssumptions[4], out)
+		}
+		if !strings.Contains(b.output(), "[feed] weight table:") || !strings.Contains(b.output(), hlWeightAssumptions[4]) {
+			t.Fatalf("the peer startup does not print the revised A5 %q:\n%s", hlWeightAssumptions[4], b.output())
+		}
 		big := e.feedConfig("big", 2, 900, 100, 100)
 		cmd = exec.Command(e.bin, "probe", "--config", big)
 		cmd.Dir, cmd.Env = e.root, e.env()

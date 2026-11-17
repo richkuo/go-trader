@@ -374,7 +374,7 @@ func TestFeedWeightSenderLifecycle(t *testing.T) {
 		<-admitted
 		clock.Advance(2 * feedBudgetWindow)
 		venue.set(func(v *wtVenue) { v.candleRows = 5001; v.candleExtra = 0 })
-		if _, err := fetchHyperliquidCandleSnapshot(ctx, "BTC", "1m", base.Add(-6000*time.Minute).UnixMilli(), end); err == nil {
+		if _, err := fetchHyperliquidCandleSnapshot(ctx, "BTC", "1m", base.Add(-4998*time.Minute).UnixMilli(), end); err == nil {
 			t.Fatal("a 5001-row response was accepted")
 		}
 		close(releaseHook)
@@ -439,7 +439,7 @@ func TestFeedWeightSenderLifecycle(t *testing.T) {
 		ctx := wtCtx(ledger, string(feedRestRefresh), "BTC|1m")
 		end := base.UnixMilli()
 		venue.set(func(v *wtVenue) { v.candleRows = 5001 })
-		if _, err := fetchHyperliquidCandleSnapshot(ctx, "BTC", "1m", base.Add(-6000*time.Minute).UnixMilli(), end); err == nil {
+		if _, err := fetchHyperliquidCandleSnapshot(ctx, "BTC", "1m", base.Add(-4998*time.Minute).UnixMilli(), end); err == nil {
 			t.Fatal("a 5001-row response was accepted")
 		}
 		events := ledger.weightReport(nil)
@@ -521,6 +521,50 @@ func TestFeedWeightSenderLifecycle(t *testing.T) {
 		clock.Advance(feedBudgetWindow)
 		if _, err := fetchHyperliquidCandleSnapshot(other, "BTC", "1m", start, end); err != nil {
 			t.Fatalf("a read 60s after the slow completion: %v", err)
+		}
+	})
+
+	t.Run("WindowAtTheRowBoundSendsAndAWiderWindowIsRefusedBeforeReservation", func(t *testing.T) {
+		clock := &hlLotTestClock{now: base}
+		venue := newWTVenue(t, clock.Now)
+		ledger := newFeedRequestLedger(wtPolicy(1100, 0, 0), true, clock.Now)
+		ctx := wtCtx(ledger, string(feedRestRefresh), "BTC|1m")
+		end := base.UnixMilli()
+		atBound := base.Add(-4998 * time.Minute).UnixMilli()
+		if bound, err := hlCandleRowBound("1m", atBound, end); err != nil || bound != hlCandleRowCap {
+			t.Fatalf("bound of a 4998-minute window = %d, err %v; want %d", bound, err, hlCandleRowCap)
+		}
+		raws, err := fetchHyperliquidCandleSnapshot(ctx, "BTC", "1m", atBound, end)
+		if err != nil || len(raws) == 0 {
+			t.Fatalf("a window at the row bound = %d row(s), err %v; want it sent and settled", len(raws), err)
+		}
+		capCost, _ := hlInfoWeightAtCap("candleSnapshot")
+		settled, _ := hlInfoWeight("candleSnapshot", len(raws))
+		st := ledger.weightStatus()
+		if st.Totals.Reserved != capCost || st.Totals.Settled != settled || len(st.Violations) != 0 {
+			t.Fatalf("weight after the at-bound read = %+v, want %d reserved, %d settled and no violation", st, capCost, settled)
+		}
+
+		sent := len(venue.requests("candleSnapshot"))
+		before := ledger.status()
+		_, err = fetchHyperliquidCandleSnapshot(ctx, "BTC", "1m", base.Add(-4999*time.Minute).UnixMilli(), end)
+		if !errors.Is(err, errHLCandleWindowTooWide) {
+			t.Fatalf("a 4999-minute window err = %v, want %v", err, errHLCandleWindowTooWide)
+		}
+		if errors.Is(err, errFeedBudgetExhausted) || errors.Is(err, errFeedWeightRefused) || feedWeightRefusalCause(err) != "" {
+			t.Fatalf("a too-wide window err = %v is classed as a ledger refusal", err)
+		}
+		if got := len(venue.requests("candleSnapshot")); got != sent {
+			t.Fatalf("venue saw %d request(s) for a too-wide window, want none", got-sent)
+		}
+		after := ledger.status()
+		if after.Totals.Total != before.Totals.Total || after.Totals.Refused != before.Totals.Refused ||
+			after.Weight.Totals.Reserved != before.Weight.Totals.Reserved || after.Weight.Totals.Refused != before.Weight.Totals.Refused ||
+			after.Weight.Totals.Unpriced != before.Weight.Totals.Unpriced || len(after.Weight.Violations) != 0 {
+			t.Fatalf("ledger moved for a too-wide window: before %+v, after %+v", before, after)
+		}
+		if _, err := fetchHyperliquidCandleSnapshot(ctx, "BTC", "1m", atBound, end); err != nil {
+			t.Fatalf("a later at-bound read err = %v, want it sent", err)
 		}
 	})
 
