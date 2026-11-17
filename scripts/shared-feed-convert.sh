@@ -455,7 +455,7 @@ write_shadow() {
 
 unit_prop() { systemctl show "$1" -p "$2" --value 2>/dev/null | head -n 1 || true; }
 
-unit_config_path() {
+unit_raw_config_path() {
     local unit="$1" wd execstart cfg
     wd=$(unit_prop "$unit" WorkingDirectory)
     execstart=$(unit_prop "$unit" ExecStart)
@@ -466,24 +466,55 @@ unit_config_path() {
     elif [[ "$cfg" != /* ]]; then
         cfg="${wd%/}/$cfg"
     fi
-    local resolved own instance
+    printf '%s' "$cfg"
+}
+
+canonical_config_path() {
+    local cfg="$1" resolved
     if ! resolved=$(readlink -f "$cfg" 2>/dev/null); then
         resolved="$cfg"
         [[ -L "$cfg" ]] && resolved=""
     fi
-    if [[ -L "$cfg" || "$resolved" != "$cfg" ]]; then
-        instance="${unit%.service}"
-        if [[ "$instance" == go-trader@* ]]; then
+    printf '%s' "$resolved"
+}
+
+unit_own_state_config() {
+    local unit="$1" instance own
+    case "$unit" in
+        go-trader.service) own="$CONVERT_ROOT/var/lib/go-trader/config.json" ;;
+        go-trader@?*.service)
+            instance="${unit%.service}"
             instance="${instance#go-trader@}"
+            [[ "$instance" != */* && "$instance" != feed-* && "$instance" != shared-feed ]] || return 0
             own="$CONVERT_ROOT/var/lib/go-trader/$instance/config.json"
-        else
-            own="$CONVERT_ROOT/var/lib/go-trader/config.json"
-        fi
-        own="$(readlink -f "$(dirname "$own")" 2>/dev/null || dirname "$own")/config.json"
-        if [[ "$resolved" != "$own" || "$instance" == feed-* || "$instance" == shared-feed ]]; then
-            die 2 "$unit: its config path $cfg resolves through a symlink to $resolved; the script follows a consumer config symlink only to the unit's own $own. Nothing changed"
+            ;;
+        *) return 0 ;;
+    esac
+    printf '%s/config.json' "$(readlink -f "$(dirname "$own")" 2>/dev/null || dirname "$own")"
+}
+
+unit_config_path() {
+    local unit="$1" cfg resolved own other name
+    cfg=$(unit_raw_config_path "$unit")
+    [[ -n "$cfg" ]] || { printf ''; return 0; }
+    resolved=$(canonical_config_path "$cfg")
+    if [[ -L "$cfg" || "$resolved" != "$cfg" ]]; then
+        own=$(unit_own_state_config "$unit")
+        if [[ -z "$own" || "$resolved" != "$own" ]]; then
+            die 2 "$unit: its config path $cfg resolves through a symlink to $resolved; the script follows a consumer config symlink only to the unit's own state config (/var/lib/go-trader/config.json for go-trader.service, /var/lib/go-trader/<instance>/config.json for go-trader@<instance>.service)${own:+, here $own}. Nothing changed"
         fi
     fi
+    while IFS= read -r other; do
+        [[ -n "$other" && "$other" != "$unit" ]] || continue
+        if [[ "$(canonical_config_path "$(unit_raw_config_path "$other")")" == "$resolved" ]]; then
+            die 2 "$unit: its config path $cfg resolves to $resolved, which is also the config of $other; root changes a consumer config only when it belongs to the selected unit alone. Nothing changed"
+        fi
+    done < <(scheduler_units)
+    for name in "${FEEDS[@]}"; do
+        if [[ "$(canonical_config_path "$(feed_config "$name")")" == "$resolved" ]]; then
+            die 2 "$unit: its config path $cfg resolves to $resolved, the config of $(feed_unit "$name"). Nothing changed"
+        fi
+    done
     printf '%s' "$resolved"
 }
 

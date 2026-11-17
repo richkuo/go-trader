@@ -404,4 +404,70 @@ grep -q "$LUNIT: refused as a consumer: $LUNIT: its config path" "$WORK/inv.out"
 grep -q "go-trader-plain.service user=" "$WORK/inv.out" || fail "the inventory stopped before the next unit: $(cat "$WORK/inv.out")"
 ok "the inventory reports a refused unit that is not selected and continues to the next unit"
 
-echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues)"
+MAIN_TREE="$CANON/main-tree"
+MAIN_CFG="$ROOT/var/lib/go-trader/config.json"
+mkdir -p "$MAIN_TREE/scheduler"
+cp "$LEGACY/scheduler/config.json.real" "$MAIN_CFG"
+ln -sfn "$MAIN_CFG" "$MAIN_TREE/scheduler/config.json"
+main_sum=$(sha "$MAIN_CFG")
+rm "$LEGACY/scheduler/config.json"
+mv "$LEGACY/scheduler/config.json.real" "$LEGACY/scheduler/config.json"
+host_units() {
+    scheduler_units() { printf '%s\n' go-trader.service "$LUNIT" go-trader@inst1.service ${EXTRA_UNIT:-}; }
+    unit_prop() {
+        case "$2" in
+            WorkingDirectory)
+                case "$1" in
+                    go-trader.service) printf '%s' "$MAIN_TREE" ;;
+                    "$LUNIT") printf '%s' "$LEGACY" ;;
+                    go-trader@inst1.service) printf '%s' "$INST1_DIR" ;;
+                    *) printf '%s' "$CANON/b-tree" ;;
+                esac
+                ;;
+            ExecStart) [[ "$1" == go-trader-b.service ]] && printf '%s' "$LEGACY/scheduler/config.json" || printf '' ;;
+            *) printf '' ;;
+        esac
+    }
+    update_execstart_config_path() { printf '%s' "$1"; }
+}
+main_refusals() {
+    local label="$1" rc=0
+    switch_journal
+    (host_units; SELECTED=("$LUNIT"); cmd_switch) >"$WORK/main-sw.out" 2>&1 || rc=$?
+    [[ $rc -eq 20 ]] || fail "$label: switch exited $rc, want 20: $(cat "$WORK/main-sw.out")"
+    rc=0
+    (host_units; check_selection "$LUNIT") >"$WORK/main-sel.out" 2>&1 || rc=$?
+    [[ $rc -eq 2 ]] || fail "$label: check_selection exited $rc, want 2: $(cat "$WORK/main-sel.out")"
+    grep -q "ERROR $LUNIT: its config path" "$WORK/main-sel.out" || fail "$label: the selection refusal did not name $LUNIT: $(cat "$WORK/main-sel.out")"
+    [[ "$(sha "$MAIN_CFG")" == "$main_sum" ]] || fail "$label: the go-trader.service config changed"
+    compgen -G "$MAIN_CFG.pre-shared-feed.*" >/dev/null && fail "$label: a pre-switch copy appeared beside the go-trader.service config"
+    return 0
+}
+mv "$LEGACY/scheduler/config.json" "$LEGACY/scheduler/config.json.real"
+ln -s "$MAIN_CFG" "$LEGACY/scheduler/config.json"
+main_refusals "a non-template unit config symlink to /var/lib/go-trader/config.json"
+ok "a non-template unit whose config is a symlink to the go-trader.service config is refused by selection (exit 2, by name) and by switch (exit 20); that config keeps its bytes and gets no pre-switch copy"
+rm "$LEGACY/scheduler/config.json"
+mv "$LEGACY/scheduler/config.json.real" "$LEGACY/scheduler/config.json"
+mv "$LEGACY/scheduler" "$LEGACY/scheduler.real"
+ln -s "$ROOT/var/lib/go-trader" "$LEGACY/scheduler"
+main_refusals "a non-template unit scheduler directory symlink to /var/lib/go-trader"
+ok "a non-template unit whose scheduler directory is a symlink to /var/lib/go-trader is refused the same way"
+rm "$LEGACY/scheduler"
+mv "$LEGACY/scheduler.real" "$LEGACY/scheduler"
+
+own_main=$(host_units; unit_config_path go-trader.service) || fail "go-trader.service with the migrated symlink to its own config was refused"
+[[ "$own_main" == "$(cd "$(dirname "$MAIN_CFG")" && pwd -P)/config.json" ]] || fail "go-trader.service resolved to $own_main"
+own_inst1=$(host_units; unit_config_path go-trader@inst1.service) || fail "go-trader@inst1.service with its own state config was refused"
+[[ "$own_inst1" == "$(cd "$ROOT/var/lib/go-trader/inst1" && pwd -P)/config.json" ]] || fail "go-trader@inst1.service resolved to $own_inst1"
+own_legacy=$(host_units; unit_config_path "$LUNIT") || fail "a regular legacy config owned by one unit was refused"
+[[ "$own_legacy" == "$LEGACY/scheduler/config.json" ]] || fail "the legacy unit resolved to $own_legacy"
+ok "go-trader.service with the migrated symlink to its own config, go-trader@inst1.service with its own state config and a regular legacy config all pass"
+
+rc=0
+(EXTRA_UNIT=go-trader-b.service; host_units; unit_config_path "$LUNIT") >"$WORK/shared-cfg.out" 2>&1 || rc=$?
+[[ $rc -eq 2 ]] || fail "a config that another unit also uses exited $rc, want 2: $(cat "$WORK/shared-cfg.out")"
+grep -q "which is also the config of go-trader-b.service" "$WORK/shared-cfg.out" || fail "the shared-config refusal did not name the other unit: $(cat "$WORK/shared-cfg.out")"
+ok "a regular config path that another discovered unit also uses is refused and names that unit"
+
+echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues)"
