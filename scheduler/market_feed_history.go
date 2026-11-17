@@ -257,7 +257,9 @@ func feedHistoryCompletionError(t *feedFetchTicket, hist hlCandleHistory, out me
 
 func (o *marketFeedOwner) historyFailedLocked(t *feedFetchTicket, err error, now time.Time) {
 	st := t.st
-	st.historyErr = err.Error()
+	if st.needsHistory() {
+		st.historyErr = err.Error()
+	}
 	st.historyFailures++
 	floor := feedHistoryRetryFloor(st.historyFailures, feedHistoryRefusal(err))
 	jitter := o.historyJitter

@@ -254,18 +254,24 @@ func hlFetchCandleHistory(ctx context.Context, coin, interval string, limit int,
 	}
 	endMs := now.UTC().UnixMilli()
 	requested := int64(limit) + hlCandleGapMargin
+	maxSpan := int64(hlCandleRowCap - 2)
 	var result []hlCandleRaw
 	prevCount := -1
 	staleWidens := 0
 	exhausted := false
 	for pass := 0; pass < hlCandleMaxExtendPasses; pass++ {
-		startMs := endMs - intervalMs*requested
+		span := min(requested, maxSpan)
+		startMs := endMs - intervalMs*span
 		raws, err := fetchHyperliquidCandleSnapshotFn(ctx, coin, interval, startMs, endMs)
 		if err != nil {
 			return hlCandleHistory{}, err
 		}
 		result = raws
 		if len(result) == 0 || len(result) >= limit || len(result) >= hlCandleMaxCandles {
+			break
+		}
+		if span == maxSpan && int64(len(result)) >= maxSpan {
+			exhausted = true
 			break
 		}
 		if len(result) > prevCount {

@@ -515,6 +515,9 @@ func (o *marketFeedOwner) ApplyGeneration(ctx context.Context, req feedRequireme
 		if st := o.keys[key]; st != nil {
 			st.raiseRequired(lookback)
 			st.historyTarget = lookback
+			if !st.needsHistory() {
+				st.historyErr = ""
+			}
 			continue
 		}
 		o.keys[key] = newFeedKeyState(key, intervalMs, lookback)

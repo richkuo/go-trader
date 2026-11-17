@@ -128,7 +128,7 @@ func (v *fhVenue) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	first := (body.Req.StartTime + fhStep - 1) / fhStep * fhStep
 	rows := []map[string]any{}
-	for open := first; open <= body.Req.EndTime && len(rows) < hlCandleMaxCandles; open += fhStep {
+	for open := first; open <= body.Req.EndTime && (mode == "deep" || len(rows) < hlCandleMaxCandles); open += fhStep {
 		if mode == "boundary" && open < from {
 			continue
 		}
@@ -395,6 +395,56 @@ func TestFeedHistoryCompletion(t *testing.T) {
 		runFeedHistoryPass(t, e.owner, e.ctx)
 		if got := e.venue.count("CCC"); got != 2*hlCandleMaxExtendPasses {
 			t.Fatalf("CCC requests after one retry = %d, want another full search", got)
+		}
+	})
+
+	t.Run("LookbackAboveResponseCapCompletesShort", func(t *testing.T) {
+		e := newFHEnv(t, fhBase)
+		for _, coin := range []string{"AAA", "BBB", "CCC"} {
+			e.venue.set(coin, "deep")
+		}
+		maxSpan := hlCandleRowCap - 2
+		fullLimit := maxSpan - hlCandleGapMargin
+		req := rlRequirements(fullLimit, 60, "CCC")
+		for coin, lookback := range map[string]int{"AAA": 5001, "BBB": 5000} {
+			key := feedKeyFor(coin, "1m")
+			req.Keys[key] = lookback
+			req.KeyCadences[key] = []int{60}
+			req.Strategies["s-"+coin] = feedStrategyRequirement{ID: "s-" + coin, Signal: key, SignalLookback: lookback, Coin: coin}
+		}
+		req.finalize()
+		e.apply(e.owner, req)
+		for coin, lookback := range map[string]int{"AAA": 5001, "BBB": 5000} {
+			key := feedKeyFor(coin, "1m")
+			r := e.ready(e.owner, key)
+			if !r.Ready || !r.CoverageShort || r.HistoryLookback != lookback || r.Bars != maxSpan+1 || r.HistoryErr != "" {
+				t.Fatalf("%s lookback %d = %+v, want ready with coverage_short on the %d bars one capped response holds", coin, lookback, r, maxSpan+1)
+			}
+		}
+		if r := e.ready(e.owner, feedKeyFor("CCC", "1m")); !r.Ready || r.CoverageShort || r.HistoryLookback != fullLimit || r.Bars != fullLimit {
+			t.Fatalf("CCC lookback %d = %+v, want complete with no coverage_short", fullLimit, r)
+		}
+		for _, coin := range []string{"AAA", "BBB", "CCC"} {
+			reqs := e.venue.requests(coin)
+			if len(reqs) != 1 {
+				t.Fatalf("%s sent %d full request(s), want one", coin, len(reqs))
+			}
+			if bound := (reqs[0].End-reqs[0].Start)/fhStep + 2; bound > hlCandleRowCap {
+				t.Fatalf("%s request window row bound %d is above the %d-row cap", coin, bound, hlCandleRowCap)
+			}
+		}
+		if w := e.ledger.weightStatus(); len(w.Violations) != 0 {
+			t.Fatalf("weight status = %+v, want no row-bound violation", w)
+		}
+		e.clock.Advance(time.Hour)
+		runFeedHistoryPass(t, e.owner, e.ctx)
+		for _, coin := range []string{"AAA", "BBB", "CCC"} {
+			if got := e.venue.count(coin); got != 1 {
+				t.Fatalf("%s sent %d request(s) after completion, want no more full loads", coin, got)
+			}
+			if got := e.owner.DrainAlerts(); len(got) != 0 {
+				t.Fatalf("alerts = %+v, want none", got)
+			}
 		}
 	})
 
@@ -778,6 +828,55 @@ func TestFeedHistoryCompletion(t *testing.T) {
 		reqs := e.venue.requests("XXX")
 		if len(reqs) != sent+1 || e.fullWindow(reqs[len(reqs)-1], 40) {
 			t.Fatalf("requests after lowering = %+v, want one short window", reqs[sent:])
+		}
+	})
+
+	t.Run("LoweredTargetClearsHistoryError", func(t *testing.T) {
+		e := newFHEnv(t, fhBase)
+		lowered, raised := feedKeyFor("AAA", "1m"), feedKeyFor("BBB", "1m")
+		flight := feedKeyFor("CCC", "1m")
+		e.apply(e.owner, rlRequirements(100, 60, "AAA", "BBB", "CCC"))
+		for _, coin := range []string{"AAA", "BBB"} {
+			e.venue.set(coin, "500")
+		}
+		up := rlRequirements(100, 60, "AAA", "BBB", "CCC")
+		up.Keys[lowered], up.Keys[raised] = 200, 200
+		e.apply(e.owner, up)
+		for _, key := range []marketFeedKey{lowered, raised} {
+			if st := e.state(e.owner, key); st.historyErr == "" || st.historyFailures != 1 {
+				t.Fatalf("%s after the failed raise: err %q failures %d, want the failure recorded", key, st.historyErr, st.historyFailures)
+			}
+		}
+		next := rlRequirements(100, 60, "AAA", "BBB", "CCC")
+		next.Keys[raised] = 300
+		e.apply(e.owner, next)
+		if r := e.ready(e.owner, lowered); !r.Ready || r.HistoryLookback != 100 || r.HistoryTarget != 100 || r.HistoryErr != "" {
+			t.Fatalf("lowered key = %+v, want complete with no history_error", r)
+		}
+		for _, k := range e.owner.Health("").Keys {
+			if k.Key == lowered.String() && k.HistoryError != "" {
+				t.Fatalf("lowered key status history_error = %q, want empty", k.HistoryError)
+			}
+		}
+		st := e.state(e.owner, raised)
+		if r := e.ready(e.owner, raised); r.HistoryErr == "" || st.historyRetryAt.IsZero() || st.historyFailures != 1 || r.HistoryTarget != 300 {
+			t.Fatalf("raised key = %+v (retry %s failures %d), want the error and backoff kept", r, st.historyRetryAt, st.historyFailures)
+		}
+		entered, release := e.venue.hold("CCC")
+		defer release()
+		inflight := rlRequirements(100, 60, "AAA", "BBB", "CCC")
+		inflight.Keys[raised] = 300
+		inflight.Keys[flight] = 200
+		done := e.owner.ApplyGeneration(e.ctx, inflight)
+		fhWait(t, entered, "the CCC raise")
+		back := rlRequirements(100, 60, "AAA", "BBB", "CCC")
+		back.Keys[raised] = 300
+		fhWait(t, e.owner.ApplyGeneration(e.ctx, back), "the lowering generation")
+		e.venue.set("CCC", "500")
+		release()
+		fhWait(t, done, "the in-flight raise")
+		if r := e.ready(e.owner, flight); !r.Ready || r.HistoryLookback != 100 || r.HistoryErr != "" {
+			t.Fatalf("key lowered during a failed raise = %+v, want complete with no history_error", r)
 		}
 	})
 
