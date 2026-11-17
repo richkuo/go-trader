@@ -6,18 +6,20 @@ detector="$root/scripts/ci_code_changed.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fail=0
-outputs=(code quote egress_docker merge_paper update migrate)
-gates=(quote egress_docker merge_paper update migrate)
+outputs=(code quote egress_docker merge_paper update migrate shared_feed)
+gates=(quote egress_docker merge_paper update migrate shared_feed)
 
 g() { git -C "$tmp/repo" -c user.email=ci@example.invalid -c user.name=ci -c init.defaultBranch=main -c advice.detachedHead=false "$@"; }
 
 git init -q "$tmp/repo"
-mkdir -p "$tmp/repo/scheduler/cmd/egress-controller" "$tmp/repo/docs" "$tmp/repo/scripts" "$tmp/repo/.github/workflows"
+mkdir -p "$tmp/repo/scheduler/cmd/egress-controller" "$tmp/repo/docs" "$tmp/repo/scripts/fixtures" "$tmp/repo/systemd" "$tmp/repo/.github/workflows"
 for f in CLAUDE.md SKILL.md README.md scheduler/executor.go docs/backtesting-registry.md scheduler/cmd/egress-controller/manifest.go \
   scheduler/quote_coordinator.go scripts/merge-paper-instance.sh scripts/update.sh scripts/migrate-service-layout.py \
   scheduler/server.go scheduler/risk.go scheduler/state_presence.go scheduler/update_sh_feature_test.go \
   scheduler/main.go scheduler/probe_cmd.go scheduler/storage_inspect.go scheduler/singleton_lock.go scheduler/inspect_cmd.go \
-  scheduler/market_feed_role.go scheduler/version.go .github/workflows/ci.yml; do
+  scheduler/market_feed_role.go scheduler/version.go .github/workflows/ci.yml scripts/shared-feed-convert.sh \
+  scheduler/market_feed_ws.go scheduler/hyperliquid_balance.go scripts/fixtures/shared_feed_venue.py \
+  scripts/test_migrate_service_layout_fixture.sh systemd/go-trader@.service; do
   printf 'base\n' >"$tmp/repo/$f"
 done
 g add -A
@@ -66,9 +68,9 @@ check() {
   fi
 }
 
-all="code=true quote=true egress_docker=true merge_paper=true update=true migrate=true"
-code_only="code=true quote=false egress_docker=false merge_paper=false update=false migrate=false"
-none="code=false quote=false egress_docker=false merge_paper=false update=false migrate=false"
+all="code=true quote=true egress_docker=true merge_paper=true update=true migrate=true shared_feed=true"
+code_only="code=true quote=false egress_docker=false merge_paper=false update=false migrate=false shared_feed=false"
+none="code=false quote=false egress_docker=false merge_paper=false update=false migrate=false shared_feed=false"
 
 check "docs only, pull request" pull_request merge "$none" 'echo x >>CLAUDE.md; echo x >>SKILL.md; echo x >>README.md'
 check "docs and code, pull request" pull_request merge "$code_only" 'echo x >>CLAUDE.md; echo x >>scheduler/executor.go'
@@ -78,23 +80,29 @@ check "test-read doc, pull request" pull_request merge "$code_only" 'echo x >>do
 check "rename out of the list, pull request" pull_request merge "$code_only" 'git mv README.md README2.md'
 check "code renamed into the list, pull request" pull_request merge "$code_only" 'git rm -q README.md && git mv scheduler/executor.go README.md'
 check "head is not a merge commit, pull request" pull_request plain "$all" 'echo x >>SKILL.md'
-check "quote coordinator, pull request" pull_request merge "code=true quote=true egress_docker=false merge_paper=false update=false migrate=false" 'echo x >>scheduler/quote_coordinator.go'
-check "egress controller, pull request" pull_request merge "code=true quote=false egress_docker=true merge_paper=false update=false migrate=false" 'echo x >>scheduler/cmd/egress-controller/manifest.go'
-check "merge script, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scripts/merge-paper-instance.sh'
-check "update script, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=false" 'echo x >>scripts/update.sh'
-check "layout tool, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true" 'echo x >>scripts/migrate-service-layout.py'
-check "status port source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true" 'echo x >>scheduler/server.go'
-check "subcommand dispatch, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true" 'echo x >>scheduler/main.go'
-check "version source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true" 'echo x >>scheduler/version.go'
-check "probe source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=true" 'echo x >>scheduler/probe_cmd.go'
-check "storage-inspect source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scheduler/storage_inspect.go'
-check "lock holder source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scheduler/singleton_lock.go'
-check "inspect source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scheduler/inspect_cmd.go'
-check "feed health source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=false" 'echo x >>scheduler/market_feed_role.go'
-check "latch hook, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=false migrate=true" 'echo x >>scheduler/risk.go'
-check "missing-state hook, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true" 'echo x >>scheduler/state_presence.go'
-check "merge harness bash helper, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=false" 'echo x >>scheduler/update_sh_feature_test.go'
-check "gated file renamed away, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=false" 'git mv scripts/update.sh scripts/moved.sh'
+check "quote coordinator, pull request" pull_request merge "code=true quote=true egress_docker=false merge_paper=false update=false migrate=false shared_feed=false" 'echo x >>scheduler/quote_coordinator.go'
+check "egress controller, pull request" pull_request merge "code=true quote=false egress_docker=true merge_paper=false update=false migrate=false shared_feed=false" 'echo x >>scheduler/cmd/egress-controller/manifest.go'
+check "merge script, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true shared_feed=false" 'echo x >>scripts/merge-paper-instance.sh'
+check "update script, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=false shared_feed=true" 'echo x >>scripts/update.sh'
+check "layout tool, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true shared_feed=true" 'echo x >>scripts/migrate-service-layout.py'
+check "status port source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true shared_feed=true" 'echo x >>scheduler/server.go'
+check "subcommand dispatch, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true shared_feed=true" 'echo x >>scheduler/main.go'
+check "version source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true shared_feed=true" 'echo x >>scheduler/version.go'
+check "probe source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=true shared_feed=true" 'echo x >>scheduler/probe_cmd.go'
+check "storage-inspect source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true shared_feed=false" 'echo x >>scheduler/storage_inspect.go'
+check "lock holder source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true shared_feed=false" 'echo x >>scheduler/singleton_lock.go'
+check "inspect source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true shared_feed=false" 'echo x >>scheduler/inspect_cmd.go'
+check "feed health source, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=false shared_feed=true" 'echo x >>scheduler/market_feed_role.go'
+check "latch hook, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=false migrate=true shared_feed=false" 'echo x >>scheduler/risk.go'
+check "missing-state hook, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true shared_feed=false" 'echo x >>scheduler/state_presence.go'
+check "merge harness bash helper, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=false shared_feed=false" 'echo x >>scheduler/update_sh_feature_test.go'
+check "gated file renamed away, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=false shared_feed=true" 'git mv scripts/update.sh scripts/moved.sh'
+check "shared feed conversion, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=true shared_feed=true" 'echo x >>scripts/shared-feed-convert.sh'
+check "feed implementation, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=false migrate=false shared_feed=true" 'echo x >>scheduler/market_feed_ws.go'
+check "venue endpoint definition, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=false migrate=false shared_feed=true" 'echo x >>scheduler/hyperliquid_balance.go'
+check "local venue helper, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=false migrate=false shared_feed=true" 'echo x >>scripts/fixtures/shared_feed_venue.py'
+check "service fixture, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=true shared_feed=true" 'echo x >>scripts/test_migrate_service_layout_fixture.sh'
+check "template unit, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true shared_feed=true" 'echo x >>systemd/go-trader@.service'
 check "workflow, pull request" pull_request merge "$all" 'echo x >>.github/workflows/ci.yml'
 
 for wf in .github/workflows/ci.yml .github/workflows/container.yml; do
@@ -162,4 +170,4 @@ fi
 if [ "$fail" != 0 ]; then
   exit 1
 fi
-echo "PASS: ci change detector (docs-only pull request merges skip; code, push, no event, test-read doc, renames and non-merge heads run; each suite gate fires on its own paths, on the workflow and the detector, and on every push; both workflows wire the code output and ci.yml gates jobs and steps only on declared outputs)"
+echo "PASS: ci change detector (docs-only pull request merges skip; code, push, no event, test-read doc, renames and non-merge heads run; each suite gate fires on its own paths (the shared feed root proof on conversion, feed implementation, venue endpoint, template unit and fixture changes), on the workflow and the detector, and on every push; both workflows wire the code output and ci.yml gates jobs and steps only on declared outputs)"

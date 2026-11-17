@@ -21,7 +21,7 @@ for t in systemd-run python3 rsync git runuser flock; do
     command -v "$t" >/dev/null 2>&1 || skip "$t required"
 done
 PY3=$(command -v python3)
-SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply latch conflict resume signal stages kill fold update newtarget update_recovery}"
+SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply latch conflict resume signal stages kill fold update newtarget update_recovery sharedfeed_migrated sharedfeed_legacy}"
 HELPERS="$SCRIPT_DIR/update_helpers.sh"
 FIXTURE_GO="${FIXTURE_GO:-$(command -v go || true)}"
 
@@ -38,6 +38,12 @@ TEMPLATE_PRESENT=0
 [[ -e /etc/systemd/system/go-trader@.service ]] && TEMPLATE_PRESENT=1
 JOURNALD_PRESENT=0
 [[ -e /etc/systemd/journald@go-trader.conf ]] && JOURNALD_PRESENT=1
+SF_ACTIVE=0
+SF_VENUE_UNIT=""
+SF_FEED_UNITS=(go-trader@feed-primary.service go-trader@feed-backup.service)
+SF_FEED_PATHS=(/opt/go-trader-feed-primary /opt/go-trader-feed-backup /var/lib/go-trader/feed-primary /var/lib/go-trader/feed-backup
+    /var/lib/go-trader/shared-feed /run/go-trader-feed-primary /run/go-trader-feed-backup
+    /etc/systemd/system/go-trader@feed-primary.service.d /etc/systemd/system/go-trader@feed-backup.service.d)
 
 fail() {
     if [[ -s "$WORK/last.out" ]]; then
@@ -54,6 +60,7 @@ note() {
 
 cleanup() {
     local u i
+    [[ "$SF_ACTIVE" != "1" ]] || sf_teardown
     for u in "${CREATED_UNITS[@]}"; do
         systemctl stop "$u" >/dev/null 2>&1 || true
     done
@@ -83,6 +90,9 @@ cleanup() {
     rm -rf "$WORK"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 tool() {
     "$PY3" "$TOOL" "$@"
@@ -155,9 +165,9 @@ file_fp() {
 }
 
 write_stubs() {
-    local dir="$1" stub
+    local dir="$1" tf="${2:-1h}" stub
     for stub in check_hyperliquid.py fetch_candles.py strategy_tuner_schema.py check_regime.py simulate_strategy.py; do
-        cat > "$dir/shared_scripts/$stub" <<'PYSTUB'
+        sed "s/\"timeframe\": \"1h\"/\"timeframe\": \"$tf\"/" > "$dir/shared_scripts/$stub" <<'PYSTUB'
 import json
 import sys
 
@@ -179,17 +189,25 @@ PYSTUB
 }
 
 make_deployment() {
-    local name="$1" port="$2" layout="${3:-plain}" paper_only="${4:-}"
+    local name="$1" port="$2" layout="${3:-plain}" paper_only="${4:-}" venue="${5:-}"
     local src="/root/gt-$ID-$name" unit="go-trader-$ID-$name.service" outside="/srv/gt-$ID-$name"
+    local tf=1h interval=3600
     CREATED_DIRS+=("$src" "$outside")
     CREATED_UNITS+=("$unit")
     mkdir -p "$src" "$outside"
     chmod 700 "$src"
     (cd "$REPO_ROOT" && git ls-files -z | tar --null -T - -cf -) | tar -xf - -C "$src"
-    cp "$GO_TRADER_BIN" "$src/go-trader"
+    if [[ -n "$venue" ]]; then
+        tf=1m
+        interval=60
+        sf_point_source_at_venue "$src" "$venue"
+        sf_build_fixture_binary "$src"
+    else
+        cp "$GO_TRADER_BIN" "$src/go-trader"
+    fi
     mkdir -p "$src/.venv/bin" "$src/logs"
     ln -s "$PY3" "$src/.venv/bin/python3"
-    write_stubs "$src"
+    write_stubs "$src" "$tf"
     if [[ "$layout" != "nogit" ]]; then
         git -C "$src" init -q
         git -C "$src" config gc.auto 0
@@ -197,15 +215,16 @@ make_deployment() {
         git -C "$src" -c user.email=fixture@example.invalid -c user.name=fixture add -A
         git -C "$src" -c user.email=fixture@example.invalid -c user.name=fixture commit -qm fixture
     fi
-    "$PY3" - "$src/scheduler/config.json" "$port" "$layout" "$outside" "$name" "$paper_only" <<'PY'
+    "$PY3" - "$src/scheduler/config.json" "$port" "$layout" "$outside" "$name" "$paper_only" "$tf" "$interval" <<'PY'
 import json, sys
 path, port, layout, outside, name, paper_only = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
+tf, interval = sys.argv[7], int(sys.argv[8])
 def strat(sid, extra=None):
     s = {"id": sid, "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py",
-         "args": ["vwap", "ETH", "1h", "--mode=paper"], "capital": 100, "leverage": 2, "margin_per_trade_usd": 10}
+         "args": ["vwap", "ETH", tf, "--mode=paper"], "capital": 100, "leverage": 2, "margin_per_trade_usd": 10}
     s.update(extra or {})
     return s
-cfg = {"config_version": 19, "interval_seconds": 3600, "log_dir": "logs", "status_port": port,
+cfg = {"config_version": 19, "interval_seconds": interval, "log_dir": "logs", "status_port": port,
        "discord": {"enabled": False, "token": "", "channels": {}},
        "strategies": [strat("hl-%s-a" % name), strat("hl-%s-b" % name)]}
 if layout in ("split", "paperfile"):
@@ -1608,7 +1627,374 @@ EOS
     echo "update recovery OK"
 }
 
+SF_ENDPOINT_FILE=scheduler/hyperliquid_balance.go
+SF_ENDPOINT_LINE='var hlMainnetURL = "https://api.hyperliquid.xyz"'
+SF_BUDGET=(--per-minute 120 --startup 400 --weight-per-minute 600 --weight-startup 400 --weight-reserve 200)
+SF_STAGE_TIMEOUT=1800
+
+sf_point_source_at_venue() {
+    local src="$1" url="$2" f="$1/$SF_ENDPOINT_FILE"
+    [[ "$(grep -cxF -- "$SF_ENDPOINT_LINE" "$f" || true)" == "1" ]] || fail "$SF_ENDPOINT_FILE no longer holds the one line $SF_ENDPOINT_LINE; update the shared-feed fixture to redirect the venue endpoint"
+    "$PY3" - "$f" "$SF_ENDPOINT_LINE" "var hlMainnetURL = \"$url\"" <<'PY'
+import sys
+path, old, new = sys.argv[1:4]
+text = open(path).read()
+open(path, "w").write(text.replace(old, new, 1))
+PY
+    if grep -rlF --include='*.go' 'api.hyperliquid.xyz' "$src/scheduler" | grep -v '_test\.go$'; then
+        fail "the fixture source still names api.hyperliquid.xyz outside $SF_ENDPOINT_FILE; the runtime could reach the live venue"
+    fi
+}
+
+sf_build_fixture_binary() {
+    local src="$1" go
+    go=$(helper update_resolve_tool_system go) || fail "no Go to build the fixture source"
+    (cd "$src/scheduler" && GOWORK=off GOFLAGS=-mod=readonly "$go" build -buildvcs=false -o "$src/go-trader" .) >"$WORK/last.out" 2>&1 \
+        || fail "go build of the fixture source in $src failed"
+}
+
+sf_host_conflicts() {
+    local p u st
+    for p in "${SF_FEED_PATHS[@]}"; do
+        [[ -e "$p" || -L "$p" ]] && printf '%s exists; ' "$p"
+    done
+    for u in "${SF_FEED_UNITS[@]}"; do
+        st=$(systemctl is-active "$u" 2>/dev/null || true)
+        [[ "$st" == "inactive" || -z "$st" ]] || printf '%s is %s; ' "$u" "$st"
+        [[ "$(systemctl is-enabled "$u" 2>/dev/null || true)" != "enabled" ]] || printf '%s is enabled; ' "$u"
+    done
+    return 0
+}
+
+sf_teardown() {
+    local u p
+    for u in "${SF_FEED_UNITS[@]}"; do
+        systemctl disable --now "$u" >/dev/null 2>&1 || true
+        systemctl reset-failed "$u" >/dev/null 2>&1 || true
+    done
+    if [[ -n "$SF_VENUE_UNIT" ]]; then
+        systemctl stop "$SF_VENUE_UNIT" >/dev/null 2>&1 || true
+        systemctl reset-failed "$SF_VENUE_UNIT" >/dev/null 2>&1 || true
+        SF_VENUE_UNIT=""
+    fi
+    for p in "${SF_FEED_PATHS[@]}"; do
+        rm -rf "$p"
+    done
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    SF_ACTIVE=0
+}
+
+sf_confine() {
+    local d="/etc/systemd/system/$1.d"
+    mkdir -p "$d"
+    printf '[Service]\nIPAddressDeny=any\nIPAddressAllow=localhost\n' >"$d/90-fixture-loopback.conf"
+}
+
+sf_assert_confined() {
+    local unit="$1"
+    [[ "$(unit_prop "$unit" IPAddressDeny)" == *0.0.0.0/0* && "$(unit_prop "$unit" IPAddressAllow)" == *127.0.0.0/8* ]] \
+        || fail "$unit does not carry the loopback-only address policy (IPAddressDeny=$(unit_prop "$unit" IPAddressDeny) IPAddressAllow=$(unit_prop "$unit" IPAddressAllow))"
+}
+
+sf_check_loopback_enforced() {
+    local port="$1" out
+    out=$(systemd-run --quiet --wait --pipe --collect -p IPAddressDeny=any -p IPAddressAllow=localhost "$PY3" -c '
+import socket, sys
+s = socket.socket()
+s.settimeout(3)
+try:
+    s.connect(("192.0.2.1", 9))
+    print("outside: connected")
+except PermissionError:
+    print("outside: denied")
+except OSError as e:
+    print("outside: %s" % e)
+c = socket.create_connection(("127.0.0.1", int(sys.argv[1])), 3)
+c.close()
+print("loopback: connected")' "$port" 2>&1) || true
+    [[ "$out" == *"outside: denied"* && "$out" == *"loopback: connected"* ]] \
+        || fail "this host does not enforce IPAddressDeny=any with IPAddressAllow=localhost (${out//$'\n'/; }), so the fixture cannot hold the runtime to the local venue"
+    echo "loopback-only address policy enforced: ${out//$'\n'/; }"
+}
+
+sf_start_venue() {
+    local port="$1" log="$2" i
+    SF_VENUE_UNIT="gtfx-$ID-venue-$3.service"
+    systemd-run --quiet --unit "$SF_VENUE_UNIT" -p IPAddressDeny=any -p IPAddressAllow=localhost \
+        "$PY3" "$SCRIPT_DIR/fixtures/shared_feed_venue.py" --port "$port" --coin ETH --log "$log" \
+        || fail "could not start the local venue unit $SF_VENUE_UNIT"
+    for i in $(seq 1 100); do
+        if curl -sf -m 2 "http://127.0.0.1:$port/fixture/ready" >/dev/null 2>&1; then
+            echo "local venue $SF_VENUE_UNIT ready on 127.0.0.1:$port"
+            return 0
+        fi
+        sleep 0.2
+    done
+    journalctl -u "$SF_VENUE_UNIT" -n 40 --no-pager >&2 || true
+    fail "the local venue did not answer on 127.0.0.1:$port within 20s"
+}
+
+sf_convert() {
+    git_isolated timeout --kill-after=60 "$SF_STAGE_TIMEOUT" bash "$SCRIPT_DIR/shared-feed-convert.sh" "$@"
+}
+
+sf_convert_failing() {
+    local at="$1"
+    shift
+    git_isolated env SHARED_FEED_CONVERT_FAIL_AFTER="$at" timeout --kill-after=60 "$SF_STAGE_TIMEOUT" bash "$SCRIPT_DIR/shared-feed-convert.sh" "$@"
+}
+
+sf_stage() {
+    local want="$1"
+    shift
+    expect_exit "$want" "$@"
+    sed 's/^/    | /' "$WORK/last.out"
+}
+
+sf_config_record() {
+    local r
+    r=$(readlink -f "$1") || fail "cannot resolve $1"
+    printf 'path=%s sha256=%s owner=%s mode=%s' "$r" "$(sha256sum "$r" | awk '{print $1}')" "$(stat -c '%u:%g' "$r")" "$(stat -c '%a' "$r")"
+}
+
+sf_record_field() {
+    local tok
+    for tok in $1; do
+        [[ "$tok" == "$2="* ]] && { printf '%s' "${tok#"$2="}"; return 0; }
+    done
+    printf ''
+}
+
+sf_journal_last() {
+    grep -E -- "^$1( |\$)" /var/lib/go-trader/shared-feed/convert.journal 2>/dev/null | tail -n 1 || true
+}
+
+sf_feed_port() {
+    local rec
+    rec=$(sf_journal_last "port $1")
+    printf '%s' "${rec##* }"
+}
+
+sf_source_fp() {
+    (cd "$1" && find scheduler -maxdepth 1 -type f \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \) -print0 \
+        | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
+}
+
+sf_assert_endpoint() {
+    local tree="$1" port="$2"
+    grep -qxF "var hlMainnetURL = \"http://127.0.0.1:$port\"" "$tree/$SF_ENDPOINT_FILE" || fail "$tree/$SF_ENDPOINT_FILE does not point at the local venue"
+    grep -aqF "http://127.0.0.1:$port" "$tree/go-trader" || fail "$tree/go-trader was not built with the local venue endpoint"
+    if grep -aqF 'api.hyperliquid.xyz' "$tree/go-trader"; then
+        fail "$tree/go-trader still names api.hyperliquid.xyz"
+    fi
+}
+
+sf_assert_running_disk() {
+    local unit="$1" dir="$2" pid
+    pid=$(unit_prop "$unit" MainPID)
+    [[ -n "$pid" && "$pid" != "0" ]] || fail "$unit has no main process"
+    [[ "$(sha256sum "/proc/$pid/exe" | awk '{print $1}')" == "$(sha256sum "$dir/go-trader" | awk '{print $1}')" ]] || fail "$unit does not run $dir/go-trader"
+}
+
+sf_feed_state() {
+    local port="$1" path="$2"
+    curl -s -m 5 "http://127.0.0.1:$port/status" 2>/dev/null | "$PY3" -c 'import json, sys
+try:
+    s = json.load(sys.stdin)
+except Exception:
+    print("unreadable")
+    sys.exit(0)
+for c in s.get("consumers") or []:
+    if c.get("path") == sys.argv[1]:
+        ok = c.get("loaded") and not c.get("error") and not c.get("retained")
+        print("loaded" if ok else "not_loaded error=%r retained=%r" % (c.get("error"), c.get("retained")))
+        sys.exit(0)
+print("absent")' "$path" || true
+}
+
+sf_wait_feed_loaded() {
+    local name="$1" path="$2" port i st=""
+    port=$(sf_feed_port "$name")
+    [[ -n "$port" ]] || fail "the conversion journal records no status port for the $name feed"
+    for i in $(seq 1 30); do
+        st=$(sf_feed_state "$port" "$path")
+        [[ "$st" == "loaded" ]] && return 0
+        sleep 2
+    done
+    fail "go-trader@feed-$name.service (port $port) reports $path as $st, want loaded with no error or retained result"
+}
+
+sf_assert_shared() {
+    "$PY3" - "$1" <<'PY' || fail "$1 is not in shared mode on both feed sockets after the switch"
+import json, sys
+c = json.load(open(sys.argv[1]))
+s = c.get("shared_market_feed") or {}
+assert c.get("market_feed") == "shared", c.get("market_feed")
+assert s.get("primary_socket") == "/run/go-trader-feed-primary/feed.sock", s
+assert s.get("backup_socket") == "/run/go-trader-feed-backup/feed.sock", s
+PY
+}
+
+sf_fresh_pid() {
+    local unit="$1" port="$2" old="$3" pid
+    wait_health "$unit" "$port"
+    pid=$(unit_prop "$unit" MainPID)
+    [[ "$pid" != "$old" ]] || fail "$unit still runs pid $old; the stage did not restart it"
+    printf '%s' "$pid"
+}
+
+sf_assert_venue_log() {
+    "$PY3" - "$1" <<'PY' || fail "the local venue log $1 does not show the feeds reading only requests it serves"
+import collections, json, sys
+recs = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+unknown = [r for r in recs if r.get("kind") == "unknown"]
+for r in unknown:
+    print("unknown venue request: %s" % r.get("detail"), file=sys.stderr)
+count = collections.Counter("%s:%s" % (r.get("kind"), r.get("type")) for r in recs)
+missing = [k for k in ("ws:connect", "ws:candle", "ws:allMids", "rest:candleSnapshot", "rest:allMids") if not count[k]]
+if missing:
+    print("the venue never served: %s" % ", ".join(missing), file=sys.stderr)
+print("local venue requests: " + " ".join("%s=%d" % kv for kv in sorted(count.items())))
+sys.exit(1 if unknown or missing else 0)
+PY
+}
+
+sf_run() {
+    local layout="$1" off vport cport name unit src cunit tree cfg venue vlog origin br inst conflicts t f
+    local pre pid0 pid1 pid2 pid3 rec backup shadow resolved fp
+    note "shared feed conversion as root on the $layout layout: feeds, calibrate, verify, a forced failure, switch and rollback against real units (#2046)"
+    for t in curl journalctl timeout; do
+        command -v "$t" >/dev/null 2>&1 || skip "$t required for the shared-feed scenarios"
+    done
+    conflicts=$(sf_host_conflicts)
+    [[ -z "$conflicts" ]] || fail "refusing the shared-feed scenario before any change: this host already has shared-feed resources (${conflicts%; }); run it on an isolated host"
+    SF_ACTIVE=1
+    if [[ "$layout" == "migrated" ]]; then off=30; else off=33; fi
+    vport=$((BASE_PORT + off))
+    cport=$((BASE_PORT + off + 1))
+    name="sf${layout:0:1}"
+    venue="http://127.0.0.1:$vport"
+    vlog="$WORK/venue-$layout.log"
+    sf_start_venue "$vport" "$vlog" "$layout"
+    sf_check_loopback_enforced "$vport"
+
+    make_deployment "$name" "$cport" plain "" "$venue"
+    unit="go-trader-$ID-$name.service"
+    src="/root/gt-$ID-$name"
+    sf_assert_endpoint "$src" "$vport"
+    origin="$WORK/$name-origin.git"
+    br=$(git -C "$src" symbolic-ref --short HEAD)
+    git init -q --bare -b "$br" "$origin"
+    git -C "$src" remote add origin "$origin"
+    git -C "$src" push -q -u origin "$br"
+
+    if [[ "$layout" == "migrated" ]]; then
+        inst="s-$ID"
+        INSTANCES+=("$inst")
+        expect_exit 0 tool apply --unit "$unit" --instance "$inst"
+        cunit="go-trader@$inst.service"
+        tree="/opt/go-trader-$inst"
+        cfg="/var/lib/go-trader/$inst/config.json"
+        [[ "$(unit_prop "$cunit" User)" == "go-trader" && "$(unit_prop "$cunit" ProtectSystem)" == "strict" ]] || fail "$cunit does not run as go-trader in the template sandbox"
+        [[ "$(unit_prop "$cunit" ExecStart)" == *"--config $cfg"* ]] || fail "$cunit does not read the instance config $cfg"
+        [[ "$(stat -c '%U' "$cfg" "$tree")" == $'go-trader\ngo-trader' ]] || fail "$cfg or $tree is not owned by the service account"
+    else
+        cunit="$unit"
+        tree="$src"
+        cfg="$src/scheduler/config.json"
+        [[ -z "$(unit_prop "$cunit" User)" ]] || fail "$cunit should run as root"
+        [[ "$(stat -c '%U' "$cfg" "$tree")" == $'root\nroot' ]] || fail "$cfg or $tree is not root-owned"
+    fi
+    sf_assert_endpoint "$tree" "$vport"
+    sf_confine "$cunit"
+    for f in "${SF_FEED_UNITS[@]}"; do
+        sf_confine "$f"
+    done
+    systemctl daemon-reload
+    systemctl restart "$cunit"
+    wait_health "$cunit" "$cport"
+    sf_assert_confined "$cunit"
+    sf_assert_running_disk "$cunit" "$tree"
+    pid0=$(unit_prop "$cunit" MainPID)
+    pre=$(sf_config_record "$cfg")
+    resolved=$(sf_record_field "$pre" path)
+    echo "consumer $cunit pid $pid0, config before conversion: $pre"
+
+    note "$layout: plan and feeds build both feed trees from the fixture source"
+    sf_stage 0 sf_convert plan --consumer "$cunit" "${SF_BUDGET[@]}"
+    sf_stage 0 sf_convert feeds --consumer "$cunit" "${SF_BUDGET[@]}"
+    fp=$(sf_source_fp "$tree")
+    for f in primary backup; do
+        [[ "$(sf_source_fp "/opt/go-trader-feed-$f")" == "$fp" ]] || fail "/opt/go-trader-feed-$f has another scheduler source than $tree"
+        sf_assert_endpoint "/opt/go-trader-feed-$f" "$vport"
+        sf_assert_confined "go-trader@feed-$f.service"
+        sf_assert_running_disk "go-trader@feed-$f.service" "/opt/go-trader-feed-$f"
+        [[ "$(unit_prop "go-trader@feed-$f.service" User)" == "$([[ "$layout" == migrated ]] && echo go-trader || echo root)" ]] || fail "go-trader@feed-$f.service runs as $(unit_prop "go-trader@feed-$f.service" User)"
+    done
+    echo "source fingerprint $fp matches in $tree and both feed trees; every binary names only the local venue"
+    [[ "$(sf_config_record "$cfg")" == "$pre" ]] || fail "feeds changed the consumer config $cfg"
+
+    note "$layout: calibrate and verify"
+    sf_stage 0 sf_convert calibrate --window 1
+    sf_stage 0 sf_convert verify
+    [[ "$(sf_journal_last "verify pass")" == "verify pass accepted_differences=0 "* ]] || fail "verify did not record a pass with no accepted difference: $(sf_journal_last "verify pass")"
+
+    note "$layout: a forced failure after the feed reload restores the original config and a healthy consumer"
+    sf_stage 26 sf_convert_failing feeds-reload switch --consumer "$cunit"
+    grep -q "the unit runs its original config again" "$WORK/last.out" || fail "the forced failure did not report the restore"
+    [[ "$(sf_config_record "$cfg")" == "$pre" ]] || fail "after the forced failure the config is $(sf_config_record "$cfg"), want $pre"
+    pid1=$(sf_fresh_pid "$cunit" "$cport" "$pid0")
+    rec=$(sf_journal_last "switch $cunit")
+    [[ "$rec" == *" rolled_back mode=byte restarted=yes "* ]] || fail "the journal does not record the byte restore: $rec"
+    shadow="/var/lib/go-trader/shared-feed/shadow/${cunit%.service}.json"
+    sf_wait_feed_loaded primary "$shadow"
+    sf_wait_feed_loaded backup "$shadow"
+
+    note "$layout: switch"
+    sf_stage 0 sf_convert switch --consumer "$cunit"
+    grep -q "$cunit switched: [0-9]* sealed primary keys and feed-parity PASS" "$WORK/last.out" || fail "switch did not report the primary-key audit and feed-parity PASS"
+    rec=$(sf_journal_last "switch $cunit")
+    [[ "$rec" == "switch $cunit config=$resolved "*" done" ]] || fail "the journal does not record a completed switch of $resolved: $rec"
+    backup=$(sf_record_field "$rec" backup)
+    [[ -f "$backup" && "$(sha256sum "$backup" | awk '{print $1}')" == "$(sf_record_field "$pre" sha256)" ]] || fail "the pre-switch backup $backup is not byte-identical to the original config"
+    sf_assert_shared "$cfg"
+    [[ "$(readlink -f "$cfg")" == "$resolved" && "$(stat -c '%u:%g %a' "$resolved")" == "$(sf_record_field "$pre" owner) $(sf_record_field "$pre" mode)" ]] \
+        || fail "the switch changed the config path, owner, group or mode: $(sf_config_record "$cfg"), want $pre"
+    sf_wait_feed_loaded primary "$resolved"
+    sf_wait_feed_loaded backup "$resolved"
+    pid2=$(sf_fresh_pid "$cunit" "$cport" "$pid1")
+    echo "switched: $(sf_config_record "$cfg"); consumer pid $pid2; both feeds load $resolved"
+
+    note "$layout: rollback"
+    sf_stage 0 sf_convert rollback --consumer "$cunit"
+    [[ "$(sf_config_record "$cfg")" == "$pre" ]] || fail "after rollback the config is $(sf_config_record "$cfg"), want $pre"
+    pid3=$(sf_fresh_pid "$cunit" "$cport" "$pid2")
+    rec=$(sf_journal_last "switch $cunit")
+    [[ "$rec" == *" rolled_back mode=byte restarted=yes "* ]] || fail "the journal does not record the byte rollback: $rec"
+    echo "rolled back: $(sf_config_record "$cfg"); consumer pid $pid3"
+
+    sf_stage 0 sf_convert rollback --all
+    sf_assert_venue_log "$vlog"
+    systemctl stop "$cunit"
+    sf_teardown
+    echo "shared-feed conversion on the $layout layout OK"
+}
+
+scenario_sharedfeed_migrated() {
+    sf_run migrated
+}
+
+scenario_sharedfeed_legacy() {
+    sf_run legacy
+}
+
 grep -q "migrate-service-layout" "$SCRIPT_DIR/update.sh" && fail "update.sh must never call the migration"
+case " $SCENARIOS " in
+    *" sharedfeed_"*)
+        sf_conflicts=$(sf_host_conflicts)
+        [[ -z "$sf_conflicts" ]] || fail "refusing before any change: this host already has shared-feed resources (${sf_conflicts%; }); the shared-feed scenarios run only on an isolated host and never overwrite them"
+        ;;
+esac
 ensure_build_tools
 for s in $SCENARIOS; do
     "scenario_$s"
