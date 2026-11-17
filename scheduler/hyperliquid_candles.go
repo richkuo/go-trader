@@ -239,8 +239,9 @@ func fetchHyperliquidCandleSnapshot(ctx context.Context, coin, interval string, 
 }
 
 type hlCandleHistory struct {
-	Raws  []hlCandleRaw
-	Short bool
+	Raws      []hlCandleRaw
+	Short     bool
+	Exhausted bool
 }
 
 func hlFetchCandleHistory(ctx context.Context, coin, interval string, limit int, now time.Time) (hlCandleHistory, error) {
@@ -256,6 +257,7 @@ func hlFetchCandleHistory(ctx context.Context, coin, interval string, limit int,
 	var result []hlCandleRaw
 	prevCount := -1
 	staleWidens := 0
+	exhausted := false
 	for pass := 0; pass < hlCandleMaxExtendPasses; pass++ {
 		startMs := endMs - intervalMs*requested
 		raws, err := fetchHyperliquidCandleSnapshotFn(ctx, coin, interval, startMs, endMs)
@@ -271,6 +273,7 @@ func hlFetchCandleHistory(ctx context.Context, coin, interval string, limit int,
 		} else {
 			staleWidens++
 			if staleWidens >= 2 {
+				exhausted = true
 				break
 			}
 		}
@@ -280,5 +283,5 @@ func hlFetchCandleHistory(ctx context.Context, coin, interval string, limit int,
 	if len(result) > limit {
 		result = result[len(result)-limit:]
 	}
-	return hlCandleHistory{Raws: result, Short: len(result) < limit}, nil
+	return hlCandleHistory{Raws: result, Short: len(result) < limit, Exhausted: exhausted && len(result) > 0 && len(result) < limit}, nil
 }

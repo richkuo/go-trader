@@ -2,6 +2,18 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 2037: a feed key is ready only after its lookback history is loaded
+
+Runtime default; restart-required; there is no opt-out, no config key, no SQLite schema change and no seal, payload or wire version change.
+Before this change a feed key became ready once any successful read stored one bar, so a short incremental recovery or socket bars could stand in for a failed start-up history load, and a reload that raised a lookback above an existing key's ready floor loaded no longer history. `coverage_short` was reported for any ready key with fewer bars than its lookback.
+Now a key is ready only after a validated full-history load covers its lookback or proves the venue's history boundary: no fetch error, a nonempty response, no rejected row, and the lookback in distinct valid rows or two widenings in a row that added nothing. An empty response, a pass-limit or 5000-row-cap result, duplicates and socket bars never count, and `coverage_short` now means only a proved short venue history.
+One request per key at a time: other callers get an in-flight result and send nothing, and a result for a removed or replaced key changes no key state.
+After a reload raises a lookback, the key stays ready on its old coverage while fresh and seals that covered lookback as `required`; consumers that need more hold through the shared coverage gate or the new embedded frame check, and the backup is never selected by lookback.
+Websocket owners (both feed services with `feed.source: websocket` and every embedded `market_feed: websocket` scheduler) retry incomplete history in one background recovery loop; seal preparation and reconnect repair never start a full-history load. REST owners retry only through due refreshes, so a REST key with a pending lookback raise seals not ready at each due deadline until that load completes.
+Retries back off from 5s, doubling to a 5-minute cap; HTTP 429, host pause, request-budget and weight refusals wait at least 60s. Every caller obeys that due time, so a key can stay not ready longer after a failed start than before.
+New status fields per key in `/status` and embedded `market_feed`: `history_lookback`, `history_target` and `history_error`. New log lines `[feed-history] key=K status=failed ...` and `[feed-history] key=K status=recovered ...`, and a `history_failed` owner-alert kind for ordinary and validation failures of the recovery loop; rate-limit and weight refusals keep their summary alerts.
+Operator action: deploy both feed services, every embedded websocket scheduler and every shared consumer (it gains the frame check) with `bash scripts/update.sh --restart`. Then watch `[feed-history]` lines and confirm each key's `history_lookback` equals its `required` in `/status`.
+
 ### Issue 2028: feed owners on one host share one durable weight record
 
 Runtime default for every participant; restart-required; no config key, no SQLite schema change, no seal or wire change.

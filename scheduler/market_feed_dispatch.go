@@ -282,11 +282,24 @@ func (c *marketFeedContext) holdFor(sc StrategyConfig) feedHold {
 	if c.Snapshot.keyFailed(entry.Signal) {
 		return feedHold{Held: true, Key: entry.Signal, Reason: fmt.Sprintf("no ready candle frame for %s", entry.Signal.PayloadID())}
 	}
+	if why, gap := c.Snapshot.coverageHold(entry.Signal, entry.SignalLookback, "candle"); gap {
+		return feedHold{Held: true, Key: entry.Signal, Reason: why}
+	}
 	if entry.HasHTF && c.Snapshot.keyFailed(entry.HTF) {
 		return feedHold{Held: true, Key: entry.HTF, Reason: fmt.Sprintf("no ready higher-timeframe frame for %s", entry.HTF.PayloadID())}
 	}
+	if entry.HasHTF {
+		if why, gap := c.Snapshot.coverageHold(entry.HTF, entry.HTFLookback, "higher-timeframe"); gap {
+			return feedHold{Held: true, Key: entry.HTF, Reason: why}
+		}
+	}
 	if entry.HasLeader && c.Snapshot.keyFailed(entry.Leader) {
 		return feedHold{Held: true, Key: entry.Leader, Reason: fmt.Sprintf("no ready leader frame for %s", entry.Leader.PayloadID())}
+	}
+	if entry.HasLeader {
+		if why, gap := c.Snapshot.coverageHold(entry.Leader, entry.LeaderLookback, "leader"); gap {
+			return feedHold{Held: true, Key: entry.Leader, Reason: why}
+		}
 	}
 	if held, why := c.Snapshot.fundingHold(entry.Coin, entry.FundingScalar, entry.FundingRecords); held {
 		return feedHold{Held: true, Key: entry.Signal, Reason: why}
@@ -298,6 +311,14 @@ func (c *marketFeedContext) holdFor(sc StrategyConfig) feedHold {
 		return feedHold{Held: true, EntryOnly: true, Key: entry.Signal, Reason: why}
 	}
 	return feedHold{}
+}
+
+func (s *marketSnapshot) coverageHold(key marketFeedKey, required int, role string) (string, bool) {
+	covered, gap := s.coverageGap(key, required)
+	if !gap {
+		return "", false
+	}
+	return fmt.Sprintf("%s frame for %s covers a %d-bar history lookback, below the %d bars this strategy needs", role, key.PayloadID(), covered, required), true
 }
 
 func (c *marketFeedContext) snapshotID() string {

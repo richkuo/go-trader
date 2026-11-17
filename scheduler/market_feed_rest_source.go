@@ -21,6 +21,9 @@ type feedPrepareReport struct {
 	Failed             []string
 	RefreshedKeys      map[marketFeedKey]bool
 	ReadyOnlyRefreshed bool
+	DueKeys            map[marketFeedKey]bool
+	InflightKeys       map[marketFeedKey]bool
+	DeferredKeys       map[marketFeedKey]time.Time
 }
 
 type feedPrepareFunc func(ctx context.Context, deadline int64, reqs cycleMarketRequirements, coverage feedRequirements) feedPrepareReport
@@ -71,7 +74,7 @@ func restRefreshOrder(reqs cycleMarketRequirements, coverage feedRequirements) [
 }
 
 func (r *feedRESTSource) canRetry(ctx context.Context, err error) bool {
-	if err == nil || errors.Is(err, errFeedBudgetExhausted) || feedRateLimitErr(err) || ctx.Err() != nil {
+	if err == nil || errors.Is(err, errFeedBudgetExhausted) || feedRateLimitErr(err) || feedFetchTypedResult(err) || ctx.Err() != nil {
 		return false
 	}
 	if dl, ok := ctx.Deadline(); ok && time.Until(dl) < r.backoff+r.margin {
@@ -81,7 +84,8 @@ func (r *feedRESTSource) canRetry(ctx context.Context, err error) bool {
 }
 
 func (r *feedRESTSource) prepare(ctx context.Context, deadline int64, reqs cycleMarketRequirements, coverage feedRequirements) feedPrepareReport {
-	rep := feedPrepareReport{RefreshedKeys: make(map[marketFeedKey]bool), ReadyOnlyRefreshed: true}
+	rep := feedPrepareReport{RefreshedKeys: make(map[marketFeedKey]bool), ReadyOnlyRefreshed: true,
+		DueKeys: make(map[marketFeedKey]bool), InflightKeys: make(map[marketFeedKey]bool), DeferredKeys: make(map[marketFeedKey]time.Time)}
 	midsWeight, _ := hlInfoWeight("allMids", 0)
 	keyed := withFeedKeepWeight(withFeedKeep(ctx, 1), midsWeight)
 	for _, cr := range restRefreshOrder(reqs, coverage) {
@@ -92,28 +96,40 @@ func (r *feedRESTSource) prepare(ctx context.Context, deadline int64, reqs cycle
 		if !feedKeyDueAt(coverage.KeyCadences[key], deadline) {
 			continue
 		}
-		err := r.owner.fetchAndMerge(keyed, key, feedRestRefresh)
-		if r.canRetry(ctx, err) && sleepCtx(ctx, r.backoff) == nil {
-			err = r.owner.fetchAndMerge(keyed, key, feedRestRetry)
+		rep.DueKeys[key] = true
+		t, err := r.owner.admitKeyFetch(key, feedRestRefresh, false)
+		if err == nil {
+			err = r.owner.executeKeyFetch(keyed, t)
+			if r.canRetry(ctx, err) && sleepCtx(ctx, r.backoff) == nil {
+				if rt, rerr := r.owner.admitKeyFetch(key, feedRestRetry, false); rerr == nil {
+					t, err = rt, r.owner.executeKeyFetch(keyed, rt)
+				}
+			}
 		}
 		if err == nil {
 			rep.Refreshed++
 			rep.RefreshedKeys[key] = true
 			continue
 		}
+		var notDue *feedHistoryNotDueError
 		switch {
+		case errors.As(err, &notDue):
+			rep.DeferredKeys[key] = notDue.DueAt
+		case errors.Is(err, errFeedKeyInflight):
+			rep.InflightKeys[key] = true
+		case feedFetchTypedResult(err):
 		case errors.Is(err, errFeedWeightRefused):
-			r.owner.markKeyUnready(key, feedStatusBudget, fmt.Sprintf("refresh for deadline %d was refused by the weight allocation: %v", deadline, err))
-			r.owner.markKeySharedHeld(key, feedSharedHeldErr(err))
+			r.owner.markTicketUnready(t, feedStatusBudget, fmt.Sprintf("refresh for deadline %d was refused by the weight allocation: %v", deadline, err))
+			r.owner.markTicketSharedHeld(t, feedSharedHeldErr(err))
 			rep.WeightRefused = append(rep.WeightRefused, key.PayloadID())
 		case errors.Is(err, errFeedBudgetExhausted):
-			r.owner.markKeyUnready(key, feedStatusBudget, fmt.Sprintf("refresh for deadline %d was refused: %v", deadline, err))
+			r.owner.markTicketUnready(t, feedStatusBudget, fmt.Sprintf("refresh for deadline %d was refused: %v", deadline, err))
 			rep.Refused = append(rep.Refused, key.PayloadID())
 		case feedRateLimitErr(err):
-			r.owner.markKeyRateLimited(key, fmt.Sprintf("refresh for deadline %d was held by a venue rate limit: %v", deadline, err))
+			r.owner.markTicketRateLimited(t, fmt.Sprintf("refresh for deadline %d was held by a venue rate limit: %v", deadline, err))
 			rep.Paused = append(rep.Paused, key.PayloadID())
 		default:
-			r.owner.markKeyUnready(key, feedStatusFailed, fmt.Sprintf("refresh for deadline %d failed: %v", deadline, err))
+			r.owner.markTicketUnready(t, feedStatusFailed, fmt.Sprintf("refresh for deadline %d failed: %v", deadline, err))
 			rep.Failed = append(rep.Failed, key.PayloadID())
 		}
 		r.logf("[feed] %s: refresh for deadline %d: %v", key, deadline, err)

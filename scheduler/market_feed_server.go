@@ -143,17 +143,54 @@ func (s *feedSealer) budgetLines(key int64, before feedBudgetTotals, beforeWeigh
 	return delta, []string{line}
 }
 
-func markUnrefreshedKeysNotReady(snap *marketSnapshot, refreshed map[marketFeedKey]bool, deadline int64) {
+func markUnrefreshedKeysNotReady(snap *marketSnapshot, rep feedPrepareReport, deadline int64) {
 	if snap == nil {
 		return
 	}
 	for k, entry := range snap.keys {
-		if entry == nil || refreshed[k] || !entry.Readiness.Ready {
+		if entry == nil || rep.RefreshedKeys[k] {
 			continue
 		}
-		entry.Readiness.Ready = false
-		entry.Readiness.Status = feedStatusNotDue
-		entry.Readiness.Detail = fmt.Sprintf("not refreshed for deadline %d: no consumer cadence this feed loaded divides it", deadline)
+		r := &entry.Readiness
+		dueAt, deferred := rep.DeferredKeys[k]
+		switch {
+		case rep.InflightKeys[k]:
+			text := fmt.Sprintf("refresh for deadline %d not sent: a history request for this key was in flight", deadline)
+			if !r.Ready {
+				if r.Detail != "" {
+					text = r.Detail + "; " + text
+				}
+				r.Detail = text
+				continue
+			}
+			r.Ready = false
+			r.Status = feedStatusBootstrapping
+			r.Detail = text
+		case deferred:
+			text := fmt.Sprintf("refresh for deadline %d not sent: the full-history retry is due at %s", deadline, dueAt.UTC().Format(time.RFC3339))
+			if !r.Ready {
+				if r.Detail != "" {
+					text = r.Detail + "; " + text
+				}
+				r.Detail = text
+				continue
+			}
+			if r.HistoryErr != "" {
+				text += ": " + r.HistoryErr
+			}
+			r.Ready = false
+			r.Status = feedStatusFailed
+			r.Detail = text
+		case !r.Ready:
+		case rep.DueKeys[k]:
+			r.Ready = false
+			r.Status = feedStatusFailed
+			r.Detail = fmt.Sprintf("not refreshed for deadline %d", deadline)
+		default:
+			r.Ready = false
+			r.Status = feedStatusNotDue
+			r.Detail = fmt.Sprintf("not refreshed for deadline %d: no consumer cadence this feed loaded divides it", deadline)
+		}
 	}
 }
 
@@ -412,7 +449,7 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 	frozenAt := s.owner.now()
 	snap := freezeMarketSnapshot(s.owner, reqs, feedSealEvaluationID(key), frozenAt, time.Unix(key, 0).UTC())
 	if rep.ReadyOnlyRefreshed {
-		markUnrefreshedKeysNotReady(snap, rep.RefreshedKeys, key)
+		markUnrefreshedKeysNotReady(snap, rep, key)
 	}
 	doc, err := feedSealDocFromSnapshot(snap, key, s.source, s.instance)
 	var blob []byte

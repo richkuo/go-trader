@@ -605,6 +605,10 @@ func TestFeedKeyAlertIntegration(t *testing.T) {
 			<-release
 		}
 		f.venue.setFail("BTC", false)
+		f.clock.mu.Lock()
+		f.clock.now = time.Unix(k+8*kaStep, 0).UTC()
+		f.clock.mu.Unlock()
+		runFeedHistoryPass(t, f.owner, f.ctx)
 		done := make(chan []string)
 		go func() { done <- f.seal(k + 8*kaStep) }()
 		<-entered
