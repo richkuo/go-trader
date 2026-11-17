@@ -1700,11 +1700,10 @@ sf_check_loopback_enforced() {
     local port="$1" out
     out=$(systemd-run --quiet --wait --pipe --collect -p IPAddressDeny=any -p IPAddressAllow=localhost "$PY3" -c '
 import socket, sys
-s = socket.socket()
-s.settimeout(3)
+u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 try:
-    s.connect(("192.0.2.1", 9))
-    print("outside: connected")
+    u.sendto(b"x", ("192.0.2.1", 9))
+    print("outside: sent")
 except PermissionError:
     print("outside: denied")
 except OSError as e:
