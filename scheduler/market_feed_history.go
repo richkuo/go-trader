@@ -106,10 +106,11 @@ func (o *marketFeedOwner) admitKeyFetchLocked(key marketFeedKey, reason feedRest
 		return nil, fmt.Errorf("feed key %s: %w", key, errFeedKeyInflight)
 	}
 	full := st.needsHistory()
-	if !full && !hlCandleWindowFits(key.Timeframe, st.Bars[len(st.Bars)-1].OpenMs-st.IntervalMs, now.UnixMilli()) {
-		o.logf("[feed-history] key=%s status=reload newest_open=%d: the incremental window is wider than one %d-row response, so the stored bars are dropped and a capped full-history load owns this key",
-			key, st.Bars[len(st.Bars)-1].OpenMs, hlCandleRowCap)
+	if !full && !hlCandleWindowFits(key.Timeframe, st.incrementalAnchor()-st.IntervalMs, now.UnixMilli()) {
+		o.logf("[feed-history] key=%s status=reload anchor_open=%d: the incremental window is wider than one %d-row response, so the stored bars are dropped and a capped full-history load owns this key",
+			key, st.incrementalAnchor(), hlCandleRowCap)
 		st.Bars = nil
+		st.repairFromMs = 0
 		st.historyLookback = 0
 		st.historyShort = false
 		full = true
@@ -124,7 +125,7 @@ func (o *marketFeedOwner) admitKeyFetchLocked(key marketFeedKey, reason feedRest
 	o.fetchSeq++
 	t := &feedFetchTicket{st: st, key: key, reason: reason, full: full, lookback: st.historyTarget, intervalMs: st.IntervalMs, seq: o.fetchSeq}
 	if !full {
-		t.startMs = st.Bars[len(st.Bars)-1].OpenMs
+		t.startMs = st.incrementalAnchor()
 	}
 	return t, nil
 }
@@ -215,6 +216,9 @@ func (o *marketFeedOwner) completeKeyFetchLocked(t *feedFetchTicket, hist hlCand
 
 	out := mergeRestRows(st, hist.Raws, requestedAt)
 	drainPendingSocketBars(st)
+	if !t.full && st.repairFromMs != 0 && t.startMs <= st.repairFromMs && hlCandleRawsHoldOpen(hist.Raws, st.repairFromMs) {
+		st.repairFromMs = 0
+	}
 	if st.rlSeq >= t.seq {
 		return fmt.Errorf("feed key %s: this fetch started before the latest rate-limit mark, so the key stays %s until a later fetch succeeds: %w",
 			key, feedStatusRateLimited, errFeedHostPaused)
@@ -233,6 +237,7 @@ func (o *marketFeedOwner) completeKeyFetchLocked(t *feedFetchTicket, hist hlCand
 		}
 		attempts := st.historyFailures + 1
 		recovered := t.loop || st.historyFailures > 0
+		st.repairFromMs = 0
 		st.historyLookback = t.lookback
 		st.historyShort = out.Stored < t.lookback
 		st.historyErr = ""
@@ -242,6 +247,10 @@ func (o *marketFeedOwner) completeKeyFetchLocked(t *feedFetchTicket, hist hlCand
 			o.logf("[feed-history] key=%s status=recovered bars=%d required=%d attempts=%d", key, len(st.Bars), t.lookback, attempts)
 		}
 	}
+	if !t.full && st.repairFromMs != 0 {
+		st.StatusDetail = fmt.Sprintf("the read did not reach the bar at %d stored before the socket disconnect", st.repairFromMs)
+		return fmt.Errorf("feed key %s: %s", key, st.StatusDetail)
+	}
 	if len(st.Bars) == 0 {
 		st.Status = feedStatusFailed
 		st.StatusDetail = "the venue returned no candles"
@@ -250,6 +259,15 @@ func (o *marketFeedOwner) completeKeyFetchLocked(t *feedFetchTicket, hist hlCand
 	st.Status = feedStatusReady
 	st.StatusDetail = ""
 	return nil
+}
+
+func hlCandleRawsHoldOpen(raws []hlCandleRaw, openMs int64) bool {
+	for _, r := range raws {
+		if r.OpenMs == openMs {
+			return true
+		}
+	}
+	return false
 }
 
 func feedHistoryCompletionError(t *feedFetchTicket, hist hlCandleHistory, out mergeRestOutcome) error {

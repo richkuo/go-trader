@@ -538,6 +538,82 @@ func TestFeedHistoryCompletion(t *testing.T) {
 		}
 	})
 
+	t.Run("SocketBarBeforeRepairKeepsTheOutageGap", func(t *testing.T) {
+		contiguous := func(e *fhEnv, key marketFeedKey, n int) {
+			t.Helper()
+			bars := e.state(e.owner, key).Bars
+			if len(bars) < n {
+				t.Fatalf("%s holds %d bars, want at least %d", key, len(bars), n)
+			}
+			tail := bars[len(bars)-n:]
+			for i := 1; i < len(tail); i++ {
+				if tail[i].OpenMs-tail[i-1].OpenMs != fhStep {
+					t.Fatalf("%s last %d bars miss the interval after %d (next open %d)", key, n, tail[i-1].OpenMs, tail[i].OpenMs)
+				}
+			}
+		}
+		for _, tc := range []struct {
+			name string
+			gap  time.Duration
+		}{{"short", 30 * time.Minute}, {"wide", 6000 * time.Minute}} {
+			t.Run(tc.name, func(t *testing.T) {
+				e := newFHEnv(t, fhBase)
+				e.venue.set("AAA", "deep")
+				key := feedKeyFor("AAA", "1m")
+				e.apply(e.owner, rlRequirements(100, 60, "AAA"))
+				e.owner.SetConnected(true)
+				bars := e.state(e.owner, key).Bars
+				lastBefore := bars[len(bars)-1].OpenMs
+				e.owner.SetConnected(false)
+				e.clock.Advance(tc.gap)
+				e.owner.SetConnected(true)
+				e.socketBars(e.owner, key, 1)
+				sent := e.venue.count("AAA")
+				repaired := make(chan struct{})
+				go func() {
+					e.owner.repairAfterConnect(e.ctx)
+					close(repaired)
+				}()
+				fhWait(t, repaired, "reconnect repair")
+				reqs := e.venue.requests("AAA")
+				if tc.name == "short" {
+					if len(reqs) != sent+1 || reqs[sent].Start != lastBefore-fhStep {
+						t.Fatalf("repair requests = %+v, want one read from the bar stored before the disconnect (%d)", reqs[sent:], lastBefore)
+					}
+					if r := e.ready(e.owner, key); !r.Ready {
+						t.Fatalf("after repair = %+v, want ready", r)
+					}
+					contiguous(e, key, 100)
+					return
+				}
+				if len(reqs) != sent {
+					t.Fatalf("repair sent %+v, want nothing for a gap past one capped window", reqs[sent:])
+				}
+				if len(e.logsContaining("status=reload")) != 1 {
+					t.Fatalf("reload lines = %q, want one", e.logsContaining("status=reload"))
+				}
+				if r := e.ready(e.owner, key); r.Ready {
+					t.Fatalf("before the capped load = %+v, want not ready", r)
+				}
+				if errs := runFeedHistoryPass(t, e.owner, e.ctx); len(errs) != 0 {
+					t.Fatal(errs)
+				}
+				for _, r := range e.venue.requests("AAA") {
+					if bound := (r.End-r.Start)/fhStep + 2; bound > hlCandleRowCap {
+						t.Fatalf("request window row bound %d is above the %d-row cap", bound, hlCandleRowCap)
+					}
+				}
+				if r := e.ready(e.owner, key); !r.Ready || r.HistoryLookback != 100 || r.FirstOpenMs <= lastBefore {
+					t.Fatalf("after the capped load = %+v, want ready with no bar from before the gap", r)
+				}
+				contiguous(e, key, 100)
+				if w := e.ledger.weightStatus(); len(w.Violations) != 0 {
+					t.Fatalf("weight status = %+v, want no row-bound violation", w)
+				}
+			})
+		}
+	})
+
 	t.Run("BlockedHistoryDoesNotBlockSealOrRepair", func(t *testing.T) {
 		e := newFHEnv(t, fhBase)
 		bKey, cKey := feedKeyFor("BBB", "1m"), feedKeyFor("CCC", "1m")

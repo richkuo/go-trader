@@ -184,6 +184,7 @@ type feedKeyState struct {
 	historyErr      string
 	historyFailures int
 	historyRetryAt  time.Time
+	repairFromMs    int64
 }
 
 func newFeedKeyState(key marketFeedKey, intervalMs int64, required int) *feedKeyState {
@@ -196,6 +197,14 @@ func newFeedKeyState(key marketFeedKey, intervalMs int64, required int) *feedKey
 		Status:        feedStatusBootstrapping,
 		historyTarget: required,
 	}
+}
+
+func (s *feedKeyState) incrementalAnchor() int64 {
+	newest := s.Bars[len(s.Bars)-1].OpenMs
+	if s.repairFromMs != 0 && s.repairFromMs < newest {
+		return s.repairFromMs
+	}
+	return newest
 }
 
 func (s *feedKeyState) needsHistory() bool {
@@ -724,6 +733,9 @@ func (o *marketFeedOwner) SetConnected(connected bool) {
 			o.lastDisconnectAt = now
 			o.markObservationsDisconnectedLocked(now.UnixMilli())
 			for _, st := range o.keys {
+				if len(st.Bars) > 0 && st.repairFromMs == 0 {
+					st.repairFromMs = st.Bars[len(st.Bars)-1].OpenMs
+				}
 				if st.Status == feedStatusReady || st.Status == feedStatusStale {
 					st.Status = feedStatusRepairing
 					st.StatusDetail = "socket disconnected"
