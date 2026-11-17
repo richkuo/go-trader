@@ -120,6 +120,14 @@ func hlCandleRowBound(interval string, startMs, endMs int64) (int, error) {
 	return int(bars), nil
 }
 
+func hlCandleWindowFits(interval string, startMs, endMs int64) bool {
+	ms, err := hlCandleBoundIntervalMs(interval)
+	if err != nil || endMs < startMs {
+		return true
+	}
+	return (endMs-startMs)/ms+2 <= hlCandleRowCap
+}
+
 func hlFundingRowBound(startMs, endMs int64) (int, error) {
 	if endMs < startMs {
 		return 0, fmt.Errorf("funding request end %d is before its start %d", endMs, startMs)

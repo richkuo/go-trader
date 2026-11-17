@@ -106,6 +106,14 @@ func (o *marketFeedOwner) admitKeyFetchLocked(key marketFeedKey, reason feedRest
 		return nil, fmt.Errorf("feed key %s: %w", key, errFeedKeyInflight)
 	}
 	full := st.needsHistory()
+	if !full && !hlCandleWindowFits(key.Timeframe, st.Bars[len(st.Bars)-1].OpenMs-st.IntervalMs, now.UnixMilli()) {
+		o.logf("[feed-history] key=%s status=reload newest_open=%d: the incremental window is wider than one %d-row response, so the stored bars are dropped and a capped full-history load owns this key",
+			key, st.Bars[len(st.Bars)-1].OpenMs, hlCandleRowCap)
+		st.Bars = nil
+		st.historyLookback = 0
+		st.historyShort = false
+		full = true
+	}
 	if full && incrementalOnly {
 		return nil, fmt.Errorf("feed key %s (%d of %d bars of lookback loaded): %w", key, st.historyLookback, st.historyTarget, errFeedHistoryPending)
 	}
@@ -155,6 +163,10 @@ func (o *marketFeedOwner) executeKeyFetch(ctx context.Context, t *feedFetchTicke
 		windowStart := t.startMs - t.intervalMs
 		if windowStart < 0 {
 			windowStart = 0
+		}
+		if !hlCandleWindowFits(t.key.Timeframe, windowStart, requestedAt.UnixMilli()) {
+			return fmt.Errorf("feed key %s: the incremental window from %d is wider than one %d-row response, so it is not sent: %w",
+				t.key, windowStart, hlCandleRowCap, errFeedHistoryPending)
 		}
 		hist.Raws, err = fetchHyperliquidCandleSnapshotFn(ctx, t.key.Symbol, t.key.Timeframe, windowStart, requestedAt.UnixMilli())
 	}

@@ -448,6 +448,96 @@ func TestFeedHistoryCompletion(t *testing.T) {
 		}
 	})
 
+	t.Run("WideGapRoutesToCappedFullLoad", func(t *testing.T) {
+		e := newFHEnv(t, fhBase)
+		coins := []string{"AAA", "BBB", "CCC"}
+		for _, coin := range coins {
+			e.venue.set(coin, "deep")
+		}
+		req := rlRequirements(100, 60, coins...)
+		aaa, bbb, ccc := feedKeyFor("AAA", "1m"), feedKeyFor("BBB", "1m"), feedKeyFor("CCC", "1m")
+		e.apply(e.owner, req)
+		e.owner.SetConnected(true)
+		withinCap := func(coin string, from int) {
+			t.Helper()
+			for _, r := range e.venue.requests(coin)[from:] {
+				if bound := (r.End-r.Start)/fhStep + 2; bound > hlCandleRowCap {
+					t.Fatalf("%s request window row bound %d is above the %d-row cap", coin, bound, hlCandleRowCap)
+				}
+			}
+		}
+
+		e.clock.Advance(4000 * time.Minute)
+		bars := e.state(e.owner, bbb).Bars
+		sent := e.venue.count("BBB")
+		if err := e.owner.fetchAndMerge(e.ctx, bbb, feedRestRefresh); err != nil {
+			t.Fatal(err)
+		}
+		reqs := e.venue.requests("BBB")
+		if len(reqs) != sent+1 || reqs[sent].Start != bars[len(bars)-1].OpenMs-fhStep {
+			t.Fatalf("BBB requests after a 4000-bar gap = %+v, want one incremental read from the newest bar", reqs[sent:])
+		}
+
+		e.clock.Advance(2000 * time.Minute)
+		sent = e.venue.count("AAA")
+		if err := e.owner.fetchAndMerge(e.ctx, aaa, feedRestRefresh); err != nil {
+			t.Fatal(err)
+		}
+		withinCap("AAA", sent)
+		reqs = e.venue.requests("AAA")
+		if len(reqs) != sent+1 || !e.fullWindow(reqs[sent], 100) {
+			t.Fatalf("AAA requests after a 6000-bar gap = %+v, want one capped full-history window", reqs[sent:])
+		}
+		nowMs := e.clock.Now().UnixMilli()
+		if r := e.ready(e.owner, aaa); !r.Ready || r.HistoryLookback != 100 || r.FirstOpenMs < nowMs-200*fhStep {
+			t.Fatalf("AAA after the capped load = %+v, want ready with no bar from before the gap", r)
+		}
+		if len(e.logsContaining("status=reload")) != 1 {
+			t.Fatalf("reload lines = %q, want one", e.logsContaining("status=reload"))
+		}
+
+		e.owner.SetConnected(false)
+		e.owner.SetConnected(true)
+		cSent := e.venue.count("CCC")
+		repaired := make(chan struct{})
+		go func() {
+			e.owner.repairAfterConnect(e.ctx)
+			close(repaired)
+		}()
+		fhWait(t, repaired, "reconnect repair")
+		prepared := make(chan struct{})
+		go func() {
+			prepareMarketSnapshot(e.ctx, e.owner, fullCycleRequirements(req))
+			close(prepared)
+		}()
+		fhWait(t, prepared, "seal preparation")
+		if got := e.venue.count("CCC"); got != cSent {
+			t.Fatalf("CCC repair and seal preparation sent %d request(s), want none for a key past one capped window", got-cSent)
+		}
+		if r := e.ready(e.owner, ccc); r.Ready || r.HistoryLookback != 0 {
+			t.Fatalf("CCC before its capped load = %+v, want not ready", r)
+		}
+		if errs := runFeedHistoryPass(t, e.owner, e.ctx); len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		withinCap("CCC", cSent)
+		if got := e.venue.count("CCC"); got != cSent+1 {
+			t.Fatalf("CCC history pass sent %d request(s), want one capped full load", got-cSent)
+		}
+		if r := e.ready(e.owner, ccc); !r.Ready || r.HistoryLookback != 100 || r.FirstOpenMs < e.clock.Now().UnixMilli()-200*fhStep {
+			t.Fatalf("CCC after the capped load = %+v, want ready with no bar from before the gap", r)
+		}
+		for _, coin := range coins {
+			withinCap(coin, 0)
+		}
+		if w := e.ledger.weightStatus(); len(w.Violations) != 0 {
+			t.Fatalf("weight status = %+v, want no row-bound violation", w)
+		}
+		for _, a := range e.owner.DrainAlerts() {
+			t.Fatalf("unexpected alert %+v", a)
+		}
+	})
+
 	t.Run("BlockedHistoryDoesNotBlockSealOrRepair", func(t *testing.T) {
 		e := newFHEnv(t, fhBase)
 		bKey, cKey := feedKeyFor("BBB", "1m"), feedKeyFor("CCC", "1m")
