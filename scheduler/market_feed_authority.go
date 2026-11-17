@@ -79,7 +79,8 @@ func feedSharedCause(cause string) bool {
 }
 
 func feedSharedHeldErr(err error) bool {
-	return feedSharedCause(feedWeightRefusalCause(err))
+	cause := feedWeightRefusalCause(err)
+	return feedSharedCause(cause) && cause != feedWeightCauseSharedOwner
 }
 
 func feedAuthorityDir() string {
@@ -489,6 +490,7 @@ type feedWeightAuthority struct {
 	durableOpen  map[string]*feedRequestPermit
 	pendingPause map[string]feedPendingPause
 	latched      string
+	latchDetail  string
 
 	viewMu sync.Mutex
 	view   feedSharedView
@@ -499,6 +501,8 @@ type feedWeightAuthority struct {
 	outageReported bool
 	outageCleared  bool
 	outageDetail   string
+	outageCause    string
+	latchReported  bool
 }
 
 func newFeedWeightAuthority(role, configPath string, logf func(string, ...any)) *feedWeightAuthority {
@@ -547,14 +551,21 @@ func (a *feedWeightAuthority) remember(p *feedRequestPermit) {
 	a.stateMu.Unlock()
 }
 
-func (a *feedWeightAuthority) latch(cause string) bool {
+func (a *feedWeightAuthority) latch(cause, detail string) bool {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	if a.latched != "" {
 		return false
 	}
 	a.latched = cause
+	a.latchDetail = detail
 	return true
+}
+
+func (a *feedWeightAuthority) latchState() (cause, detail string) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.latched, a.latchDetail
 }
 
 func (a *feedWeightAuthority) latchedCause() string {
@@ -1270,8 +1281,9 @@ func (t *feedAuthTx) reconcile() {
 		t.dirty = true
 	}
 	if me.Incarnation != "" && me.Incarnation != a.incarnation && !me.Reconstructed {
-		if a.latch(feedWeightCauseSharedOwner) {
-			t.logLine("[feed-weight-shared] CRITICAL: owner=%s incarnation %s is no longer the registered incarnation (%s); this process refuses every shared send", a.key, a.incarnation, me.Incarnation)
+		detail := fmt.Sprintf("incarnation %s is no longer the registered incarnation (%s)", a.incarnation, me.Incarnation)
+		if a.latch(feedWeightCauseSharedOwner, detail) {
+			t.logLine("[feed-weight-shared] CRITICAL: owner=%s %s; this process refuses every shared send", a.key, detail)
 		}
 		return
 	}
@@ -1419,20 +1431,28 @@ func (a *feedWeightAuthority) refuseFast(op string) *feedWeightRefusal {
 }
 
 func (a *feedWeightAuthority) noteFault(r *feedWeightRefusal) {
-	if r == nil || r.Cause != feedWeightCauseSharedStorage {
+	if r == nil {
+		return
+	}
+	switch r.Cause {
+	case feedWeightCauseSharedStorage, feedWeightCauseSharedClock, feedWeightCauseSharedVersion:
+	default:
 		return
 	}
 	a.faultErr = r
 	a.faultUntil = time.Now().Add(feedAuthorityFaultRetry)
 	a.consecutiveFaults++
 	a.viewMu.Lock()
-	a.view.status.Registry = "unavailable"
+	if r.Cause == feedWeightCauseSharedStorage {
+		a.view.status.Registry = "unavailable"
+	}
 	a.view.status.LastRefusal = r.Detail
 	a.viewMu.Unlock()
 	a.reportMu.Lock()
 	if a.consecutiveFaults >= feedAuthorityOutageAfter && !a.outageReported {
 		a.outageReported = true
 		a.outageDetail = r.Detail
+		a.outageCause = r.Cause
 	}
 	a.reportMu.Unlock()
 }
@@ -1498,6 +1518,7 @@ func (a *feedWeightAuthority) txLocked(ctx context.Context, op string, fn func(t
 		a.view.status.Registry = "clock_unavailable"
 		a.view.status.LastRefusal = ref.Detail
 		a.viewMu.Unlock()
+		a.noteFault(ref)
 		return ref
 	}
 	t.now = now
@@ -1509,6 +1530,7 @@ func (a *feedWeightAuthority) txLocked(ctx context.Context, op string, fn func(t
 			a.view.status.Registry = "unsupported_version"
 			a.view.status.LastRefusal = lr.Detail
 			a.viewMu.Unlock()
+			a.noteFault(lr)
 			return lr
 		}
 		return fail(lr)
@@ -2255,8 +2277,9 @@ func (a *feedWeightAuthority) heartbeatOnce(ctx context.Context) {
 		if err == nil {
 			id, ok = feedFileIDOf(cur)
 		}
-		if (!ok || id != a.lifetimeID) && a.latch(feedWeightCauseSharedOwner) {
-			a.logf("[feed-weight-shared] CRITICAL: owner=%s lifetime lock %s no longer names the held lock file; this owner refuses every shared send", a.key, feedAuthorityOwnerLockPath(a.dir, a.key))
+		detail := fmt.Sprintf("lifetime lock %s no longer names the held lock file", feedAuthorityOwnerLockPath(a.dir, a.key))
+		if (!ok || id != a.lifetimeID) && a.latch(feedWeightCauseSharedOwner, detail) {
+			a.logf("[feed-weight-shared] CRITICAL: owner=%s %s; this owner refuses every shared send", a.key, detail)
 		}
 	}
 	if err := a.txLocked(ctx, "heartbeat", nil); err != nil {
@@ -2335,11 +2358,16 @@ func startFeedAuthority(a *feedWeightAuthority, policy *feedWeightPolicy, notifi
 		fmt.Fprintf(os.Stderr, "%s CRITICAL: %s (exit %d)\n", prefix, msg, ExitSingletonLock)
 		sendStartupRefusalDM(notifier, "Shared weight owner", msg)
 		return ExitSingletonLock
-	case errors.As(err, &unsafe) && unsafe.AllLive:
+	case errors.As(err, &unsafe) && unsafe.AllLive && a.role == feedAuthorityRoleFeed:
 		msg := fmt.Sprintf("shared weight admission refused: %v", err)
 		fmt.Fprintf(os.Stderr, "%s CRITICAL: %s (exit %d)\n", prefix, msg, ExitProbeFailure)
 		sendStartupRefusalDM(notifier, "Shared weight admission", msg)
 		return ExitProbeFailure
+	case errors.As(err, &unsafe) && unsafe.AllLive:
+		msg := fmt.Sprintf("shared weight admission refused (%v); the trading scheduler keeps running so protection, the kill switch and circuit breakers stay active, refuses every participating venue read so entries on those inputs hold, and retries the admission every %s", err, feedAuthorityHeartbeat)
+		fmt.Fprintf(os.Stderr, "%s CRITICAL: %s\n", prefix, msg)
+		sendStartupRefusalDM(notifier, "Shared weight admission", msg)
+		return 0
 	}
 	msg := fmt.Sprintf("shared weight registration is held (%v); this owner keeps running, refuses every participating venue read and retries every %s", err, feedAuthorityHeartbeat)
 	fmt.Fprintf(os.Stderr, "%s WARN: %s\n", prefix, msg)
@@ -2365,27 +2393,36 @@ func (a *feedWeightAuthority) sharedReport() []feedSharedEvent {
 	a.viewMu.Lock()
 	cur, last := a.view.recovery, a.view.lastRecovery
 	a.viewMu.Unlock()
+	latchCause, latchDetail := a.latchState()
+	latched := ""
+	if latchCause != "" {
+		latched = latchCause + ": " + latchDetail
+	}
 	a.reportMu.Lock()
 	defer a.reportMu.Unlock()
 	var out []feedSharedEvent
+	if latchCause != "" && !a.latchReported {
+		a.latchReported = true
+		out = append(out, feedSharedEvent{Kind: "owner_latched", Reason: latchCause, Detail: latchDetail})
+	}
 	if cur != nil && cur.EpochID != a.reportedStart {
 		if a.reportedStart != "" && a.reportedStart != a.reportedEnd {
 			a.reportedEnd = a.reportedStart
-			out = append(out, feedSharedEvent{Kind: "recovery_ended", Reason: "superseded by a later recovery"})
+			out = append(out, feedSharedEvent{Kind: "recovery_ended", Reason: "superseded by a later recovery", Detail: latched})
 		}
 		a.reportedStart = cur.EpochID
 		out = append(out, feedSharedEvent{Kind: "recovery_hold", Generation: cur.Generation, Reason: cur.Reason})
 	}
 	if cur == nil && a.reportedStart != "" && a.reportedStart != a.reportedEnd {
 		a.reportedEnd = a.reportedStart
-		ev := feedSharedEvent{Kind: "recovery_ended"}
+		ev := feedSharedEvent{Kind: "recovery_ended", Detail: latched}
 		if last != nil {
 			ev.Generation, ev.Reason = last.Generation, last.Reason
 		}
 		out = append(out, ev)
 	}
 	if a.outageReported && a.outageDetail != "" {
-		out = append(out, feedSharedEvent{Kind: "storage_outage", Detail: a.outageDetail})
+		out = append(out, feedSharedEvent{Kind: "storage_outage", Reason: a.outageCause, Detail: a.outageDetail})
 		a.outageDetail = ""
 	}
 	if a.outageCleared {
@@ -2405,9 +2442,24 @@ func formatFeedSharedAlert(ev feedSharedEvent, source, instance, key string) str
 		return fmt.Sprintf("**MARKET FEED SHARED WEIGHT HOLD** [%s] shared weight recovery generation %d (%s) holds every participating venue read on this host for at least %s; consumers hold entries on unready inputs, protection continues on verified inputs, and reads recover by themselves (owner %s, instance %s).",
 			source, ev.Generation, ev.Reason, feedBudgetWindow, key, instance)
 	case "recovery_ended":
+		if ev.Detail != "" {
+			return fmt.Sprintf("**MARKET FEED SHARED WEIGHT RECOVERED** [%s] shared weight recovery generation %d (%s) ended for the host, but this owner stays latched closed (%s) and refuses every participating venue read until it restarts (owner %s, instance %s).",
+				source, ev.Generation, ev.Reason, ev.Detail, key, instance)
+		}
 		return fmt.Sprintf("**MARKET FEED SHARED WEIGHT RECOVERED** [%s] shared weight recovery generation %d (%s) ended; participating reads resume through the normal eligible fetches (owner %s, instance %s).",
 			source, ev.Generation, ev.Reason, key, instance)
+	case "owner_latched":
+		return fmt.Sprintf("**MARKET FEED SHARED WEIGHT OWNER LATCHED** [%s] this owner latched its shared sends closed (%s: %s); every participating venue read of this owner is refused until it restarts, consumers hold entries on unready inputs and protection continues on verified inputs; check the shared weight directory, then restart this owner (owner %s, instance %s).",
+			source, ev.Reason, ev.Detail, key, instance)
 	case "storage_outage":
+		switch ev.Reason {
+		case feedWeightCauseSharedClock:
+			return fmt.Sprintf("**MARKET FEED SHARED WEIGHT CLOCK FAULT** [%s] the boot clock cannot be read (%s); every participating venue read of this owner is refused until the clock reads again (owner %s, instance %s).",
+				source, ev.Detail, key, instance)
+		case feedWeightCauseSharedVersion:
+			return fmt.Sprintf("**MARKET FEED SHARED WEIGHT UNSUPPORTED RECORD** [%s] the shared weight record has a version this binary does not know (%s); every participating venue read of this owner is refused until a binary that knows that version runs (owner %s, instance %s).",
+				source, ev.Detail, key, instance)
+		}
 		return fmt.Sprintf("**MARKET FEED SHARED WEIGHT STORAGE FAULT** [%s] the shared weight record cannot be used (%s); every participating venue read of this owner is refused until storage works again (owner %s, instance %s).",
 			source, ev.Detail, key, instance)
 	}

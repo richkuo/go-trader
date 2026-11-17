@@ -1107,3 +1107,288 @@ func TestFeedWeightSharedStatus(t *testing.T) {
 		t.Fatalf("embedded lot metadata must use the participating ledger")
 	}
 }
+
+func TestFeedWeightSharedBootstrapWait(t *testing.T) {
+	t.Run("ASharedRefusalWaitsForTheHintWhilePeersKeepCommitting", func(t *testing.T) {
+		e := newFAEnv(t)
+		newWTVenue(t, e.clock.Wall)
+		a := e.owner("a", wtPolicy(300, 100, 100))
+		b := e.owner("b", wtPolicy(300, 100, 100))
+		e.settle(a, b)
+		e.clock.set(func(c *faClock) { c.boot = "boot-b"; c.ns = int64(time.Minute) })
+		a.a.heartbeatOnce(context.Background())
+		rec := e.record()
+		if rec.Recovery == nil || rec.Recovery.Reason != feedAuthorityRecoveryBoot {
+			t.Fatalf("boot change did not start a hold: %+v", rec.Recovery)
+		}
+		c := e.owner("c", wtPolicy(200, 100, 100))
+		const keys = 10
+		const deadline = 2 * time.Second
+		hint := c.a.waitHint(c.l.clock().UTC())
+		end := e.clock.Wall()
+		var wg sync.WaitGroup
+		errs := make([]error, keys)
+		for i := 0; i < keys; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				ctx, cancel := context.WithTimeout(faCandleCtx(c, string(feedRestBootstrap), fmt.Sprintf("K%02d|1m", i)), deadline)
+				defer cancel()
+				_, errs[i] = fetchHyperliquidCandleSnapshot(ctx, fmt.Sprintf("K%02d", i), "1m", end.Add(-59*time.Minute).UnixMilli(), end.UnixMilli())
+			}(i)
+		}
+		stop := make(chan struct{})
+		beats := 0
+		var hb sync.WaitGroup
+		hb.Add(1)
+		go func() {
+			defer hb.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-time.After(100 * time.Millisecond):
+				}
+				b.a.heartbeatOnce(context.Background())
+				beats++
+			}
+		}()
+		wg.Wait()
+		close(stop)
+		hb.Wait()
+		for i, err := range errs {
+			if feedWeightRefusalCause(err) != feedWeightCauseSharedHold {
+				t.Fatalf("key %d during the hold: %v", i, err)
+			}
+		}
+		passes := c.l.weightSnapshot().RefusedByCause[feedWeightCauseSharedHold]
+		perKey := int(deadline/hint) + 1
+		t.Logf("wait hint %s, %d bootstrap keys, %d reserve transaction(s) refused by the hold in %s, %d peer heartbeat(s)", hint, keys, passes, deadline, beats)
+		if passes < keys || passes > keys*perKey {
+			t.Fatalf("%d reserve transactions for %d keys in %s with a %s hint, want between %d and %d", passes, keys, deadline, hint, keys, keys*perKey)
+		}
+		if n := e.logged("owner=" + b.a.key + " heartbeat:"); n != 0 || beats == 0 {
+			t.Fatalf("peer heartbeats failed %d time(s) of %d during the hold: %v", n, beats, e.logs)
+		}
+		e.clock.advance(55 * time.Second)
+		for _, o := range []*faOwner{a, b, c} {
+			o.a.heartbeatOnce(context.Background())
+		}
+		if rec := e.record(); rec.Recovery == nil {
+			t.Fatalf("the hold ended before 60s")
+		}
+		e.clock.advance(6 * time.Second)
+		for _, o := range []*faOwner{a, b, c} {
+			o.a.heartbeatOnce(context.Background())
+		}
+		if rec := e.record(); rec.Recovery != nil {
+			t.Fatalf("the hold did not end at about 60s: %+v", rec.Recovery)
+		}
+	})
+
+	t.Run("ALocalExhaustedRefusalStillWakesOnASettle", func(t *testing.T) {
+		clock := &hlLotTestClock{now: time.Unix(1890000000, 0).UTC()}
+		venue := newWTVenue(t, clock.Now)
+		small, err := hlInfoWeight("candleSnapshot", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rule, _ := hlInfoWeightRuleFor("candleSnapshot")
+		rows := rule.RowCap
+		big, err := hlInfoWeight("candleSnapshot", rows)
+		if err != nil || big < 2*small {
+			t.Fatalf("candle weights %d and %d do not leave room for the fixture", small, big)
+		}
+		l := newFeedRequestLedger(wtPolicy(big, 0, 0), true, clock.Now)
+		l.openStartup()
+		first, err := feedBudgetAcquireBounded(wtCtx(l, string(feedRestRefresh), "A|1m"), venue.srv.URL, "candleSnapshot", rows)
+		if err != nil || first == nil {
+			t.Fatalf("first reservation: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(wtCtx(l, string(feedRestBootstrap), "B|1m"), feedWeightWaitTick*4/5)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			p, err := feedBudgetAcquireBounded(ctx, venue.srv.URL, "candleSnapshot", 0)
+			if p != nil {
+				p.release()
+			}
+			done <- err
+		}()
+		time.Sleep(feedWeightWaitTick / 5)
+		first.settle(0)
+		start := time.Now()
+		if err := <-done; err != nil {
+			t.Fatalf("a waiting bootstrap did not wake on the settle: %v", err)
+		}
+		t.Logf("waiter woke %s after the settle; the timer tick is %s", time.Since(start), feedWeightWaitTick)
+	})
+}
+
+func TestFeedWeightSharedLatchAndFaultAlerts(t *testing.T) {
+	t.Run("ARemovedDirectoryLatchesTheOwnerWithOneAlertAndNoResumeText", func(t *testing.T) {
+		e := newFAEnv(t)
+		newWTVenue(t, e.clock.Wall)
+		a := e.owner("a", wtPolicy(600, 100, 100))
+		e.settle(a)
+		a.a.sharedReport()
+		if err := os.RemoveAll(e.dir); err != nil {
+			t.Fatal(err)
+		}
+		a.a.heartbeatOnce(context.Background())
+		evs := a.a.sharedReport()
+		kinds := []string{}
+		for _, ev := range evs {
+			kinds = append(kinds, ev.Kind)
+		}
+		if len(evs) != 2 || evs[0].Kind != "owner_latched" || evs[1].Kind != "recovery_hold" {
+			t.Fatalf("events after the directory was removed: %v", kinds)
+		}
+		if msg := formatFeedSharedAlert(evs[0], "fixture", "i", a.a.key); !strings.Contains(msg, "OWNER LATCHED") || !strings.Contains(msg, "until it restarts") {
+			t.Fatalf("latch alert: %s", msg)
+		}
+		for i := 0; i < 5; i++ {
+			a.a.heartbeatOnce(context.Background())
+			if again := a.a.sharedReport(); len(again) != 0 {
+				t.Fatalf("a repeated latch alert: %+v", again)
+			}
+		}
+		err := faFetch(e, a, string(feedRestRefresh))
+		if feedWeightRefusalCause(err) != feedWeightCauseSharedOwner || feedSharedHeldErr(err) {
+			t.Fatalf("a latched read: %v (shared held %v)", err, feedSharedHeldErr(err))
+		}
+		e.clock.advance(feedBudgetWindow + time.Second)
+		a.a.heartbeatOnce(context.Background())
+		evs = a.a.sharedReport()
+		if len(evs) != 1 || evs[0].Kind != "recovery_ended" || evs[0].Detail == "" {
+			t.Fatalf("events at the hold end: %+v", evs)
+		}
+		if msg := formatFeedSharedAlert(evs[0], "fixture", "i", a.a.key); strings.Contains(msg, "resume") || !strings.Contains(msg, "stays latched closed") {
+			t.Fatalf("recovered alert for a latched owner: %s", msg)
+		}
+		if err := faFetch(e, a, string(feedRestRefresh)); feedWeightRefusalCause(err) != feedWeightCauseSharedOwner {
+			t.Fatalf("a latched owner read after the hold: %v", err)
+		}
+	})
+
+	t.Run("ALatchedOwnerKeepsTheKeyUnreadyAlertPath", func(t *testing.T) {
+		e := newFAEnv(t)
+		newWTVenue(t, e.clock.Wall)
+		a := e.owner("a", wtPolicy(600, 100, 100))
+		e.settle(a)
+		if err := os.Remove(feedAuthorityOwnerLockPath(e.dir, a.a.key)); err != nil {
+			t.Fatal(err)
+		}
+		a.a.heartbeatOnce(context.Background())
+		owner := newMarketFeedOwner(e.clock.Wall, nil)
+		owner.SetRequestLedger(a.l)
+		ctx, cancel := context.WithTimeout(withFeedLedger(context.Background(), a.l), 5*time.Second)
+		defer cancel()
+		<-owner.ApplyGeneration(ctx, rlRequirements(5, 60, "BTC"))
+		if held := owner.sharedHeldKeys(); len(held) != 0 {
+			t.Fatalf("a latched owner marked keys shared-held, which silences the UNREADY alert: %v", held)
+		}
+		for _, r := range owner.Readiness() {
+			if r.Ready {
+				t.Fatalf("%s is ready while the owner is latched", r.Key)
+			}
+		}
+	})
+
+	t.Run("AnUnreadableClockSendsOneFaultAndOneRestore", func(t *testing.T) {
+		e := newFAEnv(t)
+		newWTVenue(t, e.clock.Wall)
+		a := e.owner("a", wtPolicy(600, 100, 100))
+		e.settle(a)
+		a.a.sharedReport()
+		e.clock.set(func(c *faClock) { c.fail = true })
+		var faults []feedSharedEvent
+		for i := 0; i < 60; i++ {
+			a.a.heartbeatOnce(context.Background())
+			faults = append(faults, a.a.sharedReport()...)
+		}
+		if len(faults) != 1 || faults[0].Kind != "storage_outage" || faults[0].Reason != feedWeightCauseSharedClock {
+			t.Fatalf("events over five minutes of an unreadable clock: %+v", faults)
+		}
+		if msg := formatFeedSharedAlert(faults[0], "fixture", "i", a.a.key); !strings.Contains(msg, "CLOCK FAULT") {
+			t.Fatalf("clock fault alert: %s", msg)
+		}
+		if err := faFetch(e, a, string(feedRestRefresh)); feedWeightRefusalCause(err) != feedWeightCauseSharedClock {
+			t.Fatalf("a read with an unreadable clock: %v", err)
+		}
+		if st := a.l.weightStatus().Shared; st.Registry != "clock_unavailable" {
+			t.Fatalf("registry = %q, want clock_unavailable", st.Registry)
+		}
+		e.clock.set(func(c *faClock) { c.fail = false })
+		a.a.heartbeatOnce(context.Background())
+		restored := 0
+		for _, ev := range a.a.sharedReport() {
+			if ev.Kind == "storage_restored" {
+				restored++
+			}
+		}
+		if restored != 1 {
+			t.Fatalf("restore alerts after the clock returned: %d", restored)
+		}
+	})
+
+	t.Run("ANormalHoldSendsOnlyHoldAndRecoveredAndHoldsKeyAlerts", func(t *testing.T) {
+		e := newFAEnv(t)
+		newWTVenue(t, e.clock.Wall)
+		a := e.owner("a", wtPolicy(600, 100, 100))
+		e.settle(a)
+		a.a.sharedReport()
+		os.Remove(filepath.Join(e.dir, feedAuthorityRecordName))
+		a.a.heartbeatOnce(context.Background())
+		err := faFetch(e, a, string(feedRestRefresh))
+		if feedWeightRefusalCause(err) != feedWeightCauseSharedHold || !feedSharedHeldErr(err) {
+			t.Fatalf("a read during the hold: %v", err)
+		}
+		var evs []feedSharedEvent
+		for i := 0; i < 12; i++ {
+			e.clock.advance(5 * time.Second)
+			a.a.heartbeatOnce(context.Background())
+			evs = append(evs, a.a.sharedReport()...)
+		}
+		evs = append(evs, a.a.sharedReport()...)
+		if len(evs) != 2 || evs[0].Kind != "recovery_hold" || evs[1].Kind != "recovery_ended" || evs[1].Detail != "" {
+			t.Fatalf("events over a normal hold: %+v", evs)
+		}
+		if msg := formatFeedSharedAlert(evs[1], "fixture", "i", a.a.key); !strings.Contains(msg, "resume") {
+			t.Fatalf("recovered alert: %s", msg)
+		}
+	})
+}
+
+func TestFeedWeightSharedEmbeddedAdmission(t *testing.T) {
+	e := newFAEnv(t)
+	newWTVenue(t, e.clock.Wall)
+	a := e.owner("a", wtPolicy(600, 100, 100))
+	e.settle(a)
+	policy := wtPolicy(400, 100, 100).weightPolicy()
+	feed := newFeedWeightAuthority(feedAuthorityRoleFeed, filepath.Join(e.root, "cfg-feed.json"), e.logf)
+	feed.attach(newFeedRequestLedger(wtPolicy(400, 100, 100), true, nil))
+	if code := startFeedAuthority(feed, policy, nil, "[fixture]"); code != ExitProbeFailure {
+		t.Fatalf("a feed owner with an unsafe admission returned %d, want %d", code, ExitProbeFailure)
+	}
+	emb := &faOwner{name: "embedded", policy: wtPolicy(400, 100, 100)}
+	emb.l = newFeedRequestLedger(emb.policy, false, nil)
+	emb.a = newFeedWeightAuthority(feedAuthorityRoleEmbedded, filepath.Join(e.root, "cfg-embedded.json"), e.logf)
+	emb.a.attach(emb.l)
+	if code := startFeedAuthority(emb.a, policy, nil, "[fixture]"); code != 0 {
+		t.Fatalf("the embedded scheduler with an unsafe admission returned %d, want 0 so protection keeps running", code)
+	}
+	emb.l.openStartup()
+	if err := faFetch(e, emb, string(feedRestRefresh)); !feedSharedHeldErr(err) {
+		t.Fatalf("a held embedded owner read: %v", err)
+	}
+	emb.a.heartbeatOnce(context.Background())
+	if emb.a.registered {
+		t.Fatalf("the embedded owner registered while the declarations still do not fit")
+	}
+	a.a.stop()
+	emb.a.heartbeatOnce(context.Background())
+	if !emb.a.registered {
+		t.Fatalf("the embedded owner did not register on the heartbeat after the peer left: %v", emb.a.registerErr)
+	}
+}

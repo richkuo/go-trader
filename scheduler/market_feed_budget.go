@@ -842,7 +842,9 @@ func feedBudgetAcquireBounded(ctx context.Context, baseURL, reqType string, rows
 			return permit, err
 		}
 		tick := feedWeightWaitTick
+		wake := changed
 		if feedSharedCause(cause) {
+			wake = nil
 			if a := l.sharedAuthority(); a != nil {
 				tick = a.waitHint(l.clock().UTC())
 			}
@@ -855,7 +857,7 @@ func feedBudgetAcquireBounded(ctx context.Context, baseURL, reqType string, rows
 				l.countWeightRefusal(spec, cause)
 			}
 			return nil, fmt.Errorf("bootstrap waited for weight capacity until its key deadline ended (%v): %w", ctx.Err(), err)
-		case <-changed:
+		case <-wake:
 		case <-timer.C:
 		}
 		timer.Stop()
