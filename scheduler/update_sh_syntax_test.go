@@ -146,7 +146,7 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		},
 		shardEnv:     "FIXTURE_SCENARIOS",
 		shardDefault: "SCENARIOS",
-		gates:        []string{"update", "migrate"},
+		gates:        []string{"update", "migrate", "shared_feed"},
 		soleRoot:     true,
 	},
 }

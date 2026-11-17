@@ -2,7 +2,7 @@
 set -uo pipefail
 
 docs_only=(CLAUDE.md AGENTS.md README.md SKILL.md docs/POST_UPDATE_HISTORY.md docs/DOCKER.md)
-gates=(quote egress_docker merge_paper update migrate)
+gates=(quote egress_docker merge_paper update migrate shared_feed)
 every_gate=(.github/workflows/ci.yml scripts/ci_code_changed.sh scripts/check_ci_code_changed.sh)
 
 gate_patterns() {
@@ -39,6 +39,14 @@ gate_patterns() {
         scripts/test_migrate_service_layout_fixture.sh
         scripts/run_ci_shell_suite.sh)
       ;;
+    shared_feed)
+      pats=(scripts/shared-feed-convert.sh scripts/feed-parity.sh scripts/feed-source-compare.sh 'scripts/fixtures/shared_feed_*'
+        scripts/test_migrate_service_layout_fixture.sh scripts/migrate-service-layout.py scripts/update.sh 'scripts/update_*'
+        scripts/install-service.sh 'systemd/*' go-trader.service scripts/run_ci_shell_suite.sh
+        'scheduler/market_feed*.go' scheduler/hyperliquid_balance.go scheduler/hyperliquid_candles.go
+        scheduler/hyperliquid_funding.go scheduler/hyperliquid_marks.go scheduler/hyperliquid_lot_metadata.go 'scheduler/egress*.go' scheduler/main.go scheduler/version.go
+        'scheduler/probe*.go' scheduler/server.go 'scheduler/config*.go' scheduler/go.mod scheduler/go.sum)
+      ;;
     *)
       pats=()
       ;;
@@ -63,6 +71,7 @@ egress_docker=true
 merge_paper=true
 update=true
 migrate=true
+shared_feed=true
 
 if [ "${EVENT_NAME:-}" = pull_request ] \
   && git rev-parse -q --verify HEAD^2 >/dev/null \
@@ -96,4 +105,4 @@ echo "code=$code" >>"$out"
 for g in "${gates[@]}"; do
   echo "$g=${!g}" >>"$out"
 done
-echo "code=$code quote=$quote egress_docker=$egress_docker merge_paper=$merge_paper update=$update migrate=$migrate (event ${EVENT_NAME:-unset})"
+echo "code=$code quote=$quote egress_docker=$egress_docker merge_paper=$merge_paper update=$update migrate=$migrate shared_feed=$shared_feed (event ${EVENT_NAME:-unset})"
