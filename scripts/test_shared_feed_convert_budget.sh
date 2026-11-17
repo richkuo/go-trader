@@ -257,20 +257,26 @@ ok "a candidate or plan probe names the persistent feed config as the shared wei
 HEALTH_MODE="$WORK/health.mode"
 HEALTH_PORT_FILE="$WORK/health.port"
 python3 - "$CONFIG" "$HEALTH_MODE" "$HEALTH_PORT_FILE" <<'PY' &
-import http.server, json, sys
+import http.server, json, sys, time
 config, mode_path, port_path = sys.argv[1:4]
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
     def do_GET(self):
         mode = open(mode_path).read().strip()
-        b = json.load(open(config))["feed"]["request_budget"]
-        charged = {"hostile": "PWD[$(touch " + mode_path + ".pwned)]", "low": 4}.get(mode, 23)
-        body = {"request_budget": {"per_minute": b["per_minute"], "window_used": 4,
-                "totals": {"refused": 0, "by_reason": {"bootstrap": 3}},
-                "weight": {"participation": "enabled", "ceiling": 1200, "weight_per_minute": b["weight_per_minute"],
-                           "charged": charged, "pending": 0, "in_flight": 0,
-                           "totals": {"refused": 0, "reserved_by_reason": {"bootstrap": 30}}}}}
+        if self.path.startswith("/status"):
+            ready = mode != "loading"
+            body = {"consumers": [{"cadences": [5]}],
+                    "market_feed": {"keys": [{"key": "BTC|1h", "status": "ready" if ready else "budget_exhausted", "ready": ready}]}}
+        else:
+            b = json.load(open(config))["feed"]["request_budget"]
+            charged = {"hostile": "PWD[$(touch " + mode_path + ".pwned)]", "low": 4}.get(mode, 23)
+            body = {"last_seal_key": int(time.time()) + 60,
+                    "request_budget": {"per_minute": b["per_minute"], "window_used": 4, "demand_peak": 4,
+                    "totals": {"refused": 0, "by_reason": {"bootstrap": 3}},
+                    "weight": {"participation": "enabled", "ceiling": 1200, "weight_per_minute": b["weight_per_minute"],
+                               "charged": charged, "demand_peak": charged, "pending": 0, "in_flight": 0,
+                               "totals": {"refused": 0, "reserved_by_reason": {"bootstrap": 30}}}}}
         data = json.dumps(body).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -317,6 +323,16 @@ rc=0
 grep -q "does not fit the 1200 ceiling less weight_reserve 1190" "$WORK/cal-nofit.out" || fail "calibrate did not name the floor that does not fit: $(cat "$WORK/cal-nofit.out")"
 [[ "$(sha "$CONFIG")" == "$before" ]] || fail "calibrate wrote a smaller policy when the floor did not fit"
 ok "calibrate fails with a clear message and keeps the config when the largest read does not fit the ceiling less the reserve"
+
+echo loading >"$HEALTH_MODE"
+py set-budget "$CONFIG" '{"per_minute":120,"startup":60,"weight_per_minute":600,"weight_startup":400,"weight_reserve":200}'
+before=$(sha "$CONFIG")
+rc=0
+(OPT_WINDOW=2 SHARED_FEED_CONVERT_SEAL_TIMEOUT=0 cmd_calibrate) >"$WORK/cal-loading.out" 2>&1 || rc=$?
+[[ $rc -eq 24 ]] || fail "calibrate on a backup whose key is still loading exited $rc, want 24: $(cat "$WORK/cal-loading.out")"
+grep -q "the backup is not steady: not_ready: BTC|1h=budget_exhausted" "$WORK/cal-loading.out" || fail "calibrate did not name the key that is not ready: $(cat "$WORK/cal-loading.out")"
+[[ "$(sha "$CONFIG")" == "$before" ]] || fail "calibrate changed the config while a backup key was not ready"
+ok "calibrate refuses a backup whose key has not loaded its history, names the key and keeps the config"
 
 echo hostile >"$HEALTH_MODE"
 py set-budget "$CONFIG" '{"per_minute":120,"startup":60,"weight_per_minute":600,"weight_startup":400,"weight_reserve":200}'
@@ -696,4 +712,4 @@ else
     ok "a legacy unit whose working directory is canonical is accepted, and switch, its failure restore and rollback succeed (no root-owned folder symlink on this host's temp path)"
 fi
 
-echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, or into its own go-trader StateDirectory, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues; a config path with a control character, a symlinked state folder or a shared state folder is refused; switch, its failure restore and rollback succeed on the migrated layout and a legacy tree, also through a root-owned folder symlink)"
+echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate refuses a backup that is not steady, keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, or into its own go-trader StateDirectory, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues; a config path with a control character, a symlinked state folder or a shared state folder is refused; switch, its failure restore and rollback succeed on the migrated layout and a legacy tree, also through a root-owned folder symlink)"

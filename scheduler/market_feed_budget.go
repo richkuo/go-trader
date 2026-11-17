@@ -127,6 +127,39 @@ type feedRequestLedger struct {
 	coverage          string
 	seededStartup     bool
 	seededStartupLeft int
+
+	demand  []feedDemandMark
+	wDemand []feedDemandMark
+}
+
+type feedDemandMark struct {
+	at    time.Time
+	value int
+}
+
+func pushFeedDemand(marks []feedDemandMark, now time.Time, value int) []feedDemandMark {
+	for len(marks) > 0 && marks[len(marks)-1].value <= value {
+		marks = marks[:len(marks)-1]
+	}
+	return append(marks, feedDemandMark{at: now, value: value})
+}
+
+func pruneFeedDemand(marks []feedDemandMark, now time.Time) []feedDemandMark {
+	cut := 0
+	for cut < len(marks) && now.Sub(marks[cut].at) >= feedBudgetWindow {
+		cut++
+	}
+	if cut == 0 {
+		return marks
+	}
+	return append([]feedDemandMark(nil), marks[cut:]...)
+}
+
+func feedDemandPeak(marks []feedDemandMark) int {
+	if len(marks) == 0 {
+		return 0
+	}
+	return marks[0].value
 }
 
 type feedBudgetTotals struct {
@@ -179,6 +212,7 @@ type feedWeightStatus struct {
 	StartupLeft   int                     `json:"weight_startup_left"`
 	Reserve       int                     `json:"weight_reserve"`
 	Allocation    int                     `json:"allocation"`
+	DemandPeak    int                     `json:"demand_peak"`
 	Pending       int                     `json:"pending"`
 	InFlight      int                     `json:"in_flight"`
 	Charged       int                     `json:"charged"`
@@ -196,6 +230,7 @@ type feedBudgetStatus struct {
 	Startup     int                       `json:"startup"`
 	StartupLeft int                       `json:"startup_left"`
 	WindowUsed  int                       `json:"window_used"`
+	DemandPeak  int                       `json:"demand_peak"`
 	Totals      feedBudgetTotals          `json:"totals"`
 	RateLimit   []feedRateLimitHostStatus `json:"rate_limit"`
 	Weight      feedWeightStatus          `json:"weight"`
@@ -332,6 +367,8 @@ func (l *feedRequestLedger) pruneLocked(now time.Time) {
 		}
 	}
 	l.wCharges = kept
+	l.demand = pruneFeedDemand(l.demand, now)
+	l.wDemand = pruneFeedDemand(l.wDemand, now)
 }
 
 func (l *feedRequestLedger) steadyUsedLocked() int {
@@ -425,7 +462,7 @@ func (l *feedRequestLedger) countWeightRefusal(spec feedAcquireSpec, cause strin
 	l.countWeightRefusalLocked(spec, cause, l.clock().UTC())
 }
 
-func (l *feedRequestLedger) weightDecisionLocked(spec feedAcquireSpec, cost int) (startupPart int, refusal *feedWeightRefusal) {
+func (l *feedRequestLedger) weightDecisionLocked(spec feedAcquireSpec, cost int, now time.Time) (startupPart int, refusal *feedWeightRefusal) {
 	if l.weight == nil {
 		return 0, nil
 	}
@@ -438,6 +475,7 @@ func (l *feedRequestLedger) weightDecisionLocked(spec feedAcquireSpec, cost int)
 	}
 	steady := cost - startupPart
 	used := l.steadyUsedLocked()
+	l.wDemand = pushFeedDemand(l.wDemand, now, used+steady+spec.keepWeight)
 	if used+steady+spec.keepWeight <= l.weight.PerMinute {
 		return startupPart, nil
 	}
@@ -463,6 +501,9 @@ func (l *feedRequestLedger) acquireSpec(spec feedAcquireSpec, silent bool) (*fee
 	l.pruneLocked(now)
 	cost, epoch, priceCause, priceDetail := l.priceLocked(spec.reqType, spec.rows)
 	useStartup := spec.reason == string(feedRestBootstrap) && l.startupLeft > 0
+	if !useStartup {
+		l.demand = pushFeedDemand(l.demand, now, len(l.window)+spec.keep+1)
+	}
 	if !useStartup && l.enforce && len(l.window)+spec.keep >= l.perMinute {
 		l.totals.Refused++
 		l.totals.RefusedByReason[spec.reason]++
@@ -484,7 +525,7 @@ func (l *feedRequestLedger) acquireSpec(spec feedAcquireSpec, silent bool) (*fee
 		cost = 0
 	} else {
 		var refusal *feedWeightRefusal
-		startupPart, refusal = l.weightDecisionLocked(spec, cost)
+		startupPart, refusal = l.weightDecisionLocked(spec, cost, now)
 		if refusal != nil {
 			if !silent {
 				l.countWeightRefusalLocked(spec, refusal.Cause, now)
@@ -602,6 +643,7 @@ func (l *feedRequestLedger) status() feedBudgetStatus {
 		Startup:     l.startup,
 		StartupLeft: l.startupLeft,
 		WindowUsed:  len(l.window),
+		DemandPeak:  feedDemandPeak(l.demand),
 		Totals:      copyFeedBudgetTotals(l.totals),
 		RateLimit:   l.rateLimitStatusLocked(now),
 		Weight:      l.weightStatusLocked(),
@@ -636,6 +678,7 @@ func (l *feedRequestLedger) weightStatusLocked() feedWeightStatus {
 		st.Participation = feedWeightParticipating
 		st.PerMinute, st.Startup, st.Reserve = l.weight.PerMinute, l.weight.Startup, l.weight.Reserve
 		st.Allocation = l.weight.PerMinute + l.weight.Startup
+		st.DemandPeak = feedDemandPeak(l.wDemand)
 	}
 	switch {
 	case l.authority != nil:
