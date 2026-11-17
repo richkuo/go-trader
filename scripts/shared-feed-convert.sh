@@ -21,19 +21,28 @@ Subcommands:
   plan [--consumer <unit>]...
         Read-only. Lists every scheduler unit and, with --consumer, checks the
         selection and prints the full target. Changes nothing on the host.
-  feeds --consumer <unit>... [--per-minute <n> --startup <n>]
+  feeds --consumer <unit>... [--per-minute <n> --startup <n>
+        --weight-per-minute <n> --weight-startup <n> --weight-reserve <n>]
         Creates /opt/go-trader-feed-primary (websocket) and
         /opt/go-trader-feed-backup (rest) from the first consumer's tree, writes
         their configs over read-only shadow copies of the consumer configs,
         installs go-trader@feed-primary and go-trader@feed-backup, and waits for
-        both to seal. No consumer config changes. A re-run with another
+        both to seal. No consumer config changes. A new backup needs all five
+        budget flags: the request limits and an explicit venue weight policy
+        that fits the venue weight ceiling less weight_reserve; the
+        candidate config is probed before it is written. A re-run with another
         selection resets the list only while no switched consumer uses the
         feeds; otherwise use consumers.
-  calibrate [--per-minute <n> --startup <n>] [--baseline-ledger <file>] [--window <seconds>]
-        Measures the backup's peak request use over the window (default two
-        periods of the longest cadence) and writes its request_budget: the
-        measured values times 1.5, or the fixed operator values. Fixed values
-        are refused when the measured peak plus the mids reserve does not fit.
+  calibrate [--per-minute <n> --startup <n>] [--weight-per-minute <n>
+        --weight-startup <n> --weight-reserve <n>] [--baseline-ledger <file>] [--window <seconds>]
+        Measures the backup's peak request use and its Go-reported peak weight
+        over the window (default two periods of the longest cadence) and writes
+        its full request_budget: the measured values times 1.5, or the fixed
+        operator values. Fixed request values are refused when the measured
+        peak plus the mids reserve does not fit; fixed weight values are
+        refused when the measured weight peak does not fit. Every change is
+        probed as a candidate before the config is replaced and the backup gets
+        SIGHUP; a failure restores the byte copy of the previous config.
         verify and switch refuse until calibrate passes.
   verify [--accept-differences]
         Both feeds healthy and scripts/feed-source-compare.sh exits 0. A
@@ -70,7 +79,8 @@ runs), 20-29 stage failures, 30 rollback failed.
 EOF
 }
 
-STATE_DIR="/var/lib/go-trader/shared-feed"
+CONVERT_ROOT="${SHARED_FEED_CONVERT_ROOT:-}"
+STATE_DIR="$CONVERT_ROOT/var/lib/go-trader/shared-feed"
 JOURNAL="$STATE_DIR/convert.journal"
 SHADOW_DIR="$STATE_DIR/shadow"
 FEEDS=(primary backup)
@@ -97,8 +107,8 @@ need_tools() {
     done
 }
 
-feed_dir() { printf '/opt/go-trader-feed-%s' "$1"; }
-feed_config() { printf '/var/lib/go-trader/feed-%s/config.json' "$1"; }
+feed_dir() { printf '%s/opt/go-trader-feed-%s' "$CONVERT_ROOT" "$1"; }
+feed_config() { printf '%s/var/lib/go-trader/feed-%s/config.json' "$CONVERT_ROOT" "$1"; }
 feed_unit() { printf 'go-trader@feed-%s.service' "$1"; }
 feed_socket() { printf '/run/go-trader-feed-%s/feed.sock' "$1"; }
 feed_source() { [[ "$1" == "primary" ]] && printf 'websocket' || printf 'rest'; }
@@ -145,35 +155,136 @@ journal_field() {
 }
 
 PY_HELPER=$(cat <<'PY'
+import errno
 import json
 import os
 import re
+import secrets
+import stat
 import sys
 
+def open_dir_walk(path):
+    parts = [p for p in os.path.abspath(path).split("/") if p]
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    hops = 0
+    while parts:
+        part = parts.pop(0)
+        if part == ".":
+            continue
+        if part == "..":
+            os.close(fd)
+            sys.exit(f"{path}: a symlink target with .. is not followed")
+        try:
+            nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        except OSError as e:
+            if e.errno not in (errno.ELOOP, errno.ENOTDIR):
+                os.close(fd)
+                sys.exit(f"{path}: cannot open the directory {part} ({e.strerror})")
+            lst = os.stat(part, dir_fd=fd, follow_symlinks=False)
+            here = os.fstat(fd)
+            if not stat.S_ISLNK(lst.st_mode) or lst.st_uid != 0 or here.st_uid != 0 or here.st_mode & 0o022:
+                os.close(fd)
+                sys.exit(f"{path}: the path component {part} is a symlink or not a directory in a directory another account can change; nothing is read or written through it")
+            hops += 1
+            if hops > 40:
+                os.close(fd)
+                sys.exit(f"{path}: too many symlinks")
+            target = os.readlink(part, dir_fd=fd)
+            parts = [p for p in target.split("/") if p] + parts
+            if target.startswith("/"):
+                os.close(fd)
+                fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+            continue
+        os.close(fd)
+        fd = nfd
+    return fd
+
+def open_parent(path):
+    return open_dir_walk(os.path.dirname(os.path.abspath(path)) or "/")
+
+def open_nofollow(path):
+    dfd = open_parent(path)
+    try:
+        fd = os.open(os.path.basename(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+    except OSError as e:
+        sys.exit(f"{path} cannot be opened without following a symlink ({e.strerror})")
+    finally:
+        os.close(dfd)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        os.close(fd)
+        sys.exit(f"{path} is not a regular file with exactly one link")
+    return fd, st
+
+def read_nofollow(path):
+    fd, st = open_nofollow(path)
+    with os.fdopen(fd, "rb") as f:
+        return f.read(), st
+
 def load(path):
-    with open(path) as f:
-        return json.load(f)
+    data, _ = read_nofollow(path)
+    return json.loads(data)
+
+def write_atomic(path, data, mode, owner=None):
+    dfd = open_parent(path)
+    base = os.path.basename(path)
+    tmp = f".{base}.tmp-shared-feed.{secrets.token_hex(8)}"
+    try:
+        try:
+            cur = os.stat(base, dir_fd=dfd, follow_symlinks=False)
+        except FileNotFoundError:
+            cur = None
+        if cur is not None and not stat.S_ISREG(cur.st_mode):
+            sys.exit(f"{path} exists and is not a regular file; nothing was written")
+        if owner is None and cur is not None:
+            owner = (cur.st_uid, cur.st_gid)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+            if owner is not None and os.geteuid() == 0:
+                os.fchown(fd, owner[0], owner[1])
+            os.fchmod(fd, mode)
+        finally:
+            os.close(fd)
+        os.replace(tmp, base, src_dir_fd=dfd, dst_dir_fd=dfd)
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=dfd)
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        os.close(dfd)
 
 def dump(obj, path, mode):
-    tmp = path + ".tmp-shared-feed"
+    write_atomic(path, (json.dumps(obj, indent=2, ensure_ascii=False) + "\n").encode(), mode)
+
+def safe_copy(src, dest):
+    data, st = read_nofollow(src)
+    write_atomic(dest, data, st.st_mode & 0o7777, (st.st_uid, st.st_gid))
+
+def chown_ref(ref, target):
+    dfd = open_parent(ref)
     try:
-        os.unlink(tmp)
-    except FileNotFoundError:
-        pass
-    owner = None
+        rst = os.stat(os.path.basename(os.path.abspath(ref)), dir_fd=dfd, follow_symlinks=False)
+    finally:
+        os.close(dfd)
+    fd, _ = open_nofollow(target)
     try:
-        st = os.stat(path)
-        owner = (st.st_uid, st.st_gid)
-    except FileNotFoundError:
-        pass
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(obj, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-        if owner is not None:
-            os.fchown(f.fileno(), owner[0], owner[1])
-        os.fchmod(f.fileno(), mode)
-    os.replace(tmp, path)
+        os.fchown(fd, rst.st_uid, rst.st_gid)
+    finally:
+        os.close(fd)
+
+def walk_check(path):
+    os.close(open_parent(path))
+
+def mode_of(path):
+    fd, st = open_nofollow(path)
+    os.close(fd)
+    print(format(st.st_mode & 0o777, "o"))
 
 def is_live_args(args):
     args = args or []
@@ -204,15 +315,15 @@ def write_shared(src, dst, primary, backup, mode):
     c["shared_market_feed"] = {"primary_socket": primary, "backup_socket": backup}
     dump(c, dst, int(mode, 8))
 
-def write_feed(path, consumer_cfg, source, socket, port, consumers, per_minute, startup):
+def write_feed(path, consumer_cfg, source, socket, port, consumers, budget):
     base = load(consumer_cfg)
     out = {"role": "feed", "config_version": base.get("config_version"), "status_port": int(port)}
     for key in ("log_level", "discord", "telegram", "alert_throttle_interval"):
         if key in base:
             out[key] = base[key]
     feed = {"source": source, "socket_path": socket, "consumer_configs": json.loads(consumers)}
-    if per_minute and int(per_minute) > 0:
-        feed["request_budget"] = {"per_minute": int(per_minute), "startup": int(startup)}
+    if budget:
+        feed["request_budget"] = json.loads(budget)
     out["feed"] = feed
     out["strategies"] = []
     dump(out, path, 0o600)
@@ -246,8 +357,9 @@ def revert_feed_keys(path, backup_path):
             c[key] = b[key]
         else:
             c.pop(key, None)
-    mode = os.stat(path).st_mode & 0o777
-    dump(c, path, mode)
+    fd, st = open_nofollow(path)
+    os.close(fd)
+    dump(c, path, st.st_mode & 0o777)
 
 def feed_keys_match(path, backup_path):
     c = load(path)
@@ -255,10 +367,26 @@ def feed_keys_match(path, backup_path):
     same = all(c.get(k) == b.get(k) for k in ("market_feed", "shared_market_feed"))
     print("yes" if same else "no")
 
-def set_budget(path, per_minute, startup):
+BUDGET_FIELDS = ("per_minute", "startup", "weight_per_minute", "weight_startup", "weight_reserve")
+
+def set_budget(path, budget):
     c = load(path)
-    c["feed"]["request_budget"] = {"per_minute": int(per_minute), "startup": int(startup)}
-    dump(c, path, 0o600)
+    b = json.loads(budget)
+    missing = [k for k in BUDGET_FIELDS if not isinstance(b.get(k), int)]
+    if missing:
+        sys.exit(f"budget is missing {', '.join(missing)}; a backup budget always carries all five fields")
+    c["feed"]["request_budget"] = {k: b[k] for k in BUDGET_FIELDS}
+    fd, st = open_nofollow(path)
+    os.close(fd)
+    dump(c, path, st.st_mode & 0o777)
+
+def budget_of(path):
+    b = (load(path).get("feed") or {}).get("request_budget") or {}
+    print(json.dumps({k: b.get(k) for k in BUDGET_FIELDS}, separators=(",", ":")))
+
+def budget_complete(path):
+    b = (load(path).get("feed") or {}).get("request_budget") or {}
+    print("yes" if all(isinstance(b.get(k), int) for k in BUDGET_FIELDS) else "no")
 
 def get(url_json_path, dotted):
     c = json.load(open(url_json_path))
@@ -293,6 +421,10 @@ op = sys.argv[1]
 args = sys.argv[2:]
 {
     "summary": summary,
+    "copy": safe_copy,
+    "chown-ref": chown_ref,
+    "mode-of": mode_of,
+    "walk-check": walk_check,
     "write-shared": write_shared,
     "write-feed": write_feed,
     "replace-consumer": replace_consumer,
@@ -301,6 +433,8 @@ args = sys.argv[2:]
     "revert-feed-keys": revert_feed_keys,
     "feed-keys-match": feed_keys_match,
     "set-budget": set_budget,
+    "budget-of": budget_of,
+    "budget-complete": budget_complete,
     "get": get,
     "feed-consumer-state": feed_consumer_state,
     "ledger-caps": ledger_caps,
@@ -320,12 +454,12 @@ prepare_shadow_dir() {
 write_shadow() {
     local cfg="$1" shadow="$2"
     py write-shared "$cfg" "$shadow" "$(feed_socket primary)" "$(feed_socket backup)" 0600
-    chown --reference="$SHADOW_DIR" "$shadow"
+    py chown-ref "$SHADOW_DIR" "$shadow"
 }
 
 unit_prop() { systemctl show "$1" -p "$2" --value 2>/dev/null | head -n 1 || true; }
 
-unit_config_path() {
+unit_raw_config_path() {
     local unit="$1" wd execstart cfg
     wd=$(unit_prop "$unit" WorkingDirectory)
     execstart=$(unit_prop "$unit" ExecStart)
@@ -336,7 +470,103 @@ unit_config_path() {
     elif [[ "$cfg" != /* ]]; then
         cfg="${wd%/}/$cfg"
     fi
-    readlink -f "$cfg" 2>/dev/null || printf '%s' "$cfg"
+    printf '%s' "$cfg"
+}
+
+canonical_config_path() {
+    local cfg="$1" resolved
+    if ! resolved=$(readlink -f "$cfg" 2>/dev/null); then
+        resolved="$cfg"
+        [[ -L "$cfg" ]] && resolved=""
+    fi
+    printf '%s' "$resolved"
+}
+
+state_dir_listed_elsewhere() {
+    local unit="$1" rel="$2" other d
+    local -a ds=()
+    while IFS= read -r other; do
+        [[ -n "$other" && "$other" != "$unit" ]] || continue
+        read -r -a ds <<<"$(unit_prop "$other" StateDirectory)" || true
+        for d in "${ds[@]+"${ds[@]}"}"; do
+            [[ "$d" == "$rel" ]] && return 0
+        done
+    done < <(scheduler_units)
+    return 1
+}
+
+state_config_for_dir() {
+    local unit="$1" rel="$2"
+    [[ "$rel" == go-trader || "$rel" == go-trader/* ]] || return 0
+    [[ "$rel" != */../* && "$rel" != */.. && "$rel" != *//* && "$rel" != go-trader/*/* && "$rel" != */. ]] || return 0
+    case "${rel#go-trader/}" in feed-*|shared-feed|shared) return 0 ;; esac
+    state_dir_listed_elsewhere "$unit" "$rel" && return 0
+    printf '%s/var/lib/%s/config.json\n' "$CONVERT_ROOT" "$rel"
+}
+
+own_state_config_matches() {
+    local own="$1" resolved="$2"
+    [[ -n "$resolved" && ! -L "$own" ]] || return 1
+    py walk-check "$own" 2>/dev/null || return 1
+    [[ "$(readlink -f "$own" 2>/dev/null)" == "$resolved" ]]
+}
+
+unit_own_state_configs() {
+    local unit="$1" instance dir
+    local -a dirs=()
+    case "$unit" in
+        go-trader.service) state_config_for_dir "$unit" go-trader ;;
+        go-trader@?*.service)
+            instance="${unit%.service}"
+            instance="${instance#go-trader@}"
+            [[ "$instance" != */* ]] && state_config_for_dir "$unit" "go-trader/$instance"
+            ;;
+    esac
+    read -r -a dirs <<<"$(unit_prop "$unit" StateDirectory)" || true
+    for dir in "${dirs[@]+"${dirs[@]}"}"; do
+        state_config_for_dir "$unit" "$dir"
+    done
+    return 0
+}
+
+unit_config_path() {
+    local unit="$1" cfg resolved other name
+    cfg=$(unit_raw_config_path "$unit")
+    [[ -n "$cfg" ]] || { printf ''; return 0; }
+    resolved=$(canonical_config_path "$cfg")
+    if [[ "$cfg$resolved" == *[[:cntrl:]]* ]]; then
+        die 2 "$unit: its config path holds a control character; nothing is read or written through it. Nothing changed"
+    fi
+    if [[ -e "$cfg" || -L "$cfg" ]] && ! py walk-check "$cfg" 2>/dev/null; then
+        die 2 "$unit: its config path $cfg passes through a folder symlink that another account can change; nothing is read or written through it. Nothing changed"
+    fi
+    if [[ -L "$cfg" ]]; then
+        local entry matched=0
+        while IFS= read -r entry; do
+            own_state_config_matches "$entry" "$resolved" && matched=1
+        done < <(unit_own_state_configs "$unit")
+        if [[ $matched -eq 0 ]]; then
+            die 2 "$unit: its config path $cfg resolves through a symlink to ${resolved:-nothing}; the script follows a consumer config symlink only to the unit's own state config: /var/lib/go-trader/config.json for go-trader.service, /var/lib/go-trader/<instance>/config.json for go-trader@<instance>.service, or <StateDirectory>/config.json for a go-trader StateDirectory= of the unit. Nothing changed"
+        fi
+    fi
+    while IFS= read -r other; do
+        [[ -n "$other" && "$other" != "$unit" ]] || continue
+        if [[ "$(canonical_config_path "$(unit_raw_config_path "$other")")" == "$resolved" ]]; then
+            die 2 "$unit: its config path $cfg resolves to $resolved, which is also the config of $other; root changes a consumer config only when it belongs to the selected unit alone. Nothing changed"
+        fi
+    done < <(scheduler_units)
+    for name in "${FEEDS[@]}"; do
+        if [[ "$(canonical_config_path "$(feed_config "$name")")" == "$resolved" ]]; then
+            die 2 "$unit: its config path $cfg resolves to $resolved, the config of $(feed_unit "$name"). Nothing changed"
+        fi
+    done
+    printf '%s' "$resolved"
+}
+
+consumer_config_now() {
+    local unit="$1" recorded="$2" now
+    now=$(unit_config_path "$unit") || return 1
+    [[ -n "$now" && "$now" == "$recorded" ]] || { warn "$unit: its config path resolves to ${now:-nothing} now, but the journal records $recorded"; return 1; }
 }
 
 unit_user() {
@@ -440,7 +670,7 @@ check_selection() {
         seen="${seen}${unit}"$'\n'
         case "$known" in *$'\n'"$unit"$'\n'*) ;; *) die 11 "$unit is not an active go-trader scheduler unit (signal-mode and bare-process deployments are not supported)" ;; esac
         wd=$(unit_prop "$unit" WorkingDirectory)
-        cfg=$(unit_config_path "$unit")
+        cfg=$(unit_config_path "$unit") || exit $?
         [[ -f "$cfg" ]] || die 11 "$unit: config $cfg does not exist"
         summary=$(py summary "$cfg") || die 11 "$unit: config $cfg does not parse"
         [[ "$(journal_field "$summary" covered)" -gt 0 ]] || die 12 "$unit: no Hyperliquid perps or manual strategy uses check_hyperliquid.py, so the shared feed covers nothing"
@@ -464,7 +694,7 @@ check_selection() {
     done
     id "$FEED_USER" >/dev/null 2>&1 || die 15 "consumer user $FEED_USER does not exist"
     for unit in "${CONSUMERS[@]}"; do
-        cfg=$(unit_config_path "$unit")
+        cfg=$(unit_config_path "$unit") || exit $?
         if [[ "$FEED_USER" != "root" ]] && ! runuser -u "$FEED_USER" -- test -r "$cfg" 2>/dev/null; then
             die 15 "$FEED_USER cannot read $cfg; the feed must read each consumer config after the switch"
         fi
@@ -522,7 +752,10 @@ print_inventory() {
     log "scheduler units on this host:"
     while IFS= read -r unit; do
         [[ -n "$unit" ]] || continue
-        cfg=$(unit_config_path "$unit")
+        if ! cfg=$(unit_config_path "$unit" 2>&1); then
+            log "  $unit: refused as a consumer: ${cfg#"[shared-feed] ERROR "}"
+            continue
+        fi
         wd=$(unit_prop "$unit" WorkingDirectory)
         summary=$(py summary "$cfg" 2>/dev/null || echo "config unreadable")
         ver=$(health_get "$(journal_field "$summary" status_port)" version)
@@ -531,25 +764,115 @@ print_inventory() {
     done < <(scheduler_units)
 }
 
-run_probe() {
-    local tmp="$1" binary="$2" name="$3"
-    (cd "$tmp" && "$binary" probe --config "$tmp/feed-$name.json")
+probe_as_tree_owner() {
+    local tree="$1" config="$2" owner
+    owner=$(update_tree_foreign_owner "$tree")
+    if [[ -n "$owner" ]]; then
+        update_probe_as_owner "$tree" "$owner" "$tree/go-trader" "stdin:$config"
+        return
+    fi
+    (cd "$tree" && ./go-trader probe --config "$config")
+}
+
+validate_budget_opts() {
+    if [[ -n "$OPT_PER_MINUTE$OPT_STARTUP" ]]; then
+        [[ "$OPT_PER_MINUTE" =~ ^[1-9][0-9]*$ && "$OPT_STARTUP" =~ ^[1-9][0-9]*$ ]] || die 2 "--per-minute and --startup must both be positive integers"
+    fi
+    if [[ -n "$OPT_WEIGHT_PER_MINUTE$OPT_WEIGHT_STARTUP$OPT_WEIGHT_RESERVE" ]]; then
+        [[ "$OPT_WEIGHT_PER_MINUTE" =~ ^[0-9]+$ && "$OPT_WEIGHT_STARTUP" =~ ^[0-9]+$ && "$OPT_WEIGHT_RESERVE" =~ ^[0-9]+$ ]] \
+            || die 2 "--weight-per-minute, --weight-startup and --weight-reserve must all be set, as whole numbers of venue weight"
+        [[ ${#OPT_WEIGHT_PER_MINUTE} -le 9 && ${#OPT_WEIGHT_STARTUP} -le 9 && ${#OPT_WEIGHT_RESERVE} -le 9 ]] \
+            || die 2 "a weight flag has too many digits; the binary's probe checks each value against the venue weight ceiling"
+    fi
+}
+
+opt_budget_json() {
+    [[ -n "$OPT_PER_MINUTE" && -n "$OPT_WEIGHT_PER_MINUTE" ]] || return 1
+    printf '{"per_minute":%s,"startup":%s,"weight_per_minute":%s,"weight_startup":%s,"weight_reserve":%s}' \
+        "$OPT_PER_MINUTE" "$OPT_STARTUP" "$OPT_WEIGHT_PER_MINUTE" "$OPT_WEIGHT_STARTUP" "$OPT_WEIGHT_RESERVE"
+}
+
+journal_budget_json() {
+    local rec="$1" f v out="" sep=""
+    [[ "$rec" == "budget calibrated "* ]] || return 1
+    for f in per_minute startup weight_per_minute weight_startup weight_reserve; do
+        v=$(journal_field "$rec" "$f")
+        [[ "$v" =~ ^[0-9]+$ ]] || return 1
+        out="$out$sep\"$f\":$v"
+        sep=","
+    done
+    printf '{%s}' "$out"
+}
+
+new_backup_budget() {
+    local budget
+    if budget=$(opt_budget_json); then
+        printf '%s' "$budget"
+        return 0
+    fi
+    journal_budget_json "$(journal_stage "budget")"
+}
+
+new_backup_budget_hint() {
+    printf 'a new backup feed needs an explicit safe initial budget: --per-minute <n> --startup <n> --weight-per-minute <n> --weight-startup <n> --weight-reserve <n> (the probe refuses weight_per_minute + weight_startup above the venue weight ceiling less weight_reserve). Nothing changed'
+}
+
+probe_feed_candidate() {
+    probe_as_tree_owner "$(feed_dir "$1")" "$2"
+}
+
+root_work_dir() {
+    install -d -m 0755 "$STATE_DIR"
+    mktemp -d "$STATE_DIR/work.XXXXXX"
+}
+
+apply_backup_budget() {
+    local budget="$1" config work candidate out rc
+    config=$(feed_config backup)
+    work=$(root_work_dir) || return 1
+    candidate="$work/candidate.json"
+    py copy "$config" "$candidate" || { rm -rf "$work"; return 1; }
+    py set-budget "$candidate" "$budget" || { rm -rf "$work"; return 1; }
+    set +e
+    out=$(probe_feed_candidate backup "$candidate" 2>&1)
+    rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        printf '%s\n' "$out" | sed 's/^/[shared-feed]   /' >&2
+        rm -rf "$work"
+        warn "the candidate budget $budget failed the backup binary's probe (exit $rc); $config is unchanged and no SIGHUP was sent"
+        return 1
+    fi
+    py copy "$candidate" "$config" || { rm -rf "$work"; return 1; }
+    rm -rf "$work"
+    systemctl kill -s HUP "$(feed_unit backup)"
+}
+
+grant_plan_probe_read() {
+    local tmp="$1" owner="$2" f
+    chown 0:0 "$tmp"
+    chmod 0711 "$tmp"
+    for f in "$tmp"/*.json; do
+        [[ "$f" == "$tmp/feed-backup.json" ]] && continue
+        chmod 0600 "$f"
+        chown "$owner" "$f"
+    done
 }
 
 build_temp_probe() {
-    local tmp="$1" unit cfg
+    local tmp="$1" budget="$2" unit cfg
     local -a shadows=()
     for unit in "${CONSUMERS[@]}"; do
-        cfg=$(unit_config_path "$unit")
+        cfg=$(unit_config_path "$unit") || exit $?
         py write-shared "$cfg" "$tmp/${unit%.service}.json" "$(feed_socket primary)" "$(feed_socket backup)" 0600
         shadows+=("$tmp/${unit%.service}.json")
     done
     local list
     list=$(printf '%s\n' "${shadows[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
-    python3 - "$tmp/feed-backup.json" "$list" <<'PY'
+    python3 - "$tmp/feed-backup.json" "$list" "$budget" <<'PY'
 import json, sys
 json.dump({"role": "feed", "status_port": 8191, "feed": {"source": "rest", "socket_path": "/run/go-trader-feed-backup/feed.sock",
-           "consumer_configs": json.loads(sys.argv[2]), "request_budget": {"per_minute": 1000, "startup": 1000}}, "strategies": []},
+           "consumer_configs": json.loads(sys.argv[2]), "request_budget": json.loads(sys.argv[3])}, "strategies": []},
           open(sys.argv[1], "w"), indent=2)
 PY
 }
@@ -567,10 +890,28 @@ cmd_plan() {
     origin=$(consumer_origin "$first_wd") \
         || die 19 "could not read the git origin of $first_wd (the git error above names the cause); feeds clones it for both feed trees"
     log "feed trees clone $origin (the origin of $first_wd)"
-    tmp=$(mktemp -d)
-    build_temp_probe "$tmp"
+    local budget
+    if [[ -f "$(feed_config backup)" && "$(py budget-complete "$(feed_config backup)")" == "yes" ]] && ! opt_budget_json >/dev/null; then
+        budget=$(py budget-of "$(feed_config backup)")
+        log "the probe uses the existing backup budget $budget"
+    else
+        budget=$(new_backup_budget) || die 2 "$(new_backup_budget_hint)"
+        log "the probe uses the budget $budget"
+    fi
+    local owner
+    owner=$(update_tree_foreign_owner "$first_wd")
+    if [[ -n "$owner" ]]; then
+        [[ "${owner%%:*}" == "$(id -u "$FEED_USER" 2>/dev/null)" ]] \
+            || die 16 "$first_wd belongs to uid ${owner%%:*}, but the consumers run as $FEED_USER; the plan probe runs the tree's binary only as its owner, and that owner must be the consumers' user to read their configs. Nothing changed"
+        install -d -m 0755 "$STATE_DIR"
+        tmp=$(mktemp -d "$STATE_DIR/plan-probe.XXXXXX")
+    else
+        tmp=$(mktemp -d)
+    fi
+    build_temp_probe "$tmp" "$budget"
+    [[ -z "$owner" ]] || grant_plan_probe_read "$tmp" "$owner"
     set +e
-    probe_out=$(run_probe "$tmp" "$first_wd/go-trader" backup 2>&1)
+    probe_out=$(probe_as_tree_owner "$first_wd" "$tmp/feed-backup.json" 2>&1)
     rc=$?
     set -e
     rm -rf "$tmp"
@@ -589,7 +930,7 @@ cmd_plan() {
         log "  feed units get a User=$FEED_USER Group=$FEED_GROUP drop-in, because the consumers run as $FEED_USER"
     fi
     for unit in "${CONSUMERS[@]}"; do
-        cfg=$(unit_config_path "$unit")
+        cfg=$(unit_config_path "$unit") || exit $?
         summary=$(py summary "$cfg")
         [[ "$(journal_field "$summary" live)" == "no" ]] && papers=$((papers + 1))
         log "  $unit: $cfg gets market_feed \"shared\", primary_socket $(feed_socket primary), backup_socket $(feed_socket backup); restart required$([[ "$(journal_field "$summary" live)" == "yes" ]] && echo "; LIVE: needs --confirm-live $unit")"
@@ -649,7 +990,7 @@ cmd_feeds() {
     pick_ports
     local first_wd first_cfg origin unit cfg shadow name
     first_wd=$(unit_prop "${CONSUMERS[0]}" WorkingDirectory)
-    first_cfg=$(unit_config_path "${CONSUMERS[0]}")
+    first_cfg=$(unit_config_path "${CONSUMERS[0]}") || exit $?
     origin=$(consumer_origin "$first_wd") \
         || die 20 "could not read the git origin of $first_wd (the git error above names the cause); the feed deployments clone it so update.sh can update them later. Nothing changed"
     prepare_shadow_dir
@@ -659,7 +1000,7 @@ cmd_feeds() {
         entry=$(consumer_entry "$unit")
         entries+=("$entry")
     done
-    local list per_minute startup keys list_changed=0
+    local list budget keys list_changed=0
     local -a relist=()
     list=$(printf '%s\n' "${entries[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
     for name in "${FEEDS[@]}"; do
@@ -672,25 +1013,10 @@ cmd_feeds() {
             update_git "$(dirname "$dir")" clone --quiet "$origin" "$dir" || die 20 "git clone of $origin into $dir failed (see the git error above)"
         fi
         install -d -m 0755 "$(dirname "$config")"
-        per_minute=""
-        startup=""
-        if [[ "$name" == "backup" ]]; then
-            local rec
-            rec=$(journal_last "budget")
-            if [[ -n "$rec" ]]; then
-                per_minute=$(journal_field "$rec" per_minute)
-                startup=$(journal_field "$rec" startup)
-            elif [[ -n "$OPT_PER_MINUTE" ]]; then
-                per_minute="$OPT_PER_MINUTE"
-                startup="$OPT_STARTUP"
-            else
-                per_minute=1000
-                startup=1000
-            fi
-        fi
+        budget=""
         if [[ -f "$config" && -n "$(journal_last "feed $name")" ]]; then
-            if [[ "$name" == "backup" && -n "$OPT_PER_MINUTE" && "$(feed_budget_matches "$config" "$OPT_PER_MINUTE" "$OPT_STARTUP")" != "yes" ]]; then
-                die 20 "$config exists with another request budget; --per-minute and --startup apply only to a new feed, and 'calibrate --per-minute $OPT_PER_MINUTE --startup $OPT_STARTUP' changes an existing one. Nothing changed for the backup"
+            if [[ "$name" == "backup" ]] && opt_budget_json >/dev/null && [[ "$(feed_budget_matches "$config" "$(opt_budget_json)")" != "yes" ]]; then
+                die 20 "$config exists with another request budget; the budget flags apply only to a new feed, and 'calibrate' with the same flags changes an existing one. Nothing changed for the backup"
             fi
             case "$(feed_list_state "$config" "$list")" in
                 same)
@@ -707,9 +1033,25 @@ cmd_feeds() {
                     ;;
             esac
         else
-            py write-feed "$config" "$first_cfg" "$(feed_source "$name")" "$(feed_socket "$name")" "${!portvar}" "$list" "$per_minute" "$startup"
+            if [[ "$name" == "backup" ]]; then
+                budget=$(new_backup_budget) || die 2 "$(new_backup_budget_hint)"
+            fi
+            local work candidate probe_out probe_rc
+            work=$(root_work_dir) || die 20 "could not create a root work directory under $STATE_DIR; $config was not written"
+            candidate="$work/candidate.json"
+            py write-feed "$candidate" "$first_cfg" "$(feed_source "$name")" "$(feed_socket "$name")" "${!portvar}" "$list" "$budget"
+            set +e
+            probe_out=$(probe_as_tree_owner "$first_wd" "$candidate" 2>&1)
+            probe_rc=$?
+            set -e
+            if [[ $probe_rc -ne 0 ]]; then
+                printf '%s\n' "$probe_out" | sed 's/^/[shared-feed]   /' >&2
+                rm -rf "$work"
+                die 20 "the candidate $(feed_unit "$name") config failed the probe (exit $probe_rc); $config was not written"
+            fi
+            py copy "$candidate" "$config" || { rm -rf "$work"; die 20 "could not install the probed $(feed_unit "$name") config at $config"; }
+            rm -rf "$work"
         fi
-        [[ "$name" == "backup" && -z "$(journal_last budget)" ]] && journal_add "budget provisional per_minute=$per_minute startup=$startup"
         ln -sfn "$config" "$dir/scheduler/config.json"
         local envfile
         envfile=$(update_systemd_envfile_check_path "$(unit_prop "${CONSUMERS[0]}" EnvironmentFiles)")
@@ -757,7 +1099,7 @@ cmd_feeds() {
 
 consumer_entry() {
     local unit="$1" cfg shadow
-    cfg=$(unit_config_path "$unit")
+    cfg=$(unit_config_path "$unit") || exit $?
     shadow="$SHADOW_DIR/${unit%.service}.json"
     journal_add "consumer $unit config=$cfg shadow=$shadow"
     if [[ "$(py is-shared "$cfg" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]]; then
@@ -783,10 +1125,12 @@ PY
 }
 
 feed_budget_matches() {
-    python3 - "$1" "$2" "$3" <<'PY'
+    python3 - "$1" "$2" <<'PY'
 import json, sys
+fields = ("per_minute", "startup", "weight_per_minute", "weight_startup", "weight_reserve")
 b = json.load(open(sys.argv[1]))["feed"].get("request_budget") or {}
-print("yes" if str(b.get("per_minute")) == sys.argv[2] and str(b.get("startup")) == sys.argv[3] else "no")
+want = json.loads(sys.argv[2])
+print("yes" if all(b.get(k) == want.get(k) for k in fields) else "no")
 PY
 }
 
@@ -894,7 +1238,7 @@ cmd_consumers() {
     list=$(printf '%s\n' "${entries[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
     keep=$(mktemp -d)
     for name in "${FEEDS[@]}"; do
-        cp -p "$(feed_config "$name")" "$keep/$name.json"
+        py copy "$(feed_config "$name")" "$keep/$name.json"
     done
     CONSUMERS_KEEP="$keep"
     guard_set consumers
@@ -927,8 +1271,7 @@ consumers_fail() {
     undo_begin
     local restore_failed="" prev
     for name in "${FEEDS[@]}"; do
-        cp -p "$keep/$name.json" "$(feed_config "$name").restore-shared-feed"
-        mv -f "$(feed_config "$name").restore-shared-feed" "$(feed_config "$name")"
+        py copy "$keep/$name.json" "$(feed_config "$name")"
         if ! systemctl is-active --quiet "$(feed_unit "$name")"; then
             log "$(feed_unit "$name") is not running; it loads its previous consumer list when it starts"
             continue
@@ -955,43 +1298,101 @@ feed_port() {
     printf '%s' "${rec##* }"
 }
 
-PREV_PER_MINUTE=""
-PREV_STARTUP=""
+CAL_KEEP=""
 
 calibrate_fail() {
     undo_begin
-    py set-budget "$(feed_config backup)" "$PREV_PER_MINUTE" "$PREV_STARTUP"
-    systemctl kill -s HUP "$(feed_unit backup)" || true
-    die 24 "$1; the backup keeps its previous budget per_minute=$PREV_PER_MINUTE startup=$PREV_STARTUP"
+    local config sum=""
+    config=$(feed_config backup)
+    if [[ -n "$CAL_KEEP" && -f "$CAL_KEEP" ]]; then
+        if ! cmp -s "$CAL_KEEP" "$config"; then
+            py copy "$CAL_KEEP" "$config"
+            systemctl kill -s HUP "$(feed_unit backup)" || true
+        fi
+        sum=$(sha256sum "$config" | awk '{print $1}')
+        rm -f "$CAL_KEEP"
+        CAL_KEEP=""
+    fi
+    die 24 "$1; the backup keeps its previous config byte for byte (sha256 ${sum:-unknown}) and its previous budget"
+}
+
+health_num() {
+    local v
+    v=$(health_get "$1" "$2")
+    [[ -z "$v" ]] && return 0
+    [[ "$v" =~ ^[0-9]{1,15}$ ]] || { warn "the backup's /health field $2 is not a whole number: ${v:0:40}"; return 1; }
+    printf '%s' "$v"
+}
+
+calibrate_weight_peak() {
+    local port="$1" charged pending inflight
+    charged=$(health_num "$port" request_budget.weight.charged) || return 1
+    pending=$(health_num "$port" request_budget.weight.pending) || return 1
+    inflight=$(health_num "$port" request_budget.weight.in_flight) || return 1
+    printf '%s' $(( ${charged:-0} + ${pending:-0} + ${inflight:-0} ))
+}
+
+calibrate_largest_read() {
+    local v
+    v=$(run_probe_live backup | sed -n 's/^probe: weight estimate .*largest_read=\([0-9]*\)$/\1/p' | tail -n 1)
+    [[ "$v" =~ ^[1-9][0-9]{0,8}$ ]] || return 1
+    printf '%s' "$v"
 }
 
 cmd_calibrate() {
     need_root
     [[ -n "$(journal_stage "feeds ready")" ]] || die 20 "run 'feeds' first$(reset_note "feeds ready")"
     local port window cad sampled=0 peak=0 used refused_before refused bootstrap per_minute startup cap_peak="" cap_cold=""
+    local wpeak=0 wused wrefused_before wrefused wboot wpm wst wrs ceiling budget prior
     port=$(feed_port backup)
     cad=$(max_cadence)
     window="${OPT_WINDOW:-$(( ${cad:-300} * 2 ))}"
-    PREV_PER_MINUTE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["feed"]["request_budget"]["per_minute"])' "$(feed_config backup)")
-    PREV_STARTUP=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["feed"]["request_budget"]["startup"])' "$(feed_config backup)")
+    [[ "$(py budget-complete "$(feed_config backup)")" == "yes" ]] || opt_budget_json >/dev/null \
+        || die 2 "$(feed_config backup) has no complete weight policy; pass all five budget flags (--per-minute, --startup, --weight-per-minute, --weight-startup, --weight-reserve). Nothing changed"
+    prior=$(py budget-of "$(feed_config backup)")
+    CAL_KEEP="$(mktemp -d)/config.json"
+    py copy "$(feed_config backup)" "$CAL_KEEP"
     guard_set calibrate
-    if [[ -n "$OPT_PER_MINUTE" ]]; then
-        py set-budget "$(feed_config backup)" "$OPT_PER_MINUTE" "$OPT_STARTUP"
-        systemctl kill -s HUP "$(feed_unit backup)"
+    if [[ -n "$OPT_PER_MINUTE" || -n "$OPT_WEIGHT_PER_MINUTE" ]]; then
+        budget=$(python3 - "$prior" "$OPT_PER_MINUTE" "$OPT_STARTUP" "$OPT_WEIGHT_PER_MINUTE" "$OPT_WEIGHT_STARTUP" "$OPT_WEIGHT_RESERVE" <<'PY'
+import json, sys
+b = json.loads(sys.argv[1])
+names = ("per_minute", "startup", "weight_per_minute", "weight_startup", "weight_reserve")
+for name, v in zip(names, sys.argv[2:]):
+    if v:
+        b[name] = int(v)
+print(json.dumps(b, separators=(",", ":")))
+PY
+)
+        apply_backup_budget "$budget" || calibrate_fail "the fixed budget $budget failed the probe"
         sleep 5
     fi
-    refused_before=$(health_get "$port" request_budget.totals.refused)
-    log "sampling the backup's request window for ${window}s (longest cadence ${cad:-unknown}s)"
+    local nonnum="the backup's /health returned a value that is not a whole number; nothing is computed from it"
+    refused_before=$(health_num "$port" request_budget.totals.refused) || calibrate_fail "$nonnum"
+    wrefused_before=$(health_num "$port" request_budget.weight.totals.refused) || calibrate_fail "$nonnum"
+    log "sampling the backup's request window and weight use for ${window}s (longest cadence ${cad:-unknown}s)"
     while [[ $sampled -lt $window ]]; do
-        used=$(health_get "$port" request_budget.window_used)
+        used=$(health_num "$port" request_budget.window_used) || calibrate_fail "$nonnum"
         [[ -n "$used" && "$used" -gt "$peak" ]] && peak="$used"
+        wused=$(calibrate_weight_peak "$port") || calibrate_fail "$nonnum"
+        [[ -n "$wused" && "$wused" -gt "$wpeak" ]] && wpeak="$wused"
         sleep 2
         sampled=$((sampled + 2))
     done
-    refused=$(health_get "$port" request_budget.totals.refused)
+    refused=$(health_num "$port" request_budget.totals.refused) || calibrate_fail "$nonnum"
     [[ "${refused:-0}" == "${refused_before:-0}" ]] || calibrate_fail "the backup refused $((refused - refused_before)) request(s) during calibration; raise the budget and re-run"
-    bootstrap=$(health_get "$port" request_budget.totals.by_reason.bootstrap)
+    wrefused=$(health_num "$port" request_budget.weight.totals.refused) || calibrate_fail "$nonnum"
+    [[ "${wrefused:-0}" == "${wrefused_before:-0}" ]] || calibrate_fail "the backup's weight allocation refused $((wrefused - wrefused_before)) read(s) during calibration; raise the weight policy and re-run"
+    [[ "$(health_get "$port" request_budget.weight.participation)" == "enabled" ]] || calibrate_fail "the backup reports no weight participation; its binary or config predates the weight policy"
+    ceiling=$(health_num "$port" request_budget.weight.ceiling) || calibrate_fail "$nonnum"
+    [[ "$ceiling" =~ ^[1-9][0-9]*$ ]] || calibrate_fail "the backup reports no weight ceiling"
+    bootstrap=$(health_num "$port" request_budget.totals.by_reason.bootstrap) || calibrate_fail "$nonnum"
     bootstrap="${bootstrap:-0}"
+    wboot=$(health_num "$port" request_budget.weight.totals.reserved_by_reason.bootstrap) || calibrate_fail "$nonnum"
+    wboot="${wboot:-0}"
+    local largest wfloor
+    largest=$(calibrate_largest_read) || calibrate_fail "the backup probe printed no largest_read in its weight estimate, so the smallest safe weight_per_minute is unknown"
+    wfloor=$((largest + 2))
     if [[ -n "$OPT_PER_MINUTE" ]]; then
         per_minute="$OPT_PER_MINUTE"
         startup="$OPT_STARTUP"
@@ -1002,6 +1403,20 @@ cmd_calibrate() {
         [[ $per_minute -ge $((peak + 2)) ]] || per_minute=$((peak + 2))
         startup=$(( (bootstrap * 3 + 1) / 2 ))
         [[ $startup -ge 1 ]] || startup=1
+    fi
+    wrs=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["weight_reserve"])' "$prior")
+    [[ -z "$OPT_WEIGHT_RESERVE" ]] || wrs="$OPT_WEIGHT_RESERVE"
+    if [[ -n "$OPT_WEIGHT_PER_MINUTE" ]]; then
+        wpm="$OPT_WEIGHT_PER_MINUTE"
+        wst="$OPT_WEIGHT_STARTUP"
+        [[ $wpeak -le $((wpm + wst)) ]] || calibrate_fail "measured weight peak $wpeak does not fit weight_per_minute $wpm + weight_startup $wst"
+        [[ $wpm -ge $wfloor ]] || calibrate_fail "weight_per_minute $wpm is below $wfloor, the largest single read of the current union ($largest) plus the mids keep (2); a key added later by reload could never be read"
+    else
+        wpm=$(( (wpeak * 3 + 1) / 2 ))
+        [[ $wpm -ge $wfloor ]] || wpm=$wfloor
+        wst=$(( (wboot * 3 + 1) / 2 ))
+        [[ $wpm -le $((ceiling - wrs)) ]] || calibrate_fail "weight_per_minute $wpm (the larger of 1.5 times the measured weight peak and the largest single read $largest plus the mids keep) does not fit the $ceiling ceiling less weight_reserve $wrs"
+        [[ $((wpm + wst)) -le $((ceiling - wrs)) ]] || wst=$((ceiling - wrs - wpm))
     fi
     if [[ -n "$OPT_LEDGER" ]]; then
         local report
@@ -1014,13 +1429,16 @@ cmd_calibrate() {
         [[ $per_minute -le $cap_peak ]] || per_minute=$cap_peak
         if [[ -n "$cap_cold" && $startup -gt $cap_cold ]]; then startup=$cap_cold; fi
     fi
-    py set-budget "$(feed_config backup)" "$per_minute" "$startup"
-    systemctl kill -s HUP "$(feed_unit backup)"
+    budget=$(printf '{"per_minute":%s,"startup":%s,"weight_per_minute":%s,"weight_startup":%s,"weight_reserve":%s}' "$per_minute" "$startup" "$wpm" "$wst" "$wrs")
+    apply_backup_budget "$budget" || calibrate_fail "the calibrated budget $budget failed the probe"
     sleep 5
     [[ "$(health_get "$port" request_budget.per_minute)" == "$per_minute" ]] || calibrate_fail "the backup did not apply per_minute $per_minute after SIGHUP"
-    journal_add "budget calibrated per_minute=$per_minute startup=$startup peak=$peak bootstrap=$bootstrap baseline_peak=${cap_peak:-none} fixed=$([[ -n "$OPT_PER_MINUTE" ]] && echo yes || echo no) at=$(date -u +%s)"
+    [[ "$(health_get "$port" request_budget.weight.weight_per_minute)" == "$wpm" ]] || calibrate_fail "the backup did not apply weight_per_minute $wpm after SIGHUP"
+    journal_add "budget calibrated per_minute=$per_minute startup=$startup weight_per_minute=$wpm weight_startup=$wst weight_reserve=$wrs peak=$peak weight_peak=$wpeak bootstrap=$bootstrap bootstrap_weight=$wboot baseline_peak=${cap_peak:-none} fixed=$([[ -n "$OPT_PER_MINUTE$OPT_WEIGHT_PER_MINUTE" ]] && echo yes || echo no) at=$(date -u +%s)"
     guard_clear
-    log "calibrate OK: per_minute=$per_minute startup=$startup (measured peak $peak, bootstrap $bootstrap). Next: verify"
+    rm -f "$CAL_KEEP"
+    CAL_KEEP=""
+    log "calibrate OK: per_minute=$per_minute startup=$startup weight_per_minute=$wpm weight_startup=$wst weight_reserve=$wrs (measured peak $peak requests and $wpeak weight, bootstrap $bootstrap requests and $wboot weight). Next: verify"
 }
 
 common_retained_keys() {
@@ -1043,7 +1461,7 @@ PY
 }
 
 budget_calibrated() {
-    [[ "$(journal_stage "budget")" == "budget calibrated "* ]]
+    journal_budget_json "$(journal_stage "budget")" >/dev/null
 }
 
 cmd_verify() {
@@ -1125,19 +1543,19 @@ restore_consumer() {
     post=$(journal_field "$rec" post)
     shadow=$(journal_field "$(journal_last "consumer $unit")" shadow)
     [[ -n "$cfg" && -f "$backup" ]] || { warn "$unit: no saved config recorded"; return 1; }
+    consumer_config_now "$unit" "$cfg" || { warn "$unit: its config path no longer resolves to the recorded $cfg; nothing is restored through a changed path, so restore $backup by hand"; return 1; }
     [[ "$(update_file_fingerprint "$backup")" == "$pre" ]] || { warn "$unit: $backup no longer matches the recorded pre-switch fingerprint"; return 1; }
     if [[ -n "$post" && "$(update_file_fingerprint "$cfg")" != "$post" ]]; then
         mode="keys"
     fi
     if [[ "$mode" == "byte" ]]; then
-        cp -p "$backup" "$cfg.restore-shared-feed"
-        mv -f "$cfg.restore-shared-feed" "$cfg"
+        py copy "$backup" "$cfg"
     else
         local kept
         kept="${cfg}.pre-rollback.$(date -u +%Y%m%dT%H%M%SZ)"
-        cp -p "$cfg" "$kept"
+        py copy "$cfg" "$kept"
         py revert-feed-keys "$cfg" "$backup"
-        chown --reference="$kept" "$cfg"
+        py chown-ref "$kept" "$cfg"
         log "$unit: the config changed after the switch (for example a paper fold), so only market_feed and shared_market_feed are reverted; the changed config is kept as $kept"
     fi
     [[ -z "$shadow" ]] || write_shadow "$cfg" "$shadow"
@@ -1253,6 +1671,7 @@ cmd_switch() {
     [[ -n "$crec" ]] && in_current_consumers "$unit" || die 20 "$unit is not a current consumer; add it with 'consumers' (or 'feeds') first"
     cfg=$(journal_field "$crec" config)
     shadow=$(journal_field "$crec" shadow)
+    consumer_config_now "$unit" "$cfg" || die 20 "$unit: its config path no longer resolves to $cfg, the path that 'consumers' or 'feeds' recorded; root writes no config through a changed path. Nothing changed"
     srec=$(journal_last "switch $unit")
     if [[ "$(py is-shared "$cfg" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]]; then
         if [[ -n "$srec" && "$srec" != *" done" && "$srec" != *" rolled_back "* ]]; then
@@ -1278,12 +1697,12 @@ cmd_switch() {
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
     backup="${cfg}.pre-shared-feed.${stamp}"
     pre=$(update_file_fingerprint "$cfg")
-    cp -p "$cfg" "$backup"
+    py copy "$cfg" "$backup"
     old_pid=$(unit_prop "$unit" MainPID)
     journal_add "switch $unit config=$cfg backup=$backup pre=$pre pid=$old_pid begin"
     guard_set switch "$unit"
-    py write-shared "$cfg" "$cfg" "$(feed_socket primary)" "$(feed_socket backup)" "$(stat -c '%a' "$backup")"
-    chown --reference="$backup" "$cfg"
+    py write-shared "$cfg" "$cfg" "$(feed_socket primary)" "$(feed_socket backup)" "$(py mode-of "$backup")"
+    py chown-ref "$backup" "$cfg"
     post=$(update_file_fingerprint "$cfg")
     journal_add "switch $unit config=$cfg backup=$backup pre=$pre post=$post pid=$old_pid written"
     local name tmp state waited
@@ -1423,23 +1842,32 @@ cmd_status() {
     done < <(current_consumers)
 }
 
-[[ $# -gt 0 ]] || { usage; exit 2; }
-SUBCOMMAND="$1"
-shift
 declare -a SELECTED=()
 OPT_PER_MINUTE=""
 OPT_STARTUP=""
+OPT_WEIGHT_PER_MINUTE=""
+OPT_WEIGHT_STARTUP=""
+OPT_WEIGHT_RESERVE=""
 OPT_LEDGER=""
 OPT_WINDOW=""
 OPT_CONFIRM_LIVE=""
 OPT_DROPIN=0
 OPT_ACCEPT_DIFF=0
 OPT_ALL=0
+
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
+
+[[ $# -gt 0 ]] || { usage; exit 2; }
+SUBCOMMAND="$1"
+shift
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --consumer) SELECTED+=("${2:-}"); shift 2 ;;
         --per-minute) OPT_PER_MINUTE="${2:-}"; shift 2 ;;
         --startup) OPT_STARTUP="${2:-}"; shift 2 ;;
+        --weight-per-minute) OPT_WEIGHT_PER_MINUTE="${2:-}"; shift 2 ;;
+        --weight-startup) OPT_WEIGHT_STARTUP="${2:-}"; shift 2 ;;
+        --weight-reserve) OPT_WEIGHT_RESERVE="${2:-}"; shift 2 ;;
         --baseline-ledger) OPT_LEDGER="${2:-}"; shift 2 ;;
         --window) OPT_WINDOW="${2:-}"; shift 2 ;;
         --confirm-live) OPT_CONFIRM_LIVE="${2:-}"; shift 2 ;;
@@ -1450,9 +1878,7 @@ while [[ $# -gt 0 ]]; do
         *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
-if [[ -n "$OPT_PER_MINUTE$OPT_STARTUP" ]]; then
-    [[ "$OPT_PER_MINUTE" =~ ^[1-9][0-9]*$ && "$OPT_STARTUP" =~ ^[1-9][0-9]*$ ]] || die 2 "--per-minute and --startup must both be positive integers"
-fi
+validate_budget_opts
 [[ -z "$OPT_WINDOW" || "$OPT_WINDOW" =~ ^[1-9][0-9]*$ ]] || die 2 "--window must be a positive number of seconds"
 
 case "$SUBCOMMAND" in

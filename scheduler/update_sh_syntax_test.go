@@ -71,6 +71,10 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		ciStep: true,
 		marker: "PASS: volume-profile replay harness (sealed profile sessions, hand-calculated value areas and decisions match the independent recording replay; tampered, truncated, contradicted and unclosed recordings refused)",
 	},
+	"test_shared_feed_convert_budget.sh": {
+		ciStep: true,
+		marker: "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, or into its own go-trader StateDirectory, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues; a config path with a control character, a symlinked state folder or a shared state folder is refused; switch, its failure restore and rollback succeed on the migrated layout and a legacy tree, also through a root-owned folder symlink)",
+	},
 	"test_feed_parity.sh": {
 		ciStep: true,
 		marker: "PASS: feed-parity audit (per-key backup fills from one backup seal pass; wrong or unlogged backup seals, same-seal fill contradictions and every earlier failure rule fail)",

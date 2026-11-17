@@ -177,6 +177,7 @@ type feedKeyState struct {
 	seq           uint64
 	corr          feedKeyCorrection
 	rlSeq         uint64
+	weightHeld    bool
 	bootstrapped  bool
 }
 
@@ -448,7 +449,9 @@ type feedFunding struct {
 	Source     string
 	Err        string
 
-	rateLimited bool
+	rateLimited    bool
+	weightHeld     bool
+	waitingForBars bool
 }
 
 type feedRestReason string
@@ -531,6 +534,7 @@ type marketFeedOwner struct {
 
 	fetchSeq        uint64
 	midsRateLimited bool
+	midsWeightHeld  bool
 
 	alerts chan feedAlert
 	clock  func() time.Time
@@ -789,11 +793,18 @@ func (o *marketFeedOwner) fetchAndMerge(ctx context.Context, key marketFeedKey, 
 		return err
 	}
 	if err != nil {
+		weight := errors.Is(err, errFeedWeightRefused)
 		o.feedMu.Lock()
 		if st := o.keys[key]; st != nil {
 			st.StatusDetail = err.Error()
+			if weight {
+				st.weightHeld = true
+			}
 			if len(st.Bars) == 0 {
 				st.Status = feedStatusFailed
+				if weight {
+					st.Status = feedStatusBudget
+				}
 			}
 		}
 		o.feedMu.Unlock()
@@ -813,6 +824,7 @@ func (o *marketFeedOwner) fetchAndMerge(ctx context.Context, key marketFeedKey, 
 			key, feedStatusRateLimited, errFeedHostPaused)
 	}
 	st.rlSeq = 0
+	st.weightHeld = false
 	if len(st.Bars) == 0 {
 		st.Status = feedStatusFailed
 		st.StatusDetail = "the venue returned no candles"
@@ -872,6 +884,7 @@ type marketFeedHealth struct {
 	Correction   *feedCorrectionHealth     `json:"correction,omitempty"`
 	Requests     *feedBudgetTotals         `json:"requests,omitempty"`
 	RateLimit    []feedRateLimitHostStatus `json:"rate_limit,omitempty"`
+	Weight       *feedWeightStatus         `json:"weight,omitempty"`
 }
 
 type marketFeedHealthKey struct {
@@ -945,6 +958,8 @@ func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 		totals := o.requestLedger.snapshot()
 		health.Requests = &totals
 		health.RateLimit = o.requestLedger.rateLimitStatus()
+		w := o.requestLedger.weightStatus()
+		health.Weight = &w
 	}
 	perKey := make(map[marketFeedKey]feedKeyCorrection, len(o.keys))
 	for k, st := range o.keys {

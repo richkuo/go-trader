@@ -2062,7 +2062,202 @@ update_probe_as_owner() {
         -E PYTHONDONTWRITEBYTECODE=1)
     [[ ${#rw[@]} -gt 0 ]] && args+=(-p "ReadWritePaths=${rw[*]}")
     [[ ${#extra[@]} -gt 0 ]] && args+=("${extra[@]}")
+    if [[ "$config" == stdin:* ]]; then
+        systemd-run "${args[@]}" -- /bin/sh -c 'd=$(mktemp -d) && cat >"$d/config.json" && exec "$1" probe --config "$d/config.json"' sh "$binary" <"${config#stdin:}"
+        return
+    fi
     systemd-run "${args[@]}" -- /bin/sh -c 'd=$(mktemp -d) && cp -- "$2" "$d/config.json" && exec "$1" probe --config "$d/config.json"' sh "$binary" "$config" </dev/null
+}
+
+update_feed_config_live_path() {
+    local link="${1%/}/scheduler/config.json"
+    [[ -e "$link" ]] || return 1
+    python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$link"
+}
+
+update_feed_staged_candidate() {
+    local deploy="$1" restart="$2" live staged
+    live=$(update_feed_config_live_path "$deploy") || return 0
+    staged="$live.staged"
+    [[ -e "$staged" || -L "$staged" ]] || return 0
+    if [[ "$(update_deployment_role_for_config "$live")" != "feed" ]]; then
+        echo "[update] $staged exists, but $live is a scheduler config; a staged config is promoted only for a role=feed deployment. Remove $staged; nothing changed" >&2
+        return 1
+    fi
+    if [[ -L "$staged" ]]; then
+        echo "[update] $staged is a symlink; stage the candidate feed config as a regular file. Nothing changed" >&2
+        return 1
+    fi
+    if [[ ! -f "$staged" ]]; then
+        echo "[update] $staged is not a regular file. Nothing changed" >&2
+        return 1
+    fi
+    if [[ "$restart" != "1" ]]; then
+        echo "[update] $staged is a staged feed config; it is promoted only by the transaction of 'update.sh --restart'. Nothing changed" >&2
+        return 1
+    fi
+    if [[ "$(update_deployment_role_for_config "$staged")" != "feed" ]]; then
+        echo "[update] $staged is not a role=feed config (or not valid JSON); nothing changed" >&2
+        return 1
+    fi
+    printf '%s\n%s' "$live" "$staged"
+}
+
+UPDATE_FEED_CONFIG_PY='
+import hashlib, os, secrets, stat, sys
+
+def die(msg):
+    sys.stderr.write("[update] " + msg + "\n")
+    sys.exit(1)
+
+def open_dir(path):
+    if not os.path.isabs(path):
+        die(path + " is not an absolute path")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    for part in [p for p in path.split("/") if p]:
+        if part in (".", ".."):
+            os.close(fd)
+            die(path + " has a . or .. component")
+        try:
+            nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        except OSError as e:
+            os.close(fd)
+            die(path + ": the component " + part + " is missing or is a symlink (" + e.strerror + ")")
+        os.close(fd)
+        fd = nfd
+    return fd
+
+def open_file(path):
+    d = open_dir(os.path.dirname(path))
+    try:
+        fd = os.open(os.path.basename(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=d)
+    except OSError as e:
+        die(path + " cannot be opened without following a symlink (" + e.strerror + ")")
+    finally:
+        os.close(d)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        os.close(fd)
+        die(path + " is not a regular file with exactly one link")
+    return fd, st
+
+def read_all(fd):
+    out = []
+    while True:
+        b = os.read(fd, 1 << 20)
+        if not b:
+            return b"".join(out)
+        out.append(b)
+
+def write_new(d, name, data, uid, gid, mode):
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=d)
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+        if os.geteuid() == 0:
+            os.fchown(fd, uid, gid)
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+mode = sys.argv[1]
+if mode == "copy":
+    src, dest, keep = sys.argv[2:5]
+    dest = os.path.join(os.path.realpath(os.path.dirname(dest)), os.path.basename(dest))
+    fd, st = open_file(src)
+    try:
+        data = read_all(fd)
+    finally:
+        os.close(fd)
+    d = open_dir(os.path.dirname(dest))
+    try:
+        if keep == "keep":
+            write_new(d, os.path.basename(dest), data, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+        else:
+            write_new(d, os.path.basename(dest), data, 0, 0, 0o600)
+    finally:
+        os.close(d)
+    print(hashlib.sha256(data).hexdigest())
+elif mode == "install":
+    src, dest, ref, want = sys.argv[2:6]
+    src = os.path.realpath(src)
+    fd, _ = open_file(src)
+    try:
+        data = read_all(fd)
+    finally:
+        os.close(fd)
+    if hashlib.sha256(data).hexdigest() != want:
+        die(src + " does not match its recorded sha256 " + want)
+    rfd, rst = open_file(ref)
+    os.close(rfd)
+    d = open_dir(os.path.dirname(dest))
+    base = os.path.basename(dest)
+    tmp = ".go-trader-config." + secrets.token_hex(8)
+    try:
+        try:
+            cur = os.stat(base, dir_fd=d, follow_symlinks=False)
+            if not stat.S_ISREG(cur.st_mode):
+                die(dest + " exists and is not a regular file; nothing was written")
+        except FileNotFoundError:
+            pass
+        try:
+            write_new(d, tmp, data, rst.st_uid, rst.st_gid, rst.st_mode & 0o7777)
+            os.rename(tmp, base, src_dir_fd=d, dst_dir_fd=d)
+            os.fsync(d)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=d)
+            except FileNotFoundError:
+                pass
+            raise
+        vfd = os.open(base, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=d)
+        try:
+            got = hashlib.sha256(read_all(vfd)).hexdigest()
+        finally:
+            os.close(vfd)
+        if got != want:
+            die(dest + " does not match sha256 " + want + " after the rename")
+    finally:
+        os.close(d)
+else:
+    die("unknown mode " + mode)
+'
+
+update_feed_config_install() {
+    python3 -c "$UPDATE_FEED_CONFIG_PY" install "$1" "$2" "$3" "$4"
+}
+
+update_feed_config_snapshot() {
+    local snap_dir="$1" live="$2" staged="$3" live_sha cand_sha
+    live_sha=$(python3 -c "$UPDATE_FEED_CONFIG_PY" copy "$live" "$snap_dir/feed_config.live" keep) || return 1
+    cand_sha=$(python3 -c "$UPDATE_FEED_CONFIG_PY" copy "$staged" "$snap_dir/feed_config.candidate" private) || return 1
+    [[ "$live_sha" == "$(update_file_fingerprint "$snap_dir/feed_config.live")" ]] || return 1
+    [[ "$cand_sha" == "$(update_file_fingerprint "$snap_dir/feed_config.candidate")" ]] || return 1
+    if [[ "$(update_deployment_role_for_config "$snap_dir/feed_config.candidate")" != "feed" ]]; then
+        echo "[update] the copy of $staged is not a role=feed config (or not valid JSON); nothing changed" >&2
+        return 1
+    fi
+    {
+        printf 'feed_config_path=%q\n' "$live"
+        printf 'feed_config_staged=%q\n' "$staged"
+        printf 'feed_config_live_sha=%q\n' "$live_sha"
+        printf 'feed_config_candidate_sha=%q\n' "$cand_sha"
+    } >"$snap_dir/feed_config.env"
+}
+
+update_feed_config_restore() {
+    local snap_dir="$1" feed_config_path="" feed_config_live_sha=""
+    [[ -f "$snap_dir/feed_config.env" && -f "$snap_dir/feed_config.live" ]] || return 1
+    source "$snap_dir/feed_config.env"
+    [[ -n "$feed_config_path" && -n "$feed_config_live_sha" ]] || return 1
+    if [[ "$(update_file_fingerprint "$feed_config_path")" == "$feed_config_live_sha" ]]; then
+        return 0
+    fi
+    local snap_live
+    snap_live=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$snap_dir/feed_config.live") || return 1
+    update_feed_config_install "$snap_live" "$feed_config_path" "$snap_live" "$feed_config_live_sha"
 }
 
 update_owner_runs_venv() {

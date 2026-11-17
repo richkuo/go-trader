@@ -845,8 +845,9 @@ func main() {
 		}
 		feedReq = derived
 		feedOwner = newMarketFeedOwner(nil, func(format string, a ...any) { fmt.Printf(format+"\n", a...) })
-		feedLedger = newFeedRequestLedger(nil, false, nil)
+		feedLedger = newFeedRequestLedger(cfg.MarketFeedWeightBudget.budget(), false, nil)
 		feedOwner.SetRequestLedger(feedLedger)
+		fmt.Printf("[feed] embedded owner request totals are logged without a limit; %s\n", formatFeedWeightPolicy(cfg.MarketFeedWeightBudget.budget().weightPolicy()))
 		feedRateLimitSender = newFeedAlertSender(func(msg string) {
 			if notifier != nil && notifier.HasOwner() {
 				notifier.SendOwnerDM(msg)
@@ -857,6 +858,7 @@ func main() {
 		fmt.Printf("[feed] closed-bar correction: re-read at close%s, counted as request reason correction\n",
 			formatFeedCorrectionOffsets(feedCorrectionOffsets))
 		globalMarketFeedStatus.setOwner(feedOwner)
+		feedLedger.openStartup()
 		ready := feedOwner.ApplyGeneration(feedOwnerCtx, feedReq)
 		go feedOwner.Run(feedOwnerCtx)
 		select {
@@ -1154,6 +1156,11 @@ func main() {
 				fmt.Printf("[feed-ratelimit] evaluation=%s %s\n", evalID, ev.logLine())
 				fmt.Printf("[feed] %s\n", formatFeedRateLimitAlert(ev, marketFeedWebsocket, "scheduler"))
 				feedRateLimitSender.enqueue(formatFeedRateLimitAlert(ev, marketFeedWebsocket, "scheduler"))
+			}
+			for _, ev := range feedLedger.weightReport(feedOwner.weightRefusedInputs()) {
+				fmt.Printf("[feed-weight] evaluation=%s %s\n", evalID, ev.logLine())
+				fmt.Printf("[feed] %s\n", formatFeedWeightAlert(ev, marketFeedWebsocket, "scheduler"))
+				feedRateLimitSender.enqueue(formatFeedWeightAlert(ev, marketFeedWebsocket, "scheduler"))
 			}
 			globalMarketFeedStatus.setSnapshotID(evalID)
 			if line := marketSnapshotLogLine(feedCtx.Snapshot, cycleFeedReqs); line != "" {

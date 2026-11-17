@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strconv"
 	"time"
 )
@@ -25,21 +24,18 @@ func fetchHyperliquidMidsCtx(ctx context.Context, coins []string) (map[string]fl
 	if err != nil {
 		return nil, fmt.Errorf("marshal allMids request: %w", err)
 	}
-	reply, err := hlInfoPost(ctx, hlMainnetURL, "allMids", body, 10*time.Second, 0)
+	var raw map[string]string
+	err = hlInfoPost(ctx, hlInfoCall{
+		BaseURL: hlMainnetURL, Type: "allMids", Body: body, Timeout: 10 * time.Second,
+		Decode: func(data []byte) (int, error) {
+			if perr := json.Unmarshal(data, &raw); perr != nil {
+				return 0, fmt.Errorf("parse allMids response: %w", perr)
+			}
+			return 0, nil
+		},
+	})
 	if err != nil {
 		return nil, err
-	}
-	if reply.Status != http.StatusOK {
-		return nil, fmt.Errorf("http %d from %s/info allMids", reply.Status, hlMainnetURL)
-	}
-	if reply.ReadErr != nil {
-		return nil, fmt.Errorf("read allMids response: %w", reply.ReadErr)
-	}
-	data := reply.Body
-
-	var raw map[string]string
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parse allMids response: %w", err)
 	}
 
 	want := make(map[string]bool, len(coins))

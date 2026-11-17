@@ -11,7 +11,10 @@
     ],
     "request_budget": {
       "per_minute": 120,
-      "startup": 400
+      "startup": 400,
+      "weight_per_minute": 600,
+      "weight_startup": 400,
+      "weight_reserve": 200
     }
   },
   "discord": {

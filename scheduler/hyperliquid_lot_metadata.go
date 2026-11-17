@@ -120,7 +120,9 @@ func hlLotMetadataLedgerContext(ctx context.Context) context.Context {
 	if feedLedgerFrom(ctx) != nil {
 		return ctx
 	}
-	local := newFeedRequestLedger(&feedBudgetConfig{PerMinute: hlLotMetadataLedgerPerMinute, Startup: 1}, true, nil)
+	metaWeight, _ := hlInfoWeight("meta", 0)
+	local := newFeedRequestLedger(&feedBudgetConfig{PerMinute: hlLotMetadataLedgerPerMinute, Startup: 1,
+		WeightPerMinute: feedIntPtr(hlLotMetadataLedgerPerMinute * metaWeight), WeightStartup: feedIntPtr(0), WeightReserve: feedIntPtr(0)}, true, nil)
 	local.closeOnSuccess = true
 	return withFeedLedger(ctx, local)
 }

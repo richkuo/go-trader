@@ -39,73 +39,96 @@ func hlPostInfoTo(ctx context.Context, baseURL string, payload any, maxBytes int
 			reqType = t
 		}
 	}
-	reply, err := hlInfoPost(ctx, baseURL, reqType, body, hlFundingFetchTimeout, maxBytes)
+	var data []byte
+	err = hlInfoPost(ctx, hlInfoCall{
+		BaseURL: baseURL, Type: reqType, Body: body, Timeout: hlFundingFetchTimeout, MaxBytes: maxBytes,
+		Decode: func(b []byte) (int, error) {
+			data = b
+			return 0, nil
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
-	if reply.Status != http.StatusOK {
-		return nil, fmt.Errorf("http %d from %s/info", reply.Status, baseURL)
-	}
-	if reply.ReadErr != nil {
-		return nil, reply.ReadErr
-	}
-	if reply.TooLarge {
-		return nil, fmt.Errorf("%s/info response exceeds %d bytes", baseURL, maxBytes)
-	}
-	return reply.Body, nil
+	return data, nil
 }
 
-type hlInfoReply struct {
-	Status   int
+type hlInfoCall struct {
+	BaseURL  string
+	Type     string
 	Body     []byte
-	ReadErr  error
-	TooLarge bool
+	Timeout  time.Duration
+	MaxBytes int64
+	RowBound int
+	Decode   func([]byte) (int, error)
 }
 
 var hlInfoBeforeSendHook func(ctx context.Context, reqType string)
 
-func hlInfoPost(ctx context.Context, baseURL, reqType string, body []byte, timeout time.Duration, maxBytes int64) (hlInfoReply, error) {
-	permit, err := feedBudgetAcquire(ctx, baseURL, reqType)
-	if err != nil {
-		return hlInfoReply{}, err
+func hlInfoPost(ctx context.Context, call hlInfoCall) error {
+	bound := -1
+	if hlInfoRowCap(call.Type) > 0 {
+		bound = call.RowBound
+		if bound <= 0 {
+			bound = -1
+		}
 	}
-	reqCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+"/info", bytes.NewReader(body))
+	permit, err := feedBudgetAcquireBounded(ctx, call.BaseURL, call.Type, bound)
 	if err != nil {
-		return hlInfoReply{}, fmt.Errorf("build %s request: %w", reqType, err)
+		return err
+	}
+	defer permit.closeOpen()
+	reqCtx, cancel := context.WithTimeout(ctx, call.Timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, call.BaseURL+"/info", bytes.NewReader(call.Body))
+	if err != nil {
+		return fmt.Errorf("build %s request: %w", call.Type, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if hook := hlInfoBeforeSendHook; hook != nil {
-		hook(ctx, reqType)
+		hook(ctx, call.Type)
 	}
 	if err := permit.beginSend(); err != nil {
-		return hlInfoReply{}, err
+		return err
 	}
-	client := egressHTTPClient(timeout)
+	client := egressHTTPClient(call.Timeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		permit.finish(0, "")
-		return hlInfoReply{}, fmt.Errorf("http request: %w", err)
+		return fmt.Errorf("http request: %w", err)
 	}
 	defer resp.Body.Close()
 	permit.finish(resp.StatusCode, resp.Header.Get("Retry-After"))
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return hlInfoReply{Status: resp.StatusCode}, fmt.Errorf("http %d from %s/info %s: %w", resp.StatusCode, baseURL, reqType, errHLInfoRateLimited)
+		return fmt.Errorf("http %d from %s/info %s: %w", resp.StatusCode, call.BaseURL, call.Type, errHLInfoRateLimited)
 	}
-	reply := hlInfoReply{Status: resp.StatusCode}
 	if resp.StatusCode != http.StatusOK {
-		return reply, nil
+		return fmt.Errorf("http %d from %s/info %s", resp.StatusCode, call.BaseURL, call.Type)
 	}
-	if maxBytes <= 0 {
-		reply.Body, reply.ReadErr = io.ReadAll(resp.Body)
-		return reply, nil
+	var body []byte
+	if call.MaxBytes <= 0 {
+		body, err = io.ReadAll(resp.Body)
+	} else {
+		body, err = io.ReadAll(io.LimitReader(resp.Body, call.MaxBytes+1))
+		if err == nil && int64(len(body)) > call.MaxBytes {
+			err = fmt.Errorf("%s/info %s response exceeds %d bytes", call.BaseURL, call.Type, call.MaxBytes)
+		}
 	}
-	reply.Body, reply.ReadErr = io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
-	if reply.ReadErr == nil && int64(len(reply.Body)) > maxBytes {
-		reply.TooLarge = true
+	if err != nil {
+		permit.retain()
+		return fmt.Errorf("read %s response: %w", call.Type, err)
 	}
-	return reply, nil
+	rows, err := call.Decode(body)
+	if err != nil {
+		permit.retain()
+		return err
+	}
+	if bound > 0 && rows > permit.rowBound(bound) {
+		permit.violation(bound, rows)
+		return fmt.Errorf("%s/info %s returned %d rows, over its %d-row bound; the reservation is kept and the excess is charged as debt", call.BaseURL, call.Type, rows, bound)
+	}
+	permit.settle(rows)
+	return nil
 }
 
 func hlParseNumeric(raw json.RawMessage) (float64, error) {
@@ -164,15 +187,36 @@ func fetchHyperliquidFundingRate(ctx context.Context, coin string) (float64, err
 
 var fetchHyperliquidFundingHistoryFn = fetchHyperliquidFundingHistory
 
-func fetchHyperliquidFundingHistory(ctx context.Context, coin string, startMs int64) ([]feedFundingRecord, error) {
-	data, err := hlPostInfo(ctx, map[string]any{
+func fetchHyperliquidFundingHistory(ctx context.Context, coin string, startMs, endMs int64) ([]feedFundingRecord, error) {
+	bound, err := hlFundingRowBound(startMs, endMs)
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(map[string]any{
 		"type":      "fundingHistory",
 		"coin":      coin,
 		"startTime": startMs,
+		"endTime":   endMs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal fundingHistory request: %w", err)
+	}
+	var out []feedFundingRecord
+	err = hlInfoPost(ctx, hlInfoCall{
+		BaseURL: hlMainnetURL, Type: "fundingHistory", Body: body, Timeout: hlFundingFetchTimeout, RowBound: bound,
+		Decode: func(data []byte) (int, error) {
+			records, derr := parseHyperliquidFundingHistory(data, startMs, endMs)
+			out = records
+			return len(records), derr
+		},
 	})
 	if err != nil {
 		return nil, err
 	}
+	return out, nil
+}
+
+func parseHyperliquidFundingHistory(data []byte, startMs, endMs int64) ([]feedFundingRecord, error) {
 	var rows []map[string]json.RawMessage
 	if err := json.Unmarshal(data, &rows); err != nil {
 		return nil, fmt.Errorf("parse fundingHistory: %w", err)
@@ -201,14 +245,18 @@ func fetchHyperliquidFundingHistory(ctx context.Context, coin string, startMs in
 		if math.IsNaN(ts) || math.IsInf(ts, 0) || ts <= 0 || ts != math.Trunc(ts) || ts > float64(math.MaxInt64/2) {
 			return nil, fmt.Errorf("fundingHistory row %d time %v is not a positive whole millisecond", i, ts)
 		}
+		if t := int64(ts); t < startMs || t > endMs {
+			return nil, fmt.Errorf("fundingHistory row %d time %d is outside the requested [%d, %d] interval", i, t, startMs, endMs)
+		}
 		out = append(out, feedFundingRecord{Rate: rate, TimeMs: int64(ts)})
 	}
 	return out, nil
 }
 
 func hlFundingAverage7d(ctx context.Context, coin string, now time.Time) (float64, error) {
-	startMs := now.UTC().UnixMilli() - int64(hlFundingAvgWindowDays)*86_400_000
-	records, err := fetchHyperliquidFundingHistoryFn(ctx, coin, startMs)
+	endMs := now.UTC().UnixMilli()
+	startMs := endMs - int64(hlFundingAvgWindowDays)*86_400_000
+	records, err := fetchHyperliquidFundingHistoryFn(ctx, coin, startMs, endMs)
 	if err != nil {
 		return 0, err
 	}
@@ -234,7 +282,7 @@ func hlFundingPagedRecords(ctx context.Context, coin string, startMs, endMs int6
 	seen := make(map[int64]float64)
 	cursor := startMs
 	for pass := 0; pass < maxPasses && cursor <= endMs; pass++ {
-		records, err := fetchHyperliquidFundingHistoryFn(ctx, coin, cursor)
+		records, err := fetchHyperliquidFundingHistoryFn(ctx, coin, cursor, endMs)
 		if err != nil {
 			return nil, err
 		}

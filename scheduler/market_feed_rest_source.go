@@ -16,6 +16,7 @@ const (
 type feedPrepareReport struct {
 	Refreshed          int
 	Refused            []string
+	WeightRefused      []string
 	Paused             []string
 	Failed             []string
 	RefreshedKeys      map[marketFeedKey]bool
@@ -81,7 +82,8 @@ func (r *feedRESTSource) canRetry(ctx context.Context, err error) bool {
 
 func (r *feedRESTSource) prepare(ctx context.Context, deadline int64, reqs cycleMarketRequirements, coverage feedRequirements) feedPrepareReport {
 	rep := feedPrepareReport{RefreshedKeys: make(map[marketFeedKey]bool), ReadyOnlyRefreshed: true}
-	keyed := withFeedKeep(ctx, 1)
+	midsWeight, _ := hlInfoWeight("allMids", 0)
+	keyed := withFeedKeepWeight(withFeedKeep(ctx, 1), midsWeight)
 	for _, cr := range restRefreshOrder(reqs, coverage) {
 		key := cr.Key
 		if _, tracked := r.owner.readinessFor(key); !tracked || !r.owner.publishedKey(key) {
@@ -100,6 +102,9 @@ func (r *feedRESTSource) prepare(ctx context.Context, deadline int64, reqs cycle
 			continue
 		}
 		switch {
+		case errors.Is(err, errFeedWeightRefused):
+			r.owner.markKeyUnready(key, feedStatusBudget, fmt.Sprintf("refresh for deadline %d was refused by the weight allocation: %v", deadline, err))
+			rep.WeightRefused = append(rep.WeightRefused, key.PayloadID())
 		case errors.Is(err, errFeedBudgetExhausted):
 			r.owner.markKeyUnready(key, feedStatusBudget, fmt.Sprintf("refresh for deadline %d was refused: %v", deadline, err))
 			rep.Refused = append(rep.Refused, key.PayloadID())
@@ -126,6 +131,11 @@ func (r *feedRESTSource) prepare(ctx context.Context, deadline int64, reqs cycle
 		case err == nil:
 			r.owner.IngestMids(mids, r.owner.now(), feedSourceREST)
 			r.owner.setMidsRateLimited(false)
+			r.owner.setMidsWeightHeld(false)
+		case errors.Is(err, errFeedWeightRefused):
+			r.owner.setMidsWeightHeld(true)
+			rep.WeightRefused = append(rep.WeightRefused, "mids")
+			r.logf("[feed] mids for deadline %d: %v", deadline, err)
 		case errors.Is(err, errFeedBudgetExhausted):
 			rep.Refused = append(rep.Refused, "mids")
 			r.logf("[feed] mids for deadline %d: %v", deadline, err)

@@ -59,6 +59,9 @@ jobs:
             exit 1
           fi
 
+      - name: Feed weight ledger race check
+        run: cd scheduler && go test -race -count=1 -timeout 15m -run '^TestFeedWeight' .
+
       - name: Quote coordinator race check
         if: ${{ needs.changes.outputs.quote == 'true' }}
         run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestQuote' -skip '^(TestQuoteReplayRunsThePolicyThroughTheRealCoordinator|TestQuoteReplayResumeMatchesAnUninterruptedRun|TestQuoteReplayFaultsRecoverWithTheirStatedClass|TestQuoteReplayRefusesUnsafeStateAndInputs|TestQuoteReplayLaterReceiptsLeaveEarlierDecisionsUnchanged|TestQuoteReplayCoverageAndTimingRefusals|TestQuotePolicyBoundaryCasesThroughTheRealCoordinator)$' .
@@ -217,6 +220,12 @@ jobs:
           bash scripts/run_ci_shell_suite.sh \
             --marker 'PASS: feed-parity audit (per-key backup fills from one backup seal pass; wrong or unlogged backup seals, same-seal fill contradictions and every earlier failure rule fail)' \
             -- bash scripts/test_feed_parity.sh
+
+      - name: Shared feed conversion budget suite
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, or into its own go-trader StateDirectory, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues; a config path with a control character, a symlinked state folder or a shared state folder is refused; switch, its failure restore and rollback succeed on the migrated layout and a legacy tree, also through a root-owned folder symlink)' \
+            -- env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" bash scripts/test_shared_feed_convert_budget.sh
 
       - name: Allow unprivileged user namespaces for the ledger capture worker
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0

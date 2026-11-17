@@ -337,7 +337,8 @@ func queryAgentFeedRateLimit(expectRole, configPath string, port int, token stri
 	}
 	switch {
 	case expectRole == configRoleFeed && reply.RequestBudget != nil && reply.RequestBudget.RateLimit != nil:
-		out.Ledgers = []feedRateLimitLedgerView{{Name: "feed", Enforced: reply.RequestBudget.Enforced, RateLimit: reply.RequestBudget.RateLimit}}
+		w := reply.RequestBudget.Weight
+		out.Ledgers = []feedRateLimitLedgerView{{Name: "feed", Enforced: reply.RequestBudget.Enforced, RateLimit: reply.RequestBudget.RateLimit, Weight: &w}}
 	case expectRole == configRoleScheduler && reply.FeedRateLimit != nil:
 		out.Ledgers = append([]feedRateLimitLedgerView{}, (*reply.FeedRateLimit)...)
 	default:
@@ -389,7 +390,7 @@ func buildFeedAgentInfo(cfg *Config, version string, now time.Time) agentInfo {
 			Note:            "Seals one immutable market snapshot per scheduled deadline and serves it to shared-mode schedulers over a Unix socket; probe loads each consumer config read-only and skips check scripts.",
 		}
 		if cfg.Feed.Source == feedSourceREST {
-			info.Feed.Note += " Source rest is the backup feed: it reads the venue REST interface at each deadline and refuses any request past feed.request_budget, which marks the affected inputs not ready so consumers hold entries on them."
+			info.Feed.Note += " Source rest is the backup feed: it reads the venue REST interface at each deadline and refuses any request past feed.request_budget, which marks the affected inputs not ready so consumers hold entries on them. A rest feed requires a venue weight policy (weight_per_minute, weight_startup, weight_reserve) and reserves each read's bounded weight before it sends."
 		}
 	}
 	return info
@@ -665,7 +666,8 @@ func renderAgentInfoMarkdown(info agentInfo) string {
 		} else {
 			fmt.Fprintf(&b, "- source: `%s`\n- socket: `%s`\n- status port: `%d`\n", info.Feed.Source, info.Feed.SocketPath, info.Feed.StatusPort)
 			if rb := info.Feed.RequestBudget; rb != nil {
-				fmt.Fprintf(&b, "- request budget: `%d` per minute, `%d` at startup\n", rb.PerMinute, rb.Startup)
+				fmt.Fprintf(&b, "- request budget: `%d` requests per minute, `%d` at startup\n", rb.PerMinute, rb.Startup)
+				fmt.Fprintf(&b, "- %s\n", formatFeedWeightPolicy(rb.weightPolicy()))
 			}
 			for _, c := range info.Feed.ConsumerConfigs {
 				fmt.Fprintf(&b, "- consumer config: `%s`\n", c)
