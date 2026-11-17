@@ -478,19 +478,31 @@ canonical_config_path() {
     printf '%s' "$resolved"
 }
 
-unit_own_state_config() {
-    local unit="$1" instance own
+state_config_for_dir() {
+    local rel="$1" own
+    [[ "$rel" == go-trader || "$rel" == go-trader/* ]] || return 0
+    [[ "$rel" != */../* && "$rel" != */.. && "$rel" != *//* && "$rel" != go-trader/*/* ]] || return 0
+    case "${rel#go-trader/}" in feed-*|shared-feed) return 0 ;; esac
+    own="$CONVERT_ROOT/var/lib/$rel/config.json"
+    printf '%s/config.json\n' "$(readlink -f "$(dirname "$own")" 2>/dev/null || dirname "$own")"
+}
+
+unit_own_state_configs() {
+    local unit="$1" instance dir
+    local -a dirs=()
     case "$unit" in
-        go-trader.service) own="$CONVERT_ROOT/var/lib/go-trader/config.json" ;;
+        go-trader.service) state_config_for_dir go-trader ;;
         go-trader@?*.service)
             instance="${unit%.service}"
             instance="${instance#go-trader@}"
-            [[ "$instance" != */* && "$instance" != feed-* && "$instance" != shared-feed ]] || return 0
-            own="$CONVERT_ROOT/var/lib/go-trader/$instance/config.json"
+            [[ "$instance" != */* ]] && state_config_for_dir "go-trader/$instance"
             ;;
-        *) return 0 ;;
     esac
-    printf '%s/config.json' "$(readlink -f "$(dirname "$own")" 2>/dev/null || dirname "$own")"
+    read -r -a dirs <<<"$(unit_prop "$unit" StateDirectory)" || true
+    for dir in "${dirs[@]+"${dirs[@]}"}"; do
+        state_config_for_dir "$dir"
+    done
+    return 0
 }
 
 unit_config_path() {
@@ -499,9 +511,9 @@ unit_config_path() {
     [[ -n "$cfg" ]] || { printf ''; return 0; }
     resolved=$(canonical_config_path "$cfg")
     if [[ -L "$cfg" || "$resolved" != "$cfg" ]]; then
-        own=$(unit_own_state_config "$unit")
-        if [[ -z "$own" || "$resolved" != "$own" ]]; then
-            die 2 "$unit: its config path $cfg resolves through a symlink to $resolved; the script follows a consumer config symlink only to the unit's own state config (/var/lib/go-trader/config.json for go-trader.service, /var/lib/go-trader/<instance>/config.json for go-trader@<instance>.service)${own:+, here $own}. Nothing changed"
+        own=$(unit_own_state_configs "$unit")
+        if [[ -z "$resolved" ]] || ! grep -qxF -- "$resolved" <<<"$own"; then
+            die 2 "$unit: its config path $cfg resolves through a symlink to ${resolved:-nothing}; the script follows a consumer config symlink only to the unit's own state config: /var/lib/go-trader/config.json for go-trader.service, /var/lib/go-trader/<instance>/config.json for go-trader@<instance>.service, or <StateDirectory>/config.json for a go-trader StateDirectory= of the unit. Nothing changed"
         fi
     fi
     while IFS= read -r other; do

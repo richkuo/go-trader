@@ -470,4 +470,36 @@ rc=0
 grep -q "which is also the config of go-trader-b.service" "$WORK/shared-cfg.out" || fail "the shared-config refusal did not name the other unit: $(cat "$WORK/shared-cfg.out")"
 ok "a regular config path that another discovered unit also uses is refused and names that unit"
 
-echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues)"
+LEG_STATE="$ROOT/var/lib/go-trader/legacy/config.json"
+mkdir -p "$(dirname "$LEG_STATE")"
+cp "$LEGACY/scheduler/config.json" "$LEG_STATE"
+state_dir_units() {
+    host_units
+    unit_prop() {
+        case "$2" in
+            WorkingDirectory) [[ "$1" == "$LUNIT" ]] && printf '%s' "$LEGACY" || printf '%s' "$MAIN_TREE" ;;
+            StateDirectory) [[ "$1" == "$LUNIT" ]] && printf '%s' "${LEG_STATE_DIR:-}" || printf '' ;;
+            *) printf '' ;;
+        esac
+    }
+}
+mv "$LEGACY/scheduler/config.json" "$LEGACY/scheduler/config.json.real"
+ln -s "$LEG_STATE" "$LEGACY/scheduler/config.json"
+got=$(LEG_STATE_DIR="go-trader/legacy"; state_dir_units; unit_config_path "$LUNIT") \
+    || fail "a non-template unit with StateDirectory=go-trader/legacy was refused its own state config"
+[[ "$got" == "$(cd "$(dirname "$LEG_STATE")" && pwd -P)/config.json" ]] || fail "the StateDirectory unit resolved to $got"
+for sd in "" "go-trader" "go-trader/feed-backup" "go-trader/other" "go-trader/legacy/.." "elsewhere/legacy"; do
+    if (LEG_STATE_DIR="$sd"; state_dir_units; unit_config_path "$LUNIT") >/dev/null 2>&1; then
+        fail "a non-template unit with StateDirectory=$sd was allowed to follow a symlink to $LEG_STATE"
+    fi
+done
+rm "$LEGACY/scheduler/config.json"
+ln -s "$MAIN_CFG" "$LEGACY/scheduler/config.json"
+if (LEG_STATE_DIR="go-trader/legacy"; state_dir_units; unit_config_path "$LUNIT") >/dev/null 2>&1; then
+    fail "a StateDirectory unit was allowed to follow a symlink to the go-trader.service config"
+fi
+rm "$LEGACY/scheduler/config.json"
+mv "$LEGACY/scheduler/config.json.real" "$LEGACY/scheduler/config.json"
+ok "a non-template unit follows a config symlink only into its own go-trader StateDirectory; a missing, shared, feed, other or escaping StateDirectory and the go-trader.service config are refused"
+
+echo "PASS: shared-feed-convert budget (a new backup needs the full weight policy; an unsafe candidate fails the real probe with the config bytes unchanged and no SIGHUP; a calibration failure restores a byte-identical config; calibrate keeps room for the largest single read and refuses non-numeric /health values; a tree owned by another user is probed only as its owner; no root write follows a planted symlink or a symlinked parent; a consumer config symlink resolves only to the own config of that unit, or into its own go-trader StateDirectory, and a config another unit also uses is refused; switch and rollback refuse a config path that changed after it was recorded; the inventory reports a refused unit that is not selected and continues)"
