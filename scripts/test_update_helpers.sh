@@ -1775,8 +1775,11 @@ fi
 rm -f "$rec_test/deploy/.venv"
 mv "$rec_test/deploy/.venv-real" "$rec_test/deploy/.venv"
 
+mkdir -p "$rec_test/shared/feed-weight"
+printf '{"version":1,"seq":1}\n' >"$rec_test/shared/feed-weight/authority.json"
 UPDATE_NO_FREEZE_EXCLUDES=1 GO_TRADER_SIGNAL_LOG="$rec_test/deploy/custom-signal.log" update_take_snapshot "$rec_test/deploy" "$rec_test/rec/$rkey" "" "" "" \
     || { echo "FAIL: update_take_snapshot failed" >&2; exit 1; }
+printf '{"version":1,"seq":2}\n' >"$rec_test/shared/feed-weight/authority.json"
 
 printf 'mutated-readme\n' >"$rec_test/deploy/README.md"
 printf 'added-by-failed-update\n' >"$rec_test/deploy/added_new.py"
@@ -1807,6 +1810,7 @@ assert_eq "$(cat "$rec_test/deploy/go-trader")" "bin-v1" "binary restored from s
 assert_eq "$(cat "$rec_test/deploy/sub/nested/primary.db")" "db1-runtime-write" "excluded nested runtime DB write survived restore"
 assert_eq "$(cat "$rec_test/deploy/custom_logs/app.log")" "log2" "custom log_dir survived restore"
 assert_eq "$(cat "$rec_test/deploy/custom-signal.log")" "sig1" "custom signal log survived restore"
+assert_eq "$(cat "$rec_test/shared/feed-weight/authority.json")" '{"version":1,"seq":2}' "a binary/config rollback keeps the shared feed weight record a peer advanced during the update"
 
 update_write_incomplete_marker "$rec_test/rec" "$rkey" "$rec_test/deploy" "$rec_test/rec/$rkey" "forced test failure" "files=ok probe=failed"
 if update_check_incomplete_marker "$rec_test/rec" "$rkey" "$rec_test/deploy" 2>/dev/null; then
@@ -2876,5 +2880,62 @@ fcfg_root=$(cd "$fcfg_root" && pwd -P)
     echo "OK: feed config: a normal promotion and its restore keep the bytes and the mode"
 ) || exit 1
 rm -rf "$fcfg_root"
+
+fw_test=$(mktemp -d)
+printf 'old binary\n' >"$fw_test/old-go-trader"
+printf 'new binary go-trader-capability:feed-weight-authority-v1 tail\n' >"$fw_test/new-go-trader"
+assert_eq "$(update_probe_identity_args "$fw_test/new-go-trader" /var/lib/go-trader/a/config.json | tr '\n' ' ')" "--deployment-config /var/lib/go-trader/a/config.json " "a capable binary is probed with the persistent owner identity"
+assert_eq "$(update_probe_identity_args "$fw_test/old-go-trader" /var/lib/go-trader/a/config.json)" "" "an older binary is probed without the identity flag it does not know"
+assert_eq "$(update_probe_identity_args "$fw_test/new-go-trader" "")" "" "no identity, no flag"
+mkdir -p "$fw_test/bin" "$fw_test/tree/scheduler"
+cat >"$fw_test/bin/systemd-run" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >>"$FW_LOG"
+SH
+cat >"$fw_test/bin/systemctl" <<'SH'
+#!/bin/sh
+case "$*" in
+    *StateDirectory*) cat "$FW_STATE_DIRS" ;;
+    *ProtectSystem*) cat "$FW_STATE_DIRS.protect" 2>/dev/null || echo strict ;;
+    *) cat "$FW_STATE_DIRS.rw" 2>/dev/null || true ;;
+esac
+SH
+chmod +x "$fw_test/bin/systemd-run" "$fw_test/bin/systemctl"
+printf '{}\n' >"$fw_test/cfg.json"
+(
+    export PATH="$fw_test/bin:$PATH" FW_LOG="$fw_test/run.log"
+    UPDATE_PROBE_DEPLOYMENT_CONFIG=/var/lib/go-trader/a/config.json update_probe_as_owner "$fw_test/tree" "1:1" "$fw_test/new-go-trader" "$fw_test/cfg.json"
+    UPDATE_PROBE_DEPLOYMENT_CONFIG=/var/lib/go-trader/a/config.json update_probe_as_owner "$fw_test/tree" "1:1" "$fw_test/old-go-trader" "stdin:$fw_test/cfg.json"
+)
+grep -q -- "new-go-trader $fw_test/cfg.json --deployment-config /var/lib/go-trader/a/config.json\$" "$fw_test/run.log" \
+    || { echo "FAIL: the owner probe of a capable binary does not carry the persistent identity" >&2; cat "$fw_test/run.log" >&2; exit 1; }
+grep -q -- "old-go-trader\$" "$fw_test/run.log" \
+    || { echo "FAIL: the owner probe of an older binary carries flags it does not know" >&2; cat "$fw_test/run.log" >&2; exit 1; }
+printf '{"role":"feed","feed":{"source":"rest","request_budget":{"per_minute":1,"startup":1,"weight_per_minute":600,"weight_startup":100,"weight_reserve":100}}}\n' >"$fw_test/feed.json"
+printf '{"market_feed":"websocket","market_feed_weight_budget":{"weight_per_minute":200,"weight_startup":0,"weight_reserve":100}}\n' >"$fw_test/embedded.json"
+printf '{"market_feed":"websocket"}\n' >"$fw_test/plain.json"
+(
+    export PATH="$fw_test/bin:$PATH" FW_STATE_DIRS="$fw_test/dirs"
+    printf 'go-trader/feed-backup\n' >"$fw_test/dirs"
+    if update_feed_weight_grant_check go-trader@feed-backup.service "$fw_test/feed.json" 2>"$fw_test/grant.err"; then
+        echo "FAIL: a participating feed whose unit grants no shared state directory passed" >&2; exit 1
+    fi
+    grep -q "grants no StateDirectory" "$fw_test/grant.err" || { echo "FAIL: grant refusal text" >&2; cat "$fw_test/grant.err" >&2; exit 1; }
+    if update_feed_weight_grant_check go-trader.service "$fw_test/embedded.json" 2>/dev/null; then
+        echo "FAIL: an embedded participant without the shared grant passed" >&2; exit 1
+    fi
+    update_feed_weight_grant_check go-trader.service "$fw_test/plain.json" >/dev/null || { echo "FAIL: a non-participant was refused" >&2; exit 1; }
+    printf 'go-trader/feed-backup go-trader/shared\n' >"$fw_test/dirs"
+    update_feed_weight_grant_check go-trader@feed-backup.service "$fw_test/feed.json" >/dev/null || { echo "FAIL: the template grant was refused" >&2; exit 1; }
+    printf 'go-trader\n' >"$fw_test/dirs"
+    update_feed_weight_grant_check go-trader.service "$fw_test/embedded.json" >/dev/null || { echo "FAIL: the plain unit grant was refused" >&2; exit 1; }
+    printf '\n' >"$fw_test/dirs"
+    printf -- '-/var/lib/go-trader\n' >"$fw_test/dirs.rw"
+    update_feed_weight_grant_check legacy.service "$fw_test/feed.json" >/dev/null || { echo "FAIL: a ReadWritePaths grant was refused" >&2; exit 1; }
+    rm -f "$fw_test/dirs.rw"
+    printf 'full\n' >"$fw_test/dirs.protect"
+    update_feed_weight_grant_check legacy.service "$fw_test/feed.json" >/dev/null || { echo "FAIL: a unit without ProtectSystem=strict was refused" >&2; exit 1; }
+)
+rm -rf "$fw_test"
 
 echo "OK: update_helpers tests passed"

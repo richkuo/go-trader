@@ -124,6 +124,7 @@ func hlLotMetadataLedgerContext(ctx context.Context) context.Context {
 	local := newFeedRequestLedger(&feedBudgetConfig{PerMinute: hlLotMetadataLedgerPerMinute, Startup: 1,
 		WeightPerMinute: feedIntPtr(hlLotMetadataLedgerPerMinute * metaWeight), WeightStartup: feedIntPtr(0), WeightReserve: feedIntPtr(0)}, true, nil)
 	local.closeOnSuccess = true
+	local.coverage = feedSharedCoverageLotLocal
 	return withFeedLedger(ctx, local)
 }
 

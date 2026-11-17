@@ -237,6 +237,10 @@ say "read-only utilities beside the service, singleton refusals"
 cli inspect --config /data/config.json --all >/dev/null || fail "inspect beside the service failed"
 cli storage-inspect --config /data/config.json >/dev/null || fail "storage-inspect beside the service failed"
 cli probe --config /data/config.json >/dev/null || fail "probe beside the service failed"
+cli_sh "/app/.venv/bin/python3 -c 'import json; d = json.load(open(\"/data/config.json\")); d[\"market_feed\"] = \"websocket\"; d[\"market_feed_weight_budget\"] = {\"weight_per_minute\": 200, \"weight_startup\": 100, \"weight_reserve\": 100}; json.dump(d, open(\"/tmp/fw.json\", \"w\"))' && /app/go-trader probe --config /tmp/fw.json --deployment-config /data/config.json" >"$work/fw-probe.out" 2>&1 \
+    || { cat "$work/fw-probe.out" >&2; fail "probe of an embedded weight participant failed"; }
+grep -q "directory=/data/feed-weight" "$work/fw-probe.out" || { cat "$work/fw-probe.out" >&2; fail "the container probe does not name /data/feed-weight as the shared weight directory"; }
+cli_sh "test ! -e /data/feed-weight" || fail "the read-only probe created /data/feed-weight"
 set +e
 start=$SECONDS
 cli --config /data/config.json --once >"$work/once-busy.out" 2>&1
@@ -257,7 +261,7 @@ docker exec "$second" /app/go-trader healthcheck >/dev/null 2>&1 && fail "held c
 docker stop -t 10 "$second" >/dev/null
 [[ "$(docker inspect -f '{{.State.ExitCode}}' "$second")" == "79" ]] || fail "held second daemon did not exit 79 on stop"
 docker rm -f "$second" >/dev/null
-ok "inspect, storage-inspect and probe run beside the service; --once returns 79; a second daemon holds with one CRITICAL line and stops"
+ok "inspect, storage-inspect and probe run beside the service; the probe of a weight participant forecasts /data/feed-weight without creating it; --once returns 79; a second daemon holds with one CRITICAL line and stops"
 
 say "hot reload through SIGHUP"
 (cd "$work" && compose cp go-trader:/data/config.json ./config.json >/dev/null)

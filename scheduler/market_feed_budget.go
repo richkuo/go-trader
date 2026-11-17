@@ -75,6 +75,7 @@ type feedWeightCharge struct {
 	weight  int
 	startup int
 	debt    bool
+	host    string
 }
 
 type feedWeightBound struct {
@@ -121,6 +122,11 @@ type feedRequestLedger struct {
 	wLastRefusal string
 	wEpisode     feedWeightEpisode
 	wChanged     chan struct{}
+
+	authority         *feedWeightAuthority
+	coverage          string
+	seededStartup     bool
+	seededStartupLeft int
 }
 
 type feedBudgetTotals struct {
@@ -181,6 +187,7 @@ type feedWeightStatus struct {
 	LastRefusal   string                  `json:"last_refusal,omitempty"`
 	Violations    []feedWeightViolation   `json:"violations"`
 	Episode       feedWeightEpisodeStatus `json:"episode"`
+	Shared        feedSharedStatus        `json:"shared"`
 }
 
 type feedBudgetStatus struct {
@@ -209,6 +216,9 @@ type feedWeightRefusal struct {
 
 func (e *feedWeightRefusal) Error() string {
 	switch e.Cause {
+	case feedWeightCauseSharedExhausted, feedWeightCauseSharedHold, feedWeightCauseSharedStorage,
+		feedWeightCauseSharedClock, feedWeightCauseSharedVersion, feedWeightCauseSharedOwner:
+		return fmt.Sprintf("%v (%s): %s (reason %s, %s, input %s)", errFeedWeightRefused, e.Cause, e.Detail, e.Reason, e.ReqType, e.Input)
 	case feedWeightCauseUnpriced, feedWeightCauseBound:
 		return fmt.Sprintf("%v (%s): %s (reason %s, %s, input %s)", errFeedWeightRefused, e.Cause, e.Detail, e.Reason, e.ReqType, e.Input)
 	}
@@ -300,6 +310,9 @@ func (l *feedRequestLedger) openStartup() {
 	l.startupLeft = l.startup
 	if l.weight != nil {
 		l.wStartupLeft = l.weight.Startup
+		if l.seededStartup && l.seededStartupLeft < l.wStartupLeft {
+			l.wStartupLeft = l.seededStartupLeft
+		}
 	}
 	l.signalLocked()
 }
@@ -388,7 +401,7 @@ func (l *feedRequestLedger) countWeightRefusalLocked(spec feedAcquireSpec, cause
 	l.wTotals.RefusedByReason[spec.reason]++
 	l.wTotals.RefusedByType[spec.reqType]++
 	l.wLastRefusal = cause
-	if !feedWeightRequiredReason(spec.reason) {
+	if !feedWeightRequiredReason(spec.reason) || feedSharedCause(cause) {
 		return
 	}
 	ep := &l.wEpisode
@@ -484,6 +497,7 @@ func (l *feedRequestLedger) acquireSpec(spec feedAcquireSpec, silent bool) (*fee
 	} else {
 		l.window = append(l.window, now)
 	}
+	durable := l.authority != nil && l.weight != nil
 	l.recordLocked(spec.reason, spec.reqType)
 	l.wStartupLeft -= startupPart
 	l.wPending += cost
@@ -495,7 +509,68 @@ func (l *feedRequestLedger) acquireSpec(spec feedAcquireSpec, silent bool) (*fee
 		atCap = true
 	}
 	return &feedRequestPermit{l: l, host: spec.host, reason: spec.reason, reqType: spec.reqType, input: spec.input,
-		cost: cost, startupPart: startupPart, epoch: epoch, wState: feedPermitPending, atCap: atCap}, nil
+		cost: cost, startupPart: startupPart, epoch: epoch, wState: feedPermitPending, atCap: atCap,
+		durable: durable, usedReqStartup: useStartup, reqAt: now}, nil
+}
+
+func (l *feedRequestLedger) unreserve(p *feedRequestPermit, spec feedAcquireSpec, refusal error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if p.wState != feedPermitPending {
+		return
+	}
+	if p.usedReqStartup {
+		l.startupLeft++
+	} else {
+		for i := len(l.window) - 1; i >= 0; i-- {
+			if l.window[i].Equal(p.reqAt) {
+				l.window = append(l.window[:i], l.window[i+1:]...)
+				break
+			}
+		}
+	}
+	l.totals.Total--
+	l.totals.ByReason[p.reason]--
+	if l.totals.ByReason[p.reason] <= 0 {
+		delete(l.totals.ByReason, p.reason)
+	}
+	l.totals.ByType[p.reqType]--
+	if l.totals.ByType[p.reqType] <= 0 {
+		delete(l.totals.ByType, p.reqType)
+	}
+	l.wPending -= p.cost
+	l.wOpenSteady -= p.cost - p.startupPart
+	l.restoreStartupLocked(p.startupPart)
+	l.wTotals.Reserved -= p.cost
+	l.wTotals.ReservedByReason[p.reason] -= p.cost
+	if l.wTotals.ReservedByReason[p.reason] <= 0 {
+		delete(l.wTotals.ReservedByReason, p.reason)
+	}
+	p.wState = feedPermitClosed
+	p.done = true
+	var paused *feedHostPausedError
+	if errors.As(refusal, &paused) {
+		l.totals.Paused++
+		l.totals.PausedByReason[spec.reason]++
+		if h := l.hosts[spec.host]; h != nil {
+			h.refused++
+			if spec.input != "" {
+				h.refusedInputs[spec.input] = true
+			}
+		}
+	} else if cause := feedWeightRefusalCause(refusal); cause != "" {
+		l.countWeightRefusalLocked(spec, cause, l.clock().UTC())
+	}
+	l.signalLocked()
+}
+
+func (l *feedRequestLedger) sharedAuthority() *feedWeightAuthority {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.authority
 }
 
 func (l *feedRequestLedger) recordLocked(reason, reqType string) {
@@ -561,6 +636,17 @@ func (l *feedRequestLedger) weightStatusLocked() feedWeightStatus {
 		st.Participation = feedWeightParticipating
 		st.PerMinute, st.Startup, st.Reserve = l.weight.PerMinute, l.weight.Startup, l.weight.Reserve
 		st.Allocation = l.weight.PerMinute + l.weight.Startup
+	}
+	switch {
+	case l.authority != nil:
+		st.Shared = l.authority.statusView()
+		if l.weight == nil {
+			st.Shared.Coverage = feedSharedCoverageNoPolicy
+		}
+	case l.coverage != "":
+		st.Shared = feedSharedStatus{Coverage: l.coverage, Hosts: []feedSharedHostStatus{}, Owners: []feedSharedOwnerStatus{}}
+	default:
+		st.Shared = feedSharedStatus{Coverage: feedSharedCoverageNoPolicy, Hosts: []feedSharedHostStatus{}, Owners: []feedSharedOwnerStatus{}}
 	}
 	types := make([]string, 0, len(l.wBounds))
 	for t := range l.wBounds {
@@ -742,28 +828,68 @@ func feedBudgetAcquireBounded(ctx context.Context, baseURL, reqType string, rows
 	}
 	spec := feedAcquireSpecFrom(ctx, baseURL, reqType, rows)
 	if spec.reason != string(feedRestBootstrap) {
-		return l.acquireSpec(spec, false)
+		return l.acquireShared(ctx, spec, false)
 	}
 	for {
 		changed := l.changedCh()
-		permit, err := l.acquireSpec(spec, true)
-		if err == nil || feedWeightRefusalCause(err) != feedWeightCauseExhausted {
-			if cause := feedWeightRefusalCause(err); cause != "" {
+		permit, err := l.acquireShared(ctx, spec, true)
+		cause := feedWeightRefusalCause(err)
+		waitable := cause == feedWeightCauseExhausted || cause == feedWeightCauseSharedExhausted || cause == feedWeightCauseSharedHold
+		if err == nil || !waitable {
+			if cause != "" && !feedSharedCause(cause) {
 				l.countWeightRefusal(spec, cause)
 			}
 			return permit, err
 		}
-		timer := time.NewTimer(feedWeightWaitTick)
+		tick := feedWeightWaitTick
+		wake := changed
+		if feedSharedCause(cause) {
+			wake = nil
+			if a := l.sharedAuthority(); a != nil {
+				tick = a.waitHint(l.clock().UTC())
+			}
+		}
+		timer := time.NewTimer(tick)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			l.countWeightRefusal(spec, feedWeightCauseExhausted)
+			if !feedSharedCause(cause) {
+				l.countWeightRefusal(spec, cause)
+			}
 			return nil, fmt.Errorf("bootstrap waited for weight capacity until its key deadline ended (%v): %w", ctx.Err(), err)
-		case <-changed:
+		case <-wake:
 		case <-timer.C:
 		}
 		timer.Stop()
 	}
+}
+
+func (l *feedRequestLedger) acquireShared(ctx context.Context, spec feedAcquireSpec, silent bool) (*feedRequestPermit, error) {
+	permit, err := l.acquireSpec(spec, silent)
+	if err != nil || permit == nil || !permit.durable {
+		return permit, err
+	}
+	a := l.sharedAuthority()
+	if a == nil {
+		return permit, nil
+	}
+	if derr := a.reserve(ctx, permit); derr != nil {
+		l.unreserve(permit, spec, derr)
+		var r *feedWeightRefusal
+		if errors.As(derr, &r) {
+			cp := *r
+			cp.Reason, cp.ReqType, cp.Input, cp.Cost = spec.reason, spec.reqType, spec.input, permit.cost
+			a.noteRefusal(&cp)
+			return nil, &cp
+		}
+		return nil, derr
+	}
+	if err := feedAuthorityHookAt("reserve:after_commit"); err != nil {
+		a.releasePermit(ctx, permit)
+		l.unreserve(permit, spec, feedSharedRefusal(feedWeightCauseSharedStorage, err.Error()))
+		return nil, feedSharedRefusal(feedWeightCauseSharedStorage, err.Error())
+	}
+	return permit, nil
 }
 
 func (l *feedRequestLedger) changedCh() <-chan struct{} {

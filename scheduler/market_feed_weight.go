@@ -201,18 +201,18 @@ func (l *feedRequestLedger) restoreStartupLocked(w int) {
 	}
 }
 
-func (l *feedRequestLedger) chargeLocked(p *feedRequestPermit, now time.Time, charge int) {
-	l.closeChargeLocked(p, now, charge, false)
+func (l *feedRequestLedger) chargeLocked(p *feedRequestPermit, now time.Time, charge int) (int, int, bool) {
+	return l.closeChargeLocked(p, now, charge, false)
 }
 
-func (l *feedRequestLedger) closeChargeLocked(p *feedRequestPermit, now time.Time, charge int, settled bool) {
+func (l *feedRequestLedger) closeChargeLocked(p *feedRequestPermit, now time.Time, charge int, settled bool) (int, int, bool) {
 	switch p.wState {
 	case feedPermitPending:
 		l.wPending -= p.cost
 	case feedPermitInFlight:
 		l.wInFlight -= p.cost
 	default:
-		return
+		return 0, 0, false
 	}
 	if charge > p.cost || charge < 0 {
 		charge = p.cost
@@ -225,7 +225,7 @@ func (l *feedRequestLedger) closeChargeLocked(p *feedRequestPermit, now time.Tim
 	}
 	l.restoreStartupLocked(startupRefund)
 	if charge > 0 {
-		l.wCharges = append(l.wCharges, feedWeightCharge{at: now, weight: charge, startup: p.startupPart - startupRefund})
+		l.wCharges = append(l.wCharges, feedWeightCharge{at: now, weight: charge, startup: p.startupPart - startupRefund, host: p.host})
 	}
 	if settled {
 		l.wTotals.Settled += charge
@@ -236,6 +236,7 @@ func (l *feedRequestLedger) closeChargeLocked(p *feedRequestPermit, now time.Tim
 	l.wTotals.ChargedByType[p.reqType] += charge
 	p.wState = feedPermitClosed
 	l.signalLocked()
+	return charge, p.startupPart - startupRefund, true
 }
 
 func (p *feedRequestPermit) settle(rows int) {
@@ -244,17 +245,22 @@ func (p *feedRequestPermit) settle(rows int) {
 	}
 	l := p.l
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if p.wState == feedPermitClosed {
+		l.mu.Unlock()
 		return
 	}
 	actual, err := hlInfoWeight(p.reqType, rows)
 	if err != nil {
 		actual = p.cost
 	}
-	l.closeChargeLocked(p, l.clock().UTC(), actual, true)
+	charge, startup, closed := l.closeChargeLocked(p, l.clock().UTC(), actual, true)
 	if l.wEpisode.open && feedWeightRequiredReason(p.reason) {
 		l.wEpisode.successAfter = true
+	}
+	l.mu.Unlock()
+	if closed {
+		feedAuthorityHookAt("settle:before_commit")
+		p.sharedClose(feedAuthClose{charge: charge, startup: startup})
 	}
 }
 
@@ -264,8 +270,11 @@ func (p *feedRequestPermit) retain() {
 	}
 	l := p.l
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.chargeLocked(p, l.clock().UTC(), p.cost)
+	charge, startup, closed := l.chargeLocked(p, l.clock().UTC(), p.cost)
+	l.mu.Unlock()
+	if closed {
+		p.sharedClose(feedAuthClose{charge: charge, startup: startup})
+	}
 }
 
 func (p *feedRequestPermit) release() {
@@ -274,8 +283,12 @@ func (p *feedRequestPermit) release() {
 	}
 	l := p.l
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	open := p.wState == feedPermitPending
 	l.releaseLocked(p)
+	l.mu.Unlock()
+	if open {
+		p.sharedRelease()
+	}
 }
 
 func (p *feedRequestPermit) closeOpen() {
@@ -284,13 +297,21 @@ func (p *feedRequestPermit) closeOpen() {
 	}
 	l := p.l
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	switch p.wState {
 	case feedPermitPending:
 		l.releaseLocked(p)
+		l.mu.Unlock()
+		p.sharedRelease()
+		return
 	case feedPermitInFlight:
-		l.chargeLocked(p, l.clock().UTC(), p.cost)
+		charge, startup, closed := l.chargeLocked(p, l.clock().UTC(), p.cost)
+		l.mu.Unlock()
+		if closed {
+			p.sharedClose(feedAuthClose{charge: charge, startup: startup})
+		}
+		return
 	}
+	l.mu.Unlock()
 }
 
 func (p *feedRequestPermit) violation(bound, observed int) {
@@ -300,10 +321,16 @@ func (p *feedRequestPermit) violation(bound, observed int) {
 	l := p.l
 	l.mu.Lock()
 	now := l.clock().UTC()
-	l.chargeLocked(p, now, p.cost)
+	charge, startup, closed := l.chargeLocked(p, now, p.cost)
 	debt := hlInfoWeightUncapped(p.reqType, observed) - p.cost
+	if !closed {
+		debt = 0
+	}
+	if debt > feedAuthorityMaxDebt {
+		debt = feedAuthorityMaxDebt
+	}
 	if debt > 0 {
-		l.wCharges = append(l.wCharges, feedWeightCharge{at: now, weight: debt, debt: true})
+		l.wCharges = append(l.wCharges, feedWeightCharge{at: now, weight: debt, debt: true, host: p.host})
 		l.wTotals.Debt += debt
 		l.wTotals.ChargedByType[p.reqType] += debt
 	}
@@ -326,7 +353,11 @@ func (p *feedRequestPermit) violation(bound, observed int) {
 	}
 	l.signalLocked()
 	logf := l.logf
+	bound2 := &feedAuthBound{AtCap: b.atCap, Blocked: b.blocked, Bound: b.bound, Observed: b.observed}
 	l.mu.Unlock()
+	if closed {
+		p.sharedClose(feedAuthClose{charge: charge, startup: startup, debt: max(debt, 0), bound: bound2, boundType: p.reqType})
+	}
 	if logf != nil {
 		logf("[feed-weight] bound_violation type=%s input=%s bound=%d observed=%d debt=%d state=%s", p.reqType, p.input, bound, observed, debt, state)
 	}
@@ -402,7 +433,7 @@ func (ev feedWeightEvent) logLine() string {
 func formatFeedWeightAlert(ev feedWeightEvent, source, instance string) string {
 	switch ev.Kind {
 	case feedWeightEventViolation:
-		after := map[string]string{"blocked": "refused until restart", "repriced_at_cap": "priced at the response cap"}[ev.State]
+		after := map[string]string{"blocked": "refused until restart (a shared weight participant restarted within 60s keeps the block)", "repriced_at_cap": "priced at the response cap"}[ev.State]
 		if !ev.Enforced {
 			after = map[string]string{"blocked": "still sent, because this owner has no weight policy; their weight is recorded but not enforced", "repriced_at_cap": "recorded at the response cap, but not refused, because this owner has no weight policy"}[ev.State]
 		}

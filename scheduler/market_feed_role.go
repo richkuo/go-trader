@@ -481,6 +481,7 @@ type feedRuntime struct {
 	owner      *marketFeedOwner
 	sealer     *feedSealer
 	ledger     *feedRequestLedger
+	authority  *feedWeightAuthority
 	instance   string
 	startedAt  time.Time
 	ctx        context.Context
@@ -614,6 +615,19 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	ctx := withFeedLedger(baseCtx, ledger)
 	fmt.Printf("[feed] %s\n", formatFeedBudgetConfig(cfg.Feed.Source, cfg.Feed.RequestBudget))
 	fmt.Printf("[feed] %s\n", hlWeightTableLine())
+	var authority *feedWeightAuthority
+	if policy := cfg.Feed.RequestBudget.weightPolicy(); policy != nil {
+		authority = newFeedWeightAuthority(feedAuthorityRoleFeed, configPath, feedLogf)
+		authority.attach(ledger)
+		fmt.Printf("[feed] %s\n", feedAuthorityStartupLine(authority))
+		if code := startFeedAuthority(authority, policy, notifier, "[feed]"); code != 0 {
+			cleanupNotifier()
+			os.Exit(code)
+		}
+		go authority.runHeartbeat(baseCtx)
+	} else {
+		fmt.Printf("[feed] shared weight: coverage=%q (no weight policy; this owner's reads are outside the shared host record)\n", feedSharedCoverageNoPolicy)
+	}
 
 	owner := newMarketFeedOwner(nil, feedLogf)
 	globalMarketFeedStatus.setOwner(owner)
@@ -643,6 +657,7 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 		owner:      owner,
 		sealer:     sealer,
 		ledger:     ledger,
+		authority:  authority,
 		instance:   instance,
 		startedAt:  startedAt,
 		ctx:        ctx,
@@ -741,6 +756,12 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 			srv.close()
 			cancel()
 			statusLn.Close()
+			rt.mu.Lock()
+			stopAuthority := rt.authority
+			rt.mu.Unlock()
+			if stopAuthority != nil {
+				stopAuthority.stop()
+			}
 			fmt.Println("[feed] shutdown complete")
 			return 0
 		case <-hupCh:
@@ -820,7 +841,10 @@ func (rt *feedRuntime) reload() {
 		fmt.Fprintf(os.Stderr, "[reload] ERROR: the new union needs about %d bytes per seal, over the %d-byte cap; keeping the previous feed generation\n", est, feedSealMaxBytes)
 		return
 	}
-	rt.ledger.setLimits(next.Feed.RequestBudget)
+	if err := rt.applyBudget(next); err != nil {
+		fmt.Fprintf(os.Stderr, "[reload] ERROR: reload rejected; keeping the previous feed generation: shared weight registration refused the new budget: %v\n", err)
+		return
+	}
 	fmt.Printf("[reload] %s; startup allowances, charged history, reservations and host pauses are kept\n", formatFeedBudgetConfig(next.Feed.Source, next.Feed.RequestBudget))
 	select {
 	case <-rt.owner.ApplyGeneration(rt.ctx, union):
@@ -834,6 +858,35 @@ func (rt *feedRuntime) reload() {
 	rt.mu.Unlock()
 	fmt.Printf("[reload] feed generation %d published (%d keys, %d mid coins, cadences %s); it applies to deadlines sealed from now on\n",
 		rt.owner.Generation(), len(union.Order), len(union.MidCoins), formatCadences(cadences))
+}
+
+func (rt *feedRuntime) applyBudget(next *Config) error {
+	apply := func() { rt.ledger.setLimits(next.Feed.RequestBudget) }
+	nextPolicy := next.Feed.RequestBudget.weightPolicy()
+	rt.mu.Lock()
+	a := rt.authority
+	prevPolicy := rt.cfg.Feed.RequestBudget.weightPolicy()
+	rt.mu.Unlock()
+	if a != nil {
+		return a.redeclare(rt.ctx, nextPolicy, apply)
+	}
+	if nextPolicy == nil || prevPolicy != nil {
+		apply()
+		return nil
+	}
+	a = newFeedWeightAuthority(feedAuthorityRoleFeed, rt.configPath, feedLogf)
+	a.ledger = rt.ledger
+	if err := a.register(rt.ctx, nextPolicy); err != nil {
+		return err
+	}
+	a.attach(rt.ledger)
+	apply()
+	rt.mu.Lock()
+	rt.authority = a
+	rt.mu.Unlock()
+	fmt.Printf("[reload] %s\n", feedAuthorityStartupLine(a))
+	go a.runHeartbeat(rt.ctx)
+	return nil
 }
 
 func (rt *feedRuntime) statusMux() *http.ServeMux {
@@ -944,7 +997,7 @@ func (rt *feedRuntime) handleStatus(w http.ResponseWriter, r *http.Request) {
 	enc.Encode(resp)
 }
 
-func runFeedProbe(configPath string) int {
+func runFeedProbe(configPath, identity string) int {
 	cfg, err := loadFeedRoleConfig(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "probe: failed to load feed config %s: %v\n", configPath, err)
@@ -982,6 +1035,13 @@ func runFeedProbe(configPath string) int {
 	fmt.Printf("probe: %s\n", formatFeedBudgetConfig(cfg.Feed.Source, cfg.Feed.RequestBudget))
 	fmt.Printf("probe: %s\n", hlWeightTableLine())
 	fmt.Printf("probe: %s\n", estimateFeedUnionWeight(union))
+	if policy := cfg.Feed.RequestBudget.weightPolicy(); policy != nil {
+		if !printFeedAuthorityForecast(feedAuthorityRoleFeed, identity, policy) {
+			return ExitProbeFailure
+		}
+	} else {
+		fmt.Printf("probe: shared weight: coverage=%q\n", feedSharedCoverageNoPolicy)
+	}
 	for _, key := range union.Order {
 		fmt.Printf("probe: key %s lookback=%d cadences=%s\n", key.PayloadID(), union.Keys[key], formatCadences(union.KeyCadences[key]))
 	}

@@ -765,13 +765,17 @@ print_inventory() {
 }
 
 probe_as_tree_owner() {
-    local tree="$1" config="$2" owner
+    local tree="$1" config="$2" identity="${3:-}" owner line
+    local -a idargs=()
     owner=$(update_tree_foreign_owner "$tree")
     if [[ -n "$owner" ]]; then
-        update_probe_as_owner "$tree" "$owner" "$tree/go-trader" "stdin:$config"
+        UPDATE_PROBE_DEPLOYMENT_CONFIG="$identity" update_probe_as_owner "$tree" "$owner" "$tree/go-trader" "stdin:$config"
         return
     fi
-    (cd "$tree" && ./go-trader probe --config "$config")
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && idargs+=("$line")
+    done < <(update_probe_identity_args "$tree/go-trader" "$identity")
+    (cd "$tree" && ./go-trader probe --config "$config" ${idargs[@]+"${idargs[@]}"})
 }
 
 validate_budget_opts() {
@@ -818,7 +822,7 @@ new_backup_budget_hint() {
 }
 
 probe_feed_candidate() {
-    probe_as_tree_owner "$(feed_dir "$1")" "$2"
+    probe_as_tree_owner "$(feed_dir "$1")" "$2" "$(feed_config "$1")"
 }
 
 root_work_dir() {
@@ -911,7 +915,7 @@ cmd_plan() {
     build_temp_probe "$tmp" "$budget"
     [[ -z "$owner" ]] || grant_plan_probe_read "$tmp" "$owner"
     set +e
-    probe_out=$(probe_as_tree_owner "$first_wd" "$tmp/feed-backup.json" 2>&1)
+    probe_out=$(probe_as_tree_owner "$first_wd" "$tmp/feed-backup.json" "$(feed_config backup)" 2>&1)
     rc=$?
     set -e
     rm -rf "$tmp"
@@ -1041,7 +1045,7 @@ cmd_feeds() {
             candidate="$work/candidate.json"
             py write-feed "$candidate" "$first_cfg" "$(feed_source "$name")" "$(feed_socket "$name")" "${!portvar}" "$list" "$budget"
             set +e
-            probe_out=$(probe_as_tree_owner "$first_wd" "$candidate" 2>&1)
+            probe_out=$(probe_as_tree_owner "$first_wd" "$candidate" "$(feed_config "$name")" 2>&1)
             probe_rc=$?
             set -e
             if [[ $probe_rc -ne 0 ]]; then
