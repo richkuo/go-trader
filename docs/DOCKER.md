@@ -41,7 +41,7 @@ Read the whole guide before you put real money behind it.
 | Image | `ghcr.io/richkuo/go-trader:<release>` | One image holds the Go binary and the Python scripts of one source commit. Images exist for `linux/amd64` and `linux/arm64`, for releases published after the Docker setup was added. |
 | Service `go-trader` | `docker/compose.yaml` | The long-running bot. It restarts by itself after a crash or an internal restart. |
 | Service `cli` | `docker/compose.yaml`, profile `cli` | One-shot commands: setup, probe, inspect, manual trades, `--once`. It never restarts by itself. |
-| Data volume | `go-trader_data`, mounted at `/data` | The config (`/data/config.json`), every state database and its sidecar files, lock files, tuning runs, the OHLCV cache and the Robinhood login session (`/data/robinhood-session`). |
+| Data volume | `go-trader_data`, mounted at `/data` | The config (`/data/config.json`), every state database and its sidecar files, lock files, tuning runs, the OHLCV cache, the Robinhood login session (`/data/robinhood-session`) and the feed weight record (`/data/feed-weight`, only with `market_feed_weight_budget`). |
 | Log volume | `go-trader_logs`, mounted at `/app/logs` | Strategy log files. The bot's main output goes to `docker compose logs`. |
 | Secrets file | `docker/go-trader.env` | Tokens and exchange keys. It stays on your computer and never goes into an image. |
 | Dashboard | `http://127.0.0.1:8099/dashboard` | Only your own computer can open it, and every data request needs your token. |
@@ -370,13 +370,15 @@ docker compose ps -a
 docker compose create go-trader
 docker compose run --rm --entrypoint find cli /data -mindepth 1 -delete
 docker compose cp ./backups/2026-10-07/data/. go-trader:/data
+docker compose run --rm --entrypoint rm cli -rf /data/feed-weight
 docker compose run --rm --user 0:0 --cap-add CHOWN --cap-add DAC_READ_SEARCH --entrypoint chown cli -R 10001:10001 /data
 docker compose run --rm cli probe --config /data/config.json
 docker compose start
 ```
 
 `docker compose create` makes the bot's container (and the volumes, when they do not exist) without starting it, so that the copy has a target; it changes nothing when the stopped container already exists. It runs before `find`, so a failure stops the restore before anything is deleted.
-The `find` command deletes the current content of the data volume. The `chown` command gives the restored files back to the bot's user; it is safe because the volume holds only go-trader files.
+The `find` command deletes the current content of the data volume.
+The `rm` command removes the shared feed weight record (`/data/feed-weight`) that the backup may hold: an old copy would forget weight used after the backup. The next start rebuilds it and holds embedded feed reads for one minute. The `chown` command gives the restored files back to the bot's user; it is safe because the volume holds only go-trader files.
 Use the image release recorded in the backup's `image.json`, or a newer one (see [Roll back](#roll-back)).
 
 ## Upgrade
@@ -483,6 +485,7 @@ The first setup creates paper strategies only.
 To trade with real money later, change a strategy to live mode in the config (see [SKILL.md](../SKILL.md) § Configure), put the exchange keys in `go-trader.env`, run `docker compose up -d --force-recreate go-trader`, and watch the first cycles.
 Every database must stay in `/data`: the container refuses a config whose `db_file`, `paper_db_file`, `paper_sources[].db_file` or `replay_log_path` points somewhere else.
 The container does not support `role: "feed"` services or `market_feed: "shared"`.
+With `market_feed: "websocket"` and `market_feed_weight_budget`, the bot keeps its venue weight record in `/data/feed-weight` (see [SKILL.md](../SKILL.md) § Shared market feed, Shared weight record). The record covers only this container; it does not coordinate with other containers or computers on the same public address. The first start with a budget holds the embedded feed reads for one minute.
 Understand the [Roll back](#roll-back) limits before you trade live.
 
 **Robinhood device approval.** Robinhood logins keep their session in `/data/robinhood-session` (mode 0700, files 0600), and the bot never answers a Robinhood device verification prompt.

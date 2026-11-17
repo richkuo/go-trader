@@ -1524,7 +1524,7 @@ def inspect(unit, instance, exec_timeout=None):
                 except OSError:
                     pass
         if foreign:
-            plan.refuse(EXIT_SHARED, "%s holds files of another account (%s); the template's StateDirectory would give them to %s" % (SHARED_STATE_DIR, ", ".join(sorted(foreign)[:5]), t_user))
+            plan.refuse(EXIT_SHARED, "%s holds files of another account (%s); the template's StateDirectory would give them to %s, and the shared feed weight record in %s/feed-weight serves only one account" % (SHARED_STATE_DIR, ", ".join(sorted(foreign)[:5]), t_user, SHARED_STATE_DIR))
         elif tuser is None or os.stat(SHARED_STATE_DIR).st_uid != tuser["uid"]:
             plan.change("systemd gives %s to %s when the new unit starts; root services keep access" % (SHARED_STATE_DIR, t_user))
 
@@ -1906,13 +1906,34 @@ def stage_config(t, target_env):
     t.journal("config", path=m["target_config"], fp=fingerprint(m["target_config"]), env_keys=sorted(target_env))
 
 
+FEED_WEIGHT_CAPABILITY = b"go-trader-capability:feed-weight-authority-v1"
+
+
+def binary_has_capability(path, marker):
+    try:
+        with open(path, "rb") as f:
+            tail = b""
+            while True:
+                chunk = f.read(1 << 20)
+                if not chunk:
+                    return False
+                if marker in tail + chunk:
+                    return True
+                tail = chunk[-len(marker):]
+    except OSError:
+        return False
+
+
 def stage_verify_runtime(t, target_env):
     m = t.m
     tgt = m["target_dir"]
     probe_cfg = os.path.join(m["target_config_dir"], ".service-layout-probe.json")
     write_atomic(probe_cfg, open(m["target_config"], "rb").read(), 0o600, m["target_uid"], m["target_gid"])
     before = fingerprint(probe_cfg)
-    p = sandbox_run(t, [os.path.join(tgt, "go-trader"), "probe", "--config", probe_cfg])
+    probe_argv = [os.path.join(tgt, "go-trader"), "probe", "--config", probe_cfg]
+    if binary_has_capability(os.path.join(tgt, "go-trader"), FEED_WEIGHT_CAPABILITY):
+        probe_argv += ["--deployment-config", m["target_config"]]
+    p = sandbox_run(t, probe_argv)
     after = fingerprint(probe_cfg)
     os.unlink(probe_cfg)
     text = (p.stdout + p.stderr).decode("utf-8", "replace")

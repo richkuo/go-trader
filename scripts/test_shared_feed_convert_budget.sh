@@ -230,6 +230,27 @@ ok "a consumer tree owned by another user is probed as that owner, and its binar
 ) >/dev/null 2>&1 || fail "the direct probe path failed"
 [[ "$(cat "$WORK/direct-probe.log")" == "probe --config $CONFIG" ]] || fail "a tree the caller owns was not probed directly: $(cat "$WORK/direct-probe.log" 2>/dev/null)"
 ok "a tree the caller owns is probed directly, as before"
+cat >"$TREE/go-trader" <<SH
+#!/bin/sh
+# go-trader-capability:feed-weight-authority-v1
+echo "\$*" >>"$WORK/direct-probe-id.log"
+exit 0
+SH
+chmod +x "$TREE/go-trader"
+(
+    update_tree_foreign_owner() { :; }
+    probe_as_tree_owner "$TREE" "$CONFIG" /var/lib/go-trader/feed-backup/config.json
+) >/dev/null 2>&1 || fail "the direct identity probe failed"
+[[ "$(cat "$WORK/direct-probe-id.log")" == "probe --config $CONFIG --deployment-config /var/lib/go-trader/feed-backup/config.json" ]] \
+    || fail "a capable tree binary was not probed with the persistent feed identity: $(cat "$WORK/direct-probe-id.log" 2>/dev/null)"
+(
+    update_tree_foreign_owner() { printf '4242:4243'; }
+    update_probe_as_owner() { printf '%s %s\n' "$UPDATE_PROBE_DEPLOYMENT_CONFIG" "$*" >>"$WORK/owner-probe-id.log"; }
+    probe_as_tree_owner "$TREE" "$CONFIG" /var/lib/go-trader/feed-backup/config.json
+) >/dev/null 2>&1 || fail "the owner identity probe failed"
+[[ "$(cat "$WORK/owner-probe-id.log")" == "/var/lib/go-trader/feed-backup/config.json $TREE 4242:4243 $TREE/go-trader stdin:$CONFIG" ]] \
+    || fail "the owner probe did not carry the persistent feed identity: $(cat "$WORK/owner-probe-id.log" 2>/dev/null)"
+ok "a candidate or plan probe names the persistent feed config as the shared weight owner, so the staged copy is not a second owner"
 [[ "$(grep -c 'go-trader probe --config' "$SCRIPT_DIR/shared-feed-convert.sh")" == "2" ]] \
     || fail "shared-feed-convert.sh runs a tree binary outside probe_as_tree_owner and run_probe_live"
 

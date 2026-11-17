@@ -815,6 +815,7 @@ func main() {
 	fmt.Println(marketFeedStartupLine(cfg))
 	var feedOwner *marketFeedOwner
 	var feedLedger *feedRequestLedger
+	var feedAuthority *feedWeightAuthority
 	var feedRateLimitSender *feedAlertSender
 	feedOwnerCtx := shutdownReadOnlyCtx
 	var feedReq feedRequirements
@@ -846,6 +847,18 @@ func main() {
 		feedReq = derived
 		feedOwner = newMarketFeedOwner(nil, func(format string, a ...any) { fmt.Printf(format+"\n", a...) })
 		feedLedger = newFeedRequestLedger(cfg.MarketFeedWeightBudget.budget(), false, nil)
+		if policy := cfg.MarketFeedWeightBudget.budget().weightPolicy(); policy != nil {
+			feedAuthority = newFeedWeightAuthority(feedAuthorityRoleEmbedded, *configPath, nil)
+			feedAuthority.attach(feedLedger)
+			fmt.Printf("[feed] %s\n", feedAuthorityStartupLine(feedAuthority))
+			if code := startFeedAuthority(feedAuthority, policy, notifier, "[feed]"); code != 0 {
+				cleanupNotifier()
+				os.Exit(code)
+			}
+			go feedAuthority.runHeartbeat(shutdownReadOnlyCtx)
+		} else {
+			fmt.Printf("[feed] shared weight: coverage=%q (no market_feed_weight_budget; embedded reads are outside the shared host record)\n", feedSharedCoverageNoPolicy)
+		}
 		feedOwner.SetRequestLedger(feedLedger)
 		fmt.Printf("[feed] embedded owner request totals are logged without a limit; %s\n", formatFeedWeightPolicy(cfg.MarketFeedWeightBudget.budget().weightPolicy()))
 		feedRateLimitSender = newFeedAlertSender(func(msg string) {
@@ -1161,6 +1174,15 @@ func main() {
 				fmt.Printf("[feed-weight] evaluation=%s %s\n", evalID, ev.logLine())
 				fmt.Printf("[feed] %s\n", formatFeedWeightAlert(ev, marketFeedWebsocket, "scheduler"))
 				feedRateLimitSender.enqueue(formatFeedWeightAlert(ev, marketFeedWebsocket, "scheduler"))
+			}
+			for _, ev := range feedAuthority.sharedReport() {
+				msg := formatFeedSharedAlert(ev, marketFeedWebsocket, "scheduler", feedAuthority.key)
+				fmt.Printf("[feed-weight-shared] evaluation=%s %s\n", evalID, ev.logLine())
+				fmt.Printf("[feed] %s\n", msg)
+				feedRateLimitSender.enqueue(msg)
+			}
+			if line := feedSharedCycleLine(feedLedger); line != "" {
+				fmt.Printf("[feed-weight-shared] evaluation=%s %s\n", evalID, line)
 			}
 			globalMarketFeedStatus.setSnapshotID(evalID)
 			if line := marketSnapshotLogLine(feedCtx.Snapshot, cycleFeedReqs); line != "" {

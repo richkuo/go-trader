@@ -2046,9 +2046,108 @@ update_unit_directional_cert_path() {
     update_directional_cert_path_from_show "$env_text" "$files_text"
 }
 
+UPDATE_FEED_WEIGHT_CAPABILITY="go-trader-capability:feed-weight-authority-v1"
+
+update_feed_weight_binary_capability() {
+    local bin_path="$1" grep_rc=0
+    [[ -n "$bin_path" && -f "$bin_path" && -r "$bin_path" ]] || return 2
+    LC_ALL=C grep -aqF -- "$UPDATE_FEED_WEIGHT_CAPABILITY" "$bin_path" || grep_rc=$?
+    case "$grep_rc" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
+update_probe_identity_args() {
+    local bin_path="$1" identity="$2"
+    [[ -n "$identity" ]] || return 0
+    update_feed_weight_binary_capability "$bin_path" || return 0
+    printf '%s\n%s\n' --deployment-config "$identity"
+}
+
+update_config_identity_path() {
+    python3 -I -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
+
+UPDATE_FEED_WEIGHT_PARTICIPANT_PY='
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(2)
+if not isinstance(doc, dict):
+    sys.exit(2)
+keys = ("weight_per_minute", "weight_startup", "weight_reserve")
+if doc.get("role") == "feed":
+    b = (doc.get("feed") or {}).get("request_budget") or {}
+else:
+    if doc.get("market_feed") != "websocket":
+        sys.exit(1)
+    b = doc.get("market_feed_weight_budget") or {}
+sys.exit(0 if isinstance(b, dict) and all(b.get(k) is not None for k in keys) else 1)
+'
+
+update_feed_weight_participant() {
+    local rc=0
+    [[ -f "$1" ]] || return 1
+    python3 -I -c "$UPDATE_FEED_WEIGHT_PARTICIPANT_PY" "$1" || rc=$?
+    return "$rc"
+}
+
+update_feed_weight_grant_check() {
+    local unit="$1" config="$2" dirs rw protect rc=0 d
+    update_feed_weight_participant "$config" || rc=$?
+    if [[ "$rc" == "1" ]]; then
+        return 0
+    fi
+    if [[ "$rc" != "0" ]]; then
+        echo "[update] shared weight: $config cannot be read to decide whether it participates in the shared feed weight record" >&2
+        return 1
+    fi
+    if [[ -z "$unit" ]] || ! command -v systemctl >/dev/null 2>&1; then
+        echo "[update] shared weight: $config participates in the shared feed weight record; no systemd unit is known, so the process user must own /var/lib/go-trader/shared (not checked here)"
+        return 0
+    fi
+    dirs=$(systemctl show -p StateDirectory --value "$unit" 2>/dev/null) \
+        && rw=$(systemctl show -p ReadWritePaths --value "$unit" 2>/dev/null) \
+        && protect=$(systemctl show -p ProtectSystem --value "$unit" 2>/dev/null) || {
+        echo "[update] shared weight: could not read the sandbox of $unit" >&2
+        return 1
+    }
+    for d in $dirs; do
+        d="${d%%:*}"
+        case "$d" in
+            go-trader|go-trader/shared|go-trader/shared/feed-weight)
+                echo "[update] shared weight: $unit grants StateDirectory=$d, which covers /var/lib/go-trader/shared/feed-weight"
+                return 0
+                ;;
+        esac
+    done
+    for d in $rw; do
+        d="${d#-}"
+        d="${d#+}"
+        case "${d%/}" in
+            /var|/var/lib|/var/lib/go-trader|/var/lib/go-trader/shared|/var/lib/go-trader/shared/feed-weight)
+                echo "[update] shared weight: $unit grants ReadWritePaths=$d, which covers /var/lib/go-trader/shared/feed-weight"
+                return 0
+                ;;
+        esac
+    done
+    if [[ "$protect" != "strict" ]]; then
+        echo "[update] shared weight: $unit sets ProtectSystem=${protect:-no}, so file permissions alone decide access to /var/lib/go-trader/shared (the process user must own it)"
+        return 0
+    fi
+    echo "[update] shared weight: $config participates in the shared feed weight record, but $unit (ProtectSystem=strict) grants no StateDirectory or ReadWritePaths that covers /var/lib/go-trader/shared (StateDirectory: ${dirs:-none}); install the current unit template (go-trader.service or go-trader@.service) and run systemctl daemon-reload before updating" >&2
+    return 1
+}
+
 update_probe_as_owner() {
-    local tree="$1" owner="$2" binary="$3" config="$4" p
-    local -a rw=() args=() extra=("${@:5}")
+    local tree="$1" owner="$2" binary="$3" config="$4" p line
+    local -a rw=() args=() extra=("${@:5}") idargs=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && idargs+=("$line")
+    done < <(update_probe_identity_args "$binary" "${UPDATE_PROBE_DEPLOYMENT_CONFIG:-}")
     if ! command -v systemd-run >/dev/null 2>&1; then
         echo "[update] systemd-run is not installed, so the probe cannot run as the owner of $tree under the unit sandbox" >&2
         return 1
@@ -2063,10 +2162,10 @@ update_probe_as_owner() {
     [[ ${#rw[@]} -gt 0 ]] && args+=(-p "ReadWritePaths=${rw[*]}")
     [[ ${#extra[@]} -gt 0 ]] && args+=("${extra[@]}")
     if [[ "$config" == stdin:* ]]; then
-        systemd-run "${args[@]}" -- /bin/sh -c 'd=$(mktemp -d) && cat >"$d/config.json" && exec "$1" probe --config "$d/config.json"' sh "$binary" <"${config#stdin:}"
+        systemd-run "${args[@]}" -- /bin/sh -c 'b=$1; shift; d=$(mktemp -d) && cat >"$d/config.json" && exec "$b" probe --config "$d/config.json" "$@"' sh "$binary" ${idargs[@]+"${idargs[@]}"} <"${config#stdin:}"
         return
     fi
-    systemd-run "${args[@]}" -- /bin/sh -c 'd=$(mktemp -d) && cp -- "$2" "$d/config.json" && exec "$1" probe --config "$d/config.json"' sh "$binary" "$config" </dev/null
+    systemd-run "${args[@]}" -- /bin/sh -c 'b=$1; c=$2; shift 2; d=$(mktemp -d) && cp -- "$c" "$d/config.json" && exec "$b" probe --config "$d/config.json" "$@"' sh "$binary" "$config" ${idargs[@]+"${idargs[@]}"} </dev/null
 }
 
 update_feed_config_live_path() {

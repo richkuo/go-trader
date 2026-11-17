@@ -18,9 +18,9 @@ const defaultHealthcheckURL = "http://127.0.0.1:8099/health"
 func heldDaemonExitReason(code int) (string, bool) {
 	switch code {
 	case ExitProbeFailure:
-		return "check-script probe failure", true
+		return "check-script probe or startup admission failure", true
 	case ExitSingletonLock:
-		return "another process owns the state files", true
+		return "another process owns the state files or the shared weight owner", true
 	case ExitStorageOwnership:
 		return "rejected storage layout", true
 	}

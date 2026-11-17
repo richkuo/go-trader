@@ -585,7 +585,13 @@ run_recovery_probe() {
         echo "[update] recovery: forced restore_probe failure" >&2
         return 1
     fi
-    local -a admission_args=(-E GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off) admission_env=(GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off)
+    local -a admission_args=(-E GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off) admission_env=(GO_TRADER_PROBE_REGIME_SIDE_ADMISSION=off) recovery_id_args=()
+    local recovery_identity="" id_line
+    recovery_identity=$(update_config_identity_path scheduler/config.json 2>/dev/null) || recovery_identity=""
+    UPDATE_PROBE_DEPLOYMENT_CONFIG="$recovery_identity"
+    while IFS= read -r id_line; do
+        [[ -n "$id_line" ]] && recovery_id_args+=("$id_line")
+    done < <(update_probe_identity_args ./go-trader "$recovery_identity")
     if [[ -n "$egress_deployment" ]]; then
         local ep_owner="$probe_owner" line
         [[ -n "$ep_owner" ]] || ep_owner=$(update_unit_owner "$service_unit" 2>/dev/null || true)
@@ -601,7 +607,7 @@ run_recovery_probe() {
         update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader" scheduler/config.json "${admission_args[@]}"
         return $?
     fi
-    env "${admission_env[@]}" ./go-trader probe
+    env "${admission_env[@]}" ./go-trader probe ${recovery_id_args[@]+"${recovery_id_args[@]}"}
 }
 
 verify_recovery_health() {
@@ -1545,11 +1551,22 @@ give_back_tree_owner "before the probe"
 probe_config_arg="scheduler/config.json"
 probe_config_name="scheduler/config.json"
 probe_root_config=()
+probe_identity=$(update_config_identity_path scheduler/config.json 2>/dev/null) || probe_identity=""
+probe_grant_config="scheduler/config.json"
 if [[ -n "$feed_cfg_candidate" ]]; then
     probe_config_arg="stdin:$feed_cfg_candidate"
     probe_config_name="the staged feed config"
     probe_root_config=(--config "$feed_cfg_candidate")
+    probe_identity="$feed_cfg_live"
+    probe_grant_config="$feed_cfg_candidate"
     echo "[update] probe: checks go-trader.new against the root-held copy of $feed_cfg_staged; $feed_cfg_live is unchanged until the promotion"
+fi
+UPDATE_PROBE_DEPLOYMENT_CONFIG="$probe_identity"
+while IFS= read -r line; do
+    [[ -n "$line" ]] && probe_root_config+=("$line")
+done < <(update_probe_identity_args ./go-trader.new "$probe_identity")
+if [[ -n "$probe_identity" ]] && update_feed_weight_binary_capability ./go-trader.new; then
+    echo "[update] probe: names the shared weight owner by $probe_identity (--deployment-config), so a private config copy is the same owner as the running service"
 fi
 probe_cert_args=()
 probe_cert_env=()
@@ -1591,6 +1608,12 @@ if [[ "$probe_ok" != 1 ]]; then
         echo "[update] probe: hint: when the new binary needs a changed feed config (for example a request_budget weight policy), stage the candidate at $hint_live.staged and rerun update.sh --restart; the update probes, promotes and recovers both together" >&2
     fi
     fail "go-trader.new probe rejected the freshly synced Python — refusing to swap"
+fi
+grant_unit=""
+[[ "$restart" == "1" && "$restart_mode" == "systemd" ]] && grant_unit="$service_unit"
+if ! update_feed_weight_grant_check "$grant_unit" "$probe_grant_config"; then
+    rm -f ./go-trader.new
+    fail "the shared feed weight record needs a writable /var/lib/go-trader/shared for this participating config — refusing to swap; the binary and the running service are unchanged"
 fi
 end_phase
 

@@ -42,7 +42,7 @@ var agentInfoCommands = []agentCommand{
 	{Name: "manual-update-sl", Summary: "Move the stop-loss trigger on a manual position.", Usage: "go-trader manual-update-sl <strategy-id> --trigger N [--symbol Y] [--dry-run]"},
 	{Name: "manual-cancel-sl", Summary: "Cancel the resting stop-loss on a manual position.", Usage: "go-trader manual-cancel-sl <strategy-id> [--symbol Y] [--dry-run]"},
 	{Name: "backfill", Summary: "Backfill derived data (trade-ledger fees/PnL, HL fees).", Usage: "go-trader backfill <trade-ledger|hl-fees> [...]"},
-	{Name: "probe", Summary: "Run startup probes against the configured check scripts (a role=feed config loads its consumer configs instead).", Usage: "go-trader probe [--config <path>]"},
+	{Name: "probe", Summary: "Run startup probes against the configured check scripts (a role=feed config loads its consumer configs instead).", Usage: "go-trader probe [--config <path>] [--deployment-config <persistent config path>]", Flags: []string{"--config", "--deployment-config"}},
 	{Name: "inspect", Summary: "Print a strategy's effective (post-migration, post-default) config.", Usage: "go-trader inspect [--config <path>] [--json] <strategy-id>|--all"},
 	{Name: "storage-inspect", Summary: "Read-only ownership report for every state file: strategy mapping, orphans, risk-row scopes, held locks. Writes nothing.", Usage: "go-trader storage-inspect [--config <path>] [--json] [--require-idle]", Flags: []string{"--config", "--json", "--require-idle"}},
 	{Name: "diagnostics", Summary: "Read-only per-strategy trade-quality report (MFE/MAE/capture ratio) with backtestable tuning hypotheses (#1147).", Usage: "go-trader diagnostics [--config <path>] [--db <path>] [--strategy <id>] [--min-trades N] [--min-bucket N]", Flags: []string{"--config", "--db", "--strategy", "--min-trades", "--min-bucket"}},
@@ -392,6 +392,7 @@ func buildFeedAgentInfo(cfg *Config, version string, now time.Time) agentInfo {
 		if cfg.Feed.Source == feedSourceREST {
 			info.Feed.Note += " Source rest is the backup feed: it reads the venue REST interface at each deadline and refuses any request past feed.request_budget, which marks the affected inputs not ready so consumers hold entries on them. A rest feed requires a venue weight policy (weight_per_minute, weight_startup, weight_reserve) and reserves each read's bounded weight before it sends."
 		}
+		info.Feed.Note += " Every feed owner with a weight policy (and an embedded websocket owner with market_feed_weight_budget) shares one durable weight record per host in " + feedAuthorityHostDir + " (container: " + containerFeedWeightDir + "): combined allocations must fit the venue ceiling less the largest reserve, unresolved use survives restarts, a 429 pause applies to every participant, and a lost record holds participating reads for one window. probe forecasts the shared admission read-only; --deployment-config names the persistent owner when probing a staged copy."
 	}
 	return info
 }

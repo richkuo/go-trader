@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -62,11 +63,13 @@ type feedHostPause struct {
 	refusedInputs  map[string]bool
 	pauseAlerted   bool
 	successAfter   bool
+	origin         string
 }
 
 type feedRateLimitHostStatus struct {
 	Host           string   `json:"host"`
 	State          string   `json:"state"`
+	Origin         string   `json:"origin,omitempty"`
 	PausedUntil    string   `json:"paused_until,omitempty"`
 	OpenedAt       string   `json:"opened_at,omitempty"`
 	Extensions     int      `json:"extensions"`
@@ -108,6 +111,13 @@ type feedRequestPermit struct {
 	epoch       int
 	wState      int
 	atCap       bool
+
+	durable        bool
+	id             string
+	durableEpoch   string
+	durableState   string
+	usedReqStartup bool
+	reqAt          time.Time
 }
 
 func (p *feedRequestPermit) rowBound(callBound int) int {
@@ -148,6 +158,11 @@ func (p *feedRequestPermit) beginSend() error {
 		return nil
 	}
 	l := p.l
+	if p.durable {
+		if a := l.sharedAuthority(); a != nil {
+			return p.beginSendShared(a)
+		}
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.clock().UTC()
@@ -174,6 +189,89 @@ func (p *feedRequestPermit) beginSend() error {
 	return nil
 }
 
+func (p *feedRequestPermit) beginSendShared(a *feedWeightAuthority) error {
+	l := p.l
+	l.mu.Lock()
+	now := l.clock().UTC()
+	if err := l.pauseRefusalLocked(p.host, p.reason, p.input, now); err != nil {
+		p.done = true
+		l.releaseLocked(p)
+		l.mu.Unlock()
+		a.releasePermit(context.Background(), p)
+		return err
+	}
+	if refusal := l.revalidateLocked(p, now); refusal != nil {
+		p.done = true
+		l.releaseLocked(p)
+		spec := feedAcquireSpec{host: p.host, reason: p.reason, reqType: p.reqType, input: p.input}
+		l.countWeightRefusalLocked(spec, refusal.Cause, now)
+		l.mu.Unlock()
+		a.releasePermit(context.Background(), p)
+		return refusal
+	}
+	l.mu.Unlock()
+	if err := a.markSending(context.Background(), p); err != nil {
+		l.mu.Lock()
+		p.done = true
+		l.releaseLocked(p)
+		spec := feedAcquireSpec{host: p.host, reason: p.reason, reqType: p.reqType, input: p.input}
+		var paused *feedHostPausedError
+		var r *feedWeightRefusal
+		if errors.As(err, &paused) {
+			if h := l.hosts[p.host]; h != nil {
+				h.refused++
+				if p.input != "" {
+					h.refusedInputs[p.input] = true
+				}
+			}
+			l.totals.Paused++
+			l.totals.PausedByReason[p.reason]++
+		} else if errors.As(err, &r) {
+			cp := *r
+			cp.Reason, cp.ReqType, cp.Input, cp.Cost = p.reason, p.reqType, p.input, p.cost
+			r = &cp
+			err = r
+			l.countWeightRefusalLocked(spec, r.Cause, l.clock().UTC())
+		}
+		l.mu.Unlock()
+		if r != nil {
+			a.noteRefusal(r)
+		}
+		a.releasePermit(context.Background(), p)
+		return err
+	}
+	feedAuthorityHookAt("send:after_commit")
+	l.mu.Lock()
+	if p.wState == feedPermitPending {
+		l.wPending -= p.cost
+		l.wInFlight += p.cost
+		p.wState = feedPermitInFlight
+	}
+	l.hostLocked(p.host).inflight++
+	p.began = l.clock().UTC()
+	p.sending = true
+	l.mu.Unlock()
+	return nil
+}
+
+func (p *feedRequestPermit) sharedClose(c feedAuthClose) {
+	if p == nil || !p.durable || p.l == nil {
+		return
+	}
+	if a := p.l.sharedAuthority(); a != nil {
+		a.closePermit(context.Background(), p, c)
+	}
+}
+
+func (p *feedRequestPermit) sharedRelease() {
+	if p == nil || !p.durable || p.l == nil {
+		return
+	}
+	if a := p.l.sharedAuthority(); a != nil {
+		a.releasePermit(context.Background(), p)
+	}
+}
+
 func (p *feedRequestPermit) finish(status int, retryAfter string) {
 	if p == nil || p.l == nil || !p.sending || p.done {
 		return
@@ -186,7 +284,9 @@ func (p *feedRequestPermit) finish(status int, retryAfter string) {
 	if h.inflight > 0 {
 		h.inflight--
 	}
+	closedNow := false
 	if status != 200 {
+		closedNow = p.wState != feedPermitClosed
 		l.chargeLocked(p, now, p.cost)
 	}
 	var line string
@@ -204,6 +304,9 @@ func (p *feedRequestPermit) finish(status int, retryAfter string) {
 	}
 	logf := l.logf
 	l.mu.Unlock()
+	if closedNow || status == 429 {
+		p.sharedClose(feedAuthClose{charge: p.cost, startup: p.startupPart, pause: status == 429, retryAfter: quoteFeedRetryAfter(retryAfter)})
+	}
 	if line != "" && logf != nil {
 		logf("%s", line)
 	}
@@ -224,6 +327,7 @@ func (l *feedRequestLedger) rateLimitedLocked(h *feedHostPause, now time.Time, p
 		h.refused = 0
 		h.refusedInputs = map[string]bool{}
 		h.pauseAlerted = false
+		h.origin = "local"
 	} else {
 		h.extensions++
 		status = "extended"
@@ -280,6 +384,7 @@ func (l *feedRequestLedger) rateLimitStatusLocked(now time.Time) []feedRateLimit
 		p := l.hosts[host]
 		st := feedRateLimitHostStatus{
 			Host:           host,
+			Origin:         p.origin,
 			State:          feedRateLimitStateClear,
 			Extensions:     p.extensions,
 			Refused:        p.refused,

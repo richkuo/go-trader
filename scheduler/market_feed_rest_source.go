@@ -104,6 +104,7 @@ func (r *feedRESTSource) prepare(ctx context.Context, deadline int64, reqs cycle
 		switch {
 		case errors.Is(err, errFeedWeightRefused):
 			r.owner.markKeyUnready(key, feedStatusBudget, fmt.Sprintf("refresh for deadline %d was refused by the weight allocation: %v", deadline, err))
+			r.owner.markKeySharedHeld(key, feedSharedHeldErr(err))
 			rep.WeightRefused = append(rep.WeightRefused, key.PayloadID())
 		case errors.Is(err, errFeedBudgetExhausted):
 			r.owner.markKeyUnready(key, feedStatusBudget, fmt.Sprintf("refresh for deadline %d was refused: %v", deadline, err))

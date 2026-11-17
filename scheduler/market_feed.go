@@ -178,6 +178,7 @@ type feedKeyState struct {
 	corr          feedKeyCorrection
 	rlSeq         uint64
 	weightHeld    bool
+	sharedHeld    bool
 	bootstrapped  bool
 }
 
@@ -799,6 +800,7 @@ func (o *marketFeedOwner) fetchAndMerge(ctx context.Context, key marketFeedKey, 
 			st.StatusDetail = err.Error()
 			if weight {
 				st.weightHeld = true
+				st.sharedHeld = feedSharedHeldErr(err)
 			}
 			if len(st.Bars) == 0 {
 				st.Status = feedStatusFailed
@@ -825,6 +827,7 @@ func (o *marketFeedOwner) fetchAndMerge(ctx context.Context, key marketFeedKey, 
 	}
 	st.rlSeq = 0
 	st.weightHeld = false
+	st.sharedHeld = false
 	if len(st.Bars) == 0 {
 		st.Status = feedStatusFailed
 		st.StatusDetail = "the venue returned no candles"
@@ -838,6 +841,26 @@ func (o *marketFeedOwner) fetchAndMerge(ctx context.Context, key marketFeedKey, 
 		st.StatusDetail = fmt.Sprintf("venue history is shorter than required (%d of %d bars)", len(st.Bars), st.Required)
 	}
 	return nil
+}
+
+func (o *marketFeedOwner) markKeySharedHeld(key marketFeedKey, held bool) {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	if st := o.keys[key]; st != nil {
+		st.sharedHeld = held
+	}
+}
+
+func (o *marketFeedOwner) sharedHeldKeys() map[marketFeedKey]bool {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	out := map[marketFeedKey]bool{}
+	for k, st := range o.keys {
+		if st.sharedHeld {
+			out[k] = true
+		}
+	}
+	return out
 }
 
 func (o *marketFeedOwner) markKeyUnready(key marketFeedKey, status feedKeyStatus, detail string) {

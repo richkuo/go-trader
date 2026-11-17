@@ -139,6 +139,7 @@ func (s *feedSealer) budgetLines(key int64, before feedBudgetTotals, beforeWeigh
 		w.Participation, w.PerMinute, w.StartupLeft, w.Reserve, w.Charged, w.SteadyUsed, w.Pending, w.InFlight,
 		wDelta.Reserved, wDelta.Settled, wDelta.Retained, wDelta.Refunded, wDelta.Debt, wDelta.Refused, formatFeedCounts(wDelta.RefusedByCause),
 		joinFeedNames(rep.WeightRefused))
+	line += " " + formatFeedSharedFields(w.Shared)
 	return delta, []string{line}
 }
 
@@ -350,6 +351,18 @@ func (s *feedSealer) reportWeight(key int64) {
 	if s.ledger == nil {
 		return
 	}
+	if a := s.ledger.sharedAuthority(); a != nil {
+		for _, ev := range a.sharedReport() {
+			s.logf("[feed-weight-shared] key=%d source=%s instance=%s %s", key, s.source, s.instance, ev.logLine())
+			send := s.rateLimitSend
+			if send == nil {
+				send = s.alertHook
+			}
+			if send != nil {
+				send(formatFeedSharedAlert(ev, s.source, s.instance, a.key))
+			}
+		}
+	}
 	for _, ev := range s.ledger.weightReport(s.owner.weightRefusedInputs()) {
 		s.logf("[feed-weight] key=%d source=%s instance=%s %s", key, s.source, s.instance, ev.logLine())
 		send := s.rateLimitSend
@@ -438,6 +451,7 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 			seal.KeysStale++
 		}
 	}
+	sharedHeld := s.owner.sharedHeldKeys()
 	s.mu.Lock()
 	if s.now().After(hard) {
 		s.recordOutcomeLocked(key, feedWireStatusUnavailable, "seal finished after its hard deadline")
@@ -459,7 +473,7 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 	s.missedStreak = 0
 	s.recordOutcomeLocked(key, feedWireStatusSealed, "")
 	evicted := s.retainLocked()
-	keyAlerts := s.observeKeyEpisodesLocked(key, rev, coverage, doc)
+	keyAlerts := s.observeKeyEpisodesLocked(key, rev, coverage, doc, sharedHeld)
 	s.mu.Unlock()
 	s.logf("[feed-seal] key=%d status=sealed source=%s instance=%s generation=%d hash=%s bytes=%d keys=%d ready=%d stale=%d mids=%d prepare_ms=%d sealed_at_ms=%d requests=%d refused=%d",
 		key, seal.Source, s.instance, seal.Generation, seal.Hash, len(seal.Bytes), seal.KeysTotal, seal.KeysReady, seal.KeysStale, seal.Mids,
@@ -486,7 +500,7 @@ type feedKeyAlert struct {
 	send []string
 }
 
-func (s *feedSealer) observeKeyEpisodesLocked(deadline int64, rev uint64, coverage feedRequirements, doc *feedSealDoc) []feedKeyAlert {
+func (s *feedSealer) observeKeyEpisodesLocked(deadline int64, rev uint64, coverage feedRequirements, doc *feedSealDoc, sharedHeld map[marketFeedKey]bool) []feedKeyAlert {
 	if rev != s.reqsRev || doc == nil || len(coverage.Order) == 0 {
 		return nil
 	}
@@ -504,6 +518,10 @@ func (s *feedSealer) observeKeyEpisodesLocked(deadline int64, rev uint64, covera
 			r = feedSealReadiness{Status: feedKeyAbsentStatus, Detail: "the key is absent from the sealed document", Required: coverage.Keys[key]}
 		}
 		ep := s.keyEpisodes[key]
+		if !r.Ready && sharedHeld[key] && (ep == nil || !ep.alerted) {
+			delete(s.keyEpisodes, key)
+			continue
+		}
 		if r.Ready {
 			if ep != nil && ep.alerted {
 				ready = append(ready, newFeedKeyAlertEntry(key, r))
