@@ -15,7 +15,16 @@ if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
 
 import eval_windows
-from closed_bar import FRAME_DECISION_TIME_ATTR, FRAME_INTERVAL_ATTR, FRAME_TIMESTAMP_KIND_ATTR, TIMESTAMP_KIND_NATIVE_CLOSE, TIMESTAMP_KIND_OPEN, bind_fixed_interval_params, declare_frame_cadence
+from closed_bar import (
+    FRAME_DECISION_TIME_ATTR,
+    FRAME_INTERVAL_ATTR,
+    FRAME_RECEIVED_ORDER_DEFECTS_ATTR,
+    FRAME_TIMESTAMP_KIND_ATTR,
+    TIMESTAMP_KIND_NATIVE_CLOSE,
+    TIMESTAMP_KIND_OPEN,
+    bind_fixed_interval_params,
+    declare_frame_cadence,
+)
 from parity_diff import ParityConfig
 from registry_loader import load_registry
 from strategy_composition import (
@@ -184,6 +193,32 @@ def _prior_day_defects_hold_every_decision_of_the_next_day():
             assert int(cur["signal"].abs().sum()) == 0 and cur["cpr_valid"].eq(0.0).all()
             pairs = cur.iloc[1:]
             assert set(pairs["cpr_reason"]) == {reason}, set(pairs["cpr_reason"])
+
+
+def test_received_out_of_order_evidence_survives_the_callers_sort():
+    clean = _day_frame("1h", [100.0, 94.0, 95.0])
+    flagged = clean.copy()
+    flagged.attrs = dict(clean.attrs)
+    flagged.attrs[FRAME_RECEIVED_ORDER_DEFECTS_ATTR] = [int(clean.index[7].value // 1_000_000)]
+    out = _apply(flagged)
+    assert out["cpr_reason"].iloc[7] == "received_out_of_order"
+    assert set(out["cpr_reason"].iloc[25:]) == {"received_out_of_order"}
+    assert int(out["signal"].abs().sum()) == 0
+    late = clean.copy()
+    late.attrs = dict(clean.attrs)
+    late.attrs[FRAME_RECEIVED_ORDER_DEFECTS_ATTR] = [int(clean.index[30].value // 1_000_000)]
+    out = _apply(late)
+    assert int(out["signal"].iloc[26]) == 1 and out["cpr_reason"].iloc[30] == "received_out_of_order"
+
+
+def test_a_gap_inside_the_current_day_resets_the_pair_and_entries_resume_after_it():
+    df = _day_frame("1h", [100.0, 100.0, 100.0, 100.0, 94.0, 95.0])
+    out = _apply(_drop(df, 24 + 2))
+    gap_row = 24 + 2
+    assert out["cpr_reason"].iloc[gap_row] == "cadence_gap" and int(out["signal"].iloc[gap_row]) == 0
+    assert int(out["signal"].iloc[24 + 4]) == 1
+    straddle = _apply(_drop(_day_frame("1h", [100.0, 94.0, 100.0, 95.0]), 24 + 2))
+    assert straddle["cpr_reason"].iloc[24 + 2] == "cadence_gap" and int(straddle["signal"].abs().sum()) == 0
 
 
 def _both_crossing_candles_are_validated():
@@ -366,3 +401,24 @@ def _study():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def test_study_local_reclaim_comparator_uses_the_same_contract_and_is_removed_after_a_failure():
+    study = _study()
+    reg = _reg()
+    df = _day_frame("1h", [100.0, 89.5, 90.5])
+    out = study.prior_day_reclaim(df)
+    cand = _apply(df)
+    assert int(out["signal"].iloc[26]) == 1 and int(cand["signal"].iloc[26]) == 0
+    short = study.prior_day_reclaim(_day_frame("1h", [100.0, 110.5, 109.5]))
+    assert int(short["signal"].iloc[26]) == -1
+    breach = _set(df, 25, "low", S4)
+    assert int(study.prior_day_reclaim(breach)["signal"].abs().sum()) == 0
+    with pytest.raises(RuntimeError):
+        with study.installed_comparator(reg):
+            assert study.LOCAL_COMPARATOR in reg.STRATEGY_REGISTRY
+            got = reg.apply_strategy(study.LOCAL_COMPARATOR, df, {"expected_interval_ms": H})
+            assert int(got["signal"].iloc[26]) == 1
+            raise RuntimeError("comparison failed")
+    assert study.LOCAL_COMPARATOR not in reg.STRATEGY_REGISTRY
+    assert study.LOCAL_COMPARATOR not in reg._registry.STRATEGIES

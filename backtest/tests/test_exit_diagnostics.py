@@ -34,6 +34,15 @@ def test_fee_churn_summary_flags():
     assert s["trades_flipped_to_loss_by_fees"] == 1
 
 
+def test_holding_time_buckets_partition():
+    trades = [ed.trade_metrics(_t(bars_held=b, pnl_pct=1.0, exit_price=101.0))
+              for b in (1, 3, 10, 30, 100)]
+    ht = ed.holding_time_summary(trades)
+    labels = [b["bucket"] for b in ht["buckets"]]
+    assert labels == ["1", "2-5", "6-20", "21-50", "51+"]
+    assert ht["bars_held"]["max"] == 100
+
+
 def test_backtester_stamps_exact_excursions():
     idx = pd.date_range("2024-01-01", periods=6, freq="h")
     df = pd.DataFrame({

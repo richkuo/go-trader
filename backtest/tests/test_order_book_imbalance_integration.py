@@ -15,7 +15,7 @@ for _p in (_BACKTEST, os.path.join(_ROOT, "shared_tools"), os.path.join(_ROOT, "
 import book_archive as ba  # noqa: E402
 import book_event_simulator as sim  # noqa: E402
 import order_book_imbalance as obi  # noqa: E402
-from book_inputs import CONTRACT
+from book_inputs import ARCHIVE_TIME_SEMANTICS, CONTRACT  # noqa: E402
 from book_replay import book_identity  # noqa: E402
 from registry_loader import load_registry  # noqa: E402
 
@@ -85,6 +85,126 @@ def test_grid_matches_the_spec_and_the_mirrored_validator():
         else:
             with pytest.raises(ValueError):
                 obi.validate_params(case["params"])
+
+
+def _check_threshold_equality_filters_and_depth_are_exact():
+    p = dict(P, entry_threshold=0.5)
+    feat = {"B": 3, "A": 1, "total": obi.Fraction(10 ** 6), "imbalance": obi.Fraction(1, 2), "spread_bps": obi.Fraction(1), "best_bid": 1, "best_ask": 1}
+    assert obi.classify(feat, p) == (0, "neutral")
+    feat["imbalance"] = obi.Fraction(1, 2) + obi.Fraction(1, 10 ** 30)
+    assert obi.classify(feat, p) == (1, "long")
+    feat["imbalance"] = -obi.Fraction(1, 2) - obi.Fraction(1, 10 ** 30)
+    assert obi.classify(feat, p) == (-1, "short")
+    feat["spread_bps"] = obi.Fraction(5)
+    assert obi.classify(feat, P)[0] == -1
+    feat["spread_bps"] = obi.Fraction(5) + obi.Fraction(1, 10 ** 20)
+    assert obi.classify(feat, P) == (0, "spread_filter")
+    feat["spread_bps"], feat["total"] = obi.Fraction(1), obi.Fraction(100000)
+    assert obi.classify(feat, P)[0] == -1
+    feat["total"] = obi.Fraction(100000) - obi.Fraction(1, 10 ** 20)
+    assert obi.classify(feat, P) == (0, "depth_filter")
+    assert obi.classify(None, P) == (0, "insufficient_depth")
+
+
+def _check_episode_fires_once_at_its_sole_deadline_and_later_intervals_are_consumed():
+    books, marks = long_run()
+    crossing = books[3]
+    deadline = obi.ceil_grid(max(crossing["event_ms"], crossing["recv_ms"]))
+    before = decide(books[:3], marks, deadline - 1000)
+    assert before["signal"] == 0 and before["reason"] == "confirming"
+    first = decide(books, marks, deadline)
+    again = decide(books, marks, deadline)
+    assert first["signal"] == 1 and first["reason"] == "entry_long" and first["entry_id"] == again["entry_id"] != ""
+    assert first["used"] == [b["identity"] for b in books[1:4]]
+    later = decide(books, marks, deadline + 1000)
+    assert later["signal"] == 0 and later["reason"] == "consumed" and later["episode_id"] == first["episode_id"]
+    after_next = decide(books, marks, obi.ceil_grid(books[4]["recv_ms"]) + 1000)
+    assert after_next["reason"] == "consumed"
+    short_books = [b if i < 1 else obs(b["seq"], b["recv_ms"], 1, 3) for i, b in enumerate(books)]
+    short = decide(short_books, marks, deadline)
+    assert short["signal"] == -1 and short["entry_id"] != first["entry_id"]
+
+
+def _check_age_truncation_marker_and_flip_boundaries():
+    books, marks = long_run()
+    crossing = books[3]
+    deadline = obi.ceil_grid(max(crossing["event_ms"], crossing["recv_ms"]))
+    stale = dict(P, max_snapshot_age_ms=250)
+    assert decide(books, marks, deadline, stale)["reason"] == "stale_crossing"
+    neutral_boundary = decide(books, [], deadline)
+    assert neutral_boundary["signal"] == 1 and neutral_boundary["boundary"] == f"book:{books[0]['identity']}"
+    truncated = decide(books[1:], [], deadline)
+    assert truncated["reason"] == "evidence_truncated" and truncated["signal"] == 0
+    reset = marks + [marker(99, books[2]["recv_ms"] + 100, "silence")]
+    assert decide(books, reset, deadline)["reason"] == "confirming"
+    base = books[1]["recv_ms"]
+    flipped = [books[0], obs(3, base, 1, 3), obs(4, base + 5_400, 1, 3)] + [obs(5 + i, base + (2 + i) * 5_400, 3, 1) for i in range(3)]
+    cross = flipped[5]
+    d = obi.ceil_grid(max(cross["event_ms"], cross["recv_ms"]))
+    out = decide(flipped, marks, d)
+    assert out["signal"] == 1 and out["boundary"] == f"book:{flipped[2]['identity']}"
+    early = decide(flipped[:3], marks, obi.ceil_grid(flipped[2]["recv_ms"]))
+    assert early["signal"] == 0 and early["reason"] == "confirming" and early["direction"] == -1
+    thin = [b if i < 3 else obs(b["seq"], b["recv_ms"], 3, 1, count=4) for i, b in enumerate(books)]
+    assert decide(thin, marks, deadline)["signal"] == 0
+
+    cut_base = T0 + 200_000
+    cut_marks = [marker(1, cut_base - 50_000)]
+    run = [obs(2 + i, cut_base - 49_000 + i * 2_000, 3, 1) for i in range(6)]
+    surviving = run[3:]
+    cut_deadline = obi.ceil_grid(max(surviving[2]["event_ms"], surviving[2]["recv_ms"]))
+    cut = section(surviving, cut_marks, cut_deadline)
+    cut["prefix_complete"], cut["retained_from_ms"] = False, run[2]["recv_ms"] + 1
+    held = obi.evaluate_section(cut, "BTC", P, cut_deadline)
+    assert held["signal"] == 0 and held["reason"] == "evidence_truncated" and held["entry_id"] == ""
+    unguarded = dict(cut, prefix_complete=True, retained_from_ms=cut_deadline - 60_000)
+    assert obi.evaluate_section(unguarded, "BTC", P, cut_deadline)["signal"] == 1
+    full_deadline = obi.ceil_grid(max(run[2]["event_ms"], run[2]["recv_ms"]))
+    full = decide(run, cut_marks, full_deadline)
+    assert full["signal"] == 1 and full["reason"] == "entry_long" and full["boundary"].startswith("marker:1:subscribed:")
+    assert decide(run, cut_marks, full_deadline + 1000)["reason"] == "consumed"
+    assert decide(run, cut_marks, cut_deadline)["reason"] == "consumed"
+    unmarked = section(surviving, [], cut_deadline)
+    unmarked["prefix_complete"], unmarked["retained_from_ms"] = False, cut_deadline - 30_000
+    unmarked_out = obi.evaluate_section(unmarked, "BTC", P, cut_deadline)
+    assert unmarked_out["signal"] == 0 and unmarked_out["reason"] == "evidence_truncated"
+    late = dict(cut, prefix_complete=True)
+    assert obi.evaluate_section(late, "BTC", P, cut_deadline)["reason"] == "evidence_truncated"
+
+
+def _random_books(seed=1635, n=900, coin="BTC"):
+    rng = np.random.default_rng(seed)
+    out, marks = [], [marker(1, T0)]
+    t = T0 + 2_000
+    seq = 2
+    for i in range(n):
+        t += int(rng.integers(4_900, 5_700))
+        if rng.random() < 0.01:
+            marks.append({"seq": seq, "at_ms": t - 2_000, "reason": "silence", "session": 1, "detail": ""})
+            seq += 1
+        b = rng.integers(1, 6)
+        a = rng.integers(1, 6)
+        out.append(obs(seq, t, f"{b}.{rng.integers(0, 10)}", f"{a}.{rng.integers(0, 10)}", event=t - int(rng.integers(200, 900)), coin=coin))
+        seq += 1
+    return out, marks
+
+
+def test_study_path_matches_the_pure_evaluator_on_every_deadline():
+    books, marks = _random_books()
+    cb = sim.CoinBooks("BTC", [books], marks, 1, 5)
+    vp = obi.validate_params(P)
+    q = cb.classify(vp["depth_levels"], vp["entry_threshold"], vp["max_spread_bps"], vp["min_combined_depth_usd"])
+    fast = {}
+    for e in sim.candidate_entries(cb, q, vp["confirmation_observations"], vp["max_snapshot_age_ms"], 60_000):
+        _, eid = obi.episode_ids("BTC", vp, e["boundary"], e["direction"], cb.identity[e["first"]], cb.identity[e["crossing"]], e["deadline_ms"])
+        fast[e["deadline_ms"]] = (e["direction"], eid)
+    assert fast
+    first, last = obi.ceil_grid(books[0]["recv_ms"]), obi.ceil_grid(books[-1]["recv_ms"])
+    for d in range(first, last, 1000):
+        sec = sim.section_at(cb, d, vp["depth_levels"], 60_000, ARCHIVE_TIME_SEMANTICS,
+                             {k: CONTRACT[k] for k in ("source", "contract", "identity_semantics", "max_future_skew_ms", "max_lag_ms", "max_gap_ms")})
+        got = obi.evaluate_section(sec, "BTC", vp, d, accept_time_semantics=(ARCHIVE_TIME_SEMANTICS,))
+        assert (got["signal"], got["entry_id"]) == fast.get(d, (0, "")), (d, got["reason"])
 
 
 def _market(books_by, minutes=120, marks=None, funding=None, eligible=True):
@@ -169,5 +289,15 @@ def test_stop_on_marks_funding_partial_fill_minimum_and_terminal_inventory():
     assert res["refusals"] == {"ineligible_day": 1}
     res = sim.simulate([{"deadline_ms": split["end_ms"] - 60_000, "coin": "BTC", "direction": 1, "entry_id": "a"}], market, _cfg(), split)
     assert res["refusals"] == {"purge": 1}
+
+
+def test_entry_thresholds_episode_lifecycle_and_evidence_boundaries(subtests):
+    for check in (
+            _check_threshold_equality_filters_and_depth_are_exact,
+            _check_episode_fires_once_at_its_sole_deadline_and_later_intervals_are_consumed,
+            _check_age_truncation_marker_and_flip_boundaries,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()
 
 

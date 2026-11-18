@@ -489,6 +489,17 @@ def test_execute_pre_send_failure_then_accept_uses_one_ref_id(tmp_path):
     assert {p["body"]["ref_id"] for p in posts} == {REF_ID}
 
 
+def test_execute_prep_read_failure_sends_nothing(tmp_path, subtests):
+    for prep in ["GET " + CURRENCY_PAIRS, "GET " + ACCOUNTS, "GET " + QUOTE]:
+        with subtests.test(prep=prep):
+            routes = _routes([_accepted()])
+            routes[prep] = [{"status": 500, "json": {"detail": "server error"}}]
+            code, payload, made = _run(tmp_path, EXECUTE, _buy(), routes)
+            assert code == 1
+            assert payload["order_outcome"] == "not_sent"
+            assert len(_posts(made)) == 0
+
+
 def test_execute_filled_without_usable_average_price_is_unknown(tmp_path, subtests):
     for average in [None, "NaN", "-1", "abc"]:
         with subtests.test(average=average):
@@ -577,6 +588,17 @@ def test_resolve_open_order_with_cancel_reports_the_partial_fill(tmp_path):
     assert payload["execution"]["fill"]["quantity"] == 0.05
 
 
+def test_resolve_finds_the_order_by_ref_id(tmp_path):
+    now_ms = int(time.time() * 1000)
+    routes = dict(PREP)
+    routes["GET " + ORDERS] = [_page([_list_row("ord-x", now_ms - 1000, ref_id="22222222-2222-4222-8222-222222222222"),
+                                      _list_row(ORDER_ID, now_ms - 40000)])]
+    routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+    code, payload, _ = _run(tmp_path, EXECUTE, _resolve(), routes)
+    assert code == 0, payload
+    assert payload["execution"]["fill"]["oid"] == ORDER_ID
+
+
 def test_resolve_ambiguous_field_match_is_unknown(tmp_path):
     now_ms = int(time.time() * 1000)
     routes = dict(PREP)
@@ -628,6 +650,18 @@ def test_resolve_account_mismatch_is_unknown(tmp_path):
     routes = dict(PREP)
     routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
     code, payload, _ = _run(tmp_path, EXECUTE, _resolve(order_id=ORDER_ID, extra=["--expected-account-id=acct-other"]), routes)
+    assert code == 1
+    assert payload["order_outcome"] == "unknown"
+
+
+def test_resolve_operator_order_without_ref_id_must_match_the_attempt_fields(tmp_path):
+    now_ms = int(time.time() * 1000)
+    routes = dict(PREP)
+    stamp = datetime.fromtimestamp((now_ms - 40000) / 1000, tz=timezone.utc).isoformat()
+    routes["GET " + ORDER] = [{"status": 200, "json": {"id": ORDER_ID, "state": "filled", "side": "buy",
+                                                       "currency_pair_id": PAIR_ID, "quantity": "0.3", "created_at": stamp,
+                                                       "cumulative_quantity": "0.3", "average_price": "100"}}]
+    code, payload, _ = _run(tmp_path, EXECUTE, _resolve(order_id=ORDER_ID, extra=["--verify-order-fields"]), routes)
     assert code == 1
     assert payload["order_outcome"] == "unknown"
 
@@ -1342,6 +1376,12 @@ def _unwritable_session(run_dir):
     return folder
 
 
+def _session_under_file(run_dir):
+    blocker = run_dir / "session-blocker"
+    blocker.write_text("")
+    return os.path.join(os.path.realpath(blocker), "robinhood-session")
+
+
 def test_failed_login_stops_script_before_any_account_request(tmp_path, subtests):
     for shape in sorted(LOGIN_FAILURES):
         for script_id in sorted(SCRIPTS):
@@ -1365,6 +1405,28 @@ def test_unwritable_session_folder_refuses_login_before_any_request(tmp_path, su
             detail = _assert_login_refused(proc, payload, made)
             assert "is not writable" in payload["error"], detail
             assert made == [], detail
+
+
+def test_session_folder_under_a_file_refuses_login_before_any_request(tmp_path, subtests):
+    for script_id in sorted(SCRIPTS):
+        with subtests.test(script=script_id):
+            script, args = SCRIPTS[script_id]
+            proc, payload, made = _run_capture(tmp_path, script, args, _single([BTC]), session=_session_under_file)
+            detail = _assert_login_refused(proc, payload, made)
+            assert "GO_TRADER_ROBINHOOD_SESSION_DIR" in payload["error"], detail
+            assert made == [], detail
+
+
+def test_cached_session_login_reads_holdings_with_its_token(tmp_path):
+    routes = dict(_single([BTC]), **{"GET " + POSITIONS_CHECK: [_page([])]})
+    proc, payload, made = _run_capture(tmp_path, FETCH, [], routes, session=_seeded_session)
+    detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}\nrequests:\n{made}"
+    assert proc.returncode == 0, detail
+    assert payload.get("error") is None, detail
+    assert payload["positions"] == [{"coin": "BTC", "size": 0.5, "avg_price": 40000.0}], detail
+    assert _count(made, TOKEN_URL, "POST") == 0, detail
+    holdings = [r for r in made if r["url"].startswith(HOLDINGS)]
+    assert len(holdings) == 1 and all(r["auth"] for r in holdings), detail
 
 
 def test_rejected_cached_session_falls_back_to_password_login(tmp_path):

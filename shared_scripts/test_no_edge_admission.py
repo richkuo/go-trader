@@ -105,6 +105,19 @@ def test_every_check_script_refuses_each_no_edge_input_outside_explicit_paper(su
             _assert_refused(_run(script, positional + extra), positional[0], reason)
 
 
+def test_dangling_mode_never_reaches_evaluation(subtests):
+    for script, positional in SOLO_SCRIPTS:
+        with subtests.test(script=script):
+            proc = _run(script, positional + ["--mode"])
+            if script == "check_strategy.py":
+                assert proc.returncode == 1
+                assert "dangling --mode" in _payload(proc)["error"]
+            else:
+                assert proc.returncode == 2
+                assert "--mode: expected one argument" in proc.stderr
+                assert proc.stdout.strip() == ""
+
+
 def test_close_fallback_reference_is_gated_and_native_close_is_not():
     refs_fallback = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": "rsi"}]})
     refused = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--mode=live", "--strategy-refs", refs_fallback])
@@ -117,6 +130,14 @@ def test_close_fallback_reference_is_gated_and_native_close_is_not():
                                            "--market-stdin"], _solo_envelope())
     assert native.returncode == 0, native.stderr[-2000:]
     assert _payload(native)["close_strategies"] == ["tiered_tp_atr"]
+
+
+def test_explicit_open_reference_replaces_the_positional_name():
+    refs = json.dumps({"open": {"name": "breakout"}})
+    proc = _run("check_hyperliquid.py", ["rsi", "BTC", "4h", "--mode=live", "--strategy-refs", refs,
+                                         "--market-stdin"], _solo_envelope())
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert _payload(proc)["open_strategy"] == "breakout"
 
 
 def test_solo_paper_or_acknowledged_evaluation_runs_offline(subtests):

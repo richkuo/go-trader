@@ -177,3 +177,51 @@ DEFECTS = {
     "high_below_low": (lambda r: (r[0], r[2], r[1], r[3]), "inconsistent_ohlc"),
     "close_above_high": (lambda r: (r[0], r[1], r[2], r[1] + 1.0), "inconsistent_ohlc"),
 }
+
+
+def test_defects_inside_the_span_hold_with_their_reason_and_the_strategy_recovers(subtests):
+    support = module().required_history_bars(SMALL["max_gap_age"], SMALL["retest_window"])
+    for case, (mutate, reason) in sorted(DEFECTS.items()):
+        with subtests.test(case=case):
+            final = len(long_setup()) - 1
+            for at in (final - support + 1, GAP_BAR - 14, GAP_BAR, GAP_BAR + 2, final):
+                rows = long_setup()
+                rows[at] = mutate(rows[at])
+                out = run("futures", frame(rows)[0])
+                assert int(out["signal"].iloc[-1]) == 0 and out["invfvg_reason"].iloc[-1] == reason, at
+                assert not bool(out["invfvg_valid"].iloc[-1])
+                assert np.isnan(out["invfvg_long_zone_bottom"].iloc[-1])
+                assert_matches_reference(rows)
+            rows = long_setup()
+            rows[final - support] = mutate(rows[final - support])
+            out = run("futures", frame(rows)[0])
+            assert int(out["signal"].iloc[-1]) == 1
+            defect = list(long_setup())
+            defect[5] = mutate(defect[5])
+            recovered = defect + flat(100.0, support) + long_setup()[PRE - 16:]
+            out = run("futures", frame(recovered)[0])
+            assert int(out["signal"].iloc[-1]) == 1 and out["invfvg_reason"].iloc[-1] == "entry_long"
+            held = out["invfvg_reason"].iloc[5:5 + support].tolist()
+            assert held == [reason] * support
+            assert_matches_reference(recovered)
+
+
+def test_timestamp_defects_hold_inside_the_span_and_recover(subtests):
+    rows = long_setup()
+    base = [T0_MS + i * STEP_MS for i in range(len(rows))]
+    cases = {
+        "duplicate": (lambda ts: ts[:GAP_BAR] + [ts[GAP_BAR - 1]] + ts[GAP_BAR + 1:], "timestamp_order"),
+        "reversed": (lambda ts: ts[:GAP_BAR] + [ts[GAP_BAR - 1] - 1] + ts[GAP_BAR + 1:], "timestamp_order"),
+        "missing": (lambda ts: ts[:GAP_BAR] + [float("nan")] + ts[GAP_BAR + 1:], "missing_timestamp"),
+    }
+    for case, (mutate, reason) in sorted(cases.items()):
+        with subtests.test(case=case):
+            ts = mutate(list(base))
+            out = run("futures", frame(rows, ts)[0])
+            assert out["invfvg_reason"].iloc[-1] == reason and int(out["signal"].iloc[-1]) == 0
+            assert_matches_reference(rows, timestamps=ts)
+    ts = list(base)
+    ts[2] = ts[1]
+    out = run("futures", frame(rows, ts)[0])
+    assert out["invfvg_reason"].iloc[-1] == "entry_long"
+    assert_matches_reference(rows, timestamps=ts)

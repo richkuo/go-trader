@@ -116,6 +116,17 @@ def test_registered_no_edge_futures_and_hidden():
     assert NAME not in _SPOT.STRATEGY_REGISTRY
 
 
+def test_zero_line_filter_blocks_cross_on_wrong_side_and_ablation_allows_it():
+    rows = [bar(100.0 - 3 * i, 97.0 - 3 * i) for i in range(14)]
+    rows.append(bar(58.0, 57.0))
+    on = run(frame(rows), SMALL)
+    assert on["rvi"].iloc[-1] < 0 and on["rvi_diff"].iloc[-1] > 0
+    assert on["signal"].iloc[-1] == 0 and on["rvi_reason"].iloc[-1] == "zero_line_filter"
+    assert bool(on["rvi_zero_line_filter"].iloc[-1])
+    off = run(frame(rows), {"period": 3, "zero_line_filter": False})
+    assert off["signal"].iloc[-1] == 1 and off["rvi_reason"].iloc[-1] == "entry_long"
+
+
 INVALID_PARAMS = [
     {"period": True},
     {"period": 10.5},

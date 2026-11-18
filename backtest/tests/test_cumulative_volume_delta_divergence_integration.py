@@ -18,7 +18,16 @@ from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from closed_bar import TIMESTAMP_KIND_NATIVE_CLOSE, declare_frame_cadence
 from registry_loader import load_registry
-from strategy_composition import evaluate_open_close, finalize_decision
+from strategy_composition import (
+    GATE_MODE_LIVE,
+    GATE_MODE_MISSING,
+    GATE_MODE_PAPER,
+    Acknowledgement,
+    GateMode,
+    admit_configured_strategies,
+    evaluate_open_close,
+    finalize_decision,
+)
 from trade_flow_replay import CONTRACT, PAYLOAD_CONTRACT_KEYS, payload_from_series
 
 NAME = "cumulative_volume_delta_divergence"
@@ -114,6 +123,81 @@ def _threshold_is_strict():
             assert (out["cvd_reason"].iloc[CONFIRM] == "armed_long") is armed
 
 
+def test_flow_side_contract_and_session_defects_hold_without_inventing_volume(subtests):
+    for label, case in (("zero_missing_or_mismatched_flow",
+                         _zero_volume_and_missing_or_mismatched_flow_hold_without_inventing_volume),
+                        ("revocation", _revocation_is_dated_and_clears_an_armed_setup),
+                        ("side_and_contract", _unverified_side_and_contract_changes_hold_every_entry),
+                        ("session_and_candle_gaps", _mid_session_start_and_candle_gaps_hold_the_session)):
+        with subtests.test(case=label):
+            case()
+
+
+def _zero_volume_and_missing_or_mismatched_flow_hold_without_inventing_volume():
+    def zero(intervals, volumes):
+        for iv in intervals:
+            bar = (iv["start_ms"] - T0) // BAR
+            if P1 < bar <= P2:
+                iv.update(buy="0", sell="0", total="0", trades=0)
+        for b in range(P1 + 1, P2 + 1):
+            volumes[b] = 0.0
+    df, series = _build(_scenario(), mutate=zero)
+    assert _run(df, series)["cvd_reason"].iloc[CONFIRM] == "zero_flow_volume"
+
+    def drop(intervals, volumes):
+        intervals[:] = [iv for iv in intervals if iv["start_ms"] != T0 + 7 * BAR + 120_000]
+    df, series = _build(_scenario(), mutate=drop)
+    out = _run(df, series)
+    assert out["cvd_reason"].iloc[CONFIRM] == "flow_unavailable" and not out["signal"].any()
+
+    def mismatch(intervals, volumes):
+        volumes[3] += 0.001
+    df, series = _build(_scenario(), mutate=mismatch)
+    assert _run(df, series)["cvd_reason"].iloc[CONFIRM] == "flow_unavailable"
+
+
+def _revocation_is_dated_and_clears_an_armed_setup():
+    target = T0 + 6 * BAR
+
+    def revoke(at):
+        def mutate(intervals, volumes):
+            for iv in intervals:
+                if iv["start_ms"] == target:
+                    iv["invalid_ms"], iv["reason"] = at, "late_event"
+        return mutate
+    before = T0 + CONFIRM * BAR
+    df, series = _build(_scenario(), mutate=revoke(before))
+    assert _run(df, series)["cvd_reason"].iloc[CONFIRM] == "flow_unavailable"
+    after_entry = T0 + (CONFIRM + 4) * BAR
+    df, series = _build(_scenario(), mutate=revoke(after_entry))
+    assert _run(df, series)["signal"].iloc[CONFIRM + 2] == 1
+    between = T0 + (CONFIRM + 1) * BAR + 30_000
+    df, series = _build(_scenario(), mutate=revoke(between))
+    out = _run(df, series)
+    assert out["cvd_reason"].iloc[CONFIRM] == "armed_long"
+    assert out["cvd_reason"].iloc[CONFIRM + 1] == "setup_cleared_flow" and not out["signal"].any()
+
+
+def _unverified_side_and_contract_changes_hold_every_entry():
+    df, series = _build(_scenario())
+    for key, value, reason in (("side_evidence", "unverified", "side_unverified"),
+                               ("reorder_grace_ms", 1_000, "unsupported_trade_flow"),
+                               ("source", "replica", "unsupported_trade_flow")):
+        payload = dict(payload_from_series(series, BAR), **{key: value})
+        out = _reg().apply_strategy(NAME, df, {**SEED, "trade_flow_observations": payload})
+        assert set(out["cvd_reason"]) == {reason} and not out["signal"].any()
+    out = _reg().apply_strategy(NAME, df, dict(SEED))
+    assert set(out["cvd_reason"]) == {"trade_flow_unavailable"}
+
+
+def _mid_session_start_and_candle_gaps_hold_the_session():
+    df, series = _build(_scenario())
+    assert not _run(df.iloc[1:], series)["signal"].any()
+    gapped = df.drop(df.index[20])
+    out = _run(gapped, series)
+    assert set(out["cvd_reason"].iloc[20:]) == {"incomplete_session_candles"}
+
+
 def test_native_close_frames_decide_like_open_time_frames():
     df, series = _build(_scenario())
     native = df.copy()
@@ -199,3 +283,32 @@ def test_simulator_fills_next_open_and_closes_by_time_stop_or_the_atr_stop_while
     res2 = bt.run(sig2, strategy_name=NAME, symbol="BTC/USDT", timeframe="5m", save=False)
     assert res2["trades"] and all(t["exit_reason"].split(":")[0] in {"sl", "time_stop", "end_of_data"} for t in res2["trades"])
     assert len(res2["trades"]) < len(trades)
+
+
+PRODUCTION_REFUSED = sorted(load_registry("futures")._registry.production_refused_strategies())
+
+
+def test_production_admission_refuses_every_reference_and_keeps_existing_candidates():
+    for refused in PRODUCTION_REFUSED:
+        with _case(refused):
+            _production_admission_refuses_every_reference_and_keeps_existing_candidates(refused)
+
+
+def _production_admission_refuses_every_reference_and_keeps_existing_candidates(refused):
+    NAME = refused
+    reg = _reg()
+    from close_registry_loader import get_strategy as get_close
+    cases = [
+        (NAME, None, None, GateMode(GATE_MODE_PAPER), Acknowledgement(False), "open"),
+        (NAME, None, None, GateMode(GATE_MODE_LIVE), Acknowledgement(True), "open"),
+        (NAME, None, None, GateMode(GATE_MODE_MISSING), Acknowledgement(True), "open"),
+        ("breakout", NAME, None, GateMode(GATE_MODE_PAPER), Acknowledgement(False), "open"),
+        (NAME, "breakout", None, GateMode(GATE_MODE_PAPER), Acknowledgement(False), "open"),
+        ("breakout", None, [NAME], GateMode(GATE_MODE_PAPER), Acknowledgement(True), "close"),
+    ]
+    for positional, open_name, closes, mode, ack, role in cases:
+        with pytest.raises(ValueError, match=f"{role} strategy '{NAME}' is production_refused"):
+            admit_configured_strategies(positional, open_name, closes, mode, ack, reg.get_strategy, get_close)
+    refs = admit_configured_strategies("mass_index_reversal", None, None, GateMode(GATE_MODE_PAPER),
+                                       Acknowledgement(False), reg.get_strategy, get_close)
+    assert [r.name for r in refs] == ["mass_index_reversal"]

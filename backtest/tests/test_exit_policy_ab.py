@@ -1,5 +1,6 @@
 import json
 
+import pandas as pd
 import pytest
 
 import exit_policy_ab as m
@@ -94,6 +95,19 @@ def _leg(entry_date="2025-01-01", side="long", pnl_pct=2.0, shares=1.0,
         "entry_fee": entry_fee, "exit_fee": exit_fee, "mfe_pct": mfe_pct,
         "mae_pct": mae_pct, "bars_held": bars_held, "exit_reason": exit_reason,
     }
+
+
+def test_group_and_free_arm_entries_orders_by_entry():
+    trades = [
+        _leg(entry_date="2025-01-01"),
+        _leg(entry_date="2025-01-05"),
+        _leg(entry_date="2025-01-01"),
+    ]
+    groups = m.group_entries(trades)
+    assert list(groups.keys()) == ["2025-01-01", "2025-01-05"]
+    assert len(groups["2025-01-01"]) == 2
+    entries = m.free_arm_entries(trades)
+    assert [e["entry_date"] for e in entries] == ["2025-01-01", "2025-01-05"]
 
 
 def test_build_paired_rows_pairs_counts_unmatched_and_labels_unknown_regime():
@@ -379,6 +393,58 @@ def test_candidate_stacks_on_inherited_stop_only_for_stop_candidates_with_an_inh
     assert not m._candidate_stacks_on_inherited_stop(
         [{"name": "atr_stop", "params": {}}], "inherit", {}), case
     assert not m._candidate_stacks_on_inherited_stop(None, "inherit", {"stop_loss_atr_mult": 1.5}), case
+
+
+def test_replay_positions_anchored_on_df_signals_not_df(monkeypatch):
+    import data_fetcher
+
+    idx = pd.date_range("2025-01-01", periods=10, freq="h")
+    df = pd.DataFrame({"close": range(10)}, index=idx)
+    df_signals = df.iloc[2:].copy()
+    df_signals["signal"] = 0
+    entry_ts = str(df.index[5])
+
+    captured = {}
+
+    def fake_prepare(reg, open_name, params, _df):
+        return df_signals
+
+    def fake_regime_series(frame, regime_cfg):
+        captured["regime_frame_len"] = len(frame)
+        return ["r"] * len(frame)
+
+    def fake_run_free_arm(reg, open_name, params, sig, close_refs, direction,
+                          capital, gate, symbol, timeframe, stops=None,
+                          comparison_mode=None, perps_sizing=None):
+        return {"total_trades": 1, "total_return_pct": 0.0, "max_drawdown_pct": 0.0,
+                "sharpe_ratio": 0.0, "liquidated": False,
+                "trades": [_leg(entry_date=entry_ts, side="long")]}
+
+    def fake_replay(reg, open_name, params, sig, sig_pos, side_sign, candidate_close,
+                    direction, capital, gate, symbol, timeframe, stops=None,
+                    comparison_mode=None, perps_sizing=None):
+        captured["sig_pos"] = sig_pos
+        return {"net_pct": 1.0, "mfe_pct": 1.0, "mae_pct": -1.0, "bars_held": 2}
+
+    monkeypatch.setattr(data_fetcher, "load_cached_data", lambda *a, **k: df)
+    monkeypatch.setattr(m, "_prepare_signals", fake_prepare)
+    monkeypatch.setattr(m, "_regime_label_series", fake_regime_series)
+    monkeypatch.setattr(m, "run_free_arm", fake_run_free_arm)
+    monkeypatch.setattr(m, "replay_candidate_for_entry", fake_replay)
+
+    spec = {
+        "open_name": "test_open", "params": None, "direction": "long",
+        "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
+        "candidate_close": [{"name": "atr_stop", "params": {}}],
+        "control_stops": {}, "candidate_stops": {}, "replayable": True,
+        "gate": {"allowed_regimes": None}, "regime_cfg": {"classifier": "adx"},
+        "capital": 10000.0, "n_resamples": 50, "ci": 0.95, "seed": 1,
+    }
+    res = m.evaluate_dataset_window(object(), spec, "BTC/USDT", "1h",
+                                    ("2025-01-01", None))
+    assert captured["sig_pos"] == 2
+    assert captured["regime_frame_len"] == 8
+    assert res is not None and res["paired_diag"]["paired"] == 1
 
 
 def test_parser_accepts_and_rejects_intrabar_modes():

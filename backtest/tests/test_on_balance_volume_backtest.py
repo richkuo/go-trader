@@ -16,6 +16,7 @@ from registry_loader import load_registry
 NAME = "on_balance_volume_divergence"
 PARAMS = {"left_span": 2, "right_span": 2, "min_separation": 3, "max_separation": 20,
           "volume_threshold": 0.1, "setup_expiry": 5, "volume_test": True}
+SUPPORT = 2 + 20 + 2 + 5 + 1
 TP_CLOSE = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}]
 FIXTURE_SEED = 1657
 STUDY_MANIFEST = os.path.abspath(os.path.join(
@@ -145,6 +146,77 @@ def _threshold_is_strict(threshold, expected):
     out = _run(_frame(closes, vols), volume_threshold=threshold)
     assert out["obvd_long_divergence"].iloc[CONFIRM_ROW] == 0.5
     assert _entries(out) == expected
+
+
+INVALID_ROWS = [
+    (lambda df, r: df.__setitem__("volume", df["volume"].where(df.index != df.index[r], np.nan)), "invalid_volume"),
+    (lambda df, r: df.__setitem__("volume", df["volume"].where(df.index != df.index[r], -1.0)), "invalid_volume"),
+    (lambda df, r: df.__setitem__("volume", df["volume"].where(df.index != df.index[r], np.inf)), "invalid_volume"),
+    (lambda df, r: df.__setitem__("close", df["close"].where(df.index != df.index[r], np.nan)), "nonfinite_input"),
+    (lambda df, r: df.__setitem__("low", df["low"].where(df.index != df.index[r], 0.0)), "invalid_price"),
+    (lambda df, r: df.__setitem__("high", df["high"].where(df.index != df.index[r], 10.0)), "inconsistent_ohlc"),
+]
+
+
+def _check_invalid_row_inside_the_support_holds_and_decisions_recover():
+    for i, (corrupt, reason) in enumerate(INVALID_ROWS):
+        with _case(f"{i}-{reason}"):
+            _invalid_row_inside_the_support_holds_and_decisions_recover(corrupt, reason)
+
+
+def _invalid_row_inside_the_support_holds_and_decisions_recover(corrupt, reason):
+    clean = _frame(_long_closes() + [103.0] * 40)
+    bad = clean.copy()
+    corrupt(bad, 36)
+    out = _run(bad)
+    ref = _run(clean)
+    assert _entries(out) == {}
+    assert out["obvd_reason"].iloc[ENTRY_ROW] == reason
+    assert out["obvd_reason"].iloc[36 + SUPPORT - 1] == reason
+    after = slice(36 + SUPPORT, len(clean))
+    assert (out["signal"].iloc[after].to_numpy() == ref["signal"].iloc[after].to_numpy()).all()
+    assert (out["obvd_reason"].iloc[after].to_numpy() == ref["obvd_reason"].iloc[after].to_numpy()).all()
+
+
+def _check_timestamp_defects_hold_until_they_leave_the_support():
+    for edit, reason in (("duplicate", "timestamp_order"), ("reverse", "timestamp_order"), ("gap", "cadence_gap")):
+        with _case(edit):
+            _timestamp_defects_hold_until_they_leave_the_support(edit, reason)
+
+
+def _timestamp_defects_hold_until_they_leave_the_support(edit, reason):
+    df = _frame(_long_closes() + [103.0] * 40)
+    idx = list(df.index)
+    if edit == "duplicate":
+        idx[36] = idx[35]
+    elif edit == "reverse":
+        idx[35], idx[36] = idx[36], idx[35]
+    else:
+        idx = idx[:36] + [t + pd.Timedelta(hours=4) for t in idx[36:]]
+    df.index = pd.DatetimeIndex(idx)
+    out = _run(df)
+    assert _entries(out) == {}
+    assert out["obvd_reason"].iloc[ENTRY_ROW] == reason
+    assert (out["obvd_reason"].iloc[36 + SUPPORT:] == "no_setup").all()
+
+
+def _check_missing_columns_or_timestamps_hold_without_throwing():
+    df = _frame(_long_closes())
+    no_volume = _run(df.drop(columns=["volume"]))
+    assert (no_volume["obvd_reason"] == "missing_columns").all() and _entries(no_volume) == {}
+    no_ts = _run(df.reset_index(drop=True))
+    assert (no_ts["obvd_reason"] == "missing_timestamps").all() and _entries(no_ts) == {}
+    assert list(no_ts.index) == list(range(len(df)))
+
+
+def test_input_defects_hold_with_a_reason_and_recover(subtests):
+    for label, check in (
+        ("invalid_row_inside_the_support_holds_and_decisions_recover", _check_invalid_row_inside_the_support_holds_and_decisions_recover),
+        ("timestamp_defects_hold_until_they_leave_the_support", _check_timestamp_defects_hold_until_they_leave_the_support),
+        ("missing_columns_or_timestamps_hold_without_throwing", _check_missing_columns_or_timestamps_hold_without_throwing),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 def _check_long_entry_fills_next_bar_open_and_the_take_profit_fills_the_bar_after_its_close():

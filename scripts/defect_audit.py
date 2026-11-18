@@ -2281,6 +2281,11 @@ def cmd_report(args):
     print(f"records written to {rec_path}")
 
 
+SAFETY_HINTS = PROTECTED_HINTS + (
+    "reconcil", "storage", "order", "recover", "update", "upgrade", "lock", "partition", "egress", "refus", "fail",
+    "pause", "admission", "probe", "secret", "token", "auth", "session", "verif", "reset", "backup", "restore",
+    "rollback", "deploy", "retired", "orphan", "corrupt", "state", "journal", "alert", "notif", "trade", "position",
+)
 RULE_DOCS = ("CLAUDE.md", "SKILL.md", "README.md", "backtest/AUDIT.md", "docs/backtesting-registry.md", "docs/POST_UPDATE_HISTORY.md")
 
 
@@ -2312,8 +2317,12 @@ def cmd_prune(args):
         name = r["test"] if r["lang"] == "go" else py_decl_key(r).rsplit("::", 1)[-1]
         return re.search(rf"\b{re.escape(name)}\b", rule_docs) is not None
 
+    def safety(r):
+        text = (r["test"] + " " + r["file"]).lower()
+        return any(h in text for h in SAFETY_HINTS)
+
     def eligible(r):
-        return not (r.get("protected_area_terms") or r.get("gaps") or r.get("unmeasured_dependencies") or r["status"] in ("excluded", "inconclusive") or named_in_rules(r))
+        return not (safety(r) or r.get("gaps") or r.get("unmeasured_dependencies") or r["status"] in ("excluded", "inconclusive") or named_in_rules(r))
 
     def decl(r):
         return ("go", r["test"]) if r["lang"] == "go" else ("py", py_decl_key(r))
@@ -2359,7 +2368,7 @@ def cmd_prune(args):
         else:
             plan[rid] = {"rule": "subsumed", "file": r["file"], "declaration": decl(r)[1], "evidence": {"subsumed_by": subsumer[rid], "covered_sites": len(cov[rid]), "subsumer_covered_sites": len(cov[subsumer[rid]]), "detected": {m: sorted(detectors[m] - remove) for m in sorted(det[rid])}}}
     held = sorted(rid for rid in weak | set(subsumer) if rid not in remove)
-    write_json(out / "prune.json", {"rules": {"eligible": "not excluded or inconclusive; no protected-area term in the test or file name; no measurement gap; no unmeasured dependency; not named in a rule document (" + ", ".join(RULE_DOCS) + ")", "no_detection": "an eligible review candidate with at least one completed mutation and no detection in either round", "subsumed": "an eligible detecting test whose covered sites are a subset of one kept test's covered sites, where every sampled mutant it detects is also detected by a kept test", "declaration": "a Go test function or Python test function is deleted only when every record of it is removed"}, "remove": plan, "held_by_declaration": held})
+    write_json(out / "prune.json", {"rules": {"eligible": "not excluded or inconclusive; no safety term in the test or file name (" + ", ".join(SAFETY_HINTS) + "); no measurement gap; no unmeasured dependency; not named in a rule document (" + ", ".join(RULE_DOCS) + ")", "no_detection": "an eligible review candidate with at least one completed mutation and no detection in either round", "subsumed": "an eligible detecting test whose covered sites are a subset of one kept test's covered sites, where every sampled mutant it detects is also detected by a kept test", "declaration": "a Go test function or Python test function is deleted only when every record of it is removed"}, "remove": plan, "held_by_declaration": held})
     print(json.dumps({"no_detection": sum(p["rule"] == "no_detection" for p in plan.values()), "subsumed": sum(p["rule"] == "subsumed" for p in plan.values()), "held_by_declaration": len(held), "declarations": len({(p["file"], p["declaration"]) for p in plan.values()})}, indent=1))
 
 

@@ -233,6 +233,21 @@ def test_loader_refuses_structural_combinations(tmp_path, subtests):
         assert loaded["regime_side_certification"] is None
 
 
+def test_consumers_that_cannot_reproduce_the_mode_refuse(tmp_path, subtests):
+    path = _write(tmp_path, _strategy())
+    with subtests.test(consumer="exit_policy_ab"), pytest.raises(SystemExit):
+        import exit_policy_ab
+        exit_policy_ab.resolve_from_baseline(path, "hl-side")
+    with subtests.test(consumer="tune_live"):
+        import tune_live
+        resolution = run_backtest.load_strategy_config(path, "hl-side")
+        assert tune_live.unsupported_reason(resolution) == "unsupported_regime_side"
+    with subtests.test(consumer="run_backtest_by_name"), pytest.raises(SystemExit):
+        run_backtest.run_single_backtest("sma_crossover", "BTC", "1h", regime_side=True,
+                                         regime_side_certification={"context": "paper"},
+                                         direction="both", close_strategies=[CLOSE])
+
+
 def test_eval_windows_runs_the_mode_in_paper_research(monkeypatch, tmp_path, subtests):
     import eval_windows
     loaded = run_backtest.load_strategy_config(_write(tmp_path, _strategy()), "hl-side")

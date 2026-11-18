@@ -136,6 +136,17 @@ def test_the_fill_timing_gate_checks_every_exit_fill_of_a_closed_trade():
     assert study.event_result([("BTC", early)], "x1", 1200.0)["fill_timing_violations"] == 1
 
 
+def test_quote_side_capacity_is_used_once_across_positions_in_one_coin_and_cost_case():
+    quotes = [q(T + 1_000, 99_990, 0, 100_000, 1), q(T + 61_000, 100_100, 0.004, 100_110, 0),
+              q(T + 61_500, 100_100, 0.004, 100_110, 0), q(T + 70_000, 100_150, 0.01, 100_160, 0.02),
+              q(T + 121_500, 100_140, 0.02, 100_150, 0.02), q(T + 181_000, 100_200, 0.02, 100_210, 0.02)]
+    res = replay(quotes, [decision(T), decision(T + 120_000)])
+    assert len(res["trades"]) == 2 and res["open_positions"] == []
+    assert_quote_capacity(res, quotes)
+    for t in res["trades"]:
+        assert_quantity_conserved(t)
+
+
 def _open_tape(first_exit_size):
     return [q(T + 1_000, 99_990, 0, 100_000, 1), q(T + 61_000, 100_100, first_exit_size, 100_110, 0),
             q(T + 66_000, 100_050, 0, 100_060, 0), q(T + 121_000, 100_000, 0, 100_010, 1)]

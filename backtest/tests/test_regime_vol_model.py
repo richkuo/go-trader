@@ -42,6 +42,51 @@ def _three_blobs(seed=0, per=200):
     return np.vstack(pts), np.array(truth)
 
 
+def _purity(assign, truth, k):
+    correct = 0
+    for j in range(k):
+        members = truth[assign == j]
+        if len(members):
+            maj = np.bincount(members).argmax()
+            correct += int((members == maj).sum())
+    return correct / len(truth)
+
+
+_FITTERS_RECOVER_THREE_BLOBS_CASES = [("kmeans", 0), ("gmm", 1)]
+
+
+def test_fitters_recover_three_blobs(subtests):
+    for i, (fitter, seed) in enumerate(_FITTERS_RECOVER_THREE_BLOBS_CASES):
+        with subtests.test(case=i, fitter=fitter, seed=seed):
+            z, truth = _three_blobs(seed=seed)
+            assign, em_mean, em_var, counts = rvm.FITTERS[fitter](z, 3, seed=0)
+            assert em_mean.shape == (3, 4) and em_var.shape == (3, 4)
+            assert (em_var > 0).all()
+            assert counts.sum() == len(z)
+            assert _purity(assign, truth, 3) > 0.95
+
+
+def _markov_sequence(seed=0, n=1500):
+    rng = np.random.default_rng(seed)
+    A = np.array([[0.95, 0.04, 0.01], [0.03, 0.94, 0.03], [0.01, 0.04, 0.95]])
+    centers = np.array([[-3, -3, -3, -3], [0, 0, 0, 0], [3, 3, 3, 3]], dtype=float)
+    s = 0; states = []
+    for _ in range(n):
+        states.append(s)
+        s = rng.choice(3, p=A[s])
+    states = np.array(states)
+    z = np.array([rng.normal(centers[s], 0.4) for s in states])
+    return z, states
+
+
+def test_fit_hmm_recovers_markov_states():
+    z, truth = _markov_sequence()
+    assign, em_mean, em_var, counts = rvm.fit_hmm(z, 3, seed=0)
+    assert em_mean.shape == (3, 4) and (em_var > 0).all()
+    assert counts.sum() == len(z)
+    assert _purity(assign, truth, 3) > 0.9
+
+
 REQUIRED_KEYS = {"type", "version", "fit_method", "features", "feature_means",
                  "feature_stds", "states", "latent_count", "emissions",
                  "transition", "init", "filter_window", "period", "fitted_on", "mapping"}
@@ -369,19 +414,6 @@ def test_fitters_pass_valid_soft_mass_to_neutralizer(monkeypatch, subtests):
             assert sm.sum() == pytest.approx(len(z), rel=1e-6)
 
 
-_HEALTHY_FIT_PARKS_NOTHING_CASES = ["gmm", "hmm"]
-
-
-def test_healthy_fit_parks_nothing(subtests):
-    for i, fitter in enumerate(_HEALTHY_FIT_PARKS_NOTHING_CASES):
-        with subtests.test(case=i, fitter=fitter):
-            z, _ = _three_blobs(seed=2)
-            _, mu, var, _ = (rvm.fit_gmm if fitter == "gmm" else rvm.fit_hmm)(z, 3, seed=0)
-            for j in range(3):
-                parked = np.allclose(mu[j], 0.0, atol=1e-6) and np.allclose(var[j], 1.0, atol=1e-9)
-                assert not parked, f"component {j} was spuriously parked on healthy data"
-
-
 def test_label_anchored_hmm_degenerate_anchor_is_unchanged():
     from regime_hmm import fit_label_anchored_hmm
     rng = np.random.default_rng(0)
@@ -404,6 +436,24 @@ def _colliding_feature_matrix(seed=0):
                         [0.15, 0.20, 0.30, 22.0]], dtype=float)
     rows = [rng.normal(c, [0.005, 0.01, 0.02, 1.0], size=(150, 4)) for c in centers]
     return np.vstack([np.full((5, 4), np.nan), *rows])
+
+
+_FITTED_MODEL_WITH_COLLIDING_CENTROIDS_KEEPS_EVERY_LATENT_STATE_DISTINCT_CASES = ["kmeans", "gmm", "hmm"]
+
+
+def test_fitted_model_with_colliding_centroids_keeps_every_latent_state_distinct(subtests):
+    for i, family in enumerate(_FITTED_MODEL_WITH_COLLIDING_CENTROIDS_KEEPS_EVERY_LATENT_STATE_DISTINCT_CASES):
+        with subtests.test(case=i, family=family):
+            from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
+            feats = _colliding_feature_matrix()
+            model = rvm.fit_unsupervised(feats, family=family, k=3, filter_window=32,
+                                         thresholds=dict(TH), seed=0)
+            assert model["latent_count"] == 3
+            assert len(set(model["states"])) == 3, model["states"]
+            assert all(s in VALID_LABELS_COMPOSITE for s in model["states"])
+            labels, _ = forward_filter_labels(feats, model)
+            valid = ~np.isnan(feats).any(1)
+            assert len(set(labels[valid].tolist())) == 3
 
 
 def test_handrule_cells_partition_matches_map_composite_label():

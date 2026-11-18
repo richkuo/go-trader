@@ -198,6 +198,13 @@ def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
     assert out["smi_reason"].iloc[bad + NEED - 1] != "cadence_gap"
 
 
+def test_defects_hold_only_inside_their_span_and_recovery_matches_a_clean_frame(subtests):
+    with subtests.test(case="received_out_of_order_rows_hold_only_inside_their_span"):
+        _received_out_of_order_rows_hold_only_inside_their_span()
+    with subtests.test(case="a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame"):
+        _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame()
+
+
 BOUNDARY_PARAMS = [
     dict(DEFAULTS, recursion_length=24),
     dict(DEFAULTS, recursion_length=188, range_period=10),

@@ -71,6 +71,93 @@ BAD_ROWS = [
 ]
 
 
+def test_input_defects_hold_with_a_reason_and_recover(subtests):
+    for i, (bad, reason) in enumerate(BAD_ROWS):
+        with subtests.test(case=f"bad{i}-{reason}"):
+            _bad_rows_hold_with_a_reason_and_recover_when_the_window_is_valid(bad, reason)
+    with subtests.test(case="invalid_volume_keeps_breakout_state_unset"):
+        _invalid_volume_never_invalidates_the_breakout_state()
+    with subtests.test(case="missing_columns_and_missing_cadence"):
+        _missing_columns_and_missing_cadence_hold_every_row()
+    for edit, reason in TIMESTAMP_DEFECTS:
+        with subtests.test(case=f"timestamp-{edit}-{reason}"):
+            _timestamp_defects_hold_inside_the_window_only(edit, reason)
+    with subtests.test(case="wrong_declared_cadence"):
+        _wrong_declared_cadence_holds_every_decision()
+
+
+def _bad_rows_hold_with_a_reason_and_recover_when_the_window_is_valid(bad, reason):
+    rows = _flat(10) + [bad] + _flat(9)
+    out = _apply(_frame(rows))
+    assert out["eom_reason"].iloc[10] == reason
+    assert (out["signal"] == 0).all()
+    held = out.iloc[10:]
+    first_valid = int(np.flatnonzero(held["eom_valid"].to_numpy())[0]) + 10
+    if reason == "invalid_volume" or (reason == "nonfinite_input" and math.isinf(bad[4])):
+        assert first_valid == 10 + PARAMS["eom_period"]
+    elif reason == "nonfinite_derived":
+        assert first_valid >= 10 + PARAMS["eom_period"]
+    else:
+        assert first_valid == 10 + NEED
+    assert (out["eom_reason"].iloc[10:first_valid] == reason).all()
+
+    recovered = _apply(_frame(rows + [(100.0, 104.0, 100.0, 103.5, 1000.0)]))
+    assert recovered["signal"].iloc[-1] == 1
+
+
+def _invalid_volume_never_invalidates_the_breakout_state():
+    rows = _flat(10) + [(100.0, 101.0, 99.0, 100.0, 0.0)] + _flat(2)
+    out = _apply(_frame(rows))
+    assert (out["eom_setup"].iloc[10:] == 0.0).all()
+    assert not out["eom_valid"].iloc[12]
+
+
+def _missing_columns_and_missing_cadence_hold_every_row():
+    df = _frame(_flat(12)).drop(columns=["volume"])
+    out = _apply(df)
+    assert (out["eom_reason"] == "missing_columns:volume").all() and (out["eom_reason_code"] == 19).all()
+    undeclared = _apply(_frame(_flat(10) + [(100.0, 104.0, 100.0, 103.5, 1000.0)], declare=False))
+    assert (undeclared["eom_reason"] == "missing_cadence").all()
+    assert (undeclared["signal"] == 0).all()
+    assert undeclared["eom_interval_ms"].isna().all()
+
+
+TIMESTAMP_DEFECTS = [
+    ("duplicate", "timestamp_order"),
+    ("reverse", "timestamp_order"),
+    ("missing", "missing_timestamps"),
+    ("gap", "cadence_gap"),
+]
+
+
+def _timestamp_defects_hold_inside_the_window_only(edit, reason):
+    rows = _flat(10) + _flat(8) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]
+    df = _frame(rows)
+    idx = list(df.index)
+    if edit == "duplicate":
+        idx[10] = idx[9]
+    elif edit == "reverse":
+        idx[10], idx[11] = idx[11], idx[10]
+    elif edit == "missing":
+        idx[10] = pd.NaT
+    elif edit == "gap":
+        idx = idx[:10] + [t + pd.Timedelta(hours=1) for t in idx[10:]]
+    df.index = pd.DatetimeIndex(idx)
+    out = _apply(df)
+    assert reason in set(out["eom_reason"].iloc[10:13])
+    assert (out["signal"].iloc[10:10 + NEED - 1] == 0).all()
+    assert out["signal"].iloc[-1] == 1
+
+
+def _wrong_declared_cadence_holds_every_decision():
+    rows = _flat(10) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]
+    df = _frame(rows)
+    df.attrs[FRAME_INTERVAL_ATTR] = 14_400_000
+    out = _apply(df)
+    assert (out["signal"] == 0).all()
+    assert (out["eom_reason"].iloc[2:] == "cadence_gap").all()
+
+
 def test_native_close_timestamps_normalize_to_bar_opening_time():
     rows = _flat(10) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]
     df = _frame(rows, kind="native_close_inclusive")

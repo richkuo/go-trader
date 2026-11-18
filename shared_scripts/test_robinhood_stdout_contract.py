@@ -281,3 +281,19 @@ def _assert_failed_login(case, mode, tmp_path):
             assert doc["source"] == "robinhood:adapter" and len(doc["candles"]) > 0, detail
         if case_id == "check_paper":
             assert isinstance(doc.get("price"), (int, float)) and doc["price"] > 0, detail
+
+
+def test_successful_login_reads_holdings_with_the_returned_token(tmp_path):
+    case = next(c for c in CASES if c[0] == "positions")
+    proc, made = _run_logged(case, "order_accepted", tmp_path)
+    detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}\nrequests:\n{made}"
+
+    doc = _refuse_constant_doc(proc.stdout)
+    assert proc.returncode == 0, detail
+    assert doc.get("error") is None, detail
+    assert doc["positions"] == [{"coin": "BTC", "size": 0.5, "avg_price": 100.0}], detail
+    holdings = [r for r in made if r["url"] == "https://nummus.robinhood.com/holdings/"]
+    assert len(holdings) >= 1, detail
+    assert all(r["auth_is_offline_token"] for r in holdings), detail
+    token_posts = [r for r in made if r["method"] == "POST" and r["url"] == TOKEN_URL]
+    assert len(token_posts) == 1 and not token_posts[0]["auth"], detail

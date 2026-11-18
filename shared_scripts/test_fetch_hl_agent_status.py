@@ -56,3 +56,12 @@ def test_key_and_address_errors_report_without_the_key(env_updates):
     for form in _key_forms(key) if key else []:
         assert form not in stdout
         assert form not in stderr
+
+
+def test_probe_only_reads_no_key_and_exits_zero():
+    code, stdout, stderr = _run({"HYPERLIQUID_SECRET_KEY": OUT_OF_RANGE_KEY}, "--probe-only")
+    doc = json.loads(stdout)
+    assert code == 0
+    assert doc["error"] == ""
+    assert doc["signer_address"] == ""
+    assert stderr == ""

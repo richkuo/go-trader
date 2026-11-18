@@ -188,3 +188,20 @@ DEFECTS = {
     "open_below_low": (lambda r: (r[2] - 1.0, r[1], r[2], r[3], r[4]), "inconsistent_ohlc"),
     "infinite_high": (lambda r: (r[0], float("inf"), r[2], r[3], r[4]), "nonfinite_input"),
 }
+
+
+def test_recovery_after_a_defect_follows_the_event_rule():
+    defect = (100.0, 100.5, 99.5, 100.0, float("nan"))
+    rows = flat(5) + [defect] + flat(4) + [bar(110.0, 50.0), bar(111.0, 60.0), bar(112.0, 70.0)]
+    out = run("futures", frame(rows)[0])
+    reasons = out["vsb_reason"].tolist()
+    assert reasons[5:10] == ["nonfinite_input"] * 5
+    assert reasons[10] == "nonfinite_input"
+    assert bool(out["vsb_valid"].iloc[11]) and out["signal"].iloc[11] == 0
+    assert reasons[11] == "breakout_continuation"
+    assert out["signal"].iloc[12] == 0
+    assert_matches_reference(rows, SMALL)
+    clear = flat(5) + [defect] + flat(6) + [bar(110.0, 50.0)]
+    out = run("futures", frame(clear)[0])
+    assert out["signal"].iloc[-1] == 1 and out["vsb_reason"].iloc[-1] == "entry_long"
+    assert_matches_reference(clear, SMALL)

@@ -45,6 +45,7 @@ def base(n=6):
 
 UP_ABOVE = base() + [(102.0, 100.5, 101.5), (112.0, 102.0, 110.0)]
 UP_EQUAL = base() + [(101.0, 99.5, 100.0), (102.5, 100.5, 102.0), (116.0, 100.5, 101.0)]
+UP_BELOW = base() + [(103.0, 101.5, 102.5), (104.0, 102.5, 103.5), (118.0, 100.5, 101.0)]
 
 
 def indices(rows, params=SMALL):
@@ -66,12 +67,40 @@ def test_registered_no_edge_futures_and_hidden():
     assert NAME not in _SPOT.STRATEGY_REGISTRY
 
 
+def test_long_cross_blocked_by_trend_rows_2_3(subtests):
+    for rows, relation in [(UP_EQUAL, "equal"), (UP_BELOW, "below")]:
+        with subtests.test(relation=relation):
+            prev, cur, row = indices(rows)
+            assert 0 < cur and prev < cur
+            if relation == "equal":
+                assert row["close"] == row["cct_trend_sma"]
+            else:
+                assert row["close"] < row["cct_trend_sma"]
+            out = last(rows, {**SMALL, "threshold": (max(prev, 0.0) + cur) / 2.0})
+            assert int(out["signal"]) == 0
+            assert out["cct_reason"] == "trend_blocked"
+
+
 MALFORMED_BAR_CASES = [
     ("swapped_high_low", lambda r: (r[1], r[0], r[2]), "inconsistent_hlc"),
     ("close_above_high", lambda r: (r[0], r[1], r[0] + 5.0), "inconsistent_hlc"),
     ("infinite_high", lambda r: (float("inf"), r[1], r[2]), "nonfinite_input"),
     ("nan_close", lambda r: (r[0], r[1], float("nan")), "nonfinite_input"),
 ]
+
+
+def test_timestamp_order_defect_detected():
+    df = frame(UP_ABOVE)
+    idx = list(df.index)
+    idx[-1] = idx[-2]
+    df.index = pd.DatetimeIndex(idx)
+    row = run(df, {**SMALL, "threshold": 1.0}).iloc[-1]
+    assert row["cct_reason"] == "timestamp_order"
+    assert int(row["signal"]) == 0
+    with_col = frame(UP_ABOVE).reset_index(drop=True)
+    with_col["timestamp"] = [1_000 * i for i in range(len(with_col))]
+    with_col.loc[len(with_col) - 1, "timestamp"] = 3_000
+    assert run(with_col, SMALL).iloc[-1]["cct_reason"] == "timestamp_order"
 
 
 INVALID_PARAMS = [
@@ -177,6 +206,20 @@ def _compose(df, position_side, position_ctx=None, close_strategies=("time_stop"
 def _entry_params():
     prev, cur, _ = indices(UP_ABOVE)
     return {**SMALL, "threshold": (prev + cur) / 2.0}
+
+
+def test_composer_flat_entry_and_open_position_blocks_duplicates_and_reversals():
+    params = _entry_params()
+    _, flat_decision = _compose(frame(UP_ABOVE), "", params=params)
+    assert flat_decision["signal"] == 1 and flat_decision["open_action"] == "long"
+
+    held = {"side": "long", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
+    _, dup = _compose(frame(UP_ABOVE), "long", held, params=params)
+    assert dup["open_action"] == "long" and dup["signal"] == 0
+
+    short_ctx = {"side": "short", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
+    _, opposite = _compose(frame(UP_ABOVE), "short", short_ctx, params=params)
+    assert opposite["close_fraction"] == 0.0 and opposite["signal"] == 0
 
 
 def test_composer_close_wins_and_survives_bad_entry_data():

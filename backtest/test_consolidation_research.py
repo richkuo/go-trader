@@ -7,7 +7,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from consolidation_research import Episode, detect_range_containment, detect_volatility_contraction, measure_box, measure_shape, measure_escape_candle, build_episode_table, benchmark_detectors, classify_pattern, measure_volume_profile, atr
+from consolidation_research import Episode, detect_range_containment, detect_regression_flatness, detect_volatility_contraction, measure_shape, measure_escape_candle, build_episode_table, benchmark_detectors, classify_pattern, measure_volume_profile, atr
 
 
 def _candles(highs, lows, closes, opens=None):
@@ -32,22 +32,6 @@ def _flat_box(n=20, level=100.0, halfspan=0.5):
     lows = level - halfspan
     closes = level + rng * 0.3
     return _candles(highs, lows, closes)
-
-
-def test_flat_box_detected_and_measured():
-    df = _flat_box(n=20, level=100.0, halfspan=0.5)
-    eps = detect_range_containment(df, min_bars=8, box_width_pct=0.05)
-    assert eps, "flat box should be detected by range-containment"
-    ep = max(eps, key=lambda e: e.n_bars)
-
-    box = measure_box(df, ep)
-    assert abs(box["top"] - 100.5) < 0.1
-    assert abs(box["bottom"] - 99.5) < 0.1
-    assert abs(box["mid"] - 100.0) < 0.1
-
-    shape = measure_shape(df, ep)
-    assert abs(shape["top_edge_slope"]) < 1e-3
-    assert abs(shape["bottom_edge_slope"]) < 1e-3
 
 
 def test_contracting_triangle_shape(subtests):
@@ -108,6 +92,16 @@ def test_escape_candle_flagged_upward(subtests):
         ep = Episode(start_idx=0, end_idx=len(df), method="t")
         esc = measure_escape_candle(df, ep, atr(df, 14))
         assert np.isnan(esc["escape_idx"])
+
+
+def test_regression_flatness_detects_flat_run():
+    flat = np.full(16, 100.0) + np.random.RandomState(0).normal(0, 0.05, 16)
+    ramp = np.linspace(100.5, 130.0, 16)
+    closes = np.concatenate([flat, ramp])
+    df = _candles(closes + 0.1, closes - 0.1, closes)
+    eps = detect_regression_flatness(df, min_bars=8)
+    assert eps, "should detect the flat run"
+    assert eps[0].start_idx < 16
 
 
 def test_detector_cache_matches_uncached():

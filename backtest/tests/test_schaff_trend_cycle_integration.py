@@ -231,6 +231,13 @@ def _received_out_of_order_rows_hold_only_inside_their_span():
     pd.testing.assert_frame_equal(out.iloc[bad + NEED:], clean.iloc[bad + NEED:])
 
 
+def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame(subtests):
+    with subtests.test(case="nonfinite_volume_and_cadence_gap"):
+        _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame()
+    with subtests.test(case="received_out_of_order"):
+        _received_out_of_order_rows_hold_only_inside_their_span()
+
+
 def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
     df = _walk(700, 5)
     bad = 300

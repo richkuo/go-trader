@@ -51,6 +51,21 @@ def test_canonical_columns_lead_enriched_set(subtests):
             ref.canonical_indices_for(["return_eff", "range_eff", "adx"])
 
 
+def test_subset_selection_preserves_canonical_first_order(subtests):
+    with subtests.test("test_subset_selection_preserves_canonical_first_order"):
+        df = _synthetic_ohlcv()
+        fund = _synthetic_funding(df.index)
+        mat = ref.enriched_feature_matrix(df, period=48, funding=fund,
+                                          columns=["htf_range_eff", "adx", "return_eff",
+                                                   "funding_rate", "range_eff", "efficiency"])
+        assert list(mat.columns) == ["return_eff", "range_eff", "efficiency", "adx",
+                                     "funding_rate", "htf_range_eff"]
+    with subtests.test("test_builder_rejects_unknown_column"):
+        df = _synthetic_ohlcv()
+        with pytest.raises(ValueError, match="unknown enriched columns"):
+            ref.enriched_feature_matrix(df, period=48, columns=["return_eff", "rsi_14"])
+
+
 def test_funding_column_is_backward_only():
     df = _synthetic_ohlcv(n=120)
     idx = df.index

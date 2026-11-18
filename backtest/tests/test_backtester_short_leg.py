@@ -73,6 +73,16 @@ def test_short_entry_fills_next_bar_open_not_signal_bar():
     assert res["trades"][0]["entry_price"] == pytest.approx(95.0)
 
 
+def test_regime_gate_blocks_short_entries():
+    closes = [100, 100, 90, 80, 80]
+    signals = [-1, 0, 0, 0, 0]
+    df = _df(closes, signals)
+    df["regime"] = "bullish"
+    res = _run(df, regime_enabled=True, allowed_regimes=["bearish"])
+    assert res["total_trades"] == 0
+    assert res["final_capital"] == pytest.approx(10000.0)
+
+
 def test_end_of_data_flush_closes_open_short():
     closes = [100, 100, 90, 85, 80]
     signals = [-1, 0, 0, 0, 0]

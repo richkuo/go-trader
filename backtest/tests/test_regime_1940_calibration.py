@@ -255,6 +255,35 @@ def test_checkpoint_requires_matching_snapshot_and_kernel(tmp_path):
     assert study._load_checkpoint(args, "cell") is not None
 
 
+def test_resumed_cells_restore_support_for_confirmation(monkeypatch):
+    import multiprocessing as mp
+    cell = {"cell_id": "ds|oos|4", "dataset_id": "ds", "split": "oos", "horizon": 4}
+    saved = _row("inc", h=2, p=0.01, transition=0.1, support="s", split="oos")
+    monkeypatch.setattr(study, "_load_checkpoint", lambda *_: {"scores": [saved], "population": {"status": "available"}})
+    monkeypatch.setattr(study, "frame_from_rows", lambda _: pd.DataFrame({"close": np.arange(20.0)}))
+    monkeypatch.setattr(study, "build_label_bank", lambda *_: {"base": np.ones(20, dtype=bool), "close": np.arange(20.0)})
+    monkeypatch.setattr(study, "forward_realized_vol", lambda close, h: np.ones(len(close)))
+    monkeypatch.setattr(study, "forward_window_inside", lambda *_: True)
+    captured = {}
+    monkeypatch.setattr(study, "_refine_confirmation", lambda *args: captured.update(args[-1]))
+
+    class Pool:
+        def close(self): pass
+        def join(self): pass
+
+    class Context:
+        def Pool(self, *args, **kwargs): return Pool()
+
+    monkeypatch.setattr(mp, "get_context", lambda _: Context())
+    from types import SimpleNamespace
+    args = SimpleNamespace(workers=1)
+    loaded = {"ds|oos": {"meta": {"status": "available"}, "rows": _hourly(0, 20)}}
+    protocol = {"splits": {"oos": []}, "horizons": [4], "min_usable_bars": 1}
+    expanded = {"datasets": [{"dataset_id": "ds"}], "cells": [cell], "settings": [], "incumbent_ids": {"adx": "inc"}}
+    study._score_all(loaded, protocol, expanded, args, Path("unused"))
+    assert np.array_equal(captured[cell["cell_id"]], np.arange(20))
+
+
 def test_mixed_resumed_and_fresh_cells_both_restore_support(monkeypatch):
     import multiprocessing as mp
     from types import SimpleNamespace

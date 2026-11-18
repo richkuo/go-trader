@@ -63,6 +63,16 @@ def test_candle_backtest_walk_forward_optimizer_and_parity_refuse_before_any_mar
         reg.STRATEGY_REGISTRY[NAME]["fn"](_frame())
 
 
+def test_the_solo_check_script_refuses_the_candidate_before_any_fetch():
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("HYPERLIQUID_", "OKX_"))}
+    proc = subprocess.run([sys.executable, os.path.join(_ROOT, "shared_scripts", "check_hyperliquid.py"), NAME, "BTC", "1m", "--mode=paper"],
+                          capture_output=True, text=True, cwd=_ROOT, env=env, timeout=120)
+    assert proc.returncode == 1, proc.stderr[-1000:]
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert f"open strategy '{NAME}' is production_refused" in payload["error"]
+    assert "Fetching" not in proc.stderr
+
+
 def test_the_committed_report_is_what_the_frozen_invocation_writes_without_a_pinned_recording(tmp_path):
     with open(os.path.join(CANDIDATE, "data-manifest.json")) as fh:
         manifest = json.load(fh)

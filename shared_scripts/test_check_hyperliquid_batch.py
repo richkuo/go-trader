@@ -193,6 +193,13 @@ def test_one_failing_slot_does_not_disturb_its_peers(mod):
     assert _strip_volatile(by_id["hl-ok-1"]) == _strip_volatile(solo)
 
 
+def test_build_shared_signal_state_raises_typed_errors(mod):
+    with pytest.raises(mod.InsufficientCandlesError):
+        mod.build_shared_signal_state("BTC", "1h", adapter=FakeAdapter(candles=_candles(n=5)))
+    with pytest.raises(mod.SharedSignalStateError):
+        mod.build_shared_signal_state("BTC", "1h")
+
+
 def test_parse_batch_slots_accepts_the_documented_envelope_and_rejects_bad_ones(mod, subtests):
     with subtests.test(case="documented_envelope"):
         raw = json.dumps({"v": 1, "slots": [
@@ -272,6 +279,19 @@ def test_batch_check_argv_returns_the_documented_json_or_rejects_malformed_stdin
         assert envelope["error_scope"] == "shared_state"
         assert "invalid batch payload" in envelope["error"]
         assert envelope["results"] == []
+
+
+def test_batch_check_probe_only_exits_before_reading_stdin(mod, monkeypatch):
+    class ExplodingStdin:
+        def read(self):
+            raise AssertionError("--probe-only must not read stdin")
+
+    monkeypatch.setattr(sys, "argv", ["check_hyperliquid.py", "--batch-check",
+                                      "--symbol=BTC", "--timeframe=1h", "--probe-only"])
+    monkeypatch.setattr(sys, "stdin", ExplodingStdin())
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    assert exc.value.code == 0
 
 
 def test_shared_state_accepts_a_prebuilt_frame_without_an_adapter(mod):

@@ -266,6 +266,31 @@ def test_cached_single_run_attaches_the_pinned_artifacts(research_inputs):
     assert proc.returncode != 0 and "sha256" in (proc.stderr + proc.stdout)
 
 
+def test_manifest_v4_contract_refuses_old_schemas_and_mismatched_pins(research_inputs, tmp_path):
+    with open(research_inputs["manifest"]) as fh:
+        raw = json.load(fh)
+    old = dict(raw, schema=om.SCHEMA_V3)
+    path = str(research_inputs["root"] / "old.json")
+    with open(path, "w") as fh:
+        json.dump(old, fh)
+    with pytest.raises(om.ManifestError, match="macro_calendar and macro_quotes need schema"):
+        om.load_manifest(path)
+    m = om.load_manifest(research_inputs["manifest"])
+    ds = m["datasets"][0]
+    win = m["windows"]["test"]
+    inputs, cov = om.attach_macro_events(m, ds, win, research_inputs["params"])
+    assert inputs["event_records"]["available"] and cov["calendar"]["eligible_events"] == 1
+    with pytest.raises(om.ManifestError, match="pins calendar"):
+        om.attach_macro_events(m, ds, win, dict(research_inputs["params"], calendar_sha256="e" * 64))
+    quotes_only = copy.deepcopy(raw)
+    del quotes_only["datasets"][0]["macro_calendar"]
+    path = str(research_inputs["root"] / "quotes_only.json")
+    with open(path, "w") as fh:
+        json.dump(quotes_only, fh)
+    with pytest.raises(om.ManifestError, match="macro_quotes needs a macro_calendar"):
+        om.load_manifest(path)
+
+
 def test_entry_rule_range_boundary_confirmation_expiry_and_cooldown(subtests):
     for check in (
             _check_mirrored_entries_record_their_evidence_and_respect_the_range_boundary,

@@ -155,3 +155,16 @@ def test_cached_and_manifest_attachment_and_unsupported_paths(monkeypatch):
                            "--strategy", NAME, "--registry", "futures", "--symbol", "ETH/USDT", "--timeframe", "1h"],
                           capture_output=True, text=True, cwd=_REPO, timeout=240)
     assert proc.returncode == 1 and "pinned BTC leader series" in proc.stdout
+
+
+def test_production_refusal_keeps_the_candidate_out_of_every_check_before_input_work():
+    from strategy_composition import GATE_MODE_PAPER, Acknowledgement, GateMode, admit_configured_strategies
+    from close_registry_loader import get_strategy as get_close
+    reg = _reg()
+    with pytest.raises(ValueError, match=f"open strategy '{NAME}' is production_refused"):
+        admit_configured_strategies(NAME, None, None, GateMode(GATE_MODE_PAPER), Acknowledgement(True),
+                                    reg.get_strategy, get_close)
+    discovery = json.loads(subprocess.run(
+        [sys.executable, os.path.join(_REPO, "shared_strategies", "open", "futures", "strategies.py"), "--list-json"],
+        capture_output=True, text=True, check=True, cwd=_REPO, timeout=120).stdout)
+    assert NAME not in {row["id"] for row in discovery}

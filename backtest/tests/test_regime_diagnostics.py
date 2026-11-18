@@ -70,3 +70,22 @@ def test_score_labels_target_volatility_stamped_and_distinct(subtests):
         feats = np.zeros((50, 4))
         with pytest.raises(ValueError):
             score_labels(close, labels, feats, horizons=(4,), target="sharpe")
+
+
+def test_per_state_significance():
+    from regime_diagnostics import per_state_significance
+
+    labels_sep = np.array(["up"] * 100 + ["down"] * 100)
+    fwd_sep = np.concatenate([np.full(100, 0.02), np.full(100, -0.02)])
+    result = per_state_significance(labels_sep, fwd_sep, block_len=5, n_perm=200, seed=0)
+    assert result["up"]["fdr_reject"] is True
+    assert result["down"]["fdr_reject"] is True
+    assert result["up"]["gap"] > 0
+    assert result["down"]["gap"] < 0
+
+    rng = np.random.default_rng(7)
+    labels_noise = np.array(["a", "b"])[rng.integers(0, 2, 300)]
+    fwd_noise = rng.normal(0, 0.01, 300)
+    result_noise = per_state_significance(labels_noise, fwd_noise, block_len=10, n_perm=200, seed=0)
+    n_reject = sum(1 for v in result_noise.values() if v["fdr_reject"])
+    assert n_reject <= 1

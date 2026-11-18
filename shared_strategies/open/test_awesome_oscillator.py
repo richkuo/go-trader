@@ -70,11 +70,44 @@ TRUTH_TABLE_CASES = [
 ]
 
 
+def test_invalid_value_inside_predecessor_search_resets_it():
+    ao = [0.5] * 12 + [-1.0, 0.0, 0.0, 0.0, 2.0]
+    clean = run(ao_frame(ao), SMALL)
+    assert int(clean["signal"].iloc[-1]) == 1
+    assert clean["ao_prev_lag"].iloc[-1] == 4.0
+    bad = ao_frame(ao)
+    bad.iloc[-3, bad.columns.get_loc("high")] = np.nan
+    out = run(bad, SMALL)
+    assert not bool(out["ao_valid"].iloc[-1])
+    assert int(out["signal"].iloc[-1]) == 0
+    assert out["ao_reason"].iloc[-1] == "nonfinite_input"
+    recover = run(ao_frame([0.5] * 12 + [-1.0] + [-0.5] * 12 + [2.0]), SMALL)
+    bad2 = ao_frame([0.5] * 12 + [-1.0] + [-0.5] * 12 + [2.0])
+    bad2.iloc[5, bad2.columns.get_loc("low")] = bad2["high"].iloc[5] + 5.0
+    out2 = run(bad2, SMALL)
+    assert out2["ao_reason"].iloc[6] == "inconsistent_hl"
+    assert int(out2["signal"].iloc[-1]) == int(recover["signal"].iloc[-1]) == 1
+
+
 MALFORMED_BAR_CASES = [
     ("high", np.inf, "nonfinite_input"),
     ("low", np.nan, "nonfinite_input"),
     ("low", 1e9, "inconsistent_hl"),
 ]
+
+
+def test_timestamp_order_defect_detected():
+    df = ao_frame([0.5] * 12 + [-1.0, 2.0])
+    idx = list(df.index)
+    idx[-1] = idx[-2]
+    df.index = pd.DatetimeIndex(idx)
+    row = run(df, SMALL).iloc[-1]
+    assert row["ao_reason"] == "timestamp_order"
+    assert int(row["signal"]) == 0
+    with_col = ao_frame([0.5] * 12 + [-1.0, 2.0]).reset_index(drop=True)
+    with_col["timestamp"] = [1_000 * i for i in range(len(with_col))]
+    with_col.loc[len(with_col) - 1, "timestamp"] = 3_000
+    assert run(with_col, SMALL).iloc[-1]["ao_reason"] == "timestamp_order"
 
 
 INVALID_PARAMS = [
@@ -159,6 +192,19 @@ def _compose(df, position_side, position_ctx=None, close_strategies=("time_stop"
 
 
 ENTRY = [0.5] * 12 + [-1.0, 2.0]
+
+
+def test_composer_flat_entry_and_open_position_blocks_duplicates_and_reversals():
+    _, flat_decision = _compose(ao_frame(ENTRY), "", params=SMALL)
+    assert flat_decision["signal"] == 1 and flat_decision["open_action"] == "long"
+
+    held = {"side": "long", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
+    _, dup = _compose(ao_frame(ENTRY), "long", held, params=SMALL)
+    assert dup["open_action"] == "long" and dup["signal"] == 0
+
+    short_ctx = {"side": "short", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
+    _, opposite = _compose(ao_frame(ENTRY), "short", short_ctx, params=SMALL)
+    assert opposite["close_fraction"] == 0.0 and opposite["signal"] == 0
 
 
 def test_composer_close_wins_over_simultaneous_entry_and_survives_bad_entry_data():

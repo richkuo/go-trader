@@ -17,7 +17,14 @@ from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from premium_replay import CONTRACT, PAYLOAD_CONTRACT_KEYS, payload_from_series
 from registry_loader import load_registry
-from strategy_composition import evaluate_open_close, finalize_decision
+from strategy_composition import (
+    GATE_MODE_PAPER,
+    Acknowledgement,
+    GateMode,
+    admit_configured_strategies,
+    evaluate_open_close,
+    finalize_decision,
+)
 
 NAME = "perpetual_premium_reversion"
 BAR = 60_000
@@ -86,6 +93,79 @@ def _row(out, i):
     return out["signal"].iloc[i], out["ppr_reason"].iloc[i]
 
 
+def test_parameter_validation_refuses_an_unestablishable_oracle_source_age_and_bad_bounds():
+    registry = _reg()._registry
+    with pytest.raises(ValueError, match="no source time"):
+        registry.validate_params(NAME, {"max_oracle_source_age_ms": 1000})
+    for bad in ({"turn_span": 10, "lookback_samples": 10}, {"expected_interval_ms": 90_000}, {"entry_z": 0},
+                {"variance_floor": 0}, {"lookback_samples": 5}, {"unknown": 1}):
+        with pytest.raises(ValueError):
+            registry.validate_params(NAME, bad)
+
+
+def _check_invalid_or_incomplete_inputs_hold_with_a_reason():
+    cases = {
+        "sample_missing": lambda s: s.pop(15),
+        "sample_not_sampled": lambda s: s[15].update(status="invalid", reason="malformed"),
+        "stale_quote": lambda s: s[15]["quote"].update(event_ms=s[15]["t"] - 5_001),
+        "stale_oracle": lambda s: s[15]["context"].update(recv_ms=s[15]["t"] - 5_001),
+        "component_skew": lambda s: s[15]["context"].update(recv_ms=s[15]["quote"]["recv_ms"] - 3_001),
+        "session_change": lambda s: [x["quote"].update(session=2) or x["context"].update(session=2) for x in s[16:]],
+        "wide_spread": lambda s: s[15]["quote"].update(bid="99.9", ask="100.1"),
+        "premium_dislocation": lambda s: s[15]["quote"].update(bid="101.5", ask="101.51"),
+        "mark_dislocation": lambda s: s[15]["context"].update(mark="99"),
+        "malformed_sample": lambda s: s[15]["quote"].update(bid="1e5"),
+    }
+    for reason, mutate in cases.items():
+        df, series = _build(_premiums(30, extreme=20), mutate=lambda s, m=mutate: m(s))
+        out = _run(df, series)
+        assert _row(out, 21) == (0, reason), reason
+        assert _row(out, 27) == (0, "no_extreme"), reason
+    boundary = {
+        "stale_quote": lambda s: s[15]["quote"].update(event_ms=s[15]["t"] - 5_000),
+        "stale_oracle": lambda s: (s[15]["context"].update(recv_ms=s[15]["t"] - 5_000),
+                                   s[15]["quote"].update(recv_ms=s[15]["t"] - 2_500, event_ms=s[15]["t"] - 2_600)),
+        "component_skew": lambda s: s[15]["context"].update(recv_ms=s[15]["quote"]["recv_ms"] - 3_000),
+    }
+    for reason, mutate in boundary.items():
+        df, series = _build(_premiums(30, extreme=20), mutate=lambda s, m=mutate: m(s))
+        assert _row(_run(df, series), 21)[0] == -1, reason
+
+
+def _check_a_later_revocation_applies_only_from_its_detection_time():
+    def revoke_after(s):
+        s[15]["invalid_ms"] = T0 + 23 * BAR
+        s[15]["invalid_reason"] = "conflicting_duplicate"
+    df, series = _build(_premiums(30, extreme=20), mutate=revoke_after)
+    out = _run(df, series)
+    assert _row(out, 21)[0] == -1
+    assert _row(out, 22) == (0, "sample_invalidated")
+
+    def revoke_before(s):
+        s[15]["invalid_ms"] = T0 + 22 * BAR
+        s[15]["invalid_reason"] = "conflicting_duplicate"
+    df, series = _build(_premiums(30, extreme=20), mutate=revoke_before)
+    assert _row(_run(df, series), 21) == (0, "sample_invalidated")
+
+
+def _check_contract_and_availability_failures_hold_every_entry():
+    df, series = _build(_premiums(30, extreme=20))
+    for key, value in (("contract", "other"), ("oracle_time_basis", "receipt"), ("sample_ms", 30_000), ("kind", "open_interest")):
+        payload = {**payload_from_series(series, BAR), key: value}
+        out = _reg().apply_strategy(NAME, df, {**SEED, "premium_observations": payload})
+        assert not out["signal"].any() and set(out["ppr_reason"]) == {"unsupported_premium"}
+    unavailable = payload_from_series({**series, "economic_evidence": False, "refusals": ["damaged"]}, BAR)
+    out = _reg().apply_strategy(NAME, df, {**SEED, "premium_observations": unavailable})
+    assert set(out["ppr_reason"]) == {"premium_unavailable"}
+    out = _reg().apply_strategy(NAME, df, dict(SEED))
+    assert set(out["ppr_reason"]) == {"premium_unavailable"}
+
+    def oracle_time(s):
+        s[3]["context"]["oracle_event_ms"] = s[3]["context"]["recv_ms"]
+    df2, series2 = _build(_premiums(30, extreme=20), mutate=oracle_time)
+    assert _row(_run(df2, series2), 13) == (0, "malformed_sample")
+
+
 def test_a_live_payload_carries_the_closed_bar_decision_onto_the_forming_row():
     df, series = _build(_premiums(30, extreme=20))
     frame = df.iloc[:23]
@@ -144,3 +224,24 @@ def test_simulator_fills_next_open_and_closes_by_time_stop_or_the_atr_stop():
         assert int(sig["signal"].iloc[pos - 1]) == (1 if t["side"] == "long" else -1)
         assert t["entry_price"] == pytest.approx(df["open"].iloc[pos], rel=0.01)
         assert t["exit_reason"].split(":")[0] in {"sl", "time_stop", "end_of_data"}
+
+
+def test_production_admission_refuses_the_candidate_and_keeps_existing_candidates():
+    reg = _reg()
+    from close_registry_loader import get_strategy as get_close
+    with pytest.raises(ValueError, match=f"open strategy '{NAME}' is production_refused"):
+        admit_configured_strategies(NAME, None, None, GateMode(GATE_MODE_PAPER), Acknowledgement(True),
+                                    reg.get_strategy, get_close)
+    refs = admit_configured_strategies("mass_index_reversal", None, None, GateMode(GATE_MODE_PAPER),
+                                       Acknowledgement(False), reg.get_strategy, get_close)
+    assert [r.name for r in refs] == ["mass_index_reversal"]
+
+
+def test_input_defects_revocations_and_contract_failures_hold_with_a_reason(subtests):
+    for check in (
+            _check_invalid_or_incomplete_inputs_hold_with_a_reason,
+            _check_a_later_revocation_applies_only_from_its_detection_time,
+            _check_contract_and_availability_failures_hold_every_entry,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()

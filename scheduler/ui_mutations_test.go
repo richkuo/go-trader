@@ -91,6 +91,67 @@ func readConfigRoot(t *testing.T, path string) map[string]json.RawMessage {
 	return root
 }
 
+func TestUIPauseEndpoint(t *testing.T) {
+	t.Run("UIPauseEndpointWritesAndReloads", func(t *testing.T) {
+		ss, path, reloads := newMutationTestServer(t)
+		pause := func(w http.ResponseWriter, r *http.Request) { ss.handleAPIStrategyPause(w, r, "spot-btc") }
+
+		w := mutationPost(ss, pause, "/api/strategies/spot-btc/pause", `{"paused":true}`, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("pause status = %d, body %s", w.Code, w.Body.String())
+		}
+		if got := readConfigStrategy(t, path)["paused"]; got != true {
+			t.Fatalf("paused in config = %v, want true", got)
+		}
+		if *reloads != 1 {
+			t.Fatalf("reloads = %d, want 1", *reloads)
+		}
+
+		w = mutationPost(ss, pause, "/api/strategies/spot-btc/pause", `{"paused":false}`, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("unpause status = %d, body %s", w.Code, w.Body.String())
+		}
+		if _, present := readConfigStrategy(t, path)["paused"]; present {
+			t.Fatal("paused key should be deleted on unpause")
+		}
+		if *reloads != 2 {
+			t.Fatalf("reloads = %d, want 2", *reloads)
+		}
+	})
+	t.Run("UIPauseEndpointGuards", func(t *testing.T) {
+		ss, path, _ := newMutationTestServer(t)
+		pause := func(w http.ResponseWriter, r *http.Request) { ss.handleAPIStrategyPause(w, r, "spot-btc") }
+
+		w := mutationPost(ss, pause, "http://127.0.0.1:8099/api/strategies/spot-btc/pause", `{"paused":true}`,
+			map[string]string{"Origin": "http://evil.example"})
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("cross-origin status = %d, want 403", w.Code)
+		}
+		if _, present := readConfigStrategy(t, path)["paused"]; present {
+			t.Fatal("cross-origin request must not write config")
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/api/strategies/spot-btc/pause", nil)
+		rec := httptest.NewRecorder()
+		pause(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("GET status = %d, want 405", rec.Code)
+		}
+
+		if w := mutationPost(ss, pause, "/pause", `{}`, nil); w.Code != http.StatusBadRequest {
+			t.Fatalf("missing paused key status = %d, want 400", w.Code)
+		}
+		if w := mutationPost(ss, pause, "/pause", `{"paused":"yes"}`, nil); w.Code != http.StatusBadRequest {
+			t.Fatalf("non-bool paused status = %d, want 400", w.Code)
+		}
+
+		other := func(w http.ResponseWriter, r *http.Request) { ss.handleAPIStrategyPause(w, r, "nope") }
+		if w := mutationPost(ss, other, "/pause", `{"paused":true}`, nil); w.Code != http.StatusNotFound {
+			t.Fatalf("unknown strategy status = %d, want 404", w.Code)
+		}
+	})
+}
+
 func TestMutatingAPIAuth(t *testing.T) {
 	t.Run("UIMutationsEnforceConfiguredToken", func(t *testing.T) {
 		ss, _, _ := newMutationTestServer(t)

@@ -105,6 +105,26 @@ def test_config_directional_classifier_matches_live_resolution():
     assert config_directional_classifier(rc3, {}) == "adx"
 
 
+def test_gate_directional_policy_by_states_per_state_sign():
+    from backtester import _gate_directional_policy_by_states
+    policy = {
+        "trending_up": {"direction": "short", "invert_signal": True},
+        "trending_down": {"direction": "short"},
+        "ranging": {"direction": "long"},
+    }
+    certs = {"trending_up": "long", "trending_down": "short", "ranging": "long"}
+    gated = _gate_directional_policy_by_states(policy, certs)
+    assert "trending_up" not in gated
+    assert gated["trending_down"]["direction"] == "short"
+    assert gated["ranging"]["direction"] == "long"
+    pol_both = {"trending_up": {"direction": "both"}}
+    assert _gate_directional_policy_by_states(pol_both, {"trending_up": "long"}) == pol_both
+    assert _gate_directional_policy_by_states(policy, {"trending_up": "short"}) == {
+        "trending_up": {"direction": "short", "invert_signal": True}}
+    assert _gate_directional_policy_by_states(policy, {}) == {}
+    assert _gate_directional_policy_by_states(policy, None) == policy
+
+
 def test_repo_artifact_is_empty_and_valid():
     import os
     here = os.path.dirname(os.path.abspath(__file__))

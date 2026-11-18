@@ -129,6 +129,21 @@ def _ohlcv(start, periods, freq="1h"):
                          "volume": 1.0}, index=idx)
 
 
+def test_clip_window_keeps_both_bounds_drops_the_rest_and_refuses_a_non_datetime_index():
+    start, end = premise_mod.WINDOWS["is"]
+    out = premise_mod._clip_window(
+        _ohlcv(pd.Timestamp(start) - pd.Timedelta(days=30), 24 * 400),
+        start, end)
+    case = "test_clip_window_is_inclusive_of_both_bounds_and_drops_the_rest"
+    assert out.index.min() >= pd.Timestamp(start), case
+    assert out.index.max() <= pd.Timestamp(end), case
+    assert len(out) > 0, case
+
+    with pytest.raises(ValueError):
+        premise_mod._clip_window(pd.DataFrame({"close": [1.0, 2.0]}),
+                                 *premise_mod.WINDOWS["is"])
+
+
 def test_an_added_symbol_on_another_venue_resolves_and_is_not_repointed(
         tmp_path, monkeypatch):
     monkeypatch.setattr(premise_mod, "run", lambda *a, **k: [_row(p=0.9)])

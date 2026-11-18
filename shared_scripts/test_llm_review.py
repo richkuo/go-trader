@@ -97,8 +97,18 @@ class TestPipeline:
         assert set(out["per_analyst"]) == {"technical"}
         assert len(calls) == 2
 
+    def test_llm_failure_propagates(self, mod):
+        def boom(system, user, schema=None):
+            raise RuntimeError("api down")
+        with pytest.raises(RuntimeError):
+            mod.run_pipeline(CTX, {"ohlcv_summary": None, "funding": None}, boom)
+
 
 class TestSubprocessContract:
+    def test_probe_only(self):
+        r = subprocess.run([sys.executable, SCRIPT, "--probe-only"], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0
+        assert json.loads(r.stdout)["status"] == "ok"
 
     def test_missing_api_key_errors_json(self, subtests):
         with subtests.test(case="missing_api_key"):

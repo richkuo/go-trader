@@ -179,6 +179,24 @@ def test_run_leg_threads_stop_loss_atr_mult(monkeypatch):
         "reached the Backtester")
 
 
+def test_run_leg_threads_allowed_regimes_and_blocks_entries(monkeypatch):
+    df = _synthetic_df(n=240)
+    df = df.copy()
+    df["regime"] = "trending_up"
+    import data_fetcher
+    monkeypatch.setattr(data_fetcher, "load_cached_data",
+                        lambda *a, **k: df, raising=True)
+    plain = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                       ("2026-01-01", None))
+    gated = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                       ("2026-01-01", None), allowed_regimes=["trending_down"])
+    assert plain is not None and plain.get("trades", 0) > 0
+    assert gated is not None
+    assert gated.get("trades", -1) == 0, (
+        "allowed_regimes gate did not suppress entries when bar regime "
+        "was never in the allowed set")
+
+
 _VALIDATE_CANDIDATE_ACCEPTS_CASES = [
     {"name": "x", "direction": "short"},
     {"name": "x", "direction": "short",
@@ -251,6 +269,21 @@ def test_validate_candidate_rejects(subtests):
         with subtests.test(case=i, candidate=candidate, match=match):
             with pytest.raises(ValueError, match=match):
                 ew.validate_candidate(candidate)
+
+
+_VALIDATE_CANDIDATE_STRIPS_EMPTY_OPTIONAL_BLOCK_CASES = [
+    ({"name": "x", "allowed_regimes": []}, "allowed_regimes"),
+    ({"name": "x", "regime_windows_spec": {}}, "regime_windows_spec"),
+    ({"name": "x", "regime_directional_policy": {}},
+     "regime_directional_policy"),
+]
+
+
+def test_validate_candidate_strips_empty_optional_block(subtests):
+    for i, (candidate, key) in enumerate(_VALIDATE_CANDIDATE_STRIPS_EMPTY_OPTIONAL_BLOCK_CASES):
+        with subtests.test(case=i, candidate=candidate, key=key):
+            assert ew.validate_candidate(candidate) is candidate
+            assert key not in candidate
 
 
 def test_run_leg_threads_regime_windows_spec_composite_gate(monkeypatch):

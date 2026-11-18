@@ -11,7 +11,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import run_backtest
 from backtester import Backtester
-from regime import ensure_regime_columns, VALID_LABELS_COMPOSITE, _DEFAULT_COMPOSITE_THRESHOLDS
+from regime import (
+    ensure_regime_columns,
+    VALID_LABELS_COMPOSITE,
+    VALID_LABELS_ADX,
+    _DEFAULT_COMPOSITE_THRESHOLDS,
+)
 
 COMPOSITE_SPEC = {"medium": {"classifier": "composite", "period": 20}}
 
@@ -41,6 +46,49 @@ def _buy_at(df: pd.DataFrame, bar: int) -> pd.DataFrame:
     out["signal"] = 0
     out.iloc[bar, out.columns.get_loc("signal")] = 1
     return out
+
+
+def test_windows_spec_stamps_composite_substates_and_default_stays_adx(subtests):
+    with subtests.test(case="windows_spec_computes_composite_substates_from_ohlcv"):
+        _assert_windows_spec_computes_composite_substates_from_ohlcv()
+    with subtests.test(case="position_regime_is_composite_substate"):
+        _assert_position_regime_is_composite_substate()
+    with subtests.test(case="default_path_stays_adx_without_windows_spec"):
+        _assert_default_path_stays_adx_without_windows_spec()
+
+
+def _assert_windows_spec_computes_composite_substates_from_ohlcv():
+    labels = set(_ground_truth_labels(_mixed_regime_ohlcv()).unique()) - {""}
+    assert labels <= VALID_LABELS_COMPOSITE
+    assert labels & VALID_LABELS_ADX == set()
+    assert labels, "expected non-empty composite labels"
+
+
+def _assert_position_regime_is_composite_substate():
+    df = _mixed_regime_ohlcv()
+    truth = _ground_truth_labels(df)
+    entry = 130
+    expected = truth.iloc[entry]
+    assert expected in VALID_LABELS_COMPOSITE
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        regime_enabled=True, regime_windows_spec=COMPOSITE_SPEC,
+    )
+    result = bt.run(_buy_at(df, entry), save=False)
+    assert result["total_trades"] == 1
+    assert bt._run_position_regime == expected
+    assert bt._run_position_regime in VALID_LABELS_COMPOSITE
+
+
+def _assert_default_path_stays_adx_without_windows_spec():
+    df = _mixed_regime_ohlcv()
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        regime_enabled=True,
+    )
+    bt.run(_buy_at(df, 130), save=False)
+    assert bt._run_position_regime in VALID_LABELS_ADX
+    assert bt._run_position_regime not in VALID_LABELS_COMPOSITE
 
 
 def test_composite_gate_allows_matching_blocks_mismatching():

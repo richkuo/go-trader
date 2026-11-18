@@ -29,6 +29,17 @@ def test_forward_filter_look_ahead_safe(subtests):
         assert list(lab_a[:71]) == list(lab_b[:71])
 
 
+def test_forward_filter_recovers_regime():
+    from regime_hmm import forward_filter_labels
+    rng = np.random.default_rng(1)
+    feats = np.vstack([rng.normal(0, 1, (60, 4)), rng.normal(4, 1, (60, 4))])
+    labels = np.array(["s0"] * 60 + ["s1"] * 60, dtype=object)
+    m = fit_label_anchored_hmm(feats, labels, STATES, filter_window=8)
+    lab, conf = forward_filter_labels(feats, m)
+    assert (lab[20:55] == "s0").mean() > 0.8 and (lab[80:115] == "s1").mean() > 0.8
+    assert (conf >= 0).all() and (conf <= 1.0 + 1e-9).all()
+
+
 def _noisy_fixture(seed=3, n=60, sep=0.7):
     rng = np.random.default_rng(seed)
     feats = np.vstack([rng.normal(0, 1, (n, 4)), rng.normal(sep, 1, (n, 4))])

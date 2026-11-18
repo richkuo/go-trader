@@ -28,6 +28,22 @@ func hlStepMainFunc(t *testing.T) (*token.FileSet, *ast.FuncDecl) {
 	return nil, nil
 }
 
+func hlStepPerpsStepFunc(t *testing.T) (*token.FileSet, *ast.FuncDecl) {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "hl_perps_step.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse hl_perps_step.go: %v", err)
+	}
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "runHyperliquidPerpsStep" {
+			return fset, fn
+		}
+	}
+	t.Fatal("func runHyperliquidPerpsStep not found in hl_perps_step.go")
+	return nil, nil
+}
+
 func hlStepCallName(call *ast.CallExpr) string {
 	switch fn := call.Fun.(type) {
 	case *ast.Ident:
@@ -60,6 +76,30 @@ func hlStepIdentCount(node ast.Node, name string) int {
 	return count
 }
 
+func hlStepHyperliquidBranch(t *testing.T, fn *ast.FuncDecl) *ast.IfStmt {
+	t.Helper()
+	var branch *ast.IfStmt
+	ast.Inspect(fn, func(n ast.Node) bool {
+		ifs, ok := n.(*ast.IfStmt)
+		if !ok || ifs.Init == nil {
+			return true
+		}
+		assign, ok := ifs.Init.(*ast.AssignStmt)
+		if !ok || len(assign.Rhs) != 1 {
+			return true
+		}
+		if call, ok := assign.Rhs[0].(*ast.CallExpr); ok && hlStepCallName(call) == "runHyperliquidCheck" {
+			branch = ifs
+			return false
+		}
+		return true
+	})
+	if branch == nil {
+		t.Fatalf("the runHyperliquidCheck branch was not found in func %s", fn.Name.Name)
+	}
+	return branch
+}
+
 func hlStepManualClause(t *testing.T, fn *ast.FuncDecl) *ast.CaseClause {
 	t.Helper()
 	var clause *ast.CaseClause
@@ -80,6 +120,163 @@ func hlStepManualClause(t *testing.T, fn *ast.FuncDecl) *ast.CaseClause {
 		t.Fatal(`the "manual" strategy case was not found in func main`)
 	}
 	return clause
+}
+
+func TestHyperliquidStepAlertOrchestrationContract(t *testing.T) {
+	_, mainFn := hlStepMainFunc(t)
+	if got := len(hlStepCalls(mainFn, "runHyperliquidPerpsStep")); got != 1 {
+		t.Fatalf("func main must route the Hyperliquid perps step through runHyperliquidPerpsStep once, got %d calls", got)
+	}
+	_, fn := hlStepPerpsStepFunc(t)
+	branch := hlStepHyperliquidBranch(t, fn)
+	body := branch.Body
+
+	if got := hlStepIdentCount(body, "trades"); got != 1 {
+		t.Errorf("the Hyperliquid perps step names trades %d times, want only the finish assignment: a producer that writes trades bypasses row selection", got)
+	}
+	if got := hlStepIdentCount(body, "detail"); got != 1 {
+		t.Errorf("the Hyperliquid perps step names detail %d times, want only the finish assignment: a producer that writes detail replaces earlier summary lines", got)
+	}
+	last, ok := body.List[len(body.List)-1].(*ast.AssignStmt)
+	if !ok || len(last.Lhs) != 2 || len(last.Rhs) != 1 {
+		t.Fatal("the Hyperliquid perps step must end with trades, detail = hlStep.finish(...)")
+	}
+	if l0, ok := last.Lhs[0].(*ast.Ident); !ok || l0.Name != "trades" {
+		t.Error("the final assignment must set trades from hlStep.finish")
+	}
+	if l1, ok := last.Lhs[1].(*ast.Ident); !ok || l1.Name != "detail" {
+		t.Error("the final assignment must set detail from hlStep.finish")
+	}
+	if call, ok := last.Rhs[0].(*ast.CallExpr); !ok || hlStepCallName(call) != "finish" {
+		t.Error("the final assignment must call hlStep.finish")
+	}
+
+	begins := hlStepCalls(body, "beginHyperliquidStepTradeAlerts")
+	breaches := hlStepCalls(body, "applyPaperStopLossBreach")
+	if len(begins) != 1 || len(breaches) != 1 || begins[0].Pos() > breaches[0].Pos() {
+		t.Errorf("want one beginHyperliquidStepTradeAlerts before the paper breach check, got %d begin calls and %d breach calls", len(begins), len(breaches))
+	}
+	hedges := hlStepCalls(body, "runHedgeSync")
+	replays := hlStepCalls(body, "applyReplayedLiveDecisions")
+	if len(hedges) != 1 || len(replays) != 1 || hedges[0].Pos() > last.Pos() || replays[0].Pos() > last.Pos() {
+		t.Error("hlStep.finish must run after replay and hedge synchronization")
+	}
+	if got := len(hlStepCalls(body, "sendTradeAlerts")); got != 0 {
+		t.Errorf("the Hyperliquid perps step calls the tail-count sendTradeAlerts %d times, want 0", got)
+	}
+
+	for _, name := range []string{"executeHyperliquidResultDeferredOpen", "executeHyperliquidScaleInDeferredOpen"} {
+		found := false
+		ast.Inspect(body, func(n ast.Node) bool {
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok || len(assign.Rhs) != 1 {
+				return true
+			}
+			call, ok := assign.Rhs[0].(*ast.CallExpr)
+			if !ok || hlStepCallName(call) != name {
+				return true
+			}
+			found = true
+			if id, ok := assign.Lhs[0].(*ast.Ident); !ok || id.Name != "execTrades" {
+				t.Errorf("%s must assign its count to execTrades", name)
+			}
+			return true
+		})
+		if !found {
+			t.Errorf("%s assignment not found", name)
+		}
+	}
+	opens := hlStepCalls(body, "recordPositionOpen")
+	binds := hlStepCalls(body, "bindExecuteLocked")
+	if len(opens) != 1 || len(binds) != 1 || binds[0].Pos() < opens[0].Pos() {
+		t.Error("bindExecuteLocked must run once, after recordPositionOpen books the deferred open row")
+	}
+
+	gates := 0
+	ast.Inspect(body, func(n ast.Node) bool {
+		be, ok := n.(*ast.BinaryExpr)
+		if !ok || be.Op != token.GTR {
+			return true
+		}
+		if id, ok := be.X.(*ast.Ident); ok && id.Name == "execTrades" {
+			gates++
+		}
+		return true
+	})
+	if gates != 3 {
+		t.Errorf("execTrades > 0 gates = %d, want 3 (ratchet scale-in ownership, post-trade protection, paper post-execute post-TP)", gates)
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || len(assign.Lhs) != 1 {
+			return true
+		}
+		if id, ok := assign.Lhs[0].(*ast.Ident); ok && id.Name == "ratchetWalkerOwnedByScaleIn" && hlStepIdentCount(assign.Rhs[0], "execTrades") != 1 {
+			t.Error("ratchetWalkerOwnedByScaleIn must read execTrades")
+		}
+		return true
+	})
+
+	guarded := 0
+	var stack []ast.Node
+	ast.Inspect(mainFn, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		stack = append(stack, n)
+		call, ok := n.(*ast.CallExpr)
+		if !ok || hlStepCallName(call) != "sendTradeAlerts" || len(call.Args) < 3 {
+			return true
+		}
+		if id, ok := call.Args[2].(*ast.Ident); !ok || id.Name != "trades" {
+			return true
+		}
+		ok = false
+		for i := len(stack) - 2; i >= 0; i-- {
+			ifs, isIf := stack[i].(*ast.IfStmt)
+			if !isIf {
+				continue
+			}
+			if be, isBin := ifs.Cond.(*ast.BinaryExpr); isBin && be.Op == token.EQL {
+				x, xOK := be.X.(*ast.Ident)
+				y, yOK := be.Y.(*ast.Ident)
+				if xOK && yOK && x.Name == "hlStep" && y.Name == "nil" {
+					ok = true
+					break
+				}
+			}
+		}
+		if !ok {
+			t.Error("the per-strategy sendTradeAlerts consumer must be guarded by hlStep == nil so Hyperliquid perps rows are never re-sent by tail count")
+		}
+		guarded++
+		return true
+	})
+	if guarded != 1 {
+		t.Errorf("per-strategy tail-count consumers = %d, want 1", guarded)
+	}
+
+	manual := hlStepManualClause(t, mainFn)
+	if got := len(hlStepCalls(manual, "runManualTrailingStopUpdate")); got != 1 {
+		t.Errorf("manual case calls runManualTrailingStopUpdate %d times, want 1", got)
+	}
+	if got := len(hlStepCalls(manual, "applyTrailingStopUpdateResult")); got != 0 {
+		t.Errorf("manual case calls applyTrailingStopUpdateResult directly %d times, want 0", got)
+	}
+	ast.Inspect(manual, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || len(assign.Lhs) != 1 {
+			return true
+		}
+		if id, ok := assign.Lhs[0].(*ast.Ident); !ok || id.Name != "detail" {
+			return true
+		}
+		if call, ok := assign.Rhs[0].(*ast.CallExpr); !ok || hlStepCallName(call) != "mergeTradeDetails" {
+			t.Error("every manual detail assignment must merge with mergeTradeDetails so a later producer keeps earlier booked-stop details")
+		}
+		return true
+	})
 }
 
 type hlStepRecordingRouter struct {

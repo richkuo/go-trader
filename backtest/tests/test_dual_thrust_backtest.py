@@ -125,6 +125,114 @@ def _same(a, b):
         assert x == y, (col, x, y)
 
 
+REFERENCE_CASES = [
+    ("1h", H, 3, 0.3, 0.4, 0, 20),
+    ("1h", H, 2, 0.25, 0.25, 7, 20),
+    ("1h", H, 7, 0.5, 0.25, 23, 40),
+    ("4h", 4 * H, 4, 0.5, 0.5, 0, 50),
+    ("4h", 4 * H, 2, 0.2, 0.3, 8, 50),
+]
+
+
+def test_registry_matches_an_independent_daily_session_calculation(subtests):
+    for case in REFERENCE_CASES:
+        with subtests.test(case=case):
+            _registry_matches_an_independent_daily_session_calculation(*case)
+
+
+def _registry_matches_an_independent_daily_session_calculation(freq, interval, n, kl, ks, hour, days):
+    per = DAY // interval
+    df = _walk(days * per, freq=freq, seed=hour + n)
+    params = dict(lookback_sessions=n, k_long=kl, k_short=ks, session_start_hour=hour, expected_interval_ms=interval)
+    out = _apply(df, **params)
+    sig, vals = _reference(df, n, kl, ks, hour, interval)
+    assert np.array_equal(out["signal"].to_numpy(), sig)
+    assert (sig == 1).sum() >= 2 and (sig == -1).sum() >= 2
+    valid = out["dt_valid"].to_numpy()
+    assert sorted(np.flatnonzero(valid)) == sorted(vals)
+    for i, (hh, lc, hc, ll, rng, anchor) in vals.items():
+        row = out.iloc[i]
+        assert (row["dt_hh"], row["dt_lc"], row["dt_hc"], row["dt_ll"]) == (hh, lc, hc, ll)
+        assert row["dt_range"] == rng and row["dt_anchor"] == anchor
+        assert row["dt_upper"] == anchor + kl * rng and row["dt_lower"] == anchor - ks * rng
+    ms = np.array([t.value // 1_000_000 for t in df.index])
+    first_session = int(np.flatnonzero((ms - hour * H) % DAY == 0)[0])
+    assert not valid[:first_session + n * per].any() and valid[first_session + n * per]
+
+
+def _rising_session_fires_one_long_and_records_its_evaluated_inputs():
+    df = _frame(_base() + _session([101.0, 102.0, 103.5, 104.0, 102.0, 104.5]))
+    out = _apply(df)
+    assert list(np.flatnonzero(out["signal"].to_numpy() == 1)) == [50]
+    assert not (out["signal"] == -1).any()
+    row = out.iloc[50]
+    assert row["dt_reason"] == "entry_long" and row["dt_reason_code"] == 1 and bool(row["dt_valid"])
+    assert (row["dt_hh"], row["dt_lc"], row["dt_hc"], row["dt_ll"]) == (105.0, 99.0, 101.0, 96.0)
+    assert row["dt_range"] == 6.0 and row["dt_anchor"] == 100.0
+    assert row["dt_upper"] == 103.0 and row["dt_lower"] == 97.0
+    assert row["dt_bar_in_session"] == 2.0 and row["dt_session_open_ms"] == T0 + 2 * DAY
+    assert row["dt_eval_ts_ms"] == T0 + 2 * DAY + 2 * H and row["dt_close"] == 103.5
+    assert (row["dt_lookback_sessions"], row["dt_k_long"], row["dt_k_short"]) == (2.0, 0.5, 0.5)
+    assert (row["dt_session_start_hour"], row["dt_interval_ms"]) == (0.0, float(H))
+    assert list(out["dt_reason"].iloc[51:54]) == ["long_consumed", "inside_range", "long_consumed"]
+    assert (out["dt_reason"].iloc[:48] == "insufficient_history").all()
+    assert out["dt_valid"].iloc[48:].all()
+
+
+def _falling_session_fires_one_short():
+    df = _frame(_base() + _session([99.0, 98.0, 96.5, 96.0, 98.0, 95.0]))
+    out = _apply(df)
+    assert list(np.flatnonzero(out["signal"].to_numpy() == -1)) == [50]
+    assert not (out["signal"] == 1).any()
+    assert out["dt_reason"].iloc[50] == "entry_short" and out["dt_reason_code"].iloc[50] == -1
+    assert list(out["dt_reason"].iloc[53:55]) == ["short_consumed", "inside_range"]
+
+
+def _both_sides_fire_once_in_one_session_and_rearm_at_the_next_session():
+    today = _session([103.5, 100.0, 96.5, 104.0, 96.0, 103.9, 96.9])
+    tomorrow = _session([110.0, 80.0, 112.0])
+    df = _frame(_base() + today + tomorrow)
+    out = _apply(df)
+    sig = out["signal"].to_numpy()
+    assert list(np.flatnonzero(sig == 1)) == [48, 72]
+    assert list(np.flatnonzero(sig == -1)) == [50, 73]
+    assert list(out["dt_reason"].iloc[51:55]) == ["long_consumed", "short_consumed", "long_consumed",
+                                                  "short_consumed"]
+    assert out["dt_long_consumed"].iloc[71] == 1.0 and out["dt_long_consumed"].iloc[72] == 1.0
+    assert out["dt_short_consumed"].iloc[72] == 0.0 and out["dt_short_consumed"].iloc[73] == 1.0
+    assert out["dt_session_open_ms"].iloc[72] == T0 + 3 * DAY
+    assert out["dt_anchor"].iloc[72] == 100.0 and out["dt_range"].iloc[72] != out["dt_range"].iloc[48]
+    ref, _ = _reference(df, 2, 0.5, 0.5, 0, H)
+    assert np.array_equal(sig, ref)
+
+
+def _threshold_equality_never_fires_and_a_strict_cross_does():
+    out = _apply(_frame(_base() + _session([103.0, 97.0, 103.0, 103.01, 96.99])))
+    assert list(out["dt_reason"].iloc[48:51]) == ["threshold_equal"] * 3
+    assert (out["signal"].iloc[48:51] == 0).all()
+    assert out["signal"].iloc[51] == 1 and out["signal"].iloc[52] == -1
+
+
+def _the_opening_candle_itself_can_fire():
+    out = _apply(_frame(_base() + _session([103.5])))
+    assert out["signal"].iloc[48] == 1 and out["dt_bar_in_session"].iloc[48] == 0.0
+
+
+SESSION_ENTRY_RULES = [
+    ("rising_session_fires_one_long", _rising_session_fires_one_long_and_records_its_evaluated_inputs),
+    ("falling_session_fires_one_short", _falling_session_fires_one_short),
+    ("both_sides_fire_once_and_rearm", _both_sides_fire_once_in_one_session_and_rearm_at_the_next_session),
+    ("threshold_equality_never_fires", _threshold_equality_never_fires_and_a_strict_cross_does),
+    ("opening_candle_can_fire", _the_opening_candle_itself_can_fire),
+]
+
+
+def test_session_entry_rules_fire_once_per_side_on_a_strict_cross(subtests):
+    for label, run in SESSION_ENTRY_RULES:
+        with subtests.test(case=label):
+            run()
+
+
 def _days(n_days, per=24):
     bars = _base(per)
     while len(bars) < n_days * per:
@@ -210,6 +318,15 @@ def test_simulator_fills_each_side_at_the_next_open_without_reversal_or_add(subt
     for label, run in SIMULATOR_FILLS:
         with subtests.test(case=label):
             run()
+
+
+def test_a_consumed_event_never_re_enters_after_an_exit_in_the_same_session():
+    df = _frame(_base() + _session([103.5, 106.8, 104.0, 105.0, 106.0, 104.5]))
+    sig, res = _run_bt(df)
+    longs = [t for t in res["trades"] if t["side"] == "long"]
+    assert len(longs) == 1 and "tp" in longs[0]["exit_reason"]
+    assert pd.Timestamp(longs[0]["exit_date"]) <= df.index[51]
+    assert list(sig["dt_reason"].iloc[51:54]) == ["long_consumed"] * 3
 
 
 def test_an_event_blocked_by_the_regime_gate_never_reappears_later_in_its_session():

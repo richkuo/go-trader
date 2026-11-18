@@ -140,6 +140,20 @@ def test_gap_counts_only_once_it_was_detected_before_the_close():
     assert last(df, bad)["oib_reason"] == "unsupported_observations"
 
 
+def test_order_and_duplicate_identities_are_refused():
+    df = frame(FLAT + [110.0])
+    obs = observations(df, ramp(df, 1000.0, 1030.0, len(df) - 1))
+    swapped = dict(obs, samples=list(obs["samples"]))
+    swapped["samples"][10], swapped["samples"][11] = swapped["samples"][11], swapped["samples"][10]
+    assert last(df, swapped)["oib_reason"] == "observation_order"
+    dup = dict(obs, samples=list(obs["samples"]))
+    dup["samples"][11] = dict(dup["samples"][11], seq=dup["samples"][10]["seq"])
+    assert last(df, dup)["oib_reason"] == "observation_duplicate"
+    same_value_refresh = dict(obs, samples=[dict(s, value=1030.0) if s["recv_ms"] > endpoint(df, 5) else s
+                                            for s in obs["samples"]])
+    assert last(df, same_value_refresh)["signal"] == 1
+
+
 INVALID_PARAMS = [
     {"price_lookback": 1}, {"price_lookback": 201}, {"oi_lookback": 0}, {"oi_lookback": 2.5},
     {"oi_change_threshold": -0.1}, {"oi_change_threshold": 1.0}, {"oi_change_threshold": True},

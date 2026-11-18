@@ -8,7 +8,7 @@ import pytest
 from backtester import Backtester
 from registry_loader import load_registry
 from atr import ensure_atr_indicator
-from eval_windows import compute_incumbent_legs, evaluate_window, INCUMBENTS
+from eval_windows import compute_incumbent_legs, evaluate_window, incumbent_contract_kwargs, INCUMBENTS
 
 NAME = "aroon_trend"
 TP = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.03, "close_fraction": 1.0}]}}]
@@ -80,12 +80,64 @@ def _market(n=420, seed=1643):
     return df
 
 
+def test_flat_range_and_input_defects_hold_with_reasons_then_recover(subtests):
+    with subtests.test(case="flat_range"):
+        _constant_prices_hold_as_a_flat_range()
+    with subtests.test(case="missing_columns"):
+        _missing_columns_hold_every_row()
+    for bad, reason, code in BAD_ROWS:
+        with subtests.test(case=f"bad_row {bad}"):
+            _a_bad_row_holds_its_whole_support_then_recovers(bad, reason, code)
+    with subtests.test(case="timestamp_order"):
+        _timestamp_defects_hold()
+
+
+def _constant_prices_hold_as_a_flat_range():
+    out = _apply(_frame([(100.0, 100.0, 100.0, 100.0, 1.0)] * 30), {"period": 10, "strength": 70.0})
+    assert (out["signal"] == 0).all()
+    assert set(out["aroon_reason"].iloc[10:]) == {"flat_range"}
+    assert (out["aroon_reason_code"].iloc[10:] == 14).all()
+    assert out["aroon_up"].isna().all()
+
+
+def _missing_columns_hold_every_row():
+    df = _frame(_trend(30)).drop(columns=["low"])
+    out = _apply(df, {"period": 10, "strength": 70.0})
+    assert (out["signal"] == 0).all()
+    assert set(out["aroon_reason"]) == {"missing_columns:low"}
+    assert (out["aroon_reason_code"] == 15).all()
+
+
 BAD_ROWS = [
     ({"close": float("nan")}, "nonfinite_input", 11),
     ({"high": float("inf")}, "nonfinite_input", 11),
     ({"high": 50.0}, "inconsistent_hlc", 12),
     ({"close": 200.0}, "inconsistent_hlc", 12),
 ]
+
+
+def _a_bad_row_holds_its_whole_support_then_recovers(bad, reason, code):
+    p = 10
+    df = _frame(_trend(60))
+    bad_row = 30
+    for col, value in bad.items():
+        df.iloc[bad_row, df.columns.get_loc(col)] = value
+    out = _apply(df, {"period": p, "strength": 70.0})
+    held = out.iloc[bad_row:bad_row + p + 2]
+    assert (held["aroon_reason"] == reason).all() and (held["aroon_reason_code"] == code).all()
+    assert not held["aroon_valid"].any() and (held["signal"] == 0).all()
+    assert held["aroon_prev_up"].isna().all()
+    assert bool(out["aroon_valid"].iloc[bad_row + p + 2])
+
+
+def _timestamp_defects_hold():
+    df = _frame(_trend(40))
+    idx = list(df.index)
+    idx[25] = idx[24]
+    df.index = pd.DatetimeIndex(idx)
+    out = _apply(df, {"period": 10, "strength": 70.0})
+    assert (out["aroon_reason"].iloc[25:37] == "timestamp_order").all()
+    assert bool(out["aroon_valid"].iloc[37])
 
 
 PREFIX_PARAMS = [{"period": 25, "strength": 70.0}, {"period": 2, "strength": 0.0},
@@ -140,3 +192,15 @@ def test_incumbent_contract_reaches_every_incumbent_and_default_callers_are_unch
     assert "incumbent_contract" not in default and contract["incumbent_contract"] == CONTRACT
     assert default["bars"] != contract["bars"]
     assert default["rows"][0]["leg"]["return_pct"] == contract["rows"][0]["leg"]["return_pct"]
+
+
+INVALID_INCUMBENT_CONTRACTS = [{"direction": "both"}, {"direction": "long", "params": {}}, "both",
+                               {"direction": "both", "close_strategies": TP, "stop_loss_atr_mult": 1.0,
+                                "trailing_stop_atr_mult": 1.0}]
+
+
+def test_invalid_incumbent_contracts_are_refused():
+    for bad in INVALID_INCUMBENT_CONTRACTS:
+        with _case(bad):
+            with pytest.raises(ValueError):
+                incumbent_contract_kwargs(bad)

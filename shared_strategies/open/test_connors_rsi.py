@@ -116,6 +116,23 @@ def test_bad_close_holds_for_every_decision_whose_span_includes_it(subtests):
             assert bool(out["crsi_valid"].iloc[150 + need])
 
 
+def test_missing_column_and_timestamp_order_hold():
+    missing = run(frame([100.0] * 160).drop(columns=["close"]))
+    assert (missing["signal"] == 0).all()
+    assert missing["crsi_reason"].iloc[-1] == "missing_columns:close"
+    df = market(200)
+    idx = list(df.index)
+    idx[-1] = idx[-2]
+    df.index = pd.DatetimeIndex(idx)
+    row = run(df).iloc[-1]
+    assert row["crsi_reason"] == "timestamp_order"
+    assert int(row["signal"]) == 0
+    with_col = market(200).reset_index(drop=True)
+    with_col["timestamp"] = [1_000 * i for i in range(200)]
+    with_col.loc[199, "timestamp"] = 3_000
+    assert run(with_col).iloc[-1]["crsi_reason"] == "timestamp_order"
+
+
 INVALID_PARAMS = [
     {"price_period": True},
     {"price_period": 1},

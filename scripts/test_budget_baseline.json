@@ -17,7 +17,9 @@
     "scheduler/ui_structural_test.go::TestUIApplyRegimeGateFlatChecks",
     "scheduler/ui_structural_test.go::TestUIPaperToLiveFlatChecks",
     "scheduler/ui_structural_test.go::TestUIStructuralConfirmRejectsModelessPaperToLiveAndIneligibleRegimeGate",
-    "scheduler/ui_tuning_test.go::TestTuningStartValidationRejectsUnknownOrUnselectedOverrides"
+    "scheduler/ui_tuning_test.go::TestTuningStartValidationRejectsUnknownOrUnselectedOverrides",
+    "scheduler/update_sh_feature_test.go::TestUpdateShellAllExplicitRootSuppressesSystemd1055",
+    "scheduler/update_sh_feature_test.go::TestUpdateShellAllUnionsSystemdAndGlob1055"
   ],
   "refusal_grid_tests": [
     "shared_scripts/test_no_edge_admission.py::test_every_check_script_refuses_each_no_edge_input_outside_explicit_paper"

@@ -5,6 +5,54 @@ import (
 	"testing"
 )
 
+func TestNewStrategyState(t *testing.T) {
+	cases := []struct {
+		name        string
+		cfg         StrategyConfig
+		wantCash    float64
+		wantInitial float64
+	}{
+		{
+			name:     "capital seeds cash and initial capital",
+			cfg:      StrategyConfig{ID: "test-spot-btc", Type: "spot", Platform: "binanceus", Capital: 1000, MaxDrawdownPct: 60},
+			wantCash: 1000, wantInitial: 1000,
+		},
+		{
+			name:     "config initial_capital overrides capital",
+			cfg:      StrategyConfig{ID: "hl-sma-btc", Type: "perps", Platform: "hyperliquid", Capital: 600, InitialCapital: 505, MaxDrawdownPct: 10},
+			wantCash: 600, wantInitial: 505,
+		},
+		{
+			name:     "no config initial_capital falls back to capital",
+			cfg:      StrategyConfig{ID: "hl-sma-btc", Type: "perps", Platform: "hyperliquid", Capital: 600, MaxDrawdownPct: 10},
+			wantCash: 600, wantInitial: 600,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewStrategyState(tc.cfg)
+			if s.ID != tc.cfg.ID || s.Type != tc.cfg.Type || s.Platform != tc.cfg.Platform {
+				t.Errorf("identity = (%q, %q, %q), want (%q, %q, %q)", s.ID, s.Type, s.Platform, tc.cfg.ID, tc.cfg.Type, tc.cfg.Platform)
+			}
+			if s.Cash != tc.wantCash {
+				t.Errorf("Cash = %g, want %g", s.Cash, tc.wantCash)
+			}
+			if s.InitialCapital != tc.wantInitial {
+				t.Errorf("InitialCapital = %g, want %g", s.InitialCapital, tc.wantInitial)
+			}
+			if s.Positions == nil || s.OptionPositions == nil || s.TradeHistory == nil {
+				t.Errorf("maps and trade history must be initialized: %+v", s)
+			}
+			if s.RiskState.PeakValue != tc.cfg.Capital {
+				t.Errorf("RiskState.PeakValue = %g, want %g", s.RiskState.PeakValue, tc.cfg.Capital)
+			}
+			if s.RiskState.MaxDrawdownPct != tc.cfg.MaxDrawdownPct {
+				t.Errorf("RiskState.MaxDrawdownPct = %g, want %g", s.RiskState.MaxDrawdownPct, tc.cfg.MaxDrawdownPct)
+			}
+		})
+	}
+}
+
 func TestApplySharedWalletPoolStateModeDefersBothDirectionsWhileOpen(t *testing.T) {
 	tests := []struct {
 		name             string

@@ -29,6 +29,42 @@ def test_percentile_empty_none_and_interpolation():
     assert mc.percentile([0.0, 10.0, 20.0], 25) == pytest.approx(5.0)
 
 
+def test_auto_block_len():
+    assert mc.auto_block_len(1) == 1
+    assert mc.auto_block_len(27) == 3
+    assert mc.auto_block_len(28) == 4
+
+
+def test_block_path_preserves_circular_contiguity(subtests):
+    with subtests.test(case="test_block_path_preserves_circular_contiguity"):
+        values = [1.0, 2.0, 3.0, 4.0, 5.0]
+        adjacent = {(values[i], values[(i + 1) % len(values)])
+                    for i in range(len(values))}
+        from random import Random
+        rng = Random(3)
+        for _ in range(50):
+            path = mc.block_bootstrap_path(values, 2, rng)
+            assert len(path) == len(values)
+            for i in range(0, len(path) - 1, 2):
+                assert (path[i], path[i + 1]) in adjacent
+
+    with subtests.test(case="test_block_len_full_series_yields_rotations"):
+        values = [1.0, 2.0, 3.0, 4.0]
+        rotations = {tuple(values[i:] + values[:i]) for i in range(len(values))}
+        from random import Random
+        rng = Random(11)
+        for _ in range(30):
+            assert tuple(mc.block_bootstrap_path(values, len(values), rng)) \
+                in rotations
+
+    with subtests.test(case="test_block_scheme_auto_len_recorded"):
+        stats = mc.resample_stats([1.0] * 27, "block", n_paths=10, seed=1)
+        assert stats["block_len"] == 3
+        stats = mc.resample_stats([1.0] * 27, "block", n_paths=10, seed=1,
+                                  block_len=5)
+        assert stats["block_len"] == 5
+
+
 def test_resample_stats_deterministic_under_seed(subtests):
     with subtests.test(case="test_resample_stats_deterministic_under_seed"):
         trades = [3.0, -2.0, 1.5, -4.0, 2.2, 0.7, -1.1]
@@ -135,6 +171,20 @@ def test_kill_switch_missing_strategy_raises():
         mc.resolve_kill_switch_pct(_cfg([]), "ghost")
 
 
+def test_trade_samples_carry_net_return_and_fall_back_to_gross():
+    case = "test_trade_samples_carry_net_return"
+    results = {"trades": [{"entry_date": "2025-01-01", "pnl_pct": 5.0,
+                           "shares": 2.0, "entry_price": 100.0, "pnl": 8.0}]}
+    samples = ew.trade_samples_from_results(results)
+    assert samples[0]["pnl_pct"] == 5.0, case
+    assert samples[0]["pnl_pct_net"] == pytest.approx(4.0), case
+
+    results = {"trades": [{"entry_date": "2025-01-01", "pnl_pct": 5.0,
+                           "shares": 0.0, "entry_price": 0.0, "pnl": 8.0}]}
+    samples = ew.trade_samples_from_results(results)
+    assert samples[0]["pnl_pct_net"] == 5.0, "test_trade_samples_net_falls_back_to_gross"
+
+
 def test_cli_deterministic_byte_identical_json(tmp_path):
     trades = [{"entry_date": "2025-01-01", "pnl_pct": 3.0, "shares": 1.0,
                "entry_price": 100.0, "pnl": 2.5},
@@ -155,6 +205,12 @@ def test_cli_deterministic_byte_identical_json(tmp_path):
     payload = json.loads(outs[0])
     assert {b["scheme"] for b in payload["schemes"]} == set(mc.SCHEMES)
     assert payload["kill_switch_pct"] == mc.DEFAULT_KILL_SWITCH_PCT
+
+
+def test_cli_empty_trades_no_crash(tmp_path):
+    src = tmp_path / "results.json"
+    src.write_text(json.dumps({"trades": []}))
+    assert mc.main(["--trades-json", str(src), "--n-paths", "50"]) == 0
 
 
 def _valid_trades_json(tmp_path):
@@ -355,6 +411,26 @@ def _write_candidate(tmp_path, **over):
     p = tmp_path / "cand.json"
     p.write_text(json.dumps(cand))
     return p
+
+
+def test_multileg_payload_has_one_block_per_window_dataset_pair(monkeypatch, tmp_path):
+    _patch_leg(monkeypatch, {"trade_samples": list(_SAMPLES)})
+    cand = _write_candidate(tmp_path)
+    out = tmp_path / "mc.json"
+    rc = mc.main(["--candidate-json", str(cand), "--windows", "is,oos",
+                  "--datasets", "BTC/USDT:1h,ETH/USDT:4h", "--n-paths", "50",
+                  "--json", str(out)])
+    assert rc == 0
+    payload = json.loads(out.read_text())
+    assert "legs" in payload and "observed" not in payload
+    assert len(payload["legs"]) == 4
+    assert {(l["window"], l["dataset"]) for l in payload["legs"]} == {
+        ("is", "BTC/USDT 1h"), ("is", "ETH/USDT 4h"),
+        ("oos", "BTC/USDT 1h"), ("oos", "ETH/USDT 4h")}
+    leg = payload["legs"][0]
+    assert leg["status"] == "ok" and leg["n_trades"] == 2
+    assert {b["scheme"] for b in leg["schemes"]} == set(mc.SCHEMES)
+    assert payload["candidate"]["name"] == "squeeze_momentum"
 
 
 def test_multileg_is_deterministic_under_seed(monkeypatch, tmp_path):

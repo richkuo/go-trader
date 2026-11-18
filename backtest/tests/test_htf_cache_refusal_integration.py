@@ -72,6 +72,14 @@ def _exchange_rows(n, step, start, drift):
     return out
 
 
+def _last_cached_ms(tmp_path, timeframe):
+    conn = sqlite3.connect(str(tmp_path / "cache.db"))
+    try:
+        return conn.execute("SELECT MAX(timestamp) FROM ohlcv WHERE timeframe = ?", (timeframe,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
 def _seed(tmp_path, htf_rows, flat=False):
     series = [_series("1d", 400, _DAY_MS, _START_MS, 0.3)]
     if htf_rows:
@@ -231,6 +239,29 @@ def test_simulator_refuses_a_higher_timeframe_cache_that_is_short_or_misses_the_
     for label, check in cases:
         with subtests.test(case=label):
             check()
+
+
+def test_simulator_tops_up_a_stale_higher_timeframe_cache_and_runs_filtered(tmp_path):
+    first_ms = _START_MS + 1000 * _DAY_MS
+    last_ms = first_ms + (30 * 24 - 1) * _HOUR_MS
+    htf_last = first_ms + 30 * _DAY_MS - 90 * _DAY_MS
+    htf_start = htf_last - 2999 * 4 * _HOUR_MS
+    fresh = _exchange_rows(3000 + 90 * 6, 4 * _HOUR_MS, htf_start, 0.2)
+    env = _seed_series(tmp_path, [
+        _series("4h", 3000, 4 * _HOUR_MS, htf_start, 0.2),
+    ], {"BTC/USDT|4h": fresh})
+    candles = []
+    p = 100.0
+    for i in range(30 * 24):
+        p += 0.05 + (0.5 if i % 3 else -0.4)
+        candles.append({"time": first_ms // 1000 + i * 3600, "open": p - 0.2, "high": p + 1, "low": p - 1,
+                        "close": p, "volume": 10})
+    proc, out = _simulate(env, True, candles=candles, timeframe="1h")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "error" not in out
+    assert "htf" in out["markers"]
+    assert len(proc.stdout.strip().splitlines()) == 1
+    assert _last_cached_ms(tmp_path, "4h") >= last_ms - 4 * _HOUR_MS
 
 
 _TREND_PROBE = """

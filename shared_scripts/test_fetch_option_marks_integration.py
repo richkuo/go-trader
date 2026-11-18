@@ -147,6 +147,39 @@ def test_batch_errors_fail_the_whole_document(tmp_path, subtests):
             assert not any(r["call"].startswith("yahoo") for r in records), records
 
 
+def test_session_calendar_cutoffs_come_from_the_library(tmp_path, subtests):
+    year = datetime.now(timezone.utc).year
+    summer = next(d for d in _sessions(date(year, 7, 6), date(year, 7, 31)) if _session_close(d).hour == 20)
+    winter = next(d for d in _sessions(date(year, 1, 5), date(year, 1, 31)) if _session_close(d).hour == 21)
+    early = [d.date() for d in XNYS.early_closes if XNYS.first_session <= d <= XNYS.last_session and d.year == year][0]
+    saturday = next(d for d in (date(year, 3, 1) + timedelta(days=i) for i in range(60))
+                    if d.weekday() == 5 and XNYS.is_session(pd.Timestamp(d - timedelta(days=1))))
+    out_of_bounds = (XNYS.last_session + pd.Timedelta(days=40)).date()
+    refresh = datetime(year - 1, 12, 1, tzinfo=timezone.utc)
+    legs = [_leg("summer", summer.isoformat()), _leg("winter", winter.isoformat()), _leg("early", early.isoformat()),
+            _leg("weekend", saturday.isoformat()), _leg("bounds", out_of_bounds.isoformat()), _leg("invalid", "2026-02-30")]
+    proc, _ = _run_qp(tmp_path, _request(refresh, legs))
+    doc = _doc(proc)
+    got = {leg["id"]: leg for leg in doc["legs"]}
+    with subtests.test(case="summer_regular_close"):
+        assert got["summer"]["cutoff_utc"].endswith("T20:00:00Z") and got["summer"]["cutoff_utc"] == _iso(_session_close(summer)), got["summer"]
+        assert got["summer"]["settlement_ready_utc"] == _iso(_session_close(summer) + timedelta(minutes=60))
+    with subtests.test(case="winter_regular_close"):
+        assert got["winter"]["cutoff_utc"].endswith("T21:00:00Z") and got["winter"]["cutoff_utc"] == _iso(_session_close(winter)), got["winter"]
+    with subtests.test(case="early_close"):
+        assert got["early"]["cutoff_utc"] == _iso(_session_close(early)), got["early"]
+        assert _session_close(early) < XNYS.session_open(pd.Timestamp(early)).tz_convert("UTC").to_pydatetime() + timedelta(hours=6, minutes=30)
+    with subtests.test(case="weekend_maps_to_prior_session"):
+        friday = saturday - timedelta(days=1)
+        assert got["weekend"]["session_date"] == friday.isoformat() and got["weekend"]["non_session_mapped"] is True, got["weekend"]
+        assert got["weekend"]["cutoff_utc"] == _iso(_session_close(friday)), got["weekend"]
+    with subtests.test(case="out_of_bounds_is_unresolved"):
+        assert got["bounds"]["status"] == "error" and got["bounds"]["reason"].startswith("session unresolved:"), got["bounds"]
+        assert "cutoff_utc" not in got["bounds"]
+    with subtests.test(case="invalid_date_is_unresolved"):
+        assert got["invalid"]["status"] == "error" and "is not a YYYY-MM-DD date" in got["invalid"]["reason"], got["invalid"]
+
+
 def _bars(days, close_for=None, split_on=None):
     out = []
     for d in days:
@@ -274,3 +307,12 @@ def test_logged_in_marks_come_only_from_the_venue_quote(tmp_path, subtests):
                 assert out["mark"]["greeks"] == {"delta": -0.2, "gamma": 0.01, "theta": -0.05, "vega": 0.3}, out
             else:
                 assert out["reason"] == reason, out
+
+
+def test_probe_only_needs_no_login_or_market_data(tmp_path):
+    proc, made = _run_logged_in(tmp_path, {}, "", argv=("--platform=robinhood", "--probe-only"))
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == {"contract": "option_marks_v1", "platform": "robinhood", "probe": True}
+    assert made == [], made
+    assert "Starting login process..." not in proc.stderr
+    assert not (tmp_path / "robinhood-session").exists()
