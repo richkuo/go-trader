@@ -305,6 +305,10 @@ def _install():
         authentication.time = types.SimpleNamespace(sleep=lambda seconds: None, time=time.time)
     sys.stderr.write("robinhood offline stub active: %s\n" % _MODE)
     sys.stderr.flush()
+    ready = os.environ.get("RH_OFFLINE_STUB_READY", "")
+    if ready:
+        with open(ready, "w") as f:
+            f.write(repr(time.monotonic()))
 
 
 if _MODE:
