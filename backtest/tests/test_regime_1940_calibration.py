@@ -130,29 +130,6 @@ def test_support_stays_inside_the_split_and_2025h1_drops_the_is_overlap():
     assert np.array_equal(np.isfinite(fwd[:190]), np.isfinite(fwd_changed[:190]))
 
 
-def test_held_out_rows_do_not_change_the_training_winner(subtests):
-    with subtests.test("test_held_out_rows_do_not_change_the_training_winner"):
-        incumbent = _row("inc", h=10, p=0.01, transition=0.2, support="s")
-        candidate = _row("cand", h=12, p=0.01, transition=0.1, support="s")
-        oos = _row("cand", h=1, p=0.5, transition=0.5, support="s", split="oos", horizon=4)
-        first = study.select_winners([incumbent, candidate, oos], {"adx": "inc"})
-        oos["kruskal_h"] = 999
-        second = study.select_winners([incumbent, candidate, oos], {"adx": "inc"})
-        assert first == second
-        assert first[0]["setting_id"] == "cand"
-    with subtests.test("test_degenerate_label_stream_is_not_selected"):
-        incumbent = _row("inc", h=10, p=0.01, transition=0.2, support="s")
-        degenerate = _row("one", h=0, p=1, transition=0.0, support="s")
-        winners = study.select_winners([incumbent, degenerate], {"adx": "inc"})
-        assert winners[0]["setting_id"] is None
-    with subtests.test("test_tie_breaks_on_the_setting_identifier"):
-        incumbent = _row("inc", h=10, p=0.01, transition=0.4, support="s")
-        low = _row("b", h=20, p=0.01, transition=0.1, support="s")
-        high = _row("a", h=20, p=0.01, transition=0.1, support="s")
-        winners = study.select_winners([incumbent, low, high], {"adx": "inc"})
-        assert winners[0]["setting_id"] == "a"
-
-
 def test_raw_pass_with_corrected_failure_is_not_suggested():
     incumbent = _row("inc", h=10, p=0.2, transition=0.3, support="s", split="oos", horizon=4)
     candidate = _row("cand", h=12, p=0.01, transition=0.1, support="s", split="oos", horizon=4)
@@ -276,35 +253,6 @@ def test_checkpoint_requires_matching_snapshot_and_kernel(tmp_path):
     assert study._load_checkpoint(args, "cell") is None
     args.code_sha = {"study.py": "s", "regime.py": "r"}
     assert study._load_checkpoint(args, "cell") is not None
-
-
-def test_resumed_cells_restore_support_for_confirmation(monkeypatch):
-    import multiprocessing as mp
-    cell = {"cell_id": "ds|oos|4", "dataset_id": "ds", "split": "oos", "horizon": 4}
-    saved = _row("inc", h=2, p=0.01, transition=0.1, support="s", split="oos")
-    monkeypatch.setattr(study, "_load_checkpoint", lambda *_: {"scores": [saved], "population": {"status": "available"}})
-    monkeypatch.setattr(study, "frame_from_rows", lambda _: pd.DataFrame({"close": np.arange(20.0)}))
-    monkeypatch.setattr(study, "build_label_bank", lambda *_: {"base": np.ones(20, dtype=bool), "close": np.arange(20.0)})
-    monkeypatch.setattr(study, "forward_realized_vol", lambda close, h: np.ones(len(close)))
-    monkeypatch.setattr(study, "forward_window_inside", lambda *_: True)
-    captured = {}
-    monkeypatch.setattr(study, "_refine_confirmation", lambda *args: captured.update(args[-1]))
-
-    class Pool:
-        def close(self): pass
-        def join(self): pass
-
-    class Context:
-        def Pool(self, *args, **kwargs): return Pool()
-
-    monkeypatch.setattr(mp, "get_context", lambda _: Context())
-    from types import SimpleNamespace
-    args = SimpleNamespace(workers=1)
-    loaded = {"ds|oos": {"meta": {"status": "available"}, "rows": _hourly(0, 20)}}
-    protocol = {"splits": {"oos": []}, "horizons": [4], "min_usable_bars": 1}
-    expanded = {"datasets": [{"dataset_id": "ds"}], "cells": [cell], "settings": [], "incumbent_ids": {"adx": "inc"}}
-    study._score_all(loaded, protocol, expanded, args, Path("unused"))
-    assert np.array_equal(captured[cell["cell_id"]], np.arange(20))
 
 
 def test_mixed_resumed_and_fresh_cells_both_restore_support(monkeypatch):

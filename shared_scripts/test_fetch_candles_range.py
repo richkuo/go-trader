@@ -46,27 +46,6 @@ def _iso(ms):
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def test_hyperliquid_range_pages_with_opening_times_inside_exact_intraday_bounds(tmp_path):
-    rows = _bars(T0, 30)
-    start = T0 + 5 * H + 30 * 60_000
-    end = T0 + 20 * H + 15 * 60_000
-    proc, calls = _run(tmp_path, {"hl": _hl_rows(rows), "hl_page_cap": 4},
-                       ["--platform", "hyperliquid", "--type", "perps", "--symbol", "ETH", "--timeframe", "1h",
-                        "--from", _iso(start), "--to", _iso(end), "--limit", "50"])
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    out = _out(proc)
-    assert out["source"] == "hyperliquid:adapter:range"
-    times = [c["time"] * 1000 for c in out["candles"]]
-    assert times == [T0 + i * H for i in range(6, 21)]
-    assert out["range"]["timestamp"] == "open"
-    assert out["range"]["from_ms"] == start and out["range"]["to_ms"] == end
-    assert out["range"]["truncated"] is False
-    hl_calls = [c for c in calls if c[0] == "hl"]
-    assert hl_calls[0][3] == start
-    assert [c[3] for c in hl_calls] == sorted(c[3] for c in hl_calls)
-    assert len(hl_calls) == out["range"]["requests"] >= 4
-
-
 def test_hyperliquid_range_stops_on_a_stalled_page(tmp_path):
     rows = _bars(T0, 10)
     proc, calls = _run(tmp_path, {"hl": _hl_rows(rows), "hl_stall": True},
@@ -140,26 +119,3 @@ def test_robinhood_range_returns_latest_bars_marked_unsupported(tmp_path):
     assert out["range"]["supported"] is False
     assert out["range"]["timestamp"] == "unverified"
     assert [c["time"] * 1000 for c in out["candles"]] == [T0 + i * H for i in range(1, 5)]
-
-
-def test_invalid_or_reversed_bounds_exit_one(tmp_path):
-    for i, extra in enumerate((["--from", "yesterday"], ["--from", _iso(T0 + 2 * H), "--to", _iso(T0)],
-                               ["--from", "2026-10-01T00:00:00"])):
-        run_dir = tmp_path / str(i)
-        run_dir.mkdir()
-        proc, calls = _run(run_dir, {"ccxt": {}},
-                           ["--platform", "binanceus", "--symbol", "BTC/USDT", "--timeframe", "1h"] + extra)
-        assert proc.returncode == 1
-        assert _out(proc)["source"] == "error"
-        assert calls == []
-
-
-def test_date_only_since_keeps_its_midnight_meaning(tmp_path):
-    rows = _bars(T0, 3)
-    script = ("import sys; sys.path.insert(0, 'shared_tools'); import data_fetcher; "
-              "df = data_fetcher.fetch_ohlcv('BTC/USDT', '1h', since='2026-10-01', limit=3, store=False); "
-              "print(len(df))")
-    proc, calls = _run(tmp_path, {"ccxt": {"BTC/USDT|1h": rows}}, [], script=script)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert proc.stdout.strip() == "3"
-    assert [c for c in calls if c[0] == "ccxt"] == [["ccxt", "binanceus", "BTC/USDT", "1h", T0, 3]]

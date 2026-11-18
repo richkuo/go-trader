@@ -1,9 +1,7 @@
 import os, sys
 import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from regime_diagnostics import (
-    forward_returns, forward_realized_vol, coverage, separation, stability,
-)
+from regime_diagnostics import forward_returns, forward_realized_vol, separation
 
 
 def test_forward_returns_horizon():
@@ -24,27 +22,6 @@ def test_forward_realized_vol_horizon1_and_horizon2_sums_squared_log_returns():
     np.testing.assert_allclose(fv[:2], [np.sqrt(0.05), np.sqrt(0.13)], atol=1e-12,
                                err_msg="test_forward_realized_vol_horizon2_sums_squared_log_returns")
     assert np.isnan(fv[2]) and np.isnan(fv[3]), "test_forward_realized_vol_horizon2_sums_squared_log_returns"
-
-
-def test_coverage_counts():
-    labels = np.array(["a", "a", "b", "a"])
-    cov = coverage(labels)
-    assert cov["a"]["count"] == 3 and abs(cov["a"]["pct"] - 0.75) < 1e-9
-
-
-def test_separation_directional():
-    labels = np.array(["up"] * 50 + ["down"] * 50)
-    fwd = np.concatenate([np.full(50, 0.02), np.full(50, -0.02)])
-    sep = separation(labels, fwd)
-    assert sep["per_state"]["up"]["mean"] > 0 > sep["per_state"]["down"]["mean"]
-    assert sep["kruskal_h"] > 5.0
-
-
-def test_stability_transition_rate():
-    labels = np.array(["a", "a", "b", "b", "a"])
-    st = stability(labels)
-    assert abs(st["transition_rate"] - 0.5) < 1e-9
-    assert st["flips"] == 2
 
 
 def test_block_shuffle_pvalue_separated_is_significant_and_noise_is_not():
@@ -71,32 +48,6 @@ def test_kmeans_yardstick_runs():
     assert out[2]["kruskal_h"] > 5.0
 
 
-def test_score_labels_masks_warmup():
-    from regime_diagnostics import score_labels
-    rng = np.random.default_rng(42)
-    n = 120
-    close = 100 * np.cumprod(1 + rng.normal(0, 0.005, n))
-    base_labels = np.array(
-        ["up" if r >= 0 else "down" for r in np.diff(close, prepend=close[0])], dtype=object
-    )
-    feats = rng.normal(0, 1, (n, 4))
-    feats[:10] = np.nan
-
-    labels_a = base_labels.copy()
-    labels_a[:10] = "ranging_quiet"
-    labels_b = base_labels.copy()
-    labels_b[:10] = "default_label"
-
-    out_a = score_labels(close, labels_a, feats, horizons=(4,), seed=0)
-    out_b = score_labels(close, labels_b, feats, horizons=(4,), seed=0)
-
-    assert "ranging_quiet" not in out_a["coverage"]
-    assert "default_label" not in out_b["coverage"]
-    assert out_a["coverage"] == out_b["coverage"]
-    assert out_a["stability"] == out_b["stability"]
-    assert out_a["h4"]["significance"]["p_value"] == out_b["h4"]["significance"]["p_value"]
-
-
 def test_score_labels_target_volatility_stamped_and_distinct(subtests):
     with subtests.test("test_score_labels_target_volatility_stamped_and_distinct"):
         from regime_diagnostics import score_labels
@@ -119,22 +70,3 @@ def test_score_labels_target_volatility_stamped_and_distinct(subtests):
         feats = np.zeros((50, 4))
         with pytest.raises(ValueError):
             score_labels(close, labels, feats, horizons=(4,), target="sharpe")
-
-
-def test_per_state_significance():
-    from regime_diagnostics import per_state_significance
-
-    labels_sep = np.array(["up"] * 100 + ["down"] * 100)
-    fwd_sep = np.concatenate([np.full(100, 0.02), np.full(100, -0.02)])
-    result = per_state_significance(labels_sep, fwd_sep, block_len=5, n_perm=200, seed=0)
-    assert result["up"]["fdr_reject"] is True
-    assert result["down"]["fdr_reject"] is True
-    assert result["up"]["gap"] > 0
-    assert result["down"]["gap"] < 0
-
-    rng = np.random.default_rng(7)
-    labels_noise = np.array(["a", "b"])[rng.integers(0, 2, 300)]
-    fwd_noise = rng.normal(0, 0.01, 300)
-    result_noise = per_state_significance(labels_noise, fwd_noise, block_len=10, n_perm=200, seed=0)
-    n_reject = sum(1 for v in result_noise.values() if v["fdr_reject"])
-    assert n_reject <= 1

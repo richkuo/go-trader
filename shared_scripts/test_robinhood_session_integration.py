@@ -185,50 +185,6 @@ def test_every_script_stores_the_session_only_in_the_configured_folder(tmp_path,
             assert _no_secrets(proc) == [], detail
 
 
-def test_nonexistent_home_is_never_created(tmp_path):
-    if os.path.lexists("/nonexistent"):
-        pytest.skip("this host has /nonexistent")
-    box = Box(tmp_path)
-    box.set_routes({"GET " + HOLDINGS: [EMPTY_PAGE]})
-    proc = _run(box, FETCH, extra={"HOME": "/nonexistent"})
-    detail = _detail(proc, box)
-    assert proc.returncode == 0, detail
-    assert box.file("pickle").is_file(), detail
-    assert not os.path.lexists("/nonexistent"), detail
-
-
-def test_second_run_reuses_the_stored_session_with_no_password_login(tmp_path):
-    box = Box(tmp_path)
-    box.set_routes({"GET " + POSITIONS_CHECK: [EMPTY_PAGE], "GET " + HOLDINGS: [EMPTY_PAGE]})
-    first = _run(box, FETCH)
-    first_made = box.requests()
-    box.reset_log()
-    second = _run(box, FETCH)
-    second_made = box.requests()
-    detail = _detail(second, box) + f"\nfirst:\n{_detail(first, box)}\nfirst requests:\n{first_made}"
-    assert first.returncode == 0 and second.returncode == 0, detail
-    assert len(_token_posts(first_made)) == 1, detail
-    assert len(_token_posts(second_made)) == 0, detail
-    checks = [r for r in second_made if r["url"] == POSITIONS_CHECK]
-    assert len(checks) == 1 and checks[0]["authorization"] == "Bearer " + STUB_ACCESS, detail
-    assert _no_secrets(first) == [] and _no_secrets(second) == [], detail
-
-
-def test_folder_and_session_files_are_owner_only_under_an_open_umask(tmp_path):
-    box = Box(tmp_path)
-    box.set_routes({"GET " + HOLDINGS: [EMPTY_PAGE]})
-    proc = _run(box, FETCH, umask=0)
-    detail = _detail(proc, box)
-    assert proc.returncode == 0, detail
-    assert _mode(box.folder) == 0o700, detail
-    for suffix in ("pickle", "device", "lock"):
-        assert _mode(box.file(suffix)) == 0o600, (suffix, detail)
-        assert os.lstat(box.file(suffix)).st_uid == os.geteuid(), detail
-    assert sorted(p.name for p in box.folder.iterdir()) == sorted(
-        f"robinhood-{_key(USERNAME)}.{s}" for s in ("device", "lock", "pickle")
-    ), detail
-
-
 def test_an_open_folder_mode_is_tightened_to_owner_only(tmp_path):
     box = Box(tmp_path)
     box.folder.mkdir()
@@ -415,54 +371,6 @@ def test_parallel_logins_send_one_password_login(tmp_path):
     reused = {r["pid"] for r in made if r["url"] == POSITIONS_CHECK}
     assert len(reused) == 1 and reused != {posts[0]["pid"]}, detail
     assert all(_no_secrets(r) == [] for r in results), detail
-
-
-def test_each_account_keeps_its_own_session(tmp_path):
-    box = Box(tmp_path)
-    box.set_routes({"GET " + HOLDINGS: [EMPTY_PAGE], "GET " + POSITIONS_CHECK: [EMPTY_PAGE]})
-    first = _run(box, FETCH, username="account-a")
-    second = _run(box, FETCH, username="account-b")
-    made = box.requests()
-    detail = _detail(first, box) + _detail(second, box)
-    assert first.returncode == 0 and second.returncode == 0, detail
-    assert _key("account-a") != _key("account-b"), detail
-    assert box.file("pickle", "account-a").is_file() and box.file("pickle", "account-b").is_file(), detail
-    assert box.file("device", "account-a").read_text() != box.file("device", "account-b").read_text(), detail
-    posts = _token_posts(made)
-    assert len(posts) == 2, detail
-    assert posts[0]["device_token"] != posts[1]["device_token"], detail
-
-
-def test_refused_login_keeps_the_stored_session_and_its_device(tmp_path):
-    box = Box(tmp_path)
-    stored = box.seed_session()
-    box.set_routes({
-        "GET " + POSITIONS_CHECK: [{"status": 401, "json": {"detail": "expired"}}],
-        "POST " + TOKEN_URL: [TOKEN_REFUSED],
-    })
-    proc = _run(box, FETCH)
-    made = box.requests()
-    detail = _detail(proc, box)
-    assert proc.returncode == 1, detail
-    assert box.file("pickle").read_bytes() == stored, detail
-    assert _mode(box.file("pickle")) == 0o600, detail
-    posts = _token_posts(made)
-    assert len(posts) == 1 and posts[0]["device_token"] == STORED_DEVICE, detail
-    assert [p.name for p in box.folder.iterdir() if p.name.startswith(".")] == [], detail
-
-
-def test_device_token_is_stable_across_logins_without_a_session(tmp_path):
-    box = Box(tmp_path)
-    box.set_routes({"POST " + TOKEN_URL: [TOKEN_REFUSED]})
-    first = _run(box, FETCH)
-    second = _run(box, FETCH)
-    posts = _token_posts(box.requests())
-    detail = _detail(first, box) + _detail(second, box)
-    assert first.returncode == 1 and second.returncode == 1, detail
-    assert len(posts) == 2, detail
-    device = box.file("device").read_text().strip()
-    assert posts[0]["device_token"] == posts[1]["device_token"] == device, detail
-    assert not box.file("pickle").exists(), detail
 
 
 def test_bootstrap_answers_the_challenge_and_clears_the_latch(tmp_path):

@@ -61,42 +61,6 @@ def market(n=420, seed=1645):
     return df
 
 
-def _seeded_wilder(changes, period):
-    gains = [max(c, 0.0) for c in changes]
-    losses = [max(-c, 0.0) for c in changes]
-    g = sum(gains[:period]) / period
-    l = sum(losses[:period]) / period
-    for k in range(period, len(changes)):
-        g = g + (gains[k] - g) / period
-        l = l + (losses[k] - l) / period
-    return 50.0 if g + l == 0 else 100.0 * g / (g + l)
-
-
-def _streak_at(closes, j):
-    count = 0
-    direction = 0
-    for k in range(CAP):
-        d = closes[j - k] - closes[j - k - 1]
-        s = 1 if d > 0 else (-1 if d < 0 else 0)
-        if s == 0 or (direction and s != direction):
-            break
-        direction = s
-        count += 1
-    return direction * count
-
-
-def reference_crsi(closes, i, p):
-    price_changes = [closes[j] - closes[j - 1] for j in range(i - SPAN + 1, i + 1)]
-    streak_changes = [_streak_at(closes, j) - _streak_at(closes, j - 1)
-                      for j in range(i - SPAN + 1, i + 1)]
-    rets = [closes[j] / closes[j - 1] - 1.0 for j in range(i - p["rank_window"], i + 1)]
-    latest, prior = rets[-1], rets[:-1]
-    rank = 100.0 * (sum(r < latest for r in prior) + 0.5 * sum(r == latest for r in prior)) / len(prior)
-    price_rsi = _seeded_wilder(price_changes, p["price_period"])
-    streak_rsi = _seeded_wilder(streak_changes, p["streak_period"])
-    return price_rsi, _streak_at(closes, i), streak_rsi, rank, (price_rsi + streak_rsi + rank) / 3.0
-
-
 def test_registered_no_edge_futures_and_hidden():
     entry = _FUTURES.STRATEGY_REGISTRY[NAME]
     assert (entry["edge_status"], entry["edge_source"], entry["edge_ref"]) == (
@@ -107,38 +71,6 @@ def test_registered_no_edge_futures_and_hidden():
     assert NAME not in _SPOT.STRATEGY_REGISTRY
 
 
-def test_independent_reference_matches_every_recorded_value_and_entry():
-    df = market()
-    out = run(df)
-    closes = df["close"].tolist()
-    need = need_for(DEFAULTS["rank_window"])
-    entries = 0
-    for i in range(need - 2, len(df)):
-        price_rsi, streak, streak_rsi, rank, crsi = reference_crsi(closes, i, DEFAULTS)
-        row = out.iloc[i]
-        assert row["crsi_price_rsi"] == pytest.approx(price_rsi, rel=1e-9, abs=1e-9)
-        assert row["crsi_streak"] == streak
-        assert row["crsi_streak_rsi"] == pytest.approx(streak_rsi, rel=1e-9, abs=1e-9)
-        assert row["crsi_rank"] == rank
-        assert row["crsi"] == pytest.approx(crsi, rel=1e-9, abs=1e-9)
-        if i < need - 1:
-            assert row["crsi_reason"] == "insufficient_history"
-            continue
-        prev = out["crsi"].iloc[i - 1]
-        assert row["crsi_prev"] == prev
-        expected = 0
-        if prev < 10.0 <= row["crsi"]:
-            expected = 1
-        elif prev > 90.0 >= row["crsi"]:
-            expected = -1
-        assert int(row["signal"]) == expected
-        entries += expected != 0
-        assert row["crsi_eval_ts_ms"] == df.index[i].value // 1_000_000
-    assert entries > 0
-    assert (out["signal"].iloc[: need - 1] == 0).all()
-    assert df.equals(market())
-
-
 def _same(a, b):
     for col in COLS:
         x, y = a[col], b[col]
@@ -146,54 +78,6 @@ def _same(a, b):
             assert isinstance(y, float) and np.isnan(y), col
         else:
             assert x == y, (col, x, y)
-
-
-def test_full_series_prefix_and_bounded_tail_agree(subtests):
-    for params in [None, {"price_period": 10, "streak_period": 10, "rank_window": 150,
-                                               "oversold": 35.0, "overbought": 65.0}]:
-        with subtests.test(params=params):
-            df = market(380, seed=11)
-            full = run(df, params)
-            p = {**DEFAULTS, **(params or {})}
-            need = need_for(p["rank_window"])
-            assert need <= 200
-            assert (full["signal"] != 0).sum() > 0
-            for i in range(len(df)):
-                _same(full.iloc[i], run(df.iloc[: i + 1], params).iloc[-1])
-                if i + 1 >= need:
-                    _same(full.iloc[i], run(df.iloc[max(0, i - 199): i + 1], params).iloc[-1])
-            _same(full.iloc[-1], run(df.iloc[len(df) - need:], params).iloc[-1])
-            too_short = run(df.iloc[len(df) - need + 1:], params).iloc[-1]
-            assert too_short["crsi_reason"] == "insufficient_history"
-            assert int(too_short["signal"]) == 0
-
-
-def test_constant_price_is_neutral_and_never_enters():
-    out = run(frame([100.0] * 160))
-    last = out.iloc[-1]
-    assert last["crsi_price_rsi"] == 50.0
-    assert last["crsi_streak"] == 0.0
-    assert last["crsi_streak_rsi"] == 50.0
-    assert last["crsi_rank"] == 50.0
-    assert last["crsi"] == 50.0
-    assert last["crsi_reason"] == "no_cross"
-    assert (out["signal"] == 0).all()
-
-
-def test_rising_and_falling_series_are_mirrors_with_capped_streak_and_tied_ranks():
-    up = run(frame([2.0 ** k for k in range(160)])).iloc[-1]
-    assert up["crsi_price_rsi"] == 100.0
-    assert up["crsi_streak"] == CAP
-    assert up["crsi_streak_rsi"] == 50.0
-    assert up["crsi_rank"] == 50.0
-    assert up["crsi"] == pytest.approx(200.0 / 3.0)
-    down = run(frame([2.0 ** -k for k in range(160)])).iloc[-1]
-    assert down["crsi_price_rsi"] == 0.0
-    assert down["crsi_streak"] == -CAP
-    assert down["crsi_streak_rsi"] == 50.0
-    assert down["crsi_rank"] == 50.0
-    assert down["crsi"] == pytest.approx(100.0 / 3.0)
-    assert up["crsi"] + down["crsi"] == pytest.approx(100.0)
 
 
 def test_unchanged_close_resets_streak():
@@ -207,38 +91,6 @@ def _first_entry(out, side):
     hits = np.flatnonzero(out["signal"].to_numpy() == side)
     assert len(hits) > 0
     return int(hits[0])
-
-
-def test_threshold_boundaries_are_inclusive_on_the_current_bar_and_strict_on_the_previous():
-    df = market()
-    base = run(df)
-    crsi = base["crsi"].to_numpy()
-    valid = base["crsi_valid"].to_numpy()
-    i = next(k for k in range(1, len(df)) if valid[k] and crsi[k - 1] < crsi[k] < 50.0 and crsi[k - 1] > 0)
-    at_current = run(df, {"oversold": float(crsi[i])})
-    assert at_current["signal"].iloc[i] == 1
-    assert at_current["crsi_reason"].iloc[i] == "entry_long"
-    at_previous = run(df, {"oversold": float(crsi[i - 1])})
-    assert at_previous["signal"].iloc[i] == 0
-    j = next(k for k in range(1, len(df)) if valid[k] and crsi[k - 1] > crsi[k] > 50.0 and crsi[k - 1] < 100)
-    at_current = run(df, {"overbought": float(crsi[j])})
-    assert at_current["signal"].iloc[j] == -1
-    assert at_current["crsi_reason"].iloc[j] == "entry_short"
-    at_previous = run(df, {"overbought": float(crsi[j - 1])})
-    assert at_previous["signal"].iloc[j] == 0
-
-
-def test_long_and_short_entries_cover_both_sides_with_reasons():
-    out = run(market())
-    longs = out[out["signal"] == 1]
-    shorts = out[out["signal"] == -1]
-    assert len(longs) > 0 and len(shorts) > 0
-    assert (longs["crsi_reason"] == "entry_long").all()
-    assert (shorts["crsi_reason"] == "entry_short").all()
-    assert (longs["crsi_prev"] < 10.0).all() and (longs["crsi"] >= 10.0).all()
-    assert (shorts["crsi_prev"] > 90.0).all() and (shorts["crsi"] <= 90.0).all()
-    assert set(out["crsi_reason"]) <= {"entry_long", "entry_short", "no_cross", "below_oversold",
-                                       "above_overbought", "insufficient_history"}
 
 
 BAD_CLOSE_CASES = [
@@ -264,23 +116,6 @@ def test_bad_close_holds_for_every_decision_whose_span_includes_it(subtests):
             assert bool(out["crsi_valid"].iloc[150 + need])
 
 
-def test_missing_column_and_timestamp_order_hold():
-    missing = run(frame([100.0] * 160).drop(columns=["close"]))
-    assert (missing["signal"] == 0).all()
-    assert missing["crsi_reason"].iloc[-1] == "missing_columns:close"
-    df = market(200)
-    idx = list(df.index)
-    idx[-1] = idx[-2]
-    df.index = pd.DatetimeIndex(idx)
-    row = run(df).iloc[-1]
-    assert row["crsi_reason"] == "timestamp_order"
-    assert int(row["signal"]) == 0
-    with_col = market(200).reset_index(drop=True)
-    with_col["timestamp"] = [1_000 * i for i in range(200)]
-    with_col.loc[199, "timestamp"] = 3_000
-    assert run(with_col).iloc[-1]["crsi_reason"] == "timestamp_order"
-
-
 INVALID_PARAMS = [
     {"price_period": True},
     {"price_period": 1},
@@ -297,19 +132,6 @@ INVALID_PARAMS = [
     {"oversold": float("nan")},
     {"overbought": False},
 ]
-
-
-def test_invalid_parameters_raise(subtests):
-    for params in INVALID_PARAMS:
-        with subtests.test(params=params):
-            with pytest.raises(ValueError):
-                run(market(200), params)
-
-
-def test_integral_float_periods_accepted():
-    out = run(market(200), {"price_period": 3.0, "rank_window": 100.0})
-    assert out["crsi_reason"].iloc[-1] in {"no_cross", "below_oversold", "above_overbought",
-                                           "entry_long", "entry_short"}
 
 
 def _compose(df, position_side, position_ctx=None, params=None):
@@ -358,16 +180,6 @@ def test_composer_close_wins_and_survives_bad_entry_data():
     short_due = {"side": "short", "bars_held": 7, "avg_cost": 100.0, "current_quantity": 1.0}
     _, short_close = _compose(window.drop(columns=["close"]).assign(close=np.nan), "short", short_due)
     assert short_close["close_fraction"] == 1.0 and short_close["signal"] == 1
-
-
-def test_composer_matches_full_series_on_bounded_windows():
-    df = market(360, seed=7)
-    full = run(df)
-    need = need_for(DEFAULTS["rank_window"])
-    for i in range(need - 1, len(df)):
-        evaluation, decision = _compose(df.iloc[max(0, i - 199): i + 1], "")
-        assert evaluation.open_signal == int(full["signal"].iloc[i])
-        assert decision["signal"] == int(full["signal"].iloc[i])
 
 
 def _hl_candles(df):

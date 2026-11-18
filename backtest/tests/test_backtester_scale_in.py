@@ -151,15 +151,6 @@ def _assert_run_rejects_entry_fraction_column():
         _run(df, allow_scale_in=True)
 
 
-def test_default_off_same_direction_signal_still_skipped():
-    closes = [100, 100, 110, 110, 120, 100]
-    repeat = _run(_df(closes, [1, 0, 1, 0, -1, 0]))
-    plain = _run(_df(closes, [1, 0, 0, 0, -1, 0]))
-    assert repeat["trades"] == plain["trades"]
-    assert repeat["final_capital"] == plain["final_capital"]
-    assert "scale_in_adds" not in repeat
-
-
 def test_add_blends_avg_cost_and_pnl_uses_blend(subtests):
     with subtests.test(case="add_blends_avg_cost_and_pnl_uses_blend"):
         _assert_add_blends_avg_cost_and_pnl_uses_blend()

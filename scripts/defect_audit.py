@@ -2281,6 +2281,88 @@ def cmd_report(args):
     print(f"records written to {rec_path}")
 
 
+RULE_DOCS = ("CLAUDE.md", "SKILL.md", "README.md", "backtest/AUDIT.md", "docs/backtesting-registry.md", "docs/POST_UPDATE_HISTORY.md")
+
+
+def py_decl_key(rec):
+    return re.sub(r"\[.*\]$", "", rec["test"])
+
+
+def cmd_prune(args):
+    out = pathlib.Path(args.out).resolve()
+    recs = {r["id"]: r for r in read_jsonl(out / "records.jsonl")}
+    baselines = {b["record"]: b for b in read_jsonl(out / "results" / "baseline.jsonl")}
+    cov = {rid: frozenset((baselines.get(rid) or {}).get("covered_sites") or ()) for rid in recs}
+    det = collections.defaultdict(set)
+    for m in read_jsonl(out / "results" / "mutants.jsonl"):
+        if m["outcome"] == "detected":
+            det[m["record"]].add(m["site"])
+    detectors = collections.defaultdict(set)
+    for rid, sites in det.items():
+        for sid in sites:
+            detectors[sid].add(rid)
+    holders = collections.defaultdict(set)
+    for rid, sites in cov.items():
+        for sid in sites:
+            holders[sid].add(rid)
+
+    rule_docs = "\n".join((ROOT / d).read_text() for d in RULE_DOCS if (ROOT / d).exists())
+
+    def named_in_rules(r):
+        name = r["test"] if r["lang"] == "go" else py_decl_key(r).rsplit("::", 1)[-1]
+        return re.search(rf"\b{re.escape(name)}\b", rule_docs) is not None
+
+    def eligible(r):
+        return not (r.get("protected_area_terms") or r.get("gaps") or r.get("unmeasured_dependencies") or r["status"] in ("excluded", "inconclusive") or named_in_rules(r))
+
+    def decl(r):
+        return ("go", r["test"]) if r["lang"] == "go" else ("py", py_decl_key(r))
+
+    members = collections.defaultdict(set)
+    for rid, r in recs.items():
+        members[decl(r)].add(rid)
+    weak = {rid for rid, r in recs.items() if eligible(r) and r["status"] == "review_candidate" and r["mutations"]}
+    remove = set(weak)
+    subsumer = {}
+    for r in sorted((r for r in recs.values() if eligible(r) and r["status"] == "detects" and cov[r["id"]]), key=lambda r: (len(cov[r["id"]]), r["id"])):
+        rid = r["id"]
+        rare = min(cov[rid], key=lambda s: (len(holders[s]), s))
+        for sid in sorted(holders[rare]):
+            if sid == rid or sid in remove or recs[sid]["status"] in ("excluded", "inconclusive") or not cov[rid] <= cov[sid]:
+                continue
+            if all(detectors[m] - remove - {rid} for m in det[rid]):
+                subsumer[rid] = sid
+                remove.add(rid)
+                break
+    while True:
+        changed = False
+        for key, ids in members.items():
+            if ids & remove and not ids <= remove:
+                remove -= ids
+                changed = True
+        for rid in sorted(subsumer):
+            if rid not in remove:
+                continue
+            kept = [s for s in sorted(holders[min(cov[rid], key=lambda s: (len(holders[s]), s))]) if s not in remove and s != rid and recs[s]["status"] not in ("excluded", "inconclusive") and cov[rid] <= cov[s]]
+            if not kept or not all(detectors[m] - remove for m in det[rid]):
+                remove.discard(rid)
+                changed = True
+            else:
+                subsumer[rid] = kept[0]
+        if not changed:
+            break
+    plan = {}
+    for rid in sorted(remove):
+        r = recs[rid]
+        if rid in weak:
+            plan[rid] = {"rule": "no_detection", "file": r["file"], "declaration": decl(r)[1], "evidence": {"outcomes": r["outcomes"], "mutations": len(r["mutations"])}}
+        else:
+            plan[rid] = {"rule": "subsumed", "file": r["file"], "declaration": decl(r)[1], "evidence": {"subsumed_by": subsumer[rid], "covered_sites": len(cov[rid]), "subsumer_covered_sites": len(cov[subsumer[rid]]), "detected": {m: sorted(detectors[m] - remove) for m in sorted(det[rid])}}}
+    held = sorted(rid for rid in weak | set(subsumer) if rid not in remove)
+    write_json(out / "prune.json", {"rules": {"eligible": "not excluded or inconclusive; no protected-area term in the test or file name; no measurement gap; no unmeasured dependency; not named in a rule document (" + ", ".join(RULE_DOCS) + ")", "no_detection": "an eligible review candidate with at least one completed mutation and no detection in either round", "subsumed": "an eligible detecting test whose covered sites are a subset of one kept test's covered sites, where every sampled mutant it detects is also detected by a kept test", "declaration": "a Go test function or Python test function is deleted only when every record of it is removed"}, "remove": plan, "held_by_declaration": held})
+    print(json.dumps({"no_detection": sum(p["rule"] == "no_detection" for p in plan.values()), "subsumed": sum(p["rule"] == "subsumed" for p in plan.values()), "held_by_declaration": len(held), "declarations": len({(p["file"], p["declaration"]) for p in plan.values()})}, indent=1))
+
+
 def cmd_removals(args):
     out = pathlib.Path(args.out).resolve()
     inv = read_json(out / "inventory.json")
@@ -2311,11 +2393,17 @@ def cmd_removals(args):
         removed_ids += [f"py/{suite}::{n}" for n in ids if n not in current_py[suite]]
     cur_decls = {d["name"] for d in go_declarations(ROOT)}
     removed_ids += [f"go::{d['name']}" for d in inv["go_declarations"] if d["name"] not in cur_decls]
-    report = {"base": base, "head": head, "removed_test_ids": sorted(removed_ids), "removed_declarations": sorted(removed_decls), "added_declarations": sorted(added_decls), "added_lines_in_test_files": changed_bodies}
+    plan = read_json(out / "prune.json")["remove"] if (out / "prune.json").exists() else {}
+    planned = set()
+    for rid in plan:
+        planned.add(f"go::{rid.split('::', 1)[1]}" if rid.startswith("go/") else rid)
+    unplanned = sorted(set(removed_ids) - planned)
+    not_removed = sorted(planned - set(removed_ids))
+    report = {"base": base, "head": head, "removed_test_ids": sorted(removed_ids), "removed_declarations": sorted(removed_decls), "added_declarations": sorted(added_decls), "added_lines_in_test_files": changed_bodies, "removed_without_plan": unplanned, "planned_but_present": not_removed}
     write_json(out / "removals.json", report)
     print(json.dumps({k: (v if not isinstance(v, list) else len(v)) for k, v in report.items()}, indent=1))
-    if added_decls or changed_bodies:
-        print("test files gained lines; retained test bodies must stay unchanged")
+    if added_decls or unplanned or not_removed:
+        print("removed test IDs differ from the prune plan, or a test declaration was added")
         sys.exit(1)
 
 
@@ -2337,11 +2425,13 @@ def main():
     p.add_argument("--select")
     p = sub.add_parser("report")
     p.add_argument("--out", required=True)
+    p = sub.add_parser("prune")
+    p.add_argument("--out", required=True)
     p = sub.add_parser("removals")
     p.add_argument("--out", required=True)
     args = ap.parse_args()
     try:
-        {"plan": cmd_plan, "run": cmd_run, "report": cmd_report, "removals": cmd_removals}[args.cmd](args)
+        {"plan": cmd_plan, "run": cmd_run, "report": cmd_report, "prune": cmd_prune, "removals": cmd_removals}[args.cmd](args)
     except AuditError as exc:
         print(f"defect_audit: {exc}", file=sys.stderr)
         sys.exit(1)

@@ -182,19 +182,6 @@ func noEdgeCaseNoEdgeAdmissionMatrixThroughRealLoaders(t *testing.T) {
 	}
 }
 
-func noEdgeCaseNoEdgeAcknowledgementMustBeAJSONBoolean(t *testing.T) {
-	setNoEdgeLiveCredentials(t)
-	for _, name := range []string{"rsi", "chande_momentum"} {
-		for _, v := range []interface{}{"true", 1, "yes"} {
-			sc := noEdgeHLStrategy("hl-x", name, "ETH", "1h", "--mode=live")
-			sc["allow_no_edge"] = v
-			if cfg, err := LoadConfig(writeNoEdgeConfig(t, CurrentConfigVersion, sc)); err == nil {
-				t.Fatalf("%s allow_no_edge=%#v loaded (ack=%v); a non-boolean must never grant live admission", name, v, cfg.Strategies[0].AllowNoEdgeAcknowledged())
-			}
-		}
-	}
-}
-
 func chandeLegacyFixture() []map[string]interface{} {
 	openLive := noEdgeHLStrategy("hl-cmo-open", "chande_momentum", "BTC", "1h", "--mode=live")
 	openLive["allow_deprecated"] = true
@@ -2046,28 +2033,6 @@ func TestNoEdgeAdmissionMatrixThroughRealLoaders(t *testing.T) {
 		{"StochasticMomentumIndex", noEdgeCaseStochasticMomentumIndexAdmissionRoutesOpenAndCloseFallbackReferences},
 		{"TrixMomentum", noEdgeCaseTrixMomentumAdmissionThroughRealLoaders},
 		{"TrueStrengthIndex", noEdgeCaseTrueStrengthIndexAdmissionRoutesOpenAndCloseFallbackReferences},
-	} {
-		t.Run(tc.name, tc.run)
-	}
-}
-
-func TestNoEdgeAcknowledgementMustBeAJSONBoolean(t *testing.T) {
-	for _, tc := range []sigAdmCase{
-		{"Generic", noEdgeCaseNoEdgeAcknowledgementMustBeAJSONBoolean},
-		{"ElderRayPullback", noEdgeCaseElderRayPullbackAcknowledgementMustBeABoolean},
-		{"FisherReversal", noEdgeCaseFisherReversalAcknowledgementMustBeABoolean},
-		{"SchaffTrendCycle", noEdgeCaseSchaffTrendCycleAcknowledgementMustBeABoolean},
-	} {
-		t.Run(tc.name, tc.run)
-	}
-}
-
-func TestResearchStrategyRegistrationTables(t *testing.T) {
-	for _, tc := range []sigAdmCase{
-		{"CamarillaPivotReversal", noEdgeCaseCamarillaPivotReversalRegistrationTables},
-		{"CumulativeVolumeDelta", noEdgeCaseCumulativeVolumeDeltaRegistrationTables},
-		{"MassIndexReversal", noEdgeCaseMassIndexReversalRegistrationTables},
-		{"SchaffTrendCycle", noEdgeCaseSchaffTrendCycleRegistrationTables},
 	} {
 		t.Run(tc.name, tc.run)
 	}

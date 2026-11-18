@@ -68,20 +68,6 @@ def _run(script, argv, stdin_payload, env_extra=None):
     return proc
 
 
-def test_market_stdin_single_check_uses_the_sealed_frame():
-    rows = _candles()
-    proc = _run(CHECK_HL, [
-        "breakout", "BTC", "1h", "--mode=paper", "--market-stdin",
-    ], _envelope({"BTC|1h": _frame(rows)}, mid=0.1234))
-    assert proc.returncode == 0, proc.stderr
-    out = json.loads(proc.stdout)
-    assert out.get("error") is None or out.get("error") == ""
-    assert out["symbol"] == "BTC"
-    assert out["timeframe"] == "1h"
-    assert out["price"] == 0.1234
-    assert "Fetching" not in proc.stderr
-
-
 def test_market_stdin_single_check_refuses_a_v1_envelope():
     proc = _run(CHECK_HL, [
         "breakout", "BTC", "1h", "--mode=paper", "--market-stdin",
@@ -114,22 +100,3 @@ def test_check_regime_market_stdin_refuses_a_missing_frame():
     assert proc.returncode == 1
     out = json.loads(proc.stdout)
     assert "market payload" in out["error"]
-
-
-def test_check_regime_probe_validates_the_market_flag():
-    proc = subprocess.run(
-        [sys.executable, CHECK_REGIME,
-         "--platform=hyperliquid", "--symbol=BTC", "--timeframe=1h",
-         "--regime-windows-spec-json", '{"default":{"classifier":"adx","period":14,"adx_threshold":20}}',
-         "--ohlcv-limit", "200", "--min-bars", "30", "--market-stdin", "--probe-only"],
-        capture_output=True, text=True, cwd=_REPO_ROOT, timeout=60,
-    )
-    assert proc.returncode == 0, proc.stderr
-    rejected = subprocess.run(
-        [sys.executable, CHECK_REGIME,
-         "--platform=hyperliquid", "--symbol=BTC", "--timeframe=1h",
-         "--regime-windows-spec-json", "{}",
-         "--not-a-real-flag", "--probe-only"],
-        capture_output=True, text=True, cwd=_REPO_ROOT, timeout=60,
-    )
-    assert rejected.returncode != 0

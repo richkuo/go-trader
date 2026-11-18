@@ -192,60 +192,6 @@ def test_partial_tp_at_open_then_intrabar_stop_same_bar():
     )
 
 
-def test_no_race_run_identical_across_modes():
-    df = _df(
-        opens=[100, 100, 101, 102, 106, 106],
-        highs=[101, 101, 103, 107, 107, 107],
-        lows=[99, 99, 100, 101, 105, 105],
-        closes=[100, 100, 102, 106, 106, 106],
-        signals=[1, 0, 0, 0, 0, 0],
-    )
-    walk = _run(df, close_strategies=TP_5PCT_FULL, stop_loss_pct=0.05)
-    legacy = _run(df, close_strategies=TP_5PCT_FULL, stop_loss_pct=0.05,
-                  intrabar_resolution="bar_close")
-    assert walk == legacy
-
-
-def test_trailing_trigger_pierce_eligibility(subtests):
-    with subtests.test(case="entry_bar_trailing_seed_is_not_pierce_eligible"):
-        _assert_entry_bar_trailing_seed_is_not_pierce_eligible()
-    with subtests.test(case="carried_trailing_trigger_is_pierce_eligible_next_bar"):
-        _assert_carried_trailing_trigger_is_pierce_eligible_next_bar()
-
-
-def _assert_entry_bar_trailing_seed_is_not_pierce_eligible():
-    df = _df(
-        opens=[100, 100, 110, 110, 110],
-        highs=[101, 110, 111, 111, 111],
-        lows=[99, 99, 109, 109, 109],
-        closes=[100, 110, 110, 110, 110],
-        signals=[1, 0, 0, 0, 0],
-    )
-    df["atr"] = 2.0
-    res = _run(df, trailing_stop_atr_mult=1.0)
-    assert res["total_trades"] == 1
-    trade = res["trades"][0]
-    assert trade["exit_reason"] == "end_of_data"
-    assert res["final_capital"] > 10500.0
-
-
-def _assert_carried_trailing_trigger_is_pierce_eligible_next_bar():
-    df = _df(
-        opens=[100, 100, 110, 110, 112, 112],
-        highs=[101, 110, 111, 111, 112, 112],
-        lows=[99, 99, 109, 107, 111, 111],
-        closes=[100, 110, 110, 109, 112, 112],
-        signals=[1, 0, 0, 0, 0, 0],
-    )
-    df["atr"] = 2.0
-    res = _run(df, trailing_stop_atr_mult=1.0)
-    assert res["total_trades"] == 1
-    trade = res["trades"][0]
-    assert trade["exit_price"] == pytest.approx(108.0, rel=1e-9)
-    assert trade["exit_reason"] == "signal_sl"
-    assert trade["exit_date"] == str(df.index[3])
-
-
 def test_sl_after_bump_bar_suppresses_pierce_until_next_bar(subtests):
     for platform, tp_bar, sl_bar in [
         ("binanceus", 3, 4),

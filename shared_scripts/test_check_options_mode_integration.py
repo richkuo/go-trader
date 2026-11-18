@@ -276,17 +276,6 @@ def test_argument_and_position_errors_fail_before_the_cap_and_the_adapter(tmp_pa
             assert records == []
 
 
-def test_unsupported_platforms_refuse_before_loading_an_adapter(tmp_path, subtests):
-    for platform in ["binanceus", "hyperliquid", "luno", "topstep"]:
-        with subtests.test(platform=platform):
-            run_dir = tmp_path / platform
-            run_dir.mkdir()
-            proc, records = _run(["covered_calls", "BTC", f"--platform={platform}"], run_dir, FOUR_POSITIONS)
-            _handled_error(proc, f"unsupported options platform: {platform}; options run only on deribit, ibkr, okx, robinhood")
-            assert records == []
-            assert "Traceback" not in proc.stderr
-
-
 def test_probe_only_and_empty_stdin_keep_their_success(tmp_path):
     proc, records = _run(["covered_calls", "SPY", "--platform=deribit", "--probe-only"], tmp_path, FOUR_POSITIONS)
     assert proc.returncode == 0 and proc.stdout == "" and records == []
@@ -296,37 +285,6 @@ def test_probe_only_and_empty_stdin_keep_their_success(tmp_path):
     assert proc.returncode == 0, proc.stderr
     out = _single_document(proc)
     assert out["signal"] == -1 and len(out["actions"]) == 1 and not out.get("error")
-
-
-RUNTIME_ERRORS = {
-    "zero_spot": (["protective_puts", "BTC", "--platform=deribit"], {"QP_QUOTE": 0}, "Could not fetch spot price"),
-    "nan_spot": (["protective_puts", "BTC", "--platform=deribit"], {"QP_QUOTE": "nan"}, "Could not fetch spot price"),
-    "infinite_spot": (["protective_puts", "BTC", "--platform=deribit"], {"QP_QUOTE": "inf"}, "Could not fetch spot price"),
-    "missing_momentum_bars": (["momentum_options", "BTC", "--platform=deribit"], {"QP_QUOTE": 100000, "QP_CANDLES": 10}, "momentum bars unavailable"),
-    "evaluator_exception": (["covered_calls", "BTC", "--platform=deribit"], {"QP_QUOTE": 100000},
-                            "options check failed: KeyError"),
-    "rank_strategy_without_rank_vol_mean_reversion": (["vol_mean_reversion", "BTC", "--platform=deribit"], {"QP_QUOTE": 100000, "QP_DAILY": "503"},
-                                                       "vol_mean_reversion needs iv rank: " + READ_FAILED + " (upstream status 503)"),
-    "rank_strategy_without_rank_butterfly": (["butterfly", "BTC", "--platform=ibkr"], {"QP_QUOTE": 100000, "QP_DAILY": json.dumps(BASE_CLOSES[:15])},
-                                             "butterfly needs iv rank: iv rank unavailable: flat volatility range"),
-    "ibkr_model_without_volatility": (["protective_puts", "BTC", "--platform=ibkr", IBKR_CALENDAR], {"QP_QUOTE": 100000, "QP_DAILY": "error"},
-                                      "volatility unavailable: model pricing needs measured volatility: " + READ_FAILED),
-    "robinhood_logged_out_model_without_volatility": (["covered_calls", "SPY", "--platform=robinhood"], {"QP_QUOTE": 600, "QP_DAILY": "429"},
-                                                      "volatility unavailable: model pricing needs measured volatility: " + READ_FAILED + " (upstream status 429)"),
-    "non_finite_result_is_refused": (["protective_puts", "BTC", "--platform=deribit"], {"QP_QUOTE": 100000, "QP_OPTION_GREEKS": '{"delta": NaN, "gamma": 0, "theta": 0, "vega": 0}'},
-                                     "options result invalid: a value is not finite JSON"),
-}
-RUNTIME_STDIN = {"evaluator_exception": '[{"option_type": "call", "action": "buy"}]'}
-
-
-def test_runtime_failures_return_one_error_document_and_exit_1(tmp_path, subtests):
-    for case in sorted(RUNTIME_ERRORS):
-        argv, extra, want = RUNTIME_ERRORS[case]
-        with subtests.test(case=case):
-            run_dir = tmp_path / case
-            run_dir.mkdir()
-            proc, _ = _run(argv, run_dir, RUNTIME_STDIN.get(case, "[]"), extra=extra)
-            _handled_error(proc, want)
 
 
 def _venue_ok(platform, mark, spot, out):
@@ -419,23 +377,6 @@ def test_a_failed_later_leg_discards_every_earlier_leg(tmp_path, subtests):
             proc, _ = _run(argv, control, "[]", extra={"QP_QUOTE": 100000, "QP_DAILY": json.dumps(closes)})
             assert proc.returncode == 0, proc.stderr
             assert len(_single_document(proc)["actions"]) == quotes
-
-
-def test_library_output_reaches_stderr_and_stdout_stays_one_document(tmp_path, subtests):
-    cases = {
-        "success": ({"QP_QUOTE": 100000}, 0),
-        "handled_error": ({"QP_QUOTE": 100000, "QP_OPTION_QUOTE": "error"}, 1),
-    }
-    for case in sorted(cases):
-        extra, code = cases[case]
-        with subtests.test(case=case):
-            run_dir = tmp_path / case
-            run_dir.mkdir()
-            proc, _ = _run(["protective_puts", "BTC", "--platform=deribit"], run_dir, "[]", extra=dict(extra, QP_STDOUT_NOISE="1"))
-            assert proc.returncode == code, proc.stderr
-            _single_document(proc)
-            assert "quote precision stub stdout noise" in proc.stderr
-            assert "quote precision stub stdout noise" not in proc.stdout
 
 
 def test_holds_that_need_no_pricing_succeed_without_metrics_or_quotes(tmp_path, subtests):
@@ -555,17 +496,6 @@ def test_every_document_carries_the_structure_contract(tmp_path, subtests):
             assert proc.returncode == code, proc.stderr
             out = _single_document(proc)
             assert out["structure_contract"] == STRUCTURE_CONTRACT, out
-
-
-def test_a_passing_structure_keeps_every_leg_with_its_metadata(tmp_path):
-    proc, _ = _run(["butterfly", "BTC", "--platform=deribit"], tmp_path, "[]",
-                   extra={"QP_QUOTE": 100000, "QP_DAILY": json.dumps(MID_RANK_CLOSES)})
-    assert proc.returncode == 0, proc.stderr
-    out = _single_document(proc)
-    assert out["signal"] == 1
-    assert [(a["action"], a["strike"]) for a in out["actions"]] == [("buy", 95000.0), ("sell", 100000.0), ("buy", 105000.0)]
-    assert {(a["structure_id"], a["structure_legs"]) for a in out["actions"]} == {("butterfly-1", 3)}
-    assert all("score" in a and "score_reason" in a for a in out["actions"])
 
 
 def test_a_structure_whose_minimum_leg_score_fails_emits_no_leg(tmp_path):

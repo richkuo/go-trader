@@ -8,7 +8,7 @@ import pytest
 
 import run_backtest
 from backtester import Backtester, CloseCapabilityError
-from regime import bounded_window_labels, prepare_check_regime, valid_labels_for_classifier
+from regime import bounded_window_labels, valid_labels_for_classifier
 from regime_label_columns import (
     attach_regime_label_columns,
     column_name,
@@ -156,35 +156,6 @@ def test_default_directional_selector_keeps_the_primary_stamp():
     assert opens
     assert opens[0]["directional"] == df[column_name("medium")].iloc[220]
     assert opens[0]["gate"] != ""
-
-
-def test_labels_match_prepare_and_the_helper_does_not_shift():
-    regime = {"enabled": True, "period": 14, "windows": {
-        "medium": {"classifier": "adx", "period": 14},
-        "fast": {"classifier": "adx", "period": 8},
-    }}
-    plan = resolve_feature_windows({"regime_gate_window": "fast"}, regime)
-    df = _frame()
-    raw = df.copy()
-    attach_regime_label_columns(df, plan)
-    col = column_name("fast")
-    limit = plan["limit"]
-    for i in range(limit, len(df), 20):
-        payload, _, _ = prepare_check_regime(
-            raw.iloc[i - limit + 1:i + 1], regime_enabled=True,
-            windows_spec=plan["windows_spec"])
-        live = str((payload.get("fast") or {}).get("regime") or "")
-        assert df[col].iloc[i] == live
-        decision = df[col].shift(1).iloc[i]
-        prior, _, _ = prepare_check_regime(
-            raw.iloc[i - limit:i], regime_enabled=True,
-            windows_spec=plan["windows_spec"])
-        assert decision == str((prior.get("fast") or {}).get("regime") or "")
-    labeled = raw.copy()
-    bounded_window_labels(
-        labeled, period=14, adx_threshold=20, windows_spec=plan["windows_spec"],
-        limit=limit, columns={col: "fast"})
-    assert list(labeled[col]) == list(df[col])
 
 
 def test_higher_timeframe_shifts_once_before_the_fill():

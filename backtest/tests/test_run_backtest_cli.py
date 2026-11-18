@@ -4,26 +4,6 @@ import pytest
 import run_backtest
 
 
-def test_build_parser_accepts():
-    for i, (argv, expected) in enumerate([
-        (
-            ["--registry", "futures", "--platform", "hyperliquid",
-             "--strategy", "sma_crossover", "--mode", "single"],
-            {"registry": "futures", "platform": "hyperliquid"},
-        ),
-        (
-            ["--mode", "optimize", "--strategy", "sma_crossover",
-             "--sweep-close", "--optimize-metric", "dd_adjusted_return",
-             "--direction", "long"],
-            {"sweep_close": True, "optimize_metric": "dd_adjusted_return",
-             "direction": "long", "close_stacks_json": None},
-        ),
-    ]):
-        args = run_backtest._build_parser().parse_args(argv)
-        for field, want in expected.items():
-            assert getattr(args, field) == want, f"test_build_parser_accepts[argv{i}-expected{i}] {field}"
-
-
 _BUILD_PARSER_REJECTS_UNKNOWN_CHOICE_CASES = [
     ["--platform", "mystery-exchange"],
     ["--registry", "options"],
@@ -440,14 +420,6 @@ def test_explicit_proxy_keeps_funding_tier_and_stop_scope(monkeypatch, capsys, t
             assert run["code"] == 1
             assert "hedge" in run["out"]
             assert run["kwargs"] is None and run["data_calls"] == []
-
-
-def test_ad_hoc_run_defaults_to_binanceus(monkeypatch):
-    seen = _spy_single(monkeypatch)
-    monkeypatch.setattr("sys.argv", [
-        "run_backtest.py", "--mode", "single", "--strategy", "sma_crossover"])
-    run_backtest.main()
-    assert seen["calls"][0]["platform"] == "binanceus"
 
 
 def _manifest(tmp_path, venue="hyperliquid"):

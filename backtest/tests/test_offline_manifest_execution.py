@@ -13,7 +13,6 @@ import offline_manifest as om
 import data_fetcher
 import eval_windows
 import hurst_gate
-import run_backtest
 from backtester import Backtester
 from registry_loader import load_registry
 
@@ -210,14 +209,6 @@ def _build_manifest(tmp_path, n_bars=400, funding_drop=(), funding=True, meta_de
     return path
 
 
-def test_manifest_loads_and_reports_complete_coverage(tmp_path):
-    m = om.load_manifest(str(_build_manifest(tmp_path)))
-    report = om.verify_report(m)
-    win = report["datasets"]["BTC 1h"]["windows"]["train"]
-    assert win["candles"]["complete"] and win["candles"]["present_bars"] == 150
-    assert win["funding"]["complete"] and win["funding"]["present_hours"] == 150
-
-
 _MANIFEST_FAILS_CLOSED_ON_BAD_INPUTS_CASES = [
     ("tamper", "sha256 mismatch"),
     ("missing", "is missing"),
@@ -385,17 +376,6 @@ def test_indicator_frame_equal_to_scored_frame_changes_nothing(tmp_path):
     assert base["final_capital"] == same["final_capital"]
 
 
-def test_indicator_frame_must_cover_and_match_the_scored_bars(tmp_path):
-    full, scored = _warmup_frames(tmp_path)
-    with pytest.raises(ValueError, match="contains every bar"):
-        _bt(stop_loss_atr_mult=1.0).run(scored, save=False,
-                                         indicator_frame=full.drop(index=scored.index[3]))
-    altered = full.copy()
-    altered.loc[scored.index[3], "close"] += 1.0
-    with pytest.raises(ValueError, match="must match"):
-        _bt(stop_loss_atr_mult=1.0).run(scored, save=False, indicator_frame=altered)
-
-
 def _fake_info(fail_on=None):
     def post(payload, retries=5):
         kind = payload["type"]
@@ -416,71 +396,6 @@ def _fake_info(fail_on=None):
     return post
 
 
-def _acquire_manifest(tmp_path, monkeypatch, fail_on=None):
-    path = _build_manifest(tmp_path, funding=False)
-    raw = json.loads(path.read_text())
-    raw["acquisition"] = {"start": pd.Timestamp(T0, unit="ms").isoformat(),
-                          "end": pd.Timestamp(T0 + HOUR * 400, unit="ms").isoformat()}
-    path.write_text(json.dumps(raw))
-    monkeypatch.delenv("HYPERLIQUID_SECRET_KEY", raising=False)
-    monkeypatch.setattr(om.time, "sleep", lambda s: None)
-    monkeypatch.setattr(om, "_post_info", _fake_info(fail_on))
-    return path
-
-
-def _snapshot(root):
-    return {str(p.relative_to(root)): p.read_bytes()
-            for p in sorted(root.rglob("*")) if p.is_file()}
-
-
-def test_acquire_refuses_existing_inputs_without_overwrite(tmp_path, monkeypatch):
-    path = _acquire_manifest(tmp_path, monkeypatch)
-    monkeypatch.setattr(om, "_post_info", lambda *a, **k: pytest.fail("acquire used the network"))
-    before = _snapshot(tmp_path)
-    with pytest.raises(om.ManifestError, match="without --overwrite"):
-        om.acquire(str(path))
-    assert _snapshot(tmp_path) == before
-
-
-_FAILED_ACQUIRE_LEAVES_FROZEN_INPUTS_AND_HASHES_UNTOUCHED_CASES = ["fetch", "move"]
-
-
-def test_failed_acquire_leaves_frozen_inputs_and_hashes_untouched(tmp_path, monkeypatch, subtests):
-    for i, stage in enumerate(_FAILED_ACQUIRE_LEAVES_FROZEN_INPUTS_AND_HASHES_UNTOUCHED_CASES):
-        with subtests.test(case=i, stage=stage):
-            case_dir = tmp_path / f"case{i}"
-            case_dir.mkdir()
-            path = _acquire_manifest(case_dir, monkeypatch,
-                                     fail_on="candleSnapshot" if stage == "fetch" else None)
-            if stage == "move":
-                real_replace = os.replace
-                calls = []
-
-                def flaky_replace(src, dst):
-                    calls.append(dst)
-                    if len(calls) == 4:
-                        raise OSError("simulated failure while moving staged files")
-                    return real_replace(src, dst)
-
-                monkeypatch.setattr(om.os, "replace", flaky_replace)
-            before = _snapshot(case_dir)
-            with pytest.raises((om.ManifestError, OSError)):
-                om.acquire(str(path), overwrite=True)
-            assert _snapshot(case_dir) == before
-            assert not list(case_dir.glob(".acquire-staging-*"))
-
-
-def test_acquire_overwrite_replaces_inputs_and_hashes_together(tmp_path, monkeypatch):
-    path = _acquire_manifest(tmp_path, monkeypatch)
-    before = _snapshot(tmp_path)
-    om.acquire(str(path), overwrite=True)
-    after = _snapshot(tmp_path)
-    assert after["data/BTC.csv.gz"] != before["data/BTC.csv.gz"]
-    m = om.load_manifest(str(path))
-    assert len(om.load_candles(m["datasets"][0])) == 400
-    assert not list(tmp_path.glob(".acquire-staging-*"))
-
-
 _FETCH_KEEPS_CLOSED_CANDLES_ONLY_CASES = [
     (T0 + HOUR * 10 - 1, T0 + HOUR * 8),
     (T0 + HOUR * 10, T0 + HOUR * 9),
@@ -497,26 +412,6 @@ def test_fetch_keeps_closed_candles_only(monkeypatch, subtests):
             df = om._fetch_hl_candles("BTC", "1h", T0, T0 + HOUR * 100)
             assert int(df["timestamp"].iloc[0]) == T0
             assert int(df["timestamp"].iloc[-1]) == last_kept
-
-
-_MANIFEST_FLAGS_ARE_REFUSED_BEFORE_ANY_DATA_LOAD_CASES = [
-    ["--mode", "compare", "--manifest", "manifest.json"],
-    ["--mode", "multi", "--manifest-window", "test"],
-    ["--mode", "optimize", "--cost-multiplier", "2"],
-    ["--mode", "single", "--manifest-window", "test"],
-    ["--mode", "single", "--manifest-dataset", "BTC 4h"],
-]
-
-
-def test_manifest_flags_are_refused_before_any_data_load(monkeypatch, subtests):
-    for i, argv in enumerate(_MANIFEST_FLAGS_ARE_REFUSED_BEFORE_ANY_DATA_LOAD_CASES):
-        with subtests.test(case=i, argv=argv):
-            monkeypatch.setattr(run_backtest, "load_cached_data",
-                                lambda *a, **k: pytest.fail("data loaded despite a refused flag"))
-            monkeypatch.setattr(sys, "argv", ["run_backtest.py", "--strategy", "sma_crossover", *argv])
-            with pytest.raises(SystemExit) as exc:
-                run_backtest.main()
-            assert exc.value.code not in (0, None)
 
 
 DAY_MS = 1_704_067_200_000
@@ -1322,22 +1217,6 @@ def test_resting_tp_html_page_on_a_complete_stream_is_an_error(tmp_path):
         assert report["candle_price_basis"] == "unconfirmed"
         assert report["candle_price_basis_evidence"]["reasons"] == ["probe_incomplete"]
         assert [row["outcome"] for row in report["orders"]] == [row["outcome"] for row in plain["orders"]]
-
-
-def test_resting_tp_empty_response_file_has_no_payload(tmp_path):
-    import resting_tp_fill_study as study
-
-    orders = [{
-        "oid": 1, "limit": "100.00", "placement": _ms(10), "status": "canceled",
-        "status_time": _ms(22, 30), "orig": "1", "sz": "1", "fills": [],
-    }]
-    _study_orders(tmp_path, orders, _example_candles())
-    capture = tmp_path / "capture"
-    _replace_responses(capture, "recentTrades", b"")
-    _bundle, _digest, loaded = study.load_capture(str(capture))
-    empty = [item for item in loaded if item["meta"].get("type") == "recentTrades"]
-    assert empty
-    assert all(item["raw"] == b"" and item["payload"] is None for item in empty)
 
 
 def test_resting_tp_unaligned_since_is_refused_before_any_request(tmp_path):

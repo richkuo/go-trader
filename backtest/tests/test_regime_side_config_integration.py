@@ -6,7 +6,6 @@ import pytest
 
 import run_backtest
 from registry_loader import load_registry
-from regime_label_columns import attach_regime_label_columns, column_name
 
 N = 240
 TRIGGER_BAR = 120
@@ -83,15 +82,6 @@ def _entry(frame, bar=TRIGGER_BAR):
 
 def _sides(result):
     return [t["side"] for t in result["trades"]]
-
-
-def test_labels_used_by_the_fixtures(tmp_path):
-    plan = run_backtest.load_strategy_config(_write(tmp_path, _strategy()), "hl-side")["regime_label_windows"]
-    col = column_name(plan["windows"]["directional"])
-    for (drift, wiggle), label in ((DOWN_CHOPPY, "trending_down_choppy"), (UP_CLEAN, "trending_up_clean")):
-        labeled, _ = attach_regime_label_columns(_frame(drift, wiggle), plan)
-        assert labeled[col].iloc[TRIGGER_BAR] == label
-        assert bool(labeled[col + "_ready"].iloc[TRIGGER_BAR])
 
 
 def test_config_runs_open_either_trigger_sign_on_the_label_side(monkeypatch, tmp_path, subtests):
@@ -243,21 +233,6 @@ def test_loader_refuses_structural_combinations(tmp_path, subtests):
         assert loaded["regime_side_certification"] is None
 
 
-def test_consumers_that_cannot_reproduce_the_mode_refuse(tmp_path, subtests):
-    path = _write(tmp_path, _strategy())
-    with subtests.test(consumer="exit_policy_ab"), pytest.raises(SystemExit):
-        import exit_policy_ab
-        exit_policy_ab.resolve_from_baseline(path, "hl-side")
-    with subtests.test(consumer="tune_live"):
-        import tune_live
-        resolution = run_backtest.load_strategy_config(path, "hl-side")
-        assert tune_live.unsupported_reason(resolution) == "unsupported_regime_side"
-    with subtests.test(consumer="run_backtest_by_name"), pytest.raises(SystemExit):
-        run_backtest.run_single_backtest("sma_crossover", "BTC", "1h", regime_side=True,
-                                         regime_side_certification={"context": "paper"},
-                                         direction="both", close_strategies=[CLOSE])
-
-
 def test_eval_windows_runs_the_mode_in_paper_research(monkeypatch, tmp_path, subtests):
     import eval_windows
     loaded = run_backtest.load_strategy_config(_write(tmp_path, _strategy()), "hl-side")
@@ -284,15 +259,3 @@ def test_eval_windows_runs_the_mode_in_paper_research(monkeypatch, tmp_path, sub
     assert leg is not None
     assert [t["entry_date"] for t in leg["trade_samples"]] == [_entry(frame)]
     assert leg["trade_samples"][0]["pnl_pct"] > 0
-
-
-def test_optimizer_handoff_treats_the_mode_as_short_capable():
-    from backtester import Backtester
-    from optimizer import scored_engine_can_open_short
-    cols = {"gate": "regime_w_m", "directional": "regime_w_m", "atr": "regime_w_m"}
-    frame = pd.DataFrame({"signal": [0]}, index=pd.date_range("2024-01-01", periods=1))
-    for direction, expected in (("both", True), ("short", True), ("long", False)):
-        engine = Backtester(regime_enabled=True, regime_label_columns=cols, direction=direction,
-                            close_strategies=[CLOSE], regime_side=True,
-                            regime_side_certification={"context": "paper"})
-        assert scored_engine_can_open_short(engine, frame) is expected

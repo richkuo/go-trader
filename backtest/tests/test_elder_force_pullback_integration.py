@@ -160,11 +160,6 @@ def _with_index(df, idx):
     return out
 
 
-def _check_evaluator_reports_the_required_history():
-    out = _apply(_frame(_pullback()))
-    assert out["efp_required_history"].iloc[0] == NEED
-
-
 def test_fixed_length_helper_reads_exactly_its_window_and_restarts_at_its_own_seed():
     from indicators_core import fixed_length_ema
     values = np.random.default_rng(5).normal(0.0, 3.0, 60)
@@ -187,125 +182,6 @@ def test_fixed_length_helper_reads_exactly_its_window_and_restarts_at_its_own_se
     assert np.isnan(held[25:37]).all() and np.array_equal(held[37:], out[37:])
     with pytest.raises(ValueError):
         fixed_length_ema(values, True, 12)
-
-
-def test_every_bar_matches_an_independent_sequential_reference_in_both_weightings():
-    df = _walk(900, seed=3)
-    for flag in (1, 0):
-        params = dict(SEED, volume_weighting=flag)
-        out = _apply(df, volume_weighting=flag)
-        for i, want in enumerate(_reference(df, params)):
-            rec = out.iloc[i]
-            assert (rec["efp_valid"] == 1.0) == want["valid"], (flag, i, rec["efp_reason"])
-            assert int(rec["signal"]) == want["signal"], (flag, i, rec["efp_reason"])
-            if want["valid"]:
-                assert rec["efp_force"] == pytest.approx(want["force"], rel=1e-12, abs=1e-12), (flag, i)
-                assert rec["efp_trend_sma"] == pytest.approx(want["sma"], rel=1e-12, abs=1e-12), (flag, i)
-                assert rec["efp_raw_force"] == pytest.approx(want["raw"], rel=1e-12, abs=1e-12), (flag, i)
-        assert (out["signal"] == 1).any() and (out["signal"] == -1).any(), flag
-        reasons = set(out["efp_reason"][out["efp_valid"] == 1.0])
-        assert {"entry_long", "entry_short", "no_cross", "trend_unconfirmed"} <= reasons, reasons
-
-
-def _check_pullback_recovery_gives_mirrored_entries_on_the_strict_crossing_bar():
-    for sign, signal, reason in ((1, 1, "entry_long"), (-1, -1, "entry_short")):
-        for flag in (1, 0):
-            out = _apply(_frame(_pullback(sign)), volume_weighting=flag)
-            assert list(np.flatnonzero(out["signal"] != 0)) == [CROSS_AT], (sign, flag)
-            rec = out.iloc[CROSS_AT]
-            assert int(rec["signal"]) == signal and rec["efp_reason"] == reason
-            assert rec["efp_cross"] == float(signal)
-            assert np.sign(rec["efp_prev_force"]) == -signal and np.sign(rec["efp_force"]) == signal
-            trend_cols = ("efp_uptrend", "efp_prev_uptrend") if sign > 0 else ("efp_downtrend", "efp_prev_downtrend")
-            assert all(rec[c] == 1.0 for c in trend_cols)
-            assert rec["efp_volume_eligible"] == 1.0
-            assert out["efp_reason"].iloc[FIRST_PULLBACK + 1] == "trend_unconfirmed"
-
-
-def _check_seed_force_and_weight_diagnostics_follow_the_contract():
-    df = _frame(_pullback())
-    out = _apply(df)
-    rec = out.iloc[CROSS_AT]
-    close = df["close"].to_numpy()
-    seed_bar = CROSS_AT - SEED["recursion_length"] + 1
-    assert rec["efp_seed_force"] == (close[seed_bar] - close[seed_bar - 1]) * 100.0
-    assert rec["efp_prev_seed_force"] == (close[seed_bar - 1] - close[seed_bar - 2]) * 100.0
-    assert rec["efp_weight"] == 100.0 and _apply(df, volume_weighting=0)["efp_weight"].iloc[CROSS_AT] == 1.0
-    assert rec["efp_eval_ts_ms"] == float(df.index[CROSS_AT].value // 1_000_000)
-    assert rec["efp_interval_ms"] == 3_600_000.0
-
-
-def _check_exact_zero_and_constant_closes_never_trigger():
-    flat = _apply(_frame(np.full(260, 150.0)))
-    valid = flat["efp_valid"] == 1.0
-    assert valid.any() and set(flat.loc[valid, "efp_reason"]) == {"zero_force"}
-    assert (flat.loc[valid, "efp_force"] == 0.0).all() and int(flat["signal"].abs().sum()) == 0
-    steps = np.zeros(400)
-    steps[300:] = 0.5
-    close = 100.0 + np.cumsum(steps)
-    close[:300] = np.linspace(80.0, 100.0, 300)
-    close[100:300] = 100.0
-    out = _apply(_frame(close))
-    assert out["efp_force"].iloc[299] == 0.0 and out["efp_force"].iloc[300] > 0.0
-    assert out["efp_reason"].iloc[300] == "zero_force" and int(out["signal"].iloc[300]) == 0
-
-
-def _check_zero_volume_eligibility_is_identical_in_both_weightings():
-    df = _frame(_pullback())
-    for pos in (CROSS_AT, CROSS_AT - 1):
-        zeroed = _set(df, pos, "volume", 0.0)
-        ablation = _apply(zeroed, volume_weighting=0)
-        assert ablation["efp_cross"].iloc[CROSS_AT] == 1.0
-        assert ablation["efp_reason"].iloc[CROSS_AT] == "volume_ineligible"
-        assert int(ablation["signal"].abs().sum()) == 0
-        assert ablation["efp_volume_eligible"].iloc[CROSS_AT] == 0.0
-        weighted = _apply(zeroed)
-        assert int(weighted["signal"].iloc[CROSS_AT]) == 0
-    older = _set(df, 190, "volume", 0.0)
-    weighted = _apply(older)
-    assert weighted["efp_raw_force"].iloc[190] == 0.0
-    ablation = _apply(older, volume_weighting=0)
-    assert ablation["efp_raw_force"].iloc[190] == df["close"].iloc[190] - df["close"].iloc[189]
-    assert int(ablation["signal"].iloc[CROSS_AT]) == 1
-
-
-def _check_trend_needs_both_candles():
-    df = _walk(900, seed=3)
-    out = _apply(df)
-    one_bar = ((out["efp_cross"] == 1.0) & (out["efp_uptrend"] == 1.0) & (out["efp_prev_uptrend"] == 0.0)) | (
-        (out["efp_cross"] == -1.0) & (out["efp_downtrend"] == 1.0) & (out["efp_prev_downtrend"] == 0.0))
-    assert one_bar.any()
-    assert set(out.loc[one_bar, "efp_reason"]) == {"trend_unconfirmed"}
-    assert (out.loc[one_bar, "signal"] == 0).all()
-
-
-def test_entry_rule_cases_and_diagnostics_follow_the_contract(subtests):
-    for label, check in (
-        ("pullback_recovery_gives_mirrored_entries_on_the_strict_crossing_bar", _check_pullback_recovery_gives_mirrored_entries_on_the_strict_crossing_bar),
-        ("seed_force_and_weight_diagnostics_follow_the_contract", _check_seed_force_and_weight_diagnostics_follow_the_contract),
-        ("exact_zero_and_constant_closes_never_trigger", _check_exact_zero_and_constant_closes_never_trigger),
-        ("zero_volume_eligibility_is_identical_in_both_weightings", _check_zero_volume_eligibility_is_identical_in_both_weightings),
-        ("trend_needs_both_candles", _check_trend_needs_both_candles),
-    ):
-        with subtests.test(case=label):
-            check()
-
-
-def _check_the_largest_allowed_history_is_199_rows():
-    for over in ({"recursion_length": 197}, {"trend_period": 190, "slope_span": 8},
-                 {"force_period": 19, "recursion_length": 190}):
-        _reg()._registry.validate_params(NAME, over)
-    assert _apply(_frame(_pullback()), recursion_length=197)["efp_required_history"].iloc[0] == 199.0
-    assert _apply(_frame(_pullback()), trend_period=190, slope_span=8)["efp_required_history"].iloc[0] == 199.0
-
-
-def test_required_history_is_reported_and_bounded_at_199_rows(subtests):
-    for label, check in (
-        ("evaluator_reports_the_required_history", _check_evaluator_reports_the_required_history),
-        ("the_largest_allowed_history_is_199_rows", _check_the_largest_allowed_history_is_199_rows),
-    ):
-        with subtests.test(case=label):
-            check()
 
 
 DEFECT_AT = CROSS_AT - 40

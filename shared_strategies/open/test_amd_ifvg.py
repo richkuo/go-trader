@@ -44,21 +44,6 @@ def _build_two_ifvg_setup() -> list:
     return rows
 
 
-def _make_utc_df_from_ny(ny_bars: list, day: str, tz="America/New_York") -> pd.DataFrame:
-    idx_ny = pd.date_range(f"{day} 20:00", periods=len(ny_bars), freq="15min", tz=tz)
-    idx_utc = idx_ny.tz_convert("UTC").tz_localize(None)
-    return pd.DataFrame(
-        {
-            "open":   [b[0] for b in ny_bars],
-            "high":   [b[1] for b in ny_bars],
-            "low":    [b[2] for b in ny_bars],
-            "close":  [b[3] for b in ny_bars],
-            "volume": [100.0] * len(ny_bars),
-        },
-        index=idx_utc,
-    )
-
-
 def _ny_asian_bars() -> list:
     return [
         (m - 0.1, m + 0.5, m - 0.5, m)
@@ -80,11 +65,6 @@ def _ny_london_bars() -> list:
     ]
 
 
-def _build_ny_bullish_setup() -> list:
-    drift = [(100.0, 100.2, 99.8, 100.0)] * 8
-    return _ny_asian_bars() + drift + _ny_london_bars()
-
-
 def _make_dst_crossing_df(tz="America/New_York") -> pd.DataFrame:
     asian = _ny_asian_bars()
     london = _ny_london_bars()
@@ -102,14 +82,6 @@ def _make_dst_crossing_df(tz="America/New_York") -> pd.DataFrame:
         },
         index=idx,
     )
-
-
-class TestDSTInvariance:
-
-    def test_signal_fires_under_default_ny_windows(self):
-        df = _make_utc_df_from_ny(_build_ny_bullish_setup(), "2024-01-15")
-        out = amd_ifvg_core(df)
-        assert (out["signal"] == 1).any(), "expected a bullish signal under NY-canon windows"
 
 
 class TestTruncationDefaultPath:

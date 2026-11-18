@@ -1,13 +1,11 @@
 {
   "wording_only_tests": [
-    "backtest/tests/test_auto_suggest.py::test_m5_params_limitation_flagged",
     "backtest/tests/test_exit_policy_ab.py::test_reject_names_all_offenders",
     "backtest/tests/test_fee_audit.py::test_render_markdown_unscreened_short_section_and_dagger",
     "backtest/tests/test_fee_audit.py::test_reproduce_command_includes_direction",
     "backtest/tests/test_metric_degenerates.py::test_format_results_tolerates_none_metrics",
     "backtest/tests/test_metrics_liquidation.py::test_format_window_report_marks_liquidated_rows",
     "backtest/tests/test_metrics_liquidation.py::test_render_markdown_liquidated_section_only_when_present",
-    "backtest/tests/test_regime_bounded_window.py::test_validate_frames_handrule_only_without_model",
     "backtest/tests/test_run_backtest_cli.py::test_direction_short_rejected_in_optimize_mode",
     "backtest/tests/test_strategy_refs_641.py::test_flag_rejected_alongside_config",
     "scheduler/hedge_test.go::TestHedgeOrderSkipReasonBlocksStaleDecisions",
@@ -19,9 +17,7 @@
     "scheduler/ui_structural_test.go::TestUIApplyRegimeGateFlatChecks",
     "scheduler/ui_structural_test.go::TestUIPaperToLiveFlatChecks",
     "scheduler/ui_structural_test.go::TestUIStructuralConfirmRejectsModelessPaperToLiveAndIneligibleRegimeGate",
-    "scheduler/ui_tuning_test.go::TestTuningStartValidationRejectsUnknownOrUnselectedOverrides",
-    "scheduler/update_sh_feature_test.go::TestUpdateShellAllExplicitRootSuppressesSystemd1055",
-    "scheduler/update_sh_feature_test.go::TestUpdateShellAllUnionsSystemdAndGlob1055"
+    "scheduler/ui_tuning_test.go::TestTuningStartValidationRejectsUnknownOrUnselectedOverrides"
   ],
   "refusal_grid_tests": [
     "shared_scripts/test_no_edge_admission.py::test_every_check_script_refuses_each_no_edge_input_outside_explicit_paper"

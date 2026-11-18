@@ -1,7 +1,5 @@
 import json
-import math
 
-import pandas as pd
 import pytest
 
 import exit_policy_ab as m
@@ -21,26 +19,6 @@ def test_sign_test():
         assert r["n_zero"] == n_zero, case
         assert r["n"] == n, case
         assert r["p_value"] == pytest.approx(p_value, abs=1e-6), case
-
-
-def test_binom_p_large_n_no_overflow_and_log_space_matches_small_n_exact():
-    case = "test_binom_p_large_n_no_overflow"
-    p = m._binom_two_sided_p(700, 2000)
-    assert 0.0 <= p <= 1.0, case
-    assert p < 1e-6, case
-    assert m._binom_two_sided_p(1000, 2000) > 0.9, case
-
-    def direct(k, n, pr=0.5):
-        def cdf(u):
-            return sum(math.comb(n, i) * (pr ** i) * ((1.0 - pr) ** (n - i))
-                       for i in range(0, u + 1))
-        lo = cdf(k)
-        hi = 1.0 - cdf(k - 1) if k > 0 else 1.0
-        return min(1.0, 2.0 * min(lo, hi))
-
-    for k, n in [(0, 5), (3, 10), (7, 8), (25, 60)]:
-        assert m._binom_two_sided_p(k, n) == pytest.approx(direct(k, n), rel=1e-9), \
-            f"test_binom_p_log_space_matches_small_n_exact[{k},{n}]"
 
 
 def test_signed_rank_low_p_symmetric_zeros_ties_and_empty():
@@ -118,45 +96,6 @@ def _leg(entry_date="2025-01-01", side="long", pnl_pct=2.0, shares=1.0,
     }
 
 
-def test_collapse_single_multi_leg_and_empty_entries():
-    case = "test_collapse_single_leg_matches_trade_metrics_net"
-    leg = _leg()
-    rec = m.collapse_entry([leg])
-    tm = m.trade_metrics(leg)
-    assert rec["net_pct"] == pytest.approx(tm["net_pct"]), case
-    assert rec["side"] == "long" and rec["n_legs"] == 1, case
-    assert rec["mfe_pct"] == 3.0 and rec["mae_pct"] == -1.0, case
-
-    case = "test_collapse_multi_leg_notional_weighted"
-    leg_a = _leg(shares=3.0, pnl_pct=1.0, mfe_pct=2.0, mae_pct=-0.5, bars_held=4,
-                 entry_fee=0.0, exit_fee=0.0, exit_price=101.0)
-    leg_b = _leg(shares=1.0, pnl_pct=5.0, mfe_pct=6.0, mae_pct=-2.0, bars_held=9,
-                 entry_fee=0.0, exit_fee=0.0, exit_price=105.0)
-    rec = m.collapse_entry([leg_a, leg_b])
-    assert rec["net_pct"] == pytest.approx(2.0, abs=1e-6), case
-    assert rec["mfe_pct"] == 6.0, case
-    assert rec["mae_pct"] == -2.0, case
-    assert rec["bars_held"] == 9, case
-    assert rec["n_legs"] == 2, case
-
-    case = "test_collapse_empty_returns_none"
-    assert m.collapse_entry([]) is None, case
-    assert m.collapse_entry([None]) is None, case
-
-
-def test_group_and_free_arm_entries_orders_by_entry():
-    trades = [
-        _leg(entry_date="2025-01-01"),
-        _leg(entry_date="2025-01-05"),
-        _leg(entry_date="2025-01-01"),
-    ]
-    groups = m.group_entries(trades)
-    assert list(groups.keys()) == ["2025-01-01", "2025-01-05"]
-    assert len(groups["2025-01-01"]) == 2
-    entries = m.free_arm_entries(trades)
-    assert [e["entry_date"] for e in entries] == ["2025-01-01", "2025-01-05"]
-
-
 def test_build_paired_rows_pairs_counts_unmatched_and_labels_unknown_regime():
     control = [
         {"entry_date": "d1", "side": "long", "net_pct": 1.0, "mfe_pct": 2.0,
@@ -228,25 +167,6 @@ def test_arm_summary_passes_max_dd_computes_winrate_and_handles_none():
     s = m.arm_summary(None)
     assert s["entries"] == 0 and s["win_rate"] is None and s["max_drawdown_pct"] is None, \
         "test_arm_summary_none_results"
-
-
-def test_candidate_is_replayable():
-    for candidate, expected in [
-        ([{"name": "atr_stop", "params": {}}], True),
-        ([{"name": "tiered_tp_atr", "params": {}},
-          {"name": "trailing_stop_atr_mult", "params": {"atr_mult": 3}}], False),
-        ([{"name": "trailing_tp_ratchet", "params": {}}], True),
-        ([{"name": "trailing_tp_ratchet_regime",
-           "params": {"use_defaults": True}}], True),
-        ([{"name": "tiered_tp_atr_regime", "params": {}}], True),
-        (None, False),
-        ([], False),
-        ([{"name": "some_signal_reversal_close"}], False),
-        ([{"name": "tiered_tp_atr_live_regime"}], False),
-        ([{"name": "tiered_tp_atr_live_regime_dynamic"}], False),
-    ]:
-        assert bool(m.candidate_is_replayable(candidate)) is expected, \
-            f"test_candidate_is_replayable[{candidate}-{expected}]"
 
 
 def test_paired_delta_summary_shape_and_empty():
@@ -459,69 +379,6 @@ def test_candidate_stacks_on_inherited_stop_only_for_stop_candidates_with_an_inh
     assert not m._candidate_stacks_on_inherited_stop(
         [{"name": "atr_stop", "params": {}}], "inherit", {}), case
     assert not m._candidate_stacks_on_inherited_stop(None, "inherit", {"stop_loss_atr_mult": 1.5}), case
-
-
-def test_replay_positions_anchored_on_df_signals_not_df(monkeypatch):
-    import data_fetcher
-
-    idx = pd.date_range("2025-01-01", periods=10, freq="h")
-    df = pd.DataFrame({"close": range(10)}, index=idx)
-    df_signals = df.iloc[2:].copy()
-    df_signals["signal"] = 0
-    entry_ts = str(df.index[5])
-
-    captured = {}
-
-    def fake_prepare(reg, open_name, params, _df):
-        return df_signals
-
-    def fake_regime_series(frame, regime_cfg):
-        captured["regime_frame_len"] = len(frame)
-        return ["r"] * len(frame)
-
-    def fake_run_free_arm(reg, open_name, params, sig, close_refs, direction,
-                          capital, gate, symbol, timeframe, stops=None,
-                          comparison_mode=None, perps_sizing=None):
-        return {"total_trades": 1, "total_return_pct": 0.0, "max_drawdown_pct": 0.0,
-                "sharpe_ratio": 0.0, "liquidated": False,
-                "trades": [_leg(entry_date=entry_ts, side="long")]}
-
-    def fake_replay(reg, open_name, params, sig, sig_pos, side_sign, candidate_close,
-                    direction, capital, gate, symbol, timeframe, stops=None,
-                    comparison_mode=None, perps_sizing=None):
-        captured["sig_pos"] = sig_pos
-        return {"net_pct": 1.0, "mfe_pct": 1.0, "mae_pct": -1.0, "bars_held": 2}
-
-    monkeypatch.setattr(data_fetcher, "load_cached_data", lambda *a, **k: df)
-    monkeypatch.setattr(m, "_prepare_signals", fake_prepare)
-    monkeypatch.setattr(m, "_regime_label_series", fake_regime_series)
-    monkeypatch.setattr(m, "run_free_arm", fake_run_free_arm)
-    monkeypatch.setattr(m, "replay_candidate_for_entry", fake_replay)
-
-    spec = {
-        "open_name": "test_open", "params": None, "direction": "long",
-        "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
-        "candidate_close": [{"name": "atr_stop", "params": {}}],
-        "control_stops": {}, "candidate_stops": {}, "replayable": True,
-        "gate": {"allowed_regimes": None}, "regime_cfg": {"classifier": "adx"},
-        "capital": 10000.0, "n_resamples": 50, "ci": 0.95, "seed": 1,
-    }
-    res = m.evaluate_dataset_window(object(), spec, "BTC/USDT", "1h",
-                                    ("2025-01-01", None))
-    assert captured["sig_pos"] == 2
-    assert captured["regime_frame_len"] == 8
-    assert res is not None and res["paired_diag"]["paired"] == 1
-
-
-def test_backtester_kwargs_carry_intrabar_resolution(monkeypatch, subtests):
-    with subtests.test("test_backtester_kwargs_carry_intrabar_resolution"):
-        kw = m._backtester_kwargs("momentum", None, None, None, 1000.0, {})
-        assert kw["intrabar_resolution"] == m.INTRABAR_RESOLUTION == "ohlc_walk"
-    with subtests.test("test_module_mode_reaches_backtester_kwargs"):
-        with monkeypatch.context() as mp:
-            mp.setattr(m, "INTRABAR_RESOLUTION", "bar_close")
-            kw = m._backtester_kwargs("momentum", None, None, None, 1000.0, {})
-            assert kw["intrabar_resolution"] == "bar_close"
 
 
 def test_parser_accepts_and_rejects_intrabar_modes():

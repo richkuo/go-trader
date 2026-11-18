@@ -24,24 +24,6 @@ _get_swing_indices = _CHART_PATTERNS._get_swing_indices
 _htf_gate_trend = _CHART_PATTERNS._htf_gate_trend
 
 
-class TestDoubleBottom:
-    def test_detects_double_bottom(self):
-        prices = (
-            list(np.linspace(100, 80, 20)) +
-            list(np.linspace(80, 90, 15)) +
-            list(np.linspace(90, 81, 15)) +
-            list(np.linspace(81, 100, 20)) +
-            [100] * 30
-        )
-        df = make_ohlcv(prices)
-        sh, sl = find_swing_points(df["high"], df["low"], lookback=3)
-        matches = detect_double_bottom(
-            df["high"], df["low"], df["close"], sh, sl, tolerance=0.03
-        )
-        assert len(matches) >= 1
-        assert matches[0].signal == 1
-
-
 def _double_top_fixture(prefix=None):
     prices = (
         list(np.linspace(80, 100, 20)) +
@@ -95,28 +77,6 @@ def _gate_frame(n, offset):
 
 
 class TestHTFGateWarmBoundary:
-    def test_min_visible_buckets_and_refusal_boundary_over_every_start_offset(self):
-        for factor, ema_slow in ((4, 40), (4, 49), (4, 50), (5, 40), (6, 40)):
-            boundary = factor * (ema_slow + 1)
-            for frame in (150, 200, boundary - 1, boundary):
-                visible, warm = [], []
-                for offset in range(factor):
-                    out = chart_pattern_core(
-                        _gate_frame(frame, offset),
-                        htf_gate_factor=factor,
-                        htf_gate_ema_slow=ema_slow,
-                    )
-                    last = out.iloc[-1]
-                    assert int(last["htf_gate_candles"]) == frame
-                    assert int(last["htf_gate_min_candles"]) == boundary
-                    assert int(last["htf_gate_warm"]) == int(last["htf_gate_buckets"] > ema_slow)
-                    if not last["htf_gate_warm"]:
-                        assert (out["htf_gate_trend"].iloc[-factor:] == 0).all()
-                    visible.append(int(last["htf_gate_buckets"]))
-                    warm.append(bool(last["htf_gate_warm"]))
-                assert min(visible) == frame // factor, (factor, ema_slow, frame, visible)
-                assert all(warm) == (frame // factor > ema_slow), (factor, ema_slow, frame)
-                assert all(warm) == (frame >= boundary), (factor, ema_slow, frame)
 
     def test_inactive_gate_adds_no_warmth_columns(self):
         for factor in (0, 1):

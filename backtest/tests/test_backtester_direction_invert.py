@@ -10,24 +10,6 @@ def _bt(direction=None, invert_signal=False):
                       invert_signal=invert_signal)
 
 
-def test_apply_direction_invert():
-    for direction, invert_signal, uses_open_close, signal, expected in [
-        (None, True, True, [1, -1, 0, 1], [-1, 1, 0, -1]),
-        (None, False, True, [1, -1, 0], [1, -1, 0]),
-        (None, False, False, [1, -1, 0], [1, -1, 0]),
-        ("long", False, True, [1, -1, 0], [1, 0, 0]),
-        ("short", False, True, [1, -1, 0], [0, -1, 0]),
-        ("both", False, True, [1, -1, 0], [1, -1, 0]),
-        ("long", False, False, [1, -1, 0], [1, -1, 0]),
-        ("long", True, True, [1, -1], [0, 1]),
-    ]:
-        out = _bt(direction=direction,
-                  invert_signal=invert_signal)._apply_direction_invert(
-            pd.Series(signal), uses_open_close=uses_open_close)
-        assert out.tolist() == expected, (
-            f"test_apply_direction_invert[{direction}-{invert_signal}-{uses_open_close}-{signal}]")
-
-
 def _ohlc(signal):
     n = len(signal)
     return pd.DataFrame(

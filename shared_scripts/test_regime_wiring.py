@@ -34,19 +34,6 @@ def _make_flat_df(n: int = 100) -> pd.DataFrame:
     return make_ohlcv(close, volume=1000.0, noise=0.05, index=idx)
 
 
-def test_latest_regime_output_json_serializable():
-    for make_df, expected_label in ((_make_uptrend_df, None), (_make_flat_df, "ranging")):
-        label = make_df.__name__
-        payload = latest_regime(make_df())
-        parsed = json.loads(json.dumps(payload))
-        assert isinstance(parsed["regime"], str), label
-        assert parsed["regime"] in ("trending_up", "trending_down", "ranging"), label
-        if expected_label is not None:
-            assert parsed["regime"] == expected_label, label
-        assert isinstance(parsed["score"], float), label
-        assert isinstance(parsed["metrics"], dict), label
-
-
 def test_hurst_metric_comes_only_from_the_composite_classifier_as_finite_json(subtests):
     with subtests.test(case="composite_json_never_contains_nan_token_when_hurst_omitted"):
         df = _make_flat_df(n=60)
@@ -169,50 +156,3 @@ def test_check_options_regime_label_from_df():
             assert label is None, case
         else:
             assert label in expected, case
-
-
-def test_check_options_fetch_ohlcv_df_reads_the_adapter_and_refuses_short_frames(subtests):
-    module = _load_check_options_module()
-
-    with subtests.test(case="uses_adapter_when_available"):
-        class StubAdapter:
-            def __init__(self, rows):
-                self._rows = rows
-                self.calls = []
-
-            def get_ohlcv(self, symbol, timeframe, limit):
-                self.calls.append((symbol, timeframe, limit))
-                return self._rows
-
-        rows = [
-            [i * 1000, 100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i, 1000.0]
-            for i in range(50)
-        ]
-        adapter = StubAdapter(rows)
-        df = module._fetch_ohlcv_df("BTC", "4h", 100, 30, adapter=adapter)
-        assert df is not None
-        assert len(df) == 50
-        assert {"high", "low", "close"}.issubset(df.columns)
-        assert adapter.calls == [("BTC", "4h", 100)]
-
-    with subtests.test(case="short_returns_none"):
-        class ShortAdapter:
-            def get_ohlcv(self, symbol, timeframe, limit):
-                return [[i * 1000, 100.0, 101.0, 99.0, 100.5, 1000.0] for i in range(5)]
-
-        df = module._fetch_ohlcv_df("BTC", "4h", 100, 30, adapter=ShortAdapter())
-        assert df is None
-
-
-def test_latest_regime_honors_custom_period_and_adx_threshold(subtests):
-    with subtests.test(case="custom_period"):
-        df = _make_uptrend_df(50)
-        warmup = latest_regime(df, period=200)
-        real = latest_regime(df, period=14)
-        assert warmup["metrics"]["adx"] == 0.0
-        assert real["metrics"]["adx"] > 0.0
-
-    with subtests.test(case="custom_adx_threshold"):
-        df = _make_uptrend_df(100)
-        assert latest_regime(df, adx_threshold=101.0)["regime"] == "ranging"
-        assert latest_regime(df, adx_threshold=50.0)["regime"] == "trending_up"

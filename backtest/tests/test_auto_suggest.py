@@ -105,28 +105,6 @@ def test_load_spec_rejects_invalid_spec(subtests):
                 asug.load_spec(_base_spec(**overrides), _STUDY_DIR)
 
 
-def test_expand_sweep_and_gate_variants_cartesian_deterministic():
-    spec = asug.load_spec(_base_spec(
-        candidates=[],
-        base={"name": "squeeze_momentum", "direction": "long", "params": {"kc_mult": 1.5}},
-        sweep={"kc_mult": [1.3, 1.5]},
-        gate_variants=[
-            {"label": "up", "allowed_regimes": ["trending_up_clean"],
-             "regime_windows_spec": {"medium": {"classifier": "composite", "period": 21}}},
-            {"label": "rng", "allowed_regimes": ["ranging_quiet"]},
-        ],
-    ), _STUDY_DIR)
-    entries = asug.expand_candidates(spec)
-    keys = [e["key"] for e in entries]
-    assert keys == [
-        "squeeze_momentum.kc_mult1.3.up", "squeeze_momentum.kc_mult1.3.rng",
-        "squeeze_momentum.kc_mult1.5.up", "squeeze_momentum.kc_mult1.5.rng",
-    ]
-    up = next(e for e in entries if e["key"].endswith(".up"))
-    assert up["candidate"]["allowed_regimes"] == ["trending_up_clean"]
-    assert up["candidate"]["params"]["kc_mult"] == 1.3
-
-
 def test_expand_rejects_duplicate_keys(subtests):
     with subtests.test(case="test_expand_rejects_duplicate_keys"):
         spec = asug.load_spec(_base_spec(candidates=[
@@ -190,15 +168,6 @@ def test_non_replayable_m6_close_excluded(subtests):
         assert len(ab) == expected
 
 
-def test_m5_params_limitation_flagged():
-    spec = asug.load_spec(_base_spec(
-        harnesses=["m5"],
-        candidates=[{"key": "c", "candidate": {"name": "squeeze_momentum",
-                                               "params": {"kc_mult": 2.0}}}]), _STUDY_DIR)
-    entry = asug.expand_candidates(spec)[0]
-    assert "m5_params_unaudited" in entry["limitations"]
-
-
 def test_m1_argv_tail():
     assert asug.m1_argv_tail("/t/c.json", "spot", ["is", "oos"],
                              ["BTC/USDT:1h"], "/t/o.json") == [
@@ -240,12 +209,6 @@ def test_m6_argv_tail_repeats_allowed_regimes(subtests):
         assert "--baseline-config" not in tail
         assert "--incumbent-close" in tail
         assert "--strategy" in tail and "squeeze_momentum" in tail
-
-
-def test_m5_argv_tail():
-    tail = asug.m5_argv_tail("sq", "spot", None, ["oos"], None, "/t/m5.json")
-    assert tail == ["--strategies", "sq", "--registry", "spot",
-                    "--windows", "oos", "--funding", "charge", "--json", "/t/m5.json"]
 
 
 def _m6_payload(is_rows, oos_rows):
@@ -429,32 +392,6 @@ def test_verdict_failure_exclusion_and_open_entry_paths():
         "test_verdict_open_m1_fail_is_incumbent_stands"
 
 
-def test_gated_siblings_share_noise_bh_verdict():
-    fam = "shared"
-    m1_pass = {"is": {"verdict": "pass"}, "oos": {"verdict": "pass"}}
-    noise = {"verdict": "distinguishable_positive", "mean": 0.3}
-    siblings = [_open_entry(k, fam=fam, noise=noise, m1=m1_pass)
-                for k in ("baseline", "adx_gate", "comp_gate")]
-    tests = [_noise_test(fam, "baseline", 0.049, bh_pass=False)]
-    verdicts = [asug.candidate_verdict(e, tests) for e in siblings]
-    assert verdicts == ["positive_uncorrected_only"] * 3
-    verdicts_rev = [asug.candidate_verdict(e, tests) for e in reversed(siblings)]
-    assert set(verdicts_rev) == {"positive_uncorrected_only"}
-    tests[0]["bh_pass"] = True
-    assert [asug.candidate_verdict(e, tests) for e in siblings] == ["survivor"] * 3
-
-
-def test_distinct_param_families_keep_independent_noise_tests():
-    e_a = {"key": "a", "kind": "open", "noise_family_key": "famA",
-           "results": {"m1_noise": {"data": {"permutation_p": 0.01, "mean": 0.2}}}}
-    e_b = {"key": "b", "kind": "open", "noise_family_key": "famB",
-           "results": {"m1_noise": {"data": {"permutation_p": 0.30, "mean": 0.1}}}}
-    tests = asug.collect_family_pvalues([e_a, e_b])
-    noise_tests = [t for t in tests if t["harness"] == "m1_noise"]
-    assert len(noise_tests) == 2
-    assert {t["noise_family_key"] for t in noise_tests} == {"famA", "famB"}
-
-
 def _ab_entry(key, is_pooled, oos_pooled):
     return {"key": key, "kind": "exit_ab", "precondition_errors": [],
             "results": {"m6": {"status": "ok", "data": {
@@ -609,12 +546,6 @@ def test_mc_argv_tail_threads_the_candidate_json_and_exclusive_threshold_sources
         assert "--kill-switch-pct" not in tail and "--config" not in tail
 
 
-def test_load_spec_resolves_mc_config_against_the_spec_dir():
-    spec = asug.load_spec(_base_spec(mc={"config": "cfg.json",
-                                         "strategy_id": "hl-x"}), _STUDY_DIR)
-    assert spec["mc"]["config"] == os.path.join(_STUDY_DIR, "cfg.json")
-
-
 def _mc_payload():
     def leg(window, ds, p_ks, p95, p_down, status="ok"):
         return {"window": window, "dataset": ds, "status": status, "n_trades": 20,
@@ -706,28 +637,6 @@ def test_candidate_json_is_rewritten_over_a_stale_file_from_a_prior_run(monkeypa
             assert seen[harness]["name"] == "squeeze_momentum"
             assert "allowed_regimes" not in seen[harness]
             assert json.loads(stale.read_text())["name"] == "squeeze_momentum"
-
-
-def test_candidate_json_is_written_once_per_run_and_shared_by_m1_and_mc(monkeypatch, tmp_path):
-    spec = _open_spec(["m1", "mc"])
-    entry = asug.expand_candidates(spec)[0]
-    paths, writes = [], []
-
-    real_dump = json.dump
-
-    def counting_dump(obj, fh, **kw):
-        if getattr(fh, "name", "").endswith(".candidate.json"):
-            writes.append(fh.name)
-        return real_dump(obj, fh, **kw)
-
-    monkeypatch.setattr(asug.json, "dump", counting_dump)
-    monkeypatch.setattr(asug, "_run_harness", lambda h, tail, out: (
-        paths.append(tail[tail.index("--candidate-json") + 1])
-        or {"harness": h, "argv_tail": tail, "status": "failed"}))
-
-    asug.run_open_entry(entry, spec, str(tmp_path), {}, {})
-    assert len(paths) == 2 and paths[0] == paths[1]
-    assert len(writes) == 1
 
 
 def _mc_data(**windows):

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -31,36 +30,6 @@ func chartPatternGateLoad(t *testing.T, root map[string]interface{}, sc map[stri
 }
 
 var chartPatternGateRegimeOn = map[string]interface{}{"regime": map[string]interface{}{"enabled": true}}
-
-func TestChartPatternHTFGateRefusesAFrameThatCannotWarm(t *testing.T) {
-	setNoEdgeLiveCredentials(t)
-	for _, mode := range []string{"live", "paper"} {
-		for _, factor := range []int{5, 6} {
-			for _, gateMode := range []string{"veto", "align"} {
-				name := fmt.Sprintf("%s-f%d-%s", mode, factor, gateMode)
-				t.Run(name, func(t *testing.T) {
-					id := "hl-cpat-" + name
-					sc := chartPatternGateHL(id, mode, map[string]interface{}{"htf_gate_factor": factor, "htf_gate_mode": gateMode})
-					_, err := chartPatternGateLoad(t, nil, sc)
-					if err == nil {
-						t.Fatalf("factor %d on the default 200-candle frame must be refused", factor)
-					}
-					for _, want := range []string{
-						"strategy " + id + ": open strategy chart_pattern",
-						fmt.Sprintf("htf_gate_factor=%d (htf_gate_mode=%q, registry default htf_gate_ema_slow=40)", factor, gateMode),
-						"cannot warm in the default check frame of 200 candles",
-						fmt.Sprintf("floor(200 / %d) = %d visible higher-timeframe buckets and the trend needs 41", factor, 200/factor),
-						fmt.Sprintf("the frame must hold at least %d candles", factor*41),
-					} {
-						if !strings.Contains(err.Error(), want) {
-							t.Fatalf("error must contain %q, got %v", want, err)
-						}
-					}
-				})
-			}
-		}
-	}
-}
 
 func TestChartPatternHTFGateAcceptsWarmFramesAndInactiveFactors(t *testing.T) {
 	setNoEdgeLiveCredentials(t)

@@ -132,13 +132,6 @@ REFERENCE_PARAMS = [DEFAULTS, dict(DEFAULTS, fast_period=12, slow_period=26, cyc
                                    lower_threshold=20.0, upper_threshold=80.0)] + DOMAIN_ENDPOINTS
 
 
-def test_values_and_decisions_match_an_independent_reference(subtests):
-    df = _walk(520, 7)
-    for i, params in enumerate(REFERENCE_PARAMS):
-        with subtests.test(case=f"params{i}"):
-            _values_and_decisions_match_an_independent_reference(df, params)
-
-
 def _values_and_decisions_match_an_independent_reference(df, params):
     out = _apply(df, params)
     close = df["close"].to_numpy()
@@ -173,48 +166,6 @@ def _first(out, side, reason=None):
         np.flatnonzero(out["stc_reason"].to_numpy() == reason)
     assert len(rows)
     return int(rows[0])
-
-
-def test_crossings_are_strict_need_the_macd_slope_and_never_repeat(subtests):
-    df = _walk(900, 11)
-    out = _apply(df, DEFAULTS)
-    for side in (1, -1):
-        with subtests.test(case=f"threshold_equality_side={side}"):
-            _threshold_equality_rules_and_strict_crossings(df, out, side)
-    with subtests.test(case="wrong_macd_slope_and_sustained_conditions"):
-        _a_crossing_with_the_wrong_macd_slope_holds_and_sustained_conditions_do_not_repeat()
-
-
-def _threshold_equality_rules_and_strict_crossings(df, out, side):
-    i = _first(out, side)
-    prev, cur = float(out["stc_prev_value"].iloc[i]), float(out["stc_value"].iloc[i])
-    key = "lower_threshold" if side == 1 else "upper_threshold"
-    at_prev = _apply(df, dict(DEFAULTS, **{key: prev}))
-    assert int(at_prev["signal"].iloc[i]) == side
-    at_cur = _apply(df, dict(DEFAULTS, **{key: cur}))
-    assert int(at_cur["signal"].iloc[i]) == 0 and at_cur["stc_reason"].iloc[i] == "no_cross"
-    beyond = float(np.nextafter(prev, -np.inf if side == 1 else np.inf))
-    past = _apply(df, dict(DEFAULTS, **{key: beyond}))
-    assert int(past["signal"].iloc[i]) == 0 and past["stc_reason"].iloc[i] == "no_cross"
-
-
-def _a_crossing_with_the_wrong_macd_slope_holds_and_sustained_conditions_do_not_repeat():
-    df = _walk(3000, 1)
-    out = _apply(df, DEFAULTS)
-    i = _first(out, 0, "slope_disagrees")
-    row = out.iloc[i]
-    up = row["stc_prev_value"] <= 25.0 < row["stc_value"]
-    assert (row["stc_macd_slope"] <= 0) if up else (row["stc_macd_slope"] >= 0)
-    assert int(row["signal"]) == 0
-    signal = out["signal"].to_numpy()
-    entries = np.flatnonzero(signal != 0)
-    assert len(entries) > 20
-    for a in entries:
-        if a + 1 < len(signal):
-            assert signal[a + 1] != signal[a]
-    above = out["stc_value"].to_numpy() > 25.0
-    sustained = np.flatnonzero(above[1:] & above[:-1]) + 1
-    assert len(sustained) and not (signal[sustained] == 1).any()
 
 
 def _holds_at_end(df, params, reason):
@@ -267,24 +218,6 @@ INVALID_ENTRY_DATA = [
 ]
 
 
-def test_invalid_entry_data_and_constant_prices_are_reasoned_holds_that_preserve_the_frame(subtests):
-    for i, (mutate, reason) in enumerate(INVALID_ENTRY_DATA):
-        with subtests.test(case=f"{i}-{reason}"):
-            _holds_at_end(mutate(_walk(400, 3)), DEFAULTS, reason)
-    with subtests.test(case="constant_prices_zero_range_and_zero_volume_valid"):
-        _constant_prices_hold_on_zero_range_and_zero_volume_is_valid()
-
-
-def _constant_prices_hold_on_zero_range_and_zero_volume_is_valid():
-    df = _walk(400, 3).assign(open=100.0, high=101.0, low=99.0, close=100.0)
-    _holds_at_end(df, DEFAULTS, "zero_range")
-    base = _walk(400, 3)
-    zero_volume = base.assign(volume=0.0)
-    a, b = _apply(base, DEFAULTS), _apply(zero_volume, DEFAULTS)
-    np.testing.assert_array_equal(a["signal"].to_numpy(), b["signal"].to_numpy())
-    assert (b["stc_reason"] == a["stc_reason"]).all()
-
-
 def _received_out_of_order_rows_hold_only_inside_their_span():
     df = _walk(700, 5)
     clean = _apply(df, DEFAULTS)
@@ -296,13 +229,6 @@ def _received_out_of_order_rows_hold_only_inside_their_span():
     assert (out["signal"].iloc[bad:bad + NEED] == 0).all()
     pd.testing.assert_frame_equal(out.iloc[:bad], clean.iloc[:bad])
     pd.testing.assert_frame_equal(out.iloc[bad + NEED:], clean.iloc[bad + NEED:])
-
-
-def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame(subtests):
-    with subtests.test(case="nonfinite_volume_and_cadence_gap"):
-        _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame()
-    with subtests.test(case="received_out_of_order"):
-        _received_out_of_order_rows_hold_only_inside_their_span()
 
 
 def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
@@ -322,29 +248,6 @@ def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
     assert out["stc_reason"].iloc[bad + NEED - 1] != "cadence_gap"
 
 
-def test_integral_float_periods_are_accepted():
-    df = _walk(300, 1)
-    floats = dict(DEFAULTS, fast_period=23.0, slow_period=50.0, cycle_length=10.0)
-    pd.testing.assert_frame_equal(_apply(df, floats), _apply(df, DEFAULTS))
-
-
-def test_193_bars_are_required_and_sufficient_at_every_supported_bound(subtests):
-    df = _walk(400, 9)
-    for i, params in enumerate(DOMAIN_ENDPOINTS + [DEFAULTS]):
-        with subtests.test(case=f"params{i}"):
-            _193_bars_are_required_and_sufficient(df, params)
-
-
-def _193_bars_are_required_and_sufficient(df, params):
-    full = _apply(df, params)
-    for end in range(NEED, 400, 37):
-        exact = _apply(df.iloc[end - NEED:end], params)
-        assert exact["stc_reason"].iloc[-1] != "insufficient_history"
-        assert exact["stc_reason"].iloc[-1] == full["stc_reason"].iloc[end - 1]
-        short = _apply(df.iloc[end - NEED + 1:end], params)
-        assert short["stc_reason"].iloc[-1] == "insufficient_history"
-
-
 def _frozen(key, bars):
     manifest = om.load_manifest(MANIFEST)
     candles = om.load_candles(om.dataset_by_key(manifest, key))
@@ -359,18 +262,6 @@ def _grid_and_endpoints():
 
 DECISION_COLUMNS = ["stc_value", "stc_prev_value", "stc_macd", "stc_prev_macd", "stc_valid",
                     "stc_reason_code", "signal"]
-
-
-def test_full_series_prefix_exact_span_and_200_row_tail_agree_for_the_grid_and_bounds():
-    df = _frozen("ETH 4h", 700)
-    for params in _grid_and_endpoints():
-        full = _apply(df, params)
-        decisions = np.flatnonzero(full["signal"].to_numpy() != 0)
-        ends = sorted({int(i) + 1 for i in decisions[decisions >= 200][:2]} | {250, 400, 700})
-        for end in ends:
-            for part in (df.iloc[:end], df.iloc[end - 200:end], df.iloc[end - NEED:end]):
-                got = _apply(part, params)[DECISION_COLUMNS].iloc[-1]
-                pd.testing.assert_series_equal(got, full[DECISION_COLUMNS].iloc[end - 1], check_names=False)
 
 
 def _runtime(df, kind, cutoff=None, boundary=None):

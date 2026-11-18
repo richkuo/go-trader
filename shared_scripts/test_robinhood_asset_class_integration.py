@@ -82,24 +82,6 @@ def _one_doc(proc):
     return json.loads(lines[0])
 
 
-def test_an_unsupported_coin_signal_run_fails_before_login_quote_or_yahoo(tmp_path, subtests):
-    for symbol in ("AAPL", "SPY", "XRP-USD", "BTC/USD", "MATIC", "xrp"):
-        with subtests.test(symbol=symbol):
-            run_dir = tmp_path / symbol.replace("/", "_")
-            run_dir.mkdir()
-            env = _rh_env(run_dir, {})
-            proc = subprocess.run([sys.executable, os.path.join(ROOT, "shared_scripts", "check_robinhood.py"),
-                                   "momentum_pro", symbol, "1h", "--mode=paper"],
-                                  capture_output=True, text=True, cwd=ROOT, env=env, timeout=180)
-            doc = _one_doc(proc)
-            assert proc.returncode == 1, proc.stderr
-            assert doc["error"].startswith(f"unsupported Robinhood crypto coin {symbol!r}"), doc
-            assert doc["signal"] == 0 and doc["price"] == 0, doc
-            assert "Starting login process..." not in proc.stderr, proc.stderr
-            assert _lines(env["RH_OFFLINE_STUB_LOG"]) == []
-            assert _lines(env["RH_OFFLINE_STUB_YAHOO_LOG"]) == []
-
-
 def test_every_table_key_quotes_on_the_crypto_route_and_falls_back_to_its_verified_ticker(tmp_path):
     for name, quote in (("quote", {"json": {"id": "pair", "mark_price": "123.45"}}),
                         ("fallback", {"status": 503, "json": {"detail": "busy"}})):

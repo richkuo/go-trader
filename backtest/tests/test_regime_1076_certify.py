@@ -50,43 +50,6 @@ def test_a_surviving_aligned_held_out_row_is_certified():
     assert e["expires_at"] > e["generated_at"]
 
 
-def test_nothing_else_is_certified():
-    cases = [
-        ("no_rows", []),
-        ("historical_window", [_row(window="2024")]),
-        ("wrong_signed", [_row(sign_aligned=False)]),
-        ("not_significant", [_row(p=0.9)]),
-    ]
-    for case_id, rows in cases:
-        case = f"test_nothing_else_is_certified[{case_id}]"
-        art = certify_mod.certify(rows, generated_at=GEN_AT)
-        assert art["schema_version"] == 1, case
-        assert art["certified"] == [], case
-
-
-def test_composite_sublabel_maps_to_canonical():
-    art = certify_mod.certify(
-        [_row(state="trending_down_strong", policy_dir=-1)], generated_at=GEN_AT)
-    assert art["certified"][0]["states"] == {"trending_down": "short"}
-
-
-def test_the_artifact_carries_the_schema_the_scheduler_parses():
-    sources = {"HYPE/USDC:USDC": "hyperliquid", "BTC/USDT": "binanceus"}
-    art = certify_mod.certify(
-        [_row()], generated_at=GEN_AT, universe=FULL_UNIVERSE,
-        data_sources=sources, n_perm=30000)
-    assert set(art) == {"schema_version", "generated_at", "generator",
-                        "source_evidence", "criteria", "default_ttl_days",
-                        "certified"}
-    assert art["schema_version"] == 1
-    c = art["criteria"]
-    assert c["data_sources"] == sources
-    assert c["n_perm"] == 30000
-    assert c["permutation_p_floor"] == pytest.approx(1 / 30001)
-    assert c["universe"]["symbols"] == list(premise_mod.DEFAULT_SYMBOLS)
-    assert c["universe"]["horizons"] == list(premise_mod.DEFAULT_HORIZONS)
-
-
 # --- refusals that keep an unearned certification out of the repo artifact ---
 
 
@@ -123,21 +86,6 @@ def test_narrowed_run_refuses_to_write_the_repo_artifact(subtests):
                 assert needle in str(exc.value)
 
 
-def test_baseline_source_violations():
-    cases = [
-        ("reports_every_repointed_default",
-         {"BTC/USDT": "kraken", "ETH/USDT": "coinbase", "SOL/USDT": "binanceus"},
-         {"BTC/USDT": "kraken", "ETH/USDT": "coinbase"}),
-        ("ignores_added_symbols",
-         {"BTC/USDT": "binanceus", "ETH/USDT": "binanceus",
-          "SOL/USDT": "binanceus", "HYPE/USDC:USDC": "hyperliquid"},
-         {}),
-    ]
-    for case_id, sources, expected in cases:
-        assert certify_mod.baseline_source_violations(sources, "binanceus") == expected, (
-            f"test_baseline_source_violations[{case_id}]")
-
-
 def test_zero_coverage_run_refuses_and_leaves_the_artifact_untouched(
         tmp_path, monkeypatch):
     monkeypatch.setattr(premise_mod, "run", lambda *a, **k: [])
@@ -162,60 +110,7 @@ def test_under_resolved_run_refuses_the_repo_artifact(tmp_path, monkeypatch):
     assert not (tmp_path / "art.json").exists()
 
 
-def test_n_perm_default_resolves_the_full_screen():
-    n_perm = certify_mod.build_parser().parse_args([]).n_perm
-    assert certify_mod.permutation_p_floor(n_perm) <= 0.05 / 1319
-
-
-def test_allow_degenerate_run_is_separate_from_allow_narrowed_family(
-        tmp_path, monkeypatch):
-    monkeypatch.setattr(premise_mod, "run", lambda *a, **k: [])
-    monkeypatch.setattr(certify_mod, "DEFAULT_ARTIFACT", str(tmp_path / "art.json"))
-    with pytest.raises(SystemExit) as exc:
-        certify_mod.main(["--symbols", "BTC/USDT", "--timeframes", "1h",
-                          "--classifiers", "composite", "--windows", "oos",
-                          "--horizons", "4", "--allow-narrowed-family",
-                          "--report-out", ""])
-    assert "NO directional rows" in str(exc.value)
-    rc = certify_mod.main(["--symbols", "BTC/USDT", "--timeframes", "1h",
-                           "--classifiers", "composite", "--windows", "oos",
-                           "--horizons", "4", "--allow-narrowed-family",
-                           "--allow-degenerate-run", "--report-out", ""])
-    assert rc == 0
-    assert json.loads((tmp_path / "art.json").read_text())["certified"] == []
-
-
 # --- the refusals must not block a research run written elsewhere ------------
-
-
-def test_narrowed_run_may_write_a_research_artifact_elsewhere(
-        tmp_path, monkeypatch):
-    monkeypatch.setattr(premise_mod, "run",
-                        lambda *a, **k: [_row(symbol="ETH/USDT")])
-    out = tmp_path / "research_artifact.json"
-    report = tmp_path / "research_report.json"
-    rc = certify_mod.main(["--symbols", "ETH/USDT", "--timeframes", "1h",
-                           "--classifiers", "composite", "--windows", "oos",
-                           "--horizons", "4", "--n-perm", "1",
-                           "--out", str(out), "--report-out", str(report)])
-    assert rc == 0
-    art = json.loads(out.read_text())
-    assert art["schema_version"] == 1
-    assert art["criteria"]["universe"]["symbols"] == ["ETH/USDT"]
-    assert json.loads(report.read_text())["cell_verdicts"][0]["verdict"] == (
-        certify_mod.VERDICT_CERTIFIED)
-
-
-def test_repo_artifact_run_over_the_full_family_is_allowed(
-        tmp_path, monkeypatch):
-    monkeypatch.setattr(premise_mod, "run", lambda *a, **k: [_row(p=0.9)])
-    art, rep = tmp_path / "art.json", tmp_path / "rep.json"
-    monkeypatch.setattr(certify_mod, "DEFAULT_ARTIFACT", str(art))
-    monkeypatch.setattr(certify_mod, "DEFAULT_RUN_REPORT", str(rep))
-    rc = certify_mod.main(["--symbols", ",".join(premise_mod.DEFAULT_SYMBOLS)])
-    assert rc == 0
-    assert art.exists() and rep.exists()
-    assert json.loads(art.read_text())["certified"] == []
 
 
 # --- the producer feeding that artifact: premise functions certify() calls for
@@ -232,45 +127,6 @@ def _ohlcv(start, periods, freq="1h"):
     return pd.DataFrame({"open": close, "high": close * 1.001,
                          "low": close * 0.999, "close": close,
                          "volume": 1.0}, index=idx)
-
-
-_LOAD_CLIPS_A_WIDER_FETCH_TO_THE_HELD_OUT_WINDOW_CASES = premise_mod.HELD_OUT_FORWARD
-
-
-def test_load_clips_a_wider_fetch_to_the_held_out_window(monkeypatch, subtests):
-    for i, window in enumerate(_LOAD_CLIPS_A_WIDER_FETCH_TO_THE_HELD_OUT_WINDOW_CASES):
-        with subtests.test(case=i, window=window):
-            with monkeypatch.context() as mp:
-                start, end = premise_mod.WINDOWS[window]
-                full = _ohlcv(pd.Timestamp(start) - pd.Timedelta(days=120), 24 * 400)
-                mp.setattr(premise_mod, "load_cached_data",
-                                    lambda *a, **k: full.copy())
-
-                d = premise_mod._load("BTC/USDT", "1h", window, "composite",
-                                      dict(premise_mod._DEFAULT_COMPOSITE_THRESHOLDS))
-
-                in_window = (full.index >= pd.Timestamp(start))
-                if end is not None:
-                    in_window &= (full.index <= pd.Timestamp(end))
-                n_in = int(in_window.sum())
-                assert 0 < n_in < len(full)
-                assert d is not None
-                assert len(d["close"]) == n_in
-
-
-def test_clip_window_keeps_both_bounds_drops_the_rest_and_refuses_a_non_datetime_index():
-    start, end = premise_mod.WINDOWS["is"]
-    out = premise_mod._clip_window(
-        _ohlcv(pd.Timestamp(start) - pd.Timedelta(days=30), 24 * 400),
-        start, end)
-    case = "test_clip_window_is_inclusive_of_both_bounds_and_drops_the_rest"
-    assert out.index.min() >= pd.Timestamp(start), case
-    assert out.index.max() <= pd.Timestamp(end), case
-    assert len(out) > 0, case
-
-    with pytest.raises(ValueError):
-        premise_mod._clip_window(pd.DataFrame({"close": [1.0, 2.0]}),
-                                 *premise_mod.WINDOWS["is"])
 
 
 def test_an_added_symbol_on_another_venue_resolves_and_is_not_repointed(

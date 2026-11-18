@@ -155,46 +155,6 @@ def _same(a, b):
     return (math.isnan(a) and math.isnan(b)) or a == b
 
 
-def test_every_bar_matches_an_independent_sequential_reference_in_both_modes():
-    df = _walk(960, seed=3)
-    for flag in (1, 0):
-        params = dict(SEED, bulge_filter=flag)
-        out = _apply(df, bulge_filter=flag)
-        ref = _reference(df, params)
-        for i, want in enumerate(ref):
-            rec = out.iloc[i]
-            assert (rec["mir_valid"] == 1.0) == want["valid"], (flag, i, rec["mir_reason"])
-            assert int(rec["signal"]) == want["signal"], (flag, i, rec["mir_reason"])
-            if want["valid"]:
-                for col, key in (("mir_ema1", "ema1"), ("mir_ema2", "ema2"), ("mir_ratio", "ratio"),
-                                 ("mir_mass_index", "mass"), ("mir_trend_slope", "slope")):
-                    assert rec[col] == pytest.approx(want[key], rel=1e-12, abs=1e-12), (flag, i, col)
-                assert rec["mir_upper_cross"] == float(want["up"]) and rec["mir_lower_cross"] == float(want["down"])
-                if flag == 1:
-                    assert rec["mir_bulge_completed"] == float(want["completed"]), i
-        assert (out["signal"] == 1).any() and (out["signal"] == -1).any(), flag
-    on = _apply(df)
-    assert (on["mir_bulge_completed"] == 1.0).sum() > (on["signal"] != 0).sum() > 0
-
-
-def test_both_smoothing_passes_ratio_orientation_and_rolling_sum():
-    out = _apply(_frame(*_burst()))
-    i = UP_AT
-    rec = out.iloc[i]
-    rng = (out["high"] - out["low"]).to_numpy()
-    a = 2.0 / 10.0
-    e1 = rng[i - 72]
-    e2 = e1
-    for k in range(1, 73):
-        e1 = a * rng[i - 72 + k] + (1 - a) * e1
-        e2 = a * e1 + (1 - a) * e2
-    assert rec["mir_ema1"] == e1 and rec["mir_ema2"] == e2 and rec["mir_ratio"] == e1 / e2
-    assert rec["mir_ratio"] > 1.0
-    assert rec["mir_mass_index"] == pytest.approx(out["mir_ratio"].iloc[i - 24:i + 1].sum(), rel=1e-12)
-    assert out["mir_mass_index"].iloc[190] == pytest.approx(25.0, rel=1e-12)
-    assert out["mir_ratio"].iloc[DOWN_AT] < 1.0
-
-
 def _check_upper_crossing_arms_and_the_first_lower_crossing_completes_once():
     out = _apply(_frame(*_burst()))
     assert list(np.flatnonzero(out["mir_upper_cross"] == 1.0)) == [UP_AT]
@@ -321,14 +281,6 @@ def test_native_close_and_timezone_inputs_decide_the_same():
         got = _apply(variant)
         for col in EVENT_COLS:
             assert all(_same(a, b) for a, b in zip(got[col], base[col])), col
-
-
-def test_decisions_depend_only_on_the_required_window(subtests):
-    for label, check in (
-        ("defects_outside_the_required_window_never_change_the_decision", _check_defects_outside_the_required_window_never_change_the_decision),
-    ):
-        with subtests.test(case=label):
-            check()
 
 
 def _cfg(**kw):

@@ -11,12 +11,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import run_backtest
 from backtester import Backtester
-from regime import (
-    ensure_regime_columns,
-    VALID_LABELS_COMPOSITE,
-    VALID_LABELS_ADX,
-    _DEFAULT_COMPOSITE_THRESHOLDS,
-)
+from regime import ensure_regime_columns, VALID_LABELS_COMPOSITE, _DEFAULT_COMPOSITE_THRESHOLDS
 
 COMPOSITE_SPEC = {"medium": {"classifier": "composite", "period": 20}}
 
@@ -46,49 +41,6 @@ def _buy_at(df: pd.DataFrame, bar: int) -> pd.DataFrame:
     out["signal"] = 0
     out.iloc[bar, out.columns.get_loc("signal")] = 1
     return out
-
-
-def test_windows_spec_stamps_composite_substates_and_default_stays_adx(subtests):
-    with subtests.test(case="windows_spec_computes_composite_substates_from_ohlcv"):
-        _assert_windows_spec_computes_composite_substates_from_ohlcv()
-    with subtests.test(case="position_regime_is_composite_substate"):
-        _assert_position_regime_is_composite_substate()
-    with subtests.test(case="default_path_stays_adx_without_windows_spec"):
-        _assert_default_path_stays_adx_without_windows_spec()
-
-
-def _assert_windows_spec_computes_composite_substates_from_ohlcv():
-    labels = set(_ground_truth_labels(_mixed_regime_ohlcv()).unique()) - {""}
-    assert labels <= VALID_LABELS_COMPOSITE
-    assert labels & VALID_LABELS_ADX == set()
-    assert labels, "expected non-empty composite labels"
-
-
-def _assert_position_regime_is_composite_substate():
-    df = _mixed_regime_ohlcv()
-    truth = _ground_truth_labels(df)
-    entry = 130
-    expected = truth.iloc[entry]
-    assert expected in VALID_LABELS_COMPOSITE
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        regime_enabled=True, regime_windows_spec=COMPOSITE_SPEC,
-    )
-    result = bt.run(_buy_at(df, entry), save=False)
-    assert result["total_trades"] == 1
-    assert bt._run_position_regime == expected
-    assert bt._run_position_regime in VALID_LABELS_COMPOSITE
-
-
-def _assert_default_path_stays_adx_without_windows_spec():
-    df = _mixed_regime_ohlcv()
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        regime_enabled=True,
-    )
-    bt.run(_buy_at(df, 130), save=False)
-    assert bt._run_position_regime in VALID_LABELS_ADX
-    assert bt._run_position_regime not in VALID_LABELS_COMPOSITE
 
 
 def test_composite_gate_allows_matching_blocks_mismatching():
@@ -248,106 +200,6 @@ def _assert_load_strategy_config_no_windows_yields_none(tmp_path):
     assert kwargs["regime_windows_spec"] is None
 
 
-def test_regime_timeframe_override_aligns_without_lookahead(monkeypatch):
-    trade = pd.DataFrame(
-        {"open": [100.0, 101.0, 102.0, 103.0],
-         "high": [101.0, 102.0, 103.0, 104.0],
-         "low": [99.0, 100.0, 101.0, 102.0],
-         "close": [100.0, 101.0, 102.0, 103.0],
-         "volume": [1000.0] * 4},
-        index=pd.to_datetime([
-            "2024-01-01 12:00:00+00:00",
-            "2024-01-02 12:00:00+00:00",
-            "2024-01-03 11:00:00+00:00",
-            "2024-01-03 12:00:00+00:00",
-        ]),
-    )
-    regime_source = pd.DataFrame(
-        {"open": [1.0, 2.0, 3.0], "high": [1.0, 2.0, 3.0], "low": [1.0, 2.0, 3.0],
-         "close": [1.0, 2.0, 3.0], "volume": [1000.0, 1000.0, 1000.0]},
-        index=pd.to_datetime([
-            "2024-01-01 00:00:00+00:00",
-            "2024-01-02 00:00:00+00:00",
-            "2024-01-03 12:00:00+00:00",
-        ]),
-    )
-
-    def fake_load(symbol, timeframe, start_date=None):
-        assert symbol == "BTC/USDT"
-        assert timeframe == "1d"
-        assert start_date == "2024-01-01"
-        return regime_source.copy()
-
-    def fake_ensure(df, *, period=14, adx_threshold=20.0, windows_spec=None):
-        assert period == 14
-        assert adx_threshold == 20.0
-        assert windows_spec == COMPOSITE_SPEC
-        df["regime"] = ["macro_row0", "macro_row1", "macro_row2"]
-        df["regime_score"] = [0.1, 0.5, 0.9]
-        df["adx"] = [11.0, 19.0, 29.0]
-        df["plus_di"] = [4.0, 6.0, 8.0]
-        df["minus_di"] = [6.0, 4.0, 2.0]
-
-    monkeypatch.setattr(run_backtest, "load_cached_data", fake_load)
-    monkeypatch.setattr(run_backtest, "ensure_regime_columns", fake_ensure)
-
-    out = run_backtest._apply_regime_timeframe_override(
-        trade,
-        "BTC/USDT",
-        "1h",
-        "1d",
-        "2024-01-01",
-        regime_period=14,
-        regime_adx_threshold=20.0,
-        regime_windows_spec=COMPOSITE_SPEC,
-    )
-
-    assert out is not None
-    assert out["regime"].tolist() == ["", "macro_row0", "macro_row0", "macro_row1"]
-    assert out["adx"].tolist() == [0.0, 11.0, 11.0, 19.0]
-
-
-def test_profile_label_series_cross_timeframe_aligns_without_lookahead(monkeypatch):
-    trade_index = pd.to_datetime([
-        "2024-01-01 12:00:00+00:00",
-        "2024-01-02 12:00:00+00:00",
-        "2024-01-03 11:00:00+00:00",
-        "2024-01-03 12:00:00+00:00",
-    ])
-    trade = pd.DataFrame({"close": [100.0, 101.0, 102.0, 103.0]}, index=trade_index)
-    regime_source = pd.DataFrame(
-        {"open": [1.0, 2.0, 3.0], "high": [1.0, 2.0, 3.0], "low": [1.0, 2.0, 3.0],
-         "close": [1.0, 2.0, 3.0], "volume": [1000.0, 1000.0, 1000.0]},
-        index=pd.to_datetime([
-            "2024-01-01 00:00:00+00:00",
-            "2024-01-02 00:00:00+00:00",
-            "2024-01-03 12:00:00+00:00",
-        ]),
-    )
-
-    def fake_load(symbol, timeframe, start_date=None):
-        assert symbol == "BTC/USDT"
-        assert timeframe == "1d"
-        assert start_date == "2024-01-01"
-        return regime_source.copy()
-
-    monkeypatch.setattr(run_backtest, "load_cached_data", fake_load)
-    monkeypatch.setattr(
-        run_backtest, "compute_regime_composite",
-        lambda df, period=20, thresholds=None: pd.DataFrame(
-            {"regime": ["macro_row0", "macro_row1", "macro_row2"], "regime_ready": [True] * 3, "regime_bars": [29, 30, 31], "regime_need": [29] * 3}, index=df.index
-        ),
-    )
-
-    out = run_backtest._profile_label_series(
-        trade, "BTC/USDT", "1h", "1d", "2024-01-01",
-        {"classifier": "composite", "period": 20},
-    )
-
-    assert out is not None
-    assert out.tolist() == ["", "macro_row0", "macro_row0", "macro_row1"]
-
-
 def _run_main(monkeypatch, argv):
     monkeypatch.setattr(sys, "argv", ["run_backtest.py", *argv])
     return run_backtest.main()
@@ -449,54 +301,6 @@ def _assert_cli_by_name_threads_windows_spec_to_backtester(monkeypatch):
 
 
 _ADX_SPEC = {"medium": {"classifier": "adx", "period": 14}}
-_COMPOSITE_PRIMARY_WITH_ADX = {
-    "medium": {"classifier": "composite", "period": 30},
-    "short": {"classifier": "adx", "period": 7},
-}
-_COMPOSITE_NO_MEDIUM = {"slow": {"classifier": "composite", "period": 40}}
-
-
-def test_primary_window_classifier(subtests):
-    for spec, expected in [
-            (None, "adx"),
-            ({}, "adx"),
-            (COMPOSITE_SPEC, "composite"),
-            (_COMPOSITE_PRIMARY_WITH_ADX, "composite"),
-            (_COMPOSITE_NO_MEDIUM, "composite"),
-            ({"z": {"classifier": "composite"}, "a": {"classifier": "adx"}}, "adx"),
-        ]:
-        with subtests.test(case=repr(spec)):
-            _assert_primary_window_classifier(spec, expected)
-
-
-def _assert_primary_window_classifier(spec, expected):
-    assert run_backtest._primary_window_classifier(spec) == expected
-
-
-def test_validate_allowed_regimes_vocabulary(subtests):
-    for labels, spec, rejects in [
-            (["trending_up", "ranging"], None, False),
-            (["ranging_quiet"], COMPOSITE_SPEC, False),
-            (["trending_up_clean", "ranging_directional"], COMPOSITE_SPEC, False),
-            (None, COMPOSITE_SPEC, False),
-            ([], COMPOSITE_SPEC, False),
-            (["ranging_quiet"], None, True),
-            (["trending_up_clean"], _ADX_SPEC, True),
-            (["trending_up"], COMPOSITE_SPEC, True),
-            (["trending_up"], _COMPOSITE_PRIMARY_WITH_ADX, True),
-            (["not_a_regime"], None, True),
-            (["ranging_quiet", "trending_up"], COMPOSITE_SPEC, True),
-        ]:
-        with subtests.test(case=repr((labels, spec))):
-            _assert_validate_allowed_regimes_vocabulary(labels, spec, rejects)
-
-
-def _assert_validate_allowed_regimes_vocabulary(labels, spec, rejects):
-    if rejects:
-        with pytest.raises(SystemExit):
-            run_backtest._validate_allowed_regimes_vocabulary(labels, spec)
-    else:
-        run_backtest._validate_allowed_regimes_vocabulary(labels, spec)
 
 
 def _assert_cli_composite_label_reaches_backtester_with_spec(monkeypatch):
@@ -606,7 +410,6 @@ def _assert_config_threads_regime_wiring_to_backtester(monkeypatch, tmp_path, al
     assert seen["regime_windows_spec"]["medium"]["classifier"] == "composite"
 
 
-from backtester import _regime_primary_labels
 
 _COMPOSITE_SL_BLOCK = {"trend_regime": {
     "trending_up_clean": {"atr_multiple": 2.0},
@@ -628,17 +431,6 @@ _COMPOSITE_TRAIL_BLOCK = {"trend_regime": {
     k: {"atr_multiple": v["atr_multiple"] + 0.5}
     for k, v in _COMPOSITE_SL_BLOCK["trend_regime"].items()
 }}
-
-
-def test_regime_primary_labels_helper():
-    labels = _regime_primary_labels(COMPOSITE_SPEC)
-    assert set(labels) == set(VALID_LABELS_COMPOSITE)
-    assert _regime_primary_labels({"medium": {"classifier": "adx", "period": 14}}) is None
-    assert _regime_primary_labels(None) is None
-    assert set(_regime_primary_labels({
-        "medium": {"classifier": "composite", "period": 30},
-        "short": {"classifier": "adx", "period": 7},
-    })) == set(VALID_LABELS_COMPOSITE)
 
 
 def _bt_with_sl_regime(spec, block, *, trailing=False):

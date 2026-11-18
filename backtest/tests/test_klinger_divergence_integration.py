@@ -23,7 +23,7 @@ from closed_bar import (
     declare_frame_cadence,
 )
 from eval_windows import expand_sweep
-from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid, max_indicator_lookback, strategy_warmup_bars
+from optimizer import DEFAULT_PARAM_RANGES
 from parity_diff import ParityConfig
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
@@ -172,24 +172,6 @@ def ref_signal(df, k, p, osc, sig, all_pivots):
     return 0
 
 
-def test_grid_support_bounds():
-    combos = expand_sweep(dict(DEFAULTS), [(k, list(v)) for k, v in DEFAULT_PARAM_RANGES[NAME].items()])
-    assert max(_support(p) for _, p in combos) == 188 and _support(DEFAULTS) == 172
-
-
-def test_walk_forward_warmup_covers_the_largest_support_of_the_grid():
-    ranges = DEFAULT_PARAM_RANGES[NAME]
-    grid = generate_param_grid(ranges)
-    assert strategy_warmup_bars(NAME, grid, ranges) == max(_support(dict(DEFAULTS, **p)) for p in grid) == 188
-    one = {"replay_bars": [96]}
-    warmup = strategy_warmup_bars(NAME, generate_param_grid(one), one)
-    assert warmup == _support(dict(DEFAULTS, replay_bars=96)) == 156
-    assert warmup >= max_indicator_lookback(one)
-    for other in ("elder_force_pullback", "true_strength_index"):
-        assert strategy_warmup_bars(other, generate_param_grid(DEFAULT_PARAM_RANGES[other]),
-                                    DEFAULT_PARAM_RANGES[other]) == 199
-
-
 def test_hand_calculated_rising_falling_equal_and_trend_change_recurrences():
     p = dict(TINY)
     a2, a3 = 2.0 / 3.0, 0.5
@@ -264,12 +246,6 @@ def test_zero_range_zero_volume_and_zero_cm_rules():
     assert (quiet.loc[valid, "klinger_reason"] == "no_divergence").any()
 
 
-def test_values_and_decisions_match_an_independent_reference(subtests):
-    for params in [DEFAULTS, FAST] + DOMAIN_ENDPOINTS:
-        with subtests.test(params=params):
-            _values_and_decisions_match_an_independent_reference(params)
-
-
 def _values_and_decisions_match_an_independent_reference(params):
     df = _walk(560, 7, tick=0.05)
     out = _apply(df, params)
@@ -300,62 +276,6 @@ def _values_and_decisions_match_an_independent_reference(params):
         seen.add(want)
     if params in (DEFAULTS, FAST):
         assert seen == {-1, 0, 1}
-
-
-def _states(out, side, state):
-    return np.flatnonzero(out[f"klinger_{side}_state"].to_numpy() == state)
-
-
-def test_event_rules_and_the_signal_cross_ablation_on_one_divergence_run():
-    df = _walk(4000, 21, tick=0.05)
-    out = _apply(df, FAST)
-    with _case("test_event_rules_cover_arming_replacement_expiry_consumption_and_equal_pivots"):
-        _event_rules_cover_arming_replacement_expiry_consumption_and_equal_pivots(out.copy())
-    with _case("test_signal_cross_ablation_drops_only_the_divergence_test"):
-        _signal_cross_ablation_drops_only_the_divergence_test(df, out.copy())
-
-
-def _event_rules_cover_arming_replacement_expiry_consumption_and_equal_pivots(out):
-    reasons = set(out["klinger_reason"])
-    assert {"entry_long", "entry_short", "setup_armed", "awaiting_cross", "setup_consumed", "no_divergence",
-            "no_pivot_pair", "no_setup"} <= reasons
-    expiry = FAST["setup_expiry"]
-    for side in ("long", "short"):
-        emitted = _states(out, side, 1)
-        assert len(emitted)
-        confirm = out[f"klinger_{side}_confirm_ts_ms"].to_numpy()
-        eval_ts = out["klinger_eval_ts_ms"].to_numpy()
-        lag = (eval_ts[emitted] - confirm[emitted]) / FOUR_H
-        assert lag.min() >= 1 and lag.max() <= expiry
-        cross = out["klinger_cross"].to_numpy()
-        assert (cross[emitted] == (1.0 if side == "long" else -1.0)).all()
-        armed = _states(out, side, 2)
-        assert len(armed) and (out["signal"].to_numpy()[armed] != (1 if side == "long" else -1)).all()
-        for e in emitted[:20]:
-            after = out[f"klinger_{side}_state"].to_numpy()[e + 1:e + expiry + 1]
-            same = confirm[e + 1:e + expiry + 1] == confirm[e]
-            assert ((after[same] == 4) | (after[same] == 0)).all()
-    long_p1 = out["klinger_long_pivot1_price"].to_numpy()
-    long_p2 = out["klinger_long_pivot2_price"].to_numpy()
-    state = out["klinger_long_state"].to_numpy()
-    equal = np.flatnonzero((long_p1 == long_p2) & np.isfinite(long_p1))
-    assert len(equal) and (state[equal] == 7).all()
-    confirm = out["klinger_long_confirm_ts_ms"].to_numpy()
-    replaced = np.flatnonzero((np.diff(confirm) > 0) & np.isfinite(confirm[:-1]) & (state[:-1] == 3)) + 1
-    assert len(replaced)
-    assert (out["signal"].to_numpy()[np.flatnonzero(out["klinger_reason"].to_numpy() == "opposite_events")] == 0).all()
-
-
-def _signal_cross_ablation_drops_only_the_divergence_test(df, div):
-    abl = _apply(df, dict(FAST, divergence_test=False))
-    for col in ("klinger_oscillator", "klinger_signal_line", "klinger_cross", "klinger_long_confirm_ts_ms",
-                "klinger_short_pivot1_ts_ms"):
-        np.testing.assert_array_equal(div[col].to_numpy(), abl[col].to_numpy())
-    for side, sign in (("long", 1), ("short", -1)):
-        d = div["signal"].to_numpy() == sign
-        a = abl["signal"].to_numpy() == sign
-        assert not (d & ~a).any() and a.sum() > d.sum()
-    assert "no_divergence" not in set(abl["klinger_reason"])
 
 
 def _holds_at_end(df, params, reason):
@@ -409,29 +329,6 @@ INVALID_ENTRY_DATA = [
 ]
 
 
-def test_invalid_entry_data_is_a_reasoned_hold_that_preserves_the_frame():
-    for i, (mutate, reason) in enumerate(INVALID_ENTRY_DATA):
-        with _case(f"{i}-{reason}"):
-            _holds_at_end(mutate(_walk(400, 3)), DEFAULTS, reason)
-
-
-def _reads_stay_inside_the_support_span(params):
-    df = _walk(900, 5)
-    full = _apply(df, params)
-    S = _support(params)
-    for k in (S + 50, 500, 899):
-        outside = df.copy()
-        for col in INPUT_COLUMNS:
-            outside.iloc[k - S, outside.columns.get_loc(col)] = np.nan
-        outside.iloc[:k - S, outside.columns.get_loc("volume")] *= 7.0
-        got = _apply(outside, params).iloc[k]
-        pd.testing.assert_series_equal(got, full.iloc[k], check_names=False)
-        inside = df.copy()
-        inside.iloc[k - S + 1, inside.columns.get_loc("volume")] = np.nan
-        held = _apply(inside, params).iloc[k]
-        assert held["klinger_reason"] == "nonfinite_input" and int(held["signal"]) == 0
-
-
 def _received_out_of_order_rows_hold_only_inside_their_span():
     df = _walk(800, 5)
     clean = _apply(df, DEFAULTS)
@@ -444,43 +341,6 @@ def _received_out_of_order_rows_hold_only_inside_their_span():
     assert (out["signal"].iloc[bad:bad + S] == 0).all()
     pd.testing.assert_frame_equal(out.iloc[:bad], clean.iloc[:bad])
     pd.testing.assert_frame_equal(out.iloc[bad + S:], clean.iloc[bad + S:])
-
-
-def test_reads_and_defects_stay_inside_the_support_span(subtests):
-    for params in (DEFAULTS, FAST):
-        with subtests.test(case="reads_stay_inside_the_support_span", params=params):
-            _reads_stay_inside_the_support_span(params)
-    with subtests.test(case="received_out_of_order_rows_hold_only_inside_their_span"):
-        _received_out_of_order_rows_hold_only_inside_their_span()
-
-
-def test_support_bound_and_integral_floats_are_accepted():
-    df = _walk(400, 1)
-    at_bound = dict(DEFAULTS, replay_bars=140, max_separation=40)
-    assert _support(at_bound) == 200
-    _reg()._registry.validate_params(NAME, at_bound)
-    with pytest.raises(ValueError):
-        _reg()._registry.validate_params(NAME, dict(at_bound, replay_bars=141))
-    floats = dict(DEFAULTS, fast_period=34.0, slow_period=55.0, replay_bars=112.0)
-    pd.testing.assert_frame_equal(_apply(df, floats), _apply(df, DEFAULTS))
-
-
-def test_support_rows_are_required_and_sufficient_at_every_supported_bound(subtests):
-    for params in DOMAIN_ENDPOINTS + [DEFAULTS]:
-        with subtests.test(params=params):
-            _support_rows_are_required_and_sufficient_at_every_supported_bound(params)
-
-
-def _support_rows_are_required_and_sufficient_at_every_supported_bound(params):
-    df = _walk(450, 9)
-    S = _support(params)
-    full = _apply(df, params)
-    for end in range(S, 450, 41):
-        exact = _apply(df.iloc[end - S:end], params)
-        assert exact["klinger_reason"].iloc[-1] != "insufficient_history"
-        assert exact["klinger_reason"].iloc[-1] == full["klinger_reason"].iloc[end - 1]
-        short = _apply(df.iloc[end - S + 1:end], params)
-        assert short["klinger_reason"].iloc[-1] == "insufficient_history"
 
 
 def _frozen(key, bars):

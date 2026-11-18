@@ -14,20 +14,7 @@ from regime import (
     compute_regime_composite,
 )
 from regime_hmm import fit_label_anchored_hmm, forward_filter_labels
-from regime_bounded_window_validate import (
-    DEFAULT_AGREEMENT_THRESHOLD,
-    _align_eval_start,
-    _gate_primary_horizon,
-    _provenance_status,
-    _sweep_blocked,
-    adx_drift_stats,
-    bounded_window_adx,
-    bounded_window_views,
-    full_window_views,
-    go_no_go,
-    label_drift_stats,
-    validate_frames,
-)
+from regime_bounded_window_validate import DEFAULT_AGREEMENT_THRESHOLD, _align_eval_start, _gate_primary_horizon, _provenance_status, _sweep_blocked, adx_drift_stats, bounded_window_adx, bounded_window_views, go_no_go, label_drift_stats, validate_frames
 
 TH = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
 PERIOD = 48
@@ -63,11 +50,6 @@ def _fit_model(df, filter_window=24):
     return model
 
 
-def _mean_abs_drift(full, bounded):
-    m = ~np.isnan(full) & ~np.isnan(bounded)
-    return float(np.mean(np.abs(full[m] - bounded[m]))) if m.any() else 0.0
-
-
 def test_bounded_adx_equals_full_when_lookback_spans_window():
     df = _ohlcv(250, seed=3)
     full = _full_adx(df)
@@ -75,24 +57,6 @@ def test_bounded_adx_equals_full_when_lookback_spans_window():
     m = ~np.isnan(full)
     assert m.any()
     np.testing.assert_allclose(bounded[m], full[m], rtol=0, atol=1e-9)
-
-
-def test_bounded_adx_drift_decays_as_lookback_grows():
-    df = _ohlcv(320, seed=4)
-    full = _full_adx(df)
-    d_short = _mean_abs_drift(full, bounded_window_adx(df, PERIOD, 40, TH["adx"], 0))
-    d_long = _mean_abs_drift(full, bounded_window_adx(df, PERIOD, 160, TH["adx"], 0))
-    d_span = _mean_abs_drift(full, bounded_window_adx(df, PERIOD, len(df), TH["adx"], 0))
-    assert d_short > d_long > 0.0
-    assert d_span == 0.0
-    assert d_long < d_short
-
-
-def test_bounded_adx_respects_eval_start():
-    df = _ohlcv(160, seed=5)
-    out = bounded_window_adx(df, PERIOD, 60, TH["adx"], eval_start=100)
-    assert np.isnan(out[:100]).all()
-    assert (~np.isnan(out[150:])).any()
 
 
 def test_bounded_views_last_bar_matches_one_shot_live_call():
@@ -111,14 +75,6 @@ def test_bounded_views_last_bar_matches_one_shot_live_call():
     np.testing.assert_allclose(feats[-1], one_shot_feat, rtol=0, atol=1e-12, equal_nan=True)
     assert hr_labels[-1] == one_shot_hr
     assert model_labels[-1] == one_shot_model
-
-
-def test_full_window_views_seed_at_window_start():
-    df = _ohlcv(160, seed=7)
-    model = _fit_model(df)
-    feats, model_labels, hr_labels = full_window_views(df, model, PERIOD, TH)
-    np.testing.assert_allclose(feats[:, 3], _full_adx(df), rtol=0, atol=1e-12, equal_nan=True)
-    assert len(model_labels) == len(df) and len(hr_labels) == len(df)
 
 
 def test_adx_drift_stats_zero_when_identical():
@@ -229,30 +185,6 @@ def test_align_eval_start_is_window_tail_and_rejects_misaligned_frames():
     df_window = _ohlcv(300, seed=99)
     with pytest.raises(ValueError):
         _align_eval_start(df_window, df_ext)
-
-
-def test_validate_frames_end_to_end_small():
-    df_ext = _ohlcv(260, seed=11)
-    eval_start = 180
-    df_window = df_ext.iloc[eval_start:].reset_index(drop=True)
-    model = _fit_model(df_ext, filter_window=24)
-    rep = validate_frames(df_window, df_ext, eval_start, model, period=PERIOD,
-                          lookback=120, target="volatility", seed=0, horizons=(4,))
-    assert rep["n_eval_bars"] == len(df_window)
-    assert rep["adx_drift"]["n"] > 0
-    assert 0.0 <= rep["model"]["label_drift"]["agreement"] <= 1.0
-    assert isinstance(rep["go_no_go"]["promote"], bool)
-    assert rep["adx_drift"]["mean_abs"] >= 0.0
-
-
-def test_validate_frames_handrule_only_without_model():
-    df_ext = _ohlcv(220, seed=12)
-    eval_start = 140
-    df_window = df_ext.iloc[eval_start:].reset_index(drop=True)
-    rep = validate_frames(df_window, df_ext, eval_start, None, period=PERIOD,
-                          lookback=90, target="volatility", seed=0, horizons=(4,))
-    assert "model" not in rep and "go_no_go" not in rep
-    assert "handrule" in rep and rep["adx_drift"]["n"] > 0
 
 
 def test_gate_primary_horizon_tracks_gate_default():

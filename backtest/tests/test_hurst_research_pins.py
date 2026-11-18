@@ -82,19 +82,6 @@ def test_the_sizing_study_scores_the_parity_module_not_a_copy():
         assert study.shipped_size_multiplier(h) == gate.size_multiplier(h)
 
 
-def test_the_shipped_multiplier_is_capped_floored_and_one_at_undefined_h():
-    study = _study("hurst_1428_sizing_exit")
-    span = study.SHIPPED_SIZE_SPAN
-    for i in range(0, 201):
-        m = study.shipped_size_multiplier(i / 200.0)
-        assert study.SHIPPED_SIZE_FLOOR <= m <= study.SHIPPED_SIZE_CEILING
-    assert study.shipped_size_multiplier(0.5 + span) == 1.0
-    assert study.shipped_size_multiplier(0.5 - span) == 1.0
-    assert study.shipped_size_multiplier(0.5 + span / 2) == pytest.approx(0.5)
-    for missing in (None, float("nan"), float("inf")):
-        assert study.shipped_size_multiplier(missing) == 1.0
-
-
 def test_the_go_gate_still_implements_the_form_the_parity_module_scores():
     study = _study("hurst_1428_sizing_exit")
     src = open(GO_GATE).read()
@@ -215,19 +202,6 @@ def test_a_degenerate_limit_passes_the_gate_but_corroborates_nothing():
     assert "corroborates NOTHING" in text
 
 
-def test_the_committed_run_never_oversells_a_degenerate_limit():
-    study = _study("hurst_1427_change_sort")
-    with open(study._DEFAULT_JSON_OUT) as fh:
-        payload = json.load(fh)
-    gate = payload["decision"]["validity_gate"]
-    text = payload["decision"]["justification"]
-    assert "limit_is_degenerate" in gate
-    if gate["limit_is_degenerate"]:
-        assert gate["limit"] == 0.0
-        assert "PASSES TRIVIALLY" in text
-        assert "corroborates NOTHING" in text
-
-
 # --- report-only: no study may write a live path ----------------------------
 
 
@@ -289,13 +263,3 @@ def test_the_estimator_study_reaches_no_live_regime_module():
         "config.example.json",
     ):
         assert needle in study.NON_GOALS
-
-
-def test_no_study_writes_outside_its_own_two_artifacts(subtests):
-    for i, name in enumerate(STUDY_NAMES):
-        with subtests.test(case=i, name=name):
-            code = _code_lines(_study(name))
-            writes = [ln for ln in code.split("\n") if "open(" in ln and '"w"' in ln]
-            assert writes, "the study must write its own report and JSON"
-            for line in writes:
-                assert "args.json_out" in line or "args.report_out" in line, line

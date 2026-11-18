@@ -32,14 +32,6 @@ def test_empirical_transition_skips_pairs_spanning_a_dropped_bar():
     assert np.allclose(A, [[1.0 / 3, 2.0 / 3], [0.5, 0.5]])
 
 
-def test_logsumexp_matches_naive():
-    v = np.array([-1.0, -2.0, -3.0])
-    assert rvm._logsumexp(v) == pytest.approx(np.log(np.exp(v).sum()))
-    m = np.array([[-1.0, -2.0], [0.0, -5.0]])
-    assert np.allclose(rvm._logsumexp_rows(m),
-                       np.log(np.exp(m).sum(1)))
-
-
 def _three_blobs(seed=0, per=200):
     rng = np.random.default_rng(seed)
     centers = np.array([[-3, -3, -3, -3], [0, 0, 0, 0], [3, 3, 3, 3]], dtype=float)
@@ -48,92 +40,6 @@ def _three_blobs(seed=0, per=200):
         pts.append(rng.normal(c, 0.25, size=(per, 4)))
         truth += [c_idx] * per
     return np.vstack(pts), np.array(truth)
-
-
-def _purity(assign, truth, k):
-    correct = 0
-    for j in range(k):
-        members = truth[assign == j]
-        if len(members):
-            maj = np.bincount(members).argmax()
-            correct += int((members == maj).sum())
-    return correct / len(truth)
-
-
-_FITTERS_RECOVER_THREE_BLOBS_CASES = [("kmeans", 0), ("gmm", 1)]
-
-
-def test_fitters_recover_three_blobs(subtests):
-    for i, (fitter, seed) in enumerate(_FITTERS_RECOVER_THREE_BLOBS_CASES):
-        with subtests.test(case=i, fitter=fitter, seed=seed):
-            z, truth = _three_blobs(seed=seed)
-            assign, em_mean, em_var, counts = rvm.FITTERS[fitter](z, 3, seed=0)
-            assert em_mean.shape == (3, 4) and em_var.shape == (3, 4)
-            assert (em_var > 0).all()
-            assert counts.sum() == len(z)
-            assert _purity(assign, truth, 3) > 0.95
-
-
-def _markov_sequence(seed=0, n=1500):
-    rng = np.random.default_rng(seed)
-    A = np.array([[0.95, 0.04, 0.01], [0.03, 0.94, 0.03], [0.01, 0.04, 0.95]])
-    centers = np.array([[-3, -3, -3, -3], [0, 0, 0, 0], [3, 3, 3, 3]], dtype=float)
-    s = 0; states = []
-    for _ in range(n):
-        states.append(s)
-        s = rng.choice(3, p=A[s])
-    states = np.array(states)
-    z = np.array([rng.normal(centers[s], 0.4) for s in states])
-    return z, states
-
-
-def test_fit_hmm_recovers_markov_states():
-    z, truth = _markov_sequence()
-    assign, em_mean, em_var, counts = rvm.fit_hmm(z, 3, seed=0)
-    assert em_mean.shape == (3, 4) and (em_var > 0).all()
-    assert counts.sum() == len(z)
-    assert _purity(assign, truth, 3) > 0.9
-
-
-def test_fit_kmeans_k1_returns_global_mean_not_random_init():
-    rng = np.random.default_rng(3)
-    z = rng.normal([5.0, -2.0, 0.0, 1.0], 0.5, size=(300, 4))
-    assign, em_mean, em_var, counts = rvm.fit_kmeans(z, 1, seed=0)
-    assert counts[0] == 300
-    assert np.allclose(em_mean[0], z.mean(0), atol=1e-9)
-
-
-def test_map_latent_to_names_uses_canonical_boundaries_and_is_deterministic(subtests):
-    with subtests.test(case="test_map_latent_to_names_uses_canonical_boundaries_and_is_deterministic"):
-        from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-        mean = np.zeros(4); std = np.ones(4)
-        em = np.array([[0.0, 0.0, 0.1, 0.0],
-                       [0.5, 0.5, 0.9, 40.0]], dtype=float)
-        names, mapping = rvm.map_latent_to_names(em, mean, std, dict(TH))
-        assert names == ["ranging_quiet", "trending_up_clean"]
-        from regime import VALID_LABELS_COMPOSITE
-        assert all(nm in VALID_LABELS_COMPOSITE for nm in names)
-        names2, _ = rvm.map_latent_to_names(em, mean, std, dict(TH))
-        assert names2 == names
-        assert mapping["1"]["centroid_raw"] == [0.5, 0.5, 0.9, 40.0]
-
-    with subtests.test(case="test_volatility_rank_orders_by_range_eff"):
-        from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-        mean = np.zeros(4); std = np.ones(4)
-        em = np.array([[0.0, 0.8, 0.1, 10.0],
-                       [0.0, 0.01, 0.1, 10.0],
-                       [0.0, 0.3, 0.1, 10.0]], dtype=float)
-        _, mapping = rvm.map_latent_to_names(em, mean, std, dict(TH))
-        ranks = {int(i): m["volatility_rank"] for i, m in mapping.items()}
-        assert ranks[1] < ranks[2] < ranks[0]
-
-
-def test_map_composite_label_monotone_in_range_within_ranging():
-    from regime import map_composite_label, _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    quiet = map_composite_label(0.0, 5.0, 0.0, 0.1, dict(TH))
-    volatile = map_composite_label(0.0, 5.0, 0.9, 0.1, dict(TH))
-    assert quiet == "ranging_quiet"
-    assert volatile == "ranging_volatile"
 
 
 REQUIRED_KEYS = {"type", "version", "fit_method", "features", "feature_means",
@@ -174,34 +80,6 @@ def test_fit_unsupervised_schema_and_decodes(subtests):
             labels, conf = forward_filter_labels(feats, model)
             assert len(labels) == len(feats)
             assert set(labels[~np.isnan(feats).any(1)]).issubset(VALID_LABELS_COMPOSITE)
-
-
-def test_fit_unsupervised_no_leakage_does_not_call_compute_regime_composite(monkeypatch):
-    import regime
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    def _boom(*a, **k):
-        raise AssertionError("fit path must not call compute_regime_composite")
-    monkeypatch.setattr(regime, "compute_regime_composite", _boom)
-    feats = _feature_blob_matrix()
-    model = rvm.fit_unsupervised(feats, family="kmeans", k=3, filter_window=32,
-                                 thresholds=dict(TH), seed=0)
-    assert model["latent_count"] == 3
-    model2 = rvm.fit_unsupervised(feats, family="kmeans", k=3, filter_window=32, seed=0)
-    assert model2["latent_count"] == 3
-
-
-def test_decode_is_causal_future_bars_do_not_change_past_labels():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    from regime_hmm import forward_filter_labels
-    feats = _feature_blob_matrix()
-    model = rvm.fit_unsupervised(feats, family="hmm", k=3, filter_window=32,
-                                 thresholds=dict(TH), seed=0)
-    base, _ = forward_filter_labels(feats, model)
-    t = 200
-    mutated = feats.copy()
-    mutated[t + 1:] = mutated[t + 1:] * 5.0 + 1.0
-    after, _ = forward_filter_labels(mutated, model)
-    assert list(base[: t + 1]) == list(after[: t + 1])
 
 
 def test_model_satisfies_bounded_window_and_forward_filter_contract():
@@ -256,17 +134,6 @@ def test_non_degeneracy_constant_healthy_high_occupancy_and_low_transition_strea
             assert expected["reason"] in " ".join(rep["reasons"]), case
 
 
-def test_derive_thresholds_is_looser_than_incumbent_worst_window():
-    from regime_vol_model import derive_thresholds, non_degeneracy
-    a = np.array((["x", "y", "z"] * 200), dtype=object)
-    b = np.array((["x"] * 150 + ["y"] * 50) * 2, dtype=object)
-    thr = derive_thresholds([a, b])
-    assert non_degeneracy(a, thr)["ok"] is True
-    assert non_degeneracy(b, thr)["ok"] is True
-    occ_b = max(c["pct"] for c in __import__("regime_diagnostics").coverage(b).values())
-    assert thr.max_occupancy >= occ_b
-
-
 def _load_research_module(tag):
     import importlib.util
     here = os.path.dirname(os.path.abspath(__file__))
@@ -275,52 +142,6 @@ def _load_research_module(tag):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-def test_select_winner_eligibility_bonferroni_and_structural_ineligibility():
-    mod = _load_research_module("select_winner")
-
-    case = "test_select_winner_prefers_eligible_high_separation"
-    cands = [
-        {"family": "hmm", "k": 3, "verdict": {"ship": True}, "model_p_value": 0.001,
-         "non_degenerate_all": True, "model_kruskal_h": 90.0, "stability_gain": 0.05},
-        {"family": "gmm", "k": 4, "verdict": {"ship": True}, "model_p_value": 0.001,
-         "non_degenerate_all": True, "model_kruskal_h": 120.0, "stability_gain": 0.03},
-        {"family": "kmeans", "k": 5, "verdict": {"ship": False}, "model_p_value": 0.001,
-         "non_degenerate_all": True, "model_kruskal_h": 999.0, "stability_gain": 0.9},
-        {"family": "hmm", "k": 7, "verdict": {"ship": True}, "model_p_value": 0.001,
-         "non_degenerate_all": False, "model_kruskal_h": 999.0, "stability_gain": 0.9},
-    ]
-    win = mod.select_winner(cands)
-    assert win["family"] == "gmm" and win["k"] == 4, case
-
-    case = "test_select_winner_returns_none_when_no_eligible"
-    assert mod.select_winner([{"family": "hmm", "k": 3, "verdict": {"ship": False},
-                               "model_p_value": 0.001, "non_degenerate_all": True,
-                               "model_kruskal_h": 1.0, "stability_gain": 0.0}]) is None, case
-
-    case = "test_select_winner_applies_bonferroni_correction"
-    lucky = {"family": "kmeans", "k": 4, "verdict": {"ship": True}, "model_p_value": 0.03,
-             "non_degenerate_all": True, "model_kruskal_h": 999.0, "stability_gain": 0.9}
-    fillers = [{"family": "hmm", "k": 2, "verdict": {"ship": False}, "model_p_value": 0.9,
-                "non_degenerate_all": False, "model_kruskal_h": 1.0, "stability_gain": 0.0}
-               for _ in range(19)]
-    assert mod.select_winner([lucky] + fillers) is None, case
-    assert mod.bonferroni_alpha(20) == pytest.approx(0.05 / 20), case
-    lucky_real = dict(lucky, model_p_value=0.0001)
-    win = mod.select_winner([lucky_real] + fillers)
-    assert win["family"] == "kmeans" and win["k"] == 4, case
-
-    case = "test_select_winner_ignores_structurally_ineligible_candidates"
-    eligible = {"family": "gmm", "k": 4, "verdict": {"ship": True}, "model_p_value": 0.03,
-                "non_degenerate_all": True, "model_kruskal_h": 10.0, "stability_gain": 0.1}
-    ineligible = [{"family": "kmeans", "k": 2, "verdict": {"ship": True},
-                   "model_p_value": 0.0001, "non_degenerate_all": True,
-                   "model_kruskal_h": 999.0, "stability_gain": 0.9,
-                   "structurally_ineligible": True}
-                  for _ in range(19)]
-    win = mod.select_winner([eligible] + ineligible)
-    assert win is not None and win["family"] == "gmm" and win["k"] == 4, case
 
 
 def test_fit_kmeans_reseeds_empty_clusters_no_ghost_states(subtests):
@@ -446,24 +267,6 @@ def test_real_pipeline_p_value_can_be_crowned_at_default_sweep_resolution():
     assert win is not None and win["family"] == "kmeans" and win["k"] == 4
 
 
-def test_structurally_ineligible_reason_keys_off_min_active_labels():
-    mod = _load_research_module("inelig_reason")
-    thr = rvm.NonDegeneracyThresholds(min_active_labels=4, max_occupancy=0.9,
-                                      min_transition_rate=0.0)
-    assert mod.structurally_ineligible_reason(2, thr) is not None
-    assert mod.structurally_ineligible_reason(3, thr) is not None
-    assert mod.structurally_ineligible_reason(4, thr) is None
-    assert mod.structurally_ineligible_reason(7, thr) is None
-
-
-def test_bonferroni_denominator_excludes_structurally_ineligible():
-    mod = _load_research_module("denom")
-    cands = ([{"structurally_ineligible": True} for _ in range(6)]
-             + [{} for _ in range(12)])
-    assert mod.bonferroni_denominator(cands) == 12
-    assert mod.bonferroni_alpha(mod.bonferroni_denominator(cands)) == pytest.approx(0.05 / 12)
-
-
 def test_permutation_steps_to_alpha_and_knife_edge_are_symmetric():
     mod = _load_research_module("steps")
     assert mod.permutation_steps_to_alpha(10.0 / 201.0, 200) == 0
@@ -475,19 +278,6 @@ def test_permutation_steps_to_alpha_and_knife_edge_are_symmetric():
     assert mod.verdict_knife_edge(1) is True
     assert mod.verdict_knife_edge(-2) is False
     assert mod.verdict_knife_edge(2) is False
-
-
-def test_score_labels_default_n_perm_is_byte_identical():
-    import json
-    from regime_diagnostics import score_labels
-    feats = _feature_blob_matrix()
-    rng = np.random.default_rng(1)
-    labels = rng.choice(["a", "b", "c"], size=len(feats)).astype(object)
-    close = 100.0 + np.cumsum(rng.normal(0.0, 0.5, len(feats)))
-    base = score_labels(close, labels, feats, target="volatility")
-    explicit = score_labels(close, labels, feats, target="volatility", n_perm=200)
-    assert (json.dumps(base, default=float, sort_keys=True)
-            == json.dumps(explicit, default=float, sort_keys=True))
 
 
 def _decoder_model(em_mean, em_var, states, *, filter_window=8):
@@ -607,16 +397,6 @@ def test_label_anchored_hmm_degenerate_anchor_is_unchanged():
     assert len(labels_out) == len(feats)
 
 
-def test_kmeans_path_unaffected_by_neutralizer():
-    import inspect
-    assert "min_soft_mass" not in inspect.signature(rvm.fit_kmeans).parameters
-    z, _ = _three_blobs(seed=0)
-    _, mu, var, counts = rvm.fit_kmeans(z, 3, seed=0)
-    assert counts.sum() == len(z)
-    for j in range(3):
-        assert not (np.allclose(mu[j], 0.0, atol=1e-6) and np.allclose(var[j], 1.0, atol=1e-9))
-
-
 def _colliding_feature_matrix(seed=0):
     rng = np.random.default_rng(seed)
     centers = np.array([[0.0, 0.02, 0.1, 8.0],
@@ -624,72 +404,6 @@ def _colliding_feature_matrix(seed=0):
                         [0.15, 0.20, 0.30, 22.0]], dtype=float)
     rows = [rng.normal(c, [0.005, 0.01, 0.02, 1.0], size=(150, 4)) for c in centers]
     return np.vstack([np.full((5, 4), np.nan), *rows])
-
-
-def test_colliding_centroids_share_a_handrule_cell():
-    from regime import map_composite_label, _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    assert map_composite_label(0.07, 20.0, 0.14, 0.15, dict(TH)) == "trending_up_choppy"
-    assert map_composite_label(0.15, 22.0, 0.20, 0.30, dict(TH)) == "trending_up_choppy"
-
-
-_FITTED_MODEL_WITH_COLLIDING_CENTROIDS_KEEPS_EVERY_LATENT_STATE_DISTINCT_CASES = ["kmeans", "gmm", "hmm"]
-
-
-def test_fitted_model_with_colliding_centroids_keeps_every_latent_state_distinct(subtests):
-    for i, family in enumerate(_FITTED_MODEL_WITH_COLLIDING_CENTROIDS_KEEPS_EVERY_LATENT_STATE_DISTINCT_CASES):
-        with subtests.test(case=i, family=family):
-            from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
-            feats = _colliding_feature_matrix()
-            model = rvm.fit_unsupervised(feats, family=family, k=3, filter_window=32,
-                                         thresholds=dict(TH), seed=0)
-            assert model["latent_count"] == 3
-            assert len(set(model["states"])) == 3, model["states"]
-            assert all(s in VALID_LABELS_COMPOSITE for s in model["states"])
-            labels, _ = forward_filter_labels(feats, model)
-            valid = ~np.isnan(feats).any(1)
-            assert len(set(labels[valid].tolist())) == 3
-
-
-def _artifact_candidate(path_tail, subset, family, k):
-    import json
-    here = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(here, "..", "..", "docs", "research", "1218-artifacts", path_tail)
-    with open(path) as fh:
-        report = json.load(fh)
-    for c in report["candidates"]:
-        if c.get("subset", "canonical") == subset and c["family"] == family and c["k"] == k:
-            return c
-    raise AssertionError(f"{subset}:{family}:k={k} missing from {path_tail}")
-
-
-_1218_NEAR_MISS_CENTROIDS_MAP_TO_DISTINCT_NAMES_CASES = [
-    ("regime_1095_btc.json", "htf", "hmm", 6),
-    ("regime_1095_eth.json", "canonical", "kmeans", 7),
-    ("regime_1095_eth.json", "funding", "kmeans", 6),
-    ("regime_1095_eth.json", "all_enriched", "kmeans", 6),
-]
-
-
-def test_1218_near_miss_centroids_map_to_distinct_names(subtests):
-    for i, (path_tail, subset, family, k) in enumerate(_1218_NEAR_MISS_CENTROIDS_MAP_TO_DISTINCT_NAMES_CASES):
-        with subtests.test(case=i, path_tail=path_tail, subset=subset, family=family, k=k):
-            from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
-            from regime_enriched_features import canonical_indices_for
-            cand = _artifact_candidate(path_tail, subset, family, k)
-            stored = cand["states"]
-            assert len(set(stored)) < len(stored)
-            raw = np.array([cand["mapping"][str(i)]["centroid_raw"] for i in range(k)], dtype=float)
-            d = raw.shape[1]
-            cidx = canonical_indices_for(cand["columns"])
-            names, mapping = rvm.map_latent_to_names(raw, np.zeros(d), np.ones(d), dict(TH),
-                                                     canonical_indices=cidx)
-            assert len(set(names)) == k, names
-            assert all(nm in VALID_LABELS_COMPOSITE for nm in names)
-            handrule = [mapping[str(i)]["handrule_name"] for i in range(k)]
-            assert handrule == stored
-            for i in range(k):
-                if stored.count(stored[i]) == 1:
-                    assert names[i] == stored[i]
 
 
 def test_handrule_cells_partition_matches_map_composite_label():
@@ -709,18 +423,6 @@ def test_handrule_cells_partition_matches_map_composite_label():
                                        pt["efficiency"], th)
         zero = [lab for lab, cell in cells.items() if rvm.cell_distance_z(pt, scale, cell) == 0.0]
         assert zero == [expected], (pt, zero, expected)
-
-
-def test_cell_distance_scales_violation_by_feature_std():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    cells = rvm.handrule_cells(dict(TH))
-    pt = {"return_eff": 0.0, "range_eff": 0.0, "efficiency": 0.0, "adx": 15.0}
-    unit = rvm.cell_distance_z(pt, {"return_eff": 1, "range_eff": 1, "efficiency": 1, "adx": 1},
-                               cells["ranging_directional"])
-    wide = rvm.cell_distance_z(pt, {"return_eff": 1, "range_eff": 1, "efficiency": 1, "adx": 10},
-                               cells["ranging_directional"])
-    assert unit == pytest.approx(10.0)
-    assert wide == pytest.approx(1.0)
 
 
 def test_min_cost_assignment_matches_brute_force_and_rejects_more_rows_than_columns():

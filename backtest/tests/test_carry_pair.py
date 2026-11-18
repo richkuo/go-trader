@@ -10,17 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from backtest_carry_pair import (
-    CarryPairBacktester,
-    CarryResults,
-    aggregate_legs,
-    bar_hours_from_index,
-    carry_verdict,
-    delta_drift_pct,
-    leg_from_carry_results,
-    liquidation_loss,
-    rebalance_spot_qty,
-)
+from backtest_carry_pair import CarryPairBacktester, CarryResults, aggregate_legs, carry_verdict, delta_drift_pct, leg_from_carry_results, liquidation_loss, rebalance_spot_qty
 from eval_windows import LIQUIDATED_DDADJ_FLOOR
 from backtester import LIQUIDATED_METRIC_FLOOR
 
@@ -224,40 +214,6 @@ def test_rebalance_spot_qty_restores_parity() -> None:
     assert delta_drift_pct(10.0, 110.0, target, 100.0) == pytest.approx(0.0)
 
 
-def test_basis_drift_triggers_one_rebalance() -> None:
-    n = 12
-    spot = [100.0] * n
-    perp = [100.0, 100.0] + [106.0] * (n - 2)
-    df = _make_df(spot, _open_hold(n), perp_prices=perp)
-    bt = CarryPairBacktester(base_notional=1000.0, leverage=50.0,
-                             maintenance_margin=0.0, drift_threshold=2.0,
-                             perp_fee_pct=0.0, spot_fee_pct=0.00045)
-    res = bt.run(df)
-    assert res.rebalances >= 1
-    assert res.fees > 1000.0 * 0.00045 * 1
-
-
-def test_below_threshold_and_single_series_never_rebalance():
-    case = "test_below_threshold_never_rebalances"
-    n = 12
-    spot = [100.0] * n
-    perp = [100.0, 100.0] + [100.5] * (n - 2)
-    df = _make_df(spot, _open_hold(n), perp_prices=perp)
-    bt = CarryPairBacktester(base_notional=1000.0, leverage=50.0,
-                             maintenance_margin=0.0, drift_threshold=2.0,
-                             perp_fee_pct=0.0, spot_fee_pct=0.0)
-    res = bt.run(df)
-    assert res.rebalances == 0, case
-
-    case = "test_single_series_never_drifts"
-    prices = [100.0 + i for i in range(30)]
-    df = _make_df(prices, _open_hold(len(prices)))
-    bt = CarryPairBacktester(base_notional=1000.0, leverage=50.0,
-                             maintenance_margin=0.0, drift_threshold=2.0)
-    res = bt.run(df)
-    assert res.rebalances == 0, case
-
-
 def test_rebalance_spot_leg_pnl_across_sells_buys_and_signal_close():
     case = "test_rebalance_preserves_spot_leg_pnl_across_sell_rebalances"
     spot = [100.0, 100.0, 200.0, 250.0, 250.0]
@@ -357,11 +313,3 @@ def test_carry_verdict_matrix() -> None:
 def test_liquidation_loss_math() -> None:
     assert liquidation_loss(1000.0, 3.0, 0.02) == pytest.approx(1000.0 * (1 / 3 - 0.02))
     assert liquidation_loss(1000.0, 10.0, 0.02) == pytest.approx(80.0)
-
-
-def test_bar_hours_from_index() -> None:
-    idx1 = pd.date_range("2024-01-01", periods=5, freq="1h")
-    idx4 = pd.date_range("2024-01-01", periods=5, freq="4h")
-    assert bar_hours_from_index(idx1) == pytest.approx(1.0)
-    assert bar_hours_from_index(idx4) == pytest.approx(4.0)
-    assert bar_hours_from_index(pd.Index([1])) == 1.0

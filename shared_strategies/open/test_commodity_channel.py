@@ -45,9 +45,6 @@ def base(n=6):
 
 UP_ABOVE = base() + [(102.0, 100.5, 101.5), (112.0, 102.0, 110.0)]
 UP_EQUAL = base() + [(101.0, 99.5, 100.0), (102.5, 100.5, 102.0), (116.0, 100.5, 101.0)]
-UP_BELOW = base() + [(103.0, 101.5, 102.5), (104.0, 102.5, 103.5), (118.0, 100.5, 101.0)]
-DOWN_BELOW = base() + [(100.5, 99.0, 99.5), (99.0, 89.0, 91.0)]
-DOWN_EQUAL = base() + [(102.5, 100.5, 102.0), (101.0, 99.5, 100.0), (101.5, 86.0, 101.0)]
 
 
 def indices(rows, params=SMALL):
@@ -69,117 +66,12 @@ def test_registered_no_edge_futures_and_hidden():
     assert NAME not in _SPOT.STRATEGY_REGISTRY
 
 
-def test_long_cross_truth_table_rows_1_4_5_6():
-    prev, cur, row = indices(UP_ABOVE)
-    assert 0 < prev < cur
-    assert row["close"] > row["cct_trend_sma"]
-    mid = (prev + cur) / 2.0
-    hit = last(UP_ABOVE, {**SMALL, "threshold": mid})
-    assert int(hit["signal"]) == 1 and hit["cct_reason"] == "entry_long"
-    at_cur = last(UP_ABOVE, {**SMALL, "threshold": cur})
-    assert at_cur["cct_index"] == at_cur["cct_threshold"]
-    assert int(at_cur["signal"]) == 0 and at_cur["cct_reason"] == "no_cross"
-    at_prev = last(UP_ABOVE, {**SMALL, "threshold": prev})
-    assert at_prev["cct_prev_index"] == at_prev["cct_threshold"]
-    assert int(at_prev["signal"]) == 1 and at_prev["cct_reason"] == "entry_long"
-    below_both = last(UP_ABOVE, {**SMALL, "threshold": prev / 2.0})
-    assert int(below_both["signal"]) == 0 and below_both["cct_reason"] == "no_cross"
-
-
-def test_long_cross_blocked_by_trend_rows_2_3(subtests):
-    for rows, relation in [(UP_EQUAL, "equal"), (UP_BELOW, "below")]:
-        with subtests.test(relation=relation):
-            prev, cur, row = indices(rows)
-            assert 0 < cur and prev < cur
-            if relation == "equal":
-                assert row["close"] == row["cct_trend_sma"]
-            else:
-                assert row["close"] < row["cct_trend_sma"]
-            out = last(rows, {**SMALL, "threshold": (max(prev, 0.0) + cur) / 2.0})
-            assert int(out["signal"]) == 0
-            assert out["cct_reason"] == "trend_blocked"
-
-
-def test_short_cross_truth_table_rows_7_8_9():
-    prev, cur, row = indices(DOWN_BELOW)
-    assert cur < prev < 0
-    assert row["close"] < row["cct_trend_sma"]
-    hit = last(DOWN_BELOW, {**SMALL, "threshold": -(prev + cur) / 2.0})
-    assert int(hit["signal"]) == -1 and hit["cct_reason"] == "entry_short"
-    at_cur = last(DOWN_BELOW, {**SMALL, "threshold": -cur})
-    assert at_cur["cct_index"] == -at_cur["cct_threshold"]
-    assert int(at_cur["signal"]) == 0 and at_cur["cct_reason"] == "no_cross"
-    at_prev = last(DOWN_BELOW, {**SMALL, "threshold": -prev})
-    assert int(at_prev["signal"]) == -1
-
-    eprev, ecur, erow = indices(DOWN_EQUAL)
-    assert ecur < 0 and ecur < eprev
-    assert erow["close"] == erow["cct_trend_sma"]
-    blocked = last(DOWN_EQUAL, {**SMALL, "threshold": -(min(eprev, 0.0) + ecur) / 2.0})
-    assert int(blocked["signal"]) == 0 and blocked["cct_reason"] == "trend_blocked"
-
-
-def test_zero_mean_deviation_rows_10_11():
-    flat = [(101.0, 99.0, 100.0)] * 8
-    row = last(flat, {**SMALL, "threshold": 1.0})
-    assert int(row["signal"]) == 0
-    assert row["cct_reason"] == "zero_mean_deviation"
-    assert row["cct_mean_dev"] == 0.0 and np.isnan(row["cct_index"])
-    after = last(flat + [(110.0, 100.0, 105.0)], {**SMALL, "threshold": 1.0})
-    assert after["cct_index"] > 1.0
-    assert int(after["signal"]) == 0
-    assert after["cct_reason"] == "zero_mean_deviation"
-    assert np.isnan(after["cct_prev_index"])
-
-
-def test_insufficient_history_row_12_and_missing_columns():
-    p = {"lookback": 3, "threshold": 1.0, "trend_period": 5}
-    short = run(frame(base(4)), p)
-    assert (short["cct_reason"] == "insufficient_history").all()
-    assert (short["signal"] == 0).all()
-    exact = run(frame(base(5)), p)
-    assert bool(exact["cct_valid"].iloc[-1])
-    missing = run(frame(base(8)).drop(columns=["low"]), SMALL)
-    assert (missing["signal"] == 0).all()
-    assert missing["cct_reason"].iloc[-1] == "missing_columns:low"
-
-
 MALFORMED_BAR_CASES = [
     ("swapped_high_low", lambda r: (r[1], r[0], r[2]), "inconsistent_hlc"),
     ("close_above_high", lambda r: (r[0], r[1], r[0] + 5.0), "inconsistent_hlc"),
     ("infinite_high", lambda r: (float("inf"), r[1], r[2]), "nonfinite_input"),
     ("nan_close", lambda r: (r[0], r[1], float("nan")), "nonfinite_input"),
 ]
-
-
-def test_malformed_bar_row_13_yields_reasoned_hold(subtests):
-    for case, mutate, reason in MALFORMED_BAR_CASES:
-        with subtests.test(case=case, reason=reason):
-            rows = list(UP_ABOVE)
-            rows[-1] = mutate(rows[-1])
-            row = last(rows, {**SMALL, "threshold": 1.0})
-            assert int(row["signal"]) == 0
-            assert not bool(row["cct_valid"])
-            assert row["cct_reason"] == reason
-            earlier = list(UP_ABOVE)
-            earlier[-2] = mutate(earlier[-2])
-            row2 = last(earlier, {**SMALL, "threshold": 1.0})
-            assert int(row2["signal"]) == 0
-            assert row2["cct_reason"] == reason
-
-
-def test_timestamp_order_defect_detected():
-    df = frame(UP_ABOVE)
-    idx = list(df.index)
-    idx[-1] = idx[-2]
-    df.index = pd.DatetimeIndex(idx)
-    row = run(df, {**SMALL, "threshold": 1.0}).iloc[-1]
-    assert row["cct_reason"] == "timestamp_order"
-    assert int(row["signal"]) == 0
-    with_col = frame(UP_ABOVE).reset_index(drop=True)
-    with_col["timestamp"] = [1_000 * i for i in range(len(with_col))]
-    with_col.loc[len(with_col) - 1, "timestamp"] = 3_000
-    assert run(with_col, SMALL).iloc[-1]["cct_reason"] == "timestamp_order"
 
 
 INVALID_PARAMS = [
@@ -198,18 +90,6 @@ INVALID_PARAMS = [
 ]
 
 
-def test_invalid_parameters_raise(subtests):
-    for params in INVALID_PARAMS:
-        with subtests.test(params=params):
-            with pytest.raises(ValueError):
-                run(frame(base(200)), params)
-
-
-def test_integral_float_periods_accepted():
-    out = run(frame(base(80)), {"lookback": 20.0, "trend_period": 50.0})
-    assert out["cct_reason"].iloc[-1] in ("no_cross", "trend_blocked")
-
-
 def _trend(n, step, seed):
     rng = np.random.RandomState(seed)
     close = 100.0 + step * np.arange(n) + rng.randn(n) * 1.5
@@ -218,15 +98,6 @@ def _trend(n, step, seed):
                        "close": close, "volume": 1.0})
     df.index = pd.date_range("2026-01-01", periods=n, freq="4h")
     return df
-
-
-def test_rising_series_only_longs_falling_only_shorts_constant_none():
-    up = run(_trend(400, 0.5, 1))
-    assert (up["signal"] >= 0).all() and (up["signal"] == 1).any()
-    down = run(_trend(400, -0.5, 2))
-    assert (down["signal"] <= 0).all() and (down["signal"] == -1).any()
-    const = run(frame([(101.0, 99.0, 100.0)] * 120))
-    assert (const["signal"] == 0).all()
 
 
 def _market(n=520, seed=1656):
@@ -292,33 +163,6 @@ def test_close_exactly_at_trend_average_matches_on_bounded_window():
     assert full["cct_reason"] == "trend_blocked"
 
 
-def test_every_entry_is_reproducible_from_recorded_columns():
-    df = _market()
-    out = run(df)
-    entries = out[out["signal"] != 0]
-    assert len(entries) > 0
-    for ts, row in entries.iterrows():
-        i = df.index.get_loc(ts)
-        tp = ((df["high"] + df["low"] + df["close"]) / 3.0).to_numpy()
-        for j, col in ((i, "cct_index"), (i - 1, "cct_prev_index")):
-            win = tp[j - 19: j + 1]
-            mean = win.mean()
-            dev = np.abs(win - mean).mean()
-            assert row[col] == pytest.approx((tp[j] - mean) / (0.015 * dev), rel=1e-9)
-        assert row["cct_trend_sma"] == pytest.approx(df["close"].iloc[i - 49: i + 1].mean(), rel=1e-12)
-        assert row["cct_eval_ts_ms"] == ts.value // 1_000_000
-        t = row["cct_threshold"]
-        if row["signal"] == 1:
-            assert row["cct_prev_index"] <= t < row["cct_index"]
-            assert row["close"] > row["cct_trend_sma"]
-            assert row["cct_reason"] == "entry_long"
-        else:
-            assert row["cct_prev_index"] >= -t > row["cct_index"]
-            assert row["close"] < row["cct_trend_sma"]
-            assert row["cct_reason"] == "entry_short"
-    assert df.equals(_market())
-
-
 def _compose(df, position_side, position_ctx=None, close_strategies=("time_stop",), params=None):
     evaluation = evaluate_open_close(
         _FUTURES.apply_strategy, _FUTURES.get_strategy, df, NAME, NAME,
@@ -333,20 +177,6 @@ def _compose(df, position_side, position_ctx=None, close_strategies=("time_stop"
 def _entry_params():
     prev, cur, _ = indices(UP_ABOVE)
     return {**SMALL, "threshold": (prev + cur) / 2.0}
-
-
-def test_composer_flat_entry_and_open_position_blocks_duplicates_and_reversals():
-    params = _entry_params()
-    _, flat_decision = _compose(frame(UP_ABOVE), "", params=params)
-    assert flat_decision["signal"] == 1 and flat_decision["open_action"] == "long"
-
-    held = {"side": "long", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
-    _, dup = _compose(frame(UP_ABOVE), "long", held, params=params)
-    assert dup["open_action"] == "long" and dup["signal"] == 0
-
-    short_ctx = {"side": "short", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
-    _, opposite = _compose(frame(UP_ABOVE), "short", short_ctx, params=params)
-    assert opposite["close_fraction"] == 0.0 and opposite["signal"] == 0
 
 
 def test_composer_close_wins_and_survives_bad_entry_data():

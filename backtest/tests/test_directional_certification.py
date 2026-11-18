@@ -78,11 +78,6 @@ def test_is_directional_certified_active_expired_never(tmp_path, subtests):
         assert certified_states(certs, "SOL", "1h", "composite", now) is None
 
 
-def test_backtest_classifier():
-    assert backtest_classifier(None) == "adx"
-    assert backtest_classifier({"windows": {}}) == "composite"
-
-
 def test_config_directional_classifier_matches_live_resolution():
     assert config_directional_classifier({}, {}) == "adx"
     assert config_directional_classifier({"windows": {}}, {}) == "adx"
@@ -108,26 +103,6 @@ def test_config_directional_classifier_matches_live_resolution():
 
     rc3 = {"windows": {"medium": {"period": 48}}}
     assert config_directional_classifier(rc3, {}) == "adx"
-
-
-def test_gate_directional_policy_by_states_per_state_sign():
-    from backtester import _gate_directional_policy_by_states
-    policy = {
-        "trending_up": {"direction": "short", "invert_signal": True},
-        "trending_down": {"direction": "short"},
-        "ranging": {"direction": "long"},
-    }
-    certs = {"trending_up": "long", "trending_down": "short", "ranging": "long"}
-    gated = _gate_directional_policy_by_states(policy, certs)
-    assert "trending_up" not in gated
-    assert gated["trending_down"]["direction"] == "short"
-    assert gated["ranging"]["direction"] == "long"
-    pol_both = {"trending_up": {"direction": "both"}}
-    assert _gate_directional_policy_by_states(pol_both, {"trending_up": "long"}) == pol_both
-    assert _gate_directional_policy_by_states(policy, {"trending_up": "short"}) == {
-        "trending_up": {"direction": "short", "invert_signal": True}}
-    assert _gate_directional_policy_by_states(policy, {}) == {}
-    assert _gate_directional_policy_by_states(policy, None) == policy
 
 
 def test_repo_artifact_is_empty_and_valid():

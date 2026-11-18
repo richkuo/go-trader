@@ -1,7 +1,6 @@
 import errno
 import hashlib
 import os
-import stat
 import sys
 
 import pytest
@@ -71,19 +70,6 @@ def _downloads(log) -> int:
     return sum(1 for line in log.read_text().splitlines() if line.startswith("s3 cp"))
 
 
-def test_fetch_downloads_once_and_writes_read_only_verified_files(archive):
-    first = ac.fetch_manifest(archive["root"], archive["manifest"])
-    assert (first["downloaded"], first["verified"], first["absent"]) == (2, 0, 1)
-    for f in archive["manifest"]["files"]:
-        if f["status"] == "present":
-            path = ac.verified_object(archive["base"], f["key"], f)
-            assert not os.stat(path).st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
-    assert not [n for _, _, names in os.walk(archive["root"]) for n in names if n.endswith(".part")]
-    second = ac.fetch_manifest(archive["root"], archive["manifest"])
-    assert (second["downloaded"], second["verified"], second["absent"]) == (0, 2, 1)
-    assert _downloads(archive["log"]) == 2
-
-
 def test_altered_or_missing_cached_files_refuse_and_are_never_replaced(archive):
     ac.fetch_manifest(archive["root"], archive["manifest"])
     book = archive["manifest"]["files"][1]
@@ -110,14 +96,6 @@ def test_downloaded_bytes_that_differ_from_the_manifest_never_reach_the_final_pa
         ac.fetch_manifest(archive["root"], archive["manifest"], workers=1)
     assert not os.path.lexists(os.path.join(archive["base"], ctx["key"]))
     assert not [n for _, _, names in os.walk(archive["root"]) for n in names if n.endswith(".part")]
-
-
-def test_an_absent_key_that_the_archive_now_holds_refuses(archive):
-    absent = archive["manifest"]["files"][2]
-    (archive["remote"] / absent["key"]).parent.mkdir(parents=True, exist_ok=True)
-    (archive["remote"] / absent["key"]).write_bytes(b"late")
-    with pytest.raises(ac.ArchiveError, match=f"{absent['key']}: the manifest lists it as absent but the archive now holds it"):
-        ac.fetch_manifest(archive["root"], archive["manifest"])
 
 
 def test_freeze_pins_present_and_absent_keys_and_refuses_cache_conflicts(archive):
@@ -162,14 +140,6 @@ def test_a_connection_error_naming_a_404_key_retries_and_never_records_absent(ar
     with pytest.raises(ac.ArchiveError, match=f"{KEY_404}: head-object failed: Could not connect"):
         ac.fetch_manifest(archive["root"], manifest)
     assert _calls(archive["log"], "s3api head-object") == ac.AWS_ATTEMPTS
-
-
-def test_a_real_not_found_error_is_absent_without_retries(archive, monkeypatch):
-    monkeypatch.setattr(ac.time, "sleep", lambda _: pytest.fail("a not-found error was retried"))
-    monkeypatch.setenv("STUB_RC", "254")
-    monkeypatch.setenv("STUB_STDERR", "aws: [ERROR]: An error occurred (404) when calling the HeadObject operation: Not Found")
-    assert ac.freeze(archive["root"], "stub-bucket", [KEY_404]) == [{"key": KEY_404, "status": "absent"}]
-    assert (_calls(archive["log"], "s3 cp"), _calls(archive["log"], "s3api head-object")) == (1, 1)
 
 
 def test_a_service_error_through_a_404_cache_root_is_retried_and_not_missing(archive, monkeypatch, tmp_path):

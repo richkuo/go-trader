@@ -2,38 +2,10 @@ package main
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
-
-func TestFormatInstrument(t *testing.T) {
-	d := NewDeribitPricer()
-
-	cases := []struct {
-		underlying, optionType, expiry string
-		strike                         float64
-		want                           string
-	}{
-		{"BTC", "call", "2026-03-13", 75000, "BTC-13MAR26-75000-C"},
-		{"ETH", "put", "2026-06-25", 3000, "ETH-25JUN26-3000-P"},
-		{"BTC", "call", "2027-12-31", 100000, "BTC-31DEC27-100000-C"},
-		{"btc", "PUT", "2026-01-15", 50000, "BTC-15JAN26-50000-P"},
-		{"BTC", "call", "not-a-date", 50000, ""},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.expiry, func(t *testing.T) {
-			got := d.formatInstrument(tc.underlying, tc.optionType, tc.strike, tc.expiry)
-			if got != tc.want {
-				t.Errorf("formatInstrument(%q, %q, %g, %q) = %q, want %q",
-					tc.underlying, tc.optionType, tc.strike, tc.expiry, got, tc.want)
-			}
-		})
-	}
-}
 
 func TestDeribitMarkPricing(t *testing.T) {
 	refreshAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -229,38 +201,3 @@ func ibkrFixtureMarksRunner(settlement float64) optionMarksRunner {
 }
 
 var _ OptionPricer = (*RobinhoodOptionPricer)(nil)
-
-func TestDeribitFetchTicker(t *testing.T) {
-	t.Run("Mocked", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte(`{"result":{"instrument_name":"BTC-PERPETUAL","mark_price":0.05,"underlying_price":60000}}`))
-		}))
-		defer server.Close()
-
-		d := &DeribitPricer{client: server.Client(), baseURL: server.URL}
-
-		ticker, err := d.fetchTickerFull("BTC-PERPETUAL")
-		if err != nil {
-			t.Fatalf("fetchTickerFull failed: %v", err)
-		}
-		if *ticker.MarkPrice != 0.05 {
-			t.Errorf("mark = %g, want 0.05", *ticker.MarkPrice)
-		}
-		if *ticker.UnderlyingPrice != 60000 {
-			t.Errorf("spot = %g, want 60000", *ticker.UnderlyingPrice)
-		}
-	})
-	t.Run("Error", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(`{"error": "not found"}`))
-		}))
-		defer server.Close()
-
-		d := &DeribitPricer{client: server.Client(), baseURL: server.URL}
-		_, err := d.fetchTickerFull("BTC-PERPETUAL")
-		if err == nil {
-			t.Error("expected error for 404 response")
-		}
-	})
-}

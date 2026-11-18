@@ -85,79 +85,6 @@ def _frame(close, low, high, open_=None):
     return df
 
 
-def _ref_ema(close, t, period):
-    alpha = 2.0 / (period + 1.0)
-    beta = 1.0 - alpha
-    e = close[t - 63]
-    for k in range(t - 62, t + 1):
-        e = alpha * close[k] + beta * e
-    return e
-
-
-def _ref_decisions(df, params):
-    p, s, w = params["ema_period"], params["slope_span"], params["pullback_window"]
-    close, high, low = df["close"].tolist(), df["high"].tolist(), df["low"].tolist()
-    n = len(close)
-
-    def parts(t):
-        e = _ref_ema(close, t, p)
-        return e, e - _ref_ema(close, t - s, p), high[t] - e, low[t] - e
-
-    def cond_long(t):
-        _, slope, _, bear = parts(t)
-        return slope > 0 and bear < 0
-
-    def cond_short(t):
-        _, slope, bull, _ = parts(t)
-        return slope < 0 and bull > 0
-
-    def run(cond, t):
-        r, k = 0, t - 1
-        while r <= w and cond(k):
-            r += 1
-            k -= 1
-        return r
-
-    out = {}
-    for t in range(_need(params) - 1, n):
-        e, slope, bull, bear = parts(t)
-        rl, rs = run(cond_long, t), run(cond_short, t)
-        sig = 0
-        if 1 <= rl <= w and slope > 0 and bear >= 0:
-            sig = 1
-        elif 1 <= rs <= w and slope < 0 and bull <= 0:
-            sig = -1
-        out[t] = (e, slope, bull, bear, sig, rl, rs)
-    return out
-
-
-def test_values_and_signals_match_an_independent_reference():
-    df = _walk(420, 7)
-    sides = set()
-    for params in [DEFAULTS, {"ema_period": 2, "slope_span": 1, "pullback_window": 1},
-                   {"ema_period": 32, "slope_span": 8, "pullback_window": 16},
-                   {"ema_period": 8, "slope_span": 5, "pullback_window": 4}]:
-        out = _apply(df, params)
-        need = _need(params)
-        assert (out["erp_valid"].iloc[:need - 1] == 0.0).all()
-        assert (out["erp_reason"].iloc[:need - 1] == "insufficient_history").all()
-        assert (out["signal"].iloc[:need - 1] == 0).all()
-        ref = _ref_decisions(df, params)
-        for t, (e, slope, bull, bear, sig, rl, rs) in ref.items():
-            row = out.iloc[t]
-            assert row["erp_valid"] == 1.0
-            assert (row["erp_ema"], row["erp_slope"], row["erp_bull_power"], row["erp_bear_power"]) == (
-                e, slope, bull, bear)
-            assert int(row["signal"]) == sig, t
-            if sig:
-                assert row["erp_reason"] == ("entry_long" if sig == 1 else "entry_short")
-                assert row["erp_reason_code"] == float(sig)
-                assert row["erp_setup_side"] == float(sig)
-                assert row["erp_setup_age"] == float(rl if sig == 1 else rs)
-            sides.add(sig)
-    assert sides == {-1, 0, 1}
-
-
 def _trend_frame(n, pullbacks, *, rising=True, deep=10.0, shallow=1.0):
     close = np.array([100.0 + i if rising else 1000.0 - i for i in range(n)])
     if rising:
@@ -329,51 +256,6 @@ INVALID_ENTRY_DATA = [
 ]
 
 
-def test_invalid_entry_data_is_a_reasoned_numeric_hold_inside_its_span_that_preserves_the_frame(subtests):
-    for i, (mutate, reason) in enumerate(INVALID_ENTRY_DATA):
-        with subtests.test(case=f"{i}-{reason}"):
-            _invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame(mutate, reason)
-    with subtests.test(case="defect_span_and_recovery"):
-        _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame()
-
-
-def _invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame(mutate, reason):
-    df = mutate(_walk(160, 3))
-    if reason is None:
-        out = _apply(df, P)
-        assert out.empty and "erp_reason" in out.columns and "signal" in out.columns
-        return
-    _holds_at_end(df, P, reason)
-
-
-def test_largest_finite_prices_stay_finite_because_the_average_is_a_convex_combination():
-    for params in DOMAIN_ENDPOINTS:
-        with _case(params):
-            _largest_finite_prices_stay_finite_because_the_average_is_a_convex_combination(params)
-
-
-def _largest_finite_prices_stay_finite_because_the_average_is_a_convex_combination(params):
-    huge = np.finfo(float).max
-    rng = np.random.default_rng(4)
-    close = huge * (1.0 - rng.uniform(0.0, 1e-3, 200))
-    df = _frame(close, close * (1.0 - 1e-4), np.full(200, huge))
-    out = _apply(df, params)
-    numeric = out.drop(columns=["erp_reason"]).filter(like="erp_")
-    assert np.isfinite(numeric.to_numpy(dtype=float)).all()
-    assert (out["erp_valid"].iloc[_need(params) - 1:] == 1.0).all()
-    assert not (out["erp_reason"] == "arithmetic_overflow").any()
-
-
-def test_timestamp_column_is_accepted_without_a_datetime_index():
-    df = _walk(200, 3)
-    plain = df.reset_index(drop=True)
-    plain["timestamp"] = (df.index.asi8 // 1_000_000).astype("int64")
-    a = _apply(df, P)
-    b = _apply(plain, P)
-    for col in DECISION_COLUMNS:
-        np.testing.assert_array_equal(a[col].to_numpy(), b[col].to_numpy())
-
-
 def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
     df = _walk(400, 5)
     bad = 200
@@ -391,13 +273,6 @@ def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
     out = _apply(gapped, P)
     assert (out["erp_reason"].iloc[bad:bad + need - 1] == "irregular_cadence").all()
     assert out["erp_valid"].iloc[bad + need - 1] == 1.0
-
-
-def test_integral_float_parameters_are_accepted_as_integers():
-    df = _walk(200, 1)
-    floats = {"ema_period": 13.0, "slope_span": 3.0, "pullback_window": 8.0}
-    _reg()._registry.validate_params(NAME, floats)
-    pd.testing.assert_frame_equal(_apply(df, floats), _apply(df, DEFAULTS))
 
 
 def _frozen(key, bars):

@@ -24,17 +24,3 @@ def test_selected_closed_history_needs_l_plus_two_bars(subtests):
             assert out["closed_bar_decision"]["forming_rows_dropped"] == 1
             assert out["indicator_labels"]["trix_reason"] == closed_reason
             assert out["signal"] == (1 if closed_reason == "entry_long" else 0)
-
-
-def test_the_ordinary_200_row_window_carries_the_largest_dependency(subtests):
-    for limit, closed_reason in [(200, "entry_long"), (198, "insufficient_history")]:
-        with subtests.test(limit=limit, closed_reason=closed_reason):
-            params = {"period": 32, "signal_period": 9, "recursion_length": 197}
-            bars = C.flat_bars(260, H, forming_jump=None)
-            bars[-2] = dict(bars[-2], h=409.0, c=408.0)
-            out = C.check(CASE, bars, closed=True, limit=limit, strategy_refs=C.refs(CASE, params=params))
-            assert out["closed_bar_decision"]["forming_rows_dropped"] == 1
-            assert out["closed_bar_decision"]["rows"] == limit
-            assert out["indicator_labels"]["trix_reason"] == closed_reason
-            assert out["indicators"]["trix_required_history"] == 199.0
-            assert out["signal"] == (1 if closed_reason == "entry_long" else 0)

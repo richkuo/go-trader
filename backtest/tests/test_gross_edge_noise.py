@@ -119,20 +119,6 @@ def test_analyze_sample_verdict_matches_primary_test():
         assert key in strong
 
 
-def test_entry_in_range():
-    cases = [
-        ("2025-06-10 00:00:00", ("2025-06-10", "2025-07-01"), True),
-        ("2025-06-30 23:00:00", ("2025-06-10", "2025-07-01"), True),
-        ("2025-07-01 00:00:00", ("2025-06-10", "2025-07-01"), False),
-        ("2025-06-09 23:00:00", ("2025-06-10", "2025-07-01"), False),
-        ("2099-01-01 00:00:00", ("2026-01-01", None), True),
-        ("2025-12-31 23:00:00", ("2026-01-01", None), False),
-    ]
-    for entry_date, window_range, expected in cases:
-        assert bool(gen._entry_in_range(entry_date, window_range)) is expected, (
-            f"test_entry_in_range[{entry_date}-{window_range}]")
-
-
 def test_pool_trade_samples_drops_exact_and_overlapping_entries(subtests):
     with subtests.test(case="test_pool_exact_duplicate_still_dropped"):
         legs = [

@@ -105,33 +105,6 @@ def _ref_signal(c, t, p):
     return 0, a, b, r
 
 
-def test_values_match_an_independent_scalar_reference_and_both_entry_directions():
-    df = _walk(420, 7)
-    c = df["close"].tolist()
-    seen = set()
-    for p in (SMALL, dict(SMALL, slope_span=1, efficiency_period=1), dict(SMALL, fast_period=1, slow_period=2),
-              dict(SEED, recursion_length=60)):
-        out = _apply(df, p)
-        need = _need(p)
-        assert (out["ama_valid"].iloc[:need - 1] == 0.0).all()
-        assert (out["ama_reason"].iloc[:need - 1] == "insufficient_history").all()
-        assert out["ama_valid"].iloc[need - 1] == 1.0
-        for t in range(need - 1, len(df)):
-            sig, a, b, r = _ref_signal(c, t, p)
-            _, er, sc = _ref_ama(c, t, p)
-            row = out.iloc[t]
-            assert (row["ama_value"], row["ama_prev_value"], row["ama_slope_ref"]) == (a, b, r)
-            assert (row["ama_efficiency"], row["ama_smoothing"]) == (er, sc)
-            assert row["ama_slope"] == a - r
-            assert row["ama_seed_close"] == c[t - p["recursion_length"]]
-            assert int(row["signal"]) == sig
-            assert row["ama_reason_code"] == {1: 1.0, -1: -1.0}.get(sig, row["ama_reason_code"])
-            if sig == 0:
-                assert row["ama_reason"] in ("no_cross", "slope_disagrees")
-            seen.add(sig)
-    assert seen == {-1, 0, 1}
-
-
 def test_timestamp_column_and_native_close_frames_decide_the_same_way():
     df = _walk(260, 3)
     plain = df.reset_index(drop=True)
@@ -267,11 +240,3 @@ def test_missing_held_hour_funding_makes_every_arm_unscorable_and_the_verdict_in
     assert funding["priced_hours"] == funding["present_hours"] - funding["venue_absent_hours"]
     assert 0 <= funding["priced_hours"] < funding["expected_hours"]
     assert funding["coverage_complete"] is False
-
-
-def test_decisions_depend_only_on_rows_inside_the_dependency_window(subtests):
-    for check in (
-            _check_rows_outside_the_dependency_window_cannot_change_a_decision,
-    ):
-        with subtests.test(case=check.__name__.removeprefix("_check_")):
-            check()

@@ -1,4 +1,3 @@
-from shared_tools.conftest import with_regime_readiness
 import numpy as np
 import pandas as pd
 import pytest
@@ -137,28 +136,6 @@ def test_parse_sweep_arg_coerces_numbers(subtests):
             ew.parse_sweep_arg("period=")
 
 
-def test_expand_sweep_cartesian_preserves_base_params():
-    combos = ew.expand_sweep({"keep": 1}, [("a", [1, 2]), ("b", ["x"])])
-    assert len(combos) == 2
-    labels = [c[0] for c in combos]
-    assert labels == ["a=1 b=x", "a=2 b=x"]
-    for _, params in combos:
-        assert params["keep"] == 1
-        assert "a" in params and params["b"] == "x"
-
-
-def test_versioned_definitions_match_protocol():
-    assert len(ew.INCUMBENTS) == 8
-    assert "breakout" not in ew.INCUMBENTS
-    assert "sma_crossover" in ew.INCUMBENTS
-    assert len(ew.DATASETS) == 6
-    assert set(ew.PROTOCOL_WINDOWS) | set(ew.HELD_OUT_WINDOWS) == set(ew.WINDOWS)
-    assert ew.WINDOWS["is"] == ("2025-06-10", "2026-01-01")
-    assert ew.WINDOWS["oos"] == ("2026-01-01", None)
-    for w in ew.HELD_OUT_WINDOWS:
-        assert ew.WINDOWS[w][1] is not None
-
-
 class _FakeRegistry:
     STRATEGY_REGISTRY = {"alternator": {"default_params": {"period": 2},
                                         "description": "test"}}
@@ -186,30 +163,6 @@ def _synthetic_df(n=120):
     }, index=idx)
 
 
-def test_run_leg_returns_leg_metrics(monkeypatch):
-    df = _synthetic_df()
-    import data_fetcher
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: df, raising=True)
-    leg = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
-                     ("2026-01-01", None))
-    assert leg is not None
-    assert leg["trades"] > 0
-    for key in ("sharpe", "return_pct", "max_dd_pct", "ddadj",
-                "trades", "bh_return_pct"):
-        assert key in leg
-    expected_bh = (df["close"].iloc[-1] - df["close"].iloc[0]) / df["close"].iloc[0] * 100
-    assert leg["bh_return_pct"] == pytest.approx(expected_bh, abs=0.01)
-
-
-def test_run_leg_empty_data_returns_none(monkeypatch):
-    import data_fetcher
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: pd.DataFrame(), raising=True)
-    assert ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
-                      ("2023-01-01", "2024-01-01")) is None
-
-
 def test_run_leg_threads_stop_loss_atr_mult(monkeypatch):
     df = _synthetic_df(n=240)
     import data_fetcher
@@ -224,24 +177,6 @@ def test_run_leg_threads_stop_loss_atr_mult(monkeypatch):
         (plain["return_pct"], plain["max_dd_pct"]), (
         "stop_loss_atr_mult=0.1 produced an identical leg — the stop never "
         "reached the Backtester")
-
-
-def test_run_leg_threads_allowed_regimes_and_blocks_entries(monkeypatch):
-    df = _synthetic_df(n=240)
-    df = df.copy()
-    df["regime"] = "trending_up"
-    import data_fetcher
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: df, raising=True)
-    plain = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
-                       ("2026-01-01", None))
-    gated = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
-                       ("2026-01-01", None), allowed_regimes=["trending_down"])
-    assert plain is not None and plain.get("trades", 0) > 0
-    assert gated is not None
-    assert gated.get("trades", -1) == 0, (
-        "allowed_regimes gate did not suppress entries when bar regime "
-        "was never in the allowed set")
 
 
 _VALIDATE_CANDIDATE_ACCEPTS_CASES = [
@@ -318,42 +253,6 @@ def test_validate_candidate_rejects(subtests):
                 ew.validate_candidate(candidate)
 
 
-_VALIDATE_CANDIDATE_STRIPS_EMPTY_OPTIONAL_BLOCK_CASES = [
-    ({"name": "x", "allowed_regimes": []}, "allowed_regimes"),
-    ({"name": "x", "regime_windows_spec": {}}, "regime_windows_spec"),
-    ({"name": "x", "regime_directional_policy": {}},
-     "regime_directional_policy"),
-]
-
-
-def test_validate_candidate_strips_empty_optional_block(subtests):
-    for i, (candidate, key) in enumerate(_VALIDATE_CANDIDATE_STRIPS_EMPTY_OPTIONAL_BLOCK_CASES):
-        with subtests.test(case=i, candidate=candidate, key=key):
-            assert ew.validate_candidate(candidate) is candidate
-            assert key not in candidate
-
-
-def test_run_candidate_leg_threads_regime_lookback(monkeypatch):
-    seen = {}
-
-    def fake_run_leg(reg, name, params, symbol, timeframe, window, **kw):
-        seen.update(kw)
-        return {"ok": True}
-
-    monkeypatch.setattr(ew, "run_leg", fake_run_leg, raising=True)
-    cand = {"name": "x", "allowed_regimes": ["trending_up"],
-            "regime_period": 21, "regime_adx_threshold": 25.0}
-    ew.run_candidate_leg(_FakeRegistry(), cand, "BTC/USDT", "1h",
-                         ("2026-01-01", None))
-    assert seen["regime_period"] == 21
-    assert seen["regime_adx_threshold"] == 25.0
-    seen.clear()
-    ew.run_candidate_leg(_FakeRegistry(), {"name": "x"}, "BTC/USDT", "1h",
-                         ("2026-01-01", None))
-    assert seen["regime_period"] == 14
-    assert seen["regime_adx_threshold"] == 20.0
-
-
 def test_run_leg_threads_regime_windows_spec_composite_gate(monkeypatch):
     df = _synthetic_df(n=240)
     import data_fetcher
@@ -403,76 +302,6 @@ def test_evaluate_window_validates_before_any_work():
     with pytest.raises(ValueError, match="silently dropped"):
         ew.evaluate_window(None, {"name": "x", "direction": "both"},
                            [("BTC/USDT", "1h")], "oos", 1000.0, {})
-
-
-def test_run_leg_omits_policy_kwargs_without_policy(monkeypatch):
-    df = _synthetic_df()
-    import data_fetcher
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: df, raising=True)
-    import backtester as bt_mod
-    real = bt_mod.Backtester
-    calls = []
-
-    def _spy(**kwargs):
-        calls.append(kwargs)
-        return real(**kwargs)
-
-    monkeypatch.setattr(bt_mod, "Backtester", _spy, raising=True)
-    leg = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
-                     ("2026-01-01", None))
-    assert leg is not None and calls
-    assert "regime_directional_policy" not in calls[0]
-    assert "regime_directional_certified" not in calls[0]
-
-
-def test_run_leg_threads_regime_directional_policy_research_certified(monkeypatch):
-    df = _synthetic_df()
-    df = df.copy()
-    df["regime"] = "trending_up"
-    import data_fetcher
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: df, raising=True)
-    import backtester as bt_mod
-    real = bt_mod.Backtester
-    calls = []
-
-    def _spy(**kwargs):
-        calls.append(kwargs)
-        return real(**kwargs)
-
-    monkeypatch.setattr(bt_mod, "Backtester", _spy, raising=True)
-    policy = {"trend_regime": {"trending_up": {"direction": "short"}}}
-    leg = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
-                     ("2026-01-01", None),
-                     regime_directional_policy=policy)
-    assert leg is not None and calls
-    kw = calls[0]
-    assert kw["regime_directional_policy"] == policy
-    assert kw["regime_directional_certified"] is True
-    assert kw["regime_enabled"] is True
-
-
-def test_run_leg_policy_switches_plain_path_side(monkeypatch):
-    df = _synthetic_df(n=240)
-    df = df.copy()
-    df["regime"] = "trending_up"
-    with_regime_readiness(df)
-    import data_fetcher
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: df, raising=True)
-    plain = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
-                       ("2026-01-01", None))
-    gated = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
-                       ("2026-01-01", None),
-                       regime_directional_policy={"trend_regime": {
-                           "trending_up": {"direction": "short"}}})
-    assert plain is not None and plain.get("trades", 0) > 0
-    assert gated is not None and gated.get("trades", 0) > 0
-    assert (gated["return_pct"], gated["max_dd_pct"]) != \
-        (plain["return_pct"], plain["max_dd_pct"]), (
-        "trending_up→short policy produced a leg identical to the ungated "
-        "long run — the policy never reached the Backtester")
 
 
 def test_evaluate_window_threads_regime_directional_policy(monkeypatch):

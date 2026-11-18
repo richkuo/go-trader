@@ -1,5 +1,4 @@
 import base64
-import datetime
 import json
 import os
 import socket
@@ -180,40 +179,6 @@ def servers():
     yield make
     for proxy in made:
         proxy.close()
-
-
-@pytest.fixture(scope="module")
-def tls_material(tmp_path_factory):
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.x509.oid import NameOID
-    import ipaddress
-
-    key = ec.generate_private_key(ec.SECP256R1())
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
-    now = datetime.datetime.now(datetime.timezone.utc)
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - datetime.timedelta(days=1))
-        .not_valid_after(now + datetime.timedelta(days=2))
-        .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
-        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
-        .sign(key, hashes.SHA256())
-    )
-    directory = tmp_path_factory.mktemp("egress_tls")
-    cert_path = directory / "proxy.pem"
-    key_path = directory / "proxy.key"
-    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-                                           serialization.NoEncryption()))
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(str(cert_path), str(key_path))
-    return context, cert_path
 
 
 def _start_proxy(servers, kind, credentials=(SENTINEL_USER, SENTINEL_PASS), tls_context=None):
@@ -551,37 +516,6 @@ def test_yfinance_native_curl_routes_through_proxy(tmp_path, servers, subtests):
             assert outcome["proxy_failures"] >= 1
 
 
-def test_overrides_restored_and_no_direct_fallback(tmp_path, servers):
-    proxy, raw = _start_proxy(servers, "socks5h")
-    direct = servers(_direct_handler)
-    hostile = f"http://127.0.0.1:{direct.port}"
-    overrides = {"NO_PROXY": "*", "no_proxy": "*", "HTTP_PROXY": hostile, "HTTPS_PROXY": hostile, "ALL_PROXY": hostile,
-                 "http_proxy": hostile, "https_proxy": hostile, "all_proxy": hostile}
-    env = _base_env(tmp_path)
-    env.update(overrides)
-    env["GO_TRADER_EGRESS_MODE"] = "proxy"
-    env["GO_TRADER_EGRESS_PROXY"] = raw
-    target = f"https://[::ffff:127.0.0.1]:{direct.port}/"
-    driver = _driver(tmp_path, f"""
-        import requests
-        RESULTS["env"] = {{k: mark(os.environ.get(k)) for k in sorted({sorted(overrides)!r})}}
-        attempt("module_get", lambda: requests.get({target!r}, timeout=20))
-        attempt("venue_get", lambda: requests.get("https://api.hyperliquid.xyz/info", timeout=20))
-        from curl_cffi import requests as curl_requests
-        attempt("curl_get", lambda: curl_requests.get({target!r}, timeout=20))
-    """)
-    result = _run(driver, env)
-    _assert_no_sentinel(result)
-    results = _results(result)
-    for key, value in results["env"].items():
-        assert value == ("localhost,127.0.0.1,::1" if key.lower() == "no_proxy" else "policy-url")
-    for label in ("module_get", "venue_get", "curl_get"):
-        assert results[label]["ok"] is False
-    assert direct.recorder.snapshot() == []
-    assert proxy.recorder.targets().count(f"::ffff:127.0.0.1:{direct.port}") == 2
-    _assert_routed(proxy, "socks5h", "api.hyperliquid.xyz")
-
-
 def test_wrong_credentials_fail_without_direct_connection(tmp_path, servers, subtests):
     for kind in ["http", "socks5h"]:
         with subtests.test(kind=kind):
@@ -610,33 +544,6 @@ def test_wrong_credentials_fail_without_direct_connection(tmp_path, servers, sub
             outcome = _outcome(result)
             assert outcome["proxy_failures"] >= 2
             assert outcome["last_error"]
-
-
-def test_tls_proxy_trusted_and_untrusted(tmp_path, servers, tls_material):
-    context, cert_path = tls_material
-    proxy, raw = _start_proxy(servers, "https", tls_context=context)
-    direct = servers(_direct_handler)
-    target = f"https://[::ffff:127.0.0.1]:{direct.port}/"
-    driver = _driver(tmp_path, f"""
-        import requests
-        attempt("module_get", lambda: requests.get("https://api.hyperliquid.xyz/info", timeout=20))
-        attempt("direct_target", lambda: requests.get({target!r}, timeout=20))
-    """)
-    trusted = _run(driver, _contract_env(tmp_path, raw, {"REQUESTS_CA_BUNDLE": str(cert_path)}))
-    _assert_no_sentinel(trusted)
-    assert _results(trusted)["module_get"]["ok"] is False
-    _assert_routed(proxy, "https", "api.hyperliquid.xyz")
-    before = len(proxy.recorder.snapshot())
-    untrusted = _run(driver, _contract_env(tmp_path, raw))
-    _assert_no_sentinel(untrusted)
-    results = _results(untrusted)
-    assert results["module_get"]["ok"] is False
-    assert results["direct_target"]["ok"] is False
-    new_events = proxy.recorder.snapshot()[before:]
-    assert new_events and all(e["kind"] == "tls_failed" for e in new_events), new_events
-    assert direct.recorder.snapshot() == []
-    outcome = _outcome(untrusted)
-    assert outcome["proxy_failures"] == outcome["requests"] == 2
 
 
 def test_outcome_line_counts_and_absence(tmp_path, servers):

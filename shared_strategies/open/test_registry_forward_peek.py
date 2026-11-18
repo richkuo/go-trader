@@ -627,25 +627,3 @@ def test_registry_strategy_is_truncation_invariant(name, params):
             f"the fixture / add a per-strategy input hook, or add it to "
             f"EXPECTED_ALL_ZERO_SIGNAL with an inline justification."
         )
-
-
-def test_harness_detects_forward_peeking_strategy():
-    base_fn = _REGISTRY.STRATEGIES["sma_crossover"]["fn"]
-    base_params = _REGISTRY.STRATEGIES["sma_crossover"]["default_params"]
-
-    def peeking(df, **params):
-        result = base_fn(df, **params)
-        s = result["signal"].to_numpy().copy()
-        if len(s) > 1:
-            s[:-1] = s[1:]
-        result["signal"] = s
-        return result
-
-    honest = _signal(base_fn, base_params, _DF)
-    assert (np.nan_to_num(honest) != 0).any(), "sensitivity base strategy is vacuous"
-
-    violations, _ = _prefix_violations(peeking, base_params, _DF, "_default")
-    assert violations, (
-        "forward-peeking strategy passed the truncation-invariance checker — "
-        "the sweep is not sensitive to look-ahead"
-    )

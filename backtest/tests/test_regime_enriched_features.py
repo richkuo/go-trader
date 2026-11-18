@@ -51,38 +51,6 @@ def test_canonical_columns_lead_enriched_set(subtests):
             ref.canonical_indices_for(["return_eff", "range_eff", "adx"])
 
 
-def test_subset_selection_preserves_canonical_first_order(subtests):
-    with subtests.test("test_subset_selection_preserves_canonical_first_order"):
-        df = _synthetic_ohlcv()
-        fund = _synthetic_funding(df.index)
-        mat = ref.enriched_feature_matrix(df, period=48, funding=fund,
-                                          columns=["htf_range_eff", "adx", "return_eff",
-                                                   "funding_rate", "range_eff", "efficiency"])
-        assert list(mat.columns) == ["return_eff", "range_eff", "efficiency", "adx",
-                                     "funding_rate", "htf_range_eff"]
-    with subtests.test("test_builder_rejects_unknown_column"):
-        df = _synthetic_ohlcv()
-        with pytest.raises(ValueError, match="unknown enriched columns"):
-            ref.enriched_feature_matrix(df, period=48, columns=["return_eff", "rsi_14"])
-
-
-def test_enriched_matrix_is_causal_future_bars_do_not_change_past_rows():
-    df = _synthetic_ohlcv(n=600)
-    fund = _synthetic_funding(df.index)
-    base = ref.enriched_feature_matrix(df, period=48, funding=fund, htf_multiple=4)
-    t = 400
-    mutated = df.copy()
-    mutated.iloc[t + 1:, mutated.columns.get_loc("close")] *= 3.0
-    mutated.iloc[t + 1:, mutated.columns.get_loc("high")] *= 3.0
-    mutated.iloc[t + 1:, mutated.columns.get_loc("low")] *= 3.0
-    mutated.iloc[t + 1:, mutated.columns.get_loc("open")] *= 3.0
-    mutated.iloc[t + 1:, mutated.columns.get_loc("volume")] *= 9.0
-    after = ref.enriched_feature_matrix(mutated, period=48, funding=fund, htf_multiple=4)
-    a = base.iloc[: t + 1].to_numpy(dtype=float)
-    b = after.iloc[: t + 1].to_numpy(dtype=float)
-    assert np.array_equal(np.nan_to_num(a, nan=-7.0), np.nan_to_num(b, nan=-7.0))
-
-
 def test_funding_column_is_backward_only():
     df = _synthetic_ohlcv(n=120)
     idx = df.index
@@ -93,54 +61,6 @@ def test_funding_column_is_backward_only():
     assert fr[59] == pytest.approx(0.001)
     assert fr[60] == pytest.approx(0.005)
     assert fr[100] == pytest.approx(0.005)
-
-
-def test_htf_feature_does_not_leak_in_progress_bar():
-    df = _synthetic_ohlcv(n=600)
-    mat = ref.enriched_feature_matrix(df, period=20, columns=ref.CANONICAL_COLUMNS + ["htf_range_eff"],
-                                      htf_multiple=4)
-    htf = mat["htf_range_eff"].to_numpy()
-    mutated = df.copy()
-    mutated.iloc[-1, mutated.columns.get_loc("high")] *= 5.0
-    htf2 = ref.enriched_feature_matrix(mutated, period=20,
-                                       columns=ref.CANONICAL_COLUMNS + ["htf_range_eff"],
-                                       htf_multiple=4)["htf_range_eff"].to_numpy()
-    assert np.array_equal(np.nan_to_num(htf[:-1], nan=-1.0), np.nan_to_num(htf2[:-1], nan=-1.0))
-
-
-def test_volume_z_is_trailing_and_warmup_nan():
-    df = _synthetic_ohlcv(n=200)
-    mat = ref.enriched_feature_matrix(df, period=48, columns=ref.CANONICAL_COLUMNS + ["volume_z"],
-                                      vol_window=24)
-    vz = mat["volume_z"].to_numpy()
-    assert np.isnan(vz[:23]).all()
-    assert np.isfinite(vz[23])
-    vol = df["volume"].to_numpy()
-    i = 100
-    w = vol[i - 23: i + 1]
-    expected = (vol[i] - w.mean()) / w.std()
-    assert vz[i] == pytest.approx(expected, rel=1e-9)
-
-
-def test_hurst_column_is_trailing_warmup_nan_and_independent_of_period():
-    df = _synthetic_ohlcv(n=300)
-    mat = ref.enriched_feature_matrix(df, period=48, columns=ref.CANONICAL_COLUMNS + ["hurst"],
-                                      hurst_window=100)
-
-    case = "test_hurst_column_is_trailing_and_warmup_nan"
-    h = mat["hurst"].to_numpy()
-    assert np.isnan(h[:100]).all(), case
-    assert np.isfinite(h[100]), case
-    from indicators_core import hurst_exponent
-    close = df["close"].to_numpy()
-    i = 200
-    expected = hurst_exponent(pd.Series(close[i - 100: i + 1]), min_points=100)
-    assert h[i] == pytest.approx(expected, rel=1e-12), case
-
-    mat_a = ref.enriched_feature_matrix(df, period=20, columns=ref.CANONICAL_COLUMNS + ["hurst"],
-                                        hurst_window=100)
-    pd.testing.assert_series_equal(mat_a["hurst"], mat["hurst"], check_exact=True,
-                                   obj="test_hurst_column_uses_own_window_independent_of_period")
 
 
 def test_full_enriched_matrix_builds_in_order_and_fitted_models_hold_the_feature_contract():
