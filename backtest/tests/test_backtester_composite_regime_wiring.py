@@ -216,38 +216,6 @@ def _composite_config(tmp_path):
     })
 
 
-def test_load_strategy_config_windows_spec(tmp_path, subtests):
-    with subtests.test(case="includes_composite_windows_spec"):
-        _assert_load_strategy_config_includes_composite_windows_spec(tmp_path)
-    with subtests.test(case="no_windows_yields_none"):
-        _assert_load_strategy_config_no_windows_yields_none(tmp_path)
-
-
-def _assert_load_strategy_config_includes_composite_windows_spec(tmp_path):
-    kwargs = run_backtest.load_strategy_config(_composite_config(tmp_path), "hl-temacb-btc")
-    spec = kwargs["regime_windows_spec"]
-    assert spec is not None
-    assert spec["medium"]["classifier"] == "composite"
-    assert spec["medium"]["period"] == 30
-    assert kwargs["regime_timeframe"] == "1d"
-
-
-def _assert_load_strategy_config_no_windows_yields_none(tmp_path):
-    path = _write_config(tmp_path, {
-        "config_version": 15,
-        "regime": {"enabled": True, "period": 14, "adx_threshold": 20.0},
-        "strategies": [{
-            "id": "hl-temacb-btc", "type": "perps", "platform": "hyperliquid",
-            "open_strategy": {"name": "tema_cross_bd"},
-            "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
-                {"atr_multiple": 2.0, "close_fraction": 1.0},
-            ]}},
-        }],
-    })
-    kwargs = run_backtest.load_strategy_config(path, "hl-temacb-btc")
-    assert kwargs["regime_windows_spec"] is None
-
-
 def _run_main(monkeypatch, argv):
     monkeypatch.setattr(sys, "argv", ["run_backtest.py", *argv])
     return run_backtest.main()

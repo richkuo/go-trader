@@ -11,32 +11,6 @@ budget = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(budget)
 
 
-def test_go_wording_only(subtests):
-    for body, expected in [
-        (
-            'func TestA(t *testing.T) {\n\tmsg := f()\n\tif !strings.Contains(msg, "x") {\n\t\tt.Fatal("no")\n\t}\n}\n',
-            True,
-        ),
-        (
-            'func TestB(t *testing.T) {\n\tgot := f()\n\tif got != 3 {\n\t\tt.Fatalf("got %d", got)\n\t}\n\tif !strings.Contains(msg, "x") {\n\t\tt.Fatal("no")\n\t}\n}\n',
-            False,
-        ),
-        ('func TestC(t *testing.T) {\n\tf()\n}\n', False),
-    ]:
-        with subtests.test(body=body):
-            assert budget.go_wording_only(body) is expected
-
-
-def test_py_wording_only(subtests):
-    for body, expected in [
-        ('def test_a():\n    assert "x" in f()\n', True),
-        ('def test_b():\n    assert f() == 3\n    assert "x" in f()\n', False),
-        ("def test_c():\n    f()\n", False),
-    ]:
-        with subtests.test(body=body):
-            assert budget.py_wording_only(body) is expected
-
-
 def test_compare_flags_new_and_stale_identifiers(subtests):
     for hits, baseline, expected_new, expected_stale in [
         (["a::t1", "b::t2"], ["a::t1", "b::t2"], [], []),

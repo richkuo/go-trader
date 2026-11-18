@@ -3,7 +3,6 @@
     "backtest/tests/test_exit_policy_ab.py::test_reject_names_all_offenders",
     "backtest/tests/test_fee_audit.py::test_render_markdown_unscreened_short_section_and_dagger",
     "backtest/tests/test_fee_audit.py::test_reproduce_command_includes_direction",
-    "backtest/tests/test_metric_degenerates.py::test_format_results_tolerates_none_metrics",
     "backtest/tests/test_metrics_liquidation.py::test_format_window_report_marks_liquidated_rows",
     "backtest/tests/test_metrics_liquidation.py::test_render_markdown_liquidated_section_only_when_present",
     "backtest/tests/test_run_backtest_cli.py::test_direction_short_rejected_in_optimize_mode",

@@ -160,6 +160,51 @@ def _check_confirmation_expiry_and_cooldown():
     assert free["signal"].abs().sum() == 2
 
 
+def _check_schedule_provenance_holds_unknown_late_revised_postponed_conflicting_and_uncovered_events():
+    quotes = _quotes()
+    df = _frame(breakout=UP)
+    unknown, _ = _calendar([_event(known=None)])
+    assert _run(df, cal=unknown, quotes=quotes)["signal"].abs().sum() == 0
+    late, _ = _calendar([_event(known=RELEASE + 1)])
+    assert _reason(_run(df, cal=late, quotes=quotes), EVENT_BAR) == "event_not_known_before_release"
+    revised, _ = _calendar([_event(), _event(revision=2, known=RELEASE + H // 2, evidence="reissued")])
+    out = _run(_frame(breakout={EVENT_BAR: 100.2, EVENT_BAR + 1: 101.5}), cal=revised, quotes=quotes)
+    assert _reason(out, EVENT_BAR + 1) == "schedule_revised" and out["signal"].abs().sum() == 0
+    postponed, _ = _calendar([_event(), _event(revision=2, status="postponed", known=RELEASE - H)])
+    assert _reason(_run(df, cal=postponed, quotes=quotes), EVENT_BAR) == "event_postponed"
+    moved, _ = _calendar([_event(), _event(revision=2, ms=RELEASE + 2 * H, known=RELEASE - 10 * H)])
+    moved_out = _run(_frame(breakout={EVENT_BAR + 2: 101.4}), cal=moved, quotes=quotes)
+    assert int(np.flatnonzero(moved_out["signal"].to_numpy() == 1)[0]) == EVENT_BAR + 2
+    assert moved_out["meb_range_end_ms"].iloc[EVENT_BAR + 2] == RELEASE + 2 * H
+    conflict, stats = _calendar([_event(), _event(revision=2, known=RELEASE - H),
+                                 _event(revision=2, ms=RELEASE + H, known=RELEASE - H)])
+    assert stats["conflicting_versions"] == 1
+    assert _reason(_run(df, cal=conflict, quotes=quotes), EVENT_BAR) == "event_conflict"
+    uncovered, _ = _calendar([_event()], coverage=[{"event_type": mi.EVENT_TYPE_FOMC, "start_ms": RELEASE,
+                                                    "end_ms": RELEASE + 100 * H}])
+    assert _reason(_run(df, cal=uncovered, quotes=quotes), EVENT_BAR) == "calendar_not_covered"
+    assert _reason(_run(df, quotes=quotes, params={"event_type": mi.EVENT_TYPE_CONTROL}),
+                   EVENT_BAR) == "calendar_not_covered"
+
+
+def _check_spread_gate_holds_missing_stale_late_conflicting_and_wide_quotes():
+    df = _frame(breakout=UP)
+    assert _reason(_run(df), EVENT_BAR) == "quotes_unavailable"
+    for quotes, why in ((_quotes(skip={EVENT_BAR + 1}), "quote_missing"),
+                        (_quotes(age_ms=61_000), "quote_missing"),
+                        (_quotes(late={EVENT_BAR + 1}), "quote_missing"),
+                        (_quotes(conflict={EVENT_BAR + 1}), "quote_conflict"),
+                        (_quotes(spread=0.0006), "spread_too_wide")):
+        out = _run(df, quotes=quotes)
+        assert _reason(out, EVENT_BAR) == why and out["signal"].iloc[EVENT_BAR] == 0
+    edge = _run(df, quotes=_quotes(spread=0.0005), params={"max_spread_frac": 0.000500125})
+    assert edge["signal"].iloc[EVENT_BAR] == 1
+    ungated = _run(df, params={"spread_gate": False})
+    assert ungated["signal"].iloc[EVENT_BAR] == 1 and not ungated["meb_spread_gate"].iloc[0]
+    malformed = _run(df, quotes=_quotes(), params={"quote_sha256": "3" * 64, "quote_path": "/x.json"})
+    assert _reason(malformed, EVENT_BAR) == "quotes_malformed"
+
+
 def test_check_time_cutoff_holds_forming_and_stale_bars_and_carries_a_fresh_decision():
     quotes = _quotes()
     df = _frame(breakout=UP).iloc[:EVENT_BAR + 2]
@@ -295,6 +340,15 @@ def test_entry_rule_range_boundary_confirmation_expiry_and_cooldown(subtests):
     for check in (
             _check_mirrored_entries_record_their_evidence_and_respect_the_range_boundary,
             _check_confirmation_expiry_and_cooldown,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()
+
+
+def test_schedule_and_quote_defects_hold_the_entry_with_a_reason(subtests):
+    for check in (
+            _check_schedule_provenance_holds_unknown_late_revised_postponed_conflicting_and_uncovered_events,
+            _check_spread_gate_holds_missing_stale_late_conflicting_and_wide_quotes,
     ):
         with subtests.test(case=check.__name__.removeprefix("_check_")):
             check()

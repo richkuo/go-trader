@@ -4,6 +4,7 @@ import ast
 import bisect
 import collections
 import concurrent.futures
+import fnmatch
 import hashlib
 import io
 import json
@@ -2285,6 +2286,7 @@ SAFETY_HINTS = PROTECTED_HINTS + (
     "reconcil", "storage", "order", "recover", "update", "upgrade", "lock", "partition", "egress", "refus", "fail",
     "pause", "admission", "probe", "secret", "token", "auth", "session", "verif", "reset", "backup", "restore",
     "rollback", "deploy", "retired", "orphan", "corrupt", "state", "journal", "alert", "notif", "trade", "position",
+    "loss", "own_share", "correlat", "_marks", "marks_", "mark_price", "wallet", "capital", "leverage", "balance", "quote", "pricing", "portfolio", "execut", "sell", "buy", "cancel", "unconfirmed", "quantit", "commission", "slippage", "robinhood", "hyperliquid", "ibkr", "deribit", "okx",
 )
 RULE_DOCS = ("CLAUDE.md", "SKILL.md", "README.md", "backtest/AUDIT.md", "docs/backtesting-registry.md", "docs/POST_UPDATE_HISTORY.md")
 
@@ -2317,12 +2319,30 @@ def cmd_prune(args):
         name = r["test"] if r["lang"] == "go" else py_decl_key(r).rsplit("::", 1)[-1]
         return re.search(rf"\b{re.escape(name)}\b", rule_docs) is not None
 
+    claude = (ROOT / "CLAUDE.md").read_text()
+    guard_globs = sorted({g for g in re.findall(r"`([\w./*-]+\.(?:go|py|sh))`", claude) if not g.endswith(("/*.go", "/test_*.py"))})
+
+    def safe_path(path):
+        text = path.lower().replace("shared_", "")
+        name = path.rsplit("/", 1)[-1]
+        return any(h in text for h in SAFETY_HINTS) or any(fnmatch.fnmatch(name, g) or fnmatch.fnmatch(path, g) or path.endswith("/" + g) for g in guard_globs)
+
+    def code_file(test_file):
+        d, _, name = test_file.rpartition("/")
+        if name.endswith("_test.go"):
+            name = name[:-8] + ".go"
+        elif name.startswith("test_"):
+            name = name[5:]
+        return (d + "/" if d else "") + name
+
     def safety(r):
-        text = (r["test"] + " " + r["file"]).lower()
-        return any(h in text for h in SAFETY_HINTS)
+        return any(h in r["test"].lower() for h in SAFETY_HINTS) or safe_path(r["file"]) or safe_path(code_file(r["file"]))
+
+    def detects_safety(r):
+        return any(safe_path(m.get("file") or "") for m in r.get("mutations") or [] if m.get("outcome") == "detected")
 
     def eligible(r):
-        return not (safety(r) or r.get("gaps") or r.get("unmeasured_dependencies") or r["status"] in ("excluded", "inconclusive") or named_in_rules(r))
+        return not (r["mode"] == "py/options" or safety(r) or r.get("gaps") or r.get("unmeasured_dependencies") or r["status"] in ("excluded", "inconclusive") or named_in_rules(r))
 
     def decl(r):
         return ("go", r["test"]) if r["lang"] == "go" else ("py", py_decl_key(r))
@@ -2330,8 +2350,20 @@ def cmd_prune(args):
     members = collections.defaultdict(set)
     for rid, r in recs.items():
         members[decl(r)].add(rid)
+    def processes(rid):
+        return ((baselines.get(rid) or {}).get("coverage") or {}).get("processes")
+
+    def in_process(r):
+        p = processes(r["id"])
+        if p is None:
+            return False
+        if r["lang"] == "go":
+            return p["go"] <= 1 and p["py"] == 0 and p["sh"] == 0
+        return p["py"] <= 1 and p["go"] == 0 and p["sh"] == 0
+
     weak = {rid for rid, r in recs.items() if eligible(r) and r["status"] == "review_candidate" and r["mutations"]}
-    remove = set(weak)
+    unit = {rid for rid, r in recs.items() if eligible(r) and rid not in weak and r["status"] == "detects" and in_process(r) and not detects_safety(r)}
+    remove = weak | unit
     subsumer = {}
     for r in sorted((r for r in recs.values() if eligible(r) and r["status"] == "detects" and cov[r["id"]]), key=lambda r: (len(cov[r["id"]]), r["id"])):
         rid = r["id"]
@@ -2363,13 +2395,15 @@ def cmd_prune(args):
     plan = {}
     for rid in sorted(remove):
         r = recs[rid]
-        if rid in weak:
+        if rid in unit:
+            plan[rid] = {"rule": "unit_outside_protected", "file": r["file"], "declaration": decl(r)[1], "evidence": {"processes": processes(rid), "outcomes": r["outcomes"]}}
+        elif rid in weak:
             plan[rid] = {"rule": "no_detection", "file": r["file"], "declaration": decl(r)[1], "evidence": {"outcomes": r["outcomes"], "mutations": len(r["mutations"])}}
         else:
             plan[rid] = {"rule": "subsumed", "file": r["file"], "declaration": decl(r)[1], "evidence": {"subsumed_by": subsumer[rid], "covered_sites": len(cov[rid]), "subsumer_covered_sites": len(cov[subsumer[rid]]), "detected": {m: sorted(detectors[m] - remove) for m in sorted(det[rid])}}}
-    held = sorted(rid for rid in weak | set(subsumer) if rid not in remove)
-    write_json(out / "prune.json", {"rules": {"eligible": "not excluded or inconclusive; no safety term in the test or file name (" + ", ".join(SAFETY_HINTS) + "); no measurement gap; no unmeasured dependency; not named in a rule document (" + ", ".join(RULE_DOCS) + ")", "no_detection": "an eligible review candidate with at least one completed mutation and no detection in either round", "subsumed": "an eligible detecting test whose covered sites are a subset of one kept test's covered sites, where every sampled mutant it detects is also detected by a kept test", "declaration": "a Go test function or Python test function is deleted only when every record of it is removed"}, "remove": plan, "held_by_declaration": held})
-    print(json.dumps({"no_detection": sum(p["rule"] == "no_detection" for p in plan.values()), "subsumed": sum(p["rule"] == "subsumed" for p in plan.values()), "held_by_declaration": len(held), "declarations": len({(p["file"], p["declaration"]) for p in plan.values()})}, indent=1))
+    held = sorted(rid for rid in weak | unit | set(subsumer) if rid not in remove)
+    write_json(out / "prune.json", {"rules": {"eligible": "not in a collection that CI runs by file path (options); not excluded or inconclusive; no safety term in the test name, its file path, or the code file it is named for (" + ", ".join(SAFETY_HINTS) + "); none of those files matches a file that CLAUDE.md names as a guardrail (" + ", ".join(guard_globs) + "); no measurement gap; no unmeasured dependency; not named in a rule document (" + ", ".join(RULE_DOCS) + ")", "unit_outside_protected": "an eligible detecting test that ran only in the test process (no child Go, Python, or shell process wrote coverage) and detects no mutant in a file with a safety term or a CLAUDE.md guardrail file; CLAUDE.md allows unit tests only for rare venue states, money math, paper/live parity, DB migrations, and large refactors, which the eligibility filter keeps", "no_detection": "an eligible review candidate with at least one completed mutation and no detection in either round", "subsumed": "an eligible detecting test whose covered sites are a subset of one kept test's covered sites, where every sampled mutant it detects is also detected by a kept test", "declaration": "a Go test function or Python test function is deleted only when every record of it is removed"}, "remove": plan, "held_by_declaration": held})
+    print(json.dumps({"unit_outside_protected": sum(p["rule"] == "unit_outside_protected" for p in plan.values()), "no_detection": sum(p["rule"] == "no_detection" for p in plan.values()), "subsumed": sum(p["rule"] == "subsumed" for p in plan.values()), "held_by_declaration": len(held), "declarations": len({(p["file"], p["declaration"]) for p in plan.values()})}, indent=1))
 
 
 def cmd_removals(args):

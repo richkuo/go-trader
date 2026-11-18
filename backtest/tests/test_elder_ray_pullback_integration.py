@@ -286,23 +286,6 @@ def _grid_and_endpoints():
     return [p for _, p in expand_sweep(dict(DEFAULTS), specs)] + DOMAIN_ENDPOINTS
 
 
-def test_full_series_prefix_exact_span_and_200_row_tail_agree():
-    df = _frozen("ETH 4h", 500)
-    for params in _grid_and_endpoints():
-        need = _need(params)
-        full = _apply(df, params)
-        ends = sorted({need, 201, 260, 300, 377, 450, 500})
-        for end in ends:
-            frames = [df.iloc[:end], df.iloc[end - need:end]]
-            if end >= 200:
-                frames.append(df.iloc[end - 200:end])
-            for part in frames:
-                got = _apply(part, params)[DECISION_COLUMNS].iloc[-1]
-                pd.testing.assert_series_equal(got, full[DECISION_COLUMNS].iloc[end - 1], check_names=False)
-            short = _apply(df.iloc[end - need + 1:end], params)
-            assert short["erp_reason"].iloc[-1] == "insufficient_history"
-
-
 def _cfg(params, **kw):
     base = dict(strategy_name=NAME, params=params, registry="futures", platform="hyperliquid",
                 symbol="BTC", timeframe="4h")

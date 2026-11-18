@@ -46,6 +46,27 @@ def _iso(ms):
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def test_hyperliquid_range_pages_with_opening_times_inside_exact_intraday_bounds(tmp_path):
+    rows = _bars(T0, 30)
+    start = T0 + 5 * H + 30 * 60_000
+    end = T0 + 20 * H + 15 * 60_000
+    proc, calls = _run(tmp_path, {"hl": _hl_rows(rows), "hl_page_cap": 4},
+                       ["--platform", "hyperliquid", "--type", "perps", "--symbol", "ETH", "--timeframe", "1h",
+                        "--from", _iso(start), "--to", _iso(end), "--limit", "50"])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = _out(proc)
+    assert out["source"] == "hyperliquid:adapter:range"
+    times = [c["time"] * 1000 for c in out["candles"]]
+    assert times == [T0 + i * H for i in range(6, 21)]
+    assert out["range"]["timestamp"] == "open"
+    assert out["range"]["from_ms"] == start and out["range"]["to_ms"] == end
+    assert out["range"]["truncated"] is False
+    hl_calls = [c for c in calls if c[0] == "hl"]
+    assert hl_calls[0][3] == start
+    assert [c[3] for c in hl_calls] == sorted(c[3] for c in hl_calls)
+    assert len(hl_calls) == out["range"]["requests"] >= 4
+
+
 def test_hyperliquid_range_stops_on_a_stalled_page(tmp_path):
     rows = _bars(T0, 10)
     proc, calls = _run(tmp_path, {"hl": _hl_rows(rows), "hl_stall": True},

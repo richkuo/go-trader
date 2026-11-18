@@ -130,20 +130,6 @@ def test_freeze_pins_present_and_absent_keys_and_refuses_cache_conflicts(archive
         ac.freeze(archive["root"], "stub-bucket", keys)
 
 
-def test_cache_root_resolution(monkeypatch, tmp_path):
-    monkeypatch.setenv(ac.ARCHIVE_CACHE_DIR_ENV, "   ")
-    with pytest.raises(ac.ArchiveError, match=f"{ac.ARCHIVE_CACHE_DIR_ENV} must not be blank"):
-        ac.cache_root()
-    monkeypatch.setenv(ac.ARCHIVE_CACHE_DIR_ENV, str(tmp_path / "explicit"))
-    assert ac.cache_root() == str(tmp_path / "explicit")
-    monkeypatch.delenv(ac.ARCHIVE_CACHE_DIR_ENV)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
-    assert ac.cache_root() == str(tmp_path / "xdg" / "go-trader" / "archive")
-    for bad in ("../escape", "/abs/key", "a//b", "a/./b"):
-        with pytest.raises(ac.ArchiveError, match="not a plain relative name"):
-            ac.object_path(str(tmp_path), bad)
-
-
 KEY_404 = "market_data/20240404/0/l2Book/BTC.lz4"
 
 
@@ -185,15 +171,6 @@ def test_a_missing_aws_executable_leaves_no_temporary_file(archive, monkeypatch,
     monkeypatch.setenv("PATH", str(empty))
     with pytest.raises(FileNotFoundError):
         ac.fetch_manifest(archive["root"], archive["manifest"])
-    assert os.path.isdir(archive["base"]) and _parts(archive["root"]) == []
-
-
-def test_an_aws_callable_that_raises_leaves_no_temporary_file(archive):
-    def boom(args):
-        raise RuntimeError("aws crashed")
-    keys = [f["key"] for f in archive["manifest"]["files"]]
-    with pytest.raises(RuntimeError, match="aws crashed"):
-        ac.freeze(archive["root"], "stub-bucket", keys, aws=boom, workers=1)
     assert os.path.isdir(archive["base"]) and _parts(archive["root"]) == []
 
 

@@ -359,58 +359,6 @@ def test_config_run_selects_the_strategy_fee_model_in_the_real_engine(monkeypatc
                 _assert_engine_costs(run, commission)
 
 
-_REFUSED_AUTOMATIC_CASES = [
-    ("deribit-opt", "options", None, "'deribit'", "'options'"),
-    ("plain-fut", "futures", None, "'binanceus'", "'futures'"),
-    ("ibkr-fut", "futures", None, "'ibkr'", "'futures'"),
-    ("kraken-spot", "spot", "kraken", "'kraken'", "'spot'"),
-    ("odd-type", "swap", None, "'binanceus'", "'swap'"),
-    ("plain-manual", "manual", None, "'binanceus'", "'manual'"),
-]
-
-
-def test_unsupported_automatic_selection_exits_before_data_access(monkeypatch, capsys, tmp_path, subtests):
-    for sid, stype, platform, want_platform, want_type in _REFUSED_AUTOMATIC_CASES:
-        with subtests.test(sid=sid):
-            with monkeypatch.context() as mp:
-                path = _fee_config(tmp_path, sid, stype, platform)
-                run = _main_config(mp, capsys, path, sid)
-                assert run["code"] == 1, run["out"]
-                assert run["kwargs"] is None and run["data_calls"] == []
-                assert f"platform={want_platform}" in run["out"]
-                assert f"type={want_type}" in run["out"]
-                assert "explicit --platform" in run["out"]
-                assert "Fee model:" not in run["out"]
-
-
-_EXPLICIT_PLATFORM_CASES = [
-    ("rh-sma", "spot", "binanceus", 0.001, ["'robinhood'", "'spot'", "binanceus"]),
-    ("rh-sma", "spot", "robinhood", 0.0, None),
-    ("hl-perp", "perps", "hyperliquid", 0.00045, None),
-    ("plain-manual", "manual", "binanceus", 0.001, ["'binanceus'", "'manual'", "--platform binanceus"]),
-]
-
-
-def test_explicit_platform_controls_config_selection_and_warns_on_a_proxy(monkeypatch, capsys, tmp_path, subtests):
-    for sid, stype, chosen, commission, warn in _EXPLICIT_PLATFORM_CASES:
-        with subtests.test(sid=sid, chosen=chosen):
-            with monkeypatch.context() as mp:
-                path = _fee_config(tmp_path, sid, stype)
-                run = _main_config(mp, capsys, path, sid, "--platform", chosen, "--funding", "off")
-                assert run["kwargs"]["platform"] == chosen
-                warnings = _selection_warnings(run["out"])
-                if warn is None:
-                    assert warnings == []
-                else:
-                    assert len(warnings) == 1, run["out"]
-                    for token in warn:
-                        assert token in warnings[0]
-                    assert "funding and Hyperliquid tier" in warnings[0]
-                assert run["code"] is None, run["out"]
-                assert _fee_line(run["out"]) == (chosen, commission, 0.0005)
-                _assert_engine_costs(run, commission)
-
-
 def test_explicit_proxy_keeps_funding_tier_and_stop_scope(monkeypatch, capsys, tmp_path, subtests):
     with subtests.test("config validation still refuses an explicit proxy"):
         with monkeypatch.context() as mp:

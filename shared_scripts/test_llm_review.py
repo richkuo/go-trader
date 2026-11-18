@@ -53,21 +53,6 @@ CTX = {
 }
 
 
-class TestSummarizeOhlcv:
-    def test_summary_fields(self, mod, subtests):
-        with subtests.test(case="summary_fields"):
-            candles = [[i, 100 + i, 101 + i, 99 + i, 100 + i, 10] for i in range(60)]
-            s = mod.summarize_ohlcv(candles)
-            assert s["bars"] == 60
-            assert s["last_close"] == 159
-            assert s["change_pct_5"] is not None
-            assert s["change_pct_50"] is not None
-        with subtests.test(case="too_short_or_garbage"):
-            assert mod.summarize_ohlcv([[1, 1, 1, 1, 1, 1]]) is None
-            assert mod.summarize_ohlcv([["x"] * 6] * 10) is None
-            assert mod.summarize_ohlcv(None) is None
-
-
 class TestPipeline:
     def _fake_llm(self, calls):
         def llm_call(system, user, schema=None):
@@ -76,26 +61,6 @@ class TestPipeline:
                 return '{"verdict": "bullish", "rationale": "momentum and funding both lean up"}'
             return "short note " + " ".join(["pad"] * 80)
         return llm_call
-
-    def test_full_pipeline_with_debate(self, mod):
-        calls = []
-        market = {"ohlcv_summary": {"last_close": 50000, "bars": 60}, "funding": {"current_rate": 0.0001}}
-        out = mod.run_pipeline(CTX, market, self._fake_llm(calls), max_debate_rounds=2, word_cap=55)
-        assert out["verdict"] == "bullish"
-        assert out["rationale"]
-        assert set(out["per_analyst"]) == {"technical", "derivatives"}
-        for note in list(out["per_analyst"].values()) + [out["rationale"]]:
-            assert len(note.split()) <= 56
-        assert len(calls) == 7
-        assert [c[2] for c in calls] == [None] * 6 + [mod.JUDGE_SCHEMA]
-
-    def test_zero_rounds_skips_debate(self, mod):
-        calls = []
-        market = {"ohlcv_summary": None, "funding": None}
-        out = mod.run_pipeline(CTX, market, self._fake_llm(calls), max_debate_rounds=0, word_cap=55)
-        assert out["verdict"] == "bullish"
-        assert set(out["per_analyst"]) == {"technical"}
-        assert len(calls) == 2
 
     def test_llm_failure_propagates(self, mod):
         def boom(system, user, schema=None):

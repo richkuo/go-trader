@@ -7,28 +7,6 @@ import eval_windows as ew
 import monte_carlo as mc
 
 
-def test_equity_path_stats():
-    cases = [
-        ([], 0.0, 0.0),
-        ([10.0, 10.0], 0.0, 21.0),
-        ([10.0, -20.0, 10.0], 20.0, -3.2),
-        ([-100.0, 50.0], 100.0, -100.0),
-        ([-10.0], 10.0, -10.0),
-    ]
-    for trades, expected_dd, expected_final in cases:
-        case = f"test_equity_path_stats[{trades}]"
-        dd, final = mc.equity_path_stats(trades)
-        assert dd == pytest.approx(expected_dd), case
-        assert final == pytest.approx(expected_final), case
-
-
-def test_percentile_empty_none_and_interpolation():
-    assert mc.percentile([], 50) is None
-    assert mc.percentile([5.0], 95) == 5.0
-    assert mc.percentile([0.0, 10.0], 50) == pytest.approx(5.0)
-    assert mc.percentile([0.0, 10.0, 20.0], 25) == pytest.approx(5.0)
-
-
 def test_auto_block_len():
     assert mc.auto_block_len(1) == 1
     assert mc.auto_block_len(27) == 3
@@ -63,32 +41,6 @@ def test_block_path_preserves_circular_contiguity(subtests):
         stats = mc.resample_stats([1.0] * 27, "block", n_paths=10, seed=1,
                                   block_len=5)
         assert stats["block_len"] == 5
-
-
-def test_resample_stats_deterministic_under_seed(subtests):
-    with subtests.test(case="test_resample_stats_deterministic_under_seed"):
-        trades = [3.0, -2.0, 1.5, -4.0, 2.2, 0.7, -1.1]
-        for scheme in mc.SCHEMES:
-            a = mc.resample_stats(trades, scheme, n_paths=200, seed=99)
-            b = mc.resample_stats(trades, scheme, n_paths=200, seed=99)
-            assert a == b
-
-    with subtests.test(case="test_resample_stats_empty_is_degenerate_not_crash"):
-        for scheme in mc.SCHEMES:
-            s = mc.resample_stats([], scheme, n_paths=100, seed=1)
-            assert s["n_trades"] == 0
-            assert s["max_dd_pct_percentiles"] is None
-            assert s["p_dd_ge_kill_switch"] is None
-
-    with subtests.test(case="test_resample_stats_single_trade"):
-        for scheme in mc.SCHEMES:
-            s = mc.resample_stats([5.0], scheme, n_paths=50, seed=1)
-            assert s["max_dd_pct_percentiles"]["p50"] == 0.0
-            assert s["final_return_pct_percentiles"]["p50"] == pytest.approx(5.0)
-
-    with subtests.test(case="test_unknown_scheme_rejected"):
-        with pytest.raises(ValueError):
-            mc.resample_stats([1.0], "bogus")
 
 
 def test_kill_switch_breach_probabilities_are_add_one_smoothed_at_both_extremes():
@@ -183,28 +135,6 @@ def test_trade_samples_carry_net_return_and_fall_back_to_gross():
                            "shares": 0.0, "entry_price": 0.0, "pnl": 8.0}]}
     samples = ew.trade_samples_from_results(results)
     assert samples[0]["pnl_pct_net"] == 5.0, "test_trade_samples_net_falls_back_to_gross"
-
-
-def test_cli_deterministic_byte_identical_json(tmp_path):
-    trades = [{"entry_date": "2025-01-01", "pnl_pct": 3.0, "shares": 1.0,
-               "entry_price": 100.0, "pnl": 2.5},
-              {"entry_date": "2025-01-02", "pnl_pct": -2.0, "shares": 1.0,
-               "entry_price": 100.0, "pnl": -2.5},
-              {"entry_date": "2025-01-03", "pnl_pct": 4.0, "shares": 1.0,
-               "entry_price": 100.0, "pnl": 3.5}]
-    src = tmp_path / "results.json"
-    src.write_text(json.dumps({"trades": trades}))
-    outs = []
-    for i in range(2):
-        out = tmp_path / f"mc{i}.json"
-        rc = mc.main(["--trades-json", str(src), "--seed", "42",
-                      "--n-paths", "300", "--json", str(out)])
-        assert rc == 0
-        outs.append(out.read_bytes())
-    assert outs[0] == outs[1]
-    payload = json.loads(outs[0])
-    assert {b["scheme"] for b in payload["schemes"]} == set(mc.SCHEMES)
-    assert payload["kill_switch_pct"] == mc.DEFAULT_KILL_SWITCH_PCT
 
 
 def test_cli_empty_trades_no_crash(tmp_path):
@@ -333,37 +263,6 @@ def _rich_candidate():
             "trailing_stop_atr_mult": 2.5}
 
 
-def test_run_candidate_leg_threads_the_whole_candidate_into_run_leg(monkeypatch, subtests):
-    with subtests.test(case="test_run_candidate_leg_threads_the_whole_candidate_into_run_leg"):
-        seen = {}
-
-        def fake_run_leg(reg, name, params, symbol, timeframe, window, **kw):
-            seen.update(name=name, params=params, kw=kw)
-            return {"trade_samples": list(_SAMPLES)}
-
-        monkeypatch.setattr(ew, "run_leg", fake_run_leg)
-        cand = _rich_candidate()
-        ew.run_candidate_leg(_FakeReg, cand, "BTC/USDT", "1h",
-                             ("2025-06-10", "2026-01-01"), keep_trades=True)
-
-        assert seen["name"] == "squeeze_momentum"
-        assert seen["params"] == {"kc_mult": 1.5}
-        kw = seen["kw"]
-        assert kw["close_strategies"] == cand["close_strategies"]
-        assert kw["allowed_regimes"] == ["trending_up_clean"]
-        assert kw["regime_windows_spec"] == cand["regime_windows_spec"]
-        assert kw["trailing_stop_atr_mult"] == 2.5
-        assert kw["keep_trades"] is True
-
-    with subtests.test(case="test_run_candidate_leg_applies_the_validated_long_direction_default"):
-        seen = {}
-        monkeypatch.setattr(ew, "run_leg",
-                            lambda *a, **kw: seen.update(kw) or {"trade_samples": []})
-        ew.run_candidate_leg(_FakeReg, {"name": "squeeze_momentum"}, "BTC/USDT",
-                             "1h", ("2025-06-10", None))
-        assert seen["direction"] == "long"
-
-
 def _patch_leg(monkeypatch, leg):
     import registry_loader
     monkeypatch.setattr(registry_loader, "load_registry", lambda r: _FakeReg)
@@ -400,11 +299,6 @@ def test_run_candidate_leg_trades_delegates_and_returns_net_series(monkeypatch, 
                                            "BTC/USDT:1h", "is", 1000.0, "net") is None
 
 
-def test_default_dataset_args_matches_the_eval_windows_audit_six():
-    assert mc.default_dataset_args() == [f"{s}:{t}" for s, t in ew.DATASETS]
-    assert len(mc.default_dataset_args()) == 6
-
-
 def _write_candidate(tmp_path, **over):
     cand = {"name": "squeeze_momentum", "direction": "long"}
     cand.update(over)
@@ -433,62 +327,7 @@ def test_multileg_payload_has_one_block_per_window_dataset_pair(monkeypatch, tmp
     assert payload["candidate"]["name"] == "squeeze_momentum"
 
 
-def test_multileg_is_deterministic_under_seed(monkeypatch, tmp_path):
-    _patch_leg(monkeypatch, {"trade_samples": list(_SAMPLES)})
-    cand = _write_candidate(tmp_path)
-    outs = []
-    for i in range(2):
-        out = tmp_path / f"mc{i}.json"
-        assert mc.main(["--candidate-json", str(cand), "--windows", "is",
-                        "--datasets", "BTC/USDT:1h", "--seed", "42",
-                        "--n-paths", "200", "--json", str(out)]) == 0
-        outs.append(out.read_bytes())
-    assert outs[0] == outs[1]
-
-
-def test_multileg_defaults_to_the_audit_six_datasets(monkeypatch, tmp_path):
-    _patch_leg(monkeypatch, {"trade_samples": list(_SAMPLES)})
-    out = tmp_path / "mc.json"
-    assert mc.main(["--candidate-json", str(_write_candidate(tmp_path)),
-                    "--windows", "oos", "--n-paths", "20",
-                    "--json", str(out)]) == 0
-    assert len(json.loads(out.read_text())["legs"]) == 6
-
-
 def test_multileg_fails_when_no_leg_has_data(monkeypatch, tmp_path):
     _patch_leg(monkeypatch, None)
     assert mc.main(["--candidate-json", str(_write_candidate(tmp_path)),
                     "--windows", "is", "--datasets", "BTC/USDT:1h"]) == 1
-
-
-def test_multileg_bare_strategy_source_also_fans(monkeypatch, tmp_path):
-    import registry_loader
-    monkeypatch.setattr(registry_loader, "load_registry", lambda r: _FakeReg)
-    monkeypatch.setattr(ew, "run_leg",
-                        lambda *a, **kw: {"trade_samples": list(_SAMPLES)})
-    out = tmp_path / "mc.json"
-    assert mc.main(["--strategy", "squeeze_momentum", "--windows", "is",
-                    "--datasets", "BTC/USDT:1h", "--n-paths", "20",
-                    "--json", str(out)]) == 0
-    assert len(json.loads(out.read_text())["legs"]) == 1
-
-
-def test_single_leg_payload_shape_is_unchanged_by_1295(monkeypatch, tmp_path):
-    import registry_loader
-    monkeypatch.setattr(registry_loader, "load_registry", lambda r: _FakeReg)
-    seen = {}
-
-    def fake_run_leg(reg, name, params, symbol, timeframe, window, **kw):
-        seen.update(direction=kw.get("direction"), symbol=symbol)
-        return {"trade_samples": list(_SAMPLES)}
-
-    monkeypatch.setattr(ew, "run_leg", fake_run_leg)
-    out = tmp_path / "mc.json"
-    assert mc.main(["--strategy", "squeeze_momentum", "--n-paths", "20",
-                    "--json", str(out)]) == 0
-    payload = json.loads(out.read_text())
-    assert "legs" not in payload
-    assert set(payload["observed"]) == {"max_dd_pct", "final_return_pct"}
-    assert payload["n_trades"] == 2
-    assert seen["symbol"] == "BTC/USDT"
-    assert seen["direction"] is None

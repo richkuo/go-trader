@@ -1,5 +1,6 @@
 import contextlib
 import itertools
+import math
 import os
 
 import numpy as np
@@ -136,6 +137,92 @@ def test_every_grid_combination_validates_and_the_largest_support_fits_the_candl
             check()
 
 
+def _check_bullish_divergence_arms_after_confirmation_and_enters_once_on_the_strict_reclaim():
+    df = _frame(_long_closes())
+    out = _run(df)
+    assert _entries(out) == {ENTRY_ROW: 1}
+    row = out.iloc[ENTRY_ROW]
+    assert row["obvd_reason"] == "entry_long"
+    assert row["obvd_long_pivot1_price"] == 95.0 and row["obvd_long_pivot2_price"] == 94.0
+    assert row["obvd_long_pivot1_ts_ms"] == df.index[P_ROW].value // 1_000_000
+    assert row["obvd_long_confirm_ts_ms"] == df.index[CONFIRM_ROW].value // 1_000_000
+    assert row["obvd_long_signed_sum"] == 26.0 and row["obvd_long_abs_sum"] == 34.0
+    assert row["obvd_long_divergence"] == pytest.approx(26.0 / 34.0, abs=1e-15)
+    assert row["obvd_long_reclaim"] == 99.0
+    assert row["obvd_long_obv2"] - row["obvd_long_obv1"] == 26.0
+    assert out["obvd_reason"].iloc[CONFIRM_ROW] == "setup_armed"
+    assert out["obvd_reason"].iloc[CONFIRM_ROW + 1] == "awaiting_reclaim"
+    assert (out["obvd_long_state"].iloc[ENTRY_ROW + 1:ENTRY_ROW + 3] == 9).all()
+    assert out["obvd_reason"].iloc[CONFIRM_ROW - 1] == "no_setup"
+
+
+def _check_bearish_mirror_enters_short():
+    out = _run(_mirror(_frame(_long_closes())))
+    assert _entries(out) == {ENTRY_ROW: -1}
+    row = out.iloc[ENTRY_ROW]
+    assert row["obvd_reason"] == "entry_short"
+    assert row["obvd_short_divergence"] == pytest.approx(-26.0 / 34.0, abs=1e-15)
+    assert row["obvd_short_reclaim"] == 101.0
+
+
+def test_mirrored_divergences_enter_once_on_the_strict_reclaim_with_their_evidence(subtests):
+    for label, check in (
+        ("bullish_divergence_arms_after_confirmation_and_enters_once_on_the_strict_reclaim", _check_bullish_divergence_arms_after_confirmation_and_enters_once_on_the_strict_reclaim),
+        ("bearish_mirror_enters_short", _check_bearish_mirror_enters_short),
+    ):
+        with subtests.test(case=label):
+            check()
+
+
+def _check_constant_rising_and_falling_input_never_enters():
+    for label, closes, vols in (("constant", [100.0] * 80, None),
+                                ("rising", list(np.linspace(100.0, 180.0, 80)), None),
+                                ("falling", list(np.linspace(180.0, 100.0, 80)), None)):
+        with _case(label):
+            out = _run(_frame(closes, vols))
+            assert _entries(out) == {}
+            assert set(out["obvd_reason"].iloc[SUPPORT - 1:]) <= {"no_setup", "no_pivot_pair"}
+
+
+def _check_equal_pivot_prices_hold():
+    body = list(BODY)
+    body[Q_ROW - 31] = 97.0
+    body[Q_ROW - 30] = 96.0
+    out = _run(_frame(_long_closes(body)))
+    assert _entries(out) == {}
+    assert out["obvd_reason"].iloc[CONFIRM_ROW] == "no_price_divergence"
+
+
+def _check_equal_indicator_values_hold_and_the_ablation_ignores_them():
+    closes = _long_closes()
+    vols = _volumes(closes)
+    for i in range(33, 36):
+        vols[i] = 1.0
+    for i in range(36, 40):
+        vols[i] = 0.75
+    df = _frame(closes, vols)
+    out = _run(df)
+    assert out["obvd_long_signed_sum"].iloc[CONFIRM_ROW] == 0.0
+    assert out["obvd_reason"].iloc[CONFIRM_ROW] == "volume_not_confirmed"
+    assert _entries(out) == {}
+    ablation = _run(df, volume_test=False)
+    assert _entries(ablation) == {ENTRY_ROW: 1}
+
+
+def _check_falling_indicator_blocks_the_long_and_the_ablation_keeps_it():
+    df = _frame(_long_closes(), _volumes(_long_closes(), up=1.0, down=10.0))
+    out = _run(df)
+    assert out["obvd_long_divergence"].iloc[CONFIRM_ROW] < 0
+    assert _entries(out) == {}
+    assert _entries(_run(df, volume_test=False)) == {ENTRY_ROW: 1}
+
+
+def _check_threshold_is_strict():
+    for threshold, expected in ((0.5, {}), (0.49, {ENTRY_ROW: 1})):
+        with _case(threshold):
+            _threshold_is_strict(threshold, expected)
+
+
 def _threshold_is_strict(threshold, expected):
     closes = _long_closes()
     vols = _volumes(closes)
@@ -146,6 +233,76 @@ def _threshold_is_strict(threshold, expected):
     out = _run(_frame(closes, vols), volume_threshold=threshold)
     assert out["obvd_long_divergence"].iloc[CONFIRM_ROW] == 0.5
     assert _entries(out) == expected
+
+
+def _check_zero_volume_span_holds_even_for_the_ablation():
+    closes = _long_closes()
+    vols = _volumes(closes)
+    for i in range(33, 40):
+        vols[i] = 0.0
+    df = _frame(closes, vols)
+    for volume_test in (True, False):
+        out = _run(df, volume_test=volume_test)
+        assert out["obvd_reason"].iloc[CONFIRM_ROW] == "zero_volume_span"
+        assert _entries(out) == {}
+
+
+def _check_nearest_pivot_is_selected_within_inclusive_separation_bounds():
+    df = _frame(_long_closes())
+    assert _entries(_run(df)) == {ENTRY_ROW: 1}
+    assert _entries(_run(df, min_separation=7)) == {ENTRY_ROW: 1}
+    assert _entries(_run(df, max_separation=7)) == {ENTRY_ROW: 1}
+    farther = _run(df, min_separation=8)
+    assert farther["obvd_long_pivot1_price"].iloc[CONFIRM_ROW] == 90.0
+    assert farther["obvd_reason"].iloc[CONFIRM_ROW] == "no_price_divergence"
+    assert _entries(farther) == {}
+    too_close = _run(df, max_separation=6, min_separation=3)
+    assert too_close["obvd_reason"].iloc[CONFIRM_ROW] == "no_pivot_pair"
+    assert _entries(too_close) == {}
+
+
+def _check_setup_expiry_is_inclusive():
+    for expiry, expected in ((1, {}), (2, {ENTRY_ROW: 1})):
+        with _case(expiry):
+            assert _entries(_run(_frame(_long_closes()), setup_expiry=expiry)) == expected
+
+
+def _check_a_newer_pivot_replaces_the_setup():
+    tail = [98.0, 96.0, 97.0, 98.0, 100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
+    body = BODY[:-2]
+    out = _run(_frame(_long_closes(body, tail)))
+    replacement_confirm = CONFIRM_ROW + 4
+    assert out["obvd_long_pivot2_price"].iloc[replacement_confirm] == 95.0
+    assert out["obvd_reason"].iloc[replacement_confirm] == "no_price_divergence"
+    assert _entries(out) == {}
+    unreplaced = _run(_frame(_long_closes(body, [98.0, 98.0, 98.0, 98.0, 100.0] + tail[5:])))
+    assert _entries(unreplaced) == {CONFIRM_ROW + 5: 1}
+
+
+def _check_confirmation_uses_only_closed_right_side_bars():
+    df = _frame(_long_closes())
+    for cut in range(Q_ROW, CONFIRM_ROW):
+        out = _run(df.iloc[:cut + 1])
+        assert out["obvd_long_state"].iloc[-1] not in (2, 3)
+        assert out["obvd_long_pivot2_price"].iloc[-1] != 94.0
+    assert _run(df.iloc[:CONFIRM_ROW + 1])["obvd_long_state"].iloc[-1] == 2
+
+
+def test_entry_rule_boundaries_hold_or_enter_with_their_reasons(subtests):
+    for label, check in (
+        ("constant_rising_and_falling_input_never_enters", _check_constant_rising_and_falling_input_never_enters),
+        ("equal_pivot_prices_hold", _check_equal_pivot_prices_hold),
+        ("equal_indicator_values_hold_and_the_ablation_ignores_them", _check_equal_indicator_values_hold_and_the_ablation_ignores_them),
+        ("falling_indicator_blocks_the_long_and_the_ablation_keeps_it", _check_falling_indicator_blocks_the_long_and_the_ablation_keeps_it),
+        ("threshold_is_strict", _check_threshold_is_strict),
+        ("zero_volume_span_holds_even_for_the_ablation", _check_zero_volume_span_holds_even_for_the_ablation),
+        ("nearest_pivot_is_selected_within_inclusive_separation_bounds", _check_nearest_pivot_is_selected_within_inclusive_separation_bounds),
+        ("setup_expiry_is_inclusive", _check_setup_expiry_is_inclusive),
+        ("a_newer_pivot_replaces_the_setup", _check_a_newer_pivot_replaces_the_setup),
+        ("confirmation_uses_only_closed_right_side_bars", _check_confirmation_uses_only_closed_right_side_bars),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 INVALID_ROWS = [
@@ -214,6 +371,54 @@ def test_input_defects_hold_with_a_reason_and_recover(subtests):
         ("invalid_row_inside_the_support_holds_and_decisions_recover", _check_invalid_row_inside_the_support_holds_and_decisions_recover),
         ("timestamp_defects_hold_until_they_leave_the_support", _check_timestamp_defects_hold_until_they_leave_the_support),
         ("missing_columns_or_timestamps_hold_without_throwing", _check_missing_columns_or_timestamps_hold_without_throwing),
+    ):
+        with subtests.test(case=label):
+            check()
+
+
+def _check_shifted_accumulator_origin_and_future_bars_leave_decisions_unchanged():
+    df = _market()
+    base = _run(df, **{"left_span": 3, "right_span": 3, "min_separation": 5, "max_separation": 40,
+                       "setup_expiry": 12})
+    support = int(base["obvd_support_bars"].iloc[0])
+    prefix = _market(150, seed=FIXTURE_SEED + 1).copy()
+    prefix.index = df.index[0] - pd.Timedelta(hours=4) * np.arange(150, 0, -1)
+    shifted = _run(pd.concat([prefix, df]), left_span=3, right_span=3, min_separation=5, max_separation=40,
+                   setup_expiry=12).iloc[150:]
+    cols = ["signal", "obvd_reason", "obvd_long_divergence", "obvd_short_divergence",
+            "obvd_long_reclaim", "obvd_short_reclaim"]
+    tail = slice(support - 1, None)
+    pd.testing.assert_frame_equal(base[cols].iloc[tail].reset_index(drop=True),
+                                  shifted[cols].iloc[tail].reset_index(drop=True))
+    offsets = (shifted["obv"] - base["obv"]).iloc[tail].dropna()
+    assert np.allclose(offsets, offsets.iloc[0], rtol=0, atol=1e-6)
+    assert (base["signal"] != 0).sum() > 0
+    future = df.copy()
+    future.iloc[600:, future.columns.get_loc("volume")] *= 7.0
+    changed = _run(future, left_span=3, right_span=3, min_separation=5, max_separation=40, setup_expiry=12)
+    pd.testing.assert_frame_equal(base[cols].iloc[:600], changed[cols].iloc[:600])
+
+
+def _check_full_series_every_prefix_and_200_row_tail_agree():
+    df = _market(520)
+    full = _run(df)
+    support = int(full["obvd_support_bars"].iloc[0])
+    for end in range(support, len(df) + 1):
+        prefix = _run(df.iloc[:end])
+        assert prefix["signal"].iloc[-1] == full["signal"].iloc[end - 1]
+        assert prefix["obvd_reason"].iloc[-1] == full["obvd_reason"].iloc[end - 1]
+        tail = _run(df.iloc[max(0, end - 200):end])
+        assert tail["signal"].iloc[-1] == full["signal"].iloc[end - 1]
+        for col in ("obvd_long_divergence", "obvd_short_divergence", "obvd_long_reclaim", "obvd_short_reclaim"):
+            a, b = tail[col].iloc[-1], full[col].iloc[end - 1]
+            assert (math.isnan(a) and math.isnan(b)) or a == b
+    assert set(full["signal"]) == {-1, 0, 1}
+
+
+def test_decisions_ignore_the_accumulator_origin_future_bars_and_rows_before_the_window(subtests):
+    for label, check in (
+        ("shifted_accumulator_origin_and_future_bars_leave_decisions_unchanged", _check_shifted_accumulator_origin_and_future_bars_leave_decisions_unchanged),
+        ("full_series_every_prefix_and_200_row_tail_agree", _check_full_series_every_prefix_and_200_row_tail_agree),
     ):
         with subtests.test(case=label):
             check()

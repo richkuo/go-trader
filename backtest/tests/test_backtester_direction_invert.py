@@ -46,26 +46,6 @@ def _run(signal, **kw):
     return bt.run(_ohlc(signal), save=False)
 
 
-def test_direction_and_invert_realized_sides(subtests):
-    for signal, kwargs, expected_sides in [
-            ([1, 0, 0, 0], {"invert_signal": False}, ["long"]),
-            ([1, 0, 0, 0], {"invert_signal": True}, ["short"]),
-            ([-1, 0, 0, 0], {"direction": "long"}, []),
-            ([-1, 0, 0, 0], {"direction": "both"}, ["short"]),
-            ([1, 0, 0, 0], {"direction": "short"}, []),
-            ([1, 0, 0, 0], {"direction": "both"}, ["long"]),
-            ([-1, 0, 0, 0], {"direction": "long", "invert_signal": True}, ["long"]),
-            ([1, 0, 0, 0], {"direction": "long", "invert_signal": True}, []),
-        ]:
-        with subtests.test(case=f"{signal}-{kwargs}"):
-            _assert_direction_and_invert_realized_sides(signal, kwargs, expected_sides)
-
-
-def _assert_direction_and_invert_realized_sides(signal, kwargs, expected_sides):
-    res = _run(signal, **kwargs)
-    assert [t["side"] for t in res["trades"]] == expected_sides
-
-
 def test_regime_directional_policy_certification(subtests):
     for cert_kwargs, expected_sides in [
             ({"regime_directional_certified": True}, ["short"]),

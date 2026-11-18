@@ -173,6 +173,73 @@ func quoteReplayMustComplete(t *testing.T, out quoteReplayOutput, code int) {
 	}
 }
 
+func TestQuoteReplayRunsThePolicyThroughTheRealCoordinator(t *testing.T) {
+	var calls atomic.Int64
+	prev := http.DefaultTransport
+	http.DefaultTransport = quoteReplayCountingTransport{&calls}
+	defer func() { http.DefaultTransport = prev }()
+	dir := quoteReplayTempDir(t)
+	spec := quoteReplayTestSpec(t, dir, defaultQuoteReplayMarket(), nil)
+	out, code := runQuoteReplayForTest(t, spec)
+	quoteReplayMustComplete(t, out, code)
+	if calls.Load() != 0 || out.LotFetches != 0 {
+		t.Fatalf("the replay made %d HTTP requests and %d metadata fetches", calls.Load(), out.LotFetches)
+	}
+	if !out.Scored || len(out.Decisions) != out.DeadlinesTotal || len(out.Fills) == 0 {
+		t.Fatalf("scored %v (%v), %d decisions of %d, %d fills", out.Scored, out.Unscored, len(out.Decisions), out.DeadlinesTotal, len(out.Fills))
+	}
+	quoteReplayCheckInvariants(t, spec, out)
+	recs := quoteReplayDecisionRecords(t, out)
+	states := map[int]bool{}
+	forms := map[string]bool{}
+	kept := 0
+	for _, rec := range recs {
+		states[mustQuoteRat(rec.Inventory).Sign()] = true
+		forms[rec.Outcome.Form] = true
+		for _, why := range rec.Outcome.Refresh {
+			if strings.HasPrefix(why, "kept") {
+				kept++
+			}
+		}
+	}
+	if !states[0] || !states[1] || !states[-1] {
+		t.Fatalf("the run did not visit flat, long and short inventory: %v", states)
+	}
+	if !forms[quotePolicyFormPair] || !forms[quotePolicyFormExit] || kept == 0 {
+		t.Fatalf("forms %v, kept identities %d", forms, kept)
+	}
+	waits := 0
+	for _, rec := range recs {
+		matched := quoteIncreaseHoldMatches(rec.PreviousHolds)
+		if len(matched) > 0 && rec.Outcome.Form == quotePolicyFormPair {
+			t.Fatalf("decision %d kept the pair form under classified holds %v", rec.DeadlineMs, matched)
+		}
+		if len(matched) == 0 && !rec.SettlementHeld && rec.Verdict.Status == quoteVerdictHealthy && rec.Outcome.Form == quotePolicyFormReducing {
+			t.Fatalf("decision %d chose the reducing form with no classified hold (previous %v)", rec.DeadlineMs, rec.PreviousHolds)
+		}
+		for _, h := range rec.PreviousHolds {
+			if strings.Contains(h, "is not resolved; the replacement waits") && rec.Outcome.Form == quotePolicyFormPair {
+				waits++
+			}
+		}
+	}
+	if waits == 0 {
+		t.Fatal("no generation wait was observed staying in the pair form")
+	}
+	var funding []quoteReplayTradeRecord
+	for _, tr := range out.Trades {
+		if tr.TradeType == TradeTypeFunding {
+			funding = append(funding, tr)
+		}
+	}
+	if len(funding) != 1 || mustQuoteRat(out.Book.Funding).Sign() == 0 {
+		t.Fatalf("funding rows %+v, exact funding %s", funding, out.Book.Funding)
+	}
+	if out.Timing == nil || out.Timing.Deadlines != out.DeadlinesTotal || out.Timing.MaxNs <= 0 {
+		t.Fatalf("timing %+v", out.Timing)
+	}
+}
+
 type quoteReplayCountingTransport struct{ n *atomic.Int64 }
 
 func (c quoteReplayCountingTransport) RoundTrip(*http.Request) (*http.Response, error) {

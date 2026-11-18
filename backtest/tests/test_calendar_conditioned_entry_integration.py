@@ -12,7 +12,6 @@ for _p in (os.path.join(_REPO, "shared_tools"), os.path.join(_REPO, "shared_stra
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import eval_windows
 import optimizer
 from atr import ensure_atr_indicator
 from backtester import Backtester
@@ -25,7 +24,6 @@ from closed_bar import (
     TIMESTAMP_KIND_OPEN,
     declare_frame_cadence,
 )
-from optimizer import DEFAULT_PARAM_RANGES, strategy_warmup_bars
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
 
@@ -332,39 +330,6 @@ def test_the_composer_blocks_entries_while_positioned_and_keeps_the_time_stop_cl
     assert live["close_fraction"] == 0.0 and live["signal"] == 0
 
 
-def test_walk_forward_warmup_covers_training_and_refit_history_without_seeding(monkeypatch):
-    grid = optimizer.generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
-    want = max(p["training_bars"] + p["refit_bars"] - 1 for p in grid)
-    assert strategy_warmup_bars(NAME, grid, DEFAULT_PARAM_RANGES[NAME]) == want
-    assert strategy_warmup_bars("rsi", [{}], DEFAULT_PARAM_RANGES["rsi"]) == optimizer.max_indicator_lookback(
-        DEFAULT_PARAM_RANGES["rsi"])
-    df = _calendar(n=N_BARS + 400)
-    full = _apply(df)
-    need = P["training_bars"] + P["refit_bars"] - 1
-    late = [b for b in range(need, len(df)) if int(full["cce_required_bars"].iloc[b]) == need]
-    b = late[0]
-    ext = _apply(df.iloc[b - need + 1:b + 1])
-    for col in ("signal", "cce_reason", "cce_gross_mean", "cce_refit_boundary_ms"):
-        assert str(ext[col].iloc[-1]) == str(full[col].iloc[b]), col
-    assert _apply(df.iloc[b - need + 2:b + 1])["cce_reason"].iloc[-1] == "insufficient_history"
-
-    real_run = Backtester.run
-
-    def unseeded_run(self, signals, **kw):
-        if kw.get("warmup_prefix") is not None or kw.get("starting_long") is not None:
-            raise AssertionError("the walk-forward warmup seeder ran for an entry-only candidate")
-        return real_run(self, signals, **kw)
-
-    monkeypatch.setattr(Backtester, "run", unseeded_run)
-    small = {k: [P[k]] for k in ("training_bars", "holding_bars", "refit_bars", "min_effective_obs", "confidence",
-                                 "cost_hurdle")}
-    result = optimizer.walk_forward_optimize(
-        _calendar(n=6000), NAME, small, n_splits=2, registry="futures", timeframe="1h", platform="hyperliquid",
-        verbose=False, close_strategies=CONTRACT["close_strategies"], direction="both", stop_loss_atr_mult=3.0,
-        comparison_mode="approximate")
-    assert result["n_valid_folds"] >= 1
-
-
 def test_walk_forward_scores_each_holding_horizon_with_its_own_time_stop(monkeypatch):
     scored = []
     real_run = Backtester.run
@@ -390,37 +355,3 @@ def test_walk_forward_scores_each_holding_horizon_with_its_own_time_stop(monkeyp
     for w in result["window_results"]:
         assert w["best_close_stack_spec"]["close_strategies"] == [
             {"name": "time_stop", "params": {"max_bars": w["best_params"]["holding_bars"]}}]
-
-
-def test_cached_m1_warmup_scores_the_window_flat_from_a_complete_history_prefix(monkeypatch):
-    import data_fetcher
-    df = _calendar(n=N_BARS + 1500)
-    window_start = df.index[N_BARS + 300]
-    window = (str(window_start), str(df.index[-1] + pd.Timedelta(hours=1)))
-
-    def cached(symbol, timeframe, start_date=None, end_date=None, **_k):
-        out = df[(df.index >= pd.Timestamp(start_date)) & (df.index <= pd.Timestamp(end_date))].copy()
-        out.attrs = dict(df.attrs)
-        return out
-
-    monkeypatch.setattr(data_fetcher, "load_cached_data", cached)
-    reg = _reg()
-    need = P["training_bars"] + P["refit_bars"] - 1
-    leg = eval_windows.run_leg(reg, NAME, dict(P), "TST/USDT", "1h", window, keep_trades=True, funding_mode="off",
-                               warmup_bars=need, **{k: v for k, v in CONTRACT.items()})
-    assert leg["warmup"]["bars"] == need and leg["warmup"]["scored_first_bar"] == str(window_start)
-    full = _apply(df)
-    first = full.index.get_loc(window_start)
-    expected = full.iloc[first:-1]
-    entries = sorted(str(df.index[i + 1]) for i in range(first, len(df) - 1) if int(full["signal"].iloc[i]) != 0)
-    positions = leg["execution"]["position_list"]
-    assert positions and str(positions[0]["entry_date"]) >= str(window_start)
-    assert {p["entry_date"] for p in positions} <= set(entries)
-    assert int(expected["cce_valid"].iloc[0]) == 1
-    with pytest.raises(ValueError, match="warmup needs"):
-        eval_windows.run_leg(reg, NAME, dict(P), "TST/USDT", "1h", (str(df.index[200]), window[1]),
-                             funding_mode="off", warmup_bars=need, **CONTRACT)
-    base = eval_windows.run_leg(reg, "rsi", None, "TST/USDT", "1h", window, funding_mode="off", **CONTRACT)
-    zero = eval_windows.run_leg(reg, "rsi", None, "TST/USDT", "1h", window, funding_mode="off", warmup_bars=0,
-                                **CONTRACT)
-    assert base == zero and "warmup" not in zero

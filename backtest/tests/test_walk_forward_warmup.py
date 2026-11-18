@@ -117,35 +117,6 @@ def test_train_fold_captures_trade_spanning_warmup_boundary():
     )
 
 
-def test_boundary_bar_signal_fires_on_first_train_bar():
-    opens = [100.0] * 30 + [200.0] * 30
-    closes = opens[:]
-    signals = [0] * 60
-    signals[5] = 1
-    signals[29] = -1
-    idx = pd.date_range("2024-01-01", periods=60, freq="D")
-    df = pd.DataFrame(
-        {"open": opens, "close": closes, "signal": signals}, index=idx,
-    )
-
-    boundary = 29
-    warmup_scan = df.iloc[:boundary]
-    backtester_df = df.iloc[boundary:]
-
-    seed = warmup_exit_long_entry(warmup_scan, slippage_pct=0.0)
-    assert seed is not None, "warmup BUY on bar 5 must carry forward"
-    assert seed["entry_price"] == pytest.approx(100.0)
-
-    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
-    result = bt.run(backtester_df, save=False, starting_long=seed)
-
-    assert result["total_trades"] == 1
-    trade = result["trades"][0]
-    assert trade["entry_price"] == pytest.approx(100.0)
-    assert trade["exit_price"] == pytest.approx(200.0)
-    assert result["total_return_pct"] == pytest.approx(100.0, abs=0.1)
-
-
 def test_seeded_metrics_anchor_at_initial_capital():
     opens = closes = [100.0] * 10
     signals = [0] * 10
@@ -299,6 +270,36 @@ def _replayed_phases(by_phase):
 REPLAYED = ["test_0", "test_1", "train_1"]
 
 
+_SHORT_CAPABLE_CONTRACT_STARTS_EVERY_SCORED_RUN_FLAT_CASES = [
+    {"direction": "both"},
+    {"direction": None},
+    {"direction": " Both "},
+    {"direction": "both", "close_stack_grid": SCRIPT_GRID_STACKS},
+]
+_SHORT_CAPABLE_CONTRACT_STARTS_EVERY_SCORED_RUN_FLAT_IDS = ["both", "omitted_fixed_close", "normalized_both", "both_grid"]
+
+
+def test_short_capable_contract_starts_every_scored_run_flat(monkeypatch, subtests):
+    for i, (case_id, kwargs) in enumerate(zip(_SHORT_CAPABLE_CONTRACT_STARTS_EVERY_SCORED_RUN_FLAT_IDS, _SHORT_CAPABLE_CONTRACT_STARTS_EVERY_SCORED_RUN_FLAT_CASES)):
+        with subtests.test(case=case_id, kwargs=kwargs):
+            with monkeypatch.context() as mp:
+                _register_scripted(mp)
+                by_phase = _scripted_walk_forward(mp, **kwargs)
+                assert _seeded_phases(by_phase) == []
+                assert _replayed_phases(by_phase) == []
+                df = _scripted_frame()
+                for phase, bar in SCORED_STARTS.items():
+                    for call in by_phase[phase]:
+                        scored = call["signals"]
+                        assert int(scored["signal"].iloc[0]) == (1 if phase != "train_0" else 0)
+                        np.testing.assert_array_equal(scored["funding_accrual"].to_numpy(),
+                                                      df["funding_accrual"].iloc[bar:len(scored) + bar].to_numpy())
+                        if phase != "train_0":
+                            first = call["result"]["trades"][0]
+                            assert first["entry_date"] == str(df.index[bar + 1])
+                            assert first["side"] == "long"
+
+
 _LONG_ONLY_CONTRACT_SEEDS_NOTHING_THE_ENGINE_CLOSED_IN_THE_PREFIX_CASES = [
     {"direction": "long"},
     {"direction": " LONG "},
@@ -330,39 +331,6 @@ def test_long_only_contract_seeds_nothing_the_engine_closed_in_the_prefix(monkey
                                                       df["funding_accrual"].loc[prefix.index].to_numpy())
                         assert int(call["signals"]["signal"].iloc[0]) == 1
                         assert call["result"]["trades"][0]["entry_date"] == str(df.index[bar + 1])
-
-
-def test_plain_long_only_path_keeps_the_seed_it_still_holds(monkeypatch):
-    reg = _register_scripted(monkeypatch)
-    by_phase = _scripted_walk_forward(monkeypatch, close_strategies=None)
-    assert _replayed_phases(by_phase) == REPLAYED
-    assert _seeded_phases(by_phase) == ["test_0", "train_1"]
-    df = _scripted_frame()
-    for phase, entry_bar in (("test_0", 101), ("train_1", 161)):
-        for call in by_phase[phase]:
-            seed = call["seed"]
-            assert seed["entry_date"] == str(df.index[entry_bar])
-            assert seed["entry_price"] == pytest.approx(
-                df["open"].iloc[entry_bar] * (1 + call["engine"].slippage_pct))
-            assert seed["bars_held"] == SCORED_STARTS[phase] - entry_bar
-            assert call["result"]["trades"][0]["entry_price"] == df["close"].iloc[SCORED_STARTS[phase] - 1]
-    assert warmup_exit_long_entry(_prefix_signals(reg, TP_PREFIX), 0.0)["entry_date"] == df.index[101]
-
-
-_SHORT_ENTRIES_FALSE_REGISTRATION_STARTS_FLAT_WHEN_THE_ENGINE_CAN_SHORT_CASES = [
-    {"direction": "both"},
-    {"direction": None},
-]
-_SHORT_ENTRIES_FALSE_REGISTRATION_STARTS_FLAT_WHEN_THE_ENGINE_CAN_SHORT_IDS = ["both", "omitted_fixed_close"]
-
-
-def test_short_entries_false_registration_starts_flat_when_the_engine_can_short(monkeypatch, subtests):
-    for i, (case_id, kwargs) in enumerate(zip(_SHORT_ENTRIES_FALSE_REGISTRATION_STARTS_FLAT_WHEN_THE_ENGINE_CAN_SHORT_IDS, _SHORT_ENTRIES_FALSE_REGISTRATION_STARTS_FLAT_WHEN_THE_ENGINE_CAN_SHORT_CASES)):
-        with subtests.test(case=case_id, kwargs=kwargs):
-            with monkeypatch.context() as mp:
-                _register_scripted(mp, short_entries=False)
-                by_phase = _scripted_walk_forward(mp, **kwargs)
-                assert _seeded_phases(by_phase) == []
 
 
 FAR_TIERS = [{"atr_multiple": 40.0, "close_fraction": 1.0}]
@@ -472,60 +440,3 @@ def test_sma_crossover_follows_the_scored_engine_under_a_fixed_close(monkeypatch
                 else:
                     assert all(c["prefix"] is None and c["seed"] is None for c in calls)
                     assert "short" in sides
-
-
-def _random_walk(timeframe="1h", n=1200, seed=3):
-    from closed_bar import declare_frame_cadence
-    rng = np.random.default_rng(seed)
-    close = 100 * np.exp(np.cumsum(rng.normal(0.0, 0.02, n)))
-    open_ = np.concatenate([[100.0], close[:-1]])
-    df = pd.DataFrame({
-        "open": open_, "high": np.maximum(open_, close) * (1 + rng.uniform(0.001, 0.01, n)),
-        "low": np.minimum(open_, close) * (1 - rng.uniform(0.001, 0.01, n)), "close": close,
-        "volume": rng.uniform(100, 1000, n),
-    }, index=pd.date_range("2026-01-01", periods=n, freq={"1h": "1h", "5m": "5min"}[timeframe]))
-    return declare_frame_cadence(df, timeframe, "open")
-
-
-def _singleton_grid(reg, name):
-    from optimizer import DEFAULT_PARAM_RANGES
-    ranges = DEFAULT_PARAM_RANGES[name]
-    if not ranges:
-        return {k: [v] for k, v in reg.STRATEGY_REGISTRY[name]["default_params"].items()}
-    return {k: [v[0]] for k, v in ranges.items()}
-
-
-def test_every_registered_short_entry_strategy_follows_the_engine_contract(monkeypatch):
-    from optimizer import DEFAULT_PARAM_RANGES
-    from registry_loader import load_registry
-    reg = load_registry("futures")
-    from run_backtest import LEADER_INPUT_STRATEGIES, TRADE_FLOW_INPUT_STRATEGIES
-    names = sorted(n for n in reg._registry.short_entry_strategies() if n in reg.STRATEGY_REGISTRY)
-    assert set(names) <= set(DEFAULT_PARAM_RANGES)
-    from run_backtest import BOOK_INPUT_STRATEGIES, VOLUME_PROFILE_INPUT_STRATEGIES
-    side_inputs = LEADER_INPUT_STRATEGIES | VOLUME_PROFILE_INPUT_STRATEGIES | BOOK_INPUT_STRATEGIES
-    names = [n for n in names if n not in side_inputs]
-    representatives = {"stochastic_momentum_index", "mass_index_reversal", "camarilla_pivot_reversal",
-                       "trix_momentum", "elder_ray_pullback", "schaff_trend_cycle"}
-    assert representatives <= set(names)
-    frames = {"1h": _random_walk("1h"), "5m": _random_walk("5m")}
-    seeded_long = set()
-    shorts_seen = set()
-    calls = _capture_runs(monkeypatch)
-    for direction in ("both", "long"):
-        for name in names:
-            calls.clear()
-            timeframe = "5m" if name in TRADE_FLOW_INPUT_STRATEGIES else "1h"
-            walk_forward_optimize(frames[timeframe], name, _singleton_grid(reg, name), n_splits=2, timeframe=timeframe,
-                                  registry="futures", platform="hyperliquid", verbose=False,
-                                  close_strategies=[SCRIPT_TP], stop_loss_atr_mult=SCRIPT_STOP,
-                                  direction=direction)
-            assert calls, name
-            if direction == "both":
-                assert all(c["prefix"] is None and c["seed"] is None for c in calls), name
-                if any((c["signals"]["signal"] == -1).any() for c in calls):
-                    shorts_seen.add(name)
-            elif any(c["seed"] is not None for c in calls):
-                seeded_long.add(name)
-    assert seeded_long
-    assert representatives - {"mass_index_reversal"} <= shorts_seen

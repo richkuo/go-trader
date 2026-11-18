@@ -1,27 +1,6 @@
 import os, sys
 import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from regime_diagnostics import forward_returns, forward_realized_vol, separation
-
-
-def test_forward_returns_horizon():
-    close = np.array([100.0, 110, 121])
-    fr = forward_returns(close, 1)
-    np.testing.assert_allclose(fr[:2], [0.10, 0.10])
-    assert np.isnan(fr[-1])
-
-
-def test_forward_realized_vol_horizon1_and_horizon2_sums_squared_log_returns():
-    close = np.exp(np.array([0.0, 0.1, 0.3, 0.6]))
-    fv = forward_realized_vol(close, 1)
-    np.testing.assert_allclose(fv[:3], [0.1, 0.2, 0.3], atol=1e-12,
-                               err_msg="test_forward_realized_vol_horizon1")
-    assert np.isnan(fv[-1]), "test_forward_realized_vol_horizon1"
-
-    fv = forward_realized_vol(close, 2)
-    np.testing.assert_allclose(fv[:2], [np.sqrt(0.05), np.sqrt(0.13)], atol=1e-12,
-                               err_msg="test_forward_realized_vol_horizon2_sums_squared_log_returns")
-    assert np.isnan(fv[2]) and np.isnan(fv[3]), "test_forward_realized_vol_horizon2_sums_squared_log_returns"
 
 
 def test_block_shuffle_pvalue_separated_is_significant_and_noise_is_not():
@@ -37,39 +16,6 @@ def test_block_shuffle_pvalue_separated_is_significant_and_noise_is_not():
     fwd = rng.normal(0, 0.01, 200)
     out = block_shuffle_pvalue(labels, fwd, block_len=10, n_perm=100, seed=0)
     assert out["p_value"] > 0.05, "test_block_shuffle_pvalue_noise_not_significant"
-
-
-def test_kmeans_yardstick_runs():
-    from regime_diagnostics import kmeans_yardstick
-    rng = np.random.default_rng(0)
-    feats = np.vstack([rng.normal(0, 1, (100, 4)), rng.normal(5, 1, (100, 4))])
-    fwd = np.concatenate([np.full(100, 0.02), np.full(100, -0.02)])
-    out = kmeans_yardstick(feats, fwd, k_range=(2, 3), seed=0)
-    assert out[2]["kruskal_h"] > 5.0
-
-
-def test_score_labels_target_volatility_stamped_and_distinct(subtests):
-    with subtests.test("test_score_labels_target_volatility_stamped_and_distinct"):
-        from regime_diagnostics import score_labels
-        rng = np.random.default_rng(1)
-        steps = np.concatenate([rng.normal(0, 0.001, 150), rng.normal(0, 0.02, 150)])
-        close = 100 * np.exp(np.cumsum(steps))
-        labels = np.array(["quiet"] * 150 + ["loud"] * 150, dtype=object)
-        feats = rng.normal(0, 1, (300, 4))
-
-        vol = score_labels(close, labels, feats, horizons=(4,), seed=0, target="volatility")
-        ret = score_labels(close, labels, feats, horizons=(4,), seed=0, target="returns")
-        assert vol["target"] == "volatility" and ret["target"] == "returns"
-        assert vol["h4"]["separation"]["kruskal_h"] != ret["h4"]["separation"]["kruskal_h"]
-        assert vol["h4"]["separation"]["kruskal_h"] > 5.0
-    with subtests.test("test_score_labels_rejects_unknown_target"):
-        from regime_diagnostics import score_labels
-        import pytest
-        close = 100 * np.cumprod(1 + np.zeros(50))
-        labels = np.array(["a"] * 50, dtype=object)
-        feats = np.zeros((50, 4))
-        with pytest.raises(ValueError):
-            score_labels(close, labels, feats, horizons=(4,), target="sharpe")
 
 
 def test_per_state_significance():

@@ -210,6 +210,14 @@ def _build_manifest(tmp_path, n_bars=400, funding_drop=(), funding=True, meta_de
     return path
 
 
+def test_manifest_loads_and_reports_complete_coverage(tmp_path):
+    m = om.load_manifest(str(_build_manifest(tmp_path)))
+    report = om.verify_report(m)
+    win = report["datasets"]["BTC 1h"]["windows"]["train"]
+    assert win["candles"]["complete"] and win["candles"]["present_bars"] == 150
+    assert win["funding"]["complete"] and win["funding"]["present_hours"] == 150
+
+
 _MANIFEST_FAILS_CLOSED_ON_BAD_INPUTS_CASES = [
     ("tamper", "sha256 mismatch"),
     ("missing", "is missing"),
@@ -377,6 +385,17 @@ def test_indicator_frame_equal_to_scored_frame_changes_nothing(tmp_path):
     assert base["final_capital"] == same["final_capital"]
 
 
+def test_indicator_frame_must_cover_and_match_the_scored_bars(tmp_path):
+    full, scored = _warmup_frames(tmp_path)
+    with pytest.raises(ValueError, match="contains every bar"):
+        _bt(stop_loss_atr_mult=1.0).run(scored, save=False,
+                                         indicator_frame=full.drop(index=scored.index[3]))
+    altered = full.copy()
+    altered.loc[scored.index[3], "close"] += 1.0
+    with pytest.raises(ValueError, match="must match"):
+        _bt(stop_loss_atr_mult=1.0).run(scored, save=False, indicator_frame=altered)
+
+
 def _fake_info(fail_on=None):
     def post(payload, retries=5):
         kind = payload["type"]
@@ -449,6 +468,17 @@ def test_failed_acquire_leaves_frozen_inputs_and_hashes_untouched(tmp_path, monk
                 om.acquire(str(path), overwrite=True)
             assert _snapshot(case_dir) == before
             assert not list(case_dir.glob(".acquire-staging-*"))
+
+
+def test_acquire_overwrite_replaces_inputs_and_hashes_together(tmp_path, monkeypatch):
+    path = _acquire_manifest(tmp_path, monkeypatch)
+    before = _snapshot(tmp_path)
+    om.acquire(str(path), overwrite=True)
+    after = _snapshot(tmp_path)
+    assert after["data/BTC.csv.gz"] != before["data/BTC.csv.gz"]
+    m = om.load_manifest(str(path))
+    assert len(om.load_candles(m["datasets"][0])) == 400
+    assert not list(tmp_path.glob(".acquire-staging-*"))
 
 
 _FETCH_KEEPS_CLOSED_CANDLES_ONLY_CASES = [
@@ -1292,6 +1322,22 @@ def test_resting_tp_html_page_on_a_complete_stream_is_an_error(tmp_path):
         assert report["candle_price_basis"] == "unconfirmed"
         assert report["candle_price_basis_evidence"]["reasons"] == ["probe_incomplete"]
         assert [row["outcome"] for row in report["orders"]] == [row["outcome"] for row in plain["orders"]]
+
+
+def test_resting_tp_empty_response_file_has_no_payload(tmp_path):
+    import resting_tp_fill_study as study
+
+    orders = [{
+        "oid": 1, "limit": "100.00", "placement": _ms(10), "status": "canceled",
+        "status_time": _ms(22, 30), "orig": "1", "sz": "1", "fills": [],
+    }]
+    _study_orders(tmp_path, orders, _example_candles())
+    capture = tmp_path / "capture"
+    _replace_responses(capture, "recentTrades", b"")
+    _bundle, _digest, loaded = study.load_capture(str(capture))
+    empty = [item for item in loaded if item["meta"].get("type") == "recentTrades"]
+    assert empty
+    assert all(item["raw"] == b"" and item["payload"] is None for item in empty)
 
 
 def test_resting_tp_unaligned_since_is_refused_before_any_request(tmp_path):

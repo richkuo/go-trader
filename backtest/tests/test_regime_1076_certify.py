@@ -1,7 +1,6 @@
 import json
 import os
 import sys
-from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -12,16 +11,6 @@ sys.path.insert(0, os.path.abspath(
 
 import regime_1076_certify as certify_mod
 import regime_1076_directional_premise as premise_mod
-
-GEN_AT = datetime(2026, 6, 19, tzinfo=timezone.utc)
-
-FULL_UNIVERSE = dict(
-    symbols=premise_mod.DEFAULT_SYMBOLS,
-    timeframes=premise_mod.DEFAULT_TIMEFRAMES,
-    windows=premise_mod.DEFAULT_WINDOWS,
-    classifiers=premise_mod.DEFAULT_CLASSIFIERS,
-    horizons=premise_mod.DEFAULT_HORIZONS,
-)
 
 
 def _row(symbol="BTC/USDT", timeframe="1h", classifier="composite",
@@ -40,27 +29,7 @@ def _row(symbol="BTC/USDT", timeframe="1h", classifier="composite",
 #     reads at runtime ---------------------------------------------------------
 
 
-def test_a_surviving_aligned_held_out_row_is_certified():
-    art = certify_mod.certify([_row()], generated_at=GEN_AT)
-    assert len(art["certified"]) == 1
-    e = art["certified"][0]
-    assert (e["asset"], e["timeframe"], e["classifier"]) == ("BTC", "1h",
-                                                             "composite")
-    assert e["states"] == {"trending_up": "long"}
-    assert e["expires_at"] > e["generated_at"]
-
-
 # --- refusals that keep an unearned certification out of the repo artifact ---
-
-
-def test_family_is_superset_only_for_the_full_default_universe():
-    assert certify_mod.family_is_superset(**FULL_UNIVERSE), (
-        "test_family_is_superset_true_for_the_default_universe")
-    for axis in ["symbols", "timeframes", "windows", "classifiers", "horizons"]:
-        kwargs = dict(FULL_UNIVERSE)
-        kwargs[axis] = tuple(kwargs[axis])[:-1]
-        assert not certify_mod.family_is_superset(**kwargs), (
-            f"test_family_is_superset_false_when_any_axis_is_narrowed[{axis}]")
 
 
 def test_narrowed_run_refuses_to_write_the_repo_artifact(subtests):

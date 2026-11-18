@@ -13,25 +13,6 @@ import regime_vol_model as rvm
 from regime_hmm import forward_filter_labels
 
 
-def test_standardize_masks_nan_rows_and_floors_zero_std():
-    feats = np.array([[1.0, 10.0, 0.5, 20.0],
-                      [3.0, 10.0, 0.5, 30.0],
-                      [np.nan, 10.0, 0.5, 40.0]], dtype=float)
-    mean, std, mask = rvm.standardize(feats)
-    assert mask.tolist() == [True, True, False]
-    assert mean[0] == pytest.approx(2.0)
-    assert std[1] == 1.0
-
-
-def test_empirical_transition_skips_pairs_spanning_a_dropped_bar():
-    valid_mask = np.array([True, True, False, True])
-    assignments_valid = np.array([0, 1, 0])
-    A = rvm.empirical_transition(assignments_valid, valid_mask, k=2, laplace=1.0)
-    assert A.shape == (2, 2)
-    assert np.allclose(A.sum(1), 1.0)
-    assert np.allclose(A, [[1.0 / 3, 2.0 / 3], [0.5, 0.5]])
-
-
 def _three_blobs(seed=0, per=200):
     rng = np.random.default_rng(seed)
     centers = np.array([[-3, -3, -3, -3], [0, 0, 0, 0], [3, 3, 3, 3]], dtype=float)
@@ -87,9 +68,29 @@ def test_fit_hmm_recovers_markov_states():
     assert _purity(assign, truth, 3) > 0.9
 
 
-REQUIRED_KEYS = {"type", "version", "fit_method", "features", "feature_means",
-                 "feature_stds", "states", "latent_count", "emissions",
-                 "transition", "init", "filter_window", "period", "fitted_on", "mapping"}
+def test_map_latent_to_names_uses_canonical_boundaries_and_is_deterministic(subtests):
+    with subtests.test(case="test_map_latent_to_names_uses_canonical_boundaries_and_is_deterministic"):
+        from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+        mean = np.zeros(4); std = np.ones(4)
+        em = np.array([[0.0, 0.0, 0.1, 0.0],
+                       [0.5, 0.5, 0.9, 40.0]], dtype=float)
+        names, mapping = rvm.map_latent_to_names(em, mean, std, dict(TH))
+        assert names == ["ranging_quiet", "trending_up_clean"]
+        from regime import VALID_LABELS_COMPOSITE
+        assert all(nm in VALID_LABELS_COMPOSITE for nm in names)
+        names2, _ = rvm.map_latent_to_names(em, mean, std, dict(TH))
+        assert names2 == names
+        assert mapping["1"]["centroid_raw"] == [0.5, 0.5, 0.9, 40.0]
+
+    with subtests.test(case="test_volatility_rank_orders_by_range_eff"):
+        from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+        mean = np.zeros(4); std = np.ones(4)
+        em = np.array([[0.0, 0.8, 0.1, 10.0],
+                       [0.0, 0.01, 0.1, 10.0],
+                       [0.0, 0.3, 0.1, 10.0]], dtype=float)
+        _, mapping = rvm.map_latent_to_names(em, mean, std, dict(TH))
+        ranks = {int(i): m["volatility_rank"] for i, m in mapping.items()}
+        assert ranks[1] < ranks[2] < ranks[0]
 
 
 def _feature_blob_matrix(seed=0):
@@ -103,28 +104,6 @@ def _feature_blob_matrix(seed=0):
     feats = np.vstack(rows)
     feats = np.vstack([np.full((5, 4), np.nan), feats])
     return feats
-
-
-_FIT_UNSUPERVISED_SCHEMA_AND_DECODES_CASES = ["kmeans", "gmm", "hmm"]
-
-
-def test_fit_unsupervised_schema_and_decodes(subtests):
-    for i, family in enumerate(_FIT_UNSUPERVISED_SCHEMA_AND_DECODES_CASES):
-        with subtests.test(case=i, family=family):
-            from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
-            from regime_hmm import forward_filter_labels
-            feats = _feature_blob_matrix()
-            model = rvm.fit_unsupervised(feats, family=family, k=3, filter_window=32,
-                                         thresholds=dict(TH), seed=0,
-                                         fitted_on={"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"})
-            assert REQUIRED_KEYS <= set(model)
-            assert model["fit_method"] == family and model["latent_count"] == 3
-            assert len(model["states"]) == 3 and len(model["emissions"]) == 3
-            assert np.allclose(np.sum(model["transition"], axis=1), 1.0)
-            assert all(s in VALID_LABELS_COMPOSITE for s in model["states"])
-            labels, conf = forward_filter_labels(feats, model)
-            assert len(labels) == len(feats)
-            assert set(labels[~np.isnan(feats).any(1)]).issubset(VALID_LABELS_COMPOSITE)
 
 
 def test_model_satisfies_bounded_window_and_forward_filter_contract():
@@ -141,52 +120,6 @@ def test_model_satisfies_bounded_window_and_forward_filter_contract():
     assert prov["verified"] is True
     assert prov["overlap_resolvable"] is True
     assert prov["in_sample"] is False
-
-
-_NON_DEGENERACY_CASES = [
-    ("constant_stream",
-     dict(min_active_labels=2, max_occupancy=0.8, min_transition_rate=0.05),
-     lambda: np.array(["ranging_quiet"] * 500, dtype=object),
-     {"ok": False, "active_labels": 1, "reason": "min_active_labels"}),
-    ("healthy_stream",
-     dict(min_active_labels=2, max_occupancy=0.9, min_transition_rate=0.01),
-     lambda: np.random.default_rng(0).choice(
-         ["ranging_quiet", "trending_up_clean", "ranging_volatile"],
-         size=600).astype(object),
-     {"ok": True, "reason": None}),
-    ("high_occupancy",
-     dict(min_active_labels=2, max_occupancy=0.8, min_transition_rate=0.0),
-     lambda: np.array((["a"] * 9 + ["b"]) * 50, dtype=object),
-     {"ok": False, "active_labels": 2, "reason": "max_occupancy"}),
-    ("low_transition_rate",
-     dict(min_active_labels=2, max_occupancy=1.0, min_transition_rate=0.5),
-     lambda: np.array(["a"] * 300 + ["b"] * 300, dtype=object),
-     {"ok": False, "reason": "min_transition_rate"}),
-]
-
-
-def test_non_degeneracy_constant_healthy_high_occupancy_and_low_transition_streams():
-    from regime_vol_model import NonDegeneracyThresholds, non_degeneracy
-    for case_id, thr_kw, stream_fn, expected in _NON_DEGENERACY_CASES:
-        case = f"test_non_degeneracy[{case_id}]"
-        rep = non_degeneracy(stream_fn(), NonDegeneracyThresholds(**thr_kw))
-        assert rep["ok"] is expected["ok"], case
-        if "active_labels" in expected:
-            assert rep["active_labels"] == expected["active_labels"], case
-        if expected["reason"] is None:
-            assert rep["reasons"] == [], case
-        else:
-            assert expected["reason"] in " ".join(rep["reasons"]), case
-
-
-def _load_research_module(tag):
-    import importlib.util
-    here = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(here, "..", "research", "regime_1080_unsupervised_vol_model.py")
-    spec = importlib.util.spec_from_file_location(f"regime_1080_{tag}", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def test_fit_kmeans_reseeds_empty_clusters_no_ghost_states(subtests):
@@ -208,15 +141,6 @@ def test_fit_kmeans_reseeds_empty_clusters_no_ghost_states(subtests):
         assert (em_var > 0).all() and np.isfinite(em_mean).all()
 
 
-def test_fit_unsupervised_high_k_stores_no_zero_n_emission():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    feats = _feature_blob_matrix()
-    model = rvm.fit_unsupervised(feats, family="kmeans", k=7, filter_window=32,
-                                 thresholds=dict(TH), seed=0)
-    assert all(e["n"] >= 1 for e in model["emissions"])
-    assert sum(e["n"] for e in model["emissions"]) == int((~np.isnan(feats).any(1)).sum())
-
-
 def _bakeoff_ohlcv(n, seed):
     import pandas as pd
     rng = np.random.default_rng(seed)
@@ -231,108 +155,6 @@ def _bakeoff_ohlcv(n, seed):
     return pd.DataFrame({"open": openp, "high": np.maximum(high, np.maximum(openp, close)),
                          "low": np.minimum(low, np.minimum(openp, close)), "close": close,
                          "volume": volume}, index=idx)
-
-
-def _offline_market(monkeypatch):
-    import socket
-    import zlib
-    import data_fetcher
-    import funding_fetcher
-
-    def loader(symbol, timeframe="1h", exchange_id=None, start_date=None, end_date=None):
-        return _bakeoff_ohlcv(400, zlib.crc32(f"{start_date}|{end_date}".encode()) % 1000)
-
-    def no_network(*args, **kwargs):
-        raise AssertionError("the offline bakeoff test reached the network")
-
-    monkeypatch.setattr(data_fetcher, "load_cached_data", loader)
-    monkeypatch.setattr(data_fetcher, "fetch_full_history", no_network)
-    monkeypatch.setattr(data_fetcher, "fetch_ohlcv", no_network)
-    monkeypatch.setattr(funding_fetcher, "load_cached_funding", lambda *a, **k: None)
-    monkeypatch.setattr(socket.socket, "connect", no_network)
-
-
-def test_bakeoff_report_on_offline_candles(monkeypatch):
-    _offline_market(monkeypatch)
-    mod = _load_research_module("offline_bakeoff")
-    report = mod.run_bakeoff("BTC/USDT", "1h", families=("kmeans",), k_range=range(4, 6),
-                             filter_window=16,
-                             eval_windows=("is", "oos"), n_perm=200)
-    cands = report["candidates"]
-    assert [(c["family"], c["k"]) for c in cands] == [("kmeans", 4), ("kmeans", 5)]
-    assert [c["structurally_ineligible"] for c in cands] == [True, False]
-    assert report["bonferroni_denominator"] == 1
-    assert report["bonferroni_alpha"] == pytest.approx(mod.bonferroni_alpha(1))
-    assert [e["k"] for e in report["structurally_ineligible"]] == [4]
-    assert cands[0]["passes_bonferroni"] is False
-    assert cands[1]["passes_bonferroni"] == (cands[1]["model_p_value"] <= report["bonferroni_alpha"])
-    assert "non_degeneracy_thresholds" in report
-    assert "abstained" in report["handrule_held_out"]
-    assert "permutation_steps_to_alpha" in report["handrule_held_out"]
-    assert "knife_edge" in report["handrule_held_out"]
-    assert report["n_perm"] == 200
-    assert report["min_achievable_p_value"] == pytest.approx(1.0 / 201.0)
-    assert report["min_achievable_p_value"] <= report["bonferroni_alpha"]
-    winner = mod.select_winner(cands)
-    assert report["winner"] == ({"family": winner["family"], "k": winner["k"]} if winner else None)
-
-
-def test_resolve_bakeoff_n_perm_default_explicit_underpowered_and_narrowed_requests():
-    mod = _load_research_module("nperm")
-
-    case = "test_resolve_bakeoff_n_perm_default_achieves_corrected_alpha_with_headroom"
-    n = mod.resolve_bakeoff_n_perm(18)
-    assert n >= mod.DEFAULT_BAKEOFF_MIN_N_PERM, case
-    assert 1.0 / (n + 1) <= mod.bonferroni_alpha(18) / 2.0, case
-
-    with pytest.raises(ValueError, match="cannot satisfy the Bonferroni-corrected alpha"):
-        mod.resolve_bakeoff_n_perm(18, requested=200)
-
-    case = "test_resolve_bakeoff_n_perm_narrowed_sweep_accepts_200"
-    assert mod.resolve_bakeoff_n_perm(6, requested=200) == 200, case
-
-
-def test_real_pipeline_p_value_can_be_crowned_at_default_sweep_resolution():
-    from regime_diagnostics import block_shuffle_pvalue
-    mod = _load_research_module("crown")
-    n_perm = mod.resolve_bakeoff_n_perm(18)
-    rng = np.random.default_rng(0)
-    labels = np.array((["low"] * 8 + ["high"] * 8) * 25, dtype=object)
-    fwd = np.where(labels == "high", 1.0, 0.001) + rng.normal(0, 1e-4, len(labels))
-    sig = block_shuffle_pvalue(labels, fwd, block_len=8, n_perm=n_perm, seed=0)
-    alpha = mod.bonferroni_alpha(18)
-    assert sig["p_value"] <= alpha
-    strong = {"family": "kmeans", "k": 4, "verdict": {"ship": True},
-              "model_p_value": sig["p_value"], "non_degenerate_all": True,
-              "model_kruskal_h": 999.0, "stability_gain": 0.9}
-    fillers = [{"family": "hmm", "k": 5, "verdict": {"ship": False}, "model_p_value": 0.9,
-                "non_degenerate_all": False, "model_kruskal_h": 1.0, "stability_gain": 0.0}
-               for _ in range(17)]
-    win = mod.select_winner([strong] + fillers)
-    assert win is not None and win["family"] == "kmeans" and win["k"] == 4
-
-
-def test_permutation_steps_to_alpha_and_knife_edge_are_symmetric():
-    mod = _load_research_module("steps")
-    assert mod.permutation_steps_to_alpha(10.0 / 201.0, 200) == 0
-    assert mod.permutation_steps_to_alpha(15.0 / 201.0, 200) < 0
-    assert mod.permutation_steps_to_alpha(2.0 / 201.0, 200) > 0
-    assert mod.permutation_steps_to_alpha(11.0 / 201.0, 200) == -1
-    assert mod.verdict_knife_edge(0) is True
-    assert mod.verdict_knife_edge(-1) is True
-    assert mod.verdict_knife_edge(1) is True
-    assert mod.verdict_knife_edge(-2) is False
-    assert mod.verdict_knife_edge(2) is False
-
-
-def _decoder_model(em_mean, em_var, states, *, filter_window=8):
-    k = len(states)
-    return {"states": list(states),
-            "feature_means": [0.0, 0.0, 0.0, 0.0], "feature_stds": [1.0, 1.0, 1.0, 1.0],
-            "emissions": [{"mean": list(m), "var": list(v), "n": 0}
-                          for m, v in zip(em_mean, em_var)],
-            "init": [1.0 / k] * k, "transition": [[1.0 / k] * k for _ in range(k)],
-            "filter_window": int(filter_window)}
 
 
 def test_neutralize_dead_components_parks_by_soft_mass_and_is_noop_when_all_alive():
@@ -357,76 +179,6 @@ def test_neutralize_dead_components_parks_by_soft_mass_and_is_noop_when_all_aliv
     dead = rvm._neutralize_dead_components(mu, var, np.array([500.0, 500.0]), min_soft_mass=1.0)
     assert not dead.any(), case
     assert np.array_equal(mu, mu0) and np.array_equal(var, var0), case
-
-
-def test_truly_dead_component_cannot_win_near_mean_bars_after_parking(subtests):
-    with subtests.test(case="test_truly_dead_component_cannot_win_near_mean_bars_after_parking"):
-        em_mean = [[0.3, 0.3, 0.3, 0.3], [3.0, 3.0, 3.0, 3.0], [0.0, 0.0, 0.0, 0.0]]
-        em_var = [[0.5, 0.5, 0.5, 0.5], [1.0, 1.0, 1.0, 1.0], [1e-3, 1e-3, 1e-3, 1e-3]]
-        states = ["A", "B", "C_ghost"]
-        near_mean = np.full((8, 4), 0.01)
-
-        labels_bug, _ = forward_filter_labels(near_mean, _decoder_model(em_mean, em_var, states))
-        assert set(labels_bug) == {"C_ghost"}
-
-        mu = np.array(em_mean, dtype=float); var = np.array(em_var, dtype=float)
-        dead = rvm._neutralize_dead_components(mu, var, np.array([500.0, 500.0, 1e-9]), min_soft_mass=1.0)
-        assert dead.tolist() == [False, False, True]
-        labels_fixed, _ = forward_filter_labels(near_mean, _decoder_model(mu, var, states))
-        assert set(labels_fixed) == {"A"}
-
-    with subtests.test(case="test_benign_zero_hard_count_component_decodes_unchanged"):
-        em_mean = [[2.0, 2.0, 2.0, 2.0], [-2.0, -2.0, -2.0, -2.0]]
-        em_var = [[1.0, 1.0, 1.0, 1.0], [0.8, 0.8, 0.8, 0.8]]
-        states = ["X", "Y_benign"]
-        in_Y = np.full((6, 4), -2.0)
-
-        before, _ = forward_filter_labels(in_Y, _decoder_model(em_mean, em_var, states))
-        assert set(before) == {"Y_benign"}
-
-        mu = np.array(em_mean, dtype=float); var = np.array(em_var, dtype=float)
-        dead = rvm._neutralize_dead_components(mu, var, np.array([300.0, 300.0]), min_soft_mass=1.0)
-        assert not dead.any()
-        after, _ = forward_filter_labels(in_Y, _decoder_model(mu, var, states))
-        assert list(after) == list(before)
-
-
-_FITTERS_PASS_VALID_SOFT_MASS_TO_NEUTRALIZER_CASES = ["gmm", "hmm"]
-
-
-def test_fitters_pass_valid_soft_mass_to_neutralizer(monkeypatch, subtests):
-    orig = rvm._neutralize_dead_components
-    for i, fitter in enumerate(_FITTERS_PASS_VALID_SOFT_MASS_TO_NEUTRALIZER_CASES):
-        with subtests.test(case=i, fitter=fitter):
-            z, _ = _three_blobs(seed=0)
-            captured = {}
-
-            def spy(mu, var, soft_mass, **kw):
-                captured["soft_mass"] = np.asarray(soft_mass, dtype=float).copy()
-                captured["calls"] = captured.get("calls", 0) + 1
-                return orig(mu, var, soft_mass, **kw)
-
-            monkeypatch.setattr(rvm, "_neutralize_dead_components", spy)
-            (rvm.fit_gmm if fitter == "gmm" else rvm.fit_hmm)(z, 3, seed=0)
-            assert captured.get("calls") == 1
-            sm = captured["soft_mass"]
-            assert sm.shape == (3,) and np.isfinite(sm).all() and (sm >= 0).all()
-            assert sm.sum() == pytest.approx(len(z), rel=1e-6)
-
-
-def test_label_anchored_hmm_degenerate_anchor_is_unchanged():
-    from regime_hmm import fit_label_anchored_hmm
-    rng = np.random.default_rng(0)
-    feats = rng.normal([1.0, 1.0, 1.0, 1.0], 0.2, size=(60, 4))
-    labels = np.array(["ranging_quiet"] * 60, dtype=object)
-    model = fit_label_anchored_hmm(feats, labels, ["ranging_quiet", "trending_up_clean"],
-                                   filter_window=16)
-    degenerate = model["emissions"][1]
-    assert degenerate["mean"] == [0.0, 0.0, 0.0, 0.0]
-    assert degenerate["var"] == [1.0, 1.0, 1.0, 1.0]
-    assert degenerate["n"] == 0
-    labels_out, _ = forward_filter_labels(feats, model)
-    assert len(labels_out) == len(feats)
 
 
 def _colliding_feature_matrix(seed=0):

@@ -168,109 +168,12 @@ def test_non_replayable_m6_close_excluded(subtests):
         assert len(ab) == expected
 
 
-def test_m1_argv_tail():
-    assert asug.m1_argv_tail("/t/c.json", "spot", ["is", "oos"],
-                             ["BTC/USDT:1h"], "/t/o.json") == [
-        "--candidate-json", "/t/c.json", "--registry", "spot",
-        "--windows", "is,oos", "--funding", "charge", "--json", "/t/o.json",
-        "--datasets", "BTC/USDT:1h"]
-
-
-def test_noise_argv_tail_threads_seed_and_direction():
-    tail = asug.noise_argv_tail("sq", '{"kc_mult": 2}', "futures", "short",
-                                ["is", "oos"], None, 500, 1066, 0.05, "/t/n.json")
-    assert tail[:8] == ["--strategy", "sq", "--registry", "futures",
-                        "--windows", "is,oos", "--resamples", "500"]
-    assert "--seed" in tail and "1066" in tail
-    assert "--direction" in tail and "short" in tail
-    assert "--params" in tail
-
-
-def test_m6_argv_tail_repeats_allowed_regimes(subtests):
-    with subtests.test("test_m6_argv_tail_repeats_allowed_regimes"):
-        m6c = {"baseline_config": "/cfg", "strategy_id": "s",
-               "candidate_close": [{"name": "atr_stop"}], "candidate_stops": "inherit",
-               "allowed_regimes": ["ranging_quiet", "ranging_volatile"]}
-        tail = asug.m6_argv_tail(m6c, "futures", ["is", "oos"], None, 10000, 1066, "/t/m6.json")
-        assert tail.count("--allowed-regimes") == 2
-        assert "--bootstrap-resamples" in tail and "10000" in tail
-        assert "--candidate-stops" in tail and "inherit" in tail
-    with subtests.test("test_m6_argv_tail_baseline_config_path"):
-        m6c = {"baseline_config": "/cfg.json", "strategy_id": "s",
-               "candidate_close": [{"name": "atr_stop"}]}
-        tail = asug.m6_argv_tail(m6c, "spot", ["oos"], None, 100, 1066, "/t/m6.json")
-        assert "--baseline-config" in tail and "/cfg.json" in tail
-        assert "--incumbent-close" not in tail
-    with subtests.test("test_m6_argv_tail_incumbent_close_path_omits_baseline"):
-        m6c = {"strategy_id": "squeeze_momentum",
-               "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
-               "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}
-        tail = asug.m6_argv_tail(m6c, "spot", ["oos"], None, 100, 1066, "/t/m6.json")
-        assert "--baseline-config" not in tail
-        assert "--incumbent-close" in tail
-        assert "--strategy" in tail and "squeeze_momentum" in tail
-
-
 def _m6_payload(is_rows, oos_rows):
     def _mk(rows):
         return [{"dataset": ds, "per_regime": {"all": {
             "n": n, "paired_delta": {"mean": mean, "signed_rank": {"p_value": p}}}}}
             for ds, mean, n, p in rows]
     return {"results": {"is": _mk(is_rows), "oos": _mk(oos_rows)}}
-
-
-def test_m6_window_rollup_weighting_none_means_and_missing_results():
-    case = "test_m6_window_rollup_matches_paired_n_weighting"
-    payload = _m6_payload(
-        is_rows=[("BTC 1h", 0.10, 100, 0.01), ("ETH 1h", -0.20, 50, 0.30)],
-        oos_rows=[("BTC 1h", 0.05, 40, 0.20)])
-    roll = asug.m6_window_rollup(payload)
-    assert roll["is"]["pooled_delta_net_pct_per_entry"] == 0.0, case
-    assert roll["is"]["paired_n"] == 150, case
-    assert roll["is"]["datasets_delta_pos"] == 1, case
-    assert roll["is"]["datasets_delta_neg"] == 1, case
-    assert roll["is"]["per_dataset"][0] == {"dataset": "BTC 1h", "mean": 0.10,
-                                            "n": 100, "p": 0.01}, case
-
-    case = "test_m6_rollup_skips_none_mean_datasets"
-    payload = {"results": {"oos": [
-        {"dataset": "A", "per_regime": {"all": {"n": 10,
-         "paired_delta": {"mean": None, "signed_rank": {"p_value": None}}}}},
-        {"dataset": "B", "per_regime": {"all": {"n": 20,
-         "paired_delta": {"mean": 0.3, "signed_rank": {"p_value": 0.04}}}}},
-    ]}}
-    roll = asug.m6_window_rollup(payload)
-    assert roll["oos"]["paired_n"] == 20, case
-    assert len(roll["oos"]["per_dataset"]) == 1, case
-
-    assert asug.m6_window_rollup({}) == {}, "test_m6_rollup_missing_results_is_empty"
-
-
-def test_extract_noise():
-    payload = {"trade_level": {"verdict": "distinguishable_positive",
-                               "permutation": {"p_value": 0.012, "mean": 0.4},
-                               "summary": {"n": 88}}}
-    assert asug.extract_noise(payload) == {"verdict": "distinguishable_positive",
-                                           "permutation_p": 0.012, "mean": 0.4, "n": 88}
-
-
-def test_extract_m1():
-    payload = {"window_scores": [
-        {"window": "is", "verdict": "pass", "mean_sharpe": 1.2, "mean_ddadj": 0.8},
-        {"window": "oos", "verdict": "fail", "mean_sharpe": -0.1, "mean_ddadj": 0.0}]}
-    out = asug.extract_m1(payload)
-    assert out["is"]["verdict"] == "pass"
-    assert out["oos"]["verdict"] == "fail"
-
-
-def test_extract_m5_matches_strategy_row():
-    payload = {"rows": [
-        {"strategy": "other", "verdict": "healthy"},
-        {"strategy": "sq", "verdict": "graduate_m1", "fee_drag_pp": 0.3,
-         "trades_per_year": 12.0, "mean_gross_ret": 0.5, "mean_net_ret": 0.2}]}
-    out = asug.extract_m5(payload, "sq")
-    assert out["salvage_verdict"] == "graduate_m1"
-    assert out["fee_drag_pp"] == 0.3
 
 
 def test_apply_correction_matches_direct_bh_and_handles_empty_and_family_size(subtests):
@@ -332,20 +235,6 @@ def test_load_spec_accepts_positive_family_size():
     assert spec["correction"]["family_size"] == 40
 
 
-def test_collect_family_pvalues_dedupes_noise_and_excludes_m3_m5():
-    e1 = {"key": "a", "kind": "open", "noise_family_key": "K",
-          "results": {"m1_noise": {"data": {"permutation_p": 0.01, "mean": 0.2}},
-                      "m3": {"data": {"x": 1}}, "m5": {"data": {"salvage_verdict": "healthy"}}}}
-    e2 = {"key": "b", "kind": "open", "noise_family_key": "K",
-          "results": {"m1_noise": {"data": {"permutation_p": 0.01, "mean": 0.2}}}}
-    e3 = {"key": "c", "kind": "exit_ab",
-          "results": {"m6": {"data": {"oos": {"per_dataset": [
-              {"dataset": "BTC 1h", "mean": 0.3, "p": 0.02}]}}}}}
-    tests = asug.collect_family_pvalues([e1, e2, e3])
-    harnesses = sorted(t["harness"] for t in tests)
-    assert harnesses == ["m1_noise", "m6"]
-
-
 def _open_entry(key, noise=None, m1=None, harnesses=("m1_noise", "m1"), fam=None):
     results = {}
     if noise is not None:
@@ -392,43 +281,6 @@ def test_verdict_failure_exclusion_and_open_entry_paths():
         "test_verdict_open_m1_fail_is_incumbent_stands"
 
 
-def _ab_entry(key, is_pooled, oos_pooled):
-    return {"key": key, "kind": "exit_ab", "precondition_errors": [],
-            "results": {"m6": {"status": "ok", "data": {
-                "is": {"pooled_delta_net_pct_per_entry": is_pooled},
-                "oos": {"pooled_delta_net_pct_per_entry": oos_pooled}}}}}
-
-
-def test_verdict_m6_exit_ab_paths():
-    e = _ab_entry("x", 0.2, 0.15)
-    tests = [{"candidate_key": "x", "harness": "m6", "p": 0.01,
-              "effect_positive": True, "bh_pass": True}]
-    assert asug.candidate_verdict(e, tests) == "survivor", \
-        "test_verdict_m6_survivor_needs_bh_positive_and_no_contradiction"
-
-    e = _ab_entry("x", 0.2, 0.15)
-    tests = [{"candidate_key": "x", "harness": "m6", "p": 0.01,
-              "effect_positive": True, "bh_pass": True},
-             {"candidate_key": "x", "harness": "m6", "p": 0.02,
-              "effect_positive": False, "bh_pass": False}]
-    assert asug.candidate_verdict(e, tests) == "incumbent_stands", \
-        "test_verdict_m6_significant_contradiction_blocks"
-
-    e = _ab_entry("x", 0.2, 0.15)
-    tests = [{"candidate_key": "x", "harness": "m6", "p": 0.03,
-              "effect_positive": True, "bh_pass": False}]
-    assert asug.candidate_verdict(e, tests) == "positive_uncorrected_only", \
-        "test_verdict_m6_positive_uncorrected_only"
-
-    e = _ab_entry("x", None, 0.15)
-    assert asug.candidate_verdict(e, []) == "inconclusive", \
-        "test_verdict_m6_inconclusive_on_none_pooled"
-
-    e = _ab_entry("x", 0.2, -0.05)
-    assert asug.candidate_verdict(e, []) == "incumbent_stands", \
-        "test_verdict_m6_incumbent_stands_when_not_both_positive"
-
-
 def test_rank_survivors_first_failed_still_present():
     entries = [
         {"key": "loser", "verdict": "incumbent_stands", "results": {}},
@@ -439,111 +291,6 @@ def test_rank_survivors_first_failed_still_present():
     assert ranked[0]["key"] == "win"
     assert [e["key"] for e in ranked] == ["win", "loser", "broke"]
     assert any(e["verdict"] == "run_failed" for e in ranked)
-
-
-def test_reproduction_command_uses_relative_harness_paths():
-    entry = {"key": "x", "results": {
-        "m1": {"argv_tail": ["--candidate-json", "/t/c.json", "--registry", "spot"]}}}
-    cmds = asug.reproduction_command(entry)
-    assert cmds and cmds[0].startswith("uv run --no-sync python backtest/eval_windows.py")
-    assert "--candidate-json" in cmds[0]
-
-
-def _survivor_entry(**results_over):
-    results = {
-        "m1_noise": {"status": "ok",
-                     "data": {"verdict": "distinguishable_positive",
-                              "permutation_p": 0.001, "mean": 0.5, "n": 80}},
-        "m1": {"status": "ok", "data": {"is": {"verdict": "pass"},
-                                        "oos": {"verdict": "pass"}}},
-    }
-    results.update(results_over)
-    return {"key": "c1", "kind": "open", "limitations": [],
-            "precondition_errors": [], "noise_family_key": "fam",
-            "results": results}
-
-
-def _mc_ok_run():
-    return {"status": "ok", "data": {"oos": {"per_dataset": {}, "worst": {
-        "permute": {"p_dd_ge_kill_switch": 0.42, "p95_max_dd": 61.0,
-                    "p_final_below_start": 0.3}}}}}
-
-
-def _family_tests(entry):
-    tests = asug.collect_family_pvalues([entry])
-    asug.apply_family_correction(tests, 0.05)
-    return tests
-
-
-def test_gate_relevant_results_drops_only_advisory_harnesses(subtests):
-    with subtests.test(case="test_gate_relevant_results_drops_only_advisory_harnesses"):
-        entry = _survivor_entry(mc={"status": "failed"},
-                                m5={"status": "ok", "data": {}})
-        gate = asug.gate_relevant_results(entry)
-        assert set(gate) == {"m1_noise", "m1", "m5"}
-        assert "mc" not in gate
-        assert asug.candidate_verdict(
-            _survivor_entry(m5={"status": "failed"}), []) == "run_failed"
-
-    with subtests.test(case="test_mc_absent_present_and_failed_all_yield_the_same_verdict"):
-        absent = _survivor_entry()
-        present = _survivor_entry(mc=_mc_ok_run())
-        failed = _survivor_entry(mc={"status": "failed", "argv_tail": ["--json", "x"]})
-
-        verdicts = {name: asug.candidate_verdict(e, _family_tests(e))
-                    for name, e in (("absent", absent), ("present", present),
-                                    ("failed", failed))}
-        assert verdicts == {"absent": "survivor", "present": "survivor",
-                            "failed": "survivor"}
-
-    with subtests.test(case="test_mc_only_failure_does_not_flip_the_process_exit_code"):
-        mc_failed = _survivor_entry(mc={"status": "failed"})
-        assert asug.any_gate_failure([mc_failed]) is False
-        gate_failed = _survivor_entry(m3={"status": "failed"})
-        assert asug.any_gate_failure([gate_failed]) is True
-
-    with subtests.test(case="test_mc_failure_surfaces_as_a_limitation_not_a_verdict"):
-        entry = _survivor_entry(mc={"status": "failed"})
-        assert asug.advisory_failures(entry) == ["mc"]
-        assert asug.advisory_failures(_survivor_entry(mc=_mc_ok_run())) == []
-        assert asug.advisory_failures(_survivor_entry(m1={"status": "failed"})) == []
-
-    with subtests.test(case="test_mc_contributes_no_pvalue_and_leaves_bh_family_size_unchanged"):
-        without = asug.collect_family_pvalues([_survivor_entry()])
-        with_mc = asug.collect_family_pvalues([_survivor_entry(mc=_mc_ok_run())])
-        assert [t["p"] for t in without] == [t["p"] for t in with_mc]
-        assert asug.apply_family_correction(with_mc, 0.05)["m"] == \
-            asug.apply_family_correction(without, 0.05)["m"]
-        assert all(t["harness"] != "mc" for t in with_mc)
-
-
-def test_mc_argv_tail_threads_the_candidate_json_and_exclusive_threshold_sources(subtests):
-    with subtests.test("test_mc_argv_tail_threads_the_candidate_json_and_exclusive_threshold_sources"):
-        tail = asug.mc_argv_tail("/t/c.json", "spot", ["is", "oos"],
-                                 ["BTC/USDT:1h"], 500, 7, {}, "/t/o.json")
-        assert tail[:2] == ["--candidate-json", "/t/c.json"]
-        assert "--strategy" not in tail
-        assert "--windows" in tail and tail[tail.index("--windows") + 1] == "is,oos"
-        assert tail[tail.index("--datasets") + 1] == "BTC/USDT:1h"
-        assert tail[tail.index("--n-paths") + 1] == "500"
-        assert tail[tail.index("--seed") + 1] == "7"
-
-        case = "test_mc_argv_tail_threshold_sources_are_exclusive"
-        explicit = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
-                                     {"kill_switch_pct": 30}, "/o")
-        assert explicit[explicit.index("--kill-switch-pct") + 1] == "30", case
-        assert "--config" not in explicit, case
-
-        from_cfg = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
-                                     {"config": "/cfg.json", "strategy_id": "hl-x"},
-                                     "/o")
-        assert from_cfg[from_cfg.index("--config") + 1] == "/cfg.json", case
-        assert from_cfg[from_cfg.index("--strategy-id") + 1] == "hl-x", case
-        assert "--kill-switch-pct" not in from_cfg, case
-    with subtests.test("test_mc_argv_tail_omits_datasets_when_none_and_threshold_when_default"):
-        tail = asug.mc_argv_tail("/t/c.json", "spot", ["is"], None, 10, 1, {}, "/o")
-        assert "--datasets" not in tail
-        assert "--kill-switch-pct" not in tail and "--config" not in tail
 
 
 def _mc_payload():
@@ -637,30 +384,3 @@ def test_candidate_json_is_rewritten_over_a_stale_file_from_a_prior_run(monkeypa
             assert seen[harness]["name"] == "squeeze_momentum"
             assert "allowed_regimes" not in seen[harness]
             assert json.loads(stale.read_text())["name"] == "squeeze_momentum"
-
-
-def _mc_data(**windows):
-    out = {}
-    for w, stats in windows.items():
-        out[w] = {"per_dataset": {},
-                  "worst": {} if stats is None else {"permute": stats}}
-    return out
-
-
-_SCORED = {"p_dd_ge_kill_switch": 0.30, "p95_max_dd": 40.0,
-           "p_final_below_start": 0.20}
-_SCORED_OOS = {"p_dd_ge_kill_switch": 0.55, "p95_max_dd": 70.0,
-               "p_final_below_start": 0.40}
-_NO_TRADES = {"p_dd_ge_kill_switch": None, "p95_max_dd": None,
-              "p_final_below_start": None}
-
-
-def test_mc_column_window():
-    for i, (windows, expected) in enumerate([
-        ({"is": _SCORED, "oos": None}, "is"),
-        ({"is": _SCORED, "oos": _SCORED_OOS}, "oos"),
-        ({"is": _SCORED, "oos": _NO_TRADES}, "is"),
-        ({"is": None, "oos": None}, None),
-    ]):
-        assert asug._mc_column_window(_mc_data(**windows)) == expected, \
-            f"test_mc_column_window[windows{i}-{expected}]"

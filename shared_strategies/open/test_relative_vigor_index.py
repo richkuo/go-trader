@@ -224,6 +224,14 @@ def _hl_candles(df):
             for ts, r in df.iterrows()]
 
 
+def test_production_hyperliquid_dataframe_is_evaluated_with_its_timestamps():
+    df = _CHECK_HL._make_dataframe(_hl_candles(market(200)))
+    direct = run(market(200))
+    out = run(df)
+    assert out["signal"].tolist() == direct["signal"].tolist()
+    assert out["rvi_reason"].iloc[-1] != "missing_timestamps"
+
+
 def test_production_hyperliquid_paths_admit_explicit_paper_and_refuse_unacknowledged_live():
     df = _CHECK_HL._make_dataframe(_hl_candles(market(200)))
     shared = _CHECK_HL.build_shared_signal_state("BTC", "4h", df=df)

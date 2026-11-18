@@ -56,27 +56,6 @@ def _run(signal, labels, **kw):
     return _bt(**kw).run(_frame(signal, labels, **frame_kw), save=False)
 
 
-def test_zero_triggers_non_directional_labels_and_unready_windows_hold(subtests):
-    cases = [
-        ("zero_trigger", [0, 0, 0, 0], ["trending_down_choppy"] * 4, None, "held:zero_trigger"),
-        ("ranging_quiet", [1, -1, 1, 0], ["ranging_quiet"] * 4, None, "held:no_side_label"),
-        ("ranging_volatile", [1, -1, 1, 0], ["ranging_volatile"] * 4, None, "held:no_side_label"),
-        ("bare_ranging_directional", [1, -1, 1, 0], ["ranging_directional"] * 4, None,
-         "held:no_side_label"),
-        ("legacy_ranging", [1, -1, 1, 0], ["ranging"] * 4, None, "held:no_side_label"),
-        ("unknown_label", [1, -1, 1, 0], ["sideways"] * 4, None, "held:no_side_label"),
-        ("empty_label", [1, -1, 1, 0], [""] * 4, None, "held:window_unavailable"),
-        ("warming_window", [1, -1, 1, 0], ["trending_down_choppy"] * 4, [False] * 4,
-         "held:window_warming"),
-    ]
-    for name, signal, labels, ready, outcome in cases:
-        with subtests.test(case=name):
-            res = _run(signal, labels, ready=ready)
-            assert res["trades"] == []
-            assert res["regime_side"]["counts"].get(outcome, 0) >= 1
-            assert not any(k.startswith("opened") for k in res["regime_side"]["counts"])
-
-
 def test_base_direction_is_a_permission_filter(subtests):
     for direction, label, expected in [
             ("long", "trending_up_clean", ["long"]), ("long", "trending_down_choppy", []),

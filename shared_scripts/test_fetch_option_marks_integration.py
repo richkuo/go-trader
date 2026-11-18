@@ -124,6 +124,19 @@ def test_logged_out_marks_and_failures(tmp_path, subtests):
                 assert "mark" not in out and "settlement" not in out, out
 
 
+def test_a_coin_named_stock_underlying_reads_only_stock_data(tmp_path):
+    expiry = _future_session()
+    refresh = _session_close(expiry) - timedelta(days=10)
+    proc, records = _run_qp(tmp_path, _request(refresh, [_leg("leg", expiry.isoformat(), underlying="LTC")]))
+    out = _only_leg(proc)
+    assert out["status"] == "mark", out
+    assert out["mark"]["source"] == "robinhood_black_scholes" and out["mark"]["spot"] == 450, out
+    yahoo = [r for r in records if r["call"].startswith("yahoo_history")]
+    assert yahoo, records
+    assert {r["symbol"] for r in yahoo} == {"LTC"}, yahoo
+    assert not [r for r in records if r["call"] in ("fetch_ticker", "fetch_ohlcv")], records
+
+
 def test_batch_errors_fail_the_whole_document(tmp_path, subtests):
     expiry = _future_session().isoformat()
     now = datetime.now(timezone.utc)

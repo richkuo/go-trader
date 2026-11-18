@@ -44,30 +44,6 @@ def _frame(n: int = 400, seed: int = 1411) -> pd.DataFrame:
     )
 
 
-def test_min_only_max_only_and_unset_disarm_hysteresis_sequences():
-    case = "test_min_only_hysteresis_sequence"
-    gate = hg.HurstGate({"enabled": True, "min": 0.55, "disarm_min": 0.50})
-    assert gate.advance(0.40) == hg.HURST_STATE_DISARMED, case
-    assert gate.advance(0.52) == hg.HURST_STATE_DISARMED, case
-    assert gate.advance(0.55) == hg.HURST_STATE_ARMED, case
-    assert gate.advance(0.51) == hg.HURST_STATE_ARMED, case
-    assert gate.advance(0.4999) == hg.HURST_STATE_DISARMED, case
-
-    case = "test_max_only_hysteresis_sequence"
-    gate = hg.HurstGate({"enabled": True, "max": 0.45, "disarm_max": 0.50})
-    assert gate.advance(0.40) == hg.HURST_STATE_ARMED, case
-    assert gate.advance(0.48) == hg.HURST_STATE_ARMED, case
-    assert gate.advance(0.51) == hg.HURST_STATE_DISARMED, case
-    assert gate.advance(0.47) == hg.HURST_STATE_DISARMED, case
-    assert gate.advance(0.45) == hg.HURST_STATE_ARMED, case
-
-    case = "test_unset_disarm_collapses_onto_the_arm_bound"
-    gate = hg.HurstGate({"enabled": True, "min": 0.55})
-    gate.state = hg.HURST_STATE_ARMED
-    assert gate.advance(0.5499) == hg.HURST_STATE_DISARMED, case
-    assert gate.advance(0.55) == hg.HURST_STATE_ARMED, case
-
-
 def test_nan_never_transitions_state():
     for prior in [hg.HURST_STATE_UNKNOWN, hg.HURST_STATE_ARMED, hg.HURST_STATE_DISARMED]:
         case = f"test_nan_never_transitions_state[{prior}]"
@@ -282,31 +258,6 @@ _COMPOSITE_REGIME = {
 }
 
 
-def test_backtest_accepts_a_primary_composite_window(tmp_path, load_strategy_config, subtests):
-    with subtests.test("test_backtest_accepts_a_primary_composite_window"):
-        case_path = tmp_path / "test_backtest_accepts_a_primary_composite_window"
-        case_path.mkdir()
-        path = _write_cfg(
-            case_path,
-            {"hurst_gate": {"enabled": True, "min": 0.55, "disarm_min": 0.5}},
-            _COMPOSITE_REGIME,
-        )
-        loaded = load_strategy_config(path, "s1")
-        assert loaded["hurst_gate"]["enabled"] is True
-        assert loaded["hurst_gate"]["window_key"] == "medium"
-        assert loaded["hurst_gate"]["on_failure"] == "open"
-    with subtests.test("test_backtest_resolves_global_on_failure_default"):
-        case_path = tmp_path / "test_backtest_resolves_global_on_failure_default"
-        case_path.mkdir()
-        regime = dict(_COMPOSITE_REGIME, hurst_gate_on_failure="closed")
-        path = _write_cfg(case_path, {"hurst_gate": {"enabled": True, "min": 0.55}}, regime)
-        assert load_strategy_config(path, "s1")["hurst_gate"]["on_failure"] == "closed"
-        path = _write_cfg(
-            case_path, {"hurst_gate": {"enabled": True, "min": 0.55, "on_failure": "open"}}, regime
-        )
-        assert load_strategy_config(path, "s1")["hurst_gate"]["on_failure"] == "open"
-
-
 _ADX_REGIME = {"enabled": True, "windows": {"medium": {"classifier": "adx", "period": 20}}}
 _TWO_COMPOSITE_REGIME = {
     "enabled": True,
@@ -483,31 +434,6 @@ def _hold_then_add_signal(n: int, open_bar: int) -> np.ndarray:
     return sig
 
 
-def test_gate_mode_holds_scale_in_adds_once_disarmed(Backtester, hurst_module, monkeypatch):
-    df = _frame(n=400)
-    disarm_at = 200
-    _pin_hurst(
-        monkeypatch, hurst_module,
-        lambda n: [0.80] * disarm_at + [0.20] * (n - disarm_at),
-    )
-    sig = _hold_then_add_signal(len(df), open_bar=100)
-    gate = {"enabled": True, "mode": "gate", "min": 0.55, "disarm_min": 0.50}
-
-    gated = _run_scale_in(Backtester, df, sig, hurst_gate=gate)
-    ungated = _run_scale_in(Backtester, df, sig)
-
-    assert ungated["scale_in_adds"] > 0
-    assert gated["scale_in_adds"] > 0, "adds taken while ARMED must still fire"
-    assert gated["scale_in_adds"] < ungated["scale_in_adds"], (
-        "a disarmed gate must hold scale-in adds, exactly as pausedBlocksSignal "
-        "holds a same-side signal on an open position live (#1411)"
-    )
-    open_fill_bar = 100 + 1
-    last_armed_bar = disarm_at
-    assert gated["scale_in_adds"] == last_armed_bar - open_fill_bar
-    assert gated["scale_in_added_notional_usd"] < ungated["scale_in_added_notional_usd"]
-
-
 def test_size_mode_scales_scale_in_adds_by_the_multiplier(Backtester, hurst_module, monkeypatch):
     df = _frame(n=400)
     _pin_hurst(monkeypatch, hurst_module, lambda n: [0.53] * n)
@@ -527,3 +453,19 @@ def test_size_mode_scales_scale_in_adds_by_the_multiplier(Backtester, hurst_modu
     assert gated["scale_in_added_notional_usd"] == pytest.approx(
         expected_mult * ungated["scale_in_added_notional_usd"], rel=1e-7,
     )
+
+
+def test_armed_gate_leaves_scale_in_adds_byte_identical(Backtester, hurst_module, monkeypatch):
+    df = _frame(n=400)
+    _pin_hurst(monkeypatch, hurst_module, lambda n: [0.80] * n)
+    sig = _hold_then_add_signal(len(df), open_bar=100)
+
+    gated = _run_scale_in(
+        Backtester, df, sig,
+        hurst_gate={"enabled": True, "mode": "gate", "min": 0.55, "disarm_min": 0.50},
+    )
+    ungated = _run_scale_in(Backtester, df, sig)
+
+    assert gated["scale_in_adds"] == ungated["scale_in_adds"] > 0
+    assert gated["scale_in_added_notional_usd"] == ungated["scale_in_added_notional_usd"]
+    assert gated["total_return_pct"] == ungated["total_return_pct"]

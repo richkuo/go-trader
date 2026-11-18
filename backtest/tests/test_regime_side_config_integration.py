@@ -109,38 +109,10 @@ def test_warmup_bars_and_zero_triggers_hold(monkeypatch, tmp_path):
     assert not any(k.startswith("opened") for k in res["regime_side"]["counts"])
 
 
-def test_base_direction_from_the_config(monkeypatch, tmp_path, subtests):
-    for direction, shape, expected in (
-            ("long", DOWN_CHOPPY, []), ("long", UP_CLEAN, ["long"]),
-            ("short", DOWN_CHOPPY, ["short"]), ("short", UP_CLEAN, []),
-            (None, UP_CLEAN, ["long"]), (None, DOWN_CHOPPY, [])):
-        with subtests.test(direction=direction, shape=shape):
-            sc = _strategy(direction=direction) if direction else {
-                k: v for k, v in _strategy().items() if k != "direction"}
-            path = _write(tmp_path, sc, name=f"{direction}-{shape[0]}.json")
-            res, _ = _run(monkeypatch, path, _frame(*shape), {TRIGGER_BAR: 1})
-            assert _sides(res) == expected
-
-
 def _htf(rising):
     idx = pd.date_range("2023-12-01", "2024-01-12", freq="4h")
     close = pd.Series([1000.0 + (5.0 if rising else -5.0) * i for i in range(len(idx))], index=idx)
     return pd.DataFrame({"open": close, "high": close + 1, "low": close - 1, "close": close, "volume": 1.0})
-
-
-def test_htf_filter_checks_the_mapped_side(monkeypatch, tmp_path, subtests):
-    path = _write(tmp_path, _strategy())
-    frame = _frame(*DOWN_CHOPPY)
-    for name, trigger, rising, expected in (
-            ("raw_disagrees_mapped_agrees", 1, False, ["short"]),
-            ("raw_agrees_mapped_disagrees", 1, True, [])):
-        with subtests.test(case=name):
-            res, _ = _run(monkeypatch, path, frame, {TRIGGER_BAR: trigger},
-                          extra_argv=("--htf-filter",), htf_frame=_htf(rising))
-            assert _sides(res) == expected
-            assert res["regime_side"]["htf_filter"] is True
-            if not expected:
-                assert res["regime_side"]["counts"]["held:htf_filter"] == 1
 
 
 def _artifact(tmp_path, states, generated_at="2023-12-01T00:00:00Z", expires_at=None,

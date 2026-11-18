@@ -73,6 +73,16 @@ def test_short_entry_fills_next_bar_open_not_signal_bar():
     assert res["trades"][0]["entry_price"] == pytest.approx(95.0)
 
 
+def test_commission_and_slippage_charged_on_both_legs():
+    closes = [100, 100, 100, 100, 100]
+    signals = [-1, 0, 1, 0, 0]
+    free = _run(_df(closes, signals))
+    costly = _run(_df(closes, signals), commission_pct=0.001,
+                  slippage_pct=0.0005)
+    assert free["final_capital"] == pytest.approx(10000.0)
+    assert costly["final_capital"] < free["final_capital"] - 25.0
+
+
 def test_regime_gate_blocks_short_entries():
     closes = [100, 100, 90, 80, 80]
     signals = [-1, 0, 0, 0, 0]

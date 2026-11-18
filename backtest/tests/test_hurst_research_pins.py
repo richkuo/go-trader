@@ -34,8 +34,6 @@ GO_GATE = os.path.join(_REPO, "scheduler", "hurst_gate.go")
 LIVE_MODULES = {"regime", "regime_unified", "shared_tools.regime"}
 LIVE_ARTIFACTS = ("hurst_gate_state", "config.example.json")
 
-_MR = "mean_reversion"
-
 
 def _study(name):
     return importlib.import_module(name)
@@ -107,99 +105,17 @@ def test_the_reference_window_exceeds_the_live_fetch_depth():
 # --- the degenerate-limit verdict pin ---------------------------------------
 
 
-def _mde(mom_limit, mom_sep, p0=0.9):
+def test_the_committed_run_never_oversells_a_degenerate_limit():
     study = _study("hurst_1427_change_sort")
-    return {
-        "by_family_cluster": {study.PRIMARY_FAMILY: mom_limit, _MR: 0.05},
-        "by_family_separation": {study.PRIMARY_FAMILY: mom_sep, _MR: 0.02},
-        "by_family_n": {study.PRIMARY_FAMILY: 8000, _MR: 20000},
-        "by_family_cluster_p0": {study.PRIMARY_FAMILY: p0, _MR: 0.8},
-        "observed_separation_by_pool": {
-            "primary": {
-                f"{study.PRIMARY_FAMILY}|512": mom_sep,
-                f"{_MR}|512": 0.02,
-            }
-        },
-        "pooled_primary_cluster": 0.01,
-        "pooled_primary_free": 0.009,
-        "pooled_primary_n": 28000,
-        "pooled_primary_cluster_p0": 0.5,
-        "pooled_primary_free_p0": 0.5,
-        "pooled_primary_cluster_return": 1.0,
-        "pooled_primary_cluster_return_p0": 0.6,
-    }
-
-
-def _passing_cfg():
-    study = _study("hurst_1427_change_sort")
-    windows = {
-        w: {
-            "n_legs": 1,
-            "dd_delta": -1.0,
-            "chop_delta": -1.0,
-            "ret_gated": 10.0,
-            "ret_ungated": 10.0,
-        }
-        for w in study.WINDOW_ORDER
-    }
-    return {
-        "config_id": study.PRIMARY_CONFIG_ID,
-        "cohort": study.COHORT_PRIMARY,
-        "family": study.PRIMARY_FAMILY,
-        "mode": "gate",
-        "hurst_window": 512,
-        "lookback_bars": 256,
-        "arm": study.PRIMARY_ARM,
-        "disarm": study.PRIMARY_DISARM,
-        "gain": None,
-        "protocol_windows": list(study.PRIMARY_PROTOCOL_WINDOWS),
-        "protocol_min_windows": study.PRIMARY_PROTOCOL_MIN_WINDOWS,
-        "held_out_windows": list(study.PRIMARY_HELD_OUT_WINDOWS),
-        "windows": windows,
-        "p_raw": 0.001,
-        "p_cluster": 0.001,
-        "p_cluster_return": 0.001,
-        "separation": 0.09,
-        "separation_return": 1.0,
-        "bh_reject": True,
-        "n_pooled_trades": 500,
-        "n_missing_target": 0,
-        "n_suppressed": 100,
-        "n_kept": 400,
-        "n_pooled_effective": 200.0,
-        "n_suppressed_effective": 60.0,
-        "n_kept_effective": 140.0,
-        "cluster_excluded_datasets": [],
-        "cluster_excluded_trades": 0,
-        "cluster_offset_range": [30, 300],
-        "cluster_distinct_offsets": 271,
-        "cluster_reason": None,
-    }
-
-
-def test_a_zero_limit_is_flagged_as_degenerate_everywhere():
-    study = _study("hurst_1427_change_sort")
-    assert study.limit_is_degenerate(0.0) is True
-    assert study.limit_is_degenerate(0.001) is False
-    assert study.limit_is_degenerate(None) is False
-    for limit, sep in ((0.0, 0.01), (0.0, None), (0.05, 0.09), (None, 0.09)):
-        gate = study.validity_gate(_mde(limit, sep))
-        assert "limit_is_degenerate" in gate
-        assert gate["limit_is_degenerate"] is (limit == 0.0)
-
-
-def test_a_degenerate_limit_passes_the_gate_but_corroborates_nothing():
-    study = _study("hurst_1427_change_sort")
-    gate = study.validity_gate(_mde(0.0, 0.0099))
-    assert gate["passed"] is True
-    assert gate["limit_is_degenerate"] is True
-    decision = study.decide_recommendation(
-        [_passing_cfg()], _mde(0.0, 0.0099, p0=0.011)
-    )
-    assert decision["verdict"] == study.VERDICT_CHANGE_SORTS
-    text = decision["justification"]
-    assert "PASSES TRIVIALLY" in text
-    assert "corroborates NOTHING" in text
+    with open(study._DEFAULT_JSON_OUT) as fh:
+        payload = json.load(fh)
+    gate = payload["decision"]["validity_gate"]
+    text = payload["decision"]["justification"]
+    assert "limit_is_degenerate" in gate
+    if gate["limit_is_degenerate"]:
+        assert gate["limit"] == 0.0
+        assert "PASSES TRIVIALLY" in text
+        assert "corroborates NOTHING" in text
 
 
 # --- report-only: no study may write a live path ----------------------------

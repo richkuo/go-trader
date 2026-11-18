@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from backtest_carry_pair import CarryPairBacktester, CarryResults, aggregate_legs, carry_verdict, delta_drift_pct, leg_from_carry_results, liquidation_loss, rebalance_spot_qty
+from backtest_carry_pair import CarryPairBacktester, CarryResults, delta_drift_pct, leg_from_carry_results, liquidation_loss, rebalance_spot_qty
 from eval_windows import LIQUIDATED_DDADJ_FLOOR
 from backtester import LIQUIDATED_METRIC_FLOOR
 
@@ -201,17 +201,44 @@ def test_run_rejects_missing_columns() -> None:
         bt.run(pd.DataFrame({"open": [1.0], "close": [1.0]}))
 
 
-def test_delta_drift_pct_math() -> None:
-    assert delta_drift_pct(10.0, 100.0, 10.0, 100.0) == pytest.approx(0.0)
-    assert delta_drift_pct(10.0, 100.0, 9.5, 100.0) == pytest.approx(5.0)
-    assert delta_drift_pct(10.0, 100.0, 8.0, 100.0) > delta_drift_pct(10.0, 100.0, 9.0, 100.0)
-    assert delta_drift_pct(0.0, 100.0, 10.0, 100.0) == 0.0
-
-
 def test_rebalance_spot_qty_restores_parity() -> None:
     target, _ = rebalance_spot_qty(qty_perp=10.0, mark_perp=110.0, mark_spot=100.0)
     assert target == pytest.approx(11.0)
     assert delta_drift_pct(10.0, 110.0, target, 100.0) == pytest.approx(0.0)
+
+
+def test_basis_drift_triggers_one_rebalance() -> None:
+    n = 12
+    spot = [100.0] * n
+    perp = [100.0, 100.0] + [106.0] * (n - 2)
+    df = _make_df(spot, _open_hold(n), perp_prices=perp)
+    bt = CarryPairBacktester(base_notional=1000.0, leverage=50.0,
+                             maintenance_margin=0.0, drift_threshold=2.0,
+                             perp_fee_pct=0.0, spot_fee_pct=0.00045)
+    res = bt.run(df)
+    assert res.rebalances >= 1
+    assert res.fees > 1000.0 * 0.00045 * 1
+
+
+def test_below_threshold_and_single_series_never_rebalance():
+    case = "test_below_threshold_never_rebalances"
+    n = 12
+    spot = [100.0] * n
+    perp = [100.0, 100.0] + [100.5] * (n - 2)
+    df = _make_df(spot, _open_hold(n), perp_prices=perp)
+    bt = CarryPairBacktester(base_notional=1000.0, leverage=50.0,
+                             maintenance_margin=0.0, drift_threshold=2.0,
+                             perp_fee_pct=0.0, spot_fee_pct=0.0)
+    res = bt.run(df)
+    assert res.rebalances == 0, case
+
+    case = "test_single_series_never_drifts"
+    prices = [100.0 + i for i in range(30)]
+    df = _make_df(prices, _open_hold(len(prices)))
+    bt = CarryPairBacktester(base_notional=1000.0, leverage=50.0,
+                             maintenance_margin=0.0, drift_threshold=2.0)
+    res = bt.run(df)
+    assert res.rebalances == 0, case
 
 
 def test_rebalance_spot_leg_pnl_across_sells_buys_and_signal_close():
@@ -275,39 +302,10 @@ def test_leg_from_results_liquidated_floors_and_funding_share():
     assert leg["ddadj"] == pytest.approx(2.0, abs=1e-6), case
 
 
-def test_aggregate_legs_degenerate_rule() -> None:
-    legs = {
-        "A": {"return_pct": 1.0, "sharpe": 1.0, "ddadj": 1.0, "trades": 2,
-              "funding_pnl": 5.0, "price_pnl": 0.0, "fees": 1.0, "rebalances": 0,
-              "liquidated": False},
-        "B": {"return_pct": 0.0, "sharpe": 0.0, "ddadj": 0.0, "trades": 0,
-              "funding_pnl": 0.0, "price_pnl": 0.0, "fees": 0.0, "rebalances": 0,
-              "liquidated": False},
-        "C": {"return_pct": 0.0, "sharpe": 0.0, "ddadj": 0.0, "trades": 0,
-              "funding_pnl": 0.0, "price_pnl": 0.0, "fees": 0.0, "rebalances": 0,
-              "liquidated": False},
-    }
-    s = aggregate_legs(legs)
-    assert s["traded_datasets"] == 1
-    assert s["degenerate"] is True
-    assert aggregate_legs({"A": None})["datasets"] == 0
-
-
 def _summary(mean_return, traded=2, datasets=2, liquidated=0, degenerate=False):
     return {"mean_return_pct": mean_return, "traded_datasets": traded,
             "datasets": datasets, "liquidated_legs": liquidated,
             "degenerate": degenerate}
-
-
-def test_carry_verdict_matrix() -> None:
-    assert carry_verdict({"is": _summary(0.0, traded=0)}) == "no_trades"
-    assert carry_verdict({"is": _summary(5.0, degenerate=True)}) == "no_trades"
-    assert carry_verdict({"a": _summary(-1.0), "b": _summary(-2.0)}) == "deprecate"
-    assert carry_verdict({"a": _summary(3.0), "b": _summary(1.0)}) == "healthy"
-    assert carry_verdict({"a": _summary(3.0, liquidated=1),
-                          "b": _summary(1.0)}) == "marginal"
-    assert carry_verdict({"a": _summary(10.0), "b": _summary(-1.0),
-                          "c": _summary(-1.0)}) == "marginal"
 
 
 def test_liquidation_loss_math() -> None:

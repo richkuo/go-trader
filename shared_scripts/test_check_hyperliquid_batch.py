@@ -132,6 +132,45 @@ SLOT_MATRIX = [
 ]
 
 
+def test_batched_slot_matrix_matches_solo_and_keeps_slot_values(mod, subtests):
+    from datetime import datetime
+
+    with subtests.test(case="mark_25000"):
+        batch_adapter = FakeAdapter()
+        envelope, exit_code = mod.run_batch_signal_check(
+            "BTC", "1h", SLOT_MATRIX,
+            ohlcv_limit=200, atr_method="simple", mark_price=25_000.0,
+            adapter=batch_adapter,
+        )
+        assert exit_code == 0, envelope
+        assert envelope["error"] == "" and envelope["error_scope"] == ""
+        assert [r["id"] for r in envelope["results"]] == ["hl-a", "hl-b", "hl-c"]
+        assert batch_adapter.ohlcv_calls, "legacy polling must still reach the adapter"
+
+        for slot, batched in zip(SLOT_MATRIX, envelope["results"]):
+            solo_shared = _shared(mod, FakeAdapter())
+            solo = mod.evaluate_signal_slot(solo_shared, slot)
+            assert _strip_volatile(batched) == _strip_volatile(solo), slot["id"]
+
+        datetime.fromisoformat(envelope["timestamp"])
+        for result in envelope["results"]:
+            datetime.fromisoformat(result["timestamp"])
+            assert result["price"] == 25_000.0
+
+        by_id = {r["id"]: r for r in envelope["results"]}
+        assert by_id["hl-a"]["mode"] == "paper"
+        assert by_id["hl-b"]["mode"] == "live"
+        assert by_id["hl-a"]["strategy"] == "breakout"
+        assert by_id["hl-b"]["strategy"] == "momentum_pro"
+        assert by_id["hl-c"]["close_fraction"] >= 0.0
+        assert by_id["hl-a"].get("close_fraction", 0.0) == 0.0
+
+    with subtests.test(case="candles_are_fetched_once_per_batch"):
+        adapter = FakeAdapter()
+        mod.run_batch_signal_check("BTC", "1h", SLOT_MATRIX, mark_price=1.0, adapter=adapter)
+        assert adapter.ohlcv_calls == [("BTC", "1h", 200)]
+
+
 def test_slot_price_comes_from_the_mark_or_one_spot_fallback(mod, subtests):
     with subtests.test(case="spot_price_fallback_used_once_when_mark_absent"):
         adapter = FakeAdapter(spot_price=31_337.0)
@@ -150,6 +189,30 @@ def test_slot_price_comes_from_the_mark_or_one_spot_fallback(mod, subtests):
                 assert result["price"] == mark, (mark, result["id"])
             solo = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=mark), SLOT_MATRIX[0])
             assert solo["price"] == mark, mark
+
+
+def test_slot_cannot_mutate_the_shared_frame(mod):
+    adapter = FakeAdapter()
+    shared = _shared(mod, adapter)
+    base_columns = list(shared["df"].columns)
+
+    deps = mod._signal_check_deps()
+    real_apply = deps.apply_strategy
+
+    def mutating_apply(name, df, params=None):
+        df["leaked_column"] = 1.0
+        return real_apply(name, df, params)
+
+    mutating_deps = types.SimpleNamespace(**vars(deps))
+    mutating_deps.apply_strategy = mutating_apply
+
+    mod.evaluate_signal_slot(shared, _slot("hl-mut", "breakout"), deps=mutating_deps)
+    assert list(shared["df"].columns) == base_columns
+
+    peer = mod.evaluate_signal_slot(shared, _slot("hl-peer", "breakout"))
+    solo = mod.evaluate_signal_slot(_shared(mod, FakeAdapter()), _slot("hl-peer", "breakout"))
+    assert "leaked_column" not in peer["indicators"]
+    assert _strip_volatile(peer) == _strip_volatile(solo)
 
 
 def test_shared_fetches_are_memoized_and_handed_out_as_copies(mod, subtests):
@@ -292,6 +355,41 @@ def test_batch_check_probe_only_exits_before_reading_stdin(mod, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         mod.main()
     assert exc.value.code == 0
+
+
+def test_single_strategy_mode_keeps_its_one_object_shapes(mod, monkeypatch, subtests):
+    with subtests.test(case="prints_one_object"), monkeypatch.context() as mp:
+        out, code = _run_main(mod, mp, [
+            "breakout", "BTC", "1h", "--mode=paper", "--mark-price=25000",
+            "--strategy-refs", json.dumps({"open": {"name": "breakout", "params": {}}}),
+        ], "", FakeAdapter())
+        assert code == 0, out
+        result = json.loads(out)
+        assert result["strategy"] == "breakout"
+        assert result["platform"] == "hyperliquid"
+        assert result["price"] == 25_000.0
+        assert "results" not in result
+
+    with subtests.test(case="insufficient_data_shape_is_unchanged"), monkeypatch.context() as mp:
+        out, code = _run_main(mod, mp, [
+            "breakout", "BTC", "1h", "--mode=paper",
+            "--strategy-refs", json.dumps({"open": {"name": "breakout", "params": {}}}),
+        ], "", FakeAdapter(candles=_candles(n=12)))
+        assert code == 1
+        result = json.loads(out)
+        assert result["error"] == "Insufficient data: 12 candles"
+        assert "regime" not in result
+
+    with subtests.test(case="error_shape_is_unchanged"), monkeypatch.context() as mp:
+        out, code = _run_main(mod, mp, [
+            "no_such_strategy_1442", "BTC", "1h", "--mode=paper",
+            "--strategy-refs", json.dumps({"open": {"name": "no_such_strategy_1442", "params": {}}}),
+        ], "", FakeAdapter())
+        assert code == 1
+        result = json.loads(out)
+        assert result["error"]
+        assert result["regime"] is None
+        assert result["signal"] == 0
 
 
 def test_shared_state_accepts_a_prebuilt_frame_without_an_adapter(mod):

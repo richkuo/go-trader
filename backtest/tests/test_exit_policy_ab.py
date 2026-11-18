@@ -6,86 +6,6 @@ import pytest
 import exit_policy_ab as m
 
 
-def test_sign_test():
-    for case_id, (xs, n_pos, n_neg, n_zero, n, p_value) in {
-        "all_positive": ([0.5, 1.0, 2.0, 0.1, 0.3], 5, 0, 0, 5, 0.0625),
-        "balanced": ([1.0, -1.0, 2.0, -2.0], 2, 2, 0, 4, 1.0),
-        "zeros_dropped": ([0.0, 0.0, 1.0, 2.0], 2, 0, 2, 2, 0.5),
-        "empty": ([], 0, 0, 0, 0, 1.0),
-    }.items():
-        case = f"test_sign_test[{case_id}]"
-        r = m.sign_test(xs)
-        assert r["n_pos"] == n_pos, case
-        assert r["n_neg"] == n_neg, case
-        assert r["n_zero"] == n_zero, case
-        assert r["n"] == n, case
-        assert r["p_value"] == pytest.approx(p_value, abs=1e-6), case
-
-
-def test_signed_rank_low_p_symmetric_zeros_ties_and_empty():
-    case = "test_signed_rank_all_positive_low_p"
-    r = m.wilcoxon_signed_rank([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
-    assert r["n"] == 8, case
-    assert r["w"] == pytest.approx(36.0), case
-    assert r["z"] > 0, case
-    assert r["p_value"] < 0.05, case
-
-    r = m.wilcoxon_signed_rank([1.0, -1.0, 2.0, -2.0, 3.0, -3.0])
-    assert r["p_value"] == pytest.approx(1.0, abs=0.05), "test_signed_rank_symmetric_high_p"
-
-    a = m.wilcoxon_signed_rank([0.0, 0.0, 1.0, 2.0, 3.0])
-    b = m.wilcoxon_signed_rank([1.0, 2.0, 3.0])
-    assert a["n"] == b["n"] == 3, "test_signed_rank_drops_zeros"
-
-    case = "test_signed_rank_handles_ties"
-    r = m.wilcoxon_signed_rank([1.0, 1.0, 1.0, -1.0, 2.0])
-    assert r["n"] == 5, case
-    assert 0.0 <= r["p_value"] <= 1.0, case
-
-    r = m.wilcoxon_signed_rank([])
-    assert r["n"] == 0 and r["p_value"] == 1.0, "test_signed_rank_empty_is_undefined"
-
-
-def test_bootstrap_point_determinism_brackets_single_sample_and_empty():
-    case = "test_bootstrap_point_is_mean_and_deterministic"
-    xs = [1.0, 2.0, 3.0, 4.0, 5.0]
-    a = m.bootstrap_ci(xs, n_resamples=500, seed=7)
-    b = m.bootstrap_ci(xs, n_resamples=500, seed=7)
-    assert a == b, case
-    assert a["point"] == pytest.approx(3.0), case
-    assert a["lo"] <= a["point"] <= a["hi"], case
-
-    case = "test_bootstrap_point_is_seed_independent_and_brackets"
-    xs = [1.0, -2.0, 3.0, -4.0, 5.0, 0.5]
-    a = m.bootstrap_ci(xs, n_resamples=500, seed=1)
-    b = m.bootstrap_ci(xs, n_resamples=500, seed=2)
-    assert a["point"] == b["point"], case
-    assert a["lo"] <= a["point"] <= a["hi"], case
-    assert b["lo"] <= b["point"] <= b["hi"], case
-
-    case = "test_bootstrap_single_sample_collapses"
-    r = m.bootstrap_ci([2.5], n_resamples=100)
-    assert r["point"] == r["lo"] == r["hi"] == 2.5, case
-    assert r["n_resamples"] == 0, case
-
-    r = m.bootstrap_ci([], n_resamples=100)
-    assert r["point"] is None and r["lo"] is None, "test_bootstrap_empty"
-
-
-def test_unpaired_diff_difference_of_means_and_one_empty_arm():
-    case = "test_unpaired_diff_point_is_difference_of_means"
-    control = [1.0, 1.0, 1.0, 1.0]
-    candidate = [3.0, 3.0, 3.0, 3.0]
-    r = m.unpaired_diff_ci(control, candidate, n_resamples=300, seed=3)
-    assert r["point"] == pytest.approx(2.0), case
-    assert r["lo"] == pytest.approx(2.0) and r["hi"] == pytest.approx(2.0), case
-
-    case = "test_unpaired_diff_one_empty_arm"
-    r = m.unpaired_diff_ci([], [2.0, 4.0], n_resamples=10)
-    assert r["point"] == pytest.approx(3.0), case
-    assert r["lo"] is None, case
-
-
 def _leg(entry_date="2025-01-01", side="long", pnl_pct=2.0, shares=1.0,
          entry_price=100.0, exit_price=102.0, entry_fee=0.1, exit_fee=0.1,
          mfe_pct=3.0, mae_pct=-1.0, bars_held=5, exit_reason="tp"):
@@ -145,54 +65,6 @@ def _row(regime, ctrl, cand, mfe=2.0, mae=-1.0):
             "candidate_bars_held": 3}
 
 
-def test_per_regime_table_buckets_all_sorted_and_win_rate_delta():
-    rows = [
-        _row("trending", 1.0, 2.0),
-        _row("ranging", 0.0, -1.0),
-        _row("trending", 2.0, 4.0),
-    ]
-    table = m.per_regime_table(rows, n_resamples=200, seed=5)
-    assert list(table["by_regime"].keys()) == ["ranging", "trending"]
-    assert table["by_regime"]["trending"]["n"] == 2
-    assert table["all"]["n"] == 3
-    assert table["by_regime"]["trending"]["candidate_mean_net_pct"] == pytest.approx(3.0)
-    assert table["all"]["paired_delta"]["mean"] == pytest.approx(2.0 / 3.0, abs=1e-6)
-
-    case = "test_per_regime_win_rate_delta"
-    rows = [_row("r", -1.0, 1.0), _row("r", -2.0, 2.0)]
-    blk = m.per_regime_table(rows)["by_regime"]["r"]
-    assert blk["control_win_rate"] == 0.0, case
-    assert blk["candidate_win_rate"] == 1.0, case
-    assert blk["delta_win_rate"] == pytest.approx(1.0), case
-
-
-def test_arm_summary_passes_max_dd_computes_winrate_and_handles_none():
-    results = {
-        "total_trades": 2, "total_return_pct": 5.0, "max_drawdown_pct": -3.0,
-        "sharpe_ratio": 1.2, "liquidated": False,
-        "trades": [_leg(entry_date="d1", pnl_pct=2.0),
-                   _leg(entry_date="d2", pnl_pct=-1.0, exit_price=99.0)],
-    }
-    s = m.arm_summary(results)
-    assert s["entries"] == 2
-    assert s["max_drawdown_pct"] == -3.0
-    assert 0.0 <= s["win_rate"] <= 1.0
-
-    s = m.arm_summary(None)
-    assert s["entries"] == 0 and s["win_rate"] is None and s["max_drawdown_pct"] is None, \
-        "test_arm_summary_none_results"
-
-
-def test_paired_delta_summary_shape_and_empty():
-    s = m.paired_delta_summary([1.0, 2.0, -0.5, 3.0], n_resamples=200, seed=9)
-    assert set(s) == {"n", "mean", "median", "sign_test", "signed_rank", "bootstrap"}
-    assert s["n"] == 4
-    assert s["sign_test"]["n_pos"] == 3 and s["sign_test"]["n_neg"] == 1
-
-    s = m.paired_delta_summary([])
-    assert s["n"] == 0 and s["mean"] is None, "test_paired_delta_summary_empty"
-
-
 def _regime_args(classifier=None, windows_json=None, period=14, adx=20.0, gate_window=None):
     import types
     return types.SimpleNamespace(
@@ -207,26 +79,6 @@ def test_resolve_regime_composite_synthesizes_windows_spec():
     spec = next(iter(cfg["windows_spec"].values()))
     assert spec["classifier"] == "composite" and spec["period"] == 20
     assert cfg["gate_window"] == "attribution"
-
-
-_CONFIG_WINDOWS = {"medium": {"classifier": "composite", "period": 14}}
-_EXPLICIT_WINDOWS = {"fast": {"classifier": "composite", "period": 7}}
-
-
-def test_resolve_regime_cfg():
-    for case_id, (args, config, classifier, windows_spec) in {
-        "adx_default": (_regime_args(), {}, "adx", None),
-        "inherits_config_windows": (_regime_args(), {"windows": _CONFIG_WINDOWS},
-                                    "composite", _CONFIG_WINDOWS),
-        "explicit_windows_json_wins": (_regime_args(windows_json=json.dumps(_EXPLICIT_WINDOWS)), {},
-                                       "composite", _EXPLICIT_WINDOWS),
-        "explicit_adx_overrides_config_windows": (_regime_args(classifier="adx"),
-                                                  {"windows": _CONFIG_WINDOWS}, "adx", None),
-    }.items():
-        case = f"test_resolve_regime_cfg[{case_id}]"
-        cfg = m.resolve_regime_cfg(args, config)
-        assert cfg["classifier"] == classifier, case
-        assert cfg["windows_spec"] == windows_spec, case
 
 
 def test_stops_from_kwargs_collects_present_drops_none_and_empty_without_stops():

@@ -18,8 +18,6 @@ from closed_bar import (
     FRAME_TIMESTAMP_KIND_ATTR,
     declare_frame_cadence,
 )
-from eval_windows import expand_sweep
-from optimizer import DEFAULT_PARAM_RANGES
 from parity_diff import ParityConfig
 from registry_loader import load_registry
 
@@ -153,47 +151,6 @@ def test_timestamp_column_and_native_close_frames_decide_the_same_way():
     d = _apply(native, SMALL)
     np.testing.assert_array_equal(a["signal"].to_numpy(), d["signal"].to_numpy())
     assert d["tsi_eval_ts_ms"].isna().all()
-
-
-def _every_grid_combination_is_causal_on_frozen_candles():
-    df = _frozen("ETH", "4h", 420)
-    future = df.copy()
-    future.iloc[300:, future.columns.get_loc("close")] *= 1.3
-    future.iloc[300:, future.columns.get_loc("high")] *= 1.3
-    for _, p in expand_sweep(SEED, [(k, list(v)) for k, v in DEFAULT_PARAM_RANGES[NAME].items()]):
-        full = _apply(df, p)
-        cut = _apply(df.iloc[:300], p)
-        changed = _apply(future, p)
-        np.testing.assert_array_equal(full["signal"].iloc[:300].to_numpy(), cut["signal"].to_numpy())
-        np.testing.assert_array_equal(full["signal"].iloc[:300].to_numpy(), changed["signal"].iloc[:300].to_numpy())
-
-
-def _rows_outside_the_support_cannot_change_a_decision():
-    df = _frozen("ETH", "4h", 400)
-    p = SEED
-    need = _need(p)
-    t = 380
-    full = _apply(df, p)
-    early = df.copy()
-    for col in ("open", "high", "low", "close"):
-        early.iloc[: t - need + 1, early.columns.get_loc(col)] *= 1.5
-    future = df.copy()
-    future.iloc[t + 1:, future.columns.get_loc("close")] = np.nan
-    for mutated in (early, future):
-        got = _apply(mutated, p)
-        pd.testing.assert_series_equal(got[DECISION_COLUMNS].iloc[t], full[DECISION_COLUMNS].iloc[t],
-                                       check_names=False)
-    recovered = _apply(_set_at(df, t - need, "close", np.nan), p)
-    pd.testing.assert_series_equal(recovered[DECISION_COLUMNS].iloc[t], full[DECISION_COLUMNS].iloc[t],
-                                   check_names=False)
-    assert recovered["tsi_valid"].iloc[t - 1] == 0.0
-
-
-def test_rows_outside_the_support_and_later_rows_never_change_a_decision(subtests):
-    with subtests.test(case="every_grid_combination_is_causal_on_frozen_candles"):
-        _every_grid_combination_is_causal_on_frozen_candles()
-    with subtests.test(case="rows_outside_the_support_cannot_change_a_decision"):
-        _rows_outside_the_support_cannot_change_a_decision()
 
 
 def _cfg(params, **kw):

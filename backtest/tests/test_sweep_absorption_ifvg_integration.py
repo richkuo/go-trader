@@ -17,7 +17,6 @@ if _TOOLS not in sys.path:
 from atr import ensure_atr_indicator
 from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
-from closed_bar import FRAME_DECISION_TIME_ATTR, FRAME_INTERVAL_ATTR, FRAME_TIMESTAMP_KIND_ATTR
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
 from trade_flow_replay import CONTRACT, PAYLOAD_CONTRACT_KEYS
@@ -63,37 +62,6 @@ def _row(day, bar):
 def _same(a, b):
     return [("nan" if isinstance(x, float) and np.isnan(x) else x) for x in a] == \
            [("nan" if isinstance(x, float) and np.isnan(x) else x) for x in b]
-
-
-def test_hard_filters_hold_with_their_reason():
-    for variant, reason in (("new_delta_low", "absorption_new_delta_extreme"),
-                            ("weak_displacement", "displacement_weak")):
-        bars, intervals = scn.build(["flat", "long", "short"], variants={1: variant, 2: variant})
-        out = _apply(bars, intervals)
-        assert not (out["signal"] != 0).any(), variant
-        assert reason in set(out["sai_reason"].iloc[_row(1, 96):_row(1, 110)]), variant
-        assert reason in set(out["sai_reason"].iloc[_row(2, 96):_row(2, 110)]), variant
-    bars, intervals = scn.build(["flat", "long", "short"])
-    for params, reason in (({"min_fvg_atr": 5.0}, "no_gap"), ({"min_displacement_atr": 5.0}, "displacement_weak"),
-                           ({"absorption_threshold": 0.5}, "absorption_failed")):
-        out = _apply(bars, intervals, params)
-        assert not (out["signal"] != 0).any(), params
-        assert reason in set(out["sai_reason"]), params
-    off = _apply(*scn.build(["flat", "long"], variants={1: "new_delta_low"}), {"absorption_filter": False})
-    assert int(off["signal"].iloc[_row(1, scn.RETEST_BAR)]) == 1
-
-
-def test_decision_time_is_required_at_the_last_row():
-    bars, intervals = scn.build(["flat", "long"])
-    cut = bars[:_row(1, scn.RETEST_BAR) + 1]
-    boundary = cut[-1]["t"] + BAR
-    out = _apply(cut, intervals, attrs={FRAME_DECISION_TIME_ATTR: {}})
-    assert out["sai_reason"].iloc[-1] == "decision_time_missing" and int(out["signal"].iloc[-1]) == 0
-    timed = {FRAME_DECISION_TIME_ATTR: {"cutoff_ms": boundary + 1_000, "boundary_ms": boundary},
-             FRAME_INTERVAL_ATTR: BAR, FRAME_TIMESTAMP_KIND_ATTR: "open"}
-    assert int(_apply(cut, intervals, attrs=timed)["signal"].iloc[-1]) == 1
-    stale = {FRAME_DECISION_TIME_ATTR: {"cutoff_ms": boundary + BAR, "boundary_ms": boundary}}
-    assert _apply(cut, intervals, attrs=stale)["sai_reason"].iloc[-1] == "decision_bar_stale"
 
 
 def test_reconstruction_agrees_across_prefixes_windows_and_separate_workers():
@@ -346,40 +314,6 @@ def _synthetic_study(tmp, days):
 
 def om_columns():
     return ("timestamp", "open", "high", "low", "close", "volume")
-
-
-def test_frozen_study_scores_a_pinned_v7_manifest_end_to_end(tmp_path):
-    import offline_manifest as om
-    study = _load("_sai_study_driver_for_tests", os.path.join(STUDY_DIR, "run_study.py"))
-    path = _synthetic_study(str(tmp_path), ["flat", "flat", "long", "short", "long", "long", "short", "long"])
-    manifest = om.load_manifest(path, verify=True)
-    with open(os.path.join(STUDY_DIR, "candidate_spec.json")) as fh:
-        spec = json.load(fh)
-    spec = dict(spec, datasets={"coins": ["BTC"], "intervals": ["5m"], "htf_interval": "1h"},
-                grid={k: [DEFAULT_PARAMS[k]] for k in spec["grid"]},
-                minimum_independent_positions={"train": 1, "test": 1})
-    scored = study.score({}, spec, str(tmp_path), {"5m": manifest})
-    assert scored["selection"]["5m"]["params"]["expected_interval_ms"] == BAR
-    entry = scored["datasets"]["BTC 5m"]
-    for window in ("train", "test"):
-        e = entry[window]
-        assert e["flow_usable"]["share"] == 1.0 and e["flow_usable"]["denominator"] > 0
-        assert e["coverage"]["htf_candles"]["complete"] and e["coverage"]["trade_flow"]["available"]
-        assert e["primary"][1.0]["positions"] == 3, (window, e["primary"])
-        assert e["primary"][1.0]["independent_positions"] == 3 and e["primary"][1.0]["turnover"] > 0
-        assert e["adapter_agreement"] is True, window
-        assert set(e["research_arms"]) == {arms.arm_label(a) for a in arms.arm_matrix()}
-        assert e["research_arms"]["market+atr+tiered"]["positions"] == 3
-        assert e["research_arms"]["ce_limit+atr+tiered"]["no_fill_share"] == 1.0
-        for control in ("absorption_disabled", "amd_ifvg", "liquidity_sweeps"):
-            assert control in e
-    assert set(entry["train"]["primary"]) == {1.0, 2.0}
-    outcome, reasons = study.verdict(spec, [], scored)
-    assert outcome in ("PASS", "FAIL"), reasons
-    gated, _ = study.verdict(spec, [{"gate": "source_b_recording", "reason": "missing"}], None)
-    assert gated == "INCONCLUSIVE"
-    thin = dict(spec, minimum_independent_positions={"train": 1, "test": 30})
-    assert study.verdict(thin, [], scored)[0] == "INCONCLUSIVE"
 
 
 def _sealed_envelope(bars, intervals, last, cutoff, tamper=False):

@@ -101,6 +101,25 @@ def test_check_price_emits_the_exact_ticker_quote(tmp_path):
     assert all(isinstance(v, float) for v in out.values())
 
 
+def test_check_price_omits_missing_and_invalid_tickers_and_keeps_valid_peers(tmp_path):
+    tickers = {
+        "OK/USDT": 0.00001234,
+        "NULL/USDT": None,
+        "STRING/USDT": "0.12",
+        "BOOL/USDT": True,
+        "NOLAST/USDT": {"symbol": "NOLAST/USDT"},
+        "NAN/USDT": float("nan"),
+        "INF/USDT": float("inf"),
+    }
+    symbols = sorted(tickers) + ["GONE/USDT"]
+    proc = _run(CHECK_PRICE, symbols, {"QP_TICKERS": json.dumps(tickers)}, tmp_path=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    out = _single_document(proc)
+    assert out == {"OK/USDT": 0.00001234}
+    failed = sorted(ln.split(":", 1)[0].removeprefix("Failed to fetch ") for ln in proc.stderr.splitlines() if ln.startswith("Failed to fetch "))
+    assert failed == sorted(s for s in symbols if s != "OK/USDT")
+
+
 def test_check_price_without_symbols_emits_an_empty_map(tmp_path):
     proc = _run(CHECK_PRICE, [], {}, tmp_path=tmp_path)
     assert proc.returncode == 0, proc.stderr
@@ -119,3 +138,12 @@ def test_check_options_preserves_the_spot_price(tmp_path, subtests):
             assert not out.get("error"), out
             assert isinstance(out["spot_price"], float)
             assert out["spot_price"] == quote
+
+
+def test_check_options_without_a_spot_quote_keeps_its_error(tmp_path):
+    proc = _run(CHECK_OPTIONS, ["vol_mean_reversion", "BTC", "--platform=deribit"],
+                {"QP_CLOSE": 0.1234}, stdin="[]", tmp_path=tmp_path)
+    out = _single_document(proc)
+    assert out["spot_price"] == 0
+    assert out["actions"] == []
+    assert out["error"] == "Could not fetch spot price"
