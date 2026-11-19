@@ -372,6 +372,59 @@ func TestFeedWeightSharedRebuildUsesDeclarationsPerOwner(t *testing.T) {
 	})
 }
 
+func TestFeedWeightSharedRebuildIgnoresInvalidDeclarationNames(t *testing.T) {
+	t.Run("UnreadableStrayFileDoesNotBlockRecoveryAndValidDeclarationSurvives", func(t *testing.T) {
+		e := newFAEnv(t)
+		c := e.owner("c", wtPolicy(300, 0, 200))
+		c.a.stop()
+		if err := os.Remove(filepath.Join(e.dir, feedAuthorityRecordName)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(feedAuthorityPolicyDir(e.dir)); err != nil {
+			t.Fatal(err)
+		}
+		decl, _ := json.Marshal(feedAuthDeclaration{Role: c.a.role, ConfigPath: c.a.configPath, Policy: feedAuthPolicyOf(c.policy.weightPolicy())})
+		if err := os.WriteFile(feedAuthorityOwnerDeclPath(e.dir, c.a.key), decl, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(e.dir, feedAuthorityOwnersDir, "notes.json"), []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		b := e.owner("b", wtPolicy(400, 100, 100))
+		e.settle(b)
+		rec := e.record()
+		if rec.Recovery != nil || rec.Owners["notes"] != nil {
+			t.Fatalf("stray declaration blocked recovery or created an owner: recovery %+v owner %+v", rec.Recovery, rec.Owners["notes"])
+		}
+		faHeld(t, e, c.a.key, 200, "valid declaration beside an invalid declaration")
+	})
+
+	t.Run("ParseableStrayFileDoesNotAffectForecast", func(t *testing.T) {
+		e := newFAEnv(t)
+		c := e.owner("c", wtPolicy(300, 0, 200))
+		c.a.stop()
+		if err := os.RemoveAll(feedAuthorityPolicyDir(e.dir)); err != nil {
+			t.Fatal(err)
+		}
+		decl, _ := json.Marshal(feedAuthDeclaration{Role: c.a.role, ConfigPath: c.a.configPath, Policy: feedAuthPolicyOf(c.policy.weightPolicy())})
+		if err := os.WriteFile(feedAuthorityOwnerDeclPath(e.dir, c.a.key), decl, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stray, _ := json.Marshal(feedAuthDeclaration{Policy: feedAuthPolicy{PerMinute: 1200, Reserve: 300}})
+		if err := os.WriteFile(filepath.Join(e.dir, feedAuthorityOwnersDir, "notes.json"), stray, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(e.dir, feedAuthorityRecordName), []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fc := forecastFeedAuthority(feedAuthorityRoleFeed, filepath.Join(e.root, "cfg-new.json"), wtPolicy(100, 0, 0).weightPolicy())
+		lines := strings.Join(fc.Lines, "\n")
+		if fc.Refuse != "" || !strings.Contains(lines, "common_reserve=200") || strings.Contains(lines, "common_reserve=300") || strings.Contains(lines, "notes") {
+			t.Fatalf("forecast beside a parseable stray declaration: %+v", fc)
+		}
+	})
+}
+
 func TestFeedWeightSharedReserveEvidence(t *testing.T) {
 	t.Run("UnprovableEvidenceHoldsSendsPastTheRecoveryUntilARelease", func(t *testing.T) {
 		e := newFAEnv(t)

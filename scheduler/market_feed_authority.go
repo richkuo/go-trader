@@ -981,6 +981,9 @@ func feedReadDeclarations(dir string) (map[string]*feedAuthDeclaration, error) {
 			continue
 		}
 		key := strings.TrimSuffix(name, ".json")
+		if !feedValidOwnerKey(key) {
+			continue
+		}
 		raw, err := os.ReadFile(filepath.Join(dir, feedAuthorityOwnersDir, name))
 		if err != nil {
 			return nil, err

@@ -340,11 +340,8 @@ func feedMigrateRows(rec *feedAuthRecord, dir string, readOnly bool, stoppedNs i
 	}
 	out := &feedMigration{}
 	for _, key := range feedSortedKeys(feedKeySet(rec.Owners), feedKeySet(set), feedKeySet(legacy)) {
-		ev, hasEv := set[key]
-		if _, declarationOnly := legacy[key]; declarationOnly && rec.Owners[key] == nil && !hasEv && !feedValidOwnerKey(key) {
-			continue
-		}
 		row := rec.Owners[key]
+		ev, hasEv := set[key]
 		if row != nil {
 			if hasEv && ev != nil {
 				held := ev.held()
