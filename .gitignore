@@ -9,6 +9,7 @@ trading_bot.db
 *.db-shm
 *.db.lock
 *.manual-regime-owner.json
+*.manual-regime-hold-*.json
 .env
 go-trader.env
 trading-scheduler

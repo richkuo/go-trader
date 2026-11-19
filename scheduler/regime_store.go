@@ -111,6 +111,7 @@ type RegimeStore struct {
 	entries map[regimeBundleKey]*RegimeBundle
 	exports map[string]manualRegimeExport
 	carried map[string]manualRegimeCarry
+	active  map[regimeBundleKey]bool
 	builtAt time.Time
 	sealed  bool
 	gen     uint64
@@ -132,6 +133,7 @@ type manualRegimeExportView struct {
 	ContractFound bool
 	Contract      manualRegimeExport
 	Found         bool
+	Pending       bool
 	Err           string
 	At            time.Time
 	PayloadJSON   string
@@ -150,6 +152,10 @@ func (s *RegimeStore) resetForCycleWithExports(now time.Time, exports map[string
 func (s *RegimeStore) reset(now time.Time, exports map[string]manualRegimeExport, carry bool) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.resetLocked(now, exports, carry)
+}
+
+func (s *RegimeStore) resetLocked(now time.Time, exports map[string]manualRegimeExport, carry bool) uint64 {
 	carried := make(map[string]manualRegimeCarry)
 	if carry {
 		for id, export := range s.exports {
@@ -174,10 +180,25 @@ func (s *RegimeStore) reset(now time.Time, exports map[string]manualRegimeExport
 	for id, export := range exports {
 		s.exports[id] = export
 	}
+	s.active = nil
 	s.builtAt = now
 	s.sealed = false
 	s.gen++
 	return s.gen
+}
+
+func (s *RegimeStore) beginPopulation(now time.Time, exports map[string]manualRegimeExport, reqs []regimeBundleRequest, runnable map[regimeBundleKey]bool) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	gen := s.resetLocked(now, exports, true)
+	s.active = make(map[regimeBundleKey]bool, len(reqs))
+	for _, req := range reqs {
+		s.entries[req.Key] = &RegimeBundle{Key: req.Key, Err: regimeBundlePendingErr, At: now}
+		if runnable[req.Key] {
+			s.active[req.Key] = true
+		}
+	}
+	return gen
 }
 
 func (s *RegimeStore) set(b *RegimeBundle, gen uint64) {
@@ -193,12 +214,33 @@ func (s *RegimeStore) set(b *RegimeBundle, gen uint64) {
 		s.entries = make(map[regimeBundleKey]*RegimeBundle)
 	}
 	s.entries[b.Key] = b
+	delete(s.active, b.Key)
 }
 
-func (s *RegimeStore) seal() int {
+func (s *RegimeStore) retire(key regimeBundleKey, gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if gen == s.gen {
+		delete(s.active, key)
+	}
+}
+
+func (s *RegimeStore) finish(gen uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if gen == s.gen {
+		s.active = nil
+	}
+}
+
+func (s *RegimeStore) seal(gen uint64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if gen != s.gen {
+		return 0
+	}
 	s.sealed = true
+	s.active = nil
 	ready := 0
 	for _, bundle := range s.entries {
 		if bundle != nil && bundle.Err == "" {
@@ -221,7 +263,9 @@ func (s *RegimeStore) manualExport(key regimeBundleKey, strategyID string) manua
 	view := manualRegimeExportView{Gen: s.gen}
 	view.Contract, view.ContractFound = s.exports[strategyID]
 	b, ok := s.entries[key]
-	if !view.ContractFound {
+	if view.ContractFound {
+		view.Pending = !s.sealed && s.active[key] && view.Contract.Key == key && ok && b != nil && b.Err == regimeBundlePendingErr
+	} else {
 		if c, carried := s.carried[strategyID]; carried {
 			view.Gen, view.Contract, view.ContractFound = c.Gen, c.Export, true
 			b, ok = c.Bundle, c.Bundle != nil && c.Bundle.Key == key
@@ -536,35 +580,41 @@ func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *Re
 }
 
 func startRegimeStorePopulationWithExports(store *RegimeStore, due []StrategyConfig, rc *RegimeConfig, notifier *MultiNotifier, feed *marketFeedContext, exports map[string]manualRegimeExport) func() {
-	gen := store.resetForCycleWithExports(time.Now().UTC(), exports)
 	reqs := collectRegimeBundleRequests(due, rc)
+	errs := make([]error, len(reqs))
+	inputs := make([][]byte, len(reqs))
+	runnable := make(map[regimeBundleKey]bool, len(reqs))
+	for i, req := range reqs {
+		if feed.ownsRegimeBundle(req) {
+			blob, perr := feed.regimeBundlePayload(req)
+			if perr != nil {
+				errs[i] = fmt.Errorf("regime bundle %s: sealed market frame unavailable: %w", req.Key, perr)
+				continue
+			}
+			inputs[i] = blob
+		}
+		runnable[req.Key] = true
+	}
+	gen := store.beginPopulation(time.Now().UTC(), exports, reqs, runnable)
 	if len(reqs) == 0 {
 		return func() {}
-	}
-	for _, req := range reqs {
-		store.set(&RegimeBundle{Key: req.Key, Err: regimeBundlePendingErr, At: time.Now().UTC()}, gen)
 	}
 	popCtx, popCancel := context.WithCancel(shutdownReadOnlyCtx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		errs := make([]error, len(reqs))
+		defer store.finish(gen)
 		var wg sync.WaitGroup
 		for i, req := range reqs {
+			if errs[i] != nil {
+				continue
+			}
 			i, req := i, req
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				var marketStdin []byte
-				if feed.ownsRegimeBundle(req) {
-					blob, perr := feed.regimeBundlePayload(req)
-					if perr != nil {
-						errs[i] = fmt.Errorf("regime bundle %s: sealed market frame unavailable: %w", req.Key, perr)
-						return
-					}
-					marketStdin = blob
-				}
-				bundle, err := runRegimeBundleCheckFn(popCtx, req, marketStdin)
+				defer store.retire(req.Key, gen)
+				bundle, err := runRegimeBundleCheckFn(popCtx, req, inputs[i])
 				if err != nil {
 					errs[i] = err
 					store.set(&RegimeBundle{Key: req.Key, Err: err.Error(), At: time.Now().UTC()}, gen)
@@ -593,7 +643,7 @@ func startRegimeStorePopulationWithExports(store *RegimeStore, due []StrategyCon
 		case <-done:
 			popCancel()
 		case <-time.After(regimeStorePhaseBudget):
-			kept := store.seal()
+			kept := store.seal(gen)
 			popCancel()
 			fmt.Printf("[WARN] regime store: phase budget %s exceeded; sealed with %d/%d bundles — missing signatures resolve per regime_gate_on_failure this cycle (default fail-open)\n",
 				regimeStorePhaseBudget, kept, len(reqs))

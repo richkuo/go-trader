@@ -361,6 +361,13 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 		t.Parallel()
 		regimeReadinessProcessIntegration(t)
 	})
+	for _, mode := range []string{"websocket", "shared"} {
+		mode := mode
+		t.Run("pending-"+mode, func(t *testing.T) {
+			t.Parallel()
+			regimeReadinessPendingProcess(t, mode)
+		})
+	}
 	state := &StrategyState{Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100}}, Regime: "stale"}
 	syncStrategyRegimeState(state, bundles[3].Payload, rc)
 	syncStrategyRegimeState(state, bundles[0].Payload, rc)
@@ -800,6 +807,7 @@ func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, r
 	}
 	regimeReadinessLimitIntegration(t, bundles, rc)
 	regimeReadinessCarryIntegration(t, bundles, rc)
+	regimeReadinessPendingIntegration(t, bundles, rc)
 }
 
 func regimeReadinessStopBackfillIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {

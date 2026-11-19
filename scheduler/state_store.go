@@ -30,6 +30,7 @@ type StateStore struct {
 	appliedActions map[storageKey]bool
 	failures       map[RiskPartition]int
 	saveExtra      func(tx *sql.Tx, role storageRole) error
+	holdSignal     func(p RiskPartition, held bool)
 }
 
 func newStateStore(layout storageLayout, ident storageIdentityMap) *StateStore {
@@ -450,9 +451,21 @@ func (st *StateStore) recordSaveOutcome(p RiskPartition, err error) {
 	defer st.mu.Unlock()
 	if err != nil {
 		st.failures[p]++
+	} else {
+		delete(st.failures, p)
+	}
+	if st.holdSignal != nil {
+		st.holdSignal(p, st.failures[p] > 0)
+	}
+}
+
+func (st *StateStore) setHoldSignal(signal func(p RiskPartition, held bool)) {
+	if st == nil {
 		return
 	}
-	delete(st.failures, p)
+	st.mu.Lock()
+	st.holdSignal = signal
+	st.mu.Unlock()
 }
 
 func (st *StateStore) saveFailures(p RiskPartition) int {

@@ -3,11 +3,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 const (
@@ -15,7 +19,36 @@ const (
 	manualRegimeTestHLWSEnv     = "GO_TRADER_TEST_HL_WS_URL"
 	manualRegimeTestVenueLogEnv = "GO_TRADER_TEST_MANUAL_VENUE_LOG"
 	manualRegimeTestFillPxEnv   = "GO_TRADER_TEST_MANUAL_FILL_PX"
+	manualRegimeTestGateEnv     = "GO_TRADER_TEST_REGIME_GATE_DIR"
 )
+
+func manualRegimeTestInstallGate(dir string) {
+	real := runRegimeBundleCheckFn
+	var seq atomic.Int64
+	runRegimeBundleCheckFn = func(ctx context.Context, req regimeBundleRequest, marketStdin []byte) (*RegimeBundle, error) {
+		release := filepath.Join(dir, "release")
+		if _, err := os.Stat(release); err != nil {
+			n := seq.Add(1)
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("blocked-%d", n)), []byte(req.Key.String()), 0o600); err != nil {
+				return nil, err
+			}
+			for {
+				if _, err := os.Stat(release); err == nil {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+			if _, err := os.Stat(filepath.Join(dir, "fail")); err == nil {
+				return nil, fmt.Errorf("regime bundle %s: controlled classifier failure", req.Key)
+			}
+		}
+		return real(ctx, req, marketStdin)
+	}
+}
 
 var manualRegimeTestVenueMu sync.Mutex
 
@@ -41,6 +74,9 @@ func init() {
 	}
 	if u := os.Getenv(manualRegimeTestHLWSEnv); u != "" {
 		hlFeedWebsocketURLOverride = u
+	}
+	if dir := os.Getenv(manualRegimeTestGateEnv); dir != "" {
+		manualRegimeTestInstallGate(dir)
 	}
 	logPath := os.Getenv(manualRegimeTestVenueLogEnv)
 	if logPath == "" {

@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	manualRegimeProtocolVersion     = 1
+	manualRegimeProtocolVersion     = 2
 	manualRegimeContractVersion     = 1
 	manualRegimeOwnerMarkerVersion  = 1
 	manualRegimeOwnerMarkerSuffix   = ".manual-regime-owner.json"
@@ -41,11 +41,13 @@ const (
 	manualRegimeConnectTimeout      = time.Second
 	manualRegimeRequestTimeout      = 3 * time.Second
 	manualRegimeMaxBodyBytes        = 1 << 20
+	manualRegimePendingPace         = 250 * time.Millisecond
 	regimeBundlePendingErr          = "regime bundle unavailable"
 )
 
 const (
 	manualRegimeResultBundle         = "bundle"
+	manualRegimeResultPending        = "pending"
 	manualRegimeResultUnavailable    = "unavailable"
 	manualRegimeResultClassification = "classification_failure"
 	manualRegimeResultDraining       = "draining"
@@ -204,12 +206,16 @@ func decodeManualRegimeStrict(blob []byte, v any) error {
 }
 
 func writeManualRegimeOwnerMarker(path string, marker manualRegimeOwnerMarker) error {
-	blob, err := json.Marshal(marker)
+	return writeManualRegimeJSONFile(path, marker)
+}
+
+func writeManualRegimeJSONFile(path string, v any) error {
+	blob, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".manual-regime-owner-*.tmp")
+	tmp, err := os.CreateTemp(dir, ".manual-regime-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -256,6 +262,7 @@ type manualRegimeOwner struct {
 	id        manualRegimeOwnerIdentity
 	active    bool
 	published []string
+	guards    *manualRegimeHoldGuards
 }
 
 var globalManualRegimeOwner = &manualRegimeOwner{}
@@ -307,31 +314,92 @@ func (o *manualRegimeOwner) publish(layout storageLayout) error {
 	if len(written) == 0 {
 		return fmt.Errorf("no on-disk state file to publish an owner marker beside")
 	}
+	guards, err := prepareManualRegimeHoldGuards(layout, nonce)
+	if err != nil {
+		rollback()
+		return err
+	}
 	o.mu.Lock()
-	o.id, o.active, o.published = id, true, written
+	previous := o.guards
+	o.id, o.active, o.published, o.guards = id, true, written, guards
 	o.mu.Unlock()
+	previous.release()
 	return nil
 }
 
 func (o *manualRegimeOwner) withdraw() {
 	o.mu.Lock()
-	nonce, paths := o.id.Nonce, o.published
-	o.active, o.published = false, nil
+	nonce, paths, guards := o.id.Nonce, o.published, o.guards
+	o.active, o.published, o.guards = false, nil, nil
 	o.mu.Unlock()
+	guards.release()
 	for _, path := range paths {
 		removeManualRegimeOwnerMarkerIfOwned(path, nonce)
 	}
 }
 
+func (o *manualRegimeOwner) signalPersistence(p RiskPartition, held bool) {
+	o.mu.RLock()
+	guards := o.guards
+	o.mu.RUnlock()
+	guards.signal(p, held)
+}
+
+func (o *manualRegimeOwner) signalDrain() {
+	o.mu.RLock()
+	guards := o.guards
+	o.mu.RUnlock()
+	guards.drain()
+}
+
+type manualRegimePin struct {
+	layout  storageLayout
+	owner   manualRegimeOwnerIdentity
+	holders []int
+}
+
+func (p manualRegimePin) same(other manualRegimePin) bool {
+	if p.owner != other.owner || len(p.holders) != len(other.holders) {
+		return false
+	}
+	for i := range p.holders {
+		if p.holders[i] != other.holders[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (p manualRegimePin) recheck(when string) *manualRegimeTransportError {
+	again, terr := verifyManualRegimeOwnerPin(p.layout)
+	if terr != nil {
+		if terr.availability {
+			return manualRegimeRefused("owner identity disappeared %s: %s", when, terr.reason)
+		}
+		return terr
+	}
+	if !p.same(again) {
+		return manualRegimeRefused("owner identity changed %s", when)
+	}
+	return nil
+}
+
 func verifyManualRegimeOwner(layout storageLayout) (manualRegimeOwnerIdentity, *manualRegimeTransportError) {
+	pin, terr := verifyManualRegimeOwnerPin(layout)
+	return pin.owner, terr
+}
+
+func verifyManualRegimeOwnerPin(layout storageLayout) (manualRegimePin, *manualRegimeTransportError) {
 	var id manualRegimeOwnerIdentity
+	var holders []int
 	held, unheld, absent := 0, 0, 0
 	for _, spec := range layout.Files {
 		if spec.InMemory {
 			continue
 		}
-		if _, ok := probeStateDBLockHolder(spec.Path); ok {
+		if pid, ok := probeStateDBLockHolder(spec.Path); ok {
 			held++
+			holders = append(holders, pid)
 		} else {
 			unheld++
 			continue
@@ -343,31 +411,31 @@ func verifyManualRegimeOwner(layout storageLayout) (manualRegimeOwnerIdentity, *
 			continue
 		}
 		if err != nil {
-			return manualRegimeOwnerIdentity{}, manualRegimeRefused("%v", err)
+			return manualRegimePin{}, manualRegimeRefused("%v", err)
 		}
 		got := manualRegimeOwnerIdentity{Nonce: marker.OwnerNonce, Secret: marker.Secret}
 		want := manualRegimeMarkerFor(spec, got)
 		if marker.Role != want.Role || strings.Join(marker.Partitions, ",") != strings.Join(want.Partitions, ",") {
-			return manualRegimeOwnerIdentity{}, manualRegimeRefused("owner marker %s belongs to a different storage layout", path)
+			return manualRegimePin{}, manualRegimeRefused("owner marker %s belongs to a different storage layout", path)
 		}
 		if id.Nonce != "" && got != id {
-			return manualRegimeOwnerIdentity{}, manualRegimeRefused("owner markers of the configured state files name different scheduler processes")
+			return manualRegimePin{}, manualRegimeRefused("owner markers of the configured state files name different scheduler processes")
 		}
 		id = got
 	}
 	if held == 0 && unheld == 0 {
-		return manualRegimeOwnerIdentity{}, manualRegimeRefused("the configured storage layout has no on-disk state file")
+		return manualRegimePin{}, manualRegimeRefused("the configured storage layout has no on-disk state file")
 	}
 	if held > 0 && unheld > 0 {
-		return manualRegimeOwnerIdentity{}, manualRegimeRefused("only part of the configured state-file set is owned by a running scheduler")
+		return manualRegimePin{}, manualRegimeRefused("only part of the configured state-file set is owned by a running scheduler")
 	}
 	if held == 0 {
-		return manualRegimeOwnerIdentity{}, manualRegimeUnavailable("no scheduler owns the configured state files")
+		return manualRegimePin{}, manualRegimeUnavailable("no scheduler owns the configured state files")
 	}
 	if absent > 0 {
-		return manualRegimeOwnerIdentity{}, manualRegimeUnavailable("the owning scheduler has not published its identity yet")
+		return manualRegimePin{}, manualRegimeUnavailable("the owning scheduler has not published its identity yet")
 	}
-	return id, nil
+	return manualRegimePin{layout: layout, owner: id, holders: holders}, nil
 }
 
 type manualRegimeStrategyProjection struct {
@@ -547,6 +615,7 @@ type manualRegimeEnvelope struct {
 	ContractFingerprint string               `json:"contract_fingerprint,omitempty"`
 	Key                 *manualRegimeKeyJSON `json:"key,omitempty"`
 	Generation          uint64               `json:"generation,omitempty"`
+	PendingGeneration   uint64               `json:"pending_generation,omitempty"`
 	IntervalSeconds     int                  `json:"interval_seconds,omitempty"`
 	BundleAt            *time.Time           `json:"bundle_at,omitempty"`
 	Payload             json.RawMessage      `json:"payload,omitempty"`
@@ -568,6 +637,7 @@ func manualRegimeStatusFor(result string) int {
 
 var manualRegimeMessages = map[string]string{
 	manualRegimeResultBundle:         "current regime bundle",
+	manualRegimeResultPending:        "the scheduler is computing this cycle's regime bundle for this strategy",
 	manualRegimeResultUnavailable:    "the current cycle holds no completed regime bundle for this strategy",
 	manualRegimeResultClassification: "the current cycle's regime classification failed",
 	manualRegimeResultDraining:       "the scheduler is draining",
@@ -696,21 +766,24 @@ func manualRegimeNetworkUnavailable(err error) bool {
 }
 
 type manualRegimeAdmissionRecord struct {
-	layout   storageLayout
-	nonce    string
+	pin      manualRegimePin
 	at       time.Time
 	interval time.Duration
 }
 
 type manualRegimeRemote struct {
-	cfg      *Config
-	store    *StateStore
-	now      func() time.Time
-	admitted *manualRegimeAdmissionRecord
+	cfg         *Config
+	store       *StateStore
+	now         func() time.Time
+	waitPending bool
+	budget      time.Duration
+	pace        time.Duration
+	admitted    *manualRegimeAdmissionRecord
+	waitedPin   *manualRegimePin
 }
 
 func newManualRegimeRemote(cfg *Config, store *StateStore) *manualRegimeRemote {
-	return &manualRegimeRemote{cfg: cfg, store: store, now: time.Now}
+	return &manualRegimeRemote{cfg: cfg, store: store, now: time.Now, budget: manualRegimeRequestTimeout, pace: manualRegimePendingPace}
 }
 
 func manualRegimeCadenceSeconds(cfg *Config, sc StrategyConfig) int {
@@ -725,8 +798,141 @@ func manualRegimeMaxAge(cfg *Config, sc StrategyConfig) time.Duration {
 	return time.Duration(manualRegimeCadenceSeconds(cfg, sc)) * time.Second
 }
 
+var manualRegimeBundleOnlyFields = []string{"generation", "interval_seconds", "bundle_at", "payload"}
+
+func manualRegimeEnvelopeFields(body []byte) (map[string]bool, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(raw))
+	for k := range raw {
+		out[strings.ToLower(k)] = true
+	}
+	return out, nil
+}
+
+func checkManualRegimeEnvelopeFields(env manualRegimeEnvelope, fields map[string]bool) *manualRegimeTransportError {
+	bundleFields := func() string {
+		for _, name := range manualRegimeBundleOnlyFields {
+			if fields[name] {
+				return name
+			}
+		}
+		return ""
+	}
+	switch env.Result {
+	case manualRegimeResultBundle:
+		if fields["pending_generation"] {
+			return manualRegimeRefused("bundle reply carries pending_generation")
+		}
+	case manualRegimeResultPending:
+		if !fields["pending_generation"] || env.PendingGeneration == 0 {
+			return manualRegimeRefused("pending reply is missing a positive pending_generation")
+		}
+		if name := bundleFields(); name != "" {
+			return manualRegimeRefused("pending reply carries the bundle field %s", name)
+		}
+	default:
+		if fields["pending_generation"] {
+			return manualRegimeRefused("%s reply carries pending_generation", env.Result)
+		}
+		if name := bundleFields(); name != "" {
+			return manualRegimeRefused("availability reply carries the bundle field %s", name)
+		}
+	}
+	return nil
+}
+
+func (m *manualRegimeRemote) exchange(ctx context.Context, client *http.Client, ep manualRegimeEndpoint, sc StrategyConfig, binding manualRegimeBinding, pin manualRegimePin) (manualRegimeEnvelope, *manualRegimeTransportError) {
+	owner := pin.owner
+	challenge, err := newManualRegimeRandomHex()
+	if err != nil {
+		return manualRegimeEnvelope{}, manualRegimeRefused("request challenge: %v", err)
+	}
+	q := url.Values{}
+	q.Set("strategy", sc.ID)
+	q.Set("partition", binding.Contract.Partition)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ep.origin+manualRegimeRoute+"?"+q.Encode(), nil)
+	if err != nil {
+		return manualRegimeEnvelope{}, manualRegimeRefused("build request: %v", err)
+	}
+	req.Host = ep.host
+	req.Header.Set(manualRegimeChallengeHeader, challenge)
+	req.Header.Set(manualRegimeAuthHeader, manualRegimeRequestMAC(owner.Secret, challenge, sc.ID, binding.Contract.Partition))
+	resp, err := client.Do(req)
+	if err != nil {
+		if manualRegimeNetworkUnavailable(err) {
+			return manualRegimeEnvelope{}, manualRegimeUnavailable("scheduler at %s did not answer: %v", ep.origin, err)
+		}
+		return manualRegimeEnvelope{}, manualRegimeRefused("request to %s failed: %v", ep.origin, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, manualRegimeMaxBodyBytes+1))
+	if err != nil {
+		if manualRegimeNetworkUnavailable(err) {
+			return manualRegimeEnvelope{}, manualRegimeUnavailable("scheduler at %s did not finish its reply: %v", ep.origin, err)
+		}
+		return manualRegimeEnvelope{}, manualRegimeRefused("read reply: %v", err)
+	}
+	if len(body) > manualRegimeMaxBodyBytes {
+		return manualRegimeEnvelope{}, manualRegimeRefused("reply exceeds %d bytes", manualRegimeMaxBodyBytes)
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return manualRegimeEnvelope{}, manualRegimeRefused("the listener at %s rejected the owner authentication (HTTP 401)", ep.origin)
+	}
+	if !manualRegimeMACEqual(resp.Header.Get(manualRegimeProofHeader), manualRegimeReplyMAC(owner.Secret, challenge, resp.StatusCode, body)) {
+		return manualRegimeEnvelope{}, manualRegimeRefused("the reply from %s carries no valid owner proof; the listener is not the scheduler that owns the configured state files", ep.origin)
+	}
+	var env manualRegimeEnvelope
+	envErr := decodeManualRegimeStrict(body, &env)
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusServiceUnavailable:
+	default:
+		if envErr == nil && env.ProtocolVersion == manualRegimeProtocolVersion && env.Result != "" && manualRegimeStatusFor(env.Result) == resp.StatusCode {
+			return manualRegimeEnvelope{}, manualRegimeRefused("the scheduler refused with HTTP %d (%s): %s", resp.StatusCode, env.Result, manualRegimeMessages[env.Result])
+		}
+		return manualRegimeEnvelope{}, manualRegimeRefused("unexpected HTTP %d from %s", resp.StatusCode, ep.origin)
+	}
+	if envErr != nil {
+		return manualRegimeEnvelope{}, manualRegimeRefused("malformed reply: %v", envErr)
+	}
+	if env.ProtocolVersion != manualRegimeProtocolVersion {
+		return manualRegimeEnvelope{}, manualRegimeRefused("unsupported protocol version %d (this command speaks %d; update the command and the scheduler together)", env.ProtocolVersion, manualRegimeProtocolVersion)
+	}
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		switch env.Result {
+		case manualRegimeResultUnavailable, manualRegimeResultClassification, manualRegimeResultPending:
+		case manualRegimeResultDraining:
+			return manualRegimeEnvelope{}, manualRegimeRefused("the scheduler is draining")
+		default:
+			return manualRegimeEnvelope{}, manualRegimeRefused("scheduler refused with %q", env.Result)
+		}
+	} else if env.Result != manualRegimeResultBundle {
+		return manualRegimeEnvelope{}, manualRegimeRefused("HTTP 200 reply with result %q", env.Result)
+	}
+	fields, err := manualRegimeEnvelopeFields(body)
+	if err != nil {
+		return manualRegimeEnvelope{}, manualRegimeRefused("malformed reply: %v", err)
+	}
+	if terr := checkManualRegimeEnvelopeFields(env, fields); terr != nil {
+		return manualRegimeEnvelope{}, terr
+	}
+	if err := checkManualRegimeIdentity(env, owner.Nonce, binding); err != nil {
+		var te *manualRegimeTransportError
+		if errors.As(err, &te) {
+			return manualRegimeEnvelope{}, te
+		}
+		return manualRegimeEnvelope{}, manualRegimeRefused("%v", err)
+	}
+	if terr := pin.recheck("during the request"); terr != nil {
+		return manualRegimeEnvelope{}, terr
+	}
+	return env, nil
+}
+
 func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
-	m.admitted = nil
+	m.admitted, m.waitedPin = nil, nil
 	if m.store == nil {
 		return RegimePayload{}, manualRegimeRefused("no state store to verify the scheduler owner")
 	}
@@ -742,116 +948,101 @@ func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
 	if err != nil {
 		return RegimePayload{}, manualRegimeRefused("%v", err)
 	}
-	owner, terr := verifyManualRegimeOwner(m.store.layout)
+	pin, terr := verifyManualRegimeOwnerPin(m.store.layout)
 	if terr != nil {
 		return RegimePayload{}, terr
 	}
-	nonce := owner.Nonce
-	challenge, err := newManualRegimeRandomHex()
-	if err != nil {
-		return RegimePayload{}, manualRegimeRefused("request challenge: %v", err)
+	budget, pace := m.budget, m.pace
+	if budget <= 0 {
+		budget = manualRegimeRequestTimeout
 	}
-	q := url.Values{}
-	q.Set("strategy", sc.ID)
-	q.Set("partition", binding.Contract.Partition)
-	ctx, cancel := context.WithTimeout(context.Background(), manualRegimeRequestTimeout)
+	if pace <= 0 {
+		pace = manualRegimePendingPace
+	}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ep.origin+manualRegimeRoute+"?"+q.Encode(), nil)
-	if err != nil {
-		return RegimePayload{}, manualRegimeRefused("build request: %v", err)
-	}
-	req.Host = ep.host
-	req.Header.Set(manualRegimeChallengeHeader, challenge)
-	req.Header.Set(manualRegimeAuthHeader, manualRegimeRequestMAC(owner.Secret, challenge, sc.ID, binding.Contract.Partition))
-	resp, err := ep.client().Do(req)
-	if err != nil {
-		if manualRegimeNetworkUnavailable(err) {
-			return RegimePayload{}, manualRegimeUnavailable("scheduler at %s did not answer: %v", ep.origin, err)
+	client := ep.client()
+	key := binding.Request.Key
+	waited := func() time.Duration { return time.Since(start).Round(time.Millisecond) }
+	expired := func(gen uint64) error {
+		if terr := pin.recheck("when the wait expired"); terr != nil {
+			return terr
 		}
-		return RegimePayload{}, manualRegimeRefused("request to %s failed: %v", ep.origin, err)
+		return manualRegimeUnavailable("the scheduler did not finish generation %d's regime bundle for %s within the %s budget (waited %s)", gen, key, budget, waited())
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, manualRegimeMaxBodyBytes+1))
-	if err != nil {
-		if manualRegimeNetworkUnavailable(err) {
-			return RegimePayload{}, manualRegimeUnavailable("scheduler at %s did not finish its reply: %v", ep.origin, err)
+	var pendingGen uint64
+	for {
+		if pendingGen != 0 {
+			timer := time.NewTimer(pace)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return RegimePayload{}, expired(pendingGen)
+			case <-timer.C:
+			}
+			if terr := pin.recheck("while waiting for the pending bundle"); terr != nil {
+				return RegimePayload{}, terr
+			}
 		}
-		return RegimePayload{}, manualRegimeRefused("read reply: %v", err)
-	}
-	if len(body) > manualRegimeMaxBodyBytes {
-		return RegimePayload{}, manualRegimeRefused("reply exceeds %d bytes", manualRegimeMaxBodyBytes)
-	}
-	if resp.StatusCode == http.StatusUnauthorized {
-		return RegimePayload{}, manualRegimeRefused("the listener at %s rejected the owner authentication (HTTP 401)", ep.origin)
-	}
-	if !manualRegimeMACEqual(resp.Header.Get(manualRegimeProofHeader), manualRegimeReplyMAC(owner.Secret, challenge, resp.StatusCode, body)) {
-		return RegimePayload{}, manualRegimeRefused("the reply from %s carries no valid owner proof; the listener is not the scheduler that owns the configured state files", ep.origin)
-	}
-	var env manualRegimeEnvelope
-	envErr := decodeManualRegimeStrict(body, &env)
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusServiceUnavailable:
-	default:
-		if envErr == nil && env.ProtocolVersion == manualRegimeProtocolVersion && env.Result != "" && manualRegimeStatusFor(env.Result) == resp.StatusCode {
-			return RegimePayload{}, manualRegimeRefused("the scheduler refused with HTTP %d (%s): %s", resp.StatusCode, env.Result, manualRegimeMessages[env.Result])
+		env, terr := m.exchange(ctx, client, ep, sc, binding, pin)
+		if terr != nil {
+			if pendingGen == 0 || !terr.availability {
+				return RegimePayload{}, terr
+			}
+			if ctx.Err() != nil {
+				return RegimePayload{}, expired(pendingGen)
+			}
+			return RegimePayload{}, manualRegimeRefused("the scheduler stopped answering after it reported generation %d pending (waited %s): %s", pendingGen, waited(), terr.reason)
 		}
-		return RegimePayload{}, manualRegimeRefused("unexpected HTTP %d from %s", resp.StatusCode, ep.origin)
-	}
-	if envErr != nil {
-		return RegimePayload{}, manualRegimeRefused("malformed reply: %v", envErr)
-	}
-	if env.ProtocolVersion != manualRegimeProtocolVersion {
-		return RegimePayload{}, manualRegimeRefused("unsupported protocol version %d", env.ProtocolVersion)
-	}
-	if resp.StatusCode == http.StatusServiceUnavailable {
 		switch env.Result {
-		case manualRegimeResultUnavailable, manualRegimeResultClassification:
-		case manualRegimeResultDraining:
-			return RegimePayload{}, manualRegimeRefused("the scheduler is draining")
-		default:
-			return RegimePayload{}, manualRegimeRefused("scheduler refused with %q", env.Result)
+		case manualRegimeResultPending:
+			if !m.waitPending {
+				return RegimePayload{}, manualRegimeRefused("the scheduler is still computing generation %d's regime bundle for %s; this command does not wait for a pending bundle", env.PendingGeneration, key)
+			}
+			if pendingGen == 0 {
+				pendingGen = env.PendingGeneration
+				pinned := pin
+				m.waitedPin = &pinned
+			} else if env.PendingGeneration != pendingGen {
+				return RegimePayload{}, manualRegimeRefused("the pending generation moved from %d to %d during the wait", pendingGen, env.PendingGeneration)
+			}
+			continue
+		case manualRegimeResultUnavailable:
+			if pendingGen != 0 {
+				return RegimePayload{}, manualRegimeUnavailable("the scheduler finished generation %d with no completed bundle for %s (waited %s)", pendingGen, key, waited())
+			}
+			return RegimePayload{}, manualRegimeUnavailable("the scheduler holds no completed bundle for %s this cycle", key)
+		case manualRegimeResultClassification:
+			if pendingGen != 0 {
+				return RegimePayload{}, manualRegimeUnavailable("the scheduler's regime classification for %s failed in generation %d (waited %s)", key, pendingGen, waited())
+			}
+			return RegimePayload{}, manualRegimeUnavailable("the scheduler's regime classification for %s failed this cycle", key)
 		}
-		if env.Payload != nil || env.BundleAt != nil || env.Generation != 0 {
-			return RegimePayload{}, manualRegimeRefused("availability reply carries bundle fields")
+		if env.Generation == 0 || env.BundleAt == nil || env.BundleAt.IsZero() || len(env.Payload) == 0 {
+			return RegimePayload{}, manualRegimeRefused("bundle reply is missing generation, timestamp or payload")
 		}
-	} else if env.Result != manualRegimeResultBundle {
-		return RegimePayload{}, manualRegimeRefused("HTTP 200 reply with result %q", env.Result)
-	}
-	if err := checkManualRegimeIdentity(env, nonce, binding); err != nil {
-		return RegimePayload{}, err
-	}
-	again, terr := verifyManualRegimeOwner(m.store.layout)
-	if terr != nil {
-		if terr.availability {
-			return RegimePayload{}, manualRegimeRefused("owner identity disappeared during the request: %s", terr.reason)
+		if pendingGen != 0 && env.Generation != pendingGen {
+			return RegimePayload{}, manualRegimeRefused("the bundle came from generation %d, not the pending generation %d", env.Generation, pendingGen)
 		}
-		return RegimePayload{}, terr
+		maxAge := manualRegimeMaxAge(m.cfg, sc)
+		if cadence := manualRegimeCadenceSeconds(m.cfg, sc); env.IntervalSeconds != cadence {
+			return RegimePayload{}, manualRegimeRefused("bundle interval %ds differs from the strategy's configured %ds", env.IntervalSeconds, cadence)
+		}
+		if err := checkManualRegimeAge(*env.BundleAt, m.now(), maxAge); err != nil {
+			return RegimePayload{}, err
+		}
+		payload, err := decodeManualRegimePayload(key, env.Payload)
+		if err != nil {
+			return RegimePayload{}, err
+		}
+		m.admitted = &manualRegimeAdmissionRecord{pin: pin, at: *env.BundleAt, interval: maxAge}
+		return payload, nil
 	}
-	if again != owner {
-		return RegimePayload{}, manualRegimeRefused("owner identity changed during the request")
-	}
-	if env.Result == manualRegimeResultUnavailable {
-		return RegimePayload{}, manualRegimeUnavailable("the scheduler holds no completed bundle for %s this cycle", binding.Request.Key)
-	}
-	if env.Result == manualRegimeResultClassification {
-		return RegimePayload{}, manualRegimeUnavailable("the scheduler's regime classification for %s failed this cycle", binding.Request.Key)
-	}
-	if env.Generation == 0 || env.BundleAt == nil || env.BundleAt.IsZero() || len(env.Payload) == 0 {
-		return RegimePayload{}, manualRegimeRefused("bundle reply is missing generation, timestamp or payload")
-	}
-	maxAge := manualRegimeMaxAge(m.cfg, sc)
-	if cadence := manualRegimeCadenceSeconds(m.cfg, sc); env.IntervalSeconds != cadence {
-		return RegimePayload{}, manualRegimeRefused("bundle interval %ds differs from the strategy's configured %ds", env.IntervalSeconds, cadence)
-	}
-	if err := checkManualRegimeAge(*env.BundleAt, m.now(), maxAge); err != nil {
-		return RegimePayload{}, err
-	}
-	payload, err := decodeManualRegimePayload(binding.Request.Key, env.Payload)
-	if err != nil {
-		return RegimePayload{}, err
-	}
-	m.admitted = &manualRegimeAdmissionRecord{layout: m.store.layout, nonce: nonce, at: *env.BundleAt, interval: maxAge}
-	return payload, nil
+}
+
+func (m *manualRegimeRemote) waitedForPending() bool {
+	return m.waitedPin != nil
 }
 
 func checkManualRegimeIdentity(env manualRegimeEnvelope, nonce string, binding manualRegimeBinding) error {
@@ -900,18 +1091,30 @@ func decodeManualRegimePayload(key regimeBundleKey, raw json.RawMessage) (Regime
 }
 
 func (m *manualRegimeRemote) confirm() error {
-	rec := m.admitted
-	if rec == nil {
+	if rec := m.admitted; rec != nil {
+		if terr := rec.pin.recheck("after admission"); terr != nil {
+			return manualRegimeRefused("owner identity no longer verifies: %s", terr.reason)
+		}
+		return checkManualRegimeAge(rec.at, m.now(), rec.interval)
+	}
+	if pin := m.waitedPin; pin != nil {
+		if terr := pin.recheck("after the wait"); terr != nil {
+			return manualRegimeRefused("owner identity no longer verifies: %s", terr.reason)
+		}
+	}
+	return nil
+}
+
+func (m *manualRegimeRemote) checkPersistenceGuard(strategyID string) error {
+	pin := m.waitedPin
+	if pin == nil {
 		return nil
 	}
-	owner, terr := verifyManualRegimeOwner(rec.layout)
-	if terr != nil {
-		return manualRegimeRefused("owner identity no longer verifies: %s", terr.reason)
+	part, ok := m.store.partitionForStrategy(strategyID)
+	if !ok {
+		return manualRegimeRefused("strategy %q has no storage partition", strategyID)
 	}
-	if owner.Nonce != rec.nonce {
-		return manualRegimeRefused("the owning scheduler changed after admission")
-	}
-	return checkManualRegimeAge(rec.at, m.now(), rec.interval)
+	return checkManualRegimeHoldGuard(pin.layout, part, pin.owner.Nonce)
 }
 
 func sealedManualCommandFeed(cfg *Config) bool {

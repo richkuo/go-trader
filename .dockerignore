@@ -24,6 +24,7 @@
 **/*.db-*
 **/*.db.lock
 **/*.manual-regime-owner.json
+**/*.manual-regime-hold-*.json
 **/*.sqlite
 **/*.sqlite3
 **/*.sqlite3-*

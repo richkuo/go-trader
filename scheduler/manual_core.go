@@ -196,6 +196,9 @@ func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *Stat
 type manualCoreDeps struct {
 	resolveRegime          func(StrategyConfig) (RegimePayload, error)
 	confirmRegimeAdmission func() error
+	regimeWaited           func() bool
+	loadFreshState         func(strategyID, symbol string) (manualStateView, error)
+	checkWaitedHold        func(strategyID string) error
 	requireExplicitATR     bool
 	cfg                    *Config
 	stateDB                *StateStore
@@ -238,11 +241,77 @@ func newCLIManualCoreDeps(cfg *Config, store *StateStore, notifier *MultiNotifie
 	}
 	if sealedManualCommandFeed(cfg) {
 		remote := newManualRegimeRemote(cfg, store)
+		remote.waitPending = true
 		d.resolveRegime = remote.resolve
 		d.confirmRegimeAdmission = remote.confirm
+		d.regimeWaited = remote.waitedForPending
+		d.checkWaitedHold = remote.checkPersistenceGuard
+		d.loadFreshState = func(strategyID, symbol string) (manualStateView, error) {
+			state, _, _, err := loadStateWithStore(cfg, store, true)
+			if err != nil {
+				return manualStateView{}, err
+			}
+			return manualStateViewFromStateWithStore(cfg, state, store, strategyID, symbol), nil
+		}
 		d.requireExplicitATR = true
 	}
 	return d
+}
+
+func manualSamePositionIdentity(before, after *Position, strategyID string) bool {
+	if before == nil || after == nil || before.Side != after.Side || !manualPositionOwnedByStrategy(after, strategyID) {
+		return false
+	}
+	if before.TradePositionID != "" || after.TradePositionID != "" {
+		return before.TradePositionID == after.TradePositionID
+	}
+	return !before.OpenedAt.IsZero() && before.OpenedAt.Equal(after.OpenedAt)
+}
+
+func manualRecheckAfterRegimeWait(d manualCoreDeps, action, strategyID, symbol, side string, target *Position, queued func() error) error {
+	if d.regimeWaited == nil || !d.regimeWaited() {
+		return nil
+	}
+	if d.loadFreshState == nil {
+		return manualFailf("%s held: the regime wait ended and no fresh state reader is configured", action)
+	}
+	view, err := d.loadFreshState(strategyID, symbol)
+	if err != nil {
+		return manualFailf("%s held: fresh state after the regime wait is unreadable: %v", action, err)
+	}
+	switch {
+	case view.KillSwitch:
+		return manualFailf("%s held after the regime wait: portfolio kill switch is active", action)
+	case view.PendingCBClose:
+		return manualFailf("%s held after the regime wait: strategy has a pending circuit-breaker close", action)
+	case view.DailyLossHold:
+		return manualFailf("%s held after the regime wait: %s", action, view.DailyLossNote)
+	case view.NotionalHold:
+		return manualFailf("%s held after the regime wait: %s", action, view.NotionalNote)
+	case view.PersistenceHold:
+		return manualFailf("%s held after the regime wait: the last state save for this scope failed and has not been acknowledged", action)
+	}
+	if blocked, why := exposureCapManualEntryBlock(view.ExposureCap, view.ExposureCapAsset, side); blocked {
+		return manualFailf("%s held after the regime wait: %s", action, why)
+	}
+	if d.checkWaitedHold != nil {
+		if err := d.checkWaitedHold(strategyID); err != nil {
+			return manualFailf("%s held after the regime wait: %v", action, err)
+		}
+	}
+	if target == nil {
+		if view.Pos != nil {
+			return manualFailf("%s held after the regime wait: a %s position for %s/%s appeared during the wait", action, view.Pos.Side, strategyID, symbol)
+		}
+	} else {
+		if !view.HasStrategy || !manualSamePositionIdentity(target, view.Pos, strategyID) {
+			return manualFailf("%s held after the regime wait: the %s/%s position it adds to changed identity, owner or side during the wait", action, strategyID, symbol)
+		}
+	}
+	if queued != nil {
+		return queued()
+	}
+	return nil
 }
 
 func manualConfirmRegimeAdmission(d manualCoreDeps, action string) error {
@@ -661,6 +730,13 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		if err := manualConfirmRegimeAdmission(d, "manual-open"); err != nil {
 			return res, err
 		}
+		if !in.DryRun {
+			if err := manualRecheckAfterRegimeWait(d, "manual-open", strategyID, sc.Symbol, side, nil, func() error {
+				return refuseIfPositionActionQueued(d, "manual-open", strategyID, sc.Symbol)
+			}); err != nil {
+				return res, err
+			}
+		}
 	}
 
 	var resolvedFillPrice, fillQty, fillFee float64
@@ -960,13 +1036,28 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
 		}
 		defer unlock()
+		pendingActionsQueued := func() error {
+			return refuseIfPendingManualPositionAction(d.stateDB, "manual-add", strategyID, sc.Symbol)
+		}
 		if regimeAdmitted {
 			if err := manualConfirmRegimeAdmission(d, "manual-add"); err != nil {
 				return res, err
 			}
+			if err := manualRecheckAfterRegimeWait(d, "manual-add", strategyID, sc.Symbol, addDir, pos, pendingActionsQueued); err != nil {
+				return res, err
+			}
 		}
-		if _, _, _, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol); err != nil {
+		_, _, cancelledRemainders, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol)
+		if err != nil {
 			return res, err
+		}
+		if regimeAdmitted && len(cancelledRemainders) > 0 {
+			if err := manualConfirmRegimeAdmission(d, "manual-add"); err != nil {
+				return res, err
+			}
+			if err := manualRecheckAfterRegimeWait(d, "manual-add", strategyID, sc.Symbol, addDir, pos, pendingActionsQueued); err != nil {
+				return res, err
+			}
 		}
 		if err := refuseIfPositionActionQueued(d, "manual-add", strategyID, sc.Symbol); err != nil {
 			return res, err

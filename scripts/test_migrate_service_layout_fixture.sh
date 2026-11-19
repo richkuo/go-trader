@@ -167,7 +167,7 @@ PY
 
 tree_fp() {
     local d="$1"
-    (cd "$d" && find . -path ./logs -prune -o -path ./.git -prune -o -type f ! -name '*.db' ! -name '*.db-wal' ! -name '*.db-shm' ! -name '*.lock' ! -name '*.manual-regime-owner.json' -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
+    (cd "$d" && find . -path ./logs -prune -o -path ./.git -prune -o -type f ! -name '*.db' ! -name '*.db-wal' ! -name '*.db-shm' ! -name '*.lock' ! -name '*.manual-regime-owner.json' ! -name '*.manual-regime-hold-*.json' -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
 }
 
 file_fp() {
@@ -1313,7 +1313,7 @@ EOS
 
 fixture_managed_manifest() {
     "$PY3" - "$1" <<'PY'
-import hashlib, os, stat, sys
+import fnmatch, hashlib, os, stat, sys
 root = os.path.realpath(sys.argv[1])
 skip_top = {".git", ".venv", "logs", "robinhood-session", "node_modules", "__pycache__", "tuning_runs"}
 skip_names = {".env", "go-trader", "go-trader.new", "go-trader.prev", "go-trader.pid", "go-trader-signal.log"}
@@ -1330,7 +1330,7 @@ for cur, dirs, files in os.walk(root, topdown=True, followlinks=False):
         rel = os.path.join(rel_cur, name) if rel_cur else name
         if rel == "scheduler/config.json" or name in skip_names:
             continue
-        if name.endswith((".db", ".db-wal", ".db-shm", ".db.lock", ".db.manual-action.lock", ".manual-regime-owner.json")):
+        if name.endswith((".db", ".db-wal", ".db-shm", ".db.lock", ".db.manual-action.lock", ".manual-regime-owner.json")) or fnmatch.fnmatch(name, "*.manual-regime-hold-*.json"):
             continue
         if name.startswith("trading_bot.db") or name.startswith("ohlcv_cache.sqlite3"):
             continue
