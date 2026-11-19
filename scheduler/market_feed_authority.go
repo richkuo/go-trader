@@ -1006,7 +1006,10 @@ func feedDeclaredLockKeys(dir string) []string {
 	var keys []string
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".lock") {
-			keys = append(keys, strings.TrimSuffix(e.Name(), ".lock"))
+			key := strings.TrimSuffix(e.Name(), ".lock")
+			if feedValidOwnerKey(key) {
+				keys = append(keys, key)
+			}
 		}
 	}
 	sort.Strings(keys)

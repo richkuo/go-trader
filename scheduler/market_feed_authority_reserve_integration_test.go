@@ -425,6 +425,61 @@ func TestFeedWeightSharedRebuildIgnoresInvalidDeclarationNames(t *testing.T) {
 	})
 }
 
+func TestFeedWeightSharedRebuildIgnoresInvalidLockNames(t *testing.T) {
+	t.Run("UnopenableStrayLockDoesNotBlockRecovery", func(t *testing.T) {
+		e := newFAEnv(t)
+		b := e.owner("b", wtPolicy(400, 100, 100))
+		e.settle(b)
+		stray := filepath.Join(e.dir, feedAuthorityOwnersDir, "backup.lock")
+		if err := os.WriteFile(stray, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(stray, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(e.dir, feedAuthorityRecordName)); err != nil {
+			t.Fatal(err)
+		}
+		b.a.heartbeatOnce(context.Background())
+		e.clock.advance(feedBudgetWindow + time.Second)
+		for range 2 {
+			b.a.heartbeatOnce(context.Background())
+		}
+		rec := e.record()
+		if rec.Recovery != nil || rec.Owners["backup"] != nil {
+			t.Fatalf("stray lock blocked recovery or created an owner: recovery %+v owner %+v", rec.Recovery, rec.Owners["backup"])
+		}
+	})
+
+	t.Run("StrayLockDoesNotAffectForecastAndValidLockIsStillProbed", func(t *testing.T) {
+		e := newFAEnv(t)
+		e.owner("b", wtPolicy(400, 100, 100))
+		for _, name := range []string{"backup.lock", "0123456789abcdef0123456789abcdef.lock"} {
+			path := filepath.Join(e.dir, feedAuthorityOwnersDir, name)
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, 0o000); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(e.dir, feedAuthorityRecordName), []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fc := forecastFeedAuthority(feedAuthorityRoleFeed, filepath.Join(e.root, "cfg-new.json"), wtPolicy(100, 0, 0).weightPolicy())
+		if fc.Refuse == "" || !strings.Contains(fc.Refuse, "0123456789abcdef0123456789abcdef") || strings.Contains(fc.Refuse, "backup") {
+			t.Fatalf("forecast beside stray and valid unopenable locks: %+v", fc)
+		}
+		rb, err := feedRebuildRows(e.dir, "", true, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rb.Rows["backup"] != nil || len(rb.Unknown) != 1 || rb.Unknown[0] != "0123456789abcdef0123456789abcdef" {
+			t.Fatalf("rebuild lock filtering: backup %+v unknown %v", rb.Rows["backup"], rb.Unknown)
+		}
+	})
+}
+
 func TestFeedWeightSharedReserveEvidence(t *testing.T) {
 	t.Run("UnprovableEvidenceHoldsSendsPastTheRecoveryUntilARelease", func(t *testing.T) {
 		e := newFAEnv(t)
