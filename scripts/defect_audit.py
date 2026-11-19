@@ -2411,7 +2411,8 @@ def cmd_removals(args):
     inv = read_json(out / "inventory.json")
     base = inv["base"]
     head = git("rev-parse", "HEAD").strip()
-    diff = git("diff", "--unified=0", base, head, "--", "*_test.go", "*test_*.py", "conftest.py")
+    changed = [p for p in git("diff", "--name-only", "--no-renames", base, head).splitlines() if is_test_file(p)]
+    diff = git("diff", "--unified=0", "--no-renames", base, head, "--", *(":(literal)" + p for p in changed)) if changed else ""
     removed_decls = []
     added_decls = []
     for line in diff.splitlines():
