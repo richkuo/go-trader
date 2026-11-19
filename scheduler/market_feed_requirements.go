@@ -132,6 +132,12 @@ func (e feedStrategyRequirement) observationNeeds() map[feedObservationKey]int64
 	return out
 }
 
+func (e feedStrategyRequirement) readsClosedOnly(key marketFeedKey) bool {
+	return e.ClosedBar &&
+		(e.HasHTF && key == e.HTF || e.HasResearchHTF && key == e.ResearchHTF) &&
+		key != e.Signal && (!e.HasLeader || key != e.Leader) && (!e.HasRegime || key != e.Regime)
+}
+
 type feedRequirements struct {
 	Keys         map[marketFeedKey]int
 	Order        []marketFeedKey

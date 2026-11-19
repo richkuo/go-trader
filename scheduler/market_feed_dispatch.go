@@ -93,6 +93,9 @@ func (c *marketFeedContext) frameSpecs(sc StrategyConfig) ([]marketPayloadFrameS
 	if entry.HasResearchHTF {
 		specs = mergeOptionalFrameSpec(specs, entry.ResearchHTF, entry.ResearchHTFRow)
 	}
+	for i := range specs {
+		specs[i].ClosedOnly = entry.readsClosedOnly(specs[i].Key)
+	}
 	return specs, entry.Coin, true
 }
 
@@ -159,6 +162,8 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 	signalKey := feedKeyFor(key.Symbol, key.Timeframe)
 	leaderTimed := make(map[marketFeedKey]bool)
 	mandatory := make(map[marketFeedKey]bool)
+	forming := make(map[marketFeedKey]bool)
+	forming[signalKey] = true
 	optionalTimed := make(map[marketFeedKey]bool)
 	anyClosedBar := false
 	anyTimed := false
@@ -187,10 +192,12 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 		if entry.HasHTF {
 			raise(entry.HTF, entry.HTFLookback)
 			mandatory[entry.HTF] = true
+			forming[entry.HTF] = forming[entry.HTF] || !entry.readsClosedOnly(entry.HTF)
 		}
 		if entry.HasRegime {
 			raise(entry.Regime, entry.RegimeLookback)
 			mandatory[entry.Regime] = true
+			forming[entry.Regime] = true
 		}
 		if entry.HasLeader {
 			raise(entry.Signal, entry.SignalLookback)
@@ -198,10 +205,12 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 			leaderTimed[entry.Signal] = true
 			leaderTimed[entry.Leader] = true
 			mandatory[entry.Leader] = true
+			forming[entry.Leader] = true
 		}
 		if entry.HasResearchHTF {
 			raise(entry.ResearchHTF, entry.ResearchHTFRow)
 			optionalTimed[entry.ResearchHTF] = true
+			forming[entry.ResearchHTF] = forming[entry.ResearchHTF] || !entry.readsClosedOnly(entry.ResearchHTF)
 		}
 		if held, why := c.Snapshot.fundingHold(entry.Coin, entry.FundingScalar, entry.FundingRecords); held {
 			return nil, fmt.Errorf("strategy %s: %s", sc.ID, why)
@@ -224,6 +233,7 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 		specs[i].Required = seen[specs[i].Key]
 		specs[i].Timing = anyClosedBar || (anyTimed && specs[i].Key == signalKey) || leaderTimed[specs[i].Key] || optionalTimed[specs[i].Key]
 		specs[i].Optional = !mandatory[specs[i].Key]
+		specs[i].ClosedOnly = !forming[specs[i].Key]
 	}
 	payload, err := marketPayloadFor(c.Snapshot, specs, []string{key.Symbol})
 	if err != nil {
@@ -278,6 +288,11 @@ func (c *marketFeedContext) holdFor(sc StrategyConfig) feedHold {
 	entry, ok := c.entryFor(sc.ID)
 	if !ok {
 		return feedHold{}
+	}
+	for _, key := range [...]marketFeedKey{entry.Signal, entry.HTF, entry.Leader, entry.Regime} {
+		if why := c.Snapshot.formingBarHold(key, entry.readsClosedOnly(key)); why != "" {
+			return feedHold{Held: true, Key: key, Reason: why}
+		}
 	}
 	if c.Snapshot.keyFailed(entry.Signal) {
 		return feedHold{Held: true, Key: entry.Signal, Reason: fmt.Sprintf("no ready candle frame for %s", entry.Signal.PayloadID())}

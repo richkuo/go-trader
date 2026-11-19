@@ -747,3 +747,61 @@ func TestFeedFundingRecordTail(t *testing.T) {
 		t.Fatal("no [feed-funding] lines were logged")
 	}
 }
+
+func TestFeedRESTReuseConsumerReaderMismatch(t *testing.T) {
+	t0 := rdBase()
+	f, consumers := newRDFixture(t, time.Unix(t0-600, 0).UTC(), func() []feedConsumer {
+		consumers := rdWorkload(t, false)
+		consumers[1].Req.Keys[feedKeyFor("BTC", "4h")] = hlBatchPythonDefaultOhlcvLimit
+		return consumers
+	})
+	fresh, _ := f.seal(t0)
+	reused, _ := f.seal(t0 + 300)
+	fourH := feedKeyFor("BTC", "4h")
+	if reused.V != feedSealVersionClosedReuse || !rdSealKey(t, reused, fourH).FormingBarOmitted {
+		t.Fatal("reused 4h frame did not carry the versioned forming-bar omission")
+	}
+
+	formingHTF := rdStrategy("forming-htf", "rsi", "BTC", "30m", 300, false, true, false)
+	formingSignal := rdStrategy("forming-signal", "sma_crossover", "BTC", "4h", 300, false, false, false)
+	closedHTF := rdStrategy("closed-htf", "sma_crossover", "BTC", "1h", 300, true, true, false)
+
+	check := func(t *testing.T, doc *feedSealDoc, sc StrategyConfig, held, formingIncluded bool) {
+		t.Helper()
+		req := rdConsumer(t, "/paper.json", []StrategyConfig{sc}).Req
+		ctx := &marketFeedContext{Enabled: true, Requirements: req, Snapshot: doc.snapshot()}
+		hold := ctx.holdFor(sc)
+		raw, err := ctx.singleCheckPayload(sc)
+		if held {
+			if !hold.Held || hold.Key != fourH || !strings.Contains(hold.Reason, "without the forming bar") ||
+				err == nil || !strings.Contains(err.Error(), "without the forming bar") || raw != nil {
+				t.Fatalf("hold = %+v, payload error = %v, want no evaluation of the reused 4h frame", hold, err)
+			}
+			return
+		}
+		if hold.Held || err != nil {
+			t.Fatalf("hold = %+v, payload error = %v, want a usable frame", hold, err)
+		}
+		var envelope marketStdinEnvelope
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if frame, ok := envelope.Market.Frames[fourH.PayloadID()]; !ok || frame.FormingBarIncluded != formingIncluded {
+			t.Fatalf("4h present = %t, forming bar included = %t, want true and %t", ok, frame.FormingBarIncluded, formingIncluded)
+		}
+	}
+
+	t.Run("NewFormingHTF", func(t *testing.T) {
+		check(t, reused, formingHTF, true, false)
+	})
+	t.Run("NewSignalWithRetainedFeedConfig", func(t *testing.T) {
+		consumers[1].Retained = true
+		f.install(unionFeedRequirements(consumers), unionFeedCadences(consumers))
+		retained, _ := f.seal(t0 + 600)
+		check(t, retained, formingSignal, true, false)
+	})
+	t.Run("ClosedReuseAndFreshForming", func(t *testing.T) {
+		check(t, reused, closedHTF, false, false)
+		check(t, fresh, formingHTF, false, true)
+	})
+}

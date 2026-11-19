@@ -80,12 +80,13 @@ type marketPayload struct {
 }
 
 type marketSnapshotKey struct {
-	Key          marketFeedKey
-	IntervalMs   int64
-	Bars         []feedBar
-	Readiness    feedKeyReadiness
-	FilledFrom   string
-	restVerified bool
+	Key               marketFeedKey
+	IntervalMs        int64
+	Bars              []feedBar
+	Readiness         feedKeyReadiness
+	FilledFrom        string
+	restVerified      bool
+	FormingBarOmitted bool
 }
 
 type marketSnapshot struct {
@@ -391,6 +392,13 @@ func (s *marketSnapshot) frameFor(key marketFeedKey, required int) (marketFrame,
 	return s.frameWithTiming(key, required, false)
 }
 
+func (s *marketSnapshot) formingBarHold(key marketFeedKey, closedOnly bool) string {
+	if entry := s.keys[key]; !closedOnly && entry != nil && entry.FormingBarOmitted {
+		return fmt.Sprintf("sealed snapshot reused %s without the forming bar this strategy needs", key.PayloadID())
+	}
+	return ""
+}
+
 func (s *marketSnapshot) frameWithTiming(key marketFeedKey, required int, timing bool) (marketFrame, bool) {
 	if s == nil {
 		return marketFrame{}, false
@@ -428,7 +436,7 @@ func (s *marketSnapshot) frameWithTiming(key marketFeedKey, required int, timing
 		Ready:              entry.Readiness.Ready,
 		Stale:              entry.Readiness.Stale,
 		StaleReason:        entry.Readiness.StaleReason,
-		FormingBarIncluded: true,
+		FormingBarIncluded: !entry.FormingBarOmitted,
 	}
 	if !entry.Readiness.LastRecvAt.IsZero() {
 		frame.LastRecvAtMs = entry.Readiness.LastRecvAt.UTC().UnixMilli()
@@ -503,10 +511,11 @@ func (s *marketSnapshot) freshMids() map[string]float64 {
 }
 
 type marketPayloadFrameSpec struct {
-	Key      marketFeedKey
-	Required int
-	Timing   bool
-	Optional bool
+	Key        marketFeedKey
+	Required   int
+	Timing     bool
+	Optional   bool
+	ClosedOnly bool
 }
 
 func marketPayloadFor(s *marketSnapshot, frames []marketPayloadFrameSpec, coins []string) (*marketPayload, error) {
@@ -522,6 +531,12 @@ func marketPayloadFor(s *marketSnapshot, frames []marketPayloadFrameSpec, coins 
 		FeedComplete: true,
 	}
 	for _, spec := range frames {
+		if why := s.formingBarHold(spec.Key, spec.ClosedOnly); why != "" {
+			if spec.Optional {
+				continue
+			}
+			return nil, errors.New(why)
+		}
 		frame, ok := s.frameWithTiming(spec.Key, spec.Required, spec.Timing)
 		if !ok {
 			if spec.Optional {

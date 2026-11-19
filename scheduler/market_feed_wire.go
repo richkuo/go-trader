@@ -15,18 +15,19 @@ import (
 )
 
 const (
-	feedWireVersion           = 1
-	feedSealVersionBase       = 1
-	feedSealVersion           = 2
-	feedSealVersionAccounting = 3
-	feedSealVersionTrades     = 4
-	feedSealVersionMacro      = 5
-	feedSealVersionProfile    = 6
-	feedSealVersionBooks      = 7
-	feedSealVersionPremium    = 8
-	feedWireMaxRequestBytes   = 4 << 10
-	feedWireMaxHeaderBytes    = 1 << 20
-	feedSealMaxBytes          = 64 << 20
+	feedWireVersion            = 1
+	feedSealVersionBase        = 1
+	feedSealVersion            = 2
+	feedSealVersionAccounting  = 3
+	feedSealVersionTrades      = 4
+	feedSealVersionMacro       = 5
+	feedSealVersionProfile     = 6
+	feedSealVersionBooks       = 7
+	feedSealVersionPremium     = 8
+	feedSealVersionClosedReuse = 9
+	feedWireMaxRequestBytes    = 4 << 10
+	feedWireMaxHeaderBytes     = 1 << 20
+	feedSealMaxBytes           = 64 << 20
 
 	feedWireOpDescribe = "describe"
 	feedWireOpSnapshot = "snapshot"
@@ -145,13 +146,14 @@ type feedSealReadiness struct {
 }
 
 type feedSealKey struct {
-	Host       string            `json:"host"`
-	Namespace  string            `json:"namespace"`
-	Symbol     string            `json:"symbol"`
-	Timeframe  string            `json:"timeframe"`
-	IntervalMs int64             `json:"interval_ms"`
-	Readiness  feedSealReadiness `json:"readiness"`
-	Bars       []feedSealBar     `json:"bars"`
+	Host              string            `json:"host"`
+	Namespace         string            `json:"namespace"`
+	Symbol            string            `json:"symbol"`
+	Timeframe         string            `json:"timeframe"`
+	IntervalMs        int64             `json:"interval_ms"`
+	Readiness         feedSealReadiness `json:"readiness"`
+	Bars              []feedSealBar     `json:"bars"`
+	FormingBarOmitted bool              `json:"forming_bar_omitted,omitempty"`
 }
 
 type feedSealMid struct {
@@ -337,7 +339,7 @@ func feedSealVersionFor(hasObservations, hasAccounting, hasTrades, hasMacro, has
 }
 
 func feedSealVersionSupported(v int) bool {
-	return v == feedSealVersionBase || v == feedSealVersion || v == feedSealVersionAccounting || v == feedSealVersionTrades || v == feedSealVersionMacro || v == feedSealVersionProfile || v == feedSealVersionBooks || v == feedSealVersionPremium
+	return v == feedSealVersionBase || v == feedSealVersion || v == feedSealVersionAccounting || v == feedSealVersionTrades || v == feedSealVersionMacro || v == feedSealVersionProfile || v == feedSealVersionBooks || v == feedSealVersionPremium || v == feedSealVersionClosedReuse
 }
 
 func (doc *feedSealDoc) hasMacro() bool {
@@ -395,11 +397,12 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 		}
 		r := entry.Readiness
 		sk := feedSealKey{
-			Host:       k.Host,
-			Namespace:  k.Namespace,
-			Symbol:     k.Symbol,
-			Timeframe:  k.Timeframe,
-			IntervalMs: entry.IntervalMs,
+			Host:              k.Host,
+			Namespace:         k.Namespace,
+			Symbol:            k.Symbol,
+			Timeframe:         k.Timeframe,
+			IntervalMs:        entry.IntervalMs,
+			FormingBarOmitted: entry.FormingBarOmitted,
 			Readiness: feedSealReadiness{
 				Status:        string(r.Status),
 				Detail:        r.Detail,
@@ -498,8 +501,17 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 	doc.VolumeProfiles = sealVolumeProfiles(snap.profiles)
 	doc.L2Books = sealL2Books(snap.books)
 	doc.Premiums = sealPremiums(snap.premiums)
-	doc.V = feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0, len(doc.TradeFlows) > 0, doc.hasMacro(), len(doc.VolumeProfiles) > 0, len(doc.L2Books) > 0, len(doc.Premiums) > 0)
+	doc.V = doc.contentVersion()
 	return doc, nil
+}
+
+func (doc *feedSealDoc) contentVersion() int {
+	for _, key := range doc.Keys {
+		if key.FormingBarOmitted {
+			return feedSealVersionClosedReuse
+		}
+	}
+	return feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0, len(doc.TradeFlows) > 0, doc.hasMacro(), len(doc.VolumeProfiles) > 0, len(doc.L2Books) > 0, len(doc.Premiums) > 0)
 }
 
 func sealTradeFlows(flows map[feedObservationKey]*marketSnapshotTradeFlow) []feedSealTradeFlow {
@@ -702,10 +714,10 @@ func decodeFeedSeal(blob []byte, wantKey int64) (*feedSealDoc, error) {
 		return nil, errors.New("seal bytes are not in canonical form")
 	}
 	if !feedSealVersionSupported(doc.V) {
-		return nil, fmt.Errorf("seal version %d, want %d through %d", doc.V, feedSealVersionBase, feedSealVersionPremium)
+		return nil, fmt.Errorf("seal version %d, want %d through %d", doc.V, feedSealVersionBase, feedSealVersionClosedReuse)
 	}
-	if want := feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0, len(doc.TradeFlows) > 0, doc.hasMacro(), len(doc.VolumeProfiles) > 0, len(doc.L2Books) > 0, len(doc.Premiums) > 0); doc.V != want {
-		return nil, fmt.Errorf("seal version %d carries %d observations, %d accounting funding entries, %d trade flows, %d macro inputs, %d volume profiles, %d l2 books and %d premium records; that content seals as version %d", doc.V, len(doc.Observations), len(doc.AccountingFunding), len(doc.TradeFlows), len(doc.MacroCalendars)+len(doc.MacroQuotes), len(doc.VolumeProfiles), len(doc.L2Books), len(doc.Premiums), want)
+	if want := doc.contentVersion(); doc.V != want {
+		return nil, fmt.Errorf("seal version %d does not match the content version %d", doc.V, want)
 	}
 	if doc.Key != wantKey {
 		return nil, fmt.Errorf("seal key %d, requested %d", doc.Key, wantKey)
@@ -907,9 +919,10 @@ func (k feedSealKey) snapshotKey() (marketFeedKey, *marketSnapshotKey) {
 	}
 	r := k.Readiness
 	return key, &marketSnapshotKey{
-		Key:        key,
-		IntervalMs: k.IntervalMs,
-		Bars:       bars,
+		Key:               key,
+		IntervalMs:        k.IntervalMs,
+		FormingBarOmitted: k.FormingBarOmitted,
+		Bars:              bars,
 		Readiness: feedKeyReadiness{
 			Key:           key,
 			Bars:          r.Bars,

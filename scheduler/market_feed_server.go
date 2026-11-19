@@ -251,6 +251,7 @@ func applyClosedFrameReuse(snap *marketSnapshot, rep *feedPrepareReport, deadlin
 		}
 		last := closed[len(closed)-1]
 		entry.Bars = closed
+		entry.FormingBarOmitted = true
 		r := &entry.Readiness
 		r.Bars = len(closed)
 		r.FirstOpenMs = closed[0].OpenMs

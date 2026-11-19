@@ -553,7 +553,7 @@ func TestPremiumObservationPipeline(t *testing.T) {
 	for _, tc := range []struct {
 		sealVersion int
 		compatible  bool
-	}{{feedSealVersionBase, true}, {feedSealVersionMacro, true}, {feedSealVersionProfile, true}, {feedSealVersionPremium, true}, {feedSealVersionPremium + 1, false}} {
+	}{{feedSealVersionBase, true}, {feedSealVersionMacro, true}, {feedSealVersionProfile, true}, {feedSealVersionPremium, true}, {feedSealVersionClosedReuse + 1, false}} {
 		peer := oiTestOldPeer(t, sockDir, tc.sealVersion)
 		_, _, err := client.roundTrip(ctx, peer, feedWireRequest{V: feedWireVersion, Op: feedWireOpDescribe})
 		if tc.compatible != (err == nil) {
