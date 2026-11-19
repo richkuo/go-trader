@@ -4,7 +4,7 @@ Repository: `https://github.com/richkuo/go-trader.git`
 
 Operator runbook for agents that install, configure, run, update, and operate go-trader. Reader-facing overview: [README.md](README.md). Coding constraints and PR conventions: [CLAUDE.md](CLAUDE.md) and [AGENTS.md](AGENTS.md).
 
-Quick flow for a new server: tell OpenClaw `install https://github.com/richkuo/go-trader and init`.
+Quick flow for a new server: tell any AI agent `install https://github.com/richkuo/go-trader and init`. go-trader does not need a specific agent platform; OpenClaw, Hermes, Claude Code, Codex, or Cursor all work.
 
 ---
 

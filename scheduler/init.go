@@ -1950,7 +1950,7 @@ func runInit(args []string) int {
 
 	fmt.Printf("\nConfig written to %s\n", outputPath)
 	fmt.Println("Next steps:")
-	fmt.Println("  To enable Discord/Telegram notifications, edit the config or ask OpenClaw.")
+	fmt.Println("  To enable Discord/Telegram notifications, edit the config or ask your AI agent.")
 	if inContainerRuntime() {
 		fmt.Printf("  docker compose run --rm cli probe --config %s\n", outputPath)
 		fmt.Println("  docker compose up -d")
