@@ -38,8 +38,9 @@ type fpPark struct {
 }
 
 type fpVenue struct {
-	t   *testing.T
-	srv *httptest.Server
+	t     *testing.T
+	srv   *httptest.Server
+	clock string
 
 	mu       sync.Mutex
 	arrivals []fpArrival
@@ -49,8 +50,8 @@ type fpVenue struct {
 	park     *fpPark
 }
 
-func newFPVenue(t *testing.T) *fpVenue {
-	v := &fpVenue{t: t, status: map[string]int{}}
+func newFPVenue(t *testing.T, clock string) *fpVenue {
+	v := &fpVenue{t: t, clock: clock, status: map[string]int{}}
 	v.srv = httptest.NewServer(http.HandlerFunc(v.handle))
 	t.Cleanup(v.srv.Close)
 	return v
@@ -68,7 +69,7 @@ func (v *fpVenue) handle(w http.ResponseWriter, r *http.Request) {
 		} `json:"req"`
 	}
 	json.Unmarshal(raw, &body)
-	now := time.Now()
+	now := feedFileBootClock{path: v.clock}.Wall()
 	var payload []byte
 	rows := 0
 	switch body.Type {
@@ -192,8 +193,9 @@ func newFPEnv(t *testing.T) *fpEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
+	clock := filepath.Join(dir, "clock.json")
 	e := &fpEnv{t: t, bin: pyintegrationBinary(t), root: filepath.Dir(filepath.Dir(thisFile)), dir: dir,
-		auth: filepath.Join(dir, "feed-weight"), clock: filepath.Join(dir, "clock.json"), venue: newFPVenue(t)}
+		auth: filepath.Join(dir, "feed-weight"), clock: clock, venue: newFPVenue(t, clock)}
 	e.setOffset(0)
 	return e
 }
