@@ -24,6 +24,56 @@ INPUTS = {
 }
 INTERVAL_START = "2026-01-05T00:00:00Z"
 HOUR_MS = 3_600_000
+_LABEL_SUFFIXES = ("", "_ready", "_bars", "_need")
+_OHLCV = ("open", "high", "low", "close", "volume")
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _shared_bounded_window_labels():
+    import numpy as np
+    import regime
+
+    real = regime.bounded_window_labels
+    cache = {}
+
+    def frame_key(df):
+        digest = hashlib.sha256(str(len(df)).encode())
+        for col in _OHLCV:
+            digest.update(col.encode())
+            digest.update(np.ascontiguousarray(df[col].to_numpy(dtype="float64")).tobytes())
+        return digest.hexdigest()
+
+    def shared(df, *, period=14, adx_threshold=20.0, windows_spec=None, limit, columns):
+        spec = windows_spec or None
+        if not spec:
+            return real(df, period=period, adx_threshold=adx_threshold, windows_spec=windows_spec,
+                        limit=limit, columns=columns)
+        primary = regime.primary_regime_window_key(spec)
+        resolved = {col: key if key not in ("", "default") else primary for col, key in columns.items()}
+        frame = frame_key(df)
+        keys = {window: json.dumps([frame, limit, period, float(adx_threshold), window, spec],
+                                   sort_keys=True, default=str)
+                for window in set(resolved.values())}
+        missing = sorted(window for window, key in keys.items() if key not in cache)
+        if missing:
+            probe = df.loc[:, list(_OHLCV)].copy()
+            names = {"_label_" + window: window for window in missing}
+            real(probe, period=period, adx_threshold=adx_threshold, windows_spec=spec,
+                 limit=limit, columns=names)
+            for name, window in names.items():
+                cache[keys[window]] = {s: probe[name + s].tolist() for s in _LABEL_SUFFIXES}
+        for col, window in resolved.items():
+            df[col] = list(cache[keys[window]][""])
+        for col, window in resolved.items():
+            for s in _LABEL_SUFFIXES[1:]:
+                df[col + s] = list(cache[keys[window]][s])
+        return df
+
+    regime.bounded_window_labels = shared
+    try:
+        yield
+    finally:
+        regime.bounded_window_labels = real
 
 
 def _load(path):

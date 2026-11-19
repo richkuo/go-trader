@@ -7,6 +7,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+import pytest
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 CHECK_HL = os.path.join(REPO, "shared_scripts", "check_hyperliquid.py")
@@ -196,7 +197,8 @@ def test_closed_bar_decision_ignores_the_forming_tail_and_matches_next_bar_execu
     assert pd.Timestamp(trade["entry_date"]) == df.index[len(closed)]
 
 
-def test_full_series_prefix_and_bounded_window_agree_at_every_allowed_lookback():
+@pytest.mark.parametrize("lookback", range(2, 101))
+def test_full_series_prefix_and_bounded_window_agree_at_every_allowed_lookback(lookback):
     mod = _strategies()
     rng = np.random.RandomState(1650)
     n = 212
@@ -217,16 +219,15 @@ def test_full_series_prefix_and_bounded_window_agree_at_every_allowed_lookback()
             else:
                 assert x == y, col
 
-    for lookback in range(2, 101):
-        params = {"lookback": lookback}
-        full = mod.apply_strategy(NAME, df, params)
-        assert (full["wr_reason"].iloc[:min(lookback, 60)] == "insufficient_history").all()
-        for i in range(n):
-            prefix = mod.apply_strategy(NAME, df.iloc[:i + 1], params).iloc[-1]
-            same(full.iloc[i], prefix)
-            if i >= 199:
-                bounded = mod.apply_strategy(NAME, df.iloc[i - 199:i + 1], params).iloc[-1]
-                same(full.iloc[i], bounded)
-        assert (full["wr_reason"].iloc[60:61] == "inconsistent_hlc").all()
-        recovered = full["wr_valid"].iloc[61 + lookback:130]
-        assert recovered.all() if len(recovered) else True
+    params = {"lookback": lookback}
+    full = mod.apply_strategy(NAME, df, params)
+    assert (full["wr_reason"].iloc[:min(lookback, 60)] == "insufficient_history").all()
+    for i in range(n):
+        prefix = mod.apply_strategy(NAME, df.iloc[:i + 1], params).iloc[-1]
+        same(full.iloc[i], prefix)
+        if i >= 199:
+            bounded = mod.apply_strategy(NAME, df.iloc[i - 199:i + 1], params).iloc[-1]
+            same(full.iloc[i], bounded)
+    assert (full["wr_reason"].iloc[60:61] == "inconsistent_hlc").all()
+    recovered = full["wr_valid"].iloc[61 + lookback:130]
+    assert recovered.all() if len(recovered) else True

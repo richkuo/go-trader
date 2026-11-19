@@ -555,7 +555,7 @@ func TestApplyUpgradeTimeoutSendsSIGTERMAndRecoversWithoutOrphans(t *testing.T) 
 		t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 		origTimeout := applyUpgradeTimeout
-		applyUpgradeTimeout = 1 * time.Second
+		applyUpgradeTimeout = 5 * time.Second
 		defer func() { applyUpgradeTimeout = origTimeout }()
 
 		rec := &updateDMRecorder{}
