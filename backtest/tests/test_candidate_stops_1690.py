@@ -45,7 +45,15 @@ def _frozen_candles() -> pd.DataFrame:
 def candle_env(tmp_path_factory):
     import storage
     db = str(tmp_path_factory.mktemp("ohlcv_1690") / "ohlcv.db")
-    storage.store_ohlcv(_frozen_candles(), "binanceus", "BTC/USDT", "4h", db_path=db)
+    candles = _frozen_candles()
+    storage.store_ohlcv(candles, "binanceus", "BTC/USDT", "4h", db_path=db)
+    step = 3600 * 1000
+    first = int(candles["timestamp"].iloc[0]) - 24 * step
+    last = int(candles["timestamp"].iloc[-1]) + 24 * step
+    hours = list(range(first, last, step))
+    storage.store_funding_fetch("hyperliquid", "BTC", [{"time": h, "rate": 1.25e-05} for h in hours], [],
+                                db_path=db)
+    storage.store_funding_coverage("hyperliquid", "BTC", hours[0], hours[-1] + step, db_path=db)
     env = dict(os.environ)
     env["GO_TRADER_OHLCV_CACHE_DB"] = db
     return env

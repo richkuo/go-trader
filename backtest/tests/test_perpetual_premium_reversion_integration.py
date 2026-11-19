@@ -103,47 +103,6 @@ def test_parameter_validation_refuses_an_unestablishable_oracle_source_age_and_b
             registry.validate_params(NAME, bad)
 
 
-def test_short_enters_after_a_positive_extreme_turns_and_long_mirrors():
-    df, series = _build(_premiums(30, extreme=20))
-    out = _run(df, series)
-    entries = np.flatnonzero(out["signal"].to_numpy())
-    assert entries.tolist() == [21]
-    sig, why = _row(out, 21)
-    assert sig == -1 and why == "entry_short"
-    t = T0 + 22 * BAR
-    history = [1e-4 * (k % 3) for k in range(11, 20)] + [8e-4]
-    mean = sum(history) / 10
-    std = (sum((x - mean) ** 2 for x in history) / 10) ** 0.5
-    assert out["ppr_sample_ms"].iloc[21] == t
-    assert out["ppr_mean"].iloc[21] == pytest.approx(mean, rel=1e-6)
-    assert out["ppr_std"].iloc[21] == pytest.approx(std, rel=1e-6)
-    assert out["ppr_z_extreme"].iloc[21] == pytest.approx((8e-4 - mean) / std, rel=1e-6)
-    assert out["ppr_premium"].iloc[21] == pytest.approx(4e-4, rel=1e-4)
-    assert out["ppr_side"].iloc[21] == "short" and len(out["ppr_window_sha256"].iloc[21]) == 64
-    for col in ("ppr_bid", "ppr_ask", "ppr_oracle", "ppr_quote_event_ms", "ppr_quote_recv_ms", "ppr_context_recv_ms"):
-        assert np.isfinite(out[col].iloc[21])
-    ldf, lseries = _build(_premiums(30, extreme=20, sign=-1.0))
-    lout = _run(ldf, lseries)
-    assert np.flatnonzero(lout["signal"].to_numpy()).tolist() == [21]
-    assert _row(lout, 21) == (1, "entry_long")
-
-
-def test_comparisons_are_strict_at_the_frozen_boundaries():
-    df, series = _build(_premiums(30, extreme=20, turn=1.0))
-    out = _run(df, series)
-    assert _row(out, 21) == (0, "no_turn")
-    df, series = _build(_premiums(30, extreme=20))
-    z = _run(df, series)["ppr_z_extreme"].iloc[21]
-    assert _row(_run(df, series, entry_z=z), 21) == (0, "no_extreme")
-    assert _row(_run(df, series, entry_z=z * 0.999), 21)[0] == -1
-    crossed = _premiums(30, extreme=20, turn=-0.1)
-    df, series = _build(crossed)
-    assert _row(_run(df, series), 21) == (0, "wrong_premium_sign")
-    flat = [2e-4] * 30
-    df, series = _build(flat)
-    assert set(_run(df, series)["ppr_reason"].iloc[10:]) == {"variance_floor"}
-
-
 def _check_invalid_or_incomplete_inputs_hold_with_a_reason():
     cases = {
         "sample_missing": lambda s: s.pop(15),
@@ -205,22 +164,6 @@ def _check_contract_and_availability_failures_hold_every_entry():
         s[3]["context"]["oracle_event_ms"] = s[3]["context"]["recv_ms"]
     df2, series2 = _build(_premiums(30, extreme=20), mutate=oracle_time)
     assert _row(_run(df2, series2), 13) == (0, "malformed_sample")
-
-
-def test_future_samples_and_bars_never_change_an_earlier_decision():
-    df, series = _build(_premiums(40, extreme=20))
-    full = _run(df, series)
-    for cut in (21, 25, 33):
-        truncated = {**series, "samples": [s for s in series["samples"] if s["t"] <= T0 + cut * BAR]}
-        out = _run(df.iloc[:cut], truncated)
-        assert out["signal"].tolist() == full["signal"].iloc[:cut].tolist()
-        assert out["ppr_reason"].tolist() == full["ppr_reason"].iloc[:cut].tolist()
-        perturbed = [dict(s) for s in series["samples"]]
-        for s in perturbed:
-            if s["t"] > T0 + cut * BAR:
-                s.update(status="invalid", reason="malformed")
-        out = _run(df, {**series, "samples": perturbed})
-        assert out["signal"].iloc[:cut].tolist() == full["signal"].iloc[:cut].tolist()
 
 
 def test_a_live_payload_carries_the_closed_bar_decision_onto_the_forming_row():

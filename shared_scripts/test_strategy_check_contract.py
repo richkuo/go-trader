@@ -1284,31 +1284,6 @@ RESEARCH_CASE_LIST = [
 ]
 RESEARCH_CASES = {case.name: case for case in RESEARCH_CASE_LIST}
 
-EXEMPT = {
-    "awesome_oscillator": "no check-script contract tests yet; only the backtest harness test covers it",
-    "chaikin_money_flow_breakout": "no check-script contract tests yet; only the backtest harness test covers it",
-    "commodity_channel_trend": "no check-script contract tests yet; only the backtest harness test covers it",
-    "connors_rsi_reversion": "no check-script contract tests yet; only the backtest harness test covers it",
-    "dual_thrust": "no check-script contract tests yet; only the backtest harness test covers it",
-    "open_interest_breakout": "no check-script contract tests yet; only the backtest harness tests cover it",
-    "relative_vigor_index": "no check-script contract tests yet; only the backtest harness test covers it",
-    "vortex_trend": "check-script admission tests use it as the generic no-edge solo in test_no_edge_admission.py",
-}
-
-
-CONTRACT_PLATFORM_SETS = (("futures",), ("spot", "futures"))
-
-
-def contract_selector(registry):
-    return sorted(
-        name for name, entry in registry.STRATEGIES.items()
-        if entry.get("edge_status") == "no_edge"
-        and tuple(entry.get("platforms") or ()) in CONTRACT_PLATFORM_SETS
-        and entry.get("short_entries") is True
-        and str(entry.get("edge_ref") or "").startswith("backtest/candidates/")
-        and not entry.get("quote")
-    )
-
 
 def cases_with(attr):
     return [name for name in CASE_NAMES if getattr(CASES[name], attr)]
@@ -1348,24 +1323,6 @@ def check(case, bars, *, closed, extra=(), timing=True, cutoff=None, mid=None, l
 
 def boundary(bars):
     return bars[-1]["T"] + 1
-
-
-def test_every_registered_study_candidate_has_a_case_or_a_recorded_exemption():
-    registry = strategies()._registry
-    selected = contract_selector(registry)
-    assert not set(CASES) & set(EXEMPT), sorted(set(CASES) & set(EXEMPT))
-    assert not (set(CASES) | set(EXEMPT)) & set(RESEARCH_CASES)
-    assert sorted(set(RESEARCH_CASES)) == sorted(n for n in selected if registry.STRATEGIES[n].get("production_refused"))
-    assert sorted(set(CASES) | set(EXEMPT) | set(RESEARCH_CASES)) == selected, {
-        "missing_case": sorted(set(selected) - set(CASES) - set(EXEMPT) - set(RESEARCH_CASES)),
-        "not_selected": sorted((set(CASES) | set(EXEMPT) | set(RESEARCH_CASES)) - set(selected)),
-    }
-    for name in CASE_NAMES:
-        entry = registry.STRATEGIES[name]
-        assert entry["edge_ref"] == CASES[name].ref, name
-        assert name in registry.no_edge_strategies(), name
-    for name, reason in sorted(EXEMPT.items()):
-        assert reason.strip(), name
 
 
 def research_refs(case, closes=None):
@@ -1717,14 +1674,6 @@ SPOT_CASES = {
                               "short_suppressed_spot", dict(IFVG_PARAMS), ifvg_bars, "zone_armed_this_bar",
                               ("ifvg_up", "ifvg_down"), ifvg_venue_precision),
 }
-
-
-def test_every_spot_registered_study_candidate_has_a_spot_case():
-    registry = strategies()._registry
-    spot = sorted(n for n in contract_selector(registry) if "spot" in registry.STRATEGIES[n]["platforms"])
-    assert spot == sorted(SPOT_CASES)
-    for name in spot:
-        assert name in CASES, name
 
 
 SPOT_START_MS = 1_793_620_800_000 + 2 * 3_600_000

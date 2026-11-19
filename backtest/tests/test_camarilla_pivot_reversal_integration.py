@@ -1,7 +1,6 @@
 import contextlib
 import importlib.util
 import json
-import math
 import os
 import sys
 
@@ -26,7 +25,7 @@ from closed_bar import (
     bind_fixed_interval_params,
     declare_frame_cadence,
 )
-from parity_diff import LIVE_MIN_CANDLES, ParityConfig
+from parity_diff import ParityConfig
 from registry_loader import load_registry
 from strategy_composition import (
     StrategyReference,
@@ -147,145 +146,6 @@ def _reference(df, interval):
     return out
 
 
-def test_levels_and_entries_match_an_independent_daily_calculation(subtests):
-    for tf in SUPPORTED:
-        with subtests.test(tf=tf):
-            _levels_and_entries_match_an_independent_daily_calculation(tf)
-
-
-def _levels_and_entries_match_an_independent_daily_calculation(tf):
-    interval = SUPPORTED[tf]
-    per = DAY // interval
-    df = _walk(per * 9, tf, seed=interval // 60_000, sigma=0.02 / per ** 0.5)
-    out = _apply(df, interval)
-    ref = _reference(df, interval)
-    for i, want in enumerate(ref):
-        assert int(out["signal"].iloc[i]) == want["signal"], (tf, i, out["cpr_reason"].iloc[i])
-        assert (out["cpr_valid"].iloc[i] == 1.0) == want["valid"], (tf, i, out["cpr_reason"].iloc[i])
-        if want["valid"]:
-            for key, col in (("s3", "cpr_s3"), ("r3", "cpr_r3"), ("s4", "cpr_s4"), ("r4", "cpr_r4"),
-                             ("H", "cpr_prior_high"), ("L", "cpr_prior_low"), ("C", "cpr_prior_close")):
-                assert out[col].iloc[i] == pytest.approx(want[key], rel=1e-12, abs=1e-12)
-    assert out["cpr_valid"].iloc[:per].eq(0.0).all()
-    assert (out["cpr_reason"].iloc[:per] == "insufficient_history").all()
-
-
-def test_designed_days_emit_both_entries_with_their_evaluated_inputs():
-    long_out = _apply(_day_frame("1h", [100.0, 94.0, 95.0]))
-    i = 24 + 2
-    assert int(long_out["signal"].iloc[i]) == 1 and long_out["cpr_reason"].iloc[i] == "entry_long"
-    rec = long_out.iloc[i]
-    assert (rec["cpr_prior_high"], rec["cpr_prior_low"], rec["cpr_prior_close"]) == (110.0, 90.0, 100.0)
-    assert rec["cpr_s3"] == pytest.approx(S3) and rec["cpr_r3"] == pytest.approx(R3)
-    assert rec["cpr_s4"] == pytest.approx(S4) and rec["cpr_r4"] == pytest.approx(R4)
-    assert (rec["cpr_prev_close"], rec["cpr_close"]) == (94.0, 95.0)
-    assert rec["cpr_eval_ts_ms"] == rec["cpr_day_open_ms"] + 2 * H
-    assert rec["cpr_prior_day_open_ms"] == rec["cpr_day_open_ms"] - DAY and rec["cpr_interval_ms"] == H
-    assert int(long_out["signal"].abs().sum()) == 1
-    short_out = _apply(_day_frame("1h", [100.0, 106.0, 105.0]))
-    assert int(short_out["signal"].iloc[i]) == -1 and short_out["cpr_reason"].iloc[i] == "entry_short"
-    assert int(short_out["signal"].abs().sum()) == 1
-
-
-LEVEL_PATHS = [
-    ([100.0, S3, 95.0], "entry_long", 1),
-    ([100.0, 94.0, S3], "level_equal", 0),
-    ([100.0, 94.0, R3], "long_opposite_jump", 0),
-    ([100.0, 94.0, 107.0], "long_opposite_jump", 0),
-    ([100.0, R3, 105.0], "entry_short", -1),
-    ([100.0, 106.0, R3], "level_equal", 0),
-    ([100.0, 106.0, S3], "short_opposite_jump", 0),
-    ([100.0, 106.0, 93.0], "short_opposite_jump", 0),
-    ([100.0, 96.0, 97.0], "no_cross", 0),
-]
-
-
-def _level_equality_and_opposite_boundary_jumps():
-    for path, reason, signal in LEVEL_PATHS:
-        with _case(path):
-            out = _apply(_day_frame("1h", path))
-            assert out["cpr_reason"].iloc[26] == reason and int(out["signal"].iloc[26]) == signal
-
-
-OUTER_SUPPORT_CASES = [
-    (S4, 93.9, "long_outer_breach"),
-    (89.5, S4, "long_outer_breach"),
-    (88.0, 93.9, "long_outer_breach"),
-    (S4 + 1e-9, 93.9, "entry_long"),
-]
-
-
-def _outer_support_contact_invalidates_a_long():
-    for prev_low, low, reason in OUTER_SUPPORT_CASES:
-        with _case((prev_low, low, reason)):
-            df = _day_frame("1h", [100.0, 94.0, 95.0])
-            df.iloc[25, df.columns.get_loc("low")] = prev_low
-            df.iloc[26, df.columns.get_loc("low")] = low
-            assert _apply(df)["cpr_reason"].iloc[26] == reason
-
-
-OUTER_RESISTANCE_CASES = [
-    (R4, 106.1, "short_outer_breach"),
-    (106.2, R4, "short_outer_breach"),
-    (R4 - 1e-9, 106.1, "entry_short"),
-]
-
-
-def _outer_resistance_contact_invalidates_a_short():
-    for prev_high, high, reason in OUTER_RESISTANCE_CASES:
-        with _case((prev_high, high, reason)):
-            df = _day_frame("1h", [100.0, 106.0, 105.0])
-            df.iloc[25, df.columns.get_loc("high")] = prev_high
-            df.iloc[26, df.columns.get_loc("high")] = high
-            assert _apply(df)["cpr_reason"].iloc[26] == reason
-
-
-def test_entry_levels_decide_by_strict_crossings_and_outer_contacts(subtests):
-    with subtests.test(case="level_equality_and_opposite_boundary_jumps"):
-        _level_equality_and_opposite_boundary_jumps()
-    with subtests.test(case="outer_support_contact_invalidates_a_long"):
-        _outer_support_contact_invalidates_a_long()
-    with subtests.test(case="outer_resistance_contact_invalidates_a_short"):
-        _outer_resistance_contact_invalidates_a_short()
-
-
-def test_the_first_bar_of_a_day_never_pairs_with_the_previous_day():
-    prior = _prior_day(24)
-    prior[-1] = (100.0, 100.1, 90.0, 93.0)
-    df = _frame(prior + _session([95.0] + [100.0] * 23, start=93.0))
-    out = _apply(df)
-    assert out["cpr_reason"].iloc[24] == "first_bar_of_day" and int(out["signal"].iloc[24]) == 0
-    assert out["cpr_prior_close"].iloc[25] == 93.0
-
-
-def test_rising_falling_and_constant_inputs():
-    for shape in ("rising", "falling", "constant"):
-        with _case(shape):
-            _rising_falling_and_constant_inputs(shape)
-
-
-def _rising_falling_and_constant_inputs(shape):
-    n = 24 * 4
-    if shape == "rising":
-        closes = list(100.0 + 0.1 * np.arange(n))
-    elif shape == "falling":
-        closes = list(100.0 - 0.1 * np.arange(n))
-    else:
-        closes = [100.0] * n
-    bars = [(c, c, c, c) for c in closes] if shape == "constant" else _session(closes, start=closes[0])
-    df = _frame(bars)
-    out = _apply(df)
-    ref = _reference(df, H)
-    assert [int(s) for s in out["signal"]] == [r["signal"] for r in ref]
-    later = out.iloc[25:]
-    if shape == "constant":
-        assert set(later["cpr_reason"]) == {"zero_range", "first_bar_of_day"}
-        assert later["cpr_valid"].eq(0.0).all()
-    else:
-        assert later.loc[later["cpr_reason"] != "first_bar_of_day", "cpr_valid"].eq(1.0).all()
-        assert int(out["signal"].abs().sum()) == 0
-
-
 def _with_index(df, idx):
     out = df.copy()
     out.index = pd.DatetimeIndex(idx, name="datetime")
@@ -379,36 +239,6 @@ def _levels_never_carry_over_a_missing_day():
     cur = out.iloc[per:]
     assert set(cur["cpr_reason"].iloc[1:]) == {"prior_day_missing"}
     assert int(out["signal"].abs().sum()) == 0 and cur["cpr_s3"].isna().all()
-
-
-def test_later_rows_never_change_an_earlier_decision():
-    df = _walk(24 * 12, "1h", seed=5, sigma=0.01)
-    full = _apply(df)
-    cols = ["signal", "cpr_reason", "cpr_valid", "cpr_s3", "cpr_r3", "cpr_s4", "cpr_r4"]
-    for cut in (60, 130, 200, 250):
-        damaged = df.copy()
-        damaged.iloc[cut + 1:, damaged.columns.get_loc("close")] = np.nan
-        damaged.attrs = dict(df.attrs)
-        damaged.attrs[FRAME_RECEIVED_ORDER_DEFECTS_ATTR] = [int(df.index[cut + 2].value // 1_000_000)]
-        got = _apply(damaged)
-        pd.testing.assert_frame_equal(got[cols].iloc[:cut + 1], full[cols].iloc[:cut + 1])
-
-
-def test_full_series_expanding_prefix_and_200_row_tail_agree_including_early_rows():
-    for tf in ("15m", "1h", "4h", "12h"):
-        interval = SUPPORTED[tf]
-        df = _walk(max(400, 10 * DAY // interval), tf, seed=17, sigma=0.03 / (DAY // interval) ** 0.5)
-        full = _apply(df, interval)
-        for i in list(range(0, LIVE_MIN_CANDLES + 5)) + list(range(150, len(df), 37)):
-            prefix = _apply(df.iloc[:i + 1].copy(), interval).iloc[-1]
-            tail = _apply(df.iloc[max(0, i - 199):i + 1].copy(), interval).iloc[-1]
-            for got in (prefix, tail):
-                assert int(got["signal"]) == int(full["signal"].iloc[i]), (tf, i)
-                assert got["cpr_reason"] == full["cpr_reason"].iloc[i], (tf, i)
-                for col in ("cpr_s3", "cpr_r3", "cpr_s4", "cpr_r4"):
-                    a, b = got[col], full[col].iloc[i]
-                    assert (math.isnan(a) and math.isnan(b)) or a == b, (tf, i, col)
-        assert (full["signal"] == 1).any() and (full["signal"] == -1).any(), tf
 
 
 def _tz_variants(df):

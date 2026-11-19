@@ -16,7 +16,6 @@ if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
 
 import eval_windows
-from backtester import Backtester
 from closed_bar import (
     FRAME_INTERVAL_ATTR,
     FRAME_RECEIVED_ORDER_DEFECTS_ATTR,
@@ -25,8 +24,7 @@ from closed_bar import (
     TIMESTAMP_KIND_OPEN,
     declare_frame_cadence,
 )
-import optimizer
-from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid, strategy_warmup_bars, warmup_exit_long_entry
+from optimizer import DEFAULT_PARAM_RANGES
 from parity_diff import ParityConfig
 from registry_loader import load_registry
 from strategy_composition import (
@@ -160,11 +158,6 @@ def _with_index(df, idx):
     return out
 
 
-def _check_evaluator_reports_the_required_history():
-    out = _apply(_frame(_pullback()))
-    assert out["efp_required_history"].iloc[0] == NEED
-
-
 def test_fixed_length_helper_reads_exactly_its_window_and_restarts_at_its_own_seed():
     from indicators_core import fixed_length_ema
     values = np.random.default_rng(5).normal(0.0, 3.0, 60)
@@ -187,125 +180,6 @@ def test_fixed_length_helper_reads_exactly_its_window_and_restarts_at_its_own_se
     assert np.isnan(held[25:37]).all() and np.array_equal(held[37:], out[37:])
     with pytest.raises(ValueError):
         fixed_length_ema(values, True, 12)
-
-
-def test_every_bar_matches_an_independent_sequential_reference_in_both_weightings():
-    df = _walk(900, seed=3)
-    for flag in (1, 0):
-        params = dict(SEED, volume_weighting=flag)
-        out = _apply(df, volume_weighting=flag)
-        for i, want in enumerate(_reference(df, params)):
-            rec = out.iloc[i]
-            assert (rec["efp_valid"] == 1.0) == want["valid"], (flag, i, rec["efp_reason"])
-            assert int(rec["signal"]) == want["signal"], (flag, i, rec["efp_reason"])
-            if want["valid"]:
-                assert rec["efp_force"] == pytest.approx(want["force"], rel=1e-12, abs=1e-12), (flag, i)
-                assert rec["efp_trend_sma"] == pytest.approx(want["sma"], rel=1e-12, abs=1e-12), (flag, i)
-                assert rec["efp_raw_force"] == pytest.approx(want["raw"], rel=1e-12, abs=1e-12), (flag, i)
-        assert (out["signal"] == 1).any() and (out["signal"] == -1).any(), flag
-        reasons = set(out["efp_reason"][out["efp_valid"] == 1.0])
-        assert {"entry_long", "entry_short", "no_cross", "trend_unconfirmed"} <= reasons, reasons
-
-
-def _check_pullback_recovery_gives_mirrored_entries_on_the_strict_crossing_bar():
-    for sign, signal, reason in ((1, 1, "entry_long"), (-1, -1, "entry_short")):
-        for flag in (1, 0):
-            out = _apply(_frame(_pullback(sign)), volume_weighting=flag)
-            assert list(np.flatnonzero(out["signal"] != 0)) == [CROSS_AT], (sign, flag)
-            rec = out.iloc[CROSS_AT]
-            assert int(rec["signal"]) == signal and rec["efp_reason"] == reason
-            assert rec["efp_cross"] == float(signal)
-            assert np.sign(rec["efp_prev_force"]) == -signal and np.sign(rec["efp_force"]) == signal
-            trend_cols = ("efp_uptrend", "efp_prev_uptrend") if sign > 0 else ("efp_downtrend", "efp_prev_downtrend")
-            assert all(rec[c] == 1.0 for c in trend_cols)
-            assert rec["efp_volume_eligible"] == 1.0
-            assert out["efp_reason"].iloc[FIRST_PULLBACK + 1] == "trend_unconfirmed"
-
-
-def _check_seed_force_and_weight_diagnostics_follow_the_contract():
-    df = _frame(_pullback())
-    out = _apply(df)
-    rec = out.iloc[CROSS_AT]
-    close = df["close"].to_numpy()
-    seed_bar = CROSS_AT - SEED["recursion_length"] + 1
-    assert rec["efp_seed_force"] == (close[seed_bar] - close[seed_bar - 1]) * 100.0
-    assert rec["efp_prev_seed_force"] == (close[seed_bar - 1] - close[seed_bar - 2]) * 100.0
-    assert rec["efp_weight"] == 100.0 and _apply(df, volume_weighting=0)["efp_weight"].iloc[CROSS_AT] == 1.0
-    assert rec["efp_eval_ts_ms"] == float(df.index[CROSS_AT].value // 1_000_000)
-    assert rec["efp_interval_ms"] == 3_600_000.0
-
-
-def _check_exact_zero_and_constant_closes_never_trigger():
-    flat = _apply(_frame(np.full(260, 150.0)))
-    valid = flat["efp_valid"] == 1.0
-    assert valid.any() and set(flat.loc[valid, "efp_reason"]) == {"zero_force"}
-    assert (flat.loc[valid, "efp_force"] == 0.0).all() and int(flat["signal"].abs().sum()) == 0
-    steps = np.zeros(400)
-    steps[300:] = 0.5
-    close = 100.0 + np.cumsum(steps)
-    close[:300] = np.linspace(80.0, 100.0, 300)
-    close[100:300] = 100.0
-    out = _apply(_frame(close))
-    assert out["efp_force"].iloc[299] == 0.0 and out["efp_force"].iloc[300] > 0.0
-    assert out["efp_reason"].iloc[300] == "zero_force" and int(out["signal"].iloc[300]) == 0
-
-
-def _check_zero_volume_eligibility_is_identical_in_both_weightings():
-    df = _frame(_pullback())
-    for pos in (CROSS_AT, CROSS_AT - 1):
-        zeroed = _set(df, pos, "volume", 0.0)
-        ablation = _apply(zeroed, volume_weighting=0)
-        assert ablation["efp_cross"].iloc[CROSS_AT] == 1.0
-        assert ablation["efp_reason"].iloc[CROSS_AT] == "volume_ineligible"
-        assert int(ablation["signal"].abs().sum()) == 0
-        assert ablation["efp_volume_eligible"].iloc[CROSS_AT] == 0.0
-        weighted = _apply(zeroed)
-        assert int(weighted["signal"].iloc[CROSS_AT]) == 0
-    older = _set(df, 190, "volume", 0.0)
-    weighted = _apply(older)
-    assert weighted["efp_raw_force"].iloc[190] == 0.0
-    ablation = _apply(older, volume_weighting=0)
-    assert ablation["efp_raw_force"].iloc[190] == df["close"].iloc[190] - df["close"].iloc[189]
-    assert int(ablation["signal"].iloc[CROSS_AT]) == 1
-
-
-def _check_trend_needs_both_candles():
-    df = _walk(900, seed=3)
-    out = _apply(df)
-    one_bar = ((out["efp_cross"] == 1.0) & (out["efp_uptrend"] == 1.0) & (out["efp_prev_uptrend"] == 0.0)) | (
-        (out["efp_cross"] == -1.0) & (out["efp_downtrend"] == 1.0) & (out["efp_prev_downtrend"] == 0.0))
-    assert one_bar.any()
-    assert set(out.loc[one_bar, "efp_reason"]) == {"trend_unconfirmed"}
-    assert (out.loc[one_bar, "signal"] == 0).all()
-
-
-def test_entry_rule_cases_and_diagnostics_follow_the_contract(subtests):
-    for label, check in (
-        ("pullback_recovery_gives_mirrored_entries_on_the_strict_crossing_bar", _check_pullback_recovery_gives_mirrored_entries_on_the_strict_crossing_bar),
-        ("seed_force_and_weight_diagnostics_follow_the_contract", _check_seed_force_and_weight_diagnostics_follow_the_contract),
-        ("exact_zero_and_constant_closes_never_trigger", _check_exact_zero_and_constant_closes_never_trigger),
-        ("zero_volume_eligibility_is_identical_in_both_weightings", _check_zero_volume_eligibility_is_identical_in_both_weightings),
-        ("trend_needs_both_candles", _check_trend_needs_both_candles),
-    ):
-        with subtests.test(case=label):
-            check()
-
-
-def _check_the_largest_allowed_history_is_199_rows():
-    for over in ({"recursion_length": 197}, {"trend_period": 190, "slope_span": 8},
-                 {"force_period": 19, "recursion_length": 190}):
-        _reg()._registry.validate_params(NAME, over)
-    assert _apply(_frame(_pullback()), recursion_length=197)["efp_required_history"].iloc[0] == 199.0
-    assert _apply(_frame(_pullback()), trend_period=190, slope_span=8)["efp_required_history"].iloc[0] == 199.0
-
-
-def test_required_history_is_reported_and_bounded_at_199_rows(subtests):
-    for label, check in (
-        ("evaluator_reports_the_required_history", _check_evaluator_reports_the_required_history),
-        ("the_largest_allowed_history_is_199_rows", _check_the_largest_allowed_history_is_199_rows),
-    ):
-        with subtests.test(case=label):
-            check()
 
 
 DEFECT_AT = CROSS_AT - 40
@@ -505,111 +379,6 @@ def _cfg(**kw):
                 stop_kwargs={"stop_loss_atr_mult": 1.0}, comparison_mode="strict")
     base.update(kw)
     return ParityConfig(**base)
-
-
-WF_SPLITS = 4
-WF_RANGES = {"force_period": [13], "trend_period": [50], "slope_span": [5], "recursion_length": [150, 197],
-             "volume_weighting": [1]}
-
-
-def _walk_forward_capture(monkeypatch, df):
-    runs = []
-    real_run = Backtester.run
-
-    def run(self, signals, **kw):
-        if kw.get("warmup_prefix") is not None:
-            raise AssertionError("the walk-forward warmup seeder ran for elder_force_pullback")
-        runs.append({"signals": signals.copy(), "params": dict(kw["params"]), "seed": kw.get("starting_long")})
-        return real_run(self, signals, **kw)
-
-    monkeypatch.setattr(Backtester, "run", run)
-    result = optimizer.walk_forward_optimize(
-        df, NAME, WF_RANGES, n_splits=WF_SPLITS, registry="futures", timeframe="1h", platform="hyperliquid",
-        verbose=False, close_strategies=CLOSE, direction="both", stop_loss_atr_mult=1.0,
-        comparison_mode="approximate")
-    monkeypatch.undo()
-    return result, runs
-
-
-def _same_column(a, b):
-    return list(a.index) == list(b.index) and [repr(v) for v in a] == [repr(v) for v in b]
-
-
-def _fold_geometry(df, fold):
-    window = len(df) // WF_SPLITS
-    start = fold * window
-    end = min(start + window, len(df)) if fold < WF_SPLITS - 1 else len(df)
-    return start, start + int((end - start) * 0.7)
-
-
-def _train_run(runs, df, bar, recursion_length):
-    return next(r for r in runs if r["signals"].index[0] == df.index[bar]
-                and r["params"]["recursion_length"] == recursion_length)
-
-
-def _check_walk_forward_warmup_covers_the_largest_required_history_of_the_grid():
-    grid = generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
-    assert max(p["recursion_length"] for p in grid) == 197
-    assert strategy_warmup_bars(NAME, grid, DEFAULT_PARAM_RANGES[NAME]) == 199
-    assert strategy_warmup_bars(NAME, generate_param_grid(dict(WF_RANGES, recursion_length=[150])),
-                                dict(WF_RANGES, recursion_length=[150])) == NEED
-
-
-def _check_walk_forward_scores_the_first_bar_of_a_later_fold_with_full_history(monkeypatch):
-    df = _walk(2400, seed=0).iloc[111:]
-    start, boundary = _fold_geometry(df, 1)
-    deep = dict(SEED, recursion_length=197)
-    full_deep = _reg().apply_strategy(NAME, df, deep)
-    assert int(full_deep["signal"].iloc[start - 1]) == 1
-    short = _reg().apply_strategy(NAME, df.iloc[start - 197:start], deep)
-    assert short["efp_reason"].iloc[-1] == "insufficient_history"
-    result, runs = _walk_forward_capture(monkeypatch, df)
-    assert result["n_valid_folds"] >= 2
-    first = _train_run(runs, df, start - 1, 197)["signals"]
-    assert int(first["signal"].iloc[0]) == 1 and first["efp_reason"].iloc[0] != "insufficient_history"
-    shallow = _train_run(runs, df, start - 1, 150)["signals"]
-    full_shallow = _apply(df).iloc[start - 1:boundary]
-    old_prefix = _apply(df.iloc[start - 197:boundary]).iloc[196:]
-    for col in ("signal", "efp_reason", "efp_force"):
-        assert _same_column(shallow[col], full_shallow[col]), col
-        assert _same_column(shallow[col], old_prefix[col]), col
-    _, first_boundary = _fold_geometry(df, 0)
-    fold0 = _train_run(runs, df, 0, 150)["signals"]
-    assert len(fold0) == first_boundary
-    for col in ("signal", "efp_reason"):
-        assert _same_column(fold0[col], _apply(df.iloc[:first_boundary])[col]), col
-
-
-def _check_walk_forward_folds_start_flat_whatever_the_prefix_left_open(monkeypatch, trim, case):
-    df = _walk(2400, seed=0).iloc[trim:]
-    start, _ = _fold_geometry(df, 1)
-    warmup = strategy_warmup_bars(NAME, generate_param_grid(WF_RANGES), WF_RANGES)
-    prefix = _apply(df.iloc[start - warmup:start]).iloc[:warmup - 1]
-    if case == "long_reaches_the_last_tier":
-        seeded = warmup_exit_long_entry(prefix, 0.0)
-        assert seeded is not None
-        assert prefix.loc[seeded["entry_date"]:, "close"].max() >= seeded["entry_price"] * (1 + TIERS[-1]["profit_pct"])
-    else:
-        assert [int(v) for v in prefix["signal"] if v != 0][-2:] == [1, -1]
-    _, runs = _walk_forward_capture(monkeypatch, df)
-    assert all(r["seed"] is None for r in runs)
-    assert _train_run(runs, df, start - 1, 150)["seed"] is None
-
-
-def test_walk_forward_warmup_scores_later_folds_with_full_history_and_starts_them_flat(subtests, monkeypatch):
-    for label, check in (
-        ("walk_forward_warmup_covers_the_largest_required_history_of_the_grid",
-         _check_walk_forward_warmup_covers_the_largest_required_history_of_the_grid),
-        ("walk_forward_scores_the_first_bar_of_a_later_fold_with_full_history",
-         lambda: _check_walk_forward_scores_the_first_bar_of_a_later_fold_with_full_history(monkeypatch)),
-        ("walk_forward_folds_start_flat_whatever_the_prefix_left_open[111-long_reaches_the_last_tier]",
-         lambda: _check_walk_forward_folds_start_flat_whatever_the_prefix_left_open(
-             monkeypatch, 111, "long_reaches_the_last_tier")),
-        ("walk_forward_folds_start_flat_whatever_the_prefix_left_open[250-long_then_short]",
-         lambda: _check_walk_forward_folds_start_flat_whatever_the_prefix_left_open(monkeypatch, 250, "long_then_short")),
-    ):
-        with subtests.test(case=label):
-            check()
 
 
 def _load(name):

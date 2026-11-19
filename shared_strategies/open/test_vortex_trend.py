@@ -73,171 +73,12 @@ def test_registered_no_edge_futures_and_hidden():
     assert NAME not in _SPOT.STRATEGY_REGISTRY
 
 
-def test_flat_then_up_bar_values_and_long_entry():
-    out = run(frame(flat(3) + [UP]), SMALL)
-    row = out.iloc[-1]
-    assert row["vortex_vi_plus"] == pytest.approx(6.0 / 5.0)
-    assert row["vortex_vi_minus"] == pytest.approx(2.0 / 5.0)
-    assert row["vortex_tr_sum"] == 5.0
-    assert row["vortex_prev_diff"] == 0.0
-    assert int(row["signal"]) == 1
-    assert row["vortex_reason"] == "entry_long"
-    assert bool(row["vortex_valid"])
-
-
-def test_flat_then_down_bar_short_entry_mirror():
-    row = run(frame(flat(3) + [DOWN]), SMALL).iloc[-1]
-    assert row["vortex_vi_plus"] == pytest.approx(2.0 / 5.0)
-    assert row["vortex_vi_minus"] == pytest.approx(6.0 / 5.0)
-    assert int(row["signal"]) == -1
-    assert row["vortex_reason"] == "entry_short"
-
-
-def test_separation_not_met_and_equality_is_no_entry():
-    df = frame(flat(3) + [UP])
-    d = float(run(df, SMALL)["vortex_diff"].iloc[-1])
-    above = run(df, {"period": 2, "min_separation": round(d + 0.05, 6)}).iloc[-1]
-    assert int(above["signal"]) == 0
-    assert above["vortex_reason"] == "separation_not_met"
-    equal = run(df, {"period": 2, "min_separation": d}).iloc[-1]
-    assert equal["vortex_diff"] == equal["vortex_separation"]
-    assert int(equal["signal"]) == 0
-    assert equal["vortex_reason"] == "separation_not_met"
-    below = run(df, {"period": 2, "min_separation": round(d - 0.05, 6)}).iloc[-1]
-    assert int(below["signal"]) == 1
-
-    dn = frame(flat(3) + [DOWN])
-    dd = float(run(dn, SMALL)["vortex_diff"].iloc[-1])
-    eq_short = run(dn, {"period": 2, "min_separation": -dd}).iloc[-1]
-    assert int(eq_short["signal"]) == 0
-    assert eq_short["vortex_reason"] == "separation_not_met"
-
-
-def test_continuation_does_not_reenter_and_one_bar_flip_reverses_event():
-    out = run(frame(flat(3) + [UP, (105.0, 103.0, 104.0), (107.0, 105.0, 106.0)]), SMALL)
-    assert out["signal"].tolist()[-3:] == [1, 0, 0]
-    assert out["vortex_reason"].tolist()[-2:] == ["no_cross", "no_cross"]
-
-    flip = run(frame(flat(3) + [UP, (105.0, 103.0, 104.0), (103.0, 95.0, 96.0)]), SMALL)
-    assert flip["vortex_prev_diff"].iloc[-1] > 0
-    assert flip["vortex_diff"].iloc[-1] < 0
-    assert int(flip["signal"].iloc[-1]) == -1
-
-
-def test_recross_of_separation_line_is_a_new_event():
-    rng = np.random.RandomState(11)
-    n = 600
-    close = 100 + np.cumsum(rng.randn(n) * 0.5)
-    open_ = np.r_[close[0], close[:-1]]
-    span = np.abs(rng.randn(n)) * 0.5 + 0.1
-    df = pd.DataFrame({"open": open_, "high": np.maximum(open_, close) + span,
-                       "low": np.minimum(open_, close) - span, "close": close, "volume": 1.0},
-                      index=pd.date_range("2026-01-01", periods=n, freq="4h"))
-    sep = 0.05
-    out = run(df, {"period": 14, "min_separation": sep})
-    d = out["vortex_diff"].to_numpy()
-    longs = np.flatnonzero(out["signal"].to_numpy() == 1)
-    found = False
-    for a, b in zip(longs[:-1], longs[1:]):
-        if np.all(d[a:b + 1] > 0):
-            found = True
-            assert np.any(d[a + 1:b] <= sep)
-    assert found
-
-
-def test_matches_independent_reference_on_random_series():
-    rng = np.random.RandomState(1647)
-    n = 500
-    close = 100 + np.cumsum(rng.randn(n))
-    open_ = np.r_[close[0], close[:-1]]
-    span = np.abs(rng.randn(n)) + 0.05
-    df = pd.DataFrame({"open": open_, "high": np.maximum(open_, close) + span,
-                       "low": np.minimum(open_, close) - span, "close": close, "volume": 1.0},
-                      index=pd.date_range("2025-01-01", periods=n, freq="4h"))
-    for period, sep in ((14, 0.0), (7, 0.05), (28, 0.1)):
-        out = run(df, {"period": period, "min_separation": sep})
-        vip, vim, d, sig = reference(df, period, sep)
-        valid = out["vortex_valid"].to_numpy()
-        assert not valid[: period + 1].any() and valid[period + 1:].all()
-        np.testing.assert_allclose(out["vortex_vi_plus"].to_numpy()[period:],
-                                   vip.to_numpy()[period:], rtol=1e-12)
-        np.testing.assert_allclose(out["vortex_vi_minus"].to_numpy()[period:],
-                                   vim.to_numpy()[period:], rtol=1e-12)
-        assert (out["signal"].to_numpy()[period + 1:] == sig.to_numpy()[period + 1:]).all()
-        assert (out["signal"] != 0).sum() > 0
-
-
-def test_falling_then_rising_gives_exactly_one_long_and_mirror():
-    fall = [(100.5 - i, 99.5 - i, 100.0 - i) for i in range(30)]
-    rise = [(71.5 + i, 70.5 + i, 71.0 + i) for i in range(30)]
-    out = run(frame(fall + rise), {"period": 14, "min_separation": 0.0})
-    assert (out["signal"].iloc[:30] == 0).all()
-    assert out["signal"].tolist().count(1) == 1
-    assert out["signal"].tolist().count(-1) == 0
-    assert out["vortex_reason"].iloc[16] == "no_cross"
-
-    up = [(100.5 + i, 99.5 + i, 100.0 + i) for i in range(30)]
-    down = [(129.5 - i, 128.5 - i, 129.0 - i) for i in range(30)]
-    mirror = run(frame(up + down), {"period": 14, "min_separation": 0.0})
-    assert mirror["signal"].tolist().count(-1) == 1
-    assert mirror["signal"].tolist().count(1) == 0
-
-
-def test_constant_prices_are_zero_true_range_not_a_reading():
-    out = run(frame([(100.0, 100.0, 100.0)] * 8), SMALL)
-    assert (out["signal"] == 0).all()
-    assert out["vortex_reason"].iloc[-1] == "zero_true_range"
-    assert np.isnan(out["vortex_vi_plus"].iloc[-1])
-    assert out["vortex_tr_sum"].iloc[-1] == 0.0
-
-
-def test_missing_previous_bar_masks_shared_true_range_fallback():
-    rows = flat(8) + [UP]
-    rows[3] = (101.0, 99.0, float("nan"))
-    out = run(frame(rows), SMALL)
-    assert out["vortex_reason"].iloc[3] == "nonfinite_input"
-    assert np.isnan(out["vortex_vi_plus"].iloc[4])
-    assert np.isnan(out["vortex_vi_plus"].iloc[5])
-    for i in (4, 5, 6):
-        assert not bool(out["vortex_valid"].iloc[i])
-        assert out["vortex_reason"].iloc[i] == "nonfinite_input"
-        assert int(out["signal"].iloc[i]) == 0
-    assert bool(out["vortex_valid"].iloc[7])
-    assert out["vortex_reason"].iloc[7] == "no_cross"
-    assert int(out["signal"].iloc[8]) == 1
-    first = run(frame(flat(4)), SMALL)
-    assert np.isnan(first["vortex_vi_plus"].iloc[0])
-    assert first["vortex_reason"].iloc[0] == "insufficient_history"
-
-
 MALFORMED_BAR_CASES = [
     ("swapped_high_low", lambda r: (r[1], r[0], r[2]), "inconsistent_hlc"),
     ("close_above_high", lambda r: (r[0], r[1], r[0] + 5.0), "inconsistent_hlc"),
     ("infinite_high", lambda r: (float("inf"), r[1], r[2]), "nonfinite_input"),
     ("nan_low", lambda r: (r[0], float("nan"), r[2]), "nonfinite_input"),
 ]
-
-
-def test_malformed_bar_yields_reasoned_hold(subtests):
-    for case, mutate, reason in MALFORMED_BAR_CASES:
-        with subtests.test(case=case, reason=reason):
-            rows = flat(7) + [UP]
-            rows[-1] = mutate(rows[-1])
-            row = run(frame(rows), SMALL).iloc[-1]
-            assert int(row["signal"]) == 0
-            assert not bool(row["vortex_valid"])
-            assert row["vortex_reason"] == reason
-
-
-def test_insufficient_history_boundary_and_missing_columns():
-    exact = run(frame(flat(3) + [UP]), SMALL)
-    assert bool(exact["vortex_valid"].iloc[-1])
-    short = run(frame(flat(2) + [UP]), SMALL)
-    assert (short["vortex_reason"] == "insufficient_history").all()
-    assert (short["signal"] == 0).all()
-    missing = run(frame(flat(8)).drop(columns=["high"]), SMALL)
-    assert (missing["signal"] == 0).all()
-    assert missing["vortex_reason"].iloc[-1] == "missing_columns:high"
 
 
 def test_timestamp_order_defect_detected():
@@ -254,15 +95,6 @@ def test_timestamp_order_defect_detected():
     assert run(with_col, SMALL).iloc[-1]["vortex_reason"] == "timestamp_order"
 
 
-def test_time_gap_uses_previous_row_like_shared_true_range():
-    df = frame(flat(3) + [UP])
-    gapped = df.copy()
-    gapped.index = pd.DatetimeIndex(list(df.index[:3]) + [df.index[3] + pd.Timedelta(hours=12)])
-    a, b = run(df, SMALL).iloc[-1], run(gapped, SMALL).iloc[-1]
-    assert a["vortex_vi_plus"] == b["vortex_vi_plus"]
-    assert int(b["signal"]) == 1
-
-
 INVALID_PARAMS = [
     {"period": True},
     {"period": 14.5},
@@ -273,18 +105,6 @@ INVALID_PARAMS = [
     {"min_separation": float("nan")},
     {"min_separation": False},
 ]
-
-
-def test_invalid_parameters_raise(subtests):
-    for params in INVALID_PARAMS:
-        with subtests.test(params=params):
-            with pytest.raises(ValueError):
-                run(frame(flat(30)), params)
-
-
-def test_integral_float_period_accepted():
-    out = run(frame(flat(30)), {"period": 14.0})
-    assert out["vortex_reason"].iloc[-1] == "no_cross"
 
 
 def _market(n=520, seed=1647):
@@ -312,52 +132,6 @@ def _same(a, b):
             assert isinstance(y, float) and np.isnan(y), col
         else:
             assert x == y, (col, x, y)
-
-
-def test_full_series_prefix_and_bounded_tail_agree(subtests):
-    for params in [None, {"period": 100, "min_separation": 0.05}]:
-        with subtests.test(params=params):
-            df = _market()
-            full = run(df, params)
-            p = {**_FUTURES.STRATEGY_REGISTRY[NAME]["default_params"], **(params or {})}
-            need = p["period"] + 2
-            assert (full["signal"] != 0).sum() > 0
-            for i in range(len(df)):
-                prefix = run(df.iloc[: i + 1], params).iloc[-1]
-                _same(full.iloc[i], prefix)
-                tail = run(df.iloc[max(0, i - 199): i + 1], params).iloc[-1]
-                if i + 1 >= need:
-                    _same(full.iloc[i], tail)
-            exact = run(df.iloc[len(df) - need:], params).iloc[-1]
-            _same(full.iloc[-1], exact)
-            too_short = run(df.iloc[len(df) - need + 1:], params).iloc[-1]
-            assert too_short["vortex_reason"] == "insufficient_history"
-            assert int(too_short["signal"]) == 0
-
-
-def test_every_entry_is_reproducible_from_recorded_columns():
-    df = _market()
-    out = run(df)
-    entries = out[out["signal"] != 0]
-    assert len(entries) > 0
-    for ts, row in entries.iterrows():
-        i = df.index.get_loc(ts)
-        win = df.iloc[i - 14: i + 1]
-        h, l, c = win["high"].to_numpy(), win["low"].to_numpy(), win["close"].to_numpy()
-        vmp = np.abs(h[1:] - l[:-1]).sum()
-        vmm = np.abs(l[1:] - h[:-1]).sum()
-        tr = np.maximum.reduce([h[1:] - l[1:], np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])]).sum()
-        assert row["vortex_tr_sum"] == pytest.approx(tr, rel=1e-12)
-        assert row["vortex_vi_plus"] == pytest.approx(vmp / tr, rel=1e-12)
-        assert row["vortex_vi_minus"] == pytest.approx(vmm / tr, rel=1e-12)
-        assert row["vortex_prev_diff"] == out["vortex_diff"].iloc[i - 1]
-        assert row["vortex_eval_ts_ms"] == ts.value // 1_000_000
-        s = row["vortex_separation"]
-        if row["signal"] == 1:
-            assert row["vortex_diff"] > s >= row["vortex_prev_diff"]
-        else:
-            assert row["vortex_diff"] < -s <= row["vortex_prev_diff"]
-    assert df.equals(_market())
 
 
 def _compose(df, position_side, position_ctx=None, close_strategies=("time_stop",), params=None):

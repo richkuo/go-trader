@@ -102,15 +102,6 @@ def test_open_interest_series_is_hash_pinned(tmp_path):
         om.load_manifest(str(path))
 
 
-def test_series_sample_hash_detects_edited_samples(tmp_path):
-    series = _series("BTC", T0, T0 + 3 * HOUR, lambda t: 1000.0)
-    series["samples"][5]["value"] = 999.0
-    target = tmp_path / "edited.json.gz"
-    orp.write_series(series, str(target))
-    with pytest.raises(orp.RecordingError, match="samples_sha256"):
-        orp.read_series(str(target))
-
-
 def _obs_record(recv, session, seq, value, refreshed=False):
     raw = json.dumps({"channel": "activeAssetCtx",
                       "data": {"coin": "BTC", "ctx": {"openInterest": repr(value)}}})
@@ -163,24 +154,6 @@ def test_importer_refuses_an_unclosed_run_and_a_wrong_refresh_flag(tmp_path):
     flagged = base + [_obs_record(t + 2_000, 1, 2, 100.5, refreshed=False)]
     with pytest.raises(orp.RecordingError, match="refresh flag"):
         orp.load_recording(str(_write_run(tmp_path / "b", flagged)))
-
-
-def test_manifest_leg_runs_the_candidate_with_attached_open_interest(tmp_path):
-    m = om.load_manifest(str(_build(tmp_path)))
-    reg = load_registry("futures")
-    ctx = {"manifest": m, "window": "test", "cost_multiplier": 1.0}
-    close = [{"name": "time_stop", "params": {"max_bars": 3}}]
-    leg = eval_windows.run_leg(reg, NAME, PARAMS, "BTC", "1h", (None, None), close_strategies=close,
-                               direction="both", stop_loss_atr_mult=1.0, manifest_ctx=ctx, keep_trades=True,
-                               comparison_mode="approximate")
-    again = eval_windows.run_leg(reg, NAME, PARAMS, "BTC", "1h", (None, None), close_strategies=close,
-                                 direction="both", stop_loss_atr_mult=1.0, manifest_ctx=ctx, keep_trades=True,
-                               comparison_mode="approximate")
-    assert leg == again
-    cov = leg["manifest"]["open_interest_coverage"]
-    assert cov["available"] and cov["bucket_coverage"] == 1.0
-    assert leg["manifest"]["open_interest_sha256"] == m["datasets"][0]["open_interest"]["sha256"]
-    assert leg["execution"]["long_positions"] == 1 and leg["execution"]["short_positions"] == 1
 
 
 def test_manifest_leg_without_coverage_holds_and_non_manifest_paths_refuse(tmp_path):

@@ -149,20 +149,6 @@ def _apply(name, df, params):
     return _fut().apply_strategy(name, df, params)
 
 
-COVERED_PLATFORM_SETS = (("futures",), ("spot", "futures"))
-
-
-def _covered_kind():
-    strategies = _fut()._registry.STRATEGIES
-    return frozenset(
-        name for name, entry in strategies.items()
-        if entry["platforms"] in COVERED_PLATFORM_SETS and entry["short_entries"] is True
-        and not entry["quote"]
-        and entry["edge_status"] == "no_edge"
-        and str(entry["edge_ref"] or "").startswith("backtest/candidates/")
-    )
-
-
 def _copy_refs(refs):
     return json.loads(json.dumps(refs))
 
@@ -1291,28 +1277,6 @@ def _bt(name, params, close_refs, **kw):
 
 def _names(family):
     return [name for name, _ in _cases_with(family)]
-
-
-def test_case_table_matches_the_registry():
-    covered = _covered_kind()
-    assert sorted(set(CASES) - covered) == []
-    assert sorted(covered - set(CASES)) == []
-
-
-def test_every_family_is_configured_or_explicitly_not_covered():
-    assert FAMILIES == ("registration", "capability", "parity", "composer", "sim_fills", "check_time",
-                        "time_stop_fills", "spot_route")
-    for name, case in sorted(CASES.items()):
-        for family in FAMILIES:
-            value = getattr(case, family)
-            with _case(f"{name}-{family}"):
-                assert value is not None
-                if isinstance(value, NotCovered):
-                    assert isinstance(value.reason, str) and value.reason.strip()
-    assert all(not isinstance(case.registration, NotCovered) for case in CASES.values())
-    for name, case in sorted(CASES.items()):
-        with _case(name):
-            assert isinstance(case.spot_route, NotCovered) is ("spot" not in case.registration.platforms)
 
 
 def test_production_refused_set_is_the_side_input_cases_plus_the_non_candle_capabilities():

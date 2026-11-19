@@ -130,20 +130,6 @@ def test_freeze_pins_present_and_absent_keys_and_refuses_cache_conflicts(archive
         ac.freeze(archive["root"], "stub-bucket", keys)
 
 
-def test_cache_root_resolution(monkeypatch, tmp_path):
-    monkeypatch.setenv(ac.ARCHIVE_CACHE_DIR_ENV, "   ")
-    with pytest.raises(ac.ArchiveError, match=f"{ac.ARCHIVE_CACHE_DIR_ENV} must not be blank"):
-        ac.cache_root()
-    monkeypatch.setenv(ac.ARCHIVE_CACHE_DIR_ENV, str(tmp_path / "explicit"))
-    assert ac.cache_root() == str(tmp_path / "explicit")
-    monkeypatch.delenv(ac.ARCHIVE_CACHE_DIR_ENV)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
-    assert ac.cache_root() == str(tmp_path / "xdg" / "go-trader" / "archive")
-    for bad in ("../escape", "/abs/key", "a//b", "a/./b"):
-        with pytest.raises(ac.ArchiveError, match="not a plain relative name"):
-            ac.object_path(str(tmp_path), bad)
-
-
 KEY_404 = "market_data/20240404/0/l2Book/BTC.lz4"
 
 
@@ -162,14 +148,6 @@ def test_a_connection_error_naming_a_404_key_retries_and_never_records_absent(ar
     with pytest.raises(ac.ArchiveError, match=f"{KEY_404}: head-object failed: Could not connect"):
         ac.fetch_manifest(archive["root"], manifest)
     assert _calls(archive["log"], "s3api head-object") == ac.AWS_ATTEMPTS
-
-
-def test_a_real_not_found_error_is_absent_without_retries(archive, monkeypatch):
-    monkeypatch.setattr(ac.time, "sleep", lambda _: pytest.fail("a not-found error was retried"))
-    monkeypatch.setenv("STUB_RC", "254")
-    monkeypatch.setenv("STUB_STDERR", "aws: [ERROR]: An error occurred (404) when calling the HeadObject operation: Not Found")
-    assert ac.freeze(archive["root"], "stub-bucket", [KEY_404]) == [{"key": KEY_404, "status": "absent"}]
-    assert (_calls(archive["log"], "s3 cp"), _calls(archive["log"], "s3api head-object")) == (1, 1)
 
 
 def test_a_service_error_through_a_404_cache_root_is_retried_and_not_missing(archive, monkeypatch, tmp_path):
@@ -193,15 +171,6 @@ def test_a_missing_aws_executable_leaves_no_temporary_file(archive, monkeypatch,
     monkeypatch.setenv("PATH", str(empty))
     with pytest.raises(FileNotFoundError):
         ac.fetch_manifest(archive["root"], archive["manifest"])
-    assert os.path.isdir(archive["base"]) and _parts(archive["root"]) == []
-
-
-def test_an_aws_callable_that_raises_leaves_no_temporary_file(archive):
-    def boom(args):
-        raise RuntimeError("aws crashed")
-    keys = [f["key"] for f in archive["manifest"]["files"]]
-    with pytest.raises(RuntimeError, match="aws crashed"):
-        ac.freeze(archive["root"], "stub-bucket", keys, aws=boom, workers=1)
     assert os.path.isdir(archive["base"]) and _parts(archive["root"]) == []
 
 

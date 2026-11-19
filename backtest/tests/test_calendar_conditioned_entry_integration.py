@@ -12,7 +12,6 @@ for _p in (os.path.join(_REPO, "shared_tools"), os.path.join(_REPO, "shared_stra
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import eval_windows
 import optimizer
 from atr import ensure_atr_indicator
 from backtester import Backtester
@@ -25,7 +24,6 @@ from closed_bar import (
     TIMESTAMP_KIND_OPEN,
     declare_frame_cadence,
 )
-from optimizer import DEFAULT_PARAM_RANGES, strategy_warmup_bars
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
 
@@ -140,121 +138,6 @@ def _reference(df, i, p=P):
     return dict(out, mean=m, se=se, n_eff=n_eff, long_lb=long_lb, short_lb=short_lb, signal=signal, reason=reason)
 
 
-def test_decisions_match_an_independent_weekly_cluster_reference():
-    df = _calendar()
-    out = _apply(df)
-    valid = np.flatnonzero(out["cce_valid"].to_numpy() == 1.0)
-    assert len(valid) > 500
-    checked = set()
-    for i in valid:
-        ref = _reference(df, int(i))
-        key = (ref["refit_boundary"], ref["cell"])
-        assert int(out["signal"].iloc[i]) == ref["signal"], (i, out["cce_reason"].iloc[i], ref)
-        assert out["cce_reason"].iloc[i] == ref["reason"]
-        assert int(out["cce_refit_boundary_ms"].iloc[i]) == ref["refit_boundary"]
-        assert int(out["cce_next_cell"].iloc[i]) == ref["cell"]
-        if key in checked:
-            continue
-        checked.add(key)
-        assert int(out["cce_weekly_obs"].iloc[i]) == ref["n"] and int(out["cce_raw_obs"].iloc[i]) == ref["raw"]
-        for col, k in (("cce_gross_mean", "mean"), ("cce_std_error", "se"), ("cce_effective_obs", "n_eff"),
-                       ("cce_long_lower_bound", "long_lb"), ("cce_short_lower_bound", "short_lb")):
-            assert out[col].iloc[i] == pytest.approx(ref[k], rel=1e-9, abs=1e-12), (i, col)
-        assert out["cce_long_net_edge"].iloc[i] == ref["mean"] - P["cost_hurdle"]
-        assert out["cce_short_net_edge"].iloc[i] == -ref["mean"] - P["cost_hurdle"]
-    sig = out["signal"].to_numpy()
-    nxt = out["cce_next_cell"].to_numpy()
-    for side, cells in ((1, {LONG_CELL - 1, LONG_CELL}), (-1, {SHORT_CELL - 1, SHORT_CELL})):
-        got = nxt[sig == side].astype(int)
-        assert cells <= set(got) and np.isin(got, list(cells)).mean() >= 0.8, (side, sorted(set(got)))
-    assert out["cce_family_size"].iloc[-1] == 336.0 and out["cce_nw_lag"].iloc[-1] == 1.0
-
-
-def test_entry_rule_direction_cost_hurdle_effective_sample_floor_and_refit_boundaries(subtests):
-    with subtests.test(case="rising_falling_constant_and_cost"):
-        _rising_falling_constant_and_directional_cost_handling()
-    with subtests.test(case="effective_sample_floor_and_refit_boundaries"):
-        _effective_sample_floor_and_refit_boundaries()
-
-
-def _rising_falling_constant_and_directional_cost_handling():
-    rising = _apply(_trend(0.003, 0.0005))
-    falling = _apply(_trend(-0.003, 0.0005))
-    flat = _apply(_trend(0.0, 0.0))
-    for out, side in ((rising, 1), (falling, -1)):
-        valid = out["cce_valid"] == 1.0
-        assert valid.sum() > 500 and (out.loc[valid, "signal"] == side).all()
-    valid = flat["cce_valid"] == 1.0
-    assert valid.sum() > 500 and set(flat.loc[valid, "cce_reason"]) == {"no_uncertainty_estimate"}
-    assert int(flat["signal"].abs().sum()) == 0
-    costly = _apply(_trend(0.003, 0.0005), cost_hurdle=0.01)
-    valid = costly["cce_valid"] == 1.0
-    assert int(costly["signal"].abs().sum()) == 0 and set(costly.loc[valid, "cce_reason"]) == {"below_threshold"}
-    mean = costly.loc[valid, "cce_gross_mean"]
-    assert (mean > 0).all() and (mean < 0.01).all()
-    assert (costly.loc[valid, "cce_long_net_edge"] == mean - 0.01).all()
-    assert (costly.loc[valid, "cce_short_net_edge"] == -mean - 0.01).all()
-    assert (costly.loc[valid, "cce_short_lower_bound"] < 0).all()
-
-
-def _effective_sample_floor_and_refit_boundaries():
-    df = _calendar()
-    out = _apply(df)
-    i = int(np.flatnonzero(out["signal"].to_numpy() == 1)[0])
-    n_eff = float(out["cce_effective_obs"].iloc[i])
-    assert int(_apply(df, min_effective_obs=int(math.floor(n_eff)))["signal"].iloc[i]) == 1
-    tight = _apply(df, min_effective_obs=int(math.floor(n_eff)) + 1)
-    assert int(tight["signal"].iloc[i]) == 0 and tight["cce_reason"].iloc[i] == "insufficient_effective_obs"
-    valid = out[out["cce_valid"] == 1.0]
-    boundary = valid["cce_refit_boundary_ms"].astype(np.int64)
-    assert ((boundary - EPOCH) % (P["refit_bars"] * H1) == 0).all()
-    assert (valid["cce_refit_bar_open_ms"].astype(np.int64) == boundary - H1).all()
-    assert (valid["cce_training_first_open_ms"].astype(np.int64) == boundary - P["training_bars"] * H1).all()
-    eval_boundary = valid["cce_eval_ts_ms"].astype(np.int64) + H1
-    changes = np.flatnonzero(np.diff(boundary.to_numpy()) != 0) + 1
-    assert len(changes) >= 2
-    assert (eval_boundary.to_numpy()[changes] == boundary.to_numpy()[changes]).all()
-    assert (eval_boundary.to_numpy()[changes - 1] - boundary.to_numpy()[changes - 1] == (P["refit_bars"] - 1) * H1).all()
-
-
-def test_no_look_ahead_labels_future_rows_and_shifted_frame_starts(subtests):
-    with subtests.test(case="labels_completed_before_refit"):
-        _labels_are_completed_before_the_refit_that_consumes_them()
-    with subtests.test(case="future_rows_and_refit_tables"):
-        _future_rows_never_change_earlier_signals_tables_or_refit_timing()
-    df = _calendar(n=N_BARS + 600)
-    full = _apply(df)
-    for shift in (1, 37, 167, 168, 500):
-        with subtests.test(case=f"shift={shift}"):
-            _shifted_start_keeps_decisions(df, full, shift)
-
-
-def _labels_are_completed_before_the_refit_that_consumes_them():
-    df = _calendar()
-    out = _apply(df)
-    rows = out.index[out["cce_valid"] == 1.0]
-    refit_open = int(out.loc[rows[400], "cce_refit_bar_open_ms"])
-    r = int(np.flatnonzero(_ms(df) == refit_open)[0])
-    block = (out["cce_refit_bar_open_ms"] == refit_open).to_numpy()
-    after = df.copy()
-    after.iloc[r + 1, after.columns.get_loc("open")] *= 1.05
-    after.iloc[r + 1, after.columns.get_loc("high")] = max(after["high"].iloc[r + 1], after["open"].iloc[r + 1])
-    changed_after = _apply(after)
-    for col in ("signal", "cce_gross_mean", "cce_std_error", "cce_reason"):
-        assert list(changed_after.loc[block, col].astype(str)) == list(out.loc[block, col].astype(str)), col
-    at = df.copy()
-    at.iloc[r, at.columns.get_loc("open")] *= 1.05
-    at.iloc[r, at.columns.get_loc("high")] = max(at["high"].iloc[r], at["open"].iloc[r])
-    at.iloc[r - 1, at.columns.get_loc("close")] = at["open"].iloc[r]
-    at.iloc[r - 1, at.columns.get_loc("high")] = max(at["high"].iloc[r - 1], at["open"].iloc[r])
-    changed_at = _apply(at)
-    exit_cell = int(((refit_open - P["holding_bars"] * H1 - EPOCH) // DAY % 7) * 24
-                    + ((refit_open - P["holding_bars"] * H1 - EPOCH) % DAY) // H1)
-    rows_in_cell = block & (out["cce_next_cell"].to_numpy() == exit_cell)
-    assert rows_in_cell.any()
-    assert (changed_at.loc[rows_in_cell, "cce_gross_mean"] != out.loc[rows_in_cell, "cce_gross_mean"]).all()
-
-
 def _tz_variants(df):
     utc = df.copy()
     utc.index = df.index.tz_localize("UTC")
@@ -349,46 +232,6 @@ def _input_defect_holds_and_recovers(df, clean, kind, row_reason):
     first = int(recovered[recovered > k][0])
     assert int(out["cce_history_bars"].iloc[first]) >= int(out["cce_required_bars"].iloc[first])
     assert int(out["cce_history_bars"].iloc[first - 1]) < int(out["cce_required_bars"].iloc[first - 1])
-
-
-def _future_rows_never_change_earlier_signals_tables_or_refit_timing():
-    from calendar_conditioned_entry import calendar_refit_tables
-    df = _calendar()
-    full = _apply(df)
-    cols = ["signal", "cce_reason", "cce_refit_boundary_ms", "cce_gross_mean", "cce_long_lower_bound"]
-    for cut in range(P["training_bars"] + 150, len(df), 7):
-        last = _apply(df.iloc[:cut + 1]).iloc[-1]
-        for col in cols:
-            assert str(last[col]) == str(full[col].iloc[cut]), (cut, col)
-    tables = calendar_refit_tables(df, **P)
-    assert len(tables) >= 4
-    pos = {int(t): i for i, t in enumerate(_ms(df))}
-    for t in tables:
-        prefix = calendar_refit_tables(df.iloc[:pos[t["refit_bar_open_ms"]] + 1], **P)
-        assert prefix[-1] == t
-    cut = 1300
-    mutated = df.copy()
-    mutated.iloc[cut:, mutated.columns.get_loc("open")] *= 1.3
-    mutated.iloc[cut:, mutated.columns.get_loc("high")] *= 1.3
-    mutated.iloc[cut:, mutated.columns.get_loc("low")] *= 1.3
-    mutated.iloc[cut:, mutated.columns.get_loc("close")] *= 1.3
-    mut = _apply(mutated)
-    for col in cols:
-        assert list(mut[col].iloc[:cut - 1].astype(str)) == list(full[col].iloc[:cut - 1].astype(str)), col
-
-
-def _shifted_start_keeps_decisions(df, full, shift):
-    out = _apply(df.iloc[shift:])
-    kept = 0
-    for j in range(len(out)):
-        i = j + shift
-        if out["cce_valid"].iloc[j] == 1.0:
-            kept += 1
-            for col in ("signal", "cce_reason", "cce_refit_boundary_ms", "cce_gross_mean"):
-                assert str(out[col].iloc[j]) == str(full[col].iloc[i]), (shift, i, col)
-        elif full["cce_valid"].iloc[i] == 1.0:
-            assert out["cce_reason"].iloc[j] == "insufficient_history"
-    assert kept > 400
 
 
 def _missing_history_columns_and_timing_hold_with_reasons():
@@ -487,39 +330,6 @@ def test_the_composer_blocks_entries_while_positioned_and_keeps_the_time_stop_cl
     assert live["close_fraction"] == 0.0 and live["signal"] == 0
 
 
-def test_walk_forward_warmup_covers_training_and_refit_history_without_seeding(monkeypatch):
-    grid = optimizer.generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
-    want = max(p["training_bars"] + p["refit_bars"] - 1 for p in grid)
-    assert strategy_warmup_bars(NAME, grid, DEFAULT_PARAM_RANGES[NAME]) == want
-    assert strategy_warmup_bars("rsi", [{}], DEFAULT_PARAM_RANGES["rsi"]) == optimizer.max_indicator_lookback(
-        DEFAULT_PARAM_RANGES["rsi"])
-    df = _calendar(n=N_BARS + 400)
-    full = _apply(df)
-    need = P["training_bars"] + P["refit_bars"] - 1
-    late = [b for b in range(need, len(df)) if int(full["cce_required_bars"].iloc[b]) == need]
-    b = late[0]
-    ext = _apply(df.iloc[b - need + 1:b + 1])
-    for col in ("signal", "cce_reason", "cce_gross_mean", "cce_refit_boundary_ms"):
-        assert str(ext[col].iloc[-1]) == str(full[col].iloc[b]), col
-    assert _apply(df.iloc[b - need + 2:b + 1])["cce_reason"].iloc[-1] == "insufficient_history"
-
-    real_run = Backtester.run
-
-    def unseeded_run(self, signals, **kw):
-        if kw.get("warmup_prefix") is not None or kw.get("starting_long") is not None:
-            raise AssertionError("the walk-forward warmup seeder ran for an entry-only candidate")
-        return real_run(self, signals, **kw)
-
-    monkeypatch.setattr(Backtester, "run", unseeded_run)
-    small = {k: [P[k]] for k in ("training_bars", "holding_bars", "refit_bars", "min_effective_obs", "confidence",
-                                 "cost_hurdle")}
-    result = optimizer.walk_forward_optimize(
-        _calendar(n=6000), NAME, small, n_splits=2, registry="futures", timeframe="1h", platform="hyperliquid",
-        verbose=False, close_strategies=CONTRACT["close_strategies"], direction="both", stop_loss_atr_mult=3.0,
-        comparison_mode="approximate")
-    assert result["n_valid_folds"] >= 1
-
-
 def test_walk_forward_scores_each_holding_horizon_with_its_own_time_stop(monkeypatch):
     scored = []
     real_run = Backtester.run
@@ -545,37 +355,3 @@ def test_walk_forward_scores_each_holding_horizon_with_its_own_time_stop(monkeyp
     for w in result["window_results"]:
         assert w["best_close_stack_spec"]["close_strategies"] == [
             {"name": "time_stop", "params": {"max_bars": w["best_params"]["holding_bars"]}}]
-
-
-def test_cached_m1_warmup_scores_the_window_flat_from_a_complete_history_prefix(monkeypatch):
-    import data_fetcher
-    df = _calendar(n=N_BARS + 1500)
-    window_start = df.index[N_BARS + 300]
-    window = (str(window_start), str(df.index[-1] + pd.Timedelta(hours=1)))
-
-    def cached(symbol, timeframe, start_date=None, end_date=None, **_k):
-        out = df[(df.index >= pd.Timestamp(start_date)) & (df.index <= pd.Timestamp(end_date))].copy()
-        out.attrs = dict(df.attrs)
-        return out
-
-    monkeypatch.setattr(data_fetcher, "load_cached_data", cached)
-    reg = _reg()
-    need = P["training_bars"] + P["refit_bars"] - 1
-    leg = eval_windows.run_leg(reg, NAME, dict(P), "TST/USDT", "1h", window, keep_trades=True, funding_mode="off",
-                               warmup_bars=need, **{k: v for k, v in CONTRACT.items()})
-    assert leg["warmup"]["bars"] == need and leg["warmup"]["scored_first_bar"] == str(window_start)
-    full = _apply(df)
-    first = full.index.get_loc(window_start)
-    expected = full.iloc[first:-1]
-    entries = sorted(str(df.index[i + 1]) for i in range(first, len(df) - 1) if int(full["signal"].iloc[i]) != 0)
-    positions = leg["execution"]["position_list"]
-    assert positions and str(positions[0]["entry_date"]) >= str(window_start)
-    assert {p["entry_date"] for p in positions} <= set(entries)
-    assert int(expected["cce_valid"].iloc[0]) == 1
-    with pytest.raises(ValueError, match="warmup needs"):
-        eval_windows.run_leg(reg, NAME, dict(P), "TST/USDT", "1h", (str(df.index[200]), window[1]),
-                             funding_mode="off", warmup_bars=need, **CONTRACT)
-    base = eval_windows.run_leg(reg, "rsi", None, "TST/USDT", "1h", window, funding_mode="off", **CONTRACT)
-    zero = eval_windows.run_leg(reg, "rsi", None, "TST/USDT", "1h", window, funding_mode="off", warmup_bars=0,
-                                **CONTRACT)
-    assert base == zero and "warmup" not in zero

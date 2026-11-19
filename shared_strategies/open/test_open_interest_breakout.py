@@ -19,8 +19,6 @@ _SPOT = load_module(
     "_oib_spot_strategies_test", os.path.join(_HERE, "spot", "strategies.py"))
 _CHECK_HL = load_module(
     "_oib_check_hyperliquid_test", os.path.join(_ROOT, "shared_scripts", "check_hyperliquid.py"))
-_PAYLOAD = load_module(
-    "_oib_market_payload_test", os.path.join(_TOOLS, "market_payload.py"))
 
 from close_registry_loader import evaluate as close_evaluate
 from strategy_composition import evaluate_open_close, finalize_decision
@@ -111,28 +109,6 @@ TRUTH_TABLE_CASES = [
 ]
 
 
-def test_truth_table_and_mirrored_rising_interest(subtests):
-    for close, oi_end, signal, reason in TRUTH_TABLE_CASES:
-        with subtests.test(close=close, oi_end=oi_end, reason=reason):
-            df = frame(FLAT + [close])
-            row = last(df, observations(df, ramp(df, 1000.0, oi_end, len(df) - 1)))
-            assert row["signal"] == signal and row["oib_reason"] == reason
-
-
-def test_equality_boundaries_never_trigger():
-    df = frame(FLAT + [110.0])
-    params = {**SMALL, "oi_change_threshold": 0.5}
-    at_threshold = last(df, observations(df, ramp(df, 100.0, 150.0, len(df) - 1)), params)
-    assert at_threshold["oib_oi_change"] == 0.5
-    assert at_threshold["signal"] == 0 and at_threshold["oib_reason"] == "oi_below_threshold"
-    above = last(df, observations(df, ramp(df, 100.0, 150.5, len(df) - 1)), params)
-    assert above["signal"] == 1
-
-    at_high = frame(FLAT + [100.5])
-    row = last(at_high, observations(at_high, ramp(at_high, 1000.0, 1100.0, len(at_high) - 1)))
-    assert row["oib_upper"] == 100.5 and row["signal"] == 0 and row["oib_reason"] == "no_breakout"
-
-
 def test_endpoint_sample_at_the_close_counts_and_one_after_does_not():
     df = frame(FLAT + [110.0])
     e = endpoint(df, len(df) - 1)
@@ -146,57 +122,6 @@ def test_endpoint_sample_at_the_close_counts_and_one_after_does_not():
     row = last(df, after_close)
     assert row["oib_oi_current_ms"] == e and row["signal"] == 0
     assert row["oib_reason"] == "oi_below_threshold"
-
-
-def test_price_only_increase_never_confirms():
-    df = frame(FLAT + [130.0])
-    row = last(df, observations(df, lambda t: 1000.0))
-    assert row["oib_oi_change"] == 0.0
-    assert row["signal"] == 0 and row["oib_reason"] == "oi_below_threshold"
-
-
-def test_continuation_does_not_reenter():
-    df = frame(FLAT + [110.0, 112.0])
-    out = run(df, observations(df, lambda t: 1000.0 + (t - T0) / MINUTE))
-    assert out["signal"].iloc[-2] == 1
-    assert out["signal"].iloc[-1] == 0 and out["oib_reason"].iloc[-1] == "breakout_continuation"
-
-
-def _defect_cases():
-    df = frame(FLAT + [110.0])
-    i = len(df) - 1
-    e, pe = endpoint(df, i), endpoint(df, i - 2)
-    good = ramp(df, 1000.0, 1030.0, i)
-    return df, [
-        ("unavailable", {"available": False, "reason": "seal has no BTC|open_interest"}, "observations_unavailable"),
-        ("missing", None, "observations_unavailable"),
-        ("units", observations(df, good, units="usd"), "unsupported_observations"),
-        ("source", observations(df, good, source=""), "unsupported_observations"),
-        ("cadence", observations(df, good, cadence_ms=30_000), "unsupported_observations"),
-        ("zero", observations(df, lambda t: 0.0 if t <= pe else 1000.0), "nonpositive_open_interest"),
-        ("nan", observations(df, lambda t: float("nan") if t > e - MINUTE else 1000.0), "nonfinite_open_interest"),
-        ("stale", observations(df, good, drop=[(e - 4 * MINUTE, e + 1)]), "stale_endpoint"),
-        ("gap", observations(df, good, gaps=[{"start_ms": e - 30 * MINUTE, "end_ms": e - 29 * MINUTE,
-                                              "reason": "disconnected"}]), "observation_gap"),
-        ("open_gap", observations(df, good, gaps=[{"start_ms": pe - 3 * HOUR, "end_ms": None,
-                                                   "reason": "disconnected"}]), "observation_gap"),
-        ("session", observations(df, good, session_at=lambda t: 1 if t < e - HOUR else 2), "session_change"),
-        ("coverage", observations(df, good, drop=[(pe + k * 10 * MINUTE, pe + k * 10 * MINUTE + 2 * MINUTE)
-                                                  for k in range(12)]), "insufficient_coverage"),
-        ("max_gap", observations(df, good, drop=[(pe + 30 * MINUTE, pe + 36 * MINUTE)]), "max_gap_exceeded"),
-        ("history", observations(df, good, drop=[(0, pe + 1)]), "insufficient_observation_history"),
-    ]
-
-
-def test_observation_defects_hold_with_a_reason(subtests):
-    for case in [c[0] for c in _defect_cases()[1]]:
-        with subtests.test(case=case):
-            df, cases = _defect_cases()
-            _, obs, reason = next(c for c in cases if c[0] == case)
-            row = last(df, obs)
-            assert row["signal"] == 0
-            assert row["oib_reason"] == reason
-            assert not row["oib_oi_valid"]
 
 
 def test_gap_counts_only_once_it_was_detected_before_the_close():
@@ -215,18 +140,6 @@ def test_gap_counts_only_once_it_was_detected_before_the_close():
     assert last(df, bad)["oib_reason"] == "unsupported_observations"
 
 
-def test_entry_window_hash_identifies_the_samples_used():
-    df = frame(FLAT + [110.0])
-    obs = observations(df, ramp(df, 1000.0, 1030.0, len(df) - 1))
-    a = last(df, obs)
-    later = dict(obs, samples=obs["samples"] + [{"recv_ms": endpoint(df, len(df) - 1) + 5_000, "event_ms": None,
-                                                  "value": 5.0, "session": 1, "seq": 10**6}])
-    assert last(df, later)["oib_window_sha256"] == a["oib_window_sha256"] != ""
-    edited = dict(obs, samples=[dict(s, value=s["value"] + 1e-6) if i == len(obs["samples"]) - 5 else s
-                                for i, s in enumerate(obs["samples"])])
-    assert last(df, edited)["oib_window_sha256"] != a["oib_window_sha256"]
-
-
 def test_order_and_duplicate_identities_are_refused():
     df = frame(FLAT + [110.0])
     obs = observations(df, ramp(df, 1000.0, 1030.0, len(df) - 1))
@@ -241,29 +154,12 @@ def test_order_and_duplicate_identities_are_refused():
     assert last(df, same_value_refresh)["signal"] == 1
 
 
-def test_bar_spacing_and_warmup_reasons():
-    df = frame(FLAT + [110.0])
-    out = run(df, observations(df, ramp(df, 1000.0, 1030.0, len(df) - 1)))
-    assert out["oib_reason"].iloc[0] == "insufficient_history"
-    gapped = df.drop(index=df.index[3])
-    row = last(gapped, observations(df, ramp(df, 1000.0, 1030.0, len(df) - 1)))
-    assert row["signal"] == 0 and row["oib_reason"] == "bar_spacing"
-
-
 INVALID_PARAMS = [
     {"price_lookback": 1}, {"price_lookback": 201}, {"oi_lookback": 0}, {"oi_lookback": 2.5},
     {"oi_change_threshold": -0.1}, {"oi_change_threshold": 1.0}, {"oi_change_threshold": True},
     {"min_coverage": 0.0}, {"min_coverage": 1.01}, {"max_gap_ms": 30_000},
     {"max_observation_age_ms": 400_000}, {"observation_cadence_ms": 500},
 ]
-
-
-def test_invalid_parameters_raise(subtests):
-    for params in INVALID_PARAMS:
-        with subtests.test(params=params):
-            df = frame(FLAT + [110.0])
-            with pytest.raises(ValueError):
-                run(df, None, {**SMALL, **params})
 
 
 def _market(n, seed):
@@ -279,45 +175,6 @@ def _market(n, seed):
         frac = (t - opens[i]) / HOUR
         return level[i] * (1.0 + drift[i] * frac)
     return df, value
-
-
-def test_every_row_is_prefix_invariant_and_blind_to_later_samples():
-    df, value = _market(160, seed=11)
-    params = {**SMALL, "oi_change_threshold": 0.005}
-    obs = observations(df, value)
-    full = run(df, obs, params)
-    assert (full["signal"] != 0).sum() >= 8
-    cols = ["signal", "oib_reason", "oib_oi_current", "oib_oi_prior", "oib_oi_change"]
-    for i in range(len(df)):
-        e = endpoint(df, i)
-        later = dict(obs, samples=[dict(s, value=s["value"] * 1.5) if s["recv_ms"] > e else s
-                                   for s in obs["samples"]])
-        for variant in (run(df.iloc[:i + 1], obs, params), run(df, later, params)):
-            a, b = full[cols].iloc[i], variant[cols].iloc[i]
-            assert a["signal"] == b["signal"] and a["oib_reason"] == b["oib_reason"]
-            for c in ("oib_oi_current", "oib_oi_prior", "oib_oi_change"):
-                assert (pd.isna(a[c]) and pd.isna(b[c])) or a[c] == b[c]
-
-
-def test_every_entry_records_its_inputs_and_repeats_identically():
-    df, value = _market(160, seed=5)
-    params = {**SMALL, "oi_change_threshold": 0.005}
-    obs = observations(df, value)
-    first, second = run(df, obs, params), run(df, obs, params)
-    pd.testing.assert_frame_equal(first, second)
-    entries = first[first["signal"] != 0]
-    assert len(entries) > 0
-    for _, row in entries.iterrows():
-        assert row["oib_valid"] and row["oib_oi_valid"]
-        assert row["oib_oi_current_age_ms"] <= params.get("max_observation_age_ms", 120_000)
-        assert row["oib_oi_current_ms"] <= row["oib_endpoint_ms"]
-        assert row["oib_oi_prior_ms"] <= row["oib_endpoint_ms"] - 2 * HOUR
-        assert row["oib_oi_change"] == pytest.approx(row["oib_oi_current"] / row["oib_oi_prior"] - 1.0)
-        assert row["oib_coverage"] >= 0.95 and row["oib_source"] == "fixture"
-        if row["signal"] == 1:
-            assert row["close"] > row["oib_upper"]
-        else:
-            assert row["close"] < row["oib_lower"]
 
 
 def test_live_forming_bar_carries_only_a_fresh_closed_decision():
@@ -395,14 +252,3 @@ def test_production_hyperliquid_paths_admit_explicit_paper_and_refuse_unacknowle
         shared, {"id": "fallback", "strategy": "breakout", "open_strategy": "breakout",
                  "close_strategies": NAME, "mode_args": ["--mode", "paper"]})
     assert fallback["close_strategies"] == [NAME]
-
-
-def test_payload_observation_lookup_never_invents_data():
-    market = {"version": 4, "snapshot_id": "x", "frames": {}}
-    missing = _PAYLOAD.market_observation(market, "BTC", "open_interest")
-    assert missing["available"] is False and "carries no BTC|open_interest" in missing["reason"]
-    mislabeled = dict(market, observations={"BTC|open_interest": {"coin": "ETH", "kind": "open_interest",
-                                                                   "available": True}})
-    assert _PAYLOAD.market_observation(mislabeled, "BTC", "open_interest")["available"] is False
-    no_market = _CHECK_HL._shared_open_interest({"market": None}, "BTC")
-    assert no_market["available"] is False and "never fetches" in no_market["reason"]

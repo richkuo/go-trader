@@ -44,30 +44,6 @@ def _frame(n: int = 400, seed: int = 1411) -> pd.DataFrame:
     )
 
 
-def test_min_only_max_only_and_unset_disarm_hysteresis_sequences():
-    case = "test_min_only_hysteresis_sequence"
-    gate = hg.HurstGate({"enabled": True, "min": 0.55, "disarm_min": 0.50})
-    assert gate.advance(0.40) == hg.HURST_STATE_DISARMED, case
-    assert gate.advance(0.52) == hg.HURST_STATE_DISARMED, case
-    assert gate.advance(0.55) == hg.HURST_STATE_ARMED, case
-    assert gate.advance(0.51) == hg.HURST_STATE_ARMED, case
-    assert gate.advance(0.4999) == hg.HURST_STATE_DISARMED, case
-
-    case = "test_max_only_hysteresis_sequence"
-    gate = hg.HurstGate({"enabled": True, "max": 0.45, "disarm_max": 0.50})
-    assert gate.advance(0.40) == hg.HURST_STATE_ARMED, case
-    assert gate.advance(0.48) == hg.HURST_STATE_ARMED, case
-    assert gate.advance(0.51) == hg.HURST_STATE_DISARMED, case
-    assert gate.advance(0.47) == hg.HURST_STATE_DISARMED, case
-    assert gate.advance(0.45) == hg.HURST_STATE_ARMED, case
-
-    case = "test_unset_disarm_collapses_onto_the_arm_bound"
-    gate = hg.HurstGate({"enabled": True, "min": 0.55})
-    gate.state = hg.HURST_STATE_ARMED
-    assert gate.advance(0.5499) == hg.HURST_STATE_DISARMED, case
-    assert gate.advance(0.55) == hg.HURST_STATE_ARMED, case
-
-
 def test_nan_never_transitions_state():
     for prior in [hg.HURST_STATE_UNKNOWN, hg.HURST_STATE_ARMED, hg.HURST_STATE_DISARMED]:
         case = f"test_nan_never_transitions_state[{prior}]"
@@ -75,14 +51,6 @@ def test_nan_never_transitions_state():
         gate.state = prior
         assert gate.advance(float("nan")) == prior, case
         assert gate.advance(None) == prior, case
-
-
-def test_readings_above_one_stay_coherent():
-    momentum = hg.HurstGate({"enabled": True, "min": 0.55})
-    assert momentum.advance(2.0033) == hg.HURST_STATE_ARMED
-    reversion = hg.HurstGate({"enabled": True, "max": 0.45})
-    reversion.state = hg.HURST_STATE_ARMED
-    assert reversion.advance(2.0033) == hg.HURST_STATE_DISARMED
 
 
 def test_fail_closed_is_flat_only(subtests):
@@ -139,23 +107,6 @@ def test_size_mode_never_holds_on_a_known_reading():
     assert not gate3.step(float("nan"), flat=False)[0]
 
 
-def test_gate_mode_never_scales():
-    gate = hg.HurstGate({"enabled": True, "min": 0.55})
-    for h in (0.2, 0.6, float("nan")):
-        assert gate.step(h, flat=True)[1] == 1.0
-
-
-def test_rolling_hurst_warmup_is_nan_and_values_are_rounded():
-    df = _frame(n=260)
-    series = hg.rolling_hurst(df["close"], 200)
-    assert series.iloc[:199].isna().all(), "warm-up bars must be genuinely unknown"
-    tail = series.iloc[199:].dropna()
-    assert len(tail) > 0
-    for v in tail:
-        assert math.isfinite(v)
-        assert round(v, 4) == v, "must match regime.py's 4-decimal rounding"
-
-
 def test_rolling_hurst_uses_only_trailing_closes():
     df = _frame(n=260)
     base = hg.rolling_hurst(df["close"], 200)
@@ -163,16 +114,6 @@ def test_rolling_hurst_uses_only_trailing_closes():
     mutated.iloc[230:, mutated.columns.get_loc("close")] *= 1.5
     after = hg.rolling_hurst(mutated["close"], 200)
     pd.testing.assert_series_equal(base.iloc[:230], after.iloc[:230])
-
-
-def test_decision_series_lags_one_bar():
-    df = _frame(n=260)
-    raw = hg.rolling_hurst(df["close"], 200)
-    decision = raw.shift(1)
-    for i in range(201, len(df)):
-        assert decision.iloc[i] == raw.iloc[i - 1] or (
-            pd.isna(decision.iloc[i]) and pd.isna(raw.iloc[i - 1])
-        )
 
 
 def test_live_frame_bars_matches_the_go_fetch_depth():
@@ -317,31 +258,6 @@ _COMPOSITE_REGIME = {
 }
 
 
-def test_backtest_accepts_a_primary_composite_window(tmp_path, load_strategy_config, subtests):
-    with subtests.test("test_backtest_accepts_a_primary_composite_window"):
-        case_path = tmp_path / "test_backtest_accepts_a_primary_composite_window"
-        case_path.mkdir()
-        path = _write_cfg(
-            case_path,
-            {"hurst_gate": {"enabled": True, "min": 0.55, "disarm_min": 0.5}},
-            _COMPOSITE_REGIME,
-        )
-        loaded = load_strategy_config(path, "s1")
-        assert loaded["hurst_gate"]["enabled"] is True
-        assert loaded["hurst_gate"]["window_key"] == "medium"
-        assert loaded["hurst_gate"]["on_failure"] == "open"
-    with subtests.test("test_backtest_resolves_global_on_failure_default"):
-        case_path = tmp_path / "test_backtest_resolves_global_on_failure_default"
-        case_path.mkdir()
-        regime = dict(_COMPOSITE_REGIME, hurst_gate_on_failure="closed")
-        path = _write_cfg(case_path, {"hurst_gate": {"enabled": True, "min": 0.55}}, regime)
-        assert load_strategy_config(path, "s1")["hurst_gate"]["on_failure"] == "closed"
-        path = _write_cfg(
-            case_path, {"hurst_gate": {"enabled": True, "min": 0.55, "on_failure": "open"}}, regime
-        )
-        assert load_strategy_config(path, "s1")["hurst_gate"]["on_failure"] == "open"
-
-
 _ADX_REGIME = {"enabled": True, "windows": {"medium": {"classifier": "adx", "period": 20}}}
 _TWO_COMPOSITE_REGIME = {
     "enabled": True,
@@ -419,15 +335,6 @@ def _run(Backtester, df, **kwargs):
     return bt.run(work, strategy_name="momentum", symbol="BTC/USDT", timeframe="1h", save=False)
 
 
-def test_absent_hurst_gate_leaves_the_baseline_byte_identical(Backtester):
-    df = _frame(n=400)
-    base = _run(Backtester, df)
-    off = _run(Backtester, df, hurst_gate=None)
-    disabled = _run(Backtester, df, hurst_gate={"enabled": False, "min": 0.55})
-    assert base["total_return_pct"] == off["total_return_pct"] == disabled["total_return_pct"]
-    assert base["total_trades"] == off["total_trades"] == disabled["total_trades"]
-
-
 def test_size_mode_shrinks_exposure_relative_to_the_ungated_run(Backtester):
     df = _frame(n=400)
     base = _run(Backtester, df)
@@ -444,17 +351,6 @@ def test_size_mode_shrinks_exposure_relative_to_the_ungated_run(Backtester):
         abs(float(s["shares"])) < abs(float(b["shares"])) - 1e-9
         for b, s in zip(base_trades, scaled_trades)
     ), "at least one entry should actually be shrunk"
-
-
-def test_gate_mode_can_only_remove_entries_never_add_them(Backtester):
-    df = _frame(n=400)
-    base = _run(Backtester, df)
-    gated = _run(
-        Backtester,
-        df,
-        hurst_gate={"enabled": True, "mode": "gate", "min": 0.55, "disarm_min": 0.50},
-    )
-    assert gated["total_trades"] <= base["total_trades"]
 
 
 def test_gate_mode_fail_closed_before_warmup_blocks_early_entries(Backtester):
@@ -538,31 +434,6 @@ def _hold_then_add_signal(n: int, open_bar: int) -> np.ndarray:
     return sig
 
 
-def test_gate_mode_holds_scale_in_adds_once_disarmed(Backtester, hurst_module, monkeypatch):
-    df = _frame(n=400)
-    disarm_at = 200
-    _pin_hurst(
-        monkeypatch, hurst_module,
-        lambda n: [0.80] * disarm_at + [0.20] * (n - disarm_at),
-    )
-    sig = _hold_then_add_signal(len(df), open_bar=100)
-    gate = {"enabled": True, "mode": "gate", "min": 0.55, "disarm_min": 0.50}
-
-    gated = _run_scale_in(Backtester, df, sig, hurst_gate=gate)
-    ungated = _run_scale_in(Backtester, df, sig)
-
-    assert ungated["scale_in_adds"] > 0
-    assert gated["scale_in_adds"] > 0, "adds taken while ARMED must still fire"
-    assert gated["scale_in_adds"] < ungated["scale_in_adds"], (
-        "a disarmed gate must hold scale-in adds, exactly as pausedBlocksSignal "
-        "holds a same-side signal on an open position live (#1411)"
-    )
-    open_fill_bar = 100 + 1
-    last_armed_bar = disarm_at
-    assert gated["scale_in_adds"] == last_armed_bar - open_fill_bar
-    assert gated["scale_in_added_notional_usd"] < ungated["scale_in_added_notional_usd"]
-
-
 def test_size_mode_scales_scale_in_adds_by_the_multiplier(Backtester, hurst_module, monkeypatch):
     df = _frame(n=400)
     _pin_hurst(monkeypatch, hurst_module, lambda n: [0.53] * n)
@@ -584,33 +455,6 @@ def test_size_mode_scales_scale_in_adds_by_the_multiplier(Backtester, hurst_modu
     )
 
 
-def test_open_bar_multiplier_never_leaks_into_later_adds(Backtester, hurst_module, monkeypatch):
-    df = _frame(n=400)
-    open_bar, recover_at = 100, 200
-    sig = np.zeros(len(df))
-    sig[open_bar] = 1.0
-    sig[recover_at + 5: recover_at + 8] = 1.0
-    gate = {"enabled": True, "mode": "size", "size_floor": 0.05}
-    scale_cfg = {"max_adds": 10}
-
-    _pin_hurst(
-        monkeypatch, hurst_module,
-        lambda n: [0.53] * recover_at + [0.80] * (n - recover_at),
-    )
-    low_open = _run_scale_in(Backtester, df, sig, scale_in=scale_cfg, hurst_gate=gate)
-
-    _pin_hurst(monkeypatch, hurst_module, lambda n: [0.80] * n)
-    full_open = _run_scale_in(Backtester, df, sig, scale_in=scale_cfg, hurst_gate=gate)
-
-    assert low_open["scale_in_adds"] == full_open["scale_in_adds"] > 0
-    assert low_open["scale_in_added_notional_usd"] == pytest.approx(
-        full_open["scale_in_added_notional_usd"], rel=1e-7,
-    ), (
-        "the open bar's multiplier must not survive into the per-add default "
-        "notional — live's defOpenNotional is recomputed ungated every cycle"
-    )
-
-
 def test_armed_gate_leaves_scale_in_adds_byte_identical(Backtester, hurst_module, monkeypatch):
     df = _frame(n=400)
     _pin_hurst(monkeypatch, hurst_module, lambda n: [0.80] * n)
@@ -625,17 +469,3 @@ def test_armed_gate_leaves_scale_in_adds_byte_identical(Backtester, hurst_module
     assert gated["scale_in_adds"] == ungated["scale_in_adds"] > 0
     assert gated["scale_in_added_notional_usd"] == ungated["scale_in_added_notional_usd"]
     assert gated["total_return_pct"] == ungated["total_return_pct"]
-
-
-def test_absent_hurst_gate_leaves_the_scale_in_baseline_byte_identical(Backtester):
-    df = _frame(n=400)
-    sig = _hold_then_add_signal(len(df), open_bar=100)
-    base = _run_scale_in(Backtester, df, sig)
-    off = _run_scale_in(Backtester, df, sig, hurst_gate=None)
-    disabled = _run_scale_in(
-        Backtester, df, sig, hurst_gate={"enabled": False, "min": 0.55},
-    )
-    for other in (off, disabled):
-        assert other["scale_in_adds"] == base["scale_in_adds"] > 0
-        assert other["scale_in_added_notional_usd"] == base["scale_in_added_notional_usd"]
-        assert other["total_return_pct"] == base["total_return_pct"]

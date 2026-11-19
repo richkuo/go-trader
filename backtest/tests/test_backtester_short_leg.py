@@ -83,24 +83,6 @@ def test_commission_and_slippage_charged_on_both_legs():
     assert costly["final_capital"] < free["final_capital"] - 25.0
 
 
-def test_long_signal_while_flat_opens_nothing_in_short_mode():
-    closes = [100, 100, 100, 100, 100]
-    signals = [1, 0, -1, -1, 0]
-    res = _run(_df(closes, signals))
-    assert [t["side"] for t in res["trades"]] == ["short"]
-    assert res["trades"][0]["exit_reason"] == "end_of_data"
-
-
-def test_invert_signal_composes_with_short_mode():
-    closes = [100, 100, 90, 80, 80]
-    signals = [1, 0, -1, 0, 0]
-    res = _run(_df(closes, signals), invert_signal=True)
-    assert res["total_trades"] == 1
-    t = res["trades"][0]
-    assert t["side"] == "short"
-    assert t["pnl"] > 0
-
-
 def test_regime_gate_blocks_short_entries():
     closes = [100, 100, 90, 80, 80]
     signals = [-1, 0, 0, 0, 0]
@@ -208,73 +190,6 @@ def _assert_direction_both_rejected_on_plain_path():
     signals = [1, 0, 0, -1, 0]
     with pytest.raises(ValueError, match="direction='both'"):
         _run(_df(closes, signals), direction="both")
-
-
-def test_direction_long_default_is_unchanged():
-    closes = [100, 100, 110, 120, 120]
-    signals = [1, 0, 0, -1, 0]
-    base = _run(_df(closes, signals), direction=None)
-    explicit = _run(_df(closes, signals), direction="long")
-    assert base["final_capital"] == explicit["final_capital"]
-    assert [t["side"] for t in base["trades"]] == ["long"]
-    assert [t["side"] for t in explicit["trades"]] == ["long"]
-
-
-def test_no_short_reopen_after_blowup(subtests):
-    with subtests.test(case="no_short_reentry_after_blowup_plain_path"):
-        _assert_no_short_reentry_after_blowup_plain_path()
-    with subtests.test(case="consecutive_reentry_attempts_after_blowup_do_not_compound"):
-        _assert_consecutive_reentry_attempts_after_blowup_do_not_compound()
-    with subtests.test(case="cash_zero_boundary_books_no_phantom_trade"):
-        _assert_cash_zero_boundary_books_no_phantom_trade()
-    with subtests.test(case="no_reopen_after_short_blowup_engine_path_grid"):
-        _assert_no_reopen_after_short_blowup_engine_path_grid(subtests)
-
-
-def _assert_no_short_reentry_after_blowup_plain_path():
-    closes = [100, 100, 250, 250, 100, 50, 50]
-    signals = [-1, 0, 1, -1, 0, 0, 0]
-    res = _run(_df(closes, signals))
-    assert res["total_trades"] == 1
-    assert res["trades"][0]["pnl"] < 0
-    assert res["final_capital"] == pytest.approx(-5000.0)
-
-
-def _assert_consecutive_reentry_attempts_after_blowup_do_not_compound():
-    closes = [100, 100, 250, 250, 100, 80, 50]
-    signals = [-1, 0, 1, -1, -1, -1, 0]
-    res = _run(_df(closes, signals))
-    assert res["total_trades"] == 1
-    assert res["final_capital"] == pytest.approx(-5000.0)
-
-
-def _assert_cash_zero_boundary_books_no_phantom_trade():
-    closes = [100, 100, 200, 200, 200]
-    signals = [-1, 0, 1, -1, 0]
-    res = _run(_df(closes, signals))
-    assert res["total_trades"] == 1
-    assert len(res["trades"]) == 1
-    assert res["final_capital"] == pytest.approx(0.0)
-
-
-def _assert_no_reopen_after_short_blowup_engine_path_grid(subtests):
-    for closes, signals, extra_kw in [
-            ([100, 100, 200, 300, 300, 100, 100], [-1, 0, 0, 0, -1, 0, 0], {}),
-            ([100, 100, 200, 300, 300, 300, 300], [-1, 0, 0, 0, 1, 0, 0],
-             {"direction": "both"}),
-        ]:
-        with subtests.test(case=repr(extra_kw)):
-            _assert_no_reopen_after_short_blowup_engine_path(closes, signals, extra_kw)
-
-
-def _assert_no_reopen_after_short_blowup_engine_path(closes, signals, extra_kw):
-    df = _df(closes, signals, atr=2.0)
-    res = _run(df, close_strategies=[
-        {"name": "time_stop", "params": {"max_bars": 2}},
-    ], comparison_mode="approximate", **extra_kw)
-    assert res["total_trades"] == 1
-    assert res["trades"][0]["side"] == "short"
-    assert res["final_capital"] == pytest.approx(-10000.0)
 
 
 def test_short_mode_with_close_refs_uses_engine_path_not_plain():

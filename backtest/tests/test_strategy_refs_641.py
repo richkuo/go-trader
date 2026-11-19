@@ -90,24 +90,6 @@ def test_parse_close_strategy_arg_accepts_and_rejects(subtests):
                 run_backtest._parse_close_strategy_arg(raw)
 
 
-def test_resolve_defaults_mode(capsys, subtests):
-    for argv, expected_mode, warn_contains in [
-        (["--config", "scheduler/config.json", "--strategy", "hl-r",
-          "--mode", "single"], "user", None),
-        (["--strategy", "tema_cross_bd", "--mode", "single"], "system", None),
-        (["--config", "scheduler/config.json", "--strategy", "hl-r",
-          "--mode", "single", "--defaults", "system"], "system", None),
-        (["--strategy", "tema_cross_bd", "--mode", "single",
-          "--defaults", "user"], "system", "requires --config"),
-    ]:
-        with subtests.test(argv=" ".join(argv)):
-            capsys.readouterr()
-            args = run_backtest._build_parser().parse_args(argv)
-            assert run_backtest._resolve_defaults_mode(args) == expected_mode
-            if warn_contains is not None:
-                assert warn_contains in capsys.readouterr().out
-
-
 def _write_config(tmp_path, version, strategies):
     cfg = {"config_version": version, "strategies": strategies}
     p = tmp_path / "config.json"

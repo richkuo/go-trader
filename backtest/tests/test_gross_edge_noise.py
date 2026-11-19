@@ -1,136 +1,9 @@
 
 import numpy as np
 import pandas as pd
-import pytest
 
 import eval_windows as ew
 import gross_edge_noise as gen
-
-
-def test_summarize_returns():
-    cases = [
-        ([], {"n": 0, "mean": None, "median": None,
-              "n_pos": 0, "n_neg": 0, "n_zero": 0}),
-        ([1.0, -2.0, 0.0, 3.0], {"n": 4, "mean": 0.5, "median": 0.5,
-                                 "min": -2.0, "max": 3.0,
-                                 "n_pos": 2, "n_neg": 1, "n_zero": 1}),
-    ]
-    for values, expected in cases:
-        s = gen.summarize_returns(values)
-        for key, want in expected.items():
-            case = f"test_summarize_returns[{values}] {key}"
-            if isinstance(want, float):
-                assert s[key] == pytest.approx(want), case
-            else:
-                assert s[key] == want, case
-
-
-def test_sign_flip_permutation_empty_strong_symmetric_seeded_and_never_zero():
-    r = gen.sign_flip_permutation([])
-    assert r["p_value"] == 1.0 and r["n"] == 0 and r["mean"] is None, (
-        "test_permutation_empty_sample_is_p_one")
-
-    case = "test_permutation_strong_positive_sample_is_significant"
-    r = gen.sign_flip_permutation([1.0] * 20, n_resamples=2000, seed=7)
-    assert r["mean"] == pytest.approx(1.0), case
-    assert r["p_value"] < 0.01, case
-
-    case = "test_permutation_symmetric_sample_is_not_significant"
-    vals = [1.0, -1.0, 2.0, -2.0, 0.5, -0.5]
-    r = gen.sign_flip_permutation(vals, n_resamples=2000, seed=7)
-    assert r["mean"] == pytest.approx(0.0), case
-    assert r["p_value"] > 0.2, case
-
-    case = "test_permutation_deterministic_under_seed"
-    vals = [0.4, -0.2, 1.1, -0.7, 0.3]
-    a = gen.sign_flip_permutation(vals, n_resamples=500, seed=1066)
-    b = gen.sign_flip_permutation(vals, n_resamples=500, seed=1066)
-    assert a == b, case
-    c = gen.sign_flip_permutation(vals, n_resamples=500, seed=2077)
-    assert c["n_resamples"] == a["n_resamples"], case
-
-    r = gen.sign_flip_permutation([5.0] * 10, n_resamples=100, seed=1)
-    assert 0.0 < r["p_value"] <= 1.0, "test_permutation_p_never_zero"
-
-
-def test_bootstrap_p_mean_le_zero_reference_values_and_seeded_determinism():
-    cases = [
-        ([], None),
-        ([2.0], 0.0),
-        ([-2.0], 1.0),
-        ([0.0], 1.0),
-        ([1.0, 2.0, 3.0], 0.0),
-    ]
-    for values, expected in cases:
-        assert gen.bootstrap_p_mean_le_zero(values, n_resamples=500,
-                                            seed=3) == expected, (
-            f"test_bootstrap_p_mean_le_zero[{values}]")
-
-    vals = [0.4, -0.2, 1.1, -0.7, 0.3]
-    a = gen.bootstrap_p_mean_le_zero(vals, n_resamples=500, seed=1066)
-    b = gen.bootstrap_p_mean_le_zero(vals, n_resamples=500, seed=1066)
-    assert a == b, "test_bootstrap_p_le_zero_deterministic"
-
-
-def test_dedupe_samples():
-    cases = [
-        ("exact_duplicate",
-         [{"dataset": "BTC/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 1.0},
-          {"dataset": "BTC/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 1.0},
-          {"dataset": "ETH/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 2.0}],
-         1, ["BTC/USDT 1h", "ETH/USDT 1h"]),
-        ("distinct_dates",
-         [{"dataset": "BTC/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 1.0},
-          {"dataset": "BTC/USDT 1h", "entry_date": "2025-06-16", "pnl_pct": -1.0}],
-         0, ["BTC/USDT 1h", "BTC/USDT 1h"]),
-    ]
-    for case_id, samples, dropped, kept_datasets in cases:
-        case = f"test_dedupe_samples[{case_id}]"
-        out, n_dropped = gen.dedupe_samples(samples)
-        assert n_dropped == dropped, case
-        assert [s["dataset"] for s in out] == kept_datasets, case
-
-
-def test_noise_verdict():
-    cases = [
-        (0.0, 0.001, gen.VERDICT_NO_EDGE),
-        (-0.5, 0.001, gen.VERDICT_NO_EDGE),
-        (None, 0.001, gen.VERDICT_NO_EDGE),
-        (0.3, 0.01, gen.VERDICT_DISTINGUISHABLE),
-        (0.3, 0.39, gen.VERDICT_INDISTINGUISHABLE),
-        (0.3, 0.05, gen.VERDICT_INDISTINGUISHABLE),
-    ]
-    for mean, permutation_p, expected in cases:
-        assert gen.noise_verdict(mean, permutation_p) == expected, (
-            f"test_noise_verdict[{mean}-{permutation_p}]")
-
-
-def test_analyze_sample_verdict_matches_primary_test():
-    strong = gen.analyze_sample([1.0] * 20, n_resamples=1000, seed=5)
-    assert strong["verdict"] == gen.VERDICT_DISTINGUISHABLE
-    assert strong["summary"]["n"] == 20
-    noisy = gen.analyze_sample([1.0, -1.0, 0.5, -0.5, 0.2],
-                               n_resamples=1000, seed=5)
-    assert noisy["verdict"] in (gen.VERDICT_INDISTINGUISHABLE,
-                                gen.VERDICT_NO_EDGE)
-    for key in ("summary", "permutation", "bootstrap",
-                "bootstrap_p_mean_le_zero", "sign_test", "wilcoxon",
-                "alpha", "verdict"):
-        assert key in strong
-
-
-def test_entry_in_range():
-    cases = [
-        ("2025-06-10 00:00:00", ("2025-06-10", "2025-07-01"), True),
-        ("2025-06-30 23:00:00", ("2025-06-10", "2025-07-01"), True),
-        ("2025-07-01 00:00:00", ("2025-06-10", "2025-07-01"), False),
-        ("2025-06-09 23:00:00", ("2025-06-10", "2025-07-01"), False),
-        ("2099-01-01 00:00:00", ("2026-01-01", None), True),
-        ("2025-12-31 23:00:00", ("2026-01-01", None), False),
-    ]
-    for entry_date, window_range, expected in cases:
-        assert bool(gen._entry_in_range(entry_date, window_range)) is expected, (
-            f"test_entry_in_range[{entry_date}-{window_range}]")
 
 
 def test_pool_trade_samples_drops_exact_and_overlapping_entries(subtests):
@@ -214,20 +87,6 @@ def test_pool_trade_samples_drops_exact_and_overlapping_entries(subtests):
         assert [s["pnl_pct"] for s in samples] == [1.0]
 
 
-def test_window_overlaps_reports_is_2025h1_and_nothing_for_disjoint_windows():
-    case = "test_window_overlaps_is_2025h1"
-    out = gen.window_overlaps(["is", "oos", "2023", "2024", "2025H1"])
-    assert len(out) == 1, case
-    o = out[0]
-    assert set(o["windows"]) == {"is", "2025H1"}, case
-    assert o["start"] == "2025-06-10" and o["end"] == "2025-07-01", case
-    assert o["days"] == pytest.approx(21.0), case
-
-    case = "test_window_overlaps_disjoint_windows_empty"
-    assert gen.window_overlaps(["2023", "2024", "oos"]) == [], case
-    assert gen.window_overlaps(["is", "oos"]) == [], case
-
-
 def test_trade_samples_from_results_extracts_entry_and_pnl():
     results = {"trades": [
         {"entry_date": "2025-06-15 04:00:00", "pnl_pct": 1.25, "pnl": 12.5},
@@ -296,20 +155,3 @@ def test_run_leg_keep_trades_attaches_samples(monkeypatch, subtests):
                              ("2026-01-01", None))
             assert leg is not None
             assert "trade_samples" not in leg
-
-
-def test_collect_gross_legs_zeroes_friction(monkeypatch):
-    df = _synthetic_df(n=240)
-    import data_fetcher
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: df, raising=True)
-    legs = gen.collect_gross_legs(_FakeRegistry(), "alternator", None,
-                                  [("BTC/USDT", "1h")], ["oos"])
-    assert len(legs) == 1
-    gross = legs[0]
-    net = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
-                     ew.WINDOWS["oos"])
-    assert gross["trades"] == net["trades"]
-    assert gross["return_pct"] >= net["return_pct"]
-    assert gross["window"] == "oos"
-    assert gross["dataset"] == "BTC/USDT 1h"

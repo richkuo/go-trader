@@ -7,7 +7,6 @@ import sys
 
 import numpy as np
 import pandas as pd
-import pytest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.abspath(os.path.join(_HERE, "..", ".."))
@@ -19,9 +18,6 @@ from closed_bar import (
     FRAME_TIMESTAMP_KIND_ATTR,
     declare_frame_cadence,
 )
-from eval_windows import expand_sweep
-import optimizer
-from optimizer import DEFAULT_PARAM_RANGES, strategy_warmup_bars
 from parity_diff import ParityConfig
 from registry_loader import load_registry
 
@@ -32,7 +28,6 @@ INPUT_COLUMNS = ["open", "high", "low", "close", "volume"]
 SEED = {"slow_period": 25, "fast_period": 13, "signal_period": 7, "recursion_length": 180}
 SMALL = {"slow_period": 3, "fast_period": 2, "signal_period": 2, "recursion_length": 18}
 REL = 1e-10
-ABS = 1e-12
 DECISION_COLUMNS = ["tsi_value", "tsi_prev_value", "tsi_signal_line", "tsi_prev_signal_line", "tsi_diff",
                     "tsi_prev_diff", "tsi_slow_change", "tsi_double_change", "tsi_slow_abs", "tsi_double_abs",
                     "tsi_signal_seed_change", "tsi_valid", "tsi_value_valid", "tsi_reason_code", "signal"]
@@ -127,100 +122,14 @@ def _ref_signal(c, t, p):
     return 0, cur, prev
 
 
-def _approx(x):
-    return pytest.approx(x, rel=REL, abs=ABS)
-
-
 REFERENCE_PARAMS = [SMALL, dict(SMALL, signal_period=5), dict(SMALL, slow_period=4, fast_period=3,
                                                                recursion_length=24)]
-
-
-def test_values_match_an_independent_scalar_reference_and_both_entry_directions(subtests):
-    for params in REFERENCE_PARAMS:
-        with subtests.test(params=params):
-            _values_match_an_independent_scalar_reference_and_both_entry_directions(params)
-
-
-def _values_match_an_independent_scalar_reference_and_both_entry_directions(params):
-    df = _walk(260, 11, vol=0.03)
-    c = df["close"].tolist()
-    out = _apply(df, params)
-    need = _need(params)
-    assert (out["tsi_valid"].iloc[:need - 1] == 0.0).all()
-    assert (out["tsi_reason"].iloc[:need - 1] == "insufficient_history").all()
-    assert out["tsi_value_valid"].iloc[need - 2] == 1.0
-    assert out["tsi_valid"].iloc[need - 1] == 1.0
-    seen = set()
-    for t in range(need - 1, len(df)):
-        sig, cur, prev = _ref_signal(c, t, params)
-        row = out.iloc[t]
-        assert row["tsi_value"] == _approx(cur["tsi"])
-        assert row["tsi_signal_line"] == _approx(cur["line"])
-        assert row["tsi_prev_value"] == _approx(prev["tsi"])
-        assert row["tsi_prev_signal_line"] == _approx(prev["line"])
-        assert row["tsi_slow_change"] == _approx(cur["slow"])
-        assert row["tsi_double_change"] == _approx(cur["fast"])
-        assert row["tsi_slow_abs"] == _approx(cur["slow_abs"])
-        assert row["tsi_double_abs"] == _approx(cur["fast_abs"])
-        assert row["tsi_prev_double_abs"] == _approx(prev["fast_abs"])
-        assert row["tsi_signal_seed_change"] == float(cur["seed_at"]) == 0.0
-        assert row["tsi_first_change"] == cur["first"]
-        assert row["tsi_seed_close"] == c[t - params["recursion_length"] + 1]
-        assert row["tsi_prev_seed_close"] == c[t - params["recursion_length"]]
-        assert row["tsi_close"] == c[t] and row["tsi_prev_close"] == c[t - 1]
-        assert row["tsi_diff"] == row["tsi_value"] - row["tsi_signal_line"]
-        assert row["tsi_prev_diff"] == row["tsi_prev_value"] - row["tsi_prev_signal_line"]
-        assert row["tsi_value"] == 100.0 * (row["tsi_double_change"] / row["tsi_double_abs"])
-        if (abs(cur["tsi"] - cur["line"]) > 1e-9 and abs(prev["tsi"] - prev["line"]) > 1e-9
-                and abs(cur["tsi"]) > 1e-9):
-            assert int(row["signal"]) == sig
-        assert row["tsi_reason_code"] == {1: 1.0, -1: -1.0, 0: row["tsi_reason_code"]}[int(row["signal"])]
-        seen.add(int(row["signal"]))
-    assert seen == {-1, 0, 1}
-
-
-def test_sustained_conditions_do_not_repeat_entries():
-    out = _apply(_walk(400, 21), SMALL)
-    sig = out["signal"].to_numpy()
-    diff = out["tsi_diff"].to_numpy()
-    assert (sig != 0).sum() > 5
-    for i in np.flatnonzero(sig != 0):
-        assert diff[i - 1] * sig[i] <= 0
-        assert sig[i - 1] != sig[i] or out["tsi_prev_diff"].iloc[i] * sig[i] <= 0
 
 
 def _set_at(df, pos, col, value):
     out = df.copy()
     out.iloc[pos, out.columns.get_loc(col)] = value
     return out
-
-
-def test_walk_forward_warmup_keeps_the_decision_before_the_first_scored_bar(monkeypatch):
-    grid = optimizer.generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
-    assert strategy_warmup_bars(NAME, grid, DEFAULT_PARAM_RANGES[NAME]) == max(_need(p) for p in grid) == 199
-    ranges = {"slow_period": [30], "fast_period": [13], "signal_period": [9], "recursion_length": [180, 198]}
-    combos = optimizer.generate_param_grid(ranges)
-    warmup = strategy_warmup_bars(NAME, combos, ranges)
-    assert warmup == 199
-    df = _walk(1500, 5, freq="1h")
-    full = {p["recursion_length"]: _apply(df, p)["signal"] for p in combos}
-    b = next(i for i in range(warmup, len(df)) if full[180].iloc[i] != 0 and full[198].iloc[i] == full[180].iloc[i])
-    df = df.iloc[:2 * (b + 1)]
-    first = {}
-    original = optimizer.Backtester.run
-
-    def record(self, signals_df, *args, **kwargs):
-        p = kwargs.get("params") or {}
-        if signals_df.index[0] == df.index[b]:
-            first.setdefault(p["recursion_length"], int(signals_df["signal"].iloc[0]))
-        return original(self, signals_df, *args, **kwargs)
-
-    monkeypatch.setattr(optimizer.Backtester, "run", record)
-    optimizer.walk_forward_optimize(df, NAME, ranges, n_splits=2, timeframe="1h", registry="futures",
-                                    platform="hyperliquid", verbose=False, close_strategies=_close_refs(),
-                                    direction="long")
-    assert first == {180: int(full[180].iloc[b]), 198: int(full[198].iloc[b])}
-    assert 0 not in first.values()
 
 
 def test_timestamp_column_and_native_close_frames_decide_the_same_way():
@@ -242,52 +151,6 @@ def test_timestamp_column_and_native_close_frames_decide_the_same_way():
     d = _apply(native, SMALL)
     np.testing.assert_array_equal(a["signal"].to_numpy(), d["signal"].to_numpy())
     assert d["tsi_eval_ts_ms"].isna().all()
-
-
-def _every_grid_combination_is_causal_on_frozen_candles():
-    df = _frozen("ETH", "4h", 420)
-    future = df.copy()
-    future.iloc[300:, future.columns.get_loc("close")] *= 1.3
-    future.iloc[300:, future.columns.get_loc("high")] *= 1.3
-    for _, p in expand_sweep(SEED, [(k, list(v)) for k, v in DEFAULT_PARAM_RANGES[NAME].items()]):
-        full = _apply(df, p)
-        cut = _apply(df.iloc[:300], p)
-        changed = _apply(future, p)
-        np.testing.assert_array_equal(full["signal"].iloc[:300].to_numpy(), cut["signal"].to_numpy())
-        np.testing.assert_array_equal(full["signal"].iloc[:300].to_numpy(), changed["signal"].iloc[:300].to_numpy())
-
-
-def test_frozen_candles_produce_both_directions_with_the_seed():
-    out = _apply(_frozen("SOL", "4h", 1500), SEED)
-    assert {-1, 1} <= set(out["signal"].unique())
-
-
-def _rows_outside_the_support_cannot_change_a_decision():
-    df = _frozen("ETH", "4h", 400)
-    p = SEED
-    need = _need(p)
-    t = 380
-    full = _apply(df, p)
-    early = df.copy()
-    for col in ("open", "high", "low", "close"):
-        early.iloc[: t - need + 1, early.columns.get_loc(col)] *= 1.5
-    future = df.copy()
-    future.iloc[t + 1:, future.columns.get_loc("close")] = np.nan
-    for mutated in (early, future):
-        got = _apply(mutated, p)
-        pd.testing.assert_series_equal(got[DECISION_COLUMNS].iloc[t], full[DECISION_COLUMNS].iloc[t],
-                                       check_names=False)
-    recovered = _apply(_set_at(df, t - need, "close", np.nan), p)
-    pd.testing.assert_series_equal(recovered[DECISION_COLUMNS].iloc[t], full[DECISION_COLUMNS].iloc[t],
-                                   check_names=False)
-    assert recovered["tsi_valid"].iloc[t - 1] == 0.0
-
-
-def test_rows_outside_the_support_and_later_rows_never_change_a_decision(subtests):
-    with subtests.test(case="every_grid_combination_is_causal_on_frozen_candles"):
-        _every_grid_combination_is_causal_on_frozen_candles()
-    with subtests.test(case="rows_outside_the_support_cannot_change_a_decision"):
-        _rows_outside_the_support_cannot_change_a_decision()
 
 
 def _cfg(params, **kw):

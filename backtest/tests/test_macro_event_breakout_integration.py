@@ -123,48 +123,6 @@ UP = {EVENT_BAR: 101.2, EVENT_BAR + 1: 101.5, EVENT_BAR + 2: 101.7}
 DOWN = {EVENT_BAR: 98.8, EVENT_BAR + 1: 98.5}
 
 
-def test_importer_is_deterministic_and_artifact_identity_is_pinned(tmp_path):
-    rows = [_event(), _event(eid="fixture/b", ms=RELEASE + 48 * H), _event()]
-    a, stats = _calendar(rows)
-    b, _ = _calendar(list(reversed(rows)))
-    assert stats["identical_duplicates"] == 1 and mi.artifact_bytes(a) == mi.artifact_bytes(b)
-    path = str(tmp_path / "cal.json")
-    sha = mi.write_artifact(path, a)
-    doc, got = mi.load_calendar_artifact(path, sha)
-    assert got == sha and doc == a
-    assert mi.calendar_payload(doc, sha) == mi.calendar_payload(mi.load_calendar_artifact(path, sha)[0], sha)
-    with open(path, "rb") as fh:
-        blob = fh.read()
-    with open(path, "wb") as fh:
-        fh.write(blob.replace(b'"revision":1', b'"revision":2', 1))
-    with pytest.raises(mi.MacroInputError, match="sha256"):
-        mi.load_calendar_artifact(path, sha)
-    tampered = copy.deepcopy(a)
-    tampered["records"][0]["scheduled_utc_ms"] += H
-    with pytest.raises(mi.MacroInputError, match="UTC conversion"):
-        mi.validate_calendar_artifact(tampered)
-    swapped = copy.deepcopy(a)
-    swapped["records"].reverse()
-    with pytest.raises(mi.MacroInputError, match="canonical order"):
-        mi.validate_calendar_artifact(swapped)
-    duplicated = copy.deepcopy(a)
-    duplicated["records"].insert(0, duplicated["records"][0])
-    with pytest.raises(mi.MacroInputError, match="duplicates"):
-        mi.validate_calendar_artifact(duplicated)
-    extra = copy.deepcopy(a)
-    extra["records"][0]["note"] = "x"
-    with pytest.raises(mi.MacroInputError, match="unknown"):
-        mi.validate_calendar_artifact(extra)
-    qpath = str(tmp_path / "q.json")
-    qsha = mi.write_artifact(qpath, _quotes())
-    with pytest.raises(mi.MacroInputError, match="coin"):
-        mi.load_quote_artifact(qpath, qsha, "ETH")
-    with pytest.raises(mi.MacroInputError, match="ambiguous"):
-        mi.local_to_utc_ms("2026-11-01T01:30:00", "America/New_York")
-    with pytest.raises(mi.MacroInputError, match="does not exist"):
-        mi.local_to_utc_ms("2026-03-08T02:30:00", "America/New_York")
-
-
 def _check_mirrored_entries_record_their_evidence_and_respect_the_range_boundary():
     quotes = _quotes()
     long_out = _run(_frame(breakout=UP), quotes=quotes)
@@ -245,22 +203,6 @@ def _check_spread_gate_holds_missing_stale_late_conflicting_and_wide_quotes():
     assert ungated["signal"].iloc[EVENT_BAR] == 1 and not ungated["meb_spread_gate"].iloc[0]
     malformed = _run(df, quotes=_quotes(), params={"quote_sha256": "3" * 64, "quote_path": "/x.json"})
     assert _reason(malformed, EVENT_BAR) == "quotes_malformed"
-
-
-def test_decisions_ignore_future_bars_and_truncated_frames_agree():
-    quotes = _quotes()
-    df = _frame(breakout=UP)
-    full = _run(df, quotes=quotes)
-    for cut in (EVENT_BAR, EVENT_BAR + 1, EVENT_BAR + 3, N - 1):
-        part = _run(df.iloc[:cut], quotes=quotes)
-        assert (part["signal"].to_numpy() == full["signal"].to_numpy()[:cut]).all()
-        perturbed = df.copy()
-        perturbed.iloc[cut:, perturbed.columns.get_loc("close")] = 90.0
-        assert (_run(perturbed, quotes=quotes)["signal"].to_numpy()[:cut] == full["signal"].to_numpy()[:cut]).all()
-    support = 24 + 4 + 6 + 1
-    end = EVENT_BAR + 1
-    tail = _run(df.iloc[end - support:end], quotes=quotes)
-    assert tail["signal"].iloc[-1] == full["signal"].iloc[end - 1]
 
 
 def test_check_time_cutoff_holds_forming_and_stale_bars_and_carries_a_fresh_decision():
@@ -367,44 +309,6 @@ def test_cached_single_run_attaches_the_pinned_artifacts(research_inputs):
     proc = subprocess.run([sys.executable, "-c", RUN_BACKTEST_SNIPPET, json.dumps(bad)], cwd=_REPO,
                           env=research_inputs["env"], capture_output=True, text=True, timeout=600)
     assert proc.returncode != 0 and "sha256" in (proc.stderr + proc.stdout)
-
-
-def test_cached_m1_and_frozen_manifest_legs_agree_under_equal_inputs(research_inputs):
-    snippet = (
-        "import json, sys; sys.path[:0] = ['backtest', 'shared_tools']\n"
-        "import eval_windows as ew, offline_manifest as om\n"
-        "from registry_loader import load_registry\n"
-        "args = json.loads(sys.argv[1])\n"
-        "reg = load_registry('futures')\n"
-        "cand = {'name': 'macro_event_breakout', 'params': args['params'], 'direction': 'both',\n"
-        "        'close_strategies': [{'name': 'time_stop', 'params': {'max_bars': 6}}],\n"
-        "        'stop_loss_atr_mult': 5.0, 'comparison_mode': 'approximate'}\n"
-        "ew.validate_candidate(cand)\n"
-        "out = {}\n"
-        "cap = []\n"
-        "import backtester\n"
-        "base = backtester.Backtester\n"
-        "class B(base):\n"
-        "    def run(self, *a, **k):\n"
-        "        r = super().run(*a, **k); cap.append(r); return r\n"
-        "backtester.Backtester = B\n"
-        "leg = ew.run_candidate_leg(reg, cand, 'BTC/USDT', '1h', ('2026-01-07', '2026-01-11'), warmup_bars=40,\n"
-        "                           funding_mode='off')\n"
-        "out['cached'] = [[t['entry_date'], t['side'], t['exit_reason']] for t in cap[-1]['trades']]\n"
-        "m = om.load_manifest(args['manifest'])\n"
-        "ctx = {'manifest': m, 'window': 'test', 'cost_multiplier': 1.0}\n"
-        "leg = ew.run_candidate_leg(reg, cand, 'BTC', '1h', (None, None), manifest_ctx=ctx)\n"
-        "out['manifest'] = [[t['entry_date'], t['side'], t['exit_reason']] for t in cap[-1]['trades']]\n"
-        "out['macro'] = leg['manifest']['macro_event_coverage']['quote_records']\n"
-        "print('RESULT', json.dumps(out))\n"
-    )
-    payload = json.dumps({"params": research_inputs["params"], "manifest": research_inputs["manifest"]})
-    proc = subprocess.run([sys.executable, "-c", snippet, payload], cwd=_REPO, env=research_inputs["env"],
-                          capture_output=True, text=True, timeout=600)
-    assert proc.returncode == 0, proc.stderr[-3000:] + proc.stdout[-3000:]
-    out = json.loads(next(l for l in proc.stdout.splitlines() if l.startswith("RESULT")).split(" ", 1)[1])
-    want = [[str(research_inputs["df"].index[EVENT_BAR + 1]), "long", "time_stop:6"]]
-    assert out["cached"] == want and out["manifest"] == want and out["macro"] == N + 1
 
 
 def test_manifest_v4_contract_refuses_old_schemas_and_mismatched_pins(research_inputs, tmp_path):

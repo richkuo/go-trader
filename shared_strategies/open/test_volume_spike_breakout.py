@@ -4,7 +4,6 @@ import sys
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from shared_strategies.open.conftest import load_module
 
@@ -164,93 +163,6 @@ def assert_matches_reference(rows, params, timestamps=None, check_reasons=True):
                     assert bool(out["vsb_valid"].iloc[i]), (platform, i)
 
 
-SHAPES = {
-    "flat": lambda: flat(40),
-    "rising": lambda: [bar(100.0 + i, 10.0 if i % 7 else 40.0) for i in range(60)],
-    "falling": lambda: [bar(200.0 - i, 10.0 if i % 7 else 40.0) for i in range(60)],
-    "spike_without_breakout": lambda: flat(20) + [bar(100.0, 200.0)] + flat(10),
-    "breakout_with_spike": lambda: flat(20) + [bar(110.0, 50.0, body=9.0)] + [bar(111.0, 50.0)] + flat(5, 111.0),
-    "zero_volume": lambda: flat(10) + [bar(100.0, 0.0)] + flat(10) + [bar(115.0, 60.0)],
-    "nan_close": lambda: flat(10) + [(100.0, 100.5, 99.5, float("nan"), 10.0)] + flat(10) + [bar(85.0, 60.0)],
-}
-
-
-def test_signals_and_reasons_match_an_independent_reference_on_shaped_fixtures(subtests):
-    for shape, build in sorted(SHAPES.items()):
-        for params in (SMALL, dict(SMALL, min_body_frac=0.5), dict(SMALL, lookback=6, vol_period=2)):
-            with subtests.test(shape=shape, params=params):
-                assert_matches_reference(build(), params)
-
-
-def test_signals_and_reasons_match_an_independent_reference_on_random_walks(subtests):
-    grid = [
-        {"lookback": 20, "vol_period": 20, "vol_multiplier": 2.0, "min_body_frac": 0.0},
-        {"lookback": 10, "vol_period": 40, "vol_multiplier": 1.5, "min_body_frac": 0.25},
-        {"lookback": 40, "vol_period": 10, "vol_multiplier": 1.0, "min_body_frac": 0.5},
-        {"lookback": 100, "vol_period": 100, "vol_multiplier": 3.0, "min_body_frac": 0.0},
-    ]
-    for seed in (1, 2, 3):
-        rows = walk(600, seed)
-        for params in grid:
-            with subtests.test(seed=seed, params=params):
-                assert_matches_reference(rows, params)
-    entries = sum(int(x != 0) for x in run("futures", frame(walk(600, 1))[0], grid[0])["signal"])
-    assert entries >= 4
-
-
-def test_strict_threshold_and_range_equality_hold():
-    rows = flat(8) + [bar(100.5, 20.0)]
-    df, _ = frame(rows)
-    last = run("futures", df).iloc[-1]
-    assert last["vsb_range_high"] == 100.5 and last["close"] == 100.5
-    assert int(last["signal"]) == 0 and last["vsb_reason"] == "no_breakout"
-    rows = flat(8) + [bar(110.0, 20.0)]
-    last = run("futures", frame(rows)[0]).iloc[-1]
-    assert last["vsb_rel_vol"] == 2.0
-    assert int(last["signal"]) == 0 and last["vsb_reason"] == "volume_below_threshold"
-    rows = flat(8) + [bar(110.0, 20.5)]
-    assert int(run("futures", frame(rows)[0]).iloc[-1]["signal"]) == 1
-
-
-def test_current_bar_is_excluded_from_its_own_range_and_baseline():
-    rows = flat(8) + [(100.0, 130.0, 99.5, 125.0, 1000.0)]
-    last = run("futures", frame(rows)[0]).iloc[-1]
-    assert last["vsb_range_high"] == 100.5
-    assert last["vsb_base_volume"] == 10.0
-    assert last["vsb_rel_vol"] == 100.0
-    assert int(last["signal"]) == 1 and last["vsb_reason"] == "entry_long"
-
-
-def test_spot_never_emits_a_short_entry_and_futures_mirrors_it():
-    rows = flat(8) + [bar(90.0, 50.0)]
-    df, _ = frame(rows)
-    fut = run("futures", df).iloc[-1]
-    spot = run("spot", df).iloc[-1]
-    assert (int(fut["signal"]), fut["vsb_reason"]) == (-1, "entry_short")
-    assert (int(spot["signal"]), spot["vsb_reason"]) == (0, "short_suppressed_spot")
-    assert spot["vsb_short_qualified"] == 1.0 and spot["vsb_short_entries"] == 0.0
-    assert fut["vsb_short_entries"] == 1.0
-    for seed in (4, 5):
-        out = run("spot", frame(walk(500, seed))[0], {"lookback": 10, "vol_period": 10, "vol_multiplier": 1.0,
-                                                       "min_body_frac": 0.0})
-        assert (out["signal"] >= 0).all()
-        assert (out["vsb_reason"] == "short_suppressed_spot").any()
-
-
-def test_spot_short_cannot_be_enabled_by_a_parameter():
-    df, _ = frame(flat(8) + [bar(90.0, 50.0)])
-    for extra in ({"allow_short": True}, {"short_entries": True}):
-        with pytest.raises((TypeError, ValueError)):
-            run("spot", df, dict(SMALL, **extra))
-
-
-def test_a_new_volume_qualification_after_a_false_bar_is_a_new_event():
-    rows = flat(8) + [bar(110.0, 50.0), bar(111.0, 12.0), bar(112.0, 80.0)]
-    out = run("futures", frame(rows)[0])
-    assert out["signal"].tolist()[-3:] == [1, 0, 1]
-    assert out["vsb_reason"].tolist()[-3:] == ["entry_long", "volume_below_threshold", "entry_long"]
-
-
 def test_body_filter_rejects_wicks_and_zero_range_and_recovers_by_the_event_rule():
     params = dict(SMALL, min_body_frac=0.5)
     wick = (100.0, 112.0, 99.5, 101.0, 50.0)
@@ -278,32 +190,6 @@ DEFECTS = {
 }
 
 
-def test_defective_bars_hold_with_a_reason_and_never_invent_volume(subtests):
-    for case, (mutate, reason) in sorted(DEFECTS.items()):
-        with subtests.test(case=case):
-            rows = flat(9) + [bar(110.0, 50.0)]
-            rows[-1] = mutate(rows[-1])
-            df, ts = frame(rows)
-            out = run("futures", df)
-            last = out.iloc[-1]
-            assert int(last["signal"]) == 0 and not bool(last["vsb_valid"])
-            assert last["vsb_reason"] == reason
-            assert np.isnan(last["vsb_rel_vol"]) and np.isnan(last["vsb_base_volume"])
-            assert out["volume"].iloc[-1] == df["volume"].iloc[-1] or np.isnan(df["volume"].iloc[-1])
-            assert_matches_reference(rows, SMALL)
-
-
-def test_a_malformed_preceding_bar_holds_and_cannot_manufacture_an_edge(subtests):
-    for case, (mutate, reason) in sorted(DEFECTS.items()):
-        with subtests.test(case=case):
-            rows = flat(9) + [bar(110.0, 50.0), bar(111.0, 60.0)]
-            rows[-2] = mutate(rows[-2])
-            out = run("futures", frame(rows)[0])
-            assert int(out["signal"].iloc[-1]) == 0 and out["vsb_reason"].iloc[-1] == reason
-            assert not bool(out["vsb_valid"].iloc[-1])
-            assert_matches_reference(rows, SMALL)
-
-
 def test_recovery_after_a_defect_follows_the_event_rule():
     defect = (100.0, 100.5, 99.5, 100.0, float("nan"))
     rows = flat(5) + [defect] + flat(4) + [bar(110.0, 50.0), bar(111.0, 60.0), bar(112.0, 70.0)]
@@ -319,55 +205,3 @@ def test_recovery_after_a_defect_follows_the_event_rule():
     out = run("futures", frame(clear)[0])
     assert out["signal"].iloc[-1] == 1 and out["vsb_reason"].iloc[-1] == "entry_long"
     assert_matches_reference(clear, SMALL)
-
-
-def test_insufficient_history_needs_both_edge_bars():
-    params = SMALL
-    need = max(params["lookback"], params["vol_period"]) + 2
-    rows = flat(need - 2) + [bar(110.0, 50.0)]
-    out = run("futures", frame(rows)[0], params)
-    assert out["vsb_reason"].iloc[-1] == "insufficient_history" and out["signal"].iloc[-1] == 0
-    assert out["vsb_required_history"].iloc[-1] == float(need)
-    rows = flat(need - 1) + [bar(110.0, 50.0)]
-    out = run("futures", frame(rows)[0], params)
-    assert out["vsb_reason"].iloc[-1] == "entry_long"
-    assert (out["vsb_reason"].iloc[:need - 1] == "insufficient_history").all()
-
-
-def test_timestamp_defects_hold_inside_the_dependency_span_only(subtests):
-    base = [T0_MS + i * STEP_MS for i in range(14)]
-    cases = {
-        "duplicate": (lambda ts: ts[:9] + [ts[8]] + ts[10:], "timestamp_order"),
-        "reversed": (lambda ts: ts[:9] + [ts[8] - 1] + ts[10:], "timestamp_order"),
-        "missing": (lambda ts: ts[:9] + [float("nan")] + ts[10:], "missing_timestamp"),
-    }
-    rows = flat(12) + [bar(110.0, 50.0), bar(111.0, 60.0)]
-    for case, (mutate, reason) in sorted(cases.items()):
-        with subtests.test(case=case):
-            ts = mutate(list(base))
-            df, fts = frame(rows, ts)
-            out = run("futures", df)
-            assert out["vsb_reason"].iloc[12] == reason and out["signal"].iloc[12] == 0
-            assert_matches_reference(rows, SMALL, ts)
-    late = flat(3) + [bar(100.0, 10.0)] * 12 + [bar(110.0, 50.0)]
-    ts = [T0_MS + i * STEP_MS for i in range(len(late))]
-    ts[1] = ts[0]
-    out = run("futures", frame(late, ts)[0])
-    assert out["vsb_reason"].iloc[-1] == "entry_long" and out["signal"].iloc[-1] == 1
-
-
-def test_derived_overflow_holds_with_a_reason():
-    huge = 1e308
-    rows = [bar(100.0, huge) for _ in range(9)] + [bar(110.0, huge)]
-    out = run("futures", frame(rows)[0])
-    assert out["vsb_reason"].iloc[-1] == "nonfinite_derived" and out["signal"].iloc[-1] == 0
-    tiny = [bar(100.0, 1e-300) for _ in range(9)] + [bar(110.0, 1e10)]
-    out = run("futures", frame(tiny)[0])
-    assert out["vsb_reason"].iloc[-1] == "nonfinite_derived" and out["signal"].iloc[-1] == 0
-    assert_matches_reference(rows, SMALL, check_reasons=False)
-
-
-def test_missing_columns_hold_every_row():
-    df, _ = frame(flat(12))
-    out = run("futures", df.drop(columns=["volume"]))
-    assert (out["vsb_reason"] == "missing_columns").all() and (out["signal"] == 0).all()

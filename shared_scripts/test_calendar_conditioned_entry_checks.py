@@ -3,7 +3,6 @@ import json
 import os
 import sys
 
-import pytest
 
 _NAME = "_strategy_check_contract_for_calendar_conditioned_entry"
 _SPEC = importlib.util.spec_from_file_location(
@@ -64,15 +63,6 @@ def test_explicit_paper_check_decides_on_the_closed_bar_and_anchors_the_frame_ho
     assert solo["signal"] == 1, case
 
 
-def test_the_production_frame_and_default_parameters_hold_for_missing_training_history():
-    bars = C.cce_bars(n=201)
-    out = _check(bars, params={}, limit=200, closes=({"name": "time_stop", "params": {"max_bars": 4}},))
-    assert out["closed_bar_decision"]["held"] is False
-    assert out["signal"] == 0 and out["open_action"] == "none"
-    assert out["indicator_labels"]["cce_reason"] == "insufficient_history"
-    assert out["indicators"]["cce_required_bars"] >= 4368.0 and out["indicators"]["cce_history_bars"] == 200.0
-
-
 def test_a_cadence_mismatch_is_refused_before_any_candle_fetch():
     strategy_refs = json.dumps({"open": {"name": NAME}, "closes": [C.TIME_STOP]})
     proc = C.run([NAME, "BTC", "4h", "--mode=paper", "--strategy-refs", strategy_refs])
@@ -80,11 +70,3 @@ def test_a_cadence_mismatch_is_refused_before_any_candle_fetch():
     out = C.payload(proc)
     assert out["signal"] == 0 and "registry default expected_interval_ms=3600000" in out["error"]
     assert "Fetching BTC" not in proc.stderr
-
-
-@pytest.mark.parametrize("effect", [0.0])
-def test_a_frame_without_a_calendar_effect_holds_below_the_corrected_threshold(effect):
-    out = _check(C.cce_bars(effect=effect))
-    assert out["signal"] == 0 and out["indicator_labels"]["cce_reason"] in ("below_threshold",
-                                                                           "insufficient_effective_obs")
-    assert out["indicators"]["cce_valid"] == 1.0

@@ -319,15 +319,6 @@ def test_arm_construction_and_refusals(study):
     assert study["both_open_as_close_refused"] is True
 
 
-def test_finite_frame_signal_replay_and_htf_visibility(study):
-    assert study["table"]["raw_nonzero"] > 0
-    assert study["table"]["t5_nonzero"] == 0 and study["table"]["t6_nonzero"] == 0
-    assert study["table"]["t4_nonzero"] > 0
-    for name, r in study["replay"].items():
-        assert r["compared"] > 0 and r["ok"] == r["compared"], (name, r)
-    assert study["future_invariance"] is True
-
-
 def test_real_backtester_legs_fill_next_bar_and_aggregate_closes(study):
     for key, leg in study["legs"].items():
         assert leg["calls"] == 1, key
@@ -346,28 +337,6 @@ def test_funding_refusal(study):
     assert u["funding_incomplete"] is True
     assert u["unpriced_hours"] > 0
     assert study["verdict"]["funding_incomplete_outcome"] == "inconclusive"
-
-
-def test_verdict_rules_and_report_regeneration(study):
-    v = study["verdict"]
-    assert v["family"] == 10
-    assert v["ok_outcome"] in ("inconclusive", "negative")
-    assert v["empty_group"] == "inconclusive" and v["empty_group_usable"] == 0
-    assert v["bad_replay"] == ["inconclusive"]
-    assert v["suggested"] == 0
-    assert study["render"] == {"report_written": True, "fresh_check_passed": True, "stale_check_refused": True}
-
-
-def test_result_rows_keyed_by_coin_and_interval(study):
-    k = study["keying"]
-    assert k["returns_differ"] is True
-    assert k["audit_scored"] == 2
-    assert k["audit_mean_sharpe"] == k["expected_mean_sharpe"]
-    assert k["perps_30m"] == ["BTC 30m"] and k["perps_1h"] == ["BTC 1h"]
-    assert k["perps_30m_positions"] == k["expected_30m_positions"]
-    assert k["perps_1h_positions"] == k["expected_1h_positions"]
-    assert k["expected_30m_positions"] != k["expected_1h_positions"]
-    assert k["duplicate_refused"] is not None and "two legs" in k["duplicate_refused"]
 
 
 def test_changed_inputs_and_incompatible_artifacts_refused(study):

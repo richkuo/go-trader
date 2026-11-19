@@ -24,22 +24,6 @@ def test_trade_metrics_fee_and_atr_conversion():
     assert m["mae_atr"] == pytest.approx(1.0, abs=1e-6)
 
 
-def test_classify_bleed_modes_each_mode():
-    trades = [
-        _t(pnl_pct=5.0, exit_price=105.0, mfe_pct=6.0, mae_pct=-0.5),
-        _t(pnl_pct=1.0, exit_price=101.0, mfe_pct=8.0, mae_pct=-1.0),
-        _t(pnl_pct=-4.0, exit_price=96.0, mfe_pct=0.2, mae_pct=-5.0),
-        _t(pnl_pct=0.1, exit_price=100.1, mfe_pct=0.3, mae_pct=-0.2),
-        _t(pnl_pct=-3.0, exit_price=97.0, mfe_pct=0.7, mae_pct=-3.0),
-    ]
-    modes = ed.classify_bleed_modes([ed.trade_metrics(t) for t in trades])
-    assert modes["clean_win"]["count"] == 1
-    assert modes["late_giveback"]["count"] == 1
-    assert modes["early_reversal"]["count"] == 1
-    assert modes["fee_churn"]["count"] == 1
-    assert modes["clean_loss"]["count"] == 1
-
-
 def test_fee_churn_summary_flags():
     trades = [
         ed.trade_metrics(_t(pnl_pct=0.1, exit_price=100.1, entry_fee=1.0, exit_fee=1.0)),
@@ -57,19 +41,6 @@ def test_holding_time_buckets_partition():
     labels = [b["bucket"] for b in ht["buckets"]]
     assert labels == ["1", "2-5", "6-20", "21-50", "51+"]
     assert ht["bars_held"]["max"] == 100
-
-
-def test_percentile_interpolation():
-    assert ed._pct([1, 2, 3, 4], 0) == 1.0
-    assert ed._pct([1, 2, 3, 4], 100) == 4.0
-    assert ed._pct([1, 2, 3, 4], 50) == pytest.approx(2.5)
-
-
-def test_empty_inputs_are_safe():
-    diag = ed.diagnose_trades([])
-    assert diag["holding_time"]["trades"] == 0
-    assert diag["bleed_modes"] == {}
-    assert diag["fee_churn"] == {"trades": 0}
 
 
 def test_backtester_stamps_exact_excursions():

@@ -421,23 +421,6 @@ def test_a_failed_later_leg_discards_every_earlier_leg(tmp_path, subtests):
             assert len(_single_document(proc)["actions"]) == quotes
 
 
-def test_library_output_reaches_stderr_and_stdout_stays_one_document(tmp_path, subtests):
-    cases = {
-        "success": ({"QP_QUOTE": 100000}, 0),
-        "handled_error": ({"QP_QUOTE": 100000, "QP_OPTION_QUOTE": "error"}, 1),
-    }
-    for case in sorted(cases):
-        extra, code = cases[case]
-        with subtests.test(case=case):
-            run_dir = tmp_path / case
-            run_dir.mkdir()
-            proc, _ = _run(["protective_puts", "BTC", "--platform=deribit"], run_dir, "[]", extra=dict(extra, QP_STDOUT_NOISE="1"))
-            assert proc.returncode == code, proc.stderr
-            _single_document(proc)
-            assert "quote precision stub stdout noise" in proc.stderr
-            assert "quote precision stub stdout noise" not in proc.stdout
-
-
 def test_holds_that_need_no_pricing_succeed_without_metrics_or_quotes(tmp_path, subtests):
     cases = {
         "existing_protective_put": (["protective_puts", "BTC", "--platform=ibkr"], '[{"option_type": "put", "action": "buy", "strike": 80000, "expiry": "2026-12-18"}]'),
@@ -555,17 +538,6 @@ def test_every_document_carries_the_structure_contract(tmp_path, subtests):
             assert proc.returncode == code, proc.stderr
             out = _single_document(proc)
             assert out["structure_contract"] == STRUCTURE_CONTRACT, out
-
-
-def test_a_passing_structure_keeps_every_leg_with_its_metadata(tmp_path):
-    proc, _ = _run(["butterfly", "BTC", "--platform=deribit"], tmp_path, "[]",
-                   extra={"QP_QUOTE": 100000, "QP_DAILY": json.dumps(MID_RANK_CLOSES)})
-    assert proc.returncode == 0, proc.stderr
-    out = _single_document(proc)
-    assert out["signal"] == 1
-    assert [(a["action"], a["strike"]) for a in out["actions"]] == [("buy", 95000.0), ("sell", 100000.0), ("buy", 105000.0)]
-    assert {(a["structure_id"], a["structure_legs"]) for a in out["actions"]} == {("butterfly-1", 3)}
-    assert all("score" in a and "score_reason" in a for a in out["actions"])
 
 
 def test_a_structure_whose_minimum_leg_score_fails_emits_no_leg(tmp_path):

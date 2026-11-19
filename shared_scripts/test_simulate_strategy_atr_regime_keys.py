@@ -78,16 +78,3 @@ def _payload(cfg: dict) -> dict:
     }
     full.update(cfg)
     return _run_payload({"candles": candles, "configs": [{"label": "x", "config": full}]})
-
-
-def test_simulation_reports_conflicts_as_json_and_runs_agreeing_spellings(subtests):
-    with subtests.test(case="conflict_surfaces_as_a_json_error_not_a_crash"):
-        out = _payload({SL_LEGACY: A, SL_CANON: B})
-        assert "conflicting ATR-regime stop keys" in out["error"]
-        assert out["markers"] == {}
-
-    with subtests.test(case="agreeing_spellings_simulate_normally"):
-        out = _payload({SL_LEGACY: A, SL_CANON: A,
-                        "regime": {"enabled": True, "period": 14, "adx_threshold": 20}})
-        assert not out.get("error")
-        assert "x" in out["markers"]

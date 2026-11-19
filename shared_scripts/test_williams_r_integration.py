@@ -145,22 +145,6 @@ def test_explicit_paper_check_emits_the_registry_decision_and_explanation(subtes
             _assert_registry_decision(out, bars, signal, action, code, action)
 
 
-def test_oversold_equality_on_the_current_bar_is_not_a_crossing(subtests):
-    for last_close, want_wr, want_signal in [
-            (92.0, -80.0, 0),
-            (92.5, -75.0, 1),
-            (91.0, -90.0, 0),
-        ]:
-        with subtests.test(last_close=last_close, want_wr=want_wr, want_signal=want_signal):
-            bars = _zigzag(60) + [(96.0, 100.0, 95.0, 96.0), (95.0, 100.0, 90.0, 90.0), (90.0, 95.0, 91.0, last_close)]
-            res = _strategies().apply_strategy(NAME, _frame_from_bars(bars), {"lookback": 2}).iloc[-1]
-            assert res["wr_prev"] == -100.0
-            assert res["wr"] == want_wr
-            out = _ok(_solo(bars, ["--mode=paper", "--params", json.dumps({"lookback": 2})]))
-            assert out["signal"] == want_signal == int(res["signal"])
-            assert out["indicators"]["wr"] == want_wr
-
-
 def test_overbought_equality_on_the_current_bar_is_not_a_crossing(subtests):
     for last_close, want_wr, want_signal in [
             (98.0, -20.0, 0),

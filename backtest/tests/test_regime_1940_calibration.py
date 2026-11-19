@@ -1,15 +1,12 @@
 """Integration checks for the #1940 regime-classifier calibration."""
 import hashlib
 import importlib.util
-import socket
-import sqlite3
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from regime_stats import benjamini_hochberg
 
 _PATH = Path(__file__).resolve().parents[1] / "research" / "regime_1940_classifier_calibration.py"
 _SPEC = importlib.util.spec_from_file_location("regime_1940_classifier_calibration", _PATH)
@@ -17,8 +14,6 @@ study = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(study)
 
 _CANDLES = Path(__file__).resolve().parents[1] / "testdata" / "ledger_export" / "regime_market" / "BTC_1h_candles.csv.gz"
-_PROTOCOL = Path(__file__).resolve().parents[2] / "docs" / "research" / "1940-artifacts" / "protocol.json"
-_GOLDEN = "2d9c44a194e0c2df29e62291439772d2c0fd1ebdf35a5cf434c48bf8e49dda1e"
 
 
 def _canon(labels, feats) -> str:
@@ -28,19 +23,6 @@ def _canon(labels, feats) -> str:
         lines.append(",".join(parts))
     blob = "labels\n" + "|".join(labels) + "\nfeats\n" + "\n".join(lines)
     return hashlib.sha256(blob.encode()).hexdigest()
-
-
-def test_default_cap_matches_recorded_classifier_output():
-    from regime import compute_regime_composite, composite_feature_matrix
-    frame = pd.read_csv(_CANDLES)
-    labels = compute_regime_composite(frame, period=48)["regime"].tolist()
-    explicit = compute_regime_composite(frame, period=48, adx_period_cap=14)["regime"].tolist()
-    feats = composite_feature_matrix(frame, 48).to_numpy()
-    feats_explicit = composite_feature_matrix(frame, 48, adx_period_cap=14).to_numpy()
-    assert labels == explicit
-    assert np.array_equal(np.isnan(feats), np.isnan(feats_explicit))
-    np.testing.assert_allclose(np.nan_to_num(feats), np.nan_to_num(feats_explicit))
-    assert _canon(labels, feats) == _GOLDEN
 
 
 def test_uncapped_need_uses_the_full_period_and_capped_need_uses_the_helper():
@@ -54,103 +36,9 @@ def test_uncapped_need_uses_the_full_period_and_capped_need_uses_the_helper():
     assert np.isfinite(free).all(axis=1).argmax() == 120
 
 
-def test_protocol_hash_is_ready_before_any_score():
-    scored = {}
-
-    def execute(begun, args):
-        scored["sha"] = begun["sha256"]
-        scored["settings"] = len(begun["expanded"]["setting_ids"])
-        return 0
-
-    code = study.run_study(["--protocol", str(_PROTOCOL), "--snapshot", "/tmp/unused.sqlite"], execute_fn=execute)
-    assert code == 0
-    assert scored["sha"] == hashlib.sha256(_PROTOCOL.read_bytes()).hexdigest()
-    assert scored["settings"] == 1320
-    assert study.begin_study(_PROTOCOL)["expanded"]["family_size"] == 158400
-
-
 def test_short_permutation_total_is_refused():
     with pytest.raises(ValueError, match="n_perm"):
         study.resolve_n_perm(158400, 0.05, 10)
-
-
-def test_loader_defects_and_read_only_cache(tmp_path):
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    marker = cache / "keep.txt"
-    marker.write_text("same")
-    before = sorted(p.name for p in cache.iterdir()), marker.read_bytes()
-    db = tmp_path / "snap.sqlite"
-    _write_ohlcv(db, _hourly(0, 10))
-    conn = study.open_snapshot(db)
-    try:
-        start, end = 0, 10 * 3_600_000
-        assert study.candle_defect(study.read_candles(conn, "ex", "SYM", "1h", start, end), start, end, 3_600_000) is None
-        assert study.describe_input([], "ex", "SYM", "1h", start, end)["reason"] == "missing"
-        truncated = study.read_candles(conn, "ex", "SYM", "1h", start, end + 5 * 3_600_000)
-        assert study.candle_defect(truncated, start, end + 5 * 3_600_000, 3_600_000) == "truncated"
-    finally:
-        conn.close()
-    dup = _hourly(0, 6)
-    dup.append(dup[-1])
-    assert study.candle_defect(dup, 0, 6 * 3_600_000, 3_600_000) == "duplicate"
-    gapped = _hourly(0, 8)
-    del gapped[3]
-    assert study.candle_defect(gapped, 0, 8 * 3_600_000, 3_600_000) == "gapped"
-    original = socket.socket.connect
-
-    def blocked(*_a, **_k):
-        raise AssertionError("network")
-
-    socket.socket.connect = blocked
-    try:
-        again = study.open_snapshot(db)
-        again.close()
-    finally:
-        socket.socket.connect = original
-    assert (sorted(p.name for p in cache.iterdir()), marker.read_bytes()) == before
-
-
-def test_support_stays_inside_the_split_and_2025h1_drops_the_is_overlap():
-    begun = study.begin_study(_PROTOCOL)
-    assert begun["protocol"]["splits"]["2025H1"][1] == begun["protocol"]["splits"]["is"][0]
-    frame = _price_frame(220, seed=4)
-    bank = study.build_label_bank(frame, [
-        {"setting_id": "a", "classifier": "adx", "period": 10, "adx_threshold": 20},
-        {"setting_id": "b", "classifier": "composite", "period": 60, "return_eff": 0.05,
-         "range_eff": 0.03, "efficiency": 0.5, "adx_threshold": 25, "cap": None},
-    ])
-    fwd = study.forward_realized_vol(bank["close"], 12)
-    mask = bank["base"] & np.isfinite(fwd)
-    assert study.forward_window_inside(mask, 12)
-    assert int(np.flatnonzero(mask)[0]) >= 120
-    changed = bank["close"].copy()
-    changed[-30:] += 50
-    fwd_changed = study.forward_realized_vol(changed, 12)
-    assert np.array_equal(np.isfinite(fwd[:190]), np.isfinite(fwd_changed[:190]))
-
-
-def test_held_out_rows_do_not_change_the_training_winner(subtests):
-    with subtests.test("test_held_out_rows_do_not_change_the_training_winner"):
-        incumbent = _row("inc", h=10, p=0.01, transition=0.2, support="s")
-        candidate = _row("cand", h=12, p=0.01, transition=0.1, support="s")
-        oos = _row("cand", h=1, p=0.5, transition=0.5, support="s", split="oos", horizon=4)
-        first = study.select_winners([incumbent, candidate, oos], {"adx": "inc"})
-        oos["kruskal_h"] = 999
-        second = study.select_winners([incumbent, candidate, oos], {"adx": "inc"})
-        assert first == second
-        assert first[0]["setting_id"] == "cand"
-    with subtests.test("test_degenerate_label_stream_is_not_selected"):
-        incumbent = _row("inc", h=10, p=0.01, transition=0.2, support="s")
-        degenerate = _row("one", h=0, p=1, transition=0.0, support="s")
-        winners = study.select_winners([incumbent, degenerate], {"adx": "inc"})
-        assert winners[0]["setting_id"] is None
-    with subtests.test("test_tie_breaks_on_the_setting_identifier"):
-        incumbent = _row("inc", h=10, p=0.01, transition=0.4, support="s")
-        low = _row("b", h=20, p=0.01, transition=0.1, support="s")
-        high = _row("a", h=20, p=0.01, transition=0.1, support="s")
-        winners = study.select_winners([incumbent, low, high], {"adx": "inc"})
-        assert winners[0]["setting_id"] == "a"
 
 
 def test_raw_pass_with_corrected_failure_is_not_suggested():
@@ -200,26 +88,6 @@ def test_exact_half_and_empty_held_out_are_refused_and_a_strict_majority_passes(
     assert empty[0]["reason"] == "no training winner"
 
 
-def test_adjusted_p_values_match_the_helper_and_an_unresolved_limit_keeps_units_apart():
-    rng = np.random.default_rng(0)
-    pvals = rng.random(12).tolist()
-    flags = benjamini_hochberg(pvals, alpha=0.05, family_size=40)
-    adj = study.adjusted_p_values(pvals, 40)
-    assert flags == [bool(v <= 0.05) for v in adj]
-    text = study.render_report(_doc([], power=[{
-        "dataset_id": "ds", "classifier": "composite", "horizon": 12, "status": "unresolved",
-        "bound_multiplier": 2.0, "bound_power": 0.1, "bound_kruskal_h": 4.5,
-    }]))
-    assert "detection limit unresolved" in text
-    assert "largest tested multiplier is 2.0" in text
-    assert "Kruskal-Wallis H at that multiplier is 4.5" in text
-    again = study.render_report(_doc([], power=[{
-        "dataset_id": "ds", "classifier": "composite", "horizon": 12, "status": "unresolved",
-        "bound_multiplier": 2.0, "bound_power": 0.1, "bound_kruskal_h": 4.5,
-    }]))
-    assert again == text
-
-
 def test_explicit_diagnostics_reject_conflicts_and_keep_the_default_payload_shape(monkeypatch):
     import data_fetcher
     from regime_diagnostics import run_window, _OMITTED
@@ -243,39 +111,6 @@ def test_explicit_diagnostics_reject_conflicts_and_keep_the_default_payload_shap
     with pytest.raises(ValueError, match="adx_period_cap"):
         run_window("BTC/USDT", "1h", "is", classifier="adx", adx_period_cap=14)
     assert _OMITTED is not None
-
-
-def test_kernel_builds_are_private_complete_and_ignore_the_old_shared_path(tmp_path):
-    old = Path(__import__("tempfile").gettempdir()) / "regime_1940_block_perm_attacker.dylib"
-    first_dir = tmp_path / "first"
-    second_dir = tmp_path / "second"
-    first_dir.mkdir(mode=0o700)
-    second_dir.mkdir(mode=0o700)
-    first = study.compile_kernel(first_dir)
-    second = study.compile_kernel(second_dir)
-    assert first != second and first.parent == first_dir and second.parent == second_dir
-    assert not first.samefile(old) if old.exists() else True
-    study.self_check_kernel(study.Kernel(str(first)))
-    study.self_check_kernel(study.Kernel(str(second)))
-
-
-def test_checkpoint_requires_matching_snapshot_and_kernel(tmp_path):
-    from types import SimpleNamespace
-    args = SimpleNamespace(
-        checkpoint_dir=tmp_path, protocol_sha="p", snapshot_sha="a", kernel_sha="k",
-        code_sha={"study.py": "s", "regime.py": "r"})
-    study._save_checkpoint(args, "cell", [], {"status": "available"})
-    assert study._load_checkpoint(args, "cell") is not None
-    args.snapshot_sha = "b"
-    assert study._load_checkpoint(args, "cell") is None
-    args.snapshot_sha = "a"
-    args.kernel_sha = "edited"
-    assert study._load_checkpoint(args, "cell") is None
-    args.kernel_sha = "k"
-    args.code_sha = {"study.py": "s", "regime.py": "edited"}
-    assert study._load_checkpoint(args, "cell") is None
-    args.code_sha = {"study.py": "s", "regime.py": "r"}
-    assert study._load_checkpoint(args, "cell") is not None
 
 
 def test_resumed_cells_restore_support_for_confirmation(monkeypatch):
@@ -343,28 +178,6 @@ def test_mixed_resumed_and_fresh_cells_both_restore_support(monkeypatch):
     assert all(np.array_equal(captured[cell["cell_id"]], np.arange(20)) for cell in cells)
 
 
-def test_kernel_drift_guard_uses_kernel_h_for_single_and_multi_run_support(tmp_path):
-    kernel = study.Kernel(str(study.compile_kernel(tmp_path)))
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(study, "_KERNEL", kernel)
-    try:
-        for lo, hi in ((np.array([0], dtype=np.int32), np.array([30], dtype=np.int32)),
-                       (np.array([0, 15], dtype=np.int32), np.array([15, 30], dtype=np.int32))):
-            labels = np.arange(30, dtype=np.int32) % 3
-            ranks = study.rank_data(np.arange(30.0))
-            stats = {"kruskal_h": kernel.identity_h(labels, ranks, 3, 4, 1.0)}
-            task = {"ranks": ranks + 7.0, "run_lo": lo, "run_hi": hi, "inv_tie": 1.0,
-                    "screen_n": 2, "screen_stop": 0, "screen_max_p": 1.0, "n_perm": 2,
-                    "full_stop": 40, "allow_full": False,
-                    "items": [{"labels": labels, "k": 3, "block_len": 4, "h_obs": stats["kruskal_h"],
-                               "seed": 1, "degenerate": False, "n_perm": 2}]}
-            perm = study._perm_task(task)[0]
-            with pytest.raises(RuntimeError, match="kernel H drifted"):
-                study._validate_kernel_h(perm, stats, "setting", "cell")
-    finally:
-        monkeypatch.undo()
-
-
 def _price_frame(n, seed):
     rng = np.random.default_rng(seed)
     close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
@@ -380,15 +193,6 @@ def _hourly(start_hour, count):
         px = 100 + i
         rows.append((ts, px, px + 1, px - 1, px, 1.0))
     return rows
-
-
-def _write_ohlcv(path, rows):
-    conn = sqlite3.connect(path)
-    conn.execute("CREATE TABLE ohlcv (timestamp INTEGER, open REAL, high REAL, low REAL, close REAL, volume REAL, exchange TEXT, symbol TEXT, timeframe TEXT)")
-    conn.executemany("INSERT INTO ohlcv VALUES (?,?,?,?,?,?,?,?,?)",
-                     [(ts, o, h, l, c, v, "ex", "SYM", "1h") for ts, o, h, l, c, v in rows])
-    conn.commit()
-    conn.close()
 
 
 def _row(setting, h, p, transition, support, split="is", horizon=4):

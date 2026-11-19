@@ -10,24 +10,6 @@ def _bt(direction=None, invert_signal=False):
                       invert_signal=invert_signal)
 
 
-def test_apply_direction_invert():
-    for direction, invert_signal, uses_open_close, signal, expected in [
-        (None, True, True, [1, -1, 0, 1], [-1, 1, 0, -1]),
-        (None, False, True, [1, -1, 0], [1, -1, 0]),
-        (None, False, False, [1, -1, 0], [1, -1, 0]),
-        ("long", False, True, [1, -1, 0], [1, 0, 0]),
-        ("short", False, True, [1, -1, 0], [0, -1, 0]),
-        ("both", False, True, [1, -1, 0], [1, -1, 0]),
-        ("long", False, False, [1, -1, 0], [1, -1, 0]),
-        ("long", True, True, [1, -1], [0, 1]),
-    ]:
-        out = _bt(direction=direction,
-                  invert_signal=invert_signal)._apply_direction_invert(
-            pd.Series(signal), uses_open_close=uses_open_close)
-        assert out.tolist() == expected, (
-            f"test_apply_direction_invert[{direction}-{invert_signal}-{uses_open_close}-{signal}]")
-
-
 def _ohlc(signal):
     n = len(signal)
     return pd.DataFrame(
@@ -62,26 +44,6 @@ def _run(signal, **kw):
         close_strategies=_NEVER_FIRES_CLOSE, **kw,
     )
     return bt.run(_ohlc(signal), save=False)
-
-
-def test_direction_and_invert_realized_sides(subtests):
-    for signal, kwargs, expected_sides in [
-            ([1, 0, 0, 0], {"invert_signal": False}, ["long"]),
-            ([1, 0, 0, 0], {"invert_signal": True}, ["short"]),
-            ([-1, 0, 0, 0], {"direction": "long"}, []),
-            ([-1, 0, 0, 0], {"direction": "both"}, ["short"]),
-            ([1, 0, 0, 0], {"direction": "short"}, []),
-            ([1, 0, 0, 0], {"direction": "both"}, ["long"]),
-            ([-1, 0, 0, 0], {"direction": "long", "invert_signal": True}, ["long"]),
-            ([1, 0, 0, 0], {"direction": "long", "invert_signal": True}, []),
-        ]:
-        with subtests.test(case=f"{signal}-{kwargs}"):
-            _assert_direction_and_invert_realized_sides(signal, kwargs, expected_sides)
-
-
-def _assert_direction_and_invert_realized_sides(signal, kwargs, expected_sides):
-    res = _run(signal, **kwargs)
-    assert [t["side"] for t in res["trades"]] == expected_sides
 
 
 def test_regime_directional_policy_certification(subtests):

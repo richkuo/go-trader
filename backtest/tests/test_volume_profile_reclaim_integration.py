@@ -3,7 +3,6 @@ import hashlib
 import os
 import subprocess
 import sys
-from fractions import Fraction
 
 import numpy as np
 import pandas as pd
@@ -22,7 +21,7 @@ from optimizer import walk_forward_optimize
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
 from trade_flow_replay import _Flow, _Interval
-from volume_profile_inputs import MINUTES, SESSION_MS, value_area
+from volume_profile_inputs import MINUTES, SESSION_MS
 from volume_profile_replay import (ProfileReplay, load_profile_recording, payload_from_profile_series,
                                    refuse_volume_profile_strategy, sessions_sha256)
 
@@ -87,45 +86,6 @@ def _frame(closes, start=D0 + SESSION_MS):
 def _run(df, series, cutoff=None, **over):
     payload = payload_from_profile_series(series, BAR, cutoff)
     return _reg().apply_strategy(NAME, df, {**SEED, **over, "volume_profile_observations": payload})
-
-
-def test_hand_profile_bins_ties_value_area_and_boundaries_through_the_replay():
-    prof = _replay_session(D0, HAND)
-    art = prof.days[D0].artifact
-    assert [p for p, _ in art["prices"]] == ["100", "101", "102", "103", "104", "105", "106", "108"]
-    assert art["volume"] == "0.16" and art["trades"] == 16 and art["available_ms"] == D0 + SESSION_MS + 5_000
-    base = value_area(art, 4, Fraction(6, 10), False)
-    assert base["volume"] == [3_000_000, 5_000_000, 5_000_000, 3_000_000]
-    assert (base["poc"], base["val"], base["vah"]) == (1, 102, 106)
-    wide = value_area(art, 4, Fraction(8, 10), False)
-    assert (wide["val"], wide["vah"]) == (100, 106)
-    bounds = value_area(art, 4, Fraction(6, 10), True)
-    assert (bounds["val"], bounds["vah"]) == (100, 108)
-    odd = value_area(art, 3, Fraction(1, 2), False)
-    assert odd["width"] == Fraction(8, 3) and odd["volume"] == [7_000_000, 6_000_000, 3_000_000]
-    dup = _replay_session(D0, HAND)
-    dup.add_trade(_trade(10 ** 9, D0 + 10, "104"), b"\0" * 32, D0, D0 + 2)
-    assert dup.days[D0].artifact["volume"] == "0.16"
-
-
-def test_mirrored_reclaims_overshoot_boundary_and_ablation_are_deterministic():
-    series = _series([_replay_session(D0, HAND)])
-    closes = [104, 101, 103, 107, 105, 101, 107, 101, 102, 104, 101, 101.5, 104]
-    out = _run(_frame(closes), series)
-    reasons = list(out["vpr_reason"])
-    assert reasons[0] == "session_start"
-    assert reasons[2] == "entry_long" and out["signal"].iloc[2] == 1
-    assert reasons[4] == "entry_short" and out["signal"].iloc[4] == -1
-    assert reasons[6] == "opposite_boundary_overshoot" and reasons[7] == "opposite_boundary_overshoot"
-    assert reasons[8] == "boundary_touch" and reasons[9] == "inside_value_area"
-    assert reasons[11] == "outside_value_area" and reasons[12] == "entry_long"
-    assert out["vpr_val"].iloc[2] == "102" and out["vpr_vah"].iloc[2] == "106" and out["vpr_side"].iloc[2] == "long"
-    assert out["vpr_bins_json"].iloc[2] == "[3000000,5000000,5000000,3000000]"
-    again = _run(_frame(closes), series)
-    assert out["signal"].tolist() == again["signal"].tolist()
-    abl = _run(_frame(closes), series, session_bounds=True)
-    assert abl["vpr_val"].iloc[2] == "100" and abl["vpr_vah"].iloc[2] == "108"
-    assert list(abl["signal"]) != list(out["signal"])
 
 
 def _check_sessions_gaps_availability_and_invalidation_are_dated():

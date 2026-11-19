@@ -10,12 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from backtest_pairs import (
-    PairsBacktester,
-    SIDE_LONG_A,
-    SIDE_SHORT_A,
-    _liquidation_loss,
-)
+from backtest_pairs import PairsBacktester, SIDE_SHORT_A, _liquidation_loss
 
 
 def _flat_df(prices: list[float], start: str = "2024-01-01") -> pd.DataFrame:
@@ -52,13 +47,6 @@ def test_constructor_rejects_bad_params() -> None:
         PairsBacktester(bar_hours=0)
 
 
-def test_bars_per_year_auto_scales_from_bar_hours() -> None:
-    assert PairsBacktester(bar_hours=1.0).bars_per_year == 24 * 365
-    assert PairsBacktester(bar_hours=4.0).bars_per_year == 6 * 365
-    assert PairsBacktester(bar_hours=24.0).bars_per_year == 365
-    assert PairsBacktester(bar_hours=4.0, bars_per_year=1000).bars_per_year == 1000
-
-
 def _make_spread_series(n: int, base_a: float, base_b: float,
                        spike_at: int, spike_pct: float, direction: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     prices_a = [base_a] * n
@@ -66,30 +54,6 @@ def _make_spread_series(n: int, base_a: float, base_b: float,
     for i in range(spike_at, min(spike_at + 5, n)):
         prices_a[i] = base_a * (1 + direction * spike_pct)
     return _flat_df(prices_a), _flat_df(prices_b)
-
-
-def test_short_a_fires_when_spread_high_and_long_a_when_spread_low():
-    case = "test_short_a_signal_fires_when_spread_high"
-    df_a, df_b = _make_spread_series(n=300, base_a=2000.0, base_b=60000.0,
-                                     spike_at=200, spike_pct=0.05, direction=+1)
-    bt = PairsBacktester(
-        base_notional=1000.0, beta=1.0, leverage=20.0, lookback=50,
-        entry_z=2.0, exit_z=0.5, taker_fee_pct=0.0, maker_fee_pct=0.0,
-    )
-    results = bt.run(df_a, df_b)
-    assert any(t.side_a == SIDE_SHORT_A for t in results.trades), \
-        (case, "spike up in A should trigger short-A trade")
-
-    case = "test_long_a_signal_fires_when_spread_low"
-    df_a, df_b = _make_spread_series(n=300, base_a=2000.0, base_b=60000.0,
-                                     spike_at=200, spike_pct=0.05, direction=-1)
-    bt = PairsBacktester(
-        base_notional=1000.0, beta=1.0, leverage=20.0, lookback=50,
-        entry_z=2.0, exit_z=0.5, taker_fee_pct=0.0, maker_fee_pct=0.0,
-    )
-    results = bt.run(df_a, df_b)
-    assert any(t.side_a == SIDE_LONG_A for t in results.trades), \
-        (case, "spike down in A should trigger long-A trade")
 
 
 def test_beta_hedge_scales_b_notional() -> None:

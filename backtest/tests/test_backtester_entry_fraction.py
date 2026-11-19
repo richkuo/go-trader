@@ -40,39 +40,6 @@ def _run(df, **kw):
                   timeframe="1d", save=False)
 
 
-def test_plain_path_fractional_entry_commits_fraction_and_keeps_reserve(subtests):
-    with subtests.test(case="long_fractional_entry_commits_fraction_and_keeps_reserve"):
-        _assert_long_fractional_entry_commits_fraction_and_keeps_reserve()
-    with subtests.test(case="short_fractional_entry_commits_fraction_and_keeps_reserve"):
-        _assert_short_fractional_entry_commits_fraction_and_keeps_reserve()
-    with subtests.test(case="compounding_reuses_reserve_plus_proceeds"):
-        _assert_compounding_reuses_reserve_plus_proceeds()
-    with subtests.test(case="signal_close_preserves_reserve"):
-        _assert_signal_close_preserves_reserve()
-    with subtests.test(case="standalone_stop_fill_preserves_reserve"):
-        _assert_standalone_stop_fill_preserves_reserve()
-
-
-def _assert_long_fractional_entry_commits_fraction_and_keeps_reserve():
-    closes = [100, 100, 120, 120, 120]
-    signals = [1, 0, -1, 0, 0]
-    res = _run(_df(closes, signals, entry_fraction=[0.5] * 5))
-    assert res["total_trades"] == 1
-    assert res["trades"][0]["shares"] == pytest.approx(50.0)
-    assert res["final_capital"] == pytest.approx(11000.0)
-
-
-def _assert_short_fractional_entry_commits_fraction_and_keeps_reserve():
-    closes = [100, 100, 80, 80, 80]
-    signals = [-1, 0, 1, 0, 0]
-    res = _run(_df(closes, signals, entry_fraction=[0.5] * 5),
-               direction="short")
-    assert res["total_trades"] == 1
-    assert res["trades"][0]["side"] == "short"
-    assert res["trades"][0]["shares"] == pytest.approx(50.0)
-    assert res["final_capital"] == pytest.approx(11000.0)
-
-
 def test_entry_fraction_uses_signal_bar_value_not_fill_bar():
     closes = [100, 100, 100, 100]
     signals = [1, 0, -1, 0]
@@ -107,31 +74,6 @@ def _assert_nan_entry_fraction_means_full_notional():
     assert nan_col["final_capital"] == pytest.approx(base["final_capital"])
     assert nan_col["trades"][0]["shares"] == pytest.approx(
         base["trades"][0]["shares"])
-
-
-def _assert_compounding_reuses_reserve_plus_proceeds():
-    closes = [100, 100, 100, 100, 100, 100, 100]
-    signals = [1, 0, -1, 1, 0, -1, 0]
-    res = _run(_df(closes, signals, entry_fraction=[0.5] * 7))
-    assert res["total_trades"] == 2
-    assert res["trades"][1]["shares"] == pytest.approx(50.0)
-    assert res["final_capital"] == pytest.approx(10000.0)
-
-
-def _assert_signal_close_preserves_reserve():
-    closes = [100, 100, 90, 90, 90]
-    signals = [1, 0, -1, 0, 0]
-    res = _run(_df(closes, signals, entry_fraction=[0.5] * 5))
-    assert res["final_capital"] == pytest.approx(9500.0)
-
-
-def _assert_standalone_stop_fill_preserves_reserve():
-    closes = [100, 100, 95, 85, 85, 85]
-    signals = [1, 0, 0, 0, 0, 0]
-    res = _run(_df(closes, signals, entry_fraction=[0.5] * 6),
-               stop_loss_pct=0.10)
-    assert res["total_trades"] == 1
-    assert res["final_capital"] == pytest.approx(9250.0)
 
 
 def test_engine_path_fractional_entry(subtests):

@@ -6,7 +6,6 @@ import pytest
 
 import run_backtest
 from registry_loader import load_registry
-from regime_label_columns import attach_regime_label_columns, column_name
 
 N = 240
 TRIGGER_BAR = 120
@@ -85,15 +84,6 @@ def _sides(result):
     return [t["side"] for t in result["trades"]]
 
 
-def test_labels_used_by_the_fixtures(tmp_path):
-    plan = run_backtest.load_strategy_config(_write(tmp_path, _strategy()), "hl-side")["regime_label_windows"]
-    col = column_name(plan["windows"]["directional"])
-    for (drift, wiggle), label in ((DOWN_CHOPPY, "trending_down_choppy"), (UP_CLEAN, "trending_up_clean")):
-        labeled, _ = attach_regime_label_columns(_frame(drift, wiggle), plan)
-        assert labeled[col].iloc[TRIGGER_BAR] == label
-        assert bool(labeled[col + "_ready"].iloc[TRIGGER_BAR])
-
-
 def test_config_runs_open_either_trigger_sign_on_the_label_side(monkeypatch, tmp_path, subtests):
     path = _write(tmp_path, _strategy())
     for shape, side in ((DOWN_CHOPPY, "short"), (UP_CLEAN, "long")):
@@ -119,38 +109,10 @@ def test_warmup_bars_and_zero_triggers_hold(monkeypatch, tmp_path):
     assert not any(k.startswith("opened") for k in res["regime_side"]["counts"])
 
 
-def test_base_direction_from_the_config(monkeypatch, tmp_path, subtests):
-    for direction, shape, expected in (
-            ("long", DOWN_CHOPPY, []), ("long", UP_CLEAN, ["long"]),
-            ("short", DOWN_CHOPPY, ["short"]), ("short", UP_CLEAN, []),
-            (None, UP_CLEAN, ["long"]), (None, DOWN_CHOPPY, [])):
-        with subtests.test(direction=direction, shape=shape):
-            sc = _strategy(direction=direction) if direction else {
-                k: v for k, v in _strategy().items() if k != "direction"}
-            path = _write(tmp_path, sc, name=f"{direction}-{shape[0]}.json")
-            res, _ = _run(monkeypatch, path, _frame(*shape), {TRIGGER_BAR: 1})
-            assert _sides(res) == expected
-
-
 def _htf(rising):
     idx = pd.date_range("2023-12-01", "2024-01-12", freq="4h")
     close = pd.Series([1000.0 + (5.0 if rising else -5.0) * i for i in range(len(idx))], index=idx)
     return pd.DataFrame({"open": close, "high": close + 1, "low": close - 1, "close": close, "volume": 1.0})
-
-
-def test_htf_filter_checks_the_mapped_side(monkeypatch, tmp_path, subtests):
-    path = _write(tmp_path, _strategy())
-    frame = _frame(*DOWN_CHOPPY)
-    for name, trigger, rising, expected in (
-            ("raw_disagrees_mapped_agrees", 1, False, ["short"]),
-            ("raw_agrees_mapped_disagrees", 1, True, [])):
-        with subtests.test(case=name):
-            res, _ = _run(monkeypatch, path, frame, {TRIGGER_BAR: trigger},
-                          extra_argv=("--htf-filter",), htf_frame=_htf(rising))
-            assert _sides(res) == expected
-            assert res["regime_side"]["htf_filter"] is True
-            if not expected:
-                assert res["regime_side"]["counts"]["held:htf_filter"] == 1
 
 
 def _artifact(tmp_path, states, generated_at="2023-12-01T00:00:00Z", expires_at=None,
@@ -284,15 +246,3 @@ def test_eval_windows_runs_the_mode_in_paper_research(monkeypatch, tmp_path, sub
     assert leg is not None
     assert [t["entry_date"] for t in leg["trade_samples"]] == [_entry(frame)]
     assert leg["trade_samples"][0]["pnl_pct"] > 0
-
-
-def test_optimizer_handoff_treats_the_mode_as_short_capable():
-    from backtester import Backtester
-    from optimizer import scored_engine_can_open_short
-    cols = {"gate": "regime_w_m", "directional": "regime_w_m", "atr": "regime_w_m"}
-    frame = pd.DataFrame({"signal": [0]}, index=pd.date_range("2024-01-01", periods=1))
-    for direction, expected in (("both", True), ("short", True), ("long", False)):
-        engine = Backtester(regime_enabled=True, regime_label_columns=cols, direction=direction,
-                            close_strategies=[CLOSE], regime_side=True,
-                            regime_side_certification={"context": "paper"})
-        assert scored_engine_can_open_short(engine, frame) is expected

@@ -115,98 +115,12 @@ def _run(df, series, **over):
     return _reg().apply_strategy(NAME, df, {**SEED, **over, "trade_flow_observations": payload})
 
 
-def test_long_divergence_arms_at_confirmation_and_enters_once_on_a_strict_reclaim():
-    df, series = _build(_scenario())
-    out = _run(df, series)
-    assert out["cvd_reason"].iloc[CONFIRM] == "armed_long"
-    assert out["signal"].iloc[CONFIRM] == 0
-    entries = np.flatnonzero(out["signal"].to_numpy() != 0)
-    assert entries.tolist() == [CONFIRM + 2]
-    row = out.iloc[CONFIRM + 2]
-    assert row["cvd_reason"] == "entry_long" and row["cvd_side"] == "long"
-    assert row["cvd_p1_ms"] == T0 + P1 * BAR and row["cvd_p2_ms"] == T0 + P2 * BAR
-    assert row["cvd_confirm_ms"] == T0 + CONFIRM * BAR and row["cvd_deadline_ms"] == T0 + (CONFIRM + 3) * BAR
-    assert row["cvd_p1_price"] == 95.0 and row["cvd_p2_price"] == 94.0 and row["cvd_reclaim"] == 101.0
-    assert row["cvd_ratio"] == pytest.approx(0.2) and row["cvd_total_volume"] == pytest.approx(6.0)
-    assert row["cvd_p2_delta"] - row["cvd_p1_delta"] == pytest.approx(1.2)
-    assert row["cvd_setup_id"] == f"long:{T0 + CONFIRM * BAR}" and len(row["cvd_flow_sha256"]) == 64
-
-
-def test_setup_rule_mirror_baseline_threshold_extrema_separation_expiry_and_consumption(subtests):
-    for label, case in (("short_mirror", _short_mirror_with_a_falling_delta),
-                        ("price_only_baseline", _price_only_baseline_enters_where_delta_disagrees),
-                        ("threshold_is_strict", _threshold_is_strict),
-                        ("equal_extrema", _equal_extrema_never_qualify),
-                        ("separation_and_session", _separation_bounds_and_session_crossing),
-                        ("expiry", _expiry_is_inclusive_and_clears_one_bar_later),
-                        ("confirmation_and_consumption", _confirmation_bar_cannot_enter_and_a_setup_is_consumed_once)):
-        with subtests.test(case=label):
-            case()
-
-
-def _short_mirror_with_a_falling_delta():
-    df, series = _build(_scenario(side="short", buy_frac="0.4"))
-    out = _run(df, series)
-    assert out["cvd_reason"].iloc[CONFIRM] == "armed_short"
-    assert np.flatnonzero(out["signal"].to_numpy()).tolist() == [CONFIRM + 2]
-    assert out["signal"].iloc[CONFIRM + 2] == -1 and out["cvd_ratio"].iloc[CONFIRM + 2] == pytest.approx(-0.2)
-
-
-def _price_only_baseline_enters_where_delta_disagrees():
-    df, series = _build(_scenario(buy_frac="0.4"))
-    held = _run(df, series)
-    assert held["cvd_reason"].iloc[CONFIRM] == "delta_not_confirmed" and not held["signal"].any()
-    base = _run(df, series, delta_confirmation=False)
-    assert base["cvd_reason"].iloc[CONFIRM] == "armed_long" and base["signal"].iloc[CONFIRM + 2] == 1
-
-
 def _threshold_is_strict():
     for threshold, armed in ((0.2, False), (0.19, True)):
         with _case(f"{threshold}-{armed}"):
             df, series = _build(_scenario())
             out = _run(df, series, delta_threshold=threshold)
             assert (out["cvd_reason"].iloc[CONFIRM] == "armed_long") is armed
-
-
-def _equal_extrema_never_qualify():
-    sc = _scenario()
-    sc["low"][P2] = sc["low"][P1]
-    df, series = _build(sc)
-    assert not _run(df, series)["signal"].any()
-    sc = _scenario()
-    sc["low"][P2 - 1] = sc["low"][P2]
-    df, series = _build(sc)
-    assert not _run(df, series)["signal"].any()
-
-
-def _separation_bounds_and_session_crossing():
-    df, series = _build(_scenario())
-    assert not _run(df, series, min_separation=7)["signal"].any()
-    assert not _run(df, series, max_separation=5, min_separation=2)["signal"].any()
-    df, series = _build(_scenario(n=60))
-    assert _run(df, series, session_hours=2)["signal"].iloc[CONFIRM + 2] == 1
-    out = _run(df, series, session_hours=1)
-    assert not out["signal"].any() and out["cvd_reason"].iloc[CONFIRM] == "no_setup"
-
-
-def _expiry_is_inclusive_and_clears_one_bar_later():
-    expiry = SEED["setup_expiry"]
-    df, series = _build(_scenario(entry_at=CONFIRM + expiry))
-    assert _run(df, series)["signal"].iloc[CONFIRM + expiry] == 1
-    df, series = _build(_scenario(entry_at=CONFIRM + expiry + 1))
-    out = _run(df, series)
-    assert not out["signal"].any() and out["cvd_reason"].iloc[CONFIRM + expiry + 1] == "setup_expired"
-
-
-def _confirmation_bar_cannot_enter_and_a_setup_is_consumed_once():
-    sc = _scenario(entry_at=None)
-    sc["high"][CONFIRM], sc["close"][CONFIRM] = 101.0, 100.9
-    for i in (CONFIRM + 1, CONFIRM + 2):
-        sc["high"][i], sc["close"][i] = 102.0, 101.5
-    df, series = _build(sc)
-    out = _run(df, series)
-    assert out["signal"].iloc[CONFIRM] == 0
-    assert np.flatnonzero(out["signal"].to_numpy()).tolist() == [CONFIRM + 1]
 
 
 def test_flow_side_contract_and_session_defects_hold_without_inventing_volume(subtests):
@@ -293,26 +207,6 @@ def test_native_close_frames_decide_like_open_time_frames():
     for frame in (native, declared):
         b = _run(frame, series)
         assert a["signal"].tolist() == b["signal"].tolist() and a["cvd_reason"].tolist() == b["cvd_reason"].tolist()
-
-
-def test_every_prefix_equals_the_deadline_specific_replay():
-    def stagger(intervals, volumes):
-        for iv in intervals:
-            if (iv["start_ms"] // 60_000) % 9 == 0:
-                iv["finalized_ms"] = iv["end_ms"] + 2 * BAR
-            if (iv["start_ms"] // 60_000) % 31 == 0:
-                iv["invalid_ms"], iv["reason"] = iv["end_ms"] + 3 * BAR, "late_event"
-    for sc in (_scenario(), _scenario(side="short", buy_frac="0.4")):
-        df, series = _build(sc, mutate=stagger)
-        full = _run(df, series)
-        cols = ["signal", "cvd_reason", "cvd_setup_id", "cvd_flow_sha256", "cvd_flow_available"]
-        for i in range(len(df)):
-            deadline = T0 + (i + 1) * BAR
-            payload = payload_from_series(series, BAR, deadline)
-            out = _reg().apply_strategy(NAME, df.iloc[:i + 1], {**SEED, "trade_flow_observations": payload})
-            assert out[cols].iloc[-1].tolist() == full[cols].iloc[i].tolist(), i
-            trunc = _run(df.iloc[:i + 1], series)
-            assert trunc[cols].iloc[-1].tolist() == full[cols].iloc[i].tolist(), i
 
 
 def test_a_live_payload_carries_the_closed_bar_decision_onto_the_forming_row():

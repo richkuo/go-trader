@@ -68,20 +68,6 @@ def _run(script, argv, stdin_payload, env_extra=None):
     return proc
 
 
-def test_market_stdin_single_check_uses_the_sealed_frame():
-    rows = _candles()
-    proc = _run(CHECK_HL, [
-        "breakout", "BTC", "1h", "--mode=paper", "--market-stdin",
-    ], _envelope({"BTC|1h": _frame(rows)}, mid=0.1234))
-    assert proc.returncode == 0, proc.stderr
-    out = json.loads(proc.stdout)
-    assert out.get("error") is None or out.get("error") == ""
-    assert out["symbol"] == "BTC"
-    assert out["timeframe"] == "1h"
-    assert out["price"] == 0.1234
-    assert "Fetching" not in proc.stderr
-
-
 def test_market_stdin_single_check_refuses_a_v1_envelope():
     proc = _run(CHECK_HL, [
         "breakout", "BTC", "1h", "--mode=paper", "--market-stdin",

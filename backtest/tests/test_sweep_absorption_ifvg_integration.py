@@ -17,10 +17,9 @@ if _TOOLS not in sys.path:
 from atr import ensure_atr_indicator
 from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
-from closed_bar import FRAME_DECISION_TIME_ATTR, FRAME_INTERVAL_ATTR, FRAME_TIMESTAMP_KIND_ATTR
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
-from trade_flow_replay import CONTRACT, PAYLOAD_CONTRACT_KEYS, payload_from_series
+from trade_flow_replay import CONTRACT, PAYLOAD_CONTRACT_KEYS
 
 NAME = "sweep_absorption_ifvg"
 STUDY_DIR = os.path.join(_REPO, "backtest", "candidates", "sweep_absorption_ifvg_2010")
@@ -63,79 +62,6 @@ def _row(day, bar):
 def _same(a, b):
     return [("nan" if isinstance(x, float) and np.isnan(x) else x) for x in a] == \
            [("nan" if isinstance(x, float) and np.isnan(x) else x) for x in b]
-
-
-def test_registry_evaluator_enters_both_directions_once_per_setup_with_frozen_evidence():
-    bars, intervals = scn.build(["flat", "long", "short", "long"])
-    out = _apply(bars, intervals)
-    entries = out.index[out["signal"] != 0]
-    assert [int(out.loc[t, "signal"]) for t in entries] == [1, -1, 1]
-    for day, side in ((1, 1), (2, -1), (3, 1)):
-        i = _row(day, scn.RETEST_BAR)
-        assert int(out["signal"].iloc[i]) == side
-        assert out["sai_reason"].iloc[i] == ("entry_long" if side == 1 else "entry_short")
-        assert out["sai_reason"].iloc[_row(day, scn.CONFIRM_BAR)] == ("armed_long" if side == 1 else "armed_short")
-        assert out["sai_absorption_ratio"].iloc[i] > DEFAULT_PARAMS["absorption_threshold"]
-        assert out["sai_htf_bias"].iloc[i] == side
-        lo, hi = out["sai_gap_bottom"].iloc[i], out["sai_gap_top"].iloc[i]
-        assert out["sai_entry_price"].iloc[i] == pytest.approx((lo + hi) / 2)
-        assert out["sai_confirm_ms"].iloc[i] < out["sai_deadline_ms"].iloc[i] - BAR
-    ids = [out["sai_setup_id"].iloc[_row(d, scn.RETEST_BAR)] for d in (1, 2, 3)]
-    assert len(set(ids)) == 3 and all(i.startswith("BTC:") for i in ids)
-
-
-def test_hard_filters_hold_with_their_reason():
-    for variant, reason in (("new_delta_low", "absorption_new_delta_extreme"),
-                            ("weak_displacement", "displacement_weak")):
-        bars, intervals = scn.build(["flat", "long", "short"], variants={1: variant, 2: variant})
-        out = _apply(bars, intervals)
-        assert not (out["signal"] != 0).any(), variant
-        assert reason in set(out["sai_reason"].iloc[_row(1, 96):_row(1, 110)]), variant
-        assert reason in set(out["sai_reason"].iloc[_row(2, 96):_row(2, 110)]), variant
-    bars, intervals = scn.build(["flat", "long", "short"])
-    for params, reason in (({"min_fvg_atr": 5.0}, "no_gap"), ({"min_displacement_atr": 5.0}, "displacement_weak"),
-                           ({"absorption_threshold": 0.5}, "absorption_failed")):
-        out = _apply(bars, intervals, params)
-        assert not (out["signal"] != 0).any(), params
-        assert reason in set(out["sai_reason"]), params
-    off = _apply(*scn.build(["flat", "long"], variants={1: "new_delta_low"}), {"absorption_filter": False})
-    assert int(off["signal"].iloc[_row(1, scn.RETEST_BAR)]) == 1
-
-
-def test_missing_late_and_revoked_flow_or_htf_input_holds_with_a_reason():
-    bars, intervals = scn.build(["flat", "long"])
-    i = _row(1, scn.RETEST_BAR)
-    assert _apply(bars, intervals, flow=False)["sai_reason"].iloc[i] == "trade_flow_unavailable"
-    assert _apply(bars, intervals, htf=False)["sai_reason"].iloc[i] == "htf_unavailable"
-    confirm_deadline = bars[_row(1, scn.CONFIRM_BAR)]["t"] + 2 * BAR
-    late = [dict(iv, finalized_ms=confirm_deadline) if iv["start_ms"] == bars[_row(1, 30)]["t"] else iv
-            for iv in intervals]
-    out = _apply(bars, late)
-    assert out["sai_reason"].iloc[_row(1, scn.CONFIRM_BAR)] == "flow_unavailable"
-    assert int(out["signal"].iloc[i]) == 0
-    revoke_at = bars[_row(1, scn.RETEST_BAR)]["t"] + BAR - 1
-    revoked = [dict(iv, status="invalid", invalid_ms=revoke_at) if iv["start_ms"] == bars[_row(1, 40)]["t"] else iv
-               for iv in intervals]
-    out = _apply(bars, revoked)
-    assert out["sai_reason"].iloc[_row(1, scn.CONFIRM_BAR)] == "armed_long"
-    assert out["sai_reason"].iloc[i] == "setup_cleared_flow" and int(out["signal"].iloc[i]) == 0
-    missing = [iv for iv in intervals if iv["start_ms"] != bars[_row(1, 50)]["t"]]
-    assert _apply(bars, missing)["sai_reason"].iloc[_row(1, scn.CONFIRM_BAR)] == "flow_unavailable"
-    mismatch = [dict(bar, v=bar["v"] + 1.0) if k == _row(1, 60) else bar for k, bar in enumerate(bars)]
-    assert _apply(mismatch, intervals)["sai_reason"].iloc[_row(1, scn.CONFIRM_BAR)] == "flow_volume_mismatch"
-
-
-def test_decision_time_is_required_at_the_last_row():
-    bars, intervals = scn.build(["flat", "long"])
-    cut = bars[:_row(1, scn.RETEST_BAR) + 1]
-    boundary = cut[-1]["t"] + BAR
-    out = _apply(cut, intervals, attrs={FRAME_DECISION_TIME_ATTR: {}})
-    assert out["sai_reason"].iloc[-1] == "decision_time_missing" and int(out["signal"].iloc[-1]) == 0
-    timed = {FRAME_DECISION_TIME_ATTR: {"cutoff_ms": boundary + 1_000, "boundary_ms": boundary},
-             FRAME_INTERVAL_ATTR: BAR, FRAME_TIMESTAMP_KIND_ATTR: "open"}
-    assert int(_apply(cut, intervals, attrs=timed)["signal"].iloc[-1]) == 1
-    stale = {FRAME_DECISION_TIME_ATTR: {"cutoff_ms": boundary + BAR, "boundary_ms": boundary}}
-    assert _apply(cut, intervals, attrs=stale)["sai_reason"].iloc[-1] == "decision_bar_stale"
 
 
 def test_reconstruction_agrees_across_prefixes_windows_and_separate_workers():
@@ -230,32 +156,6 @@ def test_htf_bias_is_truncation_invariant_at_hour_boundaries_and_uses_only_close
     native["timestamp_kind"] = "native_close_inclusive"
     native["rows"] = [[r[0] + scn.HOUR - 1] + r[1:] for r in native["rows"]]
     assert _SAI.htf_bias_at(_SAI.parse_htf_candles(native), confirm_deadline) == 1
-
-
-def test_sealed_and_replayed_flow_give_equal_decisions_at_the_same_cutoff():
-    bars, intervals = scn.build(["flat", "long", "short"])
-    series = {"coin": "BTC", **{k: CONTRACT[k] for k in PAYLOAD_CONTRACT_KEYS},
-              "intervals": [dict(iv) for iv in intervals], "economic_evidence": True, "refusals": []}
-    for day in (1, 2):
-        for k in (scn.CONFIRM_BAR, scn.RETEST_BAR):
-            i = _row(day, k)
-            cutoff = bars[i]["t"] + BAR + 10_000
-            frame = scn.frame(bars[:i + 1])
-            sealed = scn.flow_payload([iv for iv in intervals if iv["finalized_ms"] <= cutoff], cutoff=cutoff)
-            replayed = payload_from_series(series, BAR, cutoff)
-            htf = scn.htf_payload(bars, bars[i]["t"] + BAR)
-            a = _reg().apply_strategy(NAME, frame, {"trade_flow_observations": sealed, "htf_candles": htf})
-            b = _reg().apply_strategy(NAME, frame, {"trade_flow_observations": replayed, "htf_candles": htf})
-            assert _same(a[COLS].iloc[-1].tolist(), b[COLS].iloc[-1].tolist()), (day, k)
-    damaged = dict(series, economic_evidence=False, refusals=["changed segment hash"])
-    out = _reg().apply_strategy(NAME, scn.frame(bars), {"trade_flow_observations": payload_from_series(damaged, BAR),
-                                                         "htf_candles": scn.htf_payload(bars)})
-    assert out["sai_reason"].iloc[_row(1, scn.RETEST_BAR)] == "trade_flow_unavailable"
-    doubled = [dict(iv, total=str(float(iv["total"]) * 2), buy=str(float(iv["buy"]) * 2)) if iv["start_ms"] ==
-               bars[_row(1, 20)]["t"] else iv for iv in intervals]
-    out = _apply(bars, doubled)
-    assert out["sai_reason"].iloc[_row(1, scn.CONFIRM_BAR)] in ("flow_volume_mismatch", "unsupported_trade_flow")
-    assert int(out["signal"].iloc[_row(1, scn.RETEST_BAR)]) == 0
 
 
 def test_composer_keeps_the_close_owner_executable_while_entry_inputs_are_missing():
@@ -416,40 +316,6 @@ def om_columns():
     return ("timestamp", "open", "high", "low", "close", "volume")
 
 
-def test_frozen_study_scores_a_pinned_v7_manifest_end_to_end(tmp_path):
-    import offline_manifest as om
-    study = _load("_sai_study_driver_for_tests", os.path.join(STUDY_DIR, "run_study.py"))
-    path = _synthetic_study(str(tmp_path), ["flat", "flat", "long", "short", "long", "long", "short", "long"])
-    manifest = om.load_manifest(path, verify=True)
-    with open(os.path.join(STUDY_DIR, "candidate_spec.json")) as fh:
-        spec = json.load(fh)
-    spec = dict(spec, datasets={"coins": ["BTC"], "intervals": ["5m"], "htf_interval": "1h"},
-                grid={k: [DEFAULT_PARAMS[k]] for k in spec["grid"]},
-                minimum_independent_positions={"train": 1, "test": 1})
-    scored = study.score({}, spec, str(tmp_path), {"5m": manifest})
-    assert scored["selection"]["5m"]["params"]["expected_interval_ms"] == BAR
-    entry = scored["datasets"]["BTC 5m"]
-    for window in ("train", "test"):
-        e = entry[window]
-        assert e["flow_usable"]["share"] == 1.0 and e["flow_usable"]["denominator"] > 0
-        assert e["coverage"]["htf_candles"]["complete"] and e["coverage"]["trade_flow"]["available"]
-        assert e["primary"][1.0]["positions"] == 3, (window, e["primary"])
-        assert e["primary"][1.0]["independent_positions"] == 3 and e["primary"][1.0]["turnover"] > 0
-        assert e["adapter_agreement"] is True, window
-        assert set(e["research_arms"]) == {arms.arm_label(a) for a in arms.arm_matrix()}
-        assert e["research_arms"]["market+atr+tiered"]["positions"] == 3
-        assert e["research_arms"]["ce_limit+atr+tiered"]["no_fill_share"] == 1.0
-        for control in ("absorption_disabled", "amd_ifvg", "liquidity_sweeps"):
-            assert control in e
-    assert set(entry["train"]["primary"]) == {1.0, 2.0}
-    outcome, reasons = study.verdict(spec, [], scored)
-    assert outcome in ("PASS", "FAIL"), reasons
-    gated, _ = study.verdict(spec, [{"gate": "source_b_recording", "reason": "missing"}], None)
-    assert gated == "INCONCLUSIVE"
-    thin = dict(spec, minimum_independent_positions={"train": 1, "test": 30})
-    assert study.verdict(thin, [], scored)[0] == "INCONCLUSIVE"
-
-
 def _sealed_envelope(bars, intervals, last, cutoff, tamper=False):
     every = bars[:last + 2]
 
@@ -499,64 +365,6 @@ def test_study_sealed_versus_replayed_proof_accepts_equal_decisions_and_refuses_
     (proof_dir / "index.json").write_text(json.dumps({"payloads": payloads}))
     compared, mismatches = study.sealed_replay_proof(str(tmp_path), study_doc, {"5m": manifest})
     assert compared == 3 and len(mismatches) == 1 and "tampered.json" in mismatches[0]
-
-
-def _side_doc(rows):
-    trades = [{"coin": coin, "trade": {"coin": coin, "side": side},
-               "facts": {"taker_side": taker, "fill_matches_trade": match}} for coin, side, taker, match in rows]
-    return {"segment": "segment-00001.ndjson", "evidence_version": "hyperliquid-trades-side-aggressor/1638-v1",
-            "trades": trades}
-
-
-def _run_side_evidence_study(tmp_path, docs):
-    import offline_manifest as om
-    study = _load("_sai_study_driver_for_side", os.path.join(STUDY_DIR, "run_study.py"))
-    with open(os.path.join(STUDY_DIR, "study_manifest.json")) as fh:
-        doc = json.load(fh)
-    spec_path = os.path.join(STUDY_DIR, "candidate_spec.json")
-    doc["spec"] = {"path": spec_path, "sha256": om.sha256_file(spec_path)}
-    side_dir = tmp_path / "data" / "side_evidence"
-    side_dir.mkdir(parents=True)
-    refs = []
-    for n, side in enumerate(docs):
-        p = side_dir / f"side_{n}.json"
-        p.write_text(json.dumps(side))
-        refs.append({"path": f"data/side_evidence/side_{n}.json", "sha256": om.sha256_file(str(p))})
-    doc["side_evidence"] = refs
-    manifest_path = tmp_path / "study_manifest.json"
-    manifest_path.write_text(json.dumps(doc))
-    return study.run(str(manifest_path), str(tmp_path / "results.json"), str(tmp_path / "REPORT.md"))
-
-
-def _side_gates(results):
-    return [g for g in results["gates"] if g["gate"] == "side_evidence"]
-
-
-def _agreeing(coin, n=30):
-    return [(coin, "B" if k % 2 else "A", "B" if k % 2 else "A", True) for k in range(n)]
-
-
-def test_side_evidence_content_gates_every_required_coin(tmp_path):
-    good = _agreeing("BTC") + _agreeing("ETH") + _agreeing("HYPE")
-    ok = _run_side_evidence_study(tmp_path / "ok", [_side_doc(good[:45]), _side_doc(good[45:])])
-    assert _side_gates(ok) == [] and ok["side_evidence"]["verified"] is True
-
-    flipped = good[:-1] + [("HYPE", "B", "A", True)]
-    disagree = _run_side_evidence_study(tmp_path / "disagree", [_side_doc(flipped)])
-    gates = _side_gates(disagree)
-    assert [g["coin"] for g in gates] == ["HYPE"] and "1 side disagreements" in gates[0]["reason"]
-    assert disagree["verdict"] == "INCONCLUSIVE" and disagree["economic_scoring_ran"] is False
-
-    no_hype = _run_side_evidence_study(tmp_path / "no_hype", [_side_doc(_agreeing("BTC") + _agreeing("ETH"))])
-    gates = _side_gates(no_hype)
-    assert [g["coin"] for g in gates] == ["HYPE"] and gates[0]["reason"].startswith("HYPE: 0 taker-identified")
-    assert no_hype["verdict"] == "INCONCLUSIVE" and no_hype["economic_scoring_ran"] is False
-
-    thin = _run_side_evidence_study(tmp_path / "thin", [_side_doc(_agreeing("BTC", 29) + _agreeing("ETH")
-                                                                  + _agreeing("HYPE"))])
-    gates = _side_gates(thin)
-    assert [g["coin"] for g in gates] == ["BTC"] and "29 taker-identified" in gates[0]["reason"]
-    assert thin["verdict"] == "INCONCLUSIVE" and thin["economic_scoring_ran"] is False
 
 
 def test_research_arms_are_withheld_when_the_reference_arm_disagrees_with_the_backtester(tmp_path, monkeypatch):

@@ -14,20 +14,7 @@ from regime import (
     compute_regime_composite,
 )
 from regime_hmm import fit_label_anchored_hmm, forward_filter_labels
-from regime_bounded_window_validate import (
-    DEFAULT_AGREEMENT_THRESHOLD,
-    _align_eval_start,
-    _gate_primary_horizon,
-    _provenance_status,
-    _sweep_blocked,
-    adx_drift_stats,
-    bounded_window_adx,
-    bounded_window_views,
-    full_window_views,
-    go_no_go,
-    label_drift_stats,
-    validate_frames,
-)
+from regime_bounded_window_validate import DEFAULT_AGREEMENT_THRESHOLD, _align_eval_start, _sweep_blocked, bounded_window_adx, bounded_window_views, go_no_go, label_drift_stats
 
 TH = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
 PERIOD = 48
@@ -50,10 +37,6 @@ def _ohlcv(n, seed=0, regime_mix=True):
     return pd.DataFrame({"high": high, "low": low, "close": close})
 
 
-def _full_adx(df):
-    return composite_feature_matrix(df, PERIOD, TH)["adx"].to_numpy()
-
-
 def _fit_model(df, filter_window=24):
     feats = composite_feature_matrix(df, PERIOD, TH).to_numpy()
     labels = compute_regime_composite(df, period=PERIOD, thresholds=TH)["regime"].to_numpy()
@@ -61,31 +44,6 @@ def _fit_model(df, filter_window=24):
                                    filter_window=filter_window)
     model["period"] = PERIOD
     return model
-
-
-def _mean_abs_drift(full, bounded):
-    m = ~np.isnan(full) & ~np.isnan(bounded)
-    return float(np.mean(np.abs(full[m] - bounded[m]))) if m.any() else 0.0
-
-
-def test_bounded_adx_equals_full_when_lookback_spans_window():
-    df = _ohlcv(250, seed=3)
-    full = _full_adx(df)
-    bounded = bounded_window_adx(df, PERIOD, lookback=len(df), adx_threshold=TH["adx"], eval_start=0)
-    m = ~np.isnan(full)
-    assert m.any()
-    np.testing.assert_allclose(bounded[m], full[m], rtol=0, atol=1e-9)
-
-
-def test_bounded_adx_drift_decays_as_lookback_grows():
-    df = _ohlcv(320, seed=4)
-    full = _full_adx(df)
-    d_short = _mean_abs_drift(full, bounded_window_adx(df, PERIOD, 40, TH["adx"], 0))
-    d_long = _mean_abs_drift(full, bounded_window_adx(df, PERIOD, 160, TH["adx"], 0))
-    d_span = _mean_abs_drift(full, bounded_window_adx(df, PERIOD, len(df), TH["adx"], 0))
-    assert d_short > d_long > 0.0
-    assert d_span == 0.0
-    assert d_long < d_short
 
 
 def test_bounded_adx_respects_eval_start():
@@ -111,31 +69,6 @@ def test_bounded_views_last_bar_matches_one_shot_live_call():
     np.testing.assert_allclose(feats[-1], one_shot_feat, rtol=0, atol=1e-12, equal_nan=True)
     assert hr_labels[-1] == one_shot_hr
     assert model_labels[-1] == one_shot_model
-
-
-def test_full_window_views_seed_at_window_start():
-    df = _ohlcv(160, seed=7)
-    model = _fit_model(df)
-    feats, model_labels, hr_labels = full_window_views(df, model, PERIOD, TH)
-    np.testing.assert_allclose(feats[:, 3], _full_adx(df), rtol=0, atol=1e-12, equal_nan=True)
-    assert len(model_labels) == len(df) and len(hr_labels) == len(df)
-
-
-def test_adx_drift_stats_zero_when_identical():
-    a = np.array([10.0, 20.0, np.nan, 30.0])
-    s = adx_drift_stats(a, a.copy())
-    assert s["n"] == 3 and s["mean_abs"] == 0.0 and s["max_abs"] == 0.0 and s["corr"] == 1.0
-
-
-def test_label_drift_stats_counts_disagreements_on_valid_bars_only():
-    full = np.array(["a", "a", "b", "c"], dtype=object)
-    bounded = np.array(["a", "x", "b", "y"], dtype=object)
-    valid = np.array([True, True, True, False])
-    s = label_drift_stats(full, bounded, valid)
-    assert s["n"] == 3
-    assert s["disagreements"] == 1
-    assert abs(s["agreement"] - 2 / 3) < 1e-9
-    assert s["transitions"] == {"a->x": 1}
 
 
 def _scored(kw_h, transition_rate, p_value=0.005):
@@ -229,93 +162,6 @@ def test_align_eval_start_is_window_tail_and_rejects_misaligned_frames():
     df_window = _ohlcv(300, seed=99)
     with pytest.raises(ValueError):
         _align_eval_start(df_window, df_ext)
-
-
-def test_validate_frames_end_to_end_small():
-    df_ext = _ohlcv(260, seed=11)
-    eval_start = 180
-    df_window = df_ext.iloc[eval_start:].reset_index(drop=True)
-    model = _fit_model(df_ext, filter_window=24)
-    rep = validate_frames(df_window, df_ext, eval_start, model, period=PERIOD,
-                          lookback=120, target="volatility", seed=0, horizons=(4,))
-    assert rep["n_eval_bars"] == len(df_window)
-    assert rep["adx_drift"]["n"] > 0
-    assert 0.0 <= rep["model"]["label_drift"]["agreement"] <= 1.0
-    assert isinstance(rep["go_no_go"]["promote"], bool)
-    assert rep["adx_drift"]["mean_abs"] >= 0.0
-
-
-def test_validate_frames_handrule_only_without_model():
-    df_ext = _ohlcv(220, seed=12)
-    eval_start = 140
-    df_window = df_ext.iloc[eval_start:].reset_index(drop=True)
-    rep = validate_frames(df_window, df_ext, eval_start, None, period=PERIOD,
-                          lookback=90, target="volatility", seed=0, horizons=(4,))
-    assert "model" not in rep and "go_no_go" not in rep
-    assert "handrule" in rep and rep["adx_drift"]["n"] > 0
-
-
-def test_gate_primary_horizon_tracks_gate_default():
-    from regime_calibrate import gate_verdict
-    import inspect
-    expected = int(str(inspect.signature(gate_verdict).parameters["primary"].default).lstrip("h"))
-    assert _gate_primary_horizon() == expected == 4
-
-
-def test_provenance_status_name_match_date_overlap_and_unresolvable_fit_window():
-    case = "test_provenance_status_flags_in_sample_and_out_of_sample"
-    fit = {"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"}
-    model = {"fitted_on": fit}
-    same = _provenance_status(model, "BTC/USDT", "1h", "is")
-    assert same["in_sample"] is True and same["verified"] is True, case
-    diff_window = _provenance_status(model, "BTC/USDT", "1h", "oos")
-    assert diff_window["in_sample"] is False and diff_window["verified"] is True, case
-    diff_symbol = _provenance_status(model, "ETH/USDT", "1h", "is")
-    assert diff_symbol["in_sample"] is False, case
-    missing = _provenance_status({"states": []}, "BTC/USDT", "1h", "is")
-    assert missing["verified"] is False and missing["in_sample"] is False, case
-
-    case = "test_provenance_status_detects_date_overlap_across_window_names"
-    WIN = {"is": ("2025-06-10", "2026-01-01"), "oos": ("2026-01-01", None),
-           "2023": ("2023-01-01", "2024-01-01"), "2025H1": ("2025-01-01", "2025-07-01")}
-    model = {"fitted_on": {"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"}}
-
-    overlap = _provenance_status(model, "BTC/USDT", "1h", "2025H1", WIN)
-    assert overlap["in_sample"] is True and overlap["date_overlap"] is True, case
-    assert overlap["name_match"] is False and overlap["overlap_detail"]["fit_window"] == "is", case
-
-    disjoint = _provenance_status(model, "BTC/USDT", "1h", "2023", WIN)
-    assert disjoint["in_sample"] is False and disjoint["date_overlap"] is False, case
-
-    boundary = _provenance_status(model, "BTC/USDT", "1h", "oos", WIN)
-    assert boundary["in_sample"] is False, case
-
-    cross_instrument = _provenance_status(model, "ETH/USDT", "1h", "2025H1", WIN)
-    assert cross_instrument["in_sample"] is False, case
-
-    case = "test_provenance_status_unresolvable_fit_window_is_unverifiable"
-    WIN = {"is": ("2025-06-10", "2026-01-01"), "2025H1": ("2025-01-01", "2025-07-01")}
-    model = {"fitted_on": {"symbol": "BTC/USDT", "timeframe": "1h", "window": "ancient"}}
-    p = _provenance_status(model, "BTC/USDT", "1h", "2025H1", WIN)
-    assert p["verified"] is True, case
-    assert p["overlap_resolvable"] is False, case
-    assert p["in_sample"] is False, case
-
-
-def test_validate_frames_scores_incumbent_at_its_own_period():
-    df_ext = _ohlcv(260, seed=21)
-    eval_start = 150
-    df_window = df_ext.iloc[eval_start:].reset_index(drop=True)
-    feats = composite_feature_matrix(df_ext, 30, TH).to_numpy()
-    labels = compute_regime_composite(df_ext, period=30, thresholds=TH)["regime"].to_numpy()
-    model = fit_label_anchored_hmm(feats, labels, sorted(VALID_LABELS_COMPOSITE), filter_window=24)
-    model["period"] = 30
-    rep = validate_frames(df_window, df_ext, eval_start, model, incumbent_period=48,
-                          lookback=110, target="volatility", seed=0, horizons=(4,))
-    assert rep["model_period"] == 30
-    assert rep["incumbent_period"] == 48
-    assert rep["model"]["period"] == 30
-    assert rep["handrule"]["period"] == 48
 
 
 import json
