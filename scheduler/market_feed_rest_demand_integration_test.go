@@ -791,8 +791,27 @@ func TestFeedRESTReuseConsumerReaderMismatch(t *testing.T) {
 		}
 	}
 
+	batch := func(t *testing.T, doc *feedSealDoc, sc StrategyConfig) (*marketPayload, error) {
+		t.Helper()
+		cfg := &Config{IntervalSeconds: 300, Strategies: []StrategyConfig{sc}}
+		req, err := deriveFeedRequirements(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, ok := hlBatchKeyForStrategy(sc, cfg)
+		if !ok {
+			t.Fatalf("strategy %s is not batch eligible", sc.ID)
+		}
+		ctx := &marketFeedContext{Enabled: true, Requirements: req, Snapshot: doc.snapshot()}
+		return ctx.batchPayload(key, cfg.Strategies)
+	}
+
 	t.Run("NewFormingHTF", func(t *testing.T) {
 		check(t, reused, formingHTF, true, false)
+		payload, err := batch(t, reused, formingHTF)
+		if err == nil || !strings.Contains(err.Error(), "without the forming bar") || payload != nil {
+			t.Fatalf("batch payload = %v, error = %v, want rejection of the reused 4h frame", payload, err)
+		}
 	})
 	t.Run("NewSignalWithRetainedFeedConfig", func(t *testing.T) {
 		consumers[1].Retained = true
@@ -803,5 +822,12 @@ func TestFeedRESTReuseConsumerReaderMismatch(t *testing.T) {
 	t.Run("ClosedReuseAndFreshForming", func(t *testing.T) {
 		check(t, reused, closedHTF, false, false)
 		check(t, fresh, formingHTF, false, true)
+		payload, err := batch(t, reused, closedHTF)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if frame, ok := payload.Frames[fourH.PayloadID()]; !ok || frame.FormingBarIncluded {
+			t.Fatalf("batch 4h present = %t, forming bar included = %t, want true and false", ok, frame.FormingBarIncluded)
+		}
 	})
 }
