@@ -154,27 +154,43 @@ func manualRegimeMACEqual(got, want string) bool {
 var errManualRegimeMarkerAbsent = errors.New("owner marker absent")
 
 func readManualRegimeOwnerMarker(path string) (manualRegimeOwnerMarker, error) {
+	marker, _, err := readManualRegimeOwnerMarkerWithInfo(path)
+	return marker, err
+}
+
+func readManualRegimeOwnerMarkerWithInfo(path string) (manualRegimeOwnerMarker, os.FileInfo, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return manualRegimeOwnerMarker{}, errManualRegimeMarkerAbsent
+		return manualRegimeOwnerMarker{}, nil, errManualRegimeMarkerAbsent
 	}
 	if err != nil {
-		return manualRegimeOwnerMarker{}, fmt.Errorf("owner marker %s unreadable: %w", path, err)
+		return manualRegimeOwnerMarker{}, nil, fmt.Errorf("owner marker %s unreadable: %w", path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return manualRegimeOwnerMarker{}, fmt.Errorf("owner marker %s is not a regular file (%s)", path, info.Mode().Type())
+		return manualRegimeOwnerMarker{}, nil, fmt.Errorf("owner marker %s is not a regular file (%s)", path, info.Mode().Type())
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return manualRegimeOwnerMarker{}, fmt.Errorf("owner marker %s unreadable: %w", path, err)
+		return manualRegimeOwnerMarker{}, nil, fmt.Errorf("owner marker %s unreadable: %w", path, err)
 	}
 	defer f.Close()
 	held, err := f.Stat()
 	if err != nil {
-		return manualRegimeOwnerMarker{}, fmt.Errorf("owner marker %s unreadable: %w", path, err)
+		return manualRegimeOwnerMarker{}, nil, fmt.Errorf("owner marker %s unreadable: %w", path, err)
 	}
 	if !held.Mode().IsRegular() || !os.SameFile(info, held) {
-		return manualRegimeOwnerMarker{}, fmt.Errorf("owner marker %s was replaced while it was read", path)
+		return manualRegimeOwnerMarker{}, nil, fmt.Errorf("owner marker %s was replaced while it was read", path)
+	}
+	marker, err := decodeManualRegimeOwnerMarkerFrom(f, path)
+	if err != nil {
+		return manualRegimeOwnerMarker{}, nil, err
+	}
+	return marker, held, nil
+}
+
+func decodeManualRegimeOwnerMarkerFrom(f *os.File, path string) (manualRegimeOwnerMarker, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return manualRegimeOwnerMarker{}, fmt.Errorf("owner marker %s unreadable: %w", path, err)
 	}
 	blob, err := io.ReadAll(io.LimitReader(f, manualRegimeOwnerMarkerMaxBytes+1))
 	if err != nil {
@@ -283,6 +299,11 @@ func (o *manualRegimeOwner) publish(layout storageLayout) error {
 		return fmt.Errorf("owner secret: %w", err)
 	}
 	id := manualRegimeOwnerIdentity{Nonce: nonce, Secret: secret}
+	o.mu.Lock()
+	previous := o.guards
+	o.active, o.guards = false, nil
+	o.mu.Unlock()
+	previous.release()
 	var written []string
 	rollback := func() {
 		for _, path := range written {
@@ -319,11 +340,14 @@ func (o *manualRegimeOwner) publish(layout storageLayout) error {
 		rollback()
 		return err
 	}
+	if err := guards.armWitnesses(layout); err != nil {
+		guards.release()
+		rollback()
+		return fmt.Errorf("ownership witness: %w", err)
+	}
 	o.mu.Lock()
-	previous := o.guards
 	o.id, o.active, o.published, o.guards = id, true, written, guards
 	o.mu.Unlock()
-	previous.release()
 	return nil
 }
 
@@ -345,6 +369,13 @@ func (o *manualRegimeOwner) signalPersistence(p RiskPartition, held bool) {
 	guards.signal(p, held)
 }
 
+func (o *manualRegimeOwner) localWitness(path, nonce string, offset int64) bool {
+	o.mu.RLock()
+	id, active, guards := o.id, o.active, o.guards
+	o.mu.RUnlock()
+	return active && id.Nonce == nonce && guards.witnessHeld(path, offset)
+}
+
 func (o *manualRegimeOwner) signalDrain() {
 	o.mu.RLock()
 	guards := o.guards
@@ -353,17 +384,35 @@ func (o *manualRegimeOwner) signalDrain() {
 }
 
 type manualRegimePin struct {
-	layout  storageLayout
-	owner   manualRegimeOwnerIdentity
-	holders []int
+	layout    storageLayout
+	owner     manualRegimeOwnerIdentity
+	holders   []int
+	witness   int
+	locks     map[storageRole]os.FileInfo
+	markers   map[storageRole]os.FileInfo
+	witnesses map[storageRole]os.FileInfo
+	unproven  bool
 }
 
 func (p manualRegimePin) same(other manualRegimePin) bool {
-	if p.owner != other.owner || len(p.holders) != len(other.holders) {
+	if p.owner != other.owner || p.witness != other.witness || len(p.holders) != len(other.holders) {
 		return false
 	}
 	for i := range p.holders {
 		if p.holders[i] != other.holders[i] {
+			return false
+		}
+	}
+	return sameManualRegimeFiles(p.locks, other.locks) && sameManualRegimeFiles(p.markers, other.markers) && sameManualRegimeFiles(p.witnesses, other.witnesses)
+}
+
+func sameManualRegimeFiles(a, b map[storageRole]os.FileInfo) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for role, info := range a {
+		other, ok := b[role]
+		if !ok || info == nil || other == nil || !os.SameFile(info, other) {
 			return false
 		}
 	}
@@ -372,8 +421,11 @@ func (p manualRegimePin) same(other manualRegimePin) bool {
 
 func (p manualRegimePin) recheck(when string) *manualRegimeTransportError {
 	again, terr := verifyManualRegimeOwnerPin(p.layout)
+	if again.owner.Nonce != "" && again.owner != p.owner {
+		return manualRegimeRefused("owner identity changed %s", when)
+	}
 	if terr != nil {
-		if terr.availability {
+		if terr.availability || again.unproven {
 			return manualRegimeRefused("owner identity disappeared %s: %s", when, terr.reason)
 		}
 		return terr
@@ -392,20 +444,28 @@ func verifyManualRegimeOwner(layout storageLayout) (manualRegimeOwnerIdentity, *
 func verifyManualRegimeOwnerPin(layout storageLayout) (manualRegimePin, *manualRegimeTransportError) {
 	var id manualRegimeOwnerIdentity
 	var holders []int
-	held, unheld, absent := 0, 0, 0
+	locks := make(map[storageRole]os.FileInfo)
+	markers := make(map[storageRole]os.FileInfo)
+	witnesses := make(map[storageRole]os.FileInfo)
+	witness := 0
+	held, unheld, absent, unwitnessed := 0, 0, 0, 0
 	for _, spec := range layout.Files {
 		if spec.InMemory {
 			continue
 		}
-		if pid, ok := probeStateDBLockHolder(spec.Path); ok {
-			held++
-			holders = append(holders, pid)
-		} else {
+		probe, err := probeStateDBLockStrict(spec.Path)
+		if err != nil {
+			return manualRegimePin{}, manualRegimeRefused("%v", err)
+		}
+		if !probe.held {
 			unheld++
 			continue
 		}
+		held++
+		holders = append(holders, probe.pid)
+		locks[spec.Role] = probe.info
 		path := manualRegimeOwnerMarkerPath(spec.Path)
-		marker, err := readManualRegimeOwnerMarker(path)
+		marker, info, err := readManualRegimeOwnerMarkerWithInfo(path)
 		if errors.Is(err, errManualRegimeMarkerAbsent) {
 			absent++
 			continue
@@ -422,6 +482,20 @@ func verifyManualRegimeOwnerPin(layout storageLayout) (manualRegimePin, *manualR
 			return manualRegimePin{}, manualRegimeRefused("owner markers of the configured state files name different scheduler processes")
 		}
 		id = got
+		markers[spec.Role] = info
+		pid, witnessInfo, err := manualRegimeWitnessHolder(manualRegimeWitnessPath(spec.Path), nil, manualRegimeOwnershipWitnessOffset, got.Nonce)
+		if errors.Is(err, errManualRegimeNoWitness) {
+			unwitnessed++
+			continue
+		}
+		if err != nil {
+			return manualRegimePin{}, manualRegimeRefused("%v", err)
+		}
+		if witness != 0 && pid != witness {
+			return manualRegimePin{}, manualRegimeRefused("the ownership witnesses of the configured state files are held by different processes")
+		}
+		witness = pid
+		witnesses[spec.Role] = witnessInfo
 	}
 	if held == 0 && unheld == 0 {
 		return manualRegimePin{}, manualRegimeRefused("the configured storage layout has no on-disk state file")
@@ -433,9 +507,12 @@ func verifyManualRegimeOwnerPin(layout storageLayout) (manualRegimePin, *manualR
 		return manualRegimePin{}, manualRegimeUnavailable("no scheduler owns the configured state files")
 	}
 	if absent > 0 {
-		return manualRegimePin{}, manualRegimeUnavailable("the owning scheduler has not published its identity yet")
+		return manualRegimePin{owner: id, unproven: true}, manualRegimeRefused("a process owns the configured state files but has not published its scheduler identity (a scheduler still starting, or another owner such as a backfill or a one-shot run)")
 	}
-	return manualRegimePin{layout: layout, owner: id, holders: holders}, nil
+	if unwitnessed > 0 {
+		return manualRegimePin{owner: id, unproven: true}, manualRegimeRefused("the owner of the configured state files holds no ownership witness (a scheduler still starting, an older scheduler build, or an owner marker left by a stopped process)")
+	}
+	return manualRegimePin{layout: layout, owner: id, holders: holders, witness: witness, locks: locks, markers: markers, witnesses: witnesses}, nil
 }
 
 type manualRegimeStrategyProjection struct {
@@ -780,6 +857,7 @@ type manualRegimeRemote struct {
 	admitted    *manualRegimeAdmissionRecord
 	ownerPin    *manualRegimePin
 	waited      bool
+	admission   *manualEntryAdmission
 }
 
 func newManualRegimeRemote(cfg *Config, store *StateStore) *manualRegimeRemote {
@@ -948,9 +1026,21 @@ func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
 	if err != nil {
 		return RegimePayload{}, manualRegimeRefused("%v", err)
 	}
-	pin, terr := verifyManualRegimeOwnerPin(m.store.layout)
-	if terr != nil {
-		return RegimePayload{}, terr
+	var pin manualRegimePin
+	if adm := m.admission; adm != nil {
+		if adm.standalone() {
+			return RegimePayload{}, manualRegimeUnavailable("no scheduler owns the configured state files; this command holds them for a standalone entry")
+		}
+		if terr := adm.pin.recheck("before the regime request"); terr != nil {
+			return RegimePayload{}, terr
+		}
+		pin = *adm.pin
+	} else {
+		verified, terr := verifyManualRegimeOwnerPin(m.store.layout)
+		if terr != nil {
+			return RegimePayload{}, terr
+		}
+		pin = verified
 	}
 	m.ownerPin = &pin
 	budget, pace := m.budget, m.pace
@@ -1111,7 +1201,7 @@ func (m *manualRegimeRemote) checkPersistenceGuard(strategyID string) error {
 	if !ok {
 		return manualRegimeRefused("strategy %q has no storage partition", strategyID)
 	}
-	return checkManualRegimeHoldGuard(pin.layout, part, pin.owner.Nonce)
+	return checkManualRegimeHoldGuardWitness(*pin, part)
 }
 
 func sealedManualCommandFeed(cfg *Config) bool {

@@ -443,9 +443,14 @@ func strategyIDs(states []*StrategyState) []string {
 
 // ------------------------------------------------------- persistence hold
 
+var stateSaveOutcomeFault = func(p RiskPartition) error { return nil }
+
 func (st *StateStore) recordSaveOutcome(p RiskPartition, err error) {
 	if st == nil {
 		return
+	}
+	if err == nil {
+		err = stateSaveOutcomeFault(p)
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()

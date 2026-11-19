@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -183,4 +184,50 @@ func probeStateDBLockHolder(dbPath string) (int, bool) {
 	}
 	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	return 0, false
+}
+
+type stateDBLockProbe struct {
+	lockPath string
+	held     bool
+	pid      int
+	info     os.FileInfo
+}
+
+func probeStateDBLockStrict(dbPath string) (stateDBLockProbe, error) {
+	lockPath := stateDBLockPath(dbPath)
+	out := stateDBLockProbe{lockPath: lockPath}
+	before, err := os.Lstat(lockPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return out, nil
+	}
+	if err != nil {
+		return out, fmt.Errorf("ownership lock %s unreadable: %w", lockPath, err)
+	}
+	if !before.Mode().IsRegular() {
+		return out, fmt.Errorf("ownership lock %s is not a regular file (%s)", lockPath, before.Mode().Type())
+	}
+	f, err := os.OpenFile(lockPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return out, fmt.Errorf("ownership lock %s unreadable: %w", lockPath, err)
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return out, fmt.Errorf("ownership lock %s was replaced during the probe", lockPath)
+	}
+	switch flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); {
+	case flockErr == nil:
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	case errors.Is(flockErr, syscall.EWOULDBLOCK):
+		out.held = true
+		out.pid = readLockPID(f)
+	default:
+		return out, fmt.Errorf("ownership lock %s unreadable: %w", lockPath, flockErr)
+	}
+	after, err := os.Lstat(lockPath)
+	if err != nil || !os.SameFile(before, after) {
+		return out, fmt.Errorf("ownership lock %s was replaced during the probe", lockPath)
+	}
+	out.info = opened
+	return out, nil
 }

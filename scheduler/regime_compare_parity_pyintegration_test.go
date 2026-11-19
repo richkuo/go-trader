@@ -368,6 +368,17 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 			regimeReadinessPendingProcess(t, mode)
 		})
 	}
+	for _, mode := range []string{"rest", "websocket", "shared"} {
+		mode := mode
+		t.Run("entry-admission-"+mode, func(t *testing.T) {
+			t.Parallel()
+			regimeReadinessEntryAdmissionProcess(t, mode)
+		})
+	}
+	t.Run("entry-admission-transitions", func(t *testing.T) {
+		t.Parallel()
+		regimeReadinessEntryAdmissionTransitions(t)
+	})
 	state := &StrategyState{Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100}}, Regime: "stale"}
 	syncStrategyRegimeState(state, bundles[3].Payload, rc)
 	syncStrategyRegimeState(state, bundles[0].Payload, rc)
