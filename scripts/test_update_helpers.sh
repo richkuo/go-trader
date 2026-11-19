@@ -2936,6 +2936,20 @@ printf '{"market_feed":"websocket"}\n' >"$fw_test/plain.json"
     printf 'full\n' >"$fw_test/dirs.protect"
     update_feed_weight_grant_check legacy.service "$fw_test/feed.json" >/dev/null || { echo "FAIL: a unit without ProtectSystem=strict was refused" >&2; exit 1; }
 )
+printf 'v2 binary go-trader-capability:feed-weight-authority-v1 go-trader-capability:feed-weight-record-v2 tail\n' >"$fw_test/v2-go-trader"
+notice=$(update_feed_weight_rollout_notice "$fw_test/new-go-trader" "$fw_test/v2-go-trader" "$fw_test/feed.json")
+[[ "$notice" == *"version 2"*"update every participant in one window"* ]] || { echo "FAIL: an update to the version 2 record does not announce the coordinated rollout: $notice" >&2; exit 1; }
+assert_eq "$(update_feed_weight_rollout_notice "$fw_test/v2-go-trader" "$fw_test/v2-go-trader" "$fw_test/feed.json")" "" "an update between version 2 binaries prints no rollout notice"
+assert_eq "$(update_feed_weight_rollout_notice "$fw_test/new-go-trader" "$fw_test/v2-go-trader" "$fw_test/plain.json")" "" "a non-participant prints no rollout notice"
+mkdir -p "$fw_test/fw/policies"
+printf '{"version":2,"epoch_id":"e"}\n' >"$fw_test/fw/authority.json"
+assert_eq "$(update_feed_weight_record_version "$fw_test/fw")" "2" "the record version is read from authority.json"
+rollback=$(update_feed_weight_rollback_notice "$fw_test/new-go-trader" "$fw_test/fw" 2>&1)
+[[ "$rollback" == *"move $fw_test/fw/authority.json aside"*"never delete $fw_test/fw/policies"* ]] || { echo "FAIL: a rollback to a version 1 binary beside a version 2 record prints no recovery path: $rollback" >&2; exit 1; }
+assert_eq "$(update_feed_weight_rollback_notice "$fw_test/v2-go-trader" "$fw_test/fw" 2>&1)" "" "a rollback to a version 2 binary prints no recovery path"
+printf '{"version":1,"epoch_id":"e"}\n' >"$fw_test/fw/authority.json"
+assert_eq "$(update_feed_weight_rollback_notice "$fw_test/new-go-trader" "$fw_test/fw" 2>&1)" "" "a version 1 record needs no rollback recovery"
+assert_eq "$(cat "$fw_test/fw/authority.json")" '{"version":1,"epoch_id":"e"}' "the rollback notice never writes the record"
 rm -rf "$fw_test"
 
 echo "OK: update_helpers tests passed"
