@@ -1,4 +1,4 @@
-# go-trader — Crypto Trading Bot
+# go-trader — AI-Enabled Crypto Trading Bot
 
 [![GitHub release](https://img.shields.io/github/v/release/richkuo/go-trader)](https://github.com/richkuo/go-trader/releases/latest)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/44BykmWZsP)
