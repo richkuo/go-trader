@@ -1057,6 +1057,12 @@ func TestPaperCloseRealMarkFetchersAndRestingLimitRefusal(t *testing.T) {
 		}, "no usable mark", "ETH")
 	}
 	mu.Lock()
+	delete(hlMids, "ETH")
+	mu.Unlock()
+	f.requireUnchanged("served HL response without ETH", "hl-p", func() string {
+		return f.run(paperCloseCommandName, pcOwner, "", pcOpts("strategy", "hl-p"), "", nil)
+	}, "no usable mark", "ETH: no mark")
+	mu.Lock()
 	hlMids["ETH"] = "2100"
 	mu.Unlock()
 
