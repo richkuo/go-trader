@@ -641,14 +641,20 @@ func qpCaseCheckQuotePrecisionRobinhoodLiveKeepsTheVenueFill(t *testing.T) {
 
 func qpCaseCheckQuotePrecisionOptionsSpotAndPremiumPrecedence(t *testing.T) {
 	root := qpRoot(t)
-	sc := StrategyConfig{ID: "qp-opt", Type: "options", Platform: "deribit", Script: "shared_scripts/check_options.py",
-		Args: []string{"vol_mean_reversion", "BTC", "--platform=deribit"}, Capital: 1000}
+	sc := StrategyConfig{ID: "qp-opt", Type: "options", Platform: "ibkr", Script: "shared_scripts/check_options.py",
+		Args: []string{"protective_puts", "BTC", "--platform=ibkr"}, Capital: 1000}
+	const heldPut = `[{"option_type": "put", "action": "buy", "strike": 1, "expiry": "2026-12-18"}]`
+	spec, err := lookupOptionContractSpec(sc.Platform, "BTC")
+	if err != nil {
+		t.Fatalf("ibkr BTC contract spec: %v", err)
+	}
+	m := spec.Multiplier
 	for _, q := range qpQuotes {
 		t.Run(qpNum(q), func(t *testing.T) {
 			qpDebugLogs(t)
 			qpEnv(t, root, map[string]string{"QP_QUOTE": qpNum(q), "QP_CLOSE": qpNum(q)})
 			logger, buf := qpLogger(sc.ID)
-			result, _, ok := runOptionsCheck(sc, "[]", nil, logger)
+			result, _, ok := runOptionsCheck(sc, heldPut, nil, logger)
 			if !ok || result.SpotPrice != q {
 				t.Fatalf("options check ok=%t spot=%v, want %v; log:\n%s", ok, result, q, buf.String())
 			}
@@ -669,12 +675,15 @@ func qpCaseCheckQuotePrecisionOptionsSpotAndPremiumPrecedence(t *testing.T) {
 			if err != nil || n != 3 {
 				t.Fatalf("options trades=%d err=%v; log:\n%s", n, err, buf.String())
 			}
-			buyCost := 0.05 * q * 2
-			sellPremium := 0.03 * q
-			fixedCost := 3.5
-			buyFee := CalculateOptionFee(s.Platform, buyCost, 1)
-			sellFee := CalculateOptionFee(s.Platform, sellPremium, 1)
-			fixedFee := CalculateOptionFee(s.Platform, fixedCost, 1)
+			buyCost := 0.05 * q * m * 2
+			sellPremium := 0.03 * q * m
+			fixedCost := 3.5 * m
+			buyFee, buyErr := CalculateOptionFee(s.Platform, 2)
+			sellFee, sellErr := CalculateOptionFee(s.Platform, 1)
+			fixedFee, fixedErr := CalculateOptionFee(s.Platform, 1)
+			if buyErr != nil || sellErr != nil || fixedErr != nil {
+				t.Fatalf("ibkr fees: %v %v %v", buyErr, sellErr, fixedErr)
+			}
 			wantCash := 1000 - (buyCost + buyFee) + (sellPremium - sellFee) - (fixedCost + fixedFee)
 			if !qpClose(s.Cash, wantCash) {
 				t.Fatalf("cash = %v, want %v", s.Cash, wantCash)
@@ -1555,7 +1564,7 @@ func qpCaseCheckQuotePrecisionOptionsResultContract(t *testing.T) {
 	t.Run("check_platform_must_match_the_strategy_platform", func(t *testing.T) {
 		qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000"})
 		for _, tc := range []struct{ cfgPlatform, argPlatform string }{
-			{"deribit", "robinhood"},
+			{"ibkr", "robinhood"},
 			{"robinhood", "robinhood"},
 		} {
 			t.Run(tc.cfgPlatform+"_config_"+tc.argPlatform+"_check", func(t *testing.T) {
@@ -1571,7 +1580,7 @@ func qpCaseCheckQuotePrecisionOptionsResultContract(t *testing.T) {
 					}
 					return
 				}
-				want := fmt.Sprintf("Script contract failure: options result contract: check priced on platform %q but the strategy platform is %q", tc.argPlatform, tc.cfgPlatform)
+				want := fmt.Sprintf("Options check refused before spawn: strategy %s argument --platform=%s conflicts with the declared platform %q", sc.ID, tc.argPlatform, tc.cfgPlatform)
 				if ok || !strings.Contains(buf.String(), want) || qpScriptFailureCount(sc.ID) != 1 {
 					t.Fatalf("mismatch must fail the check: ok=%t failures=%d; log:\n%s", ok, qpScriptFailureCount(sc.ID), buf.String())
 				}
@@ -1670,8 +1679,8 @@ func qpCaseCheckQuotePrecisionOptionsStructureContract(t *testing.T) {
 	root := qpRoot(t)
 
 	t.Run("real_butterfly_books_whole_and_commits_with_the_save", func(t *testing.T) {
-		sc := StrategyConfig{ID: "qp-opt-fly", Type: "options", Platform: "deribit", Script: "shared_scripts/check_options.py",
-			Args: []string{"butterfly", "BTC", "--platform=deribit"}, Capital: 100000, MaxDrawdownPct: 50}
+		sc := StrategyConfig{ID: "qp-opt-fly", Type: "options", Platform: "ibkr", Script: "shared_scripts/check_options.py",
+			Args: []string{"butterfly", "BTC", "--platform=ibkr"}, Capital: 100000, MaxDrawdownPct: 50}
 		qpResetScriptFailures(t, sc.ID)
 		qpEnv(t, root, map[string]string{"QP_QUOTE": "100000", "QP_CLOSE": "100000", "QP_DAILY": qpMidRankDaily()})
 		env := openEntryTestEnv(t, newEntryTestConfig(t, sc))

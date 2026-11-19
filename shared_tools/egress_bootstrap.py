@@ -172,14 +172,6 @@ def _check_requests():
     _expect_session(egress_policy.pin_requests_session(requests.Session()), "requests")
 
 
-def _check_deribit():
-    utils = _load_repo_module("_egress_check_deribit_utils", os.path.join("platforms", "deribit", "utils.py"))
-    _expect(utils.egress_policy.requests_proxies() == egress_policy.requests_proxies(),
-            "deribit helper proxies differ from the frozen policy")
-    adapter = _load_repo_module("_egress_check_deribit_adapter", os.path.join("platforms", "deribit", "adapter.py"))
-    _expect_ccxt(adapter.DeribitOptionsAdapter(sandbox=False).exchange, "ccxt deribit")
-
-
 def _check_advisory():
     review = _load_repo_module("_egress_check_llm_review", os.path.join("shared_scripts", "llm_review.py"))
     _expect_session(review.new_session(), "advisory")
@@ -192,7 +184,6 @@ _CHECKS = {
     "topstep": _check_topstep,
     "yfinance": _check_yfinance,
     "requests": _check_requests,
-    "deribit": _check_deribit,
     "advisory": _check_advisory,
 }
 

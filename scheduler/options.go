@@ -236,7 +236,10 @@ func planOptionStructure(s *StrategyState, result *OptionsResult, spec optionCon
 		if !finitePositive(value) {
 			return refuseLeg(i, a, "Zero premium, skipping option %s %s %s strike=%s", a.Action, result.Underlying, a.OptionType, strike)
 		}
-		fee := CalculateOptionFee(s.Platform, value, qty)
+		fee, err := CalculateOptionFee(s.Platform, qty)
+		if err != nil {
+			return refuseLeg(i, a, "Option %s %s %s strike=%s fee refused: %v", a.Action, result.Underlying, a.OptionType, strike, err)
+		}
 		if !finiteAmount(fee) || fee < 0 {
 			return refuseLeg(i, a, "Option %s %s %s strike=%s fee %v is not a finite non-negative amount", a.Action, result.Underlying, a.OptionType, strike, fee)
 		}

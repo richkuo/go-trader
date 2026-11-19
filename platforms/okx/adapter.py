@@ -3,13 +3,12 @@ import os
 import re
 import sys
 import time
-from typing import Optional, Tuple
+from typing import Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
 import ccxt
 import egress_policy
-import option_data
 
 
 def _bill_float(value) -> float:
@@ -587,129 +586,3 @@ class OKXExchangeAdapter:
         if len(bills) > max_bills:
             bills = bills[:max_bills]
         return bills, capped
-
-
-    def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:
-        try:
-            ohlcv = self._exchange.fetch_ohlcv(underlying + "/USDT", "1d", limit=90)
-        except Exception as e:
-            raise option_data.unavailable("volatility unavailable: daily history read failed", e) from e
-        return option_data.realized_vol_metrics(option_data.daily_closes(ohlcv), 365)
-
-    def get_real_expiry(self, underlying: str, target_dte: int) -> Tuple[str, int]:
-        self._load_markets()
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc)
-
-        expiries = set()
-        for market in self._exchange.markets.values():
-            if (market.get("type") == "option"
-                    and market.get("base", "").upper() == underlying.upper()
-                    and market.get("active", True)):
-                exp = market.get("expiry")
-                if exp:
-                    expiries.add(int(exp))
-
-        if not expiries:
-            from datetime import timedelta
-            syn = now + timedelta(days=target_dte)
-            return syn.strftime("%Y-%m-%d"), target_dte
-
-        best_exp = None
-        best_diff = float("inf")
-        best_dte = 0
-        for exp_ts in expiries:
-            exp_dt = datetime.fromtimestamp(exp_ts / 1000, tz=timezone.utc)
-            dte = (exp_dt - now).days
-            if dte < 0:
-                continue
-            diff = abs(dte - target_dte)
-            if diff < best_diff:
-                best_diff = diff
-                best_exp = exp_dt
-                best_dte = dte
-
-        if best_exp is None:
-            from datetime import timedelta
-            syn = now + timedelta(days=target_dte)
-            return syn.strftime("%Y-%m-%d"), target_dte
-
-        return best_exp.strftime("%Y-%m-%d"), best_dte
-
-    def get_real_strike(self, underlying: str, expiry: str,
-                        option_type: str, target_strike: float) -> float:
-        self._load_markets()
-        from datetime import datetime, timezone
-
-        exp_dt = datetime.strptime(expiry, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        exp_start = int(exp_dt.timestamp() * 1000)
-        exp_end = exp_start + 86400 * 1000
-
-        strikes = []
-        for market in self._exchange.markets.values():
-            if (market.get("type") == "option"
-                    and market.get("base", "").upper() == underlying.upper()
-                    and market.get("optionType") == option_type
-                    and market.get("active", True)):
-                mkt_exp = market.get("expiry")
-                if mkt_exp and exp_start <= int(mkt_exp) < exp_end:
-                    strike = market.get("strike")
-                    if strike:
-                        strikes.append(float(strike))
-
-        if not strikes:
-            if underlying.upper() == "BTC":
-                return round(target_strike / 1000) * 1000
-            elif underlying.upper() == "ETH":
-                return round(target_strike / 100) * 100
-            return round(target_strike / 50) * 50
-
-        return min(strikes, key=lambda s: abs(s - target_strike))
-
-    def get_premium_and_greeks(self, underlying: str, option_type: str,
-                                strike: float, expiry: str, dte: float,
-                                spot: float, vol: Optional[float] = None) -> Tuple[float, float, dict]:
-        from datetime import datetime, timezone
-        try:
-            self._load_markets()
-        except Exception as e:
-            raise option_data.unavailable("option quote unavailable: okx markets read failed", e) from e
-        exp_dt = datetime.strptime(expiry, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        exp_start = int(exp_dt.timestamp() * 1000)
-        exp_end = exp_start + 86400 * 1000
-
-        matched = False
-        last_error = None
-        for sym, market in (self._exchange.markets or {}).items():
-            if (market.get("type") == "option"
-                    and market.get("base", "").upper() == underlying.upper()
-                    and market.get("optionType") == option_type
-                    and float(market.get("strike") or 0) == strike
-                    and market.get("active", True)):
-                mkt_exp = market.get("expiry")
-                if mkt_exp and exp_start <= int(mkt_exp) < exp_end:
-                    matched = True
-                    try:
-                        ticker = self._exchange.fetch_ticker(sym)
-                    except Exception as e:
-                        print(f"[okx] option ticker read failed for {sym}: {e}", file=sys.stderr)
-                        last_error = e
-                        continue
-                    mark = ticker.get("last") or ticker.get("close") or 0
-                    if not option_data.is_finite_positive(mark):
-                        continue
-                    premium_usd = float(mark) * spot
-                    premium_pct = float(mark)
-                    greeks = {
-                        "delta": ticker.get("info", {}).get("delta", 0),
-                        "gamma": ticker.get("info", {}).get("gamma", 0),
-                        "theta": ticker.get("info", {}).get("theta", 0),
-                        "vega": ticker.get("info", {}).get("vega", 0),
-                    }
-                    greeks = {k: float(v or 0) for k, v in greeks.items()}
-                    return premium_pct, premium_usd, greeks
-        if last_error is not None:
-            raise option_data.unavailable("option quote unavailable: okx ticker read failed", last_error) from last_error
-        if not matched:
-            raise option_data.OptionDataUnavailable("option quote unavailable: no listed okx option matches")
-        raise option_data.OptionDataUnavailable("option quote unavailable: okx mark is not positive")

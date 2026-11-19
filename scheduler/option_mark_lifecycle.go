@@ -107,11 +107,6 @@ func optionGoExpirySchedule(platform, expiry string) (time.Time, time.Time, bool
 	if err != nil {
 		return time.Time{}, time.Time{}, false, fmt.Errorf("invalid expiry %q: %w", expiry, err)
 	}
-	switch platform {
-	case "deribit", "okx":
-		cutoff := day.Add(8 * time.Hour)
-		return cutoff, cutoff.Add(time.Hour), true, nil
-	}
 	spec, ok := optionContractSpecs[platform]
 	if !ok || spec.Cutoff == nil {
 		return time.Time{}, time.Time{}, false, nil
@@ -306,10 +301,6 @@ func optionSettlementError(platform string, pos *OptionPosition, st *optionLegSe
 		return fmt.Errorf("leg expiry %q is invalid", pos.Expiry)
 	}
 	switch platform {
-	case "deribit", "okx":
-		if st.Basis != optionSettlementBasisDelivery || st.Date != pos.Expiry {
-			return fmt.Errorf("settlement basis %s on %s does not match the %s delivery price for expiry %s", st.Basis, st.Date, platform, pos.Expiry)
-		}
 	case "robinhood":
 		if st.Basis != optionSettlementBasisRawClose || day.After(expiry) || expiry.Sub(day) > 7*24*time.Hour {
 			return fmt.Errorf("settlement basis %s on %s is not a raw close of the expiry session for %s", st.Basis, st.Date, pos.Expiry)
@@ -758,13 +749,12 @@ func clearOptionMarkFailure(notifier *MultiNotifier, sc StrategyConfig) {
 }
 
 type optionPricers struct {
-	Deribit   *DeribitPricer
 	Robinhood *RobinhoodOptionPricer
 	IBKR      *IBKROptionPricer
 }
 
 func newOptionPricers() optionPricers {
-	return optionPricers{Deribit: NewDeribitPricer(), Robinhood: NewRobinhoodOptionPricer(), IBKR: NewIBKROptionPricer()}
+	return optionPricers{Robinhood: NewRobinhoodOptionPricer(), IBKR: NewIBKROptionPricer()}
 }
 
 func optionPricerFor(platform string, shared optionPricers) OptionPricer {
@@ -776,14 +766,6 @@ func optionPricerFor(platform string, shared optionPricers) OptionPricer {
 	case "ibkr":
 		if shared.IBKR != nil {
 			return shared.IBKR
-		}
-	case "deribit":
-		if shared.Deribit != nil {
-			return shared.Deribit
-		}
-	case "okx":
-		if shared.Deribit != nil {
-			return shared.Deribit.OKXProxy()
 		}
 	}
 	return nil

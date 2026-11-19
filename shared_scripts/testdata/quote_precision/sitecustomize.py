@@ -97,68 +97,10 @@ def _raise_daily(ccxt, exchange_id, mode):
     raise ccxt.NetworkError("quote precision stub: daily history failure for " + exchange_id)
 
 
-_OPTION_QUOTES_SERVED = [0]
-
-
 def _noise():
     if os.environ.get("QP_STDOUT_NOISE") == "1":
         sys.stdout.write("quote precision stub stdout noise\n")
         sys.stdout.flush()
-
-
-def _option_quote_mode():
-    fail_after = os.environ.get("QP_OPTION_QUOTE_FAIL_AFTER", "")
-    _OPTION_QUOTES_SERVED[0] += 1
-    if fail_after != "" and _OPTION_QUOTES_SERVED[0] > int(fail_after):
-        return "error", None
-    raw = os.environ.get("QP_OPTION_QUOTE", "")
-    if raw == "":
-        return "value", 0.05
-    if raw in ("error", "429", "503", "missing"):
-        return raw, None
-    return "value", float(raw)
-
-
-def _option_greeks():
-    raw = os.environ.get("QP_OPTION_GREEKS", "")
-    if raw:
-        return json.loads(raw)
-    return {"delta": 0.25, "gamma": 0.0001, "theta": -1.5, "vega": 2.5}
-
-
-def _install_deribit_ticker(requests):
-    import requests.adapters
-    import requests.models
-
-    real_send = requests.adapters.HTTPAdapter.send
-
-    def send(self, request, *args, **kwargs):
-        if "deribit.com/api/v2/public/ticker" not in request.url:
-            return real_send(self, request, *args, **kwargs)
-        mode, value = _option_quote_mode()
-        _log({"call": "deribit_ticker", "url": request.url, "mode": mode})
-        if mode == "error":
-            raise requests.exceptions.ConnectionError("quote precision stub: deribit ticker failure")
-        resp = requests.models.Response()
-        resp.status_code = 200
-        result = {"underlying_price": 100.0, "greeks": _option_greeks()}
-        if mode in ("429", "503"):
-            resp.status_code = int(mode)
-            body = {"error": {"message": "quote precision stub status " + mode}}
-        elif mode == "missing":
-            body = {"result": result}
-        else:
-            result["mark_price"] = value
-            body = {"result": result}
-        resp._content = json.dumps(body).encode()
-        resp.headers["Content-Type"] = "application/json"
-        resp.url = request.url
-        resp.request = request
-        resp.reason = "quote precision stub"
-        resp.encoding = "utf-8"
-        return resp
-
-    requests.adapters.HTTPAdapter.send = send
 
 
 def _install_frozen_topstep_clock(iso):
@@ -269,8 +211,6 @@ def _install():
         cls.fetch_ticker = fetch_ticker
         cls.fetch_ohlcv = fetch_ohlcv
         cls.load_markets = load_markets
-
-    _install_deribit_ticker(requests)
 
     frozen_now = os.environ.get("QP_NOW", "")
     if frozen_now:

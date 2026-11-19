@@ -12,8 +12,8 @@ from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 
-from platforms.deribit.adapter import (
-    DeribitOptionsAdapter, OptionContract, OptionPosition, OptionType,
+from shared_tools.option_types import (
+    PaperOptionsBook, OptionContract, OptionPosition, OptionType,
     OptionSide, Greeks
 )
 from shared_strategies.options.risk import OptionsRiskManager
@@ -46,7 +46,7 @@ def list_options_strategies() -> List[str]:
     return list(OPTIONS_STRATEGY_REGISTRY.keys())
 
 
-def create_options_strategy(name: str, adapter: DeribitOptionsAdapter,
+def create_options_strategy(name: str, adapter: PaperOptionsBook,
                              risk_manager: OptionsRiskManager,
                              params: Optional[dict] = None):
     strat = get_options_strategy(name)
@@ -56,7 +56,7 @@ def create_options_strategy(name: str, adapter: DeribitOptionsAdapter,
 
 class BaseOptionsStrategy:
 
-    def __init__(self, adapter: DeribitOptionsAdapter,
+    def __init__(self, adapter: PaperOptionsBook,
                  risk_manager: OptionsRiskManager, **kwargs):
         self.adapter = adapter
         self.risk = risk_manager
@@ -81,8 +81,7 @@ class MomentumOptionsStrategy(BaseOptionsStrategy):
 
     def _get_momentum_signal(self, underlying: str) -> int:
         try:
-            symbol = f"{underlying}/USD:{underlying}-PERPETUAL"
-            ohlcv = self.adapter.exchange.fetch_ohlcv(symbol, "4h", limit=100)
+            ohlcv = self.adapter.fetch_ohlcv(underlying, "4h", limit=100)
             if not ohlcv or len(ohlcv) < 30:
                 return 0
 

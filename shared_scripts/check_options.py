@@ -24,7 +24,8 @@ MIN_SCORE_THRESHOLD = 0.3
 REGIME_TIMEFRAME = "4h"
 REGIME_LIMIT = 100
 REGIME_MIN_BARS = required_regime_bars(14)
-SUPPORTED_PLATFORMS = ("deribit", "ibkr", "okx", "robinhood")
+SUPPORTED_PLATFORMS = ("ibkr", "robinhood")
+RETIRED_PLATFORMS = ("deribit", "okx")
 RANK_STRATEGIES = ("butterfly", "vol_mean_reversion")
 PREMIUM_UNIT = "underlying_unit"
 STRUCTURE_CONTRACT = "options_structures_v1"
@@ -459,7 +460,7 @@ def _usage():
 
 
 def _parse_args(args):
-    platform = "deribit"
+    platforms = []
     regime_payload_json = None
     calendar_json = None
     remaining = []
@@ -473,7 +474,7 @@ def _parse_args(args):
             if i + 1 < len(args) and not args[i + 1].startswith("--"):
                 i += 1
         elif arg.startswith("--platform="):
-            platform = arg.split("=", 1)[1]
+            platforms.append(arg.split("=", 1)[1])
         elif arg.startswith("--platform"):
             invalid = True
         elif arg.startswith("--regime-payload-json="):
@@ -487,7 +488,26 @@ def _parse_args(args):
         else:
             remaining.append(arg)
         i += 1
-    return platform, regime_payload_json, calendar_json, remaining, invalid
+    return platforms, regime_payload_json, calendar_json, remaining, invalid
+
+
+def _platform_error(platforms):
+    supported = "|".join(SUPPORTED_PLATFORMS)
+    if not platforms:
+        return f"missing options platform: pass exactly one --platform={supported}"
+    if len(platforms) > 1:
+        return f"duplicate options platform flags: {', '.join(platforms)}; pass exactly one --platform={supported}"
+    platform = platforms[0]
+    if platform in RETIRED_PLATFORMS:
+        return (f"retired options platform: {platform}; Deribit support and OKX options support were removed "
+                f"in issue 2073; options run only on {', '.join(SUPPORTED_PLATFORMS)}")
+    if platform not in SUPPORTED_PLATFORMS:
+        return f"unsupported options platform: {platform}; options run only on {', '.join(SUPPORTED_PLATFORMS)}"
+    return None
+
+
+def _single_platform(platforms):
+    return platforms[0] if len(platforms) == 1 else ""
 
 
 def _reject_constant(name):
@@ -549,23 +569,23 @@ def _result(ctx, **fields):
 
 
 def _evaluate(ctx, args):
-    platform, regime_payload_json, calendar_json, remaining, invalid_args = _parse_args(args)
+    platforms, regime_payload_json, calendar_json, remaining, invalid_args = _parse_args(args)
+    platform = _single_platform(platforms)
     ctx["platform"] = platform
     ctx["strategy"] = remaining[0] if remaining else ""
     ctx["underlying"] = remaining[1].upper() if len(remaining) > 1 else ""
 
     if _is_live_args(args):
-        raise CheckError(_options_live_mode_error(platform))
+        raise CheckError(_options_live_mode_error(platform or "any venue"))
     if invalid_args or len(remaining) < 2 or len(remaining) > 3:
         raise CheckError(_usage())
+    platform_error = _platform_error(platforms)
+    if platform_error:
+        raise CheckError(platform_error)
     strategy_name = ctx["strategy"]
     underlying = ctx["underlying"]
     if strategy_name not in STRATEGY_MAP:
         raise CheckError(f"Unknown strategy: {strategy_name}. Available: {list(STRATEGY_MAP.keys())}")
-    if platform not in SUPPORTED_PLATFORMS:
-        raise CheckError(
-            f"unsupported options platform: {platform}; options run only on {', '.join(SUPPORTED_PLATFORMS)}"
-        )
 
     existing_positions, spot_positions = parse_positions_context(_read_positions(remaining))
 
@@ -620,7 +640,7 @@ def _evaluate(ctx, args):
 
 
 def _run(args, emit):
-    ctx = {"strategy": "", "underlying": "", "platform": "deribit"}
+    ctx = {"strategy": "", "underlying": "", "platform": ""}
     try:
         output = _evaluate(ctx, args)
     except Exception as e:
@@ -639,12 +659,17 @@ def _run(args, emit):
 
 
 def _probe(args):
-    platform, _, calendar_json, remaining, invalid = _parse_args([a for a in args if a != "--probe-only"])
+    platforms, _, calendar_json, remaining, invalid = _parse_args([a for a in args if a != "--probe-only"])
     if calendar_json is None:
         sys.exit(0)
     if invalid or len(remaining) < 2:
         print(f"option calendar probe argv is invalid: {args}", file=sys.stderr)
         sys.exit(2)
+    platform_error = _platform_error(platforms)
+    if platform_error:
+        print(f"option calendar probe rejected: {platform_error}", file=sys.stderr)
+        sys.exit(2)
+    platform = platforms[0]
     try:
         adapter = _load_adapter(platform, remaining[1].upper(), calendar_json)
         if getattr(adapter, "_calendar", None) is None:

@@ -86,6 +86,25 @@ func (p *Prompter) Choice(prompt string, options []string, defaultIdx int) int {
 	}
 }
 
+func (p *Prompter) RequiredChoice(prompt string, options []string) int {
+	fmt.Fprintln(p.out, prompt)
+	for i, opt := range options {
+		fmt.Fprintf(p.out, "   %d) %s\n", i+1, opt)
+	}
+	for {
+		fmt.Fprintf(p.out, "Enter choice (1-%d, no default): ", len(options))
+		if !p.scanner.Scan() {
+			return -1
+		}
+		input := strings.TrimSpace(p.scanner.Text())
+		n, err := strconv.Atoi(input)
+		if err == nil && n >= 1 && n <= len(options) {
+			return n - 1
+		}
+		fmt.Fprintln(p.out, "  A choice is required, try again.")
+	}
+}
+
 func (p *Prompter) MultiSelect(prompt string, options []string, defaultAll bool) []int {
 	return p.MultiSelectWithDefaults(prompt, options, multiSelectDefault(options, defaultAll))
 }

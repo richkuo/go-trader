@@ -812,7 +812,7 @@ func main() {
 
 	sharedOptionPricers := newOptionPricers()
 	optionSettlementAlerts := newOptionSettlementAlertThrottle()
-	fmt.Println("Option pricers ready (deribit: exact ticker + delivery price, okx: deribit_proxy, ibkr: " + optionMarksScript + " --platform=ibkr, robinhood: " + robinhoodOptionMarksScript + ")")
+	fmt.Println("Option pricers ready (ibkr: " + optionMarksScript + " --platform=ibkr, robinhood: " + robinhoodOptionMarksScript + ")")
 
 	websocketFeed := cfg.marketFeedWebsocketEnabled()
 	sharedFeed := cfg.marketFeedSharedEnabled()
@@ -3298,11 +3298,16 @@ func indicatorFloat(indicators map[string]interface{}, key string) (float64, boo
 }
 
 func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier, logger *StrategyLogger) (*OptionsResult, string, bool) {
-	args := append([]string{}, sc.Args...)
+	args, err := optionsCheckDispatchArgs(sc)
+	if err != nil {
+		logger.Error("Options check refused before spawn: %v", err)
+		notifyScriptFailure(notifier, sc, scriptFailureError, err.Error())
+		return nil, "", false
+	}
 	if raw, ok := globalRegimeStore.InjectionJSONForStrategy(sc, nil); ok {
 		args = append(args, "--regime-payload-json="+raw)
 	}
-	if arg, ok, err := optionCalendarArg(optionsCheckArgsPlatform(sc.Args), optionsConfigUnderlying(sc.Args), tradingNow()); err != nil {
+	if arg, ok, err := optionCalendarArg(sc.Platform, optionsConfigUnderlying(sc.Args), tradingNow()); err != nil {
 		logger.Error("Option calendar context failed: %v", err)
 		notifyScriptFailure(notifier, sc, scriptFailureError, err.Error())
 		return nil, "", false

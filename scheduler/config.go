@@ -1012,6 +1012,9 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 	if errs := retiredResearchConfigRefusals(data); len(errs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
 	}
+	if errs := retiredOptionVenueConfigRefusals(data); len(errs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
+	}
 	if opts.quoteLoad != nil && (!readOnly || !skipLiveCredentialChecks || path != "") {
 		return nil, fmt.Errorf("a quote-admitted load runs only in the read-only, credential-skip form with no config file")
 	}
@@ -1358,8 +1361,6 @@ func inferStrategyPlatform(sc *StrategyConfig) {
 	switch {
 	case strings.HasPrefix(sc.ID, "ibkr-"):
 		sc.Platform = "ibkr"
-	case strings.HasPrefix(sc.ID, "deribit-"):
-		sc.Platform = "deribit"
 	case strings.HasPrefix(sc.ID, "hl-"):
 		sc.Platform = "hyperliquid"
 	case strings.HasPrefix(sc.ID, "ts-"):
@@ -1368,10 +1369,10 @@ func inferStrategyPlatform(sc *StrategyConfig) {
 		sc.Platform = "robinhood"
 	case strings.HasPrefix(sc.ID, "luno-"):
 		sc.Platform = "luno"
+	case sc.Type == "options":
+		return
 	case strings.HasPrefix(sc.ID, "okx-"):
 		sc.Platform = "okx"
-	case sc.Type == "options":
-		sc.Platform = "deribit"
 	default:
 		sc.Platform = "binanceus"
 	}

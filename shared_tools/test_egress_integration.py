@@ -404,14 +404,11 @@ def test_requests_clients_route_through_proxy(tmp_path, servers, subtests):
             driver = _driver(case_dir, f"""
                 import subprocess
                 import requests
-                sys.path.insert(0, os.path.join(REPO, "platforms", "deribit"))
-                import utils as deribit_utils
-                attempt("deribit", lambda: deribit_utils.fetch_available_expiries("BTC"))
                 attempt("module_get", lambda: requests.get("https://api.coinbase.com/v2/time", timeout=20))
                 attempt("session_get", lambda: requests.Session().get("https://api.gemini.com/v1/symbols", timeout=20))
                 os.environ.update({{"TOPSTEP_API_KEY": "k", "TOPSTEP_API_SECRET": "s", "TOPSTEP_ACCOUNT_ID": "1"}})
                 sys.path.insert(0, os.path.join(REPO, "platforms", "topstep"))
-                del sys.modules["utils"]
+                sys.modules.pop("utils", None)
                 import importlib.util
                 spec = importlib.util.spec_from_file_location("topstep_adapter", os.path.join(REPO, "platforms", "topstep", "adapter.py"))
                 topstep = importlib.util.module_from_spec(spec)
@@ -430,16 +427,15 @@ def test_requests_clients_route_through_proxy(tmp_path, servers, subtests):
             result = _run(driver, _contract_env(case_dir, raw))
             _assert_no_sentinel(result)
             results = _results(result)
-            assert results["deribit"] == {"ok": True, "value": []}
             for label in ("module_get", "session_get", "topstep", "advisory"):
                 assert results[label]["ok"] is False, results
             assert results["topstep_session"] == {"trust_env": False, "proxies": {"http": "policy-url", "https": "policy-url"}}
             assert results["child"][0] == 0
-            for host in ("www.deribit.com", "api.coinbase.com", "api.gemini.com", "api.topstepx.com", "api.anthropic.com",
+            for host in ("api.coinbase.com", "api.gemini.com", "api.topstepx.com", "api.anthropic.com",
                          "api.hyperliquid-testnet.xyz"):
                 _assert_routed(proxy, kind, host)
             outcome = _outcome(result)
-            assert outcome["requests"] >= 5
+            assert outcome["requests"] >= 4
             assert outcome["proxy_failures"] == outcome["requests"]
 
 
@@ -741,7 +737,7 @@ def test_inactive_mode_sets_no_proxies(tmp_path):
         assert results["env"] == [None, None, None, None]
 
 
-ALL_FAMILIES = ["ccxt", "hyperliquid", "robinhood", "topstep", "yfinance", "requests", "deribit", "advisory"]
+ALL_FAMILIES = ["ccxt", "hyperliquid", "robinhood", "topstep", "yfinance", "requests", "advisory"]
 
 
 def _check(env, *families):
@@ -780,6 +776,9 @@ def test_check_policy_failures(tmp_path):
     unknown = _check(_contract_env(tmp_path, raw), "ccxt", "bogus")
     assert unknown.returncode == 2
     assert json.loads(unknown.stdout) == {"ok": False, "error": "unknown family", "family": "bogus"}
+    retired = _check(_contract_env(tmp_path, raw), "deribit")
+    assert retired.returncode == 2
+    assert json.loads(retired.stdout) == {"ok": False, "error": "unknown family", "family": "deribit"}
     tamper = tmp_path / "tamper"
     tamper.mkdir()
     (tamper / "sitecustomize.py").write_text(textwrap.dedent("""

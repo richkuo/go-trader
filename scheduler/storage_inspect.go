@@ -309,6 +309,12 @@ func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storag
 	}
 	rejections = append(rejections, retiredRejections...)
 
+	retiredVenueRejections, err := inspectRetiredOptionVenueBooks(db, fi, ident)
+	if err != nil {
+		return nil, err
+	}
+	rejections = append(rejections, retiredVenueRejections...)
+
 	quoteReplayRejections, err := inspectQuoteReplayRows(db, fi)
 	if err != nil {
 		return nil, err

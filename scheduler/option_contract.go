@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,8 +47,6 @@ const (
 
 var optionContractSpecs = map[string]optionContractSpec{
 	"robinhood": {Platform: "robinhood", Multiplier: 100, LegacyMultiplier: 100, RequireCoveredCalls: true, Settlement: optionSettlementPhysical},
-	"deribit":   {Platform: "deribit", Multiplier: 1, LegacyMultiplier: 1, Settlement: optionSettlementCash},
-	"okx":       {Platform: "okx", Multiplier: 1, LegacyMultiplier: 1, Settlement: optionSettlementCash},
 	"ibkr": {Platform: "ibkr", LegacyMultiplier: 1, Settlement: optionSettlementCash,
 		Cutoff:     &optionExpiryCutoff{Zone: "Europe/London", Hour: 16, Minute: 0, ReadDelay: 5 * time.Minute},
 		MarkSource: ibkrMarkSource, SettlementSource: ibkrSettlementSource, SettlementBasis: optionSettlementBasisVWAP},
@@ -129,14 +128,38 @@ func optionCalendarArg(platform, underlying string, now time.Time) (string, bool
 	return optionCalendarFlag + "=" + string(raw), true, nil
 }
 
-func optionsCheckArgsPlatform(args []string) string {
-	platform := "deribit"
-	for _, a := range args {
-		if strings.HasPrefix(a, "--platform=") {
-			platform = strings.TrimPrefix(a, "--platform=")
+const builtinOptionsCheckScript = "check_options.py"
+
+func optionsCheckDispatchArgs(sc StrategyConfig) ([]string, error) {
+	args := append([]string{}, sc.Args...)
+	if filepath.Base(sc.Script) != builtinOptionsCheckScript {
+		return args, nil
+	}
+	if _, ok := optionContractSpecs[sc.Platform]; !ok {
+		return nil, fmt.Errorf("strategy %s declares options platform %q, which has no option pricer (supported: %s)", sc.ID, sc.Platform, strings.Join(supportedOptionPlatforms(), ", "))
+	}
+	var values []string
+	for i, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--platform="):
+			v := strings.TrimPrefix(a, "--platform=")
+			if strings.TrimSpace(v) == "" || v != strings.TrimSpace(v) {
+				return nil, fmt.Errorf("strategy %s argument %d %q is a malformed --platform flag", sc.ID, i, a)
+			}
+			values = append(values, v)
+		case strings.HasPrefix(a, "--platform"):
+			return nil, fmt.Errorf("strategy %s argument %d %q is a malformed --platform flag; use --platform=%s", sc.ID, i, a, sc.Platform)
 		}
 	}
-	return platform
+	switch {
+	case len(values) > 1:
+		return nil, fmt.Errorf("strategy %s passes %d --platform flags (%s); pass at most one, matching the declared platform %q", sc.ID, len(values), strings.Join(values, ", "), sc.Platform)
+	case len(values) == 1 && values[0] != sc.Platform:
+		return nil, fmt.Errorf("strategy %s argument --platform=%s conflicts with the declared platform %q", sc.ID, values[0], sc.Platform)
+	case len(values) == 0:
+		args = append(args, "--platform="+sc.Platform)
+	}
+	return args, nil
 }
 
 func optionCalendarProbeArgv(platform string) []string {
@@ -158,8 +181,6 @@ func legacyOptionContractMultiplier(platform string) (float64, error) {
 	return spec.LegacyMultiplier, nil
 }
 
-var optionInverseFamilyUnderlyings = map[string]bool{"BTC": true, "ETH": true}
-
 func supportedOptionPlatforms() []string {
 	out := make([]string, 0, len(optionContractSpecs))
 	for p := range optionContractSpecs {
@@ -175,10 +196,6 @@ func optionPricingPolicyError(platform, underlying string) error {
 	}
 	u := strings.ToUpper(strings.TrimSpace(underlying))
 	switch platform {
-	case "deribit", "okx":
-		if !optionInverseFamilyUnderlyings[u] {
-			return fmt.Errorf("%s options price only the inverse BTC and ETH option families (instrument UNDERLYING-DDMONYY-STRIKE-C|P); underlying %q is outside that local naming path", platform, underlying)
-		}
 	case "robinhood":
 		if why := robinhoodStockUnderlyingError(underlying); why != "" {
 			return fmt.Errorf("%s", why)

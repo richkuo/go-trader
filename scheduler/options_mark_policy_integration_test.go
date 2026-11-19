@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func optionPolicyStrategy(id, platform, underlying string) map[string]interface{} {
@@ -24,12 +25,12 @@ func TestOptionPricingPolicyThroughConfigLoaders(t *testing.T) {
 	refused := []struct {
 		name, id, platform, underlying, want string
 	}{
-		{"unsupported_platform", "opt-binanceus", "binanceus", "BTC", `options platform "binanceus" has no option pricer (supported: deribit, ibkr, okx, robinhood)`},
-		{"deribit_sol", "deribit-sol", "deribit", "SOL", `deribit options price only the inverse BTC and ETH option families`},
+		{"unsupported_platform", "opt-binanceus", "binanceus", "BTC", `options platform "binanceus" has no option pricer (supported: ibkr, robinhood)`},
+		{"ibkr_sol", "ibkr-sol", "ibkr", "SOL", `ibkr options support only the BTC and ETH underlyings; underlying "SOL" has no contract size`},
 		{"robinhood_dash_pair", "rh-btc-usd", "robinhood", "BTC-USD", `robinhood options underlying "BTC-USD" is a currency pair`},
 		{"robinhood_slash_pair", "rh-xrp-usdt", "robinhood", "XRP/USDT", `robinhood options underlying "XRP/USDT" is a currency pair`},
 		{"robinhood_not_a_ticker", "rh-digit", "robinhood", "1SPY", `robinhood options underlying "1SPY" is not a stock or ETF ticker`},
-		{"prefixless_options_default_deribit", "opt-noprefix", "", "SOL", `deribit options price only the inverse BTC and ETH option families`},
+		{"prefixless_options_need_a_platform", "opt-noprefix", "", "SOL", `an options strategy needs an explicit platform field`},
 	}
 	for _, tc := range refused {
 		t.Run("refuses_"+tc.name, func(t *testing.T) {
@@ -49,14 +50,12 @@ func TestOptionPricingPolicyThroughConfigLoaders(t *testing.T) {
 	accepted := []struct {
 		id, platform, underlying, wantPlatform string
 	}{
-		{"deribit-btc", "deribit", "BTC", "deribit"},
-		{"deribit-eth", "deribit", "ETH", "deribit"},
+		{"ibkr-eth", "ibkr", "ETH", "ibkr"},
 		{"rh-spy", "robinhood", "SPY", "robinhood"},
 		{"rh-ltc-stock", "robinhood", "LTC", "robinhood"},
 		{"rh-btc-stock", "robinhood", "BTC", "robinhood"},
 		{"rh-brk-b", "robinhood", "BRK.B", "robinhood"},
 		{"ibkr-btc", "ibkr", "BTC", "ibkr"},
-		{"opt-prefixless", "", "BTC", "deribit"},
 	}
 	for _, tc := range accepted {
 		t.Run("loads_"+tc.id, func(t *testing.T) {
@@ -75,5 +74,29 @@ func TestOptionPricingPolicyThroughConfigLoaders(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOptionPricerRoutingIntegration(t *testing.T) {
+	shared := newOptionPricers()
+	if got := optionPricerFor("ibkr", shared); got != shared.IBKR || got.Name() != "ibkr" {
+		t.Fatalf("ibkr must route to the shared batch provider, got %#v", got)
+	}
+	if got := optionPricerFor("robinhood", shared); got != shared.Robinhood {
+		t.Fatalf("robinhood must route to the shared provider, got %#v", got)
+	}
+	for _, retired := range []string{"deribit", "okx"} {
+		if got := optionPricerFor(retired, shared); got != nil {
+			t.Fatalf("%s must have no option pricer, got %#v", retired, got)
+		}
+	}
+	cutoff, ready, ok, err := optionGoExpirySchedule("ibkr", "2026-07-31")
+	if err != nil || !ok || !cutoff.Equal(time.Date(2026, 7, 31, 15, 0, 0, 0, time.UTC)) || !ready.Equal(time.Date(2026, 7, 31, 15, 5, 0, 0, time.UTC)) {
+		t.Fatalf("ibkr schedule = %s %s %v %v, want 16:00 and 16:05 London", cutoff, ready, ok, err)
+	}
+	for _, retired := range []string{"deribit", "okx"} {
+		if _, _, ok, err := optionGoExpirySchedule(retired, "2026-07-31"); ok || err != nil {
+			t.Fatalf("%s must have no Go expiry schedule: ok=%v err=%v", retired, ok, err)
+		}
 	}
 }

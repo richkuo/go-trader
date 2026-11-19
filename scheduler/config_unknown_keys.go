@@ -245,6 +245,112 @@ func retiredResearchConfigRefusals(raw []byte) []string {
 	return errs
 }
 
+const retiredOptionVenueIssue = "issue 2073"
+
+const retiredOptionVenueRecovery = "on the previous release close or settle every open position of the affected strategy, verify its positions and option_positions rows are flat, stop every writer, back up the config and each state file with its storage mapping, then remove the retired settings (docs/POST_UPDATE_HISTORY.md)"
+
+func retiredOptionVenueRefusal(subject, what string) string {
+	return fmt.Sprintf("%s: %s is retired; Deribit support and OKX options support were removed in %s; %s", subject, what, retiredOptionVenueIssue, retiredOptionVenueRecovery)
+}
+
+func platformArgValues(args []string) []string {
+	var out []string
+	for i, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--platform="):
+			out = append(out, strings.TrimPrefix(a, "--platform="))
+		case a == "--platform" && i+1 < len(args):
+			out = append(out, args[i+1])
+		}
+	}
+	return out
+}
+
+func normalizedVenue(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+func retiredOptionVenueConfigRefusals(raw []byte) []string {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil
+	}
+	var errs []string
+	if rawPlatforms, ok := root["platforms"]; ok {
+		var platforms map[string]json.RawMessage
+		if json.Unmarshal(rawPlatforms, &platforms) == nil {
+			keys := make([]string, 0, len(platforms))
+			for k := range platforms {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				if normalizedVenue(k) == "deribit" {
+					errs = append(errs, retiredOptionVenueRefusal("config platforms", "the settings key "+strconv.Quote(k)))
+				}
+			}
+		}
+	}
+	rawStrategies, ok := root["strategies"]
+	if !ok {
+		return errs
+	}
+	var strategies []map[string]json.RawMessage
+	if err := json.Unmarshal(rawStrategies, &strategies); err != nil {
+		return errs
+	}
+	for i, s := range strategies {
+		var id, typ, platform string
+		if v, ok := s["id"]; ok {
+			_ = json.Unmarshal(v, &id)
+		}
+		if v, ok := s["type"]; ok {
+			_ = json.Unmarshal(v, &typ)
+		}
+		if v, ok := s["platform"]; ok {
+			_ = json.Unmarshal(v, &platform)
+		}
+		var args []string
+		if v, ok := s["args"]; ok {
+			_ = json.Unmarshal(v, &args)
+		}
+		subject := fmt.Sprintf("strategy[%d]", i)
+		if id != "" {
+			subject = fmt.Sprintf("strategy[%s]", id)
+		}
+		venue := normalizedVenue(platform)
+		lowerID := strings.ToLower(strings.TrimSpace(id))
+		isOptions := strings.TrimSpace(typ) == "options"
+		if venue == "deribit" {
+			errs = append(errs, retiredOptionVenueRefusal(subject, "platform "+strconv.Quote(platform)))
+		}
+		if strings.HasPrefix(lowerID, "deribit-") {
+			errs = append(errs, retiredOptionVenueRefusal(subject, "the strategy id prefix \"deribit-\""))
+		}
+		for _, v := range platformArgValues(args) {
+			switch nv := normalizedVenue(v); {
+			case nv == "deribit":
+				errs = append(errs, retiredOptionVenueRefusal(subject, "the script argument --platform="+v))
+			case nv == "okx" && isOptions:
+				errs = append(errs, retiredOptionVenueRefusal(subject, "the options script argument --platform="+v))
+			}
+		}
+		if !isOptions {
+			continue
+		}
+		switch {
+		case venue == "okx":
+			errs = append(errs, retiredOptionVenueRefusal(subject, "options on platform "+strconv.Quote(platform)))
+		case venue == "":
+			if strings.HasPrefix(lowerID, "okx-") {
+				errs = append(errs, retiredOptionVenueRefusal(subject, "an options strategy with the \"okx-\" id prefix and no platform field"))
+			}
+			errs = append(errs, fmt.Sprintf("%s: an options strategy needs an explicit platform field (\"ibkr\" or \"robinhood\"); the id prefix no longer selects an options venue (%s)", subject, retiredOptionVenueIssue))
+		}
+	}
+	return errs
+}
+
 func validateTradeFeedbackAnalysisJSON(rawData []byte) []string {
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(rawData, &root); err != nil {

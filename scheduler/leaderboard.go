@@ -429,7 +429,7 @@ func platformIcon(platform string) string {
 	switch strings.ToLower(platform) {
 	case "hyperliquid":
 		return "⚡"
-	case "deribit", "ibkr":
+	case "ibkr":
 		return "🎯"
 	case "topstep":
 		return "🏦"

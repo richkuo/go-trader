@@ -166,22 +166,22 @@ func TestOptionExpiredLegLeavesOnlyThroughSettlementIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("deribit_leg_at_0805_before_any_refresh_since_the_cutoff", func(t *testing.T) {
-		deribitCutoff := time.Date(2026, 6, 26, 8, 0, 0, 0, time.UTC)
+	t.Run("ibkr_leg_at_1505_before_any_refresh_since_the_cutoff", func(t *testing.T) {
+		ibkrCutoff := time.Date(2026, 6, 26, 15, 0, 0, 0, time.UTC)
 		for _, known := range []bool{true, false} {
-			sc := ocSC("deribit-el-cb", "deribit", "BTC")
+			sc := ocSC("ibkr-el-cb", "ibkr", "BTC")
 			env := ocEnv(t, sc)
 			s := env.strat(sc.ID)
 			s.Cash = 100000
 			leg := &OptionPosition{ID: "BTC-put-sell-60000-2026-06-26", TradePositionID: "pos-btc", Underlying: "BTC", OptionType: "put",
 				Strike: 60000, Expiry: "2026-06-26", Action: "sell", Quantity: 1, EntryPremiumUSD: 900, CurrentValueUSD: -1200,
-				MarkUpdatedAt: deribitCutoff.Add(-10 * time.Minute), MarkSource: "deribit_mark"}
+				MarkUpdatedAt: ibkrCutoff.Add(-10 * time.Minute), MarkSource: ibkrMarkSource}
 			if known {
-				leg.ExpiryCutoffAt = deribitCutoff
-				leg.SettlementReadyAt = deribitCutoff.Add(time.Hour)
+				leg.ExpiryCutoffAt = ibkrCutoff
+				leg.SettlementReadyAt = ibkrCutoff.Add(5 * time.Minute)
 			}
 			s.OptionPositions[leg.ID] = leg
-			elBindClock(t, deribitCutoff.Add(5*time.Minute))
+			elBindClock(t, ibkrCutoff.Add(5*time.Minute))
 			elFireDrawdown(t, sc, s)
 			if s.OptionPositions[leg.ID] == nil || s.Cash != 100000 || len(s.ClosedOptionPositions) != 0 || leg.MarkError != "" {
 				t.Fatalf("known cutoff=%v: circuit breaker closed the leg: legs=%d cash=%v", known, len(s.OptionPositions), s.Cash)
@@ -231,21 +231,21 @@ func TestOptionExpiredLegLeavesOnlyThroughSettlementIntegration(t *testing.T) {
 			t.Fatalf("mixed book: closed=%v legs=%v message=%q", out.Closed, sortedOptionLegKeys(s.OptionPositions), out.Message)
 		}
 
-		deribitCutoff := time.Date(2026, 6, 26, 8, 0, 0, 0, time.UTC)
-		dsc := ocSC("deribit-el-ks", "deribit", "BTC")
+		ibkrCutoff := time.Date(2026, 6, 26, 15, 0, 0, 0, time.UTC)
+		dsc := ocSC("ibkr-el-ks", "ibkr", "BTC")
 		env = ocEnv(t, dsc)
 		s = env.strat(dsc.ID)
 		s.Cash = 100000
 		legID := "BTC-put-sell-60000-2026-06-26"
 		s.OptionPositions[legID] = &OptionPosition{ID: legID, TradePositionID: "pos-btc", Underlying: "BTC", OptionType: "put",
 			Strike: 60000, Expiry: "2026-06-26", Action: "sell", Quantity: 1, EntryPremiumUSD: 900, CurrentValueUSD: -1200,
-			MarkUpdatedAt: deribitCutoff.Add(-10 * time.Minute), MarkSource: "deribit_mark"}
+			MarkUpdatedAt: ibkrCutoff.Add(-10 * time.Minute), MarkSource: ibkrMarkSource}
 		unbindTradingClock("expired-leg-test-" + t.Name())
-		elBindClock(t, deribitCutoff.Add(5*time.Minute))
+		elBindClock(t, ibkrCutoff.Add(5*time.Minute))
 		out = fire(env, dsc, false)
 		if !out.AutoReset || len(out.Closed) != 0 || s.OptionPositions[legID] == nil ||
-			!strings.Contains(out.Message, keptLine+"deribit-el-ks "+legID+".") || !strings.Contains(out.Message, paperKillSwitchAutoResetLine) {
-			t.Fatalf("deribit auto-reset: reset=%v closed=%v message=%q", out.AutoReset, out.Closed, out.Message)
+			!strings.Contains(out.Message, keptLine+"ibkr-el-ks "+legID+".") || !strings.Contains(out.Message, paperKillSwitchAutoResetLine) {
+			t.Fatalf("ibkr auto-reset: reset=%v closed=%v message=%q", out.AutoReset, out.Closed, out.Message)
 		}
 	})
 

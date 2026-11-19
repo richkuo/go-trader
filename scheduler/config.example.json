@@ -64,10 +64,11 @@
       "interval_seconds": 86400
     },
     {
-      "id": "deribit-vol-btc",
+      "id": "ibkr-vol-btc",
       "type": "options",
+      "platform": "ibkr",
       "script": "shared_scripts/check_options.py",
-      "args": ["vol_mean_reversion", "BTC", "--platform=deribit"],
+      "args": ["vol_mean_reversion", "BTC", "--platform=ibkr"],
       "capital": 1000,
       "max_drawdown_pct": 40,
       "interval_seconds": 1200,

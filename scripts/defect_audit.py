@@ -2286,7 +2286,7 @@ SAFETY_HINTS = PROTECTED_HINTS + (
     "reconcil", "storage", "order", "recover", "update", "upgrade", "lock", "partition", "egress", "refus", "fail",
     "pause", "admission", "probe", "secret", "token", "auth", "session", "verif", "reset", "backup", "restore",
     "rollback", "deploy", "retired", "orphan", "corrupt", "state", "journal", "alert", "notif", "trade", "position",
-    "loss", "own_share", "correlat", "_marks", "marks_", "mark_price", "wallet", "capital", "leverage", "balance", "quote", "pricing", "portfolio", "execut", "sell", "buy", "cancel", "unconfirmed", "quantit", "commission", "slippage", "robinhood", "hyperliquid", "ibkr", "deribit", "okx",
+    "loss", "own_share", "correlat", "_marks", "marks_", "mark_price", "wallet", "capital", "leverage", "balance", "quote", "pricing", "portfolio", "execut", "sell", "buy", "cancel", "unconfirmed", "quantit", "commission", "slippage", "robinhood", "hyperliquid", "ibkr", "okx",
 )
 RULE_DOCS = ("CLAUDE.md", "SKILL.md", "README.md", "backtest/AUDIT.md", "docs/backtesting-registry.md", "docs/POST_UPDATE_HISTORY.md")
 

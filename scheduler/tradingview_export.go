@@ -387,8 +387,6 @@ func platformOverrideAliases(platform string) []string {
 		return []string{"robinhood", "rh"}
 	case "topstep":
 		return []string{"topstep", "ts"}
-	case "deribit":
-		return []string{"deribit"}
 	case "ibkr":
 		return []string{"ibkr"}
 	case "okx":

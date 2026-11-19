@@ -98,6 +98,7 @@ def _attach_funding_if_needed(df, strategy_name, symbol, since,
 from htf_filter import get_default_htf, apply_htf_filter
 from htf_trend import htf_trend_from_candles
 from registry_loader import load_registry, refuse_quote_capability
+from options_venue_admission import require_admitted_venues
 from lead_lag_history import (LEADER_INPUT_STRATEGIES, LeaderDataUnavailable, cached_leader_params,
                               manifest_leader_params, refuse_leader_input_strategy)
 from backtester import (Backtester, CapabilityContext, CloseCapabilityError,
@@ -928,7 +929,6 @@ def _capture_promotion_baseline(cfg: dict, sc: dict) -> dict:
 
 _PLATFORM_ID_PREFIXES = (
     ("ibkr-", "ibkr"),
-    ("deribit-", "deribit"),
     ("hl-", "hyperliquid"),
     ("ts-", "topstep"),
     ("rh-", "robinhood"),
@@ -989,11 +989,15 @@ def live_strategy_platform(sc: dict) -> str:
     raw = str(sc.get("platform") or "").strip()
     if raw:
         return raw.lower()
+    if str(sc.get("type") or "") == "options":
+        raise ValueError(
+            f"strategy {sc.get('id')!r}: an options strategy needs an explicit platform field "
+            f"('ibkr' or 'robinhood'); the id prefix no longer selects an options venue (issue 2073)")
     sid = str(sc.get("id") or "")
     for prefix, name in _PLATFORM_ID_PREFIXES:
         if sid.startswith(prefix):
             return name
-    return "deribit" if str(sc.get("type") or "") == "options" else "binanceus"
+    return "binanceus"
 
 
 _FEE_PLATFORM_TYPES = ("spot", "perps", "manual")
@@ -1441,6 +1445,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
     import json as _json
     with open(config_path) as fh:
         cfg = _normalize_atr_regime_keys(_json.load(fh))
+    require_admitted_venues(cfg, config_path)
     user_defaults = _effective_user_close_defaults(cfg)
     _validate_user_close_defaults_regime_atr(user_defaults)
     version = int(cfg.get("config_version", 0) or 0)

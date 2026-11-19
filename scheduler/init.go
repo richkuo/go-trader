@@ -608,6 +608,24 @@ func initOptionsSelectionError(opts InitOptions) error {
 	return fmt.Errorf("options enabled but no selected options strategy can open on the selected platforms (%s on %s needs held shares and is not generated)", strings.Join(opts.OptStrategies, ", "), strings.Join(opts.OptionPlatforms, ", "))
 }
 
+func initOptionPlatformsError(platforms []string) error {
+	seen := map[string]bool{}
+	for _, platform := range platforms {
+		switch platform {
+		case "ibkr", "robinhood":
+		case "deribit", "okx":
+			return fmt.Errorf("options platform %q is retired (%s); choose ibkr, robinhood or both", platform, retiredOptionVenueIssue)
+		default:
+			return fmt.Errorf("options platform %q is not supported; choose ibkr, robinhood or both", platform)
+		}
+		if seen[platform] {
+			return fmt.Errorf("options platform %q is listed twice", platform)
+		}
+		seen[platform] = true
+	}
+	return nil
+}
+
 func initOptionsNotes(opts InitOptions) []string {
 	if !opts.EnableOptions {
 		return nil
@@ -1261,6 +1279,12 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		fmt.Fprintln(os.Stderr, "Error: options enabled but no option platforms selected")
 		return 1
 	}
+	if opts.EnableOptions {
+		if err := initOptionPlatformsError(opts.OptionPlatforms); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
+	}
 	if opts.EnablePerps && opts.PerpsMode == "" {
 		opts.PerpsMode = "paper"
 	}
@@ -1509,19 +1533,19 @@ func runInit(args []string) int {
 
 	var optionPlatforms []string
 	if enableOptions {
-		platOptions := []string{"deribit", "ibkr", "robinhood", "okx", "all"}
-		platIdx := p.Choice("\nOptions platform:", platOptions, 0)
+		platOptions := []string{"ibkr", "robinhood", "both"}
+		platIdx := p.RequiredChoice("\nOptions platform (paper only; choose one):", platOptions)
+		if platIdx < 0 {
+			fmt.Println("No options platform selected. Aborted.")
+			return 1
+		}
 		switch platOptions[platIdx] {
-		case "deribit":
-			optionPlatforms = []string{"deribit"}
 		case "ibkr":
 			optionPlatforms = []string{"ibkr"}
 		case "robinhood":
 			optionPlatforms = []string{"robinhood"}
-		case "okx":
-			optionPlatforms = []string{"okx"}
-		case "all":
-			optionPlatforms = []string{"deribit", "ibkr", "robinhood", "okx"}
+		case "both":
+			optionPlatforms = []string{"ibkr", "robinhood"}
 		}
 	}
 

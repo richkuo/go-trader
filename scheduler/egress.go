@@ -470,8 +470,6 @@ func egressStartupTargets(cfg *Config, feedRole bool) []string {
 				set[hlHost] = true
 			case "okx":
 				set[urlHost(okxMainnetURL)] = true
-			case "deribit":
-				set[urlHost(deribitAPIBase)] = true
 			}
 		}
 		if cfg.marketFeedWebsocketEnabled() {
@@ -542,9 +540,6 @@ func egressPythonFamilies(cfg *Config) []string {
 			case "topstep":
 				set["topstep"] = true
 				set["yfinance"] = true
-			case "deribit":
-				set["deribit"] = true
-				set["ccxt"] = true
 			default:
 				set["ccxt"] = true
 			}

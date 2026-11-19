@@ -388,7 +388,7 @@ def test_config_mode_platform_autodetect_and_explicit_override(tmp_path, capsys,
             assert "platform selection" not in capsys.readouterr().err
     for sid, stype, platform in [("test-strat", "futures", None),
                                  ("test-strat", "manual", None),
-                                 ("deribit-strat", "options", None),
+                                 ("ibkr-strat", "options", "ibkr"),
                                  ("test-strat", "spot", "kraken")]:
         with subtests.test(sid=sid, stype=stype, platform=platform, refused=True):
             path = _write_live_config(tmp_path, stype, sid, platform)
@@ -510,13 +510,13 @@ def test_config_mode_platform_scope_and_refusals(tmp_path, monkeypatch, capsys, 
                                   hedge={"enabled": True, "symbol": "ETH"})
         with pytest.raises(ValueError, match="hedge"):
             config_from_live_config(path, "rh-hedge", platform="robinhood")
-    for sid, stype in [("deribit-strat", "options"), ("test-strat", "futures")]:
+    for sid, stype, platform in [("ibkr-strat", "options", "ibkr"), ("test-strat", "futures", None)]:
         with subtests.test("main exits 2 on refused automatic selection", stype=stype):
             with monkeypatch.context() as mp:
                 import data_fetcher
                 mp.setattr(data_fetcher, "load_cached_data",
                            lambda *a, **k: pytest.fail("data access before the refusal"))
-                rc = main(["--config", _write_live_config(tmp_path, stype, sid),
+                rc = main(["--config", _write_live_config(tmp_path, stype, sid, platform),
                            "--strategy-id", sid])
                 assert rc == 2
                 err = capsys.readouterr().err

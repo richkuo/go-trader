@@ -420,7 +420,7 @@ def _manifest(tmp_path, venue="hyperliquid"):
 _MANIFEST_PRECEDENCE_CASES = [
     ("rh-man", "spot", ()),
     ("rh-man", "spot", ("--platform", "robinhood")),
-    ("deribit-man", "options", ()),
+    ("ibkr-man", "options", ()),
 ]
 
 
@@ -430,7 +430,7 @@ def test_manifest_venue_and_costs_win_over_config_and_explicit_platform(monkeypa
             case = tmp_path / f"case{i}"
             case.mkdir()
             manifest, spec = _manifest(case)
-            path = _fee_config(case, sid, stype,
+            path = _fee_config(case, sid, stype, "ibkr" if stype == "options" else None,
                                close_strategy={"name": "time_stop", "params": {"max_bars": 6}})
             with monkeypatch.context() as mp:
                 def never(*a, **k):

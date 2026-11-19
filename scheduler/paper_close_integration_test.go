@@ -304,16 +304,17 @@ func pcSplitConfig(t *testing.T) *Config {
 			{ID: "pc-fut", Type: "futures", Platform: "topstep", Args: []string{"sma", "ES", "1h", "--mode=paper"}, Capital: 50000},
 			hl,
 			src,
-			ocSC("pc-opt", "deribit", "BTC"),
+			ocSC("pc-opt", "ibkr", "BTC"),
 			hlLivePerps("pc-live", "BTC", 1000),
 			{ID: "pc-quote", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "ETH/USDT", "1h"}, Capital: 10000},
 		},
 	}
 }
 
-func pcDeribitExpiry(at time.Time) (string, time.Time) {
-	day := time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, time.UTC)
-	return day.Format("2006-01-02"), day.Add(8 * time.Hour)
+func pcIBKRExpiry(at time.Time) (string, time.Time) {
+	expiry := at.UTC().Format("2006-01-02")
+	cutoff, _, _, _ := optionGoExpirySchedule("ibkr", expiry)
+	return expiry, cutoff
 }
 
 func pcSeed(t *testing.T, f *pcFixture, clock *paperFundingTestClock) {
@@ -329,11 +330,11 @@ func pcSeed(t *testing.T, f *pcFixture, clock *paperFundingTestClock) {
 	fut.Positions["ES"] = &Position{Symbol: "ES", TradePositionID: "pc-fut-es", Quantity: 1, AvgCost: 5000, Side: "long", Multiplier: 50, OpenedAt: now}
 	opt := env.strat("pc-opt")
 	opt.Cash = 100000
-	liveExpiry, liveCutoff := pcDeribitExpiry(now.AddDate(0, 0, 30))
-	pastExpiry, pastCutoff := pcDeribitExpiry(now.AddDate(0, 0, -1))
+	liveExpiry, liveCutoff := pcIBKRExpiry(now.AddDate(0, 0, 30))
+	pastExpiry, pastCutoff := pcIBKRExpiry(now.AddDate(0, 0, -1))
 	opt.OptionPositions["BTC-call-buy-90000-"+liveExpiry] = &OptionPosition{ID: "BTC-call-buy-90000-" + liveExpiry, TradePositionID: "pc-opt-live",
 		Underlying: "BTC", OptionType: "call", Strike: 90000, Expiry: liveExpiry, Action: "buy", Quantity: 1,
-		EntryPremiumUSD: 1000, CurrentValueUSD: 1200, OpenedAt: now.AddDate(0, 0, -2), MarkUpdatedAt: now, MarkSource: "deribit mark",
+		EntryPremiumUSD: 1000, CurrentValueUSD: 1200, OpenedAt: now.AddDate(0, 0, -2), MarkUpdatedAt: now, MarkSource: ibkrMarkSource,
 		ExpiryCutoffAt: liveCutoff, markVerifiedAt: now}
 	opt.OptionPositions["BTC-put-sell-80000-"+pastExpiry] = &OptionPosition{ID: "BTC-put-sell-80000-" + pastExpiry, TradePositionID: "pc-opt-past",
 		Underlying: "BTC", OptionType: "put", Strike: 80000, Expiry: pastExpiry, Action: "sell", Quantity: 1,

@@ -653,7 +653,6 @@ func setNestedRaw(root map[string]json.RawMessage, section, key string, v interf
 var addPlatformKnown = map[string]string{
 	"hyperliquid": "Hyperliquid perps",
 	"binanceus":   "BinanceUS spot",
-	"deribit":     "Deribit options",
 	"ibkr":        "Interactive Brokers options/futures",
 	"topstep":     "TopStep futures",
 	"robinhood":   "Robinhood options",

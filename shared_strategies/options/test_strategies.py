@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta, timezone
 
-from platforms.deribit.adapter import Greeks, OptionContract, OptionPosition, OptionSide, OptionType
+from shared_tools.option_types import Greeks, OptionContract, OptionPosition, OptionSide, OptionType
 from shared_strategies.options.risk import OptionsRiskConfig, OptionsRiskManager
 from shared_strategies.options.strategies import (
     OPTIONS_STRATEGY_REGISTRY,

@@ -1,9 +1,9 @@
 package main
 
+import "fmt"
+
 const (
 	BinanceSpotFeePct = 0.001
-
-	DeribitOptionFeePct = 0.0003
 
 	IBKROptionFeeFixed = 0.25
 
@@ -16,7 +16,6 @@ const (
 
 	OKXSpotTakerFeePct  = 0.001
 	OKXPerpsTakerFeePct = 0.0005
-	OKXOptionFeePct     = 0.0003
 
 	SlippagePct = 0.0005
 
@@ -65,10 +64,6 @@ func CalculatePlatformSpotFee(platform string, value float64) float64 {
 	}
 }
 
-func CalculateDeribitOptionFee(premiumUSD float64) float64 {
-	return premiumUSD * DeribitOptionFeePct
-}
-
 func CalculateIBKROptionFee(quantity float64) float64 {
 	return quantity * IBKROptionFeeFixed
 }
@@ -77,16 +72,14 @@ func CalculateRobinhoodOptionFee(quantity float64) float64 {
 	return quantity * RobinhoodOptionFeeFixed
 }
 
-func CalculateOptionFee(platform string, premiumUSD, quantity float64) float64 {
+func CalculateOptionFee(platform string, quantity float64) (float64, error) {
 	switch platform {
 	case "ibkr":
-		return CalculateIBKROptionFee(quantity)
+		return CalculateIBKROptionFee(quantity), nil
 	case "robinhood":
-		return CalculateRobinhoodOptionFee(quantity)
-	case "okx":
-		return premiumUSD * OKXOptionFeePct
+		return CalculateRobinhoodOptionFee(quantity), nil
 	default:
-		return CalculateDeribitOptionFee(premiumUSD)
+		return 0, fmt.Errorf("no option fee schedule for platform %q (supported: ibkr, robinhood)", platform)
 	}
 }
 

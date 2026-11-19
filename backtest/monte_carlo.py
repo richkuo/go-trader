@@ -16,6 +16,7 @@ if _THIS_DIR not in sys.path:
 sys.path.insert(0, os.path.join(_THIS_DIR, "..", "shared_tools"))
 
 from exit_policy_ab import DEFAULT_SEED
+from options_venue_admission import require_admitted_venues
 
 DEFAULT_N_PATHS = 10000
 DEFAULT_PERCENTILES = (5.0, 50.0, 95.0)
@@ -24,7 +25,6 @@ SCHEMES = ("permute", "block")
 
 GO_ID_PREFIX_PLATFORM = (
     ("ibkr-", "ibkr"),
-    ("deribit-", "deribit"),
     ("hl-", "hyperliquid"),
     ("ts-", "topstep"),
     ("rh-", "robinhood"),
@@ -186,6 +186,7 @@ def trades_from_json_payload(payload) -> List:
 
 
 def resolve_kill_switch_pct(cfg: dict, strategy_id: str) -> float:
+    require_admitted_venues(cfg)
     sc = None
     for cand in cfg.get("strategies") or []:
         if isinstance(cand, dict) and cand.get("id") == strategy_id:
@@ -205,7 +206,7 @@ def resolve_kill_switch_pct(cfg: dict, strategy_id: str) -> float:
                 platform = name
                 break
         else:
-            platform = "deribit" if stype == "options" else "binanceus"
+            platform = "binanceus"
     platforms = cfg.get("platforms") or {}
     pc = platforms.get(platform) if isinstance(platforms, dict) else None
     if isinstance(pc, dict):

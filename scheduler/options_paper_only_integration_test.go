@@ -22,10 +22,9 @@ type optionsModeCase struct {
 func optionsModeCases() []optionsModeCase {
 	return []optionsModeCase{
 		{id: "rh-calls-spy", platform: "robinhood", explicit: true, underly: "SPY"},
-		{id: "deribit-calls-btc", platform: "deribit", explicit: true, underly: "BTC"},
 		{id: "ibkr-calls-btc", platform: "ibkr", explicit: true, underly: "BTC"},
 		{id: "rh-calls-spy", platform: "robinhood", explicit: false, underly: "SPY"},
-		{id: "calls-btc", platform: "deribit", explicit: false, underly: "BTC"},
+		{id: "calls-btc", platform: "ibkr", explicit: false, underly: "BTC"},
 	}
 }
 
@@ -43,9 +42,7 @@ func optionsModeConfigJSON(t *testing.T, dir string, c optionsModeCase, modeToke
 		"args":             args,
 		"capital":          1000,
 		"max_drawdown_pct": 40,
-	}
-	if c.explicit {
-		strategy["platform"] = c.platform
+		"platform":         c.platform,
 	}
 	root := map[string]interface{}{
 		"config_version":   CurrentConfigVersion,
@@ -156,7 +153,7 @@ func TestOptionsModeGateOnLoadAndPromotion(t *testing.T) {
 		}
 	})
 	t.Run("LiveModeRefusedByAdministrativePromotion", func(t *testing.T) {
-		const id = "deribit-calls-btc"
+		const id = "ibkr-calls-btc"
 		for _, mode := range [][]string{{"--mode=paper"}, {"--mode", "paper"}} {
 			t.Run(strings.Join(mode, "_"), func(t *testing.T) {
 				dir := t.TempDir()
@@ -175,7 +172,7 @@ func TestOptionsModeGateOnLoadAndPromotion(t *testing.T) {
 					t.Errorf("restart requested by a refused promotion")
 					return nil
 				}
-				wantReason := fmt.Sprintf("strategy %q: %s; paper-to-live is refused", id, optionsPaperOnlyReason("deribit"))
+				wantReason := fmt.Sprintf("strategy %q: %s; paper-to-live is refused", id, optionsPaperOnlyReason("ibkr"))
 
 				body := fmt.Sprintf(`{"action":"paper-to-live","strategy_id":%q,"params":{}}`, id)
 				w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
@@ -215,7 +212,7 @@ func TestOptionsModeGateOnLoadAndPromotion(t *testing.T) {
 				if err == nil {
 					t.Fatalf("backstop accepted a flipped live options config")
 				}
-				if !strings.Contains(err.Error(), "patched config invalid") || !strings.Contains(err.Error(), optionsLiveModeConfigError("deribit")) {
+				if !strings.Contains(err.Error(), "patched config invalid") || !strings.Contains(err.Error(), optionsLiveModeConfigError("ibkr")) {
 					t.Errorf("backstop error = %v, want the patched-config gate refusal", err)
 				}
 				if after := mustReadFile(t, path); !bytes.Equal(after, original) {
@@ -250,11 +247,11 @@ func optionsPromotionConfigJSON(t *testing.T, dir string, modeTokens []string) s
 	root["log_dir"] = filepath.Join(dir, "logs")
 	strategies := root["strategies"].([]interface{})
 	strategies = append(strategies, map[string]interface{}{
-		"id":               "deribit-calls-btc",
+		"id":               "ibkr-calls-btc",
 		"type":             "options",
-		"platform":         "deribit",
+		"platform":         "ibkr",
 		"script":           "shared_scripts/check_options.py",
-		"args":             append([]string{"covered_calls", "BTC", "--platform=deribit"}, modeTokens...),
+		"args":             append([]string{"covered_calls", "BTC", "--platform=ibkr"}, modeTokens...),
 		"capital":          1000,
 		"max_drawdown_pct": 40,
 	})

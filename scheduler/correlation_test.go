@@ -67,7 +67,7 @@ func TestComputeCorrelation(t *testing.T) {
 		}{
 			{
 				name: "greeks",
-				id:   "deribit-strat",
+				id:   "ibkr-strat",
 				args: []string{"iron_condor", "BTC"},
 				options: map[string]*OptionPosition{
 					"BTC-CALL-60000": {
@@ -116,12 +116,13 @@ func TestComputeCorrelation(t *testing.T) {
 					tc.id: {
 						ID:              tc.id,
 						Type:            "options",
+						Platform:        "ibkr",
 						Positions:       make(map[string]*Position),
 						OptionPositions: tc.options,
 					},
 				}
 				cfgStrategies := []StrategyConfig{
-					{ID: tc.id, Type: "options", Args: tc.args},
+					{ID: tc.id, Type: "options", Platform: "ibkr", Args: tc.args},
 				}
 				prices := map[string]float64{"BTC/USDT": 50000}
 				corrCfg := &CorrelationConfig{Enabled: true, MaxConcentrationPct: 60, MaxSameDirectionPct: 75}

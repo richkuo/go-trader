@@ -301,8 +301,6 @@ func humanPlatformName(platform string) string {
 		return "TopStep"
 	case "robinhood":
 		return "Robinhood"
-	case "deribit":
-		return "Deribit"
 	case "ibkr":
 		return "IBKR"
 	case "okx":

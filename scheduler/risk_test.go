@@ -695,6 +695,7 @@ func TestPortfolioNotional(t *testing.T) {
 					OptionPositions: make(map[string]*OptionPosition),
 				},
 				"options-strat": {
+					Platform:  "ibkr",
 					Positions: make(map[string]*Position),
 					OptionPositions: map[string]*OptionPosition{
 						"BTC-put-40000-sell": {Action: "sell", Strike: 40000.0, Quantity: 2.0, CurrentValueUSD: -500.0},

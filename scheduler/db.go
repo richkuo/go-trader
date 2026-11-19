@@ -1676,6 +1676,9 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 	if err := sdb.guardQuoteOwnersTx(tx, req.Strategies, storageIDs, req.FullFile); err != nil {
 		return err
 	}
+	if err := sdb.guardRetiredOptionBooksTx(tx, req.Strategies, storageIDs, req.FullFile); err != nil {
+		return err
+	}
 
 	if req.FullFile {
 		if _, err := tx.Exec("DELETE FROM strategies"); err != nil {
@@ -2189,6 +2192,9 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 }
 
 func (sdb *StateDB) writeOneStrategyBookTx(tx *sql.Tx, s *StrategyState, sid string, scope PortfolioScope) ([]int, []TradeDiagnosticsRow, error) {
+	if err := sdb.guardRetiredOptionBooksTx(tx, []*StrategyState{s}, []string{sid}, false); err != nil {
+		return nil, nil, err
+	}
 	var existingInitCap float64
 	err := tx.QueryRow("SELECT initial_capital FROM strategies WHERE id = ?", sid).Scan(&existingInitCap)
 	if err != nil && err != sql.ErrNoRows {
