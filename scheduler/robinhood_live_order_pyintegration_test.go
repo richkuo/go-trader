@@ -1061,14 +1061,26 @@ func TestRobinhoodLiveOrderHeldAttemptResolution(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000), eth)
 		e.seedHeldSettlingBuy("rh-btc")
 		e.seedHeldSettlingBuy("rh-eth")
-		bn := &blockingNotifier{release: make(chan struct{})}
+		bn := &blockingNotifier{release: make(chan struct{}), entered: make(chan struct{})}
 		e.notifier = NewMultiNotifier(notifierBackend{notifier: bn, ownerID: "owner"})
+		var releaseOnce sync.Once
+		release := func() { releaseOnce.Do(func() { close(bn.release) }) }
 		done := make(chan struct{})
 		go func() {
+			defer close(done)
 			settleRobinhoodAttempts(e.deps(), e.cfg, nil)
-			close(done)
 		}()
-		time.Sleep(500 * time.Millisecond)
+		defer func() {
+			release()
+			<-done
+		}()
+		select {
+		case <-bn.entered:
+		case <-done:
+			t.Fatal("settlement returned before it sent a hold DM")
+		case <-time.After(15 * time.Second):
+			t.Fatal("settlement did not send a hold DM within 15s")
+		}
 		locked := make(chan struct{})
 		go func() {
 			e.mu.RLock()
@@ -1077,10 +1089,10 @@ func TestRobinhoodLiveOrderHeldAttemptResolution(t *testing.T) {
 		}()
 		select {
 		case <-locked:
-		case <-time.After(2 * time.Second):
+		case <-time.After(5 * time.Second):
 			t.Fatal("a blocked notifier must not hold the state lock")
 		}
-		close(bn.release)
+		release()
 		<-done
 		settleRobinhoodAttempts(e.deps(), e.cfg, nil)
 		bn.mu.Lock()
@@ -2237,13 +2249,18 @@ func (e *rhLiveEnv) seedSharedSettlingClose() rhAttemptRow {
 }
 
 type blockingNotifier struct {
-	release chan struct{}
-	mu      sync.Mutex
-	dms     []string
+	release   chan struct{}
+	entered   chan struct{}
+	enterOnce sync.Once
+	mu        sync.Mutex
+	dms       []string
 }
 
 func (b *blockingNotifier) SendMessage(channelID, content string) error { return nil }
 func (b *blockingNotifier) SendDM(userID, content string) error {
+	if b.entered != nil {
+		b.enterOnce.Do(func() { close(b.entered) })
+	}
 	<-b.release
 	b.mu.Lock()
 	b.dms = append(b.dms, content)

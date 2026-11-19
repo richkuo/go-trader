@@ -498,15 +498,24 @@ func TestFeedRESTReuseNeedsEveryReaderClosed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !req.ClosedKeys[feedKeyFor("BTC", "4h")] || req.FormingKeys[feedKeyFor("BTC", "4h")] {
+		fourH := feedKeyFor("BTC", "4h")
+		if !req.ClosedKeys[fourH] || req.FormingKeys[fourH] {
 			t.Fatalf("closed-bar HTF readers = %v forming = %v", req.ClosedKeys, req.FormingKeys)
+		}
+		closedOnly := unionFeedRequirements([]feedConsumer{{Path: "/closed.json", Loaded: true, Req: req, Cadences: feedConsumerCadences(cfg), Strategies: len(req.Strategies)}})
+		if !closedOnly.closedOnlyReuse(fourH) {
+			t.Fatalf("a 4h key with only closed-bar readers must allow closed-only reuse; label = %s", closedOnly.keyReuseLabel(fourH))
 		}
 		cfg.Regime = &RegimeConfig{Enabled: true, Timeframe: "4h"}
 		if req, err = deriveFeedRequirements(cfg); err != nil {
-			t.Skipf("regime config not derivable in this fixture: %v", err)
+			t.Fatalf("derive the 4h regime bundle requirements: %v", err)
 		}
-		if !req.FormingKeys[feedKeyFor("BTC", "4h")] {
+		if !req.FormingKeys[fourH] {
 			t.Fatalf("a regime bundle on the 4h key reads the forming bar; forming = %v", req.FormingKeys)
+		}
+		forming := unionFeedRequirements([]feedConsumer{{Path: "/regime.json", Loaded: true, Req: req, Cadences: feedConsumerCadences(cfg), Strategies: len(req.Strategies)}})
+		if forming.closedOnlyReuse(fourH) {
+			t.Fatalf("a 4h key that a regime bundle reads must not allow closed-only reuse; label = %s", forming.keyReuseLabel(fourH))
 		}
 	})
 }
