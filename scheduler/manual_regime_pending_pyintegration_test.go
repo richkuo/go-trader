@@ -790,6 +790,69 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 		}
 	})
 	clearQueue()
+	t.Run("persistence-guard-limit-open", func(t *testing.T) {
+		placement := limit
+		placement.dryRun = false
+		for _, tc := range []struct {
+			name    string
+			held    *RiskPartition
+			blocked bool
+		}{
+			{"paper-held", &defaultPaperPartition, true},
+			{"paper-clear", nil, false},
+			{"live-held", &livePartition, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if tc.held != nil {
+					scheduler.recordSaveOutcome(*tc.held, fmt.Errorf("controlled save failure"))
+					t.Cleanup(func() { scheduler.recordSaveOutcome(*tc.held, nil) })
+					owner, _ := globalManualRegimeOwner.identity()
+					if err := checkManualRegimeHoldGuard(store.layout, *tc.held, owner.Nonce); err == nil || !strings.Contains(err.Error(), "holds the "+partitionLabel(*tc.held)+" partition") {
+						t.Fatalf("expected the %s guard to be held: %v", partitionLabel(*tc.held), err)
+					}
+				}
+				gen := begin([]StrategyConfig{sc}, true)
+				globalRegimeStore.set(ready(bundles[3]), gen)
+				proxy.setHook(nil)
+
+				const orderOID = 1842
+				calls := 0
+				originalOpen := runHyperliquidLimitOpenFn
+				t.Cleanup(func() { runHyperliquidLimitOpenFn = originalOpen })
+				runHyperliquidLimitOpenFn = func(script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+					calls++
+					return &HyperliquidLimitOpenResult{OrderOID: orderOID, Status: "resting"}, "", nil
+				}
+				code := runManualLimitOpen(cfg, sc, store, placement)
+				seen := proxy.observed(sc.ID)
+				if len(seen) != 1 || !seen[0].Verified || seen[0].Result != manualRegimeResultBundle {
+					t.Fatalf("expected one signed ready bundle, got %+v", seen)
+				}
+				rows, err := pendingLimitOrdersForStrategySymbol(store, sc.ID, sc.Symbol)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, row := range rows {
+					t.Cleanup(func() {
+						if err := store.DeletePendingLimitOrder(row.ID); err != nil {
+							t.Error(err)
+						}
+					})
+				}
+				if tc.blocked {
+					if code != 1 || calls != 0 || len(rows) != 0 {
+						t.Fatalf("held limit open: exit %d, venue calls %d, pending rows %d", code, calls, len(rows))
+					}
+					t.Log("paper save hold refused the signed ready limit open with no venue call or pending row")
+					return
+				}
+				if code != 0 || calls != 1 || len(rows) != 1 || rows[0].OrderOID != orderOID || len(rows[0].RegimeSnapshots) == 0 {
+					t.Fatalf("accepted limit open: exit %d, venue calls %d, pending rows %+v", code, calls, rows)
+				}
+				t.Logf("%s accepted the signed ready paper limit open and recorded its order and regime evidence", tc.name)
+			})
+		}
+	})
 	resetBook()
 
 	shutdownDraining.Store(true)
