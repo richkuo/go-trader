@@ -159,8 +159,7 @@ def test_no_lookahead_fills_at_next_bar_open() -> None:
         entry_z=2.0, exit_z=0.5, taker_fee_pct=0.0, maker_fee_pct=0.0,
     )
     results = bt.run(df_a, df_b)
-    if not results.trades:
-        pytest.skip("spread didn't cross threshold; lookahead invariant not exercised")
+    assert results.trades, "the bar 200 spread spike must open a trade"
     t = results.trades[0]
     assert t.entry_bar == 201, f"entry should land at bar 201, got {t.entry_bar}"
     assert t.entry_price_a == pytest.approx(2050.0), \

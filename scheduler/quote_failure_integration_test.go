@@ -3,9 +3,34 @@ package main
 import (
 	"context"
 	"errors"
+	"regexp"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
+
+type quoteShutdownBudgetVenue struct {
+	*quoteFixtureVenue
+	mu      sync.Mutex
+	cancels []string
+}
+
+func (v *quoteShutdownBudgetVenue) Cancel(ctx context.Context, req quoteOrderRequest, venueOrderID string) (quoteOrderOutcome, error) {
+	v.mu.Lock()
+	v.cancels = append(v.cancels, req.ClientOrderID)
+	v.mu.Unlock()
+	<-ctx.Done()
+	return quoteOrderOutcome{}, ctx.Err()
+}
+
+func (v *quoteShutdownBudgetVenue) cancelCalls() []string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return append([]string(nil), v.cancels...)
+}
+
+var quoteBudgetSpentLine = regexp.MustCompile(`^order (\d+) cancel left for restart \(cleanup budget spent\)$`)
 
 func quoteFailCommitsAfter(t *testing.T, pass int) func() int {
 	t.Helper()
@@ -241,6 +266,77 @@ func TestQuoteFailureInjectionAndShutdownRecovery(t *testing.T) {
 		}
 		if g := e.sides(1); g[quoteRoleAsk].SubmitState != quoteSubmitCancelled || g[quoteRoleAsk].CancelState != quoteCancelConfirmed {
 			t.Fatalf("startup recovery must resolve the requested cancel: %+v", g[quoteRoleAsk])
+		}
+	})
+	t.Run("shutdown_defers_cancels_past_its_budget_and_startup_sends_them", func(t *testing.T) {
+		e := newQuoteTestEnv(t, quoteTestOptions{})
+		e.mustRun(1, 100, e.pair("99", "101", "0.2"), quoteExitRequest{})
+		byRow := map[int64]*quoteOrderRow{}
+		for _, o := range e.sides(1) {
+			if o.SubmitState != quoteSubmitResting || o.CancelState != quoteCancelNone {
+				t.Fatalf("the fixture needs two resting quote orders: %+v", o)
+			}
+			byRow[o.RowID] = o
+		}
+		if len(byRow) != 2 {
+			t.Fatalf("the fixture needs two resting quote orders: %+v", byRow)
+		}
+		budgetVenue := &quoteShutdownBudgetVenue{quoteFixtureVenue: e.venue}
+		e.adm.venue = budgetVenue
+		lines := e.adm.ShutdownCleanup(50 * time.Millisecond)
+		var deferred []int64
+		for _, line := range lines {
+			m := quoteBudgetSpentLine.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			id, err := strconv.ParseInt(m[1], 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if byRow[id] == nil {
+				t.Fatalf("the budget diagnostic names row %d, which is not a resting quote order: %q", id, lines)
+			}
+			deferred = append(deferred, id)
+		}
+		if len(deferred) == 0 {
+			t.Fatalf("an expired shutdown budget must leave at least one cancel for restart: %q", lines)
+		}
+		calls := budgetVenue.cancelCalls()
+		if len(calls)+len(deferred) != len(byRow) {
+			t.Fatalf("every target is either sent once or deferred: calls %q, deferred %v, lines %q", calls, deferred, lines)
+		}
+		saved := e.sides(1)
+		savedByRow := map[int64]*quoteOrderRow{}
+		for _, o := range saved {
+			savedByRow[o.RowID] = o
+		}
+		for _, id := range deferred {
+			cid := byRow[id].ClientOrderID
+			for _, c := range calls {
+				if c == cid {
+					t.Fatalf("deferred order %d (client %s) reached the venue cancel: %q", id, cid, calls)
+				}
+			}
+			if o := savedByRow[id]; o == nil || o.SubmitState != quoteSubmitResting || o.CancelState != quoteCancelRequested {
+				t.Fatalf("deferred order %d must stay saved resting with its cancel requested: %+v", id, o)
+			}
+		}
+		e.reopen()
+		if _, ok := e.adm.venue.(*quoteFixtureVenue); !ok {
+			t.Fatalf("the reopened admission must use the normal fixture venue, got %T", e.adm.venue)
+		}
+		if _, err := RecoverOnStart(context.Background(), e.adm); err != nil {
+			t.Fatal(err)
+		}
+		recovered := map[int64]*quoteOrderRow{}
+		for _, o := range e.sides(1) {
+			recovered[o.RowID] = o
+		}
+		for _, id := range deferred {
+			if o := recovered[id]; o == nil || o.SubmitState != quoteSubmitCancelled || o.CancelState != quoteCancelConfirmed {
+				t.Fatalf("startup recovery must send the deferred cancel of order %d: %+v", id, o)
+			}
 		}
 	})
 }
