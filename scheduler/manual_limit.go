@@ -195,8 +195,9 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 	}
 	resolve := func(sc StrategyConfig) (RegimePayload, error) { return resolveManualRegimePayload(sc, cfg) }
 	confirm := func() error { return nil }
+	var remote *manualRegimeRemote
 	if sealed {
-		remote := newManualRegimeRemote(cfg, stateDB)
+		remote = newManualRegimeRemote(cfg, stateDB)
 		resolve, confirm = remote.resolve, remote.confirm
 	}
 	var entrySnapshots map[string]RegimeSnapshot
@@ -289,6 +290,12 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 	}
 	if !confirmAdmission() {
 		return 1
+	}
+	if remote != nil && regimeAdmitted {
+		if err := remote.checkPersistenceGuard(in.strategyID); err != nil {
+			fmt.Fprintf(os.Stderr, "manual limit-open held: %v\n", err)
+			return 1
+		}
 	}
 
 	res, stderr, err := runHyperliquidLimitOpenFn(sc.Script, sc.Symbol, in.openSide, size, in.limitPrice, in.tif, sc.MarginMode, sc.Leverage, hlExecuteSnapshot{})

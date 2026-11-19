@@ -2,6 +2,18 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 2062: command-line market orders wait for the scheduler's pending regime bundle
+
+Runtime default; restart-required; there is no opt-out, no config key and no SQLite schema change. The manual regime route moves from protocol 1 to protocol 2.
+Before this change, under `market_feed` `shared` or `websocket`, a command-line `manual-open` or `manual-add` that asked the scheduler while its regime population was still running got `unavailable`, and a ratchet strategy then armed the fallback stop without the warming hold.
+Now the scheduler publishes each cycle's due contracts and active keys together, and the route answers a signed `pending` (HTTP 503, positive `pending_generation`) only for a key whose classifier is still running in that strategy's due generation. A missing sealed frame, a finished or sealed population, a missing contract or entry and a carried pending marker still answer `unavailable`.
+A command-line market open or add retries a verified `pending` reply every 250 ms inside one 3 s budget that starts with the first request and also bounds every later request and body read. It stops on the first other result. A bundle must come from the pending generation and passes the existing age, cadence, warming and stop-window checks. A later classification failure or `unavailable`, or expiry of the budget, uses the existing ratchet fallback where eligible, with the wait in the message (for example `within the 3s budget (waited 3.001s)`).
+A limit open refuses on its first verified `pending` reply. A changed owner, proof, fingerprint, protocol version or generation, a stale or future bundle, draining, or a transport failure after `pending` refuses with no fallback.
+After a wait, a market command reloads state and repeats the kill switch, pending circuit-breaker close, daily loss, notional, exposure and queued-action checks before the order, and before and after any resting limit remainder cancellation on an add. An open needs a free target; an add needs the same owned position (trade position id, else opening time) and side.
+New runtime files: each daemon writes a mode-0600 `<state db>.manual-regime-hold-<partition>.json` (owner nonce and partition; `:` becomes `-`) per partition beside its state file, and holds an exclusive lock on it while that partition has no unacknowledged save failure. A save failure or drain releases the lock; only a later successful save of that partition takes it again. A market or limit entry command with a verified scheduler owner uses a shared lock probe before placement, including on an immediate reply or market fallback. It refuses when the guard is unlocked, missing, replaced or names another owner. Shutdown removes guards still carrying its nonce. `update.sh`, the container image build and `migrate-service-layout.py` treat the guards as runtime state.
+Mixed versions refuse: a protocol 1 command rejects a protocol 2 reply, and a protocol 2 command rejects a protocol 1 reply. Update the command and the scheduler together.
+Operator action: none. Deploy with `bash scripts/update.sh --restart`.
+
 ### Issue 2061: a stopped feed owner keeps its weight reserve
 
 Runtime default for every participant; restart-required; the shared weight record becomes version 2; there is no config key, no SQLite schema change and no seal, payload or wire version change.

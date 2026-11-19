@@ -2804,6 +2804,7 @@ PY
     UPDATE_MANAGED_EXCLUDES+=(
         --exclude='*.db.manual-action.lock'
         --exclude='*.manual-regime-owner.json'
+        --exclude='*.manual-regime-hold-*.json'
         --exclude='.venv/'
         --exclude='.venv.restore-new/'
         --exclude='.venv.restore-old/'

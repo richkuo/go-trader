@@ -31,6 +31,7 @@ func beginDrain() {
 	if !shutdownDraining.CompareAndSwap(false, true) {
 		return
 	}
+	globalManualRegimeOwner.signalDrain()
 	if shutdownReadOnlyCancel != nil {
 		shutdownReadOnlyCancel()
 	}

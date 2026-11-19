@@ -342,6 +342,8 @@ func main() {
 	if ownership != nil {
 		if err := globalManualRegimeOwner.publish(storageLayoutCfg); err != nil {
 			fmt.Fprintf(os.Stderr, "[manual-regime] WARN: owner identity publication failed; command-line regime admission stays disabled for this process: %v\n", err)
+		} else {
+			store.setHoldSignal(globalManualRegimeOwner.signalPersistence)
 		}
 		defer globalManualRegimeOwner.withdraw()
 	}
