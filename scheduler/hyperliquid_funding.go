@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -323,8 +324,106 @@ func hlFundingPagedRecords(ctx context.Context, coin string, startMs, endMs int6
 	return out, nil
 }
 
+var (
+	errFundingRangeIncomplete = errors.New("the funding history range is not proved complete")
+	errFundingTailMismatch    = errors.New("the funding history tail does not start with the retained anchor record")
+)
+
 func hlFundingRecordsSince(ctx context.Context, coin string, startMs int64, now time.Time) ([]feedFundingRecord, error) {
-	return hlFundingPagedRecords(ctx, coin, startMs, now.UTC().UnixMilli(), hlFundingMaxRangePasses)
+	records, _, err := hlFundingRecordsRange(ctx, coin, startMs, now.UTC().UnixMilli(), hlFundingMaxRangePasses)
+	return records, err
+}
+
+func hlFundingRangeProvedComplete(pageRows int, lastMs, endMs int64) bool {
+	if pageRows == 0 {
+		return true
+	}
+	if pageRows >= hlFundingRowCap {
+		return false
+	}
+	return endMs < (lastMs/hlFundingRecordStepMs+1)*hlFundingRecordStepMs
+}
+
+func hlFundingRecordsRange(ctx context.Context, coin string, startMs, endMs int64, maxPasses int) ([]feedFundingRecord, int, error) {
+	if endMs < startMs {
+		return nil, 0, fmt.Errorf("fundingHistory %s range end %d is before its start %d", coin, endMs, startMs)
+	}
+	var out []feedFundingRecord
+	cursor := startMs
+	pages := 0
+	for pass := 0; pass < maxPasses; pass++ {
+		records, err := fetchHyperliquidFundingHistoryFn(ctx, coin, cursor, endMs)
+		pages++
+		if err != nil {
+			return nil, pages, err
+		}
+		page := append([]feedFundingRecord(nil), records...)
+		sort.SliceStable(page, func(i, j int) bool { return page[i].TimeMs < page[j].TimeMs })
+		var lastT int64
+		kept := 0
+		for i, r := range page {
+			if math.IsNaN(r.Rate) || math.IsInf(r.Rate, 0) {
+				return nil, pages, fmt.Errorf("fundingHistory %s record at %d carries a non-finite rate", coin, r.TimeMs)
+			}
+			if r.TimeMs < cursor || r.TimeMs > endMs || r.TimeMs <= 0 {
+				return nil, pages, fmt.Errorf("fundingHistory %s record at %d is outside the requested [%d, %d] interval", coin, r.TimeMs, cursor, endMs)
+			}
+			if i > 0 && r.TimeMs == page[i-1].TimeMs {
+				if r.Rate != page[i-1].Rate {
+					return nil, pages, fmt.Errorf("fundingHistory %s has conflicting records at %d (rate %v and %v)", coin, r.TimeMs, page[i-1].Rate, r.Rate)
+				}
+				continue
+			}
+			out = append(out, r)
+			lastT = r.TimeMs
+			kept++
+		}
+		if hlFundingRangeProvedComplete(len(records), lastT, endMs) {
+			return out, pages, nil
+		}
+		if kept == 0 || lastT < cursor {
+			return nil, pages, fmt.Errorf("fundingHistory %s page from %d made no progress: %w", coin, cursor, errFundingRangeIncomplete)
+		}
+		if lastT >= endMs {
+			return out, pages, nil
+		}
+		cursor = lastT + 1
+	}
+	return nil, pages, fmt.Errorf("fundingHistory %s range [%d, %d] needed more than %d pages: %w", coin, startMs, endMs, maxPasses, errFundingRangeIncomplete)
+}
+
+func hlFundingRecordsTail(ctx context.Context, coin string, retained []feedFundingRecord, startMs, endMs int64) ([]feedFundingRecord, int, error) {
+	if len(retained) == 0 {
+		return nil, 0, fmt.Errorf("fundingHistory %s has no retained record to anchor a tail: %w", coin, errFundingTailMismatch)
+	}
+	anchor := retained[len(retained)-1]
+	if anchor.TimeMs < startMs || anchor.TimeMs > endMs {
+		return nil, 0, fmt.Errorf("fundingHistory %s anchor at %d is outside the required range [%d, %d]: %w", coin, anchor.TimeMs, startMs, endMs, errFundingTailMismatch)
+	}
+	tail, pages, err := hlFundingRecordsRange(ctx, coin, anchor.TimeMs, endMs, hlFundingMaxRangePasses)
+	if err != nil {
+		return nil, pages, err
+	}
+	if len(tail) == 0 || tail[0].TimeMs != anchor.TimeMs {
+		return nil, pages, fmt.Errorf("fundingHistory %s tail from %d did not return the anchor record: %w", coin, anchor.TimeMs, errFundingTailMismatch)
+	}
+	if tail[0].Rate != anchor.Rate {
+		return nil, pages, fmt.Errorf("fundingHistory %s anchor at %d changed rate from %v to %v: %w", coin, anchor.TimeMs, anchor.Rate, tail[0].Rate, errFundingTailMismatch)
+	}
+	out := make([]feedFundingRecord, 0, len(retained)+len(tail)-1)
+	var last int64
+	for _, r := range retained {
+		if r.TimeMs < startMs {
+			continue
+		}
+		if len(out) > 0 && r.TimeMs <= last {
+			return nil, pages, fmt.Errorf("fundingHistory %s retained records are not strictly increasing at %d: %w", coin, r.TimeMs, errFundingTailMismatch)
+		}
+		out = append(out, r)
+		last = r.TimeMs
+	}
+	out = append(out, tail[1:]...)
+	return out, pages, nil
 }
 
 func hlFundingRecordsCoverage(ctx context.Context, coin string, startMs int64, now time.Time, maxPasses int) (feedFundingCoverage, error) {

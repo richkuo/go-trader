@@ -116,6 +116,7 @@ func (o *marketFeedOwner) admitKeyFetchLocked(key marketFeedKey, reason feedRest
 		st.repairFromMs = 0
 		st.historyLookback = 0
 		st.historyShort = false
+		st.restVerified = false
 		full = true
 	}
 	if full && incrementalOnly {
@@ -190,6 +191,7 @@ func (o *marketFeedOwner) completeKeyFetchLocked(t *feedFetchTicket, hist hlCand
 		return fmt.Errorf("feed key %s: %w", key, errFeedKeyObsolete)
 	}
 	st := t.st
+	st.restVerified = false
 	now := o.now()
 	if feedRateLimitErr(err) {
 		o.markRateLimitedLocked(st, err.Error())
@@ -261,6 +263,7 @@ func (o *marketFeedOwner) completeKeyFetchLocked(t *feedFetchTicket, hist hlCand
 	}
 	st.Status = feedStatusReady
 	st.StatusDetail = ""
+	st.restVerified = !st.needsHistory()
 	return nil
 }
 
@@ -412,6 +415,7 @@ func (o *marketFeedOwner) markTicketUnready(t *feedFetchTicket, status feedKeySt
 	}
 	t.st.Status = status
 	t.st.StatusDetail = detail
+	t.st.restVerified = false
 }
 
 func (o *marketFeedOwner) markTicketSharedHeld(t *feedFetchTicket, held bool) {

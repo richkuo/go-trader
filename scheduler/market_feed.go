@@ -176,6 +176,7 @@ type feedKeyState struct {
 	rlSeq        uint64
 	weightHeld   bool
 	sharedHeld   bool
+	restVerified bool
 
 	historyTarget   int
 	historyLookback int
@@ -505,6 +506,7 @@ type feedFunding struct {
 	rateLimited    bool
 	weightHeld     bool
 	waitingForBars bool
+	recordsFromMs  int64
 }
 
 type feedRestReason string

@@ -617,7 +617,7 @@ func TestL2BookObservationPipeline(t *testing.T) {
 		{feedSealVersionBase, marketSnapshotVersion, true},
 		{feedSealVersionBooks, marketSnapshotVersion, true},
 		{feedSealVersionPremium, marketSnapshotVersion, true},
-		{feedSealVersionPremium + 1, marketSnapshotVersion, false},
+		{feedSealVersionClosedReuse + 1, marketSnapshotVersion, false},
 	} {
 		peer := l2TestPeer(t, sockDir, tc.sealVersion, tc.payloadVersion)
 		_, _, err := client.roundTrip(ctx, peer, feedWireRequest{V: feedWireVersion, Op: feedWireOpDescribe})

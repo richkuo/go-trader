@@ -309,13 +309,25 @@ func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 		Strategies:   make(map[string]feedStrategyRequirement),
 		KeyCadences:  make(map[marketFeedKey][]int),
 		SignalKeys:   make(map[marketFeedKey]bool),
+
+		FormingKeys:    make(map[marketFeedKey]bool),
+		ClosedKeys:     make(map[marketFeedKey]bool),
+		ClosedOnlyKeys: make(map[marketFeedKey]bool),
 	}
+	var skipped []string
 	coins := make(map[string]bool)
 	accounting := make(map[string]bool)
 	cadenceSets := make(map[marketFeedKey]map[int]bool)
 	for _, c := range consumers {
 		if !c.Loaded {
+			skipped = append(skipped, c.Path)
 			continue
+		}
+		for key := range c.Req.FormingKeys {
+			union.FormingKeys[key] = true
+		}
+		for key := range c.Req.ClosedKeys {
+			union.ClosedKeys[key] = true
 		}
 		for key, lookback := range c.Req.Keys {
 			union.addKey(key, lookback)
@@ -376,6 +388,15 @@ func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 		}
 		sort.Ints(cads)
 		union.KeyCadences[key] = cads
+	}
+	for key := range union.Keys {
+		if union.ClosedKeys[key] && !union.FormingKeys[key] && feedReuseAlignedTimeframe(key.Timeframe) {
+			union.ClosedOnlyKeys[key] = true
+		}
+	}
+	if len(skipped) > 0 {
+		sort.Strings(skipped)
+		union.ReuseBlocked = fmt.Sprintf("consumer config %s was not loaded, so its readers are unknown", strings.Join(skipped, ", "))
 	}
 	union.finalize()
 	return union
@@ -459,6 +480,35 @@ func formatFeedConsumerLines(prefix string, consumers []feedConsumer) []string {
 		default:
 			out = append(out, fmt.Sprintf("%s consumer %s: skipped (%s)", prefix, c.Path, c.Err))
 		}
+	}
+	return out
+}
+
+type feedKeyCoverage struct {
+	Key      string `json:"key"`
+	Cadences []int  `json:"cadences"`
+	Reach    string `json:"reach"`
+	Reuse    string `json:"reuse"`
+}
+
+const feedKeyReachNote = "consumer-wide: a consumer's late evaluation can select any of its cadences"
+
+func feedKeyCoverageStatus(union feedRequirements, source string) []feedKeyCoverage {
+	out := make([]feedKeyCoverage, 0, len(union.Order))
+	for _, key := range union.Order {
+		reuse := union.keyReuseLabel(key)
+		if source != feedSourceREST {
+			reuse = "none(source " + source + " reads candles from the venue socket)"
+		}
+		out = append(out, feedKeyCoverage{Key: key.PayloadID(), Cadences: append([]int{}, union.KeyCadences[key]...), Reach: feedKeyReachNote, Reuse: reuse})
+	}
+	return out
+}
+
+func feedKeyCoverageLines(union feedRequirements, source string) []string {
+	var out []string
+	for _, c := range feedKeyCoverageStatus(union, source) {
+		out = append(out, fmt.Sprintf("coverage key=%s cadences=%s reach=%q reuse=%q", c.Key, formatCadences(c.Cadences), c.Reach, c.Reuse))
 	}
 	return out
 }
@@ -989,6 +1039,7 @@ func (rt *feedRuntime) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"market_feed":    health,
 		"sealer":         rt.sealer.describe(),
 		"consumers":      consumers,
+		"key_coverage":   feedKeyCoverageStatus(rt.sealer.coverageSnapshot(), rt.sealer.source),
 		"request_budget": rt.ledger.status(),
 		"egress":         processEgress.status(),
 	}
@@ -1035,6 +1086,9 @@ func runFeedProbe(configPath, identity string) int {
 	fmt.Printf("probe: %s\n", formatFeedBudgetConfig(cfg.Feed.Source, cfg.Feed.RequestBudget))
 	fmt.Printf("probe: %s\n", hlWeightTableLine())
 	fmt.Printf("probe: %s\n", estimateFeedUnionWeight(union))
+	for _, line := range estimateFeedDemandLines(union, cfg.Feed.Source) {
+		fmt.Printf("probe: %s\n", line)
+	}
 	if policy := cfg.Feed.RequestBudget.weightPolicy(); policy != nil {
 		if !printFeedAuthorityForecast(feedAuthorityRoleFeed, identity, policy) {
 			return ExitProbeFailure
@@ -1044,6 +1098,9 @@ func runFeedProbe(configPath, identity string) int {
 	}
 	for _, key := range union.Order {
 		fmt.Printf("probe: key %s lookback=%d cadences=%s\n", key.PayloadID(), union.Keys[key], formatCadences(union.KeyCadences[key]))
+	}
+	for _, line := range feedKeyCoverageLines(union, cfg.Feed.Source) {
+		fmt.Printf("probe: %s\n", line)
 	}
 	for _, key := range union.observationKeys() {
 		fmt.Printf("probe: observation %s window_ms=%d source=%s\n", key.PayloadID(), union.Observations[key], feedObservationSourceFor(key.Kind))
