@@ -16,7 +16,6 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 CHECK_HL = os.path.join(REPO, "shared_scripts", "check_hyperliquid.py")
 CHECK_SPOT = os.path.join(REPO, "shared_scripts", "check_strategy.py")
 CHECK_ROBINHOOD = os.path.join(REPO, "shared_scripts", "check_robinhood.py")
-CHECK_OKX = os.path.join(REPO, "shared_scripts", "check_okx.py")
 CHECK_TOPSTEP = os.path.join(REPO, "shared_scripts", "check_topstep.py")
 HTF_OFFLINE = os.path.join(REPO, "shared_scripts", "testdata", "htf_offline")
 QUOTE_STUB = os.path.join(REPO, "shared_scripts", "testdata", "quote_precision")
@@ -1802,7 +1801,7 @@ def quote_stub_check(tmp_path, script, argv, shape):
 
 
 @pytest.mark.parametrize("name", sorted(SPOT_CASES))
-def test_futures_routes_refuse_missing_mode_and_okx_and_topstep_export_full_precision_diagnostics(name, tmp_path):
+def test_hyperliquid_requires_mode_and_topstep_and_robinhood_export_full_precision_diagnostics(name, tmp_path):
     case = SPOT_CASES[name]
     params = json.dumps(case.venue_params)
     refused = run([name, "BTC", CASES[name].tf, "--market-stdin", "--strategy-refs", refs(CASES[name])],
@@ -1813,10 +1812,6 @@ def test_futures_routes_refuse_missing_mode_and_okx_and_topstep_export_full_prec
     assert payload(refused)["signal"] == 0 and "Fetching" not in refused.stderr
     up, down = case.venue_shapes
     rows = [
-        (CHECK_OKX, ["BTC", "1h", "--inst-type=swap"], up, 1, "entry_long"),
-        (CHECK_OKX, ["BTC", "1h", "--inst-type=swap"], down, -1, "entry_short"),
-        (CHECK_OKX, ["BTC", "1h", "--inst-type=spot"], up, 1, "entry_long"),
-        (CHECK_OKX, ["BTC", "1h", "--inst-type=spot"], down, 0, case.suppressed),
         (CHECK_TOPSTEP, ["MES", "1h"], up, 1, "entry_long"),
         (CHECK_TOPSTEP, ["MES", "1h"], down, -1, "entry_short"),
         (CHECK_ROBINHOOD, ["BTC", "1h"], up, 1, "entry_long"),

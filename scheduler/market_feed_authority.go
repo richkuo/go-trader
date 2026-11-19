@@ -21,7 +21,7 @@ import (
 
 const (
 	feedAuthorityCapability   = "go-trader-capability:feed-weight-authority-v1"
-	feedAuthorityVersion      = 1
+	feedAuthorityVersion      = 2
 	feedAuthorityHostDir      = "/var/lib/go-trader/shared/feed-weight"
 	feedAuthorityRecordName   = "authority.json"
 	feedAuthorityLockName     = "authority.lock"
@@ -221,6 +221,8 @@ type feedAuthOwner struct {
 	Policy        feedAuthPolicy            `json:"policy"`
 	StartupLeft   int                       `json:"startup_left"`
 	StoppedNs     int64                     `json:"stopped_boot_ns,omitempty"`
+	PolicyTx      string                    `json:"policy_tx,omitempty"`
+	Unproven      bool                      `json:"policy_unproven,omitempty"`
 	Bounds        map[string]*feedAuthBound `json:"bounds"`
 	Permits       []*feedAuthPermit         `json:"permits"`
 	Charges       []*feedAuthCharge         `json:"charges"`
@@ -256,6 +258,7 @@ type feedAuthRecord struct {
 	LastRecovery *feedAuthRecovery         `json:"last_recovery,omitempty"`
 	Hosts        map[string]*feedAuthHost  `json:"hosts"`
 	Owners       map[string]*feedAuthOwner `json:"owners"`
+	MigratedFrom string                    `json:"migrated_from_sha256,omitempty"`
 }
 
 type feedAuthDeclaration struct {
@@ -270,7 +273,7 @@ type feedAuthDeclaration struct {
 func (rec *feedAuthRecord) commonReserve() int {
 	r := 0
 	for _, o := range rec.Owners {
-		if o.Active && o.Policy.Reserve > r {
+		if o.Policy.Reserve > r {
 			r = o.Policy.Reserve
 		}
 	}
@@ -353,11 +356,12 @@ func feedSharedRefusal(cause, detail string) *feedWeightRefusal {
 }
 
 type feedAuthorityUnsafeError struct {
-	Combined int64
-	Capacity int64
-	Reserve  int
-	AllLive  bool
-	Owners   []string
+	Combined     int64
+	Capacity     int64
+	Reserve      int
+	ReserveOwner string
+	AllLive      bool
+	Owners       []string
 }
 
 func (e *feedAuthorityUnsafeError) Error() string {
@@ -365,8 +369,8 @@ func (e *feedAuthorityUnsafeError) Error() string {
 	if !e.AllLive {
 		proof = "some counted owners have unknown liveness, so the owner waits for their state"
 	}
-	return fmt.Sprintf("combined weight allocation %d of active owners %s exceeds the %d venue weight ceiling less the common reserve %d (at most %d); %s",
-		e.Combined, strings.Join(e.Owners, ","), hlRESTWeightCeiling, e.Reserve, e.Capacity, proof)
+	return fmt.Sprintf("combined weight allocation %d of active owners %s exceeds the %d venue weight ceiling less the common reserve %d held by owner %s (at most %d); %s",
+		e.Combined, strings.Join(e.Owners, ","), hlRESTWeightCeiling, e.Reserve, e.ReserveOwner, e.Capacity, proof)
 }
 
 type feedAuthorityDuplicateError struct {
@@ -400,6 +404,7 @@ type feedPendingPause struct {
 type feedSharedHostStatus struct {
 	Host        string `json:"host"`
 	Used        int64  `json:"used"`
+	Shortfall   int64  `json:"shortfall"`
 	Pause       string `json:"pause"`
 	PausedUntil string `json:"paused_until,omitempty"`
 }
@@ -420,6 +425,7 @@ type feedSharedOwnerStatus struct {
 	Active     bool   `json:"active"`
 	Allocation int64  `json:"allocation"`
 	Reserve    int    `json:"reserve"`
+	Unproven   bool   `json:"unproven,omitempty"`
 	Pending    int64  `json:"pending"`
 	InFlight   int64  `json:"in_flight"`
 	Charged    int64  `json:"charged"`
@@ -446,6 +452,7 @@ type feedSharedStatus struct {
 	Hosts              []feedSharedHostStatus    `json:"hosts"`
 	Recovery           *feedSharedRecoveryStatus `json:"recovery,omitempty"`
 	LastRecovery       *feedSharedRecoveryStatus `json:"last_recovery,omitempty"`
+	UnprovenOwners     []string                  `json:"unproven_owners,omitempty"`
 	LastRefusal        string                    `json:"last_refusal,omitempty"`
 	ViewAt             string                    `json:"view_at,omitempty"`
 	Owners             []feedSharedOwnerStatus   `json:"owners"`
@@ -453,6 +460,7 @@ type feedSharedStatus struct {
 
 type feedSharedView struct {
 	status        feedSharedStatus
+	shortfall     map[string]int64
 	holdUntil     time.Time
 	nextExpiry    time.Time
 	recovery      *feedAuthRecovery
@@ -503,6 +511,7 @@ type feedWeightAuthority struct {
 	outageDetail   string
 	outageCause    string
 	latchReported  bool
+	unprovenSeen   string
 }
 
 func newFeedWeightAuthority(role, configPath string, logf func(string, ...any)) *feedWeightAuthority {
@@ -619,7 +628,7 @@ func (a *feedWeightAuthority) ensureDir() *feedWeightRefusal {
 	if err := feedAuthorityHookAt("dir"); err != nil {
 		return feedSharedRefusal(feedWeightCauseSharedStorage, fmt.Sprintf("shared weight directory %s: %v", a.dir, err))
 	}
-	for _, d := range []string{a.dir, filepath.Join(a.dir, feedAuthorityOwnersDir)} {
+	for _, d := range []string{a.dir, filepath.Join(a.dir, feedAuthorityOwnersDir), feedAuthorityPolicyDir(a.dir)} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return feedSharedRefusal(feedWeightCauseSharedStorage, fmt.Sprintf("shared weight directory %s: %v", d, err))
 		}
@@ -631,14 +640,16 @@ func (a *feedWeightAuthority) ensureDir() *feedWeightRefusal {
 }
 
 type feedAuthTx struct {
-	op        string
-	a         *feedWeightAuthority
-	rec       *feedAuthRecord
-	now       feedBootReading
-	dirty     bool
-	onCommit  []func()
-	onFinally []func()
-	logs      []string
+	op         string
+	a          *feedWeightAuthority
+	rec        *feedAuthRecord
+	now        feedBootReading
+	dirty      bool
+	afterWrite []func() error
+	staged     map[string]bool
+	onCommit   []func()
+	onFinally  []func()
+	logs       []string
 }
 
 func (t *feedAuthTx) owner() *feedAuthOwner { return t.rec.Owners[t.a.key] }
@@ -720,6 +731,7 @@ const (
 	feedAuthLoadOK feedAuthLoad = iota
 	feedAuthLoadAbsent
 	feedAuthLoadCorrupt
+	feedAuthLoadLegacy
 )
 
 func loadFeedAuthRecord(path string, readOnly bool) (*feedAuthRecord, feedAuthLoad, string, *feedWeightRefusal) {
@@ -753,8 +765,8 @@ func loadFeedAuthRecord(path string, readOnly bool) (*feedAuthRecord, feedAuthLo
 	if err := json.Unmarshal(head.Version, &version); err != nil {
 		return nil, feedAuthLoadCorrupt, "version is not an integer", nil
 	}
-	if version != feedAuthorityVersion {
-		return nil, 0, "", feedSharedRefusal(feedWeightCauseSharedVersion, fmt.Sprintf("%s has version %d; this binary reads only version %d and never overwrites another version (stop every participant, remove %s, start them; one recovery hold follows)", path, version, feedAuthorityVersion, path))
+	if version != feedAuthorityVersion && version != feedAuthorityLegacyVersion {
+		return nil, 0, "", feedSharedRefusal(feedWeightCauseSharedVersion, fmt.Sprintf("%s has version %d; this binary reads versions %d and %d and never overwrites another version (run a binary that knows version %d on every participant; to go back to this binary, stop every participant, move %s aside and start them: the held reserves in %s stay, and one recovery hold follows)", path, version, feedAuthorityLegacyVersion, feedAuthorityVersion, version, path, feedAuthorityPolicyDir(filepath.Dir(path))))
 	}
 	rec := newFeedAuthRecord()
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -764,6 +776,9 @@ func loadFeedAuthRecord(path string, readOnly bool) (*feedAuthRecord, feedAuthLo
 	}
 	if issue := validateFeedAuthRecord(rec); issue != "" {
 		return nil, feedAuthLoadCorrupt, issue, nil
+	}
+	if rec.Version == feedAuthorityLegacyVersion {
+		return rec, feedAuthLoadLegacy, feedSHA256(raw), nil
 	}
 	return rec, feedAuthLoadOK, "", nil
 }
@@ -809,6 +824,9 @@ func validateFeedAuthRecord(rec *feedAuthRecord) string {
 			if b == nil || b.AtNs < 0 {
 				return fmt.Sprintf("owner %s bound %s is invalid", key, t)
 			}
+		}
+		if o.Unproven && (o.Active || o.Policy != feedAuthPolicy{}) {
+			return fmt.Sprintf("owner %s is marked unproven but is active or holds a policy", key)
 		}
 		for _, pm := range o.Permits {
 			if pm == nil || pm.ID == "" || !feedWeightInRange(pm.Cost, hlRESTWeightCeiling) || !feedWeightInRange(pm.StartupPart, pm.Cost) ||
@@ -893,13 +911,15 @@ func (a *feedWeightAuthority) cleanStaleTemps() {
 			os.Remove(filepath.Join(a.dir, e.Name()))
 		}
 	}
-	owners, err := os.ReadDir(filepath.Join(a.dir, feedAuthorityOwnersDir))
-	if err != nil {
-		return
-	}
-	for _, e := range owners {
-		if strings.Contains(e.Name(), ".json.tmp-") {
-			os.Remove(filepath.Join(a.dir, feedAuthorityOwnersDir, e.Name()))
+	for _, sub := range []string{feedAuthorityOwnersDir, feedAuthorityPoliciesDir} {
+		entries, err := os.ReadDir(filepath.Join(a.dir, sub))
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if strings.Contains(e.Name(), ".json.tmp-") {
+				os.Remove(filepath.Join(a.dir, sub, e.Name()))
+			}
 		}
 	}
 }
@@ -961,6 +981,9 @@ func feedReadDeclarations(dir string) (map[string]*feedAuthDeclaration, error) {
 			continue
 		}
 		key := strings.TrimSuffix(name, ".json")
+		if !feedValidOwnerKey(key) {
+			continue
+		}
 		raw, err := os.ReadFile(filepath.Join(dir, feedAuthorityOwnersDir, name))
 		if err != nil {
 			return nil, err
@@ -983,7 +1006,10 @@ func feedDeclaredLockKeys(dir string) []string {
 	var keys []string
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".lock") {
-			keys = append(keys, strings.TrimSuffix(e.Name(), ".lock"))
+			key := strings.TrimSuffix(e.Name(), ".lock")
+			if feedValidOwnerKey(key) {
+				keys = append(keys, key)
+			}
 		}
 	}
 	sort.Strings(keys)
@@ -1049,7 +1075,7 @@ func (t *feedAuthTx) ownerDied(key string, o *feedAuthOwner, why string) {
 		}
 		r.UnknownOwners = feedRemoveString(r.UnknownOwners, key)
 	}
-	t.logLine("[feed-weight-shared] owner=%s role=%s stopped (%s): allocation removed, %d unresolved permit(s) kept as full charges, unexpired debt kept", key, o.Role, why, n)
+	t.logLine("[feed-weight-shared] owner=%s role=%s stopped (%s): allocation removed, reserve %d held, %d unresolved permit(s) kept as full charges, unexpired debt kept", key, o.Role, why, o.Policy.Reserve, n)
 }
 
 func (t *feedAuthTx) sweep() {
@@ -1108,7 +1134,7 @@ func (t *feedAuthTx) prune() {
 			}
 		}
 		pending := t.rec.Recovery != nil && (containsString(t.rec.Recovery.PendingOwners, key) || containsString(t.rec.Recovery.UnknownOwners, key))
-		if !o.Active && len(o.Permits) == 0 && len(o.Charges) == 0 && len(o.Bounds) == 0 && !pending {
+		if !o.Active && len(o.Permits) == 0 && len(o.Charges) == 0 && len(o.Bounds) == 0 && !pending && o.Policy.Reserve == 0 && !o.Unproven {
 			delete(t.rec.Owners, key)
 			t.dirty = true
 		}
@@ -1156,7 +1182,7 @@ func (t *feedAuthTx) rebase(prevLast int64) {
 	t.rec.Recovery = nil
 }
 
-func (t *feedAuthTx) startRecovery(reason string, rebuild bool) {
+func (t *feedAuthTx) startRecovery(reason string, rebuild bool) *feedWeightRefusal {
 	a := t.a
 	gen := t.rec.Generation
 	if seen := a.maxGeneration(); seen > gen {
@@ -1166,48 +1192,34 @@ func (t *feedAuthTx) startRecovery(reason string, rebuild bool) {
 	r := &feedAuthRecovery{Generation: gen, Reason: reason, Started: feedWallString(t.now.Wall), StartedNs: t.now.Ns,
 		HoldUntilNs: t.now.Ns + int64(feedBudgetWindow), PendingOwners: []string{}, UnknownOwners: []string{}}
 	if rebuild {
-		decls, err := feedReadDeclarations(a.dir)
+		skip := ""
+		if a.registered {
+			skip = a.key
+		}
+		rb, err := feedRebuildRows(a.dir, skip, false, t.now.Ns)
 		if err != nil {
-			t.logLine("[feed-weight-shared] recovery could not read owner declarations: %v; every owner lock is treated as unknown", err)
+			return feedSharedRefusal(feedWeightCauseSharedStorage, fmt.Sprintf("rebuild %s: %v; participating sends stay held until the recovery evidence can be read", a.recordPath(), err))
 		}
-		keys := map[string]bool{}
-		for k := range decls {
-			keys[k] = true
-		}
-		for _, k := range feedDeclaredLockKeys(a.dir) {
-			keys[k] = true
-		}
-		sorted := make([]string, 0, len(keys))
-		for k := range keys {
-			sorted = append(sorted, k)
-		}
-		sort.Strings(sorted)
-		for _, key := range sorted {
-			d := decls[key]
-			if key == a.key && a.registered {
-				continue
-			}
-			state, _ := feedProbeOwnerLock(a.dir, key, false)
-			if err != nil {
-				state = feedOwnerUnknown
-			}
-			if state == feedOwnerDead {
-				continue
-			}
-			o := &feedAuthOwner{Active: true, Reconstructed: true, Bounds: map[string]*feedAuthBound{}, Permits: []*feedAuthPermit{}, Charges: []*feedAuthCharge{}}
-			if d != nil {
-				o.Role, o.ConfigPath, o.Incarnation, o.PID, o.StartedWall, o.Policy = d.Role, d.ConfigPath, d.Incarnation, d.PID, d.StartedWall, d.Policy
-			} else {
-				state = feedOwnerUnknown
-				o.Policy = feedAuthPolicy{PerMinute: hlRESTWeightCeiling}
-			}
+		for key, o := range rb.Rows {
 			t.rec.Owners[key] = o
-			if state == feedOwnerLive {
-				r.PendingOwners = append(r.PendingOwners, key)
-			} else {
-				r.UnknownOwners = append(r.UnknownOwners, key)
+		}
+		r.PendingOwners = append(r.PendingOwners, rb.Pending...)
+		r.UnknownOwners = append(r.UnknownOwners, rb.Unknown...)
+		source := "none"
+		switch {
+		case rb.Evidence:
+			source = "policy evidence"
+		case rb.Legacy:
+			source = "version 1 declarations"
+		}
+		held := []string{}
+		for _, key := range t.rec.sortedOwnerKeys() {
+			if o := t.rec.Owners[key]; !o.Active && o.Policy.Reserve > 0 {
+				held = append(held, fmt.Sprintf("%s:%d", key, o.Policy.Reserve))
 			}
 		}
+		t.logLine("[feed-weight-shared] rebuild from %s: stopped owners with held reserves %s; unproven reserves %s",
+			source, joinFeedNames(held), joinFeedNames(rb.Unproven))
 	} else {
 		for _, key := range t.rec.sortedOwnerKeys() {
 			o := t.rec.Owners[key]
@@ -1230,6 +1242,8 @@ func (t *feedAuthTx) startRecovery(reason string, rebuild bool) {
 	if a.registered {
 		r.PendingOwners = feedAddUnique(r.PendingOwners, a.key)
 	}
+	sort.Strings(r.PendingOwners)
+	sort.Strings(r.UnknownOwners)
 	t.rec.Generation = gen
 	t.rec.EpochID = feedRandomID(8)
 	r.EpochID = t.rec.EpochID
@@ -1237,6 +1251,7 @@ func (t *feedAuthTx) startRecovery(reason string, rebuild bool) {
 	t.dirty = true
 	t.logLine("[feed-weight-shared] recovery generation=%d reason=%s epoch=%s hold_until=%s pending_owners=%s unknown_owners=%s",
 		gen, reason, t.rec.EpochID, feedWallString(t.now.Wall.Add(feedBudgetWindow)), joinFeedNames(r.PendingOwners), joinFeedNames(r.UnknownOwners))
+	return nil
 }
 
 func (t *feedAuthTx) maybeEndRecovery() {
@@ -1288,8 +1303,8 @@ func (t *feedAuthTx) reconcile() {
 		return
 	}
 	if me.Reconstructed || me.EpochID != t.rec.EpochID || !me.Active {
-		me.Role, me.ConfigPath, me.Incarnation, me.PID = a.role, a.configPath, a.incarnation, a.pid
-		me.StartedWall, me.Policy, me.Active = feedWallString(a.startedWall), a.policy, true
+		me.applyIdentity(a.identity())
+		me.Active = true
 		if me.Reconstructed {
 			t.readoptHeap(me)
 		}
@@ -1300,6 +1315,15 @@ func (t *feedAuthTx) reconcile() {
 			r.UnknownOwners = feedRemoveString(r.UnknownOwners, a.key)
 		}
 		t.dirty = true
+	}
+	if me.Policy != a.policy || me.Unproven || me.PolicyTx == "" {
+		before := t.rec.commonReserve()
+		if tx, r := t.stagePolicy(a.key, a.identity(), a.policy, false); r != nil {
+			t.logLine("[feed-weight-shared] owner=%s record policy %+v differs from this owner's policy %+v and the correction is not staged yet (%s); the next transaction retries", a.key, me.Policy, a.policy, r.Detail)
+		} else {
+			me.Policy, me.PolicyTx, me.Unproven = a.policy, tx, false
+			t.noteReserveChange(before)
+		}
 	}
 	open := t.heapOpenPermits()
 	inRecord := map[string]bool{}
@@ -1540,16 +1564,25 @@ func (a *feedWeightAuthority) txLocked(ctx context.Context, op string, fn func(t
 	case feedAuthLoadAbsent:
 		t.rec = newFeedAuthRecord()
 		reason := feedAuthorityRecoveryMissing
-		if decls, _ := feedReadDeclarations(a.dir); len(decls) == 0 && len(feedDeclaredLockKeys(a.dir)) == 0 {
+		if feedAuthorityDirEmpty(a.dir) {
 			reason = feedAuthorityRecoveryInitial
 		}
-		t.startRecovery(reason, true)
+		if r := t.startRecovery(reason, true); r != nil {
+			return fail(r)
+		}
 	case feedAuthLoadCorrupt:
 		t.rec = newFeedAuthRecord()
-		t.logLine("[feed-weight-shared] %s is corrupt (%s); rebuilding from owner declarations", a.recordPath(), detail)
-		t.startRecovery(feedAuthorityRecoveryCorrupt, true)
+		t.logLine("[feed-weight-shared] %s is corrupt (%s); rebuilding from owner policy evidence", a.recordPath(), detail)
+		if r := t.startRecovery(feedAuthorityRecoveryCorrupt, true); r != nil {
+			return fail(r)
+		}
 	default:
 		t.rec = rec
+		if state == feedAuthLoadLegacy {
+			if r := t.migrate(detail); r != nil {
+				return fail(r)
+			}
+		}
 		switch {
 		case rec.BootID != now.Boot:
 			prev := rec.LastBootNs
@@ -1563,7 +1596,7 @@ func (a *feedWeightAuthority) txLocked(ctx context.Context, op string, fn func(t
 			clockRecovered = true
 		}
 	}
-	if a.clockFaulted && state != feedAuthLoadOK {
+	if a.clockFaulted && state != feedAuthLoadOK && state != feedAuthLoadLegacy {
 		clockRecovered = true
 	}
 	t.sweep()
@@ -1575,9 +1608,17 @@ func (a *feedWeightAuthority) txLocked(ctx context.Context, op string, fn func(t
 	if fn != nil {
 		fnErr = fn(t)
 	}
+	if state == feedAuthLoadOK && feedAuthoritySyncOp(op) {
+		t.syncEvidence()
+	}
 	if t.dirty {
 		if err := a.writeRecord(t); err != nil {
 			return fail(feedSharedRefusal(feedWeightCauseSharedStorage, fmt.Sprintf("commit %s (%s): %v", a.recordPath(), op, err)))
+		}
+		for _, f := range t.afterWrite {
+			if err := f(); err != nil {
+				t.logLine("[feed-weight-shared] owner policy evidence stays staged after %s (%v); the staged file keeps the larger policy until the next transaction finalizes it", op, err)
+			}
 		}
 	}
 	if clockRecovered {
@@ -1591,8 +1632,26 @@ func (a *feedWeightAuthority) txLocked(ctx context.Context, op string, fn func(t
 	return fnErr
 }
 
+func feedAuthoritySyncOp(op string) bool {
+	switch op {
+	case "heartbeat", "register", "redeclare", "stop", "release":
+		return true
+	}
+	return false
+}
+
+func feedAuthorityDirEmpty(dir string) bool {
+	if set, err := feedReadPolicyEvidenceSet(dir); err != nil || len(set) > 0 {
+		return false
+	}
+	if decls, err := feedReadDeclarations(dir); err != nil || len(decls) > 0 {
+		return false
+	}
+	return len(feedDeclaredLockKeys(dir)) == 0
+}
+
 func (a *feedWeightAuthority) ownerStatus(key string, o *feedAuthOwner) feedSharedOwnerStatus {
-	st := feedSharedOwnerStatus{Key: key, Role: o.Role, ConfigPath: o.ConfigPath, Active: o.Active, Reserve: o.Policy.Reserve}
+	st := feedSharedOwnerStatus{Key: key, Role: o.Role, ConfigPath: o.ConfigPath, Active: o.Active, Reserve: o.Policy.Reserve, Unproven: o.Unproven}
 	if o.Active {
 		st.Allocation = o.Policy.allocation()
 	}
@@ -1684,8 +1743,13 @@ func (a *feedWeightAuthority) refreshView(rec *feedAuthRecord, now feedBootReadi
 		hostList = append(hostList, h)
 	}
 	sort.Strings(hostList)
+	shortfall := map[string]int64{}
 	for _, h := range hostList {
 		hs := feedSharedHostStatus{Host: h, Used: rec.usedOnHost(h), Pause: "clear"}
+		if hs.Used > st.Capacity {
+			hs.Shortfall = hs.Used - st.Capacity
+			shortfall[h] = hs.Shortfall
+		}
 		if hp := rec.Hosts[h]; hp != nil && hp.PauseUntilNs > now.Ns {
 			hs.Pause = "confirmed"
 			hs.PausedUntil = feedWallString(now.Wall.Add(time.Duration(hp.PauseUntilNs - now.Ns)))
@@ -1698,6 +1762,10 @@ func (a *feedWeightAuthority) refreshView(rec *feedAuthRecord, now feedBootReadi
 	}
 	st.Recovery = feedRecoveryStatus(rec.Recovery, now)
 	st.LastRecovery = feedRecoveryStatus(rec.LastRecovery, now)
+	st.UnprovenOwners = rec.unprovenOwners()
+	if len(st.UnprovenOwners) > 0 {
+		st.Registry = "reserve_unproven"
+	}
 	var holdUntil time.Time
 	if rec.Recovery != nil {
 		st.Registry = "recovery_hold"
@@ -1710,6 +1778,8 @@ func (a *feedWeightAuthority) refreshView(rec *feedAuthRecord, now feedBootReadi
 	if st.LastRefusal == "" {
 		st.LastRefusal = prevRefusal
 	}
+	prevShortfall := a.view.shortfall
+	a.view.shortfall = shortfall
 	a.view.status = st
 	a.view.holdUntil = holdUntil
 	a.view.nextExpiry = nextExpiry
@@ -1726,6 +1796,20 @@ func (a *feedWeightAuthority) refreshView(rec *feedAuthRecord, now feedBootReadi
 		a.view.maxGeneration = rec.Generation
 	}
 	a.viewMu.Unlock()
+	for _, h := range hostList {
+		cur, was := shortfall[h], prevShortfall[h]
+		switch {
+		case cur > 0 && was == 0:
+			a.logf("[feed-weight-shared] owner=%s host=%s reserve shortfall=%d: used %d is above capacity %d (common reserve %d); no new participating reservation or pending send fits on this host until use falls", a.key, h, cur, rec.usedOnHost(h), st.Capacity, st.CommonReserve)
+		case cur == 0 && was > 0:
+			a.logf("[feed-weight-shared] owner=%s host=%s reserve shortfall cleared: used %d fits capacity %d", a.key, h, rec.usedOnHost(h), st.Capacity)
+		}
+	}
+	for _, h := range feedSortedKeys(feedKeySet(prevShortfall)) {
+		if !containsString(hostList, h) {
+			a.logf("[feed-weight-shared] owner=%s host=%s reserve shortfall cleared: no recorded use", a.key, h)
+		}
+	}
 }
 
 func (a *feedWeightAuthority) mergePauses(rec *feedAuthRecord, now feedBootReading) {
@@ -1816,52 +1900,24 @@ func (a *feedWeightAuthority) waitHint(now time.Time) time.Duration {
 	return wait
 }
 
-func (a *feedWeightAuthority) writeDeclaration(policy feedAuthPolicy) error {
-	d := feedAuthDeclaration{Role: a.role, ConfigPath: a.configPath, Incarnation: a.incarnation, PID: a.pid,
-		StartedWall: feedWallString(a.startedWall), Policy: policy}
-	data, err := json.Marshal(d)
-	if err != nil {
-		return err
-	}
-	return feedAuthorityWriteFileAtomic(filepath.Join(a.dir, feedAuthorityOwnersDir), a.key+".json", data, false)
-}
-
 func (t *feedAuthTx) aggregateCheck(policy feedAuthPolicy) *feedAuthorityUnsafeError {
-	combined := policy.allocation()
-	reserve := policy.Reserve
-	allLive := true
-	owners := []string{t.a.key}
 	unknown := map[string]bool{}
 	if r := t.rec.Recovery; r != nil {
 		for _, k := range r.UnknownOwners {
 			unknown[k] = true
 		}
 	}
-	for _, key := range t.rec.sortedOwnerKeys() {
-		if key == t.a.key {
-			continue
+	res := feedAdmissionOf(t.rec, t.a.key, policy, func(key string, o *feedAuthOwner) bool {
+		if !unknown[key] && !o.Reconstructed {
+			return true
 		}
-		o := t.rec.Owners[key]
-		if !o.Active {
-			continue
-		}
-		combined += o.Policy.allocation()
-		if o.Policy.Reserve > reserve {
-			reserve = o.Policy.Reserve
-		}
-		owners = append(owners, key)
-		if unknown[key] || o.Reconstructed {
-			if state, _ := feedProbeOwnerLock(t.a.dir, key, false); state != feedOwnerLive {
-				allLive = false
-			}
-		}
-	}
-	capacity := int64(hlRESTWeightCeiling) - int64(reserve)
-	if combined <= capacity {
+		state, _ := feedProbeOwnerLock(t.a.dir, key, false)
+		return state == feedOwnerLive
+	})
+	if res.Combined <= res.Capacity {
 		return nil
 	}
-	sort.Strings(owners)
-	return &feedAuthorityUnsafeError{Combined: combined, Capacity: capacity, Reserve: reserve, AllLive: allLive, Owners: owners}
+	return &feedAuthorityUnsafeError{Combined: res.Combined, Capacity: res.Capacity, Reserve: res.Reserve, ReserveOwner: res.ReserveOwner, AllLive: res.AllLive, Owners: res.Owners}
 }
 
 func (a *feedWeightAuthority) register(ctx context.Context, policy *feedWeightPolicy) error {
@@ -1880,8 +1936,8 @@ func (a *feedWeightAuthority) registerLocked(ctx context.Context, policy *feedWe
 	var lifetime *os.File
 	var lifetimeID feedFileID
 	err := a.txLocked(ctx, "register", func(t *feedAuthTx) error {
-		if t.rec.Recovery == nil && len(t.rec.Owners) >= feedAuthorityMaxOwners {
-			return feedSharedRefusal(feedWeightCauseSharedOwner, fmt.Sprintf("the shared weight record already holds %d owners", feedAuthorityMaxOwners))
+		if t.rec.Owners[a.key] == nil && len(t.rec.Owners) >= feedAuthorityMaxOwners {
+			return feedSharedRefusal(feedWeightCauseSharedOwner, fmt.Sprintf("the shared weight record already holds %d owners; release stopped owners with go-trader feed-weight-release", feedAuthorityMaxOwners))
 		}
 		path := feedAuthorityOwnerLockPath(a.dir, a.key)
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
@@ -1908,9 +1964,11 @@ func (a *feedWeightAuthority) registerLocked(ctx context.Context, policy *feedWe
 			f.Close()
 			return unsafe
 		}
-		if err := a.writeDeclaration(a.policy); err != nil {
+		before := t.rec.commonReserve()
+		tx, sr := t.stagePolicy(a.key, a.identity(), a.policy, false)
+		if sr != nil {
 			f.Close()
-			return feedSharedRefusal(feedWeightCauseSharedStorage, fmt.Sprintf("write owner declaration: %v", err))
+			return sr
 		}
 		prev := t.rec.Owners[a.key]
 		me := &feedAuthOwner{Bounds: map[string]*feedAuthBound{}, Permits: []*feedAuthPermit{}, Charges: []*feedAuthCharge{}}
@@ -1937,7 +1995,9 @@ func (a *feedWeightAuthority) registerLocked(ctx context.Context, policy *feedWe
 		}
 		me.Role, me.ConfigPath, me.Incarnation, me.PID = a.role, a.configPath, a.incarnation, a.pid
 		me.StartedWall, me.Active, me.EpochID, me.Policy, me.StartupLeft = feedWallString(a.startedWall), true, t.rec.EpochID, a.policy, left
+		me.PolicyTx = tx
 		t.rec.Owners[a.key] = me
+		t.noteReserveChange(before)
 		if r := t.rec.Recovery; r != nil {
 			r.UnknownOwners = feedRemoveString(r.UnknownOwners, a.key)
 			r.PendingOwners = feedAddUnique(r.PendingOwners, a.key)
@@ -2029,29 +2089,29 @@ func (a *feedWeightAuthority) redeclare(ctx context.Context, policy *feedWeightP
 		apply()
 		return nil
 	}
+	if policy == nil {
+		return feedSharedRefusal(feedWeightCauseSharedOwner, fmt.Sprintf("owner %s is registered in the shared weight record; a reload cannot remove its complete weight policy (set an explicit policy, for example weight_reserve 0, or restart without it: the held reserve stays until go-trader feed-weight-release)", a.key))
+	}
 	next := feedAuthPolicyOf(policy)
 	return a.txLocked(ctx, "redeclare", func(t *feedAuthTx) error {
 		if unsafe := t.aggregateCheck(next); unsafe != nil {
 			return unsafe
 		}
-		if err := a.writeDeclaration(next); err != nil {
-			a.writeDeclaration(a.policy)
-			return feedSharedRefusal(feedWeightCauseSharedStorage, fmt.Sprintf("write owner declaration: %v", err))
+		me := t.owner()
+		if me == nil || me.Incarnation != a.incarnation || !me.Active {
+			return feedSharedRefusal(feedWeightCauseSharedOwner, fmt.Sprintf("owner %s incarnation %s is not the active registered incarnation", a.key, a.incarnation))
 		}
-		if me := t.owner(); me != nil {
-			me.Policy = next
-			t.dirty = true
+		before := t.rec.commonReserve()
+		tx, sr := t.stagePolicy(a.key, a.identity(), next, false)
+		if sr != nil {
+			return sr
 		}
-		committed := false
+		me.Policy, me.PolicyTx = next, tx
+		t.dirty = true
+		t.noteReserveChange(before)
 		t.onCommit = append(t.onCommit, func() {
-			committed = true
 			a.policy = next
 			apply()
-		})
-		t.onFinally = append(t.onFinally, func() {
-			if !committed {
-				a.writeDeclaration(a.policy)
-			}
 		})
 		t.logLine("[feed-weight-shared] owner=%s redeclared allocation=%d reserve=%d", a.key, next.allocation(), next.Reserve)
 		return nil
@@ -2079,6 +2139,9 @@ func (a *feedWeightAuthority) sendRefusalLocked(t *feedAuthTx) *feedWeightRefusa
 	if r := t.rec.Recovery; r != nil {
 		return feedSharedRefusal(feedWeightCauseSharedHold, fmt.Sprintf("shared recovery generation %d (%s) holds every participating send until %s", r.Generation, r.Reason,
 			feedWallString(t.now.Wall.Add(time.Duration(r.HoldUntilNs-t.now.Ns)))))
+	}
+	if keys := t.rec.unprovenOwners(); len(keys) > 0 {
+		return feedSharedRefusal(feedWeightCauseSharedHold, fmt.Sprintf("the held weight reserve of owner(s) %s cannot be proved from the recovery evidence; participating sends stay held until each one restarts with its config or, once it is confirmed stopped, an operator runs go-trader feed-weight-release --owner <key>", strings.Join(keys, ",")))
 	}
 	return nil
 }
@@ -2324,7 +2387,7 @@ func (a *feedWeightAuthority) stop() {
 		me.Active = false
 		me.StoppedNs = t.now.Ns
 		t.dirty = true
-		t.logLine("[feed-weight-shared] owner=%s stopped: allocation removed, %d open permit(s) kept as full charges, unexpired charges kept", a.key, n)
+		t.logLine("[feed-weight-shared] owner=%s stopped: allocation removed, reserve %d held, %d open permit(s) kept as full charges, unexpired charges kept", a.key, me.Policy.Reserve, n)
 		return nil
 	})
 	if err != nil {
@@ -2392,6 +2455,7 @@ func (a *feedWeightAuthority) sharedReport() []feedSharedEvent {
 	}
 	a.viewMu.Lock()
 	cur, last := a.view.recovery, a.view.lastRecovery
+	unproven := strings.Join(a.view.status.UnprovenOwners, ",")
 	a.viewMu.Unlock()
 	latchCause, latchDetail := a.latchState()
 	latched := ""
@@ -2404,6 +2468,12 @@ func (a *feedWeightAuthority) sharedReport() []feedSharedEvent {
 	if latchCause != "" && !a.latchReported {
 		a.latchReported = true
 		out = append(out, feedSharedEvent{Kind: "owner_latched", Reason: latchCause, Detail: latchDetail})
+	}
+	if unproven != a.unprovenSeen {
+		a.unprovenSeen = unproven
+		if unproven != "" {
+			out = append(out, feedSharedEvent{Kind: "reserve_unproven", Detail: unproven})
+		}
 	}
 	if cur != nil && cur.EpochID != a.reportedStart {
 		if a.reportedStart != "" && a.reportedStart != a.reportedEnd {
@@ -2448,6 +2518,9 @@ func formatFeedSharedAlert(ev feedSharedEvent, source, instance, key string) str
 		}
 		return fmt.Sprintf("**MARKET FEED SHARED WEIGHT RECOVERED** [%s] shared weight recovery generation %d (%s) ended; participating reads resume through the normal eligible fetches (owner %s, instance %s).",
 			source, ev.Generation, ev.Reason, key, instance)
+	case "reserve_unproven":
+		return fmt.Sprintf("**MARKET FEED SHARED WEIGHT RESERVE UNPROVEN** [%s] the held weight reserve of owner(s) %s cannot be proved from the recovery evidence, so every participating venue read on this host is held; restart each such owner with its config or, once it is confirmed stopped, run go-trader feed-weight-release --owner <key> as the service user; if the release reports a missing lifetime lock, first confirm no process runs with that key, create owners/<key>.lock with mode 0600 as the service user, then rerun the release (owner %s, instance %s).",
+			source, ev.Detail, key, instance)
 	case "owner_latched":
 		return fmt.Sprintf("**MARKET FEED SHARED WEIGHT OWNER LATCHED** [%s] this owner latched its shared sends closed (%s: %s); every participating venue read of this owner is refused until it restarts, consumers hold entries on unready inputs and protection continues on verified inputs; check the shared weight directory, then restart this owner (owner %s, instance %s).",
 			source, ev.Reason, ev.Detail, key, instance)
@@ -2477,17 +2550,12 @@ func forecastFeedAuthority(role, identityPath string, policy *feedWeightPolicy) 
 	cand := feedAuthPolicyOf(policy)
 	out := feedAuthorityForecast{}
 	add := func(format string, a ...any) { out.Lines = append(out.Lines, fmt.Sprintf(format, a...)) }
-	add("shared weight: owner=%s role=%s identity=%s directory=%s capability=%s", key, role, resolvedConfigPath(identityPath), dir, feedAuthorityCapability)
+	add("shared weight: owner=%s role=%s identity=%s directory=%s capability=%s record_version=%d", key, role, resolvedConfigPath(identityPath), dir, feedAuthorityCapability, feedAuthorityVersion)
 	if _, err := readFeedBoot(newFeedBootClock()); err != nil {
 		out.Refuse = fmt.Sprintf("the boot clock is unavailable (%s): %v", feedBootClockSource, err)
 		return out
 	}
-	type entry struct {
-		key   string
-		pol   feedAuthPolicy
-		state string
-	}
-	var peers []entry
+	view := newFeedAuthRecord()
 	state := "ok"
 	fi, err := os.Lstat(dir)
 	switch {
@@ -2505,79 +2573,78 @@ func forecastFeedAuthority(role, identityPath string, policy *feedWeightPolicy) 
 			out.Refuse = lr.Detail
 			return out
 		}
-		if load == feedAuthLoadOK {
+		switch load {
+		case feedAuthLoadOK:
+			view = rec
 			if rec.Recovery != nil {
 				state = fmt.Sprintf("recovery generation %d (%s) in progress", rec.Recovery.Generation, rec.Recovery.Reason)
 			}
-			for _, k := range rec.sortedOwnerKeys() {
-				o := rec.Owners[k]
-				if k == key || !o.Active {
-					continue
-				}
-				live, why := feedProbeOwnerLock(dir, k, true)
-				switch live {
-				case feedOwnerDead:
-					peers = append(peers, entry{k, o.Policy, "stopped (removed at startup)"})
-					continue
-				case feedOwnerUnknown:
-					out.Refuse = fmt.Sprintf("the liveness of owner %s cannot be read: %s", k, why)
-					return out
-				}
-				peers = append(peers, entry{k, o.Policy, "live"})
+		case feedAuthLoadLegacy:
+			view = rec
+			if _, merr := feedMigrateRows(view, dir, true, 0); merr != nil {
+				out.Refuse = fmt.Sprintf("the version %d record cannot be migrated: %v", feedAuthorityLegacyVersion, merr)
+				return out
 			}
-		} else {
+			state = fmt.Sprintf("migration required (record version %d)", feedAuthorityLegacyVersion)
+		default:
 			if load == feedAuthLoadAbsent {
 				state = "recovery required (record missing)"
 			} else {
 				state = fmt.Sprintf("recovery required (record corrupt: %s)", detail)
 			}
-			decls, derr := feedReadDeclarations(dir)
-			if derr != nil {
-				out.Refuse = fmt.Sprintf("owner declarations in %s cannot be read: %v", dir, derr)
-				return out
-			}
-			if len(decls) == 0 && len(feedDeclaredLockKeys(dir)) == 0 && load == feedAuthLoadAbsent {
+			if load == feedAuthLoadAbsent && feedAuthorityDirEmpty(dir) {
 				state = "initialization required"
 			}
-			keys := make([]string, 0, len(decls))
-			for k := range decls {
-				keys = append(keys, k)
+			rb, rerr := feedRebuildRows(dir, key, true, 0)
+			if rerr != nil {
+				out.Refuse = fmt.Sprintf("the recovery evidence in %s cannot be read: %v", dir, rerr)
+				return out
 			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				if k == key {
-					continue
-				}
-				live, why := feedProbeOwnerLock(dir, k, true)
-				if live == feedOwnerDead {
-					continue
-				}
-				if live == feedOwnerUnknown || decls[k] == nil {
-					out.Refuse = fmt.Sprintf("the liveness or declaration of owner %s cannot be read: %s", k, why)
-					return out
-				}
-				peers = append(peers, entry{k, decls[k].Policy, "live"})
+			view.Owners = rb.Rows
+			for _, k := range rb.Unknown {
+				out.Refuse = fmt.Sprintf("the liveness or policy of owner %s cannot be read from the recovery evidence", k)
+				return out
 			}
 		}
 	}
-	combined := cand.allocation()
-	reserve := cand.Reserve
-	for _, p := range peers {
-		if p.state != "live" {
+	peerState := map[string]string{}
+	for _, k := range view.sortedOwnerKeys() {
+		o := view.Owners[k]
+		if k == key {
 			continue
 		}
-		combined += p.pol.allocation()
-		if p.pol.Reserve > reserve {
-			reserve = p.pol.Reserve
+		if o.Unproven {
+			out.Refuse = fmt.Sprintf("the held weight reserve of owner %s cannot be proved from the recovery evidence; restart that owner with its config or, once it is confirmed stopped, run go-trader feed-weight-release --owner %s", k, k)
+			return out
+		}
+		if !o.Active {
+			peerState[k] = "stopped (reserve held)"
+			continue
+		}
+		live, why := feedProbeOwnerLock(dir, k, true)
+		switch live {
+		case feedOwnerDead:
+			o.Active = false
+			peerState[k] = "stopped (allocation removed at startup, reserve held)"
+		case feedOwnerUnknown:
+			out.Refuse = fmt.Sprintf("the liveness of owner %s cannot be read: %s", k, why)
+			return out
+		default:
+			peerState[k] = "live"
 		}
 	}
-	capacity := int64(hlRESTWeightCeiling) - int64(reserve)
-	add("shared weight: state=%s candidate_allocation=%d candidate_reserve=%d combined_allocation=%d common_reserve=%d capacity=%d", state, cand.allocation(), cand.Reserve, combined, reserve, capacity)
-	for _, p := range peers {
-		add("shared weight: peer owner=%s state=%s allocation=%d reserve=%d", p.key, p.state, p.pol.allocation(), p.pol.Reserve)
+	res := feedAdmissionOf(view, key, cand, nil)
+	add("shared weight: state=%s candidate_allocation=%d candidate_reserve=%d combined_allocation=%d common_reserve=%d reserve_owner=%s capacity=%d", state, cand.allocation(), cand.Reserve, res.Combined, res.Reserve, res.ReserveOwner, res.Capacity)
+	for _, k := range feedSortedKeys(feedKeySet(peerState)) {
+		o := view.Owners[k]
+		alloc := int64(0)
+		if o.Active {
+			alloc = o.Policy.allocation()
+		}
+		add("shared weight: peer owner=%s state=%s allocation=%d reserve=%d", k, peerState[k], alloc, o.Policy.Reserve)
 	}
-	if combined > capacity {
-		out.Refuse = fmt.Sprintf("combined weight allocation %d exceeds the %d venue weight ceiling less the common reserve %d (at most %d)", combined, hlRESTWeightCeiling, reserve, capacity)
+	if res.Combined > res.Capacity {
+		out.Refuse = fmt.Sprintf("combined weight allocation %d exceeds the %d venue weight ceiling less the common reserve %d held by owner %s (at most %d)", res.Combined, hlRESTWeightCeiling, res.Reserve, res.ReserveOwner, res.Capacity)
 	}
 	return out
 }
@@ -2593,14 +2660,17 @@ func formatFeedSharedFields(sh feedSharedStatus) string {
 	hosts := make([]string, 0, len(sh.Hosts))
 	for _, h := range sh.Hosts {
 		part := fmt.Sprintf("%s:used=%d:pause=%s", h.Host, h.Used, h.Pause)
+		if h.Shortfall > 0 {
+			part += fmt.Sprintf(":shortfall=%d", h.Shortfall)
+		}
 		if h.PausedUntil != "" {
 			part += ":until=" + h.PausedUntil
 		}
 		hosts = append(hosts, part)
 	}
-	return fmt.Sprintf("shared_coverage=shared shared_registry=%s shared_owner=%s shared_allocation=%d shared_common_reserve=%d shared_combined_allocation=%d shared_capacity=%d shared_pending=%d shared_in_flight=%d shared_charged=%d shared_debt=%d shared_stopped_owner_debt=%d shared_hosts=%s shared_recovery=%s shared_owners=%d shared_last_refusal=%q",
+	return fmt.Sprintf("shared_coverage=shared shared_registry=%s shared_owner=%s shared_allocation=%d shared_common_reserve=%d shared_combined_allocation=%d shared_capacity=%d shared_pending=%d shared_in_flight=%d shared_charged=%d shared_debt=%d shared_stopped_owner_debt=%d shared_hosts=%s shared_recovery=%s shared_owners=%d shared_unproven=%s shared_last_refusal=%q",
 		sh.Registry, sh.OwnerKey, sh.Allocation, sh.CommonReserve, sh.CombinedAllocation, sh.Capacity, sh.Pending, sh.InFlight, sh.Charged, sh.Debt,
-		sh.StoppedOwnerDebt, joinFeedNames(hosts), recovery, len(sh.Owners), sh.LastRefusal)
+		sh.StoppedOwnerDebt, joinFeedNames(hosts), recovery, len(sh.Owners), joinFeedNames(sh.UnprovenOwners), sh.LastRefusal)
 }
 
 func feedSharedCycleLine(l *feedRequestLedger) string {

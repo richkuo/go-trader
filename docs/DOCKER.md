@@ -368,17 +368,18 @@ The same steps work with a stopped container, after `docker compose down`, and o
 docker compose stop
 docker compose ps -a
 docker compose create go-trader
-docker compose run --rm --entrypoint find cli /data -mindepth 1 -delete
+docker compose run --rm --entrypoint sh cli -c 'set -e; if [ ! -d /data/.feed-weight-current ] && [ -d /data/feed-weight ]; then mv /data/feed-weight /data/.feed-weight-current; fi; find /data -mindepth 1 -maxdepth 1 ! -name .feed-weight-current -exec rm -rf {} +'
 docker compose cp ./backups/2026-10-07/data/. go-trader:/data
-docker compose run --rm --entrypoint rm cli -rf /data/feed-weight
+docker compose run --rm --entrypoint sh cli -c 'set -e; if [ -d /data/.feed-weight-current ]; then rm -rf /data/feed-weight; mv /data/.feed-weight-current /data/feed-weight; elif [ -d /data/feed-weight ]; then rm -f /data/feed-weight/authority.json; fi'
 docker compose run --rm --user 0:0 --cap-add CHOWN --cap-add DAC_READ_SEARCH --entrypoint chown cli -R 10001:10001 /data
 docker compose run --rm cli probe --config /data/config.json
 docker compose start
 ```
 
 `docker compose create` makes the bot's container (and the volumes, when they do not exist) without starting it, so that the copy has a target; it changes nothing when the stopped container already exists. It runs before `find`, so a failure stops the restore before anything is deleted.
-The `find` command deletes the current content of the data volume.
-The `rm` command removes the shared feed weight record (`/data/feed-weight`) that the backup may hold: an old copy would forget weight used after the backup. The next start rebuilds it and holds embedded feed reads for one minute. The `chown` command gives the restored files back to the bot's user; it is safe because the volume holds only go-trader files.
+The first `sh` command moves the current feed weight record (`/data/feed-weight`) aside to `/data/.feed-weight-current` and deletes the rest of the data volume; when an earlier restore stopped after that move, it keeps the copy that is already there.
+The second `sh` command puts the current feed weight record back in place of the backup's copy, because an old copy would forget weight used after the backup and could hold an older reserve. With no current record (a new volume), it keeps the backup's `policies/` folder, which holds the reserve each owner committed, and removes only the backup's `authority.json`: the next start rebuilds the record from `policies/` and holds embedded feed reads for one minute.
+Never delete `/data/feed-weight/policies`: it is the only proof of the reserve this bot keeps for live orders. The `chown` command gives the restored files back to the bot's user; it is safe because the volume holds only go-trader files.
 Use the image release recorded in the backup's `image.json`, or a newer one (see [Roll back](#roll-back)).
 
 ## Upgrade
@@ -425,7 +426,8 @@ So a rollback goes back to the old image **together with** the backup taken just
 1. `docker compose stop`
 2. Set `GO_TRADER_TAG` in `.env` back to the old tag (the release in the backup's `image.json`).
 3. [Restore](#restore) the pre-upgrade backup.
-4. `docker compose up -d`
+4. When the old image's `version --json` lacks `go-trader-capability:feed-weight-record-v2` and `/data/feed-weight/authority.json` exists, move that file aside, because the old image refuses the newer record and holds embedded feed reads: `docker compose run --rm --entrypoint mv cli /data/feed-weight/authority.json /data/feed-weight/authority.json.v2`. Keep `/data/feed-weight/policies`; a later upgrade reads the held reserves from it again. The next start holds embedded feed reads for one minute.
+5. `docker compose up -d`
 
 Paper trades made after the backup are lost.
 
@@ -485,7 +487,7 @@ The first setup creates paper strategies only.
 To trade with real money later, change a strategy to live mode in the config (see [SKILL.md](../SKILL.md) § Configure), put the exchange keys in `go-trader.env`, run `docker compose up -d --force-recreate go-trader`, and watch the first cycles.
 Every database must stay in `/data`: the container refuses a config whose `db_file`, `paper_db_file`, `paper_sources[].db_file` or `replay_log_path` points somewhere else.
 The container does not support `role: "feed"` services or `market_feed: "shared"`.
-With `market_feed: "websocket"` and `market_feed_weight_budget`, the bot keeps its venue weight record in `/data/feed-weight` (see [SKILL.md](../SKILL.md) § Shared market feed, Shared weight record). The record covers only this container; it does not coordinate with other containers or computers on the same public address. The first start with a budget holds the embedded feed reads for one minute.
+With `market_feed: "websocket"` and `market_feed_weight_budget`, the bot keeps its venue weight record in `/data/feed-weight` (see [SKILL.md](../SKILL.md) § Shared market feed, Shared weight record). The record covers only this container; it does not coordinate with other containers or computers on the same public address. The first start with a budget holds the embedded feed reads for one minute. The record keeps the bot's reserve while the bot is stopped; a restore keeps it (see [Restore](#restore)), and only a start with a new budget or `go-trader feed-weight-release` changes it.
 Understand the [Roll back](#roll-back) limits before you trade live.
 
 **Robinhood device approval.** Robinhood logins keep their session in `/data/robinhood-session` (mode 0700, files 0600), and the bot never answers a Robinhood device verification prompt.

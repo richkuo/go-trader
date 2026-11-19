@@ -1000,7 +1000,7 @@ func TestRemoveStrategyGuardIntegration(t *testing.T) {
 			{StrategyConfig{ID: "p", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}}, "/go-trader-paper-close p"},
 			{hlLiveManual("m", 100), "go-trader manual-close m"},
 			{hlLivePerps("h", "ETH", 100), "go-trader force-close h"},
-			{StrategyConfig{ID: "o", Type: "spot", Platform: "okx", Args: []string{"sma", "BTC", "1h", "--mode=live"}}, "No close command exists for platform=okx type=spot"},
+			{StrategyConfig{ID: "r", Type: "spot", Platform: "robinhood", Args: []string{"sma", "BTC", "1h", "--mode=live"}}, "No close command exists for platform=robinhood type=spot"},
 		}
 		for _, c := range cases {
 			if got := removeStrategyCloseAdvice(c.sc, nil); !strings.Contains(got, c.want) {
@@ -1016,33 +1016,25 @@ func TestRemoveStrategyGuardIntegration(t *testing.T) {
 func TestPaperCloseRealMarkFetchersAndRestingLimitRefusal(t *testing.T) {
 	var mu sync.Mutex
 	hlMids := map[string]string{"ETH": "2100", "SOL": "150"}
-	okxLast := map[string]string{"BTC-USDT": "60000"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch {
 		case r.URL.Path == "/info":
 			_ = json.NewEncoder(w).Encode(hlMids)
-		case r.URL.Path == "/api/v5/market/tickers" && r.URL.Query().Get("instType") == "SPOT":
-			var data []map[string]string
-			for inst, last := range okxLast {
-				data = append(data, map[string]string{"instId": inst, "last": last})
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": "0", "msg": "", "data": data})
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
-	origHL, origOKX := hlMainnetURL, okxMainnetURL
-	hlMainnetURL, okxMainnetURL = srv.URL, srv.URL
-	defer func() { hlMainnetURL, okxMainnetURL = origHL, origOKX }()
+	origHL := hlMainnetURL
+	hlMainnetURL = srv.URL
+	defer func() { hlMainnetURL = origHL }()
 
 	cfg := &Config{
 		DBFile:          filepath.Join(t.TempDir(), "state.db"),
 		IntervalSeconds: 600,
 		Strategies: []StrategyConfig{
-			{ID: "okx-sp", Type: "spot", Platform: "okx", Args: []string{"sma", "BTC", "1h", "--mode=paper", "--inst-type=spot"}, Capital: 10000},
 			{ID: "hl-p", Type: "perps", Platform: "hyperliquid", Args: []string{"sma", "ETH", "1h", "--mode=paper"}, Capital: 10000, Leverage: 1},
 			{ID: "man-p", Type: "manual", Platform: "hyperliquid", Symbol: "SOL", Timeframe: "1h", Args: []string{"hold", "SOL", "1h", "--mode=paper"}, Capital: 10000, Leverage: 1},
 		},
@@ -1051,7 +1043,6 @@ func TestPaperCloseRealMarkFetchersAndRestingLimitRefusal(t *testing.T) {
 	f.ss.paperCloseMarks = nil
 	now := time.Now().UTC()
 	f.env.mu.Lock()
-	f.env.strat("okx-sp").Positions["BTC"] = &Position{Symbol: "BTC", TradePositionID: "okx-btc", Quantity: 0.1, AvgCost: 50000, Side: "long", OpenedAt: now}
 	f.env.strat("hl-p").Positions["ETH"] = &Position{Symbol: "ETH", TradePositionID: "hl-eth", Quantity: 1, AvgCost: 2000, Side: "short", Multiplier: 1, OpenedAt: now}
 	f.env.strat("man-p").Positions["SOL"] = &Position{Symbol: "SOL", TradePositionID: "man-sol", Quantity: 2, AvgCost: 140, Side: "long", Multiplier: 1, OpenedAt: now}
 	f.env.mu.Unlock()
@@ -1066,22 +1057,16 @@ func TestPaperCloseRealMarkFetchersAndRestingLimitRefusal(t *testing.T) {
 		}, "no usable mark", "ETH")
 	}
 	mu.Lock()
-	hlMids["ETH"] = "2100"
-	delete(okxLast, "BTC-USDT")
+	delete(hlMids, "ETH")
 	mu.Unlock()
-	f.requireUnchanged("missing OKX coin", "okx-sp", func() string {
-		return f.run(paperCloseCommandName, pcOwner, "", pcOpts("strategy", "okx-sp"), "", nil)
-	}, "BTC: no mark")
+	f.requireUnchanged("served HL response without ETH", "hl-p", func() string {
+		return f.run(paperCloseCommandName, pcOwner, "", pcOpts("strategy", "hl-p"), "", nil)
+	}, "no usable mark", "ETH: no mark")
 	mu.Lock()
-	okxLast["BTC-USD"] = "59000"
-	okxLast["BTC-USDT"] = "60000"
+	hlMids["ETH"] = "2100"
 	mu.Unlock()
 
-	msg := f.run(paperCloseCommandName, pcOwner, "", pcOpts("strategy", "okx-sp"), "confirm", nil)
-	if !strings.Contains(msg, "@ 60000 (okx spot ticker BTC-USDT), realized PnL $1000.00") {
-		t.Fatalf("OKX spot close = %q", msg)
-	}
-	msg = f.run(paperCloseCommandName, pcOwner, "", pcOpts("strategy", "hl-p", "symbol", "ETH"), "confirm", nil)
+	msg := f.run(paperCloseCommandName, pcOwner, "", pcOpts("strategy", "hl-p", "symbol", "ETH"), "confirm", nil)
 	if !strings.Contains(msg, "@ 2100 (hyperliquid allMids), realized PnL $-100.00") {
 		t.Fatalf("HL perps close = %q", msg)
 	}
