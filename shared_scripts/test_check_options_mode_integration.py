@@ -3,8 +3,10 @@ import math
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CHILD_WORKERS = min(4, os.cpu_count() or 1)
 STUB_DIR = os.path.join(ROOT, "shared_scripts", "testdata", "quote_precision")
 CHECK_OPTIONS = os.path.join(ROOT, "shared_scripts", "check_options.py")
 CREDENTIALS = (
@@ -180,26 +182,35 @@ def _vol_cases(ppy):
 
 
 def test_volatility_adapters_measure_or_refuse_without_substitutes(tmp_path, subtests):
-    for platform in sorted(VOL_PLATFORMS):
-        underlying, ppy, baseline = VOL_PLATFORMS[platform]
-        cases = _vol_cases(ppy)
-        for case in sorted(cases):
-            daily, want = cases[case]
-            with subtests.test(platform=platform, case=case):
+    fifteen = "fifteen_bars_keep_volatility_without_rank"
+    with ThreadPoolExecutor(max_workers=CHILD_WORKERS) as pool:
+        spawned = {}
+        for platform in sorted(VOL_PLATFORMS):
+            underlying, ppy, _ = VOL_PLATFORMS[platform]
+            for case, (daily, _) in sorted(_vol_cases(ppy).items()):
                 run_dir = tmp_path / f"{platform}-{case}"
                 run_dir.mkdir()
-                out = _driver(run_dir, {"QP_DAILY": daily}, platform, underlying, "vol")
-                if want is None:
-                    assert out == {"vol": baseline[0], "rank": baseline[1]}
-                    continue
-                assert out["one_identity"] is True, out
-                assert {k: out[k] for k in want} == want
-        with subtests.test(platform=platform, case="fifteen_bars_keep_volatility_without_rank"):
+                spawned[platform, case] = pool.submit(_driver, run_dir, {"QP_DAILY": daily}, platform, underlying, "vol")
             run_dir = tmp_path / f"{platform}-fifteen"
             run_dir.mkdir()
-            out = _driver(run_dir, {"QP_DAILY": json.dumps(BASE_CLOSES[:15])}, platform, underlying, "vol")
-            assert out["reason"] == "iv rank unavailable: flat volatility range"
-            assert isinstance(out["vol_annual"], float) and out["vol_annual"] > 0
+            spawned[platform, fifteen] = pool.submit(
+                _driver, run_dir, {"QP_DAILY": json.dumps(BASE_CLOSES[:15])}, platform, underlying, "vol")
+        for platform in sorted(VOL_PLATFORMS):
+            underlying, ppy, baseline = VOL_PLATFORMS[platform]
+            cases = _vol_cases(ppy)
+            for case in sorted(cases):
+                daily, want = cases[case]
+                with subtests.test(platform=platform, case=case):
+                    out = spawned[platform, case].result()
+                    if want is None:
+                        assert out == {"vol": baseline[0], "rank": baseline[1]}
+                        continue
+                    assert out["one_identity"] is True, out
+                    assert {k: out[k] for k in want} == want
+            with subtests.test(platform=platform, case=fifteen):
+                out = spawned[platform, fifteen].result()
+                assert out["reason"] == "iv rank unavailable: flat volatility range"
+                assert isinstance(out["vol_annual"], float) and out["vol_annual"] > 0
 
 
 MODEL_CASES = {
