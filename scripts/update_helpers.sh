@@ -2059,6 +2059,55 @@ update_feed_weight_binary_capability() {
     esac
 }
 
+UPDATE_FEED_WEIGHT_RECORD_V2_CAPABILITY="go-trader-capability:feed-weight-record-v2"
+UPDATE_FEED_WEIGHT_DIR="${UPDATE_FEED_WEIGHT_DIR:-/var/lib/go-trader/shared/feed-weight}"
+
+update_feed_weight_record_v2_binary() {
+    local bin_path="$1" grep_rc=0
+    [[ -n "$bin_path" && -f "$bin_path" && -r "$bin_path" ]] || return 2
+    LC_ALL=C grep -aqF -- "$UPDATE_FEED_WEIGHT_RECORD_V2_CAPABILITY" "$bin_path" || grep_rc=$?
+    case "$grep_rc" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
+update_feed_weight_record_version() {
+    local record="$1/authority.json"
+    [[ -f "$record" ]] || return 0
+    python3 -I -c '
+import json, sys
+try:
+    v = json.load(open(sys.argv[1])).get("version")
+except Exception:
+    sys.exit(0)
+if isinstance(v, int):
+    print(v)
+' "$record"
+}
+
+update_feed_weight_rollout_notice() {
+    local old_bin="$1" new_bin="$2" config="$3" rc=0
+    update_feed_weight_participant "$config" || rc=$?
+    [[ "$rc" == "0" ]] || return 0
+    update_feed_weight_record_v2_binary "$new_bin" || return 0
+    if update_feed_weight_record_v2_binary "$old_bin"; then
+        return 0
+    fi
+    echo "[update] shared weight: the new binary keeps the shared feed weight record as version 2, where a stopped owner keeps its reserve until it restarts with a new policy or go-trader feed-weight-release releases it. After this service starts, every other participant on this host that still runs an older binary holds its participating reads (shared_version) until it is updated with bash scripts/update.sh --restart, so update every participant in one window. A rollback of this binary holds its participating reads the same way; see the recovery steps that a failed update prints."
+}
+
+update_feed_weight_rollback_notice() {
+    local restored_bin="$1" dir="${2:-$UPDATE_FEED_WEIGHT_DIR}" version rc=0
+    [[ -f "$dir/authority.json" ]] || return 0
+    update_feed_weight_record_v2_binary "$restored_bin" || rc=$?
+    [[ "$rc" == "1" ]] || return 0
+    version=$(update_feed_weight_record_version "$dir")
+    [[ "$version" == "2" ]] || return 0
+    echo "[update] recovery: the restored binary reads only version 1 of the shared feed weight record, but $dir/authority.json is version 2, so this service holds its participating reads (shared_version) until it runs a version 2 binary again. The fastest fix is to update again to a binary with $UPDATE_FEED_WEIGHT_RECORD_V2_CAPABILITY. To run older binaries instead: stop every participant on this host, move $dir/authority.json aside (never delete $dir/policies or any lock file) and start them; one 60s recovery hold follows, and the held reserves in $dir/policies return when a version 2 binary next starts." >&2
+}
+
 update_probe_identity_args() {
     local bin_path="$1" identity="$2"
     [[ -n "$identity" ]] || return 0

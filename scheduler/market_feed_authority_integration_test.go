@@ -338,7 +338,7 @@ func TestFeedWeightSharedAuthorityStorage(t *testing.T) {
 		newWTVenue(t, e.clock.Wall)
 		o := e.owner("a", wtPolicy(600, 100, 100))
 		e.settle(o)
-		future := []byte(`{"version":2,"anything":"else"}`)
+		future := []byte(`{"version":3,"anything":"else"}`)
 		if err := os.WriteFile(filepath.Join(e.dir, feedAuthorityRecordName), future, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -466,8 +466,9 @@ func TestFeedWeightSharedOwners(t *testing.T) {
 		}
 		e.clock.advance(feedBudgetWindow)
 		b.a.heartbeatOnce(context.Background())
-		if rec := e.record(); rec.Owners[a.a.key] != nil {
-			t.Fatalf("an expired stopped owner stays in the record: %+v", rec.Owners[a.a.key])
+		rec = e.record()
+		if held := rec.Owners[a.a.key]; held == nil || held.Active || len(held.Charges) != 0 || held.Policy.Reserve != 100 || rec.commonReserve() != 100 {
+			t.Fatalf("a stopped owner's reserve must stay held after its charges expire and pruning runs: %+v", held)
 		}
 	})
 

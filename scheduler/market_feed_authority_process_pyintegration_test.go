@@ -402,7 +402,241 @@ func (e *fpEnv) installLeavingALateArrival(t *testing.T, cfg string) func() int 
 	}
 }
 
+func (e *fpEnv) release(key string, extra ...string) (int, string) {
+	e.t.Helper()
+	cmd := exec.Command(e.bin, "feed-weight-release", "--owner", key)
+	cmd.Dir, cmd.Env = e.root, e.env(extra...)
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			code = 128 + int(ws.Signal())
+		}
+	} else if err != nil {
+		e.t.Fatal(err)
+	}
+	return code, string(out)
+}
+
+func (e *fpEnv) probe(args ...string) (int, string) {
+	e.t.Helper()
+	cmd := exec.Command(e.bin, append([]string{"probe"}, args...)...)
+	cmd.Dir, cmd.Env = e.root, e.env()
+	out, err := cmd.CombinedOutput()
+	if ee, ok := err.(*exec.ExitError); ok {
+		return ee.ExitCode(), string(out)
+	} else if err != nil {
+		e.t.Fatal(err)
+	}
+	return 0, string(out)
+}
+
+func (e *fpEnv) heldReserve(key string) int {
+	e.t.Helper()
+	o := e.record().Owners[key]
+	if o == nil {
+		return 0
+	}
+	return o.Policy.Reserve
+}
+
+func (e *fpEnv) embeddedConfig(name string, weightPerMinute, weightStartup, reserve int) string {
+	e.t.Helper()
+	cfg := filepath.Join(e.dir, name+"-embedded.json")
+	blob, _ := json.Marshal(map[string]any{"config_version": CurrentConfigVersion, "market_feed": "websocket",
+		"db_file": filepath.Join(e.dir, name+"-state.db"), "log_dir": filepath.Join(e.dir, "logs"),
+		"market_feed_weight_budget": map[string]any{"weight_per_minute": weightPerMinute, "weight_startup": weightStartup, "weight_reserve": reserve},
+		"strategies": []any{map[string]any{"id": "hl-emb", "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py",
+			"args": []any{"sma_crossover", "BTC", "1h", "--mode=paper"}, "capital": 1000, "max_drawdown_pct": 50}}})
+	if err := os.WriteFile(cfg, blob, 0o600); err != nil {
+		e.t.Fatal(err)
+	}
+	return cfg
+}
+
 func TestFeedWeightSharedProcesses(t *testing.T) {
+	t.Run("ADeadOwnersReserveHoldsWhileALowerReservePeerRegistersFirst", func(t *testing.T) {
+		e := newFPEnv(t)
+		cCfg := e.feedConfig("c", 10, 800, 200, 200)
+		e.install(t, cCfg)
+		c := e.start("c", cCfg)
+		c.waitFor("[feed] serving:", 120*time.Second)
+		c.kill()
+		bCfg := e.feedConfig("b", 30, 300, 100, 100)
+		aCfg := e.feedConfig("a", 30, 500, 100, 200)
+		b := e.start("b", bCfg)
+		b.waitFor("[feed-weight-shared] registered owner=", 60*time.Second)
+		deadline := time.Now().Add(90 * time.Second)
+		for e.venue.sentBy("b") == 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("b sent nothing:\n%s", b.output())
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		rec := e.record()
+		dead := rec.Owners[e.ownerKey(cCfg)]
+		if dead == nil || dead.Active || len(dead.Charges) == 0 || dead.Policy.Reserve != 200 {
+			t.Fatalf("the killed owner's charges or reserve are gone before b sent: %+v", dead)
+		}
+		var active []string
+		for _, k := range rec.sortedOwnerKeys() {
+			if rec.Owners[k].Active {
+				active = append(active, k)
+			}
+		}
+		if len(active) != 1 || active[0] != e.ownerKey(bCfg) || rec.capacity() != hlRESTWeightCeiling-200 {
+			t.Fatalf("with only b active the capacity is %d (active %v), want %d", rec.capacity(), active, hlRESTWeightCeiling-200)
+		}
+		a := e.start("a", aCfg)
+		a.waitFor("[feed] serving:", 120*time.Second)
+		b.waitFor("[feed] serving:", 120*time.Second)
+		if got := e.venue.maxWindow(); got > hlRESTWeightCeiling-200 {
+			t.Fatalf("the largest rolling 60s venue window is %d, above the shared capacity %d", got, hlRESTWeightCeiling-200)
+		}
+		t.Logf("venue arrivals %d (b %d), largest window %d", len(e.venue.snapshot()), e.venue.sentBy("b"), e.venue.maxWindow())
+	})
+
+	t.Run("AHeldReserveRefusesStartupAndBothProbesAndStagedProbesKeepTheDeploymentKey", func(t *testing.T) {
+		e := newFPEnv(t)
+		cCfg := e.feedConfig("c", 2, 300, 0, 200)
+		e.install(t, cCfg)
+		bCfg := e.feedConfig("b", 2, 400, 100, 100)
+		b := e.start("b", bCfg)
+		b.waitFor("[feed-weight-shared] registered owner=", 60*time.Second)
+		if e.heldReserve(e.ownerKey(cCfg)) != 200 {
+			t.Fatalf("the stopped owner's reserve is not held: %+v", e.record().Owners[e.ownerKey(cCfg)])
+		}
+		if err := b.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
+			t.Fatal(err)
+		}
+		before := faTree(t, e.auth)
+		dCfg := e.feedConfig("d", 2, 500, 50, 100)
+		if code, out := e.probe("--config", dCfg); code != ExitProbeFailure {
+			t.Fatalf("a feed probe of combined 1050 under a held reserve 200 exited %d:\n%s", code, out)
+		}
+		embCfg := e.embeddedConfig("emb", 500, 50, 100)
+		if code, out := e.probe("--config", embCfg); code != ExitProbeFailure || !strings.Contains(out, "role="+feedAuthorityRoleEmbedded) {
+			t.Fatalf("an embedded probe of combined 1050 under a held reserve 200 exited %d:\n%s", code, out)
+		}
+		staged := filepath.Join(e.dir, "c-staged.json")
+		raw, _ := os.ReadFile(e.feedConfig("cnext", 2, 500, 100, 100))
+		os.WriteFile(staged, raw, 0o600)
+		code, out := e.probe("--config", staged, "--deployment-config", cCfg)
+		if code != 0 || !strings.Contains(out, "owner="+e.ownerKey(cCfg)) || !strings.Contains(out, "common_reserve=100") {
+			t.Fatalf("a staged probe of c that replaces its own held reserve exited %d:\n%s", code, out)
+		}
+		if after := faTree(t, e.auth); after != before {
+			t.Fatalf("a probe changed the state directory")
+		}
+		if err := b.cmd.Process.Signal(syscall.SIGCONT); err != nil {
+			t.Fatal(err)
+		}
+		d := e.start("d", dCfg)
+		if code := d.waitExit(60 * time.Second); code != ExitProbeFailure {
+			t.Fatalf("feed startup under the held reserve exited %d, want %d:\n%s", code, ExitProbeFailure, d.output())
+		}
+	})
+
+	t.Run("ReleaseThroughTheCommandLine", func(t *testing.T) {
+		e := newFPEnv(t)
+		xCfg := e.feedConfig("x", 2, 300, 100, 200)
+		yCfg := e.feedConfig("y", 2, 300, 100, 100)
+		xKey, yKey := e.ownerKey(xCfg), e.ownerKey(yCfg)
+		e.install(t, xCfg)
+		x := e.start("x", xCfg)
+		x.waitFor("[feed] serving:", 120*time.Second)
+		if code, out := e.release(xKey); code != 1 || !strings.Contains(out, "is live") {
+			t.Fatalf("release of a live owner exited %d:\n%s", code, out)
+		}
+		x.stop()
+		y := e.start("y", yCfg)
+		y.waitFor("[feed-weight-shared] registered owner=", 60*time.Second)
+		y.stop()
+		yLock := feedAuthorityOwnerLockPath(e.auth, yKey)
+		if err := os.Remove(yLock); err != nil {
+			t.Fatal(err)
+		}
+		if code, out := e.release(yKey); code != 1 || e.heldReserve(yKey) != 100 {
+			t.Fatalf("release of an owner whose lifetime lock is missing exited %d (held %d):\n%s", code, e.heldReserve(yKey), out)
+		}
+		if err := os.WriteFile(yLock, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		charged := func() int {
+			n := 0
+			if o := e.record().Owners[xKey]; o != nil {
+				for _, c := range o.Charges {
+					n += c.Weight
+				}
+			}
+			return n
+		}
+		chargedBefore := charged()
+		if chargedBefore == 0 {
+			t.Fatalf("fixture: the stopped owner has no unexpired charges")
+		}
+		code, out := e.release(xKey)
+		if code != 0 || !strings.Contains(out, "released owner="+xKey) || e.heldReserve(xKey) != 0 {
+			t.Fatalf("release of the stopped owner exited %d (held %d):\n%s", code, e.heldReserve(xKey), out)
+		}
+		if got := charged(); got != chargedBefore {
+			t.Fatalf("release changed the unexpired charges %d -> %d", chargedBefore, got)
+		}
+		if strings.Count(out, "released owner=") != 1 {
+			t.Fatalf("release did not log exactly one line:\n%s", out)
+		}
+		evBefore, _ := os.ReadFile(feedAuthorityPolicyPath(e.auth, xKey))
+		txBefore := e.record().Owners[xKey].PolicyTx
+		if code, out := e.release(xKey); code != 0 || strings.Contains(out, "released owner=") || e.heldReserve(xKey) != 0 || e.record().Owners[xKey].PolicyTx != txBefore {
+			t.Fatalf("a repeated release exited %d or changed the owner:\n%s", code, out)
+		}
+		if evAfter, _ := os.ReadFile(feedAuthorityPolicyPath(e.auth, xKey)); !bytes.Equal(evBefore, evAfter) {
+			t.Fatalf("a repeated release rewrote the policy evidence")
+		}
+
+		x2 := e.start("x2", xCfg)
+		x2.waitFor("[feed-weight-shared] registered owner=", 60*time.Second)
+		x2.stop()
+		if code, out := e.release(xKey, feedWeightTestKillEnv+"=policy:staged"); code != 128+int(syscall.SIGKILL) {
+			t.Fatalf("release killed after the stage exited %d:\n%s", code, out)
+		}
+		if e.heldReserve(xKey) != 200 {
+			t.Fatalf("a release killed before the record write lowered the reserve")
+		}
+		if code, out := e.release(xKey, feedWeightTestKillEnv+"=policy:finalize"); code != 128+int(syscall.SIGKILL) || e.heldReserve(xKey) != 0 {
+			t.Fatalf("release killed before the evidence finalize exited %d (held %d):\n%s", code, e.heldReserve(xKey), out)
+		}
+		os.Remove(filepath.Join(e.auth, feedAuthorityRecordName))
+		if code, out := e.probe("--config", yCfg); code != 0 || !strings.Contains(out, "peer owner="+xKey+" state=stopped (reserve held) allocation=0 reserve=200") {
+			t.Fatalf("a rebuild view after an interrupted release must keep the earlier reserve (exit %d):\n%s", code, out)
+		}
+		if code, out := e.release(xKey); code != 0 || !strings.Contains(out, "released owner="+xKey) {
+			t.Fatalf("a rerun of the interrupted release exited %d:\n%s", code, out)
+		}
+		os.Remove(filepath.Join(e.auth, feedAuthorityRecordName))
+		if code, out := e.probe("--config", yCfg); code != 0 || strings.Contains(out, "peer owner="+xKey) {
+			t.Fatalf("a committed release reappeared in the rebuild view (exit %d):\n%s", code, out)
+		}
+
+		x4 := e.start("x4", xCfg)
+		x4.waitFor("[feed-weight-shared] registered owner=", 60*time.Second)
+		x4.stop()
+		if e.heldReserve(xKey) != 200 {
+			t.Fatalf("fixture: the restarted owner does not hold its reserve again")
+		}
+		x3 := e.start("x3", xCfg)
+		code, out = e.release(xKey)
+		x3.waitFor("[feed-weight-shared] registered owner=", 60*time.Second)
+		if !(code == 0 && strings.Contains(out, "released owner="+xKey) || code == 1 && strings.Contains(out, "is live")) {
+			t.Fatalf("a release racing a same-key registration exited %d:\n%s", code, out)
+		}
+		if o := e.record().Owners[xKey]; o == nil || !o.Active || o.Policy.Reserve != 200 {
+			t.Fatalf("after the race the registered owner does not hold its declared reserve: %+v", o)
+		}
+		t.Logf("release racing registration: exit %d %q", code, strings.TrimSpace(out))
+	})
+
 	t.Run("TwoOwnersAndADeadOwnersDebtStayWithinTheSharedCapacity", func(t *testing.T) {
 		e := newFPEnv(t)
 		cCfg := e.feedConfig("c", 40, 800, 200, 200)

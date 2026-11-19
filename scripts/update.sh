@@ -832,6 +832,7 @@ update_exit_coordinator() {
 
     if update_restore_snapshot_binaries "$repo_root" "$recovery_dir"; then
         stage_restore_binaries="ok"
+        update_feed_weight_rollback_notice "$repo_root/go-trader" || true
     else
         stage_restore_binaries="failed"
         echo "[update] recovery: failed to restore binaries from $recovery_dir" >&2
@@ -1615,6 +1616,7 @@ if ! update_feed_weight_grant_check "$grant_unit" "$probe_grant_config"; then
     rm -f ./go-trader.new
     fail "the shared feed weight record needs a writable /var/lib/go-trader/shared for this participating config — refusing to swap; the binary and the running service are unchanged"
 fi
+update_feed_weight_rollout_notice ./go-trader ./go-trader.new "$probe_grant_config"
 end_phase
 
 if [[ -n "$tree_owner" ]]; then

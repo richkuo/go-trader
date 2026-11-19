@@ -43,6 +43,7 @@ var knownSubcommands = []string{
 	"notify-broker",
 	"egress-anchor",
 	"cpu-class",
+	"feed-weight-release",
 }
 
 func validateDaemonInvocation(extra []string) error {
@@ -124,6 +125,8 @@ func main() {
 			os.Exit(runRobinhoodLogin(os.Args[2:]))
 		case "cpu-class":
 			os.Exit(runCPUClass(os.Args[2:]))
+		case "feed-weight-release":
+			os.Exit(runFeedWeightRelease(os.Args[2:]))
 		}
 	}
 
