@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -262,6 +263,9 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 	t.Helper()
 	sc := regimeReadinessManual("pending-add", "paper")
 	peer := regimeReadinessManual("pending-peer", "paper")
+	peer.CloseStrategy = &StrategyRef{Name: trailingTPRatchetCloseName}
+	peer.TrailingStopATRMultRegime = peer.StopLossATRMultRegime
+	peer.StopLossATRMultRegime = nil
 	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60, Strategies: []StrategyConfig{sc, peer}}
 	previousStore := globalRegimeStore
 	globalRegimeStore = &RegimeStore{}
@@ -677,6 +681,117 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 	}
 	t.Logf("persistence guard: a save failure holds the waited add, a later successful save releases it, and a live hold leaves the paper partition alone")
 
+	guardPath := manualRegimeHoldGuardPath(store.layout.Files[0].Path, defaultPaperPartition)
+	t.Run("persistence-guard-locks", func(t *testing.T) {
+		partition := defaultPaperPartition
+		owner, _ := globalManualRegimeOwner.identity()
+		check := func() error { return checkManualRegimeHoldGuard(store.layout, partition, owner.Nonce) }
+		probe, err := os.Open(guardPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer probe.Close()
+
+		scheduler.recordSaveOutcome(partition, fmt.Errorf("controlled save failure"))
+		if err := syscall.Flock(int(probe.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+			t.Fatal(err)
+		}
+		if err := check(); err == nil || !strings.Contains(err.Error(), "holds the paper partition") {
+			t.Errorf("save hold with another probe: %v", err)
+		} else {
+			t.Log("save hold with an independent shared probe: the command refused")
+		}
+
+		scheduler.recordSaveOutcome(partition, nil)
+		if err := check(); err == nil || !strings.Contains(err.Error(), "holds the paper partition") {
+			t.Errorf("save succeeded while the probe held a shared lock: %v", err)
+		}
+		if err := syscall.Flock(int(probe.Fd()), syscall.LOCK_UN); err != nil {
+			t.Fatal(err)
+		}
+		if err := check(); err == nil {
+			t.Fatal("releasing the probe cleared the hold before the next save")
+		}
+		scheduler.recordSaveOutcome(partition, nil)
+		if err := check(); err != nil {
+			t.Fatalf("next successful save did not relock: %v", err)
+		}
+		t.Log("relock with a shared probe stayed held until the next successful save")
+
+		start := make(chan struct{})
+		results := make(chan error, 2)
+		for range 2 {
+			go func() {
+				<-start
+				results <- check()
+			}()
+		}
+		close(start)
+		for range 2 {
+			if err := <-results; err != nil {
+				t.Errorf("concurrent probe with the daemon holding the lock: %v", err)
+			}
+		}
+		if !t.Failed() {
+			t.Log("the daemon held the exclusive lock and both concurrent probes passed")
+		}
+	})
+
+	writeBook(func(st *AppState) { delete(st.Strategies[sc.ID].Positions, sc.Symbol) })
+	t.Run("persistence-guard-first-reply", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, result string
+			strategy     StrategyConfig
+			held         bool
+		}{
+			{"ready-held", manualRegimeResultBundle, sc, true},
+			{"fallback-held", manualRegimeResultUnavailable, peer, true},
+			{"ready-clear", manualRegimeResultBundle, sc, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if tc.held {
+					scheduler.recordSaveOutcome(defaultPaperPartition, fmt.Errorf("controlled save failure"))
+				} else {
+					scheduler.recordSaveOutcome(defaultPaperPartition, nil)
+				}
+				bundleReady := tc.result == manualRegimeResultBundle
+				gen := begin([]StrategyConfig{tc.strategy}, bundleReady)
+				if bundleReady {
+					globalRegimeStore.set(ready(bundles[3]), gen)
+				}
+				proxy.setHook(nil)
+				before := executes
+				result, err := manualOpenCore(deps(), tc.strategy, manualOpenInputs{StrategyID: tc.strategy.ID, Side: "long", Size: 0.1, ATR: 1})
+				seen := proxy.observed(tc.strategy.ID)
+				if len(seen) != 1 || !seen[0].Verified || seen[0].Result != tc.result {
+					t.Fatalf("expected one signed %s reply, got %+v", tc.result, seen)
+				}
+				if tc.held {
+					if err == nil || !strings.Contains(err.Error(), "holds the paper partition") || executes != before {
+						t.Fatalf("expected a persistence hold before execute, got %v with %d execute calls", err, executes-before)
+					}
+					if !bundleReady {
+						found := false
+						for _, line := range result.lines {
+							found = found || strings.Contains(line.text, "using the manual fallback protection policy")
+						}
+						if !found {
+							t.Fatal("the fallback did not admit the unavailable bundle before the guard")
+						}
+					}
+					t.Logf("the first signed %s reply reached the persistence hold with zero execute calls", tc.result)
+				} else {
+					if err != nil || executes != before+1 {
+						t.Fatalf("expected one execute call with the daemon guard clear, got %v with %d execute calls", err, executes-before)
+					}
+					t.Log("the first signed ready bundle reached execute with the guard clear")
+				}
+			})
+		}
+	})
+	clearQueue()
+	resetBook()
+
 	shutdownDraining.Store(true)
 	proxy.setHook(nil)
 	begin([]StrategyConfig{sc, peer}, true)
@@ -704,7 +819,6 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 	t.Setenv(manualSchedulerURLEnv, "http://127.0.0.1:"+strconv.Itoa(proxy.port))
 	t.Logf("no retry: draining, classification failure and connection refused answer on the first request")
 
-	guardPath := manualRegimeHoldGuardPath(store.layout.Files[0].Path, defaultPaperPartition)
 	err = waitedAdd(func() {
 		marker := manualRegimeHoldGuardMarker{Version: manualRegimeHoldGuardVersion, OwnerNonce: func() string { id, _ := globalManualRegimeOwner.identity(); return id.Nonce }(), Partition: defaultPaperPartition.String()}
 		if err := writeManualRegimeJSONFile(guardPath, marker); err != nil {

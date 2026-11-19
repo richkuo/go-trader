@@ -198,7 +198,7 @@ type manualCoreDeps struct {
 	confirmRegimeAdmission func() error
 	regimeWaited           func() bool
 	loadFreshState         func(strategyID, symbol string) (manualStateView, error)
-	checkWaitedHold        func(strategyID string) error
+	checkPersistenceGuard  func(strategyID string) error
 	requireExplicitATR     bool
 	cfg                    *Config
 	stateDB                *StateStore
@@ -245,7 +245,7 @@ func newCLIManualCoreDeps(cfg *Config, store *StateStore, notifier *MultiNotifie
 		d.resolveRegime = remote.resolve
 		d.confirmRegimeAdmission = remote.confirm
 		d.regimeWaited = remote.waitedForPending
-		d.checkWaitedHold = remote.checkPersistenceGuard
+		d.checkPersistenceGuard = remote.checkPersistenceGuard
 		d.loadFreshState = func(strategyID, symbol string) (manualStateView, error) {
 			state, _, _, err := loadStateWithStore(cfg, store, true)
 			if err != nil {
@@ -294,11 +294,6 @@ func manualRecheckAfterRegimeWait(d manualCoreDeps, action, strategyID, symbol, 
 	if blocked, why := exposureCapManualEntryBlock(view.ExposureCap, view.ExposureCapAsset, side); blocked {
 		return manualFailf("%s held after the regime wait: %s", action, why)
 	}
-	if d.checkWaitedHold != nil {
-		if err := d.checkWaitedHold(strategyID); err != nil {
-			return manualFailf("%s held after the regime wait: %v", action, err)
-		}
-	}
 	if target == nil {
 		if view.Pos != nil {
 			return manualFailf("%s held after the regime wait: a %s position for %s/%s appeared during the wait", action, view.Pos.Side, strategyID, symbol)
@@ -310,6 +305,15 @@ func manualRecheckAfterRegimeWait(d manualCoreDeps, action, strategyID, symbol, 
 	}
 	if queued != nil {
 		return queued()
+	}
+	return nil
+}
+
+func manualCheckRegimePersistenceGuard(d manualCoreDeps, action, strategyID string) error {
+	if d.checkPersistenceGuard != nil {
+		if err := d.checkPersistenceGuard(strategyID); err != nil {
+			return manualFailf("%s held: %v", action, err)
+		}
 	}
 	return nil
 }
@@ -762,6 +766,11 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 			res.errf("warning: --record-only does not arm a stop-loss trigger automatically — place the SL manually on the HL UI")
 		}
 	} else {
+		if regimeAdmitted {
+			if err := manualCheckRegimePersistenceGuard(d, "manual-open", strategyID); err != nil {
+				return res, err
+			}
+		}
 		execResult, execStderr, execErr := d.execute(
 			script, sc.Symbol, openSide,
 			resolvedOrderSize,
@@ -1046,6 +1055,9 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 			if err := manualRecheckAfterRegimeWait(d, "manual-add", strategyID, sc.Symbol, addDir, pos, pendingActionsQueued); err != nil {
 				return res, err
 			}
+			if err := manualCheckRegimePersistenceGuard(d, "manual-add", strategyID); err != nil {
+				return res, err
+			}
 		}
 		_, _, cancelledRemainders, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol)
 		if err != nil {
@@ -1089,6 +1101,11 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 		fillQty = in.Size
 		resolvedFillPrice = in.FillPrice
 	} else {
+		if regimeAdmitted {
+			if err := manualCheckRegimePersistenceGuard(d, "manual-add", strategyID); err != nil {
+				return res, err
+			}
+		}
 		execResult, execStderr, execErr := d.execute(
 			sc.Script, sc.Symbol, addSide,
 			resolvedOrderSize,

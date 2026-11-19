@@ -766,7 +766,6 @@ func manualRegimeNetworkUnavailable(err error) bool {
 }
 
 type manualRegimeAdmissionRecord struct {
-	pin      manualRegimePin
 	at       time.Time
 	interval time.Duration
 }
@@ -779,7 +778,8 @@ type manualRegimeRemote struct {
 	budget      time.Duration
 	pace        time.Duration
 	admitted    *manualRegimeAdmissionRecord
-	waitedPin   *manualRegimePin
+	ownerPin    *manualRegimePin
+	waited      bool
 }
 
 func newManualRegimeRemote(cfg *Config, store *StateStore) *manualRegimeRemote {
@@ -932,7 +932,7 @@ func (m *manualRegimeRemote) exchange(ctx context.Context, client *http.Client, 
 }
 
 func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
-	m.admitted, m.waitedPin = nil, nil
+	m.admitted, m.ownerPin, m.waited = nil, nil, false
 	if m.store == nil {
 		return RegimePayload{}, manualRegimeRefused("no state store to verify the scheduler owner")
 	}
@@ -952,6 +952,7 @@ func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
 	if terr != nil {
 		return RegimePayload{}, terr
 	}
+	m.ownerPin = &pin
 	budget, pace := m.budget, m.pace
 	if budget <= 0 {
 		budget = manualRegimeRequestTimeout
@@ -1002,8 +1003,7 @@ func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
 			}
 			if pendingGen == 0 {
 				pendingGen = env.PendingGeneration
-				pinned := pin
-				m.waitedPin = &pinned
+				m.waited = true
 			} else if env.PendingGeneration != pendingGen {
 				return RegimePayload{}, manualRegimeRefused("the pending generation moved from %d to %d during the wait", pendingGen, env.PendingGeneration)
 			}
@@ -1036,13 +1036,13 @@ func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
 		if err != nil {
 			return RegimePayload{}, err
 		}
-		m.admitted = &manualRegimeAdmissionRecord{pin: pin, at: *env.BundleAt, interval: maxAge}
+		m.admitted = &manualRegimeAdmissionRecord{at: *env.BundleAt, interval: maxAge}
 		return payload, nil
 	}
 }
 
 func (m *manualRegimeRemote) waitedForPending() bool {
-	return m.waitedPin != nil
+	return m.waited
 }
 
 func checkManualRegimeIdentity(env manualRegimeEnvelope, nonce string, binding manualRegimeBinding) error {
@@ -1091,22 +1091,19 @@ func decodeManualRegimePayload(key regimeBundleKey, raw json.RawMessage) (Regime
 }
 
 func (m *manualRegimeRemote) confirm() error {
-	if rec := m.admitted; rec != nil {
-		if terr := rec.pin.recheck("after admission"); terr != nil {
+	if pin := m.ownerPin; pin != nil {
+		if terr := pin.recheck("before the manual action"); terr != nil {
 			return manualRegimeRefused("owner identity no longer verifies: %s", terr.reason)
 		}
-		return checkManualRegimeAge(rec.at, m.now(), rec.interval)
 	}
-	if pin := m.waitedPin; pin != nil {
-		if terr := pin.recheck("after the wait"); terr != nil {
-			return manualRegimeRefused("owner identity no longer verifies: %s", terr.reason)
-		}
+	if rec := m.admitted; rec != nil {
+		return checkManualRegimeAge(rec.at, m.now(), rec.interval)
 	}
 	return nil
 }
 
 func (m *manualRegimeRemote) checkPersistenceGuard(strategyID string) error {
-	pin := m.waitedPin
+	pin := m.ownerPin
 	if pin == nil {
 		return nil
 	}

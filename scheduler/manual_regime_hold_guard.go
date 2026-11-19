@@ -225,7 +225,7 @@ func checkManualRegimeHoldGuard(layout storageLayout, p RiskPartition, nonce str
 	if marker.OwnerNonce != nonce || marker.Partition != p.String() {
 		return manualRegimeRefused("persistence guard %s belongs to a different scheduler process or partition", path)
 	}
-	flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
 	if flockErr == nil {
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		return manualRegimeRefused("the scheduler holds the %s partition: a state save failed and no later save succeeded, or the scheduler is draining", partitionLabel(p))
