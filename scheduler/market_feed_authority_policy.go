@@ -262,13 +262,11 @@ func feedRebuildRows(dir, skip string, readOnly bool, stoppedNs int64) (*feedReb
 		return nil, fmt.Errorf("owner policy evidence: %w", err)
 	}
 	out := &feedRebuild{Rows: map[string]*feedAuthOwner{}, Evidence: len(set) > 0}
-	legacy := map[string]*feedAuthDeclaration{}
-	if len(set) == 0 {
-		if legacy, err = feedReadDeclarations(dir); err != nil {
-			return nil, fmt.Errorf("owner declarations: %w", err)
-		}
-		out.Legacy = len(legacy) > 0
+	legacy, err := feedReadDeclarations(dir)
+	if err != nil {
+		return nil, fmt.Errorf("owner declarations: %w", err)
 	}
+	out.Legacy = len(legacy) > 0
 	locks := map[string]bool{}
 	for _, k := range feedDeclaredLockKeys(dir) {
 		locks[k] = true
@@ -342,8 +340,11 @@ func feedMigrateRows(rec *feedAuthRecord, dir string, readOnly bool, stoppedNs i
 	}
 	out := &feedMigration{}
 	for _, key := range feedSortedKeys(feedKeySet(rec.Owners), feedKeySet(set), feedKeySet(legacy)) {
-		row := rec.Owners[key]
 		ev, hasEv := set[key]
+		if _, declarationOnly := legacy[key]; declarationOnly && rec.Owners[key] == nil && !hasEv && !feedValidOwnerKey(key) {
+			continue
+		}
+		row := rec.Owners[key]
 		if row != nil {
 			if hasEv && ev != nil {
 				held := ev.held()

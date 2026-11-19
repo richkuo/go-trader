@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -293,6 +294,84 @@ func TestFeedWeightSharedHeldReserve(t *testing.T) {
 	})
 }
 
+func TestFeedWeightSharedRebuildUsesDeclarationsPerOwner(t *testing.T) {
+	writeDeclaration := func(t *testing.T, e *faEnv, o *faOwner, raw []byte) {
+		t.Helper()
+		if raw == nil {
+			raw, _ = json.Marshal(feedAuthDeclaration{Role: o.a.role, ConfigPath: o.a.configPath, Incarnation: o.a.incarnation, PID: o.a.pid, Policy: feedAuthPolicyOf(o.policy.weightPolicy())})
+		}
+		if err := os.WriteFile(feedAuthorityOwnerDeclPath(e.dir, o.a.key), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("PartialEvidenceKeepsAStoppedDeclarationInRebuildAndForecast", func(t *testing.T) {
+		e := newFAEnv(t)
+		c := e.owner("c", wtPolicy(300, 0, 200))
+		c.a.stop()
+		if err := os.Remove(filepath.Join(e.dir, feedAuthorityRecordName)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(feedAuthorityPolicyDir(e.dir)); err != nil {
+			t.Fatal(err)
+		}
+		writeDeclaration(t, e, c, nil)
+		b := e.newOwner("b", wtPolicy(400, 100, 100))
+		feedAuthorityHook = func(point string) error {
+			if point == "policy:staged" {
+				return fmt.Errorf("injected kill after policy staging")
+			}
+			return nil
+		}
+		if err := b.a.register(context.Background(), b.policy.weightPolicy()); err == nil {
+			t.Fatal("registration unexpectedly passed the injected policy staging failure")
+		}
+		feedAuthorityHook = nil
+		fc := forecastFeedAuthority(feedAuthorityRoleFeed, filepath.Join(e.root, "cfg-new.json"), wtPolicy(100, 0, 0).weightPolicy())
+		if lines := strings.Join(fc.Lines, "\n"); fc.Refuse != "" || !strings.Contains(lines, "common_reserve=200") || !strings.Contains(lines, "capacity=1000") {
+			t.Fatalf("forecast with partial evidence: %+v", fc)
+		}
+		e.owner("b", wtPolicy(400, 100, 100))
+		if rec := faHeld(t, e, c.a.key, 200, "rebuild with partial evidence"); rec.capacity() != 1000 {
+			t.Fatalf("rebuild capacity %d, want 1000", rec.capacity())
+		}
+	})
+
+	t.Run("ReleasedEvidenceWinsOverAnOlderDeclaration", func(t *testing.T) {
+		e := newFAEnv(t)
+		c := e.owner("c", wtPolicy(300, 0, 200))
+		c.a.stop()
+		if out, err := newFeedWeightReleaser(e.logf).releaseOwner(context.Background(), c.a.key); err != nil || !out.Released {
+			t.Fatalf("release fixture: %+v %v", out, err)
+		}
+		writeDeclaration(t, e, c, nil)
+		rb, err := feedRebuildRows(e.dir, "", false, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rb.Rows[c.a.key] != nil {
+			t.Fatalf("released owner returned through its older declaration: %+v", rb.Rows[c.a.key])
+		}
+	})
+
+	t.Run("CorruptEvidenceWinsOverAValidDeclaration", func(t *testing.T) {
+		e := newFAEnv(t)
+		c := e.owner("c", wtPolicy(300, 0, 200))
+		c.a.stop()
+		if err := os.WriteFile(feedAuthorityPolicyPath(e.dir, c.a.key), []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		writeDeclaration(t, e, c, nil)
+		rb, err := feedRebuildRows(e.dir, "", false, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o := rb.Rows[c.a.key]; o == nil || !o.Unproven || len(rb.Unproven) != 1 || rb.Unproven[0] != c.a.key {
+			t.Fatalf("corrupt evidence with a valid declaration: owner %+v unproven %v", o, rb.Unproven)
+		}
+	})
+}
+
 func TestFeedWeightSharedReserveEvidence(t *testing.T) {
 	t.Run("UnprovableEvidenceHoldsSendsPastTheRecoveryUntilARelease", func(t *testing.T) {
 		e := newFAEnv(t)
@@ -520,6 +599,63 @@ func TestFeedWeightSharedReserveShortfall(t *testing.T) {
 	}
 	if err := faMids(a, hot.srv.URL); err != nil {
 		t.Fatalf("a read after the shortfall cleared: %v", err)
+	}
+}
+
+func TestFeedWeightSharedMigrationRecoveryInstructions(t *testing.T) {
+	e := newFAEnv(t)
+	newWTVenue(t, e.clock.Wall)
+	live := e.owner("live", wtPolicy(400, 100, 100))
+	broken := e.owner("broken", wtPolicy(100, 0, 50))
+	e.settle(live, broken)
+	broken.a.stop()
+	rec := e.record()
+	delete(rec.Owners, broken.a.key)
+	rec.Version = feedAuthorityLegacyVersion
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, feedAuthorityRecordName), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(feedAuthorityPolicyDir(e.dir)); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{broken.a.key, "notes"} {
+		if err := os.WriteFile(filepath.Join(e.dir, feedAuthorityOwnersDir, name+".json"), []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lockPath := feedAuthorityOwnerLockPath(e.dir, broken.a.key)
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	live.a.heartbeatOnce(context.Background())
+	rec = e.record()
+	if o := rec.Owners[broken.a.key]; o == nil || !o.Unproven {
+		t.Fatalf("missing-lock declaration did not become unproven: %+v", o)
+	}
+	if rec.Owners["notes"] != nil {
+		t.Fatalf("invalid declaration name created an owner: %+v", rec.Owners["notes"])
+	}
+	rel := newFeedWeightReleaser(e.logf)
+	if _, err := rel.releaseOwner(context.Background(), broken.a.key); err == nil || !strings.Contains(err.Error(), "create "+lockPath+" with mode 0600") {
+		t.Fatalf("missing-lock release instructions: %v", err)
+	}
+	if alert := formatFeedSharedAlert(feedSharedEvent{Kind: "reserve_unproven", Detail: broken.a.key}, "feed", "test", live.a.key); !strings.Contains(alert, "create owners/<key>.lock with mode 0600") {
+		t.Fatalf("unproven alert instructions: %s", alert)
+	}
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := rel.releaseOwner(context.Background(), broken.a.key); err != nil || !out.Released {
+		t.Fatalf("release after following the missing-lock instructions: %+v %v", out, err)
+	}
+	e.settle(live)
+	live.a.heartbeatOnce(context.Background())
+	if err := faFetch(e, live, string(feedRestRefresh)); err != nil {
+		t.Fatalf("read after following the missing-lock instructions: %v", err)
 	}
 }
 

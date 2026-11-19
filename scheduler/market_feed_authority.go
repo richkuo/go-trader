@@ -2513,7 +2513,7 @@ func formatFeedSharedAlert(ev feedSharedEvent, source, instance, key string) str
 		return fmt.Sprintf("**MARKET FEED SHARED WEIGHT RECOVERED** [%s] shared weight recovery generation %d (%s) ended; participating reads resume through the normal eligible fetches (owner %s, instance %s).",
 			source, ev.Generation, ev.Reason, key, instance)
 	case "reserve_unproven":
-		return fmt.Sprintf("**MARKET FEED SHARED WEIGHT RESERVE UNPROVEN** [%s] the held weight reserve of owner(s) %s cannot be proved from the recovery evidence, so every participating venue read on this host is held; restart each such owner with its config or, once it is confirmed stopped, run go-trader feed-weight-release --owner <key> as the service user (owner %s, instance %s).",
+		return fmt.Sprintf("**MARKET FEED SHARED WEIGHT RESERVE UNPROVEN** [%s] the held weight reserve of owner(s) %s cannot be proved from the recovery evidence, so every participating venue read on this host is held; restart each such owner with its config or, once it is confirmed stopped, run go-trader feed-weight-release --owner <key> as the service user; if the release reports a missing lifetime lock, first confirm no process runs with that key, create owners/<key>.lock with mode 0600 as the service user, then rerun the release (owner %s, instance %s).",
 			source, ev.Detail, key, instance)
 	case "owner_latched":
 		return fmt.Sprintf("**MARKET FEED SHARED WEIGHT OWNER LATCHED** [%s] this owner latched its shared sends closed (%s: %s); every participating venue read of this owner is refused until it restarts, consumers hold entries on unready inputs and protection continues on verified inputs; check the shared weight directory, then restart this owner (owner %s, instance %s).",

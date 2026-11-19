@@ -52,7 +52,7 @@ func (a *feedWeightAuthority) releaseOwner(ctx context.Context, key string) (fee
 				out.Detail = fmt.Sprintf("owner %s holds no reserve; nothing to release", key)
 				return nil
 			}
-			return feedReleaseRefusal(fmt.Sprintf("owner %s holds a reserve but its lifetime lock %s is missing, so its liveness cannot be proved; release refused", key, lockPath))
+			return feedReleaseRefusal(fmt.Sprintf("owner %s holds a reserve but its lifetime lock %s is missing, so its liveness cannot be proved; release refused; once no process is confirmed to run with this key, create %s with mode 0600 as the service user, then rerun this release", key, lockPath, lockPath))
 		}
 		if oerr != nil {
 			return feedReleaseRefusal(fmt.Sprintf("lifetime lock %s cannot be opened (%v), so the liveness of owner %s cannot be proved; release refused", lockPath, oerr, key))
