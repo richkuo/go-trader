@@ -142,6 +142,11 @@ type feedRequirements struct {
 	KeyCadences  map[marketFeedKey][]int
 	SignalKeys   map[marketFeedKey]bool
 
+	FormingKeys    map[marketFeedKey]bool
+	ClosedKeys     map[marketFeedKey]bool
+	ClosedOnlyKeys map[marketFeedKey]bool
+	ReuseBlocked   string
+
 	AccountingCoins []string
 
 	Macro map[feedMacroKey]feedMacroNeed
@@ -201,6 +206,37 @@ func (r feedRequirements) observationKeys() []feedObservationKey {
 	}
 	sortFeedObservationKeys(out)
 	return out
+}
+
+func (r *feedRequirements) markReader(key marketFeedKey, closedOnly bool) {
+	if closedOnly {
+		if r.ClosedKeys == nil {
+			r.ClosedKeys = make(map[marketFeedKey]bool)
+		}
+		r.ClosedKeys[key] = true
+		return
+	}
+	if r.FormingKeys == nil {
+		r.FormingKeys = make(map[marketFeedKey]bool)
+	}
+	r.FormingKeys[key] = true
+}
+
+func (r feedRequirements) closedOnlyReuse(key marketFeedKey) bool {
+	return r.ReuseBlocked == "" && r.ClosedOnlyKeys[key]
+}
+
+func (r feedRequirements) keyReuseLabel(key marketFeedKey) string {
+	switch {
+	case r.ReuseBlocked != "":
+		return "refresh(" + r.ReuseBlocked + ")"
+	case r.ClosedOnlyKeys[key]:
+		return "closed_only"
+	case r.FormingKeys[key]:
+		return "refresh(a reader uses the forming bar)"
+	default:
+		return "refresh(no proved closed-only reader)"
+	}
 }
 
 func (r feedRequirements) requires(key marketFeedKey) bool {
@@ -293,8 +329,10 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 				entry.SignalLookback = rows
 			}
 			req.addKey(entry.Leader, entry.LeaderLookback)
+			req.markReader(entry.Leader, false)
 		}
 		req.addKey(entry.Signal, entry.SignalLookback)
+		req.markReader(entry.Signal, false)
 
 		if feedStrategyUsesHTF(sc) {
 			htfTimeframe := hlFeedHTFTimeframe(timeframe)
@@ -306,6 +344,7 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 				entry.HasHTF = true
 				entry.HTFLookback = hlFeedHTFLookback + closedBarExtra
 				req.addKey(entry.HTF, entry.HTFLookback)
+				req.markReader(entry.HTF, entry.ClosedBar)
 			}
 		}
 
@@ -319,6 +358,7 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 				entry.HasRegime = true
 				entry.RegimeLookback = bundleReq.OhlcvLimit + closedBarExtra
 				req.addKey(entry.Regime, entry.RegimeLookback)
+				req.markReader(entry.Regime, false)
 			}
 		}
 
@@ -354,6 +394,7 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 				entry.HasResearchHTF = true
 				entry.ResearchHTFRow = int(support.HTFRows)
 				req.addKey(entry.ResearchHTF, entry.ResearchHTFRow)
+				req.markReader(entry.ResearchHTF, entry.ClosedBar)
 			}
 		}
 		if feedStrategyUsesTradeFlow(sc) {
@@ -405,6 +446,11 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 	if len(errs) > 0 {
 		sort.Strings(errs)
 		return feedRequirements{}, fmt.Errorf("market_feed=%s rejects this config:\n  %s", cfg.marketFeedMode(), strings.Join(errs, "\n  "))
+	}
+	for _, sc := range cfg.Strategies {
+		if bundleReq, ok := strategyRegimeBundleRequest(sc, rc); ok && bundleReq.Key.Platform == "hyperliquid" {
+			req.markReader(feedKeyFor(bundleReq.Key.Symbol, bundleReq.Key.Timeframe), false)
+		}
 	}
 	resolveMacroPathConflicts(&req)
 	pruneUnusedMacro(&req)
@@ -513,6 +559,9 @@ func (o *marketFeedOwner) ApplyGeneration(ctx context.Context, req feedRequireme
 			continue
 		}
 		if st := o.keys[key]; st != nil {
+			if lookback > st.historyTarget {
+				st.restVerified = false
+			}
 			st.raiseRequired(lookback)
 			st.historyTarget = lookback
 			if !st.needsHistory() {
@@ -631,9 +680,17 @@ func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[s
 		need := needs[coin]
 		o.feedMu.Lock()
 		existing := o.funding[coin]
+		var retained []feedFundingRecord
+		retainedFrom := int64(0)
+		if existing != nil && existing.Err == "" && existing.HasRecords {
+			retained = append(retained, existing.Records...)
+			retainedFrom = existing.recordsFromMs
+		}
 		wasLimited := existing != nil && existing.rateLimited
+		frameStart, frameKnown := earliestBarMs[coin]
+		coversFrame := !need.Records || !frameKnown || (retainedFrom > 0 && retainedFrom <= frameStart)
 		fresh := existing != nil && existing.Err == "" && now.Sub(existing.FetchedAt) < feedFundingTTL &&
-			(!need.Scalar || existing.HasScalar) && (!need.Records || existing.HasRecords)
+			(!need.Scalar || existing.HasScalar) && (!need.Records || existing.HasRecords) && coversFrame
 		o.feedMu.Unlock()
 		if fresh {
 			continue
@@ -661,11 +718,11 @@ func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[s
 				waitingForBars = true
 				entry.Err = fmt.Sprintf("funding records for %s wait for the first candle bar of its key; no fundingHistory read is sent without a frame start", coin)
 			} else {
-				records, err := hlFundingRecordsSince(ctx, coin, startMs, now)
+				records, err := o.fundingRecordsRefresh(ctx, coin, retained, retainedFrom, startMs, now)
 				if err != nil {
 					entry.Err, fetchErr = err.Error(), err
 				} else {
-					entry.Records, entry.HasRecords = records, true
+					entry.Records, entry.HasRecords, entry.recordsFromMs = records, true, startMs
 				}
 			}
 		}
@@ -684,6 +741,27 @@ func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[s
 		o.funding[coin] = entry
 		o.feedMu.Unlock()
 	}
+}
+
+func (o *marketFeedOwner) fundingRecordsRefresh(ctx context.Context, coin string, retained []feedFundingRecord, retainedFrom, startMs int64, now time.Time) ([]feedFundingRecord, error) {
+	endMs := now.UTC().UnixMilli()
+	if retainedFrom > 0 && retainedFrom <= startMs && len(retained) > 0 && retained[len(retained)-1].TimeMs >= startMs {
+		records, pages, err := hlFundingRecordsTail(ctx, coin, retained, startMs, endMs)
+		if err == nil {
+			o.logf("[feed-funding] coin=%s mode=tail range=[%d,%d] anchor=%d pages=%d records=%d", coin, startMs, endMs, retained[len(retained)-1].TimeMs, pages, len(records))
+			return records, nil
+		}
+		if !errors.Is(err, errFundingTailMismatch) && !errors.Is(err, errFundingRangeIncomplete) {
+			return nil, err
+		}
+		o.logf("[feed-funding] coin=%s mode=tail pages=%d refused: %v; reading the full range", coin, pages, err)
+	}
+	records, pages, err := hlFundingRecordsRange(ctx, coin, startMs, endMs, hlFundingMaxRangePasses)
+	if err != nil {
+		return nil, err
+	}
+	o.logf("[feed-funding] coin=%s mode=full range=[%d,%d] pages=%d records=%d", coin, startMs, endMs, pages, len(records))
+	return records, nil
 }
 
 func premiumStrategyIDs(cfg *Config) []string {

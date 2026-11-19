@@ -518,3 +518,180 @@ func formatMarketFeedWeightBudget(b *feedWeightBudgetConfig) string {
 	}
 	return fmt.Sprintf("weight_per_minute=%s weight_startup=%s weight_reserve=%s", f(b.WeightPerMinute), f(b.WeightStartup), f(b.WeightReserve))
 }
+
+const feedDemandHorizonSeconds = int64(86_400)
+
+type feedDemandClass struct {
+	Label       string
+	Deadlines   int
+	DueMax      int
+	ReusedMax   int
+	CandleMax   int
+	CandleTotal int
+}
+
+func feedDeadlineClassLabel(cadences []int, deadline int64) string {
+	var parts []string
+	for _, c := range cadences {
+		if c > 0 && deadline%int64(c) == 0 {
+			parts = append(parts, fmt.Sprintf("%ds", c))
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, "+")
+}
+
+func estimateFeedDemandLines(union feedRequirements, source string) []string {
+	if source != feedSourceREST {
+		return []string{fmt.Sprintf("weight demand source=%s: candles arrive on the venue socket, so no per-deadline candle reads are estimated; funding and accounting reads follow the lines below", source)}
+	}
+	cadenceSet := make(map[int]bool)
+	for _, key := range union.Order {
+		for _, c := range union.KeyCadences[key] {
+			if c > 0 {
+				cadenceSet[c] = true
+			}
+		}
+	}
+	cadences := make([]int, 0, len(cadenceSet))
+	for c := range cadenceSet {
+		cadences = append(cadences, c)
+	}
+	sort.Ints(cadences)
+	candleW, _ := hlInfoWeight("candleSnapshot", 3)
+	midsW := 0
+	if len(union.MidCoins) > 0 {
+		midsW, _ = hlInfoWeight("allMids", 0)
+	}
+	var out []string
+	if len(cadences) == 0 {
+		return []string{"weight demand source=rest: no key has a cadence, so no deadline reads are estimated"}
+	}
+	horizon := feedDemandHorizonSeconds
+	for _, c := range cadences {
+		if horizon%int64(c) != 0 {
+			horizon = 0
+			break
+		}
+	}
+	if horizon == 0 {
+		return []string{fmt.Sprintf("weight demand source=rest: cadences %s do not divide one day, so the deadline cycle is not simulated", formatCadences(cadences))}
+	}
+	deadlineSet := make(map[int64]bool)
+	for _, c := range cadences {
+		for d := int64(0); d < horizon; d += int64(c) {
+			deadlineSet[d] = true
+		}
+	}
+	deadlines := make([]int64, 0, len(deadlineSet))
+	for d := range deadlineSet {
+		deadlines = append(deadlines, d)
+	}
+	sort.Slice(deadlines, func(i, j int) bool { return deadlines[i] < deadlines[j] })
+	lastFetchBar := make(map[marketFeedKey]int64)
+	weightAt := make([]int, len(deadlines))
+	classes := make(map[string]*feedDemandClass)
+	var classOrder []string
+	for pass := 0; pass < 2; pass++ {
+		for i, d := range deadlines {
+			due, reused, w := 0, 0, 0
+			for _, key := range union.Order {
+				if !feedKeyDueAt(union.KeyCadences[key], d) {
+					continue
+				}
+				due++
+				if union.closedOnlyReuse(key) {
+					intervalS, _ := hlCandleIntervalMs(key.Timeframe)
+					intervalS /= 1000
+					bar := d / intervalS
+					if prev, ok := lastFetchBar[key]; ok && prev == bar {
+						reused++
+						continue
+					}
+					lastFetchBar[key] = bar
+				}
+				w += candleW
+			}
+			if pass == 0 {
+				continue
+			}
+			weightAt[i] = w + midsW
+			label := feedDeadlineClassLabel(cadences, d)
+			cl := classes[label]
+			if cl == nil {
+				cl = &feedDemandClass{Label: label}
+				classes[label] = cl
+				classOrder = append(classOrder, label)
+			}
+			cl.Deadlines++
+			cl.DueMax = max(cl.DueMax, due)
+			cl.ReusedMax = max(cl.ReusedMax, reused)
+			cl.CandleMax = max(cl.CandleMax, w)
+			cl.CandleTotal += w
+		}
+	}
+	sort.Strings(classOrder)
+	for _, label := range classOrder {
+		cl := classes[label]
+		out = append(out, fmt.Sprintf("weight demand source=rest class=%s deadlines_per_day=%d keys_due_max=%d reused_max=%d candle_weight_max=%d candle_weight_avg=%d mids=%d",
+			cl.Label, cl.Deadlines, cl.DueMax, cl.ReusedMax, cl.CandleMax, cl.CandleTotal/max(cl.Deadlines, 1), midsW))
+	}
+	peak, peakAt, peakCount := 0, int64(0), 0
+	n := len(deadlines)
+	for i := 0; i < n; i++ {
+		d := deadlines[i] + horizon
+		sum, count := 0, 0
+		for k := 0; k < n; k++ {
+			j := (i - k + n) % n
+			t := deadlines[j] + horizon
+			if j > i {
+				t -= horizon
+			}
+			if d-t >= 60 {
+				break
+			}
+			sum += weightAt[j]
+			count++
+		}
+		if sum > peak {
+			peak, peakAt, peakCount = sum, deadlines[i], count
+		}
+	}
+	fundingTotal, fundingLine := estimateFeedFundingDemand(union)
+	out = append(out, fmt.Sprintf("weight demand source=rest rolling_60s_peak candles_and_mids=%d at day offset %ds (%d deadline(s), class %s) with_funding_expiry=%d",
+		peak, peakAt, peakCount, feedDeadlineClassLabel(cadences, peakAt), peak+fundingTotal))
+	out = append(out, fundingLine)
+	out = append(out, "weight demand assumptions: warm history (one incremental candle read of at most 3 rows per due key); closed_only keys are read once at the first due deadline after each bar close and reused until the next close; a read is charged from its deadline for 60s, so completion delay can shift overlaps; funding expiries are assumed to coincide with the peak deadline; non-participating owners on the host are not included")
+	return out
+}
+
+func estimateFeedFundingDemand(union feedRequirements) (int, string) {
+	ctxW, _ := hlInfoWeight("metaAndAssetCtxs", 0)
+	avgRows, _ := hlFundingRowBound(0, int64(hlFundingAvgWindowDays)*86_400_000)
+	avgW, _ := hlInfoWeight("fundingHistory", avgRows)
+	tailRows, _ := hlFundingRowBound(0, hlFundingRecordStepMs)
+	tailW, _ := hlInfoWeight("fundingHistory", tailRows)
+	pageW, _ := hlInfoWeightAtCap("fundingHistory")
+	scalarCoins, recordCoins := 0, 0
+	coins := make([]string, 0, len(union.Funding))
+	for coin := range union.Funding {
+		coins = append(coins, coin)
+	}
+	sort.Strings(coins)
+	for _, coin := range coins {
+		need := union.Funding[coin]
+		if need.Scalar {
+			scalarCoins++
+		}
+		if need.Records {
+			recordCoins++
+		}
+	}
+	scalar := scalarCoins * (ctxW + avgW)
+	tail := recordCoins * tailW
+	total := scalar + tail
+	return total, fmt.Sprintf("weight demand funding: scalar=%d per %ds for %d coin(s) (metaAndAssetCtxs %d plus 7-day fundingHistory %d each); strategy_records_tail=%d per %ds for %d coin(s) (one bounded page of %d each, plus one terminal page of %d when the newest hour is not yet published); strategy_records_full=%d per page on first load, a wider frame or a refused tail; accounting=%d per page for %d coin(s), measured separately",
+		scalar, int(feedFundingTTL/time.Second), scalarCoins, ctxW, avgW, tail, int(feedFundingTTL/time.Second), recordCoins, tailW, tailW, pageW, pageW, len(union.AccountingCoins))
+}

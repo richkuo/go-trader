@@ -24,6 +24,10 @@ type feedPrepareReport struct {
 	DueKeys            map[marketFeedKey]bool
 	InflightKeys       map[marketFeedKey]bool
 	DeferredKeys       map[marketFeedKey]time.Time
+	ReusedKeys         map[marketFeedKey]bool
+	ReuseRefused       map[marketFeedKey]string
+	ReuseProofFetched  int
+	ReusePaused        bool
 }
 
 type feedPrepareFunc func(ctx context.Context, deadline int64, reqs cycleMarketRequirements, coverage feedRequirements) feedPrepareReport
@@ -47,6 +51,78 @@ func newFeedRESTSource(owner *marketFeedOwner, logf func(string, ...any)) *feedR
 		logf = func(string, ...any) {}
 	}
 	return &feedRESTSource{owner: owner, logf: logf, backoff: feedRESTRetryBackoff, margin: feedRESTRetryMargin}
+}
+
+const feedReuseDayMs = int64(86_400_000)
+
+func feedReuseAlignedTimeframe(timeframe string) bool {
+	ms, ok := hlCandleIntervalMs(timeframe)
+	return ok && ms > 0 && ms <= feedReuseDayMs && feedReuseDayMs%ms == 0
+}
+
+func feedClosedFrameReuse(bars []feedBar, r feedKeyReadiness, restVerified bool, intervalMs, cutoffMs int64, now time.Time) ([]feedBar, string) {
+	if !restVerified {
+		return nil, "no successful REST refresh of this key since its last failure, refusal, pause, history load or lookback change"
+	}
+	if !r.Ready || r.Stale {
+		return nil, fmt.Sprintf("the key is not ready (status %s)", r.Status)
+	}
+	if intervalMs <= 0 || feedReuseDayMs%intervalMs != 0 {
+		return nil, "the candle interval is not aligned to UTC days"
+	}
+	boundary := cutoffMs / intervalMs * intervalMs
+	latestOpen := boundary - intervalMs
+	closed := 0
+	for closed < len(bars) && bars[closed].CloseMs < cutoffMs {
+		closed++
+	}
+	if closed == 0 {
+		return nil, "no stored bar closed before the seal cutoff"
+	}
+	last := bars[closed-1]
+	if last.OpenMs != latestOpen || last.CloseMs != boundary-1 {
+		return nil, fmt.Sprintf("the newest stored closed bar opens at %d, not at %d, the latest bar closed at the seal cutoff", last.OpenMs, latestOpen)
+	}
+	for i := 0; i < closed; i++ {
+		if bars[i].RestSeenAt.IsZero() || bars[i].RestSeenAt.UnixMilli() <= bars[i].CloseMs {
+			return nil, fmt.Sprintf("the bar opened at %d was not read from REST after it closed", bars[i].OpenMs)
+		}
+	}
+	if closed < r.Required || closed < feedReadyFloor(r.Required) {
+		return nil, fmt.Sprintf("%d closed bars are stored, below the %d-bar requirement", closed, r.Required)
+	}
+	if now.UTC().UnixMilli()-last.CloseMs > 2*intervalMs+int64(feedStaleGrace/time.Millisecond) {
+		return nil, "the newest closed bar is stale"
+	}
+	return append([]feedBar(nil), bars[:closed]...), ""
+}
+
+func (o *marketFeedOwner) closedFrameReuseProof(key marketFeedKey, cutoffMs int64) string {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	st := o.keys[key]
+	if st == nil || !o.published[key] {
+		return "the key is not published"
+	}
+	if st.historyInflight {
+		return "a history request for this key is in flight"
+	}
+	now := o.now()
+	_, why := feedClosedFrameReuse(st.Bars, keyReadiness(st, now, o.connectedForReadinessLocked(now)), st.restVerified, st.IntervalMs, cutoffMs, now)
+	return why
+}
+
+func (o *marketFeedOwner) dropReuseProof(keys map[marketFeedKey]string) {
+	if len(keys) == 0 {
+		return
+	}
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	for key := range keys {
+		if st := o.keys[key]; st != nil {
+			st.restVerified = false
+		}
+	}
 }
 
 func feedKeyDueAt(cadences []int, deadline int64) bool {
@@ -85,7 +161,9 @@ func (r *feedRESTSource) canRetry(ctx context.Context, err error) bool {
 
 func (r *feedRESTSource) prepare(ctx context.Context, deadline int64, reqs cycleMarketRequirements, coverage feedRequirements) feedPrepareReport {
 	rep := feedPrepareReport{RefreshedKeys: make(map[marketFeedKey]bool), ReadyOnlyRefreshed: true,
-		DueKeys: make(map[marketFeedKey]bool), InflightKeys: make(map[marketFeedKey]bool), DeferredKeys: make(map[marketFeedKey]time.Time)}
+		DueKeys: make(map[marketFeedKey]bool), InflightKeys: make(map[marketFeedKey]bool), DeferredKeys: make(map[marketFeedKey]time.Time),
+		ReusedKeys: make(map[marketFeedKey]bool), ReuseRefused: make(map[marketFeedKey]string)}
+	cutoffMs := deadline * 1000
 	midsWeight, _ := hlInfoWeight("allMids", 0)
 	keyed := withFeedKeepWeight(withFeedKeep(ctx, 1), midsWeight)
 	for _, cr := range restRefreshOrder(reqs, coverage) {
@@ -97,6 +175,13 @@ func (r *feedRESTSource) prepare(ctx context.Context, deadline int64, reqs cycle
 			continue
 		}
 		rep.DueKeys[key] = true
+		if coverage.closedOnlyReuse(key) {
+			if r.owner.closedFrameReuseProof(key, cutoffMs) == "" {
+				rep.ReusedKeys[key] = true
+				continue
+			}
+			rep.ReuseProofFetched++
+		}
 		t, err := r.owner.admitKeyFetch(key, feedRestRefresh, false)
 		if err == nil {
 			err = r.owner.executeKeyFetch(keyed, t)
@@ -166,4 +251,23 @@ func (r *feedRESTSource) prepare(ctx context.Context, deadline int64, reqs cycle
 		}
 	}
 	return rep
+}
+
+func formatFeedReuseLines(deadline int64, source, instance string, rep feedPrepareReport) []string {
+	reused := make([]string, 0, len(rep.ReusedKeys))
+	for k := range rep.ReusedKeys {
+		reused = append(reused, k.PayloadID())
+	}
+	sort.Strings(reused)
+	refusedKeys := make([]marketFeedKey, 0, len(rep.ReuseRefused))
+	for k := range rep.ReuseRefused {
+		refusedKeys = append(refusedKeys, k)
+	}
+	sortMarketFeedKeys(refusedKeys)
+	refused := make([]string, 0, len(refusedKeys))
+	for _, k := range refusedKeys {
+		refused = append(refused, fmt.Sprintf("%s(%s)", k.PayloadID(), rep.ReuseRefused[k]))
+	}
+	return []string{fmt.Sprintf("[feed-reuse] key=%d source=%s instance=%s reused=%d reused_keys=%s refused=%d refused_keys=%s",
+		deadline, source, instance, len(reused), joinFeedNames(reused), len(refused), joinFeedNames(refused))}
 }

@@ -80,11 +80,12 @@ type marketPayload struct {
 }
 
 type marketSnapshotKey struct {
-	Key        marketFeedKey
-	IntervalMs int64
-	Bars       []feedBar
-	Readiness  feedKeyReadiness
-	FilledFrom string
+	Key          marketFeedKey
+	IntervalMs   int64
+	Bars         []feedBar
+	Readiness    feedKeyReadiness
+	FilledFrom   string
+	restVerified bool
 }
 
 type marketSnapshot struct {
@@ -283,10 +284,11 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 			continue
 		}
 		frozen := &marketSnapshotKey{
-			Key:        cr.Key,
-			IntervalMs: st.IntervalMs,
-			Bars:       append([]feedBar(nil), st.Bars...),
-			Readiness:  keyReadiness(st, now, connected),
+			Key:          cr.Key,
+			IntervalMs:   st.IntervalMs,
+			Bars:         append([]feedBar(nil), st.Bars...),
+			Readiness:    keyReadiness(st, now, connected),
+			restVerified: st.restVerified,
 		}
 		snap.keys[cr.Key] = frozen
 	}

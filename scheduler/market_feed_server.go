@@ -140,6 +140,7 @@ func (s *feedSealer) budgetLines(key int64, before feedBudgetTotals, beforeWeigh
 		wDelta.Reserved, wDelta.Settled, wDelta.Retained, wDelta.Refunded, wDelta.Debt, wDelta.Refused, formatFeedCounts(wDelta.RefusedByCause),
 		joinFeedNames(rep.WeightRefused))
 	line += " " + formatFeedSharedFields(w.Shared)
+	line += fmt.Sprintf(" reuse_candidates=%d reuse_proof_fetched=%d", len(rep.ReusedKeys), rep.ReuseProofFetched)
 	return delta, []string{line}
 }
 
@@ -148,12 +149,20 @@ func markUnrefreshedKeysNotReady(snap *marketSnapshot, rep feedPrepareReport, de
 		return
 	}
 	for k, entry := range snap.keys {
-		if entry == nil || rep.RefreshedKeys[k] {
+		if entry == nil || rep.RefreshedKeys[k] || rep.ReusedKeys[k] {
 			continue
 		}
 		r := &entry.Readiness
 		dueAt, deferred := rep.DeferredKeys[k]
+		refusedReuse, reuseRefused := rep.ReuseRefused[k]
 		switch {
+		case reuseRefused:
+			r.Ready = false
+			r.Status = feedStatusFailed
+			if rep.ReusePaused {
+				r.Status = feedStatusRateLimited
+			}
+			r.Detail = fmt.Sprintf("not refreshed for deadline %d: closed-frame reuse was refused at the seal: %s", deadline, refusedReuse)
 		case rep.InflightKeys[k]:
 			text := fmt.Sprintf("refresh for deadline %d not sent: a history request for this key was in flight", deadline)
 			if !r.Ready {
@@ -191,6 +200,63 @@ func markUnrefreshedKeysNotReady(snap *marketSnapshot, rep feedPrepareReport, de
 			r.Status = feedStatusNotDue
 			r.Detail = fmt.Sprintf("not refreshed for deadline %d: no consumer cadence this feed loaded divides it", deadline)
 		}
+	}
+}
+
+func (s *feedSealer) reusePauseReason() string {
+	if s.ledger == nil {
+		return ""
+	}
+	host := feedHostOf(hlMainnetURL)
+	if until := s.ledger.pausedUntil(host); until.After(s.ledger.clock().UTC()) {
+		return fmt.Sprintf("the venue host %s is paused until %s", host, until.UTC().Format(time.RFC3339))
+	}
+	if a := s.ledger.sharedAuthority(); a != nil {
+		if _, pending := a.pendingPauses()[host]; pending {
+			return fmt.Sprintf("a pause for the venue host %s is not yet written to the shared weight record", host)
+		}
+		for _, h := range a.statusView().Hosts {
+			if h.Host == host && h.Pause != "" && h.Pause != "clear" {
+				return fmt.Sprintf("the shared weight record shows the venue host %s pause as %s", host, h.Pause)
+			}
+		}
+	}
+	return ""
+}
+
+func applyClosedFrameReuse(snap *marketSnapshot, rep *feedPrepareReport, deadline int64, pauseReason string) {
+	if snap == nil || len(rep.ReusedKeys) == 0 {
+		return
+	}
+	cutoffMs := deadline * 1000
+	keys := make([]marketFeedKey, 0, len(rep.ReusedKeys))
+	for k := range rep.ReusedKeys {
+		keys = append(keys, k)
+	}
+	sortMarketFeedKeys(keys)
+	for _, k := range keys {
+		entry := snap.keys[k]
+		why := pauseReason
+		var closed []feedBar
+		if why == "" && entry == nil {
+			why = "the key is absent from the frozen snapshot"
+		}
+		if why == "" {
+			closed, why = feedClosedFrameReuse(entry.Bars, entry.Readiness, entry.restVerified, entry.IntervalMs, cutoffMs, snap.SealedAt)
+		}
+		if why != "" {
+			delete(rep.ReusedKeys, k)
+			rep.ReuseRefused[k] = why
+			continue
+		}
+		last := closed[len(closed)-1]
+		entry.Bars = closed
+		r := &entry.Readiness
+		r.Bars = len(closed)
+		r.FirstOpenMs = closed[0].OpenMs
+		r.LastOpenMs = last.OpenMs
+		r.LastCloseMs = last.CloseMs
+		r.Detail = fmt.Sprintf("reused for deadline %d: every bar through the close at %d was read from REST after it closed, and every reader of this key uses closed bars only; the forming bar is omitted", deadline, last.CloseMs)
 	}
 }
 
@@ -269,6 +335,12 @@ func (s *feedSealer) setGeneration(union feedRequirements, cadences []int, activ
 		s.logf("[feed-key-alert] source=%s instance=%s requirements reload removed %d key(s) with open unready state; cleared with no recovery alert: %s",
 			s.source, s.instance, len(removed), strings.Join(removed, ","))
 	}
+}
+
+func (s *feedSealer) coverageSnapshot() feedRequirements {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.coverage
 }
 
 func (s *feedSealer) startServing(at time.Time) {
@@ -448,6 +520,15 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 	s.budgetAlert(key, delta, rep)
 	frozenAt := s.owner.now()
 	snap := freezeMarketSnapshot(s.owner, reqs, feedSealEvaluationID(key), frozenAt, time.Unix(key, 0).UTC())
+	if len(rep.ReusedKeys) > 0 {
+		pause := s.reusePauseReason()
+		applyClosedFrameReuse(snap, &rep, key, pause)
+		rep.ReusePaused = pause != ""
+		s.owner.dropReuseProof(rep.ReuseRefused)
+		for _, line := range formatFeedReuseLines(key, s.source, s.instance, rep) {
+			s.logf("%s", line)
+		}
+	}
 	if rep.ReadyOnlyRefreshed {
 		markUnrefreshedKeysNotReady(snap, rep, key)
 	}

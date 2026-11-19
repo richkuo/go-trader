@@ -557,6 +557,7 @@ func (s *feedAlertSender) drain(bound time.Duration) bool {
 func (o *marketFeedOwner) markRateLimitedLocked(st *feedKeyState, detail string) {
 	st.Status = feedStatusRateLimited
 	st.StatusDetail = detail
+	st.restVerified = false
 	if o.fetchSeq == 0 {
 		o.fetchSeq = 1
 	}
