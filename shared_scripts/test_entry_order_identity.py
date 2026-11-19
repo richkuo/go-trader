@@ -71,7 +71,7 @@ class _HLVenue:
 
 def _run_hl_execute(monkeypatch, capsys, venue, **kwargs):
     mod = _load_script("check_hyperliquid.py", "entry_identity")
-    monkeypatch.setitem(sys.modules, "adapter", venue.adapter_module())
+    monkeypatch.setitem(sys.modules, "platforms.hyperliquid.adapter", venue.adapter_module())
     code = 0
     try:
         mod.run_execute("BTC", "buy", 0.3, "live", **kwargs)
@@ -251,7 +251,7 @@ def test_hl_run_recover_entry_reports_the_account_and_both_client_ids(monkeypatc
     venue = _HLHistoryVenue(pages={1: [_hl_fill(3, cloid="0x01")]})
     venue.order_status[CLOID] = {"status": "unknownOid"}
     venue.order_status[STOP_CLOID] = {"status": "unknownOid"}
-    monkeypatch.setitem(sys.modules, "adapter", venue.adapter_module())
+    monkeypatch.setitem(sys.modules, "platforms.hyperliquid.adapter", venue.adapter_module())
     monkeypatch.setenv("HYPERLIQUID_TESTNET", "")
     mod.run_recover_entry("BTC", CLOID, STOP_CLOID, 1, "live")
     out = json.loads(capsys.readouterr().out)

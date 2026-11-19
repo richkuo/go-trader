@@ -80,9 +80,9 @@ class HyperliquidExchangeAdapter:
     def strict_position(self, symbol):
         return state["position"]
 
-mod = types.ModuleType("adapter")
+mod = types.ModuleType("platforms.hyperliquid.adapter")
 mod.HyperliquidExchangeAdapter = HyperliquidExchangeAdapter
-sys.modules["adapter"] = mod
+sys.modules[mod.__name__] = mod
 script = os.path.join(root, "shared_scripts", "check_hyperliquid.py")
 sys.argv = [script] + sys.argv[1:]
 runpy.run_path(script, run_name="__main__")

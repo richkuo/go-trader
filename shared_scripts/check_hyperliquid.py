@@ -29,7 +29,9 @@ class SafeEncoder(json.JSONEncoder):
             return [self._sanitize(v) for v in obj]
         return obj
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'hyperliquid'))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'futures'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
@@ -224,14 +226,14 @@ def _signal_check_deps():
 
 
 def _offline_sz_decimals(symbol):
-    from adapter import sz_decimals_from_meta_cache
+    from platforms.hyperliquid.adapter import sz_decimals_from_meta_cache
 
     return sz_decimals_from_meta_cache(symbol)
 
 
 def _venue_min_order_notional_usd():
     try:
-        from adapter import MIN_ORDER_NOTIONAL_USD
+        from platforms.hyperliquid.adapter import MIN_ORDER_NOTIONAL_USD
 
         return float(MIN_ORDER_NOTIONAL_USD)
     except Exception:
@@ -240,7 +242,7 @@ def _venue_min_order_notional_usd():
 
 def _venue_min_order_notional_margin():
     try:
-        from adapter import MIN_ORDER_NOTIONAL_SAFETY_MARGIN
+        from platforms.hyperliquid.adapter import MIN_ORDER_NOTIONAL_SAFETY_MARGIN
 
         return max(float(MIN_ORDER_NOTIONAL_SAFETY_MARGIN), 0.0)
     except Exception:
@@ -281,7 +283,7 @@ def apply_venue_close_gate(decision, position_ctx, price, lot_decimals, min_noti
         return decision
     if current_qty <= 0:
         return decision
-    from adapter import floor_lot_size
+    from platforms.hyperliquid.adapter import floor_lot_size
 
     requested_qty = current_qty * close_fraction
     floored_qty = floor_lot_size(requested_qty, lot_decimals)
@@ -1284,7 +1286,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
         adapter = None
         if market is None:
-            from adapter import HyperliquidExchangeAdapter
+            from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
 
             adapter = HyperliquidExchangeAdapter()
 
@@ -1493,7 +1495,7 @@ def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_met
             adapter = None
             df = None
         elif adapter is None and df is None:
-            from adapter import HyperliquidExchangeAdapter
+            from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
             adapter = HyperliquidExchangeAdapter()
         shared = build_shared_signal_state(
             symbol, timeframe,
@@ -1839,7 +1841,7 @@ def run_sync_protection(
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
 
         fill_hints = None
@@ -2255,7 +2257,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
     cancel_failed_oids = []
 
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
 
         is_buy = side.lower() == "buy"
@@ -2789,7 +2791,7 @@ def run_recover_entry(symbol, cloid, stop_cloid, since_ms, mode, until_ms=0):
         print(json.dumps(out, cls=SafeEncoder))
         sys.exit(1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         out["account"] = hyperliquid_account_key(adapter.account_address)
         scan = _RecoveryFillScan(adapter, since_ms, until_ms)
@@ -2808,7 +2810,7 @@ def run_recover_entry(symbol, cloid, stop_cloid, since_ms, mode, until_ms=0):
 
 def run_list_open_order_oids(symbol=None):
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         listed = []
         decimals = {}
@@ -2962,7 +2964,7 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
     open_order_check_error = ""
 
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
 
         side = side.lower()
@@ -3145,7 +3147,7 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
 
 def run_fetch_atr(symbol: str, timeframe: str, period: int, atr_method: str = "simple"):
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=200)
         if not candles or len(candles) < period + 1:
@@ -3176,7 +3178,7 @@ def run_limit_open(symbol, side, size, limit_px, mode, tif="Alo",
         sys.exit(1)
 
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
 
         side = side.lower()
@@ -3279,7 +3281,7 @@ def run_limit_status(symbol, oids, mode, since_ms=0):
         print(json.dumps({"error": "--limit-status requires --mode=live"}, cls=SafeEncoder))
         sys.exit(1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
 
         if since_ms <= 0:
@@ -3336,7 +3338,7 @@ def run_cancel_order(symbol, oid, mode):
         print(json.dumps({"error": "--cancel-order requires --mode=live"}, cls=SafeEncoder))
         sys.exit(1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         out = {
             "platform": "hyperliquid",
@@ -3475,7 +3477,7 @@ def run_quote_place(symbol, side, size, limit_price, trigger_px, tif, cloid, rol
         _quote_print(out)
         return
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         out["account"] = hyperliquid_account_key(adapter.account_address)
         adapter.set_order_expiry(int(expires_at_ms))
@@ -3513,7 +3515,7 @@ def run_quote_cancel(symbol, cloid, oid, mode):
         out["error"] = "--quote-cancel requires --mode=live"
         _quote_print(out, 1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         out["account"] = hyperliquid_account_key(adapter.account_address)
     except Exception as e:
@@ -3545,7 +3547,7 @@ def run_quote_status(symbol, cloid, mode):
         out["error"] = "--quote-status requires --mode=live"
         _quote_print(out, 1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         out["account"] = hyperliquid_account_key(adapter.account_address)
         out["outcome"] = quote_status_outcome(adapter.query_order_by_cloid(cloid), int(time.time() * 1000))
@@ -3664,7 +3666,7 @@ def run_quote_recover(symbol, since_ms, until_ms, mode):
         out["error"] = "--quote-recover requires --mode=live"
         _quote_print(out, 1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         account = hyperliquid_account_key(adapter.account_address)
         out["account"] = account
@@ -3684,7 +3686,7 @@ def run_quote_position(symbol, mode):
         out["error"] = "--quote-position requires --mode=live"
         _quote_print(out, 1)
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         account = hyperliquid_account_key(adapter.account_address)
         read_at = int(time.time() * 1000)
