@@ -8,7 +8,7 @@ A Go + Python hybrid trading system. A single Go binary (~8MB idle RAM) orchestr
 
 Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid, TopStep, Robinhood (crypto + paper stock options), OKX (spot + perps + paper options), Luno. Per-platform Discord/Telegram channels post hourly summaries plus immediate trade alerts. When a new release ships, a host deployment DMs the configured owner — reply **yes** and it pulls, rebuilds, and restarts itself. A Docker deployment updates by pulling a new image instead.
 
-Join the Discord: [https://discord.gg/46d7Fa2dXz](https://discord.gg/46d7Fa2dXz)
+Join the Discord: [https://discord.gg/44BykmWZsP](https://discord.gg/44BykmWZsP)
 
 ---
 
