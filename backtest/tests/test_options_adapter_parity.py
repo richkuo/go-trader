@@ -52,7 +52,7 @@ def test_strikes_round_to_the_underlying_grid_like_the_adapter_fallback(monkeypa
         with monkeypatch.context() as mp:
             no_chain = types.ModuleType("utils")
             no_chain.find_closest_strike = lambda *args, **kwargs: None
-            mp.setitem(sys.modules, "utils", no_chain)
+            mp.setitem(sys.modules, "platforms.deribit.utils", no_chain)
             adapter_cls = _deribit_exchange_adapter()
             for underlying, target, expected in grid:
                 label = f"test_strikes_round_to_the_underlying_grid[{underlying}-{target}-{expected}]"

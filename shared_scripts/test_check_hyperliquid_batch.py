@@ -5,6 +5,7 @@ import io
 import json
 import math
 import os
+import subprocess
 import sys
 import types
 
@@ -295,7 +296,7 @@ def test_parse_batch_slots_accepts_the_documented_envelope_and_rejects_bad_ones(
 def _run_main(mod, monkeypatch, argv, stdin_text, adapter):
     fake_module = types.ModuleType("adapter")
     fake_module.HyperliquidExchangeAdapter = lambda *a, **kw: adapter
-    monkeypatch.setitem(sys.modules, "adapter", fake_module)
+    monkeypatch.setitem(sys.modules, "platforms.hyperliquid.adapter", fake_module)
     monkeypatch.setattr(sys, "argv", ["check_hyperliquid.py"] + argv)
     monkeypatch.setattr(sys, "stdin", io.StringIO(stdin_text))
     buf = io.StringIO()
@@ -633,6 +634,38 @@ def _tier_slot(slot_id, initial_qty, current_qty, entry_atr, mode="live"):
     )
 
 
+@pytest.mark.parametrize("cached_venue", ["deribit", "hyperliquid"])
+def test_venue_close_gate_and_options_ignore_bare_adapter_cache(cached_venue):
+    driver = """
+import importlib
+import runpy
+import sys
+
+venue, script = sys.argv[1:]
+cached_adapter = importlib.import_module(f"platforms.{venue}.adapter")
+sys.modules["adapter"] = cached_adapter
+if venue == "deribit":
+    from shared_strategies.options import strategies
+    check = runpy.run_path(script)
+else:
+    check = runpy.run_path(script)
+    from shared_strategies.options import strategies
+
+from platforms.deribit.adapter import OptionType
+assert strategies.OptionType is OptionType
+out = check["apply_venue_close_gate"](
+    {"close_fraction": 0.5, "open_action": "none", "signal": -1},
+    {"current_quantity": 0.2}, 100.0, 4, 10.0, "long", min_notional_margin=0.03)
+assert out["close_gate"] == "below_venue_minimum"
+assert sys.modules["adapter"] is cached_adapter
+"""
+    root = os.path.dirname(os.path.dirname(SCRIPT_PATH))
+    result = subprocess.run(
+        [sys.executable, "-c", driver, cached_venue, SCRIPT_PATH],
+        cwd=root, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
 def test_venue_close_gate_rewrites_only_dust_partial_closes(mod):
     cases = [
         ("sub_lot_remainder", 4, 0.1234, 0.0741, 5.0, True, 0.0),
@@ -804,7 +837,7 @@ def test_slot_and_single_check_evaluate_tiers_under_the_resting_limit_model(mod,
     monkeypatch.setattr(mod, "_signal_check_deps", lambda: recording)
     monkeypatch.setattr(mod, "build_shared_signal_state",
                         lambda symbol, timeframe, **kw: real_build(symbol, timeframe, **{**kw, "adapter": FakeAdapter()}))
-    monkeypatch.setitem(sys.modules, "adapter", types.SimpleNamespace(HyperliquidExchangeAdapter=FakeAdapter))
+    monkeypatch.setitem(sys.modules, "platforms.hyperliquid.adapter", types.SimpleNamespace(HyperliquidExchangeAdapter=FakeAdapter))
     mod.run_signal_check("breakout", "BTC", "1h", "paper", False, None, "breakout",
                          "tiered_tp_atr_live", "long", position_ctx, mark_price=25_000.0)
     single_out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])

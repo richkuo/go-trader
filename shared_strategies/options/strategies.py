@@ -1,8 +1,9 @@
 
 import sys
 import os as _os
-sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'platforms', 'deribit'))
-sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+_REPO_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime, timedelta
@@ -11,11 +12,11 @@ from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 
-from adapter import (
+from platforms.deribit.adapter import (
     DeribitOptionsAdapter, OptionContract, OptionPosition, OptionType,
     OptionSide, Greeks
 )
-from risk import OptionsRiskManager
+from shared_strategies.options.risk import OptionsRiskManager
 
 
 OPTIONS_STRATEGY_REGISTRY: Dict[str, dict] = {}

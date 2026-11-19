@@ -28,7 +28,7 @@ const entryHLRecoveryDriver = `import json, runpy, sys, types
 script, spec = sys.argv[1], json.loads(sys.argv[2])
 argv = sys.argv[3:]
 cloids = {a.split("=", 1)[0]: a.split("=", 1)[1].lower() for a in argv if a.startswith("--cloid=") or a.startswith("--stop-cloid=")}
-mod = types.ModuleType("adapter")
+mod = types.ModuleType("platforms.hyperliquid.adapter")
 class HyperliquidExchangeAdapter:
     account_address = spec["account"]
     def query_order_by_cloid(self, cloid):
@@ -40,7 +40,7 @@ class HyperliquidExchangeAdapter:
     def query_order_by_oid(self, oid):
         raise ConnectionError("connection reset by peer")
 mod.HyperliquidExchangeAdapter = HyperliquidExchangeAdapter
-sys.modules["adapter"] = mod
+sys.modules[mod.__name__] = mod
 sys.argv = [script] + argv
 runpy.run_path(script, run_name="__main__")
 `

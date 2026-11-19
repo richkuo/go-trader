@@ -1,13 +1,15 @@
 
 import sys
 import os as _os
-sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'platforms', 'deribit'))
+_REPO_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 
-from adapter import (
+from platforms.deribit.adapter import (
     DeribitOptionsAdapter, OptionPosition, OptionSide, OptionType, Greeks
 )
 

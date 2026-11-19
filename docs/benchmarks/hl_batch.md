@@ -20,9 +20,10 @@ on the children's `PYTHONPATH`; that module replaces
 `hl_batch_candles.json` (200 hourly bars). **No benchmark switch exists on the
 trading path** — the adapter reads no fixture environment variable, so no
 stray setting on a deployment can make a live strategy trade on pinned
-candles. The harness runs a preflight child and aborts unless that child
-reports the injection took effect, so a silently-failed injection cannot
-produce a network-bound benchmark that still prints plausible numbers.
+candles. The benchmark also supplies fixed BTC metadata so adapter startup
+needs no venue request or local metadata cache. Both preflight children
+and every timed child must report that they read the candle fixture. The
+harness aborts before it reports timing for a child that misses the fixture.
 
 `--mark-price` is always supplied, so `adapter.get_spot_price` is never
 reached. The `#839` on-disk OHLCV cache is disabled for both arms, so the

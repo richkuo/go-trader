@@ -116,7 +116,7 @@ class TestFillExtraction:
                 original_import = builtins.__import__
 
                 def mock_import(name, *args, **kwargs):
-                    if name == "adapter":
+                    if name == "platforms.hyperliquid.adapter":
                         fake_mod = MagicMock()
                         fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
                         return fake_mod
@@ -326,7 +326,7 @@ class TestMarginMode:
         original_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
-            if name == "adapter":
+            if name == "platforms.hyperliquid.adapter":
                 fake_mod = MagicMock()
                 fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
                 return fake_mod
@@ -389,7 +389,7 @@ class TestPeerLeverageSkip:
         original_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
-            if name == "adapter":
+            if name == "platforms.hyperliquid.adapter":
                 fake_mod = MagicMock()
                 fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
                 return fake_mod
@@ -444,7 +444,7 @@ class TestPeerLeverageSkip:
             original_import = builtins.__import__
 
             def mock_import(name, *args, **kwargs):
-                if name == "adapter":
+                if name == "platforms.hyperliquid.adapter":
                     fake_mod = MagicMock()
                     fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
                     return fake_mod
@@ -600,7 +600,7 @@ class TestUpdateStopLoss:
         original_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
-            if name == "adapter":
+            if name == "platforms.hyperliquid.adapter":
                 fake_mod = MagicMock()
                 fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
                 return fake_mod
@@ -792,7 +792,7 @@ class TestUpdateStopLoss:
         original_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
-            if name == "adapter":
+            if name == "platforms.hyperliquid.adapter":
                 fake_mod = MagicMock()
                 fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
                 return fake_mod
@@ -846,7 +846,7 @@ class TestCloseFullPosition:
         original_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
-            if name == "adapter":
+            if name == "platforms.hyperliquid.adapter":
                 fake_mod = MagicMock()
                 fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
                 return fake_mod
@@ -912,7 +912,7 @@ class TestRunExecuteCloseMode:
         original_import = builtins.__import__
 
         def mock_import(name, *args, **kw):
-            if name == "adapter":
+            if name == "platforms.hyperliquid.adapter":
                 fake_mod = MagicMock()
                 fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
                 return fake_mod
@@ -984,7 +984,7 @@ class TestRunExecuteCloseMode:
         original_import = builtins.__import__
 
         def mock_import(name, *args, **kw):
-            if name == "adapter":
+            if name == "platforms.hyperliquid.adapter":
                 fake_mod = MagicMock()
                 fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
                 return fake_mod
@@ -1105,7 +1105,7 @@ class TestSyncProtection:
         original_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
-            if name == "adapter":
+            if name == "platforms.hyperliquid.adapter":
                 fake_mod = MagicMock()
                 fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
                 return fake_mod
@@ -1493,7 +1493,7 @@ class TestProtectionSyncStopLossTriggerContract:
         original_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
-            if name == "adapter":
+            if name == "platforms.hyperliquid.adapter":
                 fake_mod = MagicMock()
                 fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
                 return fake_mod
@@ -1601,7 +1601,7 @@ class TestSyncProtectionPreservedTrigger:
         original_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
-            if name == "adapter":
+            if name == "platforms.hyperliquid.adapter":
                 fake_mod = MagicMock()
                 fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
                 return fake_mod

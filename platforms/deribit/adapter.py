@@ -12,7 +12,10 @@ from dataclasses import dataclass, field, asdict
 import ccxt
 import numpy as np
 
-_SHARED_TOOLS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools')
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+_SHARED_TOOLS = os.path.join(_REPO_ROOT, "shared_tools")
 if _SHARED_TOOLS not in sys.path:
     sys.path.append(_SHARED_TOOLS)
 
@@ -871,7 +874,7 @@ class DeribitExchangeAdapter:
 
     def get_real_expiry(self, underlying: str, target_dte: int) -> Tuple[str, int]:
         try:
-            from utils import find_closest_expiry
+            from platforms.deribit.utils import find_closest_expiry
             result = find_closest_expiry(underlying, target_dte)
             if result:
                 return result
@@ -884,7 +887,7 @@ class DeribitExchangeAdapter:
     def get_real_strike(self, underlying: str, expiry: str,
                         option_type: str, target_strike: float) -> float:
         try:
-            from utils import find_closest_strike
+            from platforms.deribit.utils import find_closest_strike
             result = find_closest_strike(underlying, expiry, option_type, target_strike)
             if result:
                 return result
@@ -897,7 +900,7 @@ class DeribitExchangeAdapter:
     def get_premium_and_greeks(self, underlying: str, option_type: str,
                                 strike: float, expiry: str, dte: float,
                                 spot: float, vol: Optional[float] = None) -> Tuple[float, float, dict]:
-        from utils import get_live_quote
+        from platforms.deribit.utils import get_live_quote
         quote = get_live_quote(underlying, option_type, strike, expiry)
         mark = option_data.require_finite_positive(quote["mark_price"], "option quote unavailable: deribit mark is not positive")
         return mark, round(mark * spot, 2), quote["greeks"]
