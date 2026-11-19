@@ -244,11 +244,11 @@ def test_an_open_folder_mode_is_tightened_to_owner_only(tmp_path):
 def test_device_verification_fails_fast_and_latches_until_the_bootstrap(tmp_path):
     box = Box(tmp_path)
     box.set_routes({"POST " + TOKEN_URL: [VERIFICATION]})
-    started = time.monotonic()
+    ready = box.root / "stub-ready"
     proc = subprocess.Popen(
         [sys.executable, str(SCRIPTS / FETCH[0])],
         cwd=str(REPO_ROOT),
-        env=box.env(),
+        env=box.env(extra={"RH_OFFLINE_STUB_READY": str(ready)}),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -260,12 +260,12 @@ def test_device_verification_fails_fast_and_latches_until_the_bootstrap(tmp_path
         if proc.poll() is None:
             proc.kill()
         proc.stdin.close()
-    elapsed = time.monotonic() - started
+    finished = time.monotonic()
     first = subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
     first_made = box.requests()
     detail = _detail(first, box)
     assert first.returncode == 1, detail
-    assert elapsed < 5, detail
+    assert finished - float(ready.read_text()) < 5, detail
     doc = _doc(first)
     assert doc["error"].startswith(LOGIN_FAILED) and BOOTSTRAP in doc["error"], detail
     assert BOOTSTRAP in first.stderr, detail
