@@ -286,7 +286,7 @@ def test_argument_and_position_errors_fail_before_the_cap_and_the_adapter(tmp_pa
 
 
 def test_unsupported_platforms_refuse_before_loading_an_adapter(tmp_path, subtests):
-    for platform in ["binanceus", "hyperliquid", "luno", "topstep"]:
+    for platform in ["binanceus", "hyperliquid", "luno"]:
         with subtests.test(platform=platform):
             run_dir = tmp_path / platform
             run_dir.mkdir()

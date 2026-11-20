@@ -1430,9 +1430,6 @@ func noEdgeCaseAroonTrendAddAdmissionAndParamPreflightThroughRealLoaders(t *test
 
 func noEdgeCaseChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
-	t.Setenv("TOPSTEP_API_KEY", "k")
-	t.Setenv("TOPSTEP_API_SECRET", "s")
-	t.Setenv("TOPSTEP_ACCOUNT_ID", "1")
 	const cmo = "chande_momentum"
 	withOpenParams := func(sc map[string]interface{}, params map[string]interface{}) map[string]interface{} {
 		sc["open_strategy"] = map[string]interface{}{"name": cmo, "params": params}
@@ -1445,10 +1442,6 @@ func noEdgeCaseChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.
 		}
 		sc["close_strategy"] = ref
 		return sc
-	}
-	topstep := map[string]interface{}{
-		"id": "ts-cmo", "type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py",
-		"args": []string{cmo, "ES", "1h", "--mode=paper"}, "capital": 1000.0, "max_drawdown_pct": 10.0,
 	}
 	interval := func(ms interface{}) map[string]interface{} {
 		return map[string]interface{}{"expected_interval_ms": ms}
@@ -1485,7 +1478,6 @@ func noEdgeCaseChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.
 			[]string{`close strategy "chande_momentum": registry default expected_interval_ms=3600000 does not match timeframe 4h`}, ""},
 		{"close fallback explicit match loads", withCloseParams(noEdgeHLStrategy("hl-cmo", "breakout", "ETH", "4h", "--mode=paper"), interval(14400000)), nil, ""},
 		{"close fallback inherits the open params", withCloseParams(withOpenParams(noEdgeHLStrategy("hl-cmo", cmo, "ETH", "4h", "--mode=paper"), interval(14400000)), nil), nil, ""},
-		{"topstep refused for session breaks", topstep, []string{`strategy ts-cmo: open strategy "chande_momentum" holds every signal`, "type=futures platform=topstep", "runs only on perps"}, ""},
 		{"manual close fallback registry default refused on 4h", manual(nil),
 			[]string{`strategy hl-cmo-manual: close strategy "chande_momentum": registry default expected_interval_ms=3600000 does not match timeframe 4h`, `"expected_interval_ms": 14400000`}, ""},
 		{"manual close fallback explicit match loads", manual(interval(14400000)), nil, ""},

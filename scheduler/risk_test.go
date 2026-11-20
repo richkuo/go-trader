@@ -296,77 +296,6 @@ func TestCheckRisk(t *testing.T) {
 			})
 		}
 	})
-	t.Run("LiveTopStepCB_PendingFlatten", func(t *testing.T) {
-		cases := []struct {
-			name        string
-			withPeer    bool
-			tsSize      int
-			posQty      float64
-			wantPending bool
-			wantSize    float64
-		}{
-			{"sole peer sets pending full flatten", false, 3, 3, true, 3},
-			{"multi-peer contract sets no pending", true, 5, 2, false, 0},
-		}
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				sc := StrategyConfig{
-					ID: "ts-a", Platform: "topstep", Type: "futures",
-					Capital: 5000,
-					Args:    []string{"sma", "ES", "15m", "--mode=live"},
-				}
-				tsLiveAll := []StrategyConfig{sc}
-				if tc.withPeer {
-					tsLiveAll = append(tsLiveAll, StrategyConfig{ID: "ts-b", Platform: "topstep", Type: "futures",
-						Capital: 5000,
-						Args:    []string{"rsi", "ES", "15m", "--mode=live"}})
-				}
-				assist := &PlatformRiskAssist{
-					TSPositions: []TopStepPosition{{Coin: "ES", Size: tc.tsSize, Side: "long"}},
-					TSLiveAll:   tsLiveAll,
-				}
-				s := &StrategyState{
-					ID:   sc.ID,
-					Type: "futures",
-					Cash: 3000.0,
-					RiskState: RiskState{
-						PeakValue:      5000.0,
-						MaxDrawdownPct: 25.0,
-						DailyPnLDate:   todayUTC(),
-					},
-					Positions: map[string]*Position{
-						"ES": {Symbol: "ES", Quantity: tc.posQty, AvgCost: 5000, Side: "long", Multiplier: 50},
-					},
-					OptionPositions: make(map[string]*OptionPosition),
-				}
-				prices := map[string]float64{"ES": 4995}
-
-				allowed, _ := CheckRisk(&sc, s, PortfolioValue(s, prices), prices, nil, assist)
-				if allowed {
-					t.Fatal("expected CB fire (drawdown exceeds 25%)")
-				}
-				p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep)
-				if !tc.wantPending {
-					if p != nil {
-						t.Errorf("expected no pending TS entry for multi-peer contract; got %+v", p)
-					}
-					return
-				}
-				if p == nil {
-					t.Fatal("expected PendingCircuitCloses[topstep] after CB fire")
-				}
-				if len(p.Symbols) != 1 {
-					t.Fatalf("expected 1 pending symbol, got %d", len(p.Symbols))
-				}
-				if p.Symbols[0].Symbol != "ES" {
-					t.Errorf("symbol=%q want ES", p.Symbols[0].Symbol)
-				}
-				if p.Symbols[0].Size != tc.wantSize {
-					t.Errorf("pending size=%.0f want %.0f (full flatten for sole peer)", p.Symbols[0].Size, tc.wantSize)
-				}
-			})
-		}
-	})
 	t.Run("CooldownExpired", func(t *testing.T) {
 		cases := []struct {
 			name               string
@@ -1242,12 +1171,9 @@ func TestPerpsMarginInputs(t *testing.T) {
 					"spot-sol": {Type: "spot", Positions: map[string]*Position{
 						"SOL/USDT": {Symbol: "SOL/USDT", Quantity: 100, AvgCost: 150, Side: "long"},
 					}},
-					"ts-es": {Type: "futures", Positions: map[string]*Position{
-						"ES": {Symbol: "ES", Quantity: 1, AvgCost: 5000, Side: "long", Multiplier: 50},
-					}},
 				},
 				configs:  []StrategyConfig{{ID: "hl-btc", Leverage: 10}, {ID: "hl-eth", Leverage: 5}},
-				prices:   map[string]float64{"BTC": 42000, "ETH": 3100, "SOL/USDT": 200, "ES": 5100},
+				prices:   map[string]float64{"BTC": 42000, "ETH": 3100, "SOL/USDT": 200},
 				wantLoss: 2000, wantMargin: 10400,
 			},
 			{

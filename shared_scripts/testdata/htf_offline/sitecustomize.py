@@ -103,15 +103,7 @@ def _patch_yfinance(module):
     module.Ticker.history = history
 
 
-def _patch_adapter(module):
-    cls = getattr(module, "TopStepExchangeAdapter", None)
-    data = _load()
-    if cls is not None and "topstep_market_open" in data:
-        is_open = bool(data["topstep_market_open"])
-        cls.is_market_open = lambda self: is_open
-
-
-_PATCHES = {"ccxt": _patch_ccxt, "yfinance": _patch_yfinance, "adapter": _patch_adapter}
+_PATCHES = {"ccxt": _patch_ccxt, "yfinance": _patch_yfinance}
 
 
 class _FixtureFinder(importlib.abc.MetaPathFinder):

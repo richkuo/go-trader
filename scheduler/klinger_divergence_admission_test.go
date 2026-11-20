@@ -104,9 +104,6 @@ func noEdgeCaseKlingerDivergenceAdmissionAndBooleanAcknowledgementThroughRealLoa
 
 func noEdgeCaseKlingerDivergenceRequiresHyperliquidClosedBarDecisions(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
-	t.Setenv("TOPSTEP_API_KEY", "k")
-	t.Setenv("TOPSTEP_API_SECRET", "s")
-	t.Setenv("TOPSTEP_ACCOUNT_ID", "1")
 	closed := func(sc map[string]interface{}, on bool) map[string]interface{} {
 		sc["closed_bar_decisions"] = on
 		return sc
@@ -118,10 +115,6 @@ func noEdgeCaseKlingerDivergenceRequiresHyperliquidClosedBarDecisions(t *testing
 	openRef := func(sc map[string]interface{}) map[string]interface{} {
 		sc["open_strategy"] = map[string]interface{}{"name": klingerName}
 		return sc
-	}
-	topstep := map[string]interface{}{
-		"id": "ts-klingerdiv", "type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py",
-		"args": []string{klingerName, "ES", "1h", "--mode=paper"}, "capital": 1000.0, "max_drawdown_pct": 10.0,
 	}
 	manual := map[string]interface{}{
 		"id": "hl-klingerdiv-manual", "type": "manual", "platform": "hyperliquid", "symbol": "ETH", "timeframe": "4h",
@@ -145,8 +138,6 @@ func noEdgeCaseKlingerDivergenceRequiresHyperliquidClosedBarDecisions(t *testing
 		{"hyperliquid effective open without closed bars refused",
 			openRef(noEdgeHLStrategy("hl-klingerdiv-open", "breakout", "ETH", "4h", "--mode=paper")),
 			[]string{`open strategy "` + klingerName + `"`, needs}},
-		{"topstep positional open refused", topstep,
-			[]string{`open strategy "` + klingerName + `"`, needs, "platform=topstep"}},
 		{"hyperliquid manual close refused", manual,
 			[]string{`close strategy "` + klingerName + `"`, needs, "type=manual"}},
 		{"hyperliquid close fallback with closed bars loads",

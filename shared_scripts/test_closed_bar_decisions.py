@@ -12,7 +12,6 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file
 CHECK_HL = os.path.join(_REPO_ROOT, "shared_scripts", "check_hyperliquid.py")
 CHECK_SPOT = os.path.join(_REPO_ROOT, "shared_scripts", "check_strategy.py")
 CHECK_RH = os.path.join(_REPO_ROOT, "shared_scripts", "check_robinhood.py")
-CHECK_TS = os.path.join(_REPO_ROOT, "shared_scripts", "check_topstep.py")
 
 H = 3_600_000
 T0 = 1_699_999_200_000
@@ -428,7 +427,7 @@ def test_hyperliquid_direct_acquisition_uses_native_close_times(tmp_path):
 
 
 def test_session_venues_refuse_closed_bar_decisions(subtests):
-    for script, extra in [(CHECK_RH, ["--mode=live"]), (CHECK_TS, [])]:
+    for script, extra in [(CHECK_RH, ["--mode=live"])]:
         with subtests.test(script=script, extra=extra):
             proc = _run(script, ["breakout", "BTC", "1h", "--closed-bar-decisions", *extra])
             assert proc.returncode == 1
@@ -913,78 +912,6 @@ def test_eom_cadence_gap_in_the_closed_window_holds_then_recovers():
     recovered = _hl_check(_EOM, far, far[-1]["t"] + H + 5_000, closed=True, extra=_eom_refs())
     assert recovered["signal"] == 1
 
-
-def _eom_rows_at(start_ms, rows, *, gap_after=None):
-    out = []
-    t = start_ms
-    for i, (o, h, low, c, v) in enumerate(rows):
-        out.append({"t": t, "T": t + H - 1, "o": o, "h": h, "l": low, "c": c, "v": v})
-        t += 2 * H if gap_after is not None and i == gap_after else H
-    return out
-
-
-_EOM_FLAT = (100.0, 101.0, 99.0, 100.0, 1000.0)
-_EOM_BREAKOUT = (100.0, 104.0, 100.0, 103.5, 1000.0)
-
-
-def _fake_topstep_dir(tmp_path, bars):
-    root = tmp_path / "tsfakes"
-    (root / "yfinance").mkdir(parents=True)
-    fixture = tmp_path / "yf_rows.json"
-    fixture.write_text(json.dumps(_open_time_rows(bars)))
-    (root / "yfinance" / "__init__.py").write_text(textwrap.dedent(f"""
-        import json
-
-        import pandas as pd
-
-        _ROWS = json.load(open({str(fixture)!r}))
-
-
-        class Ticker:
-            def __init__(self, symbol):
-                self.symbol = symbol
-
-            def history(self, period=None, interval=None):
-                index = pd.to_datetime([r[0] for r in _ROWS], unit="ms", utc=True)
-                return pd.DataFrame({{
-                    "Open": [r[1] for r in _ROWS], "High": [r[2] for r in _ROWS], "Low": [r[3] for r in _ROWS],
-                    "Close": [r[4] for r in _ROWS], "Volume": [r[5] for r in _ROWS],
-                }}, index=index)
-    """))
-    (root / "sitecustomize.py").write_text(textwrap.dedent("""
-        import builtins
-
-        _real_import = builtins.__import__
-
-
-        def _import(name, globals=None, locals=None, fromlist=(), level=0):
-            module = _real_import(name, globals, locals, fromlist, level)
-            cls = getattr(module, "TopStepExchangeAdapter", None)
-            if cls is not None:
-                cls.is_market_open = lambda self: True
-            return module
-
-
-        builtins.__import__ = _import
-    """))
-    return str(root)
-
-
-def test_eom_topstep_check_holds_only_when_the_window_spans_a_session_break(subtests, tmp_path):
-    for index, (bars_after_break, signal, reason) in enumerate([(2, 0, "cadence_gap"), (10, 1, "entry_long")]):
-        with subtests.test(bars_after_break=bars_after_break, signal=signal, reason=reason):
-            case_path = tmp_path / f"case{index}"
-            case_path.mkdir()
-            rows = [_EOM_FLAT] * 40 + [_EOM_FLAT] * bars_after_break + [_EOM_BREAKOUT]
-            bars = _eom_rows_at(T0, rows, gap_after=39)
-            fakes = _fake_topstep_dir(case_path, bars)
-            proc = _run(CHECK_TS, [_EOM, "ES", "1h", "--mode=paper", *_eom_refs()], env_extra={"PYTHONPATH": fakes})
-            assert proc.returncode == 0, proc.stderr + proc.stdout
-            out = json.loads(proc.stdout)
-            assert out["market_open"] is True
-            assert out["indicators"]["eom_interval_ms"] == H
-            assert out["indicator_labels"]["eom_reason"] == reason
-            assert out["signal"] == signal
 
 
 _AROON = "aroon_trend"

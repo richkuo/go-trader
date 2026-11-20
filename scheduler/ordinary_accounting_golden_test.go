@@ -554,13 +554,6 @@ func goldenBookings(t *testing.T) map[string]interface{} {
 		forceCloseKillSwitchPositions(s, hlPaper, map[string]float64{"BTC": 61000, "ETH": 2900}, nil, nil, hlVirtualQuantitySnapshot{}, nil, logger)
 		return nil
 	})
-	futures := StrategyConfig{ID: "ts-book", Platform: "topstep", Type: "futures", Args: []string{"sma", "ES", "1h", "--mode=paper"}, Capital: 20000, MaxDrawdownPct: 20}
-	run("futures_open_close", futures, nil, func(s *StrategyState) interface{} {
-		spec := ContractSpec{Multiplier: 50, TickSize: 0.25, TickValue: 12.5, Margin: 1500}
-		n1, err1 := ExecuteFuturesSignalWithFillFee(s, 1, "ES", 5000, spec, 2.5, 3, 0, 0, "", 0, logger)
-		n2, err2 := ExecuteFuturesSignalWithFillFee(s, -1, "ES", 5010, spec, 2.5, 3, 0, 0, "", 0, logger)
-		return []interface{}{n1, err1 == nil, n2, err2 == nil}
-	})
 	return out
 }
 

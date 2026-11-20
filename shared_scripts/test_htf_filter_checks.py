@@ -14,10 +14,9 @@ H = 3_600_000
 SCRIPTS = {
     "binanceus": ("check_strategy.py", ["atr_breakout", "BTC/USDT", "1h", "--mode=paper"], "BTC/USDT"),
     "robinhood": ("check_robinhood.py", ["atr_breakout", "BTC", "30m", "--mode=paper"], "BTC"),
-    "topstep": ("check_topstep.py", ["breakout", "ES", "1h", "--mode=paper"], "ES"),
 }
 
-SWALLOWING_ADAPTERS = ("robinhood", "topstep")
+SWALLOWING_ADAPTERS = ("robinhood",)
 
 
 def _now_hour():
@@ -70,7 +69,7 @@ def _hourly_htf(mode, now):
     return rows
 
 
-def _fixture(tmp_path, htf_mode, *, primary=True, market_open=True):
+def _fixture(tmp_path, htf_mode, *, primary=True):
     now = _now_hour()
     rows = _bars(200, H, now, "up") if primary else []
     htf = _htf(htf_mode, now)
@@ -78,11 +77,10 @@ def _fixture(tmp_path, htf_mode, *, primary=True, market_open=True):
     doc = {
         "ccxt": {"BTC/USDT|1h": rows, "BTC/USDT|4h": htf, "BTC/USDT:USDT|1h": rows, "BTC/USDT:USDT|4h": htf},
         "tickers": {"BTC/USDT": last, "BTC/USDT:USDT": last},
-        "yahoo": {"BTC-USD|30m": rows, "BTC-USD|1h": _hourly_htf(htf_mode, now), "ES=F|1h": rows, "ES=F|4h": htf},
-        "yahoo_price": {"BTC-USD": last, "ES=F": last},
-        "topstep_market_open": market_open,
+        "yahoo": {"BTC-USD|30m": rows, "BTC-USD|1h": _hourly_htf(htf_mode, now)},
+        "yahoo_price": {"BTC-USD": last},
     }
-    path = tmp_path / f"fixture-{htf_mode}-{int(primary)}-{int(market_open)}.json"
+    path = tmp_path / f"fixture-{htf_mode}-{int(primary)}.json"
     path.write_text(json.dumps(doc))
     return str(path)
 
@@ -90,7 +88,7 @@ def _fixture(tmp_path, htf_mode, *, primary=True, market_open=True):
 def _run(script, argv, fixture):
     env = dict(os.environ)
     env.update({"PYTHONPATH": _OFFLINE, "HTF_OFFLINE_FIXTURE": fixture, "OKX_API_KEY": "",
-                "ROBINHOOD_USERNAME": "", "TOPSTEP_API_KEY": ""})
+                "ROBINHOOD_USERNAME": ""})
     proc = subprocess.run([sys.executable, os.path.join(_ROOT, "shared_scripts", script)] + argv,
                           capture_output=True, text=True, cwd=_ROOT, env=env, timeout=240)
     assert "network blocked by the htf offline fixture" not in proc.stderr, proc.stderr
@@ -150,18 +148,6 @@ def test_a_successful_neutral_trend_reports_ok_and_keeps_the_signal(tmp_path, su
             assert out["indicators"]["htf_trend"] == 0
             assert "htf_filter" not in off
             assert "HTF filter unavailable" not in proc.stderr
-
-
-def test_topstep_closed_market_return_reports_not_evaluated(tmp_path):
-    proc, out = _check(tmp_path, "topstep", "short", market_open=False)
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    assert out["market_open"] is False
-    assert out["signal"] == 0
-    assert out["htf_filter"]["status"] == "not_evaluated"
-    assert "market is closed" in out["htf_filter"]["reason"]
-    off_proc, off = _check(tmp_path, "topstep", "short", htf=False, market_open=False)
-    assert off_proc.returncode == 0
-    assert "htf_filter" not in off
 
 
 def test_error_payloads_keep_their_failure_handling(tmp_path, subtests):
