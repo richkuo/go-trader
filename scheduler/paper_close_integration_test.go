@@ -301,7 +301,6 @@ func pcSplitConfig(t *testing.T) *Config {
 		IntervalSeconds: 600,
 		Strategies: []StrategyConfig{
 			{ID: "pc-spot", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}, Capital: 10000},
-			{ID: "pc-fut", Type: "futures", Platform: "topstep", Args: []string{"sma", "ES", "1h", "--mode=paper"}, Capital: 50000},
 			hl,
 			src,
 			ocSC("pc-opt", "ibkr", "BTC"),
@@ -329,9 +328,6 @@ func pcSeed(t *testing.T, f *pcFixture, clock *paperFundingTestClock) {
 	spot := env.strat("pc-spot")
 	spot.Cash = 5000
 	spot.Positions["BTC/USDT"] = &Position{Symbol: "BTC/USDT", TradePositionID: "pc-spot-btc", Quantity: 0.1, AvgCost: 50000, Side: "long", OpenedAt: now}
-	fut := env.strat("pc-fut")
-	fut.Cash = 50000
-	fut.Positions["ES"] = &Position{Symbol: "ES", TradePositionID: "pc-fut-es", Quantity: 1, AvgCost: 5000, Side: "long", Multiplier: 50, OpenedAt: now}
 	opt := env.strat("pc-opt")
 	opt.Cash = 100000
 	liveExpiry, liveCutoff := pcIBKRExpiry(t, now.AddDate(0, 0, 30))
@@ -372,7 +368,6 @@ func TestPaperCloseIntegration(t *testing.T) {
 	pcSeed(t, f, clock)
 	clock.set(clock.ms + 60_000)
 	f.setMark("BTC/USDT", 55000)
-	f.setMark("ES", 5010)
 	f.setMark("ETH", 2100)
 	f.setMark("SOL", 90)
 
@@ -546,7 +541,7 @@ func TestPaperCloseIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("spot, futures, perps and options close at the mark with the operator reason", func(t *testing.T) {
+	t.Run("spot, perps and options close at the mark with the operator reason", func(t *testing.T) {
 		type want struct {
 			id      string
 			pnl     float64
@@ -557,7 +552,6 @@ func TestPaperCloseIntegration(t *testing.T) {
 		}
 		cases := []want{
 			{"pc-spot", 500, 5500, 1, 0, "SELECT COUNT(*) FROM closed_positions WHERE strategy_id = ? AND close_reason = 'operator_paper_close'"},
-			{"pc-fut", 500, 500, 1, 0, "SELECT COUNT(*) FROM closed_positions WHERE strategy_id = ? AND close_reason = 'operator_paper_close'"},
 			{"pc-hl", 50, 50, 1, 0, "SELECT COUNT(*) FROM closed_positions WHERE strategy_id = ? AND close_reason = 'operator_paper_close'"},
 			{"pc-opt", 200, 1200, 1, 1, "SELECT COUNT(*) FROM closed_option_positions WHERE strategy_id = ? AND close_reason = 'operator_paper_close'"},
 		}
@@ -608,12 +602,12 @@ func TestPaperCloseDashboardAndBreakerReasonUnchanged(t *testing.T) {
 	f := newPCFixture(t, cfg)
 	clock := withPaperFundingClock(t, 1_800_000_000_000)
 	pcSeed(t, f, clock)
-	f.setMark("ES", 4990)
+	f.setMark("ETH/USDT", 1500)
 
 	tradesTotal := func() int {
-		req := httptest.NewRequest(http.MethodGet, "/api/strategies/pc-fut/trades", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/strategies/pc-quote/trades", nil)
 		w := httptest.NewRecorder()
-		f.ss.handleAPIStrategyTrades(w, req, "pc-fut")
+		f.ss.handleAPIStrategyTrades(w, req, "pc-quote")
 		var body struct {
 			Total int `json:"total"`
 		}
@@ -621,38 +615,38 @@ func TestPaperCloseDashboardAndBreakerReasonUnchanged(t *testing.T) {
 		return body.Total
 	}
 	confirm := func(params string) (int, uiConfirmResponse) {
-		w := mutationPost(f.ss, f.ss.handleAPIConfirm, "/api/confirm", fmt.Sprintf(`{"action":"paper-close","strategy_id":"pc-fut","params":%s}`, params), nil)
+		w := mutationPost(f.ss, f.ss.handleAPIConfirm, "/api/confirm", fmt.Sprintf(`{"action":"paper-close","strategy_id":"pc-quote","params":%s}`, params), nil)
 		var resp uiConfirmResponse
 		_ = json.Unmarshal(w.Body.Bytes(), &resp)
 		return w.Code, resp
 	}
 	apply := func(nonce, params string) *httptest.ResponseRecorder {
-		h := func(w http.ResponseWriter, r *http.Request) { f.ss.handleAPIStrategyPaperClose(w, r, "pc-fut") }
-		return mutationPost(f.ss, h, "/api/strategies/pc-fut/paper-close", fmt.Sprintf(`{"nonce":%q,"params":%s}`, nonce, params), nil)
+		h := func(w http.ResponseWriter, r *http.Request) { f.ss.handleAPIStrategyPaperClose(w, r, "pc-quote") }
+		return mutationPost(f.ss, h, "/api/strategies/pc-quote/paper-close", fmt.Sprintf(`{"nonce":%q,"params":%s}`, nonce, params), nil)
 	}
 
-	code, c := confirm(`{"symbol":"ES"}`)
-	if code != http.StatusOK || c.ConfirmPhrase != "pc-fut" || !strings.Contains(c.Description, "ES long 1") {
+	code, c := confirm(`{"symbol":"ETH/USDT"}`)
+	if code != http.StatusOK || c.ConfirmPhrase != "pc-quote" || !strings.Contains(c.Description, "ETH/USDT long 1") {
 		t.Fatalf("confirm = %d %+v", code, c)
 	}
 	f.env.mu.Lock()
-	f.env.strat("pc-fut").Positions["ES"].Quantity = 2
+	f.env.strat("pc-quote").Positions["ETH/USDT"].Quantity = 2
 	f.env.mu.Unlock()
-	f.requireUnchanged("book change between confirm and apply", "pc-fut", func() string {
-		w := apply(c.Nonce, `{"symbol":"ES"}`)
+	f.requireUnchanged("book change between confirm and apply", "pc-quote", func() string {
+		w := apply(c.Nonce, `{"symbol":"ETH/USDT"}`)
 		return fmt.Sprintf("%d %s", w.Code, w.Body.String())
 	}, "409", "changed while you were confirming")
 	f.env.mu.Lock()
-	f.env.strat("pc-fut").Positions["ES"].Quantity = 1
+	f.env.strat("pc-quote").Positions["ETH/USDT"].Quantity = 1
 	f.env.mu.Unlock()
 
 	before := tradesTotal()
-	_, c = confirm(`{"symbol":"ES"}`)
+	_, c = confirm(`{"symbol":"ETH/USDT"}`)
 	if w := apply(c.Nonce, `{}`); w.Code != http.StatusForbidden {
 		t.Fatalf("a nonce bound to other params must be refused: %d %s", w.Code, w.Body.String())
 	}
-	_, c = confirm(`{"symbol":"ES"}`)
-	w := apply(c.Nonce, `{"symbol":"ES"}`)
+	_, c = confirm(`{"symbol":"ETH/USDT"}`)
+	w := apply(c.Nonce, `{"symbol":"ETH/USDT"}`)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "realized PnL $-500.00") {
 		t.Fatalf("dashboard paper-close = %d %s", w.Code, w.Body.String())
 	}

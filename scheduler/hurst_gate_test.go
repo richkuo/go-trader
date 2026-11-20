@@ -105,27 +105,6 @@ func hurstCaseSpotPaperOpenScalesWithMultiplierAndClosesDoNot(t *testing.T) {
 	}
 }
 
-func hurstCaseFuturesPaperOpenFloorsToZeroAndRefuses(t *testing.T) {
-	logger := silentStrategyLogger("fut-hurst")
-	spec := ContractSpec{Margin: 400, Multiplier: 1}
-	s := &StrategyState{ID: "fut-hurst", Type: "futures", Cash: 1000, Positions: map[string]*Position{}, TradeHistory: []Trade{}}
-	res, err := ExecuteFuturesSignalWithFillFeeSizedDeferredOpen(s, 1, "ES", 100, spec, 1, 0, 0, 0, "", 0, 1.0, logger)
-	if err != nil || res.TradesExecuted != 1 || s.Positions["ES"].Quantity != 2 {
-		t.Fatalf("expected 2 contracts, got %+v err=%v", s.Positions["ES"], err)
-	}
-	s2 := &StrategyState{ID: "fut-hurst", Type: "futures", Cash: 1000, Positions: map[string]*Position{}, TradeHistory: []Trade{}}
-	res2, err := ExecuteFuturesSignalWithFillFeeSizedDeferredOpen(s2, 1, "ES", 100, spec, 1, 0, 0, 0, "", 0, 0.3, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res2.TradesExecuted != 0 || len(s2.Positions) != 0 {
-		t.Fatalf("a floor-to-zero scaled size must refuse the open, got %d trades / %d positions", res2.TradesExecuted, len(s2.Positions))
-	}
-	if s2.Cash != 1000 {
-		t.Fatalf("a refused open must not move cash, got %v", s2.Cash)
-	}
-}
-
 func TestHurstEntrySizeMultiplier(t *testing.T) {
 	for _, tc := range []sigAdmCase{
 		{"FormulaAndClamps", hurstCaseHurstSizeMultiplierFormulaAndClamps},
@@ -133,7 +112,6 @@ func TestHurstEntrySizeMultiplier(t *testing.T) {
 		{"PerpsNotionalComposesWithRiskPerTradePct", hurstCasePerpsOpenNotionalSizedComposesWithRiskPerTradePct},
 		{"OutOfRangeIsNeutral", hurstCaseEntrySizeMultOutOfRangeIsNeutral},
 		{"SpotPaperOpenScalesAndClosesDoNot", hurstCaseSpotPaperOpenScalesWithMultiplierAndClosesDoNot},
-		{"FuturesPaperOpenFloorsToZeroAndRefuses", hurstCaseFuturesPaperOpenFloorsToZeroAndRefuses},
 	} {
 		t.Run(tc.name, tc.run)
 	}

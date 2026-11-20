@@ -27,10 +27,7 @@ var qpQuotes = []float64{0.00001234}
 
 var qpZeroPriceText = regexp.MustCompile(`\$0\.00(?:[^0-9]|$)`)
 
-const (
-	qpMarketOpen = "2026-10-21T12:00:00-04:00"
-	qpRoundedTo  = 0.12
-)
+const qpRoundedTo = 0.12
 
 var qpEnvKeys = []string{
 	"QP_CLOSE", "QP_QUOTE", "QP_SHAPE", "QP_NOW", "QP_TICKERS", "QP_CLOSES", "QP_CANDLES",
@@ -129,14 +126,6 @@ func qpRunRobinhood(sc StrategyConfig, prices map[string]float64, logger *Strate
 	return r.Price, price, ok
 }
 
-func qpRunTopStep(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (float64, float64, bool) {
-	r, _, price, ok := runTopStepCheck(sc, prices, PositionCtx{}, nil, "simple", nil, logger)
-	if r == nil {
-		return 0, price, ok
-	}
-	return r.Price, price, ok
-}
-
 func qpSpotSC(id, symbol string) StrategyConfig {
 	return StrategyConfig{ID: id, Type: "spot", Platform: "binanceus", Script: "shared_scripts/check_strategy.py",
 		Args: []string{"sma_crossover", symbol, "1h", "--mode=paper"}, Capital: 100, MaxDrawdownPct: 50}
@@ -161,9 +150,6 @@ func qpRunners() []qpRunner {
 			symbol: "BTC/USDT", extra: map[string]string{"QP_ALL_CLOSED": "1"}, run: qpRunSpot},
 		{name: "robinhood", sc: StrategyConfig{ID: "qp-rh", Type: "spot", Platform: "robinhood", Script: "shared_scripts/check_robinhood.py",
 			Args: []string{"sma_crossover", "DOGE", "1h", "--mode=paper"}, Capital: 100}, symbol: "DOGE", quoteVar: true, run: qpRunRobinhood},
-		{name: "topstep", sc: StrategyConfig{ID: "qp-ts", Type: "futures", Platform: "topstep", Script: "shared_scripts/check_topstep.py",
-			Args: []string{"sma_crossover", "MES", "1h", "--mode=paper"}, Capital: 5000}, symbol: "MES", quoteVar: true,
-			extra: map[string]string{"QP_NOW": qpMarketOpen}, run: qpRunTopStep},
 	}
 }
 

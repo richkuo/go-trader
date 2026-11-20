@@ -121,11 +121,9 @@ func htfITHourlyHTF(mode string, now int64) any {
 }
 
 type htfITFixture struct {
-	HTF        string
-	Spot       string
-	Fut        string
-	NoPrimary  bool
-	MarketOpen *bool
+	HTF       string
+	Spot      string
+	NoPrimary bool
 }
 
 func htfITLastClose(rows [][]any) float64 {
@@ -136,28 +134,20 @@ func htfITWriteFixture(t *testing.T, path string, f htfITFixture) string {
 	t.Helper()
 	now := htfITNow()
 	spot := htfITBars(200, htfITHour, now, f.Spot)
-	fut := htfITBars(200, htfITHour, now, f.Fut)
 	htf := htfITHTF(f.HTF, now)
-	var spotRows, futRows any = spot, fut
+	var spotRows any = spot
 	if f.NoPrimary {
-		spotRows, futRows = [][]any{}, [][]any{}
-	}
-	open := true
-	if f.MarketOpen != nil {
-		open = *f.MarketOpen
+		spotRows = [][]any{}
 	}
 	doc := map[string]any{
 		"ccxt": map[string]any{
 			"BTC/USDT|1h": spotRows, "BTC/USDT|4h": htf,
-			"BTC/USDT:USDT|1h": futRows, "BTC/USDT:USDT|4h": htf,
 		},
-		"tickers": map[string]any{"BTC/USDT": htfITLastClose(spot), "BTC/USDT:USDT": htfITLastClose(fut)},
+		"tickers": map[string]any{"BTC/USDT": htfITLastClose(spot)},
 		"yahoo": map[string]any{
 			"BTC-USD|30m": spotRows, "BTC-USD|1h": htfITHourlyHTF(f.HTF, now),
-			"ES=F|1h": futRows, "ES=F|4h": htf,
 		},
-		"yahoo_price":         map[string]any{"BTC-USD": htfITLastClose(spot), "ES=F": htfITLastClose(fut)},
-		"topstep_market_open": open,
+		"yahoo_price": map[string]any{"BTC-USD": htfITLastClose(spot)},
 	}
 	blob, err := json.Marshal(doc)
 	if err != nil {
@@ -213,7 +203,6 @@ func htfITCaseHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses(t *tes
 	strats := []strat{
 		{"bus-atrb-btc", "BTC/USDT", true, map[string]any{"type": "spot", "platform": "binanceus", "script": "shared_scripts/check_strategy.py", "args": []string{"atr_breakout", "BTC/USDT", "1h"}, "capital": 1000}},
 		{"rh-atrb-btc", "BTC", true, map[string]any{"type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py", "args": []string{"atr_breakout", "BTC", "30m", "--mode=paper"}, "capital": 1000}},
-		{"ts-brk-es", "ES", false, map[string]any{"type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py", "args": []string{"breakout", "ES", "1h", "--mode=paper"}, "capital": 50000, "close_strategy": map[string]any{"name": "tiered_tp_pct"}}},
 	}
 	var entries []any
 	for _, s := range strats {
@@ -262,7 +251,7 @@ func htfITCaseHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses(t *tes
 		return strings.Contains(log, "HTF filter unavailable for "+s.symbol+" 4h: ")
 	}
 
-	flatHeld := run("flat-short-htf", htfITFixture{HTF: "short", Spot: "up", Fut: "up"})
+	flatHeld := run("flat-short-htf", htfITFixture{HTF: "short", Spot: "up"})
 	for _, s := range strats {
 		if !htfITHeld(flatHeld, s.id) || !pythonLine(flatHeld, s) || !strings.Contains(flatHeld, "49 4h candles available for "+s.symbol+" (need 50)") {
 			t.Errorf("%s: a flat entry with a 49-row HTF frame must log the Python unavailable line and the Go hold", s.id)
@@ -272,7 +261,7 @@ func htfITCaseHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses(t *tes
 		}
 	}
 
-	neutral := run("flat-neutral-htf", htfITFixture{HTF: "neutral", Spot: "up", Fut: "up"})
+	neutral := run("flat-neutral-htf", htfITFixture{HTF: "neutral", Spot: "up"})
 	for _, s := range strats {
 		if strings.Contains(neutral, "["+s.id+"] [WARN] HTF filter:") {
 			t.Errorf("%s: a successful neutral HTF trend must pass the entry", s.id)
@@ -282,7 +271,7 @@ func htfITCaseHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses(t *tes
 		}
 	}
 
-	addition := run("long-error-htf", htfITFixture{HTF: "error", Spot: "up", Fut: "up"})
+	addition := run("long-error-htf", htfITFixture{HTF: "error", Spot: "up"})
 	for _, s := range strats {
 		if !pythonLine(addition, s) {
 			t.Errorf("%s: a failed HTF fetch must report unavailable", s.id)
@@ -295,7 +284,7 @@ func htfITCaseHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses(t *tes
 		}
 	}
 
-	closes := run("long-nan-htf-closes", htfITFixture{HTF: "nan", Spot: "down", Fut: "tp"})
+	closes := run("long-nan-htf-closes", htfITFixture{HTF: "nan", Spot: "down"})
 	for _, s := range strats {
 		nonFinite := "4h close values for " + s.symbol + " are not finite"
 		if s.id == "rh-atrb-btc" {
@@ -351,12 +340,6 @@ func htfITConsumers(stub string) []htfITConsumer {
 			base("robinhood", nil),
 			func(sc StrategyConfig, l *StrategyLogger) bool {
 				_, _, _, ok := runRobinhoodCheck(sc, prices, PositionCtx{}, nil, "simple", notifier, l)
-				return ok
-			}},
-		{"topstep futures", StrategyConfig{ID: "htf-c-ts", Type: "futures", Platform: "topstep", Script: stub, Args: []string{"breakout", "ES", "1h", "--mode=paper"}, HTFFilter: true},
-			base("topstep", map[string]any{"symbol": "ES", "market_open": true, "contract_spec": map[string]any{"tick_size": 0.25, "tick_value": 12.5, "multiplier": 50, "margin": 1000}}),
-			func(sc StrategyConfig, l *StrategyLogger) bool {
-				_, _, _, ok := runTopStepCheck(sc, prices, PositionCtx{}, nil, "simple", notifier, l)
 				return ok
 			}},
 		{"hyperliquid perps", StrategyConfig{ID: "htf-c-hl", Type: "perps", Platform: "hyperliquid", Script: stub, Args: []string{"breakout", "BTC", "1h", "--mode=paper"}, HTFFilter: true},
@@ -422,8 +405,15 @@ func htfITCaseHTFFilterIntegrationConsumersValidateTheContract(t *testing.T) {
 		})
 	}
 
-	hl := htfITConsumers(stub)[3]
-	sc := hl.sc
+	var sc StrategyConfig
+	for _, c := range htfITConsumers(stub) {
+		if c.sc.Platform == "hyperliquid" {
+			sc = c.sc
+		}
+	}
+	if sc.Platform != "hyperliquid" {
+		t.Fatal("the consumer list must include the hyperliquid perps consumer")
+	}
 	var buf bytes.Buffer
 	degraded := degradedHyperliquidResult(sc, "BTC", "paper", "no ready higher-timeframe frame for BTC|4h", 100)
 	res, _, _, ok := finishHyperliquidCheck(&sc, map[string]float64{"BTC": 100}, PositionCtx{}, nil, NewMultiNotifier(), &StrategyLogger{stratID: sc.ID, writer: &buf}, degraded, "", "", scriptFailureError, false)
@@ -530,8 +520,8 @@ func htfITCaseHTFFilterIntegrationAlertsRouteThrottleAndRecover(t *testing.T) {
 		_, _, _, ok := runSpotCheck(sc, prices, PositionCtx{}, nil, "simple", notifier, &StrategyLogger{stratID: sc.ID, writer: &logBuf})
 		return ok
 	}
-	short := htfITFixture{HTF: "short", Spot: "up", Fut: "up"}
-	neutral := htfITFixture{HTF: "neutral", Spot: "up", Fut: "up"}
+	short := htfITFixture{HTF: "short", Spot: "up"}
+	neutral := htfITFixture{HTF: "neutral", Spot: "up"}
 	expectNone := func(step string) {
 		t.Helper()
 		if m, d := sink.drain(); len(m)+len(d) != 0 {

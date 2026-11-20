@@ -1,46 +1,5 @@
 {
   "bookings": {
-    "futures_open_close": {
-      "book": {
-        "cash": "20726.75",
-        "circuit_breaker": false,
-        "closed": [
-          "{\"avg_cost\":\"5002.5\",\"close_price\":\"5007.495\",\"close_reason\":\"signal\",\"quantity\":\"3\",\"realized_pnl\":\"741.75\",\"side\":\"long\",\"symbol\":\"ES\"}"
-        ],
-        "consecutive_losses": 0,
-        "current_drawdown": "0",
-        "daily_pnl": "741.75",
-        "options": {},
-        "peak_value": "20000",
-        "positions": {
-          "ES": {
-            "added_notional_usd": "0",
-            "avg_cost": "5007.495",
-            "hedge_for": "",
-            "initial_quantity": "3",
-            "last_add_price": "0",
-            "leverage": "0",
-            "multiplier": "50",
-            "quantity": "3",
-            "risk_anchor_price": "0",
-            "scale_in_count": 0,
-            "side": "short",
-            "symbol": "ES"
-          }
-        },
-        "trades": [
-          "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Close long 3 contracts, PnL: $741.75 (fee $7.50)\",\"exchange_fee\":\"7.5\",\"exchange_order_id\":\"\",\"fee_source\":\"modeled\",\"is_close\":true,\"pnl_gross\":true,\"price\":\"5007.495\",\"quantity\":\"3\",\"realized_pnl\":\"749.25\",\"regime\":\"\",\"side\":\"sell\",\"strategy_id\":\"ts-book\",\"symbol\":\"ES\",\"trade_type\":\"futures\",\"value\":\"751124.25\"}",
-          "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Open long 3 contracts @ $5002.50 (fee $7.50)\",\"exchange_fee\":\"7.5\",\"exchange_order_id\":\"\",\"fee_source\":\"modeled\",\"is_close\":false,\"pnl_gross\":true,\"price\":\"5002.5\",\"quantity\":\"3\",\"realized_pnl\":\"0\",\"regime\":\"\",\"side\":\"buy\",\"strategy_id\":\"ts-book\",\"symbol\":\"ES\",\"trade_type\":\"futures\",\"value\":\"4500\"}",
-          "{\"cost_model_version\":1,\"cost_policy_id\":\"\",\"details\":\"Open short 3 contracts @ $5007.49 (fee $7.50)\",\"exchange_fee\":\"7.5\",\"exchange_order_id\":\"\",\"fee_source\":\"modeled\",\"is_close\":false,\"pnl_gross\":true,\"price\":\"5007.495\",\"quantity\":\"3\",\"realized_pnl\":\"0\",\"regime\":\"\",\"side\":\"sell\",\"strategy_id\":\"ts-book\",\"symbol\":\"ES\",\"trade_type\":\"futures\",\"value\":\"4500\"}"
-        ]
-      },
-      "result": [
-        1,
-        true,
-        2,
-        true
-      ]
-    },
     "hl_book_close": {
       "book": {
         "cash": "10197.39",

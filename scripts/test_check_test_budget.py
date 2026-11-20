@@ -68,7 +68,7 @@ CANONICAL_SOURCE = [
     '    (["--mode=Paper"], "invalid mode input"),',
     '    (["--mode=live", "--allow-no-edge=1"], "invalid acknowledgement"),',
     "]",
-    'SCRIPTS = [("check_okx.py", ["rsi"]), ("check_topstep.py", ["rsi"])]',
+    'SCRIPTS = [("check_okx.py", ["rsi"]), ("check_robinhood.py", ["rsi"])]',
     "",
     "",
     '@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)',

@@ -406,16 +406,7 @@ def test_requests_clients_route_through_proxy(tmp_path, servers, subtests):
                 import requests
                 attempt("module_get", lambda: requests.get("https://api.coinbase.com/v2/time", timeout=20))
                 attempt("session_get", lambda: requests.Session().get("https://api.gemini.com/v1/symbols", timeout=20))
-                os.environ.update({{"TOPSTEP_API_KEY": "k", "TOPSTEP_API_SECRET": "s", "TOPSTEP_ACCOUNT_ID": "1"}})
-                sys.path.insert(0, os.path.join(REPO, "platforms", "topstep"))
-                sys.modules.pop("utils", None)
                 import importlib.util
-                spec = importlib.util.spec_from_file_location("topstep_adapter", os.path.join(REPO, "platforms", "topstep", "adapter.py"))
-                topstep = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(topstep)
-                live = topstep.TopStepExchangeAdapter(mode="live")
-                RESULTS["topstep_session"] = session_state(live._session)
-                attempt("topstep", live.get_open_positions_raise)
                 os.environ["ANTHROPIC_API_KEY"] = "test-key"
                 spec = importlib.util.spec_from_file_location("llm_review_driver", os.path.join(REPO, "shared_scripts", "llm_review.py"))
                 review = importlib.util.module_from_spec(spec)
@@ -427,15 +418,13 @@ def test_requests_clients_route_through_proxy(tmp_path, servers, subtests):
             result = _run(driver, _contract_env(case_dir, raw))
             _assert_no_sentinel(result)
             results = _results(result)
-            for label in ("module_get", "session_get", "topstep", "advisory"):
+            for label in ("module_get", "session_get", "advisory"):
                 assert results[label]["ok"] is False, results
-            assert results["topstep_session"] == {"trust_env": False, "proxies": {"http": "policy-url", "https": "policy-url"}}
             assert results["child"][0] == 0
-            for host in ("api.coinbase.com", "api.gemini.com", "api.topstepx.com", "api.anthropic.com",
-                         "api.hyperliquid-testnet.xyz"):
+            for host in ("api.coinbase.com", "api.gemini.com", "api.anthropic.com", "api.hyperliquid-testnet.xyz"):
                 _assert_routed(proxy, kind, host)
             outcome = _outcome(result)
-            assert outcome["requests"] >= 4
+            assert outcome["requests"] >= 3
             assert outcome["proxy_failures"] == outcome["requests"]
 
 
@@ -521,11 +510,8 @@ def test_yfinance_native_curl_routes_through_proxy(tmp_path, servers, subtests):
             case_dir.mkdir()
             proxy, raw = _start_proxy(servers, kind)
             driver = _driver(case_dir, """
-                import importlib.util
-                spec = importlib.util.spec_from_file_location("topstep_adapter", os.path.join(REPO, "platforms", "topstep", "adapter.py"))
-                topstep = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(topstep)
-                RESULTS["price"] = topstep.TopStepExchangeAdapter(mode="paper")._get_yahoo_price("ES")
+                import yfinance as yf
+                attempt("history", lambda: yf.Ticker("ES=F").history(period="1d", interval="1h"))
                 from yfinance.config import YfConfig
                 RESULTS["yf_proxy"] = mark(YfConfig.network.proxy)
                 from curl_cffi import requests as curl_requests
@@ -534,7 +520,7 @@ def test_yfinance_native_curl_routes_through_proxy(tmp_path, servers, subtests):
             result = _run(driver, _contract_env(case_dir, raw))
             _assert_no_sentinel(result)
             results = _results(result)
-            assert results["price"] == 0.0
+            assert results["history"]["ok"] is False
             assert results["yf_proxy"] == "policy-url"
             assert results["native_curl"]["ok"] is False
             yahoo = [e for e in proxy.recorder.snapshot() if e["kind"] == "connect" and e["target"].endswith("yahoo.com:443")]
@@ -737,7 +723,7 @@ def test_inactive_mode_sets_no_proxies(tmp_path):
         assert results["env"] == [None, None, None, None]
 
 
-ALL_FAMILIES = ["ccxt", "hyperliquid", "robinhood", "topstep", "yfinance", "requests", "advisory"]
+ALL_FAMILIES = ["ccxt", "hyperliquid", "robinhood", "yfinance", "requests", "advisory"]
 CHECK_TRACE_PREFIX = "EGRESS_CHECK_TRACE "
 CHECK_WRAPPER = textwrap.dedent(f"""
     import json

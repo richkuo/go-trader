@@ -295,15 +295,6 @@ func TestPlanKillSwitchClose(t *testing.T) {
 					in.RHSettle = func() robinhoodSettleOutcome { return robinhoodSettleOutcome{} }
 				},
 			},
-			{
-				name: "TopStep", want: "venue down",
-				wire: func(in *KillSwitchCloseInputs) {
-					in.TSLiveAll = []StrategyConfig{{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
-						Args: []string{"momentum", "ES", "1h", "--mode=live"}}}
-					in.TSCloser, _ = stubTSLiveCloser(map[string]error{"ES": fmt.Errorf("venue down")})
-					in.TSFetcher, _ = stubTSPositionsFetcher([]TopStepPosition{{Coin: "ES", Size: 2}}, nil)
-				},
-			},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -681,33 +672,6 @@ func stubRHPositionsFetcher(positions []RobinhoodPosition, err error) (Robinhood
 	return fetcher, &calls
 }
 
-func stubTSLiveCloser(errs map[string]error) (TopStepLiveCloser, *[]string) {
-	var calls []string
-	closer := func(symbol string) (*TopStepCloseResult, error) {
-		calls = append(calls, symbol)
-		if err, ok := errs[symbol]; ok && err != nil {
-			return nil, err
-		}
-		return &TopStepCloseResult{
-			Close:    &TopStepClose{Symbol: symbol, Fill: &TopStepCloseFill{TotalContracts: 1, AvgPx: 5000}},
-			Platform: "topstep",
-		}, nil
-	}
-	return closer, &calls
-}
-
-func stubTSPositionsFetcher(positions []TopStepPosition, err error) (TopStepPositionsFetcher, *int) {
-	var calls int
-	fetcher := func() ([]TopStepPosition, error) {
-		calls++
-		if err != nil {
-			return nil, err
-		}
-		return positions, nil
-	}
-	return fetcher, &calls
-}
-
 type killSwitchPlatformHarness struct {
 	name         string
 	label        string
@@ -744,33 +708,6 @@ func killSwitchPlatformHarnesses() []killSwitchPlatformHarness {
 			unconfigured: func(plan KillSwitchClosePlan) []string {
 				var out []string
 				for _, p := range plan.RHUnconfigured {
-					out = append(out, p.Coin)
-				}
-				return out
-			},
-		},
-		{
-			name: "TopStep", label: "TopStep", coin: "ES", extraCoin: "NQ",
-			build: func(coins []string, closeErrs map[string]error, fetchErr error) (KillSwitchCloseInputs, *[]string, *int) {
-				var positions []TopStepPosition
-				for _, c := range coins {
-					positions = append(positions, TopStepPosition{Coin: c, Size: 2, AvgPrice: 5000, Side: "long"})
-				}
-				closer, calls := stubTSLiveCloser(closeErrs)
-				fetcher, fetchCalls := stubTSPositionsFetcher(positions, fetchErr)
-				return KillSwitchCloseInputs{
-					TSLiveAll: []StrategyConfig{{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
-						Args: []string{"momentum", "ES", "1h", "--mode=live"}}},
-					TSCloser:        closer,
-					TSFetcher:       fetcher,
-					PortfolioReason: "drawdown reason",
-					CloseTimeout:    time.Second,
-				}, calls, fetchCalls
-			},
-			errs: func(plan KillSwitchClosePlan) map[string]error { return plan.TSCloseReport.Errors },
-			unconfigured: func(plan KillSwitchClosePlan) []string {
-				var out []string
-				for _, p := range plan.TSUnconfigured {
 					out = append(out, p.Coin)
 				}
 				return out

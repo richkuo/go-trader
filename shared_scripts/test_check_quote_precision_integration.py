@@ -9,13 +9,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STUB_DIR = os.path.join(ROOT, "shared_scripts", "testdata", "quote_precision")
 CHECK_STRATEGY = os.path.join(ROOT, "shared_scripts", "check_strategy.py")
 CHECK_ROBINHOOD = os.path.join(ROOT, "shared_scripts", "check_robinhood.py")
-CHECK_TOPSTEP = os.path.join(ROOT, "shared_scripts", "check_topstep.py")
 CHECK_PRICE = os.path.join(ROOT, "shared_scripts", "check_price.py")
 CHECK_OPTIONS = os.path.join(ROOT, "shared_scripts", "check_options.py")
 
 QUOTES = (0.1234, 0.006, 0.00001234)
-MARKET_OPEN = "2026-10-21T12:00:00-04:00"
-MARKET_CLOSED = "2026-10-24T12:00:00-04:00"
 CREDENTIALS = (
     "OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE", "OKX_SANDBOX",
     "ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET",
@@ -52,8 +49,6 @@ CHECK_CASES = {
     "robinhood_adapter_quote": (CHECK_ROBINHOOD, ["sma_crossover", "DOGE", "1h", "--mode=paper"], "quote", {}),
     "robinhood_candle_fallback_after_missing_quote": (CHECK_ROBINHOOD, ["sma_crossover", "DOGE", "1h", "--mode=paper"], "close", {}),
     "robinhood_candle_fallback_after_quote_error": (CHECK_ROBINHOOD, ["sma_crossover", "DOGE", "1h", "--mode=paper"], "close", {"QP_QUOTE": "error"}),
-    "topstep_adapter_quote": (CHECK_TOPSTEP, ["sma_crossover", "MES", "1h", "--mode=paper"], "quote", {"QP_NOW": MARKET_OPEN}),
-    "topstep_candle_fallback_after_missing_quote": (CHECK_TOPSTEP, ["sma_crossover", "MES", "1h", "--mode=paper"], "close", {"QP_NOW": MARKET_OPEN}),
 }
 
 
@@ -78,18 +73,6 @@ def test_non_option_checks_emit_the_selected_quote_exactly(quote, tmp_path, subt
             assert out["signal"] == 1, out
             assert isinstance(out["price"], float)
             assert out["price"] == quote
-            if script == CHECK_TOPSTEP:
-                assert out["market_open"] is True
-
-
-def test_topstep_closed_market_keeps_its_refusal(tmp_path):
-    proc = _run(CHECK_TOPSTEP, ["sma_crossover", "MES", "1h", "--mode=paper"],
-                {"QP_NOW": MARKET_CLOSED, "QP_CLOSE": 0.1234, "QP_QUOTE": 0.1234, "QP_SHAPE": "cross_up"}, tmp_path=tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    out = _single_document(proc)
-    assert out["market_open"] is False
-    assert out["signal"] == 0
-    assert out["price"] == 0
 
 
 def test_check_price_emits_the_exact_ticker_quote(tmp_path):

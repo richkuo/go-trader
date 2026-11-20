@@ -149,40 +149,6 @@ def _install_model_price_controls():
     sys.meta_path.insert(0, PricingFinder())
 
 
-def _install_frozen_topstep_clock(iso):
-    import datetime as _dt
-    import importlib.abc
-    import importlib.machinery
-
-    fixed = _dt.datetime.fromisoformat(iso)
-
-    class FrozenDatetime(_dt.datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return fixed.astimezone(tz) if tz is not None else fixed.replace(tzinfo=None)
-
-    suffix = os.path.join("platforms", "topstep", "adapter.py")
-
-    class TopStepClockFinder(importlib.abc.MetaPathFinder):
-        def find_spec(self, name, path, target=None):
-            if name != "adapter":
-                return None
-            spec = importlib.machinery.PathFinder.find_spec(name, path)
-            if spec is None or not str(spec.origin or "").endswith(suffix):
-                return spec
-            loader = spec.loader
-            original = loader.exec_module
-
-            def exec_module(module):
-                original(module)
-                module.datetime = FrozenDatetime
-
-            loader.exec_module = exec_module
-            return spec
-
-    sys.meta_path.insert(0, TopStepClockFinder())
-
-
 def _install():
     real_connect = socket.socket.connect
 
@@ -258,10 +224,6 @@ def _install():
         cls.load_markets = load_markets
 
     _install_model_price_controls()
-
-    frozen_now = os.environ.get("QP_NOW", "")
-    if frozen_now:
-        _install_frozen_topstep_clock(frozen_now)
 
     def dated_history(self, interval, kwargs):
         _log({"call": "yahoo_history_window", "symbol": getattr(self, "ticker", ""), "interval": interval,

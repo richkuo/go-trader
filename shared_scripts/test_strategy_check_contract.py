@@ -16,7 +16,6 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 CHECK_HL = os.path.join(REPO, "shared_scripts", "check_hyperliquid.py")
 CHECK_SPOT = os.path.join(REPO, "shared_scripts", "check_strategy.py")
 CHECK_ROBINHOOD = os.path.join(REPO, "shared_scripts", "check_robinhood.py")
-CHECK_TOPSTEP = os.path.join(REPO, "shared_scripts", "check_topstep.py")
 HTF_OFFLINE = os.path.join(REPO, "shared_scripts", "testdata", "htf_offline")
 QUOTE_STUB = os.path.join(REPO, "shared_scripts", "testdata", "quote_precision")
 CREDENTIAL_PREFIXES = ("HYPERLIQUID", "OKX", "ROBINHOOD", "TOPSTEP", "PROJECTX")
@@ -1793,7 +1792,7 @@ def quote_stub_check(tmp_path, script, argv, shape):
     for key in [k for k in environ if k.startswith("QP_")]:
         environ.pop(key)
     environ.update({"QP_STUB": "1", "PYTHONPATH": QUOTE_STUB, "HOME": str(tmp_path), "QP_SHAPE": shape,
-                    "QP_CLOSE": "100", "QP_NOW": "2026-10-21T12:00:00-04:00"})
+                    "QP_CLOSE": "100"})
     proc = subprocess.run([sys.executable, script] + argv, capture_output=True, text=True, cwd=REPO, env=environ,
                           timeout=240)
     assert proc.returncode == 0, proc.stderr[-2000:]
@@ -1801,7 +1800,7 @@ def quote_stub_check(tmp_path, script, argv, shape):
 
 
 @pytest.mark.parametrize("name", sorted(SPOT_CASES))
-def test_hyperliquid_requires_mode_and_topstep_and_robinhood_export_full_precision_diagnostics(name, tmp_path):
+def test_hyperliquid_requires_mode_and_robinhood_exports_full_precision_diagnostics(name, tmp_path):
     case = SPOT_CASES[name]
     params = json.dumps(case.venue_params)
     refused = run([name, "BTC", CASES[name].tf, "--market-stdin", "--strategy-refs", refs(CASES[name])],
@@ -1812,8 +1811,6 @@ def test_hyperliquid_requires_mode_and_topstep_and_robinhood_export_full_precisi
     assert payload(refused)["signal"] == 0 and "Fetching" not in refused.stderr
     up, down = case.venue_shapes
     rows = [
-        (CHECK_TOPSTEP, ["MES", "1h"], up, 1, "entry_long"),
-        (CHECK_TOPSTEP, ["MES", "1h"], down, -1, "entry_short"),
         (CHECK_ROBINHOOD, ["BTC", "1h"], up, 1, "entry_long"),
         (CHECK_ROBINHOOD, ["BTC", "1h"], down, 0, case.suppressed),
     ]

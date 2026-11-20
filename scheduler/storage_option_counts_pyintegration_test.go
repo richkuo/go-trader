@@ -83,7 +83,7 @@ func TestOrphanOptionPositionsCLIAndStartupIntegration(t *testing.T) {
 		t.Fatalf("option rows after inspection = %d, want 2 (read-only)", n)
 	}
 
-	fixture := htfITWriteFixture(t, filepath.Join(dir, "market.json"), htfITFixture{HTF: "neutral", Spot: "up", Fut: "up"})
+	fixture := htfITWriteFixture(t, filepath.Join(dir, "market.json"), htfITFixture{HTF: "neutral", Spot: "up"})
 	cmd = exec.Command(bin, "--config", cfgPath, "--once", "--status-port", strconv.Itoa(htfITFreePort(t)))
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(),

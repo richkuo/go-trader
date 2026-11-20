@@ -29,7 +29,7 @@ func TestEffectiveMarginPerTradeUSDOmittedReturnsZero(t *testing.T) {
 }
 
 func TestLoadConfigLiveCredentialChecksFollowIsLiveArgs(t *testing.T) {
-	for _, v := range []string{"HYPERLIQUID_SECRET_KEY", "TOPSTEP_API_KEY", "TOPSTEP_API_SECRET", "TOPSTEP_ACCOUNT_ID", "ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET"} {
+	for _, v := range []string{"HYPERLIQUID_SECRET_KEY", "ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET"} {
 		t.Setenv(v, "")
 	}
 	hl := func(args ...string) map[string]interface{} {
@@ -38,10 +38,6 @@ func TestLoadConfigLiveCredentialChecksFollowIsLiveArgs(t *testing.T) {
 	}
 	rh := func(args ...string) map[string]interface{} {
 		return map[string]interface{}{"id": "rh-btc", "type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py",
-			"args": args, "capital": 1000.0, "max_drawdown_pct": 10.0}
-	}
-	ts := func(args ...string) map[string]interface{} {
-		return map[string]interface{}{"id": "ts-es", "type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py",
 			"args": args, "capital": 1000.0, "max_drawdown_pct": 10.0}
 	}
 	rhWant := []string{"strategy[rh-btc]: --mode=live requires ROBINHOOD_USERNAME env var", "strategy[rh-btc]: --mode=live requires ROBINHOOD_PASSWORD env var", "strategy[rh-btc]: --mode=live requires ROBINHOOD_TOTP_SECRET env var"}
@@ -56,9 +52,7 @@ func TestLoadConfigLiveCredentialChecksFollowIsLiveArgs(t *testing.T) {
 			[]string{"strategy[hl-eth]: --mode=live requires HYPERLIQUID_SECRET_KEY env var"}},
 		{"robinhood split live", rh("momentum_pro", "BTC", "1h", "--mode", "live"), false, rhWant},
 		{"robinhood equals live", rh("momentum_pro", "BTC", "1h", "--mode=live"), false, rhWant},
-		{"topstep split live", ts("momentum", "ES", "1h", "--mode", "live"), false,
-			[]string{"strategy[ts-es]: --mode=live requires TOPSTEP_API_KEY env var", "strategy[ts-es]: --mode=live requires TOPSTEP_API_SECRET env var", "strategy[ts-es]: --mode=live requires TOPSTEP_ACCOUNT_ID env var"}},
-		{"topstep split live probe skips credentials", ts("momentum", "ES", "1h", "--mode", "live"), true, nil},
+		{"robinhood split live probe skips credentials", rh("momentum_pro", "BTC", "1h", "--mode", "live"), true, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -760,15 +760,15 @@ def test_config_strategy_entries_rejects_duplicate_strategy_subset(tmp_path):
 
 def test_main_auto_resolves_mixed_registry_per_strategy(tmp_path, monkeypatch):
     cfg = _sma_config(sid="spot-one")
-    futures = dict(cfg["strategies"][0])
-    futures.update({
-        "id": "futures-one",
-        "type": "futures",
-        "platform": "topstep",
-        "args": ["breakout", "ES", "1h"],
+    perps = dict(cfg["strategies"][0])
+    perps.update({
+        "id": "perps-one",
+        "type": "perps",
+        "platform": "hyperliquid",
+        "args": ["breakout", "ETH", "1h"],
         "open_strategy": {"name": "breakout", "params": {}},
     })
-    cfg["strategies"].append(futures)
+    cfg["strategies"].append(perps)
     path = _write_config(tmp_path, cfg)
     loaded = []
     tuned = []
@@ -791,7 +791,7 @@ def test_main_auto_resolves_mixed_registry_per_strategy(tmp_path, monkeypatch):
     assert loaded == ["spot", "futures"]
     assert tuned == [
         ("spot-one", "spot", "spot"),
-        ("futures-one", "futures", "futures"),
+        ("perps-one", "futures", "futures"),
     ]
 
 

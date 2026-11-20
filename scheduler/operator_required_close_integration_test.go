@@ -680,7 +680,7 @@ func TestOperatorRequiredClose(t *testing.T) {
 		f.fireDrawdown("rh-opt")
 		f.env.mu.Lock()
 		auto := f.env.strat("auto-1")
-		for _, key := range []string{PlatformPendingCloseRobinhood, PlatformPendingCloseHyperliquid, PlatformPendingCloseTopStep} {
+		for _, key := range []string{PlatformPendingCloseRobinhood, PlatformPendingCloseHyperliquid} {
 			auto.RiskState.setPendingCircuitClose(key, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 1}}})
 		}
 		f.env.mu.Unlock()
@@ -735,7 +735,7 @@ func TestOperatorRequiredClose(t *testing.T) {
 			{"no entry", orcOwnerID, "", "auto-1", "", "has no operator-required circuit-breaker entry", owner},
 			{"unknown platform", orcOwnerID, "", "rh-opt", "binanceus", "is not okx_spot or robinhood_options", owner},
 		}
-		for _, key := range []string{PlatformPendingCloseRobinhood, PlatformPendingCloseHyperliquid, PlatformPendingCloseTopStep} {
+		for _, key := range []string{PlatformPendingCloseRobinhood, PlatformPendingCloseHyperliquid} {
 			refusals = append(refusals, struct {
 				label, user, guild, strategy, platform, want string
 				c                                            *orcCommander
@@ -748,7 +748,7 @@ func TestOperatorRequiredClose(t *testing.T) {
 			}
 			assertUnchanged(r.label, msg)
 		}
-		if msg := owner.run(orcOwnerID, "", orcCommandOpts("auto-1", ""), "", nil); !strings.Contains(msg, "Other pending closes (hyperliquid, robinhood, topstep) have automatic close owners") {
+		if msg := owner.run(orcOwnerID, "", orcCommandOpts("auto-1", ""), "", nil); !strings.Contains(msg, "Other pending closes (hyperliquid, robinhood) have automatic close owners") {
 			t.Fatalf("the refusal must list the automatic pending closes in sorted order: %q", msg)
 		}
 

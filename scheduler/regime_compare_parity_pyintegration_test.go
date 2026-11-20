@@ -532,17 +532,6 @@ func regimeReadinessAdmissionIntegration(t *testing.T, bundles []*RegimeBundle, 
 	if s := paperBook(1, true); len(s.TradeHistory) != 1 || s.Positions["BTC"] == nil || s.Positions["BTC"].Side != "long" {
 		t.Fatalf("paper cold same-side add changed the book: %+v trades %d", s.Positions, len(s.TradeHistory))
 	}
-	futures := NewStrategyState(StrategyConfig{ID: "readiness-topstep", Type: "futures", Platform: "topstep", Capital: 10000})
-	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 1000}
-	if _, err := ExecuteFuturesSignalWithFillFee(futures, 1, "ES", 5000, spec, 2.5, 1, 0, 0, "", 0, logger); err != nil || futures.Positions["ES"] == nil {
-		t.Fatalf("futures long open: %v", err)
-	}
-	futuresSignal, futuresClose := -1, 0.0
-	applyRegimeReadinessHold(hold, &futuresSignal, &futuresClose, futures.Positions["ES"].Quantity, futures.Positions["ES"].Side, true, true, logger)
-	if _, err := ExecuteFuturesSignalWithFillFee(futures, futuresSignal, "ES", 5000, spec, 2.5, 1, 0, 0, "", futuresClose, logger); err != nil || len(futures.Positions) != 0 {
-		t.Fatalf("futures cold reversal left %+v: %v", futures.Positions, err)
-	}
-	t.Logf("readiness hold futures reversal: long ES closed, open positions %d", len(futures.Positions))
 
 	pos := &Position{Symbol: "BTC", Quantity: 1, InitialQuantity: 1, AvgCost: 100, Side: "long", Regime: "trending_up_clean", RegimeWindows: map[string]string{"medium": "trending_up_clean", "long": ""}, RegimeSnapshots: bundles[2].Payload.Snapshots()}
 	if positionCtxForCheck(sc, pos, rc).Regime != "" || positionATRRegimeLabel(hyperliquidProtectionPositionSnapshot(pos), sc) != "" {
@@ -617,7 +606,6 @@ func regimeReadinessOnceIntegration(t *testing.T) {
 	entries := []map[string]any{
 		{"id": "ready-bus", "type": "spot", "platform": "binanceus", "script": "shared_scripts/check_strategy.py", "args": []string{"atr_breakout", "BTC/USDT", "1h"}, "capital": 1000},
 		{"id": "ready-rh", "type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py", "args": []string{"atr_breakout", "BTC", "30m", "--mode=paper"}, "capital": 1000},
-		{"id": "ready-ts", "type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py", "args": []string{"breakout", "ES", "1h", "--mode=paper"}, "capital": 50000, "close_strategy": map[string]any{"name": "tiered_tp_pct"}},
 	}
 	for _, e := range entries {
 		e["max_drawdown_pct"] = 90
@@ -634,11 +622,11 @@ func regimeReadinessOnceIntegration(t *testing.T) {
 	}
 	bin := pyintegrationBinary(t)
 	for _, stage := range []string{"cold-entry", "ready-entry", "cold-close"} {
-		spot, fut := "up", "up"
+		spot := "up"
 		if stage == "cold-close" {
-			spot, fut = "down", "tp"
+			spot = "down"
 		}
-		fixture := htfITWriteFixture(t, filepath.Join(dir, stage+".json"), htfITFixture{HTF: "short", Spot: spot, Fut: fut})
+		fixture := htfITWriteFixture(t, filepath.Join(dir, stage+".json"), htfITFixture{HTF: "short", Spot: spot})
 		if stage == "ready-entry" {
 			var doc map[string]any
 			raw, err := os.ReadFile(fixture)
@@ -654,7 +642,6 @@ func regimeReadinessOnceIntegration(t *testing.T) {
 					doc["ccxt"].(map[string]any)[key] = htfITBars(104, 4*htfITHour, now, "")
 				}
 			}
-			doc["yahoo"].(map[string]any)["ES=F|4h"] = htfITBars(104, 4*htfITHour, now, "")
 			doc["yahoo"].(map[string]any)["BTC-USD|1h"] = htfITBars(416, htfITHour, now, "")
 			raw, err = json.Marshal(doc)
 			if err != nil {
@@ -688,7 +675,7 @@ func regimeReadinessOnceIntegration(t *testing.T) {
 				t.Fatalf("%s: cold management close was suppressed\n%s", id, log)
 			}
 		}
-		t.Logf("%s: three real check scripts and scheduler paths passed", stage)
+		t.Logf("%s: two real check scripts and scheduler paths passed", stage)
 	}
 }
 
