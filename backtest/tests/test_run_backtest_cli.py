@@ -337,7 +337,6 @@ _AUTOMATIC_FEE_CASES = [
     ("rh-sma", "spot", None, "robinhood", 0.0),
     ("cfg-rh", "spot", "robinhood", "robinhood", 0.0),
     ("hl-but-rh", "spot", "robinhood", "robinhood", 0.0),
-    ("luno-spot", "spot", None, "luno", 0.01),
     ("hl-perp", "perps", None, "hyperliquid", 0.00045),
     ("hl-manual", "manual", None, "hyperliquid", 0.00045),
     ("bus-spot", "spot", "binanceus", "binanceus", 0.001),
