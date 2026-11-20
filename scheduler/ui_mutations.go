@@ -79,7 +79,7 @@ func (ss *StatusServer) applyUIStrategyOverrides(w http.ResponseWriter, id strin
 	_, err = applyStrategyConfigPatch(ss.configPath, id, merged, overrides, hasOpen)
 	ss.configWriteMu.Unlock()
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeJSONError(w, tunerConfigErrorStatus(err), err.Error())
 		return "", false
 	}
 	return ss.triggerConfigReload(), true
