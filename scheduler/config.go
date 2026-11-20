@@ -26,6 +26,7 @@ type DiscordConfig struct {
 	EphemeralReplies   bool              `json:"ephemeral_replies,omitempty"`
 	ReportRepo         string            `json:"report_repo,omitempty"`
 	ReportGitHubToken  string            `json:"report_github_token,omitempty"`
+	SlashCommands      bool              `json:"slash_commands,omitempty"`
 }
 
 func (c DiscordConfig) reportRepo() string {
@@ -1105,6 +1106,7 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
 	unknownErrs = append(unknownErrs, validateEgressJSON(data)...)
 	unknownErrs = append(unknownErrs, validateMarketFeedWeightBudgetJSON(data)...)
+	unknownErrs = append(unknownErrs, validateDiscordJSONKeys(data)...)
 	if len(unknownErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
 	}

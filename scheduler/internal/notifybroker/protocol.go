@@ -16,6 +16,10 @@ const (
 	FrameRequest  = "request"
 	FrameResponse = "response"
 	FrameEvent    = "event"
+	FrameCancel   = "cancel"
+
+	CapabilityCommandPolicy = "discord.command_policy.v1"
+	CapabilityCancel        = "cancel.v1"
 
 	OpHello                = "hello"
 	OpDiscordSend          = "discord.send"
@@ -38,11 +42,20 @@ const (
 )
 
 type Frame struct {
-	ID      uint64          `json:"id,omitempty"`
-	Type    string          `json:"type"`
-	Op      string          `json:"op,omitempty"`
-	Payload json.RawMessage `json:"payload,omitempty"`
-	Error   string          `json:"error,omitempty"`
+	ID          uint64          `json:"id,omitempty"`
+	Type        string          `json:"type"`
+	Op          string          `json:"op,omitempty"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	ErrorDetail *ErrorDetail    `json:"error_detail,omitempty"`
+}
+
+type ErrorDetail struct {
+	HTTPStatus   int   `json:"http_status,omitempty"`
+	Code         int   `json:"code,omitempty"`
+	RateLimited  bool  `json:"rate_limited,omitempty"`
+	RetryAfterMS int64 `json:"retry_after_ms,omitempty"`
+	Global       bool  `json:"global,omitempty"`
 }
 
 type HelloRequest struct {
@@ -54,6 +67,17 @@ type HelloResponse struct {
 	Discord       bool   `json:"discord"`
 	Telegram      bool   `json:"telegram"`
 	GitHub        bool   `json:"github"`
+
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+func (h HelloResponse) Has(capability string) bool {
+	for _, c := range h.Capabilities {
+		if c == capability {
+			return true
+		}
+	}
+	return false
 }
 
 type DiscordSendRequest struct {
@@ -91,21 +115,25 @@ type DiscordFollowupRequest struct {
 }
 
 type DiscordCommandListRequest struct {
-	GuildID string `json:"guild_id,omitempty"`
+	GuildID   string `json:"guild_id,omitempty"`
+	TimeoutMS int64  `json:"timeout_ms,omitempty"`
 }
 
 type DiscordCommandCreateRequest struct {
-	Command json.RawMessage `json:"command"`
+	Command   json.RawMessage `json:"command"`
+	TimeoutMS int64           `json:"timeout_ms,omitempty"`
 }
 
 type DiscordCommandEditRequest struct {
-	ID      string          `json:"id"`
-	Command json.RawMessage `json:"command"`
+	ID        string          `json:"id"`
+	Command   json.RawMessage `json:"command"`
+	TimeoutMS int64           `json:"timeout_ms,omitempty"`
 }
 
 type DiscordCommandDeleteRequest struct {
-	GuildID string `json:"guild_id,omitempty"`
-	ID      string `json:"id"`
+	GuildID   string `json:"guild_id,omitempty"`
+	ID        string `json:"id"`
+	TimeoutMS int64  `json:"timeout_ms,omitempty"`
 }
 
 type TelegramCallRequest struct {

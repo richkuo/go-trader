@@ -19,6 +19,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"trading-scheduler/internal/discordcmd"
 	"trading-scheduler/internal/egresspolicy"
 )
 
@@ -45,6 +46,7 @@ type Broker struct {
 
 	session *discordgo.Session
 	rest    *discordgo.Session
+	cmd     *discordcmd.Client
 	selfID  string
 	client  *http.Client
 
@@ -124,6 +126,7 @@ func (b *Broker) Run(ctx context.Context) error {
 			return err
 		}
 		b.rest = rest
+		b.cmd = discordcmd.New(rest.Client, rest.Token, rest.UserAgent)
 		go b.keepDiscordOpen(ctx)
 	}
 	if err := os.Remove(b.SocketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -169,29 +172,40 @@ func (b *Broker) newDiscordSession() (*discordgo.Session, error) {
 }
 
 func (b *Broker) discordSelfID(ctx context.Context) string {
+	id, _ := b.discordSelfIDErr(ctx)
+	return id
+}
+
+func (b *Broker) discordSelfIDErr(ctx context.Context) (string, error) {
 	b.mu.Lock()
 	id, gw := b.selfID, b.session
 	b.mu.Unlock()
 	if id != "" {
-		return id
+		return id, nil
 	}
 	if gw != nil && gw.State != nil && gw.State.User != nil {
 		id = gw.State.User.ID
-	} else if b.rest != nil {
+	} else if b.cmd != nil {
 		rctx, cancel := context.WithTimeout(ctx, selfIDLookupTimeout)
-		u, err := b.rest.User("@me", discordgo.WithContext(rctx))
+		u, err := b.cmd.Self(rctx)
 		cancel()
-		if err == nil && u != nil {
+		if err != nil {
+			if discordcmd.IsRateLimited(err) {
+				return "", err
+			}
+			return "", errors.New("discord application identity is not available yet")
+		}
+		if u != nil {
 			id = u.ID
 		}
 	}
 	if ValidSnowflake(id) != nil {
-		return ""
+		return "", errors.New("discord application identity is not available yet")
 	}
 	b.mu.Lock()
 	b.selfID = id
 	b.mu.Unlock()
-	return id
+	return id, nil
 }
 
 func (b *Broker) telegramEnabled() bool {
@@ -290,27 +304,89 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 		delete(b.subs, bc)
 		b.mu.Unlock()
 	}()
+	connCtx, connCancel := context.WithCancel(ctx)
+	defer connCancel()
+	var inflightMu sync.Mutex
+	inflight := map[uint64]context.CancelFunc{}
 	r := bufio.NewReaderSize(conn, 64<<10)
 	for {
 		f, err := readFrame(r)
 		if err != nil {
 			return
 		}
+		if f.Type == FrameCancel && f.ID != 0 {
+			inflightMu.Lock()
+			cancel := inflight[f.ID]
+			inflightMu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+			continue
+		}
 		if f.Type != FrameRequest || f.ID == 0 {
 			return
 		}
-		go func(f *Frame) {
-			rctx, cancel := context.WithTimeout(ctx, requestTimeout)
-			defer cancel()
+		var rctx context.Context
+		var cancel context.CancelFunc
+		if commandOp(f.Op) {
+			rctx, cancel = context.WithTimeout(connCtx, requestTimeout)
+			inflightMu.Lock()
+			inflight[f.ID] = cancel
+			inflightMu.Unlock()
+		} else {
+			rctx, cancel = context.WithTimeout(ctx, requestTimeout)
+		}
+		go func(f *Frame, rctx context.Context, cancel context.CancelFunc) {
+			defer func() {
+				cancel()
+				inflightMu.Lock()
+				delete(inflight, f.ID)
+				inflightMu.Unlock()
+			}()
 			payload, err := b.handle(rctx, bc, f)
 			resp := &Frame{ID: f.ID, Type: FrameResponse, Op: f.Op, Payload: payload}
 			if err != nil {
 				resp.Error = b.redact(err.Error())
+				resp.ErrorDetail = errorDetail(err)
 				resp.Payload = nil
 			}
 			_ = bc.send(resp)
-		}(f)
+		}(f, rctx, cancel)
 	}
+}
+
+func commandOp(op string) bool {
+	switch op {
+	case OpDiscordCommandList, OpDiscordCommandCreate, OpDiscordCommandEdit, OpDiscordCommandDelete:
+		return true
+	}
+	return false
+}
+
+func errorDetail(err error) *ErrorDetail {
+	e, ok := discordcmd.AsError(err)
+	if !ok {
+		return nil
+	}
+	d := &ErrorDetail{HTTPStatus: e.HTTPStatus, Code: e.Code, RateLimited: e.RateLimited, Global: e.Global}
+	if e.RateLimited {
+		d.RetryAfterMS = e.RetryAfter.Milliseconds()
+		if d.RetryAfterMS <= 0 {
+			d.RetryAfterMS = 1
+		}
+	}
+	return d
+}
+
+func commandContext(ctx context.Context, timeoutMS int64) (context.Context, context.CancelFunc) {
+	if timeoutMS <= 0 {
+		return context.WithCancel(ctx)
+	}
+	d := time.Duration(timeoutMS) * time.Millisecond
+	if d > requestTimeout {
+		d = requestTimeout
+	}
+	return context.WithTimeout(ctx, d)
 }
 
 func decodeStrict(raw json.RawMessage, v any) error {
@@ -338,16 +414,21 @@ func (b *Broker) handle(ctx context.Context, bc *brokerConn, f *Frame) (json.Raw
 			b.subs[bc] = append([]string(nil), req.Events...)
 			b.mu.Unlock()
 		}
-		resp := HelloResponse{Discord: b.discordEnabled(), Telegram: b.telegramEnabled(), GitHub: b.githubEnabled()}
+		resp := HelloResponse{Discord: b.discordEnabled(), Telegram: b.telegramEnabled(), GitHub: b.githubEnabled(), Capabilities: []string{CapabilityCommandPolicy, CapabilityCancel}}
 		if resp.Discord {
 			resp.DiscordUserID = b.discordSelfID(ctx)
 		}
 		return json.Marshal(resp)
-	case OpDiscordSend, OpDiscordUserChannel, OpDiscordRespond, OpDiscordFollowup, OpDiscordCommandList, OpDiscordCommandCreate, OpDiscordCommandEdit, OpDiscordCommandDelete:
+	case OpDiscordSend, OpDiscordUserChannel, OpDiscordRespond, OpDiscordFollowup:
 		if b.rest == nil {
 			return nil, errors.New("discord is not configured in the notification broker")
 		}
 		return b.handleDiscord(ctx, b.rest, f)
+	case OpDiscordCommandList, OpDiscordCommandCreate, OpDiscordCommandEdit, OpDiscordCommandDelete:
+		if b.rest == nil || b.cmd == nil {
+			return nil, errors.New("discord is not configured in the notification broker")
+		}
+		return b.handleDiscordCommand(ctx, b.cmd, f)
 	case OpTelegramCall:
 		if !b.telegramEnabled() {
 			return nil, errors.New("telegram is not configured in the notification broker")
@@ -382,8 +463,8 @@ func ownedCommandPayload(raw json.RawMessage) (*discordgo.ApplicationCommand, er
 	return &cmd, nil
 }
 
-func requireOwnedCommand(session *discordgo.Session, appID, guildID, cmdID string, opt discordgo.RequestOption) error {
-	cur, err := session.ApplicationCommand(appID, guildID, cmdID, opt)
+func requireOwnedCommand(ctx context.Context, client *discordcmd.Client, appID, guildID, cmdID string) error {
+	cur, err := client.Get(ctx, appID, guildID, cmdID)
 	if err != nil {
 		return fmt.Errorf("read command %s: %w", cmdID, err)
 	}
@@ -481,6 +562,12 @@ func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, 
 			return nil, err
 		}
 		return json.Marshal(msg)
+	}
+	return nil, fmt.Errorf("unknown operation %q", f.Op)
+}
+
+func (b *Broker) handleDiscordCommand(ctx context.Context, client *discordcmd.Client, f *Frame) (json.RawMessage, error) {
+	switch f.Op {
 	case OpDiscordCommandList:
 		var req DiscordCommandListRequest
 		if err := decodeStrict(f.Payload, &req); err != nil {
@@ -490,11 +577,13 @@ func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, 
 		if err != nil {
 			return nil, err
 		}
-		appID := b.discordSelfID(ctx)
-		if appID == "" {
-			return nil, errors.New("discord application identity is not available yet")
+		ctx, cancel := commandContext(ctx, req.TimeoutMS)
+		defer cancel()
+		appID, err := b.discordSelfIDErr(ctx)
+		if err != nil {
+			return nil, err
 		}
-		cmds, err := session.ApplicationCommands(appID, guildID, opt)
+		cmds, err := client.List(ctx, appID, guildID)
 		if err != nil {
 			return nil, err
 		}
@@ -508,11 +597,13 @@ func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, 
 		if err != nil {
 			return nil, err
 		}
-		appID := b.discordSelfID(ctx)
-		if appID == "" {
-			return nil, errors.New("discord application identity is not available yet")
+		ctx, cancel := commandContext(ctx, req.TimeoutMS)
+		defer cancel()
+		appID, err := b.discordSelfIDErr(ctx)
+		if err != nil {
+			return nil, err
 		}
-		out, err := session.ApplicationCommandCreate(appID, "", cmd, opt)
+		out, err := client.Create(ctx, appID, "", cmd)
 		if err != nil {
 			return nil, err
 		}
@@ -529,14 +620,16 @@ func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, 
 		if err != nil {
 			return nil, err
 		}
-		appID := b.discordSelfID(ctx)
-		if appID == "" {
-			return nil, errors.New("discord application identity is not available yet")
-		}
-		if err := requireOwnedCommand(session, appID, "", req.ID, opt); err != nil {
+		ctx, cancel := commandContext(ctx, req.TimeoutMS)
+		defer cancel()
+		appID, err := b.discordSelfIDErr(ctx)
+		if err != nil {
 			return nil, err
 		}
-		out, err := session.ApplicationCommandEdit(appID, "", req.ID, cmd, opt)
+		if err := requireOwnedCommand(ctx, client, appID, "", req.ID); err != nil {
+			return nil, err
+		}
+		out, err := client.Edit(ctx, appID, "", req.ID, cmd)
 		if err != nil {
 			return nil, err
 		}
@@ -553,14 +646,16 @@ func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, 
 		if err := ValidSnowflake(req.ID); err != nil {
 			return nil, fmt.Errorf("command id: %w", err)
 		}
-		appID := b.discordSelfID(ctx)
-		if appID == "" {
-			return nil, errors.New("discord application identity is not available yet")
-		}
-		if err := requireOwnedCommand(session, appID, guildID, req.ID, opt); err != nil {
+		ctx, cancel := commandContext(ctx, req.TimeoutMS)
+		defer cancel()
+		appID, err := b.discordSelfIDErr(ctx)
+		if err != nil {
 			return nil, err
 		}
-		if err := session.ApplicationCommandDelete(appID, guildID, req.ID, opt); err != nil {
+		if err := requireOwnedCommand(ctx, client, appID, guildID, req.ID); err != nil {
+			return nil, err
+		}
+		if err := client.Delete(ctx, appID, guildID, req.ID); err != nil {
 			return nil, err
 		}
 		return json.Marshal(struct{}{})

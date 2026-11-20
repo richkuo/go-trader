@@ -799,6 +799,7 @@ func formatSpotLiveCashReconcileReminder(ids []string, cashByID map[string]float
 		b.WriteString(fmt.Sprintf("- %s cash=$%.4f\n", id, cash))
 	}
 	b.WriteString("Further live spot buys are held; closes still run. Clear with /go-trader-clear-cash-reconcile after confirming books match the venue — cash ≥ $0.01 alone does not clear.")
+	b.WriteString(slashCommandOffNote())
 	return b.String()
 }
 

@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -45,6 +44,98 @@ type fakeNotifyServices struct {
 
 	commands  map[string]map[string]map[string]any
 	nextCmdID int
+
+	times   []time.Time
+	holds   map[string]chan struct{}
+	heldNow map[string]int
+	scripts map[string][]fakeCommandResponse
+	closing chan struct{}
+}
+
+type fakeCommandResponse struct {
+	status int
+	header map[string]string
+	body   string
+}
+
+func fakeRateLimit(retryAfter float64) fakeCommandResponse {
+	return fakeCommandResponse{
+		status: http.StatusTooManyRequests,
+		header: map[string]string{"Retry-After": strconv.FormatFloat(retryAfter, 'f', -1, 64), "X-RateLimit-Scope": "user"},
+		body:   fmt.Sprintf(`{"message":"You are being rate limited.","retry_after":%g,"global":false}`, retryAfter),
+	}
+}
+
+func fakeCapacityError() fakeCommandResponse {
+	return fakeCommandResponse{status: http.StatusBadRequest, body: `{"message":"Maximum number of application commands reached (100)","code":30032}`}
+}
+
+func (f *fakeNotifyServices) holdCommandOp(kind string) func() {
+	f.mu.Lock()
+	if f.holds == nil {
+		f.holds = map[string]chan struct{}{}
+	}
+	ch := make(chan struct{})
+	f.holds[kind] = ch
+	f.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			f.mu.Lock()
+			if f.holds[kind] == ch {
+				delete(f.holds, kind)
+			}
+			f.mu.Unlock()
+			close(ch)
+		})
+	}
+}
+
+func (f *fakeNotifyServices) heldCount(kind string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.heldNow[kind]
+}
+
+func (f *fakeNotifyServices) scriptCommandOp(kind string, responses ...fakeCommandResponse) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.scripts == nil {
+		f.scripts = map[string][]fakeCommandResponse{}
+	}
+	f.scripts[kind] = append(f.scripts[kind], responses...)
+}
+
+func (f *fakeNotifyServices) requestLog() ([]string, []time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.requests...), append([]time.Time(nil), f.times...)
+}
+
+func (f *fakeNotifyServices) commandRequests() int {
+	n := 0
+	for _, key := range f.requestKeys() {
+		if strings.HasPrefix(key, "discord.command") || strings.HasPrefix(key, "discord.held:") || strings.HasPrefix(key, "discord.scripted:") {
+			n++
+		}
+	}
+	return n
+}
+
+func fakeCommandKind(method, id string) string {
+	switch {
+	case method == http.MethodGet && id == "":
+		return "list"
+	case method == http.MethodPost && id == "":
+		return "create"
+	case method == http.MethodGet:
+		return "get"
+	case method == http.MethodPatch:
+		return "edit"
+	case method == http.MethodDelete:
+		return "delete"
+	}
+	return "other"
 }
 
 func (f *fakeNotifyServices) seedCommand(scope, name, description string) string {
@@ -151,6 +242,54 @@ func (f *fakeNotifyServices) serveCommands(w http.ResponseWriter, r *http.Reques
 	if len(parts) == at+2 {
 		id = parts[at+1]
 	}
+	kind := fakeCommandKind(r.Method, id)
+	f.mu.Lock()
+	hold := f.holds[kind]
+	closing := f.closing
+	if hold != nil {
+		if f.heldNow == nil {
+			f.heldNow = map[string]int{}
+		}
+		f.heldNow[kind]++
+	}
+	f.mu.Unlock()
+	if hold != nil {
+		f.record("discord.held:"+kind, string(body))
+		select {
+		case <-hold:
+		case <-closing:
+		case <-r.Context().Done():
+		}
+		f.mu.Lock()
+		f.heldNow[kind]--
+		f.mu.Unlock()
+		if r.Context().Err() != nil {
+			f.record("discord.abandoned:"+kind, "")
+			return
+		}
+	}
+	f.mu.Lock()
+	var scripted *fakeCommandResponse
+	if q := f.scripts[kind]; len(q) > 0 {
+		scripted = &q[0]
+		f.scripts[kind] = q[1:]
+	}
+	f.mu.Unlock()
+	if scripted != nil && scripted.status != 0 {
+		f.record("discord.scripted:"+kind, string(body))
+		for k, v := range scripted.header {
+			w.Header().Set(k, v)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(scripted.status)
+		_, _ = io.WriteString(w, scripted.body)
+		return
+	}
+	if scripted != nil {
+		for k, v := range scripted.header {
+			w.Header().Set(k, v)
+		}
+	}
 	key, status, out := f.commandOp(r.Method, scope, id, body, r.URL.Query().Get("with_localizations") == "true")
 	f.record(key, string(body))
 	if out == nil {
@@ -250,6 +389,7 @@ func (f *fakeNotifyServices) record(key, body string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, key)
+	f.times = append(f.times, time.Now())
 	if f.bodies == nil {
 		f.bodies = map[string][]string{}
 	}
@@ -283,7 +423,7 @@ func (f *fakeNotifyServices) dispatch(t *testing.T, eventType string, payload an
 
 func startFakeNotifyServices(t *testing.T, ca *egressTestCA) (*fakeNotifyServices, string) {
 	t.Helper()
-	f := &fakeNotifyServices{gwReady: make(chan struct{})}
+	f := &fakeNotifyServices{gwReady: make(chan struct{}), closing: make(chan struct{})}
 	upgrader := websocket.Upgrader{}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -364,7 +504,10 @@ func startFakeNotifyServices(t *testing.T, ca *egressTestCA) (*fakeNotifyService
 	srv := httptest.NewUnstartedServer(handler)
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{ca.leaf(t, "discord.com", "gateway.discord.gg", "api.telegram.org", "api.github.com")}}
 	srv.StartTLS()
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() {
+		close(f.closing)
+		srv.Close()
+	})
 	return f, srv.Listener.Addr().String()
 }
 
@@ -464,23 +607,33 @@ func TestEgressDirectNotificationsUseTheIsolatedBroker(t *testing.T) {
 	services.seedCommand(legacyGuild, commandPrefix+"health", "registered by the guild-scope build")
 	services.seedCommand(legacyGuild, "openclaw-guild", "OpenClaw guild command")
 	cfg.Discord.GuildID = legacyGuild
+	cfg.Discord.SlashCommands = true
 	prevResync, prevFlap, prevBudget := slashResyncInterval, slashResyncFlapWindow, slashCreateBudget
 	slashResyncInterval, slashResyncFlapWindow, slashCreateBudget = 200*time.Millisecond, time.Minute, 1000
 	t.Cleanup(func() {
 		slashResyncInterval, slashResyncFlapWindow, slashCreateBudget = prevResync, prevFlap, prevBudget
 	})
-	if err := d.RegisterSlashCommands(nil, cfg); err != nil {
-		t.Fatalf("register commands through the broker: %v", err)
-	}
-	if n := len(services.bodiesFor("discord.commands_bulk")); n != 0 {
-		t.Fatalf("registration sent %d bulk overwrite(s); it must change commands one at a time", n)
-	}
 	var wantGlobal []string
 	for _, c := range slashCommands() {
 		wantGlobal = append(wantGlobal, c.Name)
 	}
 	wantGlobal = append(wantGlobal, "help", "model")
 	sort.Strings(wantGlobal)
+	d.bindSlashCommandContext(nil, cfg)
+	d.installSlashCommandHandler()
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	t.Cleanup(stopWorker)
+	d.startSlashCommandWorker(workerCtx, slashCommandPolicyFor(cfg))
+	syncDeadline := time.Now().Add(15 * time.Second)
+	for !reflect.DeepEqual(services.commandNames(""), wantGlobal) || !reflect.DeepEqual(services.commandNames(legacyGuild), []string{"openclaw-guild"}) {
+		if time.Now().After(syncDeadline) {
+			t.Fatalf("the command worker never converged: global %v, guild %v; requests %v", services.commandNames(""), services.commandNames(legacyGuild), services.requestKeys())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := len(services.bodiesFor("discord.commands_bulk")); n != 0 {
+		t.Fatalf("registration sent %d bulk overwrite(s); it must change commands one at a time", n)
+	}
 	if got := services.commandNames(""); !reflect.DeepEqual(got, wantGlobal) {
 		t.Fatalf("global commands after sync = %v, want %v", got, wantGlobal)
 	}
@@ -514,26 +667,32 @@ func TestEgressDirectNotificationsUseTheIsolatedBroker(t *testing.T) {
 	t.Log("case: stored go-trader-logs with default_member_permissions that a PATCH cannot clear: deleted and created again without it")
 	t.Log("case: stored go-trader-pnl with name and description localizations, served by the list only on with_localizations=true: deleted and created again without them")
 
-	writes := services.commandWrites()
-	if err := d.RegisterSlashCommands(nil, cfg); err != nil {
-		t.Fatalf("second registration through the broker: %v", err)
+	writes, lists := services.commandWrites(), len(services.bodiesFor("discord.commands_list"))
+	for len(services.bodiesFor("discord.commands_list")) < lists+3 {
+		if time.Now().After(syncDeadline.Add(10 * time.Second)) {
+			t.Fatalf("the command worker stopped its re-sync passes; requests %v", services.requestKeys())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if got := services.commandWrites(); got != writes {
-		t.Fatalf("a second registration with no change wrote %d command change(s)", got-writes)
+		t.Fatalf("re-sync passes with no change wrote %d command change(s)", got-writes)
 	}
-	t.Log("case: an unchanged command set: the second registration wrote nothing")
+	t.Log("case: an unchanged command set: three later re-sync passes wrote nothing")
 
 	brokerSess := processNotifyBroker()
-	if brokerSess == nil || brokerSess.discord == nil {
-		t.Fatal("no broker Discord transport")
+	if brokerSess == nil || brokerSess.client == nil {
+		t.Fatal("no broker client")
 	}
-	if err := brokerSess.discord.ApplicationCommandDelete("999", "", foreignGlobal); err == nil || !strings.Contains(err.Error(), "outside the") {
+	brokerAPI := &brokerSlashCommandAPI{c: brokerSess.client}
+	refuseCtx, refuseCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer refuseCancel()
+	if err := brokerAPI.remove(refuseCtx, "999", "", foreignGlobal); err == nil || !strings.Contains(err.Error(), "outside the") {
 		t.Fatalf("broker delete of a foreign command = %v, want a namespace refusal", err)
 	}
-	if _, err := brokerSess.discord.ApplicationCommandCreate("999", "", &discordgo.ApplicationCommand{Name: "help", Description: "x"}); err == nil || !strings.Contains(err.Error(), "outside the") {
+	if _, err := brokerAPI.create(refuseCtx, "999", &discordgo.ApplicationCommand{Name: "help", Description: "x"}); err == nil || !strings.Contains(err.Error(), "outside the") {
 		t.Fatalf("broker create of a foreign name = %v, want a namespace refusal", err)
 	}
-	if _, err := brokerSess.discord.ApplicationCommandEdit("999", "", foreignGlobal, &discordgo.ApplicationCommand{Name: commandPrefix + "help", Description: "x"}); err == nil || !strings.Contains(err.Error(), "outside the") {
+	if _, err := brokerAPI.edit(refuseCtx, "999", foreignGlobal, &discordgo.ApplicationCommand{Name: commandPrefix + "help", Description: "x"}); err == nil || !strings.Contains(err.Error(), "outside the") {
 		t.Fatalf("broker edit of a foreign command = %v, want a namespace refusal", err)
 	}
 	if got := services.commandNames(""); !reflect.DeepEqual(got, wantGlobal) {
@@ -734,12 +893,12 @@ func TestEgressBrokerSlashCommandsSurviveALateDiscordGateway(t *testing.T) {
 	processEgress.attestation = &egresspolicy.Attestation{Notify: &egresspolicy.NotifyAttestation{Socket: sock, BrokerUID: os.Getuid()}}
 	processEgress.mu.Unlock()
 	t.Cleanup(func() { setProcessNotifyBroker(nil) })
-	prevWait, prevRetry := slashIdentityWait, slashRegisterFirstRetry
-	slashIdentityWait, slashRegisterFirstRetry = 2*time.Second, 500*time.Millisecond
-	t.Cleanup(func() { slashIdentityWait, slashRegisterFirstRetry = prevWait, prevRetry })
+	prevRetry := slashIdentityRetry
+	slashIdentityRetry = 200 * time.Millisecond
+	t.Cleanup(func() { slashIdentityRetry = prevRetry })
 
 	cfg := &Config{
-		Discord:  DiscordConfig{Enabled: true, OwnerID: "424242"},
+		Discord:  DiscordConfig{Enabled: true, OwnerID: "424242", SlashCommands: true},
 		Telegram: TelegramConfig{Enabled: true, OwnerChatID: "777"},
 	}
 	notifier, cleanup := buildNotifierFromConfig(cfg)
@@ -749,11 +908,17 @@ func TestEgressBrokerSlashCommandsSurviveALateDiscordGateway(t *testing.T) {
 		t.Fatalf("broker backends = %d, want Discord and Telegram", notifier.BackendCount())
 	}
 
-	err = d.RegisterSlashCommands(nil, cfg)
-	if !errors.Is(err, errSlashCommandsDeferred) {
-		t.Fatalf("registration with no Discord identity = %v, want the deferred registration", err)
+	d.bindSlashCommandContext(nil, cfg)
+	d.installSlashCommandHandler()
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	t.Cleanup(stopWorker)
+	started := time.Now()
+	d.startSlashCommandWorker(workerCtx, slashCommandPolicyFor(cfg))
+	if took := time.Since(started); took > time.Second {
+		t.Fatalf("starting the command worker took %s; it must not wait for Discord", took)
 	}
-	t.Logf("case: the broker never connects to Discord: RegisterSlashCommands returned the one deferred warning: %v", err)
+	time.Sleep(time.Second)
+	t.Logf("case: the broker never connects to Discord: the worker started in %s and defers while the identity is missing", time.Since(started)-time.Second)
 	if services.commandWrites() != 0 {
 		t.Fatal("commands were registered without an application identity")
 	}

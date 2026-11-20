@@ -289,6 +289,7 @@ Opt-in via `correlation.enabled: true`. Warns when a single asset exceeds `max_c
 | `discord.owner_id` | Owner DM for upgrades + config migration (`DISCORD_OWNER_ID`) |
 | `discord.channels` | Map keyed by `spot` / `options` / `<platform>` / `<platform>-paper` |
 | `discord.trade_alert_channels` | Optional per-type trade-alert routing; SIGHUP-reloadable |
+| `discord.slash_commands` | `false` (default): no slash commands; the daemon removes its `go-trader-` commands once per start. `true`: a background worker registers and maintains them, and trading never waits for it. Restart-required. Use one bot application and token per instance. Turn it on before you update if you resolve live holds with slash commands (SKILL.md § Discord Slash Commands) |
 | `telegram.trade_alert_channels` | Same override for Telegram |
 
 ### Summary Frequency

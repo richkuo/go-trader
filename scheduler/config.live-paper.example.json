@@ -31,6 +31,7 @@
   "discord": {
     "enabled": false,
     "token": "",
+    "slash_commands": false,
     "channels": {
       "hyperliquid": "LIVE_CHANNEL_ID",
       "hyperliquid-paper": "PAPER_CHANNEL_ID",

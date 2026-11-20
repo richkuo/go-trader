@@ -293,3 +293,40 @@ func validateTradeFeedbackAnalysisJSON(rawData []byte) []string {
 	}
 	return errs
 }
+
+var retiredDiscordConfigKeys = map[string]bool{
+	"channel_id":           true,
+	"channel_paper_trades": true,
+	"channel_live_trades":  true,
+	"dm_paper_trades":      true,
+	"dm_live_trades":       true,
+	"spot_summary_freq":    true,
+	"options_summary_freq": true,
+}
+
+func validateDiscordJSONKeys(rawData []byte) []string {
+	var envelope struct {
+		Discord map[string]json.RawMessage `json:"discord"`
+	}
+	if err := json.Unmarshal(rawData, &envelope); err != nil || envelope.Discord == nil {
+		return nil
+	}
+	known := knownJSONKeys(reflect.TypeOf(DiscordConfig{}))
+	keys := make([]string, 0, len(envelope.Discord))
+	for k := range envelope.Discord {
+		if !known[k] && !retiredDiscordConfigKeys[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	errs := make([]string, 0, len(keys)+1)
+	for _, k := range keys {
+		errs = append(errs, fmt.Sprintf("discord: unknown field %q", k))
+	}
+	if raw, ok := envelope.Discord["slash_commands"]; ok {
+		if v := strings.TrimSpace(string(raw)); v != "true" && v != "false" {
+			errs = append(errs, fmt.Sprintf("discord.slash_commands must be true or false, got %s", v))
+		}
+	}
+	return errs
+}

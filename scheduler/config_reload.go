@@ -538,6 +538,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	if cfg.Discord.GuildID != next.Discord.GuildID {
 		errs = append(errs, "discord.guild_id changed (restart required)")
 	}
+	if cfg.Discord.SlashCommands != next.Discord.SlashCommands {
+		errs = append(errs, "discord.slash_commands changed (restart required)")
+	}
 	if cfg.Telegram.Enabled != next.Telegram.Enabled {
 		errs = append(errs, "telegram.enabled changed (restart required)")
 	}
