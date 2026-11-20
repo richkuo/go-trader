@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: container-${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  group: container-${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
