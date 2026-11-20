@@ -246,8 +246,11 @@ class Runner(object):
           'H=localhost; C="git commit --allow-empty -m x"; ssh "$H" "$C"', "deny")
         c("variable argument to an ordinary command next to git", gt,
           "T=x; python3 -I -c 'print(1)' \"$T\" && git status", "allow")
-        c("variable search root for find without -exec next to git", gt,
-          "D=.; find \"$D\" -maxdepth 0 -name x && git status", "allow")
+        c("variable find word that can hold -exec next to git", gt,
+          "D=.; find \"$D\" -maxdepth 0 -name x && git status", "deny")
+        c("variable -exec operator for find with a variable command", gt,
+          'O=-exec; C="git commit --allow-empty -m x"; find . -maxdepth 0 "$O" $C \\;', "deny")
+        c("literal find without -exec next to git", gt, "find . -maxdepth 0 -name x && git status", "allow")
         c("conditional with a known git subcommand", gt, "if git diff --quiet; then echo same; fi", "allow")
         c("conditional with quoted git text", gt, "if true; then echo 'git cm'; fi", "allow")
         c("nested shell with a dynamic git subcommand", gt, 'bash -c "git $SUB --allow-empty -m x"', "deny")

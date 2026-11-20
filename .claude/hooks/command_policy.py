@@ -913,7 +913,8 @@ class Analyzer(object):
             return set(states), set(states)
         if base in DATA_HEADS:
             return set(states), set(states)
-        runner = base in COMMAND_RUNNERS or (base == "find" and any(a.value in FIND_EXEC for a in args))
+        runner = base in COMMAND_RUNNERS or (base == "find" and any(a.value is None or a.value in FIND_EXEC
+                                                                        for a in args))
         return self.unsupported(words, states, "the command " + base + " is not a supported wrapper",
                                 runner and any(a.value is None for a in args))
 
