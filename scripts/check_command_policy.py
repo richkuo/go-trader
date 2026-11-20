@@ -298,6 +298,37 @@ class Runner(object):
           "xargs git -C . cm --allow-empty -m x </dev/null", "deny")
         c("unsupported wrapper with git options before a known subcommand", gt,
           "find . -name '*.go' | xargs git -C . add", "allow")
+        c("parallel with no command runs commit lines from standard input", gt,
+          "echo 'git commit --allow-empty -m x' | parallel", "deny")
+        c("xargs replace string in the command name next to git", gt,
+          "echo git | xargs -I{} {} commit --allow-empty -m x", "deny")
+        c("find -exec runs the found file as a commit", gt,
+          "find /usr/bin /usr/local/bin /opt/homebrew/bin -name git -exec {} commit --allow-empty -m x \\;",
+          "deny")
+        c("find -exec with a replaced command name next to git", gt,
+          "find . -name x -exec {} --version \\; && git status", "deny")
+        c("xargs runs a wrapper that runs a git branch switch", gt, "echo x | xargs env git checkout main", "deny")
+        c("xargs runs find with a shell next to git", gt,
+          "echo x | xargs find . -exec sh -c 'git status' \\;", "deny")
+        c("xargs runs a sed program that runs commands next to git", gt,
+          "git ls-files | xargs sed '1e git commit'", "deny")
+        c("xargs search for a runner name in files that git lists", gt,
+          "git ls-files '*.go' | xargs grep -n timeout", "allow")
+        c("xargs search for the word git in files that git lists", gt, "git ls-files | xargs grep -l git", "allow")
+        c("xargs search with a variable pattern next to git", gt,
+          "echo x | xargs -0 -n 2 grep -l \"$P\" && git status", "allow")
+        c("xargs sed search for commit text in files that git lists", gt,
+          "git ls-files | xargs sed -n '/git commit/p'", "allow")
+        c("find -exec search for a runner name next to git", gt,
+          "find . -name '*.go' -exec grep -n timeout {} + && git status", "allow")
+        c("sed search for commit text", gt, "sed -n '/git commit/p' SKILL.md", "allow")
+        c("sed edit of a git command in a doc", gt, "sed -i.bak 's/git status/git status --short/' README", "allow")
+        c("awk search for push text", gt, "awk '/git push/' README", "allow")
+        c("sed program with a variable next to git", gt, "sed \"s/x/$Y/\" README && git status", "deny")
+        c("xargs -i replace string into a git subcommand", gt,
+          "echo commit | xargs -i git {} --allow-empty -m x", "deny")
+        c("xargs --replace without a value into a git subcommand", gt,
+          "echo commit | xargs --replace git {} --allow-empty -m x", "deny")
         c("if statement around a commit", wt, "if true; then git commit -m probe; fi", "deny")
         c("unparseable command with a commit", wt, "git commit -m 'unterminated", "deny")
         c("unparseable case with a commit alias", gt, "case 1 in 1) git cm --allow-empty -m x;; esac", "deny")

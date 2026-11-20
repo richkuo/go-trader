@@ -95,41 +95,123 @@ def literal_word(text):
 
 
 XARGS_FLAGS = frozenset("0rtxpo")
-XARGS_ARG_FLAGS = frozenset("nLsPdaE")
+XARGS_ARG_FLAGS = frozenset("nLsPdaEI")
+XARGS_OPT_FLAGS = frozenset("ile")
 XARGS_LONG = frozenset(("--null", "--no-run-if-empty", "--verbose", "--exit", "--interactive", "--open-tty",
                         "--show-limits", "--max-args", "--max-lines", "--max-procs", "--max-chars", "--delimiter",
-                        "--arg-file", "--process-slot-var"))
+                        "--arg-file", "--process-slot-var", "--eof"))
 XARGS_LONG_ARG = frozenset(("--max-args", "--max-procs", "--max-chars", "--delimiter", "--arg-file",
                             "--process-slot-var"))
+RUNNER_TARGETS = SHELLS | WRAPPER_HEADS | frozenset(("ssh",))
 
 
-def replaces_words(runner_args):
+def xargs_command(args):
+    replace = set()
     i = 0
-    while i < len(runner_args):
-        v = runner_args[i].value
-        if v is None or not v.startswith("-") or v == "-":
-            return True
+    while i < len(args):
+        v = args[i].value
+        if v is None:
+            return None, None
         if v == "--":
-            return i + 1 != len(runner_args)
+            return i + 1, replace
+        if not v.startswith("-") or v == "-":
+            break
         if v.startswith("--"):
-            name = v.split("=", 1)[0]
+            name, eq, val = v.partition("=")
+            if name == "--replace":
+                replace.add(val if eq else "{}")
+                i += 1
+                continue
             if name not in XARGS_LONG:
-                return True
-            i += 2 if name in XARGS_LONG_ARG and "=" not in v else 1
+                return None, None
+            i += 2 if name in XARGS_LONG_ARG and not eq else 1
             continue
         j = 1
-        consumed = False
         while j < len(v):
-            if v[j] in XARGS_FLAGS:
+            c = v[j]
+            if c in XARGS_FLAGS:
                 j += 1
                 continue
-            if v[j] in XARGS_ARG_FLAGS:
-                consumed = j + 1 == len(v)
+            if c in XARGS_OPT_FLAGS:
+                if c == "i":
+                    replace.add(v[j + 1:] or "{}")
                 break
-            if v[j] == "l":
+            if c in XARGS_ARG_FLAGS:
+                val = v[j + 1:]
+                if not val:
+                    if i + 1 >= len(args) or args[i + 1].value is None:
+                        return None, None
+                    val = args[i + 1].value
+                    i += 1
+                if c == "I":
+                    replace.add(val)
                 break
+            return None, None
+        i += 1
+    return i, replace
+
+
+def runner_commands(base, args):
+    if base == "parallel":
+        return None
+    if base == "xargs":
+        k, replace = xargs_command(args)
+        if k is None:
+            return None
+        return [(k, len(args), replace)] if k < len(args) else []
+    if any(a.value is None for a in args):
+        return None
+    cmds = []
+    k = 0
+    while k < len(args):
+        if args[k].value in FIND_EXEC and k + 1 < len(args):
+            end = k + 1
+            while end < len(args) and args[end].value != ";" and not (
+                    args[end].value == "+" and args[end - 1].value == "{}"):
+                end += 1
+            cmds.append((k + 1, end, {"{}"}))
+            k = end
+        k += 1
+    return cmds
+
+
+def command_runs(words):
+    v = words[0].value
+    if v is None:
+        return True
+    base = os.path.basename(v)
+    if base in RUNNER_TARGETS:
+        return True
+    if base in INPUT_RUNNERS or base == "find":
+        return runner_runs(base, words[1:])
+    if base in AWK_HEADS | SED_HEADS:
+        return text_program_runs(base, words[1:])
+    return base in COMMAND_RUNNERS
+
+
+def data_command(words):
+    v = words[0].value
+    if v is None:
+        return False
+    base = os.path.basename(v)
+    if base in DATA_HEADS:
+        return True
+    if base in AWK_HEADS | SED_HEADS:
+        return not text_program_runs(base, words[1:])
+    if base == "xargs":
+        k, _ = xargs_command(words[1:])
+        return k is not None and (k + 1 >= len(words) or data_command(words[k + 1:]))
+    return False
+
+
+def runner_runs(base, args):
+    cmds = runner_commands(base, args)
+    if cmds is None:
+        return True
+    for k, end, replace in cmds:
+        v = args[k].value
+        if v is None or any(r in v for r in replace) or command_runs(args[k:end]):
             return True
-        i += 2 if consumed else 1
     return False
 
 
@@ -998,17 +1080,20 @@ class Analyzer(object):
 
     def word_hazards(self, words, depth=0):
         found = set()
-        for word in words:
+        for k, word in enumerate(words):
             if word.quoted or word.value not in COMPOUND:
-                if word.value is not None and os.path.basename(word.value) in DATA_HEADS:
+                if data_command(words[k:]):
                     return found
                 break
+        fed = False
         for i, word in enumerate(words):
             value = word.value
-            if value is None:
+            if value is None or (fed and "{" in value):
                 if i + 1 < len(words) and words[i + 1].value == "commit":
                     found.add("guarded")
                 value = "".join(word.text)
+            if os.path.basename(value) in INPUT_RUNNERS or os.path.basename(value) == "find":
+                fed = True
             base = os.path.basename(value)
             if base in ("update.sh", "git-commit.sh"):
                 found.add("guarded")
@@ -1032,8 +1117,15 @@ class Analyzer(object):
             v = words[j].value
             if v is None or os.path.basename(v) not in INPUT_RUNNERS:
                 continue
-            if status in ("none", "info") or os.path.basename(v) == "parallel" \
-                    or replaces_words(words[j + 1:i]):
+            if os.path.basename(v) == "parallel":
+                return True
+            k, replace = xargs_command(words[j + 1:])
+            if k is None:
+                return True
+            cmd = j + 1 + k
+            if cmd == i and (status in ("none", "info") or replace):
+                return True
+            if cmd < i and command_runs(words[cmd:]):
                 return True
         return False
 
@@ -1119,15 +1211,16 @@ class Analyzer(object):
             return set(states), set(states)
         if base in DATA_HEADS:
             return set(states), set(states)
-        find_exec = base == "find" and any(a.value is None or a.value in FIND_EXEC for a in args)
-        runner = base in COMMAND_RUNNERS or find_exec
-        inner = (base in INPUT_RUNNERS or find_exec) and any(
-            a.value is not None and os.path.basename(a.value) in SHELLS | WRAPPER_HEADS | COMMAND_RUNNERS | {"ssh"}
-            for a in args)
         if base in AWK_HEADS | SED_HEADS:
-            inner = text_program_runs(base, args)
-        return self.unsupported(words, states, "the command " + base + " is not a supported wrapper",
-                                inner or (runner and any(a.value is None for a in args)))
+            if not text_program_runs(base, args):
+                return set(states), set(states)
+            dynamic = True
+        elif base in INPUT_RUNNERS or (base == "find" and any(a.value is None or a.value in FIND_EXEC
+                                                                for a in args)):
+            dynamic = runner_runs(base, args)
+        else:
+            dynamic = base in COMMAND_RUNNERS and any(a.value is None for a in args)
+        return self.unsupported(words, states, "the command " + base + " is not a supported wrapper", dynamic)
 
     def strip_wrapper(self, base, hv, words, inv):
         args = words[1:]
