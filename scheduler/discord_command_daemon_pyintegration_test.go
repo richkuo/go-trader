@@ -263,14 +263,43 @@ func TestSlashCommandDaemonDoesNotWaitForCommandMaintenance(t *testing.T) {
 		cycles := once.waitCycle(t, s, "")
 		time.Sleep(2 * time.Second)
 		once.stop(t, 20*time.Second)
-		summaryOut, summaryErr := f.runOneShot(t, "--config", cfgPath, "--summary", "spot")
+		raw, err := os.ReadFile(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var summaryCfg map[string]any
+		if err := json.Unmarshal(raw, &summaryCfg); err != nil {
+			t.Fatal(err)
+		}
+		summaryCfg["strategies"] = []any{map[string]any{
+			"id": "hl-summary", "type": "manual", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py",
+			"symbol": "BTC", "timeframe": "1m", "args": []any{"hold", "BTC", "1m", "--mode=paper"},
+			"capital": 1000, "leverage": 1, "max_drawdown_pct": 90, "direction": "both",
+		}}
+		summaryCfg["discord"].(map[string]any)["channels"] = map[string]string{"spot": "6001", "hyperliquid": "6001"}
+		blob, err := json.MarshalIndent(summaryCfg, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		summaryPath := filepath.Join(f.dir, "oneshot-summary.json")
+		if err := os.WriteFile(summaryPath, blob, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		posted := len(s.bodiesFor(slashTestChannel))
+		summaryOut, summaryErr := f.runOneShot(t, "--config", summaryPath, "--summary", "hyperliquid")
+		if summaryErr != nil || !strings.Contains(summaryOut, "-summary=hyperliquid: posted, exiting.") {
+			t.Fatalf("--summary hyperliquid did not finish its post: err %v\n%s", summaryErr, summaryOut)
+		}
+		if got := len(s.bodiesFor(slashTestChannel)) - posted; got != 1 {
+			t.Fatalf("--summary hyperliquid posted %d channel message(s); want 1", got)
+		}
 		if n := s.commandRequests(); n != 0 {
 			t.Fatalf("--once and --summary sent %d command request(s); want none: %v", n, s.requestKeys())
 		}
 		if strings.Contains(once.out.String(), "Discord slash commands are") || strings.Contains(summaryOut, "Discord slash commands are") {
 			t.Fatal("a one-shot run started the command worker")
 		}
-		t.Logf("case: commands on: --once reached cycle %d and ran 2s more, --summary spot exited (err %v); neither started the command worker or sent a command request; summary output tail: %q", cycles, summaryErr, lastLine(summaryOut))
+		t.Logf("case: commands on: --once reached cycle %d and ran 2s more; --summary hyperliquid exited 0 after it posted one channel summary (%q); neither started the command worker or sent a command request", cycles, lastLine(summaryOut))
 	})
 
 	t.Run("ConfigGuards", func(t *testing.T) {
