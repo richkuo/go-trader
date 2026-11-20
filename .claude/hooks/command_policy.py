@@ -40,6 +40,10 @@ DATA_HEADS = frozenset(("echo", "printf", "cat", "grep", "egrep", "fgrep", "rg",
                         "chmod", "which", "type", "printenv", "test", "[", "[[", "true", "false", ":", "pwd", "sed",
                         "awk", "column", "fold", "nl", "od", "xxd", "shasum", "sha256sum", "md5", "md5sum", "du", "df",
                         "tree", "bat", "shellcheck"))
+COMMAND_RUNNERS = frozenset(("xargs", "parallel", "watch", "flock", "doas", "su", "runuser", "chroot", "script",
+                             "systemd-run", "unbuffer", "ionice", "chrt", "taskset", "numactl", "strace", "ltrace",
+                             "gtimeout", "entr"))
+FIND_EXEC = frozenset(("-exec", "-execdir", "-ok", "-okdir"))
 SHELL_STATE = frozenset(("export", "unset", "declare", "typeset", "local", "readonly", "set", "shopt", "setopt",
                          "unsetopt", "eval", "alias", "unalias", "hash", "enable", "trap", "emulate", "function"))
 SET_FLAGS_OK = frozenset(("-e", "+e", "-u", "+u", "-x", "+x", "-v", "+v", "-eu", "-ex", "-eux", "-euo", "-eo", "-uo"))
@@ -909,7 +913,9 @@ class Analyzer(object):
             return set(states), set(states)
         if base in DATA_HEADS:
             return set(states), set(states)
-        return self.unsupported(words, states, "the command " + base + " is not a supported wrapper")
+        runner = base in COMMAND_RUNNERS or (base == "find" and any(a.value in FIND_EXEC for a in args))
+        return self.unsupported(words, states, "the command " + base + " is not a supported wrapper",
+                                runner and any(a.value is None for a in args))
 
     def strip_wrapper(self, base, hv, words, inv):
         args = words[1:]
@@ -1780,7 +1786,7 @@ class Analyzer(object):
         while i < len(vals):
             v = vals[i]
             if v is None:
-                return self.unsupported(words, states, "an ssh option is not literal")
+                return self.unsupported(words, states, "an ssh option is not literal", True)
             if v == "--":
                 i += 1
                 break

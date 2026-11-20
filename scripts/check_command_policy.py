@@ -238,6 +238,16 @@ class Runner(object):
         c("commit alias in a variable through eval", gt, 'C="git cm --allow-empty -m x"; eval "$C"', "deny")
         c("commit text piped into a shell", gt, "echo 'git commit --allow-empty -m x' | bash", "deny")
         c("variable command name without git", gt, "PY=python3; $PY -c 'print(1)'", "allow")
+        c("whole command in a variable through xargs", gt, 'C="git commit --allow-empty -m x"; xargs $C </dev/null',
+          "deny")
+        c("whole command in a variable through find -exec", gt,
+          'C="git commit --allow-empty -m x"; find . -maxdepth 0 -exec $C \\;', "deny")
+        c("ssh with a variable host and a variable remote command", gt,
+          'H=localhost; C="git commit --allow-empty -m x"; ssh "$H" "$C"', "deny")
+        c("variable argument to an ordinary command next to git", gt,
+          "T=x; python3 -I -c 'print(1)' \"$T\" && git status", "allow")
+        c("variable search root for find without -exec next to git", gt,
+          "D=.; find \"$D\" -maxdepth 0 -name x && git status", "allow")
         c("conditional with a known git subcommand", gt, "if git diff --quiet; then echo same; fi", "allow")
         c("conditional with quoted git text", gt, "if true; then echo 'git cm'; fi", "allow")
         c("nested shell with a dynamic git subcommand", gt, 'bash -c "git $SUB --allow-empty -m x"', "deny")
