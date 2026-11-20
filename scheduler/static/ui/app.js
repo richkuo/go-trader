@@ -3727,6 +3727,7 @@
       refreshFeedbackAnalysis().catch(function () {});
     } else if (state.activeID === strategyID) {
       feedbackState.cache = null;
+      refreshFeedbackAnalysis().catch(function () {});
     }
   }
 
