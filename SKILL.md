@@ -1985,7 +1985,7 @@ When the mark has already crossed the moved trigger, the position closes in the 
 | ref `tiered_tp_atr_live_regime_dynamic` | HL perps, manual | Unified per-regime block only. Applies a new ATR-regime label after `regime_confirm_cycles` consecutive cycles (a whole number >= 1, default 2), then re-places the stop-loss and take-profit orders for that label. Hot-reload-gated while a position is open. The backtester rejects it. |
 | `close_strategy.params.tp_tiers` with ref `trailing_tp_ratchet` / `trailing_tp_ratchet_regime` | HL perps, manual | Shape and rules in Configure. `use_defaults: true` or an omitted `tp_tiers` takes the system ladder (scalar: trails 1.5×/1.5×/0.8× at 2×/2.5×/3× ATR; regime: per quality group). Tier-table changes blocked while open. |
 
-Discord and Telegram: `enabled`; `channels` (the platform/type map for summaries and, as a fallback, trade alerts); `trade_alert_channels` (an override for fills only, same key scheme, hot-reloadable); `dm_channels`; `owner_id` (prefer `DISCORD_OWNER_ID`); `ephemeral_replies`; `report_repo` and `report_github_token`.
+Discord and Telegram: `enabled`; `channels` (the platform/type map for summaries and, as a fallback, trade alerts); `trade_alert_channels` (an override for fills only, same key scheme, hot-reloadable); `dm_channels`; `owner_id` (prefer `DISCORD_OWNER_ID`); `ephemeral_replies`; Discord only: `slash_commands` (Boolean, default `false`, restart-required; § Discord Slash Commands) and `guild_id` (optional, restart-required); `report_repo` and `report_github_token`.
 
 ---
 
