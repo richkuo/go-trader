@@ -2,6 +2,17 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 2117: Discord slash commands are off by default and maintained by a background worker
+
+Runtime default; restart-required; new config key `discord.slash_commands` (Boolean, default `false`); the loader rejects unknown keys in the `discord` block; the notification broker announces capabilities in its hello; no SQLite schema change.
+Before this change the scheduler synchronized slash commands on its main startup goroutine, through the direct Discord session or the notification broker. discordgo slept and retried on each HTTP 429 and waited on rate-limit buckets without a context, and the broker forwarded a timeout but kept running the call, so a rate-limited command create could delay or block the first trading cycle. The health endpoint then reported `main loop stale`.
+Now only the daemon runs command maintenance, in one background worker that starts immediately before the first cycle and never touches the scheduler locks. `--once`, `--summary`, `--leaderboard`, `probe`, feed and manual commands send no command request.
+Command requests on both transports use one command client with no automatic retry, a context-aware wait on Discord's rate-limit headers, typed errors and a per-request cap of 20 seconds inside a 2-minute pass (5 minutes for the cleanup job). A 429 on any command request ends the pass and the worker waits Discord's retry delay for the life of the process.
+With the setting absent or `false`, the daemon installs no interaction handler and sends no create or edit; one cleanup job per start deletes only the application's `go-trader-` chat-input commands, globally and in `discord.guild_id`, retries with a fresh list inside its deadline, and DMs the owner once when it removed commands. Owner alerts that name a held-state command add how to turn the commands back on.
+With `true`, the worker runs the first sync and the one-minute re-sync with one create budget (100 creates in 24 hours per process), deletes stale commands before creates, stops creating on error 30032 or a full list of 100 chat-input commands, and DMs the owner once per process with the limit, the other programs' command count and the separate-token remedy. Repairs count toward the shared-token warning only after the first sync with no error.
+The broker announces `discord.command_policy.v1` and `cancel.v1`; the scheduler defers command maintenance with one warning when the broker lacks them, and keeps ordinary messages working. Command errors carry HTTP status, Discord code, the rate-limit flag and the retry delay across the socket.
+Operator action: before the update, set `"slash_commands": true` in the `discord` block if the operator relies on slash commands, above all the held-state recovery commands. Deploy the scheduler and the broker together with `bash scripts/update.sh --restart`. Give each instance its own bot application and token; mixed versions or settings on one application remove each other's commands.
+
 ### Issue 2114: the dashboard tuner cannot change a strategy's open strategy
 
 Runtime default; restart-required; no config key, no SQLite schema change and no config file format change.

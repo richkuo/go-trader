@@ -15,6 +15,15 @@ import (
 
 var ErrBrokerUnavailable = errors.New("notification broker unavailable")
 
+type CallError struct {
+	Message string
+	Detail  *ErrorDetail
+}
+
+func (e *CallError) Error() string {
+	return e.Message
+}
+
 type EventHandler func(kind string, raw json.RawMessage)
 
 type Client struct {
@@ -183,6 +192,32 @@ func (c *Client) readLoop(conn net.Conn) {
 }
 
 func (c *Client) Call(ctx context.Context, op string, req any, out any) error {
+	return c.call(ctx, op, req, out, false)
+}
+
+func (c *Client) CallCancellable(ctx context.Context, op string, req any, out any) error {
+	return c.call(ctx, op, req, out, true)
+}
+
+func (c *Client) sendCancel(conn net.Conn, id uint64) {
+	c.mu.Lock()
+	current := c.conn == conn
+	supported := c.hello.Has(CapabilityCancel)
+	c.mu.Unlock()
+	if !current || !supported {
+		return
+	}
+	data, err := encodeFrame(&Frame{ID: id, Type: FrameCancel})
+	if err != nil {
+		return
+	}
+	c.wmu.Lock()
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_, _ = conn.Write(data)
+	c.wmu.Unlock()
+}
+
+func (c *Client) call(ctx context.Context, op string, req any, out any, cancellable bool) error {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return err
@@ -216,7 +251,7 @@ func (c *Client) Call(ctx context.Context, op string, req any, out any) error {
 	select {
 	case f := <-ch:
 		if f.Error != "" {
-			return errors.New(f.Error)
+			return &CallError{Message: f.Error, Detail: f.ErrorDetail}
 		}
 		if out != nil && len(f.Payload) > 0 {
 			return json.Unmarshal(f.Payload, out)
@@ -224,8 +259,12 @@ func (c *Client) Call(ctx context.Context, op string, req any, out any) error {
 		return nil
 	case <-ctx.Done():
 		c.mu.Lock()
+		_, inFlight := c.pending[id]
 		delete(c.pending, id)
 		c.mu.Unlock()
+		if cancellable && inFlight {
+			c.sendCancel(conn, id)
+		}
 		return ctx.Err()
 	}
 }

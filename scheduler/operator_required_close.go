@@ -163,7 +163,7 @@ func formatOperatorRequiredWarningMessage(entries []OperatorRequiredEntry) strin
 			formatOperatorRequiredLegs(e.Symbols), e.DrawdownPct, cbSuffix, detail))
 	}
 	b.WriteString("Sizes are the virtual book at fire time, summed across the fires not cleared; they do not show the current venue position. No automated close will be attempted.\n")
-	fmt.Fprintf(&b, "After you flatten the position on the venue, run `%s` in a DM to the bot to clear the entry.\n", operatorCloseCommandUsage())
+	fmt.Fprintf(&b, "After you flatten the position on the venue, run `%s` in a DM to the bot to clear the entry.%s\n", operatorCloseCommandUsage(), slashCommandOffNote())
 	fmt.Fprintf(&b, "Until then this warning repeats every %s (`alert_throttle_interval`) and at once on a new circuit-breaker fire; the CRITICAL log line repeats every cycle. Circuit-breaker expiry does not clear the entry.",
 		effectiveAlertThrottleInterval())
 	return b.String()

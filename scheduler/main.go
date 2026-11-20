@@ -660,17 +660,10 @@ func main() {
 		fmt.Printf("[WARN] llm_entry_analysis enabled but %s is not set — analyses will fail (advisory only, trading unaffected)\n", llmEntryAnalysisAPIKeyEnv)
 	}
 
+	slashPolicy := slashCommandPolicyFor(cfg)
 	if d := notifier.DiscordBackend(); d != nil {
-		if err := d.RegisterSlashCommands(server, cfg); errors.Is(err, errSlashCommandsDeferred) {
-			fmt.Printf("[WARN] Discord slash commands: %v\n", err)
-		} else if err != nil {
-			fmt.Printf("[WARN] Discord slash command registration failed: %v\n", err)
-			if notifier.HasOwner() {
-				notifier.SendOwnerDM("[slash] registration failed: " + err.Error())
-			}
-		} else {
-			fmt.Println("Discord slash commands registered")
-		}
+		d.bindSlashCommandContext(server, cfg)
+		slashCommandsOffHint.Store(!slashPolicy.Enabled)
 	}
 
 	defer func() {
@@ -1007,6 +1000,12 @@ func main() {
 	sharedWalletRiskGeneration := 0
 	backfillMovedStopMarkers(cfg, state, &mu)
 	var pendingDrainReports []manualDrainReport
+	if d := notifier.DiscordBackend(); d != nil && !*once && !readOnlyReport {
+		if slashPolicy.Enabled {
+			d.installSlashCommandHandler()
+		}
+		d.startSlashCommandWorker(shutdownReadOnlyCtx, slashPolicy)
+	}
 
 	for {
 		if isDraining() {

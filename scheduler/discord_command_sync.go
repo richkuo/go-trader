@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+
+	"trading-scheduler/internal/discordcmd"
 )
 
 type slashCommandSyncResult struct {
@@ -20,6 +22,13 @@ type slashCommandSyncResult struct {
 	Recreated int
 	Deleted   int
 	Unchanged int
+
+	Listed             bool
+	OtherChatCommands  int
+	GlobalChatCommands int
+	CapacityReached    bool
+	CreatesSkipped     int
+	BudgetReached      bool
 }
 
 func (r slashCommandSyncResult) writes() int {
@@ -32,11 +41,20 @@ var (
 	slashResyncFlapWindow   = 30 * time.Minute
 	slashCreateBudget       = 100
 	slashCreateBudgetWindow = 24 * time.Hour
+	slashPassDeadline       = 2 * time.Minute
+	slashCleanupDeadline    = 5 * time.Minute
+	slashOpTimeout          = 20 * time.Second
 )
 
-var errSlashCreateBudget = errors.New("slash command create budget exhausted")
+const (
+	slashGlobalChatCommandLimit = 100
+	slashResyncFlapRepairs      = 3
+)
 
-const slashResyncFlapRepairs = 3
+var (
+	errSlashCreateBudget    = errors.New("slash command create budget exhausted")
+	errSlashCommandCapacity = errors.New("discord reached its limit of global chat-input commands for this application")
+)
 
 var slashHeldStateCommandNames = map[string]bool{
 	"clear-cash-reconcile":      true,
@@ -58,94 +76,84 @@ func slashCreatePriority(c *discordgo.ApplicationCommand) int {
 	}
 }
 
-func ownedSlashCommand(c *discordgo.ApplicationCommand) bool {
-	if c == nil || !strings.HasPrefix(c.Name, commandPrefix) {
-		return false
-	}
-	return c.Type == 0 || c.Type == discordgo.ChatApplicationCommand
+func chatSlashCommand(c *discordgo.ApplicationCommand) bool {
+	return c != nil && (c.Type == 0 || c.Type == discordgo.ChatApplicationCommand)
 }
 
-func syncOwnedSlashCommands(t discordTransport, appID string, desired []*discordgo.ApplicationCommand, allowCreate func() bool, recordCreate func()) (slashCommandSyncResult, error) {
-	var res slashCommandSyncResult
+func ownedSlashCommand(c *discordgo.ApplicationCommand) bool {
+	return chatSlashCommand(c) && strings.HasPrefix(c.Name, commandPrefix)
+}
+
+func slashOpContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	limit := slashOpTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		if rem := time.Until(dl); rem < limit {
+			limit = rem
+		}
+	}
+	return context.WithTimeout(ctx, limit)
+}
+
+func slashPassStop(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	return ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || discordcmd.IsRateLimited(err)
+}
+
+func validateDesiredSlashCommands(desired []*discordgo.ApplicationCommand) (map[string]bool, error) {
 	want := make(map[string]bool, len(desired))
 	for _, c := range desired {
 		if !ownedSlashCommand(c) {
-			return res, fmt.Errorf("slash command %q is not a %s chat command", c.Name, commandPrefix)
+			return nil, fmt.Errorf("slash command %q is not a %s chat command", c.Name, commandPrefix)
 		}
 		if want[c.Name] {
-			return res, fmt.Errorf("duplicate slash command %q", c.Name)
+			return nil, fmt.Errorf("duplicate slash command %q", c.Name)
 		}
 		if c.Contexts == nil || c.IntegrationTypes == nil || c.NSFW == nil {
-			return res, fmt.Errorf("slash command %q must set contexts, integration types and nsfw so the sync can compare them", c.Name)
+			return nil, fmt.Errorf("slash command %q must set contexts, integration types and nsfw so the sync can compare them", c.Name)
 		}
 		want[c.Name] = true
 	}
+	return want, nil
+}
+
+func syncOwnedSlashCommands(ctx context.Context, api slashCommandAPI, appID string, desired []*discordgo.ApplicationCommand, allowCreate func() bool, recordCreate func()) (slashCommandSyncResult, error) {
+	var res slashCommandSyncResult
+	want, err := validateDesiredSlashCommands(desired)
+	if err != nil {
+		return res, err
+	}
 	ordered := append([]*discordgo.ApplicationCommand(nil), desired...)
 	sort.SliceStable(ordered, func(i, j int) bool { return slashCreatePriority(ordered[i]) < slashCreatePriority(ordered[j]) })
-	existing, err := t.ApplicationCommands(appID, "")
+	opCtx, cancel := slashOpContext(ctx)
+	existing, err := api.list(opCtx, appID, "")
+	cancel()
 	if err != nil {
 		return res, fmt.Errorf("list global commands: %w", err)
 	}
+	res.Listed = true
 	have := make(map[string]*discordgo.ApplicationCommand)
 	for _, c := range existing {
+		if !chatSlashCommand(c) {
+			continue
+		}
+		res.GlobalChatCommands++
 		if ownedSlashCommand(c) {
 			have[c.Name] = c
+		} else {
+			res.OtherChatCommands++
 		}
 	}
 	var errs []error
-	budgetHit := false
-	mayCreate := func() bool {
-		if allowCreate == nil || allowCreate() {
-			return true
-		}
-		if !budgetHit {
-			budgetHit = true
-			errs = append(errs, errSlashCreateBudget)
-		}
-		return false
+	stop := func(err error) bool {
+		errs = append(errs, err)
+		return slashPassStop(ctx, err)
 	}
-	created := func() {
-		if recordCreate != nil {
-			recordCreate()
-		}
+	finish := func() (slashCommandSyncResult, error) {
+		return res, errors.Join(errs...)
 	}
-	for _, c := range ordered {
-		cur, ok := have[c.Name]
-		switch {
-		case !ok:
-			if !mayCreate() {
-				continue
-			}
-			if _, err := t.ApplicationCommandCreate(appID, "", c); err != nil {
-				errs = append(errs, fmt.Errorf("create %s: %w", c.Name, err))
-				continue
-			}
-			created()
-			res.Created++
-		case slashCommandMatches(cur, c):
-			res.Unchanged++
-		case slashCommandNeedsRecreate(cur, c):
-			if !mayCreate() {
-				continue
-			}
-			if err := t.ApplicationCommandDelete(appID, "", cur.ID); err != nil {
-				errs = append(errs, fmt.Errorf("recreate %s: delete: %w", c.Name, err))
-				continue
-			}
-			if _, err := t.ApplicationCommandCreate(appID, "", c); err != nil {
-				errs = append(errs, fmt.Errorf("recreate %s: create: %w", c.Name, err))
-				continue
-			}
-			created()
-			res.Recreated++
-		default:
-			if _, err := t.ApplicationCommandEdit(appID, "", cur.ID, c); err != nil {
-				errs = append(errs, fmt.Errorf("update %s: %w", c.Name, err))
-				continue
-			}
-			res.Updated++
-		}
-	}
+
 	stale := make([]string, 0)
 	for name := range have {
 		if !want[name] {
@@ -154,19 +162,128 @@ func syncOwnedSlashCommands(t discordTransport, appID string, desired []*discord
 	}
 	sort.Strings(stale)
 	for _, name := range stale {
-		if err := t.ApplicationCommandDelete(appID, "", have[name].ID); err != nil {
-			errs = append(errs, fmt.Errorf("delete %s: %w", name, err))
+		opCtx, cancel := slashOpContext(ctx)
+		err := api.remove(opCtx, appID, "", have[name].ID)
+		cancel()
+		if err != nil {
+			if stop(fmt.Errorf("delete %s: %w", name, err)) {
+				return finish()
+			}
 			continue
 		}
 		res.Deleted++
+		res.GlobalChatCommands--
 	}
-	return res, errors.Join(errs...)
+
+	var creates []*discordgo.ApplicationCommand
+	for _, c := range ordered {
+		cur, ok := have[c.Name]
+		switch {
+		case !ok:
+			creates = append(creates, c)
+		case slashCommandMatches(cur, c):
+			res.Unchanged++
+		case slashCommandNeedsRecreate(cur, c):
+			creates = append(creates, c)
+		default:
+			opCtx, cancel := slashOpContext(ctx)
+			_, err := api.edit(opCtx, appID, cur.ID, c)
+			cancel()
+			if err != nil {
+				if stop(fmt.Errorf("update %s: %w", c.Name, err)) {
+					return finish()
+				}
+				continue
+			}
+			res.Updated++
+		}
+	}
+
+	mayCreate := func() bool {
+		if allowCreate == nil || allowCreate() {
+			return true
+		}
+		if !res.BudgetReached {
+			res.BudgetReached = true
+			errs = append(errs, errSlashCreateBudget)
+		}
+		return false
+	}
+	capacity := func() {
+		if !res.CapacityReached {
+			res.CapacityReached = true
+			errs = append(errs, errSlashCommandCapacity)
+		}
+	}
+	for i, c := range creates {
+		if res.CapacityReached {
+			res.CreatesSkipped += len(creates) - i
+			break
+		}
+		cur, recreate := have[c.Name]
+		if !recreate && res.GlobalChatCommands >= slashGlobalChatCommandLimit {
+			capacity()
+			res.CreatesSkipped += len(creates) - i
+			break
+		}
+		if !mayCreate() {
+			res.CreatesSkipped++
+			continue
+		}
+		if recreate {
+			opCtx, cancel := slashOpContext(ctx)
+			err := api.remove(opCtx, appID, "", cur.ID)
+			cancel()
+			if err != nil {
+				if stop(fmt.Errorf("recreate %s: delete: %w", c.Name, err)) {
+					return finish()
+				}
+				continue
+			}
+			res.GlobalChatCommands--
+		}
+		opCtx, cancel := slashOpContext(ctx)
+		_, err := api.create(opCtx, appID, c)
+		cancel()
+		if err != nil {
+			label := "create " + c.Name
+			if recreate {
+				label = "recreate " + c.Name + ": create"
+			}
+			if discordcmd.IsCapacity(err) {
+				capacity()
+				errs = append(errs, fmt.Errorf("%s: %w", label, err))
+				res.CreatesSkipped += len(creates) - i - 1
+				break
+			}
+			if stop(fmt.Errorf("%s: %w", label, err)) {
+				return finish()
+			}
+			continue
+		}
+		if recordCreate != nil {
+			recordCreate()
+		}
+		res.GlobalChatCommands++
+		if recreate {
+			res.Recreated++
+		} else {
+			res.Created++
+		}
+	}
+	return finish()
 }
 
-func deleteOwnedGuildSlashCommands(t discordTransport, appID, guildID string) (int, error) {
-	existing, err := t.ApplicationCommands(appID, guildID)
+func cleanupOwnedSlashCommandScope(ctx context.Context, api slashCommandAPI, appID, guildID string) (int, error) {
+	scope := "global"
+	if guildID != "" {
+		scope = "guild " + guildID
+	}
+	opCtx, cancel := slashOpContext(ctx)
+	existing, err := api.list(opCtx, appID, guildID)
+	cancel()
 	if err != nil {
-		return 0, fmt.Errorf("list guild %s commands: %w", guildID, err)
+		return 0, fmt.Errorf("list %s commands: %w", scope, err)
 	}
 	var owned []*discordgo.ApplicationCommand
 	for _, c := range existing {
@@ -175,16 +292,31 @@ func deleteOwnedGuildSlashCommands(t discordTransport, appID, guildID string) (i
 		}
 	}
 	sort.Slice(owned, func(i, j int) bool { return owned[i].Name < owned[j].Name })
-	deleted := 0
+	removed := 0
 	var errs []error
 	for _, c := range owned {
-		if err := t.ApplicationCommandDelete(appID, guildID, c.ID); err != nil {
-			errs = append(errs, fmt.Errorf("delete guild %s command %s: %w", guildID, c.Name, err))
+		opCtx, cancel := slashOpContext(ctx)
+		err := api.remove(opCtx, appID, guildID, c.ID)
+		cancel()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("delete %s command %s: %w", scope, c.Name, err))
+			if slashPassStop(ctx, err) {
+				break
+			}
 			continue
 		}
-		deleted++
+		removed++
 	}
-	return deleted, errors.Join(errs...)
+	return removed, errors.Join(errs...)
+}
+
+func cleanupOwnedSlashCommands(ctx context.Context, api slashCommandAPI, appID, guildID string) (int, error) {
+	removed, err := cleanupOwnedSlashCommandScope(ctx, api, appID, "")
+	if err != nil || guildID == "" {
+		return removed, err
+	}
+	n, err := cleanupOwnedSlashCommandScope(ctx, api, appID, guildID)
+	return removed + n, err
 }
 
 func slashCommandMatches(cur, want *discordgo.ApplicationCommand) bool {
@@ -278,163 +410,10 @@ func pruneTimes(times []time.Time, now time.Time, window time.Duration) []time.T
 	return kept
 }
 
-func (d *DiscordNotifier) syncOwnedSlashCommandsLocked(appID string, enforceBudget bool) (slashCommandSyncResult, error) {
-	d.syncMu.Lock()
-	defer d.syncMu.Unlock()
-	allowCreate := func() bool {
-		now := time.Now()
-		d.createTimes = pruneTimes(d.createTimes, now, slashCreateBudgetWindow)
-		return !enforceBudget || len(d.createTimes) < slashCreateBudget
-	}
-	recordCreate := func() {
-		d.createTimes = append(d.createTimes, time.Now())
-	}
-	res, err := syncOwnedSlashCommands(d.transport, appID, slashCommands(), allowCreate, recordCreate)
-	if err != nil {
-		err = fmt.Errorf("sync slash commands: %w%s", err, brokerProtocolHint(err))
-	}
-	return res, err
-}
-
-func slashRateLimited(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "http 429") || strings.Contains(msg, "rate limit")
-}
-
-func brokerProtocolHint(err error) string {
-	if err == nil || !strings.Contains(err.Error(), "unknown operation") {
-		return ""
-	}
+func brokerUpgradeHint() string {
 	unit := "go-trader-notify@<deployment>.service"
 	if dep := strings.TrimSpace(os.Getenv("GO_TRADER_EGRESS_DEPLOYMENT")); dep != "" {
 		unit = "go-trader-notify@" + dep + ".service"
 	}
-	return fmt.Sprintf(" (the notification broker runs an older build than this scheduler: run `sudo systemctl restart %s`; go-trader retries every %s)", unit, slashResyncInterval)
-}
-
-func (d *DiscordNotifier) syncSlashCommands(appID string) error {
-	res, err := d.syncOwnedSlashCommandsLocked(appID, false)
-	fmt.Printf("Discord slash commands synced: %d created, %d updated, %d recreated, %d deleted, %d unchanged\n", res.Created, res.Updated, res.Recreated, res.Deleted, res.Unchanged)
-	if d.cfg != nil {
-		if guildID := strings.TrimSpace(d.cfg.Discord.GuildID); guildID != "" {
-			d.syncMu.Lock()
-			d.legacyGuildID = guildID
-			d.syncMu.Unlock()
-		}
-	}
-	if err != nil {
-		return err
-	}
-	d.cleanupLegacyGuildSlashCommands(appID)
-	return nil
-}
-
-func (d *DiscordNotifier) cleanupLegacyGuildSlashCommands(appID string) {
-	d.syncMu.Lock()
-	defer d.syncMu.Unlock()
-	guildID := d.legacyGuildID
-	if guildID == "" || d.legacyGuildDone {
-		return
-	}
-	n, err := deleteOwnedGuildSlashCommands(d.transport, appID, guildID)
-	if err != nil {
-		if msg := err.Error(); msg != d.legacyGuildErr {
-			d.legacyGuildErr = msg
-			fmt.Printf("[WARN] Discord legacy guild command cleanup: %v (the slash command re-sync retries it)\n", err)
-		}
-		return
-	}
-	d.legacyGuildDone = true
-	fmt.Printf("Discord legacy guild %s: removed %d go-trader command(s); discord.guild_id is used only for this cleanup and can be removed\n", guildID, n)
-}
-
-func (d *DiscordNotifier) startSlashCommandResync(appID string, initialErr error) {
-	d.resyncOnce.Do(func() {
-		ctx, cancel := context.WithCancel(shutdownReadOnlyCtx)
-		d.mu.Lock()
-		d.resyncCancel = cancel
-		d.mu.Unlock()
-		lastErr := ""
-		if initialErr != nil {
-			lastErr = initialErr.Error()
-		}
-		go d.resyncSlashCommands(ctx, appID, slashResyncInterval, slashResyncMaxInterval, slashResyncFlapWindow, lastErr)
-	})
-}
-
-func (d *DiscordNotifier) slashResyncOwnerDM(msg string) {
-	fmt.Println("[WARN] " + msg)
-	if d.ownerID == "" {
-		return
-	}
-	if err := d.SendDM(d.ownerID, msg); err != nil {
-		fmt.Printf("[WARN] Discord slash command owner DM failed: %v\n", err)
-	}
-}
-
-func (d *DiscordNotifier) resyncSlashCommands(ctx context.Context, appID string, base, maxWait, flapWindow time.Duration, lastErr string) {
-	wait := base
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	var repairs []time.Time
-	flapping, flapWarned, budgetWarned := false, false, false
-	backOff := func() {
-		wait = min(wait*2, maxWait)
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-		}
-		res, err := d.syncOwnedSlashCommandsLocked(appID, true)
-		if err == nil {
-			d.cleanupLegacyGuildSlashCommands(appID)
-		}
-		now := time.Now()
-		repairs = pruneTimes(repairs, now, flapWindow)
-		if len(repairs) == 0 && !flapping {
-			flapWarned = false
-		}
-		budgetHit := errors.Is(err, errSlashCreateBudget)
-		throttled := budgetHit || slashRateLimited(err)
-		if err != nil {
-			if msg := err.Error(); msg != lastErr {
-				lastErr = msg
-				fmt.Printf("[WARN] Discord slash command re-sync failed: %v\n", err)
-			}
-		} else if lastErr != "" {
-			lastErr = ""
-			fmt.Println("Discord slash command re-sync recovered")
-		}
-		if res.writes() > 0 {
-			repairs = append(repairs, now)
-			fmt.Printf("[WARN] Discord slash commands changed outside go-trader and were repaired: %d created, %d updated, %d recreated, %d deleted\n", res.Created, res.Updated, res.Recreated, res.Deleted)
-		}
-		if budgetHit && !budgetWarned {
-			budgetWarned = true
-			d.slashResyncOwnerDM(fmt.Sprintf("[slash] go-trader stopped re-creating its Discord slash commands: it reached its limit of %d creates within %s, because another program keeps deleting them. Missing go-trader commands stay missing until that window passes or go-trader restarts; give each program its own bot token.", slashCreateBudget, slashCreateBudgetWindow))
-		}
-		if len(repairs) >= slashResyncFlapRepairs {
-			flapping = true
-		}
-		if len(repairs) >= slashResyncFlapRepairs && !flapWarned {
-			flapWarned = true
-			d.slashResyncOwnerDM(fmt.Sprintf("[slash] go-trader repaired its Discord slash commands %d times within %s. Another program or another go-trader instance that uses this bot token keeps changing them; go-trader now waits longer between checks (up to %s). Give each program its own bot token, or run one go-trader version per token.", len(repairs), flapWindow, maxWait))
-		}
-		switch {
-		case throttled:
-			backOff()
-		case err == nil && res.writes() == 0:
-			wait, flapping, budgetWarned = base, false, false
-		case !flapping:
-			wait = base
-		case res.writes() > 0:
-			backOff()
-		}
-		timer.Reset(wait)
-	}
+	return fmt.Sprintf(" (update go-trader with scripts/update.sh, or run `sudo systemctl restart %s` after the update installed the new broker)", unit)
 }
