@@ -175,21 +175,31 @@ def runner_commands(base, args):
     return cmds
 
 
-def command_runs(words):
+def replaced(words, replace):
+    return any(w.value is None or r in w.value for w in words for r in replace)
+
+
+def program_runs(base, words, replace, appended):
+    if appended and not (base in SED_HEADS and words[-1].value == "--"):
+        return True
+    return replaced(words[1:], replace) or text_program_runs(base, words[1:])
+
+
+def command_runs(words, replace=(), appended=False):
     v = words[0].value
     if v is None:
         return True
     base = os.path.basename(v)
-    if base in RUNNER_TARGETS:
+    if base in RUNNER_TARGETS or (base == "find" and appended):
         return True
     if base in INPUT_RUNNERS or base == "find":
-        return runner_runs(base, words[1:])
+        return runner_runs(base, words[1:], replace, appended)
     if base in AWK_HEADS | SED_HEADS:
-        return text_program_runs(base, words[1:])
+        return program_runs(base, words, replace, appended)
     return base in COMMAND_RUNNERS
 
 
-def data_command(words):
+def data_command(words, replace=(), appended=False):
     v = words[0].value
     if v is None:
         return False
@@ -197,20 +207,23 @@ def data_command(words):
     if base in DATA_HEADS:
         return True
     if base in AWK_HEADS | SED_HEADS:
-        return not text_program_runs(base, words[1:])
+        return not program_runs(base, words, replace, appended)
     if base == "xargs":
-        k, _ = xargs_command(words[1:])
-        return k is not None and (k + 1 >= len(words) or data_command(words[k + 1:]))
+        k, inner = xargs_command(words[1:])
+        return k is not None and (k + 1 >= len(words) or
+                                  data_command(words[k + 1:], set(replace) | inner, appended or not inner))
     return False
 
 
-def runner_runs(base, args):
+def runner_runs(base, args, outer=(), appended=False):
     cmds = runner_commands(base, args)
     if cmds is None:
         return True
     for k, end, replace in cmds:
+        fed = appended or (base == "xargs" and not replace)
+        replace = set(replace) | set(outer)
         v = args[k].value
-        if v is None or any(r in v for r in replace) or command_runs(args[k:end]):
+        if v is None or any(r in v for r in replace) or command_runs(args[k:end], replace, fed):
             return True
     return False
 
@@ -1125,7 +1138,7 @@ class Analyzer(object):
             cmd = j + 1 + k
             if cmd == i and (status in ("none", "info") or replace):
                 return True
-            if cmd < i and command_runs(words[cmd:]):
+            if cmd < i and command_runs(words[cmd:], replace, not replace):
                 return True
         return False
 

@@ -317,8 +317,8 @@ class Runner(object):
         c("xargs search for the word git in files that git lists", gt, "git ls-files | xargs grep -l git", "allow")
         c("xargs search with a variable pattern next to git", gt,
           "echo x | xargs -0 -n 2 grep -l \"$P\" && git status", "allow")
-        c("xargs sed search for commit text in files that git lists", gt,
-          "git ls-files | xargs sed -n '/git commit/p'", "allow")
+        c("xargs sed search for commit text with -- before the file names", gt,
+          "git ls-files | xargs sed -n '/git commit/p' --", "allow")
         c("find -exec search for a runner name next to git", gt,
           "find . -name '*.go' -exec grep -n timeout {} + && git status", "allow")
         c("sed search for commit text", gt, "sed -n '/git commit/p' SKILL.md", "allow")
@@ -329,6 +329,24 @@ class Runner(object):
           "echo commit | xargs -i git {} --allow-empty -m x", "deny")
         c("xargs --replace without a value into a git subcommand", gt,
           "echo commit | xargs --replace git {} --allow-empty -m x", "deny")
+        c("xargs replace string into a sed flag next to git", gt,
+          "echo e | xargs -I@ sed 's/^/git status/@' README", "deny")
+        c("xargs replace string into an awk function name next to git", gt,
+          "echo system | xargs -I Q awk 'BEGIN{Q(\"git commit --allow-empty -m x\")}'", "deny")
+        c("find -exec replace string into a sed flag next to git", gt,
+          "find . -name e -exec sed 's/^/git status/{}' README \\;", "deny")
+        c("nested xargs keeps the outer replace string for sed next to git", gt,
+          "echo e | xargs -I@ xargs sed 's/^/git status/@' README", "deny")
+        c("xargs sed search with a replace string in the file name next to git", gt,
+          "git ls-files | xargs -I{} sed -n 1p {}", "deny")
+        c("xargs appends an -e option with commit text to sed", gt,
+          "echo \"-e '1e git commit --allow-empty -m x'\" | xargs sed -n p README", "deny")
+        c("xargs appends an -exec option with a commit to find", gt,
+          "echo '-exec git commit --allow-empty -m x ;' | xargs find . -maxdepth 0", "deny")
+        c("xargs appends words to an awk program next to git", gt,
+          "git ls-files | xargs awk '/git push/'", "deny")
+        c("xargs sed search for commit text without -- before the file names", gt,
+          "git ls-files | xargs sed -n '/git commit/p'", "deny")
         c("if statement around a commit", wt, "if true; then git commit -m probe; fi", "deny")
         c("unparseable command with a commit", wt, "git commit -m 'unterminated", "deny")
         c("unparseable case with a commit alias", gt, "case 1 in 1) git cm --allow-empty -m x;; esac", "deny")
