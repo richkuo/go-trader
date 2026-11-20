@@ -41,8 +41,10 @@
               <p id="review-coverage">Coverage: loading</p>
             </div>
           </div>
-          <div id="review-chart" class="trade-review-chart" aria-label="Position candles"></div>
+          <p id="review-chart-failure" class="chart-failure-inline" role="alert" hidden></p>
+          <div id="review-chart" class="trade-review-chart chart-surface" aria-label="Position candles"></div>
           <p id="review-legend" class="trade-review-legend"></p>
+          <p class="chart-attribution">TradingView Lightweight Charts™ · Copyright (с) 2025 TradingView, Inc. <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">https://www.tradingview.com/</a> · <a href="/dashboard/lightweight-charts.NOTICE.txt" target="_blank" rel="noopener noreferrer">Notice</a> · <a href="/dashboard/lightweight-charts.LICENSE.txt" target="_blank" rel="noopener noreferrer">License</a></p>
         </section>
 
         <aside class="tuning-card trade-review-side">
@@ -100,6 +102,7 @@
       </section>
     </main>
     <script src="/dashboard/lightweight-charts.standalone.production.js"></script>
+    <script src="/dashboard/chart.js"></script>
     <script src="/dashboard/trade.js"></script>
   </body>
 </html>

@@ -1641,6 +1641,11 @@ Each save adds a row; there is no update or delete path.
 OKX, TopStep and Robinhood have no historical range read: they return their latest window marked `:latest`, which never counts as full coverage. Without `--from` the request is unchanged.
 The diagnostics worker passes `--from`, so it now receives these range reads (Hyperliquid bars keyed by opening time); its metrics and status policy are unchanged and terminal rows are not retried.
 
+Chart failure policy (#2093): the page fills the actual result, fills, saved annotations, both bar lists and the legend before it draws the chart, and builds its bar map only from `review.candles`.
+A missing chart script or bundle, a failed setup, or any failed draw (bars, markers, average, MFE/MAE or preferred lines) shows the reason above the chart and turns `chartAvailable` off.
+While the chart is unavailable the form and Save stay disabled and `save` refuses; Reload tries the chart again.
+A chart click passes back only a bar time of the accepted response, so selection and price bounds still come from the response bars, and the server still refetches and validates every save.
+
 ### Trade mark analysis (#1995)
 
 This parent feature reads the operator's saved trade marks for one strategy, sends them to an analysis provider, and keeps every input and outcome. It is suggest-only: no path calls `POST /api/tuning/apply`, `applyTuningSuggestion`, `applyTunerConfig` or a config writer.
@@ -3222,6 +3227,18 @@ Per-subsystem mechanism notes for coding agents. `CLAUDE.md` keeps only the guar
 - Paper close (§ Operator paper close): the confirm pins the plan as the nonce payload, and the apply refuses with 409 when the book differs. Position rows of a paper strategy show "Paper close", and the trade panel shows "Close all paper positions"; "Force close" shows only for live Hyperliquid perps. `removeStrategyGuarded` takes `tradeActionMu`, then `configWriteMu`, then `mu.RLock` inside; no path holds `mu` and then takes either, and no trade action takes `configWriteMu`. A successful removal records the ID in `removedStrategies`, which dashboard open and add check under `tradeActionMu`, so a removal and a dashboard open never interleave. The dashboard remove ignores `restart:false`.
 - Trade mark analysis (§ Trade mark analysis): metadata children run before any lock; admission holds `configWriteMu` (with brief `strategiesMu.RLock`) across the context recheck, the database selection rebuild and the accepted insert, and never takes `mu`; the manager lane holds no lock while a provider or validator child runs.
 - Trade review (§ Trade review window): the save reads the in-memory book under `mu.RLock` and releases it before any fetch or transaction, then holds `configWriteMu` (taking `strategiesMu.RLock` only briefly inside) across the context check and the owning file's write transaction; it never takes `mu` or `tradeActionMu` while holding `configWriteMu`.
+- **Charts (#2093).** `static/ui/chart.js` (`window.GoTraderChart`) is the only caller of the vendored Lightweight Charts bundle (`lightweight-charts.standalone.production.js`, v5.3.0 byte-identical to the npm tarball, with `lightweight-charts.LICENSE.txt` and `lightweight-charts.NOTICE.txt` beside it).
+  It owns chart creation, theme, series, the volume pane, markers through `createSeriesMarkers`, named price-line groups, resize and the crosshair bar readout; every method catches its own error, reports it through `onFailure` and returns false.
+  It makes no request, reads no storage and starts no timer; the page owns its requests and passes the accepted response.
+  The volume pane appears only when the source is not `trades` or `trades:cached` and a bar carries a finite `volume`; a bar without `volume` is a gap and reads `unavailable`, because the server omits zero volume.
+  `/tuning` loads neither the bundle nor `chart.js`.
+  Both chart pages carry `<meta name="referrer" content="no-referrer">`; dashboard POSTs still send their real `Origin`, so `requireSameOrigin` accepts them.
+- **Strategy detail reply acceptance (#2093).** `setActiveStrategy` is the only writer of `state.activeID`; it bumps `selectionEpoch`, drops the retained chart and trade replies, clears the chart and empties the trade table.
+  Candles and trades are separate lanes: a reply is accepted only when its strategy and epoch are current and its sequence is above the last accepted one, so slow polls never overwrite a newer reply.
+  The tuner preview is strict latest-wins on its own sequence, which a selection change, Reset to live and an override-free run all bump; a stale preview reply stores no markers and never clears a newer request's loading state.
+  The trade table is stamped with its strategy, and a row opens a review only for that stamp when it is still the selected strategy.
+  The chart is created on the first detail refresh, never at boot.
+  A chart setup, candle request or draw failure shows only in the chart area: the strategy list, status, positions, controls and trade history still load, and the dashboard status does not turn to error (a 401 still raises the token prompt).
 - `applyStrategyConfigPatch` needs `config_version>=13`. `/tuning` (`static/ui/tuning.html`) is read-and-launch: it re-reads `/api/strategies/<id>/config` on every poll.
 - `/api/tuning/runs` is a suggest-only lane. `tuning.max_retained_runs` prunes terminal run directories. `POST /api/tuning/apply` is refused on drift against the schema-v2 `promotion_baseline` and applies through `mutateConfigRoot` as an exact replace.
 - **Partition navigation.** Every dashboard read takes an optional `partition` query key carrying the runtime's own partition text (`live`, `paper`, `paper:<source id>`).
