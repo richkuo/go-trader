@@ -180,9 +180,9 @@ def replaced(words, replace):
 
 
 def program_runs(base, words, replace, appended):
-    if appended and not (base in SED_HEADS and words[-1].value == "--"):
+    if appended and base not in SED_HEADS:
         return True
-    return replaced(words[1:], replace) or text_program_runs(base, words[1:])
+    return replaced(words[1:], replace) or text_program_runs(base, words[1:], appended)
 
 
 def command_runs(words, replace=(), appended=False):
@@ -287,7 +287,7 @@ AWK_LONG_ARG = frozenset(("--field-separator", "--assign"))
 AWK_EXEC = ("system", "|", "@", "getline")
 
 
-def sed_program_runs(vals):
+def sed_program_runs(vals, closed=False):
     scripts = []
     first = None
     seen_e = False
@@ -341,6 +341,8 @@ def sed_program_runs(vals):
                 break
             else:
                 return True
+    if closed and not operands_only:
+        return True
     if first is not None:
         scripts.append(first)
     return not scripts or any(sed_runs_commands(x) for x in scripts)
@@ -369,12 +371,12 @@ def awk_program_runs(vals):
     return any(x in vals[i] for x in AWK_EXEC)
 
 
-def text_program_runs(base, args):
+def text_program_runs(base, args, closed=False):
     vals = [a.value for a in args]
     if any(v is None for v in vals):
         return True
     if base in SED_HEADS:
-        return sed_program_runs(vals)
+        return sed_program_runs(vals, closed)
     return awk_program_runs(vals)
 
 

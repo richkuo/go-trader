@@ -347,6 +347,12 @@ class Runner(object):
           "git ls-files | xargs awk '/git push/'", "deny")
         c("xargs sed search for commit text without -- before the file names", gt,
           "git ls-files | xargs sed -n '/git commit/p'", "deny")
+        c("xargs sed with -- taken as the -l value", gt,
+          "echo \"-e '1e git commit --allow-empty -m x'\" | xargs sed -n p -l --", "deny")
+        c("xargs sed with -- taken as the --line-length value", gt,
+          "echo \"-e '1e git commit --allow-empty -m x'\" | xargs sed -n p --line-length --", "deny")
+        c("xargs sed with -- before the script", gt, "echo \"1e git commit --allow-empty -m x\" | xargs sed -n --",
+          "deny")
         c("if statement around a commit", wt, "if true; then git commit -m probe; fi", "deny")
         c("unparseable command with a commit", wt, "git commit -m 'unterminated", "deny")
         c("unparseable case with a commit alias", gt, "case 1 in 1) git cm --allow-empty -m x;; esac", "deny")
