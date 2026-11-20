@@ -1904,17 +1904,38 @@
     els.dashboardMessage.hidden = !state.lateResults.length;
   }
 
+  function pushLateResult(kind, text) {
+    state.lateResults.push({ kind: kind, text: text + " This result arrived after the selection changed." });
+    renderLateResults();
+  }
+
   function reportLateResult(action, strategyID, outcome) {
     if (suppressedAuthOutcome(outcome)) return;
     if (outcome.status === "failed" && outcome.httpStatus === 401) {
       handleRefreshError(outcome.err);
     }
-    state.lateResults.push({
-      kind: outcome.status === "success" ? "success" : "error",
-      text: describeWriteOutcome(action, strategyID, outcome) +
-        " This result arrived after the selection changed.",
-    });
-    renderLateResults();
+    pushLateResult(outcome.status === "success" ? "success" : "error", describeWriteOutcome(action, strategyID, outcome));
+  }
+
+  function reportLateNotSent(action, strategyID, reason) {
+    pushLateResult("error", action + " for strategy " + strategyID + " was not sent: " + reason + ".");
+  }
+
+  function reportLateFailure(action, strategyID, err, sent) {
+    if (sent) {
+      reportLateResult(action, strategyID, writeOutcomeFromError(err));
+      return;
+    }
+    const outcome = writeOutcomeFromError(err);
+    if (suppressedAuthOutcome(outcome)) return;
+    if (outcome.status === "failed" && outcome.httpStatus === 401) {
+      handleRefreshError(err);
+    }
+    reportLateNotSent(action, strategyID, outcome.status === "failed" ? outcome.message : outcome.detail);
+  }
+
+  function selectionTicket() {
+    return { id: state.activeID, epoch: state.selectionEpoch };
   }
 
   async function togglePause() {
@@ -1983,7 +2004,10 @@
     } catch (err) {
       outcome = writeOutcomeFromError(err);
     }
-    if (!acceptReply("notify", ticket)) return;
+    if (!acceptReply("notify", ticket)) {
+      reportLateResult("Ratchet alert change", ticket.id, outcome);
+      return;
+    }
     const ratchet = state.tuner.ratchet;
     ratchet.ticket = null;
     if (outcome.status === "success") {
@@ -2071,35 +2095,67 @@
     }
   }
 
-  async function confirmTradeAction(action, params) {
-    if (!state.activeID) return;
-    setTradeMessage("");
+  async function confirmedStrategyAction(spec) {
+    const ticket = spec.ticket;
+    spec.setMessage("");
     let confirm;
     try {
       confirm = await postJSON("/api/confirm", {
-        action: action,
-        strategy_id: state.activeID,
-        params: params,
+        action: spec.action,
+        strategy_id: ticket.id,
+        params: spec.params,
       });
     } catch (err) {
-      setTradeMessage("Confirm failed: " + err.message);
+      if (!ticketSelected(ticket)) {
+        reportLateFailure(spec.label, ticket.id, err, false);
+        return;
+      }
+      spec.setMessage("Confirm failed: " + err.message);
+      return;
+    }
+    if (!ticketSelected(ticket)) {
+      reportLateNotSent(spec.label, ticket.id, "the selection changed before its confirmation dialog opened");
       return;
     }
     const proceed = await showTradeConfirmDialog(confirm);
     if (!proceed) {
-      setTradeMessage("Cancelled.");
+      if (ticketSelected(ticket)) spec.setMessage("Cancelled.");
       return;
     }
+    let resp = null;
+    let failure = null;
     try {
-      const resp = await postJSON(
-        "/api/strategies/" + encodeURIComponent(state.activeID) + "/" + action,
-        { nonce: confirm.nonce, params: params }
-      );
-      setTradeMessage(resp.message || "Submitted.");
-      await refreshAll();
+      resp = await postJSON(spec.url, { nonce: confirm.nonce, params: spec.params });
     } catch (err) {
-      setTradeMessage(action + " failed: " + err.message);
+      failure = err;
     }
+    if (!ticketSelected(ticket)) {
+      reportLateResult(spec.label, ticket.id, failure ? writeOutcomeFromError(failure) : writeOutcomeFromReply(resp));
+      return;
+    }
+    if (failure) {
+      spec.setMessage(spec.action + " failed: " + failure.message);
+      return;
+    }
+    spec.setMessage((resp && resp.message) || spec.doneText);
+    await refreshAll();
+    if (!ticketSelected(ticket)) {
+      reportLateResult(spec.label, ticket.id, writeOutcomeFromReply(resp));
+    }
+  }
+
+  function confirmTradeAction(action, params) {
+    if (!state.activeID) return Promise.resolve();
+    const ticket = selectionTicket();
+    return confirmedStrategyAction({
+      ticket: ticket,
+      action: action,
+      label: "Trade action " + action,
+      params: params,
+      url: "/api/strategies/" + encodeURIComponent(ticket.id) + "/" + action,
+      setMessage: setTradeMessage,
+      doneText: "Submitted.",
+    });
   }
 
   function showTradeConfirmDialog(confirm) {
@@ -2194,6 +2250,18 @@
   }
 
   async function confirmStructuralAction(action, strategyID, params, url, messageEl) {
+    if (strategyID) {
+      if (strategyID !== state.activeID) return;
+      return confirmedStrategyAction({
+        ticket: selectionTicket(),
+        action: action,
+        label: "Structural action " + action,
+        params: params,
+        url: url,
+        setMessage: function (text) { setStructuralMessage(text, messageEl); },
+        doneText: "Done.",
+      });
+    }
     setStructuralMessage("", messageEl);
     let confirm;
     try {
@@ -3491,7 +3559,7 @@
     }
   }
 
-  const feedbackState = { submitting: false, apiSubmitting: false, cache: null };
+  const feedbackState = { submittingID: "", apiSubmittingID: "", cache: null };
 
   function feedbackNode(tag, className, text) {
     const el = document.createElement(tag);
@@ -3644,31 +3712,50 @@
     if (!data.available) blocked = data.reason || "analysis is unavailable";
     else if (!provider.available) blocked = provider.reason || "the Anthropic API provider is unavailable";
     else if (!(sel.included > 0)) blocked = "there are no usable saved marks to analyze";
-    button.disabled = !!blocked || feedbackState.submitting || feedbackState.apiSubmitting;
+    button.disabled = !!blocked || feedbackState.submittingID === id || feedbackState.apiSubmittingID === id;
     button.addEventListener("click", function () { submitFeedbackAPIAnalysis(id, sel.included || 0, provider.reason || ""); });
     box.appendChild(button);
     if (blocked) box.appendChild(feedbackNode("p", "tuner-note", "Anthropic API: " + blocked));
     return box;
   }
 
+  function settleFeedbackSubmission(ticket, strategyID) {
+    if (ticketSelected(ticket)) {
+      refreshFeedbackAnalysis().catch(function () {});
+    } else if (state.activeID === strategyID) {
+      feedbackState.cache = null;
+    }
+  }
+
   async function submitFeedbackAPIAnalysis(strategyID, included, settings) {
-    if (feedbackState.apiSubmitting || state.activeID !== strategyID) return;
+    if (feedbackState.apiSubmittingID === strategyID || state.activeID !== strategyID) return;
+    const ticket = selectionTicket();
     const question = "Send " + included + " saved mark(s) of " + strategyID + " to the Anthropic API" +
       (settings ? " (" + settings + ")" : "") + "? This is one paid call. It is never retried by itself, and the result changes no setting.";
     if (!window.confirm(question)) {
-      setFeedbackMessage("Cancelled. No analysis request was sent.", "");
+      if (ticketSelected(ticket)) setFeedbackMessage("Cancelled. No analysis request was sent.", "");
       return;
     }
-    feedbackState.apiSubmitting = true;
+    feedbackState.apiSubmittingID = strategyID;
+    let resp = null;
+    let failure = null;
     try {
-      const resp = await postJSON(feedbackAnalysesURL(strategyID), { provider: "anthropic_api" });
-      setFeedbackMessage("Analysis " + (resp.request_id || "") + " is accepted. Its progress shows below.", "success");
+      resp = await postJSON(feedbackAnalysesURL(strategyID), { provider: "anthropic_api" });
     } catch (err) {
-      setFeedbackMessage("The analysis was not started: " + apiFeedbackError(err), "error");
-    } finally {
-      feedbackState.apiSubmitting = false;
-      refreshFeedbackAnalysis().catch(function () {});
+      failure = err;
     }
+    if (feedbackState.apiSubmittingID === strategyID) feedbackState.apiSubmittingID = "";
+    const requestID = (resp && resp.request_id) || "";
+    if (!ticketSelected(ticket)) {
+      reportLateResult("Trade mark analysis request (Anthropic API)", strategyID, failure
+        ? writeOutcomeFromError(failure)
+        : { status: "success", message: "Analysis " + requestID + " is accepted. Its progress shows in that strategy's analysis list." });
+    } else if (failure) {
+      setFeedbackMessage("The analysis was not started: " + apiFeedbackError(failure), "error");
+    } else {
+      setFeedbackMessage("Analysis " + requestID + " is accepted. Its progress shows below.", "success");
+    }
+    settleFeedbackSubmission(ticket, strategyID);
   }
 
   function feedbackShellQuote(text) {
@@ -3738,7 +3825,7 @@
         const button = feedbackNode("button", "tuner-button secondary", "Start research…");
         button.type = "button";
         button.dataset.proposalIndex = String(index);
-        button.disabled = !r.available || feedbackState.submitting;
+        button.disabled = !r.available || feedbackState.submittingID === id || feedbackState.apiSubmittingID === id;
         button.addEventListener("click", function () { confirmFeedbackResearch(id, a, index); });
         box.appendChild(button);
         if (!r.available && r.reason) box.appendChild(feedbackNode("p", "tuner-note", r.reason));
@@ -3765,9 +3852,11 @@
   }
 
   async function confirmFeedbackResearch(strategyID, analysis, index) {
-    if (feedbackState.submitting) return;
+    if (feedbackState.submittingID === strategyID) return;
     const proposal = analysis.result && analysis.result.proposals && analysis.result.proposals[index];
     if (!proposal || proposal.kind !== "param_grid") return;
+    const ticket = selectionTicket();
+    const label = "Research run";
     const frozen = deepFreeze({
       strategyID: strategyID,
       requestID: analysis.request_id,
@@ -3779,12 +3868,15 @@
     els.feedbackResearchGrid.textContent = JSON.stringify(frozen.params, null, 2);
     const choice = await showFeedbackResearchDialog();
     if (choice !== "confirm") {
-      setFeedbackMessage("Cancelled. No research request was sent.", "");
+      if (ticketSelected(ticket)) setFeedbackMessage("Cancelled. No research request was sent.", "");
       return;
     }
-    feedbackState.submitting = true;
-    els.feedbackList.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+    feedbackState.submittingID = frozen.strategyID;
+    if (ticketSelected(ticket)) {
+      els.feedbackList.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+    }
     const readTicket = takeTicket("feedback");
+    let sent = false;
     try {
       const fresh = await getJSONForPartition(feedbackAnalysesURL(frozen.strategyID));
       const match = (fresh.data.analyses || []).find(function (x) { return x.request_id === frozen.requestID; });
@@ -3792,6 +3884,10 @@
       const current = match && match.result && match.result.proposals && match.result.proposals[frozen.index];
       if (state.activeID !== frozen.strategyID || !match || !decision || !decision.available ||
           match.bundle_sha256 !== frozen.bundle || !current || stableJSON(current.params) !== stableJSON(frozen.params)) {
+        if (!ticketSelected(ticket)) {
+          reportLateNotSent(label, frozen.strategyID, "the selection, the marks, the settings or the analysis changed");
+          return;
+        }
         setFeedbackMessage("The marks, the settings or the analysis changed. Nothing was sent. Review the proposal and confirm again.", "error");
         if (readTicket.id === frozen.strategyID && partitionStillSelected(fresh.partition) &&
             acceptReply("feedback", readTicket)) {
@@ -3801,6 +3897,8 @@
       }
       const overrides = {};
       overrides[frozen.strategyID] = { params: frozen.params };
+      const generation = statusToken.generation();
+      sent = true;
       const res = await fetch("/api/tuning/runs", {
         method: "POST",
         headers: Object.assign({
@@ -3813,17 +3911,37 @@
       if (!res.ok) {
         let msg = text;
         try { msg = JSON.parse(text).error || text; } catch (e) { msg = text; }
+        if (!ticketSelected(ticket)) {
+          reportLateResult(label, frozen.strategyID, {
+            status: "failed",
+            httpStatus: res.status,
+            message: msg,
+            err: { status: res.status, tokenGeneration: generation },
+          });
+          return;
+        }
         setFeedbackMessage("Research was not started: " + msg, "error");
         return;
       }
       let run = {};
       try { run = JSON.parse(text); } catch (e) { run = {}; }
+      if (!ticketSelected(ticket)) {
+        reportLateResult(label, frozen.strategyID, {
+          status: "success",
+          message: "Research run " + (run.id || "") + " is queued. Open /tuning to follow it.",
+        });
+        return;
+      }
       setFeedbackMessage("Research run " + (run.id || "") + " is queued. Open /tuning to follow it.", "success");
     } catch (err) {
+      if (!ticketSelected(ticket)) {
+        reportLateFailure(label, frozen.strategyID, err, sent);
+        return;
+      }
       setFeedbackMessage("Research was not started: " + apiFeedbackError(err), "error");
     } finally {
-      feedbackState.submitting = false;
-      refreshFeedbackAnalysis().catch(function () {});
+      if (feedbackState.submittingID === frozen.strategyID) feedbackState.submittingID = "";
+      settleFeedbackSubmission(ticket, frozen.strategyID);
     }
   }
 
