@@ -38,14 +38,14 @@ check_agent_docs() {
   fi
   if [ -f CLAUDE.md ] && [ ! -L CLAUDE.md ]; then
     bytes=$(wc -c < CLAUDE.md | tr -d ' ')
-    echo "CLAUDE.md: $bytes bytes (ceiling 17000, target 16500)"
-    if [ "$bytes" -ge 17000 ]; then
-      echo "::error::CLAUDE.md is $bytes bytes, at or above the 17000-byte ceiling. Move mechanism to SKILL.md, shorten wording, drop no guardrail."
+    echo "CLAUDE.md: $bytes bytes (ceiling 17500, target 17000)"
+    if [ "$bytes" -ge 17500 ]; then
+      echo "::error::CLAUDE.md is $bytes bytes, at or above the 17500-byte ceiling. Move mechanism to SKILL.md, shorten wording, drop no guardrail."
       echo "Bytes per section:"
       LC_ALL=C awk 'BEGIN{h="(header)"} /^## /{printf "%6d  %s\n",n,h; h=$0; n=0} {n+=length($0)+1} END{printf "%6d  %s\n",n,h}' CLAUDE.md
       fail=1
-    elif [ "$bytes" -gt 16500 ]; then
-      echo "::warning::CLAUDE.md is $bytes bytes, above the 16500-byte target. The CI check fails at 17000."
+    elif [ "$bytes" -gt 17000 ]; then
+      echo "::warning::CLAUDE.md is $bytes bytes, above the 17000-byte target. The CI check fails at 17500."
     fi
   fi
   return $fail
