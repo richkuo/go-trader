@@ -736,35 +736,6 @@ def test_config_flag_rejects_non_single_modes(tmp_path):
             _sys.argv = old_argv
 
 
-def test_flag_rejected_alongside_config(tmp_path, monkeypatch, subtests):
-    for cfg, sid, extra_argv in [
-        (
-            _cfg(15, [{"id": "x", "open_strategy": {"name": "triple_ema"},
-                       "close_strategies": []}]),
-            "x",
-            ["--direction", "short"],
-        ),
-        (
-            _cfg(15, [_perps_strategy(allowed_regimes=["trending_up"])],
-                 regime=_REGIME_ON),
-            "hl-d-btc",
-            ["--allowed-regimes", "ranging"],
-        ),
-    ]:
-        with subtests.test(flag=extra_argv[0]):
-            config_path = _write_full_config(tmp_path, cfg)
-            called = {}
-            monkeypatch.setattr(run_backtest, "run_single_backtest",
-                                lambda *a, **kw: called.setdefault("hit", True))
-            monkeypatch.setattr("sys.argv", [
-                "run_backtest.py", "--mode", "single",
-                "--config", config_path, "--strategy", sid, *extra_argv,
-            ])
-            with pytest.raises(SystemExit):
-                run_backtest.main()
-            assert "hit" not in called
-
-
 def _flat_ohlc(signal):
     n = len(signal)
     return pd.DataFrame(

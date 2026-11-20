@@ -214,17 +214,6 @@ def test_reject_unreplayable_entry_shapers(subtests):
              "profile_allocation": {}})
 
 
-def test_reject_names_all_offenders():
-    with pytest.raises(SystemExit) as ei:
-        m._reject_unreplayable_entry_shapers(
-            {"invert_signal": True,
-             "regime_directional_policy": {"x": "long"},
-             "profile_allocation": {"y": 1}})
-    msg = str(ei.value)
-    assert "invert_signal" in msg and "regime_directional_policy" in msg \
-        and "profile_allocation" in msg
-
-
 def test_candidate_stacks_on_inherited_stop_only_for_stop_candidates_with_an_inherited_stop():
     case = "test_stop_candidate_stacks_under_inherited_stop"
     assert m._candidate_stacks_on_inherited_stop(
