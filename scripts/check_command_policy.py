@@ -265,6 +265,18 @@ class Runner(object):
           "C='git commit --allow-empty -m x'; awk -v c=\"$C\" 'BEGIN{system(c)}'", "deny")
         c("awk text processing next to git", gt, "awk '{print $1}' README && git status", "allow")
         c("sed text processing after git", gt, "git log -1 | sed -n 1p", "allow")
+        c("xargs replace string that turns a known subcommand into commit", gt,
+          "echo commit | xargs -I add git add --allow-empty -m x", "deny")
+        c("xargs replace string after another option", gt,
+          "echo commit | xargs -n 1 -I status git status --allow-empty -m x", "deny")
+        c("parallel replacement into a git subcommand", gt, "parallel git {} --allow-empty -m x ::: commit", "deny")
+        c("sed e command that runs commit text from standard input", gt,
+          "echo 'git commit --allow-empty -m x' | sed e", "deny")
+        c("sed s command with the e flag next to git", gt, "sed 's/^/git /e' README", "deny")
+        c("awk system call on input lines next to git", gt,
+          "echo 'git commit --allow-empty -m x' | awk '{system($0)}'", "deny")
+        c("sed substitution with an e in its text next to git", gt, "sed 's/old/new/' README && git status", "allow")
+        c("sed script from a file next to git", gt, "sed -f x.sed README && git status", "deny")
         c("conditional with a known git subcommand", gt, "if git diff --quiet; then echo same; fi", "allow")
         c("conditional with quoted git text", gt, "if true; then echo 'git cm'; fi", "allow")
         c("nested shell with a dynamic git subcommand", gt, 'bash -c "git $SUB --allow-empty -m x"', "deny")

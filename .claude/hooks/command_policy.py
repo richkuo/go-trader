@@ -44,6 +44,8 @@ COMMAND_RUNNERS = frozenset(("xargs", "parallel", "watch", "flock", "doas", "su"
                              "systemd-run", "unbuffer", "ionice", "chrt", "taskset", "numactl", "strace", "ltrace",
                              "gtimeout", "entr", "awk", "gawk", "mawk", "nawk", "sed", "gsed"))
 INPUT_RUNNERS = frozenset(("xargs", "parallel"))
+AWK_HEADS = frozenset(("awk", "gawk", "mawk", "nawk"))
+SED_HEADS = frozenset(("sed", "gsed"))
 WRAPPER_HEADS = frozenset(("command", "builtin", "exec", "nohup", "setsid", "caffeinate", "time", "nice", "timeout",
                            "stdbuf", "env", "sudo"))
 FIND_EXEC = frozenset(("-exec", "-execdir", "-ok", "-okdir"))
@@ -90,6 +92,117 @@ def literal_word(text):
     w.text = [text]
     w.raw = text
     return w
+
+
+def replaces_words(runner_args):
+    for a in runner_args:
+        v = a.value
+        if v is None or v.startswith(("-I", "-i", "-J", "--replace")):
+            return True
+    return False
+
+
+def skip_delimited(script, i, d):
+    while i < len(script) and script[i] != d:
+        i += 2 if script[i] == "\\" else 1
+    return i + 1
+
+
+def sed_runs_commands(script):
+    i, n = 0, len(script)
+    while i < n:
+        c = script[i]
+        if c in " \t\n;{}!,$~+" or c.isdigit():
+            i += 1
+        elif c == "#":
+            e = script.find("\n", i)
+            i = n if e < 0 else e + 1
+        elif c in "/\\":
+            if c == "\\":
+                if i + 1 >= n:
+                    return True
+                i = skip_delimited(script, i + 2, script[i + 1])
+            else:
+                i = skip_delimited(script, i + 1, "/")
+            while i < n and script[i] in "IM":
+                i += 1
+        elif c in "sy":
+            if i + 1 >= n:
+                return True
+            d = script[i + 1]
+            i = skip_delimited(script, skip_delimited(script, i + 2, d), d)
+            while c == "s" and i < n and script[i] not in ";\n}":
+                if script[i] == "e":
+                    return True
+                if script[i] == "w":
+                    break
+                i += 1
+            if c == "s" and i < n and script[i] == "w":
+                e = script.find("\n", i)
+                i = n if e < 0 else e + 1
+        elif c in "btT:v":
+            while i < n and script[i] not in ";\n":
+                i += 1
+        elif c in "aicrwRW":
+            e = script.find("\n", i)
+            i = n if e < 0 else e + 1
+        elif c in "pPdDgGhHnNxz=FlLqQ":
+            i += 1
+        else:
+            return True
+    return False
+
+
+def text_program_runs(base, args):
+    vals = [a.value for a in args]
+    if any(v is None for v in vals):
+        return True
+    scripts = []
+    first = None
+    i = 0
+    while i < len(vals):
+        v = vals[i]
+        if v == "--":
+            first = vals[i + 1] if i + 1 < len(vals) else None
+            break
+        if base in SED_HEADS:
+            if v in ("-f", "--file") or v.startswith(("-f", "--file=")):
+                return True
+            if v in ("-e", "--expression"):
+                if i + 1 >= len(vals):
+                    return True
+                scripts.append(vals[i + 1])
+                i += 2
+                continue
+            if v.startswith("--expression="):
+                scripts.append(v.split("=", 1)[1])
+            elif v.startswith("-e") and len(v) > 2:
+                scripts.append(v[2:])
+            elif v == "-i" and i + 1 < len(vals) and (vals[i + 1] == "" or
+                                                    (vals[i + 1].startswith(".") and " " not in vals[i + 1])):
+                i += 2
+                continue
+            elif v in ("-l", "--line-length"):
+                i += 2
+                continue
+            elif not v.startswith("-") or v == "-":
+                first = v
+                break
+        else:
+            if v in ("-f", "--file") or v.startswith(("-f", "--file=")) or v in ("-e", "--source"):
+                return True
+            if v in ("-F", "-v", "--assign", "--field-separator"):
+                i += 2
+                continue
+            if not v.startswith("-") or v == "-":
+                first = v
+                break
+        i += 1
+    if base in SED_HEADS:
+        if not scripts:
+            scripts = [first] if first is not None else []
+        return any(sed_runs_commands(s) for s in scripts)
+    return first is None or "system" in first or "|" in first
 
 
 def gh_switches(vals):
@@ -826,9 +939,7 @@ class Analyzer(object):
                 _, _, _, sub, status = self.git_global(args)
                 if status == "dynamic" or (status == "ok" and args[sub].value not in GIT_NON_COMMIT):
                     found.add("guarded")
-                elif status in ("none", "info") and any(w.value is not None and
-                                                         os.path.basename(w.value) in INPUT_RUNNERS
-                                                         for w in words[:i]):
+                elif self.input_fed_git(words, i, status):
                     found |= {"guarded", "branch"}
                 elif status == "ok" and args[sub].value in GIT_BRANCH_CHANGE:
                     found.add("branch")
@@ -837,6 +948,16 @@ class Analyzer(object):
             if word.quoted and any(c.isspace() for c in value):
                 found |= self.text_hazards(value, depth + 1)
         return found
+
+    def input_fed_git(self, words, i, status):
+        for j in range(i):
+            v = words[j].value
+            if v is None or os.path.basename(v) not in INPUT_RUNNERS:
+                continue
+            if status in ("none", "info") or os.path.basename(v) == "parallel" \
+                    or replaces_words(words[j + 1:i]):
+                return True
+        return False
 
     def text_hazards(self, text, depth=0):
         ctx = Ctx()
@@ -925,6 +1046,8 @@ class Analyzer(object):
         inner = (base in INPUT_RUNNERS or find_exec) and any(
             a.value is not None and os.path.basename(a.value) in SHELLS | WRAPPER_HEADS | COMMAND_RUNNERS | {"ssh"}
             for a in args)
+        if base in AWK_HEADS | SED_HEADS:
+            inner = text_program_runs(base, args)
         return self.unsupported(words, states, "the command " + base + " is not a supported wrapper",
                                 inner or (runner and any(a.value is None for a in args)))
 
