@@ -20,19 +20,21 @@ import (
 )
 
 type shellSuiteWiring struct {
-	goTest       string
-	goTestFile   string
-	ciStep       bool
-	sudo         bool
-	manualReason string
-	marker       string
-	requireEnv   []string
-	forbidden    []string
-	permitted    map[string]string
-	shardEnv     string
-	shardDefault string
-	gates        []string
-	soleRoot     bool
+	goTest        string
+	goTestFile    string
+	ciStep        bool
+	sudo          bool
+	manualReason  string
+	marker        string
+	requireEnv    []string
+	forbidden     []string
+	permitted     map[string]string
+	shardEnv      string
+	shardDefault  string
+	shardGates    map[string]string
+	soloScenarios []string
+	gates         []string
+	soleRoot      bool
 }
 
 var shellSuiteWirings = map[string]shellSuiteWiring{
@@ -146,8 +148,27 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		},
 		shardEnv:     "FIXTURE_SCENARIOS",
 		shardDefault: "SCENARIOS",
-		gates:        []string{"update", "migrate", "shared_feed"},
-		soleRoot:     true,
+		shardGates: map[string]string{
+			"refuse":              "migrate",
+			"plan":                "migrate",
+			"confirm":             "migrate",
+			"apply":               "migrate",
+			"latch":               "migrate",
+			"conflict":            "migrate",
+			"resume":              "migrate",
+			"signal":              "migrate",
+			"stages":              "migrate",
+			"kill":                "migrate",
+			"fold":                "migrate",
+			"newtarget":           "migrate",
+			"update":              "update",
+			"update_recovery":     "update",
+			"sharedfeed_migrated": "shared_feed",
+			"sharedfeed_legacy":   "shared_feed",
+		},
+		soloScenarios: []string{"sharedfeed_migrated", "sharedfeed_legacy"},
+		gates:         []string{"update", "migrate", "shared_feed"},
+		soleRoot:      true,
 	},
 }
 
@@ -791,6 +812,7 @@ const ciShellSuitesJob = "shell-suites"
 type ciSuiteShard struct {
 	job       string
 	gate      string
+	jobGate   string
 	scenarios []string
 }
 
@@ -876,9 +898,32 @@ func checkCIShardPartition(t *testing.T, script string, w shellSuiteWiring, src,
 			owners[name] = append(owners[name], run.job+" (gate "+run.gate+")")
 		}
 	}
+	solo := map[string]bool{}
+	for _, name := range w.soloScenarios {
+		solo[name] = true
+	}
+	for _, run := range runs {
+		for _, name := range run.scenarios {
+			want, ok := w.shardGates[name]
+			if !ok {
+				continue
+			}
+			if run.jobGate != want || run.gate != want {
+				t.Errorf("%s runs scenario %s of scripts/%s under job gate %q, but its shardGates entry requires the job-level gate %q", run.job, name, script, run.jobGate, want)
+			}
+			if solo[name] && len(run.scenarios) != 1 {
+				t.Errorf("%s runs scenario %s of scripts/%s with %s; it must run alone in its own job", run.job, name, script, strings.Join(run.scenarios, " "))
+			}
+		}
+	}
 	known := map[string]bool{}
 	for _, name := range defaults {
 		known[name] = true
+		if gate, ok := w.shardGates[name]; !ok {
+			t.Errorf("scenario %s of scripts/%s has no shardGates entry: give it the one gate whose paths it proves", name, script)
+		} else if !wiringHasGate(w, gate) {
+			t.Errorf("shardGates gives scenario %s of scripts/%s gate %s, which is not one of its gates %v", name, script, gate, w.gates)
+		}
 		switch len(owners[name]) {
 		case 0:
 			t.Errorf("no CI step runs scenario %s of scripts/%s: add it to exactly one %s list", name, script, w.shardEnv)
@@ -896,6 +941,21 @@ func checkCIShardPartition(t *testing.T, script string, w shellSuiteWiring, src,
 	sort.Strings(unknown)
 	for _, name := range unknown {
 		t.Errorf("%s runs scenario %s of scripts/%s, which is not in its default %s list", strings.Join(owners[name], ", "), name, script, w.shardDefault)
+	}
+	var stale []string
+	for name := range w.shardGates {
+		if !known[name] {
+			stale = append(stale, name)
+		}
+	}
+	for _, name := range w.soloScenarios {
+		if !known[name] {
+			stale = append(stale, name)
+		}
+	}
+	sort.Strings(stale)
+	for _, name := range stale {
+		t.Errorf("the scripts/%s wiring names scenario %s in shardGates or soloScenarios, but its default %s list does not", script, name, w.shardDefault)
 	}
 }
 
@@ -1035,6 +1095,7 @@ func TestShellSuiteCIWiring(t *testing.T) {
 		}
 		var rootSuites []string
 		soleRoot := ""
+		shardInvocations := map[string]int{}
 		for si, step := range shellJob.logical {
 			gate := shellJob.gates[si]
 			for _, line := range step {
@@ -1085,8 +1146,12 @@ func TestShellSuiteCIWiring(t *testing.T) {
 				}
 				marker := w.marker
 				if w.shardEnv != "" {
+					shardInvocations[script]++
+					if shardInvocations[script] > 1 {
+						t.Fatalf("job %s runs the sharded scripts/%s more than once; give each scenario list its own job", jobName, script)
+					}
 					list := readCIShardList(t, jobName, script, w, strings.TrimSuffix(cmd, "bash scripts/"+script))
-					shardRuns[script] = append(shardRuns[script], ciSuiteShard{job: jobName, gate: gate, scenarios: list})
+					shardRuns[script] = append(shardRuns[script], ciSuiteShard{job: jobName, gate: gate, jobGate: shellJob.jobGate, scenarios: list})
 					marker = fmt.Sprintf(w.marker, strings.Join(list, " "))
 				}
 				if strings.Count(opts, "--marker ") != 1 || !strings.Contains(opts, "--marker '"+marker+"'") {

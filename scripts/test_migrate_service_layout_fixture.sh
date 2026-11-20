@@ -20,6 +20,29 @@ skip() {
 for t in systemd-run python3 rsync git runuser flock; do
     command -v "$t" >/dev/null 2>&1 || skip "$t required"
 done
+[[ -n "${EPOCHREALTIME:-}" ]] || skip "bash 5 or later required for the timing records"
+
+fixture_now_us() {
+    local t=$EPOCHREALTIME
+    printf '%s' "${t//[!0-9]/}"
+}
+
+fixture_elapsed() {
+    local us=$(( $(fixture_now_us) - $1 ))
+    printf '%d.%03d' $(( us / 1000000 )) $(( us % 1000000 / 1000 ))
+}
+
+timing() {
+    echo "TIMING: $*"
+}
+
+FIXTURE_START_US=$(fixture_now_us)
+PHASE_US=$FIXTURE_START_US
+
+phase_done() {
+    timing "phase $1 $(fixture_elapsed "$PHASE_US")s"
+    PHASE_US=$(fixture_now_us)
+}
 PY3=$(command -v python3)
 SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply latch conflict resume signal stages kill fold update newtarget update_recovery sharedfeed_migrated sharedfeed_legacy}"
 HELPERS="$SCRIPT_DIR/update_helpers.sh"
@@ -59,7 +82,8 @@ note() {
 }
 
 cleanup() {
-    local u i
+    local u i cleanup_us
+    cleanup_us=$(fixture_now_us)
     [[ "$SF_ACTIVE" != "1" ]] || sf_teardown
     for u in "${CREATED_UNITS[@]}"; do
         systemctl stop "$u" >/dev/null 2>&1 || true
@@ -88,6 +112,7 @@ cleanup() {
     done
     [[ "$FEED_STATE_PRESENT" == "1" ]] || rm -rf /var/lib/go-trader/shared-feed
     rm -rf "$WORK"
+    timing "fixture cleanup $(fixture_elapsed "$cleanup_us")s"
 }
 trap cleanup EXIT
 SF_STAGE_PID=""
@@ -201,17 +226,21 @@ PYSTUB
 make_deployment() {
     local name="$1" port="$2" layout="${3:-plain}" paper_only="${4:-}" venue="${5:-}"
     local src="/root/gt-$ID-$name" unit="go-trader-$ID-$name.service" outside="/srv/gt-$ID-$name"
-    local tf=1h interval=3600
+    local tf=1h interval=3600 step_us
     CREATED_DIRS+=("$src" "$outside")
     CREATED_UNITS+=("$unit")
     mkdir -p "$src" "$outside"
     chmod 700 "$src"
+    step_us=$(fixture_now_us)
     (cd "$REPO_ROOT" && git ls-files -z | tar --null -T - -cf -) | tar -xf - -C "$src"
+    timing "deployment $name copy $(fixture_elapsed "$step_us")s"
     if [[ -n "$venue" ]]; then
         tf=1m
         interval=60
         sf_point_source_at_venue "$src" "$venue"
+        step_us=$(fixture_now_us)
         sf_build_fixture_binary "$src"
+        timing "deployment $name build $(fixture_elapsed "$step_us")s"
     else
         cp "$GO_TRADER_BIN" "$src/go-trader"
     fi
@@ -280,8 +309,10 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
     systemctl daemon-reload
+    step_us=$(fixture_now_us)
     systemctl enable --now "$unit" >/dev/null 2>&1
     wait_health "$unit" "$port"
+    timing "deployment $name start $(fixture_elapsed "$step_us")s"
 }
 
 latch_kill_switch() {
@@ -1883,6 +1914,7 @@ sf_run() {
     local layout="$1" off vport cport name unit src cunit tree cfg venue vlog origin br inst conflicts t f
     local pre pid0 pid1 pid2 pid3 rec backup shadow resolved fp
     note "shared feed conversion as root on the $layout layout: feeds, calibrate, verify, a forced failure, switch and rollback against real units (#2046)"
+    PHASE_US=$(fixture_now_us)
     for t in curl journalctl timeout; do
         command -v "$t" >/dev/null 2>&1 || skip "$t required for the shared-feed scenarios"
     done
@@ -1940,6 +1972,7 @@ sf_run() {
     resolved=$(sf_record_field "$pre" path)
     echo "consumer $cunit pid $pid0, config before conversion: $pre"
 
+    phase_done "$layout/setup"
     note "$layout: plan and feeds build both feed trees from the fixture source"
     sf_stage 0 sf_convert plan --consumer "$cunit" "${SF_BUDGET[@]}"
     sf_stage 0 sf_convert feeds --consumer "$cunit" "${SF_BUDGET[@]}"
@@ -1954,11 +1987,13 @@ sf_run() {
     echo "source fingerprint $fp matches in $tree and both feed trees; every binary names only the local venue"
     [[ "$(sf_config_record "$cfg")" == "$pre" ]] || fail "feeds changed the consumer config $cfg"
 
+    phase_done "$layout/plan_feeds"
     note "$layout: calibrate and verify"
     sf_stage 0 sf_convert calibrate --window 1
     sf_stage 0 sf_convert verify
     [[ "$(sf_journal_last "verify pass")" == "verify pass accepted_differences=0 "* ]] || fail "verify did not record a pass with no accepted difference: $(sf_journal_last "verify pass")"
 
+    phase_done "$layout/calibrate_verify"
     note "$layout: a forced failure after the feed reload restores the original config and a healthy consumer"
     sf_stage 26 sf_convert_failing feeds-reload switch --consumer "$cunit"
     grep -q "the unit runs its original config again" "$WORK/last.out" || fail "the forced failure did not report the restore"
@@ -1970,6 +2005,7 @@ sf_run() {
     sf_wait_feed_loaded primary "$shadow"
     sf_wait_feed_loaded backup "$shadow"
 
+    phase_done "$layout/forced_failure_restore"
     note "$layout: switch"
     sf_stage 0 sf_convert switch --consumer "$cunit"
     grep -q "$cunit switched: [0-9]* sealed primary keys and feed-parity PASS" "$WORK/last.out" || fail "switch did not report the primary-key audit and feed-parity PASS"
@@ -1985,6 +2021,7 @@ sf_run() {
     pid2=$(sf_fresh_pid "$cunit" "$cport" "$pid1")
     echo "switched: $(sf_config_record "$cfg"); consumer pid $pid2; both feeds load $resolved"
 
+    phase_done "$layout/switch"
     note "$layout: rollback"
     sf_stage 0 sf_convert rollback --consumer "$cunit"
     [[ "$(sf_config_record "$cfg")" == "$pre" ]] || fail "after rollback the config is $(sf_config_record "$cfg"), want $pre"
@@ -1992,11 +2029,13 @@ sf_run() {
     rec=$(sf_journal_last "switch $cunit")
     [[ "$rec" == *" rolled_back mode=byte restarted=yes "* ]] || fail "the journal does not record the byte rollback: $rec"
     echo "rolled back: $(sf_config_record "$cfg"); consumer pid $pid3"
+    phase_done "$layout/rollback"
 
     sf_stage 0 sf_convert rollback --all
     sf_assert_venue_log "$vlog"
     systemctl stop "$cunit"
     sf_teardown
+    phase_done "$layout/rollback_all_teardown"
     echo "shared-feed conversion on the $layout layout OK"
 }
 
@@ -2016,7 +2055,11 @@ case " $SCENARIOS " in
         ;;
 esac
 ensure_build_tools
+timing "fixture setup $(fixture_elapsed "$FIXTURE_START_US")s"
 for s in $SCENARIOS; do
+    scenario_us=$(fixture_now_us)
+    timing "scenario $s start"
     "scenario_$s"
+    timing "scenario $s finish $(fixture_elapsed "$scenario_us")s"
 done
 echo "OK: migrate-service-layout fixture passed ($SCENARIOS)"
