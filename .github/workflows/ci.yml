@@ -502,8 +502,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {suite: default, group: 1, splits: 2, paths: ''}
-          - {suite: default, group: 2, splits: 2, paths: ''}
+          - {suite: default, group: 1, splits: 1, paths: ''}
           - {suite: shared_scripts, group: 1, splits: 1, paths: shared_scripts/}
     steps:
       - uses: actions/checkout@v7
