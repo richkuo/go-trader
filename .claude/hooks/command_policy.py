@@ -23,6 +23,8 @@ MAX_PROBES = 64
 MAX_TOKENS = 50000
 
 RAW_GUARD = re.compile(r"\bgit\b[\s\S]*\bcommit\b|update\.sh|git-commit\.sh")
+UNPARSED_GUARD = re.compile(r"\bgit\b|update\.sh|git-commit\.sh")
+BASH_NOEXEC_FLAGS = re.compile(r"-[enuvx]+\Z")
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 FD_RE = re.compile(r"\d+(?=[<>])")
 META = " \t\r\n;&|()<>"
@@ -37,7 +39,7 @@ DATA_HEADS = frozenset(("echo", "printf", "cat", "grep", "egrep", "fgrep", "rg",
                         "dirname", "realpath", "readlink", "date", "sleep", "mkdir", "touch", "cp", "mv", "rm", "ln",
                         "chmod", "which", "type", "printenv", "test", "[", "[[", "true", "false", ":", "pwd", "sed",
                         "awk", "column", "fold", "nl", "od", "xxd", "shasum", "sha256sum", "md5", "md5sum", "du", "df",
-                        "tree", "bat"))
+                        "tree", "bat", "shellcheck"))
 SHELL_STATE = frozenset(("export", "unset", "declare", "typeset", "local", "readonly", "set", "shopt", "setopt",
                          "unsetopt", "eval", "alias", "unalias", "hash", "enable", "trap", "emulate", "function"))
 SET_FLAGS_OK = frozenset(("-e", "+e", "-u", "+u", "-x", "+x", "-v", "+v", "-eu", "-ex", "-eux", "-euo", "-eo", "-uo"))
@@ -1451,6 +1453,7 @@ class Analyzer(object):
             return ("unknown",)
         new = None
         detach = False
+        track = False
         positional = []
         dashdash = False
         i = 0
@@ -1462,7 +1465,7 @@ class Analyzer(object):
                 positional.append(v)
             elif v == "--":
                 dashdash = True
-                if sub == "checkout" and new is None and not detach:
+                if sub == "checkout" and new is None and not detach and i + 1 < len(vals):
                     return ("none",)
             elif v in create:
                 if i + 1 >= len(vals):
@@ -1477,11 +1480,12 @@ class Analyzer(object):
                 detach = True
             elif v in ("-p", "--patch", "--ours", "--theirs") and sub == "checkout":
                 return ("none",)
-            elif v in ("-t", "--track", "--no-track", "-f", "--force", "-q", "--quiet", "-m", "--merge",
+            elif v in ("-t", "--track") or v.startswith("--track="):
+                track = True
+            elif v in ("--no-track", "-f", "--force", "-q", "--quiet", "-m", "--merge",
                        "--guess", "--no-guess", "--discard-changes", "--progress", "--no-progress",
                        "--ignore-other-worktrees", "--overwrite-ignore", "--no-overwrite-ignore",
-                       "--recurse-submodules", "--no-recurse-submodules", "-l") or v.startswith("--track=") \
-                    or v.startswith("--conflict="):
+                       "--recurse-submodules", "--no-recurse-submodules", "-l") or v.startswith("--conflict="):
                 pass
             elif v.startswith("-"):
                 return ("unknown",)
@@ -1489,13 +1493,15 @@ class Analyzer(object):
                 positional.append(v)
             i += 1
         if new is not None:
+            if "@{" in new:
+                return ("unknown",)
             return ("branch", "refs/heads/" + new)
         if detach:
             return ("branch", None)
         if not positional:
             return ("none",)
         if sub == "switch":
-            if positional[0] == "-":
+            if track or positional[0] == "-" or positional[0].startswith("@") or "@{" in positional[0]:
                 return ("unknown",)
             return ("branch", "refs/heads/" + positional[0])
         if len(positional) == 1 and positional[0] == "main":
@@ -1561,13 +1567,19 @@ class Analyzer(object):
         vals = [a.value for a in args]
         i = 0
         want_c = False
+        bash_syntax_flags = os.path.basename(words[0].value) == "bash"
+        noexec = False
         while i < len(vals):
             v = vals[i]
             if v is None:
                 return self.unsupported(words, states, "a shell option is not literal")
             if v == "--" or v == "-":
+                bash_syntax_flags = bash_syntax_flags and v == "--"
                 i += 1
                 break
+            if v.startswith(("-", "+")) and len(v) > 1:
+                bash_syntax_flags = bash_syntax_flags and bool(BASH_NOEXEC_FLAGS.fullmatch(v))
+                noexec = noexec or "n" in v[1:]
             if v in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file"):
                 i += 2
                 continue
@@ -1593,6 +1605,8 @@ class Analyzer(object):
                 return self.unsupported(words, states, "the script path is not literal")
             base = os.path.basename(sv)
             if base == "update.sh":
+                if bash_syntax_flags and noexec:
+                    return set(states), set(states)
                 return self.do_update(script, args[i + 1:], inv, states, True)
             if base == "git-commit.sh":
                 return self.do_action_wrapper(script, inv, states, conc)
@@ -1620,7 +1634,7 @@ class Analyzer(object):
         try:
             tree = Parser(text, 1, self.ctx).parse()
         except ParseError as e:
-            if RAW_GUARD.search(text):
+            if UNPARSED_GUARD.search(text):
                 self.deny("a nested shell command could not be parsed (%s) and it contains a guarded call" % e)
             return set(states), set(states)
         self.env_stack.append([("reset",)] if remote else list(inv.envops))
@@ -1766,7 +1780,7 @@ def evaluate(command, cwd):
     try:
         tree = Parser(command, 0, ctx).parse()
     except ParseError as e:
-        if RAW_GUARD.search(command):
+        if UNPARSED_GUARD.search(command):
             return ["the command could not be parsed (%s) and it contains a guarded call. Run the commit or the "
                     "update as its own plain command." % e]
         return []
@@ -1820,7 +1834,7 @@ def main():
     try:
         reasons = evaluate(command, cwd)
     except Exception as e:
-        if re.search(r"\bgit\b|update\.sh|git-commit\.sh", command):
+        if UNPARSED_GUARD.search(command):
             block("the policy check failed (%s) on a command that can contain a guarded call." % e.__class__.__name__)
         return 0
     if reasons:

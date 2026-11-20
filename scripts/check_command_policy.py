@@ -144,6 +144,20 @@ class Runner(object):
           "git checkout -q -b cc/chain && git commit --allow-empty -m probe && git checkout -q main", "allow",
           True, gt)
         c("switch to main then commit", wt, "git switch main && git commit -m probe", "deny")
+        previous = self.repo("previous-branch", GO_TRADER_URL, branch="cc/feature")
+        self.sh(previous, "git", "branch", "main")
+        self.sh(previous, "git", "switch", "main")
+        self.sh(previous, "git", "switch", "cc/feature")
+        c("switch to previous main then commit", previous, "git switch @{-1} && git commit --allow-empty -m x",
+          "deny")
+        c("checkout of main with trailing separator then commit", previous,
+          "git checkout main -- && git commit --allow-empty -m x", "deny")
+        c("checkout of a path from main then commit", previous,
+          "git checkout main -- README && git commit --allow-empty -m x", "allow", True, previous)
+        tracking = self.repo("tracking-branch", GO_TRADER_URL, branch="cc/feature")
+        self.sh(tracking, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        c("switch with an implicit tracking branch then commit", tracking,
+          "git switch --track origin/main && git commit --allow-empty -m x", "deny")
         c("checkout of a branch that cannot be resolved then commit", wt,
           "git checkout something && git commit -m probe", "deny")
         c("path checkout then commit", wt, "git checkout -- README && git commit --allow-empty -m probe", "allow",
@@ -182,12 +196,19 @@ class Runner(object):
         c("unsupported wrapper around a commit", wt, "xargs git commit -m probe </dev/null", "deny")
         c("if statement around a commit", wt, "if true; then git commit -m probe; fi", "deny")
         c("unparseable command with a commit", wt, "git commit -m 'unterminated", "deny")
+        c("unparseable case with a commit alias", gt, "case 1 in 1) git cm --allow-empty -m x;; esac", "deny")
+        c("unparseable nested function with a commit alias", gt,
+          "bash -c 'f() { :; }; git cm --allow-empty -m x'", "deny")
         c("unparseable command without a guarded call", wt, "echo 'unterminated", "allow")
         c("arithmetic expansion that hides a commit", wt, "echo $(( $(git commit -m x) ))", "deny")
         c("ssh remote commit cannot be checked", wt, "ssh host 'cd /opt/go-trader && git commit -m x'", "deny")
         c("ordinary build commands", gt, "go -C scheduler build . && uv run --no-sync python -c 'print(1)'", "allow")
 
         c("update without restart", gt, "bash scripts/update.sh", "deny")
+        c("syntax check of updater", gt, "bash -n scripts/update.sh", "allow")
+        c("syntax check of updater with grouped flags", gt, "bash -en -- scripts/update.sh", "allow")
+        c("lint check of updater", gt, "shellcheck scripts/update.sh", "allow")
+        c("updater with syntax check disabled", gt, "bash -n +n scripts/update.sh", "deny")
         c("update with the restart flag", gt, "bash scripts/update.sh --restart", "allow")
         c("update with the restart flag and an absolute path", wt, "bash %s/scripts/update.sh --restart" % gt, "allow")
         c("update by direct execution without restart", gt, "./scripts/update.sh", "deny")

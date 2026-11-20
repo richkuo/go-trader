@@ -3660,12 +3660,15 @@ It makes no repository changes and keeps no results between calls.
 Supported command forms: literal `cd` and `pushd`, `&&`, `||`, `;`, newlines, subshells, `{ ...; }` groups, pipelines, background jobs, command substitution, process substitution and here-documents.
 The checker also reads `bash`/`sh`/`zsh` `-c` strings and here-document scripts, `ssh` remote command strings (a remote commit always denies, and a remote update needs a literal restart), and the wrappers `command`, `builtin`, `exec`, `nohup`, `setsid`, `time`, `nice`, `timeout`, `stdbuf`, `env` and `sudo`.
 Repeated `git -C`, `--git-dir` and `--work-tree` resolve in git's argument order.
-A `git checkout`/`git switch` to a literal branch earlier in the same call sets the branch that a later commit checks.
+The checker tracks literal `git switch` branch names, explicit new branch names and `git checkout main` (with or without a trailing `--`).
+A checkout with a pathspec after `--` leaves the branch unchanged. An unresolved branch change, including a previous-branch reference or an implicit tracking branch, blocks a later commit.
 Other branch or target changes earlier in the same call deny a later commit: `rebase`, `bisect`, `update-ref`, a `symbolic-ref` write, `worktree move`/`remove`, a `config` write, `branch -m`, `submodule`, `init`, `clone`, `gh pr checkout`, an unresolved checkout, an export or assignment of a git, path or home variable, `source`, `eval` and `alias`.
 `GIT_DIR`-style environment prefixes and `-c core.worktree`/`core.bare`/`include.*` overrides deny.
 A commit in a pipeline or background job next to any branch change denies.
 A guarded call inside `if`/`for`/`while`/`case`, a function, an arithmetic or parameter expansion, an unsupported wrapper (`xargs`, `find -exec`, `uv run` and similar), or a command that cannot be parsed denies.
-Quoted text and the arguments of data commands (`echo`, `printf`, `grep`, `gh` and similar) stay data.
+When parsing fails, the checker blocks text that mentions git, the update script or the action commit wrapper.
+In parsed commands, quoted text and arguments to data commands (`echo`, `printf`, `grep`, `gh` and similar) stay data.
+`bash -n scripts/update.sh` and `shellcheck scripts/update.sh` are read-only checks and do not require a restart.
 Other git commands that add commits to the current branch (`merge`, `pull`, `cherry-pick`, `revert`, `am`) are outside the direct-commit rule.
 
 Git checks use a fixed git path (`/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, then `/bin`), literal argument arrays, a 5-second timeout each and at most 64 checks per call.
