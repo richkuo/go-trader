@@ -147,8 +147,8 @@ func TestRobinhoodOptionMarksPyIntegration(t *testing.T) {
 		if raw, err := os.ReadFile(requests); err == nil && len(strings.TrimSpace(string(raw))) > 0 {
 			t.Fatalf("--probe-only made network requests:\n%s", raw)
 		}
-		deribitOnly := &Config{Strategies: []StrategyConfig{ocSC("deribit-om-probe", "deribit", "BTC")}}
-		if anyRobinhoodOptions(deribitOnly) || !anyRobinhoodOptions(cfg) {
+		ibkrOnly := &Config{Strategies: []StrategyConfig{ocSC("ibkr-om-probe", "ibkr", "BTC")}}
+		if anyRobinhoodOptions(ibkrOnly) || !anyRobinhoodOptions(cfg) {
 			t.Fatal("the mark probe must run only for robinhood options")
 		}
 	})

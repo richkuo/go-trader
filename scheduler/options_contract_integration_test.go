@@ -259,11 +259,12 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 	t.Run("uncovered_short_call_refuses_the_whole_entry_signal", func(t *testing.T) {
 		expiry := "2026-12-18"
 		for _, tc := range []struct {
-			name     string
-			platform string
-			held     float64
-			actions  []OptionsAction
-			want     int
+			name       string
+			platform   string
+			underlying string
+			held       float64
+			actions    []OptionsAction
+			want       int
 		}{
 			{name: "robinhood_butterfly", platform: "robinhood", actions: []OptionsAction{
 				{Action: "buy", OptionType: "call", Strike: 570, Expiry: expiry, PremiumUSD: 1},
@@ -277,14 +278,18 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 			{name: "robinhood_covered_wheel_call", platform: "robinhood", held: 100, want: 1, actions: []OptionsAction{
 				{Action: "sell", OptionType: "call", Strike: 600, Expiry: expiry, PremiumUSD: 1},
 			}},
-			{name: "deribit_butterfly", platform: "deribit", want: 3, actions: []OptionsAction{
+			{name: "ibkr_butterfly", platform: "ibkr", underlying: "BTC", want: 3, actions: []OptionsAction{
 				{Action: "buy", OptionType: "call", Strike: 570, Expiry: expiry, PremiumUSD: 1},
 				{Action: "sell", OptionType: "call", Strike: 600, Expiry: expiry, PremiumUSD: 1, Quantity: 2},
 				{Action: "buy", OptionType: "call", Strike: 630, Expiry: expiry, PremiumUSD: 1},
 			}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				sc := ocSC("opt-atomic-cover", tc.platform, "SPY")
+				underlying := tc.underlying
+				if underlying == "" {
+					underlying = "SPY"
+				}
+				sc := ocSC("opt-atomic-cover", tc.platform, underlying)
 				env := ocEnv(t, sc)
 				s := env.strat(sc.ID)
 				s.Cash = 80000
@@ -292,7 +297,7 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 					s.Positions["SPY"] = &Position{Symbol: "SPY", Side: "long", Quantity: tc.held, AvgCost: 450, OwnerStrategyID: sc.ID}
 				}
 				logger, _ := ocLogger(sc.ID)
-				n, err := ExecuteOptionsSignal(s, ocResult(tc.platform, "SPY", 600, tc.actions...), logger)
+				n, err := ExecuteOptionsSignal(s, ocResult(tc.platform, underlying, 600, tc.actions...), logger)
 				env.saveAll()
 				if err != nil || n != tc.want || len(s.OptionPositions) != tc.want || len(ocStoredTrades(t, env, sc.ID)) != tc.want {
 					t.Fatalf("trades=%d legs=%d err=%v, want %d complete entries", n, len(s.OptionPositions), err, tc.want)
@@ -369,7 +374,7 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 			{"missing_unit", "robinhood", ""},
 			{"other_unit", "robinhood", "contract"},
 			{"missing_platform", "", optionPremiumUnitUnderlying},
-			{"other_platform", "deribit", optionPremiumUnitUnderlying},
+			{"other_platform", "ibkr", optionPremiumUnitUnderlying},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				r := ocResult(tc.platform, "SPY", 480, actions...)
@@ -390,7 +395,7 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 		logger, _ := ocLogger("marks")
 		mk := func(platform string, qty float64, action string) *StrategyState {
 			underlying := "SPY"
-			if platform == "deribit" {
+			if platform == "ibkr" {
 				underlying = "BTC"
 			}
 			return &StrategyState{ID: platform + "-marks", Type: "options", Platform: platform, Positions: map[string]*Position{},
@@ -405,9 +410,9 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 		}{
 			{"robinhood", 2, "buy", 0.01 * 500 * 100 * 2},
 			{"robinhood", 2, "sell", -0.01 * 500 * 100 * 2},
-			{"deribit", 1, "buy", 0.01 * 500},
-			{"deribit", 2, "buy", 0.01 * 500 * 2},
-			{"deribit", 2, "sell", -0.01 * 500 * 2},
+			{"ibkr", 1, "buy", 0.01 * 500},
+			{"ibkr", 2, "buy", 0.01 * 500 * 2},
+			{"ibkr", 2, "sell", -0.01 * 500 * 2},
 		} {
 			s := mk(tc.platform, tc.qty, tc.action)
 			ocMarkCycle(s, ocPricer{mark: 0.01, spot: 500}, logger)
@@ -483,7 +488,7 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("deribit_call_settles_in_cash_and_keeps_held_units", func(t *testing.T) {
+	t.Run("ibkr_call_settles_in_cash_and_keeps_held_units", func(t *testing.T) {
 		for _, tc := range []struct {
 			name string
 			held float64
@@ -492,7 +497,7 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 			{name: "held_units_stay", held: 1},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				sc := ocSC("deribit-opt-expiry", "deribit", "BTC")
+				sc := ocSC("ibkr-opt-expiry", "ibkr", "BTC")
 				env := ocEnv(t, sc)
 				s := env.strat(sc.ID)
 				s.Cash = 1000
@@ -599,15 +604,15 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 	t.Run("legacy_rows_stamp_on_load_without_changing_history", func(t *testing.T) {
 		dir := t.TempDir()
 		rh := ocSC("rh-opt-legacy", "robinhood", "SPY")
-		der := ocSC("deribit-opt-legacy", "deribit", "BTC")
-		der.StorageStrategyID = "der-store"
-		cfg := &Config{DBFile: filepath.Join(dir, "state.db"), Strategies: []StrategyConfig{rh, der}}
+		ib := ocSC("ibkr-opt-legacy", "ibkr", "BTC")
+		ib.StorageStrategyID = "ib-store"
+		cfg := &Config{DBFile: filepath.Join(dir, "state.db"), Strategies: []StrategyConfig{rh, ib}}
 		env := openEntryTestEnv(t, cfg)
 		env.strat(rh.ID).Cash = 1234.5
 		env.strat(rh.ID).OptionPositions["rh-leg"] = &OptionPosition{ID: "rh-leg", Underlying: "SPY", OptionType: "put", Strike: 470, Expiry: "2099-01-16", Action: "sell", Quantity: 1, EntryPremiumUSD: 1.5, CurrentValueUSD: -1.2}
 		env.strat(rh.ID).OptionPositions["rh-explicit"] = &OptionPosition{ID: "rh-explicit", Underlying: "SPY", OptionType: "put", Strike: 400, Expiry: "2099-01-16", Action: "sell", Quantity: 1, ContractMultiplier: 10, EntryPremiumUSD: 9, CurrentValueUSD: -9}
 		env.strat(rh.ID).Positions["SPY"] = &Position{Symbol: "SPY", Side: "long", Quantity: 1, AvgCost: 470, OwnerStrategyID: rh.ID}
-		env.strat(der.ID).OptionPositions["der-leg"] = &OptionPosition{ID: "der-leg", Underlying: "BTC", OptionType: "call", Strike: 90000, Expiry: "2099-01-16", Action: "buy", Quantity: 2, EntryPremiumUSD: 800, CurrentValueUSD: 900}
+		env.strat(ib.ID).OptionPositions["ib-leg"] = &OptionPosition{ID: "ib-leg", Underlying: "BTC", OptionType: "call", Strike: 90000, Expiry: "2099-01-16", Action: "buy", Quantity: 2, EntryPremiumUSD: 800, CurrentValueUSD: 900}
 		env.saveAll()
 		env.store.Close()
 
@@ -653,8 +658,8 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 		if got := roState.Strategies[rh.ID].OptionPositions["rh-explicit"].ContractMultiplier; got != 100 {
 			t.Fatalf("a dropped column reads as legacy zero and stamps from the platform: got %v", got)
 		}
-		if got := roState.Strategies[der.ID].OptionPositions["der-leg"].ContractMultiplier; got != 1 {
-			t.Fatalf("read-only deribit stamp = %v, want 1", got)
+		if got := roState.Strategies[ib.ID].OptionPositions["ib-leg"].ContractMultiplier; got != 1 {
+			t.Fatalf("read-only ibkr legacy stamp = %v, want 1", got)
 		}
 		ro.Close()
 		if sum() != oldSum {
@@ -678,12 +683,12 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 		if leg := rhBook.OptionPositions["rh-explicit"]; leg.ContractMultiplier != 10 {
 			t.Fatalf("explicit stamp = %v, want the retained 10", leg.ContractMultiplier)
 		}
-		if leg := env.strat(der.ID).OptionPositions["der-leg"]; leg.ContractMultiplier != 1 || leg.EntryPremiumUSD != 800 {
-			t.Fatalf("deribit leg = %+v, want stamp 1", leg)
+		if leg := env.strat(ib.ID).OptionPositions["ib-leg"]; leg.ContractMultiplier != 1 || leg.EntryPremiumUSD != 800 {
+			t.Fatalf("ibkr legacy leg = %+v, want stamp 1", leg)
 		}
 		var stored float64
-		if err := env.fileFor(der.ID).db.QueryRow(`SELECT contract_multiplier FROM option_positions WHERE strategy_id = 'der-store' AND id = 'der-leg'`).Scan(&stored); err != nil || stored != 1 {
-			t.Fatalf("stored deribit stamp under its storage alias = %v, %v; want 1", stored, err)
+		if err := env.fileFor(ib.ID).db.QueryRow(`SELECT contract_multiplier FROM option_positions WHERE strategy_id = 'ib-store' AND id = 'ib-leg'`).Scan(&stored); err != nil || stored != 1 {
+			t.Fatalf("stored ibkr legacy stamp under its storage alias = %v, %v; want 1", stored, err)
 		}
 
 		for _, bad := range []struct{ name, value string }{{"negative", "-5"}, {"infinite", "9e999"}} {

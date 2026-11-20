@@ -733,8 +733,8 @@ func paperResearchLoadError(t *testing.T, root map[string]interface{}, strategie
 func TestPaperResearchOptionsQuoteReferencesAreRefused(t *testing.T) {
 	websocket := map[string]interface{}{"market_feed": "websocket"}
 	options := func() map[string]interface{} {
-		return map[string]interface{}{"id": "deribit-cc-btc", "type": "options", "platform": "deribit", "script": "shared_scripts/check_options.py",
-			"args": []string{"covered_calls", "BTC", "--platform=deribit", "--mode=paper"}, "capital": 1000, "max_drawdown_pct": 40}
+		return map[string]interface{}{"id": "ibkr-cc-btc", "type": "options", "platform": "ibkr", "script": "shared_scripts/check_options.py",
+			"args": []string{"covered_calls", "BTC", "--platform=ibkr", "--mode=paper"}, "capital": 1000, "max_drawdown_pct": 40}
 	}
 	if err := paperResearchLoadError(t, websocket, options()); err != nil {
 		t.Fatalf("control: a plain paper options entry must load: %v", err)

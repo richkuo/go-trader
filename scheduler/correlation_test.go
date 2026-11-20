@@ -67,22 +67,24 @@ func TestComputeCorrelation(t *testing.T) {
 		}{
 			{
 				name: "greeks",
-				id:   "deribit-strat",
+				id:   "ibkr-strat",
 				args: []string{"iron_condor", "BTC"},
 				options: map[string]*OptionPosition{
 					"BTC-CALL-60000": {
-						Underlying: "BTC",
-						OptionType: "call",
-						Action:     "sell",
-						Quantity:   1.0,
-						Greeks:     OptGreeks{Delta: 0.5},
+						Underlying:         "BTC",
+						OptionType:         "call",
+						Action:             "sell",
+						Quantity:           10.0,
+						ContractMultiplier: 0.1,
+						Greeks:             OptGreeks{Delta: 0.5},
 					},
 					"BTC-PUT-40000": {
-						Underlying: "BTC",
-						OptionType: "put",
-						Action:     "buy",
-						Quantity:   1.0,
-						Greeks:     OptGreeks{Delta: -0.3},
+						Underlying:         "BTC",
+						OptionType:         "put",
+						Action:             "buy",
+						Quantity:           10.0,
+						ContractMultiplier: 0.1,
+						Greeks:             OptGreeks{Delta: -0.3},
 					},
 				},
 				expectedNet: -40000.0,
@@ -93,18 +95,20 @@ func TestComputeCorrelation(t *testing.T) {
 				args: []string{"straddle", "BTC"},
 				options: map[string]*OptionPosition{
 					"BTC-CALL-70000": {
-						Underlying: "BTC",
-						OptionType: "call",
-						Action:     "buy",
-						Quantity:   2.0,
-						Greeks:     OptGreeks{Delta: 0},
+						Underlying:         "BTC",
+						OptionType:         "call",
+						Action:             "buy",
+						Quantity:           20.0,
+						ContractMultiplier: 0.1,
+						Greeks:             OptGreeks{Delta: 0},
 					},
 					"BTC-PUT-40000": {
-						Underlying: "BTC",
-						OptionType: "put",
-						Action:     "buy",
-						Quantity:   1.0,
-						Greeks:     OptGreeks{Delta: 0},
+						Underlying:         "BTC",
+						OptionType:         "put",
+						Action:             "buy",
+						Quantity:           10.0,
+						ContractMultiplier: 0.1,
+						Greeks:             OptGreeks{Delta: 0},
 					},
 				},
 				expectedNet: 50000.0,
@@ -116,12 +120,13 @@ func TestComputeCorrelation(t *testing.T) {
 					tc.id: {
 						ID:              tc.id,
 						Type:            "options",
+						Platform:        "ibkr",
 						Positions:       make(map[string]*Position),
 						OptionPositions: tc.options,
 					},
 				}
 				cfgStrategies := []StrategyConfig{
-					{ID: tc.id, Type: "options", Args: tc.args},
+					{ID: tc.id, Type: "options", Platform: "ibkr", Args: tc.args},
 				}
 				prices := map[string]float64{"BTC/USDT": 50000}
 				corrCfg := &CorrelationConfig{Enabled: true, MaxConcentrationPct: 60, MaxSameDirectionPct: 75}

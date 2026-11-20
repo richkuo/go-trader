@@ -154,7 +154,7 @@ func TestAgentInfoReadOnlySnapshot(t *testing.T) {
 		if _, err := sdb.db.Exec(`INSERT INTO app_state (id, cycle_count) VALUES (1, 42) ON CONFLICT(id) DO UPDATE SET cycle_count=42`); err != nil {
 			t.Fatalf("seed app_state: %v", err)
 		}
-		if _, err := sdb.db.Exec(`INSERT INTO strategies (id, type, platform) VALUES ('opt1','options','deribit')`); err != nil {
+		if _, err := sdb.db.Exec(`INSERT INTO strategies (id, type, platform) VALUES ('opt1','options','ibkr')`); err != nil {
 			t.Fatalf("seed option strategy: %v", err)
 		}
 		if _, err := sdb.db.Exec(`INSERT INTO option_positions (strategy_id, id, underlying, option_type, strike, expiry, action, quantity) VALUES ('opt1','o-1','BTC','call',70000,'2026-12-25','buy',2)`); err != nil {

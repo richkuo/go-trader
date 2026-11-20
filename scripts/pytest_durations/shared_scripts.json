@@ -90,7 +90,6 @@
     "shared_scripts/test_check_options_mode_integration.py::test_runtime_failures_return_one_error_document_and_exit_1": 10.1535,
     "shared_scripts/test_check_options_mode_integration.py::test_the_row_cap_counts_the_proposed_structure": 3.143,
     "shared_scripts/test_check_options_mode_integration.py::test_unsupported_platforms_refuse_before_loading_an_adapter": 3.5513,
-    "shared_scripts/test_check_options_mode_integration.py::test_venue_quotes_price_without_volatility_and_never_substitute": 8.6373,
     "shared_scripts/test_check_options_mode_integration.py::test_volatility_adapters_measure_or_refuse_without_substitutes": 26.3282,
     "shared_scripts/test_check_quote_precision_integration.py::test_check_options_preserves_the_spot_price": 3.5101,
     "shared_scripts/test_check_quote_precision_integration.py::test_check_options_without_a_spot_quote_keeps_its_error": 1.1394,

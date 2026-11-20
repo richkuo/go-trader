@@ -130,8 +130,8 @@ def test_entry_uses_the_scheduler_calendar_and_emits_no_size_fields(tmp_path, su
     failures = {
         "missing_context": ([], "expiry calendar unavailable: no option calendar context from the scheduler (--option-calendar-json)"),
         "malformed_context": (["--option-calendar-json={not json"], "invalid option calendar context: option calendar context is not valid JSON"),
-        "wrong_platform": (["--option-calendar-json=" + _calendar("2026-11-04T12:00:00Z", platform="deribit")],
-                           "invalid option calendar context: option calendar context platform 'deribit' does not match 'ibkr'"),
+        "wrong_platform": (["--option-calendar-json=" + _calendar("2026-11-04T12:00:00Z", platform="robinhood")],
+                           "invalid option calendar context: option calendar context platform 'robinhood' does not match 'ibkr'"),
         "wrong_underlying": (["--option-calendar-json=" + _calendar("2026-11-04T12:00:00Z", underlying="ETH")],
                              "invalid option calendar context: option calendar context underlying 'ETH' does not match 'BTC'"),
         "naive_clock": (["--option-calendar-json=" + _calendar("2026-11-04T12:00:00")],
@@ -151,10 +151,10 @@ def test_entry_uses_the_scheduler_calendar_and_emits_no_size_fields(tmp_path, su
             else:
                 assert out["error"] == want, out
             assert out["actions"] == []
-    with subtests.test(case="deribit_refuses_a_calendar_context"):
-        proc, _ = _check(_subdir(tmp_path, "deribit"), ["covered_calls", "BTC", "--platform=deribit",
-                                                        "--option-calendar-json=" + _calendar("2026-11-04T12:00:00Z", platform="deribit")])
-        assert proc.returncode == 1 and _doc(proc)["error"] == "deribit options take no --option-calendar-json context"
+    with subtests.test(case="robinhood_refuses_a_calendar_context"):
+        proc, _ = _check(_subdir(tmp_path, "robinhood"), ["covered_calls", "SPY", "--platform=robinhood",
+                                                          "--option-calendar-json=" + _calendar("2026-11-04T12:00:00Z", platform="robinhood", underlying="SPY")])
+        assert proc.returncode == 1 and _doc(proc)["error"] == "robinhood options take no --option-calendar-json context"
     with subtests.test(case="live_mode_refusal_kept"):
         proc, _ = _check(_subdir(tmp_path, "live"), ["covered_calls", "BTC", "--platform=ibkr", "--mode=live",
                                                      "--option-calendar-json=" + _calendar("2026-11-04T12:00:00Z")])

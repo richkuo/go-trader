@@ -28,7 +28,7 @@ def _run(script, argv, env_extra, stdin=None, tmp_path=None):
     for key in CREDENTIALS:
         env.pop(key, None)
     for key in ("QP_CLOSE", "QP_QUOTE", "QP_SHAPE", "QP_NOW", "QP_TICKERS", "QP_CLOSES", "QP_CANDLES",
-                "QP_DAILY", "QP_OPTION_QUOTE", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER", "QP_STDOUT_NOISE"):
+                "QP_DAILY", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER", "QP_STDOUT_NOISE"):
         env.pop(key, None)
     env["QP_STUB"] = "1"
     env["PYTHONPATH"] = STUB_DIR
@@ -126,22 +126,29 @@ def test_check_price_without_symbols_emits_an_empty_map(tmp_path):
     assert _single_document(proc) == {}
 
 
+IBKR_CALENDAR = "--option-calendar-json=" + json.dumps({
+    "contract": "option_calendar_v1", "platform": "ibkr", "underlying": "BTC", "evaluated_at": "2026-11-04T12:00:00Z",
+    "cutoff_zone": "Europe/London", "cutoff_hour": 16, "cutoff_minute": 0})
+HELD_PROTECTIVE_PUT = json.dumps([{"option_type": "put", "action": "buy", "strike": 1, "expiry": "2026-12-18"}])
+
+
 def test_check_options_preserves_the_spot_price(tmp_path, subtests):
     for i, quote in enumerate(QUOTES):
         with subtests.test(quote=quote):
             home = tmp_path / f"quote-{i}"
             home.mkdir()
-            proc = _run(CHECK_OPTIONS, ["vol_mean_reversion", "BTC", "--platform=deribit"],
-                        {"QP_QUOTE": repr(quote), "QP_CLOSE": repr(quote)}, stdin="[]", tmp_path=home)
+            proc = _run(CHECK_OPTIONS, ["protective_puts", "BTC", "--platform=ibkr", IBKR_CALENDAR],
+                        {"QP_QUOTE": repr(quote), "QP_CLOSE": repr(quote)}, stdin=HELD_PROTECTIVE_PUT, tmp_path=home)
             assert proc.returncode == 0, proc.stderr
             out = _single_document(proc)
             assert not out.get("error"), out
+            assert out["actions"] == [], out
             assert isinstance(out["spot_price"], float)
             assert out["spot_price"] == quote
 
 
 def test_check_options_without_a_spot_quote_keeps_its_error(tmp_path):
-    proc = _run(CHECK_OPTIONS, ["vol_mean_reversion", "BTC", "--platform=deribit"],
+    proc = _run(CHECK_OPTIONS, ["vol_mean_reversion", "BTC", "--platform=ibkr", IBKR_CALENDAR],
                 {"QP_CLOSE": 0.1234}, stdin="[]", tmp_path=tmp_path)
     out = _single_document(proc)
     assert out["spot_price"] == 0

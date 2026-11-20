@@ -1,8 +1,6 @@
-import importlib.util
 import math
 import os
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -22,17 +20,7 @@ if SHARED_TOOLS not in sys.path:
 from pricing import bs_price, bs_price_and_greeks
 
 
-DERIBIT_ADAPTER = REPO_ROOT / "platforms" / "deribit" / "adapter.py"
-
-
-def _deribit_exchange_adapter():
-    spec = importlib.util.spec_from_file_location("_bt_options_deribit_adapter_parity", DERIBIT_ADAPTER)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.DeribitExchangeAdapter
-
-
-def test_strikes_round_to_the_underlying_grid_like_the_adapter_fallback(monkeypatch, subtests):
+def test_strikes_round_to_the_underlying_research_grid(subtests):
     grid = [
         ("BTC", 67234, 67000),
         ("BTC", 67501, 68000),
@@ -48,22 +36,14 @@ def test_strikes_round_to_the_underlying_grid_like_the_adapter_fallback(monkeypa
         for underlying, target, expected in grid:
             assert adapter_strike(underlying, target) == expected, \
                 f"test_strikes_round_to_the_underlying_grid[{underlying}-{target}-{expected}]"
-    with subtests.test("test_strikes_round_to_the_underlying_grid_like_the_adapter_fallback"):
-        with monkeypatch.context() as mp:
-            no_chain = types.ModuleType("utils")
-            no_chain.find_closest_strike = lambda *args, **kwargs: None
-            mp.setitem(sys.modules, "platforms.deribit.utils", no_chain)
-            adapter_cls = _deribit_exchange_adapter()
-            for underlying, target, expected in grid:
-                label = f"test_strikes_round_to_the_underlying_grid[{underlying}-{target}-{expected}]"
-                live = adapter_cls.get_real_strike(None, underlying, "", "call", target)
-                assert live == expected, (label, live)
-            for underlying, step in [("BTC", ADAPTER_STRIKE_STEP["BTC"]), ("ETH", DEFAULT_STRIKE_STEP),
-                                     ("SOL", DEFAULT_STRIKE_STEP)]:
-                for target in (step * 7, step * 7 + step * 0.49, step * 7 + step * 0.51, step * 7.5, step * 8.5):
-                    label = f"adapter_fallback_parity[{underlying}-{target}]"
-                    assert adapter_cls.get_real_strike(None, underlying, "", "call", target) == \
-                        adapter_strike(underlying, target), label
+    with subtests.test("test_strikes_land_on_the_nearest_research_grid_point"):
+        for underlying, step in [("BTC", ADAPTER_STRIKE_STEP["BTC"]), ("ETH", DEFAULT_STRIKE_STEP),
+                                 ("SOL", DEFAULT_STRIKE_STEP)]:
+            for target in (step * 7, step * 7 + step * 0.49, step * 7 + step * 0.51, step * 7.5, step * 8.5):
+                label = f"research_grid[{underlying}-{target}]"
+                got = adapter_strike(underlying, target)
+                assert math.isclose(got / step, round(got / step)), label
+                assert abs(got - target) <= step / 2, label
 
 
 def test_backtest_bs_matches_shared_pricing_and_greeks(subtests):

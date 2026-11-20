@@ -22,7 +22,7 @@ FOUR_POSITIONS = json.dumps([
 CAP_REASON = "Max positions reached (4/4)"
 QP_KEYS = (
     "QP_CLOSE", "QP_QUOTE", "QP_SHAPE", "QP_NOW", "QP_TICKERS", "QP_CLOSES", "QP_CANDLES",
-    "QP_DAILY", "QP_OPTION_QUOTE", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER",
+    "QP_DAILY", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER",
     "QP_STDOUT_NOISE", "QP_ALL_CLOSED",
 )
 
@@ -70,17 +70,17 @@ def _single_document(proc):
 
 
 PAPER_ARGVS = {
-    "omitted": ["covered_calls", "SPY", "--platform=deribit"],
-    "equals_form": ["covered_calls", "SPY", "--platform=deribit", "--mode=paper"],
-    "two_token_form": ["covered_calls", "SPY", "--platform=deribit", "--mode", "paper"],
-    "two_token_form_first": ["--mode", "paper", "covered_calls", "SPY", "--platform=deribit"],
+    "omitted": ["covered_calls", "SPY", "--platform=robinhood"],
+    "equals_form": ["covered_calls", "SPY", "--platform=robinhood", "--mode=paper"],
+    "two_token_form": ["covered_calls", "SPY", "--platform=robinhood", "--mode", "paper"],
+    "two_token_form_first": ["--mode", "paper", "covered_calls", "SPY", "--platform=robinhood"],
 }
 
 
 def test_paper_and_omitted_mode_read_the_stdin_positions(tmp_path, subtests):
     shapes = [(shape, PAPER_ARGVS[shape], FOUR_POSITIONS) for shape in sorted(PAPER_ARGVS)]
     shapes.append(("inline_positions_argument_with_two_token_form",
-                   ["covered_calls", "SPY", FOUR_POSITIONS, "--platform=deribit", "--mode", "paper"], ""))
+                   ["covered_calls", "SPY", FOUR_POSITIONS, "--platform=robinhood", "--mode", "paper"], ""))
     for shape, argv, stdin in shapes:
         with subtests.test(shape=shape):
             run_dir = tmp_path / shape
@@ -91,12 +91,12 @@ def test_paper_and_omitted_mode_read_the_stdin_positions(tmp_path, subtests):
             assert out["skip_reason"] == CAP_REASON
             assert out["strategy"] == "covered_calls"
             assert out["underlying"] == "SPY"
-            assert out["platform"] == "deribit"
+            assert out["platform"] == "robinhood"
             assert records == []
 
 
 def test_paper_control_builds_the_adapter_and_fetches(tmp_path):
-    proc, records = _run(["covered_calls", "SPY", "--platform=deribit", "--mode", "paper"], tmp_path, "[]")
+    proc, records = _run(["covered_calls", "BTC", "--platform=ibkr", IBKR_CALENDAR, "--mode", "paper"], tmp_path, "[]")
     out = _single_document(proc)
     assert out.get("skip_reason") is None
     assert len(records) > 0
@@ -110,7 +110,7 @@ LIVE_TAILS = {
 
 def test_live_mode_refuses_before_the_cap_and_the_adapter(tmp_path, subtests):
     for tail in sorted(LIVE_TAILS):
-        for platform in ["deribit", "robinhood"]:
+        for platform in ["ibkr", "robinhood"]:
             with subtests.test(tail=tail, platform=platform):
                 run_dir = tmp_path / f"{tail}-{platform}"
                 run_dir.mkdir()
@@ -150,7 +150,6 @@ LOW_RANK_CLOSES = [round(100 * math.exp((0.05 if i < 70 else 0.005) * math.sin(i
 FLAT_RANGE_CLOSES = [100.0, 200.0] * 20
 VOL_PLATFORMS = {
     "binanceus": ("BTC", 365, [0.631, 78.8]),
-    "deribit": ("BTC", 365, [0.631, 78.8]),
     "ibkr": ("BTC", 365, [0.631, 78.8]),
     "robinhood": ("SPY", 252, [0.5243, 78.8]),
 }
@@ -258,16 +257,16 @@ def _handled_error(proc, want_error=None):
 
 
 ARG_ERRORS = {
-    "missing_underlying": (["covered_calls", "--platform=deribit"], FOUR_POSITIONS, "usage"),
-    "extra_positional": (["covered_calls", "SPY", "[]", "extra", "--platform=deribit"], "", "usage"),
-    "bare_platform_flag": (["covered_calls", "SPY", "--platform", "deribit"], FOUR_POSITIONS, "usage"),
-    "unknown_strategy": (["iron_condor", "SPY", "--platform=deribit"], FOUR_POSITIONS,
+    "missing_underlying": (["covered_calls", "--platform=robinhood"], FOUR_POSITIONS, "usage"),
+    "extra_positional": (["covered_calls", "SPY", "[]", "extra", "--platform=robinhood"], "", "usage"),
+    "bare_platform_flag": (["covered_calls", "SPY", "--platform", "robinhood"], FOUR_POSITIONS, "usage"),
+    "unknown_strategy": (["iron_condor", "SPY", "--platform=robinhood"], FOUR_POSITIONS,
                          "Unknown strategy: iron_condor. Available: ['momentum_options', 'vol_mean_reversion', 'protective_puts', 'covered_calls', 'wheel', 'butterfly']"),
-    "invalid_positions_json": (["covered_calls", "SPY", "--platform=deribit"], "[{", "invalid positions JSON"),
-    "nan_constant_in_positions": (["covered_calls", "SPY", "--platform=deribit"], '[{"strike": NaN}]', "invalid positions JSON"),
-    "overflowing_number_in_positions": (["covered_calls", "SPY", "--platform=deribit"], '[{"strike": 1e999}]', "invalid positions JSON"),
-    "positions_payload_not_a_list": (["covered_calls", "SPY", "--platform=deribit"], '{"option_type": "call"}', "invalid positions payload: expected a JSON list"),
-    "positions_entry_not_an_object": (["covered_calls", "SPY", "--platform=deribit"], '[1, 2, 3, 4]', "invalid positions payload: every entry must be a JSON object"),
+    "invalid_positions_json": (["covered_calls", "SPY", "--platform=robinhood"], "[{", "invalid positions JSON"),
+    "nan_constant_in_positions": (["covered_calls", "SPY", "--platform=robinhood"], '[{"strike": NaN}]', "invalid positions JSON"),
+    "overflowing_number_in_positions": (["covered_calls", "SPY", "--platform=robinhood"], '[{"strike": 1e999}]', "invalid positions JSON"),
+    "positions_payload_not_a_list": (["covered_calls", "SPY", "--platform=robinhood"], '{"option_type": "call"}', "invalid positions payload: expected a JSON list"),
+    "positions_entry_not_an_object": (["covered_calls", "SPY", "--platform=robinhood"], '[1, 2, 3, 4]', "invalid positions payload: every entry must be a JSON object"),
 }
 
 
@@ -298,24 +297,24 @@ def test_unsupported_platforms_refuse_before_loading_an_adapter(tmp_path, subtes
 
 
 def test_probe_only_and_empty_stdin_keep_their_success(tmp_path):
-    proc, records = _run(["covered_calls", "SPY", "--platform=deribit", "--probe-only"], tmp_path, FOUR_POSITIONS)
+    proc, records = _run(["covered_calls", "SPY", "--platform=robinhood", "--probe-only"], tmp_path, FOUR_POSITIONS)
     assert proc.returncode == 0 and proc.stdout == "" and records == []
     empty = tmp_path / "empty"
     empty.mkdir()
-    proc, _ = _run(["covered_calls", "BTC", "--platform=deribit"], empty, "", extra={"QP_QUOTE": 100000, "QP_CLOSE": 100000})
+    proc, _ = _run(["covered_calls", "BTC", "--platform=ibkr", IBKR_CALENDAR], empty, "", extra={"QP_QUOTE": 100000, "QP_CLOSE": 100000})
     assert proc.returncode == 0, proc.stderr
     out = _single_document(proc)
     assert out["signal"] == -1 and len(out["actions"]) == 1 and not out.get("error")
 
 
 RUNTIME_ERRORS = {
-    "zero_spot": (["protective_puts", "BTC", "--platform=deribit"], {"QP_QUOTE": 0}, "Could not fetch spot price"),
-    "nan_spot": (["protective_puts", "BTC", "--platform=deribit"], {"QP_QUOTE": "nan"}, "Could not fetch spot price"),
-    "infinite_spot": (["protective_puts", "BTC", "--platform=deribit"], {"QP_QUOTE": "inf"}, "Could not fetch spot price"),
-    "missing_momentum_bars": (["momentum_options", "BTC", "--platform=deribit"], {"QP_QUOTE": 100000, "QP_CANDLES": 10}, "momentum bars unavailable"),
-    "evaluator_exception": (["covered_calls", "BTC", "--platform=deribit"], {"QP_QUOTE": 100000},
+    "zero_spot": (["protective_puts", "BTC", "--platform=ibkr", IBKR_CALENDAR], {"QP_QUOTE": 0}, "Could not fetch spot price"),
+    "nan_spot": (["protective_puts", "BTC", "--platform=ibkr", IBKR_CALENDAR], {"QP_QUOTE": "nan"}, "Could not fetch spot price"),
+    "infinite_spot": (["protective_puts", "BTC", "--platform=ibkr", IBKR_CALENDAR], {"QP_QUOTE": "inf"}, "Could not fetch spot price"),
+    "missing_momentum_bars": (["momentum_options", "BTC", "--platform=ibkr", IBKR_CALENDAR], {"QP_QUOTE": 100000, "QP_CANDLES": 10}, "momentum bars unavailable"),
+    "evaluator_exception": (["covered_calls", "BTC", "--platform=ibkr", IBKR_CALENDAR], {"QP_QUOTE": 100000},
                             "options check failed: KeyError"),
-    "rank_strategy_without_rank_vol_mean_reversion": (["vol_mean_reversion", "BTC", "--platform=deribit"], {"QP_QUOTE": 100000, "QP_DAILY": "503"},
+    "rank_strategy_without_rank_vol_mean_reversion": (["vol_mean_reversion", "BTC", "--platform=ibkr", IBKR_CALENDAR], {"QP_QUOTE": 100000, "QP_DAILY": "503"},
                                                        "vol_mean_reversion needs iv rank: " + READ_FAILED + " (upstream status 503)"),
     "rank_strategy_without_rank_butterfly": (["butterfly", "BTC", "--platform=ibkr"], {"QP_QUOTE": 100000, "QP_DAILY": json.dumps(BASE_CLOSES[:15])},
                                              "butterfly needs iv rank: iv rank unavailable: flat volatility range"),
@@ -323,7 +322,8 @@ RUNTIME_ERRORS = {
                                       "volatility unavailable: model pricing needs measured volatility: " + READ_FAILED),
     "robinhood_logged_out_model_without_volatility": (["covered_calls", "SPY", "--platform=robinhood"], {"QP_QUOTE": 600, "QP_DAILY": "429"},
                                                       "volatility unavailable: model pricing needs measured volatility: " + READ_FAILED + " (upstream status 429)"),
-    "non_finite_result_is_refused": (["protective_puts", "BTC", "--platform=deribit"], {"QP_QUOTE": 100000, "QP_OPTION_GREEKS": '{"delta": NaN, "gamma": 0, "theta": 0, "vega": 0}'},
+    "non_finite_result_is_refused": (["protective_puts", "BTC", "--platform=ibkr", IBKR_CALENDAR], {"QP_QUOTE": 100000, "QP_DAILY": json.dumps(BASE_CLOSES),
+                                                                                      "QP_OPTION_GREEKS": '{"delta": NaN, "gamma": 0, "theta": 0, "vega": 0}'},
                                      "options result invalid: a value is not finite JSON"),
 }
 RUNTIME_STDIN = {"evaluator_exception": '[{"option_type": "call", "action": "buy"}]'}
@@ -337,63 +337,6 @@ def test_runtime_failures_return_one_error_document_and_exit_1(tmp_path, subtest
             run_dir.mkdir()
             proc, _ = _run(argv, run_dir, RUNTIME_STDIN.get(case, "[]"), extra=extra)
             _handled_error(proc, want)
-
-
-def _venue_ok(platform, mark, spot, out):
-    assert out["signal"] == 1 and len(out["actions"]) == 1, out
-    leg = out["actions"][0]
-    assert leg["premium"] == mark
-    want_usd = round(mark * spot, 2) if platform == "deribit" else mark * spot
-    assert leg["premium_usd"] == want_usd
-    assert leg["greeks"] == {"delta": 0.25, "gamma": 0.0001, "theta": -1.5, "vega": 2.5}
-
-
-VENUES = {
-    "deribit": {},
-}
-VENUE_FAILURES = {
-    "deribit": {
-        "read_error": ("error", "option quote unavailable: deribit ticker read failed"),
-        "rate_limited": ("429", "option quote unavailable: deribit ticker read failed (upstream status 429)"),
-        "server_error": ("503", "option quote unavailable: deribit ticker read failed (upstream status 503)"),
-        "missing_mark": ("missing", "option quote unavailable: deribit mark is not positive"),
-        "zero_mark": ("0", "option quote unavailable: deribit mark is not positive"),
-        "nan_mark": ("nan", "option quote unavailable: deribit mark is not positive"),
-    },
-}
-
-
-def test_venue_quotes_price_without_volatility_and_never_substitute(tmp_path, subtests):
-    spot = 100000.0
-    for platform in sorted(VENUES):
-        base = dict(VENUES[platform], QP_QUOTE=spot, QP_CLOSE=spot)
-        with subtests.test(platform=platform, case="usable_quote_without_volatility"):
-            run_dir = tmp_path / f"{platform}-novol"
-            run_dir.mkdir()
-            proc, _ = _run(["protective_puts", "BTC", f"--platform={platform}"], run_dir, "[]",
-                           extra=dict(base, QP_DAILY="503", QP_OPTION_QUOTE="0.0123"))
-            assert proc.returncode == 0, proc.stderr
-            out = _single_document(proc)
-            assert out["iv_rank"] is None
-            assert out["vol_metrics_error"] == READ_FAILED + " (upstream status 503)"
-            _venue_ok(platform, 0.0123, spot, out)
-        with subtests.test(platform=platform, case="usable_quote_with_measured_metrics"):
-            run_dir = tmp_path / f"{platform}-metrics"
-            run_dir.mkdir()
-            proc, _ = _run(["protective_puts", "BTC", f"--platform={platform}"], run_dir, "[]",
-                           extra=dict(base, QP_DAILY=json.dumps(BASE_CLOSES), QP_OPTION_QUOTE="0.0123"))
-            assert proc.returncode == 0, proc.stderr
-            out = _single_document(proc)
-            assert out["iv_rank"] == 78.8 and "vol_metrics_error" not in out
-            _venue_ok(platform, 0.0123, spot, out)
-        for case in sorted(VENUE_FAILURES[platform]):
-            quote, want = VENUE_FAILURES[platform][case]
-            with subtests.test(platform=platform, case=case):
-                run_dir = tmp_path / f"{platform}-{case}"
-                run_dir.mkdir()
-                proc, _ = _run(["protective_puts", "BTC", f"--platform={platform}"], run_dir, "[]",
-                               extra=dict(base, QP_OPTION_QUOTE=quote))
-                _handled_error(proc, want)
 
 
 def test_rank_free_model_entries_price_from_measured_volatility(tmp_path, subtests):
@@ -412,8 +355,8 @@ def test_rank_free_model_entries_price_from_measured_volatility(tmp_path, subtes
 
 def test_a_failed_later_leg_discards_every_earlier_leg(tmp_path, subtests):
     cases = {
-        "butterfly_third_leg": (["butterfly", "BTC", "--platform=deribit"], MID_RANK_CLOSES, 2, 3),
-        "straddle_put_leg": (["vol_mean_reversion", "BTC", "--platform=deribit"], LOW_RANK_CLOSES, 1, 2),
+        "butterfly_third_leg": (["butterfly", "BTC", "--platform=ibkr", IBKR_CALENDAR], MID_RANK_CLOSES, 2, 3),
+        "straddle_put_leg": (["vol_mean_reversion", "BTC", "--platform=ibkr", IBKR_CALENDAR], LOW_RANK_CLOSES, 1, 2),
     }
     for case in sorted(cases):
         argv, closes, served, quotes = cases[case]
@@ -422,8 +365,8 @@ def test_a_failed_later_leg_discards_every_earlier_leg(tmp_path, subtests):
             run_dir.mkdir()
             proc, records = _run(argv, run_dir, "[]", extra={"QP_QUOTE": 100000, "QP_DAILY": json.dumps(closes),
                                                               "QP_OPTION_QUOTE_FAIL_AFTER": served})
-            _handled_error(proc, "option quote unavailable: deribit ticker read failed")
-            assert [r["mode"] for r in records if r["call"] == "deribit_ticker"] == ["value"] * served + ["error"]
+            _handled_error(proc, "option model unavailable: quote precision stub model failure")
+            assert [r["mode"] for r in records if r["call"] == "model_price"] == ["value"] * served + ["error"]
             control = tmp_path / f"{case}-control"
             control.mkdir()
             proc, _ = _run(argv, control, "[]", extra={"QP_QUOTE": 100000, "QP_DAILY": json.dumps(closes)})
@@ -522,6 +465,7 @@ def test_authenticated_robinhood_prices_only_from_a_venue_quote(tmp_path, subtes
 
 
 STRUCTURE_CONTRACT = "options_structures_v1"
+FIXED_GREEKS = {"delta": 0.25, "gamma": 0.0001, "theta": -1.5, "vega": 2.5}
 
 
 def _far_rows(n, expiry="2027-06-25"):
@@ -535,9 +479,9 @@ def _far_rows(n, expiry="2027-06-25"):
 
 def test_every_document_carries_the_structure_contract(tmp_path, subtests):
     cases = {
-        "entry": (["butterfly", "BTC", "--platform=deribit"], "[]", {"QP_QUOTE": 100000, "QP_DAILY": json.dumps(MID_RANK_CLOSES)}, 0),
-        "early_cap_hold": (["covered_calls", "SPY", "--platform=deribit"], FOUR_POSITIONS, {}, 0),
-        "error": (["protective_puts", "BTC", "--platform=deribit"], "[]", {"QP_QUOTE": 0}, 1),
+        "entry": (["butterfly", "BTC", "--platform=ibkr", IBKR_CALENDAR], "[]", {"QP_QUOTE": 100000, "QP_DAILY": json.dumps(MID_RANK_CLOSES)}, 0),
+        "early_cap_hold": (["covered_calls", "SPY", "--platform=robinhood"], FOUR_POSITIONS, {}, 0),
+        "error": (["protective_puts", "BTC", "--platform=ibkr", IBKR_CALENDAR], "[]", {"QP_QUOTE": 0}, 1),
     }
     for case in sorted(cases):
         argv, stdin, extra, code = cases[case]
@@ -551,30 +495,30 @@ def test_every_document_carries_the_structure_contract(tmp_path, subtests):
 
 
 def test_a_structure_whose_minimum_leg_score_fails_emits_no_leg(tmp_path):
-    extra = {"QP_QUOTE": 100000, "QP_DAILY": json.dumps(MID_RANK_CLOSES)}
+    extra = {"QP_QUOTE": 100000, "QP_DAILY": json.dumps(MID_RANK_CLOSES), "QP_OPTION_GREEKS": json.dumps(FIXED_GREEKS)}
     control = tmp_path / "control"
     control.mkdir()
-    proc, _ = _run(["butterfly", "BTC", "--platform=deribit"], control, "[]", extra=extra)
+    proc, _ = _run(["butterfly", "BTC", "--platform=ibkr", IBKR_CALENDAR], control, "[]", extra=extra)
     expiry = _single_document(proc)["actions"][0]["expiry"]
     held = json.dumps([{"option_type": "call", "action": "buy", "strike": 106000, "expiry": expiry, "delta": 0}])
     run_dir = tmp_path / "held"
     run_dir.mkdir()
-    proc, _ = _run(["butterfly", "BTC", "--platform=deribit"], run_dir, held, extra=extra)
+    proc, _ = _run(["butterfly", "BTC", "--platform=ibkr", IBKR_CALENDAR], run_dir, held, extra=extra)
     assert proc.returncode == 0, proc.stderr
     out = _single_document(proc)
     assert out["actions"] == [] and out["signal"] == 0, out
     assert "Skipping structure butterfly-1: minimum leg score 0.1 < 0.3" in proc.stderr
-    assert "buy call strike=95000.0 score=0.8" in proc.stderr
-    assert "sell call strike=100000.0 score=0.6" in proc.stderr
-    assert "buy call strike=105000.0 score=0.1" in proc.stderr
+    assert "buy call strike=95000 score=0.8" in proc.stderr
+    assert "sell call strike=100000 score=0.6" in proc.stderr
+    assert "buy call strike=105000 score=0.1" in proc.stderr
 
 
 def test_the_row_cap_counts_the_proposed_structure(tmp_path, subtests):
     base = {"QP_QUOTE": 100000, "QP_DAILY": json.dumps(BASE_CLOSES)}
     cases = {
-        "two_rows_on_three_open": (["vol_mean_reversion", "BTC", "--platform=deribit"], 3, 0),
-        "two_rows_on_two_open": (["vol_mean_reversion", "BTC", "--platform=deribit"], 2, 2),
-        "one_row_on_three_open": (["protective_puts", "BTC", "--platform=deribit"], 3, 1),
+        "two_rows_on_three_open": (["vol_mean_reversion", "BTC", "--platform=ibkr", IBKR_CALENDAR], 3, 0),
+        "two_rows_on_two_open": (["vol_mean_reversion", "BTC", "--platform=ibkr", IBKR_CALENDAR], 2, 2),
+        "one_row_on_three_open": (["protective_puts", "BTC", "--platform=ibkr", IBKR_CALENDAR], 3, 1),
     }
     for case in sorted(cases):
         argv, held, want = cases[case]

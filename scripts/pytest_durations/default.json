@@ -502,7 +502,7 @@
     "backtest/tests/test_optimizer_close_stacks.py::test_result_metric": 0.0002,
     "backtest/tests/test_optimizer_close_stacks.py::test_tiered_tp_atr_actually_fires_in_optimize_path": 0.112,
     "backtest/tests/test_options_adapter_parity.py::test_backtest_bs_matches_shared_pricing_and_greeks": 0.0014,
-    "backtest/tests/test_options_adapter_parity.py::test_strikes_round_to_the_underlying_grid_like_the_adapter_fallback": 0.0168,
+    "backtest/tests/test_options_adapter_parity.py::test_strikes_round_to_the_underlying_research_grid": 0.0168,
     "backtest/tests/test_options_adapter_parity.py::test_trade_log_entries_carry_delta_and_on_grid_strikes": 0.0455,
     "backtest/tests/test_order_book_imbalance_integration.py::test_entries_fill_strictly_after_the_decision_plus_latency_and_exit_on_time": 0.6799,
     "backtest/tests/test_order_book_imbalance_integration.py::test_entry_thresholds_episode_lifecycle_and_evidence_boundaries": 0.0142,
