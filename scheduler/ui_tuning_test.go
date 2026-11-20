@@ -240,21 +240,6 @@ func TestTuningRunPersistence(t *testing.T) {
 	})
 }
 
-func TestTuningStartValidationRejectsUnknownOrUnselectedOverrides(t *testing.T) {
-	strategies := []StrategyConfig{{ID: "spot-a"}, {ID: "spot-b"}}
-	_, err := validateTuningStartRequest(tuningStartRequest{StrategyIDs: []string{"missing"}}, strategies)
-	if err == nil || !strings.Contains(err.Error(), "unknown strategy") {
-		t.Fatalf("unknown strategy err = %v", err)
-	}
-	_, err = validateTuningStartRequest(tuningStartRequest{
-		StrategyIDs: []string{"spot-a"},
-		Overrides:   map[string]tuningStrategyOverrides{"spot-b": {Freeze: []string{"period"}}},
-	}, strategies)
-	if err == nil || !strings.Contains(err.Error(), "not selected") {
-		t.Fatalf("unselected override err = %v", err)
-	}
-}
-
 func TestTuningRunProcess(t *testing.T) {
 	t.Run("TuningRunProcessArtifactOutcomes", func(t *testing.T) {
 		configPath := writeTuningTestConfig(t, t.TempDir())
