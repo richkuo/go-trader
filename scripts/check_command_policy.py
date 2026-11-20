@@ -277,6 +277,18 @@ class Runner(object):
           "echo 'git commit --allow-empty -m x' | awk '{system($0)}'", "deny")
         c("sed substitution with an e in its text next to git", gt, "sed 's/old/new/' README && git status", "allow")
         c("sed script from a file next to git", gt, "sed -f x.sed README && git status", "deny")
+        c("xargs replace option inside a grouped flag", gt, "echo commit | xargs -0I add git add --allow-empty -m x",
+          "deny")
+        c("xargs abbreviated replace option", gt, "echo commit | xargs --rep=add git add --allow-empty -m x", "deny")
+        c("xargs with known options before git add", gt, "find . -name '*.go' -print0 | xargs -0 -n 20 git add",
+          "allow")
+        c("sed e flag inside a grouped -ne option next to git", gt, "sed -ne 's/^/git /e' README", "deny")
+        c("sed abbreviated --expression option next to git", gt, "sed --expr=e README && git status", "deny")
+        c("sed unknown option next to git", gt, "sed -x 1p README && git status", "deny")
+        c("sed in-place edit next to git", gt, "sed -i.bak 's/a/b/' README && git status", "allow")
+        c("awk abbreviated --source option next to git", gt, "awk --so 'BEGIN{}' && git status", "deny")
+        c("awk indirect call next to git", gt, "awk '{@f()}' README && git status", "deny")
+        c("awk with a field separator next to git", gt, "awk -F: '{print $1}' README && git status", "allow")
         c("conditional with a known git subcommand", gt, "if git diff --quiet; then echo same; fi", "allow")
         c("conditional with quoted git text", gt, "if true; then echo 'git cm'; fi", "allow")
         c("nested shell with a dynamic git subcommand", gt, 'bash -c "git $SUB --allow-empty -m x"', "deny")

@@ -94,11 +94,40 @@ def literal_word(text):
     return w
 
 
+XARGS_FLAGS = frozenset("0rtxpo")
+XARGS_ARG_FLAGS = frozenset("nLlsPdaE")
+XARGS_LONG = frozenset(("--null", "--no-run-if-empty", "--verbose", "--exit", "--interactive", "--open-tty",
+                        "--show-limits", "--max-args", "--max-lines", "--max-procs", "--max-chars", "--delimiter",
+                        "--arg-file", "--process-slot-var"))
+XARGS_LONG_ARG = frozenset(("--max-args", "--max-procs", "--max-chars", "--delimiter", "--arg-file",
+                            "--process-slot-var"))
+
+
 def replaces_words(runner_args):
-    for a in runner_args:
-        v = a.value
-        if v is None or v.startswith(("-I", "-i", "-J", "--replace")):
+    i = 0
+    while i < len(runner_args):
+        v = runner_args[i].value
+        if v is None or not v.startswith("-") or v == "-":
             return True
+        if v == "--":
+            return i + 1 != len(runner_args)
+        if v.startswith("--"):
+            name = v.split("=", 1)[0]
+            if name not in XARGS_LONG:
+                return True
+            i += 2 if name in XARGS_LONG_ARG and "=" not in v else 1
+            continue
+        j = 1
+        consumed = False
+        while j < len(v):
+            if v[j] in XARGS_FLAGS:
+                j += 1
+                continue
+            if v[j] in XARGS_ARG_FLAGS:
+                consumed = j + 1 == len(v)
+                break
+            return True
+        i += 2 if consumed else 1
     return False
 
 
@@ -153,56 +182,103 @@ def sed_runs_commands(script):
     return False
 
 
-def text_program_runs(base, args):
-    vals = [a.value for a in args]
-    if any(v is None for v in vals):
-        return True
+SED_FLAGS = frozenset("nErsuz")
+SED_LONG = frozenset(("--quiet", "--silent", "--regexp-extended", "--separate", "--unbuffered", "--null-data",
+                      "--posix", "--debug", "--sandbox", "--follow-symlinks", "--in-place", "--line-length",
+                      "--expression"))
+AWK_LONG_ARG = frozenset(("--field-separator", "--assign"))
+AWK_EXEC = ("system", "|", "@", "getline")
+
+
+def sed_program_runs(vals):
     scripts = []
     first = None
+    seen_e = False
+    operands_only = False
+    i = 0
+    while i < len(vals):
+        v = vals[i]
+        i += 1
+        if operands_only or not v.startswith("-") or v == "-":
+            if first is None and not seen_e:
+                first = v
+            continue
+        if v == "--":
+            operands_only = True
+            continue
+        if v.startswith("--"):
+            name, eq, val = v.partition("=")
+            if name not in SED_LONG:
+                return True
+            if name == "--expression":
+                if not eq:
+                    if i >= len(vals):
+                        return True
+                    val = vals[i]
+                    i += 1
+                scripts.append(val)
+                seen_e = True
+            elif name == "--line-length" and not eq:
+                i += 1
+            continue
+        j = 1
+        while j < len(v):
+            ch = v[j]
+            if ch in SED_FLAGS:
+                j += 1
+            elif ch == "i":
+                if j + 1 == len(v) and i < len(vals) and (vals[i] == "" or
+                                                          (vals[i].startswith(".") and " " not in vals[i])):
+                    i += 1
+                break
+            elif ch in "el":
+                val = v[j + 1:]
+                if not val:
+                    if i >= len(vals):
+                        return True
+                    val = vals[i]
+                    i += 1
+                if ch == "e":
+                    scripts.append(val)
+                    seen_e = True
+                break
+            else:
+                return True
+    if first is not None:
+        scripts.append(first)
+    return not scripts or any(sed_runs_commands(x) for x in scripts)
+
+
+def awk_program_runs(vals):
     i = 0
     while i < len(vals):
         v = vals[i]
         if v == "--":
-            first = vals[i + 1] if i + 1 < len(vals) else None
+            i += 1
             break
-        if base in SED_HEADS:
-            if v in ("-f", "--file") or v.startswith(("-f", "--file=")):
+        if not v.startswith("-") or v == "-":
+            break
+        if v.startswith("--"):
+            name, eq, _ = v.partition("=")
+            if name not in AWK_LONG_ARG:
                 return True
-            if v in ("-e", "--expression"):
-                if i + 1 >= len(vals):
-                    return True
-                scripts.append(vals[i + 1])
-                i += 2
-                continue
-            if v.startswith("--expression="):
-                scripts.append(v.split("=", 1)[1])
-            elif v.startswith("-e") and len(v) > 2:
-                scripts.append(v[2:])
-            elif v == "-i" and i + 1 < len(vals) and (vals[i + 1] == "" or
-                                                    (vals[i + 1].startswith(".") and " " not in vals[i + 1])):
-                i += 2
-                continue
-            elif v in ("-l", "--line-length"):
-                i += 2
-                continue
-            elif not v.startswith("-") or v == "-":
-                first = v
-                break
-        else:
-            if v in ("-f", "--file") or v.startswith(("-f", "--file=")) or v in ("-e", "--source"):
-                return True
-            if v in ("-F", "-v", "--assign", "--field-separator"):
-                i += 2
-                continue
-            if not v.startswith("-") or v == "-":
-                first = v
-                break
-        i += 1
+            i += 1 if eq else 2
+            continue
+        if v[1] not in "Fv":
+            return True
+        i += 1 if len(v) > 2 else 2
+    if i >= len(vals):
+        return True
+    return any(x in vals[i] for x in AWK_EXEC)
+
+
+def text_program_runs(base, args):
+    vals = [a.value for a in args]
+    if any(v is None for v in vals):
+        return True
     if base in SED_HEADS:
-        if not scripts:
-            scripts = [first] if first is not None else []
-        return any(sed_runs_commands(s) for s in scripts)
-    return first is None or "system" in first or "|" in first
+        return sed_program_runs(vals)
+    return awk_program_runs(vals)
 
 
 def gh_switches(vals):
