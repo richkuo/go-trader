@@ -458,7 +458,9 @@ func (e *fpEnv) embeddedConfig(name string, weightPerMinute, weightStartup, rese
 }
 
 func TestFeedWeightSharedProcesses(t *testing.T) {
+	t.Parallel()
 	t.Run("ADeadOwnersReserveHoldsWhileALowerReservePeerRegistersFirst", func(t *testing.T) {
+		t.Parallel()
 		e := newFPEnv(t)
 		cCfg := e.feedConfig("c", 10, 800, 200, 200)
 		e.install(t, cCfg)
@@ -500,6 +502,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 	})
 
 	t.Run("AHeldReserveRefusesStartupAndBothProbesAndStagedProbesKeepTheDeploymentKey", func(t *testing.T) {
+		t.Parallel()
 		e := newFPEnv(t)
 		cCfg := e.feedConfig("c", 2, 300, 0, 200)
 		e.install(t, cCfg)
@@ -541,6 +544,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 	})
 
 	t.Run("ReleaseThroughTheCommandLine", func(t *testing.T) {
+		t.Parallel()
 		e := newFPEnv(t)
 		xCfg := e.feedConfig("x", 2, 300, 100, 200)
 		yCfg := e.feedConfig("y", 2, 300, 100, 100)
@@ -640,6 +644,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 	})
 
 	t.Run("TwoOwnersAndADeadOwnersDebtStayWithinTheSharedCapacity", func(t *testing.T) {
+		t.Parallel()
 		e := newFPEnv(t)
 		cCfg := e.feedConfig("c", 40, 800, 200, 200)
 		e.install(t, cCfg)
@@ -668,6 +673,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 	})
 
 	t.Run("CrashPointsKeepFullLiabilityAndNeverSendUnreserved", func(t *testing.T) {
+		t.Parallel()
 		for _, tc := range []struct {
 			point     string
 			wantState string
@@ -680,6 +686,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 			{"rename@2", "", false},
 		} {
 			t.Run(strings.ReplaceAll(tc.point, ":", "_"), func(t *testing.T) {
+				t.Parallel()
 				e := newFPEnv(t)
 				cfg := e.feedConfig("x", 2, 600, 100, 100)
 				recordLate := e.installLeavingALateArrival(t, cfg)
@@ -745,6 +752,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 	})
 
 	t.Run("CrashDuringADelayedResponseKeepsTheSendingPermit", func(t *testing.T) {
+		t.Parallel()
 		e := newFPEnv(t)
 		cfg := e.feedConfig("x", 2, 600, 100, 100)
 		e.install(t, cfg)
@@ -789,6 +797,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 	})
 
 	t.Run("RestartKeepsAPauseAndTheProbeIsReadOnly", func(t *testing.T) {
+		t.Parallel()
 		e := newFPEnv(t)
 		aCfg := e.feedConfig("a", 2, 600, 100, 100)
 		bCfg := e.feedConfig("b", 2, 300, 100, 100)
@@ -850,6 +859,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 	})
 
 	t.Run("AHeldAuthorityLockNeverBlocksStatus", func(t *testing.T) {
+		t.Parallel()
 		e := newFPEnv(t)
 		cfg := e.feedConfig("a", 2, 600, 100, 100)
 		e.install(t, cfg)

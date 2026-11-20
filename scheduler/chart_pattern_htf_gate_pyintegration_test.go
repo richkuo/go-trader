@@ -95,6 +95,7 @@ func chartPatternITEnv(root, fixture string) []string {
 }
 
 func TestChartPatternHTFGateRuntimeShortageHoldsEntriesAndKeepsCloses(t *testing.T) {
+	t.Parallel()
 	root := htfITRoot(t)
 	bin := pyintegrationBinary(t)
 	dir := t.TempDir()
@@ -157,6 +158,7 @@ func TestChartPatternHTFGateRuntimeShortageHoldsEntriesAndKeepsCloses(t *testing
 }
 
 func TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig(t *testing.T) {
+	t.Parallel()
 	root := htfITRoot(t)
 	bin := pyintegrationBinary(t)
 	dir := t.TempDir()
@@ -268,6 +270,7 @@ func chartPatternITWriteFuturesFixture(t *testing.T, path string, n int, kind st
 }
 
 func TestChartPatternHTFGateColdReversalClosesWithoutOpeningTheOtherSide(t *testing.T) {
+	t.Parallel()
 	root := htfITRoot(t)
 	bin := pyintegrationBinary(t)
 	dir := t.TempDir()
