@@ -152,7 +152,6 @@ VOL_PLATFORMS = {
     "binanceus": ("BTC", 365, [0.631, 78.8]),
     "deribit": ("BTC", 365, [0.631, 78.8]),
     "ibkr": ("BTC", 365, [0.631, 78.8]),
-    "luno": ("BTC", 365, [0.631, 78.8]),
     "robinhood": ("SPY", 252, [0.5243, 78.8]),
 }
 READ_FAILED = "volatility unavailable: daily history read failed"

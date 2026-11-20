@@ -229,7 +229,7 @@ Set in systemd overrides or exported environment variables before installation:
 | `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` | TopStep live |
 | `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` | Robinhood live crypto orders; when set, paper Robinhood checks and the options check also log in for authenticated option data (expiry, strikes, premiums, Greeks); options run as paper only and place no order; the login session is kept in `<config folder>/robinhood-session` (see Robinhood session below) |
 | `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE`, `OKX_SANDBOX` | OKX live/demo |
-| `LUNO_API_KEY_ID`, `LUNO_API_KEY_SECRET` | Luno live |
+| `LUNO_API_KEY`, `LUNO_API_SECRET` | Optional. The Luno adapter reads them for data access. Luno is unmaintained (#2078): the generated `luno-` spot strategy uses `shared_scripts/check_strategy.py` with Binance US candles and has no Luno order route |
 | `GO_TRADER_ALLOW_MISSING_STATE` | `1` only for a genuine first-run live deployment |
 | `GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH` | `1` only in the migrate layout fixture's latch scenario. A paper kill switch with no DM owner stays latched, and the daemon logs that this variable suppressed the auto-reset. Do not set it on a running service |
 | `GO_TRADER_CASHFLOW_JOURNAL_ALARM` | `0`/`off`/`false`/`no` forces the legacy trade-ledger drift basis for HL shared wallets (default on) |
@@ -1987,7 +1987,7 @@ Platform conventions:
 | OKX | `okx-` | `check_okx.py` (spot and perps), `check_options.py --platform=okx` for options |
 | Deribit options | `deribit-` | `check_options.py --platform=deribit` |
 | IBKR options | `ibkr-` | `check_options.py --platform=ibkr` |
-| Luno | `luno-` | Luno adapter and scripts |
+| Luno (unmaintained, #2078) | `luno-` | `spot`, `shared_scripts/check_strategy.py` with Binance US candles; no Luno order route. `platforms/luno/adapter.py` keeps its quote and daily-volatility methods for data access. Existing Luno configurations load and run unchanged with the 1% modeled fee, but the project no longer maintains or specifically tests Luno and plans no Luno fix |
 
 Options on every platform run as paper only (#1823): no venue order path exists for options, so `validateConfig` refuses a `type: options` strategy whose args `isLiveArgs` classifies as live, and `check_options.py` refuses the same forms with a JSON `error` and exit 1.
 

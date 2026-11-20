@@ -375,7 +375,6 @@ _CONFIG_AUTOMATIC_PLATFORM_CASES = [
     ("hl-strat", "perps", None, "hyperliquid"),
     ("rh-strat", "spot", None, "robinhood"),
     ("hl-strat", "spot", "robinhood", "robinhood"),
-    ("luno-strat", "spot", None, "luno"),
 ]
 
 
@@ -474,7 +473,6 @@ def _assert_parity_engine_costs(df, report, engine, metrics, commission, slippag
 
 _PARITY_ENGINE_FEE_CASES = [
     ("rh-strat", "spot", None, "robinhood", 0.0),
-    ("luno-strat", "spot", None, "luno", 0.01),
     ("hl-strat", "perps", None, "hyperliquid", 0.00045),
     ("test-strat", "manual", "hyperliquid", "hyperliquid", 0.00045),
     ("test-strat", "spot", "binanceus", "binanceus", 0.001),

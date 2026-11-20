@@ -13,6 +13,8 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 
 Retired in #1955: the basket and pair research harnesses (`basket_replay.py`, `pair_archive_book.py`) and the `cross_exchange_perp_arbitrage_1655`, `cross_sectional_momentum_1787` and `cross_sectional_reversal_1793` candidate suites. Their files are kept in git tag `archive/basket-pair-research`.
 
+Luno is unmaintained (#2078). `backtester.py` keeps the `luno` fee key at 1%, and `run_backtest.py`, `parity_diff.py` and `monte_carlo.py` keep the `luno-` prefix fee selection, so existing Luno configurations run unchanged. No backtest test checks the Luno fee entry, Luno fee selection, Luno fee deduction or a Luno close-capability case, and no Luno fix is planned.
+
 ## Categories
 
 - **Core simulator** — the trade-simulating engine and its entry points / reporting / optimization; produce equity curves and metrics.
