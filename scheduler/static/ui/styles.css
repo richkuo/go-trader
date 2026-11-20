@@ -250,9 +250,22 @@ h3 {
 
 .workspace {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
   max-height: 100vh;
+}
+
+.workspace > .topbar {
+  grid-row: 1;
+}
+
+.workspace > .auth-panel {
+  grid-row: 2;
+  margin: 18px 18px 0;
+}
+
+.workspace > .content {
+  grid-row: 3;
 }
 
 .topbar {
@@ -483,6 +496,16 @@ h3 {
   padding: 9px 10px;
   color: var(--text);
   background: var(--input-bg);
+}
+
+.auth-message {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.auth-message:empty {
+  display: none;
 }
 
 .auth-panel button {
@@ -939,6 +962,10 @@ h3 {
 
   .content {
     padding: 10px;
+  }
+
+  .workspace > .auth-panel {
+    margin: 10px 10px 0;
   }
 }
 .view-mode-button {

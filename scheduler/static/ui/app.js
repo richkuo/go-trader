@@ -106,6 +106,72 @@
     return msg;
   }
 
+  function createGuardedStorage(getStorage) {
+    function target() {
+      const storage = getStorage();
+      if (!storage) throw new Error("storage unavailable");
+      return storage;
+    }
+    return {
+      read: function (key) {
+        try {
+          const value = target().getItem(key);
+          return { ok: true, value: value === null || value === undefined ? null : String(value) };
+        } catch (_err) {
+          return { ok: false };
+        }
+      },
+      write: function (key, value) {
+        try {
+          target().setItem(key, value);
+          return { ok: true };
+        } catch (_err) {
+          return { ok: false };
+        }
+      },
+      remove: function (key) {
+        try {
+          target().removeItem(key);
+          return { ok: true };
+        } catch (_err) {
+          return { ok: false };
+        }
+      },
+    };
+  }
+
+  function createTokenState(storage, key) {
+    let override = null;
+    let lastSubmitted = null;
+    let generation = 0;
+    return {
+      current: function () {
+        if (override !== null) return override;
+        const read = storage.read(key);
+        if (read.ok) return read.value === null ? "" : read.value;
+        return lastSubmitted === null ? "" : lastSubmitted;
+      },
+      generation: function () {
+        return generation;
+      },
+      submit: function (raw) {
+        const value = String(raw === undefined || raw === null ? "" : raw).trim();
+        generation += 1;
+        lastSubmitted = value;
+        const change = value ? storage.write(key, value) : storage.remove(key);
+        const check = change.ok ? storage.read(key) : { ok: false };
+        const persisted = change.ok && check.ok && (value ? check.value === value : check.value === null);
+        override = persisted ? null : value;
+        return { persisted: persisted, generation: generation };
+      },
+    };
+  }
+
+  function bearerHeaders(token) {
+    if (!token || !/^[\t\x20-\x7e\x80-\xff]+$/.test(token)) return {};
+    return { Authorization: "Bearer " + token };
+  }
+
   const tuningLogic = {
     baselineState: tuningBaselineState,
     paramDiff: tuningParamDiff,
@@ -113,6 +179,9 @@
     detailLoadAction: tuningDetailLoadAction,
     applyButtonState: tuningApplyButtonState,
     applyConfirmMessage: tuningApplyConfirmMessage,
+    createGuardedStorage: createGuardedStorage,
+    createTokenState: createTokenState,
+    bearerHeaders: bearerHeaders,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = tuningLogic;
   if (typeof document === "undefined") return;
@@ -120,6 +189,11 @@
   const SIDEBAR_STORAGE_KEY = "goTraderSidebarOpen";
   const MOBILE_SIDEBAR_MQ = "(max-width: 980px)";
   const VIEW_MODE_KEY = "goTraderViewMode";
+  const STATUS_TOKEN_KEY = "goTraderStatusToken";
+  const AUTH_CHECKING_TEXT = "Checking the token…";
+  const AUTH_CHECK_FAILED_TEXT = "The token check did not finish. Try again.";
+  const guardedStorage = createGuardedStorage(function () { return window.localStorage; });
+  const statusToken = createTokenState(guardedStorage, STATUS_TOKEN_KEY);
 
   if (document.body.dataset.page === "tuning") {
     initTuningPage();
@@ -199,6 +273,7 @@
     statusLabel: document.getElementById("status-label"),
     authPanel: document.getElementById("auth-panel"),
     authToken: document.getElementById("auth-token"),
+    authMessage: document.getElementById("auth-message"),
     statusGrid: document.getElementById("status-grid"),
     positions: document.getElementById("positions-list"),
     sidebar: document.getElementById("app-sidebar"),
@@ -360,11 +435,15 @@
   }
 
   function authHeaders() {
-    const token = window.localStorage.getItem("goTraderStatusToken");
-    return token ? { Authorization: "Bearer " + token } : {};
+    return bearerHeaders(statusToken.current());
+  }
+
+  function tokenStampCurrent(err) {
+    return !err || err.tokenGeneration === undefined || err.tokenGeneration === statusToken.generation();
   }
 
   async function postJSON(url, body) {
+    const generation = statusToken.generation();
     const res = await fetch(url, {
       method: "POST",
       headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
@@ -374,17 +453,20 @@
       const text = await res.text();
       const err = new Error(text || res.statusText);
       err.status = res.status;
+      err.tokenGeneration = generation;
       throw err;
     }
     return res.json();
   }
 
   async function getJSON(url) {
+    const generation = statusToken.generation();
     const res = await fetch(url, { headers: authHeaders() });
     if (!res.ok) {
       const text = await res.text();
       const err = new Error(text || res.statusText);
       err.status = res.status;
+      err.tokenGeneration = generation;
       throw err;
     }
     return res.json();
@@ -508,6 +590,7 @@
       detailLoadingRunID: "",
       detailReloadPending: false,
       pollTimer: 0,
+      authFailures: 0,
     };
     const pageEls = {
       auth: document.getElementById("tuning-auth"),
@@ -558,16 +641,29 @@
       pageEls.launchMessage.className = "controls-message" + (kind ? " " + kind : "");
     }
 
+    function isAuthError(err) {
+      return !!err && (err.status === 401 || err.status === 403);
+    }
+
     function showAuth(err, prefix) {
-      pageEls.auth.hidden = false;
-      pageEls.authToken.value = window.localStorage.getItem("goTraderStatusToken") || "";
+      if (!tokenStampCurrent(err)) return;
+      pageState.authFailures += 1;
       const detail = err ? apiErrorMessage(err) : "Authorization required";
       pageEls.authMessage.textContent = (prefix ? prefix + ": " : "") + detail;
+      if (pageEls.auth.hidden) {
+        pageEls.authToken.value = statusToken.current();
+        pageEls.auth.hidden = false;
+        pageEls.authToken.focus();
+      }
     }
 
     function handlePageError(err, prefix) {
-      if (err && (err.status === 401 || err.status === 403)) {
+      const current = tokenStampCurrent(err);
+      if (isAuthError(err)) {
+        if (!current) return;
         showAuth(err, prefix || "Authorization failed");
+      } else if (current && !pageEls.auth.hidden && pageEls.authMessage.textContent === AUTH_CHECKING_TEXT) {
+        pageEls.authMessage.textContent = AUTH_CHECK_FAILED_TEXT;
       }
       setLaunchMessage((prefix ? prefix + ": " : "") + apiErrorMessage(err), "error");
     }
@@ -1064,6 +1160,8 @@
     }
 
     async function refreshTuning(selectNewest) {
+      const generation = statusToken.generation();
+      const authFailures = pageState.authFailures;
       try {
         const strategies = await getJSON("/api/strategies");
         pageState.strategies = strategies.strategies || [];
@@ -1071,7 +1169,9 @@
         renderOverrides();
         await loadRuns(selectNewest);
         if (pageState.activeRunID) await loadRunDetail();
-        pageEls.auth.hidden = true;
+        if (generation === statusToken.generation() && authFailures === pageState.authFailures) {
+          pageEls.auth.hidden = true;
+        }
       } catch (err) {
         handlePageError(err, "Refresh failed");
       }
@@ -1095,7 +1195,11 @@
         await loadRuns(false);
         await loadRunDetail();
       } catch (err) {
-        handlePageError(err, "Launch failed");
+        if (isAuthError(err) && !tokenStampCurrent(err)) {
+          setLaunchMessage("Launch failed: the server refused the earlier token. Start the run again to use the new token.", "error");
+        } else {
+          handlePageError(err, "Launch failed");
+        }
       } finally {
         pageEls.launch.disabled = false;
       }
@@ -1103,9 +1207,8 @@
 
     pageEls.authForm.addEventListener("submit", function (event) {
       event.preventDefault();
-      const token = pageEls.authToken.value.trim();
-      if (token) window.localStorage.setItem("goTraderStatusToken", token);
-      else window.localStorage.removeItem("goTraderStatusToken");
+      statusToken.submit(pageEls.authToken.value);
+      pageEls.authMessage.textContent = AUTH_CHECKING_TEXT;
       refreshTuning(true);
     });
     pageEls.refresh.addEventListener("click", function () { refreshTuning(false); });
@@ -1116,7 +1219,7 @@
         await loadRuns(false);
         await loadRunDetail();
       } catch (err) {
-        if (err.status === 401 || err.status === 403) showAuth(err, "Polling authorization failed");
+        if (isAuthError(err)) showAuth(err, "Polling authorization failed");
       }
     }, 3000);
     window.addEventListener("pagehide", function () { window.clearInterval(pageState.pollTimer); });
@@ -1149,12 +1252,12 @@
 
 
   function loadViewMode() {
-    const saved = window.localStorage.getItem(VIEW_MODE_KEY);
-    return saved === "table" ? "table" : "detail";
+    const saved = guardedStorage.read(VIEW_MODE_KEY);
+    return saved.ok && saved.value === "table" ? "table" : "detail";
   }
 
   function saveViewMode(mode) {
-    window.localStorage.setItem(VIEW_MODE_KEY, mode);
+    guardedStorage.write(VIEW_MODE_KEY, mode);
   }
 
   function applyViewMode() {
@@ -1168,8 +1271,8 @@
 
   function toggleViewMode() {
     state.viewMode = state.viewMode === "table" ? "detail" : "table";
-    saveViewMode(state.viewMode);
     applyViewMode();
+    saveViewMode(state.viewMode);
     refreshAll().catch(handleRefreshError);
   }
 
@@ -1398,8 +1501,8 @@
     renderStrategies();
     if (opts.switchToDetail) {
       state.viewMode = "detail";
-      saveViewMode(state.viewMode);
       applyViewMode();
+      saveViewMode(state.viewMode);
     }
     if (isMobileSidebar()) {
       setSidebarOpen(false);
@@ -3039,9 +3142,16 @@
   }
 
   function handleRefreshError(err) {
-    if (err.status === 401) {
-      showAuthPrompt();
+    const current = tokenStampCurrent(err);
+    if (err && err.status === 401) {
+      if (!current) return;
+      showAuthPrompt(statusToken.generation() > 0
+        ? "The server rejected this token. Enter the configured status token."
+        : "This server requires a status token.");
       return;
+    }
+    if (current && !els.authPanel.hidden && els.authMessage.textContent === AUTH_CHECKING_TEXT) {
+      els.authMessage.textContent = AUTH_CHECK_FAILED_TEXT;
     }
     els.statusDot.className = "status-dot error";
     els.statusLabel.textContent = "Error";
@@ -3427,16 +3537,28 @@
     });
   }
 
-  async function boot() {
+  function initDashboardView() {
     state.viewMode = loadViewMode();
     applyViewMode();
     updateDarkModeToggle();
+  }
+
+  async function loadDashboard() {
+    const generation = statusToken.generation();
     const read = await getJSONForPartition("/api/strategies");
+    if (generation !== statusToken.generation()) return;
+    hideAuthPrompt();
     state.strategies = read.data.strategies || [];
     renderStrategies();
-    if (state.strategies.length) {
+    const keepActive = !!state.activeID && state.strategies.some(function (s) {
+      return s.id === state.activeID;
+    });
+    if (keepActive) {
+      await refreshAll();
+    } else if (state.strategies.length) {
       await selectStrategy(state.strategies[0].id);
     } else {
+      if (state.activeID) setActiveStrategy("");
       await refreshAll();
     }
     scheduleRefresh();
@@ -3578,29 +3700,27 @@
   });
   els.authPanel.addEventListener("submit", function (event) {
     event.preventDefault();
-    const token = els.authToken.value.trim();
-    if (token) {
-      window.localStorage.setItem("goTraderStatusToken", token);
-    } else {
-      window.localStorage.removeItem("goTraderStatusToken");
-    }
-    els.authPanel.hidden = true;
-    boot();
+    statusToken.submit(els.authToken.value);
+    els.authMessage.textContent = AUTH_CHECKING_TEXT;
+    loadDashboard().catch(handleRefreshError);
   });
-  boot().catch(function (err) {
-    if (err.status === 401) {
-      showAuthPrompt();
-      return;
-    }
-    handleRefreshError(err);
-  });
+  initDashboardView();
+  loadDashboard().catch(handleRefreshError);
 
-  function showAuthPrompt() {
+  function showAuthPrompt(message) {
     els.statusDot.className = "status-dot error";
     els.statusLabel.textContent = "Token required";
-    els.authToken.value = window.localStorage.getItem("goTraderStatusToken") || "";
-    els.authPanel.hidden = false;
     els.statusGrid.innerHTML = "<dt>API</dt><dd>Unauthorized</dd>";
-    els.authToken.focus();
+    els.authMessage.textContent = message;
+    if (els.authPanel.hidden) {
+      els.authToken.value = statusToken.current();
+      els.authPanel.hidden = false;
+      els.authToken.focus();
+    }
+  }
+
+  function hideAuthPrompt() {
+    els.authPanel.hidden = true;
+    els.authMessage.textContent = "";
   }
 })();

@@ -79,6 +79,15 @@
           </div>
         </header>
 
+        <form id="auth-panel" class="auth-panel" hidden>
+          <label>
+            <span>Status token</span>
+            <input id="auth-token" type="password" autocomplete="current-password" placeholder="Status token">
+          </label>
+          <p id="auth-message" class="auth-message" role="status"></p>
+          <button type="submit">Save</button>
+        </form>
+
         <section class="content">
           <div id="overview-panel" class="overview-panel" hidden>
             <div class="overview-filter" role="group" aria-label="Mode filter">
@@ -229,13 +238,6 @@
                 <span id="status-dot" class="status-dot"></span>
                 <span id="status-label">Waiting</span>
               </div>
-              <form id="auth-panel" class="auth-panel" hidden>
-                <label>
-                  <span>Status token</span>
-                  <input id="auth-token" type="password" autocomplete="current-password" placeholder="Status token">
-                </label>
-                <button type="submit">Save</button>
-              </form>
               <dl id="status-grid" class="status-grid"></dl>
               <div class="positions">
                 <h3>Positions</h3>
