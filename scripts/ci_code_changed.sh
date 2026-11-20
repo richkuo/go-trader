@@ -64,6 +64,83 @@ in_gate() {
   return 1
 }
 
+on_docs_list() {
+  local d
+  for d in "${docs_only[@]}"; do
+    if [ "$1" = "$d" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+scratch="$(mktemp 2>/dev/null)" || scratch=""
+trap '[ -z "$scratch" ] || rm -f "$scratch"' EXIT
+
+push_docs_only() {
+  local head before f n=0
+  [ -n "$scratch" ] || return 1
+  [ "${PUSH_FORCED-}" = false ] || return 1
+  head="$(git rev-parse -q --verify 'HEAD^{commit}')" || return 1
+  [[ "$head" =~ ^[0-9a-f]+$ ]] || return 1
+  before="${PUSH_BEFORE-}"
+  [[ "$before" =~ ^[0-9a-f]+$ ]] || return 1
+  [ "${#before}" = "${#head}" ] || return 1
+  if [[ "$before" =~ ^0+$ ]]; then
+    return 1
+  fi
+  git cat-file -e "$before^{commit}" 2>/dev/null || return 1
+  git merge-base --is-ancestor "$before" "$head" || return 1
+  git diff --name-only --no-renames -z "$before" "$head" >"$scratch" || return 1
+  while IFS= read -r -d '' f || [ -n "$f" ]; do
+    if ! on_docs_list "$f"; then
+      echo "push change off the docs-only list: $f"
+      return 1
+    fi
+    n=$((n + 1))
+    f=""
+  done <"$scratch"
+  [ "$n" -gt 0 ]
+}
+
+go_header() {
+  LC_ALL=C awk '
+    !found && /^(func|var|const|type)([ \t(]|$)/ { found = 1 }
+    !found {
+      if (index($0, "/*") || index($0, "`")) bad = 1
+      print
+      next
+    }
+    index($0, "go:embed") { bad = 1 }
+    END { if (!found || bad) exit 3 }
+  '
+}
+
+test_only_edit() {
+  local meta f old_mode new_mode old_id new_id old_h new_h n=0
+  [ -n "$scratch" ] || return 1
+  git diff --raw --no-abbrev --no-renames -z HEAD^1 HEAD >"$scratch" || return 1
+  while IFS= read -r -d '' meta || [ -n "$meta" ]; do
+    f=""
+    IFS= read -r -d '' f || [ -n "$f" ] || return 1
+    [[ "$meta" =~ ^:([0-7]+)\ ([0-7]+)\ ([0-9a-f]+)\ ([0-9a-f]+)\ M$ ]] || return 1
+    old_mode="${BASH_REMATCH[1]}"
+    new_mode="${BASH_REMATCH[2]}"
+    old_id="${BASH_REMATCH[3]}"
+    new_id="${BASH_REMATCH[4]}"
+    [ "$old_mode" = "$new_mode" ] || return 1
+    [ "$old_mode" = 100644 ] || [ "$old_mode" = 100755 ] || return 1
+    [ "$old_id" != "$new_id" ] || return 1
+    [[ "$f" =~ ^scheduler/[A-Za-z0-9_.-]+_test\.go$ ]] || return 1
+    old_h="$(git cat-file blob "$old_id" </dev/null | go_header | git hash-object --stdin)" || return 1
+    new_h="$(git cat-file blob "$new_id" </dev/null | go_header | git hash-object --stdin)" || return 1
+    [ -n "$old_h" ] && [ "$old_h" = "$new_h" ] || return 1
+    n=$((n + 1))
+    meta=""
+  done <"$scratch"
+  [ "$n" -gt 0 ]
+}
+
 out="${GITHUB_OUTPUT:-/dev/stdout}"
 code=true
 quote=true
@@ -99,6 +176,19 @@ if [ "${EVENT_NAME:-}" = pull_request ] \
       fi
     done
   done <<<"$files"
+  if test_only_edit; then
+    update=false
+    migrate=false
+    shared_feed=false
+    egress_docker=false
+    echo "service gates off: every change is a test-body edit of an existing top-level scheduler Go test file with the same mode and the same package clause, build constraints and imports"
+  fi
+elif [ "${EVENT_NAME:-}" = push ] && push_docs_only; then
+  code=false
+  for g in "${gates[@]}"; do
+    printf -v "$g" '%s' false
+  done
+  echo "verified docs-only push: every path from PUSH_BEFORE to HEAD is on the docs-only list"
 fi
 
 echo "code=$code" >>"$out"
