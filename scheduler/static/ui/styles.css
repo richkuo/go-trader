@@ -250,7 +250,7 @@ h3 {
 
 .workspace {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   min-width: 0;
   max-height: 100vh;
 }
@@ -264,8 +264,13 @@ h3 {
   margin: 18px 18px 0;
 }
 
-.workspace > .content {
+.workspace > .dashboard-message {
   grid-row: 3;
+  margin: 18px 18px 0;
+}
+
+.workspace > .content {
+  grid-row: 4;
 }
 
 .topbar {
@@ -480,6 +485,40 @@ h3 {
 
 .auth-panel[hidden] {
   display: none;
+}
+
+.dashboard-message {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--panel);
+}
+
+.dashboard-message[hidden] {
+  display: none;
+}
+
+.dashboard-message-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.dashboard-message-item.success {
+  color: var(--green);
+}
+
+.dashboard-message-item.error {
+  color: var(--red);
 }
 
 .auth-panel label {
@@ -964,7 +1003,8 @@ h3 {
     padding: 10px;
   }
 
-  .workspace > .auth-panel {
+  .workspace > .auth-panel,
+  .workspace > .dashboard-message {
     margin: 10px 10px 0;
   }
 }
