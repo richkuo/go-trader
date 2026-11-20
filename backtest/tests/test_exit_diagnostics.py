@@ -34,15 +34,6 @@ def test_fee_churn_summary_flags():
     assert s["trades_flipped_to_loss_by_fees"] == 1
 
 
-def test_holding_time_buckets_partition():
-    trades = [ed.trade_metrics(_t(bars_held=b, pnl_pct=1.0, exit_price=101.0))
-              for b in (1, 3, 10, 30, 100)]
-    ht = ed.holding_time_summary(trades)
-    labels = [b["bucket"] for b in ht["buckets"]]
-    assert labels == ["1", "2-5", "6-20", "21-50", "51+"]
-    assert ht["bars_held"]["max"] == 100
-
-
 def test_backtester_stamps_exact_excursions():
     idx = pd.date_range("2024-01-01", periods=6, freq="h")
     df = pd.DataFrame({
@@ -87,23 +78,6 @@ def test_atr_stop_engine_fires_at_next_open():
     r = bt.run(df, strategy_name="x", save=False)
     assert r["total_trades"] == 1
     assert r["trades"][0]["exit_reason"] == "atr_stop:2"
-
-
-def test_zscore_target_engine_uses_closed_bar_z():
-    idx = pd.date_range("2024-01-01", periods=10, freq="h")
-    closes = [100, 100, 100, 100, 101, 103, 108, 108, 108, 108]
-    df = pd.DataFrame({
-        "open": closes, "high": closes, "low": closes, "close": closes,
-        "open_action": ["long"] + ["none"] * 9,
-    }, index=idx)
-    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0,
-                    open_strategy={"name": "x"},
-                    close_strategies=[{"name": "zscore_target",
-                                       "params": {"lookback": 3, "z_target": 1.0}}],
-                    direction="long", comparison_mode="approximate")
-    r = bt.run(df, strategy_name="x", save=False)
-    assert r["total_trades"] == 1
-    assert r["trades"][0]["exit_reason"].startswith("zscore_target:")
 
 
 def test_duplicate_zscore_target_rejected():

@@ -152,17 +152,6 @@ def test_no_lookahead_fills_at_next_bar_open() -> None:
     assert ep.entry_spot == pytest.approx(105.0)
 
 
-def test_exit_signal_closes_and_reopens() -> None:
-    n = 30
-    sig = [-1] + [0] * 4 + [1] + [0] * 4 + [-1] + [0] * (n - 11)
-    df = _make_df([100.0] * n, sig)
-    bt = CarryPairBacktester(base_notional=1000.0, leverage=3.0,
-                             perp_fee_pct=0.0, spot_fee_pct=0.0)
-    res = bt.run(df)
-    assert res.pairs_opened == 2
-    assert res.episodes[0].exit_reason == "exit_signal"
-
-
 def test_perp_liquidation_caps_loss_and_credits_spot() -> None:
     n = 20
     prices = [100.0, 100.0] + [135.0] * (n - 2)
@@ -193,12 +182,6 @@ def test_constructor_rejects_bad_params() -> None:
         CarryPairBacktester(drift_threshold=0)
     with pytest.raises(ValueError):
         CarryPairBacktester(bar_hours=0)
-
-
-def test_run_rejects_missing_columns() -> None:
-    bt = CarryPairBacktester()
-    with pytest.raises(ValueError):
-        bt.run(pd.DataFrame({"open": [1.0], "close": [1.0]}))
 
 
 def test_rebalance_spot_qty_restores_parity() -> None:

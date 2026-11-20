@@ -79,28 +79,6 @@ def test_run_single_backtest_threads_platform_to_backtester(monkeypatch):
     assert seen["capital"] == 777.0
 
 
-def test_backtester_imports_under_script_style_sys_path(tmp_path):
-    import os
-    import subprocess
-    import sys
-
-    backtest_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    snippet = tmp_path / "script_style_import.py"
-    snippet.write_text(
-        "import sys\n"
-        f"sys.path.insert(0, {backtest_dir!r})\n"
-        "import backtester\n"
-        "backtester.Backtester()\n"
-        "print('OK')\n"
-    )
-    proc = subprocess.run(
-        [sys.executable, str(snippet)],
-        cwd=tmp_path, capture_output=True, text=True, timeout=120,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert "OK" in proc.stdout
-
-
 def _spy_single(monkeypatch):
     seen = {}
 

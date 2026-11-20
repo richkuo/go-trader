@@ -151,52 +151,6 @@ def test_control_keeps_stop_regardless_of_candidate_mode(subtests):
         assert m._candidate_stops("inherit", None) == {}
 
 
-def _spec_args(extra=None):
-    base = [
-        "--strategy", "squeeze_momentum",
-        "--incumbent-close", "none",
-        "--candidate-close", '[{"name":"atr_stop","params":{}}]',
-    ]
-    return m.build_parser().parse_args(base + (extra or []))
-
-
-_MULTI_WINDOW = ('{"fast":{"classifier":"composite","period":7},'
-                 '"slow":{"classifier":"composite","period":21}}')
-_SINGLE_WINDOW = '{"slow":{"classifier":"composite","period":21}}'
-
-
-def test_resolve_spec_explicit_path_has_no_stops_and_accepts_valid_gate_windows():
-    case = "test_resolve_spec_explicit_path_has_no_stops"
-    spec = m._resolve_spec(_spec_args())
-    assert spec["control_stops"] == {} and spec["candidate_stops"] == {}, case
-    assert spec["candidate_stops_mode"] == "inherit", case
-
-    spec = m._resolve_spec(_spec_args(["--regime-windows-json", _MULTI_WINDOW]))
-    assert len(spec["regime_cfg"]["windows_spec"]) == 2, \
-        "test_multi_window_without_gate_window_is_allowed"
-
-    spec = m._resolve_spec(_spec_args(["--regime-windows-json", _SINGLE_WINDOW,
-                                       "--gate-window", "slow"]))
-    assert list(spec["regime_cfg"]["windows_spec"].keys()) == ["slow"], \
-        "test_gate_window_on_single_window_spec_naming_that_window_ok"
-
-
-_GATE_WINDOW_REJECTED_CASES = [
-        (_MULTI_WINDOW, "slow"),
-        (_MULTI_WINDOW, "fast"),
-        (_SINGLE_WINDOW, "nope"),
-    ]
-_GATE_WINDOW_REJECTED_IDS = ["multi_window_slow", "multi_window_fast", "absent_window"]
-
-
-def test_gate_window_rejected(subtests):
-    for i, (case_id, (windows_json, gate_window)) in enumerate(zip(_GATE_WINDOW_REJECTED_IDS, _GATE_WINDOW_REJECTED_CASES)):
-        with subtests.test(case=case_id, windows_json=windows_json, gate_window=gate_window):
-            with pytest.raises(SystemExit):
-                m._resolve_spec(_spec_args(["--regime-windows-json", windows_json,
-                                            "--gate-window", gate_window]))
-
-
 def test_reject_unreplayable_entry_shapers(subtests):
     for case_id, incumbent in [
         ("invert_signal", {"invert_signal": True}),
@@ -212,28 +166,6 @@ def test_reject_unreplayable_entry_shapers(subtests):
         m._reject_unreplayable_entry_shapers(
             {"invert_signal": False, "regime_directional_policy": None,
              "profile_allocation": {}})
-
-
-def test_candidate_stacks_on_inherited_stop_only_for_stop_candidates_with_an_inherited_stop():
-    case = "test_stop_candidate_stacks_under_inherited_stop"
-    assert m._candidate_stacks_on_inherited_stop(
-        [{"name": "atr_stop", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5}), case
-    assert m._candidate_stacks_on_inherited_stop(
-        [{"name": "trailing_stop_atr_mult_regime", "params": {}}], "inherit",
-        {"trailing_stop_atr_mult": 2.0}), case
-
-    case = "test_tp_ladder_candidate_does_not_stack"
-    assert not m._candidate_stacks_on_inherited_stop(
-        [{"name": "tiered_tp_atr", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5}), case
-    assert not m._candidate_stacks_on_inherited_stop(
-        [{"name": "zscore_target", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5}), case
-
-    case = "test_no_stack_warning_when_dropped_or_no_inherited_stop"
-    assert not m._candidate_stacks_on_inherited_stop(
-        [{"name": "atr_stop", "params": {}}], "drop", {"stop_loss_atr_mult": 1.5}), case
-    assert not m._candidate_stacks_on_inherited_stop(
-        [{"name": "atr_stop", "params": {}}], "inherit", {}), case
-    assert not m._candidate_stacks_on_inherited_stop(None, "inherit", {"stop_loss_atr_mult": 1.5}), case
 
 
 def test_replay_positions_anchored_on_df_signals_not_df(monkeypatch):

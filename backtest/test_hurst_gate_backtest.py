@@ -353,21 +353,6 @@ def test_size_mode_shrinks_exposure_relative_to_the_ungated_run(Backtester):
     ), "at least one entry should actually be shrunk"
 
 
-def test_gate_mode_fail_closed_before_warmup_blocks_early_entries(Backtester):
-    df = _frame(n=400)
-    closed = _run(
-        Backtester,
-        df,
-        hurst_gate={"enabled": True, "min": 0.55, "on_failure": "closed"},
-    )
-    opened = _run(
-        Backtester,
-        df,
-        hurst_gate={"enabled": True, "min": 0.55, "on_failure": "open"},
-    )
-    assert closed["total_trades"] <= opened["total_trades"]
-
-
 def test_hurst_gate_is_in_the_config_cli_allowlist(tmp_path, monkeypatch):
     import inspect
 

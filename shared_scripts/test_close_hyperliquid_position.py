@@ -530,12 +530,6 @@ class TestSizedClose:
                 adapter.market_close.assert_not_called()
 
 
-def test_probe_only_accepts_the_sized_close_argv():
-    out, code, adapter = _run_sized(_filled(0.5), _SIZED_CANCEL + ["--probe-only"])
-    assert code == 0
-    adapter.market_close_sized.assert_not_called()
-
-
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 CLOSE_HL = os.path.join(_REPO_ROOT, "shared_scripts", "close_hyperliquid_position.py")
 

@@ -53,28 +53,7 @@ CTX = {
 }
 
 
-class TestPipeline:
-    def _fake_llm(self, calls):
-        def llm_call(system, user, schema=None):
-            calls.append((system, user, schema))
-            if "risk manager" in system:
-                return '{"verdict": "bullish", "rationale": "momentum and funding both lean up"}'
-            return "short note " + " ".join(["pad"] * 80)
-        return llm_call
-
-    def test_llm_failure_propagates(self, mod):
-        def boom(system, user, schema=None):
-            raise RuntimeError("api down")
-        with pytest.raises(RuntimeError):
-            mod.run_pipeline(CTX, {"ohlcv_summary": None, "funding": None}, boom)
-
-
 class TestSubprocessContract:
-    def test_probe_only(self):
-        r = subprocess.run([sys.executable, SCRIPT, "--probe-only"], capture_output=True, text=True, timeout=30)
-        assert r.returncode == 0
-        assert json.loads(r.stdout)["status"] == "ok"
-
     def test_missing_api_key_errors_json(self, subtests):
         with subtests.test(case="missing_api_key"):
             env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}

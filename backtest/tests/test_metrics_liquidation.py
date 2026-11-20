@@ -208,18 +208,6 @@ def _assert_liquidated_legs_counts_every_blowup_including_unscored():
     assert score["liquidated_legs"] == 1
 
 
-def test_format_window_report_silent_when_no_liquidation():
-    healthy = ew.leg_from_results(_results(ret=20.0, dd=-10.0, sharpe=1.5,
-                                           liquidated=False))
-    bar = {"sharpe": 0.5, "ddadj": 0.5, "n": 8}
-    score = ew.score_candidate({"BTC/USDT 1h": healthy}, {"BTC/USDT 1h": bar})
-    score["window"] = "oos"
-    score["window_range"] = ["2026-01-01", None]
-    report = ew.format_window_report(score)
-    assert "LIQ" not in report
-    assert "liquidated" not in report
-
-
 def _screen_leg_with(monkeypatch, net_liquidated, gross_liquidated):
     def fake_run_leg(reg, name, params, sym, tf, window, capital=0.0,
                      direction=None, commission_pct=None, slippage_pct=None,

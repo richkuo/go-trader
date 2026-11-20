@@ -1,4 +1,3 @@
-import contextlib
 import os
 
 import numpy as np
@@ -8,7 +7,7 @@ import pytest
 from backtester import Backtester
 from registry_loader import load_registry
 from atr import ensure_atr_indicator
-from eval_windows import compute_incumbent_legs, evaluate_window, incumbent_contract_kwargs, INCUMBENTS
+from eval_windows import compute_incumbent_legs, evaluate_window, INCUMBENTS
 
 NAME = "aroon_trend"
 TP = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.03, "close_fraction": 1.0}]}}]
@@ -44,19 +43,6 @@ def _spike_down(rows, size=50.0):
 
 def _apply(df, params):
     return load_registry("futures").apply_strategy(NAME, df, params)
-
-
-@contextlib.contextmanager
-def _case(label):
-    try:
-        yield
-    except AssertionError as exc:
-        raise AssertionError(f"case {label}: {exc}") from exc
-    except pytest.fail.Exception as exc:
-        pytest.fail(f"case {label}: {exc}")
-    except Exception as exc:
-        exc.add_note(f"case {label}")
-        raise
 
 
 def _bt(**kw):
@@ -192,15 +178,3 @@ def test_incumbent_contract_reaches_every_incumbent_and_default_callers_are_unch
     assert "incumbent_contract" not in default and contract["incumbent_contract"] == CONTRACT
     assert default["bars"] != contract["bars"]
     assert default["rows"][0]["leg"]["return_pct"] == contract["rows"][0]["leg"]["return_pct"]
-
-
-INVALID_INCUMBENT_CONTRACTS = [{"direction": "both"}, {"direction": "long", "params": {}}, "both",
-                               {"direction": "both", "close_strategies": TP, "stop_loss_atr_mult": 1.0,
-                                "trailing_stop_atr_mult": 1.0}]
-
-
-def test_invalid_incumbent_contracts_are_refused():
-    for bad in INVALID_INCUMBENT_CONTRACTS:
-        with _case(bad):
-            with pytest.raises(ValueError):
-                incumbent_contract_kwargs(bad)

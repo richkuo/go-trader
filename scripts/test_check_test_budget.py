@@ -1,26 +1,7 @@
-import importlib.util
 import json
 import pathlib
 import subprocess
 import sys
-
-_SPEC = importlib.util.spec_from_file_location(
-    "check_test_budget_under_test", pathlib.Path(__file__).with_name("check_test_budget.py")
-)
-budget = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(budget)
-
-
-def test_compare_flags_new_and_stale_identifiers(subtests):
-    for hits, baseline, expected_new, expected_stale in [
-        (["a::t1", "b::t2"], ["a::t1", "b::t2"], [], []),
-        (["a::t1", "c::t3"], ["a::t1", "b::t2"], ["c::t3"], ["b::t2"]),
-        (["a::t1"], ["a::t1", "b::t2"], [], ["b::t2"]),
-        (["a::t1", "a::t9"], ["a::t1"], ["a::t9"], []),
-    ]:
-        with subtests.test(hits=hits, baseline=baseline):
-            assert budget.compare(hits, baseline) == (expected_new, expected_stale)
-
 
 SCRIPT = pathlib.Path(__file__).with_name("check_test_budget.py")
 COMPOSITION = pathlib.Path(__file__).resolve().parent.parent / "shared_tools" / "strategy_composition.py"

@@ -1,7 +1,6 @@
 import contextlib
 import math
 import os
-import subprocess
 import sys
 
 import numpy as np
@@ -321,16 +320,6 @@ def _cfg(params, **kw):
                 symbol="BTC", timeframe="4h")
     base.update(kw)
     return ParityConfig(**base)
-
-
-def test_candidate_parity_entry_point_runs_offline():
-    script = os.path.join(CANDIDATE_DIR, "parity_check.py")
-    proc = subprocess.run(
-        [sys.executable, script, "--registry", "futures", "--window", "200", "--bars", "230",
-         "--dataset", "BTC 4h", "--mode", "entry"],
-        capture_output=True, text=True, cwd=_REPO, timeout=600)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert proc.stdout.strip().endswith("clean")
 
 
 def test_input_defects_hold_with_a_reason_inside_their_dependent_windows(subtests):

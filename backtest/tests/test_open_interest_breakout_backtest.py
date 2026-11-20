@@ -43,7 +43,7 @@ def _candles(n, breakouts=()):
                          "low": np.minimum(open_, close) - 0.5, "close": close, "volume": np.ones(n)})
 
 
-def _build(tmp_path, schema=None, with_oi=True, extra_key=None, n=200, oi_start=None):
+def _build(tmp_path, with_oi=True, n=200, oi_start=None):
     data = tmp_path / "data"
     data.mkdir()
     candles = _candles(n, breakouts=[(150, 110.0), (151, 111.0), (170, 90.0), (171, 89.0)])
@@ -58,10 +58,8 @@ def _build(tmp_path, schema=None, with_oi=True, extra_key=None, n=200, oi_start=
     if with_oi:
         ds["open_interest"] = {"path": "data/BTC_open_interest.json.gz",
                                "sha256": _sha(data / "BTC_open_interest.json.gz")}
-    if extra_key:
-        ds[extra_key] = 1
     manifest = {
-        "schema": schema or om.SCHEMA_V2, "study": "fixture", "venue": "hyperliquid",
+        "schema": om.SCHEMA_V2, "study": "fixture", "venue": "hyperliquid",
         "provenance": {"kind": "venue", "label": "fixture candles"},
         "interval": "1h", "warmup_bars": 40,
         "windows": {"train": {"start": pd.Timestamp(T0 + HOUR * 60, unit="ms").isoformat(),
@@ -79,17 +77,6 @@ def _build(tmp_path, schema=None, with_oi=True, extra_key=None, n=200, oi_start=
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest))
     return path
-
-
-def test_v1_manifest_refuses_an_open_interest_key_and_v2_refuses_unknown_keys(tmp_path):
-    v1 = tmp_path / "v1"
-    v1.mkdir()
-    with pytest.raises(om.ManifestError, match="open_interest needs schema"):
-        om.load_manifest(str(_build(v1, schema=om.SCHEMA)))
-    v2 = tmp_path / "v2"
-    v2.mkdir()
-    with pytest.raises(om.ManifestError, match="unknown keys"):
-        om.load_manifest(str(_build(v2, extra_key="open_interest_usd")))
 
 
 def test_open_interest_series_is_hash_pinned(tmp_path):

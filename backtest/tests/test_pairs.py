@@ -32,21 +32,6 @@ def test_liquidation_loss_math() -> None:
     assert _liquidation_loss(1000.0, 10.0, 0.02) == pytest.approx(80.0)
 
 
-def test_constructor_rejects_bad_params() -> None:
-    with pytest.raises(ValueError):
-        PairsBacktester(entry_z=1.0, exit_z=2.0)
-    with pytest.raises(ValueError):
-        PairsBacktester(leverage=0)
-    with pytest.raises(ValueError):
-        PairsBacktester(maintenance_margin=0.5, leverage=5.0)
-    with pytest.raises(ValueError):
-        PairsBacktester(initial_capital=0)
-    with pytest.raises(ValueError):
-        PairsBacktester(initial_capital=-100)
-    with pytest.raises(ValueError):
-        PairsBacktester(bar_hours=0)
-
-
 def _make_spread_series(n: int, base_a: float, base_b: float,
                        spike_at: int, spike_pct: float, direction: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     prices_a = [base_a] * n

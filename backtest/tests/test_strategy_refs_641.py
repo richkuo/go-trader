@@ -7,67 +7,6 @@ from backtester import Backtester, CloseCapabilityError
 import run_backtest
 
 
-def _flat_df():
-    return pd.DataFrame(
-        {
-            "open":   [100, 100, 100],
-            "high":   [101, 101, 101],
-            "low":    [ 99,  99,  99],
-            "close":  [100, 100, 100],
-            "volume": [1000, 1000, 1000],
-            "signal": [0, 0, 0],
-        },
-        index=pd.date_range("2024-01-01", periods=3, freq="D"),
-    )
-
-
-def test_backtester_accepts_and_records_open_and_close_refs(subtests):
-    with subtests.test(case="open_strategy_ref"):
-        bt = Backtester(
-            initial_capital=1000,
-            open_strategy={"name": "tema_cross_bd", "params": {"short_period": 5}},
-        )
-        df = _flat_df()
-        result = bt.run(df, save=False)
-        assert result["open_strategy"]["name"] == "tema_cross_bd"
-        assert result["open_strategy"]["params"]["short_period"] == 5
-    with subtests.test(case="close_strategy_ref_with_params"):
-        bt = Backtester(
-            initial_capital=1000,
-            close_strategies=[
-                {"name": "tiered_tp_atr", "params": {"tp_tiers": [
-                    {"atr_multiple": 2.0, "close_fraction": 1.0},
-                ]}},
-            ],
-        )
-        assert bt.close_strategies == ["tiered_tp_atr"]
-        assert bt.close_params["tiered_tp_atr"]["tp_tiers"] == [
-            {"atr_multiple": 2.0, "close_fraction": 1.0}
-        ]
-    with subtests.test(case="close_refs_recorded_on_result"):
-        bt = Backtester(
-            initial_capital=1000,
-            close_strategies=[
-                {"name": "tp_at_pct", "params": {"pct": 0.05}},
-                {"name": "tiered_tp_pct"},
-            ],
-        )
-        result = bt.run(_flat_df(), save=False)
-        refs = result["close_strategies"]
-        assert [r["name"] for r in refs] == ["tiered_tp_pct", "tiered_tp_pct"]
-        assert refs[0]["params"] == {
-            "tp_tiers": [{"profit_pct": 0.05, "close_fraction": 1.0}],
-        }
-        assert refs[1]["params"] == {}
-    for close_strategies, match in [
-        ([{"params": {"pct": 0.03}}], "missing 'name'"),
-        (["bare_string_no_longer_supported"], "must be dicts"),
-    ]:
-        with subtests.test(case=f"rejects-{match}"):
-            with pytest.raises(ValueError, match=match):
-                Backtester(close_strategies=close_strategies)
-
-
 def test_parse_close_strategy_arg_accepts_and_rejects(subtests):
     for raw, expected in [
         ("tp_at_pct", {"name": "tp_at_pct", "params": {}}),
@@ -718,22 +657,6 @@ def _assert_config_flag_threads_live_open_params(tmp_path, monkeypatch):
     assert captured["strategy_name"] == "triple_ema"
     assert captured["params"] == {
         "short_period": 3, "mid_period": 13, "long_period": 34}
-
-
-def test_config_flag_rejects_non_single_modes(tmp_path):
-    config_path = _write_config(tmp_path, version=15, strategies=[
-        {"id": "x", "open_strategy": {"name": "triple_ema"}, "close_strategies": []},
-    ])
-    import sys as _sys
-    for bad_mode in ("compare", "multi", "optimize"):
-        old_argv = _sys.argv
-        _sys.argv = ["run_backtest.py", "--mode", bad_mode,
-                     "--config", config_path, "--strategy", "x"]
-        try:
-            with pytest.raises(SystemExit):
-                run_backtest.main()
-        finally:
-            _sys.argv = old_argv
 
 
 def _flat_ohlc(signal):

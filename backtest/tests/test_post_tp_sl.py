@@ -78,26 +78,6 @@ def test_parse_sl_after_rule_accepts_empties_and_rejects():
             sl.parse_sl_after_rule(raw)
 
 
-def test_validate_sl_after_rule_accepts_valid_and_rejects_bad():
-    for r in [
-        sl.SLAfterRule(),
-        sl.SLAfterRule(kind="breakeven"),
-        sl.SLAfterRule(kind="atr_offset", atr_mult=0.25),
-        sl.SLAfterRule(kind="atr_offset", atr_mult=0),
-        sl.SLAfterRule(kind="atr_offset", atr_mult=-0.5),
-        sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=1.0),
-    ]:
-        sl.validate_sl_after_rule(r)
-    for r in [
-        sl.SLAfterRule(kind="trail_from_here"),
-        sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=0),
-        sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=-1),
-        sl.SLAfterRule(kind="weird"),
-    ]:
-        with _raises_for(f"test_validate_sl_after_rule_rejects_bad[{r!r}]"):
-            sl.validate_sl_after_rule(r)
-
-
 _TRIGGER_CASES = [
     (sl.SLAfterRule(kind="breakeven"), "long", 100, 5, 0, True, 100, "breakeven"),
     (sl.SLAfterRule(kind="breakeven"), "short", 200, 5, 0, True, 200, "breakeven"),

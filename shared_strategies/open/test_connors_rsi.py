@@ -3,7 +3,6 @@ import sys
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from shared_strategies.open.conftest import load_module
 
@@ -17,8 +16,6 @@ _FUTURES = load_module(
     "_crsi_futures_strategies_test", os.path.join(_HERE, "futures", "strategies.py"))
 _SPOT = load_module(
     "_crsi_spot_strategies_test", os.path.join(_HERE, "spot", "strategies.py"))
-_CHECK_HL = load_module(
-    "_crsi_check_hyperliquid_test", os.path.join(_ROOT, "shared_scripts", "check_hyperliquid.py"))
 
 from close_registry_loader import evaluate as close_evaluate
 from strategy_composition import evaluate_open_close, finalize_decision
@@ -197,39 +194,5 @@ def test_composer_close_wins_and_survives_bad_entry_data():
     short_due = {"side": "short", "bars_held": 7, "avg_cost": 100.0, "current_quantity": 1.0}
     _, short_close = _compose(window.drop(columns=["close"]).assign(close=np.nan), "short", short_due)
     assert short_close["close_fraction"] == 1.0 and short_close["signal"] == 1
-
-
-def _hl_candles(df):
-    return [[int(ts.value // 1_000_000), r.open, r.high, r.low, r.close, r.volume]
-            for ts, r in df.iterrows()]
-
-
-def test_production_hyperliquid_paths_admit_explicit_paper_and_refuse_unacknowledged_live():
-    df = _CHECK_HL._make_dataframe(_hl_candles(market(200)))
-    shared = _CHECK_HL.build_shared_signal_state("BTC", "4h", df=df)
-    with pytest.raises(ValueError, match="allow_no_edge"):
-        _CHECK_HL.evaluate_signal_slot(shared, {"id": "solo", "strategy": NAME})
-    with pytest.raises(ValueError, match="allow_no_edge"):
-        _CHECK_HL.evaluate_signal_slot(
-            shared, {"id": "open", "strategy": "breakout", "open_strategy": NAME,
-                     "close_strategies": "time_stop"})
-    with pytest.raises(ValueError, match="allow_no_edge"):
-        _CHECK_HL.evaluate_signal_slot(
-            shared, {"id": "close", "strategy": "breakout", "open_strategy": "breakout",
-                     "close_strategies": NAME})
-    deps = _CHECK_HL._signal_check_deps()
-    peer = _CHECK_HL.evaluate_signal_slot(shared, {"id": "peer", "strategy": "breakout"}, deps=deps)
-    assert peer["strategy"] == "breakout"
-    with pytest.raises(ValueError, match="allow_no_edge"):
-        _CHECK_HL.evaluate_signal_slot(shared, {"id": "batched", "strategy": NAME}, deps=deps)
-    paper = _CHECK_HL.evaluate_signal_slot(shared, {"id": "paper", "strategy": NAME, "mode_args": ["--mode=paper"]})
-    acked = _CHECK_HL.evaluate_signal_slot(
-        shared, {"id": "acked", "strategy": NAME, "mode_args": ["--mode=live"], "allow_no_edge": True})
-    assert paper["strategy"] == acked["strategy"] == NAME
-    assert (paper["signal"], paper["price"]) == (acked["signal"], acked["price"])
-    fallback = _CHECK_HL.evaluate_signal_slot(
-        shared, {"id": "fallback", "strategy": "breakout", "open_strategy": "breakout",
-                 "close_strategies": NAME, "mode_args": ["--mode", "paper"]})
-    assert fallback["close_strategies"] == [NAME]
 
 

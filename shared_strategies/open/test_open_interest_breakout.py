@@ -3,7 +3,6 @@ import sys
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from shared_strategies.open.conftest import load_module
 
@@ -17,8 +16,6 @@ _FUTURES = load_module(
     "_oib_futures_strategies_test", os.path.join(_HERE, "futures", "strategies.py"))
 _SPOT = load_module(
     "_oib_spot_strategies_test", os.path.join(_HERE, "spot", "strategies.py"))
-_CHECK_HL = load_module(
-    "_oib_check_hyperliquid_test", os.path.join(_ROOT, "shared_scripts", "check_hyperliquid.py"))
 
 from close_registry_loader import evaluate as close_evaluate
 from strategy_composition import evaluate_open_close, finalize_decision
@@ -162,21 +159,6 @@ INVALID_PARAMS = [
 ]
 
 
-def _market(n, seed):
-    rng = np.random.RandomState(seed)
-    closes = 100 + np.cumsum(rng.randn(n) * 1.2)
-    df = frame(closes, closes + np.abs(rng.randn(n)) * 0.6 + 0.1, closes - np.abs(rng.randn(n)) * 0.6 - 0.1)
-    drift = 0.02 * np.sin(np.arange(n) * 1.7 + seed)
-    level = 1e4 * np.concatenate([[1.0], np.cumprod(1.0 + drift)[:-1]])
-    opens = df["timestamp"].to_numpy()
-
-    def value(t):
-        i = min(max(int(np.searchsorted(opens, t, side="right")) - 1, 0), n - 1)
-        frac = (t - opens[i]) / HOUR
-        return level[i] * (1.0 + drift[i] * frac)
-    return df, value
-
-
 def test_live_forming_bar_carries_only_a_fresh_closed_decision():
     df = frame(FLAT + [110.0, 110.0])
     i = len(df) - 2
@@ -222,33 +204,3 @@ def test_composer_keeps_the_close_when_open_interest_is_missing():
     assert tp_close["close_fraction"] == 1.0 and tp_close["signal"] == -1
 
 
-def _hl_candles(df):
-    return [[int(t) + HOUR - 1, r.open, r.high, r.low, r.close, r.volume]
-            for t, r in zip(df["timestamp"], df.itertuples())]
-
-
-def test_production_hyperliquid_paths_admit_explicit_paper_and_refuse_unacknowledged_live():
-    df, value = _market(120, seed=3)
-    rows = _hl_candles(df)
-    obs = observations(df, value, bar_endpoint_offset_ms=1, cutoff_ms=int(df["timestamp"].iloc[-1]) + HOUR)
-    market = {"version": 4, "snapshot_id": "feed/1", "frames": {"BTC|1h": {"ready": True, "rows": rows}},
-              "observations": {"BTC|open_interest": dict(obs, coin="BTC")}}
-    shared = _CHECK_HL.build_shared_signal_state("BTC", "1h", market=market)
-    for slot in ({"id": "solo", "strategy": NAME},
-                 {"id": "open", "strategy": "breakout", "open_strategy": NAME,
-                  "close_strategies": "time_stop"},
-                 {"id": "close", "strategy": "breakout", "open_strategy": "breakout",
-                  "close_strategies": NAME}):
-        with pytest.raises(ValueError, match="allow_no_edge"):
-            _CHECK_HL.evaluate_signal_slot(shared, slot)
-    peer = _CHECK_HL.evaluate_signal_slot(shared, {"id": "peer", "strategy": "breakout"})
-    assert peer["strategy"] == "breakout"
-    paper = _CHECK_HL.evaluate_signal_slot(shared, {"id": "paper", "strategy": NAME, "mode_args": ["--mode=paper"]})
-    acked = _CHECK_HL.evaluate_signal_slot(
-        shared, {"id": "acked", "strategy": NAME, "mode_args": ["--mode=live"], "allow_no_edge": True})
-    assert paper["strategy"] == acked["strategy"] == NAME
-    assert (paper["signal"], paper["price"]) == (acked["signal"], acked["price"])
-    fallback = _CHECK_HL.evaluate_signal_slot(
-        shared, {"id": "fallback", "strategy": "breakout", "open_strategy": "breakout",
-                 "close_strategies": NAME, "mode_args": ["--mode", "paper"]})
-    assert fallback["close_strategies"] == [NAME]

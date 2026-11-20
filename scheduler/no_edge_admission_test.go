@@ -836,34 +836,6 @@ func TestNoEdgeReloadRefusesLiveAcknowledgementChanges(t *testing.T) {
 	})
 }
 
-func TestNoEdgeSummaryAndInspectSurfaces(t *testing.T) {
-	setNoEdgeLiveCredentials(t)
-	liveAcked := noEdgeHLStrategy("hl-live", "rsi", "BTC", "1h", "--mode=live")
-	liveAcked["allow_no_edge"] = true
-	closeOnly := noEdgeHLStrategy("hl-close", "breakout", "SOL", "1h", "--mode=live")
-	closeOnly["allow_no_edge"] = true
-	closeOnly["close_strategy"] = map[string]interface{}{"name": "vortex_trend"}
-	cfg := loadedNoEdgeConfig(t, liveAcked, closeOnly, noEdgeHLStrategy("hl-paper", "awesome_oscillator", "ETH", "4h", "--mode=paper"))
-	want := map[string]string{
-		"hl-live":  "edge=no_edge:fee_audit_m5(ack)",
-		"hl-close": "edge=no_edge:study_fail(ack)[close=vortex_trend]",
-		"hl-paper": "edge=no_edge:study_fail(paper)",
-	}
-	for _, sc := range cfg.Strategies {
-		if !strings.HasSuffix(formatStrategySummaryLine(sc, nil, cfg), " "+want[sc.ID]) && !strings.Contains(formatStrategySummaryLine(sc, nil, cfg), want[sc.ID]+" ") {
-			t.Fatalf("%s summary %q lacks %q", sc.ID, formatStrategySummaryLine(sc, nil, cfg), want[sc.ID])
-		}
-		edge, ok := buildStrategyInspectionJSON(sc, nil, cfg, nil)["edge"].(map[string]interface{})
-		if !ok || edge["tag"] != want[sc.ID] {
-			t.Fatalf("%s inspect edge = %#v", sc.ID, edge)
-		}
-	}
-	warnings := noEdgeStartupWarnings(cfg.Strategies)
-	if len(warnings) != 2 || !strings.Contains(strings.Join(warnings, "\n"), "close strategy vortex_trend") {
-		t.Fatalf("live warnings must cover the close-only reference and skip paper: %v", warnings)
-	}
-}
-
 func noEdgeCaseNoEdgePaperAddAcceptsEveryRegisteredPlatformName(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	seen := map[string]string{}

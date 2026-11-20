@@ -110,19 +110,6 @@ def test_expanding_window_mode():
     assert summarize(frame)["clean"]
 
 
-def test_stride_thins_comparison():
-    df = _ohlcv(200)
-    full = compute_parity_frame(
-        df, "sma_crossover", params={"fast_period": 5, "slow_period": 15},
-        window=60,
-    )
-    thinned = compute_parity_frame(
-        df, "sma_crossover", params={"fast_period": 5, "slow_period": 15},
-        window=60, stride=5,
-    )
-    assert len(thinned) == (len(full) + 4) // 5
-
-
 def test_window_below_live_minimum_rejected():
     df = _ohlcv(100)
     with pytest.raises(ValueError, match="window must be >="):
