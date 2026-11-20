@@ -457,7 +457,7 @@ func (job *entryRecoveryJob) noteHold(store *StateStore, mu *sync.RWMutex, reaso
 	}
 	if _, loaded := entryRecoveryAlerted.LoadOrStore(in.IntentID, true); !loaded && notifier != nil && notifier.HasOwner() {
 		notifier.SendOwnerDM(fmt.Sprintf("**LIVE ENTRY UNRESOLVED** [%s] %s %s entry %s (client order %s, candle %s): %s. New entries for this strategy stay held until venue evidence resolves it; exits, stops and protection continue. The owner can request a fresh check with /%s%s.",
-			sc.ID, in.Symbol, in.TargetSide, in.IntentID, in.ClientOrderID, formatClosedBarMs(in.BarOpenMs), reason, commandPrefix, entryOperatorCommandName))
+			sc.ID, in.Symbol, in.TargetSide, in.IntentID, in.ClientOrderID, formatClosedBarMs(in.BarOpenMs), reason, commandPrefix, entryOperatorCommandName) + slashCommandOffNote())
 	}
 }
 

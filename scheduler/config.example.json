@@ -101,6 +101,7 @@
   "discord": {
     "enabled": true,
     "token": "",
+    "slash_commands": false,
     "channels": {
       "spot": "",
       "options": "",
