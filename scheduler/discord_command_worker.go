@@ -127,8 +127,8 @@ func sleepUntil(ctx context.Context, at time.Time) bool {
 }
 
 func (w *slashCommandWorker) noteRateLimit(err error) bool {
-	e, ok := discordcmd.AsError(err)
-	if !ok || !e.RateLimited {
+	e, ok := discordcmd.RateLimit(err)
+	if !ok {
 		return false
 	}
 	at := time.Now().Add(e.RetryAfter)

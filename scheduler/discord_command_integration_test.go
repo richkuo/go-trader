@@ -188,7 +188,16 @@ func (e *slashTestEnv) start(t *testing.T, policy slashCommandPolicy) (<-chan st
 	}
 	began := time.Now()
 	done := e.d.startSlashCommandWorker(ctx, policy)
-	return done, cancel, time.Since(began)
+	took := time.Since(began)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Errorf("the command worker did not stop within 10s of its cancel")
+		}
+	})
+	return done, cancel, took
 }
 
 func slashWaitFor(t *testing.T, services *fakeNotifyServices, desc string, timeout time.Duration, ok func() bool) {
@@ -520,6 +529,107 @@ func TestSlashCommandWorkerRateLimitEndsThePass(t *testing.T) {
 				t.Fatalf("a list request went out after shutdown: %d", n)
 			}
 			t.Logf("case: %s: the list bucket reported 0 remaining for 10s; the next pass waited without sending, and shutdown stopped it in %s", env.transport, stopped.Round(time.Millisecond))
+		})
+	})
+}
+
+func slashLastRequest(keys []string, key string) int {
+	at := -1
+	for i, k := range keys {
+		if k == key {
+			at = i
+		}
+	}
+	return at
+}
+
+func TestSlashCommandWorkerRateLimitAfterAnotherError(t *testing.T) {
+	slashEnvs(t, func(t *testing.T, newEnv func(t *testing.T) *slashTestEnv) {
+		t.Run("EditErrorThenCreate429", func(t *testing.T) {
+			tuneSlashTimers(t, 50*time.Millisecond)
+			env := newEnv(t)
+			s := env.services
+			s.seedCommandFields("", map[string]any{"name": commandPrefix + "status", "description": "outdated", "contexts": []int{0, 1}, "integration_types": []int{0}})
+			s.scriptCommandOp("edit", fakeCommandResponse{status: http.StatusBadRequest, body: `{"message":"Invalid Form Body","code":50035}`})
+			s.scriptCommandOp("create", fakeRateLimit(2))
+			_, _, _ = env.start(t, slashCommandPolicy{Enabled: true})
+			slashWaitFor(t, s, "convergence after the 400 and the 429", 20*time.Second, func() bool {
+				return reflect.DeepEqual(slashOwnedNames(s, ""), slashDesiredNames()) && s.commandDescription("", commandPrefix+"status") != "outdated"
+			})
+			keys, times := s.requestLog()
+			if n := len(s.bodiesFor("discord.scripted:edit")) + len(s.bodiesFor("discord.scripted:create")); n != 2 {
+				t.Fatalf("scripted 400 and 429 served %d time(s); want 2: %v", n, keys)
+			}
+			edit, at := slashLastRequest(keys, "discord.scripted:edit"), slashLastRequest(keys, "discord.scripted:create")
+			if edit < 0 || at < edit {
+				t.Fatalf("the 400 edit must come before the 429 create in one pass: %v", keys)
+			}
+			next, nextAt, ok := slashNextCommandRequest(keys, times, at)
+			if !ok || next != "discord.commands_list" {
+				t.Fatalf("after the 429 the next command request = %q; want a fresh list", next)
+			}
+			gap := nextAt.Sub(times[at])
+			if gap < 1900*time.Millisecond {
+				t.Fatalf("a 429 asking for 2s that followed a 400 in the same pass was followed by a request after %s", gap)
+			}
+			if n := slashDMsContaining(s, "registration failed"); n != 0 {
+				t.Fatalf("%d registration-failed owner DM(s) for a rate-limited pass; want 0", n)
+			}
+			t.Logf("case: %s: an edit got a 400, then a create got a 429 asking for 2s (base interval 50ms); the next request was a fresh list after %s, no registration-failed DM went out, and the worker converged", env.transport, gap.Round(time.Millisecond))
+		})
+
+		t.Run("CleanupDelete403Then429", func(t *testing.T) {
+			tuneSlashTimers(t, 50*time.Millisecond)
+			env := newEnv(t)
+			s := env.services
+			for _, n := range []string{"alpha", "bravo", "charlie"} {
+				s.seedCommand("", commandPrefix+n, "owned")
+			}
+			s.scriptCommandOp("delete", fakeCommandResponse{status: http.StatusForbidden, body: `{"message":"Missing Access","code":50001}`}, fakeRateLimit(1.5))
+			done, _, _ := env.start(t, slashCommandPolicy{})
+			slashWaitDone(t, done, 20*time.Second, "cleanup after a 403 and a 429")
+			if got := slashOwnedNames(s, ""); len(got) != 0 {
+				t.Fatalf("owned commands after the retried cleanup: %v", got)
+			}
+			keys, times := s.requestLog()
+			at := slashLastRequest(keys, "discord.scripted:delete")
+			if at < 0 || len(s.bodiesFor("discord.scripted:delete")) != 2 {
+				t.Fatalf("scripted 403 and 429 not served once each: %v", keys)
+			}
+			next, nextAt, ok := slashNextCommandRequest(keys, times, at)
+			if !ok || next != "discord.commands_list" {
+				t.Fatalf("after the 429 the next command request = %q; want a fresh list", next)
+			}
+			gap := nextAt.Sub(times[at])
+			if gap < 1400*time.Millisecond {
+				t.Fatalf("the cleanup retried %s after a 429 asking for 1.5s that followed a 403", gap)
+			}
+			t.Logf("case: %s: one delete got a 403, the next got a 429 asking for 1.5s (base interval 50ms); the job waited %s, listed again and removed all three", env.transport, gap.Round(time.Millisecond))
+		})
+
+		t.Run("CleanupDelete403Then429AfterTheDeadline", func(t *testing.T) {
+			tuneSlashTimers(t, 50*time.Millisecond)
+			slashCleanupDeadline = time.Second
+			env := newEnv(t)
+			s := env.services
+			for _, n := range []string{"alpha", "bravo", "charlie"} {
+				s.seedCommand("", commandPrefix+n, "owned")
+			}
+			s.scriptCommandOp("delete", fakeCommandResponse{status: http.StatusForbidden, body: `{"message":"Missing Access","code":50001}`}, fakeRateLimit(30))
+			done, _, _ := env.start(t, slashCommandPolicy{})
+			took := slashWaitDone(t, done, 5*time.Second, "cleanup with a 403 then a long retry delay")
+			keys, times := s.requestLog()
+			at := slashLastRequest(keys, "discord.scripted:delete")
+			if at < 0 || len(s.bodiesFor("discord.scripted:delete")) != 2 || len(s.bodiesFor("discord.commands_list")) != 1 {
+				t.Fatalf("want one list, then a 403 delete and a 429 delete: %v", keys)
+			}
+			if next, _, ok := slashNextCommandRequest(keys, times, at); ok {
+				t.Fatalf("cleanup sent %s after a 429 whose delay ends after the deadline: %v", next, keys)
+			}
+			if got := slashOwnedNames(s, ""); len(got) != 3 {
+				t.Fatalf("owned commands = %v; the unfinished cleanup must leave them for a later start", got)
+			}
+			t.Logf("case: %s: a 403 then a 429 asking for 30s with a 1s cleanup deadline: the job stopped after %s with no request after the 429 and left the commands for a later daemon start", env.transport, took.Round(time.Millisecond))
 		})
 	})
 }

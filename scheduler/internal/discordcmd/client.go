@@ -67,14 +67,46 @@ func AsError(err error) (*Error, bool) {
 	return nil, false
 }
 
+func eachError(err error, visit func(*Error)) {
+	if err == nil {
+		return
+	}
+	if e, ok := err.(*Error); ok && e != nil {
+		visit(e)
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, inner := range u.Unwrap() {
+			eachError(inner, visit)
+		}
+	case interface{ Unwrap() error }:
+		eachError(u.Unwrap(), visit)
+	}
+}
+
+func RateLimit(err error) (*Error, bool) {
+	var found *Error
+	eachError(err, func(e *Error) {
+		if e.RateLimited && (found == nil || e.RetryAfter > found.RetryAfter) {
+			found = e
+		}
+	})
+	return found, found != nil
+}
+
 func IsRateLimited(err error) bool {
-	e, ok := AsError(err)
-	return ok && e.RateLimited
+	_, ok := RateLimit(err)
+	return ok
 }
 
 func IsCapacity(err error) bool {
-	e, ok := AsError(err)
-	return ok && e.Code == CodeMaxApplicationCommands
+	capacity := false
+	eachError(err, func(e *Error) {
+		if e.Code == CodeMaxApplicationCommands {
+			capacity = true
+		}
+	})
+	return capacity
 }
 
 type Client struct {
