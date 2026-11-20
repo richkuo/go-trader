@@ -459,6 +459,35 @@ func (e *fpEnv) embeddedConfig(name string, weightPerMinute, weightStartup, rese
 
 func TestFeedWeightSharedProcesses(t *testing.T) {
 	t.Parallel()
+	t.Run("TwoOwnersAndADeadOwnersDebtStayWithinTheSharedCapacity", func(t *testing.T) {
+		t.Parallel()
+		e := newFPEnv(t)
+		cCfg := e.feedConfig("c", 40, 800, 200, 200)
+		e.install(t, cCfg)
+		c := e.start("c", cCfg)
+		c.waitFor("[feed] serving:", 120*time.Second)
+		c.kill()
+		aCfg := e.feedConfig("a", 30, 500, 100, 200)
+		bCfg := e.feedConfig("b", 30, 300, 100, 100)
+		a := e.start("a", aCfg)
+		b := e.start("b", bCfg)
+		a.waitFor("[feed-weight-shared] registered owner=", 60*time.Second)
+		rec := e.record()
+		dead := rec.Owners[e.ownerKey(cCfg)]
+		if dead == nil || dead.Active || len(dead.Charges) == 0 {
+			t.Fatalf("the killed owner is still active or its debt vanished: %+v", dead)
+		}
+		if rec.usedOnHost(feedHostOf(e.venue.srv.URL)) == 0 {
+			t.Fatalf("the killed owner's debt does not count against the shared host capacity")
+		}
+		a.waitFor("[feed] serving:", 120*time.Second)
+		b.waitFor("[feed] serving:", 120*time.Second)
+		if got := e.venue.maxWindow(); got > hlRESTWeightCeiling-200 {
+			t.Fatalf("the largest rolling 60s venue window is %d, above the shared capacity %d", got, hlRESTWeightCeiling-200)
+		}
+		t.Logf("venue arrivals %d, largest window %d", len(e.venue.snapshot()), e.venue.maxWindow())
+	})
+
 	t.Run("ADeadOwnersReserveHoldsWhileALowerReservePeerRegistersFirst", func(t *testing.T) {
 		t.Parallel()
 		e := newFPEnv(t)
@@ -641,35 +670,6 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 			t.Fatalf("after the race the registered owner does not hold its declared reserve: %+v", o)
 		}
 		t.Logf("release racing registration: exit %d %q", code, strings.TrimSpace(out))
-	})
-
-	t.Run("TwoOwnersAndADeadOwnersDebtStayWithinTheSharedCapacity", func(t *testing.T) {
-		t.Parallel()
-		e := newFPEnv(t)
-		cCfg := e.feedConfig("c", 40, 800, 200, 200)
-		e.install(t, cCfg)
-		c := e.start("c", cCfg)
-		c.waitFor("[feed] serving:", 120*time.Second)
-		c.kill()
-		aCfg := e.feedConfig("a", 30, 500, 100, 200)
-		bCfg := e.feedConfig("b", 30, 300, 100, 100)
-		a := e.start("a", aCfg)
-		b := e.start("b", bCfg)
-		a.waitFor("[feed-weight-shared] registered owner=", 60*time.Second)
-		rec := e.record()
-		dead := rec.Owners[e.ownerKey(cCfg)]
-		if dead == nil || dead.Active || len(dead.Charges) == 0 {
-			t.Fatalf("the killed owner is still active or its debt vanished: %+v", dead)
-		}
-		if rec.usedOnHost(feedHostOf(e.venue.srv.URL)) == 0 {
-			t.Fatalf("the killed owner's debt does not count against the shared host capacity")
-		}
-		a.waitFor("[feed] serving:", 120*time.Second)
-		b.waitFor("[feed] serving:", 120*time.Second)
-		if got := e.venue.maxWindow(); got > hlRESTWeightCeiling-200 {
-			t.Fatalf("the largest rolling 60s venue window is %d, above the shared capacity %d", got, hlRESTWeightCeiling-200)
-		}
-		t.Logf("venue arrivals %d, largest window %d", len(e.venue.snapshot()), e.venue.maxWindow())
 	})
 
 	t.Run("CrashPointsKeepFullLiabilityAndNeverSendUnreserved", func(t *testing.T) {
