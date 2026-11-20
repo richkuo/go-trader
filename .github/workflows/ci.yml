@@ -6,6 +6,10 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
 
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('go-trader-ci-pr-{0}', github.ref) || format('go-trader-ci-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == '1' }}
+
 jobs:
   changes:
     runs-on: ubuntu-26.04

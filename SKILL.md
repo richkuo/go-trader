@@ -3607,6 +3607,13 @@ It runs under macOS bash 3.2 and BSD awk as well as on the Ubuntu runner, so kee
 Issue #2041 ran the same scripts and fixtures on `ubuntu-24.04` and on `ubuntu-26.04` in separate runs before it moved every job to `ubuntu-26.04`; its pull request links both runs.
 To move to another image, run the full workflow once on the new literal label with unchanged scripts, then change every `runs-on` in `ci.yml` together. Shell-suite jobs never use a runner matrix (`TestShellSuiteCIWiring` refuses `strategy:` and `matrix:` there).
 
+**Run concurrency.** The `concurrency:` rule sits at workflow level in `ci.yml`, above `jobs:`, and `TestShellSuiteCIWiring` pins its `group:` and `cancel-in-progress:` lines byte for byte and refuses a second `concurrency:` or `cancel-in-progress` line.
+A first attempt of a pull request run uses the group `go-trader-ci-pr-<merge ref>` (`refs/pull/<n>/merge`) with `cancel-in-progress` true, so it cancels an older pending or running first attempt of the same pull request.
+Every push run on `main` and every rerun (`github.run_attempt` above 1) uses its own group `go-trader-ci-run-<run id>` with `cancel-in-progress` false, so nothing cancels or replaces a `main` run, also when two pushes put `main` on the same commit.
+A rerun never cancels the current first attempt, and a new push does not cancel a running rerun.
+Do not key a `main` run on the ref or the commit: GitHub replaces a pending run in a shared group even with `cancel-in-progress` false.
+Runs can reach the group out of order; when the run of the current head commit shows `cancelled`, rerun it, and the rerun gets its own group.
+
 **Docs-only pull requests.** The `changes` job in `ci.yml` and in `container.yml` runs `scripts/ci_code_changed.sh`, which reads the pull request merge commit and sets `code=false` only when every changed path is one of `CLAUDE.md`, `AGENTS.md`, `README.md`, `SKILL.md`, `docs/POST_UPDATE_HISTORY.md` or `docs/DOCKER.md`.
 No test reads these files, and the container image does not hold them.
 With `code=false`, every Go, Python-backed, shell-suite, Python and container image job is skipped, and `checks` still runs (it holds the CLAUDE.md size and layout check).

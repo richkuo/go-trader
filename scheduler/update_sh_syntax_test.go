@@ -1281,6 +1281,7 @@ func TestShellSuiteCIWiring(t *testing.T) {
 	if strings.Contains(string(workflow), "GOFLAGS") {
 		t.Fatal(".github/workflows/ci.yml sets GOFLAGS, which can change the tests a go-python-integration shard selects")
 	}
+	checkCIConcurrency(t, workflow)
 	jobs, stray := parseCIWorkflowJobs(t, workflowPath)
 	checkCIFullRunJobs(t, jobs, stray)
 	var declared map[string]bool
@@ -1555,5 +1556,44 @@ func TestRunCIShellSuiteVerdicts(t *testing.T) {
 				t.Fatalf("run_ci_shell_suite.sh passed=%v, want %v\n%s", got, tc.pass, out)
 			}
 		})
+	}
+}
+
+const (
+	ciConcurrencyGroup  = `  group: ${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('go-trader-ci-pr-{0}', github.ref) || format('go-trader-ci-run-{0}', github.run_id) }}`
+	ciConcurrencyCancel = `  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == '1' }}`
+)
+
+func checkCIConcurrency(t *testing.T, workflow []byte) {
+	t.Helper()
+	lines := strings.Split(string(workflow), "\n")
+	concurrencyAt, jobsAt, cancelLines := -1, -1, 0
+	var concurrencyLines []int
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "concurrency:") {
+			concurrencyLines = append(concurrencyLines, i+1)
+			concurrencyAt = i
+		}
+		if line == "jobs:" && jobsAt < 0 {
+			jobsAt = i
+		}
+		if strings.Contains(line, "cancel-in-progress") {
+			cancelLines++
+		}
+	}
+	if len(concurrencyLines) != 1 {
+		t.Fatalf(".github/workflows/ci.yml has concurrency: on lines %v, want exactly one workflow-level block above jobs:", concurrencyLines)
+	}
+	if lines[concurrencyAt] != "concurrency:" {
+		t.Fatalf(".github/workflows/ci.yml line %d is %q, want a zero-indent workflow-level concurrency: key", concurrencyAt+1, lines[concurrencyAt])
+	}
+	if jobsAt < 0 || concurrencyAt > jobsAt {
+		t.Fatalf(".github/workflows/ci.yml concurrency: on line %d is not above the top-level jobs: key", concurrencyAt+1)
+	}
+	if concurrencyAt+2 >= len(lines) || lines[concurrencyAt+1] != ciConcurrencyGroup || lines[concurrencyAt+2] != ciConcurrencyCancel {
+		t.Fatalf(".github/workflows/ci.yml concurrency: block does not match the pinned rule; a pull request first attempt must use go-trader-ci-pr-<merge ref> with cancel-in-progress, and every main push run and rerun must use its own go-trader-ci-run-<run id> group\nwant:\n%s\n%s", ciConcurrencyGroup, ciConcurrencyCancel)
+	}
+	if cancelLines != 1 {
+		t.Fatalf(".github/workflows/ci.yml has %d lines with cancel-in-progress, want exactly one in the workflow-level concurrency: block", cancelLines)
 	}
 }
