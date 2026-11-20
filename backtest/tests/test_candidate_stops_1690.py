@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import shlex
 import subprocess
 import sys
 
@@ -87,6 +88,101 @@ def _spec(m6):
     return {"study": "stops_1690", "registry": "spot", "harnesses": ["m6"],
             "correction": {"method": "benjamini_hochberg", "alpha": 0.05},
             "m6": m6}
+
+
+def test_stop_overrides_and_stop_only_variants_run_paired_through_m6(candle_env, tmp_path):
+    spec = _spec({
+        "strategy_id": "sma_crossover",
+        "incumbent_close": INCUMBENT,
+        "candidate_close_variants": [
+            {"key": "fixed_sl", "candidate_close": WIDE_TP,
+             "candidate_stops": {"stop_loss_atr_mult": 1.0}},
+            {"key": "trail_tight", "candidate_close": WIDE_TP,
+             "candidate_stops": {"trailing_stop_atr_mult": 1.5}},
+            {"key": "trail_wide", "candidate_close": WIDE_TP,
+             "candidate_stops": {"trailing_stop_atr_mult": 3.0}},
+            {"key": "atr_trail", "candidate_close": [],
+             "candidate_stops": {"trailing_stop_atr_mult": 3.0}},
+        ],
+        "close_stack_specs": [
+            {"trailing_stop_atr_mult": [2.0]},
+            {"close": {"name": "tiered_tp_atr", "params": {"tp_tiers": [WIDE_TP[0]["params"]["tp_tiers"]]}},
+             "stop_loss_atr_mult": [1.25]},
+        ],
+    })
+    proc, report, out_dir = _auto_suggest(candle_env, tmp_path, spec)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert report["close_validation"]["requested_set_complete"] is True
+    entries = {e["key"]: e for e in report["ranked"]}
+    expected = {
+        "m6.fixed_sl": ({"stop_loss_atr_mult": 1.0}, False, "fixed_atr"),
+        "m6.trail_tight": ({"trailing_stop_atr_mult": 1.5}, False, "trailing_atr"),
+        "m6.trail_wide": ({"trailing_stop_atr_mult": 3.0}, False, "trailing_atr"),
+        "m6.atr_trail": ({"trailing_stop_atr_mult": 3.0}, True, "trailing_atr"),
+        "m6.close_stack_0": ({"trailing_stop_atr_mult": 2.0}, True, "trailing_atr"),
+        "m6.close_stack_1": ({"stop_loss_atr_mult": 1.25}, False, "fixed_atr"),
+    }
+    assert set(entries) == set(expected)
+    family_keys = {t["candidate_key"] for t in report["family_tests"] if t["harness"] == "m6"}
+    assert family_keys == set(expected)
+
+    controls = []
+    for key, (selection, stop_only, owner) in expected.items():
+        entry = entries[key]
+        assert entry["precondition_errors"] == []
+        assert entry["verdict"] not in ("excluded_close_capability",
+                                        "excluded_not_replayable", "run_failed")
+        cand = entry["candidate"]
+        assert not any(r["name"] in ("stop_loss_atr_mult", "trailing_stop_atr_mult")
+                       for r in cand["candidate_close"])
+        assert cand["candidate_stops"] == selection
+        assert cand["candidate_stop_only"] is stop_only
+        assert entry["evidence"]["m6"]["data"][WINDOW]["paired_n"] > 0
+        policy = entry["evidence"]["m6"]["stop_policy"]
+        assert policy["candidate_stops_mode"] == "replace"
+        assert policy["candidate_stops_selection"] == selection
+        assert policy["candidate_stops"] == selection
+        assert policy["candidate_stop_only"] is stop_only
+        assert policy["candidate_stop_owner"] == owner
+        assert policy["control_stop_owner"] == "none"
+        assert policy["stop_units"] == "engine_fraction"
+        assert "--candidate-stops" in entry["reproduce"][0]
+        assert shlex.quote(json.dumps(selection, sort_keys=True)) in entry["reproduce"][0]
+
+        res = _dataset(_m6_payload(out_dir, key))
+        controls.append(res["control_arm"])
+        assert res["paired_diag"]["paired"] > 0
+        assert res["paired_diag"]["paired"] == res["paired_diag"]["schedule_entries"]
+        cand_reasons = res["candidate_arm"]["exit_reasons"]
+        replay_reasons = res["paired_diag"]["candidate_exit_reasons"]
+        assert cand_reasons.get("sl", 0) > 0 and replay_reasons.get("sl", 0) > 0
+        if stop_only:
+            assert set(cand_reasons) <= STOP_ONLY_REASONS
+            assert set(replay_reasons) <= STOP_ONLY_REASONS
+        else:
+            assert any(r.startswith("tiered_tp_atr") for r in cand_reasons)
+    assert all(c == controls[0] for c in controls)
+    assert set(controls[0]["exit_reasons"]) <= {"tiered_tp_atr:0.5", "tiered_tp_atr:1",
+                                                "end_of_data"}
+
+    tight = _dataset(_m6_payload(out_dir, "m6.trail_tight"))
+    wide = _dataset(_m6_payload(out_dir, "m6.trail_wide"))
+    assert tight["control_arm"] == wide["control_arm"]
+    assert tight["candidate_arm"] != wide["candidate_arm"]
+    tight_all = tight["per_regime"]["all"]
+    wide_all = wide["per_regime"]["all"]
+    assert tight_all["control_mean_net_pct"] == wide_all["control_mean_net_pct"]
+    assert tight_all["candidate_mean_net_pct"] != wide_all["candidate_mean_net_pct"]
+
+    dry = subprocess.run(
+        [sys.executable, AUTO_SUGGEST, "--spec", str(tmp_path / "suggest.json"),
+         "--windows", WINDOW, "--datasets", DATASET, "--bootstrap-resamples", "200",
+         "--out-dir", str(out_dir), "--dry-run"],
+        cwd=REPO, env=candle_env, capture_output=True, text=True, timeout=300)
+    assert dry.returncode == 0, dry.stderr[-3000:]
+    dry_lines = set(dry.stdout.splitlines())
+    for key in expected:
+        assert entries[key]["reproduce"][0] in dry_lines
 
 
 def test_baseline_config_short_leg_replaces_inherited_percent_stop(candle_env, tmp_path):
@@ -189,3 +285,5 @@ def test_stop_only_variant_without_candidate_close_runs_like_empty_close(candle_
     assert inherit["candidate"]["candidate_stop_only"] is False
     assert inherit["evidence"] == {}
     assert not (out_dir / "m6.inherit_no_close.m6.json").exists()
+
+

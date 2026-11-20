@@ -175,6 +175,7 @@
     "backtest/tests/test_camarilla_pivot_reversal_integration.py::test_study_local_reclaim_comparator_uses_the_same_contract_and_is_removed_after_a_failure": 0.0438,
     "backtest/tests/test_candidate_stops_1690.py::test_baseline_config_short_leg_replaces_inherited_percent_stop": 8.926,
     "backtest/tests/test_candidate_stops_1690.py::test_stop_only_variant_without_candidate_close_runs_like_empty_close": 6.7924,
+    "backtest/tests/test_candidate_stops_1690.py::test_stop_overrides_and_stop_only_variants_run_paired_through_m6": 17.5006,
     "backtest/tests/test_carry_pair.py::test_basis_drift_triggers_one_rebalance": 0.0023,
     "backtest/tests/test_carry_pair.py::test_below_threshold_and_single_series_never_rebalance": 0.0049,
     "backtest/tests/test_carry_pair.py::test_constructor_rejects_bad_params": 0.0004,
