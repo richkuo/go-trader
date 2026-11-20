@@ -2,6 +2,15 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 2114: the dashboard tuner cannot change a strategy's open strategy
+
+Runtime default; restart-required; no config key, no SQLite schema change and no config file format change.
+Before this change a dashboard Apply request could name a different open strategy. The shared override merge copied the request name into the strategy, and the file patch saved it with the old parameters and unchanged script arguments; a later reload then ran the new open strategy with no restart. A preview wrote its parameter overrides into the running strategy's parameter map, so the preview's live arm and the scheduler both saw the edit. Apply also merged against the loaded strategy, so an edit made before a reload could restore stale parameters or lose an earlier edit.
+Now preview and Apply compare a request `open_strategy.name` (trimmed) with the selected strategy's effective open strategy (`open_strategy.name`, else the first script argument). A different name gets HTTP 400 naming both strategies; preview returns before it fetches candles and Apply returns before it reads the file. A blank or missing name is a parameter-only request.
+The merge writes parameter overrides into a deep copy, so the running config never changes before a reload. Under the config write lock, Apply reads the file entry and refuses an open strategy edit with HTTP 409 when the file's effective open strategy differs from the running one. An accepted edit starts from the file entry's own parameters and name and never saves the request name.
+Pause, ratchet notifications and Discord `config set` send no open strategy override and are unchanged. The ranked tuning promotion (`POST /api/tuning/apply`) is a separate path and is unchanged.
+Operator action: none. On a 409, send SIGHUP (or wait for the next reload) and refresh the dashboard; restart instead when the reload log says a restart is required, as it does when the name changed through the first script argument. Deploy with `bash scripts/update.sh --restart`.
+
 ### Issue 2077: Deribit and OKX are unmaintained, and the shared option types leave the Deribit adapter
 
 Internal; no config key, no SQLite schema change, no book change and no runtime behavior change.

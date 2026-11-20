@@ -232,7 +232,7 @@ func (ss *StatusServer) handleAPIStrategyApplyConfig(w http.ResponseWriter, r *h
 	restartRequired, err := applyStrategyConfigPatch(ss.configPath, id, merged, req.Overrides, hasOpen)
 	ss.configWriteMu.Unlock()
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeJSONError(w, tunerConfigErrorStatus(err), err.Error())
 		return
 	}
 	msg := "Config updated."
@@ -546,10 +546,127 @@ func tunerApplyRequiresRestart(overrides map[string]json.RawMessage, hasOpen boo
 	return false
 }
 
+type tunerOpenStrategyNameMismatchError struct {
+	StrategyID string
+	Requested  string
+	Effective  string
+}
+
+func (e *tunerOpenStrategyNameMismatchError) Error() string {
+	return fmt.Sprintf("strategy %s: open_strategy.name %q does not match its open strategy %q; the tuner edits only the parameters of the selected open strategy", e.StrategyID, e.Requested, e.Effective)
+}
+
+type tunerOpenStrategyStaleError struct {
+	StrategyID string
+	Loaded     string
+	File       string
+}
+
+func (e *tunerOpenStrategyStaleError) Error() string {
+	return fmt.Sprintf("strategy %s: the running config uses open strategy %q but the config file now has %q; reload go-trader (SIGHUP), or restart it when the reload log says a restart is required, then refresh the dashboard before editing open strategy parameters", e.StrategyID, e.Loaded, e.File)
+}
+
+func tunerConfigErrorStatus(err error) int {
+	var mismatch *tunerOpenStrategyNameMismatchError
+	if errors.As(err, &mismatch) {
+		return http.StatusBadRequest
+	}
+	var stale *tunerOpenStrategyStaleError
+	if errors.As(err, &stale) {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
+}
+
+type tunerOpenStrategyOverride struct {
+	Present bool
+	Name    string
+	Nested  map[string]json.RawMessage
+	Dotted  map[string]json.RawMessage
+}
+
+func (o tunerOpenStrategyOverride) hasParams() bool {
+	return len(o.Nested) > 0 || len(o.Dotted) > 0
+}
+
+func parseTunerOpenStrategyOverride(overrides map[string]json.RawMessage) (tunerOpenStrategyOverride, error) {
+	var out tunerOpenStrategyOverride
+	if raw, ok := overrides["open_strategy"]; ok {
+		out.Present = true
+		var ref struct {
+			Name   string                     `json:"name"`
+			Params map[string]json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(raw, &ref); err != nil {
+			return out, fmt.Errorf("open_strategy: %w", err)
+		}
+		out.Name = strings.TrimSpace(ref.Name)
+		out.Nested = ref.Params
+	}
+	for key, raw := range overrides {
+		if !strings.HasPrefix(key, "open_strategy.params.") {
+			continue
+		}
+		out.Present = true
+		paramKey := strings.TrimPrefix(key, "open_strategy.params.")
+		if paramKey == "" {
+			continue
+		}
+		if out.Dotted == nil {
+			out.Dotted = map[string]json.RawMessage{}
+		}
+		out.Dotted[paramKey] = raw
+	}
+	return out, nil
+}
+
+func validateTunerOpenStrategyName(strategyID, requested, effective string) error {
+	if requested == "" || requested == strings.TrimSpace(effective) {
+		return nil
+	}
+	return &tunerOpenStrategyNameMismatchError{StrategyID: strategyID, Requested: requested, Effective: strings.TrimSpace(effective)}
+}
+
+func cloneTunerParamValue(v interface{}) interface{} {
+	switch typed := v.(type) {
+	case map[string]interface{}:
+		return cloneTunerParams(typed)
+	case []interface{}:
+		if typed == nil {
+			return typed
+		}
+		out := make([]interface{}, len(typed))
+		for i, item := range typed {
+			out[i] = cloneTunerParamValue(item)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func cloneTunerParams(in map[string]interface{}) map[string]interface{} {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = cloneTunerParamValue(v)
+	}
+	return out
+}
+
 func mergeStrategyTunerOverrides(base StrategyConfig, overrides map[string]json.RawMessage) (StrategyConfig, error) {
 	out := base
 	if len(overrides) == 0 {
 		return out, nil
+	}
+	openOverride, err := parseTunerOpenStrategyOverride(overrides)
+	if err != nil {
+		return base, err
+	}
+	if err := validateTunerOpenStrategyName(base.ID, openOverride.Name, effectiveOpenStrategy(base)); err != nil {
+		return base, err
 	}
 	if raw, ok := overrides["interval_seconds"]; ok {
 		var v int
@@ -620,39 +737,21 @@ func mergeStrategyTunerOverrides(base StrategyConfig, overrides map[string]json.
 		}
 		out.NotifyRatchetTriggers = v
 	}
-	if raw, ok := overrides["open_strategy"]; ok {
-		var ref StrategyRef
-		if err := json.Unmarshal(raw, &ref); err != nil {
-			return out, fmt.Errorf("open_strategy: %w", err)
+	if openOverride.hasParams() {
+		params := cloneTunerParams(base.OpenStrategy.Params)
+		if params == nil {
+			params = map[string]interface{}{}
 		}
-		if ref.Name != "" {
-			out.OpenStrategy.Name = ref.Name
-		}
-		if ref.Params != nil {
-			if out.OpenStrategy.Params == nil {
-				out.OpenStrategy.Params = map[string]interface{}{}
-			}
-			for k, v := range ref.Params {
-				out.OpenStrategy.Params[k] = v
+		for _, layer := range []map[string]json.RawMessage{openOverride.Nested, openOverride.Dotted} {
+			for k, raw := range layer {
+				var v interface{}
+				if err := json.Unmarshal(raw, &v); err != nil {
+					return base, fmt.Errorf("open_strategy.params.%s: %w", k, err)
+				}
+				params[k] = v
 			}
 		}
-	}
-	for key, raw := range overrides {
-		if !strings.HasPrefix(key, "open_strategy.params.") {
-			continue
-		}
-		paramKey := strings.TrimPrefix(key, "open_strategy.params.")
-		if paramKey == "" {
-			continue
-		}
-		if out.OpenStrategy.Params == nil {
-			out.OpenStrategy.Params = map[string]interface{}{}
-		}
-		var v interface{}
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return out, fmt.Errorf("%s: %w", key, err)
-		}
-		out.OpenStrategy.Params[paramKey] = v
+		out.OpenStrategy.Params = params
 	}
 	return out, nil
 }
@@ -960,6 +1059,9 @@ func applyStrategyConfigPatch(configPath, strategyID string, merged StrategyConf
 	if err != nil {
 		return false, err
 	}
+	if needsV13SchemaMigration(data) {
+		return false, fmt.Errorf("dashboard apply requires config_version >= 13; restart go-trader once to migrate the config file")
+	}
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(data, &root); err != nil {
 		return false, fmt.Errorf("parse config: %w", err)
@@ -1016,12 +1118,10 @@ func applyStrategyConfigPatch(configPath, strategyID string, merged StrategyConf
 		return false, err
 	}
 	tmpPath := tmpFile.Name()
+	_ = tmpFile.Close()
 	defer os.Remove(tmpPath)
 	if err := os.WriteFile(tmpPath, out, 0o600); err != nil {
 		return false, err
-	}
-	if needsV13SchemaMigration(out) {
-		return false, fmt.Errorf("dashboard apply requires config_version >= 13; restart go-trader once to migrate the config file")
 	}
 	if _, err := LoadConfigForProbe(tmpPath); err != nil {
 		return false, fmt.Errorf("patched config invalid: %w", err)
@@ -1032,7 +1132,95 @@ func applyStrategyConfigPatch(configPath, strategyID string, merged StrategyConf
 	return restartRequired, nil
 }
 
+type tunerFileOpenStrategyEntry struct {
+	Open          map[string]json.RawMessage
+	Name          string
+	EffectiveName string
+}
+
+func tunerFileOpenStrategy(item map[string]json.RawMessage) (tunerFileOpenStrategyEntry, error) {
+	var entry tunerFileOpenStrategyEntry
+	if raw, ok := item["open_strategy"]; ok {
+		if err := json.Unmarshal(raw, &entry.Open); err != nil {
+			return entry, fmt.Errorf("config file open_strategy: %w", err)
+		}
+	}
+	if raw, ok := entry.Open["name"]; ok {
+		if err := json.Unmarshal(raw, &entry.Name); err != nil {
+			return entry, fmt.Errorf("config file open_strategy.name: %w", err)
+		}
+	}
+	var args []string
+	if raw, ok := item["args"]; ok {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return entry, fmt.Errorf("config file args: %w", err)
+		}
+	}
+	entry.EffectiveName = effectiveOpenStrategy(StrategyConfig{Args: args, OpenStrategy: StrategyRef{Name: entry.Name}})
+	return entry, nil
+}
+
+func patchTunerOpenStrategyParams(item map[string]json.RawMessage, file tunerFileOpenStrategyEntry, openOverride tunerOpenStrategyOverride) error {
+	open := make(map[string]json.RawMessage, len(file.Open)+2)
+	for k, v := range file.Open {
+		open[k] = v
+	}
+	if strings.TrimSpace(file.Name) == "" {
+		raw, err := json.Marshal(file.EffectiveName)
+		if err != nil {
+			return err
+		}
+		open["name"] = raw
+	}
+	params := map[string]json.RawMessage{}
+	if raw, ok := open["params"]; ok {
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return fmt.Errorf("config file open_strategy.params: %w", err)
+		}
+		if params == nil {
+			params = map[string]json.RawMessage{}
+		}
+	}
+	for _, layer := range []map[string]json.RawMessage{openOverride.Dotted, openOverride.Nested} {
+		for k, v := range layer {
+			params[k] = v
+		}
+	}
+	rawParams, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	open["params"] = rawParams
+	rawOpen, err := json.Marshal(open)
+	if err != nil {
+		return err
+	}
+	item["open_strategy"] = rawOpen
+	return nil
+}
+
 func patchStrategyJSON(item map[string]json.RawMessage, merged StrategyConfig, overrides map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+	openOverride, err := parseTunerOpenStrategyOverride(overrides)
+	if err != nil {
+		return item, err
+	}
+	var file tunerFileOpenStrategyEntry
+	if openOverride.Present {
+		loadedName := effectiveOpenStrategy(merged)
+		if err := validateTunerOpenStrategyName(merged.ID, openOverride.Name, loadedName); err != nil {
+			return item, err
+		}
+		file, err = tunerFileOpenStrategy(item)
+		if err != nil {
+			return item, err
+		}
+		if file.EffectiveName != loadedName {
+			return item, &tunerOpenStrategyStaleError{StrategyID: merged.ID, Loaded: loadedName, File: file.EffectiveName}
+		}
+		if err := validateTunerOpenStrategyName(merged.ID, openOverride.Name, file.EffectiveName); err != nil {
+			return item, err
+		}
+	}
 	set := func(key string, value interface{}) error {
 		raw, err := json.Marshal(value)
 		if err != nil {
@@ -1105,65 +1293,8 @@ func patchStrategyJSON(item map[string]json.RawMessage, merged StrategyConfig, o
 		}
 	}
 
-	paramOverrides := map[string]interface{}{}
-	for key, raw := range overrides {
-		if !strings.HasPrefix(key, "open_strategy.params.") {
-			continue
-		}
-		paramKey := strings.TrimPrefix(key, "open_strategy.params.")
-		if paramKey == "" {
-			continue
-		}
-		var v interface{}
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return item, fmt.Errorf("%s: %w", key, err)
-		}
-		paramOverrides[paramKey] = v
-	}
-	if raw, ok := overrides["open_strategy"]; ok {
-		var ref StrategyRef
-		if err := json.Unmarshal(raw, &ref); err != nil {
-			return item, fmt.Errorf("open_strategy: %w", err)
-		}
-		openRef := merged.OpenStrategy
-		if ref.Name != "" {
-			openRef.Name = ref.Name
-		}
-		if ref.Params != nil {
-			if openRef.Params == nil {
-				openRef.Params = map[string]interface{}{}
-			}
-			for k, v := range ref.Params {
-				openRef.Params[k] = v
-			}
-		}
-		if effectiveOpenStrategy(merged) != "" {
-			openRef.Name = effectiveOpenStrategy(merged)
-		}
-		if err := set("open_strategy", openRef); err != nil {
-			return item, err
-		}
-	} else if len(paramOverrides) > 0 {
-		openRef := StrategyRef{}
-		if raw, ok := item["open_strategy"]; ok {
-			_ = json.Unmarshal(raw, &openRef)
-		}
-		if openRef.Name == "" {
-			openRef.Name = effectiveOpenStrategy(merged)
-		}
-		if openRef.Name == "" {
-			openRef.Name = merged.OpenStrategy.Name
-		}
-		if openRef.Params == nil {
-			openRef.Params = map[string]interface{}{}
-		}
-		for k, v := range merged.OpenStrategy.Params {
-			openRef.Params[k] = v
-		}
-		for k, v := range paramOverrides {
-			openRef.Params[k] = v
-		}
-		if err := set("open_strategy", openRef); err != nil {
+	if openOverride.Present && openOverride.hasParams() {
+		if err := patchTunerOpenStrategyParams(item, file, openOverride); err != nil {
 			return item, err
 		}
 	}
