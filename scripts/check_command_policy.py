@@ -251,6 +251,20 @@ class Runner(object):
         c("variable -exec operator for find with a variable command", gt,
           'O=-exec; C="git commit --allow-empty -m x"; find . -maxdepth 0 "$O" $C \\;', "deny")
         c("literal find without -exec next to git", gt, "find . -maxdepth 0 -name x && git status", "allow")
+        c("commit words from standard input into xargs git on main", gt,
+          "echo commit --allow-empty -m x | xargs git", "deny")
+        c("updater path from standard input into xargs bash", gt, "echo scripts/update.sh | xargs bash", "deny")
+        c("commit text from standard input into xargs sh -c", gt,
+          "printf '%s\\0' 'git commit --allow-empty -m x' | xargs -0 sh -c", "deny")
+        c("checkout words from standard input into xargs git then commit", wt,
+          "echo checkout main | xargs git && git commit --allow-empty -m x", "deny")
+        c("unrelated command that names git", gt, "brew install git", "allow")
+        c("awk program that runs a commit", gt, "awk 'BEGIN{system(\"git commit --allow-empty -m x\")}'", "deny")
+        c("sed program that runs a commit", gt, "sed '1e git commit --allow-empty -m x' README", "deny")
+        c("awk program that runs a command from a variable", gt,
+          "C='git commit --allow-empty -m x'; awk -v c=\"$C\" 'BEGIN{system(c)}'", "deny")
+        c("awk text processing next to git", gt, "awk '{print $1}' README && git status", "allow")
+        c("sed text processing after git", gt, "git log -1 | sed -n 1p", "allow")
         c("conditional with a known git subcommand", gt, "if git diff --quiet; then echo same; fi", "allow")
         c("conditional with quoted git text", gt, "if true; then echo 'git cm'; fi", "allow")
         c("nested shell with a dynamic git subcommand", gt, 'bash -c "git $SUB --allow-empty -m x"', "deny")

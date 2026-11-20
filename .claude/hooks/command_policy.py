@@ -37,12 +37,15 @@ SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh"))
 DATA_HEADS = frozenset(("echo", "printf", "cat", "grep", "egrep", "fgrep", "rg", "ls", "head", "tail", "wc", "sort",
                         "uniq", "cut", "tr", "diff", "jq", "tee", "less", "more", "file", "stat", "basename",
                         "dirname", "realpath", "readlink", "date", "sleep", "mkdir", "touch", "cp", "mv", "rm", "ln",
-                        "chmod", "which", "type", "printenv", "test", "[", "[[", "true", "false", ":", "pwd", "sed",
-                        "awk", "column", "fold", "nl", "od", "xxd", "shasum", "sha256sum", "md5", "md5sum", "du", "df",
+                        "chmod", "which", "type", "printenv", "test", "[", "[[", "true", "false", ":", "pwd",
+                        "column", "fold", "nl", "od", "xxd", "shasum", "sha256sum", "md5", "md5sum", "du", "df",
                         "tree", "bat", "shellcheck"))
 COMMAND_RUNNERS = frozenset(("xargs", "parallel", "watch", "flock", "doas", "su", "runuser", "chroot", "script",
                              "systemd-run", "unbuffer", "ionice", "chrt", "taskset", "numactl", "strace", "ltrace",
-                             "gtimeout", "entr"))
+                             "gtimeout", "entr", "awk", "gawk", "mawk", "nawk", "sed", "gsed"))
+INPUT_RUNNERS = frozenset(("xargs", "parallel"))
+WRAPPER_HEADS = frozenset(("command", "builtin", "exec", "nohup", "setsid", "caffeinate", "time", "nice", "timeout",
+                           "stdbuf", "env", "sudo"))
 FIND_EXEC = frozenset(("-exec", "-execdir", "-ok", "-okdir"))
 SHELL_STATE = frozenset(("export", "unset", "declare", "typeset", "local", "readonly", "set", "shopt", "setopt",
                          "unsetopt", "eval", "alias", "unalias", "hash", "enable", "trap", "emulate", "function"))
@@ -823,6 +826,10 @@ class Analyzer(object):
                 _, _, _, sub, status = self.git_global(args)
                 if status == "dynamic" or (status == "ok" and args[sub].value not in GIT_NON_COMMIT):
                     found.add("guarded")
+                elif status in ("none", "info") and any(w.value is not None and
+                                                         os.path.basename(w.value) in INPUT_RUNNERS
+                                                         for w in words[:i]):
+                    found |= {"guarded", "branch"}
                 elif status == "ok" and args[sub].value in GIT_BRANCH_CHANGE:
                     found.add("branch")
             elif base == "gh" and gh_switches([a.value for a in words[i + 1:i + 3]]):
@@ -913,10 +920,13 @@ class Analyzer(object):
             return set(states), set(states)
         if base in DATA_HEADS:
             return set(states), set(states)
-        runner = base in COMMAND_RUNNERS or (base == "find" and any(a.value is None or a.value in FIND_EXEC
-                                                                        for a in args))
+        find_exec = base == "find" and any(a.value is None or a.value in FIND_EXEC for a in args)
+        runner = base in COMMAND_RUNNERS or find_exec
+        inner = (base in INPUT_RUNNERS or find_exec) and any(
+            a.value is not None and os.path.basename(a.value) in SHELLS | WRAPPER_HEADS | COMMAND_RUNNERS | {"ssh"}
+            for a in args)
         return self.unsupported(words, states, "the command " + base + " is not a supported wrapper",
-                                runner and any(a.value is None for a in args))
+                                inner or (runner and any(a.value is None for a in args)))
 
     def strip_wrapper(self, base, hv, words, inv):
         args = words[1:]
