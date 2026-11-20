@@ -143,6 +143,10 @@
     lanes: {
       candles: { issued: 0, accepted: 0 },
       trades: { issued: 0, accepted: 0 },
+      config: { issued: 0, accepted: 0 },
+      apply: { issued: 0, accepted: 0 },
+      pause: { issued: 0, accepted: 0 },
+      notify: { issued: 0, accepted: 0 },
     },
     chartData: null,
     tradeHistory: null,
@@ -158,6 +162,9 @@
       loading: false,
       previewSeq: 0,
       previewFor: "",
+      pendingApply: null,
+      applyTicket: null,
+      notice: "",
     },
   };
 
@@ -1216,6 +1223,7 @@
     hideChartFailure();
     els.empty.style.display = "none";
     clearTradeHistoryTable();
+    resetTunerState();
   }
 
   function takeTicket(lane) {
@@ -1224,19 +1232,26 @@
     return { id: state.activeID, epoch: state.selectionEpoch, seq: entry.issued };
   }
 
+  function ticketSelected(ticket) {
+    return ticket.id === state.activeID && ticket.epoch === state.selectionEpoch;
+  }
+
   function acceptReply(lane, ticket) {
     const entry = state.lanes[lane];
-    if (ticket.id !== state.activeID || ticket.epoch !== state.selectionEpoch || ticket.seq <= entry.accepted) {
+    if (!ticketSelected(ticket) || ticket.seq <= entry.accepted) {
       return false;
     }
     entry.accepted = ticket.seq;
     return true;
   }
 
+  function retireLane(lane) {
+    const entry = state.lanes[lane];
+    entry.accepted = entry.issued;
+  }
+
   function previewTicketCurrent(ticket) {
-    return ticket.id === state.activeID &&
-      ticket.epoch === state.selectionEpoch &&
-      ticket.seq === state.tuner.previewSeq;
+    return ticketSelected(ticket) && ticket.seq === state.tuner.previewSeq;
   }
 
   function invalidatePreview() {
@@ -1372,7 +1387,6 @@
   async function selectStrategy(id, options) {
     const opts = options || {};
     setActiveStrategy(id);
-    resetTunerState();
     updateRegimeBadge("");
     updateDivergenceBadge(null);
     updatePausedBadge(false);
@@ -1406,6 +1420,15 @@
       clearTimeout(state.tuner.simulateTimer);
       state.tuner.simulateTimer = 0;
     }
+    state.tuner.pendingApply = null;
+    state.tuner.applyTicket = null;
+    state.tuner.notice = "";
+    if (els.tunerApply) {
+      els.tunerApply.disabled = false;
+    }
+    if (els.tunerConfirmDialog && els.tunerConfirmDialog.open) {
+      els.tunerConfirmDialog.close("cancel");
+    }
     updateTunerStatus();
     if (els.tunerPanel) {
       els.tunerPanel.hidden = true;
@@ -1413,6 +1436,16 @@
     if (els.tunerForm) {
       els.tunerForm.innerHTML = "";
     }
+    updateControlsPanel(null);
+    setControlsMessage("");
+  }
+
+  function currentTunerConfig() {
+    const owned = state.tuner.config;
+    if (!owned || owned.strategyID !== state.activeID || owned.epoch !== state.selectionEpoch) {
+      return null;
+    }
+    return owned.resp;
   }
 
   function tunerHasOverrides() {
@@ -1421,6 +1454,11 @@
 
   function updateTunerStatus() {
     if (!els.tunerStatus) return;
+    if (state.tuner.notice) {
+      els.tunerStatus.textContent = state.tuner.notice;
+      els.tunerStatus.className = "tuner-status preview";
+      return;
+    }
     if (state.tuner.loading) {
       els.tunerStatus.textContent = "Simulating…";
       els.tunerStatus.className = "tuner-status preview";
@@ -1502,8 +1540,21 @@
 
   async function loadTunerConfig() {
     if (!state.activeID) return;
-    const config = await getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/config");
-    state.tuner.config = config;
+    const ticket = takeTicket("config");
+    let config;
+    try {
+      config = await getJSON("/api/strategies/" + encodeURIComponent(ticket.id) + "/config");
+    } catch (err) {
+      if (!acceptReply("config", ticket)) return;
+      throw err;
+    }
+    if (!acceptReply("config", ticket)) return;
+    if (!config || config.strategy_id !== ticket.id) {
+      throw new Error("The config reply names strategy " +
+        JSON.stringify(config && config.strategy_id !== undefined ? config.strategy_id : null) +
+        " but the request was for " + JSON.stringify(ticket.id));
+    }
+    state.tuner.config = { strategyID: ticket.id, epoch: ticket.epoch, resp: config };
     renderTunerForm(config);
     updateControlsPanel(config);
     refreshGlobalNotifications().catch(function () {});
@@ -1521,11 +1572,19 @@
       if (config) {
         els.pauseToggle.textContent = config.paused ? "Resume strategy" : "Pause strategy";
         els.pauseToggle.dataset.paused = config.paused ? "1" : "";
+      } else {
+        els.pauseToggle.disabled = false;
+        delete els.pauseToggle.dataset.paused;
       }
     }
-    if (els.ratchetNotifySelect && config) {
-      const v = config.notify_ratchet_triggers;
-      els.ratchetNotifySelect.value = v === null || v === undefined ? "inherit" : (v ? "on" : "off");
+    if (els.ratchetNotifySelect) {
+      els.ratchetNotifySelect.disabled = !config;
+      if (config) {
+        const v = config.notify_ratchet_triggers;
+        els.ratchetNotifySelect.value = v === null || v === undefined ? "inherit" : (v ? "on" : "off");
+      } else {
+        els.ratchetNotifySelect.value = "inherit";
+      }
     }
   }
 
@@ -1542,33 +1601,44 @@
   }
 
   async function togglePause() {
-    if (!state.activeID || !els.pauseToggle) return;
-    const next = !els.pauseToggle.dataset.paused;
+    const config = currentTunerConfig();
+    if (!state.activeID || !els.pauseToggle || !config) return;
+    const next = !config.paused;
+    const ticket = takeTicket("pause");
     els.pauseToggle.disabled = true;
     try {
       const resp = await postJSON(
-        "/api/strategies/" + encodeURIComponent(state.activeID) + "/pause",
+        "/api/strategies/" + encodeURIComponent(ticket.id) + "/pause",
         { paused: next }
       );
+      if (!acceptReply("pause", ticket)) return;
       setControlsMessage(resp.message || "");
       await loadTunerConfig();
+      if (!ticketSelected(ticket)) return;
       await refreshAll();
     } catch (err) {
-      setControlsMessage("Pause failed: " + err.message);
+      if (ticketSelected(ticket)) {
+        setControlsMessage("Pause failed: " + err.message);
+      }
     } finally {
-      els.pauseToggle.disabled = false;
+      if (ticketSelected(ticket)) {
+        els.pauseToggle.disabled = false;
+      }
     }
   }
 
   async function changeStrategyRatchetNotify() {
-    if (!state.activeID || !els.ratchetNotifySelect) return;
+    if (!state.activeID || !els.ratchetNotifySelect || !currentTunerConfig()) return;
+    const ticket = takeTicket("notify");
     try {
       const resp = await postJSON(
-        "/api/strategies/" + encodeURIComponent(state.activeID) + "/notifications",
+        "/api/strategies/" + encodeURIComponent(ticket.id) + "/notifications",
         { notify_ratchet_triggers: triStateToValue(els.ratchetNotifySelect.value, "inherit") }
       );
+      if (!acceptReply("notify", ticket)) return;
       setControlsMessage(resp.message || "");
     } catch (err) {
+      if (!acceptReply("notify", ticket)) return;
       setControlsMessage("Notification toggle failed: " + err.message);
     }
   }
@@ -1859,12 +1929,12 @@
     );
   }
 
-  function buildSimulateOverrides() {
+  function buildSimulateOverrides(config, draft) {
     const overrides = {};
-    Object.keys(state.tuner.overrides).forEach(function (key) {
-      overrides[key] = state.tuner.overrides[key];
+    Object.keys(draft).forEach(function (key) {
+      overrides[key] = draft[key];
     });
-    if (state.tuner.config && state.tuner.config.open_strategy && state.tuner.config.open_strategy.params) {
+    if (config && config.open_strategy && config.open_strategy.params) {
       const paramOverrides = {};
       Object.keys(overrides).forEach(function (key) {
         if (key.indexOf("open_strategy.params.") === 0) {
@@ -1874,7 +1944,7 @@
       });
       if (Object.keys(paramOverrides).length) {
         overrides.open_strategy = {
-          name: state.tuner.config.open_strategy.name,
+          name: config.open_strategy.name,
           params: paramOverrides,
         };
       }
@@ -1908,6 +1978,8 @@
       await refreshChartAndTrades();
       return;
     }
+    const config = currentTunerConfig();
+    if (!config) return;
     state.tuner.previewSeq += 1;
     const ticket = { id: state.activeID, epoch: state.selectionEpoch, seq: state.tuner.previewSeq };
     state.tuner.loading = true;
@@ -1915,7 +1987,7 @@
     try {
       const resp = await postJSON(
         "/api/strategies/" + encodeURIComponent(ticket.id) + "/simulate",
-        { overrides: buildSimulateOverrides(), limit: 400 }
+        { overrides: buildSimulateOverrides(config, state.tuner.overrides), limit: 400 }
       );
       if (!previewTicketCurrent(ticket)) return;
       state.tuner.liveMarkers = resp.live_markers || [];
@@ -1940,6 +2012,8 @@
     const target = event.target;
     const key = target.dataset.key;
     if (!key) return;
+    const config = currentTunerConfig();
+    if (!config) return;
     let value;
     if (target.type === "checkbox") {
       value = target.checked;
@@ -1948,8 +2022,8 @@
     } else {
       value = target.value;
     }
-    const base = state.tuner.config && state.tuner.config.editable_fields
-      ? state.tuner.config.editable_fields.find(function (f) { return f.key === key; })
+    const base = config.editable_fields
+      ? config.editable_fields.find(function (f) { return f.key === key; })
       : null;
     const baseline = base ? base.value : undefined;
     if (value === baseline || (value === null && (baseline === null || baseline === undefined))) {
@@ -1957,15 +2031,17 @@
     } else {
       state.tuner.overrides[key] = value;
     }
+    state.tuner.notice = "";
     updateTunerStatus();
     scheduleSimulate();
   }
 
   function resetTunerToLive() {
+    const config = currentTunerConfig();
+    if (!config) return;
     state.tuner.overrides = {};
-    if (state.tuner.config) {
-      renderTunerForm(state.tuner.config);
-    }
+    state.tuner.notice = "";
+    renderTunerForm(config);
     invalidatePreview();
     state.tuner.previewActive = false;
     state.tuner.liveMarkers = [];
@@ -1976,9 +2052,9 @@
     refreshChartAndTrades().catch(handleRefreshError);
   }
 
-  function tunerApplyRequiresRestartClient() {
-    const keys = Object.keys(state.tuner.overrides);
-    if (state.tuner.config && state.tuner.config.has_open_position) {
+  function tunerApplyRequiresRestartClient(config, draft) {
+    const keys = Object.keys(draft);
+    if (config && config.has_open_position) {
       if (keys.indexOf("direction") >= 0 || keys.indexOf("invert_signal") >= 0 || keys.indexOf("leverage") >= 0) {
         return true;
       }
@@ -1986,18 +2062,123 @@
     return keys.indexOf("htf_filter") >= 0;
   }
 
-  async function applyTunerConfig() {
-    if (!state.activeID || !tunerHasOverrides()) return;
-    const resp = await postJSON(
-      "/api/strategies/" + encodeURIComponent(state.activeID) + "/config",
-      { overrides: buildSimulateOverrides() }
-    );
-    if (resp.ok) {
-      resetTunerState();
-      await loadTunerConfig();
-      await refreshAll();
-      els.statusLabel.textContent = resp.restart_required ? "Apply OK — restart" : "Apply OK";
+  function tunerApplyConfirmText(record) {
+    const edits = Object.keys(record.draft).sort().map(function (key) {
+      return key + " = " + JSON.stringify(record.draft[key]);
+    });
+    const sentence = record.restart
+      ? "This writes tuned parameters to the live config file. Restart go-trader afterward — hot reload cannot apply most tuner fields."
+      : "This writes tuned parameters to the live config file. Send SIGHUP to reload when ready.";
+    return "Strategy " + record.id + ": " + edits.join("; ") + ". " + sentence;
+  }
+
+  function requestTunerApply() {
+    const config = currentTunerConfig();
+    if (!config || !tunerHasOverrides() || state.tuner.applyTicket) return;
+    const draft = JSON.parse(JSON.stringify(state.tuner.overrides));
+    const record = deepFreeze({
+      id: state.activeID,
+      epoch: state.selectionEpoch,
+      draft: draft,
+      overrides: buildSimulateOverrides(config, draft),
+      restart: tunerApplyRequiresRestartClient(config, draft),
+    });
+    state.tuner.pendingApply = record;
+    state.tuner.notice = "";
+    updateTunerStatus();
+    const text = tunerApplyConfirmText(record);
+    if (els.tunerConfirmText) {
+      els.tunerConfirmText.textContent = text;
     }
+    if (els.tunerConfirmDialog && typeof els.tunerConfirmDialog.showModal === "function") {
+      els.tunerConfirmDialog.returnValue = "";
+      els.tunerConfirmDialog.showModal();
+    } else if (window.confirm(text)) {
+      submitConfirmedApply().catch(handleRefreshError);
+    } else {
+      state.tuner.pendingApply = null;
+    }
+  }
+
+  function submitConfirmedApply() {
+    const record = state.tuner.pendingApply;
+    state.tuner.pendingApply = null;
+    if (!record) return Promise.resolve();
+    const config = currentTunerConfig();
+    const draft = state.tuner.overrides;
+    const unchanged = !!config &&
+      !state.tuner.applyTicket &&
+      record.id === state.activeID &&
+      record.epoch === state.selectionEpoch &&
+      stableJSON(draft) === stableJSON(record.draft) &&
+      stableJSON(buildSimulateOverrides(config, draft)) === stableJSON(record.overrides) &&
+      tunerApplyRequiresRestartClient(config, draft) === record.restart;
+    if (!unchanged) {
+      state.tuner.notice = "The selection, the edits or the restart warning changed. Nothing was sent. Review and confirm again.";
+      updateTunerStatus();
+      return Promise.resolve();
+    }
+    return applyTunerConfig(record);
+  }
+
+  function releaseApplyBusy(ticket) {
+    if (state.tuner.applyTicket !== ticket) return;
+    state.tuner.applyTicket = null;
+    if (els.tunerApply) {
+      els.tunerApply.disabled = false;
+    }
+  }
+
+  async function applyTunerConfig(record) {
+    const ticket = takeTicket("apply");
+    state.tuner.applyTicket = ticket;
+    if (els.tunerApply) {
+      els.tunerApply.disabled = true;
+    }
+    let resp;
+    try {
+      resp = await postJSON(
+        "/api/strategies/" + encodeURIComponent(record.id) + "/config",
+        { overrides: record.overrides }
+      );
+    } catch (err) {
+      releaseApplyBusy(ticket);
+      if (!acceptReply("apply", ticket)) return;
+      throw err;
+    }
+    releaseApplyBusy(ticket);
+    if (!acceptReply("apply", ticket)) return;
+    if (!resp.ok) return;
+    Object.keys(record.draft).forEach(function (key) {
+      if (hasOwn(state.tuner.overrides, key) && sameValue(state.tuner.overrides[key], record.draft[key])) {
+        delete state.tuner.overrides[key];
+      }
+    });
+    if (tunerHasOverrides()) {
+      scheduleSimulate();
+    } else {
+      invalidatePreview();
+      state.tuner.previewActive = false;
+      state.tuner.liveMarkers = [];
+      state.tuner.simulatedMarkers = [];
+      state.tuner.liveRefusal = "";
+      state.tuner.simulatedRefusal = "";
+      if (state.tuner.simulateTimer) {
+        clearTimeout(state.tuner.simulateTimer);
+        state.tuner.simulateTimer = 0;
+      }
+    }
+    updateTunerStatus();
+    const config = currentTunerConfig();
+    if (config) {
+      renderTunerForm(config);
+    }
+    retireLane("config");
+    await loadTunerConfig();
+    if (!ticketSelected(ticket)) return;
+    await refreshAll();
+    if (!ticketSelected(ticket)) return;
+    els.statusLabel.textContent = resp.restart_required ? "Apply OK — restart" : "Apply OK";
   }
 
   function markerText(marker) {
@@ -3263,6 +3444,7 @@
 
   initSidebar();
   initTradeHistoryActivation();
+  updateControlsPanel(null);
   if (els.tunerForm) {
     els.tunerForm.addEventListener("input", onTunerFieldChange);
     els.tunerForm.addEventListener("change", onTunerFieldChange);
@@ -3346,25 +3528,14 @@
     });
   }
   if (els.tunerApply) {
-    els.tunerApply.addEventListener("click", function () {
-      if (!state.tuner.config) return;
-      const restart = tunerApplyRequiresRestartClient();
-      if (els.tunerConfirmText) {
-        els.tunerConfirmText.textContent = restart
-          ? "This writes tuned parameters to the live config file. Restart go-trader afterward — hot reload cannot apply most tuner fields."
-          : "This writes tuned parameters to the live config file. Send SIGHUP to reload when ready.";
-      }
-      if (els.tunerConfirmDialog && typeof els.tunerConfirmDialog.showModal === "function") {
-        els.tunerConfirmDialog.showModal();
-      } else if (window.confirm(els.tunerConfirmText ? els.tunerConfirmText.textContent : "Apply tuned config?")) {
-        applyTunerConfig().catch(handleRefreshError);
-      }
-    });
+    els.tunerApply.addEventListener("click", requestTunerApply);
   }
   if (els.tunerConfirmDialog) {
     els.tunerConfirmDialog.addEventListener("close", function () {
       if (els.tunerConfirmDialog.returnValue === "apply") {
-        applyTunerConfig().catch(handleRefreshError);
+        submitConfirmedApply().catch(handleRefreshError);
+      } else {
+        state.tuner.pendingApply = null;
       }
     });
   }
