@@ -95,7 +95,7 @@ def literal_word(text):
 
 
 XARGS_FLAGS = frozenset("0rtxpo")
-XARGS_ARG_FLAGS = frozenset("nLlsPdaE")
+XARGS_ARG_FLAGS = frozenset("nLsPdaE")
 XARGS_LONG = frozenset(("--null", "--no-run-if-empty", "--verbose", "--exit", "--interactive", "--open-tty",
                         "--show-limits", "--max-args", "--max-lines", "--max-procs", "--max-chars", "--delimiter",
                         "--arg-file", "--process-slot-var"))
@@ -125,6 +125,8 @@ def replaces_words(runner_args):
                 continue
             if v[j] in XARGS_ARG_FLAGS:
                 consumed = j + 1 == len(v)
+                break
+            if v[j] == "l":
                 break
             return True
         i += 2 if consumed else 1

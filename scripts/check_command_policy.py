@@ -279,6 +279,8 @@ class Runner(object):
         c("sed script from a file next to git", gt, "sed -f x.sed README && git status", "deny")
         c("xargs replace option inside a grouped flag", gt, "echo commit | xargs -0I add git add --allow-empty -m x",
           "deny")
+        c("xargs replace option after a bare -l", gt, "echo commit | xargs -l -Iadd git add --allow-empty -m x",
+          "deny")
         c("xargs abbreviated replace option", gt, "echo commit | xargs --rep=add git add --allow-empty -m x", "deny")
         c("xargs with known options before git add", gt, "find . -name '*.go' -print0 | xargs -0 -n 20 git add",
           "allow")
