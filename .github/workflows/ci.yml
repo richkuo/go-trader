@@ -49,7 +49,7 @@ jobs:
           cache-dependency-path: scheduler/go.sum
 
       - name: Remaining Go tests
-        run: cd scheduler && go test -v -count=1 -skip '^TestFeedWeight' ./...
+        run: cd scheduler && go test -skip '^TestFeedWeight' ./...
 
       - name: Format check (every tracked Go file)
         run: |
@@ -74,7 +74,7 @@ jobs:
           cache-dependency-path: scheduler/go.sum
 
       - name: Feed weight ledger race check
-        run: cd scheduler && go test -v -race -count=1 -timeout 15m -run '^TestFeedWeight' .
+        run: cd scheduler && go test -race -count=1 -timeout 15m -run '^TestFeedWeight' .
 
       - name: Quote coordinator race check
         if: ${{ needs.changes.outputs.quote == 'true' }}
