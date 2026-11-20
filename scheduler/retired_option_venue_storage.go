@@ -98,9 +98,9 @@ func countLegRowsByStrategy(q retiredVenueQueryer, table string, present bool) (
 	return out, rows.Err()
 }
 
-// readRetiredOptionVenueBooks lists every stored book in one file that still
-// holds a position or option leg on a retired venue, plus every leg row whose
-// owning strategy row is missing. It reads only and tolerates older schemas.
+// readRetiredOptionVenueBooks lists every stored book in one file that a
+// retired venue owned, flat or not, plus every leg row whose owning strategy
+// row is missing. It reads only and tolerates older schemas.
 func readRetiredOptionVenueBooks(q retiredVenueQueryer) ([]retiredOptionBook, error) {
 	posPresent, err := retiredVenueTableExists(q, "positions")
 	if err != nil {
@@ -110,9 +110,6 @@ func readRetiredOptionVenueBooks(q retiredVenueQueryer) ([]retiredOptionBook, er
 	if err != nil {
 		return nil, err
 	}
-	if !posPresent && !optPresent {
-		return nil, nil
-	}
 	posCounts, err := countLegRowsByStrategy(q, "positions", posPresent)
 	if err != nil {
 		return nil, err
@@ -120,9 +117,6 @@ func readRetiredOptionVenueBooks(q retiredVenueQueryer) ([]retiredOptionBook, er
 	optCounts, err := countLegRowsByStrategy(q, "option_positions", optPresent)
 	if err != nil {
 		return nil, err
-	}
-	if len(posCounts) == 0 && len(optCounts) == 0 {
-		return nil, nil
 	}
 	stratPresent, err := retiredVenueTableExists(q, "strategies")
 	if err != nil {
@@ -164,6 +158,9 @@ func readRetiredOptionVenueBooks(q retiredVenueQueryer) ([]retiredOptionBook, er
 	for id := range optCounts {
 		ids[id] = true
 	}
+	for id := range known {
+		ids[id] = true
+	}
 	sorted := make([]string, 0, len(ids))
 	for id := range ids {
 		sorted = append(sorted, id)
@@ -188,6 +185,18 @@ func readRetiredOptionVenueBooks(q retiredVenueQueryer) ([]retiredOptionBook, er
 	return out, nil
 }
 
+func (b retiredOptionBook) flat() bool {
+	return b.PositionRows == 0 && b.OptionLegRows == 0
+}
+
+func (b retiredOptionBook) describeFlatTakeover(file string) string {
+	stored := b.StoredPlatform
+	if strings.TrimSpace(stored) == "" {
+		stored = "(blank, resolved to " + b.Venue + " by the previous release)"
+	}
+	return fmt.Sprintf("%s: stored strategy id %q (type %q, platform %s) is a flat book of a retired venue that still holds its cash, risk state and trade history; Deribit support and OKX options support were removed in %s; a strategy on a supported venue cannot adopt this book, so give the replacement strategy a new id or a new storage_strategy_id and keep the retired row for its history (docs/POST_UPDATE_HISTORY.md)", file, b.StorageID, b.Type, stored, retiredOptionVenueIssue)
+}
+
 func (b retiredOptionBook) describe(file string) string {
 	if b.UnresolvedOwner {
 		return fmt.Sprintf("%s: stored strategy id %q holds %d position row(s) and %d option leg row(s) but has no strategy row, so its venue cannot be resolved; restore the strategy row from a backup or resolve the rows by hand before this release starts (%s)", file, b.StorageID, b.PositionRows, b.OptionLegRows, retiredOptionVenueIssue)
@@ -206,7 +215,14 @@ func inspectRetiredOptionVenueBooks(db *StateDB, fi *storageFileInspection, iden
 	}
 	var out []string
 	for _, b := range books {
-		msg := b.describe(fmt.Sprintf("%s state file %q", fi.Role, fi.Path))
+		file := fmt.Sprintf("%s state file %q", fi.Role, fi.Path)
+		if b.flat() {
+			if procID, ok := ident.processFor(fi.Role, b.StorageID); ok {
+				out = append(out, b.describeFlatTakeover(file)+fmt.Sprintf("; the current config maps process strategy %q to this stored id", procID))
+			}
+			continue
+		}
+		msg := b.describe(file)
 		if procID, ok := ident.processFor(fi.Role, b.StorageID); ok {
 			msg += fmt.Sprintf("; the current config maps process strategy %q to this stored id, so it cannot take over the book", procID)
 		}
@@ -241,6 +257,12 @@ func (sdb *StateDB) guardRetiredOptionBooksTx(tx *sql.Tx, strategies []*Strategy
 		incoming[sid] = true
 	}
 	for _, b := range books {
+		if b.flat() {
+			if incoming[b.StorageID] {
+				return fmt.Errorf("refusing the save: %s", b.describeFlatTakeover(file))
+			}
+			continue
+		}
 		if b.UnresolvedOwner || fullFile || incoming[b.StorageID] {
 			return fmt.Errorf("refusing the save: %s", b.describe(file))
 		}

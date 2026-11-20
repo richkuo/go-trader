@@ -498,6 +498,141 @@ func TestRetiredOptionVenueStorageIntegration(t *testing.T) {
 	})
 }
 
+func TestFlatRetiredOptionBookTakeoverIntegration(t *testing.T) {
+	type flatRow struct {
+		cash, peak float64
+		platform   string
+		exists     bool
+	}
+	read := func(t *testing.T, path, id string) flatRow {
+		t.Helper()
+		db, err := openStateDBReadOnly(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		var out flatRow
+		err = db.db.QueryRow("SELECT cash, risk_peak_value, platform FROM strategies WHERE id = ?", id).Scan(&out.cash, &out.peak, &out.platform)
+		out.exists = err == nil
+		return out
+	}
+	spot := func(id string) map[string]interface{} {
+		return map[string]interface{}{"id": id, "type": "spot", "platform": "okx", "script": "shared_scripts/check_strategy.py",
+			"args": []string{"sma_crossover", "BTC/USDT", "1h", "--mode=paper"}, "capital": 1000, "max_drawdown_pct": 40}
+	}
+	cases := []struct {
+		name                 string
+		storedID, storedType string
+		storedPlatform       string
+		strategy             map[string]interface{}
+		processID            string
+		refuse               bool
+	}{
+		{name: "deribit_row_reused_by_ibkr", storedID: "opt-btc", storedType: "options", storedPlatform: "deribit", strategy: rvOptionStrategy("opt-btc", "ibkr", ""), processID: "opt-btc", refuse: true},
+		{name: "blank_platform_prefixless_row_reused_by_ibkr", storedID: "opt-btc", storedType: "options", storedPlatform: "", strategy: rvOptionStrategy("opt-btc", "ibkr", ""), processID: "opt-btc", refuse: true},
+		{name: "okx_options_row_aliased_to_robinhood", storedID: "okx-opt-btc", storedType: "options", storedPlatform: "okx", strategy: func() map[string]interface{} {
+			sc := rvOptionStrategy("rh-opt-btc", "robinhood", "")
+			sc["storage_strategy_id"] = "okx-opt-btc"
+			return sc
+		}(), processID: "rh-opt-btc", refuse: true},
+		{name: "okx_spot_row_still_loads", storedID: "okx-spot-btc", storedType: "spot", storedPlatform: "okx", strategy: spot("okx-spot-btc"), processID: "okx-spot-btc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path, _ := rvWriteConfig(t, dir, rvBaseConfig(dir, CurrentConfigVersion, tc.strategy))
+			cfg, err := LoadConfigReadOnly(path)
+			if err != nil {
+				t.Fatalf("config: %v", err)
+			}
+			layout, err := resolveStorageLayout(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ident, err := buildStorageIdentityMap(cfg, layout)
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner, ok := ident.storageFor(tc.processID)
+			if !ok || owner.StorageID != tc.storedID {
+				t.Fatalf("storage identity for %s = %+v, want stored id %s", tc.processID, owner, tc.storedID)
+			}
+			var file string
+			for _, spec := range layout.Files {
+				if spec.Role == owner.Role {
+					file = spec.Path
+				}
+			}
+			seed, err := OpenStateDB(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := seed.db.Exec("INSERT INTO strategies (id, type, platform, cash, initial_capital, risk_peak_value) VALUES (?, ?, ?, 900, 1000, 1500)", tc.storedID, tc.storedType, tc.storedPlatform); err != nil {
+				t.Fatal(err)
+			}
+			seed.Close()
+			before := read(t, file, tc.storedID)
+			if !before.exists || before.cash != 900 || before.peak != 1500 {
+				t.Fatalf("seed row = %+v", before)
+			}
+
+			si, err := inspectStorageOwnership(layout, ident, cfg, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := openStateStoreWith(layout, ident, openStateDBFromTemplate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			if !tc.refuse {
+				if !si.OK() {
+					t.Fatalf("a flat %s row must not block startup: %v", tc.storedPlatform, si.Rejections)
+				}
+				state, _, err := LoadStateWithStore(cfg, store)
+				if err != nil {
+					t.Fatalf("load: %v", err)
+				}
+				if got := state.Strategies[tc.processID]; got == nil || got.Cash != 900 {
+					t.Fatalf("the supported book did not load its stored row: %+v", got)
+				}
+				if err := store.SaveStrategyBook(state.Strategies[tc.processID]); err != nil {
+					t.Fatalf("single-book save: %v", err)
+				}
+				for part, err := range store.SaveAll(state) {
+					if err != nil {
+						t.Fatalf("full save (%s): %v", partitionLabel(part), err)
+					}
+				}
+				return
+			}
+			joined := strings.Join(si.Rejections, "\n")
+			if si.OK() || !strings.Contains(joined, rvQuote(tc.storedID)) || !strings.Contains(joined, "flat book of a retired venue") || !strings.Contains(joined, "new id or a new storage_strategy_id") || !strings.Contains(joined, rvQuote(tc.processID)) || !strings.Contains(joined, file) {
+				t.Fatalf("startup inspection must refuse the takeover of the flat retired book %s:\n%s", tc.storedID, joined)
+			}
+			state := NewAppState()
+			for _, sc := range cfg.Strategies {
+				state.Strategies[sc.ID] = NewStrategyState(sc)
+			}
+			if err := store.SaveStrategyBook(state.Strategies[tc.processID]); err == nil || !strings.Contains(err.Error(), "refusing the save") || !strings.Contains(err.Error(), rvQuote(tc.storedID)) {
+				t.Fatalf("a single-book save over the flat retired row: err = %v", err)
+			}
+			refused := 0
+			for _, err := range store.SaveAll(state) {
+				if err != nil && strings.Contains(err.Error(), "refusing the save") && strings.Contains(err.Error(), rvQuote(tc.storedID)) {
+					refused++
+				}
+			}
+			if refused == 0 {
+				t.Fatalf("a full save must refuse to replace the flat retired row %s", tc.storedID)
+			}
+			if after := read(t, file, tc.storedID); after != before {
+				t.Fatalf("refused saves changed the flat retired row: before %+v after %+v", before, after)
+			}
+		})
+	}
+}
+
 func rvQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)

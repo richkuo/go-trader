@@ -345,7 +345,11 @@ func retiredOptionVenueConfigRefusals(raw []byte) []string {
 			if strings.HasPrefix(lowerID, "okx-") {
 				errs = append(errs, retiredOptionVenueRefusal(subject, "an options strategy with the \"okx-\" id prefix and no platform field"))
 			}
-			errs = append(errs, fmt.Sprintf("%s: an options strategy needs an explicit platform field (\"ibkr\" or \"robinhood\"); the id prefix no longer selects an options venue (%s)", subject, retiredOptionVenueIssue))
+			msg := fmt.Sprintf("%s: an options strategy needs an explicit platform field (\"ibkr\" or \"robinhood\"); the id prefix no longer selects an options venue (%s)", subject, retiredOptionVenueIssue)
+			if legacyStoredStrategyVenue(strings.TrimSpace(id), "options", "") == "deribit" {
+				msg += "; the previous release ran this id on Deribit, so a strategy on a supported venue cannot adopt its stored book: give it a new strategy id (or a new storage_strategy_id) together with the platform field"
+			}
+			errs = append(errs, msg)
 		}
 	}
 	return errs
