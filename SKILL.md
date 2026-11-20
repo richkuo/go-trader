@@ -3662,11 +3662,16 @@ The checker also reads `bash`/`sh`/`zsh` `-c` strings and here-document scripts,
 Repeated `git -C`, `--git-dir` and `--work-tree` resolve in git's argument order.
 The checker tracks literal `git switch` branch names, explicit new branch names and `git checkout main` (with or without a trailing `--`).
 A checkout with a pathspec after `--` leaves the branch unchanged. An unresolved branch change, including a previous-branch reference or an implicit tracking branch, blocks a later commit.
+A branch change in a `bash -c` string, a here-document script or a git shell alias carries to later commits in the same call.
+A branch-changing git subcommand (`checkout`, `switch`, `branch`, `config`, `symbolic-ref`, `worktree` and the always-tainting set below) or `gh pr checkout` inside a form the checker does not analyze (an unsupported wrapper such as `xargs` or `find -exec`, a function, a compound command, an expansion, or `eval` and `alias` text) denies every commit in the same call, before or after it.
 Other branch or target changes earlier in the same call deny a later commit: `rebase`, `bisect`, `update-ref`, a `symbolic-ref` write, `worktree move`/`remove`, a `config` write, `branch -m`, `submodule`, `init`, `clone`, `gh pr checkout`, an unresolved checkout, an export or assignment of a git, path or home variable, `source`, `eval` and `alias`.
 `GIT_DIR`-style environment prefixes and `-c core.worktree`/`core.bare`/`include.*` overrides deny.
 A commit in a pipeline or background job next to any branch change denies.
 The checker blocks a possible guarded call inside a compound command, an expansion, an `eval` string, a function, or an unsupported wrapper such as `xargs`.
 In those forms it treats a git subcommand outside the known non-commit set, including a possible alias, as a guarded call. It also blocks a non-literal command name followed by `commit`.
+A command name, `-c` string, shell option, `eval` text or `ssh` remote command that is not literal, and a shell that reads its commands from a pipe or standard input, deny when the call text mentions git, `update.sh` or `git-commit.sh`. Without such a mention, `"$PY" script.py` and `$EDITOR file` stay allowed.
+Git aliases resolve the way git expands them: alias chains up to 12 levels (a loop or a deeper chain is judged as a possible commit), command-line `-c alias.*` values first, and a `!` shell alias analyzed as a shell command run from the worktree top with its arguments appended.
+A plain alias with environment-changing git options, and a git subcommand that is neither known nor an alias (git can run an external `git-<name>` command), are judged as possible commits.
 When parsing fails, the checker blocks text that mentions git, the update script or the action commit wrapper.
 Arguments to recognized data commands (`echo`, `printf`, `grep`, `gh` and similar) stay data in supported forms. Text passed to an unsupported wrapper can be a command.
 `bash -n scripts/update.sh` and `shellcheck scripts/update.sh` are read-only checks and do not require a restart.
@@ -3687,7 +3692,7 @@ No coverage: `--bare`, `--setting-sources` without `project`, `disableAllHooks`,
 
 CI: claude-code-action loads every settings source unless `--setting-sources` is passed, so the `implement` and `fix-pr` routes and the CLAUDE.md revision step run this hook from the job checkout.
 A pull request can edit that copy in the `fix-pr` route.
-A reviewed copy staged outside the checkout needs a default-off policy input in the rk-skills reusable workflow, which is a separate change.
+A reviewed copy staged outside the checkout needs a default-off policy input in the rk-skills reusable workflow (richkuo/rk-skills issue 503, <https://github.com/richkuo/rk-skills/issues/503>) and the go-trader caller change (issue 2088, <https://github.com/richkuo/go-trader/issues/2088>).
 The `review` route keeps `--setting-sources user`, its own settings file and its credential guard.
 GitHub branch protection for `main` is a separate change.
 

@@ -98,6 +98,11 @@ class Runner(object):
         shutil.copy(os.path.join(other, "scripts", "update.sh"), os.path.join(plain, "scripts", "update.sh"))
         self.sh(gt, "git", "config", "alias.cm", "commit")
         self.sh(gt, "git", "config", "alias.st", "status")
+        self.sh(gt, "git", "config", "alias.c2", "cm --allow-empty")
+        self.sh(gt, "git", "config", "alias.wip", "!git cm --allow-empty -m wip")
+        self.sh(gt, "git", "config", "alias.co", "checkout")
+        self.sh(gt, "git", "config", "alias.loop", "loop2")
+        self.sh(gt, "git", "config", "alias.loop2", "loop")
 
         c = self.case
         c("commit on go-trader main", gt, "git commit --allow-empty -m probe", "deny")
@@ -139,6 +144,14 @@ class Runner(object):
         c("alias from repository config on main", gt, "git cm --allow-empty -m probe", "deny")
         c("alias from repository config on a feature branch", wt, "git cm --allow-empty -m probe", "allow", True, gt)
         c("harmless alias", gt, "git st", "allow")
+        c("alias chain to a commit alias on main", gt, "git c2 -m x", "deny")
+        c("shell alias that runs a commit alias on main", gt, "git wip", "deny")
+        c("alias chain to a commit alias on a feature branch", wt, "git c2 -m x", "allow", True, gt)
+        c("shell alias that runs a commit alias on a feature branch", wt, "git wip", "allow", True, gt)
+        c("checkout alias to main then commit", wt, "git co main && git commit --allow-empty -m x", "deny")
+        c("alias loop on main", gt, "git loop", "deny")
+        c("unknown git command on main", gt, "git frobnicate", "deny")
+        c("unknown git command on a feature branch", wt, "git frobnicate", "allow")
         c("dynamic subcommand on main", gt, "git $SUB -m probe", "deny")
         c("new branch then commit in one chain", gt,
           "git checkout -q -b cc/chain && git commit --allow-empty -m probe && git checkout -q main", "allow",
@@ -204,6 +217,27 @@ class Runner(object):
         c("parameter expansion with a commit alias", gt, "echo ${x:-$(git cm --allow-empty -m x)}", "deny")
         c("arithmetic expansion with a commit alias", gt, "echo $(( $(git cm --allow-empty -m x) ))", "deny")
         c("unsupported wrapper around a known git subcommand", gt, "find . -name '*.go' | xargs git add", "allow")
+        main_before = self.ref(gt, "refs/heads/main")
+        c("branch switch through xargs then commit", wt,
+          "echo main | xargs git checkout && git commit --allow-empty -m x", "deny")
+        if self.ref(gt, "refs/heads/main") != main_before:
+            self.failures.append("the xargs branch switch check moved main")
+        c("branch switch in a function then commit", wt,
+          "function f { git switch main; }; f; git commit --allow-empty -m x", "deny")
+        c("branch switch in a parameter expansion then commit", wt,
+          "echo ${x:-$(git checkout main)} && git commit --allow-empty -m x", "deny")
+        c("commit before a branch switch through xargs", wt,
+          "git commit --allow-empty -m x; echo main | xargs git checkout", "deny")
+        c("branch switch in a bash -c string then commit", wt,
+          "bash -c 'git switch main' && git commit --allow-empty -m x", "deny")
+        c("new branch in a bash -c string then commit", gt,
+          "bash -c 'git switch -q -c cc/nested' && git commit --allow-empty -m x && git switch -q main", "allow",
+          True, gt)
+        c("whole command in a variable on main", gt, 'C="git commit --allow-empty -m x"; $C', "deny")
+        c("commit alias in a variable through bash -c", gt, 'C="git cm --allow-empty -m x"; bash -c "$C"', "deny")
+        c("commit alias in a variable through eval", gt, 'C="git cm --allow-empty -m x"; eval "$C"', "deny")
+        c("commit text piped into a shell", gt, "echo 'git commit --allow-empty -m x' | bash", "deny")
+        c("variable command name without git", gt, "PY=python3; $PY -c 'print(1)'", "allow")
         c("conditional with a known git subcommand", gt, "if git diff --quiet; then echo same; fi", "allow")
         c("conditional with quoted git text", gt, "if true; then echo 'git cm'; fi", "allow")
         c("nested shell with a dynamic git subcommand", gt, 'bash -c "git $SUB --allow-empty -m x"', "deny")

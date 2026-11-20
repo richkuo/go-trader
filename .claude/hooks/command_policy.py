@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -71,9 +72,21 @@ GIT_SAFE = frozenset((
     "verify-commit", "verify-pack", "verify-tag", "version", "whatchanged", "write-tree", "lfs",
 ))
 GIT_NON_COMMIT = GIT_SAFE | GIT_ALWAYS_TAINT | {"checkout", "switch", "branch", "config", "symbolic-ref", "worktree"}
+GIT_BRANCH_CHANGE = GIT_NON_COMMIT - GIT_SAFE
 SSH_OPERAND = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
 
 State = collections.namedtuple("State", "cwd taint over")
+
+
+def literal_word(text):
+    w = Word()
+    w.text = [text]
+    w.raw = text
+    return w
+
+
+def gh_switches(vals):
+    return vals[:2] == ["pr", "checkout"] or vals[:1] == ["co"] or vals[:2] in (["repo", "clone"], ["repo", "fork"])
 
 
 class ParseError(Exception):
@@ -672,11 +685,15 @@ def simulate_update_args(values):
 
 
 class Analyzer(object):
-    def __init__(self, ctx):
+    def __init__(self, ctx, text):
         self.ctx = ctx
+        self.text = text
         self.denials = []
         self.fs_taint = []
         self.branch_changes = []
+        self.unchecked_branch = []
+        self.commit_seen = False
+        self.alias_stack = []
         self.concurrent_commit = False
         self.remote = 0
         self.env_stack = []
@@ -781,42 +798,71 @@ class Analyzer(object):
             inv.envops.append(("set", a.assign[0], a.assign_value))
         return self.dispatch(words, inv, redirs, states, conc)
 
-    def guarded_words(self, words, depth=0):
+    def word_hazards(self, words, depth=0):
+        found = set()
         for word in words:
             if word.quoted or word.value not in COMPOUND:
                 if word.value is not None and os.path.basename(word.value) in DATA_HEADS:
-                    return False
+                    return found
                 break
         for i, word in enumerate(words):
             value = word.value
             if value is None:
                 if i + 1 < len(words) and words[i + 1].value == "commit":
-                    return True
+                    found.add("guarded")
                 value = "".join(word.text)
             base = os.path.basename(value)
             if base in ("update.sh", "git-commit.sh"):
-                return True
-            if base == "git":
+                found.add("guarded")
+            elif base == "git":
                 args = words[i + 1:]
                 _, _, _, sub, status = self.git_global(args)
                 if status == "dynamic" or (status == "ok" and args[sub].value not in GIT_NON_COMMIT):
-                    return True
-            if word.quoted and any(c.isspace() for c in value) and self.guarded_text(value, depth + 1):
-                return True
-        return False
+                    found.add("guarded")
+                elif status == "ok" and args[sub].value in GIT_BRANCH_CHANGE:
+                    found.add("branch")
+            elif base == "gh" and gh_switches([a.value for a in words[i + 1:i + 3]]):
+                found.add("branch")
+            if word.quoted and any(c.isspace() for c in value):
+                found |= self.text_hazards(value, depth + 1)
+        return found
 
-    def guarded_text(self, text, depth=0):
+    def text_hazards(self, text, depth=0):
         ctx = Ctx()
         try:
             Parser(text, depth, ctx).parse()
         except ParseError:
-            return bool(UNPARSED_GUARD.search(text))
-        return (any(self.guarded_words(words, depth) for words in ctx.commands)
-                or any(self.guarded_text(fragment, depth + 1) for fragment in ctx.opaque))
+            return {"guarded", "branch"} if UNPARSED_GUARD.search(text) else set()
+        found = set()
+        for words in ctx.commands:
+            found |= self.word_hazards(words, depth)
+        for fragment in ctx.opaque:
+            found |= self.text_hazards(fragment, depth + 1)
+        return found
 
-    def unsupported(self, words, states, why):
-        if self.guarded_words(words):
+    def guarded_words(self, words, depth=0):
+        return "guarded" in self.word_hazards(words, depth)
+
+    def guarded_text(self, text, depth=0):
+        return "guarded" in self.text_hazards(text, depth)
+
+    def note_unchecked(self, hazards, why):
+        if "branch" in hazards:
+            self.add_taint("a branch change inside %s" % why)
+            self.unchecked_branch.append(why)
+
+    def dynamic_guard(self):
+        return bool(UNPARSED_GUARD.search(self.text))
+
+    def unsupported(self, words, states, why, dynamic=False):
+        hazards = self.word_hazards(words)
+        if "guarded" in hazards:
             self.deny("a guarded call appears in a form the policy cannot check (%s)" % why)
+        elif dynamic and self.dynamic_guard():
+            self.deny("this command runs a command or shell text that is not literal (%s), and the call mentions git, "
+                      "the update script or the action commit wrapper. Run the commit or the update as its own "
+                      "literal command." % why)
+        self.note_unchecked(hazards, why)
         return set(states), set(states)
 
     def dispatch(self, words, inv, redirs, states, conc):
@@ -826,7 +872,7 @@ class Analyzer(object):
             head = words[0]
             hv = head.value
             if hv is None:
-                return self.unsupported(words, states, "the command name is not literal")
+                return self.unsupported(words, states, "the command name is not literal", True)
             base = os.path.basename(hv)
             rest = self.strip_wrapper(base, hv, words, inv)
             if rest is None:
@@ -834,7 +880,8 @@ class Analyzer(object):
             if rest == "data":
                 return set(states), set(states)
             if rest == "unsupported":
-                return self.unsupported(words, states, "the options of " + base + " are not supported")
+                return self.unsupported(words, states, "the options of " + base + " are not supported",
+                                        any(w.value is None for w in words[1:]))
             if inv.background:
                 conc = True
             words = rest
@@ -1255,6 +1302,7 @@ class Analyzer(object):
         return True
 
     def check_commit(self, label, opts, problems, inv, states, conc):
+        self.commit_seen = True
         if conc:
             self.concurrent_commit = True
         problems = list(problems) + self.env_problems(inv)
@@ -1271,6 +1319,7 @@ class Analyzer(object):
 
     def do_action_wrapper(self, head, inv, states, conc):
         label = "the action commit wrapper"
+        self.commit_seen = True
         if conc:
             self.concurrent_commit = True
         pv = head.value
@@ -1390,10 +1439,12 @@ class Analyzer(object):
             self.add_taint("a git subcommand that is not literal")
             return self.check_commit("a git command whose subcommand is not literal", opts, problems, inv,
                                      states, conc)
-        sub = args[i].value
-        rest = args[i + 1:]
+        return self.git_sub(args[i].value, args[i + 1:], opts, problems, aliases, inv, states, conc)
+
+    def git_sub(self, sub, rest, opts, problems, aliases, inv, states, conc):
         if sub == "commit":
-            return self.check_commit("git commit", opts, problems, inv, states, conc)
+            label = "git %s (an alias for commit)" % self.alias_stack[0] if self.alias_stack else "git commit"
+            return self.check_commit(label, opts, problems, inv, states, conc)
         if sub in ("checkout", "switch"):
             return self.git_switch(sub, rest, opts, problems, inv, states, conc)
         if sub in GIT_ALWAYS_TAINT:
@@ -1430,38 +1481,87 @@ class Analyzer(object):
             return set(states), set(states)
         return self.git_alias(sub, rest, opts, problems, aliases, inv, states, conc)
 
+    def alias_unknown(self, label, why, opts, problems, inv, states, conc):
+        result = self.check_commit("%s (%s)" % (label, why), opts, problems, inv, states, conc)
+        self.add_taint(label)
+        return result
+
     def git_alias(self, sub, rest, opts, problems, aliases, inv, states, conc):
-        values = set()
-        failed = False
-        if sub in aliases:
-            values.add(aliases[sub])
-        else:
-            for st in states:
-                cwd = self.effective_cwd(st, inv)
-                r = self.run(cwd, list(opts) + ["config", "--get", "alias." + sub], self.probe_env())
-                if isinstance(r, str) or r[0] not in (0, 1):
-                    failed = True
-                elif r[0] == 0:
-                    values.add(r[1].strip())
-        label = "git " + sub
-        if failed:
-            self.add_taint("the git alias " + sub)
-            return self.check_commit(label + " (an alias that cannot be read)", opts, problems, inv, states, conc)
-        commit_like = False
-        for v in values:
-            if v.startswith("!") or not v.split():
-                self.add_taint("the shell alias git " + sub)
-                if re.search(r"\bcommit\b", v):
-                    commit_like = True
+        label = "git " + (self.alias_stack[0] if self.alias_stack else sub)
+        if sub.lower() in self.alias_stack or len(self.alias_stack) >= MAX_DEPTH:
+            return self.alias_unknown(label, "an alias chain that the policy cannot follow", opts, problems, inv,
+                                      states, conc)
+        groups = {}
+        unread = set()
+        for st in states:
+            if sub.lower() in aliases:
+                groups.setdefault(aliases[sub.lower()], set()).add(st)
                 continue
-            first = v.split()[0]
-            if first == "commit":
-                commit_like = True
-            elif first not in GIT_SAFE:
-                self.add_taint("the git alias " + sub)
-        if commit_like:
-            return self.check_commit(label + " (an alias for commit)", opts, problems, inv, states, conc)
-        return set(states), set(states)
+            r = self.run(self.effective_cwd(st, inv), list(opts) + ["config", "--get", "alias." + sub],
+                         self.probe_env())
+            if isinstance(r, str) or r[0] not in (0, 1):
+                unread.add(st)
+            else:
+                groups.setdefault(r[1].strip() if r[0] == 0 else None, set()).add(st)
+        succ, fail = set(), set()
+        if unread:
+            s, f = self.alias_unknown(label, "an alias that cannot be read", opts, problems, inv, unread, conc)
+            succ |= s
+            fail |= f
+        self.alias_stack.append(sub.lower())
+        try:
+            for value in sorted(groups, key=lambda v: (v is None, v or "")):
+                s, f = self.alias_expand(label, value, rest, opts, problems, aliases, inv, groups[value], conc)
+                succ |= s
+                fail |= f
+        finally:
+            self.alias_stack.pop()
+        return succ, fail
+
+    def alias_expand(self, label, value, rest, opts, problems, aliases, inv, states, conc):
+        if value is None:
+            return self.alias_unknown(label, "not a known git subcommand or alias", opts, problems, inv, states,
+                                      conc)
+        if value.startswith("!"):
+            return self.shell_alias(label, value[1:], rest, opts, problems, inv, states, conc)
+        try:
+            parts = shlex.split(value)
+        except ValueError:
+            return self.alias_unknown(label, "an alias that cannot be parsed", opts, problems, inv, states, conc)
+        if not parts:
+            return set(states), set(states)
+        words = [literal_word(p) for p in parts]
+        opts2, problems2, aliases2, j, status = self.git_global(words)
+        if opts2 or problems2 or aliases2 or status == "dynamic":
+            return self.alias_unknown(label, "an alias with git options", opts, problems, inv, states, conc)
+        if status in ("info", "none"):
+            if any(a.value == "commit" for a in words + list(rest)):
+                return self.alias_unknown(label, "an alias with git options", opts, problems, inv, states, conc)
+            return set(states), set(states)
+        return self.git_sub(words[j].value, words[j + 1:] + list(rest), opts, problems, aliases, inv, states, conc)
+
+    def shell_alias(self, label, body, rest, opts, problems, inv, states, conc):
+        vals = [a.value for a in rest]
+        if problems or any(o.startswith(("--git-dir", "--work-tree")) for o in opts) \
+                or any(v is None for v in vals) or not body.strip():
+            return self.alias_unknown(label, "a shell alias", opts, problems, inv, states, conc)
+        text = body + "".join(" " + shlex.quote(v) for v in vals)
+        succ, fail = set(), set()
+        for st in states:
+            cwd = self.effective_cwd(st, inv)
+            tgt = self.resolve_target(cwd, opts, self.probe_env()) if cwd else "unknown directory"
+            if isinstance(tgt, str):
+                s, f = self.alias_unknown(label, "a shell alias", opts, problems, inv, {st}, conc)
+            else:
+                nested = Inv()
+                nested.envops = list(inv.envops)
+                nested.problems = list(inv.problems)
+                s, f = self.run_nested(literal_word(text), nested, {st._replace(cwd=tgt.top)}, conc, False)
+                s = {st._replace(over=r.over) for r in s}
+                f = {st._replace(over=r.over) for r in f}
+            succ |= s
+            fail |= f
+        return succ, fail
 
     def switch_target(self, sub, rest):
         vals = [a.value for a in rest]
@@ -1588,7 +1688,9 @@ class Analyzer(object):
         while i < len(vals):
             v = vals[i]
             if v is None:
-                return self.unsupported(words, states, "a shell option is not literal")
+                if want_c:
+                    break
+                return self.unsupported(words, states, "a shell option is not literal", True)
             if v == "--" or v == "-":
                 bash_syntax_flags = bash_syntax_flags and v == "--"
                 i += 1
@@ -1641,12 +1743,13 @@ class Analyzer(object):
                     if rv is not None and os.path.basename(rv) == "update.sh":
                         return self.do_update(r["word"], [], inv, states, True)
                     return self.unsupported([r["word"]], states, "a script read from standard input")
-        return set(states), set(states)
+                return set(states), set(states)
+        return self.unsupported(words, states, "a shell that reads commands from a pipe or standard input", True)
 
     def run_nested(self, word, inv, states, conc, remote):
         text = word.value
         if text is None:
-            return self.unsupported([word], states, "a shell command string that is not literal")
+            return self.unsupported([word], states, "a shell command string that is not literal", True)
         try:
             tree = Parser(text, 1, self.ctx).parse()
         except ParseError as e:
@@ -1660,11 +1763,12 @@ class Analyzer(object):
             if remote:
                 self.eval_list(tree, {State(None, None, frozenset())}, conc)
                 return set(states), set(states)
-            start = set()
+            succ, fail = set(), set()
             for st in states:
-                start.add(st._replace(cwd=self.effective_cwd(st, inv)))
-            self.eval_child(lambda st: self.eval_list(tree, {st}, conc), start)
-            return set(states), set(states)
+                s, f = self.eval_list(tree, {st._replace(cwd=self.effective_cwd(st, inv))}, conc)
+                succ |= {st._replace(over=r.over) for r in s}
+                fail |= {st._replace(over=r.over) for r in f}
+            return succ, fail
         finally:
             self.env_stack.pop()
             if remote:
@@ -1691,7 +1795,7 @@ class Analyzer(object):
         if not cmd:
             return set(states), set(states)
         if any(a.value is None for a in cmd):
-            return self.unsupported(words, states, "the remote command is not literal")
+            return self.unsupported(words, states, "the remote command is not literal", True)
         joined = Word()
         joined.text = [" ".join(a.value for a in cmd)]
         joined.raw = joined.text[0]
@@ -1779,21 +1883,26 @@ class Analyzer(object):
             reason = None
         else:
             reason = name
+            hazards = self.word_hazards(words)
             if name == "eval":
-                guarded = self.guarded_text(" ".join("".join(a.text) for a in args))
+                hazards |= self.text_hazards(" ".join("".join(a.text) for a in args))
+                if any(a.value is None for a in args) and self.dynamic_guard():
+                    self.deny("eval runs text that is not literal, and the call mentions git, the update script or "
+                              "the action commit wrapper. Run the commit or the update as its own literal command.")
             elif name == "alias":
-                guarded = any(self.guarded_text(v.split("=", 1)[1]) for v in vals if v and "=" in v)
-            else:
-                guarded = False
-            if guarded or self.guarded_words(words):
+                for v in vals:
+                    if v and "=" in v:
+                        hazards |= self.text_hazards(v.split("=", 1)[1])
+            if "guarded" in hazards:
                 self.deny("a guarded call appears inside %s, which the policy cannot check" % name)
+            self.note_unchecked(hazards, name)
         if reason:
             states = {st._replace(taint=st.taint or reason) for st in states}
         return set(states), set(states)
 
     def do_gh(self, args):
         vals = [a.value for a in args[:3]]
-        if vals[:2] == ["pr", "checkout"] or vals[:1] == ["co"] or vals[:2] in (["repo", "clone"], ["repo", "fork"]):
+        if gh_switches(vals):
             self.add_taint("gh " + " ".join(v for v in vals[:2] if v))
 
 
@@ -1806,16 +1915,26 @@ def evaluate(command, cwd):
             return ["the command could not be parsed (%s) and it contains a guarded call. Run the commit or the "
                     "update as its own plain command." % e]
         return []
-    an = Analyzer(ctx)
+    an = Analyzer(ctx, command)
     an.eval_list(tree, {State(cwd, None, frozenset())}, False)
     if an.concurrent_commit and (an.fs_taint or an.branch_changes):
         an.deny("a commit runs in a pipeline or in the background next to %s." % (an.fs_taint + an.branch_changes)[0])
-    if ctx.complex and any(an.guarded_words(words) for words in ctx.commands):
-        an.deny("a guarded call appears inside a shell construct (%s) that the policy cannot check. Run the commit "
-                "or the update as its own plain command." % ", ".join(sorted(set(ctx.complex))))
+    if ctx.complex:
+        hazards = set()
+        for words in ctx.commands:
+            hazards |= an.word_hazards(words)
+        if "guarded" in hazards:
+            an.deny("a guarded call appears inside a shell construct (%s) that the policy cannot check. Run the "
+                    "commit or the update as its own plain command." % ", ".join(sorted(set(ctx.complex))))
+        an.note_unchecked(hazards, "a shell construct")
     for text in ctx.opaque:
-        if an.guarded_text(text):
+        hazards = an.text_hazards(text)
+        if "guarded" in hazards:
             an.deny("a guarded call appears inside an expansion that the policy cannot check.")
+        an.note_unchecked(hazards, "an expansion")
+    if an.commit_seen and an.unchecked_branch:
+        an.deny("a commit runs in the same command as a branch or target change that the policy cannot follow "
+                "(inside %s). Run the commit as its own command." % an.unchecked_branch[0])
     return an.denials
 
 
