@@ -350,6 +350,10 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 	if !reflect.DeepEqual(metricBefore, metricCapture) {
 		t.Fatal("current metric mutation changed captured entry evidence")
 	}
+	t.Run("entry-admission-transitions", func(t *testing.T) {
+		t.Parallel()
+		regimeReadinessEntryAdmissionTransitions(t)
+	})
 	t.Run("once", func(t *testing.T) {
 		t.Parallel()
 		regimeReadinessOnceIntegration(t)
@@ -375,10 +379,6 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 			regimeReadinessEntryAdmissionProcess(t, mode)
 		})
 	}
-	t.Run("entry-admission-transitions", func(t *testing.T) {
-		t.Parallel()
-		regimeReadinessEntryAdmissionTransitions(t)
-	})
 	state := &StrategyState{Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100}}, Regime: "stale"}
 	syncStrategyRegimeState(state, bundles[3].Payload, rc)
 	syncStrategyRegimeState(state, bundles[0].Payload, rc)

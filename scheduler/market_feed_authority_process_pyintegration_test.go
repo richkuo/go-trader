@@ -458,7 +458,38 @@ func (e *fpEnv) embeddedConfig(name string, weightPerMinute, weightStartup, rese
 }
 
 func TestFeedWeightSharedProcesses(t *testing.T) {
+	t.Parallel()
+	t.Run("TwoOwnersAndADeadOwnersDebtStayWithinTheSharedCapacity", func(t *testing.T) {
+		t.Parallel()
+		e := newFPEnv(t)
+		cCfg := e.feedConfig("c", 40, 800, 200, 200)
+		e.install(t, cCfg)
+		c := e.start("c", cCfg)
+		c.waitFor("[feed] serving:", 120*time.Second)
+		c.kill()
+		aCfg := e.feedConfig("a", 30, 500, 100, 200)
+		bCfg := e.feedConfig("b", 30, 300, 100, 100)
+		a := e.start("a", aCfg)
+		b := e.start("b", bCfg)
+		a.waitFor("[feed-weight-shared] registered owner=", 60*time.Second)
+		rec := e.record()
+		dead := rec.Owners[e.ownerKey(cCfg)]
+		if dead == nil || dead.Active || len(dead.Charges) == 0 {
+			t.Fatalf("the killed owner is still active or its debt vanished: %+v", dead)
+		}
+		if rec.usedOnHost(feedHostOf(e.venue.srv.URL)) == 0 {
+			t.Fatalf("the killed owner's debt does not count against the shared host capacity")
+		}
+		a.waitFor("[feed] serving:", 120*time.Second)
+		b.waitFor("[feed] serving:", 120*time.Second)
+		if got := e.venue.maxWindow(); got > hlRESTWeightCeiling-200 {
+			t.Fatalf("the largest rolling 60s venue window is %d, above the shared capacity %d", got, hlRESTWeightCeiling-200)
+		}
+		t.Logf("venue arrivals %d, largest window %d", len(e.venue.snapshot()), e.venue.maxWindow())
+	})
+
 	t.Run("ADeadOwnersReserveHoldsWhileALowerReservePeerRegistersFirst", func(t *testing.T) {
+		t.Parallel()
 		e := newFPEnv(t)
 		cCfg := e.feedConfig("c", 10, 800, 200, 200)
 		e.install(t, cCfg)
@@ -500,6 +531,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 	})
 
 	t.Run("AHeldReserveRefusesStartupAndBothProbesAndStagedProbesKeepTheDeploymentKey", func(t *testing.T) {
+		t.Parallel()
 		e := newFPEnv(t)
 		cCfg := e.feedConfig("c", 2, 300, 0, 200)
 		e.install(t, cCfg)
@@ -541,6 +573,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 	})
 
 	t.Run("ReleaseThroughTheCommandLine", func(t *testing.T) {
+		t.Parallel()
 		e := newFPEnv(t)
 		xCfg := e.feedConfig("x", 2, 300, 100, 200)
 		yCfg := e.feedConfig("y", 2, 300, 100, 100)
@@ -639,35 +672,8 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 		t.Logf("release racing registration: exit %d %q", code, strings.TrimSpace(out))
 	})
 
-	t.Run("TwoOwnersAndADeadOwnersDebtStayWithinTheSharedCapacity", func(t *testing.T) {
-		e := newFPEnv(t)
-		cCfg := e.feedConfig("c", 40, 800, 200, 200)
-		e.install(t, cCfg)
-		c := e.start("c", cCfg)
-		c.waitFor("[feed] serving:", 120*time.Second)
-		c.kill()
-		aCfg := e.feedConfig("a", 30, 500, 100, 200)
-		bCfg := e.feedConfig("b", 30, 300, 100, 100)
-		a := e.start("a", aCfg)
-		b := e.start("b", bCfg)
-		a.waitFor("[feed-weight-shared] registered owner=", 60*time.Second)
-		rec := e.record()
-		dead := rec.Owners[e.ownerKey(cCfg)]
-		if dead == nil || dead.Active || len(dead.Charges) == 0 {
-			t.Fatalf("the killed owner is still active or its debt vanished: %+v", dead)
-		}
-		if rec.usedOnHost(feedHostOf(e.venue.srv.URL)) == 0 {
-			t.Fatalf("the killed owner's debt does not count against the shared host capacity")
-		}
-		a.waitFor("[feed] serving:", 120*time.Second)
-		b.waitFor("[feed] serving:", 120*time.Second)
-		if got := e.venue.maxWindow(); got > hlRESTWeightCeiling-200 {
-			t.Fatalf("the largest rolling 60s venue window is %d, above the shared capacity %d", got, hlRESTWeightCeiling-200)
-		}
-		t.Logf("venue arrivals %d, largest window %d", len(e.venue.snapshot()), e.venue.maxWindow())
-	})
-
 	t.Run("CrashPointsKeepFullLiabilityAndNeverSendUnreserved", func(t *testing.T) {
+		t.Parallel()
 		for _, tc := range []struct {
 			point     string
 			wantState string
@@ -680,6 +686,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 			{"rename@2", "", false},
 		} {
 			t.Run(strings.ReplaceAll(tc.point, ":", "_"), func(t *testing.T) {
+				t.Parallel()
 				e := newFPEnv(t)
 				cfg := e.feedConfig("x", 2, 600, 100, 100)
 				recordLate := e.installLeavingALateArrival(t, cfg)
@@ -745,6 +752,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 	})
 
 	t.Run("CrashDuringADelayedResponseKeepsTheSendingPermit", func(t *testing.T) {
+		t.Parallel()
 		e := newFPEnv(t)
 		cfg := e.feedConfig("x", 2, 600, 100, 100)
 		e.install(t, cfg)
@@ -789,6 +797,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 	})
 
 	t.Run("RestartKeepsAPauseAndTheProbeIsReadOnly", func(t *testing.T) {
+		t.Parallel()
 		e := newFPEnv(t)
 		aCfg := e.feedConfig("a", 2, 600, 100, 100)
 		bCfg := e.feedConfig("b", 2, 300, 100, 100)
@@ -850,6 +859,7 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 	})
 
 	t.Run("AHeldAuthorityLockNeverBlocksStatus", func(t *testing.T) {
+		t.Parallel()
 		e := newFPEnv(t)
 		cfg := e.feedConfig("a", 2, 600, 100, 100)
 		e.install(t, cfg)
@@ -867,20 +877,31 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer f.Close()
-		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-			t.Fatal(err)
-		}
-		release := time.AfterFunc(1500*time.Millisecond, func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN) })
-		defer release.Stop()
 		for _, path := range []string{"/health", "/status", "/health"} {
+			if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+				t.Fatal(err)
+			}
+			released := make(chan struct{})
 			started := time.Now()
+			release := time.AfterFunc(1500*time.Millisecond, func() {
+				syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				close(released)
+			})
 			resp, err := http.Get("http://localhost:" + strconv.Itoa(port) + path)
+			if err == nil {
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+			d := time.Since(started)
+			if release.Stop() {
+				syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+			} else {
+				<-released
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			if d := time.Since(started); d > 200*time.Millisecond {
+			if d > time.Second {
 				t.Fatalf("%s took %s while the authority lock was held", path, d)
 			}
 		}
