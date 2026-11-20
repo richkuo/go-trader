@@ -1939,3 +1939,99 @@ h3 {
   overflow-wrap: anywhere;
   font-size: 12px;
 }
+
+.chart-surface {
+  position: relative;
+}
+
+.chart-mount {
+  position: absolute;
+  inset: 0;
+}
+
+.chart-readout {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  right: 72px;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--topbar-bg);
+  color: var(--text);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.chart-readout[hidden] {
+  display: none;
+}
+
+.chart-readout-time {
+  color: var(--muted);
+}
+
+.chart-readout-item {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.chart-readout-label {
+  color: var(--muted);
+}
+
+.chart-readout-up {
+  color: var(--green);
+}
+
+.chart-readout-down {
+  color: var(--red);
+}
+
+.chart-failure {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  color: var(--text);
+  background: var(--empty-bg);
+  text-align: center;
+  white-space: pre-wrap;
+}
+
+.chart-failure[hidden] {
+  display: none;
+}
+
+.chart-failure-inline {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--auth-border);
+  border-radius: 8px;
+  background: var(--auth-bg);
+  white-space: pre-wrap;
+}
+
+.chart-attribution {
+  margin: 0;
+  padding: 6px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.trade-review-chart-card .chart-attribution {
+  padding: 6px 0 0;
+}
+
+.chart-attribution a {
+  color: inherit;
+}

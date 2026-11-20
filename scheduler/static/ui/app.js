@@ -137,9 +137,15 @@
     partitions: [],
     sortDir: "asc",
     chart: null,
-    series: null,
     timer: 0,
     sparklines: {},
+    selectionEpoch: 0,
+    lanes: {
+      candles: { issued: 0, accepted: 0 },
+      trades: { issued: 0, accepted: 0 },
+    },
+    chartData: null,
+    tradeHistory: null,
     tuner: {
       config: null,
       overrides: {},
@@ -150,6 +156,8 @@
       previewActive: false,
       simulateTimer: 0,
       loading: false,
+      previewSeq: 0,
+      previewFor: "",
     },
   };
 
@@ -169,6 +177,7 @@
     subtitle: document.getElementById("active-subtitle"),
     chart: document.getElementById("chart"),
     empty: document.getElementById("empty-chart"),
+    chartFailure: document.getElementById("chart-failure"),
     chartWrap: document.querySelector(".chart-wrap"),
     tradeHistoryBody: document.getElementById("trade-history-body"),
     tradeHistoryEmpty: document.getElementById("trade-history-empty"),
@@ -463,7 +472,7 @@
       return item.id === state.activeID;
     })[0];
     if (active && !partitionSelected(active.partition)) {
-      state.activeID = "";
+      setActiveStrategy("");
     }
     reloadForPartition().catch(handleRefreshError);
   }
@@ -1110,25 +1119,9 @@
     return document.documentElement.classList.contains("dark");
   }
 
-  function chartThemeOptions() {
-    const dark = isDarkMode();
-    return {
-      layout: {
-        background: { type: "solid", color: dark ? "#1a211c" : "#ffffff" },
-        textColor: dark ? "#c5cec8" : "#334139",
-      },
-      grid: {
-        vertLines: { color: dark ? "#2b342f" : "#eef1eb" },
-        horzLines: { color: dark ? "#2b342f" : "#eef1eb" },
-      },
-      rightPriceScale: { borderColor: dark ? "#3a4540" : "#d8ddd2" },
-      timeScale: { borderColor: dark ? "#3a4540" : "#d8ddd2", timeVisible: true },
-    };
-  }
-
   function applyChartTheme() {
     if (!state.chart) return;
-    state.chart.applyOptions(chartThemeOptions());
+    state.chart.applyTheme();
   }
 
   function updateDarkModeToggle() {
@@ -1173,23 +1166,83 @@
     refreshAll().catch(handleRefreshError);
   }
 
-  function initChart() {
-    if (state.chart) return;
-    state.chart = LightweightCharts.createChart(els.chart, Object.assign({}, chartThemeOptions(), {
-      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    }));
-    state.series = state.chart.addCandlestickSeries({
-      upColor: "#0f8a5f",
-      downColor: "#c23b3b",
-      borderUpColor: "#0f8a5f",
-      borderDownColor: "#c23b3b",
-      wickUpColor: "#0f8a5f",
-      wickDownColor: "#c23b3b",
+  function showChartFailure(message) {
+    els.chartFailure.textContent = "Chart unavailable: " + message;
+    els.chartFailure.hidden = false;
+    els.empty.style.display = "none";
+  }
+
+  function hideChartFailure() {
+    els.chartFailure.hidden = true;
+    els.chartFailure.textContent = "";
+  }
+
+  function ensureChart() {
+    if (state.chart) return state.chart;
+    if (!window.GoTraderChart || typeof window.GoTraderChart.create !== "function") {
+      showChartFailure("The chart script did not load. Reload the page to try again.");
+      return null;
+    }
+    const controller = window.GoTraderChart.create({
+      container: els.chart,
+      minWidth: 320,
+      minHeight: 320,
+      isDark: isDarkMode,
+      onFailure: function (failure) {
+        showChartFailure(failure.message);
+      },
     });
-    new ResizeObserver(function () {
-      const rect = els.chart.getBoundingClientRect();
-      state.chart.resize(Math.max(320, rect.width), Math.max(320, rect.height));
-    }).observe(els.chart);
+    if (!controller.available()) {
+      controller.destroy();
+      return null;
+    }
+    state.chart = controller;
+    return controller;
+  }
+
+  function clearTradeHistoryTable() {
+    els.tradeHistoryBody.innerHTML = "";
+    delete els.tradeHistoryBody.dataset.strategyId;
+    els.tradeHistoryEmpty.hidden = true;
+    els.tradeHistoryTable.hidden = true;
+  }
+
+  function setActiveStrategy(id) {
+    state.activeID = id;
+    state.selectionEpoch += 1;
+    state.chartData = null;
+    state.tradeHistory = null;
+    if (state.chart) state.chart.clear();
+    hideChartFailure();
+    els.empty.style.display = "none";
+    clearTradeHistoryTable();
+  }
+
+  function takeTicket(lane) {
+    const entry = state.lanes[lane];
+    entry.issued += 1;
+    return { id: state.activeID, epoch: state.selectionEpoch, seq: entry.issued };
+  }
+
+  function acceptReply(lane, ticket) {
+    const entry = state.lanes[lane];
+    if (ticket.id !== state.activeID || ticket.epoch !== state.selectionEpoch || ticket.seq <= entry.accepted) {
+      return false;
+    }
+    entry.accepted = ticket.seq;
+    return true;
+  }
+
+  function previewTicketCurrent(ticket) {
+    return ticket.id === state.activeID &&
+      ticket.epoch === state.selectionEpoch &&
+      ticket.seq === state.tuner.previewSeq;
+  }
+
+  function invalidatePreview() {
+    state.tuner.previewSeq += 1;
+    state.tuner.previewFor = "";
+    state.tuner.loading = false;
   }
 
   function groupStrategies(strategies) {
@@ -1318,7 +1371,7 @@
 
   async function selectStrategy(id, options) {
     const opts = options || {};
-    state.activeID = id;
+    setActiveStrategy(id);
     resetTunerState();
     updateRegimeBadge("");
     updateDivergenceBadge(null);
@@ -1348,6 +1401,7 @@
     state.tuner.liveRefusal = "";
     state.tuner.simulatedRefusal = "";
     state.tuner.previewActive = false;
+    invalidatePreview();
     if (state.tuner.simulateTimer) {
       clearTimeout(state.tuner.simulateTimer);
       state.tuner.simulateTimer = 0;
@@ -1837,34 +1891,48 @@
     }, 450);
   }
 
+  function refreshChartAndTrades() {
+    return Promise.all([refreshChart(), refreshTradeHistory()]);
+  }
+
   async function runSimulate() {
     if (!state.activeID) return;
     if (!tunerHasOverrides()) {
+      invalidatePreview();
       state.tuner.previewActive = false;
       state.tuner.liveMarkers = [];
       state.tuner.simulatedMarkers = [];
       state.tuner.liveRefusal = "";
       state.tuner.simulatedRefusal = "";
       updateTunerStatus();
-      await refreshChart();
+      await refreshChartAndTrades();
       return;
     }
+    state.tuner.previewSeq += 1;
+    const ticket = { id: state.activeID, epoch: state.selectionEpoch, seq: state.tuner.previewSeq };
     state.tuner.loading = true;
     updateTunerStatus();
     try {
       const resp = await postJSON(
-        "/api/strategies/" + encodeURIComponent(state.activeID) + "/simulate",
+        "/api/strategies/" + encodeURIComponent(ticket.id) + "/simulate",
         { overrides: buildSimulateOverrides(), limit: 400 }
       );
+      if (!previewTicketCurrent(ticket)) return;
       state.tuner.liveMarkers = resp.live_markers || [];
       state.tuner.simulatedMarkers = resp.simulated_markers || [];
       state.tuner.liveRefusal = resp.live_refusal || "";
       state.tuner.simulatedRefusal = resp.simulated_refusal || "";
       state.tuner.previewActive = true;
-      await refreshChart();
+      state.tuner.previewFor = ticket.id;
+      await refreshChartAndTrades();
+    } catch (err) {
+      if (!previewTicketCurrent(ticket)) return;
+      throw err;
     } finally {
-      state.tuner.loading = false;
-      updateTunerStatus();
+      if (previewTicketCurrent(ticket)) {
+        state.tuner.loading = false;
+        updateTunerStatus();
+      }
     }
   }
 
@@ -1898,13 +1966,14 @@
     if (state.tuner.config) {
       renderTunerForm(state.tuner.config);
     }
+    invalidatePreview();
     state.tuner.previewActive = false;
     state.tuner.liveMarkers = [];
     state.tuner.simulatedMarkers = [];
     state.tuner.liveRefusal = "";
     state.tuner.simulatedRefusal = "";
     updateTunerStatus();
-    refreshChart().catch(handleRefreshError);
+    refreshChartAndTrades().catch(handleRefreshError);
   }
 
   function tunerApplyRequiresRestartClient() {
@@ -1938,7 +2007,7 @@
   }
 
   function chartMarkersFromResponse(tradeResp) {
-    if (state.tuner.previewActive && state.tuner.simulatedMarkers.length) {
+    if (state.tuner.previewActive && state.tuner.previewFor === state.activeID && state.tuner.simulatedMarkers.length) {
       const faded = (state.tuner.liveMarkers || []).map(function (m) {
         return {
           time: m.time,
@@ -1959,7 +2028,7 @@
       });
       return faded.concat(bright);
     }
-    return (tradeResp.markers || []).map(function (m) {
+    return ((tradeResp && tradeResp.markers) || []).map(function (m) {
       return {
         time: m.time,
         position: m.position,
@@ -1970,19 +2039,61 @@
     });
   }
 
+  function drawChartMarkers() {
+    const chart = state.chart;
+    const data = state.chartData;
+    if (!chart || !data || data.strategyID !== state.activeID) return false;
+    const history = state.tradeHistory && state.tradeHistory.strategyID === state.activeID
+      ? state.tradeHistory.resp
+      : null;
+    return chart.setMarkers(chartMarkersFromResponse(history));
+  }
+
+  function drawChart() {
+    const chart = state.chart;
+    const data = state.chartData;
+    if (!chart || !data || data.strategyID !== state.activeID) return;
+    const candles = data.resp.candles || [];
+    if (!chart.setData({ candles: candles, source: data.resp.source })) return;
+    if (!drawChartMarkers()) return;
+    hideChartFailure();
+    els.empty.style.display = candles.length ? "none" : "flex";
+    if (candles.length) chart.fitContent();
+  }
+
   async function refreshChart() {
     if (!state.activeID) return;
-    initChart();
-    const [candleResp, tradeResp] = await Promise.all([
-      getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/candles?limit=400"),
-      getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/trades?limit=400"),
-    ]);
-    const candles = candleResp.candles || [];
-    state.series.setData(candles);
-    state.series.setMarkers(chartMarkersFromResponse(tradeResp));
-    els.empty.style.display = candles.length ? "none" : "flex";
-    if (candles.length) state.chart.timeScale().fitContent();
-    renderTradeHistory(tradeResp.trades || tradeResp.markers || []);
+    if (!ensureChart()) return;
+    const ticket = takeTicket("candles");
+    let resp;
+    try {
+      resp = await getJSON("/api/strategies/" + encodeURIComponent(ticket.id) + "/candles?limit=400");
+    } catch (err) {
+      if (!acceptReply("candles", ticket)) return;
+      if (err.status === 401) throw err;
+      showChartFailure("The candle request failed: " + (err.message || String(err)));
+      return;
+    }
+    if (!acceptReply("candles", ticket)) return;
+    state.chartData = { strategyID: ticket.id, resp: resp };
+    drawChart();
+  }
+
+  async function refreshTradeHistory() {
+    if (!state.activeID) return;
+    const ticket = takeTicket("trades");
+    let resp;
+    try {
+      resp = await getJSON("/api/strategies/" + encodeURIComponent(ticket.id) + "/trades?limit=400");
+    } catch (err) {
+      if (!acceptReply("trades", ticket)) return;
+      throw err;
+    }
+    if (!acceptReply("trades", ticket)) return;
+    state.tradeHistory = { strategyID: ticket.id, resp: resp };
+    renderTradeHistory(resp.trades || resp.markers || []);
+    els.tradeHistoryBody.dataset.strategyId = ticket.id;
+    drawChartMarkers();
   }
 
   function tradeRowsForDisplay(rows) {
@@ -2070,10 +2181,11 @@
   }
 
   function openTradeReview(row) {
-    if (!row || !state.activeID) return;
+    const stampedID = els.tradeHistoryBody.dataset.strategyId || "";
+    if (!row || !stampedID || stampedID !== state.activeID) return;
     const positionID = row.getAttribute("data-position-id");
     if (!positionID) return;
-    window.open(tradeReviewURL(state.activeID, positionID), "_blank", "noopener");
+    window.open(tradeReviewURL(stampedID, positionID), "_blank", "noopener");
   }
 
   function initTradeHistoryActivation() {
@@ -2764,6 +2876,7 @@
       }
       await Promise.all([
         refreshChart(),
+        refreshTradeHistory(),
         refreshStatus(),
         refreshRiskPanel(),
         refreshRegimeStorePanel(),
@@ -3137,7 +3250,6 @@
     state.viewMode = loadViewMode();
     applyViewMode();
     updateDarkModeToggle();
-    initChart();
     const read = await getJSONForPartition("/api/strategies");
     state.strategies = read.data.strategies || [];
     renderStrategies();
