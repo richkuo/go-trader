@@ -9,7 +9,7 @@ Before this change a dashboard Apply request could name a different open strateg
 Now preview and Apply compare a request `open_strategy.name` (trimmed) with the selected strategy's effective open strategy (`open_strategy.name`, else the first script argument). A different name gets HTTP 400 naming both strategies; preview returns before it fetches candles and Apply returns before it reads the file. A blank or missing name is a parameter-only request.
 The merge writes parameter overrides into a deep copy, so the running config never changes before a reload. Under the config write lock, Apply reads the file entry and refuses an open strategy edit with HTTP 409 when the file's effective open strategy differs from the running one. An accepted edit starts from the file entry's own parameters and name and never saves the request name.
 Pause, ratchet notifications and Discord `config set` send no open strategy override and are unchanged. The ranked tuning promotion (`POST /api/tuning/apply`) is a separate path and is unchanged.
-Operator action: none. On a 409, send SIGHUP (or wait for the next reload) and refresh the dashboard. Deploy with `bash scripts/update.sh --restart`.
+Operator action: none. On a 409, send SIGHUP (or wait for the next reload) and refresh the dashboard; restart instead when the reload log says a restart is required, as it does when the name changed through the first script argument. Deploy with `bash scripts/update.sh --restart`.
 
 ### Issue 2077: Deribit and OKX are unmaintained, and the shared option types leave the Deribit adapter
 

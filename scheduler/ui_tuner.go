@@ -563,7 +563,7 @@ type tunerOpenStrategyStaleError struct {
 }
 
 func (e *tunerOpenStrategyStaleError) Error() string {
-	return fmt.Sprintf("strategy %s: the running config uses open strategy %q but the config file now has %q; reload go-trader (SIGHUP) and refresh the dashboard before editing open strategy parameters", e.StrategyID, e.Loaded, e.File)
+	return fmt.Sprintf("strategy %s: the running config uses open strategy %q but the config file now has %q; reload go-trader (SIGHUP), or restart it when the reload log says a restart is required, then refresh the dashboard before editing open strategy parameters", e.StrategyID, e.Loaded, e.File)
 }
 
 func tunerConfigErrorStatus(err error) int {
@@ -1118,6 +1118,7 @@ func applyStrategyConfigPatch(configPath, strategyID string, merged StrategyConf
 		return false, err
 	}
 	tmpPath := tmpFile.Name()
+	_ = tmpFile.Close()
 	defer os.Remove(tmpPath)
 	if err := os.WriteFile(tmpPath, out, 0o600); err != nil {
 		return false, err
