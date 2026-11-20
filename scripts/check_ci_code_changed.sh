@@ -12,6 +12,7 @@ gates=(quote egress_docker merge_paper update migrate shared_feed)
 g() { git -C "$tmp/repo" -c user.email=ci@example.invalid -c user.name=ci -c init.defaultBranch=main -c advice.detachedHead=false "$@"; }
 
 git init -q "$tmp/repo"
+g config core.fileMode true
 mkdir -p "$tmp/repo/scheduler/cmd/egress-controller" "$tmp/repo/docs" "$tmp/repo/scripts/fixtures" "$tmp/repo/systemd" "$tmp/repo/.github/workflows"
 for f in CLAUDE.md SKILL.md README.md scheduler/executor.go docs/backtesting-registry.md scheduler/cmd/egress-controller/manifest.go \
   scheduler/quote_coordinator.go scripts/merge-paper-instance.sh scripts/update.sh scripts/migrate-service-layout.py \
@@ -22,14 +23,66 @@ for f in CLAUDE.md SKILL.md README.md scheduler/executor.go docs/backtesting-reg
   scripts/test_migrate_service_layout_fixture.sh systemd/go-trader@.service scheduler/config_reload.go; do
   printf 'base\n' >"$tmp/repo/$f"
 done
+go_src() {
+  local path="$1"
+  shift
+  printf '%s\n' "$@" >"$path"
+}
+go_body='func TestBase() { _ = os.Args }'
+for f in scheduler/probe_cmd_test.go scheduler/run_evidence_test.go scheduler/market_feed_ws_test.go \
+  scheduler/egress_integration_test.go scheduler/quote_coordinator_test.go scheduler/config_reload_test.go \
+  scheduler/cmd/egress-controller/manifest_test.go; do
+  go_src "$tmp/repo/$f" 'package main' '' 'import "os"' '' "$go_body"
+done
+go_src "$tmp/repo/scheduler/run_evidence_block_test.go" '/* block comment */' 'package main' '' "$go_body"
+go_src "$tmp/repo/scheduler/run_evidence_raw_test.go" '// see `x`' 'package main' '' "$go_body"
+go_src "$tmp/repo/scheduler/run_evidence_nodecl_test.go" 'package main'
+go_src "$tmp/repo/scheduler/run_evidence_alias_test.go" 'package main' '' 'import (' 'typeé "os"' ')' '' "$go_body"
 g add -A
 g commit -q -m base
 base="$(g rev-parse HEAD)"
 
+push_before=unset
+push_forced=unset
+fail_git=""
+case_head=""
+repo_dir="$tmp/repo"
+mkdir -p "$tmp/bin"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'real=%q\n' "$(command -v git)"
+  cat <<'SHIM'
+if [ -n "${CI_CHECK_FAIL_GIT:-}" ]; then
+  for a in "$@"; do
+    if [ "$a" = "$CI_CHECK_FAIL_GIT" ]; then
+      "$real" "$@"
+      exit 1
+    fi
+  done
+fi
+exec "$real" "$@"
+SHIM
+} >"$tmp/bin/git"
+chmod +x "$tmp/bin/git"
+
 detect() {
-  local event="$1" out="$tmp/output" name lines got=""
+  local event="$1" out="$tmp/output" name lines got="" before="$push_before"
+  local envs=(EVENT_NAME="$event" GITHUB_OUTPUT="$out")
+  case "$before" in
+    base) before="$base" ;;
+    head) before="$case_head" ;;
+  esac
+  if [ "$before" != unset ]; then
+    envs+=(PUSH_BEFORE="$before")
+  fi
+  if [ "$push_forced" != unset ]; then
+    envs+=(PUSH_FORCED="$push_forced")
+  fi
+  if [ -n "$fail_git" ]; then
+    envs+=(CI_CHECK_FAIL_GIT="$fail_git" PATH="$tmp/bin:$PATH")
+  fi
   : >"$out"
-  (cd "$tmp/repo" && EVENT_NAME="$event" GITHUB_OUTPUT="$out" bash "$detector" >/dev/null)
+  (cd "$repo_dir" && env -u PUSH_BEFORE -u PUSH_FORCED -u CI_CHECK_FAIL_GIT "${envs[@]}" bash "$detector" >/dev/null)
   lines="$(wc -l <"$out" | tr -d ' ')"
   if [ "$lines" != "${#outputs[@]}" ]; then
     echo "bad: $lines output lines" && return
@@ -52,6 +105,7 @@ check() {
   g commit -q -m "$name"
   local head
   head="$(g rev-parse HEAD)"
+  case_head="$head"
   g checkout -q --detach "$base"
   if [ "$merge" = merge ]; then
     g merge -q --no-ff --no-edit "$head"
@@ -67,6 +121,23 @@ check() {
     fail=1
   fi
 }
+
+check_env() {
+  push_before="$5"
+  push_forced="$6"
+  check "$1" "$2" "$3" "$4" "$7"
+  push_before=unset
+  push_forced=unset
+}
+
+with_fail_git() {
+  fail_git="$1"
+  shift
+  "$@"
+  fail_git=""
+}
+
+res() { echo "code=$1 quote=$2 egress_docker=$3 merge_paper=$4 update=$5 migrate=$6 shared_feed=$7"; }
 
 all="code=true quote=true egress_docker=true merge_paper=true update=true migrate=true shared_feed=true"
 code_only="code=true quote=false egress_docker=false merge_paper=false update=false migrate=false shared_feed=false"
@@ -106,6 +177,110 @@ check "template unit, pull request" pull_request merge "code=true quote=false eg
 check "shared feed config reload, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=false shared_feed=true" 'echo x >>scheduler/config_reload.go'
 check "workflow, pull request" pull_request merge "$all" 'echo x >>.github/workflows/ci.yml'
 
+g checkout -q -B sibling "$base"
+echo sibling >>"$tmp/repo/SKILL.md"
+g commit -q -am sibling
+sibling="$(g rev-parse HEAD)"
+zeros="$(printf "%${#base}s" "" | tr ' ' 0)"
+ones="$(printf "%${#base}s" "" | tr ' ' 1)"
+upper="$(printf '%s' "$base" | tr a-f A-F)"
+
+check_env "verified docs-only push" push plain "$none" base false 'echo x >>SKILL.md'
+check_env "verified docs-only push, merge head" push merge "$none" base false 'echo x >>SKILL.md; echo x >>CLAUDE.md'
+check_env "two docs-only commits, push" push plain "$none" base false 'echo x >>SKILL.md; g add -A; g commit -q -m d1; echo y >>README.md'
+check_env "code push" push plain "$all" base false 'echo x >>scheduler/executor.go'
+check_env "mixed push" push plain "$all" base false 'echo x >>SKILL.md; echo x >>scheduler/executor.go'
+check_env "test-read doc push" push plain "$all" base false 'echo x >>docs/backtesting-registry.md'
+check_env "code renamed into the list, push" push plain "$all" base false 'git rm -q README.md && git mv scheduler/executor.go README.md'
+check_env "rename out of the list, push" push plain "$all" base false 'git mv README.md README2.md'
+check_env "code renamed onto a new listed path, push" push plain "$all" base false 'git mv scheduler/executor.go AGENTS.md'
+check_env "code then docs commits, push" push plain "$all" base false 'echo x >>scheduler/executor.go; g add -A; g commit -q -m c1; echo y >>SKILL.md'
+check_env "previous commit unset, push" push plain "$all" unset false 'echo x >>SKILL.md'
+check_env "previous commit empty, push" push plain "$all" "" false 'echo x >>SKILL.md'
+check_env "previous commit abbreviated, push" push plain "$all" "${base:0:12}" false 'echo x >>SKILL.md'
+check_env "previous commit uppercase, push" push plain "$all" "$upper" false 'echo x >>SKILL.md'
+check_env "previous commit as a ref expression, push" push plain "$all" "HEAD~1" false 'echo x >>SKILL.md'
+check_env "previous commit all zeros, push" push plain "$all" "$zeros" false 'echo x >>SKILL.md'
+check_env "previous commit absent, push" push plain "$all" "$ones" false 'echo x >>SKILL.md'
+check_env "forced flag unset, push" push plain "$all" base unset 'echo x >>SKILL.md'
+check_env "forced flag empty, push" push plain "$all" base "" 'echo x >>SKILL.md'
+check_env "forced push" push plain "$all" base true 'echo x >>SKILL.md'
+check_env "forced flag not exactly false, push" push plain "$all" base False 'echo x >>SKILL.md'
+check_env "previous commit not an ancestor, push" push plain "$all" "$sibling" false 'echo x >>SKILL.md'
+check_env "empty diff, push" push plain "$all" head false 'echo x >>SKILL.md'
+for cmd in diff merge-base cat-file rev-parse; do
+  with_fail_git "$cmd" check_env "git $cmd fails, push" push plain "$all" base false 'echo x >>SKILL.md'
+done
+check_env "release with push values" release plain "$all" base false 'echo x >>SKILL.md'
+check_env "manual run with push values" workflow_dispatch plain "$all" base false 'echo x >>SKILL.md'
+check_env "no event with push values" "" plain "$all" base false 'echo x >>SKILL.md'
+check_env "non-merge pull request with push values" pull_request plain "$all" base false 'echo x >>SKILL.md'
+
+g checkout -q -B case "$base"
+echo d1 >>"$tmp/repo/SKILL.md"
+g commit -q -am d1
+d1="$(g rev-parse HEAD)"
+echo d2 >>"$tmp/repo/README.md"
+g commit -q -am d2
+git clone -q --depth 2 --branch case "file://$tmp/repo" "$tmp/shallow"
+repo_dir="$tmp/shallow"
+for shallow in "d1:$d1:$none" "base:$base:$all"; do
+  label="${shallow%%:*}"
+  rest="${shallow#*:}"
+  push_before="${rest%%:*}"
+  push_forced=false
+  want="${rest#*:}"
+  got="$(detect push)"
+  if [ "$got" = "$want" ]; then
+    echo "ok: shallow depth 2 clone, previous commit $label, push -> $got"
+  else
+    echo "FAIL: shallow depth 2 clone, previous commit $label, push: want $want, got $got"
+    fail=1
+  fi
+done
+push_before=unset
+push_forced=unset
+repo_dir="$tmp/repo"
+
+svc_files=(scheduler/probe_cmd_test.go scheduler/run_evidence_test.go scheduler/market_feed_ws_test.go scheduler/egress_integration_test.go)
+svc_prev=("$(res true false false false true true true)" "$(res true false false false false true false)"
+  "$(res true false false false false false true)" "$(res true false true false false false true)")
+for i in 0 1 2 3; do
+  f="${svc_files[$i]}"
+  prev="${svc_prev[$i]}"
+  stem="${f%_test.go}"
+  check "test body edit $f, pull request" pull_request merge "$code_only" "echo '// body edit' >>$f"
+  check "test body edit $f and a doc, pull request" pull_request merge "$prev" "echo '// body edit' >>$f; echo x >>CLAUDE.md"
+  check "test body edit $f and code, pull request" pull_request merge "$prev" "echo '// body edit' >>$f; echo x >>scheduler/executor.go"
+  check "test file ${stem}_added_test.go added, pull request" pull_request merge "$prev" "cp $f ${stem}_added_test.go"
+  check "test file $f deleted, pull request" pull_request merge "$prev" "git rm -q $f"
+  check "test file $f renamed, pull request" pull_request merge "$prev" "git mv $f ${stem}_moved_test.go"
+  check "test file $f made executable, pull request" pull_request merge "$prev" "chmod +x $f; echo '// body edit' >>$f"
+  check "test file $f made a symlink, pull request" pull_request merge "$prev" "rm $f; ln -s executor.go $f"
+  check "test file $f import changed, pull request" pull_request merge "$prev" "go_src $f 'package main' '' 'import \"io\"' '' \"\$go_body\""
+  check "test file $f package clause changed, pull request" pull_request merge "$prev" "go_src $f 'package main_test' '' 'import \"os\"' '' \"\$go_body\""
+  check "test file $f build constraint added, pull request" pull_request merge "$prev" "go_src $f '//go:build x' '' 'package main' '' 'import \"os\"' '' \"\$go_body\""
+done
+migrate_prev="${svc_prev[1]}"
+probe_prev="${svc_prev[0]}"
+check "two test body edits, pull request" pull_request merge "$code_only" "echo '// body edit' >>scheduler/probe_cmd_test.go; echo '// body edit' >>scheduler/run_evidence_test.go"
+check "quote test body edit, pull request" pull_request merge "$(res true true false false false false false)" "echo '// body edit' >>scheduler/quote_coordinator_test.go"
+check "config reload test body edit, pull request" pull_request merge "$(res true false false true false false false)" "echo '// body edit' >>scheduler/config_reload_test.go"
+check "test header comment edit, pull request" pull_request merge "$migrate_prev" "go_src scheduler/run_evidence_test.go '// header comment' 'package main' '' 'import \"os\"' '' \"\$go_body\""
+check "test header blank line, pull request" pull_request merge "$migrate_prev" "go_src scheduler/run_evidence_test.go 'package main' '' '' 'import \"os\"' '' \"\$go_body\""
+check "test header with a block comment, pull request" pull_request merge "$migrate_prev" "echo '// body edit' >>scheduler/run_evidence_block_test.go"
+check "test header with a backquote, pull request" pull_request merge "$migrate_prev" "echo '// body edit' >>scheduler/run_evidence_raw_test.go"
+check "test body gains go:embed, pull request" pull_request merge "$migrate_prev" "echo '//go:embed x' >>scheduler/run_evidence_test.go"
+check "test file with no top-level declaration, pull request" pull_request merge "$migrate_prev" "echo '// body edit' >>scheduler/run_evidence_nodecl_test.go"
+check "test body edit under an import alias that starts with type, pull request" pull_request merge "$code_only" "echo '// body edit' >>scheduler/run_evidence_alias_test.go"
+check "import alias that starts with type changed, pull request" pull_request merge "$migrate_prev" "go_src scheduler/run_evidence_alias_test.go 'package main' '' 'import (' 'typeé \"net\"' ')' '' \"\$go_body\""
+check "nested egress controller test body edit, pull request" pull_request merge "$(res true false true false false false false)" "echo '// body edit' >>scheduler/cmd/egress-controller/manifest_test.go"
+for cmd in --raw cat-file hash-object; do
+  with_fail_git "$cmd" check "git $cmd fails on a test body edit, pull request" pull_request merge "$probe_prev" "echo '// body edit' >>scheduler/probe_cmd_test.go"
+done
+with_fail_git --name-only check "git --name-only fails, pull request" pull_request merge "$all" "echo '// body edit' >>scheduler/probe_cmd_test.go"
+check "test body edit and the detector, pull request" pull_request merge "$all" "echo '// body edit' >>scheduler/probe_cmd_test.go; echo x >>scripts/ci_code_changed.sh"
+
 for wf in .github/workflows/ci.yml .github/workflows/container.yml; do
   path="$root/$wf"
   n="$(grep -cxF '      code: ${{ steps.diff.outputs.code }}' "$path" || true)"
@@ -121,6 +296,15 @@ for wf in .github/workflows/ci.yml .github/workflows/container.yml; do
   n="$(grep -cxF '        run: bash scripts/ci_code_changed.sh' "$path" || true)"
   if [ "$n" != 1 ]; then
     echo "FAIL: $wf runs scripts/ci_code_changed.sh $n times, want 1"
+    fail=1
+  fi
+  want_env="$(printf '%s\n' '        id: diff' '        env:' '          EVENT_NAME: ${{ github.event_name }}' \
+    '          PUSH_BEFORE: ${{ github.event.before }}' '          PUSH_FORCED: ${{ github.event.forced }}' \
+    '        run: bash scripts/ci_code_changed.sh')"
+  got_env="$(sed -n '/^        id: diff$/,/^        run: bash scripts\/ci_code_changed.sh$/p' "$path")"
+  if [ "$got_env" != "$want_env" ]; then
+    echo "FAIL: $wf detector step does not pass exactly EVENT_NAME, PUSH_BEFORE and PUSH_FORCED in its env block, got:"
+    echo "$got_env"
     fail=1
   fi
   n="$(grep -cxF "    if: \${{ needs.changes.outputs.code == 'true' }}" "$path" || true)"
@@ -414,4 +598,4 @@ fi
 if [ "$fail" != 0 ]; then
   exit 1
 fi
-echo "PASS: ci change detector (docs-only pull request merges skip; code, push, no event, test-read doc, renames and non-merge heads run; each suite gate fires on its own paths (the shared feed root proof on conversion, feed implementation, venue endpoint, config parse and reload, template unit and fixture changes), on the workflow and the detector, and on every push; both workflows wire the code output and ci.yml gates jobs and steps only on declared outputs)"
+echo "PASS: ci change detector (docs-only pull request merges and verified docs-only pushes skip; code, doubtful pushes (forced, unset, malformed, zero, absent, non-ancestor, empty or failed diff, shallow gaps), no event, test-read doc, renames and non-merge heads run; each suite gate fires on its own paths (the shared feed root proof on conversion, feed implementation, venue endpoint, config parse and reload, template unit and fixture changes), on the workflow and the detector, and on every push that is not a verified docs-only push; test-body-only edits of top-level scheduler Go test files with the same mode and header turn the four service gates off, and every other test file change keeps them; both workflows wire the code output and pass both push values to the detector step, and ci.yml gates jobs and steps only on declared outputs)"
