@@ -22,8 +22,7 @@ MAX_STATES = 32
 MAX_PROBES = 64
 MAX_TOKENS = 50000
 
-RAW_GUARD = re.compile(r"\bgit\b[\s\S]*\bcommit\b|update\.sh|git-commit\.sh")
-UNPARSED_GUARD = re.compile(r"\bgit\b|update\.sh|git-commit\.sh")
+UNPARSED_GUARD = re.compile(r"\bgit\b|update\.sh|git-commit\.sh|\$[^\s;&|]+[ \t]+commit\b")
 BASH_NOEXEC_FLAGS = re.compile(r"-[enuvx]+\Z")
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 FD_RE = re.compile(r"\d+(?=[<>])")
@@ -71,6 +70,7 @@ GIT_SAFE = frozenset((
     "sparse-checkout", "stage", "stash", "status", "stripspace", "tag", "unpack-objects", "update-index", "var",
     "verify-commit", "verify-pack", "verify-tag", "version", "whatchanged", "write-tree", "lfs",
 ))
+GIT_NON_COMMIT = GIT_SAFE | GIT_ALWAYS_TAINT | {"checkout", "switch", "branch", "config", "symbolic-ref", "worktree"}
 SSH_OPERAND = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
 
 State = collections.namedtuple("State", "cwd taint over")
@@ -84,6 +84,7 @@ class Ctx(object):
     def __init__(self):
         self.complex = []
         self.opaque = []
+        self.commands = []
 
 
 class Word(object):
@@ -374,7 +375,7 @@ class Parser(object):
             return
         if s.startswith("$((", p):
             end = self.match_close(p + 3, "(", ")", 2)
-            self.ctx.opaque.append(s[p:end])
+            self.ctx.opaque.append(s[p + 3:end - 2])
             w.text.append(s[p:end])
             w.dynamic = True
             self.pos = end
@@ -386,7 +387,7 @@ class Parser(object):
             return
         if nxt == "{":
             end = self.match_close(p + 2, "{", "}", 1)
-            self.ctx.opaque.append(s[p:end])
+            self.ctx.opaque.append(s[p + 2:end - 1])
             w.text.append(s[p:end])
             w.dynamic = True
             self.pos = end
@@ -586,6 +587,7 @@ class Parser(object):
             break
         if not assigns and not words and not redirs:
             raise ParseError("an empty command")
+        self.ctx.commands.append(words)
         return ("simple", assigns, words, redirs)
 
 
@@ -620,25 +622,6 @@ def sensitive_env(name):
     if name.startswith("GIT_AUTHOR_") or name.startswith("GIT_COMMITTER_"):
         return False
     return name.startswith("GIT_") and name not in SAFE_GIT_ENV
-
-
-def guarded_words(words):
-    if RAW_GUARD.search(" ".join(w.raw for w in words)):
-        return True
-    seen_git = False
-    for w in words:
-        if RAW_GUARD.search(w.raw):
-            return True
-        v = w.value
-        if v is None:
-            continue
-        if os.path.basename(v) in ("update.sh", "git-commit.sh"):
-            return True
-        if os.path.basename(v) == "git":
-            seen_git = True
-        elif seen_git and v == "commit":
-            return True
-    return False
 
 
 def simulate_update_args(values):
@@ -798,8 +781,41 @@ class Analyzer(object):
             inv.envops.append(("set", a.assign[0], a.assign_value))
         return self.dispatch(words, inv, redirs, states, conc)
 
+    def guarded_words(self, words, depth=0):
+        for word in words:
+            if word.quoted or word.value not in COMPOUND:
+                if word.value is not None and os.path.basename(word.value) in DATA_HEADS:
+                    return False
+                break
+        for i, word in enumerate(words):
+            value = word.value
+            if value is None:
+                if i + 1 < len(words) and words[i + 1].value == "commit":
+                    return True
+                value = "".join(word.text)
+            base = os.path.basename(value)
+            if base in ("update.sh", "git-commit.sh"):
+                return True
+            if base == "git":
+                args = words[i + 1:]
+                _, _, _, sub, status = self.git_global(args)
+                if status == "dynamic" or (status == "ok" and args[sub].value not in GIT_NON_COMMIT):
+                    return True
+            if word.quoted and any(c.isspace() for c in value) and self.guarded_text(value, depth + 1):
+                return True
+        return False
+
+    def guarded_text(self, text, depth=0):
+        ctx = Ctx()
+        try:
+            Parser(text, depth, ctx).parse()
+        except ParseError:
+            return bool(UNPARSED_GUARD.search(text))
+        return (any(self.guarded_words(words, depth) for words in ctx.commands)
+                or any(self.guarded_text(fragment, depth + 1) for fragment in ctx.opaque))
+
     def unsupported(self, words, states, why):
-        if guarded_words(words):
+        if self.guarded_words(words):
             self.deny("a guarded call appears in a form the policy cannot check (%s)" % why)
         return set(states), set(states)
 
@@ -1763,7 +1779,13 @@ class Analyzer(object):
             reason = None
         else:
             reason = name
-            if guarded_words(words):
+            if name == "eval":
+                guarded = self.guarded_text(" ".join("".join(a.text) for a in args))
+            elif name == "alias":
+                guarded = any(self.guarded_text(v.split("=", 1)[1]) for v in vals if v and "=" in v)
+            else:
+                guarded = False
+            if guarded or self.guarded_words(words):
                 self.deny("a guarded call appears inside %s, which the policy cannot check" % name)
         if reason:
             states = {st._replace(taint=st.taint or reason) for st in states}
@@ -1788,11 +1810,11 @@ def evaluate(command, cwd):
     an.eval_list(tree, {State(cwd, None, frozenset())}, False)
     if an.concurrent_commit and (an.fs_taint or an.branch_changes):
         an.deny("a commit runs in a pipeline or in the background next to %s." % (an.fs_taint + an.branch_changes)[0])
-    if ctx.complex and RAW_GUARD.search(command):
+    if ctx.complex and any(an.guarded_words(words) for words in ctx.commands):
         an.deny("a guarded call appears inside a shell construct (%s) that the policy cannot check. Run the commit "
                 "or the update as its own plain command." % ", ".join(sorted(set(ctx.complex))))
     for text in ctx.opaque:
-        if RAW_GUARD.search(text):
+        if an.guarded_text(text):
             an.deny("a guarded call appears inside an expansion that the policy cannot check.")
     return an.denials
 

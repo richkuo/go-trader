@@ -194,6 +194,23 @@ class Runner(object):
         c("sudo git commit on main", gt, "sudo -n git commit -m probe", "deny")
         c("env -C into main", wt, "env -C %s git commit -m probe" % gt, "deny")
         c("unsupported wrapper around a commit", wt, "xargs git commit -m probe </dev/null", "deny")
+        c("dynamic command name with a commit on main", gt, "G=git; $G commit --allow-empty -m x", "deny")
+        main_before = self.ref(gt, "refs/heads/main")
+        c("unsupported wrapper around a commit alias", gt, "xargs git cm --allow-empty -m x </dev/null", "deny")
+        if self.ref(gt, "refs/heads/main") != main_before:
+            self.failures.append("the unsupported wrapper check moved main")
+        c("function definition with a commit alias", gt, "function f { git cm --allow-empty -m x; }; f", "deny")
+        c("eval with a commit alias", gt, "eval 'git cm --allow-empty -m x'", "deny")
+        c("parameter expansion with a commit alias", gt, "echo ${x:-$(git cm --allow-empty -m x)}", "deny")
+        c("arithmetic expansion with a commit alias", gt, "echo $(( $(git cm --allow-empty -m x) ))", "deny")
+        c("unsupported wrapper around a known git subcommand", gt, "find . -name '*.go' | xargs git add", "allow")
+        c("conditional with a known git subcommand", gt, "if git diff --quiet; then echo same; fi", "allow")
+        c("conditional with quoted git text", gt, "if true; then echo 'git cm'; fi", "allow")
+        c("nested shell with a dynamic git subcommand", gt, 'bash -c "git $SUB --allow-empty -m x"', "deny")
+        c("unsupported wrapper with git options before a commit alias", gt,
+          "xargs git -C . cm --allow-empty -m x </dev/null", "deny")
+        c("unsupported wrapper with git options before a known subcommand", gt,
+          "find . -name '*.go' | xargs git -C . add", "allow")
         c("if statement around a commit", wt, "if true; then git commit -m probe; fi", "deny")
         c("unparseable command with a commit", wt, "git commit -m 'unterminated", "deny")
         c("unparseable case with a commit alias", gt, "case 1 in 1) git cm --allow-empty -m x;; esac", "deny")

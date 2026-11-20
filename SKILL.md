@@ -3665,9 +3665,10 @@ A checkout with a pathspec after `--` leaves the branch unchanged. An unresolved
 Other branch or target changes earlier in the same call deny a later commit: `rebase`, `bisect`, `update-ref`, a `symbolic-ref` write, `worktree move`/`remove`, a `config` write, `branch -m`, `submodule`, `init`, `clone`, `gh pr checkout`, an unresolved checkout, an export or assignment of a git, path or home variable, `source`, `eval` and `alias`.
 `GIT_DIR`-style environment prefixes and `-c core.worktree`/`core.bare`/`include.*` overrides deny.
 A commit in a pipeline or background job next to any branch change denies.
-A guarded call inside `if`/`for`/`while`/`case`, a function, an arithmetic or parameter expansion, an unsupported wrapper (`xargs`, `find -exec`, `uv run` and similar), or a command that cannot be parsed denies.
+The checker blocks a possible guarded call inside a compound command, an expansion, an `eval` string, a function, or an unsupported wrapper such as `xargs`.
+In those forms it treats a git subcommand outside the known non-commit set, including a possible alias, as a guarded call. It also blocks a non-literal command name followed by `commit`.
 When parsing fails, the checker blocks text that mentions git, the update script or the action commit wrapper.
-In parsed commands, quoted text and arguments to data commands (`echo`, `printf`, `grep`, `gh` and similar) stay data.
+Arguments to recognized data commands (`echo`, `printf`, `grep`, `gh` and similar) stay data in supported forms. Text passed to an unsupported wrapper can be a command.
 `bash -n scripts/update.sh` and `shellcheck scripts/update.sh` are read-only checks and do not require a restart.
 Other git commands that add commits to the current branch (`merge`, `pull`, `cherry-pick`, `revert`, `am`) are outside the direct-commit rule.
 
