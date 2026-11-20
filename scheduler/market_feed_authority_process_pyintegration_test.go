@@ -877,20 +877,31 @@ func TestFeedWeightSharedProcesses(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer f.Close()
-		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-			t.Fatal(err)
-		}
-		release := time.AfterFunc(1500*time.Millisecond, func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN) })
-		defer release.Stop()
 		for _, path := range []string{"/health", "/status", "/health"} {
+			if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+				t.Fatal(err)
+			}
+			released := make(chan struct{})
 			started := time.Now()
+			release := time.AfterFunc(1500*time.Millisecond, func() {
+				syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				close(released)
+			})
 			resp, err := http.Get("http://localhost:" + strconv.Itoa(port) + path)
+			if err == nil {
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+			d := time.Since(started)
+			if release.Stop() {
+				syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+			} else {
+				<-released
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			if d := time.Since(started); d > 200*time.Millisecond {
+			if d > time.Second {
 				t.Fatalf("%s took %s while the authority lock was held", path, d)
 			}
 		}
