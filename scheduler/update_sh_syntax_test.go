@@ -252,13 +252,24 @@ func TestUpdateShellScriptSyntax(t *testing.T) {
 	}
 }
 
+const ciFullRunJobs = 19
+
+type ciCountProblem struct {
+	line int
+	text string
+}
+
 type ciWorkflowJob struct {
-	raw      []string
-	logical  [][]string
-	gates    []string
-	problems []string
-	docsGate bool
-	jobGate  string
+	raw         []string
+	logical     [][]string
+	gates       []string
+	problems    []string
+	docsGate    bool
+	jobGate     string
+	line        int
+	expands     int
+	matrix      bool
+	uncountable []ciCountProblem
 }
 
 var (
@@ -278,6 +289,7 @@ var (
 	ciStepGate    = regexp.MustCompile(`^        if: \$\{\{ needs\.changes\.outputs\.([a-z][a-z0-9_]*) == 'true' \}\}$`)
 	ciJobGate     = regexp.MustCompile(`^    if: \$\{\{ needs\.changes\.outputs\.([a-z][a-z0-9_]*) == 'true' \}\}$`)
 	ciChangesOut  = regexp.MustCompile(`^      ([a-z][a-z0-9_]*): \$\{\{ steps\.diff\.outputs\.([a-z][a-z0-9_]*) \}\}$`)
+	ciPlainKey    = regexp.MustCompile(`^( *)([A-Za-z0-9_-]+):(?:\s+(.*))?$`)
 )
 
 const (
@@ -285,7 +297,7 @@ const (
 	ciDocsGateIf    = "    if: ${{ needs.changes.outputs.code == 'true' }}"
 )
 
-func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
+func parseCIWorkflowJobs(t *testing.T, path string) (map[string]*ciWorkflowJob, []ciCountProblem) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -308,24 +320,47 @@ func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
 		t.Fatalf("%s has no top-level jobs: key", path)
 	}
 	jobs := map[string]*ciWorkflowJob{}
+	rawAt := map[*ciWorkflowJob][]int{}
+	var stray []ciCountProblem
 	var cur *ciWorkflowJob
-	for _, line := range lines[jobsAt+1:] {
-		if line != "" && line[0] != ' ' {
+	curName := ""
+	for i, line := range lines[jobsAt+1:] {
+		lineNo := jobsAt + 2 + i
+		trimmed := strings.TrimSpace(line)
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		switch {
+		case trimmed == "":
+		case line[0] == '#':
+			continue
+		case line[0] == '\t':
+			stray = append(stray, ciCountProblem{lineNo, fmt.Sprintf("a line under jobs: starts with a tab (%s)", trimmed)})
+			continue
+		case indent == 0:
+		case ciJobHeader.MatchString(line):
+		case cur == nil && !strings.HasPrefix(trimmed, "#"):
+			stray = append(stray, ciCountProblem{lineNo, fmt.Sprintf("a line under jobs: comes before the first job heading (%s)", trimmed)})
+		case indent < 4 && !strings.HasPrefix(trimmed, "#"):
+			stray = append(stray, ciCountProblem{lineNo, fmt.Sprintf("a line indented fewer than four spaces under jobs: is not a plain job heading (%s); the parser would add it to job %s", trimmed, curName)})
+		}
+		if trimmed != "" && indent == 0 {
 			break
 		}
 		if m := ciJobHeader.FindStringSubmatch(line); m != nil {
 			if _, dup := jobs[m[1]]; dup {
 				t.Fatalf("%s declares job %s twice", path, m[1])
 			}
-			cur = &ciWorkflowJob{}
+			cur = &ciWorkflowJob{line: lineNo}
+			curName = m[1]
 			jobs[m[1]] = cur
 			continue
 		}
 		if cur != nil {
 			cur.raw = append(cur.raw, line)
+			rawAt[cur] = append(rawAt[cur], lineNo)
 		}
 	}
 	for name, job := range jobs {
+		job.expands, job.matrix, job.uncountable = readCIJobExpansion(name, job.raw, rawAt[job])
 		var kept []string
 		gateNeeds, gateIf := 0, 0
 		for _, line := range job.raw {
@@ -398,7 +433,205 @@ func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
 			job.gates = append(job.gates, gate)
 		}
 	}
-	return jobs
+	return jobs, stray
+}
+
+func ciInlineForm(value string) string {
+	switch {
+	case strings.Contains(value, "${{"):
+		return "an expression"
+	case strings.HasPrefix(value, "*"):
+		return "an alias"
+	case strings.HasPrefix(value, "&"):
+		return "an anchor"
+	case value == "[]":
+		return "an empty list"
+	case strings.HasPrefix(value, "["):
+		return "a flow list"
+	case strings.HasPrefix(value, "{"):
+		return "a flow mapping"
+	}
+	return "an inline value"
+}
+
+func readCIJobExpansion(name string, lines []string, at []int) (int, bool, []ciCountProblem) {
+	const (
+		inJob = iota
+		inStrategy
+		inMatrix
+		inInclude
+	)
+	state := inJob
+	sawContent, sawStrategy, sawMatrix, sawInclude := false, false, false, false
+	rows := 0
+	lastRowFlow := false
+	fail := func(i int, format string, args ...any) (int, bool, []ciCountProblem) {
+		return 0, false, []ciCountProblem{{at[i], fmt.Sprintf("job %s ", name) + fmt.Sprintf(format, args...)}}
+	}
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if indent < 4 {
+			continue
+		}
+		if !sawContent {
+			sawContent = true
+			if indent != 4 {
+				return fail(i, "indents its keys by %d spaces, want 4", indent)
+			}
+		}
+		key, value := "", ""
+		m := ciPlainKey.FindStringSubmatch(line)
+		if m != nil && len(m[1]) == indent {
+			key, value = m[2], strings.TrimSpace(m[3])
+		}
+		if indent == 4 {
+			if key == "" {
+				return fail(i, "has a job-level line that is not a plain key (%s)", trimmed)
+			}
+			switch key {
+			case "uses":
+				return fail(i, "calls a reusable workflow (uses:), which starts jobs this count does not see")
+			case "strategy":
+				if sawStrategy {
+					return fail(i, "declares strategy: as a second key")
+				}
+				if value != "" {
+					return fail(i, "declares strategy: as %s", ciInlineForm(value))
+				}
+				sawStrategy = true
+				state = inStrategy
+			default:
+				state = inJob
+			}
+			continue
+		}
+		if state == inJob {
+			continue
+		}
+		if indent == 6 {
+			switch {
+			case key == "matrix" && sawMatrix:
+				return fail(i, "declares matrix: twice")
+			case key == "matrix" && value != "":
+				return fail(i, "builds its matrix from %s", ciInlineForm(value))
+			case key == "matrix":
+				sawMatrix = true
+				state = inMatrix
+			case (key == "fail-fast" || key == "max-parallel") && value != "":
+				state = inStrategy
+			default:
+				return fail(i, "has a strategy line the count does not know (%s)", trimmed)
+			}
+			continue
+		}
+		if state == inStrategy {
+			return fail(i, "has a strategy line the count does not know (%s)", trimmed)
+		}
+		if indent == 8 {
+			switch {
+			case key == "include" && sawInclude:
+				return fail(i, "declares include: twice")
+			case key == "include" && value != "":
+				return fail(i, "gives include as %s; write one row per line under it", ciInlineForm(value))
+			case key == "include":
+				sawInclude = true
+				state = inInclude
+				continue
+			case key == "exclude":
+				return fail(i, "has a matrix exclude list")
+			case key != "":
+				return fail(i, "has the matrix axis %s; the only matrix shape counted is include with literal rows", key)
+			}
+			return fail(i, "has a matrix line at an indent the count cannot read (%s)", trimmed)
+		}
+		if strings.Contains(line, "${{") {
+			return fail(i, "has an expression in its matrix (%s)", trimmed)
+		}
+		if state != inInclude || indent == 9 || indent == 11 || indent < 8 {
+			return fail(i, "has a matrix line at an indent the count cannot read (%s)", trimmed)
+		}
+		if indent == 10 {
+			if !strings.HasPrefix(trimmed, "- ") {
+				return fail(i, "has a matrix line at an indent the count cannot read (%s)", trimmed)
+			}
+			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+			switch {
+			case strings.HasPrefix(rest, "{"):
+				if !strings.HasSuffix(rest, "}") || strings.Count(rest, "{") != strings.Count(rest, "}") || strings.Count(rest, "{") != 1 {
+					return fail(i, "has an include row that is not a literal mapping (%s)", trimmed)
+				}
+				lastRowFlow = true
+			case ciPlainKey.MatchString(rest):
+				lastRowFlow = false
+			default:
+				return fail(i, "has an include row that is not a literal mapping (%s)", trimmed)
+			}
+			rows++
+			continue
+		}
+		if rows == 0 || lastRowFlow {
+			return fail(i, "has a matrix line at an indent the count cannot read (%s)", trimmed)
+		}
+	}
+	if !sawContent {
+		return 0, false, []ciCountProblem{{0, fmt.Sprintf("job %s has no keys", name)}}
+	}
+	if !sawStrategy {
+		return 1, false, nil
+	}
+	if !sawMatrix {
+		return 0, false, []ciCountProblem{{0, fmt.Sprintf("job %s declares strategy: without matrix:", name)}}
+	}
+	if !sawInclude {
+		return 0, false, []ciCountProblem{{0, fmt.Sprintf("job %s declares matrix: without include:", name)}}
+	}
+	if rows == 0 {
+		return 0, false, []ciCountProblem{{0, fmt.Sprintf("job %s declares an include list with no rows", name)}}
+	}
+	return rows, true, nil
+}
+
+func checkCIFullRunJobs(t *testing.T, jobs map[string]*ciWorkflowJob, stray []ciCountProblem) {
+	t.Helper()
+	problems := append([]ciCountProblem(nil), stray...)
+	var names []string
+	for name, job := range jobs {
+		names = append(names, name)
+		for _, p := range job.uncountable {
+			if p.line == 0 {
+				p.line = job.line
+			}
+			problems = append(problems, p)
+		}
+	}
+	sort.Strings(names)
+	sort.SliceStable(problems, func(i, j int) bool { return problems[i].line < problems[j].line })
+	for _, p := range problems {
+		t.Errorf(".github/workflows/ci.yml:%d: %s, so the job count cannot be read", p.line, p.text)
+	}
+	if len(problems) > 0 {
+		t.Errorf("the job count is not compared with ciFullRunJobs until each line above is fixed")
+		return
+	}
+	total, static, rows := 0, 0, 0
+	var breakdown []string
+	for _, name := range names {
+		job := jobs[name]
+		total += job.expands
+		if job.matrix {
+			rows += job.expands
+			breakdown = append(breakdown, fmt.Sprintf("%s=%d", name, job.expands))
+		} else {
+			static++
+		}
+	}
+	if total != ciFullRunJobs {
+		t.Errorf("a full .github/workflows/ci.yml run starts %d jobs (%d static job definitions and %d matrix rows: %s), but ciFullRunJobs is %d; a change of the job count in either direction needs ciFullRunJobs changed in the same pull request (SKILL.md, CI job limit)", total, static, rows, strings.Join(breakdown, ", "), ciFullRunJobs)
+	}
 }
 
 func ciLogicalLines(body []string) []string {
@@ -1048,12 +1281,13 @@ func TestShellSuiteCIWiring(t *testing.T) {
 	if strings.Contains(string(workflow), "GOFLAGS") {
 		t.Fatal(".github/workflows/ci.yml sets GOFLAGS, which can change the tests a go-python-integration shard selects")
 	}
-	jobs := parseCIWorkflowJobs(t, workflowPath)
+	jobs, stray := parseCIWorkflowJobs(t, workflowPath)
+	checkCIFullRunJobs(t, jobs, stray)
 	var declared map[string]bool
 	for _, wf := range []string{"ci.yml", "container.yml"} {
 		wfJobs := jobs
 		if wf != "ci.yml" {
-			wfJobs = parseCIWorkflowJobs(t, filepath.Join(repoRoot, ".github", "workflows", wf))
+			wfJobs, _ = parseCIWorkflowJobs(t, filepath.Join(repoRoot, ".github", "workflows", wf))
 		}
 		outputs := requireCIChangesJob(t, wf, wfJobs)
 		if wf == "ci.yml" {
@@ -1136,6 +1370,9 @@ func TestShellSuiteCIWiring(t *testing.T) {
 				sep := strings.Index(line, " -- ")
 				if sep < 0 || strings.Count(line, " -- ") != 1 {
 					t.Fatalf("%s command for scripts/%s must have one -- separator: %s", jobName, script, line)
+				}
+				if sep < len(runner) {
+					t.Fatalf("%s command for scripts/%s must pass its runner options before --: %s", jobName, script, line)
 				}
 				opts, cmd := line[len(runner):sep], line[sep+len(" -- "):]
 				if !strings.HasSuffix(cmd, "bash scripts/"+script) {
