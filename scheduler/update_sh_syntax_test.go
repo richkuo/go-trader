@@ -929,33 +929,10 @@ func pyIntegrationBuildTests(t *testing.T, schedDir string) ([]string, map[strin
 		if err != nil {
 			t.Fatalf("read build constraints of %s: %v", filepath.Base(path), err)
 		}
-		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatalf("parse %s: %v", filepath.Base(path), err)
-		}
-		testingName := ""
-		for _, imp := range file.Imports {
-			if imp.Path.Value != `"testing"` {
-				continue
-			}
-			testingName = "testing"
-			if imp.Name != nil {
-				testingName = imp.Name.Name
-			}
-		}
-		if testingName == "" {
-			continue
-		}
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Recv != nil {
-				continue
-			}
-			if goTestRunnerName(fn, testingName, "Test", "T") || goTestRunnerName(fn, testingName, "Fuzz", "F") {
-				tests = append(tests, fn.Name.Name)
-				if !untagged {
-					tagged[fn.Name.Name] = true
-				}
+		for _, name := range goTestRunnersInFile(t, fset, path) {
+			tests = append(tests, name)
+			if !untagged {
+				tagged[name] = true
 			}
 		}
 	}
@@ -964,6 +941,194 @@ func pyIntegrationBuildTests(t *testing.T, schedDir string) ([]string, map[strin
 	}
 	sort.Strings(tests)
 	return tests, tagged
+}
+
+func goTestRunnersInFile(t *testing.T, fset *token.FileSet, path string) []string {
+	t.Helper()
+	file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v", filepath.Base(path), err)
+	}
+	testingName := ""
+	for _, imp := range file.Imports {
+		if imp.Path.Value != `"testing"` {
+			continue
+		}
+		testingName = "testing"
+		if imp.Name != nil {
+			testingName = imp.Name.Name
+		}
+	}
+	if testingName == "" {
+		return nil
+	}
+	var names []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil {
+			continue
+		}
+		if goTestRunnerName(fn, testingName, "Test", "T") || goTestRunnerName(fn, testingName, "Fuzz", "F") {
+			names = append(names, fn.Name.Name)
+		}
+	}
+	return names
+}
+
+const ciFeedWeightFilter = "^TestFeedWeight"
+
+func ciFeedWeightTestLine(t *testing.T, name string, job *ciWorkflowJob) string {
+	t.Helper()
+	var found []string
+	for _, step := range job.logical {
+		for _, line := range step {
+			if !strings.Contains(line, "go test ") && !strings.Contains(line, "go -C ") {
+				continue
+			}
+			if runs := ciRunPattern.FindAllStringSubmatch(line, -1); name == "go-race" && len(runs) == 1 && runs[0][1] == "^TestQuote" {
+				continue
+			}
+			found = append(found, line)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("job %s has %d go test commands that split the feed weight tests, want 1: %q", name, len(found), found)
+	}
+	return found[0]
+}
+
+func ciFeedWeightPattern(t *testing.T, name, flag string, re *regexp.Regexp, line string) *regexp.Regexp {
+	t.Helper()
+	m := re.FindAllStringSubmatch(line, -1)
+	if strings.Count(line, flag+" ") != 1 || len(m) != 1 || m[0][1] != ciFeedWeightFilter {
+		t.Fatalf("job %s must pass %s '%s' exactly once, so the go and go-race filters stay complementary: %s", name, flag, ciFeedWeightFilter, line)
+	}
+	return compilePyIntegrationPattern(t, name, flag, m[0][1])
+}
+
+func checkFeedWeightSplit(t *testing.T, jobs map[string]*ciWorkflowJob, schedDir string, shards []ciPyIntegrationShard) {
+	t.Helper()
+	goJob := requireCIJob(t, jobs, "go")
+	raceJob := requireCIJob(t, jobs, "go-race")
+	for _, name := range []string{"go", "go-race"} {
+		if job := jobs[name]; !job.docsGate || job.jobGate != "" {
+			t.Fatalf("job %s must carry needs: changes and the code condition, never a suite gate, so it runs on every code change", name)
+		}
+	}
+	goLine := ciFeedWeightTestLine(t, "go", goJob)
+	raceLine := ciFeedWeightTestLine(t, "go-race", raceJob)
+	if strings.Contains(goLine, "-run") || !strings.HasSuffix(goLine, " ./...") {
+		t.Fatalf("job go must select tests only with -skip and name the packages ./...: %s", goLine)
+	}
+	if strings.Contains(raceLine, "-skip") || !strings.Contains(raceLine, " -race ") || !strings.Contains(raceLine, " -count=1 ") || !strings.HasSuffix(raceLine, " .") {
+		t.Fatalf("the go-race feed weight command must pass -race and -count=1, no -skip, and name the package .: %s", raceLine)
+	}
+	skip := ciFeedWeightPattern(t, "go", "-skip", ciSkipPattern, goLine)
+	run := ciFeedWeightPattern(t, "go-race", "-run", ciRunPattern, raceLine)
+
+	ordinary := build.Default
+	ordinary.GOOS = "linux"
+	ordinary.GOARCH = "amd64"
+	ordinary.CgoEnabled = true
+	ordinary.BuildTags = nil
+	race := ordinary
+	race.BuildTags = []string{"race"}
+	fset := token.NewFileSet()
+	skippedRoot := map[string]string{}
+	var outside []string
+	raced := map[string]string{}
+	err := filepath.WalkDir(schedDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		dir := filepath.Dir(path)
+		if d.IsDir() {
+			if path == schedDir {
+				return nil
+			}
+			base := d.Name()
+			if base == "testdata" || base == "vendor" || strings.HasPrefix(base, ".") || strings.HasPrefix(base, "_") {
+				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), "_test.go") {
+			return nil
+		}
+		rel, err := filepath.Rel(schedDir, path)
+		if err != nil {
+			return err
+		}
+		inOrdinary, err := ordinary.MatchFile(dir, d.Name())
+		if err != nil {
+			return fmt.Errorf("read build constraints of %s: %v", rel, err)
+		}
+		inRace := false
+		if dir == schedDir {
+			if inRace, err = race.MatchFile(dir, d.Name()); err != nil {
+				return fmt.Errorf("read build constraints of %s: %v", rel, err)
+			}
+		}
+		if !inOrdinary && !inRace {
+			return nil
+		}
+		for _, name := range goTestRunnersInFile(t, fset, path) {
+			if inOrdinary && skip.MatchString(name) {
+				if dir == schedDir {
+					skippedRoot[name] = rel
+				} else {
+					outside = append(outside, fmt.Sprintf("go skips the untagged feed weight test %s in %s, which is outside the scheduler root package, so the go-race step (package .) never runs it", name, filepath.ToSlash(filepath.Dir(rel))))
+				}
+			}
+			if inRace && run.MatchString(name) {
+				raced[name] = rel
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", schedDir, err)
+	}
+	if len(skippedRoot) == 0 && len(outside) == 0 {
+		t.Errorf("the go -skip pattern %q matches no untagged test in the scheduler module", skip.String())
+	}
+	if len(raced) == 0 {
+		t.Errorf("the go-race -run pattern %q matches no test in the -race build of the scheduler package", run.String())
+	}
+	sort.Strings(outside)
+	for _, msg := range outside {
+		t.Error(msg)
+	}
+	names := map[string]bool{}
+	for name := range skippedRoot {
+		names[name] = true
+	}
+	for name := range raced {
+		names[name] = true
+	}
+	var sorted []string
+	for name := range names {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
+	for _, name := range sorted {
+		file, skipped := skippedRoot[name]
+		raceFile, inRace := raced[name]
+		switch {
+		case skipped && !inRace:
+			t.Errorf("go skips %s (%s), but the -race build of the scheduler package does not declare it, so no CI job runs it", name, file)
+		case inRace && !skipped:
+			t.Errorf("go-race runs %s (%s), but the ordinary build does not declare it, so the go filter and the race filter select different sets", name, raceFile)
+		}
+		for _, shard := range shards {
+			if shard.selects(name) {
+				t.Errorf("%s also runs the untagged feed weight test %s, which go-race already runs", shard.job, name)
+			}
+		}
+	}
 }
 
 func goTestRunnerName(fn *ast.FuncDecl, testingName, prefix, param string) bool {
@@ -1317,6 +1482,7 @@ func TestShellSuiteCIWiring(t *testing.T) {
 	pyTests, pyTagged := pyIntegrationBuildTests(t, schedDir)
 	checkPyIntegrationPartition(t, shards, pyTests, pyTagged)
 	checkGatedPyIntegrationShards(t, shards, pyTests)
+	checkFeedWeightSplit(t, jobs, schedDir, shards)
 
 	invoked := map[string]int{}
 	shardRuns := map[string][]ciSuiteShard{}
