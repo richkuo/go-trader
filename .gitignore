@@ -24,6 +24,10 @@ scheduler/state.db
 robinhood-session/
 .worktrees/
 .claude/*
+!.claude/settings.json
+!.claude/hooks/
+.claude/hooks/*
+!.claude/hooks/command_policy.py
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/go-trader-trade-feedback/

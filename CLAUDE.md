@@ -1,6 +1,6 @@
 # go-trader
 
-Guardrails only;mechanism:SKILL.md,docs/POST_UPDATE_HISTORY.md.<17500B(target 17000),1 root file+`AGENTS.md` symlink.Shorten,drop no guardrail.
+Guardrails only;mechanism:SKILL.md,docs/POST_UPDATE_HISTORY.md.<17500B(target 17000),1 root file+`AGENTS.md` symlink.Shorten,drop no guardrail
 
 ## Env
 - Go 1.26.2.Python:`uv run --no-sync python`;scheduler `.venv/bin/python3`;`uv sync`/worktree.systemd:`ProtectSystem=strict`,no `PATH`/`UV_CACHE_DIR` injected,secrets `/opt/go-trader/.env`,config `/var/lib/go-trader[/<instance>]/config.json`;`scheduler/config.json`=transition symlink
@@ -47,13 +47,13 @@ Guardrails only;mechanism:SKILL.md,docs/POST_UPDATE_HISTORY.md.<17500B(target 17
 - `.github/workflows/claude.yml`:mode routing fail-closed(untrusted/fork=review);no-execution in agent;commit/push implement-only;prompt never holds `"`,`` ` ``,`$`.rk-skills workflow skills=CI-only,no settings pin
 
 ## Deploy
-- Update only with `bash scripts/update.sh --restart`.Never rebuild Go alone:Go+Python:1 argv contract/SHA;`update_resolve_db_exclude` lists all state files(+`paper_sources[].db_file`).Container:image-only;mode via `GO_TRADER_RUNTIME` ONLY;restart=drain+save+exit.Exit codes(`RestartPreventExitStatus`):probe 78(never from `hyperliquid_agent_status.go`),singleton 79,storage 80.Ownership over ALL files(+`--once`) precedes migration/startup write;unit edits:`daemon-reload`
+- Update only via `bash scripts/update.sh --restart`;hook `command_policy.py` denies other updates+`main` commits.Never rebuild Go alone:Go+Python:1 argv contract/SHA;`update_resolve_db_exclude` lists all state files(+`paper_sources[].db_file`).Container:image-only;mode via `GO_TRADER_RUNTIME` ONLY;restart=drain+save+exit.Exit codes(`RestartPreventExitStatus`):probe 78(never from `hyperliquid_agent_status.go`),singleton 79,storage 80.Ownership over ALL files(+`--once`) precedes migration/startup write;unit edits:`daemon-reload`
 - Post-update:SKILL.md Post-Update Agent Protocol;Python-launcher change:smoke `--once`(daemon off).Scripts:root git via `update_git`(py:exact-tree `-c`),never `*`/config;foreign-owned tree:confined units,Go only from `git archive`,probe as owner;give-back fd-pinned,no hardlinks;root `uv sync` copy-mode;uv/go via `update_resolve_tool`.Failed update restores `update_take_snapshot` copy,never `git reset --hard`
 
 ## Backtest
 - Harness map `docs/backtesting-registry.md`:add/deprecate PR updates row.SL-vs-TP races default `ohlc_walk`
-- Look-ahead:bar N signal fills at N+1 open;regime gate reads N-1;closes use closed-bar ATR.HTF series keyed by candle OPEN time MUST `.shift(1)` BEFORE `reindex` ffill.
-- HL perps backtests `--funding charge`;incomplete=refuse save,block promotion.Backtester rejects HL-live-only closes(`regime_window_divergence`/`tiered_tp_atr_live_regime_dynamic`);no options regime gating.M1-M6,auto_suggest,regime promotion,`tune_live.py`=SUGGEST-ONLY:never write live defaults/config/PRs.
+- Look-ahead:bar N signal fills at N+1 open;regime gate reads N-1;closes use closed-bar ATR.HTF series keyed by candle OPEN time MUST `.shift(1)` BEFORE `reindex` ffill
+- HL perps backtests `--funding charge`;incomplete=refuse save,block promotion.Backtester rejects HL-live-only closes(`regime_window_divergence`/`tiered_tp_atr_live_regime_dynamic`);no options regime gating.M1-M6,auto_suggest,regime promotion,`tune_live.py`=SUGGEST-ONLY:never write live defaults/config/PRs
 
 ## Testing
 - Unit tests only if no run proves it or regression silent:rare venue states(partial/rejected/unknown),money math(sizing/PnL/fees),paper/live parity,DB migrations,large refactors.Deribit/OKX/Luno/TopStep:no venue tests.Else run real binaries/scripts(build/`probe`/`--once`);PR lists commands+log lines/criterion.Kept test edit/removal:Outdated/Wrong/Obsolete+checkable ground,disclosed in commit+PR;no ground=fix code

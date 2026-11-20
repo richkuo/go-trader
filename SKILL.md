@@ -1730,7 +1730,7 @@ Protocol (every call needs the configured status token as `Authorization: Bearer
 Refusals with no row: a missing `model`, `bundle_sha256`, `feedback_rowids` or `result` (or a null `result`) is 400; a model label that is empty, longer than 128 bytes or holds characters outside letters, digits, spaces and `. _ : / @ + ( ) [ ] -` is 400; a digest that is not 64 lowercase hex characters is 400; a non-integer id is 400; any other top-level field, such as a client `validation` or `status`, is 400 (unknown field). These four fields with `provider: anthropic_api` are also 400. A `validation` key inside `result` reaches the validator and ends `invalid` (the result schema allows no extra field).
 The stored `model` is the session's self-reported label and `model_verification` is `self_reported_unverified`; no client value sets a validation outcome. The posted result lives only in memory until the terminal row, so a restart between 202 and the outcome ends that request `failed` through the parent's restart recovery; the operator submits again.
 
-Project skill: `.claude/skills/go-trader-trade-feedback/` (`SKILL.md` and the stdlib-only helper `trade_feedback_client.py`), the only tracked files under `.claude/`. `.gitignore` keeps settings, hooks, worktrees and other skills ignored. In a go-trader checkout, run `GO_TRADER_DASHBOARD_URL=http://127.0.0.1:8099 claude '/go-trader-trade-feedback <strategy-id>'` with `GO_TRADER_STATUS_TOKEN` set in that shell; the dashboard panel shows this command, without a token, when the provider is available.
+Project skill: `.claude/skills/go-trader-trade-feedback/` (`SKILL.md` and the stdlib-only helper `trade_feedback_client.py`). The only other tracked files under `.claude/` are the command policy files (§ Claude Code command policy). `.gitignore` keeps local settings, other hooks, worktrees and other skills ignored. In a go-trader checkout, run `GO_TRADER_DASHBOARD_URL=http://127.0.0.1:8099 claude '/go-trader-trade-feedback <strategy-id>'` with `GO_TRADER_STATUS_TOKEN` set in that shell; the dashboard panel shows this command, without a token, when the provider is available.
 The helper sends the token only to the `GO_TRADER_DASHBOARD_URL` origin: it refuses a URL with a path, query, fragment or user info, allows `http` only for a loopback host, ignores proxy variables, never follows a redirect, never prints the token and never puts it in a URL or an argument. Its commands are `pull`, `check` (optional local pre-check with the repository validator; the server stays authoritative), `submit` and `poll` (reads `?view=history` every 3 s, so polling builds no bundle; exit 0 `ok`, 2 `invalid`, 3 `failed`). The skill treats every bundle string, including notes, as data.
 
 Remote server: the dashboard listens on loopback (§ Status), so open an SSH tunnel from the operator's computer first, for example `ssh -N -L 8099:127.0.0.1:8099 <user>@<server>` (use the instance's `status_port` on the right side and any free local port on the left), then set `GO_TRADER_DASHBOARD_URL=http://127.0.0.1:<local port>`. An https origin through an authenticated proxy also works.
@@ -3644,6 +3644,50 @@ Every send goes through `MultiNotifier`, which fans out to its backends. Channel
 - Comment patching uses `patch_claude_comment.sh` and `compose_claude_comment.py`, staged from `rk-skills` `templates/claude-workflow/scripts/` into `$RUNNER_TEMP` each run. `.github/scripts/test_workflow_logic.py` executes the real `run:` blocks. Concurrency `group: claude-<N>`, `cancel-in-progress: false`. `timeout-minutes: 90`. `issues: types: [opened]` only.
 - The CLAUDE.md revision step must `git commit` and `git push origin HEAD`, then diff `HEAD -- CLAUDE.md` against `origin/main` to catch a silent revert.
 - Operator lookup for the latest bot review: `gh api repos/richkuo/go-trader/issues/<N>/comments --jq '[.[] | select(.user.login=="claude[bot]" or .user.login=="github-actions[bot]")] | last | .body'`.
+
+### Claude Code command policy (`.claude/settings.json`, `.claude/hooks/command_policy.py`)
+
+The tracked project settings add one synchronous `PreToolUse` hook for the Bash tool.
+It runs `python3 -I "$CLAUDE_PROJECT_DIR/.claude/hooks/command_policy.py"` with a 30-second timeout and `"onFailure": "block"`.
+The checker is a self-contained standard-library script that reads the hook input, treats the command text as data, and exits 2 with a reason on stderr to block the call.
+It makes no repository changes and keeps no results between calls.
+
+| Rule | Enforcement point and target | Allowed forms | Failure behavior |
+| --- | --- | --- | --- |
+| Direct commit | The hook. For each `git commit`, git alias for commit, git subcommand that is not literal, and pinned claude-code-action `scripts/git-commit.sh` wrapper, it resolves the effective repository, worktree and current branch. | A commit on any branch other than `main`. A commit on `main` of a repository verified as unrelated to go-trader: no go-trader root commit, no remote URL or `insteadOf` rule that names `richkuo/go-trader`, and not shallow. | Deny when the target, branch or identity cannot be resolved, including a detached go-trader HEAD and a commit outside any repository. |
+| Manual host update | The hook. For each call of a script named `update.sh`, it checks the restart setting, the script's checkout and the checkout that the working directory selects. | `--restart`; an explicit `RESTART=1` that reaches the script (a command prefix, `env`, or an assignment after `sudo`); `-h`/`--help` reached before an argument error; a lone `--clear-recovery`; an updater whose script and working directory are both verified outside go-trader. | Deny an argument that is not literal, an inherited or exported `RESTART`, a `--restart` that another option consumes as its operand, a `RESTART=1` that `sudo`, `env -i` or `env -u` removes, and any target that cannot be verified. |
+
+Supported command forms: literal `cd` and `pushd`, `&&`, `||`, `;`, newlines, subshells, `{ ...; }` groups, pipelines, background jobs, command substitution, process substitution and here-documents.
+The checker also reads `bash`/`sh`/`zsh` `-c` strings and here-document scripts, `ssh` remote command strings (a remote commit always denies, and a remote update needs a literal restart), and the wrappers `command`, `builtin`, `exec`, `nohup`, `setsid`, `time`, `nice`, `timeout`, `stdbuf`, `env` and `sudo`.
+Repeated `git -C`, `--git-dir` and `--work-tree` resolve in git's argument order.
+A `git checkout`/`git switch` to a literal branch earlier in the same call sets the branch that a later commit checks.
+Other branch or target changes earlier in the same call deny a later commit: `rebase`, `bisect`, `update-ref`, a `symbolic-ref` write, `worktree move`/`remove`, a `config` write, `branch -m`, `submodule`, `init`, `clone`, `gh pr checkout`, an unresolved checkout, an export or assignment of a git, path or home variable, `source`, `eval` and `alias`.
+`GIT_DIR`-style environment prefixes and `-c core.worktree`/`core.bare`/`include.*` overrides deny.
+A commit in a pipeline or background job next to any branch change denies.
+A guarded call inside `if`/`for`/`while`/`case`, a function, an arithmetic or parameter expansion, an unsupported wrapper (`xargs`, `find -exec`, `uv run` and similar), or a command that cannot be parsed denies.
+Quoted text and the arguments of data commands (`echo`, `printf`, `grep`, `gh` and similar) stay data.
+
+Git checks use a fixed git path (`/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, then `/bin`), literal argument arrays, a 5-second timeout each and at most 64 checks per call.
+They run only `rev-parse`, `symbolic-ref`, `cat-file --batch-check` and `config --get`/`--get-regexp`, with `GIT_OPTIONAL_LOCKS=0` and `GIT_NO_LAZY_FETCH=1`.
+The action wrapper is recognized only when `git-commit.sh` and `git-env.sh` beside it match the SHA-256 digests of claude-code-action `f3b070c88125d33dbae5653df5f143101d4ea9dc`, the commit that the reusable workflow pins.
+The checker reads the wrapper's `.git-repo` record and refuses a missing, relative or inconsistent record.
+A change to the pinned action commit needs new digests in `ACTION_WRAPPER_SHA256`; until then every wrapper commit denies.
+
+Activation: an interactive or `claude -p` session started in a trusted go-trader checkout with project settings enabled, on Claude Code 2.1.295 or later (`onFailure` first ships there).
+Tested runtimes: 2.1.325 (the pinned action) and 2.1.329.
+On both, a checker that cannot start, exits with another code, or times out blocks the matched call.
+`$CLAUDE_PROJECT_DIR` selects the checker, so a session uses the copy in the checkout it started in.
+On 2.1.329 an `EnterWorktree` switch inside the session leaves `$CLAUDE_PROJECT_DIR` on that launch checkout, so a worktree cannot substitute its own checker during that session.
+No coverage: `--bare`, `--setting-sources` without `project`, `disableAllHooks`, sessions started outside a go-trader checkout, older Claude Code versions (a hook failure there lets the call run), shells outside Claude, other tools and agents, indirect execution through scripts and programs, and shell aliases or functions defined in the user's shell profile.
+
+CI: claude-code-action loads every settings source unless `--setting-sources` is passed, so the `implement` and `fix-pr` routes and the CLAUDE.md revision step run this hook from the job checkout.
+A pull request can edit that copy in the `fix-pr` route.
+A reviewed copy staged outside the checkout needs a default-off policy input in the rk-skills reusable workflow, which is a separate change.
+The `review` route keeps `--setting-sources user`, its own settings file and its credential guard.
+GitHub branch protection for `main` is a separate change.
+
+Checks: `bash scripts/check_pre_pr.sh command-policy` runs `scripts/check_command_policy.py`, which builds disposable repositories, runs the real checker on each case and, for each allowed commit, runs the command and confirms that `main` did not move.
+The CI `checks` job checks out the pinned action's `scripts/` and sets `COMMAND_POLICY_ACTION_SCRIPTS`, so the real wrapper cases must pass there.
 
 ---
 

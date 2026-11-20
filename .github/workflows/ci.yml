@@ -512,6 +512,22 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/check_pre_pr.sh github-scripts
 
+      - name: Check out the pinned claude-code-action wrapper scripts
+        if: ${{ !cancelled() }}
+        uses: actions/checkout@v7
+        with:
+          repository: anthropics/claude-code-action
+          ref: f3b070c88125d33dbae5653df5f143101d4ea9dc
+          path: .ci-claude-code-action
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Claude Code command policy
+        if: ${{ !cancelled() }}
+        env:
+          COMMAND_POLICY_ACTION_SCRIPTS: ${{ github.workspace }}/.ci-claude-code-action/scripts
+        run: bash scripts/check_pre_pr.sh command-policy
+
   python-shard:
     name: python-shard (${{ matrix.suite }} ${{ matrix.group }}/${{ matrix.splits }})
     needs: changes

@@ -4,10 +4,10 @@ set -u
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 2
 cd "$root" || exit 2
 
-checks="syntax test-budget agent-docs doc-lines github-scripts"
+checks="syntax test-budget agent-docs doc-lines github-scripts command-policy"
 
 usage() {
-  echo "usage: bash scripts/check_pre_pr.sh [all|syntax|test-budget|agent-docs|doc-lines|github-scripts]" >&2
+  echo "usage: bash scripts/check_pre_pr.sh [all|syntax|test-budget|agent-docs|doc-lines|github-scripts|command-policy]" >&2
 }
 
 check_syntax() {
@@ -75,6 +75,10 @@ check_github_scripts() {
   fi
 }
 
+check_command_policy() {
+  python3 -I scripts/check_command_policy.py ${COMMAND_POLICY_ACTION_SCRIPTS:+--require-action-scripts}
+}
+
 run_one() {
   case "$1" in
     syntax) (check_syntax) ;;
@@ -82,6 +86,7 @@ run_one() {
     agent-docs) (check_agent_docs) ;;
     doc-lines) (check_doc_lines) ;;
     github-scripts) (check_github_scripts) ;;
+    command-policy) (check_command_policy) ;;
     *) usage; return 2 ;;
   esac
 }
