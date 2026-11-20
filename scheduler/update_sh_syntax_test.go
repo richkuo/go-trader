@@ -1371,6 +1371,9 @@ func TestShellSuiteCIWiring(t *testing.T) {
 				if sep < 0 || strings.Count(line, " -- ") != 1 {
 					t.Fatalf("%s command for scripts/%s must have one -- separator: %s", jobName, script, line)
 				}
+				if sep < len(runner) {
+					t.Fatalf("%s command for scripts/%s must pass its runner options before --: %s", jobName, script, line)
+				}
 				opts, cmd := line[len(runner):sep], line[sep+len(" -- "):]
 				if !strings.HasSuffix(cmd, "bash scripts/"+script) {
 					t.Fatalf("%s command for scripts/%s must end with bash scripts/%s: %s", jobName, script, script, cmd)
