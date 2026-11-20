@@ -3666,6 +3666,7 @@ Other branch or target changes earlier in the same call deny a later commit: `re
 A commit in a pipeline or background job next to any branch change denies.
 A guarded call inside `if`/`for`/`while`/`case`, a function, an arithmetic or parameter expansion, an unsupported wrapper (`xargs`, `find -exec`, `uv run` and similar), or a command that cannot be parsed denies.
 Quoted text and the arguments of data commands (`echo`, `printf`, `grep`, `gh` and similar) stay data.
+Other git commands that add commits to the current branch (`merge`, `pull`, `cherry-pick`, `revert`, `am`) are outside the direct-commit rule.
 
 Git checks use a fixed git path (`/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, then `/bin`), literal argument arrays, a 5-second timeout each and at most 64 checks per call.
 They run only `rev-parse`, `symbolic-ref`, `cat-file --batch-check` and `config --get`/`--get-regexp`, with `GIT_OPTIONAL_LOCKS=0` and `GIT_NO_LAZY_FETCH=1`.
