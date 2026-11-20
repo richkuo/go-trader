@@ -308,40 +308,38 @@ def study(tmp_path_factory):
     return json.loads(line[len("RESULT "):])
 
 
-def test_arm_construction_and_refusals(study):
-    arms = study["arms"]
-    assert arms["frame"] == 200
-    assert arms["contracts"]["ratchet_both"] == {"direction": "both", "close": ["trailing_tp_ratchet_regime"],
-                                                 "identical": True}
-    assert arms["contracts"]["ref_long"]["close"] == [] and arms["contracts"]["ref_short"]["direction"] == "short"
-    assert arms["refused"] == ["ref_both"]
-    assert study["tampered_arm_refused"] is True
-    assert study["both_open_as_close_refused"] is True
+def test_study_arms_legs_funding_and_artifact_refusals(study, subtests):
+    with subtests.test(case="arm_construction_and_refusals"):
+        arms = study["arms"]
+        assert arms["frame"] == 200
+        assert arms["contracts"]["ratchet_both"] == {"direction": "both", "close": ["trailing_tp_ratchet_regime"],
+                                                     "identical": True}
+        assert arms["contracts"]["ref_long"]["close"] == [] and arms["contracts"]["ref_short"]["direction"] == "short"
+        assert arms["refused"] == ["ref_both"]
+        assert study["tampered_arm_refused"] is True
+        assert study["both_open_as_close_refused"] is True
 
+    with subtests.test(case="real_backtester_legs_fill_next_bar_and_aggregate_closes"):
+        for key, leg in study["legs"].items():
+            assert leg["calls"] == 1, key
+            assert leg["closes"] == leg["records"], key
+            assert leg["funding_incomplete"] is False, key
+            assert leg["equity_days"] > 25, key
+        assert study["fills"]
+        for f in study["fills"]:
+            assert f["prev_signal"] == (1 if f["side"] == "long" else -1), f
+        assert study["legs"]["ratchet_both|f4"]["positions"] > 0
+        assert set(study["both_sides"]) <= {"long", "short"}
 
-def test_real_backtester_legs_fill_next_bar_and_aggregate_closes(study):
-    for key, leg in study["legs"].items():
-        assert leg["calls"] == 1, key
-        assert leg["closes"] == leg["records"], key
-        assert leg["funding_incomplete"] is False, key
-        assert leg["equity_days"] > 25, key
-    assert study["fills"]
-    for f in study["fills"]:
-        assert f["prev_signal"] == (1 if f["side"] == "long" else -1), f
-    assert study["legs"]["ratchet_both|f4"]["positions"] > 0
-    assert set(study["both_sides"]) <= {"long", "short"}
+    with subtests.test(case="funding_refusal"):
+        u = study["unfunded"]
+        assert u["funding_incomplete"] is True
+        assert u["unpriced_hours"] > 0
+        assert study["verdict"]["funding_incomplete_outcome"] == "inconclusive"
 
-
-def test_funding_refusal(study):
-    u = study["unfunded"]
-    assert u["funding_incomplete"] is True
-    assert u["unpriced_hours"] > 0
-    assert study["verdict"]["funding_incomplete_outcome"] == "inconclusive"
-
-
-def test_changed_inputs_and_incompatible_artifacts_refused(study):
-    assert study["tampered_samples_refused"] is True
-    assert study["missing_selection_refused"] is True
-    assert study["changed_input_refused"] is True
-    assert study["checkpoint"] == {"same": True, "other": True}
-    assert study["protocol_change_detected"] is True
+    with subtests.test(case="changed_inputs_and_incompatible_artifacts_refused"):
+        assert study["tampered_samples_refused"] is True
+        assert study["missing_selection_refused"] is True
+        assert study["changed_input_refused"] is True
+        assert study["checkpoint"] == {"same": True, "other": True}
+        assert study["protocol_change_detected"] is True
