@@ -1887,7 +1887,7 @@
       return head + " failed: " + outcome.message;
     }
     return head + " has an unknown outcome: " + outcome.detail +
-      ". Check the strategy's config before you try again.";
+      ". Check the strategy's current config, positions and orders before you try again.";
   }
 
   function renderLateResults() {
@@ -2133,14 +2133,17 @@
       reportLateResult(spec.label, ticket.id, failure ? writeOutcomeFromError(failure) : writeOutcomeFromReply(resp));
       return;
     }
-    if (failure) {
+    const failureOutcome = failure ? writeOutcomeFromError(failure) : null;
+    if (failureOutcome && failureOutcome.status !== "unknown") {
       spec.setMessage(spec.action + " failed: " + failure.message);
       return;
     }
-    spec.setMessage((resp && resp.message) || spec.doneText);
+    spec.setMessage(failureOutcome
+      ? describeWriteOutcome(spec.label, ticket.id, failureOutcome)
+      : (resp && resp.message) || spec.doneText);
     await refreshAll();
     if (!ticketSelected(ticket)) {
-      reportLateResult(spec.label, ticket.id, writeOutcomeFromReply(resp));
+      reportLateResult(spec.label, ticket.id, failureOutcome || writeOutcomeFromReply(resp));
     }
   }
 
@@ -3559,7 +3562,7 @@
     }
   }
 
-  const feedbackState = { submittingID: "", apiSubmittingID: "", cache: null };
+  const feedbackState = { submittingIDs: new Set(), apiSubmittingIDs: new Set(), cache: null };
 
   function feedbackNode(tag, className, text) {
     const el = document.createElement(tag);
@@ -3712,7 +3715,7 @@
     if (!data.available) blocked = data.reason || "analysis is unavailable";
     else if (!provider.available) blocked = provider.reason || "the Anthropic API provider is unavailable";
     else if (!(sel.included > 0)) blocked = "there are no usable saved marks to analyze";
-    button.disabled = !!blocked || feedbackState.submittingID === id || feedbackState.apiSubmittingID === id;
+    button.disabled = !!blocked || feedbackState.submittingIDs.has(id) || feedbackState.apiSubmittingIDs.has(id);
     button.addEventListener("click", function () { submitFeedbackAPIAnalysis(id, sel.included || 0, provider.reason || ""); });
     box.appendChild(button);
     if (blocked) box.appendChild(feedbackNode("p", "tuner-note", "Anthropic API: " + blocked));
@@ -3728,7 +3731,7 @@
   }
 
   async function submitFeedbackAPIAnalysis(strategyID, included, settings) {
-    if (feedbackState.apiSubmittingID === strategyID || state.activeID !== strategyID) return;
+    if (feedbackState.apiSubmittingIDs.has(strategyID) || state.activeID !== strategyID) return;
     const ticket = selectionTicket();
     const question = "Send " + included + " saved mark(s) of " + strategyID + " to the Anthropic API" +
       (settings ? " (" + settings + ")" : "") + "? This is one paid call. It is never retried by itself, and the result changes no setting.";
@@ -3736,7 +3739,7 @@
       if (ticketSelected(ticket)) setFeedbackMessage("Cancelled. No analysis request was sent.", "");
       return;
     }
-    feedbackState.apiSubmittingID = strategyID;
+    feedbackState.apiSubmittingIDs.add(strategyID);
     let resp = null;
     let failure = null;
     try {
@@ -3744,14 +3747,17 @@
     } catch (err) {
       failure = err;
     }
-    if (feedbackState.apiSubmittingID === strategyID) feedbackState.apiSubmittingID = "";
+    feedbackState.apiSubmittingIDs.delete(strategyID);
     const requestID = (resp && resp.request_id) || "";
     if (!ticketSelected(ticket)) {
       reportLateResult("Trade mark analysis request (Anthropic API)", strategyID, failure
         ? writeOutcomeFromError(failure)
         : { status: "success", message: "Analysis " + requestID + " is accepted. Its progress shows in that strategy's analysis list." });
     } else if (failure) {
-      setFeedbackMessage("The analysis was not started: " + apiFeedbackError(failure), "error");
+      const outcome = writeOutcomeFromError(failure);
+      setFeedbackMessage(outcome.status === "unknown"
+        ? describeWriteOutcome("Trade mark analysis request (Anthropic API)", strategyID, outcome)
+        : "The analysis was not started: " + apiFeedbackError(failure), "error");
     } else {
       setFeedbackMessage("Analysis " + requestID + " is accepted. Its progress shows below.", "success");
     }
@@ -3825,7 +3831,7 @@
         const button = feedbackNode("button", "tuner-button secondary", "Start research…");
         button.type = "button";
         button.dataset.proposalIndex = String(index);
-        button.disabled = !r.available || feedbackState.submittingID === id || feedbackState.apiSubmittingID === id;
+        button.disabled = !r.available || feedbackState.submittingIDs.has(id) || feedbackState.apiSubmittingIDs.has(id);
         button.addEventListener("click", function () { confirmFeedbackResearch(id, a, index); });
         box.appendChild(button);
         if (!r.available && r.reason) box.appendChild(feedbackNode("p", "tuner-note", r.reason));
@@ -3852,7 +3858,7 @@
   }
 
   async function confirmFeedbackResearch(strategyID, analysis, index) {
-    if (feedbackState.submittingID === strategyID) return;
+    if (feedbackState.submittingIDs.has(strategyID)) return;
     const proposal = analysis.result && analysis.result.proposals && analysis.result.proposals[index];
     if (!proposal || proposal.kind !== "param_grid") return;
     const ticket = selectionTicket();
@@ -3871,7 +3877,11 @@
       if (ticketSelected(ticket)) setFeedbackMessage("Cancelled. No research request was sent.", "");
       return;
     }
-    feedbackState.submittingID = frozen.strategyID;
+    if (feedbackState.submittingIDs.has(frozen.strategyID)) {
+      if (ticketSelected(ticket)) setFeedbackMessage("A research request for this strategy is already in progress. Nothing was sent.", "error");
+      return;
+    }
+    feedbackState.submittingIDs.add(frozen.strategyID);
     if (ticketSelected(ticket)) {
       els.feedbackList.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
     }
@@ -3938,9 +3948,12 @@
         reportLateFailure(label, frozen.strategyID, err, sent);
         return;
       }
-      setFeedbackMessage("Research was not started: " + apiFeedbackError(err), "error");
+      const outcome = writeOutcomeFromError(err);
+      setFeedbackMessage(sent && outcome.status === "unknown"
+        ? describeWriteOutcome(label, frozen.strategyID, outcome)
+        : "Research was not started: " + apiFeedbackError(err), "error");
     } finally {
-      if (feedbackState.submittingID === frozen.strategyID) feedbackState.submittingID = "";
+      feedbackState.submittingIDs.delete(frozen.strategyID);
       settleFeedbackSubmission(ticket, frozen.strategyID);
     }
   }
