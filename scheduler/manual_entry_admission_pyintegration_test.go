@@ -400,7 +400,7 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	t.Helper()
 	p := "et-"
 	strategies := []any{}
-	for _, name := range []string{"open-exit", "open-swap", "open-after", "open-shared", "open-excl", "open-ok", "solo", "solo-race", "solo-limit", "unpub", "add-cx", "add-fill", "record"} {
+	for _, name := range []string{"open-exit", "open-swap", "open-after", "open-shared", "open-excl", "open-ok", "solo", "solo-race", "solo-bound", "solo-limit", "unpub", "add-cx", "add-fill", "record"} {
 		strategies = append(strategies, meaPlainStrategy(p+name))
 	}
 	strategies = append(strategies, mrpManualStrategy(p+"ratchet", "short"), mrpManualStrategy(p+"ratchet-limit", "short"), mrpManualStrategy(p+"ratchet-unpub", "short"))
@@ -555,23 +555,92 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	}
 	t.Logf("standalone: market and limit opens placed under exclusive ownership; the eligible ratchet fallback applied; a regime-dependent limit refused")
 
+	venue = e.venueKinds()
 	e.armGate(placement)
 	pending = e.runAsync(nil, open("solo-race")...)
 	e.waitGate(placement)
-	blocked := e.scheduler()
+	waiting := e.scheduler()
+	waiting.waitLog("the wait for the standalone entry", 120*time.Second, func(out string) bool {
+		return strings.Contains(out, "a standalone manual entry command") && strings.Contains(out, "waiting up to")
+	})
 	select {
-	case <-blocked.exited:
-	case <-time.After(120 * time.Second):
-		t.Fatalf("a scheduler started on files a standalone command held:\n%s", blocked.output())
+	case <-waiting.exited:
+		t.Fatalf("a scheduler started during a standalone entry exited:\n%s", waiting.output())
+	case <-time.After(2 * time.Second):
 	}
-	if code := blocked.cmd.ProcessState.ExitCode(); code != ExitSingletonLock {
-		t.Fatalf("scheduler start during a standalone entry exited %d, want %d:\n%s", code, ExitSingletonLock, blocked.output())
+	if strings.Contains(waiting.output(), "Cycle 1 complete") {
+		t.Fatalf("a scheduler ran a cycle on files a standalone command held:\n%s", waiting.output())
 	}
 	e.releaseGate(placement)
 	if r := <-pending; r.code != 0 {
-		t.Fatalf("standalone entry after the refused scheduler start:\n%s", r)
+		t.Fatalf("standalone entry while a scheduler waited:\n%s", r)
 	}
-	t.Logf("standalone: a scheduler starting during the entry exited %d; the command kept its locks and placed", ExitSingletonLock)
+	waiting.waitCycles(1)
+	e.waitWitness(defaultPaperPartition, true)
+	if pid := meaWitnessPID(t, e.witnessFile(), manualRegimeOwnershipWitnessOffset); pid != waiting.cmd.Process.Pid {
+		t.Fatalf("ownership witness pid %d, want the waiting scheduler %d", pid, waiting.cmd.Process.Pid)
+	}
+	for _, spec := range e.layout().Files {
+		if spec.InMemory {
+			continue
+		}
+		if pid, held := probeStateDBLockHolder(spec.Path); !held || pid != waiting.cmd.Process.Pid {
+			t.Fatalf("state file %s holder pid %d (held %v), want the waiting scheduler %d", spec.Path, pid, held, waiting.cmd.Process.Pid)
+		}
+	}
+	if got := e.venueKinds(); got["execute"] != venue["execute"]+1 {
+		t.Fatalf("standalone entry venue after the wait: %v -> %v", venue, got)
+	}
+	t.Logf("standalone: a scheduler starting during the entry waited; the command placed, then the scheduler started and owns every state file")
+
+	refused := func(what string, d *mrpDaemon, want ...string) {
+		t.Helper()
+		select {
+		case <-d.exited:
+		case <-time.After(120 * time.Second):
+			t.Fatalf("%s: the scheduler did not exit:\n%s", what, d.output())
+		}
+		if code := d.cmd.ProcessState.ExitCode(); code != ExitSingletonLock {
+			t.Fatalf("%s: scheduler exited %d, want %d:\n%s", what, code, ExitSingletonLock, d.output())
+		}
+		for _, w := range want {
+			if !strings.Contains(d.output(), w) {
+				t.Fatalf("%s: scheduler output lacks %q:\n%s", what, w, d.output())
+			}
+		}
+	}
+	rival := e.scheduler()
+	refused("a second scheduler beside a running scheduler", rival, "another go-trader is already running")
+	if strings.Contains(rival.output(), "waiting up to") {
+		t.Fatalf("a second scheduler waited on a running scheduler:\n%s", rival.output())
+	}
+	waiting.stop()
+	exclusive, err := acquireStateOwnership(e.layout().Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rival = e.scheduler()
+	refused("a scheduler beside a plain ownership holder", rival, "another go-trader is already running")
+	if strings.Contains(rival.output(), "waiting up to") {
+		t.Fatalf("a scheduler waited on a plain ownership holder:\n%s", rival.output())
+	}
+	exclusive.Release()
+	t.Logf("standalone: a running scheduler and a plain ownership holder (the lock backfill --apply and --once take) still made a starting scheduler exit %d with no wait", ExitSingletonLock)
+
+	e.armGate(placement)
+	pending = e.runAsync(nil, open("solo-bound")...)
+	e.waitGate(placement)
+	startedAt := time.Now()
+	bounded := e.startDaemon(e.cfg, e.port, manualEntryTestSaveFaultEnv+"="+e.faults, manualEntryTestWaitEnv+"=1500")
+	refused("a scheduler beside a standalone entry that outlasts the wait", bounded, "a standalone manual entry command", "still holds the lock", "after a 1.5s wait")
+	if waited := time.Since(startedAt); waited < 1500*time.Millisecond {
+		t.Fatalf("the scheduler refused after %s, before the 1.5s wait ended:\n%s", waited, bounded.output())
+	}
+	e.releaseGate(placement)
+	if r := <-pending; r.code != 0 {
+		t.Fatalf("standalone entry after the bounded scheduler refusal:\n%s", r)
+	}
+	t.Logf("standalone: a command that outlasted the wait made the scheduler exit %d with the singleton refusal; the command kept its locks and placed", ExitSingletonLock)
 
 	cfg, err := LoadConfig(e.cfg)
 	if err != nil {

@@ -24,6 +24,7 @@ const (
 	manualEntryTestGateEnv      = "GO_TRADER_TEST_ENTRY_GATE_DIR"
 	manualEntryTestSaveFaultEnv = "GO_TRADER_TEST_SAVE_FAULT_DIR"
 	manualEntryTestCancelEnv    = "GO_TRADER_TEST_MANUAL_CANCEL_FILLED"
+	manualEntryTestWaitEnv      = "GO_TRADER_TEST_MANUAL_ENTRY_WAIT_MS"
 )
 
 func manualEntryTestStageName(stage string) string {
@@ -128,6 +129,14 @@ func init() {
 	}
 	if dir := os.Getenv(manualEntryTestSaveFaultEnv); dir != "" {
 		manualEntryTestInstallSaveFault(dir)
+	}
+	if raw := os.Getenv(manualEntryTestWaitEnv); raw != "" {
+		ms, err := strconv.Atoi(raw)
+		if err != nil || ms <= 0 {
+			fmt.Fprintf(os.Stderr, "%s needs a positive integer\n", manualEntryTestWaitEnv)
+			os.Exit(1)
+		}
+		schedulerManualEntryWait = time.Duration(ms) * time.Millisecond
 	}
 	logPath := os.Getenv(manualRegimeTestVenueLogEnv)
 	if logPath == "" {

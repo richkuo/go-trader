@@ -18,12 +18,31 @@ type stateDBLock struct {
 	path string
 }
 
+const stateDBLockKindManualEntry = "manual-entry"
+
+var (
+	schedulerManualEntryWait    = 45 * time.Second
+	schedulerManualEntryPollGap = 250 * time.Millisecond
+)
+
 type stateDBLockedError struct {
-	path string
-	pid  int
+	path   string
+	pid    int
+	kind   string
+	waited time.Duration
 }
 
 func (e *stateDBLockedError) Error() string {
+	if e.kind == stateDBLockKindManualEntry {
+		holder := "a standalone manual entry command"
+		if e.pid > 0 {
+			holder = fmt.Sprintf("a standalone manual entry command (pid %d)", e.pid)
+		}
+		if e.waited > 0 {
+			return fmt.Sprintf("%s still holds the lock on %s after a %s wait", holder, e.path, e.waited)
+		}
+		return fmt.Sprintf("%s holds the lock on %s", holder, e.path)
+	}
 	if e.pid > 0 {
 		return fmt.Sprintf("another go-trader is already running (pid %d); lock held on %s", e.pid, e.path)
 	}
@@ -54,20 +73,24 @@ const (
 // retried briefly so a read-only probe (probeStateDBLockHolder) that holds
 // the lock for microseconds never turns a daemon start into an exit 79.
 func acquireStateDBLock(dbPath string) (*stateDBLock, error) {
+	return acquireStateDBLockAs(dbPath, "")
+}
+
+func acquireStateDBLockAs(dbPath, kind string) (*stateDBLock, error) {
 	lockPath := stateDBLockPath(dbPath)
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file %s: %w", lockPath, err)
 	}
 	if err := flockWithRetry(f); err != nil {
-		pid := readLockPID(f)
+		pid, holderKind := readLockRecord(f)
 		f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, &stateDBLockedError{path: lockPath, pid: pid}
+			return nil, &stateDBLockedError{path: lockPath, pid: pid, kind: holderKind}
 		}
 		return nil, fmt.Errorf("flock %s: %w", lockPath, err)
 	}
-	if err := writeLockPID(f, os.Getpid()); err != nil {
+	if err := writeLockRecord(f, os.Getpid(), kind); err != nil {
 		fmt.Fprintf(os.Stderr, "[singleton] WARN: could not write pid to %s: %v\n", lockPath, err)
 	}
 	return &stateDBLock{f: f, path: lockPath}, nil
@@ -95,33 +118,49 @@ func (l *stateDBLock) Release() {
 	l.f = nil
 }
 
-func writeLockPID(f *os.File, pid int) error {
+func writeLockRecord(f *os.File, pid int, kind string) error {
 	if err := f.Truncate(0); err != nil {
 		return err
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(f, "%d\n", pid); err != nil {
+	record := strconv.Itoa(pid)
+	if kind != "" {
+		record += " " + kind
+	}
+	if _, err := fmt.Fprintf(f, "%s\n", record); err != nil {
 		return err
 	}
 	return f.Sync()
 }
 
 func readLockPID(f *os.File) int {
+	pid, _ := readLockRecord(f)
+	return pid
+}
+
+func readLockRecord(f *os.File) (int, string) {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return 0
+		return 0, ""
 	}
-	buf := make([]byte, 32)
+	buf := make([]byte, 64)
 	n, err := f.Read(buf)
 	if (err != nil && err != io.EOF) || n <= 0 {
-		return 0
+		return 0, ""
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(buf[:n])))
-	if err != nil {
-		return 0
+	fields := strings.Fields(string(buf[:n]))
+	if len(fields) == 0 || len(fields) > 2 {
+		return 0, ""
 	}
-	return pid
+	pid, err := strconv.Atoi(fields[0])
+	if err != nil || pid <= 0 {
+		return 0, ""
+	}
+	if len(fields) == 2 {
+		return pid, fields[1]
+	}
+	return pid, ""
 }
 
 // stateOwnership is the process-wide claim on every state file. Both files are
@@ -142,6 +181,44 @@ func (o *stateOwnership) Release() {
 }
 
 func acquireStateOwnership(specs []storageFileSpec) (*stateOwnership, error) {
+	return acquireStateOwnershipAs(specs, "")
+}
+
+func acquireSchedulerStateOwnership(specs []storageFileSpec) (*stateOwnership, error) {
+	wait := schedulerManualEntryWait
+	deadline := time.Now().Add(wait)
+	announced, confirmed := false, false
+	for {
+		owned, err := acquireStateOwnership(specs)
+		if err == nil {
+			return owned, nil
+		}
+		var locked *stateDBLockedError
+		if !errors.As(err, &locked) {
+			return nil, err
+		}
+		if locked.kind != stateDBLockKindManualEntry {
+			if confirmed {
+				return nil, err
+			}
+			confirmed = true
+			time.Sleep(schedulerManualEntryPollGap)
+			continue
+		}
+		confirmed = false
+		if !time.Now().Before(deadline) {
+			locked.waited = wait
+			return nil, err
+		}
+		if !announced {
+			announced = true
+			fmt.Printf("[singleton] %s; waiting up to %s for it to finish before this scheduler starts\n", locked.Error(), wait)
+		}
+		time.Sleep(schedulerManualEntryPollGap)
+	}
+}
+
+func acquireStateOwnershipAs(specs []storageFileSpec, kind string) (*stateOwnership, error) {
 	// The layout's file order (primary, paper, then sources by id) is the one
 	// stable lock order every process and every tool takes, so two owners can
 	// never deadlock against each other half way through a set of files.
@@ -150,7 +227,7 @@ func acquireStateOwnership(specs []storageFileSpec) (*stateOwnership, error) {
 		if spec.InMemory {
 			continue
 		}
-		lock, err := acquireStateDBLock(spec.Path)
+		lock, err := acquireStateDBLockAs(spec.Path, kind)
 		if err != nil {
 			owned.Release()
 			return nil, err

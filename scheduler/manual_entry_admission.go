@@ -87,7 +87,7 @@ func admitManualEntry(cfg *Config, strategyID string) (*manualEntryAdmission, er
 		}
 		a.pin = &pin
 	default:
-		owned, err := acquireStateOwnership(layout.Files)
+		owned, err := acquireStateOwnershipAs(layout.Files, stateDBLockKindManualEntry)
 		if err != nil {
 			return nil, manualEntryRefused("could not take the state files for a standalone entry: %v", err)
 		}

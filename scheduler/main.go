@@ -279,7 +279,7 @@ func main() {
 
 	var ownership *stateOwnership
 	if !readOnlyReport && schedulerNeedsOwnership(*once) {
-		owned, lockErr := acquireStateOwnership(storageLayoutCfg.Files)
+		owned, lockErr := acquireSchedulerStateOwnership(storageLayoutCfg.Files)
 		if lockErr != nil {
 			msg := reportStateOwnershipFailure(lockErr)
 			sendStartupRefusalDM(notifier, "Singleton guard", msg)
@@ -341,7 +341,7 @@ func main() {
 
 	if ownership != nil {
 		if err := globalManualRegimeOwner.publish(storageLayoutCfg); err != nil {
-			fmt.Fprintf(os.Stderr, "[manual-regime] WARN: owner identity publication failed; command-line regime admission stays disabled for this process: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[manual-regime] WARN: owner identity publication failed; every command-line manual-open and manual-add that sends an order refuses in every feed mode, and command-line regime admission stays disabled, until this scheduler restarts and publishes: %v\n", err)
 		} else {
 			store.setHoldSignal(globalManualRegimeOwner.signalPersistence)
 		}
