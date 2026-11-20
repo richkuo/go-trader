@@ -179,6 +179,7 @@ type manualLimitOpenInputs struct {
 	slPct       float64
 	expireAfter time.Duration
 	dryRun      bool
+	admission   *manualEntryAdmission
 }
 
 func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in manualLimitOpenInputs) int {
@@ -198,6 +199,7 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 	var remote *manualRegimeRemote
 	if sealed {
 		remote = newManualRegimeRemote(cfg, stateDB)
+		remote.admission = in.admission
 		resolve, confirm = remote.resolve, remote.confirm
 	}
 	var entrySnapshots map[string]RegimeSnapshot
@@ -291,7 +293,12 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 	if !confirmAdmission() {
 		return 1
 	}
-	if remote != nil && regimeAdmitted {
+	if in.admission != nil {
+		if err := in.admission.check("before placement"); err != nil {
+			fmt.Fprintf(os.Stderr, "manual limit-open held: %v\n", err)
+			return 1
+		}
+	} else if remote != nil && regimeAdmitted {
 		if err := remote.checkPersistenceGuard(in.strategyID); err != nil {
 			fmt.Fprintf(os.Stderr, "manual limit-open held: %v\n", err)
 			return 1

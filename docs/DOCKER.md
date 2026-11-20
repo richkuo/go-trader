@@ -272,12 +272,14 @@ docker compose run --rm cli storage-inspect --config /data/config.json
 **Manual Hyperliquid trades** (these need live Hyperliquid keys in `go-trader.env` and a manual strategy; see [Live trading](#live-trading)):
 
 ```bash
-docker compose run --rm cli manual-open hl-manual-btc --config /data/config.json --side long --margin 50
+docker compose exec go-trader /app/go-trader manual-open hl-manual-btc --config /data/config.json --side long --margin 50
 docker compose run --rm cli manual-update-sl hl-manual-btc --config /data/config.json --trigger 66000
 docker compose run --rm cli manual-close hl-manual-btc --config /data/config.json
 ```
 
-Manual commands take only the manual-action lock, so they run beside the running bot, as on a host.
+**Entries while the bot runs use `docker compose exec go-trader /app/go-trader ...`.** A `manual-open` or `manual-add` that sends an order must see the bot's process to prove that the bot owns the state files and holds no save-failure hold. The `cli` service is a separate container with its own process namespace, so `docker compose run --rm cli manual-open ...` (and `manual-add`) refuses with `is not visible from this process` while the bot runs. This is the same with the `compose.egress.yaml` overlay.
+**Entries while the bot is stopped use `docker compose run --rm cli manual-open ...`** (`docker compose exec` needs a running container). The command then holds every state-file lock until it ends. A bot that starts in that time waits up to 45 seconds for the command and then starts; if the command runs longer, the bot exits 79 and stays down until you start it again.
+The other manual commands (closes, stop-loss edits, cancels) take only the manual-action lock, so they run beside the running bot from either service, as on a host.
 The full list of manual commands is in [SKILL.md](../SKILL.md) § Manual Trading.
 
 ## Run one cycle with --once

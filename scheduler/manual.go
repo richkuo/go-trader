@@ -78,6 +78,16 @@ func runManualOpen(args []string) int {
 			return 2
 		}
 
+		var admission *manualEntryAdmission
+		if !*dryRun {
+			admission, err = admitManualEntry(cfg, strategyID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "manual limit-open held: %v\n", err)
+				return 1
+			}
+			defer admission.Release()
+		}
+
 		stateDB, err := openToolStateStore(cfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
@@ -137,7 +147,18 @@ func runManualOpen(args []string) int {
 			slPct:       *slPct,
 			expireAfter: *expireAfter,
 			dryRun:      *dryRun,
+			admission:   admission,
 		})
+	}
+
+	var admission *manualEntryAdmission
+	if !*dryRun && !*recordOnly {
+		admission, err = admitManualEntry(cfg, strategyID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "manual-open held: %v\n", err)
+			return 1
+		}
+		defer admission.Release()
 	}
 
 	stateDB, err := openToolStateStore(cfg)
@@ -150,7 +171,7 @@ func runManualOpen(args []string) int {
 	notifier, closeNotifier := buildNotifierFromConfig(cfg)
 	defer closeNotifier()
 
-	res, coreErr := manualOpenCore(newCLIManualCoreDeps(cfg, stateDB, notifier), sc, manualOpenInputs{
+	res, coreErr := manualOpenCore(newCLIManualEntryDeps(cfg, stateDB, notifier, admission), sc, manualOpenInputs{
 		StrategyID: strategyID,
 		Side:       *side,
 		Size:       *size,
@@ -196,6 +217,16 @@ func runManualAdd(args []string) int {
 		return 1
 	}
 
+	var admission *manualEntryAdmission
+	if !*dryRun && !*recordOnly {
+		admission, err = admitManualEntry(cfg, strategyID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "manual-add held: %v\n", err)
+			return 1
+		}
+		defer admission.Release()
+	}
+
 	stateDB, err := openToolStateStore(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
@@ -203,7 +234,7 @@ func runManualAdd(args []string) int {
 	}
 	defer stateDB.Close()
 
-	res, coreErr := manualAddCore(newCLIManualCoreDeps(cfg, stateDB, nil), sc, manualAddInputs{
+	res, coreErr := manualAddCore(newCLIManualEntryDeps(cfg, stateDB, nil, admission), sc, manualAddInputs{
 		StrategyID: strategyID,
 		Size:       *size,
 		Notional:   *notional,

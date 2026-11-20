@@ -199,6 +199,7 @@ type manualCoreDeps struct {
 	regimeWaited           func() bool
 	loadFreshState         func(strategyID, symbol string) (manualStateView, error)
 	checkPersistenceGuard  func(strategyID string) error
+	entryAdmission         *manualEntryAdmission
 	requireExplicitATR     bool
 	cfg                    *Config
 	stateDB                *StateStore
@@ -231,7 +232,12 @@ func (d manualCoreDeps) acquireManualActionLock(strategyID string) (func(), erro
 }
 
 func newCLIManualCoreDeps(cfg *Config, store *StateStore, notifier *MultiNotifier) manualCoreDeps {
+	return newCLIManualEntryDeps(cfg, store, notifier, nil)
+}
+
+func newCLIManualEntryDeps(cfg *Config, store *StateStore, notifier *MultiNotifier, admission *manualEntryAdmission) manualCoreDeps {
 	d := newManualCoreDeps(cfg, store, notifier)
+	d.entryAdmission = admission
 	d.loadState = func(strategyID, symbol string) (manualStateView, error) {
 		state, _, err := LoadStateWithStore(cfg, store)
 		if err != nil {
@@ -242,6 +248,7 @@ func newCLIManualCoreDeps(cfg *Config, store *StateStore, notifier *MultiNotifie
 	if sealedManualCommandFeed(cfg) {
 		remote := newManualRegimeRemote(cfg, store)
 		remote.waitPending = true
+		remote.admission = admission
 		d.resolveRegime = remote.resolve
 		d.confirmRegimeAdmission = remote.confirm
 		d.regimeWaited = remote.waitedForPending
@@ -314,6 +321,19 @@ func manualCheckRegimePersistenceGuard(d manualCoreDeps, action, strategyID stri
 		if err := d.checkPersistenceGuard(strategyID); err != nil {
 			return manualFailf("%s held: %v", action, err)
 		}
+	}
+	return nil
+}
+
+func manualCheckEntryAdmission(d manualCoreDeps, action, strategyID, stage string, regimeAdmitted bool) error {
+	if d.entryAdmission != nil {
+		if err := d.entryAdmission.check(stage); err != nil {
+			return manualFailf("%s held: %v", action, err)
+		}
+		return nil
+	}
+	if regimeAdmitted {
+		return manualCheckRegimePersistenceGuard(d, action, strategyID)
 	}
 	return nil
 }
@@ -488,7 +508,7 @@ func limitStatusForOID(res *HyperliquidLimitStatusResult, oid int64) (Hyperliqui
 	return HyperliquidLimitOrderStatus{}, false
 }
 
-func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, cmdName, strategyID, symbol string) (float64, float64, []int64, error) {
+func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, cmdName, strategyID, symbol string, beforeCancel func() error) (float64, float64, []int64, error) {
 	orders, err := pendingLimitOrdersForStrategySymbol(d.stateDB, strategyID, symbol)
 	if err != nil {
 		return 0, 0, nil, manualFailf("error: could not check for resting limit orders (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
@@ -497,13 +517,23 @@ func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCo
 		return 0, 0, nil, nil
 	}
 
+	if beforeCancel != nil {
+		if err := beforeCancel(); err != nil {
+			return 0, 0, nil, err
+		}
+	}
 	if _, err := d.stateDB.MarkPendingLimitOrderCancelRequested(strategyID, symbol); err != nil {
 		return 0, 0, nil, manualFailf("error: could not mark resting limit order cancel_requested (%v) — refusing %s to avoid racing the scheduler's fill adoption", err, cmdName)
 	}
 
 	var clearedQty, clearedNotional float64
 	var cancelledOIDs []int64
-	for _, o := range orders {
+	for i, o := range orders {
+		if i > 0 && beforeCancel != nil {
+			if err := beforeCancel(); err != nil {
+				return 0, 0, nil, manualFailf("%v — the remaining resting limit orders for %s/%s stay marked for cancellation; the scheduler finalizes them", err, strategyID, o.Symbol)
+			}
+		}
 		cancelRes, cstderr, cerr := runHyperliquidCancelOrderFn(sc.Script, o.Symbol, o.OrderOID)
 		if cstderr != "" {
 			res.errf("[limit-cancel] %s stderr: %s", strategyID, cstderr)
@@ -766,10 +796,8 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 			res.errf("warning: --record-only does not arm a stop-loss trigger automatically — place the SL manually on the HL UI")
 		}
 	} else {
-		if regimeAdmitted {
-			if err := manualCheckRegimePersistenceGuard(d, "manual-open", strategyID); err != nil {
-				return res, err
-			}
+		if err := manualCheckEntryAdmission(d, "manual-open", strategyID, "before placement", regimeAdmitted); err != nil {
+			return res, err
 		}
 		execResult, execStderr, execErr := d.execute(
 			script, sc.Symbol, openSide,
@@ -1055,11 +1083,16 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 			if err := manualRecheckAfterRegimeWait(d, "manual-add", strategyID, sc.Symbol, addDir, pos, pendingActionsQueued); err != nil {
 				return res, err
 			}
-			if err := manualCheckRegimePersistenceGuard(d, "manual-add", strategyID); err != nil {
+		}
+		beforeCancel := func() error {
+			return manualCheckEntryAdmission(d, "manual-add", strategyID, "before remainder cancellation", regimeAdmitted)
+		}
+		if d.entryAdmission == nil && regimeAdmitted {
+			if err := beforeCancel(); err != nil {
 				return res, err
 			}
 		}
-		_, _, cancelledRemainders, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol)
+		_, _, cancelledRemainders, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol, beforeCancel)
 		if err != nil {
 			return res, err
 		}
@@ -1101,10 +1134,8 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 		fillQty = in.Size
 		resolvedFillPrice = in.FillPrice
 	} else {
-		if regimeAdmitted {
-			if err := manualCheckRegimePersistenceGuard(d, "manual-add", strategyID); err != nil {
-				return res, err
-			}
+		if err := manualCheckEntryAdmission(d, "manual-add", strategyID, "before placement", regimeAdmitted); err != nil {
+			return res, err
 		}
 		execResult, execStderr, execErr := d.execute(
 			sc.Script, sc.Symbol, addSide,
@@ -1292,7 +1323,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	}
 	defer unlock()
 
-	clearedQty, clearedAvgPx, cancelledLimitOIDs, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-close", strategyID, sc.Symbol)
+	clearedQty, clearedAvgPx, cancelledLimitOIDs, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-close", strategyID, sc.Symbol, nil)
 	if err != nil {
 		return res, err
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,7 +21,52 @@ const (
 	manualRegimeTestVenueLogEnv = "GO_TRADER_TEST_MANUAL_VENUE_LOG"
 	manualRegimeTestFillPxEnv   = "GO_TRADER_TEST_MANUAL_FILL_PX"
 	manualRegimeTestGateEnv     = "GO_TRADER_TEST_REGIME_GATE_DIR"
+	manualEntryTestGateEnv      = "GO_TRADER_TEST_ENTRY_GATE_DIR"
+	manualEntryTestSaveFaultEnv = "GO_TRADER_TEST_SAVE_FAULT_DIR"
+	manualEntryTestCancelEnv    = "GO_TRADER_TEST_MANUAL_CANCEL_FILLED"
+	manualEntryTestWaitEnv      = "GO_TRADER_TEST_MANUAL_ENTRY_WAIT_MS"
 )
+
+func manualEntryTestStageName(stage string) string {
+	return strings.ReplaceAll(stage, " ", "-")
+}
+
+func manualEntryTestPartitionName(p RiskPartition) string {
+	return strings.ReplaceAll(p.String(), ":", "-")
+}
+
+func manualEntryTestInstallGate(dir string) {
+	manualEntryAdmissionBarrier = func(stage string) {
+		name := manualEntryTestStageName(stage)
+		if _, err := os.Stat(filepath.Join(dir, "arm-"+name)); err != nil {
+			return
+		}
+		if err := os.WriteFile(filepath.Join(dir, "blocked-"+name), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			fmt.Fprintf(os.Stderr, "entry gate %s: %v\n", dir, err)
+			os.Exit(1)
+		}
+		deadline := time.Now().Add(5 * time.Minute)
+		for {
+			if _, err := os.Stat(filepath.Join(dir, "release-"+name)); err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				fmt.Fprintf(os.Stderr, "entry gate %s: no release for %s\n", dir, stage)
+				os.Exit(1)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+func manualEntryTestInstallSaveFault(dir string) {
+	stateSaveOutcomeFault = func(p RiskPartition) error {
+		if _, err := os.Stat(filepath.Join(dir, manualEntryTestPartitionName(p))); err == nil {
+			return fmt.Errorf("controlled %s save failure", partitionLabel(p))
+		}
+		return nil
+	}
+}
 
 func manualRegimeTestInstallGate(dir string) {
 	real := runRegimeBundleCheckFn
@@ -78,6 +124,20 @@ func init() {
 	if dir := os.Getenv(manualRegimeTestGateEnv); dir != "" {
 		manualRegimeTestInstallGate(dir)
 	}
+	if dir := os.Getenv(manualEntryTestGateEnv); dir != "" {
+		manualEntryTestInstallGate(dir)
+	}
+	if dir := os.Getenv(manualEntryTestSaveFaultEnv); dir != "" {
+		manualEntryTestInstallSaveFault(dir)
+	}
+	if raw := os.Getenv(manualEntryTestWaitEnv); raw != "" {
+		ms, err := strconv.Atoi(raw)
+		if err != nil || ms <= 0 {
+			fmt.Fprintf(os.Stderr, "%s needs a positive integer\n", manualEntryTestWaitEnv)
+			os.Exit(1)
+		}
+		schedulerManualEntryWait = time.Duration(ms) * time.Millisecond
+	}
 	logPath := os.Getenv(manualRegimeTestVenueLogEnv)
 	if logPath == "" {
 		return
@@ -95,9 +155,26 @@ func init() {
 		manualRegimeTestVenueRecord(logPath, map[string]any{"kind": "limit_open", "symbol": symbol, "side": side, "size": size, "limit_px": limitPx})
 		return &HyperliquidLimitOpenResult{Platform: "hyperliquid", Status: "resting", OrderOID: 8001, LimitPrice: limitPx, TIF: tif}, "", nil
 	}
+	cancelFilled, cancelOK := os.LookupEnv(manualEntryTestCancelEnv)
+	filledSize, _ := strconv.ParseFloat(cancelFilled, 64)
 	runHyperliquidCancelOrderFn = func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
 		manualRegimeTestVenueRecord(logPath, map[string]any{"kind": "cancel", "symbol": symbol, "oid": oid})
+		if cancelOK {
+			return &HyperliquidCancelOrderResult{Platform: "hyperliquid", OID: oid, Cancelled: true}, "", nil
+		}
 		return nil, "", fmt.Errorf("manual venue substitute refuses cancellations")
+	}
+	runHyperliquidLimitStatusFn = func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error) {
+		manualRegimeTestVenueRecord(logPath, map[string]any{"kind": "limit_status", "symbol": symbol, "oids": len(oids)})
+		if !cancelOK {
+			return nil, "", fmt.Errorf("manual venue substitute refuses limit status reads")
+		}
+		resting := false
+		out := &HyperliquidLimitStatusResult{Platform: "hyperliquid"}
+		for _, oid := range oids {
+			out.Orders = append(out.Orders, HyperliquidLimitOrderStatus{OID: oid, Resting: &resting, FilledSize: filledSize, AvgPx: fillPx})
+		}
+		return out, "", nil
 	}
 	runHyperliquidFetchATRFn = func(script, symbol, timeframe string, period int, atrMethod string) (*HyperliquidFetchATRResult, string, error) {
 		manualRegimeTestVenueRecord(logPath, map[string]any{"kind": "fetch_atr", "symbol": symbol, "timeframe": timeframe})
