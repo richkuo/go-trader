@@ -48,7 +48,7 @@ jobs:
         run: cd scheduler && go build -ldflags "-X main.Version=$(git describe --tags --always --dirty=-mod)" .
 
       - name: Remaining Go tests
-        run: cd scheduler && go test -skip '^(TestFeedWeight|TestSharedFeed)' ./...
+        run: cd scheduler && go test ./...
 
       - name: Format check (every tracked Go file)
         run: |
@@ -60,22 +60,7 @@ jobs:
             exit 1
           fi
 
-  go-feed:
-    needs: changes
-    if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
-      - name: Feed weight and shared feed Go tests
-        run: cd scheduler && go test -run '^(TestFeedWeight|TestSharedFeed)' ./...
-
-  go-race-feed-weight:
+  go-race:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-26.04
@@ -90,19 +75,8 @@ jobs:
       - name: Feed weight ledger race check
         run: cd scheduler && go test -race -count=1 -timeout 15m -run '^TestFeedWeight' .
 
-  go-race-quote:
-    needs: changes
-    if: ${{ needs.changes.outputs.quote == 'true' }}
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
       - name: Quote coordinator race check
+        if: ${{ needs.changes.outputs.quote == 'true' }}
         run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestQuote' -skip '^(TestQuoteReplayRunsThePolicyThroughTheRealCoordinator|TestQuoteReplayResumeMatchesAnUninterruptedRun|TestQuoteReplayFaultsRecoverWithTheirStatedClass|TestQuoteReplayRefusesUnsafeStateAndInputs|TestQuoteReplayLaterReceiptsLeaveEarlierDecisionsUnchanged|TestQuoteReplayCoverageAndTimingRefusals|TestQuotePolicyBoundaryCasesThroughTheRealCoordinator)$' .
 
   go-python-integration:

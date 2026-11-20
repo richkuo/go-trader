@@ -168,32 +168,6 @@ if [ "$n" != "${#outputs[@]}" ]; then
   fail=1
 fi
 
-read_go_test_filter() {
-  local job="$1" flag="$2" command
-  local pattern="^        run: cd scheduler && go test $flag '([^']+)' [.]\/\.{3}$"
-  command="$(awk -v job="$job" '
-    /^  [[:alnum:]_-]+:/ { selected = ($0 == "  " job ":") }
-    selected && /^        run: cd scheduler && go test / { print }
-  ' "$path")"
-  if [[ "$command" =~ $pattern ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]}"
-    return
-  fi
-  printf 'FAIL: ci.yml job %s must use one literal %s filter in its go test command\n' "$job" "$flag" >&2
-  return 1
-}
-
-if go_skip="$(read_go_test_filter go -skip)" && go_feed_run="$(read_go_test_filter go-feed -run)"; then
-  if [ "$go_skip" = "$go_feed_run" ]; then
-    printf 'ok: ci.yml Go test filters match: %s\n' "$go_skip"
-  else
-    printf 'FAIL: ci.yml go -skip %s differs from go-feed -run %s\n' "$go_skip" "$go_feed_run"
-    fail=1
-  fi
-else
-  fail=1
-fi
-
 if [ "$fail" != 0 ]; then
   exit 1
 fi
