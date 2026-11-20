@@ -221,6 +221,8 @@
       apply: { issued: 0, accepted: 0 },
       pause: { issued: 0, accepted: 0 },
       notify: { issued: 0, accepted: 0 },
+      status: { issued: 0, accepted: 0 },
+      feedback: { issued: 0, accepted: 0 },
     },
     chartData: null,
     tradeHistory: null,
@@ -239,7 +241,9 @@
       pendingApply: null,
       applyTicket: null,
       notice: "",
+      ratchet: { confirmed: "inherit", held: null, ticket: null },
     },
+    lateResults: [],
   };
 
   const SPARKLINE_LIMIT = 40;
@@ -274,6 +278,9 @@
     authPanel: document.getElementById("auth-panel"),
     authToken: document.getElementById("auth-token"),
     authMessage: document.getElementById("auth-message"),
+    dashboardMessage: document.getElementById("dashboard-message"),
+    dashboardMessageList: document.getElementById("dashboard-message-list"),
+    dashboardMessageDismiss: document.getElementById("dashboard-message-dismiss"),
     statusGrid: document.getElementById("status-grid"),
     positions: document.getElementById("positions-list"),
     sidebar: document.getElementById("app-sidebar"),
@@ -481,6 +488,13 @@
       "partition=" + encodeURIComponent(state.partitionFilter);
   }
 
+  function stampErrorPartition(err, partition) {
+    if (err && typeof err === "object" && err.partition === undefined) {
+      err.partition = partition;
+    }
+    return err;
+  }
+
   // A reload can retire a source while the selector still names it. The server
   // answers 404 for a partition it does not own, and the dashboard falls back
   // to every partition rather than showing a stale view. Every 404 of a
@@ -490,19 +504,27 @@
   async function getJSONForPartition(url) {
     const requested = state.partitionFilter;
     if (requested === "all") {
-      return { data: await getJSON(url), partition: "all" };
+      try {
+        return { data: await getJSON(url), partition: "all" };
+      } catch (err) {
+        throw stampErrorPartition(err, "all");
+      }
     }
     try {
       return { data: await getJSON(withPartition(url)), partition: requested };
     } catch (err) {
-      if (err.status === 404) {
+      if (err && err.status === 404) {
         if (state.partitionFilter === requested) {
           state.partitionFilter = "all";
           renderPartitionSelect();
         }
-        return { data: await getJSON(url), partition: "all" };
+        try {
+          return { data: await getJSON(url), partition: "all" };
+        } catch (fallbackErr) {
+          throw stampErrorPartition(fallbackErr, "all");
+        }
       }
-      throw err;
+      throw stampErrorPartition(err, requested);
     }
   }
 
@@ -1326,7 +1348,32 @@
     hideChartFailure();
     els.empty.style.display = "none";
     clearTradeHistoryTable();
+    resetStrategyDetail();
     resetTunerState();
+  }
+
+  function resetStrategyDetail() {
+    const strategy = activeStrategy();
+    if (strategy) {
+      els.title.textContent = strategy.id;
+      els.subtitle.textContent = [strategy.platform, strategy.symbol, strategy.timeframe].filter(Boolean).join(" / ");
+    } else if (state.activeID) {
+      els.title.textContent = state.activeID;
+      els.subtitle.textContent = "";
+    } else {
+      els.title.textContent = "Dashboard";
+      els.subtitle.textContent = "Select a strategy";
+    }
+    updateRegimeBadge("");
+    updateDivergenceBadge(null);
+    updatePausedBadge(false);
+    els.statusGrid.innerHTML = "";
+    els.positions.innerHTML = "";
+    if (els.tradePanel) els.tradePanel.hidden = true;
+    setTradeMessage("");
+    if (els.structuralPanel) els.structuralPanel.hidden = true;
+    setStructuralMessage("");
+    resetFeedbackPanel();
   }
 
   function takeTicket(lane) {
@@ -1490,14 +1537,6 @@
   async function selectStrategy(id, options) {
     const opts = options || {};
     setActiveStrategy(id);
-    updateRegimeBadge("");
-    updateDivergenceBadge(null);
-    updatePausedBadge(false);
-    const strategy = activeStrategy();
-    if (strategy) {
-      els.title.textContent = strategy.id;
-      els.subtitle.textContent = [strategy.platform, strategy.symbol, strategy.timeframe].filter(Boolean).join(" / ");
-    }
     renderStrategies();
     if (opts.switchToDetail) {
       state.viewMode = "detail";
@@ -1526,6 +1565,7 @@
     state.tuner.pendingApply = null;
     state.tuner.applyTicket = null;
     state.tuner.notice = "";
+    state.tuner.ratchet = { confirmed: "inherit", held: null, ticket: null };
     if (els.tunerApply) {
       els.tunerApply.disabled = false;
     }
@@ -1595,50 +1635,136 @@
     return groups;
   }
 
-  function renderTunerForm(config) {
+  const TUNER_GROUP_LABELS = {
+    runtime: "Runtime",
+    risk: "Risk",
+    open_params: "Indicator params",
+  };
+
+  function tunerFieldShape(field) {
+    return stableJSON({
+      type: String(field.type || ""),
+      options: field.type === "select" ? (field.options || []).map(String) : null,
+    });
+  }
+
+  function findTunerField(config, key) {
+    const fields = config && config.editable_fields ? config.editable_fields : [];
+    return fields.find(function (field) { return field.key === key; }) || null;
+  }
+
+  function pruneTunerDraft(previous, next) {
+    const dropped = [];
+    Object.keys(state.tuner.overrides).forEach(function (key) {
+      const before = findTunerField(previous, key);
+      const after = findTunerField(next, key);
+      if (!before || !after || tunerFieldShape(before) !== tunerFieldShape(after)) {
+        delete state.tuner.overrides[key];
+        dropped.push(key);
+      }
+    });
+    return dropped.sort();
+  }
+
+  function tunerFieldValue(field) {
+    return hasOwn(state.tuner.overrides, field.key) ? state.tuner.overrides[field.key] : field.value;
+  }
+
+  function createTunerFieldElement(field) {
+    const label = document.createElement("label");
+    label.className = "tuner-field";
+    label.dataset.key = field.key;
+    label.dataset.shape = tunerFieldShape(field);
+    label.appendChild(document.createElement("span"));
+    let control;
+    if (field.type === "boolean") {
+      control = document.createElement("input");
+      control.type = "checkbox";
+    } else if (field.type === "select") {
+      control = document.createElement("select");
+      (field.options || []).forEach(function (opt) {
+        const option = document.createElement("option");
+        option.value = String(opt);
+        option.textContent = String(opt);
+        control.appendChild(option);
+      });
+    } else {
+      control = document.createElement("input");
+      control.type = "number";
+      control.step = "any";
+    }
+    control.dataset.key = field.key;
+    label.appendChild(control);
+    return label;
+  }
+
+  function writeTunerFieldElement(label, field, keepInput) {
+    label.firstChild.textContent = field.label || field.key;
+    if (keepInput) return;
+    const control = label.lastChild;
+    const value = tunerFieldValue(field);
+    if (field.type === "boolean") {
+      control.checked = !!value;
+    } else if (field.type === "select") {
+      const match = Array.from(control.options).findIndex(function (option) {
+        return option.value === String(value);
+      });
+      control.selectedIndex = match >= 0 ? match : 0;
+    } else {
+      control.value = value === null || value === undefined ? "" : String(value);
+    }
+  }
+
+  function renderTunerForm(config, options) {
     if (!els.tunerForm || !els.tunerPanel) return;
-    if (!config || !config.editable_fields || !config.editable_fields.length) {
+    const force = !!(options && options.force);
+    const fields = config && config.editable_fields ? config.editable_fields : [];
+    if (!fields.length) {
       els.tunerPanel.hidden = true;
-      els.tunerForm.innerHTML = "";
+      els.tunerForm.replaceChildren();
       return;
     }
     els.tunerPanel.hidden = false;
-    const groups = groupEditableFields(config.editable_fields);
-    const groupLabels = {
-      runtime: "Runtime",
-      risk: "Risk",
-      open_params: "Indicator params",
-    };
-    let html = "";
+    const active = document.activeElement;
+    const focused = active && active !== els.tunerForm && els.tunerForm.contains(active)
+      ? active.closest("label.tuner-field")
+      : null;
+    const existing = {};
+    Array.from(els.tunerForm.querySelectorAll("label.tuner-field")).forEach(function (label) {
+      existing[label.dataset.key] = label;
+    });
+    const used = new Set();
+    const desired = [];
+    const groups = groupEditableFields(fields);
     ["runtime", "risk", "open_params"].forEach(function (groupKey) {
-      const fields = groups[groupKey] || [];
-      if (!fields.length) return;
-      html += '<div class="tuner-group-label">' + escapeHTML(groupLabels[groupKey] || groupKey) + "</div>";
-      fields.forEach(function (field) {
-        const value = state.tuner.overrides[field.key] !== undefined
-          ? state.tuner.overrides[field.key]
-          : field.value;
-        html += '<label class="tuner-field" data-key="' + escapeHTML(field.key) + '">';
-        html += "<span>" + escapeHTML(field.label || field.key) + "</span>";
-        if (field.type === "boolean") {
-          html += '<input type="checkbox" data-key="' + escapeHTML(field.key) + '"' +
-            (value ? " checked" : "") + ">";
-        } else if (field.type === "select") {
-          html += '<select data-key="' + escapeHTML(field.key) + '">';
-          (field.options || []).forEach(function (opt) {
-            html += '<option value="' + escapeHTML(opt) + '"' +
-              (String(value) === String(opt) ? " selected" : "") + ">" +
-              escapeHTML(opt) + "</option>";
-          });
-          html += "</select>";
-        } else {
-          html += '<input type="number" step="any" data-key="' + escapeHTML(field.key) + '" value="' +
-            escapeHTML(value === null || value === undefined ? "" : value) + '">';
+      const list = groups[groupKey] || [];
+      if (!list.length) return;
+      const heading = document.createElement("div");
+      heading.className = "tuner-group-label";
+      heading.textContent = TUNER_GROUP_LABELS[groupKey] || groupKey;
+      desired.push(heading);
+      list.forEach(function (field) {
+        let label = hasOwn(existing, field.key) ? existing[field.key] : null;
+        if (!label || used.has(label) || label.dataset.shape !== tunerFieldShape(field)) {
+          label = createTunerFieldElement(field);
         }
-        html += "</label>";
+        used.add(label);
+        writeTunerFieldElement(label, field, !force && label === focused);
+        desired.push(label);
       });
     });
-    els.tunerForm.innerHTML = html;
+    const anchor = focused && used.has(focused) ? focused : null;
+    Array.from(els.tunerForm.childNodes).forEach(function (node) {
+      if (node !== anchor) els.tunerForm.removeChild(node);
+    });
+    const at = anchor ? desired.indexOf(anchor) : -1;
+    desired.forEach(function (node, index) {
+      if (anchor && index < at) {
+        els.tunerForm.insertBefore(node, anchor);
+      } else if (index !== at) {
+        els.tunerForm.appendChild(node);
+      }
+    });
   }
 
   async function loadTunerConfig() {
@@ -1657,9 +1783,18 @@
         JSON.stringify(config && config.strategy_id !== undefined ? config.strategy_id : null) +
         " but the request was for " + JSON.stringify(ticket.id));
     }
+    const previous = currentTunerConfig();
     state.tuner.config = { strategyID: ticket.id, epoch: ticket.epoch, resp: config };
+    const dropped = pruneTunerDraft(previous, config);
+    acceptRatchetConfig(ticket.seq, config);
     renderTunerForm(config);
     updateControlsPanel(config);
+    if (dropped.length) {
+      state.tuner.notice = "The server changed or removed tuner field(s) " + dropped.join(", ") +
+        ". Their edits were dropped and will not be applied.";
+      updateTunerStatus();
+      scheduleSimulate();
+    }
     refreshGlobalNotifications().catch(function () {});
   }
 
@@ -1667,6 +1802,22 @@
     if (!els.controlsMessage) return;
     els.controlsMessage.textContent = text || "";
     els.controlsMessage.hidden = !text;
+  }
+
+  function ratchetChoice(value) {
+    return value === null || value === undefined ? "inherit" : (value ? "on" : "off");
+  }
+
+  function acceptRatchetConfig(seq, config) {
+    const ratchet = state.tuner.ratchet;
+    const reported = ratchetChoice(config.notify_ratchet_triggers);
+    const held = ratchet.held;
+    if (held) {
+      if (seq <= held.afterSeq) return;
+      if (reported !== held.value && held.pending.indexOf(reported) !== -1) return;
+      ratchet.held = null;
+    }
+    ratchet.confirmed = reported;
   }
 
   function updateControlsPanel(config) {
@@ -1681,12 +1832,10 @@
       }
     }
     if (els.ratchetNotifySelect) {
-      els.ratchetNotifySelect.disabled = !config;
-      if (config) {
-        const v = config.notify_ratchet_triggers;
-        els.ratchetNotifySelect.value = v === null || v === undefined ? "inherit" : (v ? "on" : "off");
-      } else {
-        els.ratchetNotifySelect.value = "inherit";
+      const busy = !!state.tuner.ratchet.ticket;
+      els.ratchetNotifySelect.disabled = !config || busy;
+      if (!busy) {
+        els.ratchetNotifySelect.value = config ? state.tuner.ratchet.confirmed : "inherit";
       }
     }
   }
@@ -1703,25 +1852,113 @@
     return v === "on";
   }
 
+  function writeOutcomeFromReply(resp) {
+    if (resp && resp.ok === true) {
+      return {
+        status: "success",
+        message: String(resp.message || ""),
+        restartRequired: !!resp.restart_required,
+      };
+    }
+    return { status: "unknown", detail: "the reply did not confirm the write" };
+  }
+
+  function writeOutcomeFromError(err) {
+    if (err && typeof err.status === "number") {
+      return { status: "failed", httpStatus: err.status, message: apiFeedbackError(err), err: err };
+    }
+    return {
+      status: "unknown",
+      detail: "the reply was lost or unreadable (" + String((err && err.message) || err || "no reply") + ")",
+      err: err,
+    };
+  }
+
+  function suppressedAuthOutcome(outcome) {
+    return outcome.status === "failed" && outcome.httpStatus === 401 && !tokenStampCurrent(outcome.err);
+  }
+
+  function describeWriteOutcome(action, strategyID, outcome) {
+    const head = action + " for strategy " + strategyID;
+    if (outcome.status === "success") {
+      return head + " succeeded. " + (outcome.message || "The server accepted the change.");
+    }
+    if (outcome.status === "failed") {
+      return head + " failed: " + outcome.message;
+    }
+    return head + " has an unknown outcome: " + outcome.detail +
+      ". Check the strategy's config before you try again.";
+  }
+
+  function renderLateResults() {
+    if (!els.dashboardMessage || !els.dashboardMessageList) return;
+    els.dashboardMessageList.replaceChildren.apply(
+      els.dashboardMessageList,
+      state.lateResults.map(function (entry) {
+        const item = document.createElement("li");
+        item.className = "dashboard-message-item" + (entry.kind ? " " + entry.kind : "");
+        item.textContent = entry.text;
+        return item;
+      })
+    );
+    els.dashboardMessage.hidden = !state.lateResults.length;
+  }
+
+  function reportLateResult(action, strategyID, outcome) {
+    if (suppressedAuthOutcome(outcome)) return;
+    if (outcome.status === "failed" && outcome.httpStatus === 401) {
+      handleRefreshError(outcome.err);
+    }
+    state.lateResults.push({
+      kind: outcome.status === "success" ? "success" : "error",
+      text: describeWriteOutcome(action, strategyID, outcome) +
+        " This result arrived after the selection changed.",
+    });
+    renderLateResults();
+  }
+
   async function togglePause() {
     const config = currentTunerConfig();
     if (!state.activeID || !els.pauseToggle || !config) return;
     const next = !config.paused;
+    const action = next ? "Pause" : "Resume";
     const ticket = takeTicket("pause");
     els.pauseToggle.disabled = true;
+    let outcome;
     try {
-      const resp = await postJSON(
+      outcome = writeOutcomeFromReply(await postJSON(
         "/api/strategies/" + encodeURIComponent(ticket.id) + "/pause",
         { paused: next }
-      );
-      if (!acceptReply("pause", ticket)) return;
-      setControlsMessage(resp.message || "");
-      await loadTunerConfig();
-      if (!ticketSelected(ticket)) return;
-      await refreshAll();
+      ));
     } catch (err) {
-      if (ticketSelected(ticket)) {
-        setControlsMessage("Pause failed: " + err.message);
+      outcome = writeOutcomeFromError(err);
+    }
+    if (!acceptReply("pause", ticket)) {
+      reportLateResult(action, ticket.id, outcome);
+      return;
+    }
+    try {
+      if (outcome.status !== "success") {
+        if (!suppressedAuthOutcome(outcome)) {
+          setControlsMessage(outcome.status === "failed"
+            ? action + " failed: " + outcome.message
+            : describeWriteOutcome(action, ticket.id, outcome));
+        }
+        return;
+      }
+      setControlsMessage(outcome.message);
+      try {
+        await loadTunerConfig();
+      } catch (err) {
+        if (ticketSelected(ticket)) handleRefreshError(err);
+      }
+      if (!ticketSelected(ticket)) {
+        reportLateResult(action, ticket.id, outcome);
+        return;
+      }
+      await refreshAll();
+      if (!ticketSelected(ticket)) {
+        reportLateResult(action, ticket.id, outcome);
       }
     } finally {
       if (ticketSelected(ticket)) {
@@ -1731,19 +1968,43 @@
   }
 
   async function changeStrategyRatchetNotify() {
-    if (!state.activeID || !els.ratchetNotifySelect || !currentTunerConfig()) return;
+    const select = els.ratchetNotifySelect;
+    if (!state.activeID || !select || !currentTunerConfig() || state.tuner.ratchet.ticket) return;
+    const choice = select.value;
     const ticket = takeTicket("notify");
+    state.tuner.ratchet.ticket = ticket;
+    select.disabled = true;
+    let outcome;
     try {
-      const resp = await postJSON(
+      outcome = writeOutcomeFromReply(await postJSON(
         "/api/strategies/" + encodeURIComponent(ticket.id) + "/notifications",
-        { notify_ratchet_triggers: triStateToValue(els.ratchetNotifySelect.value, "inherit") }
-      );
-      if (!acceptReply("notify", ticket)) return;
-      setControlsMessage(resp.message || "");
+        { notify_ratchet_triggers: triStateToValue(choice, "inherit") }
+      ));
     } catch (err) {
-      if (!acceptReply("notify", ticket)) return;
-      setControlsMessage("Notification toggle failed: " + err.message);
+      outcome = writeOutcomeFromError(err);
     }
+    if (!acceptReply("notify", ticket)) return;
+    const ratchet = state.tuner.ratchet;
+    ratchet.ticket = null;
+    if (outcome.status === "success") {
+      if (ratchet.held || choice !== ratchet.confirmed) {
+        const stale = ratchet.held ? ratchet.held.pending.concat([ratchet.held.value]) : [ratchet.confirmed];
+        ratchet.held = {
+          value: choice,
+          pending: stale.filter(function (value, index) {
+            return value !== choice && stale.indexOf(value) === index;
+          }),
+          afterSeq: state.lanes.config.issued,
+        };
+      }
+      ratchet.confirmed = choice;
+      setControlsMessage(outcome.message);
+    } else if (!suppressedAuthOutcome(outcome)) {
+      setControlsMessage(outcome.status === "failed"
+        ? "Ratchet alert change failed: " + outcome.message
+        : describeWriteOutcome("Ratchet alert change", ticket.id, outcome));
+    }
+    updateControlsPanel(currentTunerConfig());
   }
 
   async function changeGlobalRatchetNotify() {
@@ -2117,6 +2378,11 @@
     if (!key) return;
     const config = currentTunerConfig();
     if (!config) return;
+    const base = findTunerField(config, key);
+    const label = target.closest("label.tuner-field");
+    if (!base || !label || !els.tunerForm.contains(label) || label.dataset.shape !== tunerFieldShape(base)) {
+      return;
+    }
     let value;
     if (target.type === "checkbox") {
       value = target.checked;
@@ -2125,10 +2391,7 @@
     } else {
       value = target.value;
     }
-    const base = config.editable_fields
-      ? config.editable_fields.find(function (f) { return f.key === key; })
-      : null;
-    const baseline = base ? base.value : undefined;
+    const baseline = base.value;
     if (value === baseline || (value === null && (baseline === null || baseline === undefined))) {
       delete state.tuner.overrides[key];
     } else {
@@ -2144,7 +2407,7 @@
     if (!config) return;
     state.tuner.overrides = {};
     state.tuner.notice = "";
-    renderTunerForm(config);
+    renderTunerForm(config, { force: true });
     invalidatePreview();
     state.tuner.previewActive = false;
     state.tuner.liveMarkers = [];
@@ -2238,20 +2501,29 @@
     if (els.tunerApply) {
       els.tunerApply.disabled = true;
     }
-    let resp;
+    let outcome;
     try {
-      resp = await postJSON(
+      outcome = writeOutcomeFromReply(await postJSON(
         "/api/strategies/" + encodeURIComponent(record.id) + "/config",
         { overrides: record.overrides }
-      );
+      ));
     } catch (err) {
-      releaseApplyBusy(ticket);
-      if (!acceptReply("apply", ticket)) return;
-      throw err;
+      outcome = writeOutcomeFromError(err);
     }
     releaseApplyBusy(ticket);
-    if (!acceptReply("apply", ticket)) return;
-    if (!resp.ok) return;
+    if (!acceptReply("apply", ticket)) {
+      reportLateResult("Apply", record.id, outcome);
+      return;
+    }
+    if (outcome.status !== "success") {
+      if (!suppressedAuthOutcome(outcome)) {
+        state.tuner.notice = describeWriteOutcome("Apply", record.id, outcome);
+        updateTunerStatus();
+      }
+      if (outcome.err) throw outcome.err;
+      return;
+    }
+    state.tuner.notice = describeWriteOutcome("Apply", record.id, outcome);
     Object.keys(record.draft).forEach(function (key) {
       if (hasOwn(state.tuner.overrides, key) && sameValue(state.tuner.overrides[key], record.draft[key])) {
         delete state.tuner.overrides[key];
@@ -2277,11 +2549,25 @@
       renderTunerForm(config);
     }
     retireLane("config");
-    await loadTunerConfig();
-    if (!ticketSelected(ticket)) return;
+    let refreshFailed = false;
+    try {
+      await loadTunerConfig();
+    } catch (err) {
+      refreshFailed = true;
+      if (ticketSelected(ticket)) handleRefreshError(err);
+    }
+    if (!ticketSelected(ticket)) {
+      reportLateResult("Apply", record.id, outcome);
+      return;
+    }
     await refreshAll();
-    if (!ticketSelected(ticket)) return;
-    els.statusLabel.textContent = resp.restart_required ? "Apply OK — restart" : "Apply OK";
+    if (!ticketSelected(ticket)) {
+      reportLateResult("Apply", record.id, outcome);
+      return;
+    }
+    if (!refreshFailed) {
+      els.statusLabel.textContent = outcome.restartRequired ? "Apply OK — restart" : "Apply OK";
+    }
   }
 
   function markerText(marker) {
@@ -2560,7 +2846,19 @@
 
   async function refreshStatus() {
     if (!state.activeID) return;
-    const status = await getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/status");
+    const ticket = takeTicket("status");
+    let status;
+    try {
+      status = await getJSON("/api/strategies/" + encodeURIComponent(ticket.id) + "/status");
+    } catch (err) {
+      if (!acceptReply("status", ticket)) return;
+      throw err;
+    }
+    if (!acceptReply("status", ticket)) return;
+    renderStatus(status);
+  }
+
+  function renderStatus(status) {
     updateRegimeBadge(status.regime);
     updateDivergenceBadge(status.regime_divergence);
     updatePausedBadge(!!status.paused);
@@ -3193,7 +3491,7 @@
     }
   }
 
-  const feedbackState = { submitting: false, apiSubmitting: false, partitionFetched: "all", cache: null };
+  const feedbackState = { submitting: false, apiSubmitting: false, cache: null };
 
   function feedbackNode(tag, className, text) {
     const el = document.createElement(tag);
@@ -3236,31 +3534,50 @@
     });
   }
 
-  async function feedbackHistoryUnchanged(id, cached) {
-    const hist = await getJSONForPartition(feedbackAnalysesURL(id) + "?view=history");
-    if (state.activeID !== id || !partitionStillSelected(hist.partition)) return true;
-    return feedbackCacheKey(id, hist.partition) === cached.key &&
+  function feedbackReplyCurrent(ticket, partition) {
+    return ticketSelected(ticket) && ticket.seq > state.lanes.feedback.accepted &&
+      partitionStillSelected(partition);
+  }
+
+  function feedbackHistoryMatchesCache(id, hist) {
+    const cached = feedbackState.cache;
+    return !!cached && feedbackCacheKey(id, hist.partition) === cached.key &&
       !!hist.data.input_signature && hist.data.input_signature === cached.inputSignature &&
       feedbackHistorySignature(hist.data) === cached.historySignature;
   }
 
+  function resetFeedbackPanel() {
+    feedbackState.cache = null;
+    if (!els.feedbackPanel) return;
+    els.feedbackPanel.hidden = true;
+    els.feedbackStatus.textContent = "";
+    els.feedbackSummary.replaceChildren();
+    els.feedbackList.replaceChildren();
+    setFeedbackMessage("", "");
+  }
+
   async function refreshFeedbackAnalysis(options) {
     if (!els.feedbackPanel) return;
-    const id = state.activeID;
-    if (!id) {
+    if (!state.activeID) {
       els.feedbackPanel.hidden = true;
       return;
     }
     els.feedbackPanel.hidden = false;
+    const ticket = takeTicket("feedback");
+    const id = ticket.id;
+    const requested = state.partitionFilter;
     try {
       const cached = feedbackState.cache;
-      if (options && options.tick && cached && cached.key === feedbackCacheKey(id, state.partitionFilter) &&
-          await feedbackHistoryUnchanged(id, cached)) {
-        return;
+      if (options && options.tick && cached && cached.key === feedbackCacheKey(id, requested)) {
+        const hist = await getJSONForPartition(feedbackAnalysesURL(id) + "?view=history");
+        if (!feedbackReplyCurrent(ticket, hist.partition)) return;
+        if (feedbackHistoryMatchesCache(id, hist)) {
+          acceptReply("feedback", ticket);
+          return;
+        }
       }
       const fetched = await getJSONForPartition(feedbackAnalysesURL(id));
-      if (state.activeID !== id || !partitionStillSelected(fetched.partition)) return;
-      feedbackState.partitionFetched = fetched.partition;
+      if (!partitionStillSelected(fetched.partition) || !acceptReply("feedback", ticket)) return;
       feedbackState.cache = {
         key: feedbackCacheKey(id, fetched.partition),
         inputSignature: fetched.data.input_signature || "",
@@ -3268,7 +3585,10 @@
       };
       renderFeedbackAnalysis(id, fetched.data);
     } catch (err) {
-      if (state.activeID !== id) return;
+      const partition = err && typeof err === "object" && typeof err.partition === "string"
+        ? err.partition
+        : requested;
+      if (!partitionStillSelected(partition) || !acceptReply("feedback", ticket)) return;
       feedbackState.cache = null;
       els.feedbackStatus.textContent = "Unavailable";
       els.feedbackSummary.replaceChildren(feedbackNode("p", "tuner-note", apiFeedbackError(err)));
@@ -3464,6 +3784,7 @@
     }
     feedbackState.submitting = true;
     els.feedbackList.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+    const readTicket = takeTicket("feedback");
     try {
       const fresh = await getJSONForPartition(feedbackAnalysesURL(frozen.strategyID));
       const match = (fresh.data.analyses || []).find(function (x) { return x.request_id === frozen.requestID; });
@@ -3472,7 +3793,10 @@
       if (state.activeID !== frozen.strategyID || !match || !decision || !decision.available ||
           match.bundle_sha256 !== frozen.bundle || !current || stableJSON(current.params) !== stableJSON(frozen.params)) {
         setFeedbackMessage("The marks, the settings or the analysis changed. Nothing was sent. Review the proposal and confirm again.", "error");
-        if (state.activeID === frozen.strategyID) renderFeedbackAnalysis(frozen.strategyID, fresh.data);
+        if (readTicket.id === frozen.strategyID && partitionStillSelected(fresh.partition) &&
+            acceptReply("feedback", readTicket)) {
+          renderFeedbackAnalysis(frozen.strategyID, fresh.data);
+        }
         return;
       }
       const overrides = {};
@@ -3659,6 +3983,12 @@
       } else {
         state.tuner.pendingApply = null;
       }
+    });
+  }
+  if (els.dashboardMessageDismiss) {
+    els.dashboardMessageDismiss.addEventListener("click", function () {
+      state.lateResults = [];
+      renderLateResults();
     });
   }
   els.search.addEventListener("input", renderStrategies);
