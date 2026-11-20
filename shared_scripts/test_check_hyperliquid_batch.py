@@ -634,7 +634,7 @@ def _tier_slot(slot_id, initial_qty, current_qty, entry_atr, mode="live"):
     )
 
 
-@pytest.mark.parametrize("cached_venue", ["deribit", "hyperliquid"])
+@pytest.mark.parametrize("cached_venue", ["ibkr", "hyperliquid"])
 def test_venue_close_gate_and_options_ignore_bare_adapter_cache(cached_venue):
     driver = """
 import importlib
@@ -644,14 +644,14 @@ import sys
 venue, script = sys.argv[1:]
 cached_adapter = importlib.import_module(f"platforms.{venue}.adapter")
 sys.modules["adapter"] = cached_adapter
-if venue == "deribit":
+if venue == "ibkr":
     from shared_strategies.options import strategies
     check = runpy.run_path(script)
 else:
     check = runpy.run_path(script)
     from shared_strategies.options import strategies
 
-from platforms.deribit.adapter import OptionType
+from shared_tools.option_types import OptionType
 assert strategies.OptionType is OptionType
 out = check["apply_venue_close_gate"](
     {"close_fraction": 0.5, "open_action": "none", "signal": -1},

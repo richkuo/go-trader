@@ -6,7 +6,7 @@
 
 A Go + Python hybrid trading system. A single Go binary (~8MB idle RAM) orchestrates 50+ strategies across spot, options, perpetual futures, and CME futures by spawning short-lived Python scripts. Both paper and live execution are supported per strategy for spot, perps and futures. Options strategies run as paper only on every platform: no venue order path exists for options, so config load refuses a `type: options` strategy with `--mode=live`.
 
-Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid, TopStep, Robinhood (crypto + paper stock options), OKX (spot + perps + paper options), Luno (unmaintained; see the platform table). Per-platform Discord/Telegram channels post hourly summaries plus immediate trade alerts. When a new release ships, a host deployment DMs the configured owner — reply **yes** and it pulls, rebuilds, and restarts itself. A Docker deployment updates by pulling a new image instead.
+Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid, TopStep, Robinhood (crypto + paper stock options), OKX (spot + perps + paper options), Luno (unmaintained; see the platform table). Deribit and OKX are unmaintained: their code stays available to existing configs, but the project no longer maintains them or runs automated venue-specific execution tests for them ([issue 2077](https://github.com/richkuo/go-trader/issues/2077)). Per-platform Discord/Telegram channels post hourly summaries plus immediate trade alerts. When a new release ships, a host deployment DMs the configured owner — reply **yes** and it pulls, rebuilds, and restarts itself. A Docker deployment updates by pulling a new image instead.
 
 Join the Discord: [https://discord.gg/44BykmWZsP](https://discord.gg/44BykmWZsP)
 
@@ -162,13 +162,13 @@ Strategies are auto-discovered from `shared_strategies/` at `go-trader init` tim
 | Platform | Type | Assets | Live env vars | Paper data |
 |---|---|---|---|---|
 | Binance US | Spot | BTC, ETH, SOL | — | CCXT public |
-| Deribit | Options | BTC, ETH | — (paper only) | Public ticker marks only; a missing quote opens no leg |
+| Deribit (unmaintained) | Options | BTC, ETH | — (paper only) | Public ticker marks only; a missing quote opens no leg |
 | IBKR/CME | Options | BTC, ETH (others refused) | — (paper only) | 0.1-coin contracts; entry and marks use Black-Scholes on BinanceUS spot and the same 14-day measured volatility (no volatility opens no leg and fails the mark); expiries from a paper CME Micro weekday calendar; expiry cutoff 16:00 Europe/London; cash settlement at the BinanceUS one-minute close VWAP from 15:30 to 16:00 London, read from 16:05 London |
 | Hyperliquid | Perps | any HL-listed | `HYPERLIQUID_SECRET_KEY` | SDK public |
 | TopStep | Futures | ES, NQ, MES, MNQ, CL, GC | `TOPSTEP_API_KEY` / `_SECRET` / `_ACCOUNT_ID` | yfinance |
 | Robinhood | Crypto | BTC, ETH, SOL, DOGE, … | `ROBINHOOD_USERNAME` / `_PASSWORD` / `_TOTP_SECRET` | yfinance; timeframes `1m`, `2m`, `5m`, `15m`, `30m`, `1h`/`60m`, `90m`, `2h`, `4h`, `6h`, `8h`, `12h` (from Yahoo `1h`), `1d`, `1w`, `1M`/`1mo` |
 | Robinhood | Stock options | SPY, QQQ, AAPL, … | — (paper only) | Black-Scholes from measured realized volatility when logged out; when the Robinhood credentials are set, the check logs in and prices only from the authenticated option mark (expiry, strikes, premiums, Greeks) |
-| OKX | Spot + Perps + Options | BTC, ETH, SOL | `OKX_API_KEY` / `_SECRET` / `_PASSPHRASE` (`OKX_SANDBOX=1` for demo); options paper only | CCXT public; options price only from a listed option ticker |
+| OKX (unmaintained) | Spot + Perps + Options | BTC, ETH, SOL | `OKX_API_KEY` / `_SECRET` / `_PASSPHRASE` (`OKX_SANDBOX=1` for demo); options paper only | CCXT public; options price only from a listed option ticker |
 | Luno (unmaintained) | Spot | BTC, ETH, … | None for orders: the generated `luno-` spot strategy uses the shared spot checker and has no Luno order route. Optional `LUNO_API_KEY` / `LUNO_API_SECRET` give the Luno adapter data access | Binance US candles through the shared spot checker |
 
 **Luno is unmaintained** ([issue 2078](https://github.com/richkuo/go-trader/issues/2078)). Existing `luno` configurations still load and run with the same behavior, and the scheduler and the backtester keep the modeled 1% Luno fee. The project no longer maintains or specifically tests Luno: no test checks the Luno fee entry, the Luno adapter or a Luno backtest fee case. No Luno fix is planned.

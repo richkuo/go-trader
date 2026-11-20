@@ -35,7 +35,7 @@ const (
 var qpEnvKeys = []string{
 	"QP_CLOSE", "QP_QUOTE", "QP_SHAPE", "QP_NOW", "QP_TICKERS", "QP_CLOSES", "QP_CANDLES",
 	"QP_LOG", "QP_ALL_CLOSED",
-	"QP_DAILY", "QP_OPTION_QUOTE", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER", "QP_STDOUT_NOISE",
+	"QP_DAILY", "QP_OPTION_GREEKS", "QP_OPTION_QUOTE_FAIL_AFTER", "QP_STDOUT_NOISE",
 	"OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE", "OKX_SANDBOX",
 	"ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET",
 	"TOPSTEP_API_KEY", "TOPSTEP_API_SECRET", "TOPSTEP_ACCOUNT_ID",
@@ -641,15 +641,21 @@ func qpCaseCheckQuotePrecisionRobinhoodLiveKeepsTheVenueFill(t *testing.T) {
 
 func qpCaseCheckQuotePrecisionOptionsSpotAndPremiumPrecedence(t *testing.T) {
 	root := qpRoot(t)
-	sc := StrategyConfig{ID: "qp-opt", Type: "options", Platform: "deribit", Script: "shared_scripts/check_options.py",
-		Args: []string{"vol_mean_reversion", "BTC", "--platform=deribit"}, Capital: 1000}
+	sc := StrategyConfig{ID: "qp-opt", Type: "options", Platform: "ibkr", Script: "shared_scripts/check_options.py",
+		Args: []string{"protective_puts", "BTC", "--platform=ibkr"}, Capital: 1000}
+	const heldPut = `[{"option_type": "put", "action": "buy", "strike": 1, "expiry": "2026-12-18"}]`
+	spec, err := lookupOptionContractSpec(sc.Platform, "BTC")
+	if err != nil {
+		t.Fatalf("ibkr BTC contract spec: %v", err)
+	}
+	m := spec.Multiplier
 	for _, q := range qpQuotes {
 		t.Run(qpNum(q), func(t *testing.T) {
 			qpDebugLogs(t)
 			qpEnv(t, root, map[string]string{"QP_QUOTE": qpNum(q), "QP_CLOSE": qpNum(q)})
 			logger, buf := qpLogger(sc.ID)
-			result, _, ok := runOptionsCheck(sc, "[]", nil, logger)
-			if !ok || result.SpotPrice != q {
+			result, _, ok := runOptionsCheck(sc, heldPut, nil, logger)
+			if !ok || result.SpotPrice != q || len(result.Actions) != 0 {
 				t.Fatalf("options check ok=%t spot=%v, want %v; log:\n%s", ok, result, q, buf.String())
 			}
 			if !strings.Contains(buf.String(), "BTC spot=$"+formatSignalPrice(q)) {
@@ -669,17 +675,17 @@ func qpCaseCheckQuotePrecisionOptionsSpotAndPremiumPrecedence(t *testing.T) {
 			if err != nil || n != 3 {
 				t.Fatalf("options trades=%d err=%v; log:\n%s", n, err, buf.String())
 			}
-			buyCost := 0.05 * q * 2
-			sellPremium := 0.03 * q
-			fixedCost := 3.5
-			buyFee := CalculateOptionFee(s.Platform, buyCost, 1)
+			buyCost := 0.05 * q * m * 2
+			sellPremium := 0.03 * q * m
+			fixedCost := 3.5 * m
+			buyFee := CalculateOptionFee(s.Platform, buyCost, 2)
 			sellFee := CalculateOptionFee(s.Platform, sellPremium, 1)
 			fixedFee := CalculateOptionFee(s.Platform, fixedCost, 1)
 			wantCash := 1000 - (buyCost + buyFee) + (sellPremium - sellFee) - (fixedCost + fixedFee)
 			if !qpClose(s.Cash, wantCash) {
 				t.Fatalf("cash = %v, want %v", s.Cash, wantCash)
 			}
-			if len(s.TradeHistory) != 3 || !qpClose(s.TradeHistory[0].Price, buyCost) || !qpClose(s.TradeHistory[1].Price, sellPremium) || s.TradeHistory[2].Price != fixedCost {
+			if len(s.TradeHistory) != 3 || !qpClose(s.TradeHistory[0].Price, buyCost) || !qpClose(s.TradeHistory[1].Price, sellPremium) || !qpClose(s.TradeHistory[2].Price, fixedCost) {
 				t.Fatalf("trades = %+v", s.TradeHistory)
 			}
 			if len(s.OptionPositions) != 3 {
@@ -1555,7 +1561,7 @@ func qpCaseCheckQuotePrecisionOptionsResultContract(t *testing.T) {
 	t.Run("check_platform_must_match_the_strategy_platform", func(t *testing.T) {
 		qpEnv(t, root, map[string]string{"QP_QUOTE": "1000", "QP_CLOSE": "1000"})
 		for _, tc := range []struct{ cfgPlatform, argPlatform string }{
-			{"deribit", "robinhood"},
+			{"ibkr", "robinhood"},
 			{"robinhood", "robinhood"},
 		} {
 			t.Run(tc.cfgPlatform+"_config_"+tc.argPlatform+"_check", func(t *testing.T) {
@@ -1670,8 +1676,8 @@ func qpCaseCheckQuotePrecisionOptionsStructureContract(t *testing.T) {
 	root := qpRoot(t)
 
 	t.Run("real_butterfly_books_whole_and_commits_with_the_save", func(t *testing.T) {
-		sc := StrategyConfig{ID: "qp-opt-fly", Type: "options", Platform: "deribit", Script: "shared_scripts/check_options.py",
-			Args: []string{"butterfly", "BTC", "--platform=deribit"}, Capital: 100000, MaxDrawdownPct: 50}
+		sc := StrategyConfig{ID: "qp-opt-fly", Type: "options", Platform: "ibkr", Script: "shared_scripts/check_options.py",
+			Args: []string{"butterfly", "BTC", "--platform=ibkr"}, Capital: 100000, MaxDrawdownPct: 50}
 		qpResetScriptFailures(t, sc.ID)
 		qpEnv(t, root, map[string]string{"QP_QUOTE": "100000", "QP_CLOSE": "100000", "QP_DAILY": qpMidRankDaily()})
 		env := openEntryTestEnv(t, newEntryTestConfig(t, sc))

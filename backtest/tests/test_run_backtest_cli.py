@@ -419,7 +419,7 @@ def _manifest(tmp_path, venue="hyperliquid"):
 _MANIFEST_PRECEDENCE_CASES = [
     ("rh-man", "spot", ()),
     ("rh-man", "spot", ("--platform", "robinhood")),
-    ("deribit-man", "options", ()),
+    ("ibkr-man", "options", ()),
 ]
 
 

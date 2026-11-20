@@ -2,44 +2,16 @@ package main
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestFormatInstrument(t *testing.T) {
-	d := NewDeribitPricer()
-
-	cases := []struct {
-		underlying, optionType, expiry string
-		strike                         float64
-		want                           string
-	}{
-		{"BTC", "call", "2026-03-13", 75000, "BTC-13MAR26-75000-C"},
-		{"ETH", "put", "2026-06-25", 3000, "ETH-25JUN26-3000-P"},
-		{"BTC", "call", "2027-12-31", 100000, "BTC-31DEC27-100000-C"},
-		{"btc", "PUT", "2026-01-15", 50000, "BTC-15JAN26-50000-P"},
-		{"BTC", "call", "not-a-date", 50000, ""},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.expiry, func(t *testing.T) {
-			got := d.formatInstrument(tc.underlying, tc.optionType, tc.strike, tc.expiry)
-			if got != tc.want {
-				t.Errorf("formatInstrument(%q, %q, %g, %q) = %q, want %q",
-					tc.underlying, tc.optionType, tc.strike, tc.expiry, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestDeribitMarkPricing(t *testing.T) {
+func TestOptionMarkPricing(t *testing.T) {
 	refreshAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	t.Run("CollectMarkRequests", func(t *testing.T) {
 		s := &StrategyState{
-			Platform: "deribit",
+			Platform: "ibkr",
 			OptionPositions: map[string]*OptionPosition{
 				"BTC-call-buy-60000-2027-12-31": {
 					ID:         "BTC-call-buy-60000-2027-12-31",
@@ -66,7 +38,7 @@ func TestDeribitMarkPricing(t *testing.T) {
 			},
 		}
 
-		reqs := collectOptionLegRequests(s, "deribit", refreshAt)
+		reqs := collectOptionLegRequests(s, "ibkr", refreshAt)
 
 		if len(reqs) != 3 {
 			t.Fatalf("len(reqs) = %d, want 3 (every leg yields a request)", len(reqs))
@@ -80,7 +52,7 @@ func TestDeribitMarkPricing(t *testing.T) {
 				if r.Op != optionLegOpSettle {
 					t.Errorf("ETH position op = %q, want settle", r.Op)
 				}
-				if want := time.Date(2020, 1, 1, 8, 0, 0, 0, time.UTC); !r.KnownCutoff.Equal(want) {
+				if want := time.Date(2020, 1, 1, 16, 0, 0, 0, time.UTC); !r.KnownCutoff.Equal(want) {
 					t.Errorf("ETH cutoff = %s, want %s", r.KnownCutoff, want)
 				}
 			case "BTC-call-buy-60000-2027-12-31":
@@ -100,7 +72,7 @@ func TestDeribitMarkPricing(t *testing.T) {
 	t.Run("ApplyMarkResults", func(t *testing.T) {
 		s := &StrategyState{
 			Cash:     1000,
-			Platform: "deribit",
+			Platform: "ibkr",
 			OptionPositions: map[string]*OptionPosition{
 				"pos1": {
 					ID:              "pos1",
@@ -130,13 +102,13 @@ func TestDeribitMarkPricing(t *testing.T) {
 		logger, _ := lm.GetStrategyLogger("test")
 		defer logger.Close()
 
-		reqs := collectOptionLegRequests(s, "deribit", refreshAt)
+		reqs := collectOptionLegRequests(s, "ibkr", refreshAt)
 		replies := []optionLegReply{
-			{Key: "pos1", Mark: &optionLegMark{PerUnitUSD: 150, Spot: 60000, Greeks: OptGreeks{Delta: 0.5}, Source: deribitMarkSource}},
-			{Key: "pos2", Settlement: &optionLegSettlement{Price: 40000, Basis: optionSettlementBasisDelivery, Date: "2026-05-01", Source: deribitSettlementSource}},
+			{Key: "pos1", Mark: &optionLegMark{PerUnitUSD: 150, Spot: 60000, Greeks: OptGreeks{Delta: 0.5}, Source: ibkrMarkSource}},
+			{Key: "pos2", Settlement: &optionLegSettlement{Price: 40000, Basis: optionSettlementBasisVWAP, Date: "2026-05-01", Source: ibkrSettlementSource}},
 		}
 
-		applyOptionLegReplies(s, "deribit", reqs, replies, refreshAt, logger)
+		applyOptionLegReplies(s, "ibkr", reqs, replies, refreshAt, logger)
 
 		if pos, ok := s.OptionPositions["pos1"]; ok {
 			if pos.CurrentValueUSD != 150 {
@@ -145,7 +117,7 @@ func TestDeribitMarkPricing(t *testing.T) {
 			if pos.Greeks.Delta != 0.5 {
 				t.Errorf("pos1 Delta = %g, want 0.5", pos.Greeks.Delta)
 			}
-			if want := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC).Sub(refreshAt).Hours() / 24; pos.DTE != want {
+			if want := time.Date(2026, 7, 1, 15, 0, 0, 0, time.UTC).Sub(refreshAt).Hours() / 24; pos.DTE != want {
 				t.Errorf("pos1 DTE = %g, want %g", pos.DTE, want)
 			}
 		} else {
@@ -201,8 +173,6 @@ func TestDeribitMarkPricing(t *testing.T) {
 	})
 }
 
-var _ OptionPricer = (*DeribitPricer)(nil)
-
 var _ OptionPricer = (*IBKROptionPricer)(nil)
 
 func ibkrFixtureMarksRunner(settlement float64) optionMarksRunner {
@@ -229,38 +199,3 @@ func ibkrFixtureMarksRunner(settlement float64) optionMarksRunner {
 }
 
 var _ OptionPricer = (*RobinhoodOptionPricer)(nil)
-
-func TestDeribitFetchTicker(t *testing.T) {
-	t.Run("Mocked", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte(`{"result":{"instrument_name":"BTC-PERPETUAL","mark_price":0.05,"underlying_price":60000}}`))
-		}))
-		defer server.Close()
-
-		d := &DeribitPricer{client: server.Client(), baseURL: server.URL}
-
-		ticker, err := d.fetchTickerFull("BTC-PERPETUAL")
-		if err != nil {
-			t.Fatalf("fetchTickerFull failed: %v", err)
-		}
-		if *ticker.MarkPrice != 0.05 {
-			t.Errorf("mark = %g, want 0.05", *ticker.MarkPrice)
-		}
-		if *ticker.UnderlyingPrice != 60000 {
-			t.Errorf("spot = %g, want 60000", *ticker.UnderlyingPrice)
-		}
-	})
-	t.Run("Error", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(`{"error": "not found"}`))
-		}))
-		defer server.Close()
-
-		d := &DeribitPricer{client: server.Client(), baseURL: server.URL}
-		_, err := d.fetchTickerFull("BTC-PERPETUAL")
-		if err == nil {
-			t.Error("expected error for 404 response")
-		}
-	})
-}

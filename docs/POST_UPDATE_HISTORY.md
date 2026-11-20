@@ -2,6 +2,15 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 2077: Deribit and OKX are unmaintained, and the shared option types leave the Deribit adapter
+
+Internal; no config key, no SQLite schema change, no book change and no runtime behavior change.
+The owner decided to keep the Deribit and OKX code available to existing configurations and to stop maintaining venue-specific test coverage for both venues.
+Platform inference (including the Deribit fallback for an options strategy with no recognized prefix), admission, entry and mark selection, settlement, fees, egress, wizard options, backtester defaults and book storage are unchanged; `inspect --all --json` gives the same effective output for explicit Deribit, explicit OKX and inferred Deribit options rows on the old and new binaries.
+`OptionType`, `OptionSide`, `Greeks`, `OptionContract`, `OptionPosition` and `TRADING_DAYS_PER_YEAR` now live in `shared_tools/option_types.py`. `platforms/deribit/adapter.py` re-exports the same objects, so existing imports keep working. The options catalog and the legacy risk module type their adapter with the structural `OptionsBook` protocol, so a catalog listing (as `go-trader init` runs it) no longer loads the Deribit adapter.
+The automated suites no longer dispatch Deribit or OKX venue code. Venue-only cases were removed and shared cases were retargeted to IBKR, Robinhood, Kraken or venue-neutral fixtures; `docs/test-reduction/2077-deribit-okx-tests.jsonl` lists each removal with its ground and replacement coverage.
+Operator action: none. Operators need no config or book changes. Deploy with `bash scripts/update.sh --restart`.
+
 ### Issue 2072: command-line entries honor the scheduler's save-failure hold
 
 Runtime default; restart-required; no opt-out, config key, regime route protocol or SQLite schema change.

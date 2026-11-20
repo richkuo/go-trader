@@ -97,7 +97,7 @@ def _raise_daily(ccxt, exchange_id, mode):
     raise ccxt.NetworkError("quote precision stub: daily history failure for " + exchange_id)
 
 
-_OPTION_QUOTES_SERVED = [0]
+_MODEL_PRICES_SERVED = [0]
 
 
 def _noise():
@@ -106,59 +106,47 @@ def _noise():
         sys.stdout.flush()
 
 
-def _option_quote_mode():
+def _install_model_price_controls():
+    import importlib.abc
+    import importlib.machinery
+
     fail_after = os.environ.get("QP_OPTION_QUOTE_FAIL_AFTER", "")
-    _OPTION_QUOTES_SERVED[0] += 1
-    if fail_after != "" and _OPTION_QUOTES_SERVED[0] > int(fail_after):
-        return "error", None
-    raw = os.environ.get("QP_OPTION_QUOTE", "")
-    if raw == "":
-        return "value", 0.05
-    if raw in ("error", "429", "503", "missing"):
-        return raw, None
-    return "value", float(raw)
+    greeks_raw = os.environ.get("QP_OPTION_GREEKS", "")
+    if fail_after == "" and greeks_raw == "":
+        return
 
+    def wrap(real):
+        def bs_price_and_greeks(*args, **kwargs):
+            _MODEL_PRICES_SERVED[0] += 1
+            if fail_after != "" and _MODEL_PRICES_SERVED[0] > int(fail_after):
+                _log({"call": "model_price", "mode": "error"})
+                raise sys.modules["option_data"].OptionDataUnavailable(
+                    "option model unavailable: quote precision stub model failure")
+            _log({"call": "model_price", "mode": "value"})
+            price, greeks = real(*args, **kwargs)
+            if greeks_raw:
+                greeks = json.loads(greeks_raw)
+            return price, greeks
+        return bs_price_and_greeks
 
-def _option_greeks():
-    raw = os.environ.get("QP_OPTION_GREEKS", "")
-    if raw:
-        return json.loads(raw)
-    return {"delta": 0.25, "gamma": 0.0001, "theta": -1.5, "vega": 2.5}
+    class PricingFinder(importlib.abc.MetaPathFinder):
+        def find_spec(self, name, path, target=None):
+            if name != "pricing":
+                return None
+            spec = importlib.machinery.PathFinder.find_spec(name, path)
+            if spec is None or not str(spec.origin or "").endswith(os.path.join("shared_tools", "pricing.py")):
+                return spec
+            loader = spec.loader
+            original = loader.exec_module
 
+            def exec_module(module):
+                original(module)
+                module.bs_price_and_greeks = wrap(module.bs_price_and_greeks)
 
-def _install_deribit_ticker(requests):
-    import requests.adapters
-    import requests.models
+            loader.exec_module = exec_module
+            return spec
 
-    real_send = requests.adapters.HTTPAdapter.send
-
-    def send(self, request, *args, **kwargs):
-        if "deribit.com/api/v2/public/ticker" not in request.url:
-            return real_send(self, request, *args, **kwargs)
-        mode, value = _option_quote_mode()
-        _log({"call": "deribit_ticker", "url": request.url, "mode": mode})
-        if mode == "error":
-            raise requests.exceptions.ConnectionError("quote precision stub: deribit ticker failure")
-        resp = requests.models.Response()
-        resp.status_code = 200
-        result = {"underlying_price": 100.0, "greeks": _option_greeks()}
-        if mode in ("429", "503"):
-            resp.status_code = int(mode)
-            body = {"error": {"message": "quote precision stub status " + mode}}
-        elif mode == "missing":
-            body = {"result": result}
-        else:
-            result["mark_price"] = value
-            body = {"result": result}
-        resp._content = json.dumps(body).encode()
-        resp.headers["Content-Type"] = "application/json"
-        resp.url = request.url
-        resp.request = request
-        resp.reason = "quote precision stub"
-        resp.encoding = "utf-8"
-        return resp
-
-    requests.adapters.HTTPAdapter.send = send
+    sys.meta_path.insert(0, PricingFinder())
 
 
 def _install_frozen_topstep_clock(iso):
@@ -216,7 +204,6 @@ def _install():
 
     import ccxt
     import pandas as pd
-    import requests
     import yfinance
 
     def fetch_ticker(self, symbol, params=None):
@@ -270,7 +257,7 @@ def _install():
         cls.fetch_ohlcv = fetch_ohlcv
         cls.load_markets = load_markets
 
-    _install_deribit_ticker(requests)
+    _install_model_price_controls()
 
     frozen_now = os.environ.get("QP_NOW", "")
     if frozen_now:

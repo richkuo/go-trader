@@ -25,11 +25,11 @@ func TestOptionPricingPolicyThroughConfigLoaders(t *testing.T) {
 		name, id, platform, underlying, want string
 	}{
 		{"unsupported_platform", "opt-binanceus", "binanceus", "BTC", `options platform "binanceus" has no option pricer (supported: deribit, ibkr, okx, robinhood)`},
-		{"deribit_sol", "deribit-sol", "deribit", "SOL", `deribit options price only the inverse BTC and ETH option families`},
+		{"ibkr_sol", "ibkr-sol", "ibkr", "SOL", `ibkr options support only the BTC and ETH underlyings; underlying "SOL" has no contract size`},
 		{"robinhood_dash_pair", "rh-btc-usd", "robinhood", "BTC-USD", `robinhood options underlying "BTC-USD" is a currency pair`},
 		{"robinhood_slash_pair", "rh-xrp-usdt", "robinhood", "XRP/USDT", `robinhood options underlying "XRP/USDT" is a currency pair`},
 		{"robinhood_not_a_ticker", "rh-digit", "robinhood", "1SPY", `robinhood options underlying "1SPY" is not a stock or ETF ticker`},
-		{"prefixless_options_default_deribit", "opt-noprefix", "", "SOL", `deribit options price only the inverse BTC and ETH option families`},
+		{"prefix_inferred_ibkr_sol", "ibkr-inferred-sol", "", "SOL", `ibkr options support only the BTC and ETH underlyings; underlying "SOL" has no contract size`},
 	}
 	for _, tc := range refused {
 		t.Run("refuses_"+tc.name, func(t *testing.T) {
@@ -49,14 +49,13 @@ func TestOptionPricingPolicyThroughConfigLoaders(t *testing.T) {
 	accepted := []struct {
 		id, platform, underlying, wantPlatform string
 	}{
-		{"deribit-btc", "deribit", "BTC", "deribit"},
-		{"deribit-eth", "deribit", "ETH", "deribit"},
+		{"ibkr-eth", "ibkr", "ETH", "ibkr"},
 		{"rh-spy", "robinhood", "SPY", "robinhood"},
 		{"rh-ltc-stock", "robinhood", "LTC", "robinhood"},
 		{"rh-btc-stock", "robinhood", "BTC", "robinhood"},
 		{"rh-brk-b", "robinhood", "BRK.B", "robinhood"},
 		{"ibkr-btc", "ibkr", "BTC", "ibkr"},
-		{"opt-prefixless", "", "BTC", "deribit"},
+		{"ibkr-inferred", "", "BTC", "ibkr"},
 	}
 	for _, tc := range accepted {
 		t.Run("loads_"+tc.id, func(t *testing.T) {

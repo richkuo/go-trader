@@ -33,7 +33,7 @@ func TestOptionsLiveModeRealCheckScriptGate(t *testing.T) {
 			t.Setenv(v, "")
 		}
 		const script = "shared_scripts/check_options.py"
-		base := []string{"covered_calls", "SPY", "--platform=deribit"}
+		base := []string{"covered_calls", "SPY", "--platform=robinhood"}
 		tails := [][]string{
 			{"--mode=live"},
 			{"--mode", "live"},
@@ -63,8 +63,8 @@ func TestOptionsLiveModeRealCheckScriptGate(t *testing.T) {
 					if err != nil || result == nil {
 						t.Fatalf("RunOptionsCheckWithStdin(%v) = %v, %v; want a parsed structured error", args, result, err)
 					}
-					if result.Error != optionsLiveModeConfigError("deribit") {
-						t.Errorf("error = %q, want %q", result.Error, optionsLiveModeConfigError("deribit"))
+					if result.Error != optionsLiveModeConfigError("robinhood") {
+						t.Errorf("error = %q, want %q", result.Error, optionsLiveModeConfigError("robinhood"))
 					}
 					if result.Signal != 0 || len(result.Actions) != 0 {
 						t.Errorf("refusal carried signal=%d actions=%d, want 0 and none", result.Signal, len(result.Actions))

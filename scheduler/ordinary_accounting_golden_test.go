@@ -235,7 +235,7 @@ func newOrdinaryGoldenFixture(t *testing.T) ordinaryGoldenFixture {
 			{ID: "hl-btc-short", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=paper"}, Capital: 3000, MaxDrawdownPct: 15, Leverage: 4},
 			{ID: "rh-eth-spot", Platform: "robinhood", Type: "spot", Args: []string{"sma", "ETH", "1h", "--mode=paper"}, Capital: 2000, MaxDrawdownPct: 15},
 			{ID: "rh-spot", Platform: "robinhood", Type: "spot", Args: []string{"sma", "DOGE", "1h", "--mode=paper"}, Capital: 1000, MaxDrawdownPct: 30, PaperSource: "alt"},
-			{ID: "deribit-opt", Platform: "deribit", Type: "options", Args: []string{"vol", "BTC", "--mode=paper"}, Capital: 6000, MaxDrawdownPct: 40},
+			{ID: "ibkr-opt", Platform: "ibkr", Type: "options", Args: []string{"vol", "BTC", "--platform=ibkr", "--mode=paper"}, Capital: 6000, MaxDrawdownPct: 40},
 			{ID: "hl-hedged", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "SOL", "1h", "--mode=paper"}, Capital: 2500, MaxDrawdownPct: 20, Leverage: 2},
 			{ID: "hl-noprice", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "XYZ", "1h", "--mode=paper"}, Capital: 1500, MaxDrawdownPct: 20, Leverage: 2, PaperSource: "alt"},
 			{ID: "hl-corrupt", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "AVAX", "1h", "--mode=paper"}, Capital: 1200, MaxDrawdownPct: 20, Leverage: 2},
@@ -260,9 +260,9 @@ func newOrdinaryGoldenFixture(t *testing.T) ordinaryGoldenFixture {
 	set("hl-btc-short", 2500, 3100).Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.03, InitialQuantity: 0.03, AvgCost: 63000, Side: "short", Multiplier: 1, Leverage: 4, OpenedAt: opened, StopLossTriggerPx: 64000}
 	set("rh-eth-spot", 500, 2100).Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 3000, Side: "long", OpenedAt: opened}
 	set("rh-spot", 400, 1050).Positions["DOGE"] = &Position{Symbol: "DOGE", Quantity: 4000, InitialQuantity: 4000, AvgCost: 0.15, Side: "long", OpenedAt: opened}
-	opt := set("deribit-opt", 5200, 6400)
-	opt.OptionPositions["BTC-C-70000"] = &OptionPosition{ID: "BTC-C-70000", Underlying: "BTC", OptionType: "call", Strike: 70000, Expiry: "2026-04-01", DTE: 28, Action: "buy", Quantity: 1, EntryPremiumUSD: 900, CurrentValueUSD: 750, Greeks: OptGreeks{Delta: 0.35}, OpenedAt: opened}
-	opt.OptionPositions["BTC-P-55000"] = &OptionPosition{ID: "BTC-P-55000", Underlying: "BTC", OptionType: "put", Strike: 55000, Expiry: "2026-04-01", DTE: 28, Action: "sell", Quantity: 1, EntryPremiumUSD: 600, CurrentValueUSD: -700, Greeks: OptGreeks{Delta: 0.2}, OpenedAt: opened}
+	opt := set("ibkr-opt", 5200, 6400)
+	opt.OptionPositions["BTC-C-70000"] = &OptionPosition{ID: "BTC-C-70000", Underlying: "BTC", OptionType: "call", Strike: 70000, Expiry: "2026-04-01", DTE: 28, Action: "buy", Quantity: 10, ContractMultiplier: 0.1, EntryPremiumUSD: 900, CurrentValueUSD: 750, Greeks: OptGreeks{Delta: 0.35}, OpenedAt: opened}
+	opt.OptionPositions["BTC-P-55000"] = &OptionPosition{ID: "BTC-P-55000", Underlying: "BTC", OptionType: "put", Strike: 55000, Expiry: "2026-04-01", DTE: 28, Action: "sell", Quantity: 10, ContractMultiplier: 0.1, EntryPremiumUSD: 600, CurrentValueUSD: -700, Greeks: OptGreeks{Delta: 0.2}, OpenedAt: opened}
 	hedged := set("hl-hedged", 1800, 2600)
 	hedged.Positions["SOL"] = &Position{Symbol: "SOL", Quantity: 4, InitialQuantity: 4, AvgCost: 140, Side: "long", Multiplier: 1, Leverage: 2, OpenedAt: opened}
 	hedged.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.01, InitialQuantity: 0.01, AvgCost: 62500, Side: "short", Multiplier: 1, Leverage: 2, OpenedAt: opened, HedgeFor: "hl-hedged"}
