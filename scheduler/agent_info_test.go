@@ -314,7 +314,7 @@ func TestAgentInfoChangelog(t *testing.T) {
 		}
 		md := renderAgentInfoMarkdown(info)
 		if strings.Contains(agentInfoGeneratedFile, "AGENTS.md") || agentInfoGeneratedFile == "AGENTS.md" {
-			t.Fatal("generated file must not be AGENTS.md (symlink to CLAUDE.md)")
+			t.Fatal("generated file must not be AGENTS.md (written by scripts/agent_guide.py)")
 		}
 
 		dir := t.TempDir()

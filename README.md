@@ -22,7 +22,7 @@ install https://github.com/richkuo/go-trader and init.
 
 ### AI Agent Setup (Recommended)
 
-Give your AI agent [SKILL.md](SKILL.md) (raw: `https://raw.githubusercontent.com/richkuo/go-trader/main/SKILL.md`) — it clones the repo, installs deps, walks through configuration, builds the binary, and starts the service. For non-Claude agents see [AGENTS.md](AGENTS.md). go-trader does not need a specific agent platform; agent stacks such as [OpenClaw](https://openclaw.ai) or [Hermes](https://hermes-agent.nousresearch.com/) are optional. With one of them, just say "Set up go-trader".
+Give your AI agent [SKILL.md](SKILL.md) (raw: `https://raw.githubusercontent.com/richkuo/go-trader/main/SKILL.md`) — it clones the repo, installs deps, walks through configuration, builds the binary, and starts the service. For non-Claude agents see [AGENTS.md](AGENTS.md), the full agent guide that `scripts/agent_guide.py` generates from `CLAUDE.md` and `.claude/rules/`. go-trader does not need a specific agent platform; agent stacks such as [OpenClaw](https://openclaw.ai) or [Hermes](https://hermes-agent.nousresearch.com/) are optional. With one of them, just say "Set up go-trader".
 
 ### Interactive Setup (go-trader init)
 

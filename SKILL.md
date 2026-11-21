@@ -2,7 +2,7 @@
 
 Repository: `https://github.com/richkuo/go-trader.git`
 
-Operator runbook for agents that install, configure, run, update, and operate go-trader. Reader-facing overview: [README.md](README.md). Coding constraints and PR conventions: [CLAUDE.md](CLAUDE.md) and [AGENTS.md](AGENTS.md).
+Operator runbook for agents that install, configure, run, update, and operate go-trader. Reader-facing overview: [README.md](README.md). Coding constraints and PR conventions: [CLAUDE.md](CLAUDE.md) with the area rules it lists in `.claude/rules/`, and the generated full guide [AGENTS.md](AGENTS.md) (§ Agent guide layout).
 
 Quick flow for a new server: tell any AI agent `install https://github.com/richkuo/go-trader and init`. go-trader does not need a specific agent platform; OpenClaw, Hermes, Claude Code, Codex, or Cursor all work.
 
@@ -1730,7 +1730,7 @@ Protocol (every call needs the configured status token as `Authorization: Bearer
 Refusals with no row: a missing `model`, `bundle_sha256`, `feedback_rowids` or `result` (or a null `result`) is 400; a model label that is empty, longer than 128 bytes or holds characters outside letters, digits, spaces and `. _ : / @ + ( ) [ ] -` is 400; a digest that is not 64 lowercase hex characters is 400; a non-integer id is 400; any other top-level field, such as a client `validation` or `status`, is 400 (unknown field). These four fields with `provider: anthropic_api` are also 400. A `validation` key inside `result` reaches the validator and ends `invalid` (the result schema allows no extra field).
 The stored `model` is the session's self-reported label and `model_verification` is `self_reported_unverified`; no client value sets a validation outcome. The posted result lives only in memory until the terminal row, so a restart between 202 and the outcome ends that request `failed` through the parent's restart recovery; the operator submits again.
 
-Project skill: `.claude/skills/go-trader-trade-feedback/` (`SKILL.md` and the stdlib-only helper `trade_feedback_client.py`), the only tracked files under `.claude/`. `.gitignore` keeps settings, hooks, worktrees and other skills ignored. In a go-trader checkout, run `GO_TRADER_DASHBOARD_URL=http://127.0.0.1:8099 claude '/go-trader-trade-feedback <strategy-id>'` with `GO_TRADER_STATUS_TOKEN` set in that shell; the dashboard panel shows this command, without a token, when the provider is available.
+Project skill: `.claude/skills/go-trader-trade-feedback/` (`SKILL.md` and the stdlib-only helper `trade_feedback_client.py`). The other tracked files under `.claude/` are the area rules in `.claude/rules/` (§ Agent guide layout). `.gitignore` keeps settings, hooks, worktrees and other skills ignored. In a go-trader checkout, run `GO_TRADER_DASHBOARD_URL=http://127.0.0.1:8099 claude '/go-trader-trade-feedback <strategy-id>'` with `GO_TRADER_STATUS_TOKEN` set in that shell; the dashboard panel shows this command, without a token, when the provider is available.
 The helper sends the token only to the `GO_TRADER_DASHBOARD_URL` origin: it refuses a URL with a path, query, fragment or user info, allows `http` only for a loopback host, ignores proxy variables, never follows a redirect, never prints the token and never puts it in a URL or an argument. Its commands are `pull`, `check` (optional local pre-check with the repository validator; the server stays authoritative), `submit` and `poll` (reads `?view=history` every 3 s, so polling builds no bundle; exit 0 `ok`, 2 `invalid`, 3 `failed`). The skill treats every bundle string, including notes, as data.
 
 Remote server: the dashboard listens on loopback (§ Status), so open an SSH tunnel from the operator's computer first, for example `ssh -N -L 8099:127.0.0.1:8099 <user>@<server>` (use the instance's `status_port` on the right side and any free local port on the left), then set `GO_TRADER_DASHBOARD_URL=http://127.0.0.1:<local port>`. An https origin through an authenticated proxy also works.
@@ -3236,7 +3236,7 @@ grep -n "liveExecFailed" scheduler/main.go
 
 ## Subsystem Mechanism Reference
 
-Per-subsystem mechanism notes for coding agents. `CLAUDE.md` keeps only the guardrail for each file; the mechanism behind it lives here. Grouped by `scheduler/` file.
+Per-subsystem mechanism notes for coding agents. `CLAUDE.md` and its `.claude/rules/` area rules keep only the guardrail for each file; the mechanism behind it lives here. Grouped by `scheduler/` file.
 
 ### Execution and fill confirmation (`executor.go`, `shutdown.go`)
 
@@ -3643,6 +3643,7 @@ Every send goes through `MultiNotifier`, which fans out to its backends. Channel
 - Mode routing: `pull_request_review*` → `review`; issues, non-PR comments, docs-sync, and release → `implement` when the issue author is trusted, else `untrusted-issue`; docs-sync and release resolve only on a non-PR comment; otherwise the keyword after `@claude` (untrusted or fork → `review`; trusted → `fix-pr`).
 - Comment patching uses `patch_claude_comment.sh` and `compose_claude_comment.py`, staged from `rk-skills` `templates/claude-workflow/scripts/` into `$RUNNER_TEMP` each run. `.github/scripts/test_workflow_logic.py` executes the real `run:` blocks. Concurrency `group: claude-<N>`, `cancel-in-progress: false`. `timeout-minutes: 90`. `issues: types: [opened]` only.
 - The CLAUDE.md revision step must `git commit` and `git push origin HEAD`, then diff `HEAD -- CLAUDE.md` against `origin/main` to catch a silent revert.
+- A revision that edits `CLAUDE.md` or a `.claude/rules/` file must also run `python3 -I scripts/agent_guide.py` and commit `AGENTS.md`; otherwise the `agent-docs` check fails on the push.
 - Operator lookup for the latest bot review: `gh api repos/richkuo/go-trader/issues/<N>/comments --jq '[.[] | select(.user.login=="claude[bot]" or .user.login=="github-actions[bot]")] | last | .body'`.
 
 ---
@@ -3675,9 +3676,10 @@ A rerun never cancels the current first attempt, and a new push does not cancel 
 Do not key a `main` run on the ref or the commit: GitHub replaces a pending run in a shared group even with `cancel-in-progress` false.
 Runs can reach the group out of order; when the run of the current head commit shows `cancelled`, rerun it, and the rerun gets its own group.
 
-**Docs-only changes.** The `changes` job in `ci.yml` and in `container.yml` runs `scripts/ci_code_changed.sh`, which reads the pull request merge commit (or, on a push to `main`, the net diff of the push) and sets `code=false` only when every changed path is one of `CLAUDE.md`, `AGENTS.md`, `README.md`, `SKILL.md`, `docs/POST_UPDATE_HISTORY.md` or `docs/DOCKER.md`.
-No test reads these files, and the container image does not hold them.
-With `code=false`, every Go, Python-backed, shell-suite, Python and container image job is skipped, and `checks` still runs (it holds the CLAUDE.md size and layout check).
+**Docs-only changes.** The `changes` job in `ci.yml` and in `container.yml` runs `scripts/ci_code_changed.sh`, which reads the pull request merge commit (or, on a push to `main`, the net diff of the push) and sets `code=false` only when every changed path is one of `CLAUDE.md`, `AGENTS.md`, `README.md`, `SKILL.md`, `docs/POST_UPDATE_HISTORY.md`, `docs/DOCKER.md` or a flat area rule file `.claude/rules/<name>.md` (lowercase letters, digits and hyphens).
+The guide generator `scripts/agent_guide.py`, its fixture script and every other path under `.claude/` are code.
+Only the `checks` job reads these files (the agent guide checks and their fixtures), `checks` runs on every push, and the container image does not hold them.
+With `code=false`, every Go, Python-backed, shell-suite, Python and container image job is skipped, and `checks` still runs (it holds the agent guide checks).
 On a verified docs-only push, CI runs only `changes` and `checks`, and Container runs only `changes` (its `image` job is skipped, and `publish` runs only on a release).
 A green docs-only commit on `main` therefore proves only the docs checks; it does not prove the code of an earlier commit, so read the run of the last code push for that.
 A push is a verified docs-only push only when all of these hold: `PUSH_FORCED` (`github.event.forced`) is exactly `false`; `PUSH_BEFORE` (`github.event.before`) is a full lowercase object ID of the same length as `HEAD` and not all zeros; that commit is present in the `fetch-depth: 2` checkout and is an ancestor of `HEAD`; and `git diff --name-only --no-renames -z PUSH_BEFORE HEAD` succeeds, lists at least one path, and lists only paths on the docs-only list.
@@ -3772,5 +3774,30 @@ Green must mean the suite proved its criteria:
 **Format and layout checks.** These checks replace CLAUDE.md prose, so keep each one exact:
 - The `go` job format step runs `gofmt -l` over every tracked Go file (`git ls-files '*.go'`, so `scripts/fixtures/ledger_fixture.go` too) and fails on any output or parse error. Run `gofmt -w` after Go edits.
 - The `checks` job fails unless `git ls-files .github/scripts` is exactly `.github/scripts/test_workflow_logic.py`. Put any other script under `scripts/`.
+- `agent-docs` (`checks` job) fails when `CLAUDE.md` is not a regular file or is 17500 bytes or more, when `AGENTS.md` is a symlink, missing, or differs from what `python3 -I scripts/agent_guide.py` writes, and when any other agent instruction file is tracked (a nested `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` or `AGENTS.override.md`, `.cursorrules`, `.cursor/rules/`, `copilot-instructions.md`, or a `.claude/` directory below the root).
+- It also fails when the `CLAUDE.md` area rule list, the files in `.claude/rules/` and `git ls-files .claude/rules` differ, when a rule name is not `[a-z0-9-]+.md`, when a rule file is a symlink or a subdirectory, when its frontmatter is not exactly `---`, `paths:`, one or more `  - "<glob>"` lines and `---`, when a glob has no slash, when a rule file is above 8000 bytes, when any line of a source is above 400 bytes, and when `AGENTS.md` would be above 28000 bytes.
+- It also fails on a coverage gap in a rule's `paths:` list (`CLOSURES` in `scripts/agent_guide.py`): every tracked file in the entry's scope that names one of the entry's identifiers must match a glob of that rule file.
+  The entries are `deploy.md` (`update_git`, `update_resolve_tool`, under `scripts/`), `discord.md` (`opsCommandNames`, `slashCommands(`), `hedge.md` (`hedge` in any letter case), `market-feed.md` (`hlInfoPost`, `feedMu`, `weight_reserve`), `merge-paper.md` (`LoadConfigReadOnly`, `resolveChannel(`), `ui.md` (`uiPartitionParam`, `spawnPythonProcessWithEnv`), each of these five over `scheduler/*.go`, and `robinhood.md` (`GO_TRADER_ROBINHOOD_SESSION_DIR`, over every tracked file).
+  Test files (`*_test.go`, `test_*`), Markdown files, `.claude/` and the two checker scripts are exempt, a glob with `[`, `]`, `{`, `}` or `!` in a listed rule file is refused, and removing a listed rule file fails the check until its `CLOSURES` entry is removed with it.
+  A rule that moves out of `CLAUDE.md` and guards money, security or a protective mechanism needs a `CLOSURES` entry, unless its globs cover whole directories.
+- Tracked files under `.claude/` must be area rules, the two `go-trader-trade-feedback` skill files, `.claude/settings.json` or `.claude/hooks/command_policy.py`.
+- `agent-docs-fixtures` (`checks` job, after `agent-docs`) runs `scripts/check_agent_docs_fixtures.sh`: each case copies the real sources and scripts into a temporary repository and runs the real `agent-docs` check there, so every rejection above has a failing case, the pristine copy passes, `--check` writes nothing, and the test-pruning audit protects a glob that only a rule file names.
+
+**Agent guide layout.** The editable sources are `CLAUDE.md` (global rules and the area rule list) and the files it lists under `.claude/rules/`.
+`AGENTS.md` is a committed regular file that `python3 -I scripts/agent_guide.py` writes: the generated-file notice, `CLAUDE.md` verbatim, then each rule file in name order with its scope line, then a footer line with the rule file count.
+After any source edit, run the generator and commit `AGENTS.md`; `bash scripts/check_pre_pr.sh agent-docs` runs `python3 -I scripts/agent_guide.py --check`, which writes nothing and fails on a stale or hand-edited mirror.
+`python3 -I scripts/agent_guide.py --rules-text` prints the complete rule text, and `--lost <rev>` prints where each rule bullet of `<rev>` lives now, with the code spans, words and protected-path globs that are gone.
+`scripts/defect_audit.py` reads the complete rule text through the generator for both its rule-name check and its protected-path globs, and `scripts/defect_audit.py guard-set` prints that glob set.
+A rule stays in `CLAUDE.md` when it guards a command or an action with no file open, names two areas, cuts across files that one area glob list cannot cover, or protects money paths that span many files (HL protection, kill switch, storage, risk, locking).
+Claude Code loads a rule file when Read, Write or Edit touches a matching file, or when a Bash command reads one file (`cat`, `head`); Grep and `sed -i` do not load it, and after a Write the rule arrives with the tool result, after the content is written.
+After `/compact`, `CLAUDE.md` loads again and a rule file returns only on the next matching file.
+Each `paths:` glob is relative to the checkout root that holds `.claude/`.
+A session that starts in a worktree, or moves there with `EnterWorktree`, loads that worktree's rules.
+A main-checkout session or subagent that reads a file under `.claude/worktrees/<name>/` loads the worktree's copy of the rule; a main-checkout rule whose glob ends in `/**` loaded as well (two copies), while `scheduler/hedge*.go` did not.
+A subagent with `isolation: worktree` loads the main checkout's rules for files in its own worktree, not the worktree's copies.
+A subagent cannot call `EnterWorktree` (the tool refuses it from a subagent with a working-directory override).
+Claude Code reads `AGENTS.md` only under the `claude-md-and-agents-md` instruction-file setting, which loads the mirror on top of `CLAUDE.md`; the default `claude-md-or-agents-md` and `claude-md` keep it out.
+Codex and Cursor read `AGENTS.md` and get the complete rule set; the 28000-byte limit keeps the mirror below the Codex `project_doc_max_bytes` default of 32 KiB with margin for other instruction files, and below the 40000-character on-demand limit that Claude Code applies from v2.1.309.
+The loading results above come from `claude -p` runs on Claude Code 2.1.330 with an `InstructionsLoaded` hook in a scratch clone (pull request for issue 2084).
 ---
 LLM: Opus 5.5 | high | Harness: Claude Code
