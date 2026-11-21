@@ -653,6 +653,49 @@ func TestDashboardCandlesArchiveLoaderRetriesTransientRefusals(t *testing.T) {
 			t.Fatalf("a generation refused for its content was read again on the next tick: %+v", st)
 		}
 	})
+	t.Run("a missing series file is not read again after the cap", func(t *testing.T) {
+		e := newDCEnv(t, nil, dcHLStrategy("hl-eth", "ETH", "1h"))
+		e.ss.ConfigureDashboardCandles(&DashboardCandlesConfig{ArchiveDir: e.dir})
+		l := e.ss.candles.archive
+		id := writeTestCandleArchive(t, e.dir, testArchiveSpec{Series: []testArchiveSeries{good()}})
+		series := filepath.Join(e.dir, candleArchiveGenerationsDir, id, "series", "s000.bars")
+		if err := os.Rename(series, series+".gone"); err != nil {
+			t.Fatal(err)
+		}
+		for tick := 1; tick <= candleArchiveTransientTries; tick++ {
+			l.check(context.Background())
+			if st := l.status(); st.Generation != "" || st.LastRefreshErr == "" {
+				t.Fatalf("tick %d with a missing series file: %+v", tick, st)
+			}
+		}
+		if err := os.Rename(series+".gone", series); err != nil {
+			t.Fatal(err)
+		}
+		l.check(context.Background())
+		if st := l.status(); st.Generation != "" {
+			t.Fatalf("the generation was read again after %d short-lived refusals: %+v", candleArchiveTransientTries, st)
+		}
+	})
+	t.Run("a missing series file that returns before the cap is admitted", func(t *testing.T) {
+		e := newDCEnv(t, nil, dcHLStrategy("hl-eth", "ETH", "1h"))
+		e.ss.ConfigureDashboardCandles(&DashboardCandlesConfig{ArchiveDir: e.dir})
+		l := e.ss.candles.archive
+		id := writeTestCandleArchive(t, e.dir, testArchiveSpec{Series: []testArchiveSeries{good()}})
+		series := filepath.Join(e.dir, candleArchiveGenerationsDir, id, "series", "s000.bars")
+		if err := os.Rename(series, series+".gone"); err != nil {
+			t.Fatal(err)
+		}
+		for tick := 1; tick < candleArchiveTransientTries; tick++ {
+			l.check(context.Background())
+		}
+		if err := os.Rename(series+".gone", series); err != nil {
+			t.Fatal(err)
+		}
+		l.check(context.Background())
+		if st := l.status(); st.Generation != id {
+			t.Fatalf("a file that returned before the cap must admit %s: %+v", id, st)
+		}
+	})
 	t.Run("an admitted CURRENT settles without a reload", func(t *testing.T) {
 		e := newDCEnv(t, nil, dcHLStrategy("hl-eth", "ETH", "1h"))
 		id := e.archive(testArchiveSpec{Series: []testArchiveSeries{good()}})

@@ -21,6 +21,7 @@ const (
 	candleArchiveMinRefresh     = 30
 	candleArchiveMaxRefresh     = 86400
 	candleArchiveLoadDeadline   = 5 * time.Minute
+	candleArchiveTransientTries = 3
 )
 
 type candleArchiveLoader struct {
@@ -40,6 +41,8 @@ type candleArchiveLoader struct {
 	lastErrAt   time.Time
 	lastCheckAt time.Time
 	attempted   string
+	transientID string
+	transients  int
 	swaps       int
 	onSwap      func()
 }
@@ -138,11 +141,21 @@ func (l *candleArchiveLoader) check(ctx context.Context) {
 		return
 	}
 	gen, err := loadCandleArchiveGeneration(ctx, l.dir, id, l.limits, now)
-	if !errors.Is(err, errCandleArchiveInterrupted) && !candleArchiveRefusalTransient(err) {
-		l.mu.Lock()
-		l.attempted = id
-		l.mu.Unlock()
+	l.mu.Lock()
+	if l.transientID != id {
+		l.transientID, l.transients = id, 0
 	}
+	switch {
+	case errors.Is(err, errCandleArchiveInterrupted):
+	case candleArchiveRefusalTransient(err):
+		l.transients++
+		if l.transients >= candleArchiveTransientTries {
+			l.attempted = id
+		}
+	default:
+		l.attempted = id
+	}
+	l.mu.Unlock()
 	if err != nil {
 		l.fail(candleAvailSourceIncompatible, fmt.Sprintf("generation %s refused: %v", id, err), now)
 		fmt.Printf("[candle-archive] generation %s refused: %v\n", id, err)
