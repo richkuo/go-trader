@@ -117,6 +117,8 @@ var okxRecoverEntryProbeArgv = []string{
 	"--probe-only",
 }
 
+var okxStrictPositionsProbeArgv = []string{"--strict", "--probe-only"}
+
 var sizedCloseProbeArgv = []string{
 	"--symbol=BTC", "--mode=live", "--sz=0.01",
 	"--side=sell", "--close-mode=reduce_only",
@@ -385,6 +387,11 @@ func probeCheckScripts(cfg *Config) error {
 			return err
 		}
 	}
+	if anyOKXLivePerps(cfg) {
+		if err := probeOneScriptContractFn(okxFetchPositionsScript, okxStrictPositionsProbeArgv, okxStrictPositionsContract); err != nil {
+			return err
+		}
+	}
 	if anyHyperliquidLive(cfg) {
 		if err := probeOneCheckScriptFn(hlAgentStatusScript, hlAgentStatusProbeArgv); err != nil {
 			return err
@@ -434,6 +441,15 @@ func probeCheckScripts(cfg *Config) error {
 func anyHLLiveReconcilable(cfg *Config) bool {
 	for _, sc := range cfg.Strategies {
 		if isHLLiveReconcilable(sc) {
+			return true
+		}
+	}
+	return false
+}
+
+func anyOKXLivePerps(cfg *Config) bool {
+	for _, sc := range cfg.Strategies {
+		if sc.Platform == "okx" && sc.Type == "perps" && okxIsLive(sc.Args) {
 			return true
 		}
 	}

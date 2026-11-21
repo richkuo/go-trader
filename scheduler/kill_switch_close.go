@@ -293,6 +293,26 @@ func removeKillSwitchCoin(list []string, coin string) []string {
 	return out
 }
 
+func removeKillSwitchCoinsFold(list []string, coins []string) []string {
+	if len(coins) == 0 {
+		return list
+	}
+	out := list[:0]
+	for _, c := range list {
+		drop := false
+		for _, coin := range coins {
+			if strings.EqualFold(c, coin) {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 type killSwitchFlatLists struct {
 	closed   *[]string
 	already  *[]string
@@ -362,11 +382,21 @@ func hlKillSwitchTradedCoins(hlLiveAll []StrategyConfig, hedgeCoins map[string]b
 	return traded
 }
 
-func hlKillSwitchUncoveredNamespaces(traded map[string]bool) []string {
+func hlKillSwitchUncoveredNamespaces(hlLiveAll []StrategyConfig, hedgeCoins map[string]bool) []string {
+	seen := map[string]bool{}
 	var out []string
-	for coin := range traded {
-		if strings.Contains(coin, ":") {
+	add := func(coin string) {
+		if strings.Contains(coin, ":") && !seen[coin] {
+			seen[coin] = true
 			out = append(out, coin)
+		}
+	}
+	for _, sc := range hlLiveAll {
+		add(hyperliquidRawCoin(sc))
+	}
+	for coin, held := range hedgeCoins {
+		if held {
+			add(coin)
 		}
 	}
 	sort.Strings(out)
@@ -825,9 +855,9 @@ func planHyperliquidKillSwitchClose(in KillSwitchCloseInputs, plan *KillSwitchCl
 		plan.holdVenue(proof, "hl-close", "the Hyperliquid closer is unwired")
 		return
 	}
-	if ns := hlKillSwitchUncoveredNamespaces(traded); len(ns) > 0 {
-		plan.holdVenue(proof, "hl-close", fmt.Sprintf("coins %v trade on a perp namespace the position reader does not cover", ns))
-		return
+	uncovered := hlKillSwitchUncoveredNamespaces(in.HLLiveAll, in.HLHedgeCoins)
+	if len(uncovered) > 0 {
+		plan.holdVenue(proof, "hl-close", fmt.Sprintf("coins %v trade on a perp namespace the position reader does not cover; the coins the reader covers are still closed and read", uncovered))
 	}
 
 	baseline, err := readHLKillSwitchPositions(in, target)
@@ -842,6 +872,10 @@ func planHyperliquidKillSwitchClose(in KillSwitchCloseInputs, plan *KillSwitchCl
 	cancel()
 	report := &plan.CloseReport
 	lists := killSwitchFlatLists{closed: &report.ClosedCoins, already: &report.AlreadyFlat, errs: report.Errors, resolved: &report.ResolvedErrors}
+	dropUncovered := func() {
+		report.ClosedCoins = removeKillSwitchCoinsFold(report.ClosedCoins, uncovered)
+		report.AlreadyFlat = removeKillSwitchCoinsFold(report.AlreadyFlat, uncovered)
+	}
 
 	attempted := map[string]bool{}
 	for _, a := range report.Attempts {
@@ -857,6 +891,7 @@ func planHyperliquidKillSwitchClose(in KillSwitchCloseInputs, plan *KillSwitchCl
 				parts := append([]string{"flat not verified: " + reason}, hlKillSwitchAttemptEvidence(*report, coin, report.Errors[coin])...)
 				lists.block(coin, strings.Join(parts, "; "))
 			}
+			dropUncovered()
 		}
 	}
 	if err == nil {
@@ -883,7 +918,8 @@ func planHyperliquidKillSwitchClose(in KillSwitchCloseInputs, plan *KillSwitchCl
 				report.Unconfigured = append(report.Unconfigured, p)
 			}
 		}
-		proof.Verified = res.flat() && len(report.Errors) == 0
+		dropUncovered()
+		proof.Verified = res.flat() && len(report.Errors) == 0 && len(uncovered) == 0
 		for _, change := range res.Changes {
 			plan.LogLines = append(plan.LogLines, "[CRITICAL] hl-close: exposure changed since the pre-close read: "+change)
 		}

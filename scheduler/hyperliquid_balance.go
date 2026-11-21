@@ -284,7 +284,7 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 const (
 	hlStrictPositionReadTimeout  = 10 * time.Second
 	hlStrictPositionMaxBytes     = 4 << 20
-	hlStrictPositionLedgerPerMin = 6
+	hlStrictPositionLedgerPerMin = 120
 )
 
 var hlStrictAccountPattern = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)

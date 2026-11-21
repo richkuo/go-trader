@@ -109,7 +109,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--strict", action="store_true",
                         help="emit the raw authenticated swap position rows under the strict kill-switch contract")
+    parser.add_argument("--probe-only", action="store_true",
+                        help="startup compatibility probe: validate the argv shape, print the strict contract and exit 0 without a venue read")
     args = parser.parse_args()
+    if args.probe_only:
+        if not args.strict:
+            parser.error("--probe-only requires --strict")
+        print(json.dumps({"contract": STRICT_CONTRACT, "probe": True}))
+        return
     if args.strict:
         strict_main()
         return
