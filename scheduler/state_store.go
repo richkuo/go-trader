@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -554,6 +555,10 @@ func (st *StateStore) recordLimitSettlementSuccess(ids []int64) {
 	st.signalHoldLocked(livePartition)
 }
 
+func (st *StateStore) recordLimitSettlementClassified(ids []int64) {
+	st.recordLimitSettlementSuccess(ids)
+}
+
 func (st *StateStore) limitRecoveryHeld() bool {
 	if st == nil {
 		return false
@@ -642,6 +647,33 @@ func (st *StateStore) persistenceHoldsPartition(p RiskPartition) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return st.heldLocked(p)
+}
+
+func (st *StateStore) persistenceHoldReason(p RiskPartition) string {
+	if st == nil {
+		return ""
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if p == livePartition && len(st.limitRecovery.failed) > 0 {
+		nums := make([]int64, 0, len(st.limitRecovery.failed))
+		for id := range st.limitRecovery.failed {
+			nums = append(nums, id)
+		}
+		sort.Slice(nums, func(i, j int) bool { return nums[i] < nums[j] })
+		ids := make([]string, 0, len(nums))
+		for _, id := range nums {
+			ids = append(ids, strconv.FormatInt(id, 10))
+		}
+		return fmt.Sprintf("a confirmed limit fill on queue row %s is not saved yet — blocked until the scheduler saves that fill or the row is resolved; an unrelated save does not release it", strings.Join(ids, ", "))
+	}
+	if p == livePartition && st.limitRecovery.unknown {
+		return "the scheduler has not completed a full pass over the resting limit order queue since startup or since the queue was last unreadable — blocked until that queue pass completes"
+	}
+	if st.failures[p] > 0 {
+		return "the last state save for this scope failed and has not been acknowledged — blocked until a save succeeds"
+	}
+	return ""
 }
 
 // ------------------------------------------------------------ routed writes

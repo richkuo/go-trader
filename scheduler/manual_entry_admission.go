@@ -12,6 +12,7 @@ var manualEntryAdmissionBarrier = func(stage string) {}
 type manualEntryAdmission struct {
 	layout     storageLayout
 	strategyID string
+	strategies []StrategyConfig
 	part       RiskPartition
 	pin        *manualRegimePin
 	owned      *stateOwnership
@@ -74,7 +75,7 @@ func admitManualEntry(cfg *Config, strategyID string) (*manualEntryAdmission, er
 			free++
 		}
 	}
-	a := &manualEntryAdmission{layout: layout, strategyID: strategyID, part: id.Partition}
+	a := &manualEntryAdmission{layout: layout, strategyID: strategyID, strategies: cfg.Strategies, part: id.Partition}
 	switch {
 	case held == 0 && free == 0:
 		return nil, manualEntryRefused("the configured storage layout has no on-disk state file")
@@ -138,7 +139,7 @@ func (a *manualEntryAdmission) check(stage string) error {
 			}
 		}
 		if a.part == livePartition {
-			return standaloneLimitQueueRefusal(a.layout)
+			return standaloneLimitQueueRefusal(a.layout, a.strategies)
 		}
 		return nil
 	}

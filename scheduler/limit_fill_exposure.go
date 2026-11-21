@@ -328,6 +328,8 @@ type limitFillCandidate struct {
 	refused        bool
 	refusalVerdict limitFillExposureVerdict
 	applyFailed    bool
+	applyErr       error
+	peersBooked    bool
 	deferred       bool
 	settleFailed   bool
 	settled        bool
@@ -347,7 +349,16 @@ func applyLimitExposureOperatorRequired(store *StateStore, c *limitFillCandidate
 		markLimitRowOperatorRequired(store, &c.order, now)
 		return
 	}
-	if !c.settled || c.order.OperatorRequiredSince.IsZero() {
+	if c.applyFailed {
+		if c.order.OperatorRequiredSince.IsZero() {
+			markLimitRowOperatorRequired(store, &c.order, now)
+		}
+		return
+	}
+	if c.hasFill && !c.settled {
+		return
+	}
+	if c.order.OperatorRequiredSince.IsZero() {
 		return
 	}
 	if err := store.ClearPendingLimitOrderOperatorRequired(c.order.ID); err != nil {

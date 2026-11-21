@@ -68,6 +68,7 @@ type manualStateView struct {
 	// PersistenceHold marks a scope with an unacknowledged state save failure:
 	// no new exposure until a save succeeds. Closes and SL edits stay open.
 	PersistenceHold  bool
+	PersistenceNote  string
 	ExposureCap      ExposureCapStatus
 	ExposureCapAsset string
 	Pos              *Position
@@ -77,6 +78,13 @@ type manualStateView struct {
 	PeerSame         []hlShareBook
 	PeerLongQty      float64
 	PeerShortQty     float64
+}
+
+func manualPersistenceHoldNote(v manualStateView) string {
+	if v.PersistenceNote != "" {
+		return v.PersistenceNote
+	}
+	return "the last state save for this scope failed and has not been acknowledged — blocked until a save succeeds"
 }
 
 func manualSubsetStateView(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig, now time.Time) manualStateView {
@@ -115,7 +123,10 @@ func mergeManualStateViews(dst, src manualStateView) manualStateView {
 		dst.NotionalHold = true
 		dst.NotionalNote = src.NotionalNote
 	}
-	dst.PersistenceHold = dst.PersistenceHold || src.PersistenceHold
+	if !dst.PersistenceHold && src.PersistenceHold {
+		dst.PersistenceHold = true
+		dst.PersistenceNote = src.PersistenceNote
+	}
 	if !dst.ExposureCap.Configured {
 		dst.ExposureCap = src.ExposureCap
 		return dst
@@ -147,13 +158,17 @@ func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *Stat
 	if known {
 		v = manualScopeStateView(cfg, state, part, now)
 		v.PersistenceHold = store.persistenceHoldsPartition(part)
+		v.PersistenceNote = store.persistenceHoldReason(part)
 	} else {
 		v.KillSwitch = state.anyScopeLatched()
 		if cfg != nil {
 			v = mergeManualStateViews(v, manualSubsetStateView(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, now))
 			for _, p := range activePartitions(cfg.Strategies) {
 				v = mergeManualStateViews(v, manualScopeStateView(cfg, state, p, now))
-				v.PersistenceHold = v.PersistenceHold || store.persistenceHoldsPartition(p)
+				if !v.PersistenceHold && store.persistenceHoldsPartition(p) {
+					v.PersistenceHold = true
+					v.PersistenceNote = store.persistenceHoldReason(p)
+				}
 			}
 		}
 	}
@@ -296,7 +311,7 @@ func manualRecheckAfterRegimeWait(d manualCoreDeps, action, strategyID, symbol, 
 	case view.NotionalHold:
 		return manualFailf("%s held after the regime wait: %s", action, view.NotionalNote)
 	case view.PersistenceHold:
-		return manualFailf("%s held after the regime wait: the last state save for this scope failed and has not been acknowledged", action)
+		return manualFailf("%s held after the regime wait: %s", action, manualPersistenceHoldNote(view))
 	}
 	if blocked, why := exposureCapManualEntryBlock(view.ExposureCap, view.ExposureCapAsset, side); blocked {
 		return manualFailf("%s held after the regime wait: %s", action, why)
@@ -679,7 +694,7 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 				return res, manualFailf("error: %s — manual-open blocked (closes and SL edits are unaffected)", view.NotionalNote)
 			}
 			if view.PersistenceHold {
-				return res, manualFailf("error: the last state save for this scope failed and has not been acknowledged — manual-open blocked until a save succeeds (closes and SL edits are unaffected)")
+				return res, manualFailf("error: %s — manual-open blocked (closes and SL edits are unaffected)", manualPersistenceHoldNote(view))
 			}
 			if blocked, why := exposureCapManualEntryBlock(view.ExposureCap, view.ExposureCapAsset, side); blocked {
 				return res, manualFailf("error: %s — manual-open (%s) blocked (closes and SL edits are unaffected)", why, side)
@@ -1014,7 +1029,7 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 		return res, manualFailf("error: %s — manual-add blocked (closes and SL edits are unaffected)", view.NotionalNote)
 	}
 	if view.PersistenceHold {
-		return res, manualFailf("error: the last state save for this scope failed and has not been acknowledged — manual-add blocked until a save succeeds (closes and SL edits are unaffected)")
+		return res, manualFailf("error: %s — manual-add blocked (closes and SL edits are unaffected)", manualPersistenceHoldNote(view))
 	}
 	addDir := "long"
 	if pos.Side == "short" {

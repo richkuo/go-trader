@@ -543,7 +543,11 @@ func clearLimitRowTerminalRefusal(cfg *Config, o PendingLimitOrder) string {
 	if len(candidates) == 0 {
 		return fmt.Sprintf("refusing: no Hyperliquid strategy with a script remains in this config, so the state of oid=%d cannot be read", o.OrderOID)
 	}
-	st, reason := readLimitOrderEvidence(candidates[0].Script, o, "clear status")
+	res, reason := readLimitOrderStatus(candidates[0].Script, o, "clear status")
+	var st HyperliquidLimitOrderStatus
+	if reason == "" {
+		st, reason = limitOrderStateEvidence(res, o)
+	}
 	if reason != "" {
 		return fmt.Sprintf("refusing: the state of oid=%d could not be verified (%s); the order may still fill", o.OrderOID, reason)
 	}
@@ -783,6 +787,14 @@ type orphanLimitCancelOutcome struct {
 }
 
 func readLimitOrderEvidence(script string, o PendingLimitOrder, tag string) (HyperliquidLimitOrderStatus, string) {
+	res, reason := readLimitOrderStatus(script, o, tag)
+	if reason != "" {
+		return HyperliquidLimitOrderStatus{}, reason
+	}
+	return limitStatusEvidence(res, o)
+}
+
+func readLimitOrderStatus(script string, o PendingLimitOrder, tag string) (*HyperliquidLimitStatusResult, string) {
 	res, stderr, err := runHyperliquidLimitStatusFn(script, o.Symbol, []int64{o.OrderOID}, limitStatusSinceMs(o.CreatedAt))
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "[limit] %s %s stderr: %s\n", o.StrategyID, tag, stderr)
@@ -792,9 +804,12 @@ func readLimitOrderEvidence(script string, o PendingLimitOrder, tag string) (Hyp
 		if res != nil {
 			msg = res.Error
 		}
-		return HyperliquidLimitOrderStatus{}, strings.TrimSpace(fmt.Sprintf("order state unreadable: %v %s", err, msg))
+		return nil, strings.TrimSpace(fmt.Sprintf("order state unreadable: %v %s", err, msg))
 	}
-	return limitStatusEvidence(res, o)
+	if res == nil {
+		return nil, "the status read returned nothing"
+	}
+	return res, ""
 }
 
 func orphanLimitOrderStatus(script string, o PendingLimitOrder) (HyperliquidLimitOrderStatus, string) {
@@ -817,6 +832,10 @@ func cancelOrphanedLimitOrder(state *AppState, cfg *Config, store *StateStore, m
 	if reason != "" {
 		out.State = orphanLimitStateUnknown
 		out.Reason = reason
+		if limitStatusRestingForCancel(st, o) && issueLimitRowCancel(script, o, "orphan cancel") {
+			out.CancelIssued = true
+			out.Reason = "cancel issued but unverified: " + reason
+		}
 		return out
 	}
 
@@ -940,6 +959,9 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 	limitFillExposureAlerts.Retain(orders)
 	limitSettlementAlerts.Retain(orders)
 	limitRowReviewAlerts.Retain(orders)
+	limitApplyFailureAlerts.Retain(orders)
+	limitRowUnresolvedAlerts.Retain(orders)
+	retainLimitRowUnresolved(orders)
 	exposureReader := &hlLiveExposureReader{}
 	applied := make(map[string]*manualAlert)
 	var order []string
@@ -963,7 +985,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 					if o.OperatorRequiredSince.IsZero() {
 						markLimitRowOperatorRequired(store, &o, now)
 					}
-					reportLimitRowReview(notifier, o, review, now)
+					reportLimitRowReview(notifier, o, review, limitRowOwnerEligible(cfg.Strategies, o), now)
 					continue
 				}
 				fmt.Printf("[limit] skipping row %d: %s (%q) and no cancellation is queued for it\n", o.ID, block, o.StrategyID)
@@ -989,12 +1011,15 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 			if o.OperatorRequiredSince.IsZero() {
 				markLimitRowOperatorRequired(store, &o, now)
 			}
-			reportLimitRowReview(notifier, o, review, now)
+			reportLimitRowReview(notifier, o, review, limitRowOwnerEligible(cfg.Strategies, o), now)
 			expired := !o.ExpiresAt.IsZero() && now.After(o.ExpiresAt)
 			if o.CancelRequested || expired {
 				st, reason := readLimitOrderEvidence(sc.Script, o, "status")
 				if reason != "" {
-					fmt.Printf("[limit] %s: cancellation deferred, %s\n", killSwitchLimitOrderLabel(o), reason)
+					fmt.Printf("[limit] %s: status unresolved, %s\n", killSwitchLimitOrderLabel(o), reason)
+					if due, why := limitRowCancelDue(o, now); due && limitStatusRestingForCancel(st, o) {
+						issueLimitRowCancel(sc.Script, o, why)
+					}
 					continue
 				}
 				if *st.Resting {
@@ -1020,8 +1045,19 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 		st, reason := readLimitOrderEvidence(sc.Script, o, "status")
 		if reason != "" {
 			fmt.Printf("[limit] status for %s oid=%d unresolved: %s\n", o.StrategyID, o.OrderOID, reason)
+			if due, why := limitRowCancelDue(o, now); due && limitStatusRestingForCancel(st, o) {
+				issueLimitRowCancel(sc.Script, o, why)
+			}
+			if passes := noteLimitRowUnresolved(o.ID); passes > limitUnresolvedPassThreshold {
+				if o.OperatorRequiredSince.IsZero() {
+					markLimitRowOperatorRequired(store, &o, now)
+				}
+				reportLimitRowUnresolved(notifier, o, reason, passes, now)
+			}
 			continue
 		}
+		clearLimitRowUnresolved(o.ID)
+		limitRowUnresolvedAlerts.Clear(limitFillExposureKeyFor(o))
 
 		c := &limitFillCandidate{order: o, sc: sc, logger: logger, status: st, polledAt: statusPolledAt}
 		if st.FilledSize > o.FilledSize+limitFillEpsilon {
@@ -1098,12 +1134,28 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 			fmt.Printf("[limit] %s fill settlement deferred: %s\n", coin, out.deferred)
 			continue
 		}
+		applyErr := func(i int) error {
+			if i < len(out.applyErrs) {
+				return out.applyErrs[i]
+			}
+			return nil
+		}
+		var attempted, failedRows []*limitFillCandidate
+		for i, r := range rows {
+			if err := applyErr(i); err != nil {
+				r.applyFailed = true
+				r.applyErr = err
+				failedRows = append(failedRows, r)
+			} else {
+				attempted = append(attempted, r)
+			}
+		}
 		if out.commitErr != nil {
-			for _, r := range rows {
+			for _, r := range attempted {
 				r.settleFailed = true
 			}
-			store.recordLimitSettlementFailure(limitCandidateIDs(rows), out.commitErr)
-			reportLimitSettlementFailure(notifier, rows, coin, out.commitErr, now)
+			store.recordLimitSettlementFailure(limitCandidateIDs(attempted), out.commitErr)
+			reportLimitSettlementFailure(notifier, attempted, coin, out.commitErr, now)
 			continue
 		}
 		if !out.decision.adopts() {
@@ -1115,19 +1167,21 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 			continue
 		}
 		if !out.committed {
-			for i, r := range rows {
-				r.applyFailed = true
-				if i < len(out.applyErrs) && out.applyErrs[i] != nil {
-					warnNotifier(notifier, fmt.Sprintf("[limit-fill] %s %s: %v — no fill on %s was booked and the queue row is kept", r.order.StrategyID, coin, out.applyErrs[i], coin))
-				}
+			for _, r := range attempted {
+				r.deferred = true
+				fmt.Printf("[limit] %s: fill of %.6f deferred — another fill of this strategy on %s could not apply in the same pass\n",
+					killSwitchLimitOrderLabel(r.order), r.status.FilledSize, coin)
 			}
 			continue
 		}
-		store.recordLimitSettlementSuccess(limitCandidateIDs(rows))
+		store.recordLimitSettlementSuccess(limitCandidateIDs(attempted))
 		for _, line := range out.logLines {
 			fmt.Println(line)
 		}
-		for _, r := range rows {
+		for _, r := range failedRows {
+			r.peersBooked = true
+		}
+		for _, r := range attempted {
 			r.settled = true
 			limitFillExposureAlerts.Clear(limitFillExposureKeyFor(r.order))
 			limitSettlementAlerts.Clear(limitFillExposureKeyFor(r.order))
@@ -1155,17 +1209,22 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 
 	for _, c := range candidates {
 		applyLimitExposureOperatorRequired(store, c, now)
+		if !c.applyFailed {
+			limitApplyFailureAlerts.Clear(limitFillExposureKeyFor(c.order))
+			continue
+		}
+		if !c.order.OperatorRequiredSince.IsZero() {
+			store.recordLimitSettlementClassified([]int64{c.order.ID})
+		}
+		reportLimitFillApplyFailure(notifier, c.order, c.status.FilledSize, c.applyErr, c.peersBooked, now)
 	}
 
 	for _, c := range candidates {
-		if c.applyFailed {
-			continue
-		}
 		o := c.order
 		st := c.status
 
 		if limitStatusOffBook(st) {
-			if c.refused || c.deferred || c.settleFailed {
+			if c.refused || c.deferred || c.settleFailed || c.applyFailed {
 				fmt.Printf("[limit] %s: order is off-book and its fill was NOT booked — keeping the queue row as the recovery record\n",
 					killSwitchLimitOrderLabel(o))
 				continue
