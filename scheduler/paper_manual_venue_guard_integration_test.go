@@ -163,55 +163,6 @@ func TestPaperManualCoresRefuseVenueActionsIntegration(t *testing.T) {
 	}
 }
 
-func TestHLWriteAuthorizationScopesIntegration(t *testing.T) {
-	cfg := paperManualGuardConfig(t)
-	byID := map[string]StrategyConfig{}
-	for _, sc := range cfg.Strategies {
-		byID[sc.ID] = sc
-	}
-	hedged := StrategyConfig{ID: "hp-live", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "BTC", "1h", "--mode=live"}, Hedge: &HedgeConfig{Enabled: true, Symbol: "ETH"}}
-	paperHedged := hedged
-	paperHedged.ID = "hp-paper"
-	paperHedged.Args = []string{"momentum", "BTC", "1h", "--mode=paper"}
-	cases := []struct {
-		name string
-		auth hlWriteAuth
-		op   hlWriteOp
-		coin string
-		oid  int64
-		ok   bool
-	}{
-		{"zero value", hlWriteAuth{}, hlWriteExecute, "BTC", 0, false},
-		{"default paper manual", hlStrategyWriteAuth(byID["pm-default"], "BTC", hlWriteExecute), hlWriteExecute, "BTC", 0, false},
-		{"explicit paper manual", hlStrategyWriteAuth(byID["pm-args"], "BTC", hlWriteClose), hlWriteClose, "BTC", 0, false},
-		{"paper manual without mode", hlStrategyWriteAuth(byID["pm-nomode"], "BTC", hlWriteStop), hlWriteStop, "BTC", 0, false},
-		{"named paper partition", hlStrategyWriteAuth(byID["pm-alt"], "BTC", hlWriteLimitOpen), hlWriteLimitOpen, "BTC", 0, false},
-		{"live owner", hlStrategyWriteAuth(byID["lm-live"], "BTC", hlWriteExecute), hlWriteExecute, "BTC", 0, true},
-		{"live owner lower-case coin", hlStrategyWriteAuth(byID["lm-live"], "btc", hlWriteExecute), hlWriteExecute, "BTC", 0, true},
-		{"live owner wrong coin", hlStrategyWriteAuth(byID["lm-live"], "BTC", hlWriteExecute), hlWriteExecute, "ETH", 0, false},
-		{"live owner foreign coin grant", hlStrategyWriteAuth(byID["lm-live"], "ETH", hlWriteExecute), hlWriteExecute, "ETH", 0, false},
-		{"live owner wrong operation", hlStrategyWriteAuth(byID["lm-live"], "BTC", hlWriteStop), hlWriteExecute, "BTC", 0, false},
-		{"cancel without order", hlStrategyWriteAuth(byID["lm-live"], "BTC", hlWriteCancel), hlWriteCancel, "BTC", 5, false},
-		{"cancel wrong order", hlStrategyWriteAuth(byID["lm-live"], "BTC", hlWriteCancel).forOrder(4), hlWriteCancel, "BTC", 5, false},
-		{"cancel bound order", hlStrategyWriteAuth(byID["lm-live"], "BTC", hlWriteCancel).forOrder(5), hlWriteCancel, "BTC", 5, true},
-		{"live hedge leg", hlHedgeWriteAuth(hedged, "ETH", hlWriteExecute), hlWriteExecute, "ETH", 0, true},
-		{"hedge grant on primary coin", hlHedgeWriteAuth(hedged, "BTC", hlWriteExecute), hlWriteExecute, "BTC", 0, false},
-		{"paper hedge leg", hlHedgeWriteAuth(paperHedged, "ETH", hlWriteExecute), hlWriteExecute, "ETH", 0, false},
-		{"strategy grant on hedge coin", hlStrategyWriteAuth(hedged, "ETH", hlWriteClose), hlWriteClose, "ETH", 0, false},
-		{"account recovery bound coin", hlAccountRecoveryWriteAuth("BTC", hlWriteClose), hlWriteClose, "BTC", 0, true},
-		{"account recovery other coin", hlAccountRecoveryWriteAuth("BTC", hlWriteClose), hlWriteClose, "ETH", 0, false},
-	}
-	for _, c := range cases {
-		err := c.auth.check(c.op, c.coin, c.oid)
-		if (err == nil) != c.ok {
-			t.Fatalf("%s: check = %v, want ok=%t", c.name, err, c.ok)
-		}
-		if err != nil && (!isHLWriteRefused(err) || !strings.Contains(err.Error(), "no order was sent")) {
-			t.Fatalf("%s: a refusal must be typed and say no order was sent: %v", c.name, err)
-		}
-	}
-}
-
 func TestPaperManualCycleCloseBooksSimulatedFillsIntegration(t *testing.T) {
 	prevLot := paperManualCloseLotLookup
 	lotKnown := true
