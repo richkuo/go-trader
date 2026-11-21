@@ -586,6 +586,7 @@ func placeLegacyPortfolioRisk(state *AppState, cfg *Config, legacy *PortfolioRis
 			if legacy.KillSwitchActive && !existing.KillSwitchActive {
 				existing.KillSwitchActive = true
 				existing.KillSwitchAt = legacy.KillSwitchAt
+				existing.cancelPeakRebaseline()
 			}
 			addKillSwitchEvent(existing, "migration_conflict", "",
 				existing.CurrentDrawdownPct, 0, existing.PeakValue,

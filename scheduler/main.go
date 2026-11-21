@@ -532,7 +532,7 @@ func main() {
 	if pruned {
 		for _, part := range startupPartitions {
 			prs := state.partitionRisk(part)
-			if prs.PeakValue <= 0 {
+			if prs.PeakValue <= 0 || prs.PeakRebaselinePending {
 				continue
 			}
 			oldPeak := prs.PeakValue
@@ -1009,6 +1009,8 @@ func main() {
 	lastAutoUpdateCheck := time.Now()
 
 	var resetGoroutineRunning atomic.Bool
+	resetReplies := make(chan killSwitchResetRequest, 1)
+	resetReplyWake := make(chan struct{}, 1)
 	sharedWalletRiskBalances := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
 	sharedWalletRiskGeneration := 0
 	backfillMovedStopMarkers(cfg, state, &mu)
@@ -1034,6 +1036,26 @@ func main() {
 		state.CycleCount++
 		cycle := state.CycleCount
 		mu.Unlock()
+		select {
+		case req := <-resetReplies:
+			mu.Lock()
+			res := applyKillSwitchResetReply(state, req, func(p RiskPartition) error { return store.SavePartition(state, p) })
+			mu.Unlock()
+			if res.Err != nil {
+				if res.SaveErr != nil {
+					fmt.Printf("[CRITICAL] Failed to save state after kill switch reset (%s scope): %v; latch kept\n", partitionLabel(res.Target), res.SaveErr)
+				} else {
+					fmt.Printf("[update] Kill switch reset DM got a reply that changed nothing: %q (%v)\n", req.Reply, res.Err)
+				}
+				notifier.SendOwnerDM(res.Err.Error())
+			} else {
+				notifier.SendOwnerDM(formatKillSwitchResetAck(res))
+				fmt.Printf("[update] Kill switch reset by owner via DM (%s scope); peak $%.2f kept until the first eligible equity reading\n", partitionLabel(res.Target), res.PeakValue)
+			}
+			releaseKillSwitchResetPrompt(&resetGoroutineRunning)
+		default:
+		}
+		cycleInputsFrom := tradingNow().UTC()
 		totalTrades := 0
 		channelTrades := make(map[string]int)
 		channelTradeDetails := make(map[string][]string)
@@ -1123,6 +1145,9 @@ func main() {
 				select {
 				case <-timer.C:
 					continue
+				case <-resetReplyWake:
+					timer.Stop()
+					continue
 				case <-reloadCh:
 					timer.Stop()
 					reloadConfig()
@@ -1139,6 +1164,9 @@ func main() {
 			timer := time.NewTimer(delay)
 			select {
 			case <-timer.C:
+				continue
+			case <-resetReplyWake:
+				timer.Stop()
 				continue
 			case <-reloadCh:
 				timer.Stop()
@@ -1231,6 +1259,8 @@ func main() {
 				continue
 			}
 		}
+		priceSources := cyclePriceSources{}
+		priceSources.label(prices, priceSourceSpot)
 		if len(hlPerpsCoins) > 0 && feedCtx.active() {
 			feedMarks := feedCtx.Snapshot.freshMids()
 			mergePerpsMarks(prices, feedMarks)
@@ -1272,6 +1302,7 @@ func main() {
 				}
 			}
 		}
+		priceSources.label(prices, priceSourceHyperliquid)
 		paperFundingMarks := make(map[string]float64, len(hlPerpsCoins))
 		for _, coin := range hlPerpsCoins {
 			if px, ok := prices[coin]; ok {
@@ -1284,6 +1315,7 @@ func main() {
 				fmt.Printf("[WARN] OKX perps marks fetch failed for %v: %v — portfolio notional will use entry cost for open OKX perps positions\n", okxPerpsCoins, err)
 			} else {
 				mergePerpsMarks(prices, okxMarks)
+				priceSources.label(prices, priceSourceOKX)
 				for _, coin := range okxPerpsCoins {
 					if _, ok := prices[coin]; !ok {
 						fmt.Printf("[WARN] No OKX perps mark for %s — PortfolioNotional/Value will fall back to entry cost\n", coin)
@@ -1300,6 +1332,11 @@ func main() {
 					fmt.Printf("[WARN] fetch_futures_marks: live mode init failed, degraded to paper (yfinance) — check TopStepX creds and network\n")
 				}
 				mergeFuturesMarks(prices, marks)
+				if mode == FuturesMarkModePaperFallback {
+					priceSources.label(prices, priceSourceFuturesDegraded)
+				} else {
+					priceSources.label(prices, priceSourceFutures)
+				}
 				for _, sym := range futuresSymbols {
 					if _, ok := prices[sym]; !ok {
 						fmt.Printf("[WARN] No futures mark for %s — PortfolioNotional/Value will fall back to entry cost\n", sym)
@@ -1494,6 +1531,8 @@ func main() {
 			for _, part := range cyclePartitions {
 				sr := measureScopeCycleRisk(part, scopeRisk[part].Config, cfg.Strategies, state, prices,
 					riskWalletBalances, sharedWallets, pooledEquityComplete, usedStaleRiskBalance, time.Now().UTC())
+				measureScopeRebaselineValuation(sr, state.partitionRiskIfPresent(part), cfg.Strategies, state, prices, priceSources,
+					riskWalletBalances, sharedWallets, cfg.IntervalSeconds, cycleInputsFrom, tradingNow().UTC())
 				scopeRisk[part] = sr
 				totalPV += sr.TotalPV
 			}
@@ -1504,7 +1543,7 @@ func main() {
 			if liveSR := scopeRisk[livePartition]; liveSR != nil {
 				livePrs := state.partitionRisk(livePartition)
 				liveCfgs := strategiesInScope(cfg.Strategies, ScopeLive)
-				if !livePrs.ManualMarkBasisRebaselined {
+				if !livePrs.ManualMarkBasisRebaselined && !livePrs.PeakRebaselinePending {
 					if unmarked := missingManualOnlyMarks(liveCfgs, riskOpenSymbols, prices); len(unmarked) > 0 {
 						fmt.Printf("[INFO] manual mark valuation-basis peak migration deferred: no live mark this cycle for open manual-only coin(s) %s\n", strings.Join(unmarked, ", "))
 					} else {
@@ -1529,9 +1568,24 @@ func main() {
 
 			quotePrecisionRebaselineDM := runQuotePrecisionPeakRebaseline(cyclePartitions, cfg.Strategies, state, prices, scopeRisk)
 
+			var rebaselineNotices []string
 			for _, part := range cyclePartitions {
 				sr := scopeRisk[part]
-				applyScopeCycleRisk(sr, state.partitionRisk(part))
+				prs := state.partitionRisk(part)
+				applyScopeCycleRiskCommitted(sr, prs, func(p RiskPartition) error { return store.SavePartition(state, p) })
+				switch {
+				case sr.Rebaselined:
+					fmt.Printf("[WARN] [%s] kill-switch reset peak rebaseline committed: peak $%.2f -> $%.2f (first eligible equity reading after the reset)\n",
+						partitionLabel(part), sr.RebaselineOldPeak, sr.RebaselineNewPeak)
+					rebaselineNotices = append(rebaselineNotices, formatPeakRebaselineDM(part, sr.RebaselineOldPeak, sr.RebaselineNewPeak))
+				case sr.RebaselineSaveErr != nil:
+					fmt.Printf("[CRITICAL] [%s] kill-switch reset peak rebaseline NOT committed (state save failed: %v); peak $%.2f and the pending flag are kept, entries held until a save succeeds\n",
+						partitionLabel(part), sr.RebaselineSaveErr, prs.PeakValue)
+				default:
+					if wait := scopeRebaselineWaitReason(sr, prs); wait != "" {
+						logOnChangef("peak-rebaseline-wait:"+part.String(), wait, "[INFO] [%s] kill-switch reset peak rebaseline waiting: %s (peak $%.2f kept)\n", partitionLabel(part), wait, prs.PeakValue)
+					}
+				}
 				if sr.KillSwitchFired {
 					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: %s\n", partitionLabel(part), sr.Reason)
 					for _, id := range stateIDsInPartition(state.Strategies, cfg.Strategies, part) {
@@ -1558,6 +1612,9 @@ func main() {
 
 			if manualBasisRebaselineDM != "" {
 				notifier.SendOwnerDM(manualBasisRebaselineDM)
+			}
+			for _, msg := range rebaselineNotices {
+				notifier.SendOwnerDM(msg)
 			}
 			if quotePrecisionRebaselineDM != "" {
 				notifier.SendOwnerDM(quotePrecisionRebaselineDM)
@@ -1743,15 +1800,17 @@ func main() {
 					if len(rhBooksKept) > 0 {
 						fmt.Println("[CRITICAL] Portfolio kill switch auto-reset suppressed: Robinhood books stay open without flat proof")
 					} else if plan.CanAutoResetWithoutOwner() {
-						peakRebaselineAvailable := liveSR.PeakRebaselineAvailable
-						killSwitchAutoReset = AutoResetConfirmedFlatKillSwitch(state.partitionRisk(livePartition), liveSR.TotalPV,
-							peakRebaselineAvailable,
+						livePrs := state.partitionRisk(livePartition)
+						before := clonePortfolioRiskState(livePrs)
+						killSwitchAutoReset = AutoResetConfirmedFlatKillSwitch(livePrs, liveSR.TotalPV,
 							"confirmed flat after portfolio kill-switch close; no DM owner configured, latch auto-cleared")
 						if killSwitchAutoReset {
-							if peakRebaselineAvailable {
-								fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset after confirmed flat close (no owner configured, peak re-baselined to $%.2f)\n", liveSR.TotalPV)
+							if err := store.SavePartition(state, livePartition); err != nil {
+								*livePrs = before
+								killSwitchAutoReset = false
+								fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset NOT applied: state save failed (%v); the latch stays in force and retries next cycle\n", err)
 							} else {
-								fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset after confirmed flat close (no owner configured, prior peak retained because current equity is not trustworthy)\n")
+								fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset after confirmed flat close (no owner configured); peak $%.2f kept until the first eligible equity reading after this close\n", livePrs.PeakValue)
 							}
 						}
 					} else {
@@ -1781,6 +1840,10 @@ func main() {
 				}
 				mu.Lock()
 				paperKillSwitch := applyPaperKillSwitchCycle(state, cfg, prices, paperSR, notifier.HasOwner())
+				if err := commitPaperKillSwitchAutoReset(state, part, &paperKillSwitch, func(p RiskPartition) error { return store.SavePartition(state, p) }); err != nil {
+					fmt.Printf("[CRITICAL] Portfolio kill switch [%s] auto-reset NOT applied: state save failed (%v); the latch stays in force and retries next cycle\n", partitionLabel(part), err)
+				}
+				paperPeak := state.partitionRisk(part).PeakValue
 				mu.Unlock()
 				if paperKillSwitch.CloseApplied {
 					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: force-closed %d paper strategy book(s) at mark\n", partitionLabel(part), len(paperKillSwitch.Closed))
@@ -1789,7 +1852,7 @@ func main() {
 					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: %d option leg(s) at or past their expiry cutoff stay open until settlement books them: %s\n", partitionLabel(part), len(paperKillSwitch.Kept), strings.Join(paperKillSwitch.Kept, ", "))
 				}
 				if paperKillSwitch.AutoReset {
-					fmt.Printf("[CRITICAL] Portfolio kill switch [%s] auto-reset after the virtual close (no owner configured, peak re-baselined to $%.2f)\n", partitionLabel(part), paperSR.TotalPV)
+					fmt.Printf("[CRITICAL] Portfolio kill switch [%s] auto-reset after the virtual close (no owner configured); peak $%.2f kept until the first eligible valuation after this close\n", partitionLabel(part), paperPeak)
 				}
 				if paperKillSwitch.Message != "" && notifier.HasBackends() {
 					notifier.SendToPartitionChannels(part, paperKillSwitch.Message)
@@ -1917,42 +1980,25 @@ func main() {
 				}
 			}
 			if len(promptScopes) > 0 && notifier.HasOwner() && tryClaimKillSwitchResetPrompt(&resetGoroutineRunning) {
-				resetPrompt := formatKillSwitchResetPromptForScopes(killSwitchInstanceLabel(*configPath), hlAddr, promptPlans, promptScopes, latchedNow)
+				resetCode := newKillSwitchResetCode()
+				mu.RLock()
+				promptedLatches := captureKillSwitchLatchInstances(state, latchedNow)
+				mu.RUnlock()
+				resetPrompt := formatKillSwitchResetPromptForScopes(killSwitchInstanceLabel(*configPath), hlAddr, resetCode, promptPlans, promptScopes, latchedNow)
 				resetDMTimeout := effectiveKillSwitchResetDMTimeout()
 				go func() {
-					defer releaseKillSwitchResetPrompt(&resetGoroutineRunning)
 					resp, err := notifier.AskOwnerDM(resetPrompt, resetDMTimeout)
 					if err != nil {
 						fmt.Printf("[update] Kill switch reset DM timed out or failed: %v\n", err)
+						releaseKillSwitchResetPrompt(&resetGoroutineRunning)
 						return
 					}
-					mu.RLock()
-					latched := state.latchedPartitions()
-					mu.RUnlock()
-					target, parseErr := parseKillSwitchResetReply(resp, latched)
-					if parseErr != nil {
-						fmt.Printf("[update] Kill switch reset DM got unexpected reply: %q (%v)\n", resp, parseErr)
-						notifier.SendOwnerDM(parseErr.Error())
-						return
+					resetReplies <- killSwitchResetRequest{Code: resetCode, Prompted: promptedLatches, Reply: resp}
+					select {
+					case resetReplyWake <- struct{}{}:
+					default:
 					}
-					mu.Lock()
-					prs := state.partitionRisk(target)
-					resetDrawdownPct := ResetPortfolioKillSwitchManual(prs)
-					addKillSwitchEvent(prs, "reset", "", resetDrawdownPct, 0, prs.PeakValue,
-						fmt.Sprintf("manual reset via DM (%s scope)", partitionLabel(target)))
-					prs.Events[len(prs.Events)-1].Partition = target
-					if err := SaveStateWithStore(state, store); err != nil {
-						fmt.Printf("[CRITICAL] Failed to save state after kill switch reset: %v\n", err)
-					}
-					remaining := state.latchedPartitions()
-					mu.Unlock()
-					ack := fmt.Sprintf("Kill switch reset (%s scope). Trading will resume next cycle.", partitionLabel(target))
-					if len(remaining) > 0 {
-						ack += fmt.Sprintf(" The %s scope stays latched; a new prompt follows next cycle.", joinScopeLabels(remaining))
-					}
-					notifier.SendOwnerDM(ack)
-					fmt.Printf("[update] Kill switch reset by owner via DM (%s scope)\n", partitionLabel(target))
-					return
+					fmt.Printf("[update] Kill switch reset DM reply queued; it applies at the next cycle boundary\n")
 				}()
 			}
 
@@ -3070,6 +3116,8 @@ func main() {
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
+		case <-resetReplyWake:
+			timer.Stop()
 		case <-reloadCh:
 			timer.Stop()
 			reloadConfig()

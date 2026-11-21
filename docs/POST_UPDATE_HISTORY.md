@@ -11,6 +11,20 @@ Every Hyperliquid write runner now requires an in-memory `hlWriteAuth` checked b
 A `paper_only` daemon and its write-capable commands refuse every side-effect launch except the open-order list, limit status and a Robinhood resolve without cancel; a read-only launch refuses an argv that selects a write. At startup the daemon prints one `[WARN]` per open paper manual position and DMs the owner; it repeats on each start while the position is open. A stored limit row owned by a paper manual strategy is cancelled on the next cycle through a live strategy's script (status first); with no live Hyperliquid strategy the row gets `operator_required_since` and a CRITICAL alert, and startup prints one `[WARN] paper manual limit order` per row.
 Operator action: for each startup warning, check Hyperliquid for real exposure, stops or resting orders left by earlier commands before relying on the paper book; trade and order history is kept. Deploy with `bash scripts/update.sh --restart`.
 
+### Issue 2144: a kill-switch reset waits for the first eligible reading to set a new peak
+
+Runtime default; restart-required; additive SQLite column `portfolio_risk.peak_rebaseline_pending` (INTEGER, default 0); new owner reply format; no config key.
+Before this change the owner direct-message reset cleared the latch and both drawdown readings but kept the peak and said trading would resume next cycle. After a real loss (peak 10000, total 7400, limit 25 percent) the next trusted cycle measured 26 percent and latched again, ran the close plan or the virtual close pass again, and sent a new prompt. The no-owner auto-reset instead set the peak to the total measured before its close pass, when that total was usable. The reply waiter applied a reset at any time, also in the middle of a cycle whose inputs it had already read.
+Now each accepted reset (owner, live no-owner after a confirmed-flat close, paper no-owner after the virtual close) keeps the old peak and sets `peak_rebaseline_pending` on its partition only.
+The first later eligible reading sets the peak before the drawdown check and commits the peak, the cleared flag and one partition-tagged `reset_rebaseline` event in one save before entries run; one warning line and one owner message follow.
+Eligible means unlatched, available and trusted equity, a positive finite total, inputs acquired after the reset, and a current own-source mark for every book valued from marks (a paper option leg needs a mark verified after the reset within 1.5x its strategy interval and before its cutoff).
+A leg at or past its expiry cutoff, which the kill-switch close keeps for settlement, counts at its kept value, so a reset with such a leg does not latch again on the old peak each cycle.
+While pending, a positive peak never rises on an ordinary reading, and prune rebaselining and the #1444 and #1820 portfolio basis migrations skip the partition.
+A pending partition with a zero peak still takes its seed from startup or from the first trusted reading, so the drawdown guard stays armed; the first eligible reading then replaces that peak.
+A new latch cancels the flag; a failed save keeps the old peak and the flag and engages the persistence hold.
+The waiter now only queues the reply; the scheduler applies it at the next cycle boundary, before any input read, when the prompted latch instance is still current, and commits the reset, the flag and the event with one partition save. A failed save keeps the latch. Each prompt carries a six-character reply code, so a delayed reply to an older prompt changes nothing.
+Operator action: tell the owner to reply `reset <code>` (or `reset <scope> <code>` when several scopes are latched). The migration is idempotent and defaults existing rows to 0; a read-only inspection of an older file reads the column as 0. Rolling back to an older binary ignores the column, so a pending change is dropped and the old peak stays. Deploy with `bash scripts/update.sh --restart`.
+
 ### Issue 2140: a zero trailing stop percent can no longer hide another stop
 
 Runtime default; restart-required; stricter config load; no config key, no SQLite schema change and no wire change.
