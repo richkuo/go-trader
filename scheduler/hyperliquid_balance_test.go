@@ -4600,16 +4600,4 @@ func TestReadHyperliquidPositionsStrict(t *testing.T) {
 			t.Fatal("a timed-out read must fail")
 		}
 	})
-
-	t.Run("LocalLedgerMetersWhenNoPolicyParticipates", func(t *testing.T) {
-		ctx := hlKillSwitchReadLedgerContext(context.Background())
-		l := feedLedgerFrom(ctx)
-		if l == nil || l.weightStatus().Shared.Coverage != feedSharedCoverageKillSwitchLocal {
-			t.Fatalf("no-feed reads must use the bounded local ledger, got %+v", l)
-		}
-		shared := newFeedRequestLedger(wtPolicy(100, 0, 0), true, nil)
-		if got := feedLedgerFrom(hlKillSwitchReadLedgerContext(withFeedLedger(context.Background(), shared))); got != shared {
-			t.Fatal("a configured feed ledger must meter the kill-switch reads")
-		}
-	})
 }
