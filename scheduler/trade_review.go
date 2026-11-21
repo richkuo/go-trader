@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -47,7 +49,7 @@ var tradeReviewSemantics = map[string]string{
 	"bar_membership":            "a bar is named by its opening time t and holds instants in [t, t + bar_seconds)",
 	"preferred_times":           "Unix seconds of completed bar opening times inside the effective window",
 	"window_padding":            "max(20 bars, 25 percent of the holding bars rounded up) on each side of the holding bars",
-	"coverage_full_requirement": "one valid completed bar at every expected opening time from effective_from to effective_to, from a verified range read",
+	"coverage_full_requirement": "one valid completed bar at every expected opening time from effective_from to effective_to, read from the currently admitted, unexpired candle archive generation with the window inside one contiguous segment and at or before its finalized bar",
 }
 
 type tradeReviewFill struct {
@@ -185,6 +187,7 @@ type tradeReviewResponse struct {
 	Coverage            tradeReviewCoverage          `json:"coverage"`
 	CandleSource        string                       `json:"candle_source,omitempty"`
 	CandleError         string                       `json:"candle_error,omitempty"`
+	CandleAvailability  *candleAvailability          `json:"candle_availability,omitempty"`
 	Candles             []UICandle                   `json:"candles"`
 	Metrics             *tradeReviewMetrics          `json:"metrics,omitempty"`
 	Annotations         []tradeFeedbackRecord        `json:"annotations"`
@@ -571,12 +574,8 @@ func tradeReviewCandleValid(c UICandle) bool {
 	return c.High >= math.Max(math.Max(c.Open, c.Close), c.Low) && c.Low <= math.Min(c.Open, c.Close)
 }
 
-func tradeReviewRangeVerified(source string) bool {
-	return strings.HasSuffix(source, ":range")
-}
-
-func assessTradeReviewCoverage(candles []UICandle, w tradeReviewWindow, source string) (tradeReviewCoverage, []UICandle) {
-	cov := tradeReviewCoverage{Expected: w.ExpectedBars, Verified: tradeReviewRangeVerified(source)}
+func assessTradeReviewCoverage(candles []UICandle, w tradeReviewWindow, prov candleReviewProvenance) (tradeReviewCoverage, []UICandle) {
+	cov := tradeReviewCoverage{Expected: w.ExpectedBars, Verified: prov.Verified && prov.Origin == candleOriginArchive && prov.Generation != ""}
 	if w.ExpectedBars <= 0 {
 		cov.Status = tradeReviewCoverageNone
 		cov.Reason = "the effective window holds no completed bar"
@@ -628,24 +627,15 @@ func assessTradeReviewCoverage(candles []UICandle, w tradeReviewWindow, source s
 	default:
 		cov.Status = tradeReviewCoveragePartial
 		if !cov.Verified {
-			cov.Reason = fmt.Sprintf("candle source %q is not a verified historical range read", source)
+			cov.Reason = "the candles are not a verified archive window"
+			if prov.Detail != "" {
+				cov.Reason += ": " + prov.Detail
+			}
 		} else {
 			cov.Reason = fmt.Sprintf("%d missing, %d duplicate, %d invalid and %d off-grid bars in the window", cov.Missing, cov.Duplicates, cov.Invalid, cov.OffGrid)
 		}
 	}
 	return cov, out
-}
-
-func tradeReviewCandleRequest(sc StrategyConfig, symbol string, w tradeReviewWindow) UICandleRequest {
-	cp := sc
-	cp.Symbol = symbol
-	cp.Timeframe = w.Timeframe
-	return UICandleRequest{
-		Strategy: cp,
-		From:     time.Unix(w.EffectiveFrom, 0).UTC(),
-		To:       time.Unix(w.EffectiveTo, 0).UTC(),
-		Limit:    int(w.ExpectedBars),
-	}
 }
 
 func tradeReviewDiagnosticsViews(rows []TradeDiagnosticsRow) []tradeReviewDiagnosticsView {
@@ -735,11 +725,12 @@ type tradeReviewBuild struct {
 	coverage tradeReviewCoverage
 	candles  []UICandle
 	source   string
-	fetchErr error
+	prov     candleReviewProvenance
+	candErr  *candleServiceError
 	fp       string
 }
 
-func (ss *StatusServer) buildTradeReview(sc StrategyConfig, positionID string, now time.Time) (*tradeReviewBuild, *tradeReviewError) {
+func (ss *StatusServer) buildTradeReview(ctx context.Context, sc StrategyConfig, positionID string, now time.Time) (*tradeReviewBuild, *tradeReviewError) {
 	ev, err := ss.stateDB.ReadPositionEvidence(sc.ID, positionID)
 	if err != nil {
 		return nil, reviewErr(http.StatusInternalServerError, "read position evidence: %v", err)
@@ -771,23 +762,19 @@ func (ss *StatusServer) buildTradeReview(sc StrategyConfig, positionID string, n
 	}
 	b.window = &w
 	if w.ExpectedBars <= 0 || w.ExpectedBars > diagMaxFetchBars {
-		b.coverage, b.candles = assessTradeReviewCoverage(nil, w, "")
+		b.coverage, b.candles = assessTradeReviewCoverage(nil, w, candleReviewProvenance{})
 		return b, nil
 	}
-	if ss.candleFetcher == nil {
-		b.fetchErr = fmt.Errorf("no candle fetcher is configured")
-		b.coverage.Reason = b.fetchErr.Error()
-		return b, nil
-	}
-	candles, source, ferr := ss.candleFetcher(tradeReviewCandleRequest(sc, b.analysis.Symbol, w))
-	if ferr != nil {
-		b.fetchErr = ferr
+	res, cerr := ss.candles.reviewWindow(ctx, sc, b.analysis.Symbol, w)
+	if cerr != nil {
+		b.candErr = cerr
 		b.coverage.Expected = w.ExpectedBars
-		b.coverage.Reason = "candle fetch failed"
+		b.coverage.Reason = "candle source unavailable: " + cerr.Detail
 		return b, nil
 	}
-	b.source = source
-	b.coverage, b.candles = assessTradeReviewCoverage(candles, w, source)
+	b.prov = res.Provenance
+	b.source = res.Provenance.Source
+	b.coverage, b.candles = assessTradeReviewCoverage(res.Bars, w, res.Provenance)
 	return b, nil
 }
 
@@ -801,8 +788,8 @@ func (b *tradeReviewBuild) saveRefusal() string {
 		return b.coverage.Reason
 	case !b.window.CloseBarComplete:
 		return "the closing bar is still forming; saving opens once it completes"
-	case b.fetchErr != nil:
-		return "candle fetch failed: " + b.fetchErr.Error()
+	case b.candErr != nil:
+		return "candle source unavailable (" + b.candErr.Code + "): " + b.candErr.Detail
 	case b.coverage.Status != tradeReviewCoverageFull:
 		return fmt.Sprintf("candle coverage is %s: %s", b.coverage.Status, b.coverage.Reason)
 	}
@@ -837,8 +824,9 @@ func (b *tradeReviewBuild) response() tradeReviewResponse {
 		Metrics:            tradeReviewMetricsFor(b.analysis.Diagnostic),
 		Annotations:        annotations,
 	}
-	if b.fetchErr != nil {
-		resp.CandleError = b.fetchErr.Error()
+	if b.candErr != nil {
+		resp.CandleError = b.candErr.Detail
+		resp.CandleAvailability = &candleAvailability{Code: b.candErr.Code, Detail: b.candErr.Detail}
 	}
 	resp.Reason = b.saveRefusal()
 	resp.SaveAvailable = resp.Reason == ""
@@ -863,7 +851,7 @@ func (ss *StatusServer) handleAPIStrategyTradeReview(w http.ResponseWriter, r *h
 		writeJSONError(w, http.StatusServiceUnavailable, "database not available")
 		return
 	}
-	b, rerr := ss.buildTradeReview(sc, positionID, time.Now().UTC())
+	b, rerr := ss.buildTradeReview(r.Context(), sc, positionID, time.Now().UTC())
 	if rerr != nil {
 		writeJSONError(w, rerr.Status, rerr.Msg)
 		return
@@ -878,8 +866,11 @@ func (ss *StatusServer) handleAPIStrategyTradeReview(w http.ResponseWriter, r *h
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	if b.fetchErr != nil {
-		w.WriteHeader(http.StatusBadGateway)
+	if b.candErr != nil {
+		if b.candErr.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(b.candErr.RetryAfter))
+		}
+		w.WriteHeader(b.candErr.Status)
 	}
 	json.NewEncoder(w).Encode(resp)
 }
@@ -1009,7 +1000,7 @@ func (ss *StatusServer) handleAPIStrategyTradeFeedback(w http.ResponseWriter, r 
 	}
 	ctx := tradeFeedbackContextFor(sc)
 	now := time.Now().UTC()
-	b, rerr := ss.buildTradeReview(sc, req.PositionID, now)
+	b, rerr := ss.buildTradeReview(r.Context(), sc, req.PositionID, now)
 	if rerr != nil {
 		writeJSONError(w, rerr.Status, rerr.Msg)
 		return
@@ -1046,8 +1037,9 @@ func (ss *StatusServer) handleAPIStrategyTradeFeedback(w http.ResponseWriter, r 
 		writeJSONError(w, http.StatusUnprocessableEntity, "the closing bar is still forming; saving opens once it completes")
 		return
 	}
-	if b.fetchErr != nil {
-		writeJSONError(w, http.StatusBadGateway, "candle fetch failed: "+b.fetchErr.Error())
+	if b.candErr != nil {
+		writeCandleServiceError(w, &candleServiceError{Status: b.candErr.Status, Code: b.candErr.Code,
+			Detail: "candle source unavailable: " + b.candErr.Detail + "; nothing was saved", RetryAfter: b.candErr.RetryAfter})
 		return
 	}
 	if b.coverage.Status != tradeReviewCoverageFull {
@@ -1123,8 +1115,16 @@ func (ss *StatusServer) handleAPIStrategyTradeFeedback(w http.ResponseWriter, r 
 		CreatedAt:           time.Now().UTC(),
 	}
 
+	if hook := ss.tradeFeedbackPreWriteHook; hook != nil {
+		hook()
+	}
 	ss.configWriteMu.Lock()
 	refusal := ss.tradeFeedbackContextRefusal(ctx)
+	if refusal == "" {
+		if ok, why := ss.candles.reviewGenerationCurrent(b.prov.Generation); !ok {
+			refusal = why
+		}
+	}
 	var insertErr error
 	if refusal == "" {
 		insertErr = ss.stateDB.InsertTradeFeedbackChecked(sc.ID, rec, func(cur *positionEvidence) error {

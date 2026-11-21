@@ -1,11 +1,11 @@
 package main
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io/fs"
-	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -445,51 +445,95 @@ func (ss *StatusServer) handleAPIStrategyCandles(w http.ResponseWriter, r *http.
 		writeJSONError(w, http.StatusNotFound, "strategy not found")
 		return
 	}
-	from, to, limit := parseUITimeQuery(r)
-	req := UICandleRequest{Strategy: sc, From: from, To: to, Limit: limit}
-	cacheKey := req.CacheKey()
-	if ss.candleCache != nil {
-		if cached, ok := ss.candleCache.Get(cacheKey); ok {
-			writeJSON(w, map[string]interface{}{
-				"strategy_id": id,
-				"source":      cached.Source + ":cached",
-				"candles":     cached.Candles,
-			})
-			return
-		}
+	req, perr := parseCandleDisplayQuery(r)
+	if perr != nil {
+		writeCandleServiceError(w, perr)
+		return
 	}
+	resp, key, serr := ss.candles.displayBars(r.Context(), sc, req)
+	if serr != nil {
+		writeCandleServiceError(w, serr)
+		return
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sum := sha256.Sum256(body)
+	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("ETag", etag)
+	w.Header().Set("X-Go-Trader-Candle-Key", key)
+	if inm := r.Header.Get("If-None-Match"); inm != "" && candleETagMatch(inm, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(body)
+	w.Write([]byte("\n"))
+}
 
-	var candles []UICandle
-	source := ""
-	var fetchErr error
-	if ss.candleFetcher != nil {
-		candles, source, fetchErr = ss.candleFetcher(req)
-	}
-	if fetchErr != nil || len(candles) == 0 {
-		if ss.stateDB == nil {
-			writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("candle fetch failed: %v", fetchErr))
-			return
+func candleETagMatch(header, etag string) bool {
+	for _, part := range strings.Split(header, ",") {
+		part = strings.TrimSpace(part)
+		if part == etag || part == "W/"+etag || part == "*" {
+			return true
 		}
-		trades, _, err := ss.stateDB.QueryTradeHistory(id, "", from, to, limit, 0)
+	}
+	return false
+}
+
+func parseCandleBound(q url.Values, name string) (int64, *candleServiceError) {
+	raw := strings.TrimSpace(q.Get(name))
+	if raw == "" {
+		return 0, nil
+	}
+	if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if n <= 0 {
+			return 0, candleErr(http.StatusBadRequest, "bounds_invalid", "%s must be a positive Unix time, got %s", name, raw)
+		}
+		return n, nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil || t.Unix() <= 0 {
+		return 0, candleErr(http.StatusBadRequest, "bounds_invalid", "%s %q is not a Unix time or an RFC 3339 instant", name, raw)
+	}
+	return t.Unix(), nil
+}
+
+func parseCandleDisplayQuery(r *http.Request) (candleDisplayRequest, *candleServiceError) {
+	q := r.URL.Query()
+	req := candleDisplayRequest{Timeframe: strings.TrimSpace(q.Get("timeframe"))}
+	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			return req, candleErr(http.StatusBadRequest, "bounds_invalid", "limit must be a positive whole number, got %q", raw)
+		}
+		req.Limit = n
+	}
+	var e *candleServiceError
+	if req.From, e = parseCandleBound(q, "from"); e != nil {
+		return req, e
+	}
+	if req.To, e = parseCandleBound(q, "to"); e != nil {
+		return req, e
+	}
+	if req.From > 0 && req.To > 0 && req.To < req.From {
+		return req, candleErr(http.StatusBadRequest, "bounds_invalid", "to %d is before from %d", req.To, req.From)
+	}
+	if raw := strings.TrimSpace(q.Get("before")); raw != "" {
+		if req.From > 0 || req.To > 0 {
+			return req, candleErr(http.StatusBadRequest, "cursor_invalid", "before is an older-page cursor and does not combine with from or to")
+		}
+		c, err := decodeCandleCursor(raw)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
-			return
+			return req, candleErr(http.StatusBadRequest, "cursor_invalid", "%v", err)
 		}
-		candles = tradeCandles(trades, strategyDisplayTimeframe(sc))
-		source = "trades"
-		if len(candles) == 0 && fetchErr != nil {
-			writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("candle fetch failed: %v", fetchErr))
-			return
-		}
+		req.Cursor = &c
+		req.CursorRaw = raw
 	}
-	if ss.candleCache != nil {
-		ss.candleCache.Set(cacheKey, UICandleResponse{Candles: candles, Source: source})
-	}
-	writeJSON(w, map[string]interface{}{
-		"strategy_id": id,
-		"source":      source,
-		"candles":     candles,
-	})
+	return req, nil
 }
 
 func (ss *StatusServer) handleAPIStrategyTrades(w http.ResponseWriter, r *http.Request, id string) {
@@ -842,69 +886,6 @@ func tradeMarkersForTable(markers []UITradeMarker) []UITradeMarker {
 	out := make([]UITradeMarker, len(markers))
 	copy(out, markers)
 	return out
-}
-
-func tradeCandles(trades []Trade, timeframe string) []UICandle {
-	if len(trades) == 0 {
-		return []UICandle{}
-	}
-	bucketSeconds := timeframeSeconds(timeframe)
-	byBucket := make(map[int64]*UICandle)
-	var keys []int64
-	for i := len(trades) - 1; i >= 0; i-- {
-		tr := trades[i]
-		if tr.Timestamp.IsZero() || tr.Price <= 0 {
-			continue
-		}
-		bucket := tr.Timestamp.UTC().Unix()
-		if bucketSeconds > 0 {
-			bucket = bucket / bucketSeconds * bucketSeconds
-		}
-		c, ok := byBucket[bucket]
-		if !ok {
-			byBucket[bucket] = &UICandle{
-				Time:  bucket,
-				Open:  tr.Price,
-				High:  tr.Price,
-				Low:   tr.Price,
-				Close: tr.Price,
-			}
-			keys = append(keys, bucket)
-			continue
-		}
-		c.High = math.Max(c.High, tr.Price)
-		c.Low = math.Min(c.Low, tr.Price)
-		c.Close = tr.Price
-	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	out := make([]UICandle, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, *byBucket[k])
-	}
-	return out
-}
-
-func timeframeSeconds(tf string) int64 {
-	if tf == "" {
-		return 0
-	}
-	unit := tf[len(tf)-1]
-	n, err := strconv.Atoi(tf[:len(tf)-1])
-	if err != nil || n <= 0 {
-		return 0
-	}
-	switch unit {
-	case 'm':
-		return int64(n * 60)
-	case 'h':
-		return int64(n * 3600)
-	case 'd':
-		return int64(n * 86400)
-	case 'w':
-		return int64(n * 604800)
-	default:
-		return 0
-	}
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

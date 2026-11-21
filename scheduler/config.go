@@ -329,6 +329,7 @@ type Config struct {
 	UserDefaults             *UserDefaultsConfig          `json:"user_defaults,omitempty"`
 	Tuning                   *TuningConfig                `json:"tuning,omitempty"`
 	TradeFeedbackAnalysis    *TradeFeedbackAnalysisConfig `json:"trade_feedback_analysis,omitempty"`
+	DashboardCandles         *DashboardCandlesConfig      `json:"dashboard_candles,omitempty"`
 	MarketFeed               string                       `json:"market_feed,omitempty"`
 	SharedMarketFeed         *SharedMarketFeedConfig      `json:"shared_market_feed,omitempty"`
 	MarketFeedWeightBudget   *feedWeightBudgetConfig      `json:"market_feed_weight_budget,omitempty"`
@@ -1089,6 +1090,9 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(rawErrs, "\n  "))
 	}
 	if rawErrs := validateTradeFeedbackAnalysisJSON(data); len(rawErrs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(rawErrs, "\n  "))
+	}
+	if rawErrs := validateDashboardCandlesJSON(data); len(rawErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(rawErrs, "\n  "))
 	}
 	var cfg Config

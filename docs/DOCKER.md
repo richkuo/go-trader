@@ -194,6 +194,11 @@ Only your own computer can open the page, because Compose publishes the port on 
 Inside Docker the bot listens on all container addresses so that the port can be published, and for that reason it refuses to start without a token.
 The health endpoint (`/health`) answers without a token and shows only the status, version and process id.
 
+The chart, the tuner preview and trade review never ask the exchange for candles.
+To save trade review marks, mount a candle archive read-only into the container, for example `- /srv/go-trader-candles:/candles:ro` under the service `volumes:`, and set `"dashboard_candles": {"archive_dir": "/candles"}` in the config.
+Publish the archive outside the container with `scripts/candle-archive-publish.py` (SKILL.md § Dashboard Candle Sources).
+Without an archive, trade review shows your fills but cannot save, and the chart shows feed bars or bars built from your trades.
+
 To read the status from a terminal:
 
 ```bash

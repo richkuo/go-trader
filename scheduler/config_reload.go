@@ -483,6 +483,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	if curBackup != nextBackup {
 		errs = append(errs, fmt.Sprintf("shared_market_feed.backup_socket changed (%q -> %q; restart required)", curBackup, nextBackup))
 	}
+	if cur, nxt := cfg.DashboardCandles.describe(), next.DashboardCandles.describe(); cur != nxt {
+		errs = append(errs, fmt.Sprintf("dashboard_candles changed (%s -> %s; restart required)", cur, nxt))
+	}
 	if cfg.ReplayLogPath != next.ReplayLogPath {
 		errs = append(errs, fmt.Sprintf("replay_log_path changed (%q -> %q; restart required)", cfg.ReplayLogPath, next.ReplayLogPath))
 	}

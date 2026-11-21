@@ -750,7 +750,81 @@
     return "go-trader-" + safe + "-" + stamp + ".png";
   }
 
+  function mergeBars(existing, incoming) {
+    const byTime = new Map();
+    (existing || []).forEach(function (bar) {
+      if (bar && isFiniteNumber(Number(bar.time))) byTime.set(Number(bar.time), bar);
+    });
+    (incoming || []).forEach(function (bar) {
+      if (bar && isFiniteNumber(Number(bar.time))) byTime.set(Number(bar.time), bar);
+    });
+    return Array.from(byTime.keys()).sort(function (a, b) {
+      return a - b;
+    }).map(function (time) {
+      return byTime.get(time);
+    });
+  }
+
+  function detectGap(lastTime, incoming, barSeconds) {
+    if (!isFiniteNumber(lastTime) || !isFiniteNumber(barSeconds) || barSeconds <= 0) return false;
+    const list = incoming || [];
+    if (!list.length) return false;
+    return Number(list[0].time) > lastTime + barSeconds;
+  }
+
+  function gapRecoveryOutcome(lastTime, reply, tailFirstTime, barSeconds, limit) {
+    if (!isFiniteNumber(lastTime) || !isFiniteNumber(tailFirstTime) || !isFiniteNumber(barSeconds) || barSeconds <= 0) return "reload";
+    const bars = (reply || []).filter(function (c) {
+      return Number(c.time) >= lastTime;
+    });
+    if (!bars.length) return "reload";
+    const first = Number(bars[0].time);
+    const newest = Number(bars[bars.length - 1].time);
+    if (first > lastTime + barSeconds || newest <= lastTime) return "reload";
+    if (newest + barSeconds >= tailFirstTime) return "bridged";
+    if (isFiniteNumber(limit) && limit > 0 && (reply || []).length >= limit) return "partial";
+    return "reload";
+  }
+
+  function mapMarkersToBars(markers, times, barSeconds) {
+    const list = times || [];
+    if (!list.length || !isFiniteNumber(barSeconds) || barSeconds <= 0) return [];
+    const out = [];
+    (markers || []).forEach(function (marker) {
+      const t = Number(marker.time);
+      if (!isFiniteNumber(t)) return;
+      let lo = 0;
+      let hi = list.length - 1;
+      let found = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (list[mid] <= t) {
+          found = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      if (found < 0) return;
+      const open = list[found];
+      if (t >= open + barSeconds) return;
+      out.push(Object.assign({}, marker, { time: open, sourceTime: t }));
+    });
+    return out;
+  }
+
+  function backoffDelay(retryAfterSeconds, attempt) {
+    const floor = isFiniteNumber(Number(retryAfterSeconds)) && Number(retryAfterSeconds) > 0 ? Number(retryAfterSeconds) * 1000 : 0;
+    const n = isFiniteNumber(Number(attempt)) && Number(attempt) > 0 ? Math.min(Number(attempt), 5) : 0;
+    return Math.max(floor, 2000 * Math.pow(2, n));
+  }
+
   const logic = {
+    mergeBars: mergeBars,
+    detectGap: detectGap,
+    gapRecoveryOutcome: gapRecoveryOutcome,
+    mapMarkersToBars: mapMarkersToBars,
+    backoffDelay: backoffDelay,
     isTradeDerivedSource: isTradeDerivedSource,
     buildBarIndex: buildBarIndex,
     readoutFor: readoutFor,
@@ -844,6 +918,9 @@
     let studyResults = new Map();
     let nextStudyID = 1;
     let fullscreenListener = null;
+    let seriesClass = "";
+    let formingTime = 0;
+    let olderHandler = null;
     const lineDefs = new Map();
     const lineHandles = new Map();
     const controls = {};
@@ -949,6 +1026,7 @@
       let head = formatTime(fallback.time, prefs.timeZone);
       if (prefs.chartType === "heikin_ashi") head += " · raw bar";
       readoutEl.append(el("span", "chart-readout-time", head));
+      if (formingTime && fallback.time === formingTime) readoutEl.append(el("span", "chart-readout-forming", "forming"));
       readoutFields(fallback).concat(readoutStudyFields(fallback.position)).forEach(function (field) {
         const item = el("span", "chart-readout-item");
         const value = el("span", "chart-readout-value" + (field.direction ? " chart-readout-" + field.direction : ""), field.value);
@@ -989,6 +1067,21 @@
       chart.resize(Math.max(minWidth, rect.width), Math.max(minHeight, rect.height));
     }
 
+    function onVisibleLogicalRange(range) {
+      if (!range || typeof olderHandler !== "function" || !index.bars.length) return;
+      if (range.from < 10) {
+        try {
+          olderHandler(range);
+        } catch (err) {
+          report("draw", err);
+        }
+      }
+    }
+
+    function seriesSourceLabel() {
+      return seriesClass === "synthetic" ? "trades" : "";
+    }
+
     function teardown() {
       if (observer) {
         try { observer.disconnect(); } catch (_err) {}
@@ -999,6 +1092,7 @@
       if (chart) {
         try { chart.unsubscribeClick(onChartClick); } catch (_err) {}
         try { chart.unsubscribeCrosshairMove(onCrosshairMove); } catch (_err) {}
+        try { chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleLogicalRange); } catch (_err) {}
         try { chart.remove(); } catch (_err) {}
       }
       if (mount && mount.parentNode) mount.parentNode.removeChild(mount);
@@ -1584,6 +1678,7 @@
         }));
         chart.subscribeClick(onChartClick);
         chart.subscribeCrosshairMove(onCrosshairMove);
+        chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleLogicalRange);
         observer = new ResizeObserver(function () {
           try {
             resize();
@@ -1629,6 +1724,85 @@
           renderReadout(null);
           return report("draw", err);
         }
+      },
+      setSeries: function (payload, keepRange) {
+        if (!chart) return false;
+        try {
+          const p = payload || {};
+          let previous = null;
+          if (keepRange && index.bars.length) {
+            try { previous = chart.timeScale().getVisibleRange(); } catch (_err) { previous = null; }
+          }
+          seriesClass = p.sourceClass || (isTradeDerivedSource(p.source) ? "synthetic" : "market");
+          formingTime = Number(p.formingTime) || 0;
+          index = buildBarIndex(mergeBars([], p.candles || []), seriesClass === "synthetic" ? "trades" : p.source);
+          ok = true;
+          applyTimeZone();
+          rebuild(false);
+          renderReadout(null);
+          if (!index.bars.length) return true;
+          const first = index.times[0];
+          const last = index.times[index.times.length - 1];
+          if (previous && Number(previous.from) <= last && Number(previous.to) >= first) {
+            chart.timeScale().setVisibleRange(previous);
+          } else {
+            chart.timeScale().fitContent();
+          }
+          return true;
+        } catch (err) {
+          index = buildBarIndex([], "");
+          renderReadout(null);
+          return report("draw", err);
+        }
+      },
+      prependBars: function (list) {
+        if (!chart) return 0;
+        try {
+          const before = index.bars.length;
+          const merged = mergeBars(index.bars, list || []);
+          const added = merged.length - before;
+          if (added <= 0) return 0;
+          let range = null;
+          try { range = chart.timeScale().getVisibleLogicalRange(); } catch (_err) { range = null; }
+          index = buildBarIndex(merged, seriesSourceLabel());
+          rebuild(false);
+          if (range) chart.timeScale().setVisibleLogicalRange({ from: range.from + added, to: range.to + added });
+          renderReadout(null);
+          return added;
+        } catch (err) {
+          report("draw", err);
+          return 0;
+        }
+      },
+      applyTail: function (list, nextFormingTime) {
+        if (!chart) return false;
+        try {
+          formingTime = Number(nextFormingTime) || 0;
+          const incoming = list || [];
+          if (incoming.length) {
+            index = buildBarIndex(mergeBars(index.bars, incoming), seriesSourceLabel());
+            rebuild(true);
+          }
+          renderReadout(null);
+          return true;
+        } catch (err) {
+          return report("draw", err);
+        }
+      },
+      onNeedOlder: function (callback) {
+        olderHandler = callback;
+      },
+      sourceClass: function () {
+        return seriesClass;
+      },
+      barTimes: function () {
+        return index.times.slice();
+      },
+      lastBarTime: function () {
+        return index.times.length ? index.times[index.times.length - 1] : null;
+      },
+      firstBarTime: function () {
+        return index.times.length ? index.times[0] : null;
       },
       setMarkers: function (list) {
         if (!chart) return false;
@@ -1678,6 +1852,8 @@
           markerDefs = [];
           lineDefs.clear();
           index = buildBarIndex([], "");
+          seriesClass = "";
+          formingTime = 0;
           rebuild(false);
           renderReadout(null);
           return true;

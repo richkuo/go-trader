@@ -574,40 +574,6 @@ func TestHandleAPIStrategyRoster(t *testing.T) {
 }
 
 func TestHandleAPIStrategyDetail(t *testing.T) {
-	t.Run("HandleAPIStrategyCandles_UsesFetcherAndCache", func(t *testing.T) {
-		state := NewAppState()
-		var mu sync.RWMutex
-		ss := NewStatusServer(state, &mu, "", []StrategyConfig{
-			{ID: "spot-btc", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}},
-		}, nil)
-		calls := 0
-		ss.candleFetcher = func(req UICandleRequest) ([]UICandle, string, error) {
-			calls++
-			return []UICandle{{Time: 100, Open: 1, High: 2, Low: 1, Close: 2}}, "test", nil
-		}
-
-		for i := 0; i < 2; i++ {
-			req := httptest.NewRequest("GET", "/api/strategies/spot-btc/candles?limit=10", nil)
-			w := httptest.NewRecorder()
-			ss.handleAPIStrategy(w, req)
-			if w.Code != http.StatusOK {
-				t.Fatalf("request %d status = %d, want %d", i+1, w.Code, http.StatusOK)
-			}
-			var resp struct {
-				Source  string     `json:"source"`
-				Candles []UICandle `json:"candles"`
-			}
-			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-				t.Fatalf("decode: %v", err)
-			}
-			if len(resp.Candles) != 1 {
-				t.Fatalf("candles len = %d, want 1", len(resp.Candles))
-			}
-		}
-		if calls != 1 {
-			t.Errorf("fetcher calls = %d, want 1 due to cache", calls)
-		}
-	})
 	t.Run("HandleAPIStrategyTradesMarkers", func(t *testing.T) {
 		db := openTestDB(t)
 		now := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)

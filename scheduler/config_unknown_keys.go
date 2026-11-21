@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strconv"
@@ -290,6 +291,89 @@ func validateTradeFeedbackAnalysisJSON(rawData []byte) []string {
 		if n < int64(lo) || n > int64(hi) {
 			errs = append(errs, fmt.Sprintf("%s.%s: must be from %d to %d, got %d", tradeFeedbackAnalysisConfigKey, k, lo, hi, n))
 		}
+	}
+	return errs
+}
+
+const dashboardCandlesConfigKey = "dashboard_candles"
+
+type DashboardCandlesConfig struct {
+	ArchiveDir         string `json:"archive_dir,omitempty"`
+	RefreshSeconds     int    `json:"refresh_seconds,omitempty"`
+	MaxGenerationBytes int64  `json:"max_generation_bytes,omitempty"`
+}
+
+func (c *DashboardCandlesConfig) refreshSeconds() int {
+	if c == nil || c.RefreshSeconds == 0 {
+		return candleArchiveDefaultRefresh
+	}
+	return c.RefreshSeconds
+}
+
+func (c *DashboardCandlesConfig) maxGenerationBytes() int64 {
+	if c == nil || c.MaxGenerationBytes == 0 {
+		return candleArchiveDefaultMaxBytes
+	}
+	return c.MaxGenerationBytes
+}
+
+func (c *DashboardCandlesConfig) describe() string {
+	if c == nil {
+		return "off"
+	}
+	return fmt.Sprintf("archive_dir=%q refresh_seconds=%d max_generation_bytes=%d", c.ArchiveDir, c.refreshSeconds(), c.maxGenerationBytes())
+}
+
+func validateDashboardCandlesJSON(rawData []byte) []string {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(rawData, &root); err != nil {
+		return nil
+	}
+	raw, ok := root[dashboardCandlesConfigKey]
+	if !ok {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+		return []string{dashboardCandlesConfigKey + ": must be an object; omit the block to turn the archive off"}
+	}
+	known := knownJSONKeys(reflect.TypeOf(DashboardCandlesConfig{}))
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var errs []string
+	for _, k := range keys {
+		if !known[k] {
+			errs = append(errs, fmt.Sprintf("%s: unknown field %q", dashboardCandlesConfigKey, k))
+			continue
+		}
+		text := strings.TrimSpace(string(obj[k]))
+		switch k {
+		case "archive_dir":
+			var dir string
+			if err := json.Unmarshal(obj[k], &dir); err != nil {
+				errs = append(errs, dashboardCandlesConfigKey+".archive_dir: must be a string")
+				continue
+			}
+			if dir == "" || !filepath.IsAbs(dir) || filepath.Clean(dir) != dir {
+				errs = append(errs, fmt.Sprintf("%s.archive_dir: must be a clean absolute path, got %q", dashboardCandlesConfigKey, dir))
+			}
+		case "refresh_seconds":
+			n, err := strconv.ParseInt(text, 10, 64)
+			if err != nil || n < candleArchiveMinRefresh || n > candleArchiveMaxRefresh {
+				errs = append(errs, fmt.Sprintf("%s.refresh_seconds: must be a whole number from %d to %d, got %s", dashboardCandlesConfigKey, candleArchiveMinRefresh, candleArchiveMaxRefresh, text))
+			}
+		case "max_generation_bytes":
+			n, err := strconv.ParseInt(text, 10, 64)
+			if err != nil || n < candleArchiveMinMaxBytes || n > candleArchiveCapMaxBytes {
+				errs = append(errs, fmt.Sprintf("%s.max_generation_bytes: must be a whole number from %d to %d, got %s", dashboardCandlesConfigKey, candleArchiveMinMaxBytes, candleArchiveCapMaxBytes, text))
+			}
+		}
+	}
+	if _, ok := obj["archive_dir"]; !ok && len(errs) == 0 {
+		errs = append(errs, dashboardCandlesConfigKey+": archive_dir is required; omit the block to turn the archive off")
 	}
 	return errs
 }

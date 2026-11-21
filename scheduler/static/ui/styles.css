@@ -2092,6 +2092,55 @@ html.dark {
   display: none;
 }
 
+.chart-source-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.chart-source-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.chart-source-field select {
+  min-width: 96px;
+  padding: 3px 6px;
+  color: var(--text);
+  background: var(--input-bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font: inherit;
+}
+
+.chart-source-field select:disabled {
+  opacity: 0.55;
+}
+
+.chart-source {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.chart-note {
+  color: var(--amber);
+  overflow-wrap: anywhere;
+}
+
+.chart-note[hidden] {
+  display: none;
+}
+
+.chart-readout-forming {
+  color: var(--amber);
+}
+
 .chart-failure-inline {
   margin-top: 12px;
   padding: 10px 12px;
