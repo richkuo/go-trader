@@ -799,7 +799,11 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 			skipQtyResync := sc.ID != "" &&
 				math.Abs(statePos.Quantity-qty) > 1e-6 &&
 				hyperliquidAllTiersArmedAndCleared(sc, statePos)
-			if skipQtyResync {
+			pendingEntry := limitEntryResyncHeld(sc.ID, sym) && (statePos.Side != side || qty > statePos.Quantity+1e-9)
+			if pendingEntry {
+				logger.Info("hl-sync: %s drift state=%.6f %s on-chain=%.6f %s (not auto-resyncing an increase or side change — a pending limit order owns this strategy's entry fills and books them once proven)",
+					sym, statePos.Quantity, statePos.Side, qty, side)
+			} else if skipQtyResync {
 				logger.Info("hl-sync: %s qty drift state=%.6f %s on-chain=%.6f %s (not auto-resyncing — all TP tiers armed/cleared, #777)",
 					sym, statePos.Quantity, statePos.Side, qty, side)
 			} else {

@@ -149,14 +149,17 @@ func formatOrphanLimitCancelDM(o PendingLimitOrder, block string, outcome orphan
 	return b.String()
 }
 
-func reportOrphanLimitCancel(notifier *MultiNotifier, o PendingLimitOrder, block string, outcome orphanLimitCancelOutcome, now time.Time) string {
+func reportOrphanLimitCancel(notifier *MultiNotifier, o PendingLimitOrder, block string, outcome orphanLimitCancelOutcome, now time.Time, markerNew bool) string {
 	fmt.Printf("[CRITICAL] limit: %s %s: %s (its strategy cannot adopt it because %s) — %s\n",
 		orphanLimitCancelHeadline(outcome.State), killSwitchLimitOrderLabel(o), outcome.Reason, block,
 		orphanLimitCancelRetryNote(outcome.State))
-	if !orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(o), outcome.State, now) {
+	if !orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(o), outcome.State, now) && !markerNew {
 		return ""
 	}
 	msg := formatOrphanLimitCancelDM(o, block, outcome)
+	if markerNew {
+		msg += "\n" + strings.TrimSuffix(limitOperatorMarkerNote(o, true), "\n")
+	}
 	if notifier != nil && notifier.HasBackends() {
 		notifier.SendOwnerDM(msg)
 	}

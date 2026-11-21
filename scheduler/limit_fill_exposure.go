@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ const (
 	limitFillExposureUnreadable limitFillExposureVerdict = iota
 	limitFillExposureUnbacked
 	limitFillExposureLive
+	limitFillExposureHeld
 )
 
 type limitFillExposureDecision struct {
@@ -204,7 +206,7 @@ func limitFillExposureSeverity(v limitFillExposureVerdict) int {
 	switch v {
 	case limitFillExposureUnbacked:
 		return 2
-	case limitFillExposureUnreadable:
+	case limitFillExposureUnreadable, limitFillExposureHeld:
 		return 1
 	default:
 		return 0
@@ -262,13 +264,23 @@ func (t *limitFillExposureTracker) reset() {
 }
 
 func limitFillExposureHeadline(v limitFillExposureVerdict) string {
-	if v == limitFillExposureUnbacked {
+	switch v {
+	case limitFillExposureUnbacked:
 		return "limit-order fill NOT booked: the exchange no longer carries it"
+	case limitFillExposureHeld:
+		return "limit-order fill NOT booked yet: its proof is incomplete"
 	}
 	return "limit-order fill NOT booked: the account state is unreadable"
 }
 
-func formatLimitFillExposureDM(o PendingLimitOrder, exchangeFill float64, d limitFillExposureDecision) string {
+func limitOperatorMarkerNote(o PendingLimitOrder, markerNew bool) string {
+	if !markerNew {
+		return ""
+	}
+	return fmt.Sprintf("• The scheduler recorded durable terminal, off-book proof on this row and marked it as needing an operator. `go-trader manual-clear-limit-row %d --flattened` now accepts it after you flatten the position by hand, and it books nothing\n", o.OrderOID)
+}
+
+func formatLimitFillExposureDM(o PendingLimitOrder, exchangeFill float64, d limitFillExposureDecision, markerNew bool) string {
 	var b strings.Builder
 	if d.Verdict == limitFillExposureUnbacked {
 		fmt.Fprintf(&b, "🚨 **LIMIT FILL REFUSED — NO LIVE EXPOSURE: %s**\n", killSwitchLimitOrderLabel(o))
@@ -280,8 +292,14 @@ func formatLimitFillExposureDM(o PendingLimitOrder, exchangeFill float64, d limi
 		if d.Owners > 1 {
 			fmt.Fprintf(&b, "• %d live strategies share %s, so the account's net size cannot be attributed to this order on its own and the check refuses rather than guesses\n", d.Owners, o.Symbol)
 		}
-		fmt.Fprintf(&b, "• If you already flattened this position by hand, clear the record with `go-trader manual-clear-limit-row %d --flattened` — the scheduler has marked this row as needing an operator, so the command accepts it and books nothing. Until you run it, this alert repeats every %s\n",
-			o.OrderOID, effectiveAlertThrottleInterval())
+		b.WriteString(limitOperatorMarkerNote(o, markerNew))
+		if !o.OperatorRequiredSince.IsZero() && o.OperatorEvidenceJSON != "" {
+			fmt.Fprintf(&b, "• If you already flattened this position by hand, clear the record with `go-trader manual-clear-limit-row %d --flattened` — the row carries terminal, off-book proof, so the command accepts it and books nothing. Until you run it, this alert repeats every %s\n",
+				o.OrderOID, effectiveAlertThrottleInterval())
+		} else {
+			fmt.Fprintf(&b, "• The row becomes clearable with `go-trader manual-clear-limit-row %d --flattened` only after the scheduler proves the order is terminal and off the book; until then this alert repeats every %s\n",
+				o.OrderOID, effectiveAlertThrottleInterval())
+		}
 		if d.Legs > 1 {
 			fmt.Fprintf(&b, "• %d pending limit fills on %s are decided TOGETHER, because the account's net size for a coin cannot be attributed to one order — the exchange must back every one of them or the scheduler books none, so the outcome never depends on the order the rows are read in\n", d.Legs, o.Symbol)
 			fmt.Fprintf(&b, "• If these positions ARE open on Hyperliquid, check that the account holds %+.6f or more of %s in the same direction across every live leg — the scheduler adopts them all on the next cycle once it does",
@@ -297,17 +315,47 @@ func formatLimitFillExposureDM(o PendingLimitOrder, exchangeFill float64, d limi
 		exchangeFill, o.Symbol, o.FilledSize, d.Reason)
 	b.WriteString("• The scheduler booked NOTHING and deleted NOTHING — the queue row is kept and the decision is deferred\n")
 	b.WriteString("• The reconciler retries every cycle and adopts the fill as soon as it can confirm the exposure on the exchange\n")
+	b.WriteString(limitOperatorMarkerNote(o, markerNew))
 	b.WriteString("• Check that HYPERLIQUID_ACCOUNT_ADDRESS is set and that the Hyperliquid info endpoint is reachable")
 	return b.String()
 }
 
-func reportLimitFillExposureRefusal(notifier *MultiNotifier, o PendingLimitOrder, exchangeFill float64, d limitFillExposureDecision, now time.Time) string {
+func reportLimitFillExposureRefusal(notifier *MultiNotifier, o PendingLimitOrder, exchangeFill float64, d limitFillExposureDecision, now time.Time, markerNew bool) string {
 	fmt.Printf("[CRITICAL] limit: %s %s: exchange fill %.6f, book %.6f — %s\n",
 		limitFillExposureHeadline(d.Verdict), killSwitchLimitOrderLabel(o), exchangeFill, o.FilledSize, d.Reason)
-	if !limitFillExposureAlerts.Record(limitFillExposureKeyFor(o), d.Verdict, now) {
+	if !limitFillExposureAlerts.Record(limitFillExposureKeyFor(o), d.Verdict, now) && !markerNew {
 		return ""
 	}
-	msg := formatLimitFillExposureDM(o, exchangeFill, d)
+	msg := formatLimitFillExposureDM(o, exchangeFill, d, markerNew)
+	if notifier != nil && notifier.HasBackends() {
+		notifier.SendOwnerDM(msg)
+	}
+	return msg
+}
+
+func formatLimitFillHeldDM(o PendingLimitOrder, p limitRowProof, reason string, markerNew bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚠️ **Limit fill NOT booked: %s**\n", killSwitchLimitOrderLabel(o))
+	fmt.Fprintf(&b, "Strategy %s, coin %s, order %d: the venue reports an executed size of %.6f where the book holds %.6f, and the scheduler cannot book the difference: %s.\n",
+		o.StrategyID, o.Symbol, o.OrderOID, p.Executed, o.FilledSize, reason)
+	b.WriteString("• The scheduler booked NOTHING and deleted NOTHING — the queue row stays as the recovery record\n")
+	if p.Permanent {
+		b.WriteString("• The venue no longer retains the fills of this order, so automatic booking cannot succeed\n")
+	} else {
+		b.WriteString("• The reconciler retries every cycle and books the fill once its complete history matches the order and live exposure supports it\n")
+	}
+	b.WriteString(limitOperatorMarkerNote(o, markerNew))
+	fmt.Fprintf(&b, "This alert repeats at most once every %s for this order.", effectiveAlertThrottleInterval())
+	return b.String()
+}
+
+func reportLimitFillHeld(notifier *MultiNotifier, o PendingLimitOrder, p limitRowProof, reason string, now time.Time, markerNew bool) string {
+	fmt.Printf("[WARN] limit: %s %s: venue executed %.6f, book %.6f — %s\n",
+		limitFillExposureHeadline(limitFillExposureHeld), killSwitchLimitOrderLabel(o), p.Executed, o.FilledSize, reason)
+	if !limitFillExposureAlerts.Record(limitFillExposureKeyFor(o), limitFillExposureHeld, now) && !markerNew {
+		return ""
+	}
+	msg := formatLimitFillHeldDM(o, p, reason, markerNew)
 	if notifier != nil && notifier.HasBackends() {
 		notifier.SendOwnerDM(msg)
 	}
@@ -315,52 +363,51 @@ func reportLimitFillExposureRefusal(notifier *MultiNotifier, o PendingLimitOrder
 }
 
 type limitFillCandidate struct {
-	order          PendingLimitOrder
-	sc             StrategyConfig
-	logger         *StrategyLogger
-	status         HyperliquidLimitOrderStatus
-	polledAt       time.Time
-	hasFill        bool
-	avgPx          float64
-	signedDelta    float64
-	resolveATR     bool
-	entryATR       float64
-	refused        bool
-	refusalVerdict limitFillExposureVerdict
-	applyFailed    bool
+	order           PendingLimitOrder
+	sc              StrategyConfig
+	logger          *StrategyLogger
+	status          HyperliquidLimitOrderStatus
+	proof           limitRowProof
+	polledAt        time.Time
+	hasFill         bool
+	avgPx           float64
+	signedDelta     float64
+	resolveATR      bool
+	entryATR        float64
+	refused         bool
+	refusalDecision limitFillExposureDecision
+	applyFailed     bool
+	blocked         string
+	adopted         bool
+	booked          int
+	finalized       bool
+	committed       bool
+	positions       []HLPosition
+	readErr         error
 }
 
-func applyLimitExposureOperatorRequired(store *StateStore, c *limitFillCandidate, now time.Time) {
-	if c == nil || store == nil {
-		return
+func applyLimitExposureOperatorRequired(store *StateStore, c *limitFillCandidate, now time.Time) bool {
+	if c == nil || store == nil || c.finalized {
+		return false
 	}
-	if c.refused {
-		if c.refusalVerdict != limitFillExposureUnbacked {
-			return
+	unbacked := c.refused && c.refusalDecision.Verdict == limitFillExposureUnbacked
+	if limitOperatorRequiredWarranted(c.proof) && (c.proof.Permanent || unbacked) {
+		reason := c.proof.Hold
+		if unbacked {
+			reason = c.refusalDecision.Reason
 		}
-		if !c.order.OperatorRequiredSince.IsZero() {
-			return
-		}
-		if err := store.MarkPendingLimitOrderOperatorRequired(c.order.ID, now); err != nil {
-			fmt.Printf("[limit] failed to persist the operator-required marker on row %d: %v\n", c.order.ID, err)
-			return
-		}
-		c.order.OperatorRequiredSince = now
-		return
+		return recordLimitOperatorRequired(store, &c.order, c.proof, reason, now)
 	}
-	if c.order.OperatorRequiredSince.IsZero() {
-		return
+	if c.adopted || c.proof.CertainForPeers() {
+		clearLimitOperatorRequired(store, &c.order)
 	}
-	if err := store.ClearPendingLimitOrderOperatorRequired(c.order.ID); err != nil {
-		fmt.Printf("[limit] failed to clear the operator-required marker on row %d: %v\n", c.order.ID, err)
-		return
-	}
-	c.order.OperatorRequiredSince = time.Time{}
+	return false
 }
 
 func applyCoinLimitFills(
 	state *AppState,
 	cfg *Config,
+	store *StateStore,
 	mu *sync.RWMutex,
 	coin string,
 	rows []*limitFillCandidate,
@@ -368,7 +415,7 @@ func applyCoinLimitFills(
 	readErr error,
 	owners int,
 	now time.Time,
-) (limitFillExposureDecision, []int, []error) {
+) (limitFillExposureDecision, []int, []error, error) {
 	mu.Lock()
 	defer mu.Unlock()
 	decision := classifyLimitFillLiveExposure(coin,
@@ -376,13 +423,68 @@ func applyCoinLimitFills(
 		totalDelta, onChainNet, readErr, owners)
 	decision.Legs = len(rows)
 	if !decision.adopts() {
-		return decision, nil, nil
+		return decision, nil, nil, nil
 	}
 	trades := make([]int, len(rows))
 	errs := make([]error, len(rows))
+	staged := make(map[string]*StrategyState)
+	captured := make(map[string]*[]ReplayDecision)
+	var bookIDs []string
+	var marks []limitFillWatermark
 	for i, r := range rows {
-		trades[i], errs[i] = applyLimitFillProgress(state, r.sc, r.order, r.status.FilledSize,
+		id := r.order.StrategyID
+		st := staged[id]
+		if st == nil {
+			live := state.Strategies[id]
+			if live == nil {
+				errs[i] = fmt.Errorf("strategy state for %q not found", id)
+				continue
+			}
+			st = cloneQuoteStrategy(live)
+			st.deferTradePersist = true
+			buf := []ReplayDecision{}
+			st.replayCapture = &buf
+			staged[id] = st
+			captured[id] = &buf
+		}
+		trades[i], errs[i] = applyLimitFillProgressTo(st, r.sc, r.order, r.proof.Executed,
 			r.avgPx, r.status.Fee, r.entryATR, resolveATRMethod(r.sc, cfg), now)
+		if errs[i] != nil {
+			continue
+		}
+		marks = append(marks, limitFillWatermark{
+			ID: r.order.ID, OrderOID: r.order.OrderOID, StrategyID: id,
+			PriorFilled: r.order.FilledSize, PriorFee: r.order.FillFee,
+			Filled: r.proof.Executed, AvgPx: r.avgPx, Fee: r.status.Fee,
+		})
+		r.committed = true
+		if !containsString(bookIDs, id) {
+			bookIDs = append(bookIDs, id)
+		}
 	}
-	return decision, trades, errs
+	if len(marks) == 0 {
+		return decision, trades, errs, nil
+	}
+	sort.Strings(bookIDs)
+	books := make([]*StrategyState, 0, len(bookIDs))
+	for _, id := range bookIDs {
+		books = append(books, staged[id])
+	}
+	if err := store.CommitLimitFillAdoption(books, marks); err != nil {
+		for _, r := range rows {
+			r.committed = false
+		}
+		return decision, trades, errs, err
+	}
+	for _, id := range bookIDs {
+		live := state.Strategies[id]
+		st := staged[id]
+		st.deferTradePersist = live.deferTradePersist
+		st.replayCapture = live.replayCapture
+		*live = *st
+		for _, d := range *captured[id] {
+			recordReplayDecision(live, d.DecisionType, d.Symbol, d.Side, d.Quantity, d.ReferencePrice, d.CloseReason, d.DecidedAt, d.EntryATR, d.Regime)
+		}
+	}
+	return decision, trades, errs, nil
 }

@@ -56,7 +56,7 @@ func (s *killSwitchLimitStubs) tick() {
 func (s *killSwitchLimitStubs) deps(
 	cancel func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error),
 	status func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error),
-	del func(id int64) error,
+	del func(o PendingLimitOrder) error,
 ) killSwitchLimitOrderDeps {
 	if s.clock.IsZero() {
 		s.clock = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -74,9 +74,9 @@ func (s *killSwitchLimitStubs) deps(
 			s.tick()
 			return status(script, symbol, oids, sinceMs)
 		},
-		Delete: func(id int64) error {
-			s.deleted = append(s.deleted, id)
-			return del(id)
+		Delete: func(o PendingLimitOrder) error {
+			s.deleted = append(s.deleted, o.ID)
+			return del(o)
 		},
 		Flush: func() error {
 			s.flushes++
@@ -102,8 +102,12 @@ func okCancel(string, string, int64) (*HyperliquidCancelOrderResult, string, err
 
 func offBookStatus(filled float64) func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 	return func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+		state := "cancelled"
+		if filled >= 0.5 {
+			state = "filled"
+		}
 		return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-			{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: filled, AvgPx: 2000, Count: 1},
+			provenLimitStatus(9001, "ETH", state, 0.5, filled, 2000, 0),
 		}}, "", nil
 	}
 }
@@ -125,7 +129,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 		id := seedKillSwitchLimitRow(t, db, sc.ID)
 
 		stubs := &killSwitchLimitStubs{}
-		deps := stubs.deps(okCancel, offBookStatus(0), db.DeletePendingLimitOrder)
+		deps := stubs.deps(okCancel, offBookStatus(0), db.DeletePendingLimitOrderIfUnchanged)
 
 		plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
 
@@ -166,7 +170,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 					{OID: 9001, Resting: limitTestBoolPtr(true), Count: 1},
 				}}, "", nil
 			},
-			db.DeletePendingLimitOrder)
+			db.DeletePendingLimitOrderIfUnchanged)
 
 		plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
 
@@ -195,6 +199,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 		cases := []struct {
 			name   string
 			status func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error)
+			booked float64
 			want   string
 		}{
 			{
@@ -207,7 +212,9 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 			{
 				name: "open orders unknown",
 				status: func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
-					return &HyperliquidLimitStatusResult{OpenOrdersError: "429 rate limited"}, "", nil
+					return &HyperliquidLimitStatusResult{OpenOrdersError: "429 rate limited", Orders: []HyperliquidLimitOrderStatus{
+						limitStatusWithUnknownBook(provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0, 0, 0)),
+					}}, "", nil
 				},
 				want: "open-orders state unknown",
 			},
@@ -219,29 +226,44 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 				want: "did not include the order",
 			},
 			{
-				name: "fills unreadable",
+				name: "fills unproven",
 				status: func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 					return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-						{OID: 9001, Resting: limitTestBoolPtr(false), FillsError: "fills fetch failed"},
+						limitStatusWithUnprovenFills(provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0, 0, 0), "fill history unreadable: (429, 'rate limited')", "retryable"),
 					}}, "", nil
 				},
-				want: "fills unreadable",
+				want: "fills unproven",
 			},
 			{
-				name: "resting state unknown",
+				name: "legacy reply without proof fields",
 				status: func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
-					return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{{OID: 9001}}}, "", nil
+					return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{{OID: 9001, Resting: limitTestBoolPtr(false)}}}, "", nil
 				},
-				want: "still resting",
+				want: "no order-status or fill proof",
+			},
+			{
+				name: "venue executed less than the book holds",
+				status: func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+					return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+						provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0, 0, 0),
+					}}, "", nil
+				},
+				booked: 0.2,
+				want:   "less than the",
 			},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
 				sc := killSwitchLimitTestStrategy()
 				db := newLimitTestStateDB(t)
-				seedKillSwitchLimitRow(t, db, sc.ID)
+				id := seedKillSwitchLimitRow(t, db, sc.ID)
+				if tc.booked > 0 {
+					if err := db.UpdatePendingLimitOrderFill(id, tc.booked, 2000, 0.1); err != nil {
+						t.Fatalf("seed watermark: %v", err)
+					}
+				}
 				stubs := &killSwitchLimitStubs{}
-				deps := stubs.deps(okCancel, tc.status, db.DeletePendingLimitOrder)
+				deps := stubs.deps(okCancel, tc.status, db.DeletePendingLimitOrderIfUnchanged)
 
 				plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
 
@@ -263,7 +285,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 		seedKillSwitchLimitRow(t, db, sc.ID)
 
 		stubs := &killSwitchLimitStubs{}
-		deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrder)
+		deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrderIfUnchanged)
 
 		plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
 
@@ -304,7 +326,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 				Status: func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 					return nil, "", nil
 				},
-				Delete: func(int64) error { return nil },
+				Delete: func(PendingLimitOrder) error { return nil },
 			},
 		}
 
@@ -331,7 +353,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 				return &HyperliquidCancelOrderResult{OID: oid, Cancelled: false, CancelError: "order already cancelled"}, "", nil
 			},
 			offBookStatus(0),
-			db.DeletePendingLimitOrder)
+			db.DeletePendingLimitOrderIfUnchanged)
 
 		plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{peer}, deps))
 
@@ -370,7 +392,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 				return okCancel(script, symbol, oid)
 			},
 			offBookStatus(0),
-			db.DeletePendingLimitOrder)
+			db.DeletePendingLimitOrderIfUnchanged)
 
 		in := KillSwitchCloseInputs{
 			HLAddr:             "0xaddr",
@@ -412,7 +434,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				return nil, "", errors.New("script timed out after 30s")
 			},
-			db.DeletePendingLimitOrder)
+			db.DeletePendingLimitOrderIfUnchanged)
 
 		var closed []string
 		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
@@ -453,7 +475,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 		}
 
 		stubs := &killSwitchLimitStubs{}
-		deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrder)
+		deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrderIfUnchanged)
 
 		plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
 
@@ -476,7 +498,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 		}
 
 		stubs := &killSwitchLimitStubs{flushErr: errors.New("disk full")}
-		deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrder)
+		deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrderIfUnchanged)
 
 		plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
 
@@ -508,7 +530,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				return nil, "", errors.New("status unreadable")
 			},
-			db.DeletePendingLimitOrder)
+			db.DeletePendingLimitOrderIfUnchanged)
 		inner := deps.MarkCancelRequested
 		deps.MarkCancelRequested = func(strategyID, symbol string) (int64, error) {
 			seq = append(seq, "mark")
@@ -580,8 +602,12 @@ func TestReconcilePendingLimitOrdersAdoptsFillOnACancelRequestedRowAndWhileKillS
 
 			withStubbedLimitDeps(t,
 				func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+					state := "filled"
+					if tc.resting {
+						state = "live"
+					}
 					return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-						{OID: 9001, Resting: limitTestBoolPtr(tc.resting), FilledSize: tc.filled, AvgPx: 2000, Fee: tc.fee, Count: 1},
+						provenLimitStatus(9001, "ETH", state, 0.5, tc.filled, 2000, tc.fee),
 					}}, "", nil
 				},
 				func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
