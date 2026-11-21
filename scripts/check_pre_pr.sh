@@ -131,3 +131,4 @@ if [ -n "$failed" ]; then
   exit 1
 fi
 echo "check_pre_pr: all checks passed"
+: hosted-proof-2131
