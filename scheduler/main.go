@@ -887,6 +887,7 @@ func main() {
 	}
 
 	hlLotMetadata.configure(feedOwnerCtx)
+	hlKillSwitchPositionReader := newHLKillSwitchPositionReader(feedOwnerCtx)
 
 	lastRun := make(map[string]time.Time)
 	var lastLiquidationAudit time.Time
@@ -1681,14 +1682,18 @@ func main() {
 				hlVirtualQty = snapshotHyperliquidVirtualQuantities(state.Strategies, hlKillSwitchAll)
 				mu.RUnlock()
 
+				var hlCycleStart *hlStrictPositionSnapshot
+				if hlStateFetched {
+					hlCycleStart = &hlStrictPositionSnapshot{Target: hlPositionTarget{Account: hlAddr, Endpoint: hlMainnetURL}, Positions: hlPositions}
+				}
 				inputs := KillSwitchCloseInputs{
 					HLAddr:            hlAddr,
-					HLStateFetched:    hlStateFetched,
-					HLPositions:       hlPositions,
+					HLCycleStart:      hlCycleStart,
+					HLEndpoint:        hlInfoEndpoint(),
 					HLLiveAll:         hlKillSwitchAll,
 					HLHedgeCoins:      hlHedgeCoins,
 					HLCloser:          defaultHyperliquidLiveCloser,
-					HLFetcher:         defaultHLStateFetcher,
+					HLReader:          hlKillSwitchPositionReader,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
 					HLLimitOrderLoader: func() ([]PendingLimitOrder, error) {
@@ -1730,7 +1735,8 @@ func main() {
 					OKXLiveAllPerps:     okxLivePerps,
 					OKXLiveAllSpot:      okxLiveSpot,
 					OKXCloser:           defaultOKXLiveCloser,
-					OKXFetcher:          defaultOKXPositionsFetcher,
+					OKXAccount:          okxEntryAccountKey("swap"),
+					OKXReader:           defaultOKXStrictPositionReader,
 					RHLiveCrypto:        rhLiveCrypto,
 					RHLiveOptions:       rhLiveOptions,
 					RHCloser:            newRobinhoodEmergencyCloser(rhEmergencyDeps, robinhoodOriginKillSwitch),

@@ -81,7 +81,7 @@ After any source edit run `python3 -I scripts/agent_guide.py`,verify with `bash 
 - Wire failure notifier per new `run*Check`.
 - Shared wallet:PRE-FEE `realized_pnl`,net via `tradeNetPnL*`.
 - Pool budgeting:2+ live HL/OKX perps omit capital fields,`margin_per_trade_usd`>0;allocated-pool flat-only.
-- Kill switch:`planKillSwitchClose`>`OnChainConfirmedFlat`;reset prompt single-flight;cancel each `pending_limit_orders` ROW pre-flatten;never gate `reconcilePendingLimitOrders` on kill-switch;cancel!=adoption,never auto-delete unadopted fill.
+- Kill switch:`planKillSwitchClose`>`OnChainConfirmedFlat`;HL/OKX perps flat ONLY via strict account-bound read after last close attempt(any nonzero row blocks,closer reply=report);reset prompt single-flight;cancel each `pending_limit_orders` ROW pre-flatten;never gate `reconcilePendingLimitOrders` on kill-switch;cancel!=adoption,never auto-delete unadopted fill.
 - Orphan limit cancel:cancel-only lane,status-FIRST finalize,books NO fill;`orphanLimitCancelState`=SSoT(off-book fill=UNTRACKED POSITION).
 - `limitFillExposure*`:books limit fill ONLY once live exposure confirms;per-coin aggregate,never per-row greedy;fail-closed same-dir+contained;`unreadable`/`unbacked` refuse book+block delete
 - `shared_scripts/`:check scripts take `--regime-payload-json`,probed at start.Lot gate(floor,never full close):live partial=`check_hyperliquid.py`,no lot=no gate;HL perps paper(+opens/adds)=Go,sub-min/no lot=HOLD+no write+quiet cycle.`platforms/<name>/adapter.py`:1 `*ExchangeAdapter`,platform-qualified imports;option types=`shared_tools/option_types.py`;HL `_sz_decimals()` via `name_to_asset`.
