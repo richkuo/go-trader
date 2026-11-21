@@ -678,6 +678,62 @@ func TestKillSwitchResetPeakRebaseline(t *testing.T) {
 		}
 	})
 
+	t.Run("ZeroPeakPendingKeepsADrawdownGuard", func(t *testing.T) {
+		cfg := threeSourceConfig(t)
+		store := openSourceStore(t, cfg)
+		state := sourceTestState(cfg)
+		prs := state.partitionRisk(livePartition)
+		prs.PeakValue = 0
+		prs.armPeakRebaseline()
+		book := state.Strategies["hl-live"]
+		book.Cash = 10000
+		book.Positions["ETH"] = &Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 2000, Multiplier: 1, OwnerStrategyID: "hl-live"}
+		for part, err := range store.SaveAll(state) {
+			if err != nil {
+				t.Fatalf("SaveAll(%s): %v", partitionLabel(part), err)
+			}
+		}
+		time.Sleep(time.Millisecond)
+
+		srM := measureScopeCycleRisk(livePartition, partitionRiskConfig(cfg, livePartition), cfg.Strategies, state, nil, nil, nil, true, true, time.Now().UTC())
+		srM.PerpsLoss, srM.PerpsMargin = 300, 1000
+		control := clonePortfolioRiskState(prs)
+		measureScopeRebaselineValuation(srM, &control, cfg.Strategies, state, nil, cyclePriceSources{}, nil, nil, cfg.IntervalSeconds, tradingNow().UTC(), tradingNow().UTC())
+		applyScopeCycleRiskCommitted(srM, &control, func(p RiskPartition) error { return store.SavePartition(state, p) })
+		if !srM.KillSwitchFired || !strings.Contains(srM.Reason, "margin") || control.PeakValue != 0 || srM.Rebaselined {
+			t.Fatalf("zero peak with untrusted equity must keep the margin backstop: fired=%v reason=%q peak=%.2f", srM.KillSwitchFired, srM.Reason, control.PeakValue)
+		}
+
+		sr := rebaselineTestCycle(t, cfg, state, store, livePartition, nil, cyclePriceSources{}, true)
+		if sr.Rebaselined || sr.ValuationComplete || sr.KillSwitchFired || !sr.EquityGuardArmed || prs.PeakValue != 10000 || !prs.PeakRebaselinePending {
+			t.Fatalf("a trusted reading with a mark gap must seed a zero peak and stay pending: rebaselined=%v complete=%v armed=%v peak=%.2f pending=%v",
+				sr.Rebaselined, sr.ValuationComplete, sr.EquityGuardArmed, prs.PeakValue, prs.PeakRebaselinePending)
+		}
+		if err := store.SavePartition(state, livePartition); err != nil {
+			t.Fatalf("SavePartition: %v", err)
+		}
+		restarted, _, err := LoadStateWithStore(cfg, store)
+		if err != nil {
+			t.Fatalf("LoadStateWithStore: %v", err)
+		}
+		prs = restarted.partitionRisk(livePartition)
+		if prs.PeakValue != 10000 || !prs.PeakRebaselinePending {
+			t.Fatalf("after restart: peak=%.2f pending=%v; want the seeded 10000 and the flag", prs.PeakValue, prs.PeakRebaselinePending)
+		}
+
+		restarted.Strategies["hl-live"].Cash = 12000
+		sr = rebaselineTestCycle(t, cfg, restarted, store, livePartition, nil, cyclePriceSources{}, true)
+		if sr.Rebaselined || sr.KillSwitchFired || prs.PeakValue != 10000 || !prs.PeakRebaselinePending {
+			t.Fatalf("an ineligible 12000 reading must keep the 10000 peak and the flag: peak=%.2f pending=%v", prs.PeakValue, prs.PeakRebaselinePending)
+		}
+
+		restarted.Strategies["hl-live"].Cash = 7000
+		sr = rebaselineTestCycle(t, cfg, restarted, store, livePartition, nil, cyclePriceSources{}, true)
+		if !sr.KillSwitchFired || !strings.Contains(sr.Reason, "30.0%") || prs.PeakRebaselinePending || prs.PeakValue != 10000 {
+			t.Fatalf("a trusted 7000 total must latch against the seeded 10000 peak: fired=%v reason=%q pending=%v", sr.KillSwitchFired, sr.Reason, prs.PeakRebaselinePending)
+		}
+	})
+
 	t.Run("PaperAutoResetWaitsForTheNextReading", func(t *testing.T) {
 		cfg := threeSourceConfig(t)
 		store := openSourceStore(t, cfg)

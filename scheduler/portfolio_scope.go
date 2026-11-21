@@ -237,7 +237,7 @@ func applyScopeCycleRisk(sr *scopeCycleRisk, prs *PortfolioRiskState) {
 	sr.Warning = warning
 	sr.WarnBandEntered = warning && !prevWarningSent
 	sr.Reason = reason
-	if (!sr.PeakRebaselineAvailable || prs.PeakRebaselinePending) && prs.PeakValue > origPeak {
+	if (!sr.PeakRebaselineAvailable || (prs.PeakRebaselinePending && origPeak > 0)) && prs.PeakValue > origPeak {
 		prs.PeakValue = origPeak
 	}
 	sr.EquityGuardArmed = sr.EquityAvailable && prs.PeakValue > 0

@@ -551,7 +551,7 @@ func main() {
 
 	for _, part := range startupPartitions {
 		prs := state.partitionRisk(part)
-		if prs.PeakValue != 0 || prs.PeakRebaselinePending {
+		if prs.PeakValue != 0 {
 			continue
 		}
 		if partitionHasPersistedState(cfg.Strategies, part, persistedStrategyIDs) {

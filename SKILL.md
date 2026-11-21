@@ -2504,7 +2504,8 @@ Eligible means: the partition is unlatched; equity is available and trusted (no 
 A missing mark (entry-cost substitution), a mark from another source, a degraded futures fallback, and a paper option leg without a successful mark verified after the reset, within 1.5x its strategy interval and before its expiry cutoff, keep the flag pending; a settled leg is already cash.
 A leg at or past its expiry cutoff (`optionLegAwaitingSettlement`, the leg the kill-switch close keeps) cannot get a new mark, so it counts at the kept value that the total already uses; settlement then moves equity against the new peak, and a loss there is drawdown.
 A book valued by a fresh shared-wallet balance needs no mark.
-While the flag is pending the peak never rises on an ordinary reading, and startup seeding, prune rebaselining and the one-shot #1444 and #1820 portfolio basis migrations skip the partition; a committed rebaseline marks those migrations done.
+While the flag is pending a positive peak never rises on an ordinary reading, and prune rebaselining and the one-shot #1444 and #1820 portfolio basis migrations skip the partition; a committed rebaseline marks those migrations done.
+A pending partition with a zero peak has no old peak to keep: startup seeding and the first trusted reading seed its peak as they do without the flag, so the equity guard is armed, and the flag stays pending until the first eligible reading replaces that peak.
 The untrusted-equity deferral and the margin backstop work as before against the kept peak.
 A new latch cancels the flag.
 A failed rebaseline save restores the old peak and the flag, sends no notice, and engages the partition's persistence hold; a later cycle retries.
