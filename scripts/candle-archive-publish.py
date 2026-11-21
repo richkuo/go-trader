@@ -38,8 +38,9 @@ cap, and write the rows to a file:
 Hyperliquid perps and CCXT spot markets are supported. OKX, TopStep and
 Robinhood serve only a latest window and are refused.
 
-Stage 2, build (offline): validate the row files, drop bars younger than the
-finalization delay, write a new immutable generation, and switch CURRENT to it
+Stage 2, build (offline): validate the row files, drop bars that had not been
+closed for the finalization delay when their fetch started or at the build,
+write a new immutable generation, and switch CURRENT to it
 by rename:
 
     uv run --no-sync python scripts/candle-archive-publish.py build \\
@@ -82,7 +83,8 @@ def cmd_fetch(args):
     if args.timeframe not in candle_archive.GRID_SECONDS:
         raise candle_archive.ArchiveError(f"timeframe {args.timeframe!r} has no fixed bar grid")
     start_ms = _parse_bound(args.from_time, "from")
-    end_ms = _parse_bound(args.to_time, "to") if args.to_time else int(time.time() * 1000)
+    observed = int(time.time() * 1000)
+    end_ms = _parse_bound(args.to_time, "to") if args.to_time else observed
     if end_ms < start_ms:
         raise candle_archive.ArchiveError("--to is before --from")
     interval_ms = candle_archive.GRID_SECONDS[args.timeframe] * 1000
@@ -107,7 +109,6 @@ def cmd_fetch(args):
         open_ms = int(row[0])
         if start_ms <= open_ms <= end_ms:
             clean.append([open_ms] + [float(x) if x is not None else 0.0 for x in row[1:6]])
-    observed = int(time.time() * 1000)
     doc = {
         **identity,
         "rows": clean,

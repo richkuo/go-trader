@@ -407,6 +407,9 @@ func admitCandleArchiveSeries(ctx context.Context, genDir string, sm candleArchi
 	if sm.Source.Kind == "" {
 		return nil, archiveRefuse(label, "source.kind is empty")
 	}
+	if sm.Source.ObservedAtMs <= 0 {
+		return nil, archiveRefuse(label, "source.observed_at_ms %d is not a positive venue read time", sm.Source.ObservedAtMs)
+	}
 	path := filepath.Join(genDir, filepath.FromSlash(sm.File))
 	if err := checkArchiveDir(filepath.Dir(path)); err != nil {
 		return nil, archiveRefuse(label, "%v", err)
@@ -495,6 +498,9 @@ func admitCandleArchiveSeries(ctx context.Context, genDir string, sm candleArchi
 	}
 	if prev+intervalMs+manifest.Finalization.MinCloseAgeMs > manifest.PublishedAtMs {
 		return nil, archiveRefuse(label, "the last bar %d had not closed for the finalization delay at publication", prev)
+	}
+	if prev+intervalMs+manifest.Finalization.MinCloseAgeMs > sm.Source.ObservedAtMs {
+		return nil, archiveRefuse(label, "the last bar %d had not closed for the finalization delay when its rows were read at %d", prev, sm.Source.ObservedAtMs)
 	}
 	segs := make([]candleArchiveSegmentIndex, len(runs))
 	for i, r := range runs {

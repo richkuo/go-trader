@@ -68,8 +68,18 @@ def valid_bar(o, h, l, c, v):
     return h >= max(o, c, l) and l <= min(o, c)
 
 
-def finalize_rows(series, rows, published_at_ms, min_close_age_ms):
+def observed_at_ms(label, source):
+    value = (source or {}).get("observed_at_ms")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ArchiveError(f"series {label}: source.observed_at_ms must be the positive time its rows were read from the venue")
+    return value
+
+
+def finalize_rows(series, rows, published_at_ms, min_close_age_ms, observed_ms):
     label = _check_identity(series)
+    if isinstance(observed_ms, bool) or not isinstance(observed_ms, int) or observed_ms <= 0:
+        raise ArchiveError(f"series {label}: the rows carry no positive venue read time")
+    final_by_ms = min(published_at_ms, observed_ms)
     interval_ms = GRID_SECONDS[series["timeframe"]] * 1000
     aligned = series["timeframe"] in EPOCH_ALIGNED
     out = []
@@ -91,7 +101,7 @@ def finalize_rows(series, rows, published_at_ms, min_close_age_ms):
         if open_ms in seen:
             raise ArchiveError(f"series {label}: opening time {open_ms} appears twice")
         seen.add(open_ms)
-        if open_ms + interval_ms + min_close_age_ms > published_at_ms:
+        if open_ms + interval_ms + min_close_age_ms > final_by_ms:
             continue
         out.append((open_ms, o, h, l, c, v))
     out.sort(key=lambda r: r[0])
@@ -157,14 +167,15 @@ def build_generation(archive_dir, series_list, publisher, published_at_ms, expir
             if label in labels:
                 raise ArchiveError(f"series {label}: the identity appears twice")
             labels.add(label)
-            bars = finalize_rows(series, item["rows"], published_at_ms, min_close_age_ms)
+            source = item.get("source") or {}
+            observed_ms = observed_at_ms(label, source)
+            bars = finalize_rows(series, item["rows"], published_at_ms, min_close_age_ms, observed_ms)
             interval_ms = GRID_SECONDS[series["timeframe"]] * 1000
             data = b"".join(RECORD.pack(*b) for b in bars)
             step = chunk_bars * RECORD.size
             chunks = [hashlib.sha256(data[off:off + step]).hexdigest() for off in range(0, len(data), step)]
             name = "series/s%04d.bars" % i
             _write_file(os.path.join(tmp, name), data)
-            source = item.get("source") or {}
             manifest_series.append({
                 **series,
                 "interval_ms": interval_ms,
@@ -181,7 +192,7 @@ def build_generation(archive_dir, series_list, publisher, published_at_ms, expir
                 "source": {
                     "kind": str(source.get("kind") or "unknown"),
                     "detail": str(source.get("detail") or ""),
-                    "observed_at_ms": int(source.get("observed_at_ms") or 0),
+                    "observed_at_ms": observed_ms,
                 },
             })
         _fsync_dir(os.path.join(tmp, "series"))

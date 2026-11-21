@@ -772,6 +772,20 @@
     return Number(list[0].time) > lastTime + barSeconds;
   }
 
+  function gapRecoveryOutcome(lastTime, reply, tailFirstTime, barSeconds, limit) {
+    if (!isFiniteNumber(lastTime) || !isFiniteNumber(tailFirstTime) || !isFiniteNumber(barSeconds) || barSeconds <= 0) return "reload";
+    const bars = (reply || []).filter(function (c) {
+      return Number(c.time) >= lastTime;
+    });
+    if (!bars.length) return "reload";
+    const first = Number(bars[0].time);
+    const newest = Number(bars[bars.length - 1].time);
+    if (first > lastTime + barSeconds || newest <= lastTime) return "reload";
+    if (newest + barSeconds >= tailFirstTime) return "bridged";
+    if (isFiniteNumber(limit) && limit > 0 && (reply || []).length >= limit) return "partial";
+    return "reload";
+  }
+
   function mapMarkersToBars(markers, times, barSeconds) {
     const list = times || [];
     if (!list.length || !isFiniteNumber(barSeconds) || barSeconds <= 0) return [];
@@ -808,6 +822,7 @@
   const logic = {
     mergeBars: mergeBars,
     detectGap: detectGap,
+    gapRecoveryOutcome: gapRecoveryOutcome,
     mapMarkersToBars: mapMarkersToBars,
     backoffDelay: backoffDelay,
     isTradeDerivedSource: isTradeDerivedSource,

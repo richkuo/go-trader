@@ -2976,7 +2976,7 @@
     afterChartDraw(r.body);
   }
 
-  async function recoverChartGap(series, last) {
+  async function recoverChartGap(series, last, tailFirst) {
     const ticket = candleTicket("candles");
     let r;
     try {
@@ -2991,6 +2991,12 @@
     if (!candleReplyMatches(r.body, ticket)) return;
     if (r.body.series_token !== series.token) {
       state.chartSeries = null;
+      return;
+    }
+    const logic = chartLogic();
+    if (!logic || logic.gapRecoveryOutcome(last, r.body.candles, tailFirst, series.barSeconds, CHART_GAP_LIMIT) === "reload") {
+      resetChartSeries(series.timeframe);
+      await loadChartSeries("The chart could not join its bars to the newest bars; it reloaded from the newest bars.");
       return;
     }
     state.chart.applyTail(r.body.candles || [], r.body.forming_time);
@@ -3033,8 +3039,9 @@
       return last === null || Number(c.time) >= last;
     });
     const logic = chartLogic();
-    if (last !== null && logic && logic.detectGap(last, fresh.length ? fresh : body.candles, series.barSeconds)) {
-      await recoverChartGap(series, last);
+    const tail = fresh.length ? fresh : body.candles;
+    if (last !== null && logic && logic.detectGap(last, tail, series.barSeconds)) {
+      await recoverChartGap(series, last, Number(tail[0].time));
       return;
     }
     chart.applyTail(fresh, body.forming_time);
