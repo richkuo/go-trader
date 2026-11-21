@@ -3,6 +3,13 @@
 Guardrails only;mechanism:SKILL.md,docs/POST_UPDATE_HISTORY.md.Sources:this file+the `.claude/rules/` files listed below;`AGENTS.md`=generated full guide for Codex/Cursor,never hand-edit.
 After any source edit run `python3 -I scripts/agent_guide.py`,verify with `bash scripts/check_pre_pr.sh agent-docs`.Limits:this file<17500B(target 17000),rule file<=8000B,any line<=400B,`AGENTS.md`<=28000B.Shorten,drop no guardrail.
 
+## Agent guide contract
+- Generated: `AGENTS.md`
+- Sources: `CLAUDE.md`, `.claude/rules/*.md`
+- Regenerate: `python3 -I scripts/agent_guide.py`
+- Verify: `bash scripts/check_pre_pr.sh agent-docs`
+- Command files: `scripts/agent_guide.py`, `scripts/check_pre_pr.sh`
+
 ## Area rules
 - Claude Code loads each file below only when it reads or edits a file in that rule's `paths:`.In a subagent,a worktree,after compaction,or before creating a file in an area,Read that rule file first.
 - `.claude/rules/backtest.md`:backtest harness,`shared_strategies/`,`shared_tools/`,registry
