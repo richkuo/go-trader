@@ -773,7 +773,7 @@ func cancelOrphanedLimitOrder(state *AppState, cfg *Config, store *StateStore, m
 		[]PendingLimitOrder{o}, killSwitchLimitOrderRoster(cfg.Strategies))
 	if len(candidates) == 0 {
 		out.State = orphanLimitStateUnknown
-		out.Reason = "no Hyperliquid strategy with a script remains in this config to cancel it — its on-chain state was never read, so manual intervention is required"
+		out.Reason = "no live Hyperliquid strategy with a script remains in this config to read or cancel it — its on-chain state was never read, so manual intervention is required"
 		return out
 	}
 	script := candidates[0].Script

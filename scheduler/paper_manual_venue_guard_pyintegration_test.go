@@ -267,3 +267,119 @@ func openMRPStore(t *testing.T, cfgPath string) *StateStore {
 	}
 	return store
 }
+
+func paperManualGuardRecoveryVenue(t *testing.T) (func(status string), func(kind string) int) {
+	t.Helper()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "launches.log")
+	statusFile := filepath.Join(dir, "status.json")
+	py := filepath.Join(dir, ".venv", "bin", "python3")
+	if err := os.MkdirAll(filepath.Dir(py), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\necho \"$*\" >> '" + marker + "'\ncase \"$*\" in\n*--limit-status*) cat '" + statusFile + "' ;;\n*--cancel-order*) echo '{\"platform\":\"hyperliquid\",\"oid\":9001,\"cancelled\":true}' ;;\n*) echo '{\"platform\":\"hyperliquid\",\"error\":\"unexpected launch\"}'; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(py, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	setStatus := func(status string) {
+		if err := os.WriteFile(statusFile, []byte(status), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	count := func(kind string) int {
+		raw, err := os.ReadFile(marker)
+		if os.IsNotExist(err) {
+			return 0
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+			if strings.Contains(line, kind) {
+				n++
+			}
+		}
+		return n
+	}
+	return setStatus, count
+}
+
+func TestPaperManualVenueGuardKillSwitchRecoveryRows(t *testing.T) {
+	setStatus, launches := paperManualGuardRecoveryVenue(t)
+	paper := StrategyConfig{ID: "pm-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Args: []string{"hold", "ETH", "30m", "--mode=paper"}}
+	live := StrategyConfig{ID: "hl-ema-eth", Type: "perps", Platform: "hyperliquid", Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}}
+	realDeps := func(db *StateDB) killSwitchLimitOrderDeps {
+		return killSwitchLimitOrderDeps{
+			Cancel: func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+				return RunHyperliquidCancelOrder(hlAccountRecoveryWriteAuth(symbol, hlWriteCancel).forOrder(oid), script, symbol, oid)
+			},
+			Status:              RunHyperliquidLimitStatus,
+			Delete:              db.DeletePendingLimitOrder,
+			Flush:               func() error { return nil },
+			MarkCancelRequested: db.MarkPendingLimitOrderCancelRequested,
+		}
+	}
+	cases := []struct {
+		name, status string
+		cancels      int
+		want         string
+	}{
+		{"resting with unreadable fills", `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":true,"filled_size":0,"avg_px":0,"fee":0,"count":0,"fills_error":"fills fetch failed"}]}`, 1, "fills unreadable (fills fetch failed)"},
+		{"open orders unreadable", `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":null,"filled_size":0,"avg_px":0,"fee":0,"count":0}],"open_orders_error":"429 rate limited"}`, 0, "open-orders state unknown (429 rate limited)"},
+		{"off book with unreadable fills", `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":false,"filled_size":0,"avg_px":0,"fee":0,"count":0,"fills_error":"fills fetch failed"}]}`, 0, "fills unreadable (fills fetch failed)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newLimitTestStateDB(t)
+			id := seedKillSwitchLimitRow(t, db, paper.ID)
+			setStatus(tc.status)
+			plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{paper, live}, realDeps(db)))
+			if got := launches("--cancel-order"); got != tc.cancels {
+				t.Fatalf("cancel launches = %d, want %d: %+v", got, tc.cancels, plan.LimitOrderReport)
+			}
+			if tc.cancels == 1 && launches("--oid=9001") != 1 {
+				t.Fatalf("the cancel must name the recovery row order: %+v", plan.LimitOrderReport)
+			}
+			if plan.OnChainConfirmedFlat || plan.LimitOrderReport.ConfirmedClear() || len(plan.LimitOrderReport.Unresolved) != 1 {
+				t.Fatalf("the recovery row must stay unresolved: %+v", plan.LimitOrderReport)
+			}
+			if !strings.Contains(plan.LimitOrderReport.Unresolved[0], tc.want) {
+				t.Fatalf("unresolved reason missing %q: %v", tc.want, plan.LimitOrderReport.Unresolved)
+			}
+			if !strings.Contains(strings.Join(plan.LimitOrderReport.LogLines, "\n"), "[CRITICAL] ks-limit") {
+				t.Fatalf("the kept row must raise the CRITICAL line: %v", plan.LimitOrderReport.LogLines)
+			}
+			orders, err := db.LoadPendingLimitOrders()
+			if err != nil || len(orders) != 1 || orders[0].ID != id {
+				t.Fatalf("the recovery row must be kept: %v %+v", err, orders)
+			}
+		})
+	}
+
+	t.Run("only paper strategies remain", func(t *testing.T) {
+		db := newLimitTestStateDB(t)
+		row := seedKillSwitchLimitRow(t, db, paper.ID)
+		setStatus(`{"platform":"hyperliquid","orders":[]}`)
+		plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{paper}, realDeps(db)))
+		const want = "no live Hyperliquid strategy with a script remains in this config"
+		if len(plan.LimitOrderReport.Unresolved) != 1 || !strings.Contains(plan.LimitOrderReport.Unresolved[0], want) || !strings.Contains(strings.Join(plan.LimitOrderReport.LogLines, "\n"), want) {
+			t.Fatalf("the alert must name the missing live strategy: %+v", plan.LimitOrderReport)
+		}
+		orders, err := db.LoadPendingLimitOrders()
+		if err != nil || len(orders) != 1 || orders[0].ID != row {
+			t.Fatalf("the row must be kept: %v %+v", err, orders)
+		}
+		out := cancelOrphanedLimitOrder(NewAppState(), &Config{Strategies: []StrategyConfig{paper}}, nil, nil, orders[0])
+		if out.Resolved || out.State != orphanLimitStateUnknown || !strings.Contains(out.Reason, want) {
+			t.Fatalf("the orphan lane must name the missing live strategy: %+v", out)
+		}
+		if launches("") != 0 {
+			t.Fatal("a paper strategy's script must run no recovery read or cancel")
+		}
+	})
+}

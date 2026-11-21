@@ -144,9 +144,9 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 	for _, o := range unscripted {
 		label := killSwitchLimitOrderLabel(o)
 		report.Unresolved = append(report.Unresolved,
-			fmt.Sprintf("%s: no Hyperliquid strategy with a script remains in this config to cancel it — manual intervention required", label))
+			fmt.Sprintf("%s: no live Hyperliquid strategy with a script remains in this config to read or cancel it — manual intervention required", label))
 		report.LogLines = append(report.LogLines,
-			fmt.Sprintf("[CRITICAL] ks-limit: resting limit order %s cannot be cancelled — no Hyperliquid strategy with a script remains in this config, manual intervention required (kill switch will retry next cycle)", label))
+			fmt.Sprintf("[CRITICAL] ks-limit: resting limit order %s cannot be cancelled — no live Hyperliquid strategy with a script remains in this config to read or cancel it, manual intervention required (kill switch will retry next cycle)", label))
 	}
 
 	if len(candidates) > 0 && !deps.wired() {
@@ -211,13 +211,16 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			if !ok {
 				return HyperliquidLimitOrderStatus{}, "status response did not include the order"
 			}
-			if st.FillsError != "" {
-				return HyperliquidLimitOrderStatus{}, fmt.Sprintf("fills unreadable (%s)", st.FillsError)
-			}
 			if st.Resting == nil {
 				return HyperliquidLimitOrderStatus{}, "the exchange did not report whether the order is still resting"
 			}
 			return st, ""
+		}
+		fillsUnreadable := func(st HyperliquidLimitOrderStatus) string {
+			if st.FillsError == "" {
+				return ""
+			}
+			return fmt.Sprintf("fills unreadable (%s)", st.FillsError)
 		}
 
 		var st HyperliquidLimitOrderStatus
@@ -229,6 +232,10 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 				continue
 			}
 			if !*pre.Resting {
+				if fillsWhy := fillsUnreadable(pre); fillsWhy != "" {
+					unresolve(fmt.Sprintf("recovery row is off-book but its %s — no cancel is needed and the queue row is kept until the fill can be checked", fillsWhy))
+					continue
+				}
 				st = pre
 				cancelNeeded = false
 			} else if !roomForCall() {
@@ -264,6 +271,9 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			}
 
 			post, why := readStatus()
+			if why == "" {
+				why = fillsUnreadable(post)
+			}
 			if why != "" {
 				unresolve("cancel unverified: " + why)
 				continue

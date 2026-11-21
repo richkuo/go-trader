@@ -171,7 +171,7 @@ func paperManualPositionStartupWarnings(cfg *Config, state *AppState) []string {
 		sort.Strings(keys)
 		for _, coin := range keys {
 			pos := ss.Positions[coin]
-			out = append(out, fmt.Sprintf("paper manual position %s/%s (%s %.6f, %s partition): before this release a paper manual strategy could send real Hyperliquid orders, so earlier opens, adds, closes, stops or limit orders for it may have left real exposure or protection on the account. Verify %s on Hyperliquid before you rely on this paper book; its trade and order history is kept unchanged.",
+			out = append(out, fmt.Sprintf("paper manual position %s/%s (%s %.6f, %s partition): a release before the paper manual order guard could send real Hyperliquid orders for a paper manual strategy. If this position, or any open, add, close, stop or limit order for it, dates from such a release, real exposure or protection can remain on the account: verify %s on Hyperliquid before you rely on this paper book. A position booked only with --record-only under the guard sent no order. This warning repeats on each start while the position is open; its trade and order history is kept unchanged.",
 				sc.ID, coin, pos.Side, pos.Quantity, partitionLabel(partitionFor(sc)), coin))
 		}
 	}
