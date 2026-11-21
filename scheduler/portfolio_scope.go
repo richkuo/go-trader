@@ -359,6 +359,9 @@ func bookValuationGaps(sc StrategyConfig, s *StrategyState, prices map[string]fl
 			gaps = append(gaps, fmt.Sprintf("%s option %s value is not finite", sc.ID, key))
 			continue
 		}
+		if optionLegAwaitingSettlement(s.Platform, leg, now) {
+			continue
+		}
 		if _, reason := optionHarvestEligibility(leg, clock); reason != "" {
 			gaps = append(gaps, fmt.Sprintf("%s option %s: %s", sc.ID, key, reason))
 			continue
