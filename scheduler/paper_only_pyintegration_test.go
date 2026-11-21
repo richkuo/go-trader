@@ -25,7 +25,7 @@ func TestPaperOnlyConfigIntegration(t *testing.T) {
 		t.Parallel()
 		cfg := e.writeConfig("paper-only-live.json", func(doc map[string]any) {
 			doc["paper_only"] = true
-			doc["strategies"] = []any{mrpManualStrategy("mr-ready", "short"), paperOnlyLiveStrategy()}
+			doc["strategies"] = []any{mrpPaperManualStrategy("mr-ready", "short"), paperOnlyLiveStrategy()}
 		})
 		want := "strategy[mr-live]: paper_only is true, so a live strategy (--mode=live) is refused"
 		for _, args := range [][]string{{"probe"}, {"--once", "--status-port", strconv.Itoa(htfITFreePort(t))}, {"cpu-class"}} {
@@ -47,7 +47,7 @@ func TestPaperOnlyConfigIntegration(t *testing.T) {
 			}
 			cfg := e.writeConfig("paper-only-init-manual-"+strconv.FormatBool(withPlatform)+".json", func(doc map[string]any) {
 				doc["paper_only"] = true
-				doc["strategies"] = []any{mrpManualStrategy("mr-ready", "short"), sc}
+				doc["strategies"] = []any{mrpPaperManualStrategy("mr-ready", "short"), sc}
 			})
 			want := "strategy[hl-manual-btc-live]: paper_only is true, so a live strategy (--mode=live) is refused"
 			for _, args := range [][]string{{"probe"}, {"--once", "--status-port", strconv.Itoa(htfITFreePort(t))}} {
@@ -68,6 +68,7 @@ func TestPaperOnlyConfigIntegration(t *testing.T) {
 		cfg := e.writeConfig("paper-only-once.json", func(doc map[string]any) {
 			doc["paper_only"] = true
 			doc["db_file"], doc["log_dir"] = filepath.Join(dir, "state.db"), filepath.Join(dir, "logs")
+			doc["strategies"] = []any{mrpPaperManualStrategy("mr-ready", "short"), mrpPaperManualStrategy("mr-warming", "long")}
 		})
 		run := e.command(cfg, nil, "--once", "--status-port", strconv.Itoa(htfITFreePort(t)))
 		if run.code != 0 {
@@ -88,6 +89,7 @@ func TestPaperOnlyConfigIntegration(t *testing.T) {
 			return func(doc map[string]any) {
 				doc["db_file"], doc["log_dir"] = filepath.Join(dir, "state.db"), filepath.Join(dir, "logs")
 				doc["status_port"] = port
+				doc["strategies"] = []any{mrpPaperManualStrategy("mr-ready", "short"), mrpPaperManualStrategy("mr-warming", "long")}
 				if paperOnly {
 					doc["paper_only"] = true
 				}

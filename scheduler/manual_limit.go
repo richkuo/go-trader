@@ -88,9 +88,15 @@ func parseHyperliquidLimitOpenOutput(stdout []byte, stderrStr string, runErr err
 	return &result, stderrStr, nil
 }
 
-func RunHyperliquidLimitOpen(script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+func RunHyperliquidLimitOpen(auth hlWriteAuth, script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+	if err := auth.check(hlWriteLimitOpen, symbol, 0); err != nil {
+		return nil, "", err
+	}
 	args := buildHyperliquidLimitOpenArgs(symbol, side, size, limitPx, tif, marginMode, leverage, snapshot)
 	stdout, stderr, err := runPythonSideEffect(script, args)
+	if isVenueWriteRefused(err) {
+		return nil, "", err
+	}
 	observeHLAgentScriptOutput(stdout, stderr)
 	hlNoteCoinSubmission(symbol)
 	return parseHyperliquidLimitOpenOutput(stdout, string(stderr), err)
@@ -147,7 +153,10 @@ func parseHyperliquidCancelOrderOutput(stdout []byte, stderrStr string, runErr e
 	return &result, stderrStr, nil
 }
 
-func RunHyperliquidCancelOrder(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+func RunHyperliquidCancelOrder(auth hlWriteAuth, script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+	if err := auth.check(hlWriteCancel, symbol, oid); err != nil {
+		return nil, "", err
+	}
 	args := []string{
 		"--cancel-order",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -155,6 +164,9 @@ func RunHyperliquidCancelOrder(script, symbol string, oid int64) (*HyperliquidCa
 		"--mode=live",
 	}
 	stdout, stderr, runErr := runPythonSideEffect(script, args)
+	if isVenueWriteRefused(runErr) {
+		return nil, "", runErr
+	}
 	observeHLAgentScriptOutput(stdout, stderr)
 	return parseHyperliquidCancelOrderOutput(stdout, string(stderr), runErr)
 }
@@ -183,6 +195,10 @@ type manualLimitOpenInputs struct {
 }
 
 func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in manualLimitOpenInputs) int {
+	if err := manualPaperVenueActionRefusal(sc, "manual-open"); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return manualCoreExitCode(err)
+	}
 	sealed := sealedManualCommandFeed(cfg)
 	if sealed && manualLimitRequiresATR(sc) {
 		if !validExplicitATR(in.atr) {
@@ -305,7 +321,7 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 		}
 	}
 
-	res, stderr, err := runHyperliquidLimitOpenFn(sc.Script, sc.Symbol, in.openSide, size, in.limitPrice, in.tif, sc.MarginMode, sc.Leverage, hlExecuteSnapshot{})
+	res, stderr, err := runHyperliquidLimitOpenFn(hlStrategyWriteAuth(sc, sc.Symbol, hlWriteLimitOpen), sc.Script, sc.Symbol, in.openSide, size, in.limitPrice, in.tif, sc.MarginMode, sc.Leverage, hlExecuteSnapshot{})
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "HL limit-open stderr: %s\n", stderr)
 	}
@@ -345,7 +361,7 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 	}
 	if _, err := stateDB.InsertPendingLimitOrder(row); err != nil {
 		fmt.Fprintf(os.Stderr, "CRITICAL: limit order placed (oid=%d) but DB insert failed (%v); attempting cancel...\n", res.OrderOID, err)
-		if _, cstderr, cerr := RunHyperliquidCancelOrder(sc.Script, sc.Symbol, res.OrderOID); cerr != nil {
+		if _, cstderr, cerr := RunHyperliquidCancelOrder(hlStrategyWriteAuth(sc, sc.Symbol, hlWriteCancel).forOrder(res.OrderOID), sc.Script, sc.Symbol, res.OrderOID); cerr != nil {
 			fmt.Fprintf(os.Stderr, "cancel ALSO failed (%v, stderr=%s) — MANUAL INTERVENTION REQUIRED: cancel oid=%d on the HL UI\n", cerr, cstderr, res.OrderOID)
 		} else {
 			fmt.Fprintln(os.Stderr, "resting order cancelled.")
@@ -382,9 +398,14 @@ func runManualCancel(args []string) int {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
+	applyProcessVenueWritePolicy(cfg)
 	sc, ok := findManualStrategy(cfg, strategyID)
 	if !ok {
 		return 1
+	}
+	if err := manualPaperVenueActionRefusal(sc, "manual-cancel"); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return manualCoreExitCode(err)
 	}
 
 	stateDB, err := openToolStateStore(cfg)
@@ -469,6 +490,7 @@ func runManualClearLimitRow(args []string) int {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
+	applyProcessVenueWritePolicy(cfg)
 	stateDB, err := openToolStateStore(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
@@ -764,7 +786,7 @@ func cancelOrphanedLimitOrder(state *AppState, cfg *Config, store *StateStore, m
 	}
 
 	if *st.Resting {
-		cancelRes, cstderr, cerr := runHyperliquidCancelOrderFn(script, o.Symbol, o.OrderOID)
+		cancelRes, cstderr, cerr := runHyperliquidCancelOrderFn(hlAccountRecoveryWriteAuth(o.Symbol, hlWriteCancel).forOrder(o.OrderOID), script, o.Symbol, o.OrderOID)
 		if cstderr != "" {
 			fmt.Fprintf(os.Stderr, "[limit] %s orphan cancel stderr: %s\n", o.StrategyID, cstderr)
 		}
@@ -1075,7 +1097,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 			if expired {
 				reason = "TTL expiry"
 			}
-			cancelRes, cstderr, cerr := runHyperliquidCancelOrderFn(c.sc.Script, o.Symbol, o.OrderOID)
+			cancelRes, cstderr, cerr := runHyperliquidCancelOrderFn(hlStrategyWriteAuth(c.sc, o.Symbol, hlWriteCancel).forOrder(o.OrderOID), c.sc.Script, o.Symbol, o.OrderOID)
 			if cstderr != "" {
 				fmt.Fprintf(os.Stderr, "[limit] %s cancel stderr: %s\n", o.StrategyID, cstderr)
 			}

@@ -48,7 +48,7 @@ func newForceCloseHarness(t *testing.T, pos *Position, peers []*Position) *force
 			return map[string]float64{"ETH": 2000}, nil
 		},
 		fetchPositions: func(string) ([]HLPosition, error) { return h.chain, h.chainErr },
-		closer: func(symbol string, partialSz *float64, oids []int64) (*HyperliquidCloseResult, error) {
+		closer: func(_ hlWriteAuth, symbol string, partialSz *float64, oids []int64) (*HyperliquidCloseResult, error) {
 			h.whole++
 			return &HyperliquidCloseResult{Close: &HyperliquidClose{Fill: &HyperliquidCloseFill{AvgPx: 2000, TotalSz: pos.Quantity}}}, nil
 		},
@@ -59,7 +59,7 @@ func newForceCloseHarness(t *testing.T, pos *Position, peers []*Position) *force
 			}
 			return sizedFill(req.Size, req.CancelOIDs...), nil
 		},
-		updateSL: func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		updateSL: func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			h.updateSLs = append(h.updateSLs, size)
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: true}, "", nil
 		},

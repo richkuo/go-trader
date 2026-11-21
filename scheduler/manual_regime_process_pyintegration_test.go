@@ -299,6 +299,7 @@ func (e *mrpEnv) env(extra ...string) []string {
 		manualRegimeTestHLInfoEnv+"="+e.venue.server.URL,
 		manualRegimeTestHLWSEnv+"="+e.socket.url(),
 		"STATUS_AUTH_TOKEN="+e.token,
+		"HYPERLIQUID_SECRET_KEY=0x"+strings.Repeat("1", 64), "HYPERLIQUID_ACCOUNT_ADDRESS=",
 		manualSchedulerURLEnv+"=",
 	)
 	return append(env, extra...)
@@ -311,10 +312,16 @@ func mrpStopBlock() map[string]any {
 func mrpManualStrategy(id, window string) map[string]any {
 	return map[string]any{
 		"id": id, "type": "manual", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py",
-		"symbol": "BTC", "timeframe": "1m", "args": []any{"hold", "BTC", "1m", "--mode=paper"},
+		"symbol": "BTC", "timeframe": "1m", "args": []any{"hold", "BTC", "1m", "--mode=live"},
 		"capital": 1000, "leverage": 1, "max_drawdown_pct": 90, "direction": "both",
 		"regime_atr_window": window,
 	}
+}
+
+func mrpPaperManualStrategy(id, window string) map[string]any {
+	sc := mrpManualStrategy(id, window)
+	sc["args"] = []any{"hold", "BTC", "1m", "--mode=paper"}
+	return sc
 }
 
 func (e *mrpEnv) writeConfig(name string, mutate func(map[string]any)) string {

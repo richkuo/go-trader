@@ -1227,7 +1227,7 @@ func runPostTPStopLossAdjustment(
 	first, result, retryOutcomeUnknown, retryReason, err := func() (*HyperliquidStopLossUpdateResult, *HyperliquidStopLossUpdateResult, bool, string, error) {
 		unlock := lockHyperliquidTrailingUpdate(symbol)
 		defer unlock()
-		res, stderr, runErr := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, placedQty, triggerPx, currentOID)
+		res, stderr, runErr := runHyperliquidUpdateStopLossFunc(hlStrategyWriteAuth(sc, symbol, hlWriteStop), sc.Script, symbol, side, placedQty, triggerPx, currentOID)
 		if stderr != "" && logger != nil {
 			logger.Info("post-TP SL stderr: %s", stderr)
 		}
@@ -1237,7 +1237,7 @@ func runPostTPStopLossAdjustment(
 		if !clampTriggered || !classifyPostTPStopReply(res).protectionLost {
 			return res, res, false, "", nil
 		}
-		retry, outcome := hlLiquidationPlaceFresh(sc.Script, symbol, side, placedQty, triggerPx, logger)
+		retry, outcome := hlLiquidationPlaceFresh(hlStrategyWriteAuth(sc, symbol, hlWriteStop), sc.Script, symbol, side, placedQty, triggerPx, logger)
 		switch outcome {
 		case hlReplacePlaced, hlReplaceFilled:
 			return res, retry, false, "", nil

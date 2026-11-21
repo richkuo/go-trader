@@ -193,7 +193,7 @@ func hlShareResizeStop(sc StrategyConfig, state *AppState, symbol, side string, 
 	}
 	trigger := order.TriggerPx
 	unlock := lockHyperliquidTrailingUpdate(symbol)
-	result, _, err := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, floorQ, trigger, oid)
+	result, _, err := runHyperliquidUpdateStopLossFunc(hlStrategyWriteAuth(sc, symbol, hlWriteStop), sc.Script, symbol, side, floorQ, trigger, oid)
 	unlock()
 	if err != nil {
 		fmt.Printf("[WARN] share resize: [%s] %s stop OID %d resize to %.6f failed: %v\n", sc.ID, symbol, oid, floorQ, err)
@@ -225,7 +225,7 @@ func hlShareResizeStop(sc StrategyConfig, state *AppState, symbol, side string, 
 
 func hlShareCancelRestingStop(sc StrategyConfig, state *AppState, symbol string, oid int64, alertRecorded bool, mu *sync.RWMutex, notifier *MultiNotifier) {
 	unlock := lockHyperliquidTrailingUpdate(symbol)
-	result, _, err := runHyperliquidCancelOrderFn(sc.Script, symbol, oid)
+	result, _, err := runHyperliquidCancelOrderFn(hlStrategyWriteAuth(sc, symbol, hlWriteCancel).forOrder(oid), sc.Script, symbol, oid)
 	unlock()
 	if err == nil && result != nil && result.Cancelled {
 		mu.Lock()
@@ -280,7 +280,7 @@ func hlShareResizeTiers(sc StrategyConfig, state *AppState, symbol string, floor
 	if floorQ <= hlSharedCloseQtyTolerance {
 		cancelled := map[int64]bool{}
 		for _, oid := range resting {
-			result, _, err := runHyperliquidCancelOrderFn(sc.Script, symbol, oid)
+			result, _, err := runHyperliquidCancelOrderFn(hlStrategyWriteAuth(sc, symbol, hlWriteCancel).forOrder(oid), sc.Script, symbol, oid)
 			if err == nil && result != nil && result.Cancelled {
 				cancelled[oid] = true
 				continue

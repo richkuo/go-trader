@@ -30,7 +30,7 @@ func TestRunRegimeDirectionOrphanCloses_AlreadyFlatLeavesVirtual(t *testing.T) {
 		},
 	}
 	var calls []string
-	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+	closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		calls = append(calls, symbol)
 		return &HyperliquidCloseResult{
 			Close:                   &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},

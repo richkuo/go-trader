@@ -373,7 +373,7 @@ func TestRunHyperliquidLiquidationAudit(t *testing.T) {
 			f := failure
 			state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 4242
 			state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 2325
-			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 				if f == nil {
 					return nil, "", errLiqAuditStub
 				}
@@ -396,7 +396,7 @@ func TestRunHyperliquidLiquidationAudit(t *testing.T) {
 		liq := map[string]float64{"ETH": 2340.5}
 		onChain := map[string]float64{"ETH": 1.0}
 
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{
 				CancelStopLossSucceeded: true,
 				StopLossError:           "Order would exceed the open order limit",
@@ -412,7 +412,7 @@ func TestRunHyperliquidLiquidationAudit(t *testing.T) {
 
 		var gotTrigger float64
 		var gotCancelOID int64
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			gotTrigger, gotCancelOID = triggerPx, cancelStopLossOID
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 7777, StopLossTriggerPx: triggerPx}, "", nil
 		}
@@ -437,7 +437,7 @@ func TestRunHyperliquidLiquidationAudit(t *testing.T) {
 		strategies, state := liqAuditFixture(t, true, 3.125)
 		var mu sync.RWMutex
 		calls := 0
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			calls++
 			if cancelOID != 4242 {
 				t.Errorf("tighten must cancel the recorded stop, got cancelOID=%d", cancelOID)
@@ -553,7 +553,7 @@ func TestRunHyperliquidLiquidationAudit(t *testing.T) {
 					strategies = tc.mutate(strategies, state)
 				}
 				calls := 0
-				stubLiqAuditStopLoss(t, func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				stubLiqAuditStopLoss(t, func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 					calls++
 					return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
 				})
@@ -586,7 +586,7 @@ func TestRunHyperliquidLiquidationAudit(t *testing.T) {
 				clearHLLiquidationAlert("hl-eth", "ETH")
 				t.Cleanup(func() { clearHLLiquidationAlert("hl-eth", "ETH") })
 				strategies, state := liqAuditFixture(t, true, 3.125)
-				stubLiqAuditStopLoss(t, func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				stubLiqAuditStopLoss(t, func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 					r := tc.result
 					r.StopLossTriggerPx = triggerPx
 					return &r, "", nil
@@ -645,7 +645,7 @@ func TestRunHyperliquidLiquidationAudit(t *testing.T) {
 					trigger   float64
 				}
 				var calls []call
-				stubLiqAuditStopLoss(t, func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				stubLiqAuditStopLoss(t, func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 					calls = append(calls, call{cancelOID: cancelOID, trigger: triggerPx})
 					if len(calls) == 1 {
 						return &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: capRejected}, "", nil
@@ -684,7 +684,7 @@ func TestRunHyperliquidLiquidationAudit(t *testing.T) {
 			t.Cleanup(func() { clearHLLiquidationAlert("hl-eth", "ETH") })
 			strategies, state := liqTrailingAuditFixture(t)
 			calls := 0
-			stubLiqAuditStopLoss(t, func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			stubLiqAuditStopLoss(t, func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 				calls++
 				return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
 			})
@@ -718,7 +718,7 @@ func TestRunHyperliquidLiquidationAudit(t *testing.T) {
 				state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
 				calls := 0
 				var gotTrigger float64
-				stubLiqAuditStopLoss(t, func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				stubLiqAuditStopLoss(t, func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 					calls++
 					gotTrigger = triggerPx
 					if cancelOID != 0 {
@@ -944,7 +944,7 @@ func liqAuditLiqETH() map[string]float64 { return map[string]float64{"ETH": 2340
 
 func liqAuditClampedTrigger() float64 { return 2340.5 * (1 + hlLiquidationStopBufferPct/100.0) }
 
-func stubLiqAuditStopLoss(t *testing.T, fn func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error)) {
+func stubLiqAuditStopLoss(t *testing.T, fn func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error)) {
 	t.Helper()
 	old := runHyperliquidUpdateStopLossFunc
 	runHyperliquidUpdateStopLossFunc = fn

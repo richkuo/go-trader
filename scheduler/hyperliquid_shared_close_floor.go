@@ -590,9 +590,9 @@ func rearmProtectionForCloseRemainder(sc StrategyConfig, stratState *StrategySta
 	return trades, detail, pickStopRearmResult(claimed, prevStopOID), tpRes
 }
 
-func removeHLStopByOID(script, symbol, side string, oid int64, logger *StrategyLogger) hlStopRearmResult {
+func removeHLStopByOID(auth hlWriteAuth, script, symbol, side string, oid int64, logger *StrategyLogger) hlStopRearmResult {
 	unlock := lockHyperliquidTrailingUpdate(symbol)
-	result, stderr, err := runHyperliquidUpdateStopLossFunc(script, symbol, side, 0, 0, oid)
+	result, stderr, err := runHyperliquidUpdateStopLossFunc(auth, script, symbol, side, 0, 0, oid)
 	unlock()
 	if stderr != "" && logger != nil {
 		logger.Info("pre-close stop removal stderr: %s", stderr)
@@ -676,7 +676,7 @@ func removeHLCloseUnconfirmedOrders(sc StrategyConfig, stratState *StrategyState
 		return rep
 	}
 	if u.StopOID > 0 {
-		stopRes := removeHLStopByOID(sc.Script, symbol, side, u.StopOID, logger)
+		stopRes := removeHLStopByOID(hlStrategyWriteAuth(sc, symbol, hlWriteStop), sc.Script, symbol, side, u.StopOID, logger)
 		switch stopRes.Status {
 		case hlStopRearmRemoved:
 			rep.Removed = append(rep.Removed, u.StopOID)
@@ -813,6 +813,7 @@ func rearmScalarStopAfterFailedClose(sc StrategyConfig, stratState *StrategyStat
 	candidate := hlLiquidationAuditCandidate{
 		StrategyID:  sc.ID,
 		Script:      sc.Script,
+		Auth:        hlStrategyWriteAuth(sc, symbol, hlWriteStop),
 		Symbol:      symbol,
 		Side:        side,
 		Qty:         slEffectiveQty,

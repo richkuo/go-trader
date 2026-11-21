@@ -39,7 +39,7 @@ func TestRunPostTPStopLossAdjustment(t *testing.T) {
 		defer func() { runHyperliquidUpdateStopLossFunc = old }()
 
 		var gotQty float64
-		runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, size, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			gotQty = size
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
 		}
@@ -110,7 +110,7 @@ func TestRunPostTPStopLossAdjustment(t *testing.T) {
 			})
 			state := newState()
 			var mu sync.RWMutex
-			runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, _ float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, _, _ float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 				if cancelOID == 111 {
 					return firstReply, "", nil
 				}

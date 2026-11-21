@@ -158,7 +158,7 @@ func TestPaperStopLoss(t *testing.T) {
 			old := runHyperliquidUpdateStopLossFunc
 			defer func() { runHyperliquidUpdateStopLossFunc = old }()
 			placed := 0.0
-			runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, _, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
 				placed = triggerPx
 				return &HyperliquidStopLossUpdateResult{StopLossOID: 1, StopLossTriggerPx: triggerPx}, "", nil
 			}

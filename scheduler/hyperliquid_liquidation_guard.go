@@ -404,6 +404,7 @@ type hlLiquidationAuditCandidate struct {
 	Unprotected         bool
 	UnresolvedPlacement bool
 	BookConsistent      bool
+	Auth                hlWriteAuth
 }
 
 type hlLiquidationAuditActionKind int
@@ -568,6 +569,7 @@ func collectHLLiquidationAuditCandidates(
 				out = append(out, hlLiquidationAuditCandidate{
 					StrategyID:          sc.ID,
 					Script:              sc.Script,
+					Auth:                hlStrategyWriteAuth(sc, symbol, hlWriteStop),
 					Symbol:              symbol,
 					Side:                pos.Side,
 					Qty:                 pos.Quantity,
@@ -596,6 +598,7 @@ func collectHLLiquidationAuditCandidates(
 			out = append(out, hlLiquidationAuditCandidate{
 				StrategyID:        sc.ID,
 				Script:            sc.Script,
+				Auth:              hlStrategyWriteAuth(sc, symbol, hlWriteStop),
 				Symbol:            symbol,
 				Side:              pos.Side,
 				Qty:               pos.Quantity,
@@ -688,7 +691,7 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 	unlock := lockHyperliquidTrailingUpdate(candidate.Symbol)
 	defer unlock()
 
-	result, stderr, err := runHyperliquidUpdateStopLossFunc(candidate.Script, candidate.Symbol, candidate.Side, candidate.Qty, clampedTriggerPx, candidate.StopLossOID)
+	result, stderr, err := runHyperliquidUpdateStopLossFunc(candidate.Auth, candidate.Script, candidate.Symbol, candidate.Side, candidate.Qty, clampedTriggerPx, candidate.StopLossOID)
 	if stderr != "" && logger != nil {
 		logger.Info("liquidation-clamp SL replace stderr: %s", stderr)
 	}
@@ -781,14 +784,14 @@ func hlLiquidationRetryPlace(candidate hlLiquidationAuditCandidate, clampedTrigg
 	}
 	unlock := lockHyperliquidTrailingUpdate(candidate.Symbol)
 	defer unlock()
-	return hlLiquidationPlaceFresh(candidate.Script, candidate.Symbol, candidate.Side, candidate.Qty, clampedTriggerPx, logger)
+	return hlLiquidationPlaceFresh(candidate.Auth, candidate.Script, candidate.Symbol, candidate.Side, candidate.Qty, clampedTriggerPx, logger)
 }
 
-func hlLiquidationPlaceFresh(script, symbol, side string, qty, triggerPx float64, logger *StrategyLogger) (*HyperliquidStopLossUpdateResult, hlLiquidationReplaceOutcome) {
+func hlLiquidationPlaceFresh(auth hlWriteAuth, script, symbol, side string, qty, triggerPx float64, logger *StrategyLogger) (*HyperliquidStopLossUpdateResult, hlLiquidationReplaceOutcome) {
 	if triggerPx <= 0 || qty <= 0 {
 		return nil, hlReplaceDeferred
 	}
-	result, stderr, err := runHyperliquidUpdateStopLossFunc(script, symbol, side, qty, triggerPx, 0)
+	result, stderr, err := runHyperliquidUpdateStopLossFunc(auth, script, symbol, side, qty, triggerPx, 0)
 	if stderr != "" && logger != nil {
 		logger.Info("liquidation-clamp SL retry stderr: %s", stderr)
 	}

@@ -808,7 +808,7 @@ type entryLiveVenue struct {
 func (v *entryLiveVenue) install() {
 	prev := runHyperliquidExecuteFn
 	v.t.Cleanup(func() { runHyperliquidExecuteFn = prev })
-	runHyperliquidExecuteFn = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	runHyperliquidExecuteFn = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		v.calls++
 		v.lastSnap = snapshot
 		for _, id := range []string{"hl-live"} {

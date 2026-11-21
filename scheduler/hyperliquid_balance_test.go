@@ -2831,7 +2831,7 @@ func TestReconcileSharedCoinTPPartialFill(t *testing.T) {
 
 func fakeCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
 	var calls []string
-	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+	closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		if partialSz != nil {
 			calls = append(calls, fmt.Sprintf("%s:%g", symbol, *partialSz))
 		} else {
@@ -2961,7 +2961,7 @@ func TestForceCloseHyperliquidLive(t *testing.T) {
 		}
 	})
 	t.Run("EmptyInputs", func(t *testing.T) {
-		report := forceCloseHyperliquidLive(context.Background(), nil, nil, nil, func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
+		report := forceCloseHyperliquidLive(context.Background(), nil, nil, nil, func(hlWriteAuth, string, *float64, []int64) (*HyperliquidCloseResult, error) {
 			t.Fatalf("closer should not be called with empty inputs")
 			return nil, nil
 		}, nil)
@@ -2977,7 +2977,7 @@ func TestForceCloseHyperliquidLive(t *testing.T) {
 		positions := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}
 
 		var calls []string
-		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			calls = append(calls, symbol)
 			return &HyperliquidCloseResult{
 				Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
@@ -3089,7 +3089,7 @@ func TestRunPendingHyperliquidCircuitCloses(t *testing.T) {
 		}
 		var mu sync.RWMutex
 		var calls []string
-		closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			if partialSz != nil {
 				calls = append(calls, fmt.Sprintf("%s:%g", sym, *partialSz))
 			} else {
@@ -3138,7 +3138,7 @@ func TestRunPendingHyperliquidCircuitCloses(t *testing.T) {
 		}
 		var mu sync.RWMutex
 		var calls []string
-		closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			calls = append(calls, sym)
 			return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: sym}, Platform: "hyperliquid"}, nil
 		}
@@ -3183,7 +3183,7 @@ func TestRunPendingHyperliquidCircuitCloses(t *testing.T) {
 		}
 		var mu sync.RWMutex
 		var calls []string
-		closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			if partialSz != nil {
 				calls = append(calls, fmt.Sprintf("%s:%g", sym, *partialSz))
 			} else {
@@ -3247,7 +3247,7 @@ func TestRunPendingHyperliquidCircuitCloses(t *testing.T) {
 				}
 				var mu sync.RWMutex
 				var calls []string
-				closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+				closer := func(_ hlWriteAuth, sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 					calls = append(calls, sym)
 					return &HyperliquidCloseResult{
 						Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.1, AvgPx: 1}},
@@ -3304,7 +3304,7 @@ func TestRunPendingHyperliquidCircuitCloses(t *testing.T) {
 				Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 		}
 		var mu sync.RWMutex
-		closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 3000, Fee: 0.75}},
 				Platform: "hyperliquid",
@@ -3366,7 +3366,7 @@ func TestRunPendingHyperliquidCircuitCloses(t *testing.T) {
 				Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 		}
 		var mu sync.RWMutex
-		closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 2900, Fee: 0.5}},
 				Platform: "hyperliquid",
@@ -3431,7 +3431,7 @@ func TestRunPendingHyperliquidCircuitCloses(t *testing.T) {
 		}
 		var mu sync.RWMutex
 		var calls int
-		closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			calls++
 			return &HyperliquidCloseResult{
 				Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 3000, Fee: 0.5}},
@@ -3481,7 +3481,7 @@ func TestRunPendingHyperliquidCircuitCloses(t *testing.T) {
 				Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 		}
 		var mu sync.RWMutex
-		closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close:    &HyperliquidClose{Symbol: sym, Fill: nil},
 				Platform: "hyperliquid",
@@ -3532,7 +3532,7 @@ func TestRunPendingHyperliquidCircuitCloses(t *testing.T) {
 		}
 		var mu sync.RWMutex
 
-		cycle1 := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		cycle1 := func(_ hlWriteAuth, sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.4, AvgPx: 2950, Fee: 0.4}},
 				Platform: "hyperliquid",
@@ -3556,7 +3556,7 @@ func TestRunPendingHyperliquidCircuitCloses(t *testing.T) {
 			t.Errorf("cycle 1: AvgCost = %.2f; want 3000 (preserved on partial)", pos.AvgCost)
 		}
 
-		cycle2 := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		cycle2 := func(_ hlWriteAuth, sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			got := *partialSz
 			if math.Abs(got-0.6) > 1e-6 {
 				t.Errorf("cycle 2 closer expected sz=0.6 (residual cap), got %v", got)
@@ -3625,7 +3625,7 @@ func TestRunPendingHyperliquidCircuitCloses(t *testing.T) {
 						Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 				}
 				var mu sync.RWMutex
-				closer := func(symbol string, sz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
+				closer := func(_ hlWriteAuth, symbol string, sz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
 					return nil, fmt.Errorf("float_to_wire causes rounding")
 				}
 				var dmMsgs []string

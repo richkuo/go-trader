@@ -60,7 +60,7 @@ func ratchetInstallStub(t *testing.T, reply *HyperliquidStopLossUpdateResult, re
 	t.Helper()
 	old := runHyperliquidUpdateStopLossFunc
 	t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = old })
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+	runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		call.called = true
 		call.size = size
 		call.trigger = triggerPx
@@ -164,7 +164,7 @@ func TestRatchetAlertBook(t *testing.T) {
 		st := ratchetBookState(sc, pos)
 		var call ratchetStubCall
 		ratchetInstallStub(t, nil, nil, &call)
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			call.called = true
 			call.size = size
 			call.trigger = triggerPx
@@ -322,7 +322,7 @@ func TestRatchetAlertBook(t *testing.T) {
 		st := ratchetBookState(sc, pos)
 		var call ratchetStubCall
 		ratchetInstallStub(t, nil, nil, &call)
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			call.called = true
 			call.size = size
 			call.trigger = triggerPx

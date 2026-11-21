@@ -16,7 +16,7 @@ func stubHLLiveCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) 
 func stubHLLiveCloserWithCancel(errs map[string]error) (HyperliquidLiveCloser, *[]string, *map[string][]int64) {
 	var calls []string
 	cancels := make(map[string][]int64)
-	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+	closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		calls = append(calls, symbol)
 		cancels[symbol] = append([]int64(nil), cancelStopLossOIDs...)
 		if err, ok := errs[symbol]; ok && err != nil {
@@ -327,7 +327,7 @@ func TestHyperliquidKillSwitchClose(t *testing.T) {
 				Args: []string{"sma", "BTC", "1h", "--mode=live"}},
 		}
 		positions := []HLPosition{{Coin: "BTC", Size: 1.0, EntryPrice: 50000}}
-		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close: &HyperliquidClose{
 					Symbol: symbol,
@@ -389,7 +389,7 @@ func TestHyperliquidKillSwitchClose(t *testing.T) {
 				Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 		}
 		positions := []HLPosition{{Coin: "ETH", Size: 0.588, EntryPrice: 1754.10}}
-		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
 				Platform: "hyperliquid",
@@ -473,7 +473,7 @@ func TestHyperliquidKillSwitchClose(t *testing.T) {
 				Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 		}
 		positions := []HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 2000}}
-		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			return &HyperliquidCloseResult{
 				Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
 				Platform: "hyperliquid",

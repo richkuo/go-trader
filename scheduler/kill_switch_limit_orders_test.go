@@ -327,10 +327,12 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 		stubs := &killSwitchLimitStubs{}
 		deps := stubs.deps(
 			func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
-				usedScript = script
 				return &HyperliquidCancelOrderResult{OID: oid, Cancelled: false, CancelError: "order already cancelled"}, "", nil
 			},
-			offBookStatus(0),
+			func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error) {
+				usedScript = script
+				return offBookStatus(0)(script, symbol, oids, sinceMs)
+			},
 			db.DeletePendingLimitOrder)
 
 		plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{peer}, deps))
@@ -340,6 +342,9 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 		}
 		if usedScript != peer.Script {
 			t.Errorf("orphaned row must fall back to a peer script, got %q", usedScript)
+		}
+		if len(stubs.cancelCalls) != 0 {
+			t.Errorf("an orphaned row the exchange reports off-book must send no cancel, got %v", stubs.cancelCalls)
 		}
 		if len(stubs.deleted) != 1 || stubs.deleted[0] != id {
 			t.Errorf("orphaned row must be deleted once off-book, deleted = %v", stubs.deleted)
@@ -356,7 +361,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 		seedKillSwitchLimitRow(t, db, sc.ID)
 
 		var seq []string
-		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			seq = append(seq, "close:"+symbol)
 			return &HyperliquidCloseResult{
 				Close:    &HyperliquidClose{Symbol: symbol, Fill: &HyperliquidCloseFill{TotalSz: 1.0, AvgPx: 100}},
@@ -415,7 +420,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 			db.DeletePendingLimitOrder)
 
 		var closed []string
-		closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 			closed = append(closed, symbol)
 			return &HyperliquidCloseResult{
 				Close:    &HyperliquidClose{Symbol: symbol, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 3000}},

@@ -297,7 +297,11 @@ func meaSeed(e *meaEnv, ids ...string) {
 	openedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	positions := map[string]*Position{}
 	for _, id := range ids {
-		positions[id] = &Position{Symbol: "BTC", Side: "long", Quantity: 0.01, InitialQuantity: 0.01, AvgCost: 100, EntryATR: 0.7, OwnerStrategyID: id, TradePositionID: id + "-pos", OpenedAt: openedAt}
+		qty := 0.01
+		if strings.HasSuffix(id, "close") {
+			qty = 0.1
+		}
+		positions[id] = &Position{Symbol: "BTC", Side: "long", Quantity: qty, InitialQuantity: qty, AvgCost: 100, EntryATR: 0.7, OwnerStrategyID: id, TradePositionID: id + "-pos", OpenedAt: openedAt}
 	}
 	e.seedPositions(e.cfg, positions)
 }
@@ -313,9 +317,9 @@ func regimeReadinessEntryAdmissionProcess(t *testing.T, mode string) {
 	}
 	daemon := e.scheduler()
 	daemon.waitCycles(1)
-	e.waitWitness(defaultPaperPartition, true)
 	e.waitWitness(livePartition, true)
-	held := "holds the paper partition"
+	e.waitWitness(defaultPaperPartition, true)
+	held := "holds the live partition"
 	atr := []string{"--atr", "0.5"}
 	open := func(id string, extra ...string) []string {
 		return append(append([]string{"manual-open", p + id, "--size", "0.01"}, atr...), extra...)
@@ -326,8 +330,8 @@ func regimeReadinessEntryAdmissionProcess(t *testing.T, mode string) {
 	}
 	add := func(id string) []string { return []string{"manual-add", p + id, "--size", "0.01"} }
 
-	e.fault(defaultPaperPartition, true)
-	e.waitWitness(defaultPaperPartition, false)
+	e.fault(livePartition, true)
+	e.waitWitness(livePartition, false)
 	resting := e.seedLimit(p+"add", 4401)
 	venue := e.venueKinds()
 	for _, c := range []struct {
@@ -345,13 +349,13 @@ func regimeReadinessEntryAdmissionProcess(t *testing.T, mode string) {
 		e.expectRefused(r, mode+" held "+c.what, held)
 		t.Logf("%s hold: %s refused: %s", mode, c.what, strings.TrimSpace(r.stderr))
 	}
-	e.expectNoRows(mode+" held paper partition", venue, p+"open", p+"regime-pct", p+"regime-mult", p+"regime", p+"limit", p+"add")
+	e.expectNoRows(mode+" held live partition", venue, p+"open", p+"regime-pct", p+"regime-mult", p+"regime", p+"limit", p+"add")
 	r := e.run(nil, "manual-close", p+"close")
-	if strings.Contains(r.stderr, "entry admission") || strings.Contains(r.stderr, "holds the paper partition") {
+	if strings.Contains(r.stderr, "entry admission") || strings.Contains(r.stderr, "holds the live partition") {
 		t.Fatalf("%s: a reduction was gated by the entry admission:\n%s", mode, r)
 	}
 	if got := e.venueKinds(); r.code != 0 || got["execute"] != venue["execute"]+1 {
-		t.Fatalf("%s: the reduction under a paper hold did not reach the venue (%v -> %v):\n%s", mode, venue, got, r)
+		t.Fatalf("%s: the reduction under a live hold did not reach the venue (%v -> %v):\n%s", mode, venue, got, r)
 	}
 	t.Logf("%s hold: the manual-close reduction still reached the venue", mode)
 	if rows := e.limitRows(p + "add"); len(rows) != 1 || rows[0].ID != resting.ID || rows[0].CancelRequested || rows[0].OrderOID != resting.OrderOID {
@@ -359,20 +363,20 @@ func regimeReadinessEntryAdmissionProcess(t *testing.T, mode string) {
 	}
 	e.dropLimits(p + "add")
 
-	e.fault(livePartition, true)
-	e.fault(defaultPaperPartition, false)
-	e.waitWitness(defaultPaperPartition, true)
-	e.waitWitness(livePartition, false)
-	venue = e.venueKinds()
-	if r := e.run(nil, open("open-live")...); r.code != 0 {
-		t.Fatalf("%s: a live hold on the shared state file blocked a paper open:\n%s", mode, r)
-	}
-	if got := e.venueKinds(); got["execute"] != venue["execute"]+1 {
-		t.Fatalf("%s: paper open under a live hold: venue %v -> %v", mode, venue, got)
-	}
-	t.Logf("%s: a live hold on the same state file left the paper partition open", mode)
+	e.fault(defaultPaperPartition, true)
 	e.fault(livePartition, false)
 	e.waitWitness(livePartition, true)
+	e.waitWitness(defaultPaperPartition, false)
+	venue = e.venueKinds()
+	if r := e.run(nil, open("open-live")...); r.code != 0 {
+		t.Fatalf("%s: a paper hold on the shared state file blocked a live open:\n%s", mode, r)
+	}
+	if got := e.venueKinds(); got["execute"] != venue["execute"]+1 {
+		t.Fatalf("%s: live open under a paper hold: venue %v -> %v", mode, venue, got)
+	}
+	t.Logf("%s: a paper hold on the same state file left the live partition open", mode)
+	e.fault(defaultPaperPartition, false)
+	e.waitWitness(defaultPaperPartition, true)
 
 	venue = e.venueKinds()
 	e.seedLimit(p+"add-clear", 4402)
@@ -408,7 +412,7 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	meaSeed(e, p+"add-cx", p+"add-fill")
 	daemon := e.scheduler()
 	daemon.waitCycles(1)
-	e.waitWitness(defaultPaperPartition, true)
+	e.waitWitness(livePartition, true)
 	atr := []string{"--atr", "0.5"}
 	open := func(id string) []string {
 		return append([]string{"manual-open", p + id, "--size", "0.01"}, atr...)
@@ -420,11 +424,11 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	e.armGate(placement)
 	pending := e.runAsync([]string{manualEntryTestCancelEnv + "=0"}, "manual-add", p+"add-cx", "--size", "0.01")
 	e.waitGate(placement)
-	e.fault(defaultPaperPartition, true)
-	e.waitWitness(defaultPaperPartition, false)
+	e.fault(livePartition, true)
+	e.waitWitness(livePartition, false)
 	e.releaseGate(placement)
 	r := <-pending
-	e.expectRefused(r, "hold during cancellation", "holds the paper partition")
+	e.expectRefused(r, "hold during cancellation", "holds the live partition")
 	got := e.venueKinds()
 	if got["cancel"] != venue["cancel"]+1 || got["limit_status"] != venue["limit_status"]+1 || got["execute"] != venue["execute"] {
 		t.Fatalf("hold during cancellation: venue %v -> %v", venue, got)
@@ -436,8 +440,8 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 		t.Fatalf("hold during cancellation queued an action: %v", acts)
 	}
 	t.Logf("cancellation: the remainder was cancelled and its off-book row deleted, then a hold raised during the cancellation refused the add with no order: %s", strings.TrimSpace(r.stderr))
-	e.fault(defaultPaperPartition, false)
-	e.waitWitness(defaultPaperPartition, true)
+	e.fault(livePartition, false)
+	e.waitWitness(livePartition, true)
 
 	venue = e.venueKinds()
 	unadopted := e.seedLimit(p+"add-fill", 4502)
@@ -452,31 +456,31 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	e.dropLimits(p + "add-fill")
 	t.Logf("cancellation: a remainder with an unadopted fill stays queued for the scheduler and the add sends no order")
 
-	guard, err := os.Open(e.guard(defaultPaperPartition))
+	guard, err := os.Open(e.guard(livePartition))
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.fault(defaultPaperPartition, true)
-	e.waitWitness(defaultPaperPartition, false)
+	e.fault(livePartition, true)
+	e.waitWitness(livePartition, false)
 	if err := syscall.Flock(int(guard.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
 		t.Fatal(err)
 	}
-	e.fault(defaultPaperPartition, false)
+	e.fault(livePartition, false)
 	daemon.waitFreshCycle()
 	daemon.waitFreshCycle()
-	if pid := meaWitnessPID(t, e.witnessFile(), e.slot(defaultPaperPartition)); pid != 0 {
+	if pid := meaWitnessPID(t, e.witnessFile(), e.slot(livePartition)); pid != 0 {
 		t.Fatalf("a failed guard relock published the clear witness (pid %d)", pid)
 	}
 	venue = e.venueKinds()
 	r = e.run(nil, open("open-shared")...)
-	e.expectRefused(r, "failed relock under shared contention", "holds the paper partition")
+	e.expectRefused(r, "failed relock under shared contention", "holds the live partition")
 	e.expectNoVenue(venue, "failed relock")
 	syscall.Flock(int(guard.Fd()), syscall.LOCK_UN)
-	e.waitWitness(defaultPaperPartition, true)
+	e.waitWitness(livePartition, true)
 	t.Logf("contention: a shared probe that blocked the relock kept entry held after the save succeeded; the next save cleared it")
 
-	e.fault(defaultPaperPartition, true)
-	e.waitWitness(defaultPaperPartition, false)
+	e.fault(livePartition, true)
+	e.waitWitness(livePartition, false)
 	if err := syscall.Flock(int(guard.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +488,7 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := checkManualRegimeHoldGuard(e.layout(), defaultPaperPartition, marker.OwnerNonce); err != nil {
+	if err := checkManualRegimeHoldGuard(e.layout(), livePartition, marker.OwnerNonce); err != nil {
 		t.Fatalf("a foreign exclusive lock should look clear to the lock-only probe: %v", err)
 	}
 	r = e.run(nil, open("open-excl")...)
@@ -492,8 +496,8 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	e.expectNoVenue(venue, "foreign exclusive guard lock")
 	syscall.Flock(int(guard.Fd()), syscall.LOCK_UN)
 	guard.Close()
-	e.fault(defaultPaperPartition, false)
-	e.waitWitness(defaultPaperPartition, true)
+	e.fault(livePartition, false)
+	e.waitWitness(livePartition, true)
 	if r := e.run(nil, open("open-ok")...); r.code != 0 {
 		t.Fatalf("clear guard after contention:\n%s", r)
 	}
@@ -512,7 +516,7 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 
 	first := e.scheduler()
 	first.waitCycles(1)
-	e.waitWitness(defaultPaperPartition, true)
+	e.waitWitness(livePartition, true)
 	e.armGate(placement)
 	pending = e.runAsync(nil, open("open-swap")...)
 	e.waitGate(placement)
@@ -520,7 +524,7 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	<-first.exited
 	second := e.scheduler()
 	second.waitCycles(1)
-	e.waitWitness(defaultPaperPartition, true)
+	e.waitWitness(livePartition, true)
 	e.releaseGate(placement)
 	r = <-pending
 	e.expectRefused(r, "owner changed before placement", "owner identity changed")
@@ -576,7 +580,7 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 		t.Fatalf("standalone entry while a scheduler waited:\n%s", r)
 	}
 	waiting.waitCycles(1)
-	e.waitWitness(defaultPaperPartition, true)
+	e.waitWitness(livePartition, true)
 	if pid := meaWitnessPID(t, e.witnessFile(), manualRegimeOwnershipWitnessOffset); pid != waiting.cmd.Process.Pid {
 		t.Fatalf("ownership witness pid %d, want the waiting scheduler %d", pid, waiting.cmd.Process.Pid)
 	}

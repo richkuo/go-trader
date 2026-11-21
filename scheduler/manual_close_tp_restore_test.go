@@ -420,7 +420,7 @@ func TestManualCloseProtectionSerialises(t *testing.T) {
 					return nil, false
 				})
 				d := manualCoreDeps{
-					updateSL: func(string, string, string, float64, float64, int64) (*HyperliquidStopLossUpdateResult, string, error) {
+					updateSL: func(hlWriteAuth, string, string, string, float64, float64, int64) (*HyperliquidStopLossUpdateResult, string, error) {
 						visit(!cycleFirst)
 						return &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 1900}, "", nil
 					},
@@ -484,7 +484,7 @@ func TestManualCloseProtectionSerialises(t *testing.T) {
 
 		started := make(chan struct{})
 		d := manualCoreDeps{
-			updateSL: func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			updateSL: func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 				close(started)
 				return &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: triggerPx}, "", nil
 			},

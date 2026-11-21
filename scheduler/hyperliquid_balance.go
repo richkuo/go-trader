@@ -82,18 +82,18 @@ var hlMainnetURL = "https://api.hyperliquid.xyz"
 
 var hyperliquidLiveCloseScript = "shared_scripts/close_hyperliquid_position.py"
 
-type HyperliquidLiveCloser func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error)
+type HyperliquidLiveCloser func(auth hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error)
 
-func defaultHyperliquidLiveCloser(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
-	result, stderr, err := RunHyperliquidClose(hyperliquidLiveCloseScript, symbol, partialSz, cancelStopLossOIDs)
+func defaultHyperliquidLiveCloser(auth hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+	result, stderr, err := RunHyperliquidClose(auth, hyperliquidLiveCloseScript, symbol, partialSz, cancelStopLossOIDs)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "[hl-close] %s stderr: %s\n", symbol, stderr)
 	}
 	return result, err
 }
 
-func defaultHyperliquidForceCloseCloser(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
-	result, stderr, err := RunHyperliquidCloseCancelAfterFill(hyperliquidLiveCloseScript, symbol, partialSz, cancelStopLossOIDs)
+func defaultHyperliquidForceCloseCloser(auth hlWriteAuth, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+	result, stderr, err := RunHyperliquidCloseCancelAfterFill(auth, hyperliquidLiveCloseScript, symbol, partialSz, cancelStopLossOIDs)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "[hl-force-close] %s stderr: %s\n", symbol, stderr)
 	}
@@ -1563,7 +1563,7 @@ func runRegimeDirectionOrphanCloses(
 			continue
 		}
 		partial := sz
-		result, err := closer(sym, &partial, job.CancelOIDs)
+		result, err := closer(hlStrategyWriteAuth(sc, sym, hlWriteClose), sym, &partial, job.CancelOIDs)
 		if err != nil {
 			msg := fmt.Sprintf("[CRITICAL] hl-regime-orphan-close: strategy %s %s %s qty=%.6f failed: %v (regime=%q effective_direction=%q)",
 				job.StrategyID, job.PosSide, sym, sz, err, job.CurrentRegime, job.EffectiveDir)
@@ -1959,7 +1959,7 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 		if stopLossOIDsByCoin != nil {
 			slOIDs = stopLossOIDsByCoin[p.Coin]
 		}
-		result, err := closer(p.Coin, nil, slOIDs)
+		result, err := closer(hlAccountRecoveryWriteAuth(p.Coin, hlWriteClose), p.Coin, nil, slOIDs)
 		if err != nil {
 			report.Errors[p.Coin] = err
 			continue
@@ -2413,7 +2413,7 @@ func runPendingHyperliquidCircuitCloses(
 			}
 			partial := sz
 			cancelOIDs := j.slOIDs[c.Symbol]
-			result, err := closer(c.Symbol, &partial, cancelOIDs)
+			result, err := closer(hlAccountRecoveryWriteAuth(c.Symbol, hlWriteClose), c.Symbol, &partial, cancelOIDs)
 			if err != nil {
 				fmt.Printf("[CRITICAL] hl-circuit-close: strategy %s coin %s sz=%.6f failed: %v\n", j.stratID, c.Symbol, sz, err)
 				allOK = false
