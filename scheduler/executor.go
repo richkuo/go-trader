@@ -835,6 +835,8 @@ type HyperliquidCloseResult struct {
 	CancelStopLossSucceededOIDs []int64           `json:"cancel_stop_loss_succeeded_oids,omitempty"`
 	CancelStopLossFailedOIDs    []int64           `json:"cancel_stop_loss_failed_oids,omitempty"`
 	OrderOutcome                string            `json:"order_outcome,omitempty"`
+
+	CancelStopLossUnacknowledgedOIDs []int64 `json:"cancel_stop_loss_unacknowledged_oids,omitempty"`
 }
 
 type hlSizedCloseRequest struct {
@@ -1849,6 +1851,113 @@ func parseOKXPositionsOutput(stdout []byte, stderrStr string, runErr error) (*OK
 	default:
 		return nil, stderrStr, fmt.Errorf("parse positions output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
 	}
+}
+
+const (
+	okxStrictPositionsContract   = "okx_swap_positions_strict_v1"
+	okxStrictPositionReadTimeout = 30 * time.Second
+	okxStrictPositionMaxStdout   = 4 << 20
+	okxStrictPositionMaxStderr   = 1 << 20
+)
+
+func RunOKXFetchPositionsStrict(ctx context.Context, script string) (okxStrictPositionSnapshot, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopShutdown := context.AfterFunc(shutdownReadOnlyCtx, cancel)
+	defer stopShutdown()
+	pythonSemaphore <- struct{}{}
+	stdout, stderr, runErr := spawnPythonProcessWithEnvLimited(runCtx, script, []string{"--strict"}, nil, okxStrictPositionReadTimeout, nil,
+		pythonOutputLimits{Stdout: okxStrictPositionMaxStdout, Stderr: okxStrictPositionMaxStderr})
+	<-pythonSemaphore
+	snap, err := parseOKXStrictPositionsOutput(stdout, runErr)
+	return snap, string(stderr), err
+}
+
+func parseOKXStrictPositionsOutput(stdout []byte, runErr error) (okxStrictPositionSnapshot, error) {
+	var env struct {
+		Contract  string          `json:"contract"`
+		Account   string          `json:"account"`
+		Positions json.RawMessage `json:"positions"`
+		Error     string          `json:"error"`
+	}
+	parseErr := json.Unmarshal(stdout, &env)
+	switch {
+	case parseErr == nil && env.Error != "":
+		return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions read failed: %s", env.Error)
+	case runErr != nil:
+		return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions subprocess failed: %v", runErr)
+	case parseErr != nil:
+		return okxStrictPositionSnapshot{}, fmt.Errorf("parse strict positions output: %v (stdout: %s)", parseErr, string(stdout))
+	}
+	if env.Contract != okxStrictPositionsContract {
+		return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions output has contract %q, want %q (an older script cannot prove flat)", env.Contract, okxStrictPositionsContract)
+	}
+	if strings.TrimSpace(env.Account) == "" {
+		return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions output names no account")
+	}
+	if len(env.Positions) == 0 || strings.TrimSpace(string(env.Positions)) == "null" {
+		return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions output has no positions list")
+	}
+	var raws []json.RawMessage
+	if err := json.Unmarshal(env.Positions, &raws); err != nil {
+		return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions output positions is not a list: %w", err)
+	}
+	snap := okxStrictPositionSnapshot{Account: env.Account, Rows: make([]okxStrictPositionRow, 0, len(raws))}
+	seen := map[string]bool{}
+	for i, raw := range raws {
+		var row struct {
+			InstID     *string `json:"inst_id"`
+			InstType   *string `json:"inst_type"`
+			PosSide    *string `json:"pos_side"`
+			MarginMode *string `json:"margin_mode"`
+			Pos        *string `json:"pos"`
+		}
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d is malformed: %w", i, err)
+		}
+		if row.InstID == nil || row.InstType == nil || row.PosSide == nil || row.MarginMode == nil || row.Pos == nil {
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d is missing a required field", i)
+		}
+		if *row.InstType != "SWAP" {
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d has instrument type %q, want SWAP", i, *row.InstType)
+		}
+		coin, _, ok := strings.Cut(*row.InstID, "-")
+		if !ok || coin == "" || !strings.HasSuffix(*row.InstID, "-SWAP") {
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d has instrument %q, which is not a swap instrument", i, *row.InstID)
+		}
+		switch *row.PosSide {
+		case "long", "short", "net":
+		default:
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d (%s) has position side %q", i, *row.InstID, *row.PosSide)
+		}
+		switch *row.MarginMode {
+		case "cross", "isolated":
+		default:
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d (%s) has margin mode %q", i, *row.InstID, *row.MarginMode)
+		}
+		contracts, err := parseStrictVenueSize(*row.Pos)
+		if err != nil {
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict position row %d (%s) pos: %w", i, *row.InstID, err)
+		}
+		switch *row.PosSide {
+		case "long":
+			contracts = math.Abs(contracts)
+		case "short":
+			contracts = -math.Abs(contracts)
+		}
+		key := *row.InstID + "|" + *row.PosSide + "|" + *row.MarginMode
+		if seen[key] {
+			return okxStrictPositionSnapshot{}, fmt.Errorf("strict positions output has more than one %s %s %s row", *row.InstID, *row.PosSide, *row.MarginMode)
+		}
+		seen[key] = true
+		snap.Rows = append(snap.Rows, okxStrictPositionRow{
+			InstID: *row.InstID, Coin: coin, PosSide: *row.PosSide, MarginMode: *row.MarginMode, Contracts: contracts,
+		})
+	}
+	return snap, nil
 }
 
 type OKXBalanceResult struct {

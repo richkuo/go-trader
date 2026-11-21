@@ -141,6 +141,52 @@ def _assert_admission_matches_fixture(tmp_path, case):
         assert case.get("note"), "a Python-only refusal must document why it is stricter"
 
 
+ZERO_TRAILING_PCT_HIDDEN = {
+    "zero_trailing_pct_hides_stop_pct": ["stop_loss_pct"],
+    "zero_trailing_pct_hides_margin_pct": ["stop_loss_margin_pct"],
+    "zero_trailing_pct_hides_trailing_atr": ["trailing_stop_atr_mult"],
+}
+
+
+def _assert_zero_trailing_pct_refusal(err: CloseCapabilityError, hidden: list) -> None:
+    mine = [r for r in err.reasons
+            if r["reason_code"] == "UNSUPPORTED_STOP_OWNER" and r["feature"] == "trailing_stop_pct"]
+    assert len(mine) == 1, err.reasons
+    assert list(mine[0]["details"]["conflicting_fields"]) == hidden, mine[0]
+    for key in hidden:
+        assert key in mine[0]["details"]["message"], mine[0]
+
+
+def _direct_stop_kwargs(strategy: dict) -> dict:
+    kwargs = {"platform": "hyperliquid"}
+    for key, value in strategy.items():
+        kwargs[key] = value / 100.0 if key.endswith("_pct") else value
+    return kwargs
+
+
+def test_zero_trailing_pct_refuses_each_hidden_stop_owner(tmp_path, subtests):
+    admission = {c["id"]: c for c in FIXTURE["admission"]}
+    combined = {"strategy": {"trailing_stop_pct": 0, "stop_loss_pct": 2,
+                             "trailing_stop_atr_mult": 2}}
+    cases = [(case_id, admission[case_id], hidden)
+             for case_id, hidden in ZERO_TRAILING_PCT_HIDDEN.items()]
+    cases.append(("combined", combined, ["stop_loss_pct", "trailing_stop_atr_mult"]))
+    for case_id, case, hidden in cases:
+        with subtests.test(case=case_id, admission="live_config"):
+            case_dir = tmp_path / case_id
+            case_dir.mkdir()
+            with pytest.raises(CloseCapabilityError) as exc:
+                _load(case_dir, case)
+            _assert_zero_trailing_pct_refusal(exc.value, hidden)
+        with subtests.test(case=case_id, admission="direct"):
+            with pytest.raises(CloseCapabilityError) as exc:
+                Backtester(**_direct_stop_kwargs(case["strategy"]))
+            _assert_zero_trailing_pct_refusal(exc.value, hidden)
+    for case_id in ("explicit_zero_trailing_pct_disables", "zero_trailing_pct_keeps_fixed_atr"):
+        with subtests.test(case=case_id, admission="direct_accepts"):
+            Backtester(**_direct_stop_kwargs(GEOMETRY[case_id]["strategy"]))
+
+
 def test_engine_geometry_matches_real_go_functions(tmp_path, subtests):
     for case in FIXTURE["geometry"]:
         with subtests.test(case=case["id"]):

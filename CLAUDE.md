@@ -49,7 +49,8 @@ After any source edit run `python3 -I scripts/agent_guide.py`,verify with `bash 
   - Corrupt pos(qty/avgCost<=0)=zero-PnL `*_corrupt` leg,cash untouched.
   - Latch:ONE owner/cycle+partition;`DrawdownReadingSubstituted` always labelled;untrusted over-limit defers,never vetoes.
   - Paper `equityTrusted`=true.
-  - `ResetPortfolioKillSwitchManual`=sole DM reset;`AutoResetConfirmedFlatKillSwitch`/`ClearLatchedKillSwitchSharedWallet` `ScopeLive` only.
+  - `ResetPortfolioKillSwitchManual`=sole DM reset,applied ONLY at cycle boundary(prompt code+latch instance);`AutoResetConfirmedFlatKillSwitch` live+paper;`ClearLatchedKillSwitchSharedWallet` `ScopeLive` only.
+  - Every reset keeps peak+sets `PeakRebaselinePending`;new peak ONLY first eligible reading(`scopePeakRebaselineEligible`),ONE `SavePartition` tx;new latch cancels;pending blocks peak raise(zero peak still seeds)+basis migrations.
   - `daily_loss.go`:hold-only,UNLATCHED pure read,PRE-FEE realized PnL,never force-closes,per partition;new `portfolio_risk` gates copy it.
   - `exposure_cap.go`:blocking-only,direction-aware;1 exposure model `computeAssetDeltas`(+`ComputeCorrelation`).
   - `notional_cap.go`:hold-only via `pausedBlocksSignal`,never skips cycle,restart-required.
@@ -80,7 +81,7 @@ After any source edit run `python3 -I scripts/agent_guide.py`,verify with `bash 
 - Wire failure notifier per new `run*Check`.
 - Shared wallet:PRE-FEE `realized_pnl`,net via `tradeNetPnL*`.
 - Pool budgeting:2+ live HL/OKX perps omit capital fields,`margin_per_trade_usd`>0;allocated-pool flat-only.
-- Kill switch:`planKillSwitchClose`>`OnChainConfirmedFlat`;reset prompt single-flight;cancel each `pending_limit_orders` ROW pre-flatten;never gate `reconcilePendingLimitOrders` on kill-switch;cancel!=adoption,never auto-delete unadopted fill.
+- Kill switch:`planKillSwitchClose`>`OnChainConfirmedFlat`;HL/OKX perps flat ONLY via strict account-bound read after last close attempt(any nonzero row blocks,closer reply=report);reset prompt single-flight;cancel each `pending_limit_orders` ROW pre-flatten;never gate `reconcilePendingLimitOrders` on kill-switch;cancel!=adoption,never auto-delete unadopted fill.
 - Orphan limit cancel:cancel-only lane,status-FIRST finalize,books NO fill;`orphanLimitCancelState`=SSoT(off-book fill=UNTRACKED POSITION).
 - `limitFillExposure*`:books limit fill ONLY once live exposure confirms;per-coin aggregate,never per-row greedy;fail-closed same-dir+contained;`unreadable`/`unbacked` refuse book+block delete
 - Manual limit fill=book+trade+`book_filled_size` seal ONE primary tx,publish after commit;delete ONLY `FinalizePendingLimitOrder`;unsealed/ownerless positive row=operator review,never adopt/resize/delete;unappliable row=operator marker+alert,peers commit;cancel/TTL needs resting flag only,never fill completeness

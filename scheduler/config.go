@@ -2322,6 +2322,25 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if pct > 0 && (fixedPct > 0 || marginPct > 0) {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct is mutually exclusive with stop_loss_pct and stop_loss_margin_pct", prefix))
 			}
+			if pct == 0 && sc.Type == "perps" && sc.Platform == "hyperliquid" {
+				var hidden, hiddenNames []string
+				addHidden := func(name string, v float64) {
+					hidden = append(hidden, fmt.Sprintf("%s=%g", name, v))
+					hiddenNames = append(hiddenNames, name)
+				}
+				if marginPct > 0 {
+					addHidden("stop_loss_margin_pct", marginPct)
+				}
+				if fixedPct > 0 {
+					addHidden("stop_loss_pct", fixedPct)
+				}
+				if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
+					addHidden("trailing_stop_atr_mult", *sc.TrailingStopATRMult)
+				}
+				if len(hidden) > 0 {
+					errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct=0 explicitly disables the stop and would hide %s, so the strategy would run without the hidden stop; remove trailing_stop_pct to use the other stop, or remove %s to keep the opt-out (stop_loss_atr_mult may stay alongside trailing_stop_pct=0)", prefix, strings.Join(hidden, ", "), strings.Join(hiddenNames, " and ")))
+				}
+			}
 		}
 
 		for _, msg := range validateHLStopWithinBankruptcyBound(sc) {
