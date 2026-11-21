@@ -25,8 +25,13 @@ SPAN_RE = re.compile(r"``.+?``|`[^`]+`")
 GUARD_RE = re.compile(r"`([\w./*-]+\.(?:go|py|sh))`")
 TEST_EXCLUDES = (":(exclude,glob)**/*_test.go", ":(exclude,glob)**/test_*", ":(exclude,glob)**/*.md", ":(exclude,glob).claude/**", ":(exclude)scripts/agent_guide.py", ":(exclude)scripts/check_agent_docs_fixtures.sh")
 CLOSURES = (
-    ("hedge.md", "names a hedge", ("-i", "-e", "hedge"), (":(glob)scheduler/*.go",)),
-    ("robinhood.md", "names GO_TRADER_ROBINHOOD_SESSION_DIR", ("-e", "GO_TRADER_ROBINHOOD_SESSION_DIR"), (":(glob)**",)),
+    ("deploy.md", "names update_git or update_resolve_tool", ("-F", "-e", "update_git", "-e", "update_resolve_tool"), (":(glob)scripts/**",)),
+    ("discord.md", "names opsCommandNames or slashCommands(", ("-F", "-e", "opsCommandNames", "-e", "slashCommands("), (":(glob)scheduler/*.go",)),
+    ("hedge.md", "names a hedge", ("-F", "-i", "-e", "hedge"), (":(glob)scheduler/*.go",)),
+    ("market-feed.md", "names hlInfoPost, feedMu or weight_reserve", ("-F", "-e", "hlInfoPost", "-e", "feedMu", "-e", "weight_reserve"), (":(glob)scheduler/*.go",)),
+    ("merge-paper.md", "names LoadConfigReadOnly or resolveChannel(", ("-F", "-e", "LoadConfigReadOnly", "-e", "resolveChannel("), (":(glob)scheduler/*.go",)),
+    ("robinhood.md", "names GO_TRADER_ROBINHOOD_SESSION_DIR", ("-F", "-e", "GO_TRADER_ROBINHOOD_SESSION_DIR"), (":(glob)**",)),
+    ("ui.md", "names uiPartitionParam or spawnPythonProcessWithEnv", ("-F", "-e", "uiPartitionParam", "-e", "spawnPythonProcessWithEnv"), (":(glob)scheduler/*.go",)),
 )
 
 

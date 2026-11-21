@@ -218,6 +218,48 @@ g add -A
 expect fail "file names the Robinhood session directory with no robinhood.md glob" "robinhood.md: shared_tools/zz_session_probe.py names GO_TRADER_ROBINHOOD_SESSION_DIR but matches no paths: glob"
 
 case_start
+mkdir -p "$repo/scripts"
+printf 'update_git status\n' >"$repo/scripts/zz_deploy_probe.sh"
+g add -A
+expect fail "script names update_git with no deploy.md glob" "deploy.md: scripts/zz_deploy_probe.sh names update_git or update_resolve_tool but matches no paths: glob"
+
+case_start
+mkdir -p "$repo/scheduler"
+printf 'package main\n\nvar zz = opsCommandNames\n' >"$repo/scheduler/zz_ops_probe.go"
+g add -A
+expect fail "scheduler file names opsCommandNames with no discord.md glob" "discord.md: scheduler/zz_ops_probe.go names opsCommandNames or slashCommands( but matches no paths: glob"
+
+case_start
+mkdir -p "$repo/scheduler"
+printf 'package main\n\nvar zz = opsCommandNames\n' >"$repo/scheduler/zz_ops_probe_test.go"
+g add -A
+expect pass "opsCommandNames in a scheduler test file needs no discord.md glob"
+
+case_start
+mkdir -p "$repo/scheduler"
+printf 'package main\n\nvar zz = hlInfoPost\n' >"$repo/scheduler/zz_info_probe.go"
+g add -A
+expect fail "scheduler file names hlInfoPost with no market-feed.md glob" "market-feed.md: scheduler/zz_info_probe.go names hlInfoPost, feedMu or weight_reserve but matches no paths: glob"
+
+case_start
+mkdir -p "$repo/scheduler"
+printf 'package main\n\nvar zz = LoadConfigReadOnly\n' >"$repo/scheduler/zz_merge_probe.go"
+g add -A
+expect fail "scheduler file names LoadConfigReadOnly with no merge-paper.md glob" "merge-paper.md: scheduler/zz_merge_probe.go names LoadConfigReadOnly or resolveChannel( but matches no paths: glob"
+
+case_start
+mkdir -p "$repo/scheduler"
+printf 'package main\n\nvar zz = uiPartitionParam\n' >"$repo/scheduler/zz_ui_probe.go"
+g add -A
+expect fail "scheduler file names uiPartitionParam with no ui.md glob" "ui.md: scheduler/zz_ui_probe.go names uiPartitionParam or spawnPythonProcessWithEnv but matches no paths: glob"
+
+case_start
+mkdir -p "$repo/docs/test-reduction"
+printf 'LoadConfigReadOnly update_git opsCommandNames\n' >"$repo/docs/test-reduction/zz-suite.jsonl"
+g add -A
+expect pass "guarded names in a docs data file need no glob"
+
+case_start
 g rm -q .claude/rules/hedge.md
 python3 -I -c 'import sys; p = sys.argv[1]; t = open(p).read(); open(p, "w").write("".join(l for l in t.splitlines(True) if "rules/hedge.md" not in l))' "$repo/CLAUDE.md"
 regen
