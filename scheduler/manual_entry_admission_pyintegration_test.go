@@ -719,3 +719,136 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	e.expectNoVenue(venue, "dry-run and record-only")
 	t.Logf("unchanged: dry-run and record-only need no entry admission")
 }
+
+func meaLiveStrategy(id string) map[string]any {
+	sc := meaPlainStrategy(id)
+	sc["args"] = []any{"hold", "BTC", "1m", "--mode=live"}
+	return sc
+}
+
+func (e *meaEnv) waitFile(path string, want bool, what string) {
+	e.t.Helper()
+	deadline := time.Now().Add(150 * time.Second)
+	for {
+		_, err := os.Stat(path)
+		if (err == nil) == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			e.t.Fatalf("%s: %s present=%v never reached %v", what, path, err == nil, want)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func regimeReadinessEntryLimitRecovery(t *testing.T, mode string) {
+	t.Helper()
+	p := "lr-"
+	strategies := []any{meaPlainStrategy(p + "paper")}
+	for _, name := range []string{"open", "limit", "add", "open-after", "open-final", "solo", "solo-held"} {
+		strategies = append(strategies, meaLiveStrategy(p+name))
+	}
+	e := newMEAEnv(t, mode, strategies)
+	meaSeed(e, p+"add")
+	queue := t.TempDir()
+	block := filepath.Join(queue, "block")
+	unreadable := filepath.Join(queue, "unreadable")
+	if err := os.WriteFile(block, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if mode == "shared" {
+		feed := e.startFeed()
+		defer feed.stop()
+	}
+	daemon := e.startDaemon(e.cfg, e.port, manualEntryTestSaveFaultEnv+"="+e.faults, limitQueueTestFaultEnv+"="+queue)
+	e.waitFile(filepath.Join(queue, "blocked"), true, "first queue pass")
+	e.waitWitness(defaultPaperPartition, true)
+	if pid := meaWitnessPID(t, e.witnessFile(), e.slot(livePartition)); pid != 0 {
+		t.Fatalf("%s: the live partition published a clear witness (pid %d) before the first queue pass", mode, pid)
+	}
+	atr := []string{"--atr", "0.5"}
+	open := func(id string) []string {
+		return append([]string{"manual-open", p + id, "--size", "0.01"}, atr...)
+	}
+	limitPx := strconv.FormatFloat(mrpMark()*0.9, 'f', 2, 64)
+	limit := append([]string{"manual-open", p + "limit", "--size", "0.01", "--limit-price", limitPx}, atr...)
+	add := []string{"manual-add", p + "add", "--size", "0.01"}
+	startup := "has not finished its first pass over the resting limit order queue"
+	venue := e.venueKinds()
+	for _, c := range []struct {
+		what string
+		args []string
+	}{{"market open", open("open")}, {"limit open", limit}, {"add", add}} {
+		r := e.run(nil, c.args...)
+		e.expectRefused(r, mode+" startup "+c.what, "holds the live partition", startup)
+		t.Logf("%s startup hold: %s refused: %s", mode, c.what, strings.TrimSpace(r.stderr))
+	}
+	e.expectNoRows(mode+" startup hold", venue, p+"open", p+"limit", p+"add")
+	if r := e.run(nil, open("paper")...); r.code != 0 {
+		t.Fatalf("%s: the live startup hold blocked a paper open:\n%s", mode, r)
+	}
+	t.Logf("%s startup hold: a paper open placed while the live partition waited for its first queue pass", mode)
+
+	if err := os.WriteFile(unreadable, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(block)
+	daemon.waitLog("an unreadable limit queue", 120*time.Second, func(out string) bool {
+		return strings.Contains(out, "controlled limit queue read failure")
+	})
+	venue = e.venueKinds()
+	r := e.run(nil, open("open")...)
+	e.expectRefused(r, mode+" unreadable queue", "holds the live partition", "the resting limit order queue could not be read")
+	causePath := manualRegimeHoldCausePath(filepath.Join(e.dir, "state.db"), livePartition)
+	foreign := manualRegimeHoldCauseMarker{Version: manualRegimeHoldCauseVersion, OwnerNonce: strings.Repeat("ef", manualRegimeOwnerNonceBytes), Partition: livePartition.String(), Causes: []string{persistenceHoldLimitQueueUnread}}
+	if err := writeManualRegimeJSONFile(causePath, foreign); err != nil {
+		t.Fatal(err)
+	}
+	r = e.run(nil, open("open")...)
+	e.expectRefused(r, mode+" foreign cause", "holds the live partition", "attests no clear persistence guard (a state save failed")
+	if strings.Contains(r.stderr, "could not be read") {
+		t.Fatalf("%s: a cause bound to another owner was reported as verified:\n%s", mode, r)
+	}
+	e.expectNoVenue(venue, mode+" unreadable queue")
+	t.Logf("%s unreadable queue: the verified cause was named, and a foreign cause fell back to the general refusal", mode)
+
+	os.Remove(unreadable)
+	e.waitWitness(livePartition, true)
+	if _, err := os.Stat(causePath); err == nil {
+		t.Fatalf("%s: the cleared live partition kept a hold cause file", mode)
+	}
+	if r := e.run(nil, open("open-after")...); r.code != 0 {
+		t.Fatalf("%s: a live open after a readable queue pass:\n%s\n%s", mode, r, mrpTimeline(daemon.output()))
+	}
+	t.Logf("%s: after a readable pass with no remaining recovery hold, the live witness cleared and a live open placed", mode)
+
+	placement := "before placement"
+	venue = e.venueKinds()
+	e.armGate(placement)
+	pending := e.runAsync(nil, open("open-final")...)
+	e.waitGate(placement)
+	if err := os.WriteFile(unreadable, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.waitWitness(livePartition, false)
+	e.releaseGate(placement)
+	r = <-pending
+	e.expectRefused(r, mode+" hold before placement", "holds the live partition", "could not be read")
+	e.expectNoRows(mode+" hold before placement", venue, p+"open-final")
+	t.Logf("%s: a queue hold raised after admission refused the final check under the manual-action lock", mode)
+	os.Remove(unreadable)
+	e.waitWitness(livePartition, true)
+	daemon.stop()
+
+	venue = e.venueKinds()
+	if r := e.run(nil, open("solo")...); r.code != 0 {
+		t.Fatalf("%s: a standalone live open with an empty readable queue:\n%s", mode, r)
+	}
+	e.seedLimit(p+"limit", 4601)
+	r = e.run(nil, open("solo-held")...)
+	e.expectRefused(r, mode+" standalone row", "live resting limit order queue holds 1 row(s)", p+"limit/BTC oid=4601")
+	if got := e.venueKinds(); got["execute"] != venue["execute"]+1 {
+		t.Fatalf("%s standalone: venue %v -> %v", mode, venue, got)
+	}
+	t.Logf("%s standalone: an empty live queue let the open place; a zero-watermark row of another strategy refused the next one", mode)
+}

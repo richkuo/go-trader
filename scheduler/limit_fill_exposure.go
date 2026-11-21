@@ -280,11 +280,15 @@ func limitOperatorMarkerNote(o PendingLimitOrder, markerNew bool) string {
 	return fmt.Sprintf("• The scheduler recorded durable terminal, off-book proof on this row and marked it as needing an operator. `go-trader manual-clear-limit-row %d --flattened` now accepts it after you flatten the position by hand, and it books nothing\n", o.OrderOID)
 }
 
-func limitUnbookableFlattenInstruction(o PendingLimitOrder, executed float64, aboveBooked bool) string {
-	if aboveBooked {
-		unbooked := executed - o.FilledSize
+func limitUnbookableFlattenInstruction(o PendingLimitOrder, p limitRowProof) string {
+	if p.ProvenAboveBooked() {
+		unbooked := p.Executed - o.FilledSize
 		return fmt.Sprintf("• This order executed %.6f %s and the scheduler booked %.6f of it, so %.6f was never booked. Flatten on Hyperliquid ONLY that unbooked %.6f if it is still open, and do NOT close size the scheduler's book holds. Then clear the record with `go-trader manual-clear-limit-row %d --flattened` — the command books nothing\n",
-			executed, o.Symbol, o.FilledSize, unbooked, unbooked, o.OrderOID)
+			p.Executed, o.Symbol, o.FilledSize, unbooked, unbooked, o.OrderOID)
+	}
+	if p.WatermarkUnproven {
+		return fmt.Sprintf("• The scheduler cannot prove that the %.6f %s fill this row records reached its book. Do NOT close the position the scheduler's book holds. Compare the %s position on Hyperliquid with the book: if they match, nothing needs flattening; flatten ONLY size the book does not hold. Then clear the record with `go-trader manual-clear-limit-row %d --flattened` — the command discards the record, books nothing and leaves the ledger as it is\n",
+			o.FilledSize, o.Symbol, o.Symbol, o.OrderOID)
 	}
 	return fmt.Sprintf("• The venue confirms the %.6f %s fill this row records, so no size from this order is known to be outside the book. Do NOT close the position the scheduler's book holds. Compare the %s position on Hyperliquid with the book: if they match, nothing needs flattening; flatten ONLY size the book does not hold. Then clear the record with `go-trader manual-clear-limit-row %d --flattened` — the command books nothing\n",
 		o.FilledSize, o.Symbol, o.Symbol, o.OrderOID)
@@ -299,7 +303,7 @@ func limitUnbookableOperatorNote(o PendingLimitOrder, p limitRowProof, markerNew
 	if markerNew {
 		note = "• The scheduler recorded durable terminal, off-book proof on this row and marked it as needing an operator\n"
 	}
-	return note + limitUnbookableFlattenInstruction(o, p.Executed, p.ProvenAboveBooked())
+	return note + limitUnbookableFlattenInstruction(o, p)
 }
 
 func formatLimitFillExposureDM(o PendingLimitOrder, exchangeFill float64, d limitFillExposureDecision, markerNew bool) string {
@@ -425,6 +429,9 @@ type limitFillCandidate struct {
 	booked          int
 	finalized       bool
 	committed       bool
+	binding         string
+	commitFailed    bool
+	review          bool
 	positions       []HLPosition
 	readErr         error
 }
@@ -478,6 +485,7 @@ func applyCoinLimitFills(
 	captured := make(map[string]*[]ReplayDecision)
 	var bookIDs []string
 	var marks []limitFillWatermark
+	var markRows []*limitFillCandidate
 	for i, r := range rows {
 		id := r.order.StrategyID
 		st := staged[id]
@@ -500,10 +508,12 @@ func applyCoinLimitFills(
 			continue
 		}
 		marks = append(marks, limitFillWatermark{
-			ID: r.order.ID, OrderOID: r.order.OrderOID, StrategyID: id,
-			PriorFilled: r.order.FilledSize, PriorFee: r.order.FillFee,
+			ID: r.order.ID, OrderOID: r.order.OrderOID, StrategyID: id, Symbol: r.order.Symbol, Side: r.order.Side,
+			PriorFilled: r.order.FilledSize, PriorAvgPx: r.order.AvgFillPrice, PriorFee: r.order.FillFee,
+			PriorVersion: r.order.FillProofVersion, PriorBinding: r.order.FillProofBinding,
 			Filled: r.proof.Executed, AvgPx: r.avgPx, Fee: r.status.Fee,
 		})
+		markRows = append(markRows, r)
 		r.committed = true
 		if !containsString(bookIDs, id) {
 			bookIDs = append(bookIDs, id)
@@ -521,7 +531,15 @@ func applyCoinLimitFills(
 		for _, r := range rows {
 			r.committed = false
 		}
+		for _, r := range markRows {
+			r.commitFailed = true
+		}
 		return decision, trades, errs, err
+	}
+	for i, r := range markRows {
+		r.binding = marks[i].Binding
+		fmt.Printf("[limit] committed fill: %s %s %.6f %s (was %.6f) @ $%.4f fee $%.4f (oid=%d)\n",
+			r.order.StrategyID, r.order.Side, marks[i].Filled, r.order.Symbol, marks[i].PriorFilled, marks[i].AvgPx, marks[i].Fee, r.order.OrderOID)
 	}
 	for _, id := range bookIDs {
 		live := state.Strategies[id]

@@ -21,15 +21,12 @@ type killSwitchLimitOrderDeps struct {
 	Cancel              func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
 	Status              func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error)
 	Delete              func(o PendingLimitOrder) error
-	Flush               func() error
-	VerifyWatermark     func(o PendingLimitOrder) string
 	MarkCancelRequested func(strategyID, symbol string) (int64, error)
 	Now                 func() time.Time
 }
 
 func (d killSwitchLimitOrderDeps) wired() bool {
-	return d.Cancel != nil && d.Status != nil && d.Delete != nil &&
-		d.Flush != nil && d.MarkCancelRequested != nil
+	return d.Cancel != nil && d.Status != nil && d.Delete != nil && d.MarkCancelRequested != nil
 }
 
 func (d killSwitchLimitOrderDeps) now() time.Time {
@@ -109,7 +106,7 @@ func collectKillSwitchLimitOrderCandidates(orders []PendingLimitOrder, roster []
 		candidates = append(candidates, killSwitchLimitOrderCandidate{
 			Row:           o,
 			Script:        script,
-			AdoptionBlock: killSwitchLimitOrderAdoptionBlock(sc, known),
+			AdoptionBlock: limitRowOwnerBlock(sc, known, o),
 		})
 	}
 	return candidates, unscripted
@@ -237,17 +234,13 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			unresolve("cancel unverified: " + limitOffBookUnverified(proof))
 			continue
 		}
-		if deps.VerifyWatermark != nil {
-			if why := deps.VerifyWatermark(o); why != "" {
-				unresolve("order is off-book but " + why + " — queue row kept as the recovery record")
-				continue
-			}
+		if why := limitWatermarkUnproven(o); why != "" {
+			unresolve("order is off-book but " + why + " — queue row kept as the recovery record for an operator; the flatten proceeded and automatic reset waits until the row is cleared")
+			continue
 		}
-		if o.FilledSize > 0 {
-			if err := deps.Flush(); err != nil {
-				unresolve(fmt.Sprintf("order is off-book but its adopted fill %.6f could not be flushed to the state DB (%v) — queue row kept as the recovery record", o.FilledSize, err))
-				continue
-			}
+		if !c.adoptionEligible() && o.FilledSize > limitFillEpsilon {
+			unresolve(fmt.Sprintf("order is off-book but its owner cannot carry the %.6f this order booked because %s — queue row kept for review; the flatten proceeded and automatic reset waits until the row is cleared", o.FilledSize, c.AdoptionBlock))
+			continue
 		}
 		if err := deps.Delete(o); err != nil {
 			unresolve(fmt.Sprintf("order is off-book but the queue row could not be cleared (%v)", err))

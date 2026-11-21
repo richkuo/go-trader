@@ -31,6 +31,8 @@ type limitRowProof struct {
 
 	Unbookable string
 
+	WatermarkUnproven bool
+
 	OpenOrdersError string
 }
 
@@ -228,6 +230,7 @@ type limitRowOperatorEvidence struct {
 	FillsProven  bool      `json:"fills_proven"`
 	Permanent    bool      `json:"fill_proof_permanent"`
 	Unbookable   bool      `json:"unbookable"`
+	Unproven     bool      `json:"watermark_unproven,omitempty"`
 	Reason       string    `json:"reason"`
 	ObservedAt   time.Time `json:"observed_at"`
 }
@@ -244,6 +247,7 @@ func limitOperatorEvidenceFor(o PendingLimitOrder, p limitRowProof, reason strin
 		FillsProven:  p.Proven,
 		Permanent:    p.Permanent,
 		Unbookable:   p.Unbookable != "",
+		Unproven:     p.WatermarkUnproven,
 		Reason:       reason,
 		ObservedAt:   now.UTC(),
 	}
@@ -303,7 +307,8 @@ func limitOperatorEvidenceRefusal(o PendingLimitOrder) string {
 
 var limitEntryResyncHolds = struct {
 	sync.Mutex
-	keys map[string]bool
+	keys       map[string]bool
+	unreadable bool
 }{keys: map[string]bool{}}
 
 func publishLimitEntryResyncHolds(orders []PendingLimitOrder) {
@@ -313,6 +318,13 @@ func publishLimitEntryResyncHolds(orders []PendingLimitOrder) {
 	}
 	limitEntryResyncHolds.Lock()
 	limitEntryResyncHolds.keys = keys
+	limitEntryResyncHolds.unreadable = false
+	limitEntryResyncHolds.Unlock()
+}
+
+func holdLimitEntryResyncUnreadable() {
+	limitEntryResyncHolds.Lock()
+	limitEntryResyncHolds.unreadable = true
 	limitEntryResyncHolds.Unlock()
 }
 
@@ -322,7 +334,7 @@ func limitEntryResyncHeld(strategyID, symbol string) bool {
 	}
 	limitEntryResyncHolds.Lock()
 	defer limitEntryResyncHolds.Unlock()
-	return limitEntryResyncHolds.keys[hlStopFillKey(strategyID, symbol)]
+	return limitEntryResyncHolds.unreadable || limitEntryResyncHolds.keys[hlStopFillKey(strategyID, symbol)]
 }
 
 func limitEntryTradeLineage(store *StateStore, o PendingLimitOrder) (string, string, bool) {
@@ -342,14 +354,46 @@ func limitEntryTradeLineage(store *StateStore, o PendingLimitOrder) (string, str
 	return positionIDs[0], "", false
 }
 
-func verifyLimitWatermarkDurable(store *StateStore, o PendingLimitOrder) (string, bool) {
-	if o.FillProofVersion >= limitFillProofVersionAtomic || o.FilledSize <= limitFillEpsilon {
-		return "", false
+func limitWatermarkUnproven(o PendingLimitOrder) string {
+	if o.FilledSize <= limitFillEpsilon || o.FillProofBound {
+		return ""
 	}
-	if _, why, final := limitEntryTradeLineage(store, o); why != "" {
-		return "the row's fill watermark predates atomic booking and " + why, final
+	return fmt.Sprintf("the row's fill watermark %.8f carries no proof that it committed in one transaction with its book, fee and trades (it was written before atomic booking, or an older build advanced it), and neither matching trade totals nor a proof version can show that the book holds it", o.FilledSize)
+}
+
+func holdUnprovenLimitWatermark(p *limitRowProof, o PendingLimitOrder) bool {
+	why := limitWatermarkUnproven(o)
+	if why == "" {
+		return false
 	}
-	return "", false
+	if p.Hold == "" {
+		p.Hold = why
+	}
+	p.Unbookable = why
+	p.WatermarkUnproven = true
+	return true
+}
+
+func limitRowOwnerBlock(sc StrategyConfig, known bool, o PendingLimitOrder) string {
+	if block := killSwitchLimitOrderAdoptionBlock(sc, known); block != "" {
+		return block
+	}
+	if coin := strings.TrimSpace(sc.Symbol); coin != "" && coin != o.Symbol {
+		return fmt.Sprintf("the strategy is configured for %s, not the row's %s", coin, o.Symbol)
+	}
+	return ""
+}
+
+func holdIneligibleLimitOwner(p *limitRowProof, o PendingLimitOrder, block string) bool {
+	if block == "" || o.FilledSize <= limitFillEpsilon {
+		return false
+	}
+	why := fmt.Sprintf("its owner cannot carry the %.8f this order already booked because %s, so the row stays for review", o.FilledSize, block)
+	if p.Hold == "" {
+		p.Hold = why
+	}
+	p.Unbookable = why
+	return true
 }
 
 func verifyLimitIncrementLineage(store *StateStore, state *AppState, o PendingLimitOrder) (string, bool) {
@@ -381,9 +425,11 @@ func (st *StateStore) tryLiveManualActionLock() (func(), error) {
 }
 
 func limitRowUnchanged(a, b PendingLimitOrder) bool {
-	return a.ID == b.ID && a.OrderOID == b.OrderOID && a.StrategyID == b.StrategyID && a.Symbol == b.Symbol &&
+	return a.ID == b.ID && a.OrderOID == b.OrderOID && a.StrategyID == b.StrategyID && a.storedOwner == b.storedOwner &&
+		a.Symbol == b.Symbol && a.Side == b.Side &&
 		a.FilledSize == b.FilledSize && a.FillFee == b.FillFee && a.AvgFillPrice == b.AvgFillPrice &&
-		a.FillProofVersion == b.FillProofVersion
+		a.FillProofVersion == b.FillProofVersion && a.FillProofBinding == b.FillProofBinding &&
+		a.OperatorEvidenceJSON == b.OperatorEvidenceJSON
 }
 
 func recheckLimitRow(store *StateStore, o PendingLimitOrder) string {

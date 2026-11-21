@@ -111,9 +111,7 @@ func limitStatusWithUnprovenFills(st HyperliquidLimitOrderStatus, reason, kind s
 func seedLimitFillLineage(t *testing.T, db *StateDB, rowID int64, strategyID, symbol string, oid int64, qty, px float64, positionID string) {
 	t.Helper()
 	if rowID > 0 {
-		if _, err := db.db.Exec("UPDATE pending_limit_orders SET fill_proof_version = ? WHERE id = ?", limitFillProofVersionAtomic, rowID); err != nil {
-			t.Fatalf("stamp atomic watermark: %v", err)
-		}
+		stampLimitRowCommitProof(t, db, rowID)
 	}
 	if err := db.InsertTrade(strategyID, Trade{
 		Timestamp: time.Now().UTC(), StrategyID: strategyID, Symbol: symbol, Side: "buy",
@@ -122,4 +120,23 @@ func seedLimitFillLineage(t *testing.T, db *StateDB, rowID int64, strategyID, sy
 	}); err != nil {
 		t.Fatalf("seed limit entry trade: %v", err)
 	}
+}
+
+func stampLimitRowCommitProof(t *testing.T, db *StateDB, rowID int64) {
+	t.Helper()
+	rows, err := db.LoadPendingLimitOrders()
+	if err != nil {
+		t.Fatalf("load row to stamp: %v", err)
+	}
+	for _, o := range rows {
+		if o.ID != rowID {
+			continue
+		}
+		binding := limitFillProofBinding(o.ID, o.OrderOID, o.storedOwner, o.Symbol, o.Side, o.FilledSize, o.AvgFillPrice, o.FillFee)
+		if _, err := db.db.Exec("UPDATE pending_limit_orders SET fill_proof_version = ?, fill_proof_binding = ? WHERE id = ?", limitFillProofVersionAtomic, binding, rowID); err != nil {
+			t.Fatalf("stamp atomic watermark: %v", err)
+		}
+		return
+	}
+	t.Fatalf("row %d not found to stamp", rowID)
 }

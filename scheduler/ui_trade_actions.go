@@ -68,6 +68,13 @@ func (ss *StatusServer) daemonManualCoreDeps(cfg *Config) manualCoreDeps {
 	notifier := ss.uiNotifier
 	ss.strategiesMu.RUnlock()
 	d := newManualCoreDeps(cfg, ss.stateDB, notifier)
+	d.processHold = func(strategyID string) string {
+		part, known := partitionOfStrategyID(configStrategyList(cfg), strategyID)
+		if !known {
+			return "the strategy has no known partition"
+		}
+		return ss.stateDB.persistenceHoldReason(part)
+	}
 	d.loadState = func(strategyID, symbol string) (manualStateView, error) {
 		ss.mu.RLock()
 		defer ss.mu.RUnlock()

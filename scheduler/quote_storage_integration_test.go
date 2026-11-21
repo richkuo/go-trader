@@ -114,9 +114,9 @@ func TestQuoteStorageRevisionsRowOwnershipAndIsolation(t *testing.T) {
 		}
 		before := e.quoteRowSignature(t)
 		_ = e.store.UpdatePendingLimitOrderFill(quoteID, 9, 9, 9)
-		_ = e.store.MarkPendingLimitOrderOperatorRequired(quoteID, quoteOID, e.clock.Now(), `{"oid":1}`)
+		_ = e.store.MarkPendingLimitOrderOperatorRequired(PendingLimitOrder{ID: quoteID, OrderOID: quoteOID}, e.clock.Now(), `{"oid":1}`)
 		_ = e.store.DeletePendingLimitOrderIfUnchanged(PendingLimitOrder{ID: quoteID, OrderOID: quoteOID})
-		_ = e.store.ClearPendingLimitOrderOperatorRequired(quoteID)
+		_ = e.store.ClearPendingLimitOrderOperatorRequired(PendingLimitOrder{ID: quoteID, OrderOID: quoteOID})
 		_ = e.store.DeletePendingLimitOrder(quoteID)
 		if _, err := e.store.MarkPendingLimitOrderCancelRequested(quoteTestOwner, "BTC"); err != nil {
 			t.Fatal(err)

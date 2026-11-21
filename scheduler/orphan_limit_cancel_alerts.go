@@ -137,9 +137,9 @@ func formatOrphanLimitCancelDM(o PendingLimitOrder, block string, outcome orphan
 		fmt.Fprintf(&b, "The order is OFF-BOOK and nothing is resting on Hyperliquid, so no exchange action is needed: %s.\n", outcome.Reason)
 		fmt.Fprintf(&b, "• Its owning strategy %q cannot adopt it because %s, so the cancel-only lane owns the row\n", o.StrategyID, block)
 		if outcome.Proof.Unbookable != "" {
-			b.WriteString("• The row's recorded fill does not match the durable trades of this order, so the scheduler cannot prove what the book holds for it and never deletes the row by itself\n")
+			fmt.Fprintf(&b, "• The scheduler keeps the row for review and never deletes it by itself: %s\n", outcome.Proof.Unbookable)
 			fmt.Fprintf(&b, "• Until the row is cleared, no limit fill on %s is booked\n", o.Symbol)
-			b.WriteString(strings.TrimSuffix(limitUnbookableFlattenInstruction(o, outcome.Proof.Executed, outcome.Proof.ProvenAboveBooked()), "\n"))
+			b.WriteString(strings.TrimSuffix(limitUnbookableFlattenInstruction(o, outcome.Proof), "\n"))
 		} else {
 			b.WriteString("• This is a scheduler bookkeeping failure, and it is not exposure on the exchange\n")
 			b.WriteString("The reconciler retries every cycle and clears the row once the write succeeds.")

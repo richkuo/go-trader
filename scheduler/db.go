@@ -759,6 +759,7 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE portfolio_risk ADD COLUMN peak_rebaseline_pending INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE pending_limit_orders ADD COLUMN operator_evidence_json TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE pending_limit_orders ADD COLUMN fill_proof_version INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE pending_limit_orders ADD COLUMN fill_proof_binding TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -3407,22 +3408,56 @@ type PendingLimitOrder struct {
 	OperatorRequiredSince time.Time
 	OperatorEvidenceJSON  string
 	FillProofVersion      int
+	FillProofBinding      string
+	FillProofBound        bool
 
 	ExpiresAt time.Time
 	CreatedAt time.Time
+
+	storedOwner string
 }
 
 const limitFillProofVersionAtomic = 1
 
+const limitFillProofBindingVersion = "limit-fill-proof/1"
+
+func limitFillProofBinding(id, orderOID int64, storedOwner, symbol, side string, filled, avgPx, fee float64) string {
+	blob, err := json.Marshal([]any{limitFillProofBindingVersion, id, orderOID, storedOwner, symbol, side, filled, avgPx, fee})
+	if err != nil {
+		return ""
+	}
+	return string(blob)
+}
+
+func limitFillProofBindingHolds(o PendingLimitOrder, storedOwner string) bool {
+	if o.FillProofVersion < limitFillProofVersionAtomic || o.FillProofBinding == "" || storedOwner == "" {
+		return false
+	}
+	return o.FillProofBinding == limitFillProofBinding(o.ID, o.OrderOID, storedOwner, o.Symbol, o.Side, o.FilledSize, o.AvgFillPrice, o.FillFee)
+}
+
 type limitFillWatermark struct {
-	ID          int64
-	OrderOID    int64
-	StrategyID  string
-	PriorFilled float64
-	PriorFee    float64
-	Filled      float64
-	AvgPx       float64
-	Fee         float64
+	ID           int64
+	OrderOID     int64
+	StrategyID   string
+	Symbol       string
+	Side         string
+	PriorFilled  float64
+	PriorAvgPx   float64
+	PriorFee     float64
+	PriorVersion int
+	PriorBinding string
+	Filled       float64
+	AvgPx        float64
+	Fee          float64
+	Binding      string
+}
+
+func (sdb *StateDB) limitRowStoredOwner(o PendingLimitOrder) (string, error) {
+	if o.storedOwner != "" {
+		return o.storedOwner, nil
+	}
+	return sdb.toStorageID(o.StrategyID)
 }
 
 func boolToInt(b bool) int {
@@ -3483,7 +3518,13 @@ func (sdb *StateDB) LoadPendingLimitOrders() ([]PendingLimitOrder, error) {
 	} else if has {
 		versionColumn = "fill_proof_version"
 	}
-	rows, err := sdb.db.Query(`SELECT id, strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, operator_required_since, ` + evidenceColumn + `, ` + versionColumn + `, expires_at, created_at, ` + snapshotColumn + ` FROM pending_limit_orders ` + filter + ` ORDER BY id`)
+	bindingColumn := "''"
+	if has, err := sdb.tableHasColumn("pending_limit_orders", "fill_proof_binding"); err != nil {
+		return nil, err
+	} else if has {
+		bindingColumn = "fill_proof_binding"
+	}
+	rows, err := sdb.db.Query(`SELECT id, strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, operator_required_since, ` + evidenceColumn + `, ` + versionColumn + `, ` + bindingColumn + `, expires_at, created_at, ` + snapshotColumn + ` FROM pending_limit_orders ` + filter + ` ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("load pending limit orders: %w", err)
 	}
@@ -3493,9 +3534,11 @@ func (sdb *StateDB) LoadPendingLimitOrders() ([]PendingLimitOrder, error) {
 		var o PendingLimitOrder
 		var cancelInt int
 		var operatorStr, expiresStr, createdStr, snapshotsJSON string
-		if err := rows.Scan(&o.ID, &o.StrategyID, &o.Symbol, &o.Side, &o.OrderOID, &o.LimitPrice, &o.OrderSize, &o.TIF, &o.FilledSize, &o.AvgFillPrice, &o.FillFee, &o.EntryATR, &cancelInt, &operatorStr, &o.OperatorEvidenceJSON, &o.FillProofVersion, &expiresStr, &createdStr, &snapshotsJSON); err != nil {
+		if err := rows.Scan(&o.ID, &o.StrategyID, &o.Symbol, &o.Side, &o.OrderOID, &o.LimitPrice, &o.OrderSize, &o.TIF, &o.FilledSize, &o.AvgFillPrice, &o.FillFee, &o.EntryATR, &cancelInt, &operatorStr, &o.OperatorEvidenceJSON, &o.FillProofVersion, &o.FillProofBinding, &expiresStr, &createdStr, &snapshotsJSON); err != nil {
 			return nil, fmt.Errorf("scan pending limit order: %w", err)
 		}
+		o.storedOwner = o.StrategyID
+		o.FillProofBound = limitFillProofBindingHolds(o, o.storedOwner)
 		o.RegimeSnapshots = parseRegimeSnapshotsJSON(snapshotsJSON)
 		o.CancelRequested = cancelInt != 0
 		if operatorStr != "" {
@@ -3576,14 +3619,22 @@ func (sdb *StateDB) commitLimitFillAdoption(books []*StrategyState, scope Portfo
 	if err := deletePendingManualActionsByID(tx, ackIDs); err != nil {
 		return err
 	}
-	for _, r := range rows {
+	for i := range rows {
+		r := &rows[i]
 		sid, err := sdb.toStorageID(r.StrategyID)
 		if err != nil {
 			return err
 		}
-		res, err := tx.Exec(`UPDATE pending_limit_orders SET filled_size = ?, avg_fill_price = ?, fill_fee = ?, fill_proof_version = ?
-			WHERE id = ? AND order_oid = ? AND strategy_id = ? AND owner_kind = 'manual' AND filled_size = ? AND fill_fee = ?`,
-			r.Filled, r.AvgPx, r.Fee, limitFillProofVersionAtomic, r.ID, r.OrderOID, sid, r.PriorFilled, r.PriorFee)
+		binding := limitFillProofBinding(r.ID, r.OrderOID, sid, r.Symbol, r.Side, r.Filled, r.AvgPx, r.Fee)
+		if binding == "" {
+			return fmt.Errorf("limit row %d (oid=%d) fill proof could not be encoded", r.ID, r.OrderOID)
+		}
+		res, err := tx.Exec(`UPDATE pending_limit_orders SET filled_size = ?, avg_fill_price = ?, fill_fee = ?, fill_proof_version = ?, fill_proof_binding = ?
+			WHERE id = ? AND order_oid = ? AND strategy_id = ? AND symbol = ? AND side = ? AND owner_kind = 'manual'
+				AND filled_size = ? AND avg_fill_price = ? AND fill_fee = ? AND fill_proof_version = ? AND fill_proof_binding = ?`,
+			r.Filled, r.AvgPx, r.Fee, limitFillProofVersionAtomic, binding,
+			r.ID, r.OrderOID, sid, r.Symbol, r.Side,
+			r.PriorFilled, r.PriorAvgPx, r.PriorFee, r.PriorVersion, r.PriorBinding)
 		if err != nil {
 			return fmt.Errorf("advance fill watermark of limit row %d: %w", r.ID, err)
 		}
@@ -3594,6 +3645,7 @@ func (sdb *StateDB) commitLimitFillAdoption(books []*StrategyState, scope Portfo
 		if n != 1 {
 			return fmt.Errorf("limit row %d (oid=%d) changed or vanished before its fill could be booked", r.ID, r.OrderOID)
 		}
+		r.Binding = binding
 	}
 	if storeCommitHook != nil {
 		if err := storeCommitHook(sdb.storageRoleOf()); err != nil {
@@ -3621,9 +3673,14 @@ func (sdb *StateDB) DeletePendingLimitOrderIfUnchanged(o PendingLimitOrder) erro
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
+	owner, err := sdb.limitRowStoredOwner(o)
+	if err != nil {
+		return err
+	}
 	res, err := sdb.db.Exec(
-		"DELETE FROM pending_limit_orders WHERE id = ? AND order_oid = ? AND symbol = ? AND filled_size = ? AND owner_kind = 'manual'",
-		o.ID, o.OrderOID, o.Symbol, o.FilledSize)
+		`DELETE FROM pending_limit_orders WHERE id = ? AND order_oid = ? AND strategy_id = ? AND symbol = ? AND side = ? AND owner_kind = 'manual'
+			AND filled_size = ? AND avg_fill_price = ? AND fill_fee = ? AND fill_proof_version = ? AND fill_proof_binding = ? AND operator_evidence_json = ?`,
+		o.ID, o.OrderOID, owner, o.Symbol, o.Side, o.FilledSize, o.AvgFillPrice, o.FillFee, o.FillProofVersion, o.FillProofBinding, o.OperatorEvidenceJSON)
 	if err != nil {
 		return err
 	}
@@ -3688,19 +3745,25 @@ func (sdb *StateDB) MarkPendingLimitOrderCancelRequested(strategyID, symbol stri
 	return res.RowsAffected()
 }
 
-func (sdb *StateDB) MarkPendingLimitOrderOperatorRequired(id, orderOID int64, at time.Time, evidenceJSON string) error {
+func (sdb *StateDB) MarkPendingLimitOrderOperatorRequired(o PendingLimitOrder, at time.Time, evidenceJSON string) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
 	if strings.TrimSpace(evidenceJSON) == "" {
-		return fmt.Errorf("operator-required marker on limit row %d carries no evidence", id)
+		return fmt.Errorf("operator-required marker on limit row %d carries no evidence", o.ID)
+	}
+	owner, err := sdb.limitRowStoredOwner(o)
+	if err != nil {
+		return err
 	}
 	res, err := sdb.db.Exec(
 		`UPDATE pending_limit_orders SET
 			operator_required_since = CASE WHEN operator_required_since = '' THEN ? ELSE operator_required_since END,
 			operator_evidence_json = ?
-		WHERE id = ? AND order_oid = ? AND owner_kind = 'manual'`,
-		formatTime(at.UTC()), evidenceJSON, id, orderOID)
+		WHERE id = ? AND order_oid = ? AND strategy_id = ? AND symbol = ? AND owner_kind = 'manual'
+			AND filled_size = ? AND avg_fill_price = ? AND fill_fee = ? AND fill_proof_version = ? AND fill_proof_binding = ?`,
+		formatTime(at.UTC()), evidenceJSON, o.ID, o.OrderOID, owner, o.Symbol,
+		o.FilledSize, o.AvgFillPrice, o.FillFee, o.FillProofVersion, o.FillProofBinding)
 	if err != nil {
 		return err
 	}
@@ -3709,17 +3772,18 @@ func (sdb *StateDB) MarkPendingLimitOrderOperatorRequired(id, orderOID int64, at
 		return err
 	}
 	if n != 1 {
-		return fmt.Errorf("limit row %d (oid=%d) vanished before its operator-required marker was recorded", id, orderOID)
+		return fmt.Errorf("limit row %d (oid=%d) changed or vanished before its operator-required marker was recorded", o.ID, o.OrderOID)
 	}
 	return nil
 }
 
-func (sdb *StateDB) ClearPendingLimitOrderOperatorRequired(id int64) error {
+func (sdb *StateDB) ClearPendingLimitOrderOperatorRequired(o PendingLimitOrder) error {
 	if sdb == nil || sdb.db == nil {
 		return nil
 	}
 	_, err := sdb.db.Exec(
-		"UPDATE pending_limit_orders SET operator_required_since = '', operator_evidence_json = '' WHERE id = ? AND owner_kind = 'manual'", id)
+		"UPDATE pending_limit_orders SET operator_required_since = '', operator_evidence_json = '' WHERE id = ? AND order_oid = ? AND operator_evidence_json = ? AND owner_kind = 'manual'",
+		o.ID, o.OrderOID, o.OperatorEvidenceJSON)
 	return err
 }
 

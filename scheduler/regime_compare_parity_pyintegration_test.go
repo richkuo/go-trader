@@ -378,6 +378,10 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 			t.Parallel()
 			regimeReadinessEntryAdmissionProcess(t, mode)
 		})
+		t.Run("entry-limit-recovery-"+mode, func(t *testing.T) {
+			t.Parallel()
+			regimeReadinessEntryLimitRecovery(t, mode)
+		})
 	}
 	state := &StrategyState{Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100}}, Regime: "stale"}
 	syncStrategyRegimeState(state, bundles[3].Payload, rc)

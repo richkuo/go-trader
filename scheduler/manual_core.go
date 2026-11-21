@@ -65,9 +65,11 @@ type manualStateView struct {
 	DailyLossNote  string
 	NotionalHold   bool
 	NotionalNote   string
-	// PersistenceHold marks a scope with an unacknowledged state save failure:
-	// no new exposure until a save succeeds. Closes and SL edits stay open.
+	// PersistenceHold marks a scope with an unacknowledged state save failure,
+	// or a live scope whose resting limit queue is not yet verified: no new
+	// exposure until it clears. Closes and SL edits stay open.
 	PersistenceHold  bool
+	PersistenceNote  string
 	ExposureCap      ExposureCapStatus
 	ExposureCapAsset string
 	Pos              *Position
@@ -115,7 +117,10 @@ func mergeManualStateViews(dst, src manualStateView) manualStateView {
 		dst.NotionalHold = true
 		dst.NotionalNote = src.NotionalNote
 	}
-	dst.PersistenceHold = dst.PersistenceHold || src.PersistenceHold
+	if !dst.PersistenceHold && src.PersistenceHold {
+		dst.PersistenceHold = true
+		dst.PersistenceNote = src.PersistenceNote
+	}
 	if !dst.ExposureCap.Configured {
 		dst.ExposureCap = src.ExposureCap
 		return dst
@@ -146,14 +151,17 @@ func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *Stat
 	part, known := partitionOfStrategyID(configStrategyList(cfg), strategyID)
 	if known {
 		v = manualScopeStateView(cfg, state, part, now)
-		v.PersistenceHold = store.persistenceHoldsPartition(part)
+		v.PersistenceNote = store.persistenceHoldReason(part)
+		v.PersistenceHold = v.PersistenceNote != ""
 	} else {
 		v.KillSwitch = state.anyScopeLatched()
 		if cfg != nil {
 			v = mergeManualStateViews(v, manualSubsetStateView(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, now))
 			for _, p := range activePartitions(cfg.Strategies) {
 				v = mergeManualStateViews(v, manualScopeStateView(cfg, state, p, now))
-				v.PersistenceHold = v.PersistenceHold || store.persistenceHoldsPartition(p)
+				if note := store.persistenceHoldReason(p); note != "" && !v.PersistenceHold {
+					v.PersistenceHold, v.PersistenceNote = true, note
+				}
 			}
 		}
 	}
@@ -200,6 +208,7 @@ type manualCoreDeps struct {
 	loadFreshState         func(strategyID, symbol string) (manualStateView, error)
 	checkPersistenceGuard  func(strategyID string) error
 	entryAdmission         *manualEntryAdmission
+	processHold            func(strategyID string) string
 	requireExplicitATR     bool
 	cfg                    *Config
 	stateDB                *StateStore
@@ -296,7 +305,7 @@ func manualRecheckAfterRegimeWait(d manualCoreDeps, action, strategyID, symbol, 
 	case view.NotionalHold:
 		return manualFailf("%s held after the regime wait: %s", action, view.NotionalNote)
 	case view.PersistenceHold:
-		return manualFailf("%s held after the regime wait: the last state save for this scope failed and has not been acknowledged", action)
+		return manualFailf("%s held after the regime wait: %s", action, manualPersistenceHoldText(view))
 	}
 	if blocked, why := exposureCapManualEntryBlock(view.ExposureCap, view.ExposureCapAsset, side); blocked {
 		return manualFailf("%s held after the regime wait: %s", action, why)
@@ -316,6 +325,13 @@ func manualRecheckAfterRegimeWait(d manualCoreDeps, action, strategyID, symbol, 
 	return nil
 }
 
+func manualPersistenceHoldText(view manualStateView) string {
+	if view.PersistenceNote != "" {
+		return "the scheduler holds new entries for this scope: " + view.PersistenceNote
+	}
+	return "the last state save for this scope failed and has not been acknowledged"
+}
+
 func manualCheckRegimePersistenceGuard(d manualCoreDeps, action, strategyID string) error {
 	if d.checkPersistenceGuard != nil {
 		if err := d.checkPersistenceGuard(strategyID); err != nil {
@@ -331,6 +347,11 @@ func manualCheckEntryAdmission(d manualCoreDeps, action, strategyID, stage strin
 			return manualFailf("%s held: %v", action, err)
 		}
 		return nil
+	}
+	if d.processHold != nil {
+		if why := d.processHold(strategyID); why != "" {
+			return manualFailf("%s held %s: the scheduler holds new entries for this scope: %s", action, stage, why)
+		}
 	}
 	if regimeAdmitted {
 		return manualCheckRegimePersistenceGuard(d, action, strategyID)
@@ -496,30 +517,29 @@ func pendingLimitOrdersForStrategySymbol(stateDB *StateStore, strategyID, symbol
 	return matching, nil
 }
 
-func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, cmdName, strategyID, symbol string, beforeCancel func() error) (float64, float64, []int64, error) {
+func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, cmdName, strategyID, symbol string, beforeCancel func() error) ([]int64, error) {
 	orders, err := pendingLimitOrdersForStrategySymbol(d.stateDB, strategyID, symbol)
 	if err != nil {
-		return 0, 0, nil, manualFailf("error: could not check for resting limit orders (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
+		return nil, manualFailf("error: could not check for resting limit orders (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
 	}
 	if len(orders) == 0 {
-		return 0, 0, nil, nil
+		return nil, nil
 	}
 
 	if beforeCancel != nil {
 		if err := beforeCancel(); err != nil {
-			return 0, 0, nil, err
+			return nil, err
 		}
 	}
 	if _, err := d.stateDB.MarkPendingLimitOrderCancelRequested(strategyID, symbol); err != nil {
-		return 0, 0, nil, manualFailf("error: could not mark resting limit order cancel_requested (%v) — refusing %s to avoid racing the scheduler's fill adoption", err, cmdName)
+		return nil, manualFailf("error: could not mark resting limit order cancel_requested (%v) — refusing %s to avoid racing the scheduler's fill adoption", err, cmdName)
 	}
 
-	var clearedQty, clearedNotional float64
 	var cancelledOIDs []int64
 	for i, o := range orders {
 		if i > 0 && beforeCancel != nil {
 			if err := beforeCancel(); err != nil {
-				return 0, 0, nil, manualFailf("%v — the remaining resting limit orders for %s/%s stay marked for cancellation; the scheduler finalizes them", err, strategyID, o.Symbol)
+				return nil, manualFailf("%v — the remaining resting limit orders for %s/%s stay marked for cancellation; the scheduler finalizes them", err, strategyID, o.Symbol)
 			}
 		}
 		cancelRes, cstderr, cerr := runHyperliquidCancelOrderFn(sc.Script, o.Symbol, o.OrderOID)
@@ -531,7 +551,7 @@ func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCo
 			if cancelRes != nil {
 				msg = cancelRes.Error
 			}
-			return 0, 0, nil, manualFailf("error: could not cancel resting limit order for %s/%s (oid=%d): %v %s — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cerr, msg, cmdName)
+			return nil, manualFailf("error: could not cancel resting limit order for %s/%s (oid=%d): %v %s — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cerr, msg, cmdName)
 		}
 
 		cancelledOIDs = append(cancelledOIDs, o.OrderOID)
@@ -542,34 +562,26 @@ func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCo
 		}
 		proof := decideLimitRowProof(o, statusRes, serr)
 		if proof.Live {
-			return 0, 0, nil, manualFailf("error: resting limit order for %s/%s (oid=%d) is not yet confirmed off-book — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cmdName)
+			return nil, manualFailf("error: resting limit order for %s/%s (oid=%d) is not yet confirmed off-book — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cmdName)
 		}
 		if proof.ProvenAboveBooked() {
-			return 0, 0, nil, manualFailf("error: resting limit order for %s/%s (oid=%d) has an unadopted fill (tracked %.6f, exchange %.6f) — cancellation is queued; run/wait for the scheduler to adopt the fill before running %s", strategyID, o.Symbol, o.OrderOID, o.FilledSize, proof.Executed, cmdName)
+			return nil, manualFailf("error: resting limit order for %s/%s (oid=%d) has an unadopted fill (tracked %.6f, exchange %.6f) — cancellation is queued; run/wait for the scheduler to adopt the fill before running %s", strategyID, o.Symbol, o.OrderOID, o.FilledSize, proof.Executed, cmdName)
 		}
 		if !proof.CanFinalize() {
-			return 0, 0, nil, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, limitOffBookUnverified(proof), cmdName)
+			return nil, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, limitOffBookUnverified(proof), cmdName)
 		}
-		if why, _ := verifyLimitWatermarkDurable(d.stateDB, o); why != "" {
-			return 0, 0, nil, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but %s — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, why, cmdName)
+		if why := limitWatermarkUnproven(o); why != "" {
+			return nil, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but %s — refusing %s so the scheduler keeps the row and records it for an operator", strategyID, o.Symbol, o.OrderOID, why, cmdName)
+		}
+		if why := recheckLimitRow(d.stateDB, o); why != "" {
+			return nil, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but %s — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, why, cmdName)
 		}
 		if err := d.stateDB.DeletePendingLimitOrderIfUnchanged(o); err != nil {
-			return 0, 0, nil, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but the queue row could not be cleared (%v) — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, err, cmdName)
+			return nil, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but the queue row could not be cleared (%v) — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, err, cmdName)
 		}
-		st := proof.Status
-		fillPx := st.AvgPx
-		if fillPx <= 0 {
-			fillPx = o.LimitPrice
-		}
-		clearedQty += proof.Executed
-		clearedNotional += proof.Executed * fillPx
-		res.outf("Cancelled resting limit remainder: %s %s oid=%d before %s", strategyID, o.Symbol, o.OrderOID, cmdName)
+		res.outf("Cancelled resting limit remainder: %s %s oid=%d before %s (recorded fill %.6f of %.6f)", strategyID, o.Symbol, o.OrderOID, cmdName, o.FilledSize, o.OrderSize)
 	}
-	clearedAvgPx := 0.0
-	if clearedQty > 0 {
-		clearedAvgPx = clearedNotional / clearedQty
-	}
-	return clearedQty, clearedAvgPx, cancelledOIDs, nil
+	return cancelledOIDs, nil
 }
 
 type manualOpenInputs struct {
@@ -675,7 +687,7 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 				return res, manualFailf("error: %s — manual-open blocked (closes and SL edits are unaffected)", view.NotionalNote)
 			}
 			if view.PersistenceHold {
-				return res, manualFailf("error: the last state save for this scope failed and has not been acknowledged — manual-open blocked until a save succeeds (closes and SL edits are unaffected)")
+				return res, manualFailf("error: %s — manual-open blocked until the hold clears (closes and SL edits are unaffected)", manualPersistenceHoldText(view))
 			}
 			if blocked, why := exposureCapManualEntryBlock(view.ExposureCap, view.ExposureCapAsset, side); blocked {
 				return res, manualFailf("error: %s — manual-open (%s) blocked (closes and SL edits are unaffected)", why, side)
@@ -1010,7 +1022,7 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 		return res, manualFailf("error: %s — manual-add blocked (closes and SL edits are unaffected)", view.NotionalNote)
 	}
 	if view.PersistenceHold {
-		return res, manualFailf("error: the last state save for this scope failed and has not been acknowledged — manual-add blocked until a save succeeds (closes and SL edits are unaffected)")
+		return res, manualFailf("error: %s — manual-add blocked until the hold clears (closes and SL edits are unaffected)", manualPersistenceHoldText(view))
 	}
 	addDir := "long"
 	if pos.Side == "short" {
@@ -1071,7 +1083,7 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 				return res, err
 			}
 		}
-		_, _, cancelledRemainders, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol, beforeCancel)
+		cancelledRemainders, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol, beforeCancel)
 		if err != nil {
 			return res, err
 		}
@@ -1302,34 +1314,25 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	}
 	defer unlock()
 
-	clearedQty, clearedAvgPx, cancelledLimitOIDs, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-close", strategyID, sc.Symbol, nil)
+	cancelledLimitOIDs, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-close", strategyID, sc.Symbol, nil)
 	if err != nil {
 		return res, err
 	}
-	if clearedQty > 0 {
-		if clearedQty > pos.Quantity+limitFillEpsilon {
-			staleQty := pos.Quantity
-			pos.Quantity = clearedQty
-			if clearedAvgPx > 0 {
-				pos.AvgCost = clearedAvgPx
-			}
-			res.errf("[manual-close] %s %s: reconciled stale position snapshot %.6f → %.6f (scheduler adopted a limit fill before flushing state); closing the true size",
-				strategyID, sc.Symbol, staleQty, pos.Quantity)
-		}
-	} else {
-		refreshed, rerr := d.loadState(strategyID, sc.Symbol)
-		if rerr != nil {
-			return res, manualFailf("Failed to re-load state: %v", rerr)
-		}
-		if refreshed.Pos == nil {
-			return res, manualFailf("error: no open position found for %s/%s", strategyID, sc.Symbol)
-		}
-		if !manualPositionOwnedByStrategy(refreshed.Pos, strategyID) {
-			return res, manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, sc.Symbol, refreshed.Pos.OwnerStrategyID, strategyID)
-		}
-		view = refreshed
-		pos = refreshed.Pos
+	refreshed, rerr := d.loadState(strategyID, sc.Symbol)
+	if rerr != nil {
+		return res, manualFailf("Failed to re-load state: %v", rerr)
 	}
+	if refreshed.Pos == nil {
+		return res, manualFailf("error: no open position found for %s/%s", strategyID, sc.Symbol)
+	}
+	if !manualPositionOwnedByStrategy(refreshed.Pos, strategyID) {
+		return res, manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, sc.Symbol, refreshed.Pos.OwnerStrategyID, strategyID)
+	}
+	if len(cancelledLimitOIDs) > 0 && !manualSamePositionIdentity(pos, refreshed.Pos, strategyID) {
+		return res, manualFailf("error: the %s/%s position changed identity, owner or side while its resting limit remainder was cleared — refusing manual-close; re-run it against the current position", strategyID, sc.Symbol)
+	}
+	view = refreshed
+	pos = refreshed.Pos
 
 	closeSide := "sell"
 	if pos.Side == "short" {

@@ -341,11 +341,14 @@ func main() {
 	}
 	defer store.Close()
 
+	if !readOnlyReport {
+		store.beginLimitRecovery()
+	}
 	if ownership != nil {
-		if err := globalManualRegimeOwner.publish(storageLayoutCfg); err != nil {
+		if err := globalManualRegimeOwner.publishHeld(storageLayoutCfg, store.persistenceHoldCauses); err != nil {
 			fmt.Fprintf(os.Stderr, "[manual-regime] WARN: owner identity publication failed; every command-line manual-open and manual-add that sends an order refuses in every feed mode, and command-line regime admission stays disabled, until this scheduler restarts and publishes: %v\n", err)
 		} else {
-			store.setHoldSignal(globalManualRegimeOwner.signalPersistence)
+			store.setHoldCauseSignal(globalManualRegimeOwner.signalPersistenceCauses)
 		}
 		defer globalManualRegimeOwner.withdraw()
 	}
@@ -1726,15 +1729,6 @@ func main() {
 								return fmt.Errorf("%s", why)
 							}
 							return store.DeletePendingLimitOrderIfUnchanged(o)
-						},
-						VerifyWatermark: func(o PendingLimitOrder) string {
-							why, _ := verifyLimitWatermarkDurable(store, o)
-							return why
-						},
-						Flush: func() error {
-							mu.Lock()
-							defer mu.Unlock()
-							return SaveStateWithStore(state, store)
 						},
 						MarkCancelRequested: func(strategyID, symbol string) (int64, error) {
 							if store == nil {
