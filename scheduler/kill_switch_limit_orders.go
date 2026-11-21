@@ -20,8 +20,9 @@ func (c killSwitchLimitOrderCandidate) adoptionEligible() bool {
 type killSwitchLimitOrderDeps struct {
 	Cancel              func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
 	Status              func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error)
-	Delete              func(id int64) error
+	Delete              func(o PendingLimitOrder) error
 	Flush               func() error
+	VerifyWatermark     func(o PendingLimitOrder) string
 	MarkCancelRequested func(strategyID, symbol string) (int64, error)
 	Now                 func() time.Time
 }
@@ -74,6 +75,19 @@ func killSwitchLimitOrderRoster(cfgs []StrategyConfig) []StrategyConfig {
 
 func killSwitchLimitOrderScriptOwner(sc StrategyConfig) bool {
 	return sc.Platform == "hyperliquid" && hyperliquidIsLive(sc.Args) && portfolioScopeFor(sc) == ScopeLive
+}
+
+func limitRestingStateUnknown(p limitRowProof) string {
+	if !p.Matched {
+		return p.holdOr("status response did not include the order")
+	}
+	if p.Status.Resting == nil {
+		if p.OpenOrdersError != "" {
+			return fmt.Sprintf("open-orders state unknown (%s)", p.OpenOrdersError)
+		}
+		return "the exchange did not report whether the order is still resting"
+	}
+	return ""
 }
 
 func killSwitchLimitOrderAdoptionBlock(sc StrategyConfig, known bool) string {
@@ -191,52 +205,25 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			break
 		}
 
-		readStatus := func() (HyperliquidLimitOrderStatus, string) {
+		readProof := func() limitRowProof {
 			statusRes, sstderr, serr := deps.Status(c.Script, o.Symbol, []int64{o.OrderOID}, limitStatusSinceMs(o.CreatedAt))
 			if sstderr != "" {
 				report.LogLines = append(report.LogLines,
 					fmt.Sprintf("[WARN] ks-limit: %s status stderr: %s", label, sstderr))
 			}
-			if serr != nil || statusRes == nil || statusRes.Error != "" {
-				msg := ""
-				if statusRes != nil {
-					msg = statusRes.Error
-				}
-				return HyperliquidLimitOrderStatus{}, strings.TrimSpace(fmt.Sprintf("%v %s", serr, msg))
-			}
-			if statusRes.OpenOrdersError != "" {
-				return HyperliquidLimitOrderStatus{}, fmt.Sprintf("open-orders state unknown (%s)", statusRes.OpenOrdersError)
-			}
-			st, ok := limitStatusForOID(statusRes, o.OrderOID)
-			if !ok {
-				return HyperliquidLimitOrderStatus{}, "status response did not include the order"
-			}
-			if st.Resting == nil {
-				return HyperliquidLimitOrderStatus{}, "the exchange did not report whether the order is still resting"
-			}
-			return st, ""
-		}
-		fillsUnreadable := func(st HyperliquidLimitOrderStatus) string {
-			if st.FillsError == "" {
-				return ""
-			}
-			return fmt.Sprintf("fills unreadable (%s)", st.FillsError)
+			return decideLimitRowProof(o, statusRes, serr)
 		}
 
-		var st HyperliquidLimitOrderStatus
+		var proof limitRowProof
 		cancelNeeded := true
 		if !c.adoptionEligible() {
-			pre, why := readStatus()
-			if why != "" {
+			pre := readProof()
+			if why := limitRestingStateUnknown(pre); why != "" {
 				unresolve(fmt.Sprintf("recovery row not cancelled: %s — %s, so no cancel is sent until the exchange reports the order", why, c.AdoptionBlock))
 				continue
 			}
-			if !*pre.Resting {
-				if fillsWhy := fillsUnreadable(pre); fillsWhy != "" {
-					unresolve(fmt.Sprintf("recovery row is off-book but its %s — no cancel is needed and the queue row is kept until the fill can be checked", fillsWhy))
-					continue
-				}
-				st = pre
+			if !pre.Live {
+				proof = pre
 				cancelNeeded = false
 			} else if !roomForCall() {
 				unresolve(fmt.Sprintf("recovery row verified resting but the pass exhausted its %s budget before the cancel — the flatten proceeded; the kill switch will retry next cycle", effectiveBudget))
@@ -270,29 +257,38 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 				continue
 			}
 
-			post, why := readStatus()
-			if why == "" {
-				why = fillsUnreadable(post)
-			}
-			if why != "" {
-				unresolve("cancel unverified: " + why)
-				continue
-			}
-			if *post.Resting {
-				unresolve("order is still resting on the exchange")
-				continue
-			}
-			st = post
+			proof = readProof()
 		}
-		if st.FilledSize > o.FilledSize+limitFillEpsilon {
-			if c.adoptionEligible() {
-				unresolve(fmt.Sprintf("order is off-book with an unadopted fill (tracked %.6f, exchange %.6f) — queue row kept so the scheduler books the fill before the next flatten",
-					o.FilledSize, st.FilledSize))
+		if proof.Live {
+			unresolve("order is still resting on the exchange")
+			continue
+		}
+		if proof.ProvenAboveBooked() {
+			if !o.OperatorRequiredSince.IsZero() && o.OperatorEvidenceJSON != "" && !limitRowUnscriptedMarker(o) {
+				unresolve(fmt.Sprintf("order executed %.6f where the book holds %.6f (unadopted fill) and the scheduler marked the row as needing an operator — follow the owner alert for this order (flatten only size the scheduler's book does not hold), then clear the row with `go-trader manual-clear-limit-row %d --flattened`",
+					proof.Executed, o.FilledSize, o.OrderOID))
+			} else if c.adoptionEligible() {
+				unresolve(fmt.Sprintf("order executed %.6f where the book holds %.6f (unadopted fill) — queue row kept so the scheduler books the fill before the next flatten",
+					proof.Executed, o.FilledSize))
 			} else {
-				unresolve(fmt.Sprintf("order is off-book with an unadopted fill (tracked %.6f, exchange %.6f) that NO automatic path can book because %s — restore it to this config as a Hyperliquid-live type=manual strategy so the scheduler adopts the fill; manual intervention required",
-					o.FilledSize, st.FilledSize, c.AdoptionBlock))
+				unresolve(fmt.Sprintf("order executed %.6f where the book holds %.6f (unadopted fill) that NO automatic path can book because %s — restore it to this config as a Hyperliquid-live type=manual strategy so the scheduler adopts the fill; manual intervention required",
+					proof.Executed, o.FilledSize, c.AdoptionBlock))
 			}
 			continue
+		}
+		if !proof.OffBook || !proof.CanFinalize() {
+			if cancelNeeded {
+				unresolve("cancel unverified: " + limitOffBookUnverified(proof))
+			} else {
+				unresolve(fmt.Sprintf("recovery row is not resting, so no cancel is sent, but %s — the queue row is kept until the order and its fills are proven", limitOffBookUnverified(proof)))
+			}
+			continue
+		}
+		if deps.VerifyWatermark != nil {
+			if why := deps.VerifyWatermark(o); why != "" {
+				unresolve("order is off-book but " + why + " — queue row kept as the recovery record")
+				continue
+			}
 		}
 		if o.FilledSize > 0 {
 			if err := deps.Flush(); err != nil {
@@ -300,7 +296,7 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 				continue
 			}
 		}
-		if err := deps.Delete(o.ID); err != nil {
+		if err := deps.Delete(o); err != nil {
 			unresolve(fmt.Sprintf("order is off-book but the queue row could not be cleared (%v)", err))
 			continue
 		}

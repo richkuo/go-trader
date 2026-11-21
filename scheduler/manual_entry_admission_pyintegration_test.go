@@ -234,7 +234,7 @@ func (e *meaEnv) seedLimit(strategyID string, oid int64) PendingLimitOrder {
 		e.t.Fatal(err)
 	}
 	defer store.Close()
-	row := PendingLimitOrder{StrategyID: strategyID, Symbol: "BTC", Side: "long", OrderOID: oid, LimitPrice: 90, OrderSize: 0.01, TIF: "Alo", CreatedAt: time.Now().UTC()}
+	row := PendingLimitOrder{StrategyID: strategyID, Symbol: "BTC", Side: "long", OrderOID: oid, LimitPrice: 90, OrderSize: manualEntryTestLimitOrigSize, TIF: "Alo", CreatedAt: time.Now().UTC()}
 	id, err := store.InsertPendingLimitOrder(row)
 	if err != nil {
 		e.t.Fatal(err)

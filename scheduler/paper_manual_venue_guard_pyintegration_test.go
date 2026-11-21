@@ -331,6 +331,21 @@ func (v *paperManualGuardRecoveryVenue) lines(kind string) []string {
 	return out
 }
 
+func paperManualGuardLimitStatus(coin, state string, orig float64, resting, proven bool, openOrdersErr string) string {
+	raw := map[string]string{"live": "open", "cancelled": "canceled"}[state]
+	restingJSON := strconv.FormatBool(resting)
+	tail := ""
+	if openOrdersErr != "" {
+		restingJSON = "null"
+		tail = `,"open_orders_error":"` + openOrdersErr + `"`
+	}
+	fills := `"fills_proven":true`
+	if !proven {
+		fills = `"fills_proven":false,"fills_error":"fills fetch failed","fills_reason":"transient"`
+	}
+	return `{"platform":"hyperliquid","orders":[{"oid":9001,"coin":"` + coin + `","resting":` + restingJSON + `,"order_status":"` + raw + `","order_state":"` + state + `","orig_size":` + strconv.FormatFloat(orig, 'f', -1, 64) + `,"executed_size":0,"sz_decimals":4,"filled_size":0,"avg_px":0,"fee":0,"count":0,` + fills + `}]` + tail + `}`
+}
+
 func TestPaperManualVenueGuardKillSwitchRecoveryRows(t *testing.T) {
 	venue := newPaperManualGuardRecoveryVenue(t)
 	paper := StrategyConfig{ID: "pm-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Args: []string{"hold", "ETH", "30m", "--mode=paper"}}
@@ -341,25 +356,25 @@ func TestPaperManualVenueGuardKillSwitchRecoveryRows(t *testing.T) {
 				return RunHyperliquidCancelOrder(hlAccountRecoveryWriteAuth(symbol, hlWriteCancel).forOrder(oid), script, symbol, oid)
 			},
 			Status:              RunHyperliquidLimitStatus,
-			Delete:              db.DeletePendingLimitOrder,
+			Delete:              db.DeletePendingLimitOrderIfUnchanged,
 			Flush:               func() error { return nil },
 			MarkCancelRequested: db.MarkPendingLimitOrderCancelRequested,
 		}
 	}
 	cases := []struct {
-		name, status string
-		cancels      int
-		want         string
+		name, status, after string
+		cancels             int
+		want                string
 	}{
-		{"resting with unreadable fills", `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":true,"filled_size":0,"avg_px":0,"fee":0,"count":0,"fills_error":"fills fetch failed"}]}`, 1, "fills unreadable (fills fetch failed)"},
-		{"open orders unreadable", `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":null,"filled_size":0,"avg_px":0,"fee":0,"count":0}],"open_orders_error":"429 rate limited"}`, 0, "open-orders state unknown (429 rate limited)"},
-		{"off book with unreadable fills", `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":false,"filled_size":0,"avg_px":0,"fee":0,"count":0,"fills_error":"fills fetch failed"}]}`, 0, "fills unreadable (fills fetch failed)"},
+		{"resting with unreadable fills", paperManualGuardLimitStatus("ETH", "live", 0.5, true, false, ""), paperManualGuardLimitStatus("ETH", "cancelled", 0.5, false, false, ""), 1, "fills unproven: fills fetch failed"},
+		{"open orders unreadable", paperManualGuardLimitStatus("ETH", "live", 0.5, false, true, "429 rate limited"), "", 0, "open-orders state unknown (429 rate limited)"},
+		{"off book with unreadable fills", paperManualGuardLimitStatus("ETH", "cancelled", 0.5, false, false, ""), "", 0, "fills unproven: fills fetch failed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			db := newLimitTestStateDB(t)
 			id := seedKillSwitchLimitRow(t, db, paper.ID)
-			venue.set(tc.status, "")
+			venue.set(tc.status, tc.after)
 			plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{paper, live}, realDeps(db)))
 			if got := len(venue.lines("--cancel-order")); got != tc.cancels {
 				t.Fatalf("cancel launches = %d, want %d: %+v", got, tc.cancels, plan.LimitOrderReport)
@@ -453,15 +468,16 @@ func TestPaperManualVenueGuardLimitRowRecovery(t *testing.T) {
 	withPeer := build("limit-row-peer.json", true)
 	paperOnly := build("limit-row-paper.json", false)
 	startup := build("limit-row-startup.json", false)
+	restored := build("limit-row-restored.json", false)
 	fillsCases := []struct {
 		name, status, after string
 		cancels             int
 		want                string
 		f                   *fixture
 	}{
-		{"resting with unreadable fills", `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":true,"filled_size":0,"avg_px":0,"fee":0,"count":0,"fills_error":"fills fetch failed"}]}`, `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":false,"filled_size":0,"avg_px":0,"fee":0,"count":0,"fills_error":"fills fetch failed"}]}`, 1, "cancel issued but unverified: fills unreadable (fills fetch failed)", build("limit-row-fills-resting.json", true)},
-		{"off book with unreadable fills", `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":false,"filled_size":0,"avg_px":0,"fee":0,"count":0,"fills_error":"fills fetch failed"}]}`, "", 0, "fills unreadable (fills fetch failed)", build("limit-row-fills-offbook.json", true)},
-		{"open orders unreadable", `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":null,"filled_size":0,"avg_px":0,"fee":0,"count":0}],"open_orders_error":"429 rate limited"}`, "", 0, "open-orders state unknown (429 rate limited)", build("limit-row-fills-openorders.json", true)},
+		{"resting with unreadable fills", paperManualGuardLimitStatus("BTC", "live", 0.01, true, false, ""), paperManualGuardLimitStatus("BTC", "cancelled", 0.01, false, false, ""), 1, "fills unproven: fills fetch failed", build("limit-row-fills-resting.json", true)},
+		{"off book with unreadable fills", paperManualGuardLimitStatus("BTC", "cancelled", 0.01, false, false, ""), "", 0, "fills unproven: fills fetch failed", build("limit-row-fills-offbook.json", true)},
+		{"open orders unreadable", paperManualGuardLimitStatus("BTC", "live", 0.01, false, true, "429 rate limited"), "", 1, "cancel issued but unverified", build("limit-row-fills-openorders.json", true)},
 	}
 	venue := newPaperManualGuardRecoveryVenue(t)
 	orphanLimitCancelAlerts.reset()
@@ -472,8 +488,7 @@ func TestPaperManualVenueGuardLimitRowRecovery(t *testing.T) {
 		if o := rows(withPeer)[0]; !o.ExpiresAt.IsZero() || o.CancelRequested {
 			t.Fatalf("the seeded row must have no expiry and no cancel request: %+v", o)
 		}
-		venue.set(`{"platform":"hyperliquid","orders":[{"oid":9001,"resting":true,"filled_size":0,"avg_px":0,"fee":0,"count":0}]}`,
-			`{"platform":"hyperliquid","orders":[{"oid":9001,"resting":false,"filled_size":0,"avg_px":0,"fee":0,"count":0}]}`)
+		venue.set(paperManualGuardLimitStatus("BTC", "live", 0.01, true, true, ""), paperManualGuardLimitStatus("BTC", "cancelled", 0.01, false, true, ""))
 		mock := &mockNotifier{}
 		reconcilePendingLimitOrders(NewAppState(), withPeer.cfg, withPeer.store, &mu, NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner"}), nil)
 		cancels := venue.lines("--cancel-order")
@@ -541,6 +556,42 @@ func TestPaperManualVenueGuardLimitRowRecovery(t *testing.T) {
 			t.Fatalf("the cleared row must be gone: %v %+v", err, left)
 		}
 	})
+
+	t.Run("a live strategy added after the unscripted marker takes the row back", func(t *testing.T) {
+		orphanLimitCancelAlerts.reset()
+		venue.set(`{"platform":"hyperliquid","orders":[]}`, "")
+		quiet := func() *MultiNotifier {
+			return NewMultiNotifier(notifierBackend{notifier: &mockNotifier{}, ownerID: "owner"})
+		}
+		reconcilePendingLimitOrders(NewAppState(), restored.cfg, restored.store, &mu, quiet(), nil)
+		marked := rows(restored)
+		if len(marked) != 1 || !limitRowUnscriptedMarker(marked[0]) {
+			t.Fatalf("the paper only pass must set the unscripted marker: %+v", marked)
+		}
+		if refusal := clearOperatorRequiredLimitRowRefusal(restored.cfg, marked[0], true); refusal != "" {
+			t.Fatalf("the operator must be able to clear an unscripted row while no live script exists: %s", refusal)
+		}
+		var peer StrategyConfig
+		for _, sc := range withPeer.cfg.Strategies {
+			if sc.ID == "lm-peer" {
+				peer = sc
+			}
+		}
+		withLive := *restored.cfg
+		withLive.Strategies = append(append([]StrategyConfig(nil), restored.cfg.Strategies...), peer)
+		if refusal := clearOperatorRequiredLimitRowRefusal(&withLive, marked[0], true); !strings.Contains(refusal, "reads and cancels the order itself") {
+			t.Fatalf("with a live script the clear command must leave the row to the scheduler: %q", refusal)
+		}
+		venue.set(paperManualGuardLimitStatus("BTC", "live", 0.01, true, true, ""), paperManualGuardLimitStatus("BTC", "cancelled", 0.01, false, true, ""))
+		reconcilePendingLimitOrders(NewAppState(), &withLive, restored.store, &mu, quiet(), nil)
+		if cancels := venue.lines("--cancel-order"); len(cancels) != 1 || !strings.Contains(cancels[0], "--oid=9001") {
+			t.Fatalf("the restored live script must cancel the order in the first pass with no poll deferral: %v", venue.lines(""))
+		}
+		if got := rows(restored); len(got) != 0 {
+			t.Fatalf("the row must be finalized from the scheduler's own proof: %+v", got)
+		}
+	})
+	orphanLimitCancelAlerts.reset()
 
 	t.Run("startup warns once for the row with no open position", func(t *testing.T) {
 		const want = "paper manual limit order pm-args/BTC oid=9001"

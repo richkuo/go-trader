@@ -81,7 +81,7 @@ func TestReconcilePendingLimitOrders(t *testing.T) {
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.5, AvgPx: 2000, Fee: 0.7, Count: 1},
+					provenLimitStatus(9001, "ETH", "filled", 0.5, 0.5, 2000, 0.7),
 				}}, "", nil
 			},
 			func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
@@ -121,7 +121,7 @@ func TestReconcilePendingLimitOrders(t *testing.T) {
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: limitTestBoolPtr(true), FilledSize: 0.4, AvgPx: 2000, Fee: 0.2, Count: 1},
+					provenLimitStatus(9001, "ETH", "live", 1.0, 0.4, 2000, 0.2),
 				}}, "", nil
 			},
 			func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
@@ -141,7 +141,7 @@ func TestReconcilePendingLimitOrders(t *testing.T) {
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 1.0, AvgPx: 2005, Fee: 0.5, Count: 2},
+					provenLimitStatus(9001, "ETH", "filled", 1.0, 1.0, 2005, 0.5),
 				}}, "", nil
 			},
 			func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
@@ -172,7 +172,7 @@ func TestReconcilePendingLimitOrders(t *testing.T) {
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: limitTestBoolPtr(true), FilledSize: 0, AvgPx: 0, Fee: 0},
+					provenLimitStatus(9001, "ETH", "live", 0.5, 0, 0, 0),
 				}}, "", nil
 			},
 			func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
@@ -194,7 +194,7 @@ func TestReconcilePendingLimitOrders(t *testing.T) {
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0},
+					provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0, 0, 0),
 				}}, "", nil
 			},
 			func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
@@ -218,7 +218,7 @@ func TestReconcilePendingLimitOrders(t *testing.T) {
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				return &HyperliquidLimitStatusResult{OpenOrdersError: "boom", Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: nil, FilledSize: 0},
+					limitStatusWithUnknownBook(provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0, 0, 0)),
 				}}, "", nil
 			},
 			func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
@@ -264,14 +264,16 @@ func newPartialLimitPositionHarness(t *testing.T) (*Config, StrategyConfig, *Sta
 	if err := db.SaveState(state); err != nil {
 		t.Fatalf("save state: %v", err)
 	}
-	if _, err := db.InsertPendingLimitOrder(PendingLimitOrder{
+	rowID, err := db.InsertPendingLimitOrder(PendingLimitOrder{
 		StrategyID: sc.ID, Symbol: sc.Symbol, Side: "long", OrderOID: 9001,
 		LimitPrice: 1990, OrderSize: 1.0, TIF: "Alo", FilledSize: 0.4,
 		AvgFillPrice: 2000, FillFee: 0.2, EntryATR: 50,
 		CreatedAt: time.Now().UTC().Add(-10 * time.Minute),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("insert pending limit: %v", err)
 	}
+	seedLimitFillLineage(t, db, rowID, sc.ID, sc.Symbol, 9001, 0.4, 2000, "pos-limit-partial")
 	cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{sc}}
 	return cfg, sc, db
 }
@@ -314,7 +316,7 @@ func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
 					func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 						statusCalls++
 						return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-							{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.4, AvgPx: 2000, Fee: 0.2},
+							provenLimitStatus(9001, "ETH", "cancelled", 1.0, 0.4, 2000, 0.2),
 						}}, "", nil
 					},
 					func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
@@ -367,11 +369,15 @@ func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
 		if err := db.UpdatePendingLimitOrderFill(orders[0].ID, 0.7, 2005, 0.35); err != nil {
 			t.Fatalf("advance watermark: %v", err)
 		}
+		if _, err := db.db.Exec("UPDATE pending_limit_orders SET fill_proof_version = 0 WHERE id = ?", orders[0].ID); err != nil {
+			t.Fatalf("model a legacy watermark: %v", err)
+		}
+		seedLimitFillLineage(t, db, 0, sc.ID, sc.Symbol, 9001, 0.3, 2011.6666666666667, "pos-limit-partial")
 
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.7, AvgPx: 2005, Fee: 0.35},
+					provenLimitStatus(9001, "ETH", "cancelled", 1.0, 0.7, 2005, 0.35),
 				}}, "", nil
 			},
 			func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
@@ -470,7 +476,7 @@ func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
 			{
 				name: "close defers on an unadopted fill",
 				status: HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.6, AvgPx: 1998, Fee: 0.3},
+					provenLimitStatus(9001, "ETH", "cancelled", 1.0, 0.6, 1998, 0.3),
 				}},
 				act: func(deps manualCoreDeps, sc StrategyConfig) error {
 					_, err := manualCloseCore(deps, sc, manualCloseInputs{StrategyID: sc.ID})
@@ -481,7 +487,7 @@ func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
 			{
 				name: "add defers on an unknown book",
 				status: HyperliquidLimitStatusResult{OpenOrdersError: "open orders unavailable", Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: nil, FilledSize: 0.4, AvgPx: 2000, Fee: 0.2},
+					limitStatusWithUnknownBook(provenLimitStatus(9001, "ETH", "cancelled", 1.0, 0.4, 2000, 0.2)),
 				}},
 				act: func(deps manualCoreDeps, sc StrategyConfig) error {
 					_, err := manualAddCore(deps, sc, manualAddInputs{StrategyID: sc.ID, Margin: 10})
@@ -540,10 +546,14 @@ func staleReconcileCloseHarness(t *testing.T) (*Config, StrategyConfig, *StateDB
 	if err := db.UpdatePendingLimitOrderFill(orders[0].ID, 0.7, 2005, 0.35); err != nil {
 		t.Fatalf("advance watermark: %v", err)
 	}
+	if _, err := db.db.Exec("UPDATE pending_limit_orders SET fill_proof_version = 0 WHERE id = ?", orders[0].ID); err != nil {
+		t.Fatalf("model a legacy watermark: %v", err)
+	}
+	seedLimitFillLineage(t, db, 0, sc.ID, sc.Symbol, 9001, 0.3, 2011.6666666666667, "pos-limit-partial")
 	withStubbedLimitDeps(t,
 		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-				{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.7, AvgPx: 2005, Fee: 0.35},
+				provenLimitStatus(9001, "ETH", "cancelled", 1.0, 0.7, 2005, 0.35),
 			}}, "", nil
 		},
 		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
