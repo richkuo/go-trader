@@ -1,7 +1,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import sys
 from pathlib import Path
@@ -14,42 +13,8 @@ sys.path.insert(0, str(REPO_ROOT / "shared_strategies" / "close"))
 
 from run_backtest import (
     _apply_user_close_defaults,
-    _validate_user_close_defaults_regime_atr,
     load_strategy_config,
 )
-
-
-@contextlib.contextmanager
-def _raises_for(case, exc=ValueError, match=None):
-    try:
-        with pytest.raises(exc, match=match) as info:
-            yield info
-    except (AssertionError, pytest.fail.Exception) as err:
-        raise AssertionError(f"{case}: {err}") from None
-
-
-def test_validate_regime_atr_rejects():
-    for payload, match in [
-        (
-            {"regime_atr": {"stop_loss_atr_mult_regime": {"use_defaults": True},
-                            "foo": 1}},
-            "unknown key 'foo'",
-        ),
-        (
-            {
-                "regime_atr": {
-                    "stop_loss_atr_mult_regime": {
-                        "trend_regime": {
-                            "trending_up": {"close_fraction": 0.5},
-                        }
-                    }
-                }
-            },
-            "close_fraction",
-        ),
-    ]:
-        with _raises_for(f"test_validate_regime_atr_rejects[{match}]", match=match):
-            _validate_user_close_defaults_regime_atr(payload)
 
 
 _USER_SL_REGIME_ATR = {

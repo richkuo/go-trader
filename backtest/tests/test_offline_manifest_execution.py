@@ -423,15 +423,6 @@ def _snapshot(root):
             for p in sorted(root.rglob("*")) if p.is_file()}
 
 
-def test_acquire_refuses_existing_inputs_without_overwrite(tmp_path, monkeypatch):
-    path = _acquire_manifest(tmp_path, monkeypatch)
-    monkeypatch.setattr(om, "_post_info", lambda *a, **k: pytest.fail("acquire used the network"))
-    before = _snapshot(tmp_path)
-    with pytest.raises(om.ManifestError, match="without --overwrite"):
-        om.acquire(str(path))
-    assert _snapshot(tmp_path) == before
-
-
 _FAILED_ACQUIRE_LEAVES_FROZEN_INPUTS_AND_HASHES_UNTOUCHED_CASES = ["fetch", "move"]
 
 

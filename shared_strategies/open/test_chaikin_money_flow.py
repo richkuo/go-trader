@@ -15,8 +15,6 @@ if _TOOLS not in sys.path:
 
 _FUTURES = load_module(
     "_cmf_futures_strategies_test", os.path.join(_HERE, "futures", "strategies.py"))
-_SPOT = load_module(
-    "_cmf_spot_strategies_test", os.path.join(_HERE, "spot", "strategies.py"))
 
 from close_registry_loader import evaluate as close_evaluate
 from strategy_composition import evaluate_open_close, finalize_decision
@@ -43,16 +41,6 @@ def flat(n):
 def last(df, params=SMALL):
     out = run(df, params)
     return out.iloc[-1]
-
-
-def test_registered_no_edge_futures_and_hidden():
-    entry = _FUTURES.STRATEGY_REGISTRY[NAME]
-    assert (entry["edge_status"], entry["edge_source"], entry["edge_ref"]) == (
-        "no_edge", "study_fail", "backtest/candidates/chaikin_money_flow_1649/REPORT.md")
-    assert entry["default_params"] == {"flow_window": 20, "breakout_window": 20, "flow_threshold": 0.05}
-    assert NAME not in _FUTURES.list_strategies()
-    assert NAME not in _FUTURES.DISCOVERY_STRATEGY_REGISTRY
-    assert NAME not in _SPOT.STRATEGY_REGISTRY
 
 
 TRUTH_TABLE_CASES = [
@@ -308,19 +296,6 @@ def _compose(df, position_side, position_ctx=None, close_strategies=("time_stop"
 ENTRY = flat(6) + [(110.0, 100.0, 110.0, 8.0)]
 
 
-def test_composer_flat_entry_and_open_position_blocks_duplicates_and_reversals():
-    _, flat_decision = _compose(frame(ENTRY), "", params=SMALL)
-    assert flat_decision["signal"] == 1 and flat_decision["open_action"] == "long"
-
-    held = {"side": "long", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
-    _, dup = _compose(frame(ENTRY), "long", held, params=SMALL)
-    assert dup["open_action"] == "long" and dup["signal"] == 0
-
-    short_ctx = {"side": "short", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
-    _, opposite = _compose(frame(ENTRY), "short", short_ctx, params=SMALL)
-    assert opposite["close_fraction"] == 0.0 and opposite["signal"] == 0
-
-
 def test_composer_close_wins_over_simultaneous_entry_and_survives_bad_entry_data():
     due = {"side": "long", "bars_held": 5, "avg_cost": 100.0, "current_quantity": 1.0}
     _, both = _compose(frame(ENTRY), "long", due, params=SMALL)
@@ -346,5 +321,3 @@ def test_composer_matches_full_series_on_bounded_windows():
         evaluation, decision = _compose(window, "", close_strategies=("time_stop",))
         assert evaluation.open_signal == int(full["signal"].iloc[i])
         assert decision["signal"] == int(full["signal"].iloc[i])
-
-

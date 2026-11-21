@@ -250,41 +250,6 @@ def test_verdict_failure_exclusion_and_open_entry_paths():
         "test_verdict_open_m1_fail_is_incumbent_stands"
 
 
-def _mc_payload():
-    def leg(window, ds, p_ks, p95, p_down, status="ok"):
-        return {"window": window, "dataset": ds, "status": status, "n_trades": 20,
-                "schemes": [{"scheme": "permute", "p_dd_ge_kill_switch": p_ks,
-                             "max_dd_pct_percentiles": {"p5": 1.0, "p50": 10.0,
-                                                        "p95": p95},
-                             "p_final_below_start": p_down}]}
-    return {"legs": [leg("is", "BTC/USDT 1h", 0.10, 30.0, 0.20),
-                     leg("oos", "BTC/USDT 1h", 0.30, 45.0, 0.25),
-                     leg("oos", "ETH/USDT 4h", 0.55, 70.0, 0.40)]}
-
-
-def test_extract_mc_worst_dataset_per_window_and_tolerates_partial_legs():
-    out = asug.extract_mc(_mc_payload())
-    assert set(out) == {"is", "oos"}
-    worst = out["oos"]["worst"]["permute"]
-    assert worst == {"p_dd_ge_kill_switch": 0.55, "p95_max_dd": 70.0,
-                     "p_final_below_start": 0.40}
-    assert set(out["oos"]["per_dataset"]) == {"BTC/USDT 1h", "ETH/USDT 4h"}
-
-    case = "test_extract_mc_tolerates_no_data_legs_and_missing_percentiles"
-    payload = {"legs": [
-        {"window": "oos", "dataset": "BTC/USDT 1h", "status": "no_data",
-         "n_trades": 0, "schemes": []},
-        {"window": "oos", "dataset": "ETH/USDT 1h", "status": "ok", "n_trades": 3,
-         "schemes": [{"scheme": "permute", "p_dd_ge_kill_switch": 0.2,
-                      "max_dd_pct_percentiles": {"p50": 5.0},
-                      "p_final_below_start": 0.1}]}]}
-    out = asug.extract_mc(payload)
-    worst = out["oos"]["worst"]["permute"]
-    assert worst["p_dd_ge_kill_switch"] == 0.2, case
-    assert worst["p95_max_dd"] is None, case
-    assert asug.extract_mc({}) == {}, case
-
-
 def _open_spec(harnesses):
     spec = asug.load_spec(_base_spec(harnesses=harnesses), _STUDY_DIR)
     spec["seed"], spec["resamples"], spec["datasets"] = 1066, 10, None

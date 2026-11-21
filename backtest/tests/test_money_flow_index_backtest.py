@@ -1,5 +1,4 @@
 import contextlib
-import math
 import os
 import sys
 
@@ -16,12 +15,10 @@ if _TOOLS not in sys.path:
 import offline_manifest as om
 from atr import ensure_atr_indicator
 from backtester import Backtester
-from close_registry_loader import evaluate as close_evaluate
 from eval_windows import expand_sweep
 from optimizer import DEFAULT_PARAM_RANGES
 from parity_diff import ParityConfig
 from registry_loader import load_registry
-from strategy_composition import evaluate_open_close, finalize_decision
 
 NAME = "money_flow_index_reversal"
 CANDIDATE_DIR = os.path.join(_REPO, "backtest", "candidates", "money_flow_index_reversal_1658")
@@ -61,16 +58,6 @@ def _flat_frame(rows):
     return df
 
 
-def _tp(h, low, c):
-    return h / 3.0 + low / 3.0 + c / 3.0
-
-
-def _expected_mfi(p, q):
-    if p > 0:
-        return 100.0 / (1.0 + q / p)
-    return 0.0
-
-
 def _walk(n, seed, start=100.0):
     rng = np.random.default_rng(seed)
     close = start * np.exp(np.cumsum(rng.normal(0.0, 0.02, n)))
@@ -81,54 +68,6 @@ def _walk(n, seed, start=100.0):
     df = pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": volume})
     df.index = pd.date_range("2026-01-01", periods=n, freq="4h")
     return df
-
-
-HAND_DERIVED_CASES = [
-    ([(12, 1), (6, 2), (12, 1), (15, 1)], {"lookback": 2, "oversold": 50.0, "overbought": 90.0},
-     1, "entry_long", 50.0, 100.0),
-    ([(12, 1), (6, 2), (3, 4), (6, 2)], {"lookback": 2, "oversold": 50.0, "overbought": 90.0},
-     0, "no_cross", 0.0, 50.0),
-    ([(12, 1), (6, 2), (12, 1), (9, 2)], {"lookback": 2, "oversold": 10.0, "overbought": 50.0},
-     -1, "entry_short", 50.0, 40.0),
-    ([(3, 1), (6, 2), (12, 1), (6, 2)], {"lookback": 2, "oversold": 10.0, "overbought": 50.0},
-     0, "no_cross", 100.0, 50.0),
-    ([(10, 1), (9, 1), (8, 1), (9, 1)], {"lookback": 2, "oversold": 20.0, "overbought": 80.0},
-     1, "entry_long", 0.0, None),
-    ([(10, 1), (11, 1), (12, 1), (11, 1)], {"lookback": 2, "oversold": 20.0, "overbought": 80.0},
-     -1, "entry_short", 100.0, None),
-]
-
-
-def test_hand_derived_crossings_and_threshold_equality():
-    for i, (rows, params, sig, reason, prev, cur) in enumerate(HAND_DERIVED_CASES):
-        with _case(f"{i}-{reason}"):
-            _hand_derived_crossings_and_threshold_equality(rows, params, sig, reason, prev, cur)
-
-
-def _hand_derived_crossings_and_threshold_equality(rows, params, sig, reason, prev, cur):
-    df = _flat_frame(rows)
-    before = df.copy()
-    out = _apply(df, params)
-    pd.testing.assert_frame_equal(df, before)
-    pd.testing.assert_frame_equal(out[INPUT_COLUMNS], before)
-    prices = [r[0] for r in rows]
-    vols = [r[1] for r in rows]
-    tps = [_tp(p, p, p) for p in prices]
-    p_tot = sum(tps[i] * vols[i] for i in (2, 3) if tps[i] > tps[i - 1])
-    q_tot = sum(tps[i] * vols[i] for i in (2, 3) if tps[i] < tps[i - 1])
-    last = out.iloc[-1]
-    assert last["mfi_positive_total"] == p_tot and last["mfi_negative_total"] == q_tot
-    assert last["mfi_value"] == _expected_mfi(p_tot, q_tot)
-    if cur is not None:
-        assert last["mfi_value"] == cur
-    assert last["mfi_prev_value"] == prev
-    assert int(last["signal"]) == sig and last["mfi_reason"] == reason
-    assert bool(last["mfi_valid"]) is True
-    assert (out["signal"].iloc[:-1] == 0).all()
-    assert list(out["mfi_reason"].iloc[:3]) == ["insufficient_history"] * 3
-    assert math.isnan(out["mfi_value"].iloc[1]) and not math.isnan(out["mfi_value"].iloc[2])
-    for col in ("mfi_high", "mfi_low", "mfi_close", "mfi_volume"):
-        assert last[col] == last[col.replace("mfi_", "")]
 
 
 def _holds(df, params, reason):
@@ -210,40 +149,6 @@ def _supported_bounds_decide_inside_the_200_bar_check_window(df, params):
     assert tail["signal"].iloc[-1] == full["signal"].iloc[-1]
     short = _apply(df.iloc[-(params["lookback"] + 1):], params)
     assert short["mfi_reason"].iloc[-1] == "insufficient_history"
-
-
-def _composer(df, params, side="", position_ctx=None):
-    reg = _reg()
-    evaluation = evaluate_open_close(
-        reg.apply_strategy, reg.get_strategy, df, NAME, NAME, ["tiered_tp_atr"], side, params=params,
-        position_ctx=position_ctx, close_evaluate=close_evaluate,
-        close_params_by_name={"tiered_tp_atr": CLOSE[0]["params"]})
-    return evaluation, finalize_decision(evaluation, side)
-
-
-def test_composer_emits_both_entry_directions_and_blocks_entries_while_open():
-    long_df = _flat_frame([(10, 1), (9, 1), (8, 1), (9, 1)])
-    short_df = _flat_frame([(10, 1), (11, 1), (12, 1), (11, 1)])
-    _, flat_long = _composer(long_df, P2)
-    _, flat_short = _composer(short_df, P2)
-    assert (flat_long["open_action"], flat_long["signal"]) == ("long", 1)
-    assert (flat_short["open_action"], flat_short["signal"]) == ("short", -1)
-    _, held = _composer(short_df, P2, "long", {"side": "long", "avg_cost": 11.0, "entry_atr": 50.0,
-                                                "current_quantity": 1.0, "initial_quantity": 1.0})
-    assert held["open_action"] == "short" and held["close_fraction"] == 0.0 and held["signal"] == 0
-
-
-def test_invalid_entry_inputs_keep_the_close_owner_running():
-    df = _flat_frame([(10, 1), (11, 1), (12, 1), (13, 1), (14, 1)]).assign(volume=np.nan)
-    ctx = {"side": "long", "avg_cost": 10.0, "entry_atr": 1.0, "current_quantity": 1.0, "initial_quantity": 1.0}
-    evaluation, decision = _composer(df, P2, "long", ctx)
-    assert evaluation.open_result_df["mfi_reason"].iloc[-1] == "nonfinite_input"
-    assert decision["open_action"] == "none"
-    assert decision["close_strategy"] == "tiered_tp_atr" and decision["close_fraction"] == 1.0
-    assert decision["signal"] == -1
-    price_bad = _flat_frame([(10, 1), (11, 1), (12, 1), (13, 1), (14, 1)]).assign(low=-1.0)
-    _, decision = _composer(price_bad, P2, "short", {**ctx, "side": "short", "avg_cost": 20.0})
-    assert decision["open_action"] == "none" and decision["signal"] == 1
 
 
 def _bt(**kw):

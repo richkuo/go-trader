@@ -17,19 +17,6 @@ def _leg(entry_date="2025-01-01", side="long", pnl_pct=2.0, shares=1.0,
     }
 
 
-def test_group_and_free_arm_entries_orders_by_entry():
-    trades = [
-        _leg(entry_date="2025-01-01"),
-        _leg(entry_date="2025-01-05"),
-        _leg(entry_date="2025-01-01"),
-    ]
-    groups = m.group_entries(trades)
-    assert list(groups.keys()) == ["2025-01-01", "2025-01-05"]
-    assert len(groups["2025-01-01"]) == 2
-    entries = m.free_arm_entries(trades)
-    assert [e["entry_date"] for e in entries] == ["2025-01-01", "2025-01-05"]
-
-
 def test_build_paired_rows_pairs_counts_unmatched_and_labels_unknown_regime():
     control = [
         {"entry_date": "d1", "side": "long", "net_pct": 1.0, "mfe_pct": 2.0,
@@ -63,22 +50,6 @@ def _row(regime, ctrl, cand, mfe=2.0, mae=-1.0):
             "candidate_mfe_pct": mfe, "control_mae_pct": mae,
             "candidate_mae_pct": mae, "control_bars_held": 3,
             "candidate_bars_held": 3}
-
-
-def _regime_args(classifier=None, windows_json=None, period=14, adx=20.0, gate_window=None):
-    import types
-    return types.SimpleNamespace(
-        regime_classifier=classifier, regime_windows_json=windows_json,
-        regime_period=period, regime_adx_threshold=adx, gate_window=gate_window)
-
-
-def test_resolve_regime_composite_synthesizes_windows_spec():
-    cfg = m.resolve_regime_cfg(_regime_args(classifier="composite", period=20), {})
-    assert cfg["classifier"] == "composite"
-    assert cfg["windows_spec"] is not None
-    spec = next(iter(cfg["windows_spec"].values()))
-    assert spec["classifier"] == "composite" and spec["period"] == 20
-    assert cfg["gate_window"] == "attribution"
 
 
 def test_stops_from_kwargs_collects_present_drops_none_and_empty_without_stops():

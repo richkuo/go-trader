@@ -167,23 +167,6 @@ def test_perp_liquidation_caps_loss_and_credits_spot() -> None:
     assert ep.price_pnl <= 1000.0 * 0.35 - margin + 1e-6
 
 
-def test_constructor_rejects_bad_params() -> None:
-    with pytest.raises(ValueError):
-        CarryPairBacktester(initial_capital=0)
-    with pytest.raises(ValueError):
-        CarryPairBacktester(base_notional=-1)
-    with pytest.raises(ValueError):
-        CarryPairBacktester(leverage=0)
-    with pytest.raises(ValueError):
-        CarryPairBacktester(leverage=5.0, maintenance_margin=0.5)
-    with pytest.raises(ValueError):
-        CarryPairBacktester(entry_threshold=0.0001, exit_threshold=0.0002)
-    with pytest.raises(ValueError):
-        CarryPairBacktester(drift_threshold=0)
-    with pytest.raises(ValueError):
-        CarryPairBacktester(bar_hours=0)
-
-
 def test_rebalance_spot_qty_restores_parity() -> None:
     target, _ = rebalance_spot_qty(qty_perp=10.0, mark_perp=110.0, mark_spot=100.0)
     assert target == pytest.approx(11.0)

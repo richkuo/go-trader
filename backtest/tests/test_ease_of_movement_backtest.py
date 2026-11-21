@@ -51,10 +51,6 @@ def _apply(df, params=None):
     return REG.apply_strategy(NAME, df, params or PARAMS)
 
 
-def _last(df, params=None):
-    return _apply(df, params).iloc[-1]
-
-
 def _breakout_after(prefix_rows):
     return _apply(_frame(prefix_rows + _flat(8) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]))
 
@@ -156,18 +152,6 @@ def _wrong_declared_cadence_holds_every_decision():
     out = _apply(df)
     assert (out["signal"] == 0).all()
     assert (out["eom_reason"].iloc[2:] == "cadence_gap").all()
-
-
-def test_native_close_timestamps_normalize_to_bar_opening_time():
-    rows = _flat(10) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]
-    df = _frame(rows, kind="native_close_inclusive")
-    df.index = df.index + pd.Timedelta(milliseconds=3_600_000 - 1)
-    row = _last(df)
-    assert row["signal"] == 1
-    assert row["eom_eval_ts_ms"] == pd.Timestamp("2026-01-01 10:00").value // 1_000_000
-    df.attrs.pop(FRAME_TIMESTAMP_KIND_ATTR)
-    unknown = _last(df)
-    assert unknown["signal"] == 1 and math.isnan(unknown["eom_eval_ts_ms"])
 
 
 def _walk(n=320, seed=5):

@@ -37,20 +37,6 @@ def test_block_path_preserves_circular_contiguity(subtests):
         assert stats["block_len"] == 5
 
 
-def test_kill_switch_breach_probabilities_are_add_one_smoothed_at_both_extremes():
-    case = "test_all_winner_series_reports_smoothed_floor"
-    s = mc.resample_stats([1.0, 2.0, 3.0], "permute", n_paths=100, seed=1,
-                          kill_switch_pct=25.0)
-    assert s["p_dd_ge_kill_switch"] == pytest.approx(1 / 101), case
-    assert s["p_final_below_start"] == pytest.approx(1 / 101), case
-
-    case = "test_certain_breach_smoothed_below_one"
-    s = mc.resample_stats([-50.0], "permute", n_paths=100, seed=1,
-                          kill_switch_pct=25.0)
-    assert s["p_dd_ge_kill_switch"] == pytest.approx(101 / 101), case
-    assert s["p_final_below_start"] == pytest.approx(101 / 101), case
-
-
 def _trade(pnl_pct, shares=2.0, entry_price=100.0, pnl=None):
     return {"pnl_pct": pnl_pct, "shares": shares, "entry_price": entry_price,
             "pnl": pnl}

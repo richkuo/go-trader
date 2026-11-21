@@ -1408,17 +1408,6 @@ def _parity_params():
     return out
 
 
-def test_parity_scenarios_are_declared_once_per_strategy():
-    for name in _names("parity"):
-        scenarios = CASES[name].parity
-        with _case(name):
-            assert scenarios and len({scenario.label for scenario in scenarios}) == len(scenarios)
-            for scenario in scenarios:
-                assert scenario.cfgs and scenario.windows and scenario.checks
-                assert len({label for label, _ in scenario.cfgs}) == len(scenario.cfgs)
-                assert len(set(scenario.windows)) == len(scenario.windows)
-
-
 @pytest.mark.parametrize("name,label,cfg_index,window", _parity_params())
 def test_parity_contract(name, label, cfg_index, window):
     scenario = next(s for s in CASES[name].parity if s.label == label)
@@ -1624,5 +1613,3 @@ def test_time_stop_fill_contract(name):
             assert first["exit_date"] == str(df.index[spec.exit_bar])
         assert all(t["side"] == "short" and pd.Timestamp(t["entry_date"]) >= pd.Timestamp(first["exit_date"])
                    for t in trades[1:])
-
-

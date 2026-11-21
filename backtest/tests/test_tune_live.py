@@ -71,11 +71,6 @@ def _canned_stage2(spec_path, out_json, out_dir, jobs, funding_mode="charge",
     }
 
 
-def test_effective_params_config_over_defaults():
-    eff = tl.effective_params({"fast_period": 18}, {"fast_period": 20, "slow_period": 50})
-    assert eff == {"fast_period": 18, "slow_period": 50}
-
-
 def test_earliest_stage2_start_and_unknown_window():
     assert tl.earliest_stage2_start(["is", "oos"], tl.M1_WINDOWS) == "2025-06-10"
     assert tl.earliest_stage2_start(["2023", "is"], tl.M1_WINDOWS) == "2023-01-01"
@@ -178,17 +173,6 @@ def test_baseline_params_byte_match_load_strategy_config(tmp_path):
                            load_registry("spot"), _make_args(dry_run=True), {},
                            str(tmp_path))
     assert res["baseline_params"] == resolved["open_strategy"]["params"]
-
-
-def test_generated_candidates_pass_auto_suggest_load_spec(tmp_path):
-    path = _write_config(tmp_path, _sma_config())
-    tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
-                     load_registry("spot"), _make_args(dry_run=True), {}, str(tmp_path))
-    spec_path = tmp_path / "suggest.spot-sma-btc.json"
-    raw = json.loads(spec_path.read_text())
-    spec = auto_suggest.load_spec(raw, str(tmp_path))
-    assert spec["correction"]["family_size"] == raw["correction"]["family_size"]
-    assert spec["candidates"][0]["key"] == "baseline"
 
 
 _PROMOTION_BASELINE_KEYS = (

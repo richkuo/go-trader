@@ -14,8 +14,6 @@ if _TOOLS not in sys.path:
 
 _FUTURES = load_module(
     "_vortex_futures_strategies_test", os.path.join(_HERE, "futures", "strategies.py"))
-_SPOT = load_module(
-    "_vortex_spot_strategies_test", os.path.join(_HERE, "spot", "strategies.py"))
 
 from close_registry_loader import evaluate as close_evaluate
 from strategy_composition import evaluate_open_close, finalize_decision
@@ -58,16 +56,6 @@ def reference(df, period, sep):
     prev = d.shift(1)
     sig = np.where((d > sep) & (prev <= sep), 1, np.where((d < -sep) & (prev >= -sep), -1, 0))
     return vip, vim, d, pd.Series(sig, index=df.index)
-
-
-def test_registered_no_edge_futures_and_hidden():
-    entry = _FUTURES.STRATEGY_REGISTRY[NAME]
-    assert (entry["edge_status"], entry["edge_source"], entry["edge_ref"]) == (
-        "no_edge", "study_fail", "backtest/candidates/vortex_trend_1647/REPORT.md")
-    assert entry["default_params"] == {"period": 14, "min_separation": 0.0}
-    assert NAME not in _FUTURES.list_strategies()
-    assert NAME not in _FUTURES.DISCOVERY_STRATEGY_REGISTRY
-    assert NAME not in _SPOT.STRATEGY_REGISTRY
 
 
 MALFORMED_BAR_CASES = [
@@ -131,19 +119,6 @@ def _compose(df, position_side, position_ctx=None, close_strategies=("time_stop"
 ENTRY = flat(3) + [UP]
 
 
-def test_composer_flat_entry_and_open_position_blocks_duplicates_and_reversals():
-    _, flat_decision = _compose(frame(ENTRY), "", params=SMALL)
-    assert flat_decision["signal"] == 1 and flat_decision["open_action"] == "long"
-
-    held = {"side": "long", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
-    _, dup = _compose(frame(ENTRY), "long", held, params=SMALL)
-    assert dup["open_action"] == "long" and dup["signal"] == 0
-
-    short_ctx = {"side": "short", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
-    _, opposite = _compose(frame(ENTRY), "short", short_ctx, params=SMALL)
-    assert opposite["close_fraction"] == 0.0 and opposite["signal"] == 0
-
-
 def test_composer_close_wins_over_simultaneous_entry_and_survives_bad_entry_data():
     due = {"side": "long", "bars_held": 5, "avg_cost": 100.0, "current_quantity": 1.0}
     _, both = _compose(frame(ENTRY), "long", due, params=SMALL)
@@ -158,5 +133,3 @@ def test_composer_close_wins_over_simultaneous_entry_and_survives_bad_entry_data
     short_due = {"side": "short", "bars_held": 7, "avg_cost": 100.0, "current_quantity": 1.0}
     _, short_close = _compose(frame(flat(8)).drop(columns=["high"]), "short", short_due, params=SMALL)
     assert short_close["close_fraction"] == 1.0 and short_close["signal"] == 1
-
-

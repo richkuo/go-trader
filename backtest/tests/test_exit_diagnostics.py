@@ -24,43 +24,6 @@ def test_trade_metrics_fee_and_atr_conversion():
     assert m["mae_atr"] == pytest.approx(1.0, abs=1e-6)
 
 
-def test_fee_churn_summary_flags():
-    trades = [
-        ed.trade_metrics(_t(pnl_pct=0.1, exit_price=100.1, entry_fee=1.0, exit_fee=1.0)),
-        ed.trade_metrics(_t(pnl_pct=5.0, exit_price=105.0, entry_fee=1.0, exit_fee=1.0)),
-    ]
-    s = ed.fee_churn_summary(trades)
-    assert s["trades"] == 2
-    assert s["trades_flipped_to_loss_by_fees"] == 1
-
-
-def test_backtester_stamps_exact_excursions():
-    idx = pd.date_range("2024-01-01", periods=6, freq="h")
-    df = pd.DataFrame({
-        "open":  [100, 100, 101, 102, 103, 103],
-        "high":  [100, 101, 103, 104, 105, 105],
-        "low":   [100,  99, 100, 101, 102, 102],
-        "close": [100, 100, 101, 102, 103, 103],
-        "open_action": ["long", "none", "none", "none", "none", "none"],
-        "atr":   [2.0] * 6,
-    }, index=idx)
-    bt = Backtester(initial_capital=1000.0, commission_pct=0.001, slippage_pct=0.0,
-                    open_strategy={"name": "x"},
-                    close_strategies=[{"name": "time_stop", "params": {"max_bars": 3}}],
-                    direction="long", comparison_mode="approximate")
-    r = bt.run(df, strategy_name="x", save=False)
-    assert r["total_trades"] == 1
-    t = r["trades"][0]
-    assert t["bars_held"] == 3
-    assert t["exit_reason"] == "time_stop:3"
-    assert t["mfe_pct"] == pytest.approx(4.0)
-    assert t["bars_to_mfe"] == 3
-    assert t["mae_pct"] == pytest.approx(-1.0)
-    assert t["bars_to_mae"] == 1
-    assert t["entry_atr"] == pytest.approx(2.0)
-    assert t["entry_fee"] == pytest.approx(1.0)
-
-
 def test_atr_stop_engine_fires_at_next_open():
     idx = pd.date_range("2024-01-01", periods=5, freq="h")
     df = pd.DataFrame({

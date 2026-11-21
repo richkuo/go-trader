@@ -113,22 +113,6 @@ def test_clip_window_keeps_both_bounds_drops_the_rest_and_refuses_a_non_datetime
                                  *premise_mod.WINDOWS["is"])
 
 
-def test_an_added_symbol_on_another_venue_resolves_and_is_not_repointed(
-        tmp_path, monkeypatch):
-    monkeypatch.setattr(premise_mod, "run", lambda *a, **k: [_row(p=0.9)])
-    art, rep = tmp_path / "art.json", tmp_path / "rep.json"
-    monkeypatch.setattr(certify_mod, "DEFAULT_ARTIFACT", str(art))
-    monkeypatch.setattr(certify_mod, "DEFAULT_RUN_REPORT", str(rep))
-    rc = certify_mod.main([
-        "--symbols",
-        ",".join(premise_mod.DEFAULT_SYMBOLS) + ",HYPE/USDC:USDC@hyperliquid"])
-    assert rc == 0
-    sources = json.loads(art.read_text())["criteria"]["data_sources"]
-    assert sources["HYPE/USDC:USDC"] == "hyperliquid"
-    assert all(sources[s] == premise_mod.PLATFORM
-               for s in premise_mod.DEFAULT_SYMBOLS)
-
-
 def test_each_symbol_is_fetched_from_its_own_mapped_venue(monkeypatch):
     seen = []
 

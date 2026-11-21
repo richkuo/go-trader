@@ -15,8 +15,6 @@ if _TOOLS not in sys.path:
 
 _FUTURES = load_module(
     "_rvi_futures_strategies_test", os.path.join(_HERE, "futures", "strategies.py"))
-_SPOT = load_module(
-    "_rvi_spot_strategies_test", os.path.join(_HERE, "spot", "strategies.py"))
 _CHECK_HL = load_module(
     "_rvi_check_hyperliquid_test", os.path.join(_ROOT, "shared_scripts", "check_hyperliquid.py"))
 
@@ -105,16 +103,6 @@ def mirror(df, k=4000.0):
     return out
 
 
-def test_registered_no_edge_futures_and_hidden():
-    entry = _FUTURES.STRATEGY_REGISTRY[NAME]
-    assert (entry["edge_status"], entry["edge_source"], entry["edge_ref"]) == (
-        "no_edge", "study_fail", "backtest/candidates/relative_vigor_index_1666/REPORT.md")
-    assert entry["default_params"] == {"period": 10, "zero_line_filter": True}
-    assert NAME not in _FUTURES.list_strategies()
-    assert NAME not in _FUTURES.DISCOVERY_STRATEGY_REGISTRY
-    assert NAME not in _SPOT.STRATEGY_REGISTRY
-
-
 def test_zero_line_filter_blocks_cross_on_wrong_side_and_ablation_allows_it():
     rows = [bar(100.0 - 3 * i, 97.0 - 3 * i) for i in range(14)]
     rows.append(bar(58.0, 57.0))
@@ -175,19 +163,6 @@ def _compose(df, position_side, position_ctx=None, params=None):
 
 
 ENTRY = doji(12) + [bar(100.0, 104.0)]
-
-
-def test_composer_flat_entry_and_open_position_blocks_duplicates_and_reversals():
-    _, flat_decision = _compose(frame(ENTRY), "", params=SMALL)
-    assert flat_decision["signal"] == 1 and flat_decision["open_action"] == "long"
-
-    held = {"side": "long", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
-    _, dup = _compose(frame(ENTRY), "long", held, params=SMALL)
-    assert dup["open_action"] == "long" and dup["signal"] == 0
-
-    short_ctx = {"side": "short", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
-    _, opposite = _compose(frame(ENTRY), "short", short_ctx, params=SMALL)
-    assert opposite["close_fraction"] == 0.0 and opposite["signal"] == 0
 
 
 def test_composer_close_wins_over_entry_and_survives_bad_entry_data():

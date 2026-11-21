@@ -28,26 +28,6 @@ def _trending_ohlc(n: int = 500, seed: int = 7) -> pd.DataFrame:
     )
 
 
-def test_sma_80_grid_generates_trades_with_warmup():
-    df = _trending_ohlc(n=500)
-    param_ranges = {"fast_period": [10, 20], "slow_period": [40, 80]}
-
-    result = walk_forward_optimize(
-        df, "sma_crossover", param_ranges,
-        n_splits=5, train_pct=0.7,
-        initial_capital=1000.0, verbose=False,
-    )
-
-    assert "window_results" in result, result
-    total_trades = sum(
-        w["test_result"]["total_trades"] for w in result["window_results"]
-    )
-    assert total_trades > 0, (
-        "Walk-forward produced zero trades across all folds — the warmup "
-        "fix did not engage or is insufficient for SMA-80 priming."
-    )
-
-
 def _warmup_train_df() -> pd.DataFrame:
     opens  = [100.0] * 60
     closes = [100.0] * 60

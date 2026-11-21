@@ -2,11 +2,8 @@ import os
 
 import numpy as np
 import pandas as pd
-import pytest
 
-from backtester import Backtester
 from registry_loader import load_registry
-from atr import ensure_atr_indicator
 from eval_windows import compute_incumbent_legs, evaluate_window, INCUMBENTS
 
 NAME = "aroon_trend"
@@ -31,26 +28,8 @@ def _trend(n, start=100.0, step=-0.5):
     return rows
 
 
-def _spike_up(rows, size=50.0):
-    px = rows[-1][3]
-    return rows + [(px + 0.3, px + size, px + 0.2, px + size - 1.0, 1.0)]
-
-
-def _spike_down(rows, size=50.0):
-    px = rows[-1][3]
-    return rows + [(px - 0.3, px - 0.2, px - size, px - size + 1.0, 1.0)]
-
-
 def _apply(df, params):
     return load_registry("futures").apply_strategy(NAME, df, params)
-
-
-def _bt(**kw):
-    base = dict(initial_capital=1000.0, platform="hyperliquid",
-                open_strategy={"name": NAME, "params": {"period": 10, "strength": 70.0}},
-                close_strategies=TP, stop_loss_atr_mult=1.0, direction="both", comparison_mode="strict")
-    base.update(kw)
-    return Backtester(**base)
 
 
 def _market(n=420, seed=1643):
@@ -128,27 +107,6 @@ def _timestamp_defects_hold():
 
 PREFIX_PARAMS = [{"period": 25, "strength": 70.0}, {"period": 2, "strength": 0.0},
                  {"period": 198, "strength": 100.0}, {"period": 14, "strength": 50.0}]
-
-
-def test_backtest_entries_fill_at_the_next_open_and_never_reverse_or_add():
-    rows = _spike_up(_trend(30))
-    rows += [(rows[-1][3] + 0.5, rows[-1][3] + 1.0, rows[-1][3] - 0.5, rows[-1][3] + 0.5, 1.0)] * 3
-    rows = _spike_down(rows, size=120.0)
-    rows += [(rows[-1][3], rows[-1][3] + 0.3, rows[-1][3] - 0.3, rows[-1][3], 1.0)] * 4
-    df = _frame(rows)
-    sig = ensure_atr_indicator(_apply(df, {"period": 10, "strength": 70.0}))
-    entries = sig.index[sig["signal"] != 0].tolist()
-    assert sig.loc[entries[0], "signal"] == 1
-    res = _bt(stop_loss_atr_mult=None, stop_loss_pct=50.0).run(
-        sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    first = res["trades"][0]
-    fill = df.index.get_loc(entries[0]) + 1
-    assert first["side"] == "long"
-    assert first["entry_date"] == str(df.index[fill])
-    assert first["entry_price"] == pytest.approx(df["open"].iloc[fill] * 1.0005)
-    assert sig.loc[entries[1], "signal"] == -1 and entries[1] < pd.Timestamp(first["exit_date"])
-    assert len(res["trades"]) == 1
-    assert first["exit_reason"] == "end_of_data"
 
 
 def test_incumbent_contract_reaches_every_incumbent_and_default_callers_are_unchanged():

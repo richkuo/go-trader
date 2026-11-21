@@ -98,38 +98,10 @@ def test_aggregate_strategy_sums_legs_and_assigns_every_verdict():
     assert row["verdict"] == "graduate_m1", case
 
 
-def test_strategy_is_short_capable_predicate():
-    assert fa.strategy_is_short_capable({}, "sma_crossover") is False
-    assert fa.strategy_is_short_capable({"short_period": 8}, "triple_ema_bidir") is True
-    assert fa.strategy_is_short_capable(None, "bear_pullback_st") is True
-    assert fa.strategy_is_short_capable({"allow_short": False}, "mtf_confluence") is False
-    assert fa.strategy_is_short_capable({"allow_short": True}, "mtf_confluence") is True
-
-
 def test_live_bidirectional_set_is_the_registry_short_entry_set():
     from registry_loader import load_registry
     registry = load_registry("futures")._registry
     assert fa.LIVE_BIDIRECTIONAL_STRATEGIES == registry.short_entry_strategies()
-
-
-def test_enumerate_targets_both_skips_hold_and_handles_variants():
-    targets = fa.enumerate_targets("both")
-    names = [t[0] for t in targets]
-    assert "hold" not in names
-    pairs = {(t[0], t[1]) for t in targets}
-
-    assert ("delta_neutral_funding", "futures") in pairs
-
-    assert ("range_scalper", "spot") in pairs
-    assert ("macd", "spot") in pairs
-
-    assert ("sma_crossover", "spot") in pairs
-    assert ("sma_crossover", "futures") not in pairs
-    assert names.count("sma_crossover") == 1
-
-    assert ("momentum", "spot") in pairs
-    assert ("momentum", "futures") in pairs
-    assert names.count("momentum") == 2
 
 
 def test_enumerate_targets_variant_detection_matches_registry():

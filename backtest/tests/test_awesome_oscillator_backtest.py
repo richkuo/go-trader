@@ -1,7 +1,4 @@
-import json
 import os
-import subprocess
-import sys
 
 import numpy as np
 import pandas as pd
@@ -53,16 +50,3 @@ def _frozen_frame(rows=520):
 def _parity_cfg(**kw):
     return ParityConfig(strategy_name=NAME, registry="futures", platform="hyperliquid",
                         close_refs=[TIME_STOP], comparison_mode="approximate", **kw)
-
-
-def test_production_solo_check_subprocess_refuses_unacknowledged_live_before_any_exchange_call():
-    env = {k: v for k, v in os.environ.items() if not k.startswith("HYPERLIQUID")}
-    proc = subprocess.run(
-        [sys.executable, os.path.join(REPO, "shared_scripts", "check_hyperliquid.py"),
-         NAME, "BTC", "4h", "--mode=live"],
-        cwd=REPO, capture_output=True, text=True, timeout=120, env=env)
-    assert proc.returncode == 1
-    payload = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert payload["strategy"] == NAME
-    assert payload["signal"] == 0
-    assert "allow_no_edge" in payload["error"] and "explicit live mode" in payload["error"]

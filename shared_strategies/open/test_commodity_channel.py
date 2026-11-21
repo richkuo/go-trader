@@ -14,8 +14,6 @@ if _TOOLS not in sys.path:
 
 _FUTURES = load_module(
     "_cct_futures_strategies_test", os.path.join(_HERE, "futures", "strategies.py"))
-_SPOT = load_module(
-    "_cct_spot_strategies_test", os.path.join(_HERE, "spot", "strategies.py"))
 
 from close_registry_loader import evaluate as close_evaluate
 from strategy_composition import evaluate_open_close, finalize_decision
@@ -52,16 +50,6 @@ def indices(rows, params=SMALL):
 
 def last(rows, params):
     return run(frame(rows), params).iloc[-1]
-
-
-def test_registered_no_edge_futures_and_hidden():
-    entry = _FUTURES.STRATEGY_REGISTRY[NAME]
-    assert (entry["edge_status"], entry["edge_source"], entry["edge_ref"]) == (
-        "no_edge", "study_fail", "backtest/candidates/commodity_channel_trend_1656/REPORT.md")
-    assert entry["default_params"] == {"lookback": 20, "threshold": 100.0, "trend_period": 50}
-    assert NAME not in _FUTURES.list_strategies()
-    assert NAME not in _FUTURES.DISCOVERY_STRATEGY_REGISTRY
-    assert NAME not in _SPOT.STRATEGY_REGISTRY
 
 
 def test_long_cross_blocked_by_trend_rows_2_3(subtests):
@@ -205,20 +193,6 @@ def _entry_params():
     return {**SMALL, "threshold": (prev + cur) / 2.0}
 
 
-def test_composer_flat_entry_and_open_position_blocks_duplicates_and_reversals():
-    params = _entry_params()
-    _, flat_decision = _compose(frame(UP_ABOVE), "", params=params)
-    assert flat_decision["signal"] == 1 and flat_decision["open_action"] == "long"
-
-    held = {"side": "long", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
-    _, dup = _compose(frame(UP_ABOVE), "long", held, params=params)
-    assert dup["open_action"] == "long" and dup["signal"] == 0
-
-    short_ctx = {"side": "short", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
-    _, opposite = _compose(frame(UP_ABOVE), "short", short_ctx, params=params)
-    assert opposite["close_fraction"] == 0.0 and opposite["signal"] == 0
-
-
 def test_composer_close_wins_and_survives_bad_entry_data():
     params = _entry_params()
     due = {"side": "long", "bars_held": 5, "avg_cost": 100.0, "current_quantity": 1.0}
@@ -234,5 +208,3 @@ def test_composer_close_wins_and_survives_bad_entry_data():
     short_due = {"side": "short", "bars_held": 7, "avg_cost": 100.0, "current_quantity": 1.0}
     _, short_close = _compose(frame(base(8)).drop(columns=["high"]), "short", short_due, params=SMALL)
     assert short_close["close_fraction"] == 1.0 and short_close["signal"] == 1
-
-

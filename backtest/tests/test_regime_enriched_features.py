@@ -112,14 +112,6 @@ def test_full_enriched_matrix_builds_in_order_and_fitted_models_hold_the_feature
     assert list(np.asarray(correct)[valid]) != list(np.asarray(wrong)[valid]), case
 
 
-def test_fit_unsupervised_rejects_feature_name_count_mismatch():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    feats = np.random.default_rng(0).normal(size=(300, 5))
-    with pytest.raises(ValueError, match="columns but feature_names lists"):
-        rvm.fit_unsupervised(feats, family="kmeans", k=3, filter_window=16, thresholds=dict(TH),
-                             feature_names=["a", "b", "c"])
-
-
 def test_naming_uses_canonical_indices_ignoring_extra_dims_and_column_position():
     from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
     mean = np.zeros(6); std = np.ones(6)

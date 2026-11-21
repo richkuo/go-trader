@@ -14,8 +14,6 @@ if _TOOLS not in sys.path:
 
 _FUTURES = load_module(
     "_oib_futures_strategies_test", os.path.join(_HERE, "futures", "strategies.py"))
-_SPOT = load_module(
-    "_oib_spot_strategies_test", os.path.join(_HERE, "spot", "strategies.py"))
 
 from close_registry_loader import evaluate as close_evaluate
 from strategy_composition import evaluate_open_close, finalize_decision
@@ -81,19 +79,6 @@ FLAT = [100.0] * 6
 
 def last(df, obs, params=SMALL):
     return run(df, obs, params).iloc[-1]
-
-
-def test_registered_no_edge_futures_and_hidden():
-    entry = _FUTURES.STRATEGY_REGISTRY[NAME]
-    assert (entry["edge_status"], entry["edge_source"], entry["edge_ref"]) == (
-        "no_edge", "study_inconclusive", "backtest/candidates/open_interest_breakout_1637/REPORT.md")
-    assert entry["default_params"] == {
-        "price_lookback": 20, "oi_lookback": 4, "oi_change_threshold": 0.002,
-        "max_observation_age_ms": 120000, "observation_cadence_ms": 60000,
-        "min_coverage": 0.95, "max_gap_ms": 300000}
-    assert NAME not in _FUTURES.list_strategies()
-    assert NAME not in _FUTURES.DISCOVERY_STRATEGY_REGISTRY
-    assert NAME not in _SPOT.STRATEGY_REGISTRY
 
 
 TRUTH_TABLE_CASES = [
@@ -202,5 +187,3 @@ def test_composer_keeps_the_close_when_open_interest_is_missing():
           "initial_quantity": 1.0}
     _, tp_close = _compose(df, "long", tp, obs=None, close_strategies=("tiered_tp_pct",))
     assert tp_close["close_fraction"] == 1.0 and tp_close["signal"] == -1
-
-

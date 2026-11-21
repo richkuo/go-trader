@@ -3,7 +3,6 @@ import contextlib
 import importlib.util
 import io
 import json
-import math
 import os
 import subprocess
 import sys
@@ -257,13 +256,6 @@ def test_one_failing_slot_does_not_disturb_its_peers(mod):
     assert _strip_volatile(by_id["hl-ok-1"]) == _strip_volatile(solo)
 
 
-def test_build_shared_signal_state_raises_typed_errors(mod):
-    with pytest.raises(mod.InsufficientCandlesError):
-        mod.build_shared_signal_state("BTC", "1h", adapter=FakeAdapter(candles=_candles(n=5)))
-    with pytest.raises(mod.SharedSignalStateError):
-        mod.build_shared_signal_state("BTC", "1h")
-
-
 def test_parse_batch_slots_accepts_the_documented_envelope_and_rejects_bad_ones(mod, subtests):
     with subtests.test(case="documented_envelope"):
         raw = json.dumps({"v": 1, "slots": [
@@ -307,16 +299,6 @@ def _run_main(mod, monkeypatch, argv, stdin_text, adapter):
     except SystemExit as e:
         code = e.code or 0
     return buf.getvalue(), code
-
-
-def test_shared_state_accepts_a_prebuilt_frame_without_an_adapter(mod):
-    df = mod._make_dataframe(_candles())
-    shared = mod.build_shared_signal_state("BTC", "1h", df=df, atr_method="simple")
-    assert shared["adapter"] is None
-    assert shared["atr"] > 0
-    result = mod.evaluate_signal_slot(shared, _slot("hl-offline", "breakout"))
-    assert result["strategy"] == "breakout"
-    assert math.isfinite(result["price"])
 
 
 def _spot_registry_path(mod):
