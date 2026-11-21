@@ -30,6 +30,9 @@ robinhood-session/
 .claude/skills/go-trader-trade-feedback/*
 !.claude/skills/go-trader-trade-feedback/SKILL.md
 !.claude/skills/go-trader-trade-feedback/trade_feedback_client.py
+!.claude/rules/
+.claude/rules/*
+!.claude/rules/*.md
 local/
 
 # macOS

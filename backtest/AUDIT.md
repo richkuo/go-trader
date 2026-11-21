@@ -16,7 +16,8 @@ useful history.
 The contract holds for every decision input. Audit-time (2026-06): the
 contract lived in the `backtester.py` module docstring. Correction (2026-10,
 issue #1724): PR 1466 removed the docstring; the contract now lives in
-CLAUDE.md ("Backtest" section, look-ahead bullets) and is pinned by the
+the look-ahead bullets of CLAUDE.md ("Backtest" section) and
+`.claude/rules/backtest.md` (HTF `.shift(1)`), and is pinned by the
 regression suite `backtest/tests/test_backtester_lookahead.py`. Verified end
 to end:
 

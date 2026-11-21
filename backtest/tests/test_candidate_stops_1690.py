@@ -90,6 +90,80 @@ def _spec(m6):
             "m6": m6}
 
 
+_MISSING = object()
+
+
+def _arm_field(arm, field):
+    if isinstance(arm, dict) and field in arm:
+        return arm[field]
+    return _MISSING
+
+
+def _differing_control_arm_fields(rows):
+    arms = []
+    for result in rows.values():
+        result = result if isinstance(result, dict) else {}
+        arm = result.get("control_arm")
+        arms.append(arm if isinstance(arm, dict) else {})
+    fields = sorted({field for arm in arms for field in arm})
+    differing = []
+    for field in fields:
+        values = [_arm_field(arm, field) for arm in arms]
+        if any(value != values[0] for value in values):
+            differing.append(field)
+    return differing
+
+
+def _differing_result_fields(rows):
+    records = [result if isinstance(result, dict) else {} for result in rows.values()]
+    fields = sorted({field for record in records for field in record})
+    differing = []
+    for field in fields:
+        values = [record[field] if field in record else _MISSING for record in records]
+        if any(value != values[0] for value in values):
+            differing.append(field)
+    return differing
+
+
+def _funding_control_fields(result):
+    funding = result.get("funding") if isinstance(result, dict) else None
+    control = funding.get("control") if isinstance(funding, dict) else None
+    control = control if isinstance(control, dict) else {}
+    fields = {
+        "source": control.get("source"),
+        "complete": control.get("complete"),
+    }
+    for name in ("error", "fetch_error"):
+        if name in control:
+            fields[name] = control[name]
+    return fields
+
+
+def _control_arm_mismatch_message(rows, *, name_result_fields=False):
+    differing = _differing_control_arm_fields(rows)
+    result_fields = _differing_result_fields(rows) if name_result_fields else []
+    show_result_fields = any(field != "control_arm" for field in result_fields)
+    lines = []
+    for key in sorted(rows):
+        result = rows[key] if isinstance(rows[key], dict) else {}
+        arm = result.get("control_arm")
+        arm = arm if isinstance(arm, dict) else {}
+        values = {}
+        for field in differing:
+            values[field] = arm[field] if field in arm else "<missing>"
+        payload = {
+            "key": key,
+            "differing_control_arm_fields": differing,
+            "control_arm": values,
+            "funding.control": _funding_control_fields(result),
+            "funding_incomplete": result.get("funding_incomplete"),
+        }
+        if show_result_fields:
+            payload["differing_result_fields"] = result_fields
+        lines.append(json.dumps(payload, sort_keys=True, default=str))
+    return "\n".join(lines)
+
+
 def test_stop_overrides_and_stop_only_variants_run_paired_through_m6(candle_env, tmp_path):
     spec = _spec({
         "strategy_id": "sma_crossover",
@@ -127,6 +201,7 @@ def test_stop_overrides_and_stop_only_variants_run_paired_through_m6(candle_env,
     assert family_keys == set(expected)
 
     controls = []
+    control_rows = {}
     for key, (selection, stop_only, owner) in expected.items():
         entry = entries[key]
         assert entry["precondition_errors"] == []
@@ -151,6 +226,7 @@ def test_stop_overrides_and_stop_only_variants_run_paired_through_m6(candle_env,
 
         res = _dataset(_m6_payload(out_dir, key))
         controls.append(res["control_arm"])
+        control_rows[key] = res
         assert res["paired_diag"]["paired"] > 0
         assert res["paired_diag"]["paired"] == res["paired_diag"]["schedule_entries"]
         cand_reasons = res["candidate_arm"]["exit_reasons"]
@@ -161,7 +237,7 @@ def test_stop_overrides_and_stop_only_variants_run_paired_through_m6(candle_env,
             assert set(replay_reasons) <= STOP_ONLY_REASONS
         else:
             assert any(r.startswith("tiered_tp_atr") for r in cand_reasons)
-    assert all(c == controls[0] for c in controls)
+    assert all(c == controls[0] for c in controls), _control_arm_mismatch_message(control_rows)
     assert set(controls[0]["exit_reasons"]) <= {"tiered_tp_atr:0.5", "tiered_tp_atr:1",
                                                 "end_of_data"}
 
@@ -210,6 +286,7 @@ def test_baseline_config_short_leg_replaces_inherited_percent_stop(candle_env, t
     assert report["close_validation"]["requested_set_complete"] is True
 
     controls = []
+    control_rows = {}
     for key, stop_only in (("m6.atr_trail", True), ("m6.tp_trail", False)):
         payload = _m6_payload(out_dir, key)
         assert payload["open"]["direction"] == "short"
@@ -239,6 +316,7 @@ def test_baseline_config_short_leg_replaces_inherited_percent_stop(candle_env, t
         assert evidence["resolved_live_units"]["value"]["trailing_stop_atr_mult"] == 2.0
         res = _dataset(payload)
         controls.append(res["control_arm"])
+        control_rows[key] = res
         assert res["paired_diag"]["paired"] > 0
         assert res["candidate_arm"]["exit_reasons"].get("sl", 0) > 0
         if stop_only:
@@ -247,8 +325,10 @@ def test_baseline_config_short_leg_replaces_inherited_percent_stop(candle_env, t
     inherit = _m6_payload(out_dir, "m6.tp_inherit")
     assert inherit["candidate_stops_mode"] == "inherit"
     assert inherit["candidate_stop_owner"] == "fixed_pct"
-    controls.append(_dataset(inherit)["control_arm"])
-    assert all(c == controls[0] for c in controls)
+    inherit_res = _dataset(inherit)
+    controls.append(inherit_res["control_arm"])
+    control_rows["m6.tp_inherit"] = inherit_res
+    assert all(c == controls[0] for c in controls), _control_arm_mismatch_message(control_rows)
 
 
 def test_stop_only_variant_without_candidate_close_runs_like_empty_close(candle_env, tmp_path):
@@ -278,7 +358,8 @@ def test_stop_only_variant_without_candidate_close_runs_like_empty_close(candle_
         assert res["paired_diag"]["paired"] > 0
         assert set(res["candidate_arm"]["exit_reasons"]) <= STOP_ONLY_REASONS
         results[key] = res
-    assert results["m6.trail_no_close"] == results["m6.trail_empty_close"]
+    assert results["m6.trail_no_close"] == results["m6.trail_empty_close"], (
+        _control_arm_mismatch_message(results, name_result_fields=True))
     inherit = entries["m6.inherit_no_close"]
     assert inherit["verdict"] == "excluded_not_replayable"
     assert inherit["precondition_errors"] == ["excluded_not_replayable"]

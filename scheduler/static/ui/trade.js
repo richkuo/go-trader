@@ -10,6 +10,8 @@
     refresh: document.getElementById("review-refresh"),
     coverage: document.getElementById("review-coverage"),
     chart: document.getElementById("review-chart"),
+    chartFrame: document.getElementById("review-chart-frame"),
+    chartToolbar: document.getElementById("review-chart-toolbar"),
     chartFailure: document.getElementById("review-chart-failure"),
     legend: document.getElementById("review-legend"),
     actual: document.getElementById("review-actual"),
@@ -122,6 +124,17 @@
     state.chartAvailable = false;
     setText(els.chartFailure, "Chart unavailable: " + message + " Saving stays off until the chart draws. Reload to try again.");
     els.chartFailure.hidden = false;
+    updateSaveState();
+  }
+
+  function chartPreferences() {
+    const lib = window.GoTraderStorage;
+    if (!lib || typeof lib.chartPreferences !== "function") return null;
+    try {
+      return lib.chartPreferences(function () { return window.localStorage; });
+    } catch (_err) {
+      return null;
+    }
   }
 
   function chartRecovered() {
@@ -137,6 +150,10 @@
     }
     const controller = window.GoTraderChart.create({
       container: els.chart,
+      toolbar: els.chartToolbar,
+      fullscreenTarget: els.chartFrame,
+      preferences: chartPreferences(),
+      exportName: function () { return strategyID + "-" + positionID; },
       minWidth: 300,
       minHeight: 320,
       isDark: isDark,
