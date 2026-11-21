@@ -134,7 +134,7 @@ var limitOpenProbeArgv = []string{
 }
 
 var limitStatusProbeArgv = []string{
-	"--limit-status", "--symbol=BTC", "--oids-json=[1]", "--probe-only",
+	"--limit-status", "--symbol=BTC", "--oids-json=[1]", "--watermarks-json={}", "--probe-only",
 }
 
 var syncProtectionProbeArgv = []string{

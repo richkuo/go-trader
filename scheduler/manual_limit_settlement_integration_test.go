@@ -88,7 +88,7 @@ func newLimitSettleEnv(t *testing.T, split bool, withPeer bool) *limitSettleEnv 
 		defer e.statusMu.Unlock()
 		return 0, append([]HLPosition(nil), e.exposure...), nil
 	}
-	runHyperliquidLimitStatusFn = func(_, symbol string, oids []int64, _ int64) (*HyperliquidLimitStatusResult, string, error) {
+	runHyperliquidLimitStatusFn = func(_, symbol string, oids []int64, _ int64, _ ...limitStatusWatermark) (*HyperliquidLimitStatusResult, string, error) {
 		e.statusMu.Lock()
 		defer e.statusMu.Unlock()
 		e.statusRead++
@@ -400,7 +400,7 @@ func newLimitSettleRestart(t *testing.T, prev *limitSettleEnv) *limitSettleEnv {
 	if !e.store.persistenceHoldsPartition(livePartition) {
 		t.Fatal("a restarted scheduler must hold live entries until the first queue pass")
 	}
-	runHyperliquidLimitStatusFn = func(_, symbol string, oids []int64, _ int64) (*HyperliquidLimitStatusResult, string, error) {
+	runHyperliquidLimitStatusFn = func(_, symbol string, oids []int64, _ int64, _ ...limitStatusWatermark) (*HyperliquidLimitStatusResult, string, error) {
 		res := &HyperliquidLimitStatusResult{}
 		for _, oid := range oids {
 			if st, ok := e.status[oid]; ok {

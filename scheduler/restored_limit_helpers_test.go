@@ -60,7 +60,12 @@ func withStubbedLimitDeps(t *testing.T, status func(script, symbol string, oids 
 	origCancel := runHyperliquidCancelOrderFn
 	origSync := syncHyperliquidProtection
 	origRecorder := tradeRecorder
-	runHyperliquidLimitStatusFn = limitTestEvidenceStatus(status)
+	runHyperliquidLimitStatusFn = nil
+	if wrapped := limitTestEvidenceStatus(status); wrapped != nil {
+		runHyperliquidLimitStatusFn = func(script, symbol string, oids []int64, sinceMs int64, _ ...limitStatusWatermark) (*HyperliquidLimitStatusResult, string, error) {
+			return wrapped(script, symbol, oids, sinceMs)
+		}
+	}
 	runHyperliquidCancelOrderFn = cancel
 	syncHyperliquidProtection = func(StrategyConfig, hlProtectionPlan, *MultiNotifier, *StrategyLogger, []byte) (*HyperliquidProtectionSyncResult, bool) {
 		return &HyperliquidProtectionSyncResult{}, true

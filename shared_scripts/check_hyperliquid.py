@@ -3289,7 +3289,30 @@ def limit_order_status_terminal(status):
     return None
 
 
-def limit_order_status_evidence(adapter, symbol, oid, scan, open_oids, open_orders_error):
+def limit_status_watermarks(raw):
+    if not raw:
+        return {}
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("--watermarks-json must be a JSON object keyed by order id")
+    out = {}
+    for key, body in data.items():
+        if not isinstance(body, dict):
+            raise ValueError(f"--watermarks-json entry {key!r} is not an object")
+        mark = {}
+        for field in ("filled_size", "avg_px", "fee"):
+            value = body.get(field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"--watermarks-json entry {key!r} has no numeric {field}")
+            value = float(value)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"--watermarks-json entry {key!r} has an unusable {field}")
+            mark[field] = value
+        out[int(key)] = mark
+    return out
+
+
+def limit_order_status_evidence(adapter, symbol, oid, scan, open_oids, open_orders_error, watermark=None):
     entry = {"oid": oid, "coin": "", "order_status": "", "terminal": False, "executed_sz": 0.0,
              "filled_size": 0.0, "avg_px": 0.0, "fee": 0.0, "count": 0, "fills_complete": False}
     entry["resting"] = (oid in open_oids) if open_oids is not None else None
@@ -3316,6 +3339,19 @@ def limit_order_status_evidence(adapter, symbol, oid, scan, open_oids, open_orde
     except Exception as se:
         print(f"[WARN] query_order_by_oid({oid}) failed: {se}", file=sys.stderr)
         entry["status_error"] = str(se) or type(se).__name__
+    if (watermark is not None and "status_error" not in entry
+            and entry["terminal"] is False and entry["resting"] is True):
+        executed = entry["executed_sz"]
+        tolerance = max(1e-9, abs(executed) * 1e-6)
+        if abs(executed - watermark["filled_size"]) <= tolerance:
+            entry["filled_size"] = watermark["filled_size"]
+            entry["avg_px"] = watermark["avg_px"]
+            entry["fee"] = watermark["fee"]
+            entry["fills_complete"] = True
+            entry["fills_source"] = "watermark"
+            return entry
+    if callable(scan):
+        scan = scan()
     if scan is None or isinstance(scan, Exception):
         entry["fills_error"] = str(scan) if scan is not None else "fill history unread"
         return entry
@@ -3341,7 +3377,7 @@ def limit_order_status_evidence(adapter, symbol, oid, scan, open_oids, open_orde
     return entry
 
 
-def run_limit_status(symbol, oids, mode, since_ms=0):
+def run_limit_status(symbol, oids, mode, since_ms=0, watermarks=None):
     if mode != "live":
         print(json.dumps({"error": "--limit-status requires --mode=live"}, cls=SafeEncoder))
         sys.exit(1)
@@ -3362,16 +3398,21 @@ def run_limit_status(symbol, oids, mode, since_ms=0):
             open_orders_error = str(oe) or type(oe).__name__
             print(f"[WARN] open_order_oids({symbol}) failed: {oe}", file=sys.stderr)
 
-        scan = None
-        try:
-            scan = scan_recovery_fills(adapter, since_ms)
-        except Exception as fe:
-            print(f"[WARN] fill history scan since {since_ms} failed: {fe}", file=sys.stderr)
-            scan = fe
+        scanned = []
+
+        def scan():
+            if not scanned:
+                try:
+                    scanned.append(scan_recovery_fills(adapter, since_ms))
+                except Exception as fe:
+                    print(f"[WARN] fill history scan since {since_ms} failed: {fe}", file=sys.stderr)
+                    scanned.append(fe)
+            return scanned[0]
 
         results = []
         for oid in oids:
-            results.append(limit_order_status_evidence(adapter, symbol, int(oid), scan, open_oids, open_orders_error))
+            results.append(limit_order_status_evidence(adapter, symbol, int(oid), scan, open_oids, open_orders_error,
+                                                       (watermarks or {}).get(int(oid))))
 
         out = {
             "platform": "hyperliquid",
@@ -4126,6 +4167,8 @@ def main():
                             help="JSON array of resting order OIDs to poll")
         parser.add_argument("--since-ms", type=int, default=0,
                             help="userFills lookback floor in epoch ms; 0 = default 7-day window")
+        parser.add_argument("--watermarks-json", default="",
+                            help="JSON object of order id to the saved fill (filled_size, avg_px, fee); a resting order whose executed size equals it skips the fill scan")
         parser.add_argument("--mode", default="live")
         parser.add_argument("--probe-only", action="store_true",
                             help="Startup compatibility probe (#883): validate argv shape and exit 0.")
@@ -4140,7 +4183,12 @@ def main():
         if not isinstance(oids, list):
             print(json.dumps({"error": "--oids-json must be a JSON array"}))
             sys.exit(1)
-        run_limit_status(args.symbol, oids, args.mode, since_ms=args.since_ms)
+        try:
+            watermarks = limit_status_watermarks(args.watermarks_json)
+        except Exception as e:
+            print(json.dumps({"error": f"invalid --watermarks-json: {e}"}))
+            sys.exit(1)
+        run_limit_status(args.symbol, oids, args.mode, since_ms=args.since_ms, watermarks=watermarks)
     elif "--cancel-order" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()

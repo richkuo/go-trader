@@ -114,10 +114,24 @@ func parseHyperliquidLimitStatusOutput(stdout []byte, stderrStr string, runErr e
 	return &result, stderrStr, nil
 }
 
-func RunHyperliquidLimitStatus(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error) {
+type limitStatusWatermark struct {
+	OID        int64
+	FilledSize float64
+	AvgPx      float64
+	Fee        float64
+}
+
+func limitStatusWatermarkFor(o PendingLimitOrder) []limitStatusWatermark {
+	if !o.fillSealed() {
+		return nil
+	}
+	return []limitStatusWatermark{{OID: o.OrderOID, FilledSize: o.FilledSize, AvgPx: o.AvgFillPrice, Fee: o.FillFee}}
+}
+
+func buildHyperliquidLimitStatusArgs(symbol string, oids []int64, sinceMs int64, sealed []limitStatusWatermark) ([]string, error) {
 	oidsJSON, err := json.Marshal(oids)
 	if err != nil {
-		return nil, "", fmt.Errorf("marshal oids: %w", err)
+		return nil, fmt.Errorf("marshal oids: %w", err)
 	}
 	args := []string{
 		"--limit-status",
@@ -127,6 +141,25 @@ func RunHyperliquidLimitStatus(script, symbol string, oids []int64, sinceMs int6
 	}
 	if sinceMs > 0 {
 		args = append(args, fmt.Sprintf("--since-ms=%d", sinceMs))
+	}
+	if len(sealed) > 0 {
+		marks := make(map[string]map[string]float64, len(sealed))
+		for _, w := range sealed {
+			marks[strconv.FormatInt(w.OID, 10)] = map[string]float64{"filled_size": w.FilledSize, "avg_px": w.AvgPx, "fee": w.Fee}
+		}
+		marksJSON, err := json.Marshal(marks)
+		if err != nil {
+			return nil, fmt.Errorf("marshal watermarks: %w", err)
+		}
+		args = append(args, fmt.Sprintf("--watermarks-json=%s", string(marksJSON)))
+	}
+	return args, nil
+}
+
+func RunHyperliquidLimitStatus(script, symbol string, oids []int64, sinceMs int64, sealed ...limitStatusWatermark) (*HyperliquidLimitStatusResult, string, error) {
+	args, err := buildHyperliquidLimitStatusArgs(symbol, oids, sinceMs, sealed)
+	if err != nil {
+		return nil, "", err
 	}
 	stdout, stderr, runErr := runPythonSideEffect(script, args)
 	return parseHyperliquidLimitStatusOutput(stdout, string(stderr), runErr)
@@ -795,7 +828,7 @@ func readLimitOrderEvidence(script string, o PendingLimitOrder, tag string) (Hyp
 }
 
 func readLimitOrderStatus(script string, o PendingLimitOrder, tag string) (*HyperliquidLimitStatusResult, string) {
-	res, stderr, err := runHyperliquidLimitStatusFn(script, o.Symbol, []int64{o.OrderOID}, limitStatusSinceMs(o.CreatedAt))
+	res, stderr, err := runHyperliquidLimitStatusFn(script, o.Symbol, []int64{o.OrderOID}, limitStatusSinceMs(o.CreatedAt), limitStatusWatermarkFor(o)...)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "[limit] %s %s stderr: %s\n", o.StrategyID, tag, stderr)
 	}

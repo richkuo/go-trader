@@ -164,7 +164,7 @@ func init() {
 		}
 		return nil, "", fmt.Errorf("manual venue substitute refuses cancellations")
 	}
-	runHyperliquidLimitStatusFn = func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error) {
+	runHyperliquidLimitStatusFn = func(script, symbol string, oids []int64, sinceMs int64, _ ...limitStatusWatermark) (*HyperliquidLimitStatusResult, string, error) {
 		manualRegimeTestVenueRecord(logPath, map[string]any{"kind": "limit_status", "symbol": symbol, "oids": len(oids)})
 		if !cancelOK {
 			return nil, "", fmt.Errorf("manual venue substitute refuses limit status reads")
