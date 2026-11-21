@@ -20,18 +20,19 @@ import (
 const trSID = "hl-eth"
 
 type trEnv struct {
-	t       *testing.T
-	ss      *StatusServer
-	store   *StateStore
-	state   *AppState
-	mu      *sync.RWMutex
-	base    time.Time
-	fetchMu sync.Mutex
-	fetches []UICandleRequest
-	source  string
-	fail    error
-	mutate  func([]UICandle) []UICandle
-	hook    func()
+	t          *testing.T
+	ss         *StatusServer
+	store      *StateStore
+	state      *AppState
+	mu         *sync.RWMutex
+	base       time.Time
+	archiveDir string
+	archived   bool
+	noArchive  bool
+	mutate     func([]UICandle) []UICandle
+	series     func(e *trEnv) []testArchiveSeries
+	expired    bool
+	history    time.Duration
 }
 
 func trConfig() StrategyConfig {
@@ -47,11 +48,9 @@ func newTREnvWith(t *testing.T, token string, store *StateStore, cfgs []Strategy
 			Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}}
 	}
 	mu := &sync.RWMutex{}
-	e := &trEnv{t: t, store: store, state: state, mu: mu, source: "hyperliquid:adapter:range",
+	e := &trEnv{t: t, store: store, state: state, mu: mu, archiveDir: t.TempDir(),
 		base: time.Now().UTC().Truncate(time.Hour).Add(-100 * time.Hour)}
 	e.ss = NewStatusServer(state, mu, token, cfgs, store)
-	e.ss.candleCache = nil
-	e.ss.candleFetcher = e.fetch
 	return e
 }
 
@@ -60,29 +59,56 @@ func newTREnv(t *testing.T, token string) *trEnv {
 	return newTREnvWith(t, token, singleFileStore(openTestDB(t)), []StrategyConfig{trConfig()})
 }
 
-func (e *trEnv) fetch(req UICandleRequest) ([]UICandle, string, error) {
-	e.fetchMu.Lock()
-	e.fetches = append(e.fetches, req)
-	hook, fail, mutate, source := e.hook, e.fail, e.mutate, e.source
-	e.fetchMu.Unlock()
-	if hook != nil {
-		hook()
+func (e *trEnv) latestCompleted() time.Time {
+	if e.expired {
+		return time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Hour).Add(-time.Hour)
 	}
-	if fail != nil {
-		return nil, "", fail
+	return time.Now().UTC().Truncate(time.Hour).Add(-time.Hour)
+}
+
+func (e *trEnv) defaultSeries() []testArchiveSeries {
+	var out []testArchiveSeries
+	for _, sym := range []string{"ETH", "SOL", "BTC"} {
+		from := e.base.Add(-300 * time.Hour)
+		if sym == "ETH" && e.history > 0 {
+			from = e.base.Add(-e.history)
+		}
+		bars := testArchiveBars(from, e.latestCompleted(), time.Hour)
+		if e.mutate != nil && sym == "ETH" {
+			bars = e.mutate(bars)
+		}
+		out = append(out, testArchiveSeries{ID: hlTestIdentity(sym, "1h"), Bars: bars})
 	}
-	bar := int64(3600)
-	if d, ok := diagTimeframeDuration(req.Strategy.Timeframe); ok {
-		bar = int64(d / time.Second)
+	return out
+}
+
+func (e *trEnv) publishArchive() string {
+	e.t.Helper()
+	series := e.defaultSeries()
+	if e.series != nil {
+		series = e.series(e)
 	}
-	var out []UICandle
-	for t := req.From.Unix(); t <= req.To.Unix(); t += bar {
-		out = append(out, UICandle{Time: t, Open: 100, High: 120, Low: 90, Close: 105, Volume: 1})
+	spec := testArchiveSpec{Series: series}
+	if e.expired {
+		spec.PublishedAt = time.Now().UTC().Add(-2 * time.Hour)
+		spec.ExpiresAt = time.Now().UTC().Add(-time.Hour)
 	}
-	if mutate != nil {
-		out = mutate(out)
+	id := writeTestCandleArchive(e.t, e.archiveDir, spec)
+	attachTestCandleArchive(e.t, e.ss, e.archiveDir)
+	e.archived = true
+	return id
+}
+
+func (e *trEnv) ensureArchive() {
+	e.t.Helper()
+	if e.archived {
+		return
 	}
-	return out, source, nil
+	if e.noArchive {
+		e.archived = true
+		return
+	}
+	e.publishArchive()
 }
 
 func (e *trEnv) at(hours float64) time.Time {
@@ -120,6 +146,7 @@ func (e *trEnv) seedDefault() {
 
 func (e *trEnv) do(method, target string, body []byte, hdr map[string]string) *httptest.ResponseRecorder {
 	e.t.Helper()
+	e.ensureArchive()
 	req := httptest.NewRequest(method, target, bytes.NewReader(body))
 	for k, v := range hdr {
 		req.Header.Set(k, v)
@@ -133,7 +160,7 @@ func (e *trEnv) review(sid, pid string) (*httptest.ResponseRecorder, tradeReview
 	e.t.Helper()
 	rec := e.do(http.MethodGet, "/api/strategies/"+url.PathEscape(sid)+"/trade-review?position_id="+url.QueryEscape(pid), nil, nil)
 	var resp tradeReviewResponse
-	if rec.Code == http.StatusOK || rec.Code == http.StatusBadGateway {
+	if rec.Code == http.StatusOK || rec.Code == http.StatusServiceUnavailable {
 		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 			e.t.Fatalf("decode review: %v (%s)", err, rec.Body.String())
 		}
@@ -321,21 +348,62 @@ func TestTradeReviewCoverage(t *testing.T) {
 		{name: "missing_first_bound", setup: func(e *trEnv) { e.mutate = drop(e.at(-18).Unix()) }, status: tradeReviewCoveragePartial, code: 200},
 		{name: "missing_last_bound", setup: func(e *trEnv) { e.mutate = drop(e.at(26).Unix()) }, status: tradeReviewCoveragePartial, code: 200},
 		{name: "interior_gap", setup: func(e *trEnv) { e.mutate = drop(e.at(4).Unix()) }, status: tradeReviewCoveragePartial, code: 200},
-		{name: "none", setup: func(e *trEnv) { e.mutate = func([]UICandle) []UICandle { return nil } }, status: tradeReviewCoverageNone, code: 200},
-		{name: "duplicate", setup: func(e *trEnv) {
-			e.mutate = func(in []UICandle) []UICandle { return append(in, in[5]) }
+		{name: "archive_ends_before_window", setup: func(e *trEnv) {
+			e.mutate = func(in []UICandle) []UICandle {
+				var out []UICandle
+				for _, c := range in {
+					if c.Time < e.at(-30).Unix() {
+						out = append(out, c)
+					}
+				}
+				return out
+			}
+		}, status: tradeReviewCoverageNone, code: 200},
+		{name: "window_past_finalized_bar", setup: func(e *trEnv) {
+			e.mutate = func(in []UICandle) []UICandle {
+				var out []UICandle
+				for _, c := range in {
+					if c.Time <= e.at(20).Unix() {
+						out = append(out, c)
+					}
+				}
+				return out
+			}
 		}, status: tradeReviewCoveragePartial, code: 200},
-		{name: "invalid_price", setup: func(e *trEnv) {
-			e.mutate = func(in []UICandle) []UICandle { in[7].High = 80; return in }
-		}, status: tradeReviewCoveragePartial, code: 200},
-		{name: "nan_price", setup: func(e *trEnv) {
-			e.mutate = func(in []UICandle) []UICandle { in[8].Low = math.NaN(); return in }
-		}, status: tradeReviewCoveragePartial, code: 200},
-		{name: "off_grid", setup: func(e *trEnv) {
-			e.mutate = func(in []UICandle) []UICandle { in[9].Time += 60; return in }
-		}, status: tradeReviewCoveragePartial, code: 200},
-		{name: "latest_window_source", setup: func(e *trEnv) { e.source = "robinhood:adapter:latest" }, status: tradeReviewCoveragePartial, code: 200},
-		{name: "fetch_failure", setup: func(e *trEnv) { e.fail = fmt.Errorf("venue timeout") }, status: tradeReviewCoverageNone, code: 502},
+		{name: "duplicate_refuses_generation", setup: func(e *trEnv) {
+			e.mutate = func(in []UICandle) []UICandle {
+				return append(append(append([]UICandle(nil), in[:6]...), in[5]), in[6:]...)
+			}
+		}, status: tradeReviewCoverageNone, code: 503},
+		{name: "invalid_price_refuses_generation", setup: func(e *trEnv) {
+			e.mutate = func(in []UICandle) []UICandle { in[len(in)-40].High = 80; return in }
+		}, status: tradeReviewCoverageNone, code: 503},
+		{name: "nan_price_refuses_generation", setup: func(e *trEnv) {
+			e.mutate = func(in []UICandle) []UICandle { in[len(in)-41].Low = math.NaN(); return in }
+		}, status: tradeReviewCoverageNone, code: 503},
+		{name: "off_grid_refuses_generation", setup: func(e *trEnv) {
+			e.mutate = func(in []UICandle) []UICandle { in[len(in)-42].Time += 60; return in }
+		}, status: tradeReviewCoverageNone, code: 503},
+		{name: "missing_archive", setup: func(e *trEnv) { e.noArchive = true }, status: tradeReviewCoverageNone, code: 503},
+		{name: "expired_generation", setup: func(e *trEnv) { e.expired = true }, status: tradeReviewCoverageNone, code: 503},
+		{name: "wrong_network", setup: func(e *trEnv) {
+			e.series = func(e *trEnv) []testArchiveSeries {
+				id := hlTestIdentity("ETH", "1h")
+				id.Network = candleNetworkTestnet
+				return []testArchiveSeries{{ID: id, Bars: testArchiveBars(e.base.Add(-300*time.Hour), e.latestCompleted(), time.Hour)}}
+			}
+		}, status: tradeReviewCoverageNone, code: 503},
+		{name: "wrong_instrument", setup: func(e *trEnv) {
+			e.series = func(e *trEnv) []testArchiveSeries {
+				id := candleIdentity{Venue: "binanceus", Network: candleNetworkLive, InstrumentClass: candleClassSpot, Symbol: "ETH/USDT", Timeframe: "1h"}
+				return []testArchiveSeries{{ID: id, Bars: testArchiveBars(e.base.Add(-300*time.Hour), e.latestCompleted(), time.Hour)}}
+			}
+		}, status: tradeReviewCoverageNone, code: 503},
+		{name: "wrong_timeframe_only", setup: func(e *trEnv) {
+			e.series = func(e *trEnv) []testArchiveSeries {
+				return []testArchiveSeries{{ID: hlTestIdentity("ETH", "4h"), Bars: testArchiveBars(e.base.Add(-300*time.Hour).Truncate(4*time.Hour), e.latestCompleted().Truncate(4*time.Hour).Add(-4*time.Hour), 4*time.Hour)}}
+			}
+		}, status: tradeReviewCoverageNone, code: 503},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -349,15 +417,15 @@ func TestTradeReviewCoverage(t *testing.T) {
 			if resp.Coverage.Status != c.status || resp.SaveAvailable != c.save {
 				t.Fatalf("coverage = %+v save=%v reason=%q, want %s save=%v", resp.Coverage, resp.SaveAvailable, resp.Reason, c.status, c.save)
 			}
-			if c.name == "fetch_failure" && len(resp.Candles) != 0 {
-				t.Fatalf("fetch failure returned %d candles; no synthetic fallback is allowed", len(resp.Candles))
+			if c.code == http.StatusServiceUnavailable && (len(resp.Candles) != 0 || resp.CandleAvailability == nil || resp.CandleAvailability.Code == "") {
+				t.Fatalf("unavailable archive returned %d candles, availability %+v; no other source may stand in", len(resp.Candles), resp.CandleAvailability)
 			}
 			post := e.post(trSID, e.validBody("pos-a", ""), nil)
 			wantPost := http.StatusOK
 			if !c.save {
 				wantPost = http.StatusUnprocessableEntity
-				if c.code == http.StatusBadGateway {
-					wantPost = http.StatusBadGateway
+				if c.code == http.StatusServiceUnavailable {
+					wantPost = http.StatusServiceUnavailable
 				}
 			}
 			if post.Code != wantPost {
@@ -378,8 +446,8 @@ func TestTradeReviewCoverage(t *testing.T) {
 		e.base = time.Now().UTC().Truncate(time.Hour).Add(-3000 * time.Hour)
 		e.seedClosedLong(trSID, "pos-long", "ETH", e.at(1), e.at(1500))
 		rec, resp := e.review(trSID, "pos-long")
-		if rec.Code != 200 || resp.Coverage.Status != tradeReviewCoverageTooLong || len(resp.Candles) != 0 || len(e.fetches) != 0 {
-			t.Fatalf("too long: code=%d coverage=%+v candles=%d fetches=%d", rec.Code, resp.Coverage, len(resp.Candles), len(e.fetches))
+		if reads := e.ss.candles.status().SourceReads; rec.Code != 200 || resp.Coverage.Status != tradeReviewCoverageTooLong || len(resp.Candles) != 0 || reads != 0 {
+			t.Fatalf("too long: code=%d coverage=%+v candles=%d source reads=%d", rec.Code, resp.Coverage, len(resp.Candles), reads)
 		}
 		if post := e.post(trSID, trBody("pos-long", e.at(1).Unix(), e.at(2).Unix(), 95, 115, ""), nil); post.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("too long POST = %d", post.Code)
@@ -415,8 +483,16 @@ func TestTradeReviewCoverage(t *testing.T) {
 		e := newTREnv(t, "")
 		e.seedClosedLong(trSID, "pos-sol", "SOL", e.at(2), e.at(6))
 		_, resp := e.review(trSID, "pos-sol")
-		if resp.Symbol != "SOL" || len(e.fetches) != 1 || strategyDisplaySymbol(e.fetches[0].Strategy) != "SOL" || e.fetches[0].Strategy.Timeframe != "1h" {
-			t.Fatalf("fetch used %+v for symbol %s", e.fetches, resp.Symbol)
+		if resp.Symbol != "SOL" || resp.Coverage.Status != tradeReviewCoverageFull || resp.CandleSource == "" {
+			t.Fatalf("review for SOL: symbol %s coverage %+v source %q", resp.Symbol, resp.Coverage, resp.CandleSource)
+		}
+		ethOnly := newTREnv(t, "")
+		ethOnly.series = func(e *trEnv) []testArchiveSeries {
+			return []testArchiveSeries{{ID: hlTestIdentity("ETH", "1h"), Bars: testArchiveBars(e.base.Add(-300*time.Hour), e.latestCompleted(), time.Hour)}}
+		}
+		ethOnly.seedClosedLong(trSID, "pos-sol", "SOL", ethOnly.at(2), ethOnly.at(6))
+		if rec, r2 := ethOnly.review(trSID, "pos-sol"); rec.Code != http.StatusServiceUnavailable || r2.CandleAvailability == nil || r2.CandleAvailability.Code != candleAvailSourceMissing {
+			t.Fatalf("SOL review against an ETH-only archive = %d %+v; the strategy symbol must not stand in", rec.Code, r2.CandleAvailability)
 		}
 		if e.ss.strategies[0].Symbol != "ETH" {
 			t.Fatalf("roster symbol mutated to %s", e.ss.strategies[0].Symbol)
@@ -653,8 +729,8 @@ func TestTradeFeedbackAppendOnlyFrozenAndStale(t *testing.T) {
 		t.Fatalf("trade_feedback accepted a delete")
 	}
 
-	e.hook = func() {
-		e.hook = nil
+	e.ss.tradeFeedbackPreWriteHook = func() {
+		e.ss.tradeFeedbackPreWriteHook = nil
 		if _, err := db.db.Exec(`UPDATE trades SET exchange_fee = 0.07 WHERE is_close = 1 AND position_id = 'pos-a'`); err != nil {
 			t.Errorf("correction: %v", err)
 		}
@@ -895,6 +971,7 @@ func TestTradeFeedbackManualHyperliquidLoaderDefaultsAreNoPendingChange(t *testi
 func TestTradeFeedbackConcurrentSavesReloadsAndConfigWrites(t *testing.T) {
 	e := newTREnv(t, "")
 	e.seedDefault()
+	e.ensureArchive()
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(cfgPath, []byte(`{"strategies":[{"id":"hl-eth","type":"perps","platform":"hyperliquid","args":["momentum","ETH","1h","--mode=paper"]}]}`), 0o600); err != nil {
 		t.Fatal(err)

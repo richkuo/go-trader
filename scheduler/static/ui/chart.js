@@ -134,7 +134,67 @@
     ];
   }
 
+  function mergeBars(existing, incoming) {
+    const byTime = new Map();
+    (existing || []).forEach(function (bar) {
+      if (bar && isFiniteNumber(Number(bar.time))) byTime.set(Number(bar.time), bar);
+    });
+    (incoming || []).forEach(function (bar) {
+      if (bar && isFiniteNumber(Number(bar.time))) byTime.set(Number(bar.time), bar);
+    });
+    return Array.from(byTime.keys()).sort(function (a, b) {
+      return a - b;
+    }).map(function (time) {
+      return byTime.get(time);
+    });
+  }
+
+  function detectGap(lastTime, incoming, barSeconds) {
+    if (!isFiniteNumber(lastTime) || !isFiniteNumber(barSeconds) || barSeconds <= 0) return false;
+    const list = incoming || [];
+    if (!list.length) return false;
+    const first = Number(list[0].time);
+    return first > lastTime + barSeconds;
+  }
+
+  function mapMarkersToBars(markers, times, barSeconds) {
+    const list = times || [];
+    if (!list.length || !isFiniteNumber(barSeconds) || barSeconds <= 0) return [];
+    const out = [];
+    (markers || []).forEach(function (marker) {
+      const t = Number(marker.time);
+      if (!isFiniteNumber(t)) return;
+      let lo = 0;
+      let hi = list.length - 1;
+      let found = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (list[mid] <= t) {
+          found = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      if (found < 0) return;
+      const open = list[found];
+      if (t >= open + barSeconds) return;
+      out.push(Object.assign({}, marker, { time: open, sourceTime: t }));
+    });
+    return out;
+  }
+
+  function backoffDelay(retryAfterSeconds, attempt) {
+    const floor = isFiniteNumber(Number(retryAfterSeconds)) && Number(retryAfterSeconds) > 0 ? Number(retryAfterSeconds) * 1000 : 0;
+    const n = isFiniteNumber(Number(attempt)) && Number(attempt) > 0 ? Math.min(Number(attempt), 5) : 0;
+    return Math.max(floor, 2000 * Math.pow(2, n));
+  }
+
   const logic = {
+    mergeBars: mergeBars,
+    detectGap: detectGap,
+    mapMarkersToBars: mapMarkersToBars,
+    backoffDelay: backoffDelay,
     isTradeDerivedSource: isTradeDerivedSource,
     buildBarIndex: buildBarIndex,
     readoutFor: readoutFor,
@@ -188,6 +248,11 @@
     let readoutEl = null;
     let ok = false;
     let index = buildBarIndex([], "");
+    let seriesBars = [];
+    let seriesSource = "";
+    let seriesClass = "";
+    let formingTime = 0;
+    let olderHandler = null;
     const lineGroups = new Map();
 
     function isDark() {
@@ -221,6 +286,12 @@
       head.className = "chart-readout-time";
       head.textContent = formatTime(fallback.time);
       readoutEl.append(head);
+      if (formingTime && fallback.time === formingTime) {
+        const tag = document.createElement("span");
+        tag.className = "chart-readout-forming";
+        tag.textContent = "forming";
+        readoutEl.append(tag);
+      }
       readoutFields(fallback).forEach(function (field) {
         const item = document.createElement("span");
         item.className = "chart-readout-item";
@@ -267,6 +338,42 @@
       chart.resize(Math.max(minWidth, rect.width), Math.max(minHeight, rect.height));
     }
 
+    function onVisibleLogicalRange(range) {
+      if (!range || typeof olderHandler !== "function") return;
+      if (range.from < 10) {
+        try {
+          olderHandler(range);
+        } catch (err) {
+          report("draw", err);
+        }
+      }
+    }
+
+    function drawVolume(candles, source) {
+      const volume = seriesClass === "synthetic" ? null : displayVolume(candles, source);
+      if (volume) {
+        if (!volumeSeries) {
+          volumeSeries = chart.addSeries(lib.HistogramSeries, {
+            priceFormat: { type: "volume" },
+            lastValueVisible: false,
+            priceLineVisible: false,
+          }, 1);
+          const panes = chart.panes();
+          if (panes[0]) panes[0].setStretchFactor(MAIN_PANE_STRETCH);
+          if (panes[1]) panes[1].setStretchFactor(VOLUME_PANE_STRETCH);
+        }
+        volumeSeries.setData(volume);
+      } else {
+        removeVolume();
+      }
+    }
+
+    function drawSeries(candles) {
+      candleSeries.setData(displayCandles(candles));
+      drawVolume(candles, seriesSource);
+      index = buildBarIndex(candles, seriesClass === "synthetic" ? "trades" : seriesSource);
+    }
+
     function teardown() {
       if (observer) {
         try { observer.disconnect(); } catch (_err) {}
@@ -274,6 +381,7 @@
       if (chart) {
         try { chart.unsubscribeClick(onChartClick); } catch (_err) {}
         try { chart.unsubscribeCrosshairMove(onCrosshairMove); } catch (_err) {}
+        try { chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleLogicalRange); } catch (_err) {}
         try { chart.remove(); } catch (_err) {}
       }
       if (mount && mount.parentNode) mount.parentNode.removeChild(mount);
@@ -324,6 +432,7 @@
         markersApi = lib.createSeriesMarkers(candleSeries, []);
         chart.subscribeClick(onChartClick);
         chart.subscribeCrosshairMove(onCrosshairMove);
+        chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleLogicalRange);
         observer = new ResizeObserver(function () {
           try {
             resize();
@@ -375,6 +484,103 @@
           renderReadout(null);
           return report("draw", err);
         }
+      },
+      setSeries: function (payload, keepRange) {
+        if (!chart) return false;
+        try {
+          const p = payload || {};
+          const previous = keepRange ? chart.timeScale().getVisibleRange() : null;
+          seriesSource = p.source || "";
+          seriesClass = p.sourceClass || (isTradeDerivedSource(p.source) ? "synthetic" : "market");
+          formingTime = Number(p.formingTime) || 0;
+          seriesBars = mergeBars([], p.candles || []);
+          drawSeries(seriesBars);
+          ok = true;
+          renderReadout(null);
+          if (!seriesBars.length) return true;
+          const first = Number(seriesBars[0].time);
+          const last = Number(seriesBars[seriesBars.length - 1].time);
+          if (previous && Number(previous.from) <= last && Number(previous.to) >= first) {
+            chart.timeScale().setVisibleRange(previous);
+          } else {
+            chart.timeScale().fitContent();
+          }
+          return true;
+        } catch (err) {
+          seriesBars = [];
+          index = buildBarIndex([], "");
+          renderReadout(null);
+          return report("draw", err);
+        }
+      },
+      prependBars: function (list) {
+        if (!chart) return 0;
+        try {
+          const before = seriesBars.length;
+          const merged = mergeBars(seriesBars, list || []);
+          const added = merged.length - before;
+          if (added <= 0) return 0;
+          const range = chart.timeScale().getVisibleLogicalRange();
+          seriesBars = merged;
+          drawSeries(seriesBars);
+          if (range) chart.timeScale().setVisibleLogicalRange({ from: range.from + added, to: range.to + added });
+          renderReadout(null);
+          return added;
+        } catch (err) {
+          report("draw", err);
+          return 0;
+        }
+      },
+      applyTail: function (list, nextFormingTime) {
+        if (!chart) return false;
+        const incoming = mergeBars([], list || []);
+        formingTime = Number(nextFormingTime) || 0;
+        if (!incoming.length) {
+          renderReadout(null);
+          return true;
+        }
+        const range = chart.timeScale().getVisibleLogicalRange();
+        seriesBars = mergeBars(seriesBars, incoming);
+        try {
+          const last = index.times.length ? index.times[index.times.length - 1] : -Infinity;
+          incoming.forEach(function (bar) {
+            const t = Number(bar.time);
+            const point = displayCandles([bar])[0];
+            if (t >= last) {
+              candleSeries.update(point);
+            } else if (index.byTime.has(t)) {
+              candleSeries.update(point, true);
+            } else {
+              throw new Error("a tail bar opens inside the held series");
+            }
+          });
+          drawVolume(seriesBars, seriesSource);
+          index = buildBarIndex(seriesBars, seriesClass === "synthetic" ? "trades" : seriesSource);
+        } catch (_err) {
+          try {
+            drawSeries(seriesBars);
+            if (range) chart.timeScale().setVisibleLogicalRange(range);
+          } catch (err) {
+            return report("draw", err);
+          }
+        }
+        renderReadout(null);
+        return true;
+      },
+      onNeedOlder: function (callback) {
+        olderHandler = callback;
+      },
+      sourceClass: function () {
+        return seriesClass;
+      },
+      barTimes: function () {
+        return index.times.slice();
+      },
+      lastBarTime: function () {
+        return index.times.length ? index.times[index.times.length - 1] : null;
+      },
+      firstBarTime: function () {
+        return index.times.length ? index.times[0] : null;
       },
       setMarkers: function (list) {
         if (!chart) return false;
@@ -442,6 +648,10 @@
           removeVolume();
           candleSeries.setData([]);
           index = buildBarIndex([], "");
+          seriesBars = [];
+          seriesSource = "";
+          seriesClass = "";
+          formingTime = 0;
           renderReadout(null);
           return true;
         } catch (err) {

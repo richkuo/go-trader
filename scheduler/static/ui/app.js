@@ -216,6 +216,7 @@
     selectionEpoch: 0,
     lanes: {
       candles: { issued: 0, accepted: 0 },
+      older: { issued: 0, accepted: 0 },
       trades: { issued: 0, accepted: 0 },
       config: { issued: 0, accepted: 0 },
       apply: { issued: 0, accepted: 0 },
@@ -224,7 +225,11 @@
       status: { issued: 0, accepted: 0 },
       feedback: { issued: 0, accepted: 0 },
     },
-    chartData: null,
+    chartSeries: null,
+    chartEpoch: 0,
+    chartTimeframe: "",
+    chartOlder: { inFlight: false, timer: 0 },
+    chartBackoff: { until: 0, attempt: 0 },
     tradeHistory: null,
     tuner: {
       config: null,
@@ -263,6 +268,9 @@
     chart: document.getElementById("chart"),
     empty: document.getElementById("empty-chart"),
     chartFailure: document.getElementById("chart-failure"),
+    chartTimeframe: document.getElementById("chart-timeframe"),
+    chartSource: document.getElementById("chart-source"),
+    chartNote: document.getElementById("chart-note"),
     chartWrap: document.querySelector(".chart-wrap"),
     tradeHistoryBody: document.getElementById("trade-history-body"),
     tradeHistoryEmpty: document.getElementById("trade-history-empty"),
@@ -1328,6 +1336,7 @@
       controller.destroy();
       return null;
     }
+    controller.onNeedOlder(onChartNeedOlder);
     state.chart = controller;
     return controller;
   }
@@ -1342,7 +1351,7 @@
   function setActiveStrategy(id) {
     state.activeID = id;
     state.selectionEpoch += 1;
-    state.chartData = null;
+    resetChartSeries("");
     state.tradeHistory = null;
     if (state.chart) state.chart.clear();
     hideChartFailure();
@@ -2680,44 +2689,360 @@
     });
   }
 
+  const CHART_INITIAL_LIMIT = 400;
+  const CHART_TAIL_LIMIT = 50;
+  const CHART_PAGE_LIMIT = 300;
+  const CHART_GAP_LIMIT = 1000;
+  const CHART_OLDER_DEBOUNCE_MS = 300;
+  const CHART_UNAVAILABLE_RETRY_S = 10;
+
+  function chartLogic() {
+    return (window.GoTraderChart && window.GoTraderChart.logic) || null;
+  }
+
+  function resetChartSeries(timeframe) {
+    state.chartEpoch += 1;
+    state.chartTimeframe = timeframe || "";
+    state.chartSeries = null;
+    if (state.chartOlder.timer) clearTimeout(state.chartOlder.timer);
+    state.chartOlder = { inFlight: false, timer: 0 };
+    state.chartBackoff = { until: 0, attempt: 0 };
+    setChartNote("");
+    if (els.chartSource) els.chartSource.textContent = "";
+    if (!timeframe && els.chartTimeframe) {
+      els.chartTimeframe.replaceChildren();
+      els.chartTimeframe.disabled = true;
+    }
+  }
+
+  function setChartNote(text) {
+    if (!els.chartNote) return;
+    els.chartNote.textContent = text || "";
+    els.chartNote.hidden = !text;
+  }
+
+  function candleTicket(lane) {
+    const ticket = takeTicket(lane);
+    ticket.chartEpoch = state.chartEpoch;
+    ticket.timeframe = state.chartTimeframe;
+    return ticket;
+  }
+
+  function candleTicketCurrent(ticket) {
+    return ticketSelected(ticket) && ticket.chartEpoch === state.chartEpoch && ticket.timeframe === state.chartTimeframe;
+  }
+
+  function acceptCandleReply(lane, ticket) {
+    return candleTicketCurrent(ticket) && acceptReply(lane, ticket);
+  }
+
+  function candleReplyMatches(body, ticket) {
+    return !!body && body.strategy_id === ticket.id && (!ticket.timeframe || body.timeframe === ticket.timeframe);
+  }
+
+  function currentChartSeries() {
+    const s = state.chartSeries;
+    if (!s || s.strategyID !== state.activeID || s.selectionEpoch !== state.selectionEpoch || s.chartEpoch !== state.chartEpoch) return null;
+    return s;
+  }
+
+  function candlesURL(id, params) {
+    const q = new URLSearchParams();
+    Object.keys(params).forEach(function (key) {
+      if (params[key] !== undefined && params[key] !== null && params[key] !== "") q.set(key, String(params[key]));
+    });
+    return "/api/strategies/" + encodeURIComponent(id) + "/candles?" + q.toString();
+  }
+
+  async function fetchCandles(url, etag) {
+    const generation = statusToken.generation();
+    const headers = Object.assign({}, authHeaders());
+    if (etag) headers["If-None-Match"] = etag;
+    const res = await fetch(url, { headers: headers, cache: "no-store" });
+    const out = {
+      status: res.status,
+      etag: res.headers.get("ETag") || "",
+      retryAfter: Number(res.headers.get("Retry-After")) || 0,
+      body: null,
+      text: "",
+    };
+    if (res.status === 401) {
+      const err = new Error(await res.text() || res.statusText);
+      err.status = 401;
+      err.tokenGeneration = generation;
+      throw err;
+    }
+    if (res.status === 304) return out;
+    out.text = await res.text();
+    try {
+      out.body = out.text ? JSON.parse(out.text) : null;
+    } catch (_err) {
+      out.body = null;
+    }
+    return out;
+  }
+
+  function chartHasBars() {
+    return !!(state.chart && state.chart.lastBarTime() !== null);
+  }
+
+  function candleRefusal(r) {
+    if (r.status === 200 || r.status === 304) return "";
+    const body = r.body || {};
+    const code = body.code || "";
+    const detail = body.error || r.text || ("HTTP " + r.status);
+    const logic = chartLogic();
+    if (r.status === 429 || r.status === 503) {
+      const retry = r.status === 429 ? r.retryAfter : (r.retryAfter || CHART_UNAVAILABLE_RETRY_S);
+      const delay = logic ? logic.backoffDelay(retry, state.chartBackoff.attempt) : retry * 1000;
+      state.chartBackoff = { until: Date.now() + delay, attempt: state.chartBackoff.attempt + 1 };
+      setChartNote((r.status === 429 ? "Chart reads are at their local limit" : "Candle source unavailable (" + code + "): " + detail) +
+        ". The chart keeps its bars and retries in " + Math.ceil(delay / 1000) + " s.");
+      return code || String(r.status);
+    }
+    if (r.status === 409 && code === "strategy_changed") {
+      state.chartSeries = null;
+      setChartNote("The strategy changed during the read; the chart reloads.");
+      return code;
+    }
+    if (r.status === 409 && code === "cursor_expired") return code;
+    if (r.status === 400 && (code === "timeframe_unsupported" || code === "timeframe_invalid") && state.chartTimeframe) {
+      resetChartSeries("");
+      setChartNote("Timeframe no longer available (" + detail + "); the chart went back to the configured timeframe.");
+      return code;
+    }
+    if (chartHasBars()) {
+      setChartNote("The candle request failed: " + detail);
+    } else {
+      showChartFailure("The candle request failed: " + detail);
+    }
+    return code || String(r.status);
+  }
+
+  function describeChartSource(body) {
+    const parts = [];
+    if (body.source_class === "synthetic") {
+      parts.push("Trade-built bars (volume and indicators hidden)");
+    } else if (body.origin) {
+      parts.push(body.origin === "published" ? "Feed bars" : "Archive bars");
+    }
+    if (body.source) parts.push(body.source);
+    if (body.freshness === "stale") parts.push("stale" + (body.freshness_detail ? ": " + body.freshness_detail : ""));
+    return parts.join(" · ");
+  }
+
+  function renderTimeframeSelect(caps, current) {
+    const select = els.chartTimeframe;
+    if (!select || !caps) return;
+    const list = caps.timeframes || [];
+    const key = list.map(function (t) { return t.timeframe + ":" + t.origin; }).join(",") + "|" + current;
+    if (select.dataset.key === key) return;
+    select.dataset.key = key;
+    select.replaceChildren();
+    list.forEach(function (t) {
+      const opt = document.createElement("option");
+      opt.value = t.timeframe;
+      opt.textContent = t.timeframe + (t.timeframe === caps.default_timeframe ? " (configured)" : "") + " · " + t.origin;
+      select.append(opt);
+    });
+    select.value = current;
+    select.disabled = list.length < 2;
+  }
+
+  function afterChartDraw(body) {
+    drawChartMarkers();
+    hideChartFailure();
+    els.empty.style.display = chartHasBars() ? "none" : "flex";
+    if (els.chartSource) els.chartSource.textContent = describeChartSource(body);
+    if (body.market_availability && body.source_class === "synthetic") {
+      setChartNote("Market bars unavailable (" + body.market_availability.code + "): " + body.market_availability.detail);
+    } else if (body.market_availability && !chartHasBars()) {
+      setChartNote("No bars (" + body.market_availability.code + "): " + body.market_availability.detail);
+    }
+  }
+
   function drawChartMarkers() {
     const chart = state.chart;
-    const data = state.chartData;
-    if (!chart || !data || data.strategyID !== state.activeID) return false;
+    const series = currentChartSeries();
+    if (!chart || !series) return false;
     const history = state.tradeHistory && state.tradeHistory.strategyID === state.activeID
       ? state.tradeHistory.resp
       : null;
-    return chart.setMarkers(chartMarkersFromResponse(history));
+    const logic = chartLogic();
+    const markers = chartMarkersFromResponse(history);
+    const mapped = logic ? logic.mapMarkersToBars(markers, chart.barTimes(), series.barSeconds) : markers;
+    return chart.setMarkers(mapped);
   }
 
-  function drawChart() {
+  function newChartSeries(ticket, r) {
+    const body = r.body;
+    return {
+      strategyID: ticket.id,
+      selectionEpoch: ticket.epoch,
+      chartEpoch: ticket.chartEpoch,
+      timeframe: body.timeframe,
+      token: body.series_token,
+      sourceClass: body.source_class,
+      barSeconds: body.bar_seconds,
+      older: (body.page && body.page.older) || "",
+      boundary: (body.page && body.page.boundary) || "",
+      etag: r.etag,
+      resp: body,
+    };
+  }
+
+  async function loadChartSeries(notice) {
     const chart = state.chart;
-    const data = state.chartData;
-    if (!chart || !data || data.strategyID !== state.activeID) return;
-    const candles = data.resp.candles || [];
-    if (!chart.setData({ candles: candles, source: data.resp.source })) return;
-    if (!drawChartMarkers()) return;
-    hideChartFailure();
-    els.empty.style.display = candles.length ? "none" : "flex";
-    if (candles.length) chart.fitContent();
+    const ticket = candleTicket("candles");
+    const params = { limit: CHART_INITIAL_LIMIT, timeframe: ticket.timeframe };
+    let r;
+    try {
+      r = await fetchCandles(candlesURL(ticket.id, params), "");
+    } catch (err) {
+      if (!acceptCandleReply("candles", ticket)) return;
+      if (err.status === 401) throw err;
+      showChartFailure("The candle request failed: " + (err.message || String(err)));
+      return;
+    }
+    if (!acceptCandleReply("candles", ticket)) return;
+    if (candleRefusal(r)) return;
+    if (!candleReplyMatches(r.body, ticket)) return;
+    state.chartBackoff = { until: 0, attempt: 0 };
+    const series = newChartSeries(ticket, r);
+    state.chartSeries = series;
+    renderTimeframeSelect(r.body.capabilities, r.body.timeframe);
+    if (!chart.setSeries({ candles: r.body.candles, source: r.body.source, sourceClass: r.body.source_class, formingTime: r.body.forming_time }, false)) return;
+    setChartNote(notice || "");
+    afterChartDraw(r.body);
+  }
+
+  async function recoverChartGap(series, last) {
+    const ticket = candleTicket("candles");
+    let r;
+    try {
+      r = await fetchCandles(candlesURL(ticket.id, { timeframe: series.timeframe, from: last, limit: CHART_GAP_LIMIT }), "");
+    } catch (err) {
+      if (err.status === 401) throw err;
+      if (acceptCandleReply("candles", ticket)) setChartNote("The gap refresh failed; the chart keeps its bars.");
+      return;
+    }
+    if (!acceptCandleReply("candles", ticket) || currentChartSeries() !== series) return;
+    if (candleRefusal(r)) return;
+    if (!candleReplyMatches(r.body, ticket)) return;
+    if (r.body.series_token !== series.token) {
+      state.chartSeries = null;
+      return;
+    }
+    state.chart.applyTail(r.body.candles || [], r.body.forming_time);
+    afterChartDraw(r.body);
+  }
+
+  async function pollChartTail(series) {
+    const chart = state.chart;
+    const ticket = candleTicket("candles");
+    let r;
+    try {
+      r = await fetchCandles(candlesURL(ticket.id, { timeframe: series.timeframe, limit: CHART_TAIL_LIMIT }), series.etag);
+    } catch (err) {
+      if (err.status === 401) throw err;
+      if (acceptCandleReply("candles", ticket)) setChartNote("The candle refresh failed; the chart keeps its bars.");
+      return;
+    }
+    if (!acceptCandleReply("candles", ticket) || currentChartSeries() !== series) return;
+    if (r.status === 304) {
+      state.chartBackoff = { until: 0, attempt: 0 };
+      return;
+    }
+    if (candleRefusal(r)) return;
+    if (!candleReplyMatches(r.body, ticket)) return;
+    state.chartBackoff = { until: 0, attempt: 0 };
+    const body = r.body;
+    renderTimeframeSelect(body.capabilities, body.timeframe);
+    if (body.series_token !== series.token || body.source_class !== series.sourceClass) {
+      const next = newChartSeries(ticket, r);
+      state.chartSeries = next;
+      if (!chart.setSeries({ candles: body.candles, source: body.source, sourceClass: body.source_class, formingTime: body.forming_time }, true)) return;
+      setChartNote("The chart source changed to " + describeChartSource(body) + "; older pages restart from here.");
+      afterChartDraw(body);
+      return;
+    }
+    series.etag = r.etag;
+    series.resp = body;
+    const last = chart.lastBarTime();
+    const fresh = (body.candles || []).filter(function (c) {
+      return last === null || Number(c.time) >= last;
+    });
+    const logic = chartLogic();
+    if (last !== null && logic && logic.detectGap(last, fresh.length ? fresh : body.candles, series.barSeconds)) {
+      await recoverChartGap(series, last);
+      return;
+    }
+    chart.applyTail(fresh, body.forming_time);
+    afterChartDraw(body);
+  }
+
+  function onChartNeedOlder() {
+    if (state.chartOlder.timer || state.chartOlder.inFlight) return;
+    state.chartOlder.timer = setTimeout(function () {
+      state.chartOlder.timer = 0;
+      loadOlderPage().catch(handleRefreshError);
+    }, CHART_OLDER_DEBOUNCE_MS);
+  }
+
+  async function loadOlderPage() {
+    const series = currentChartSeries();
+    if (!series || !series.older || series.boundary || state.chartOlder.inFlight) return;
+    if (Date.now() < state.chartBackoff.until) return;
+    const older = state.chartOlder;
+    older.inFlight = true;
+    const ticket = candleTicket("older");
+    let r;
+    try {
+      r = await fetchCandles(candlesURL(ticket.id, { timeframe: series.timeframe, limit: CHART_PAGE_LIMIT, before: series.older }), "");
+    } catch (err) {
+      older.inFlight = false;
+      if (err.status === 401) throw err;
+      if (candleTicketCurrent(ticket)) setChartNote("The older-page request failed; scroll again to retry.");
+      return;
+    }
+    older.inFlight = false;
+    if (!acceptCandleReply("older", ticket) || currentChartSeries() !== series) return;
+    const refused = candleRefusal(r);
+    if (refused === "cursor_expired") {
+      resetChartSeries(series.timeframe);
+      await loadChartSeries("The candle history changed; paging restarted from the newest bars.");
+      return;
+    }
+    if (refused) return;
+    if (!candleReplyMatches(r.body, ticket)) return;
+    const page = r.body.page || {};
+    state.chart.prependBars(r.body.candles || []);
+    series.older = page.older || "";
+    series.boundary = page.boundary || "";
+    if (!series.older && !series.boundary) series.boundary = "unsupported";
+    if (series.boundary && page.detail) setChartNote("Older history stops here: " + page.detail);
+    drawChartMarkers();
   }
 
   async function refreshChart() {
     if (!state.activeID) return;
     if (!ensureChart()) return;
-    const ticket = takeTicket("candles");
-    let resp;
-    try {
-      resp = await getJSON("/api/strategies/" + encodeURIComponent(ticket.id) + "/candles?limit=400");
-    } catch (err) {
-      if (!acceptReply("candles", ticket)) return;
-      if (err.status === 401) throw err;
-      showChartFailure("The candle request failed: " + (err.message || String(err)));
+    if (Date.now() < state.chartBackoff.until) return;
+    const series = currentChartSeries();
+    if (!series) {
+      await loadChartSeries("");
       return;
     }
-    if (!acceptReply("candles", ticket)) return;
-    state.chartData = { strategyID: ticket.id, resp: resp };
-    drawChart();
+    await pollChartTail(series);
+  }
+
+  function onChartTimeframeChange() {
+    const value = els.chartTimeframe.value;
+    const series = currentChartSeries();
+    if (series && value === series.timeframe) return;
+    if (state.chart) state.chart.clear();
+    resetChartSeries(value);
+    refreshChart().catch(handleRefreshError);
   }
 
   async function refreshTradeHistory() {
@@ -4026,6 +4351,7 @@
   if (els.tunerForm) {
     els.tunerForm.addEventListener("input", onTunerFieldChange);
     els.tunerForm.addEventListener("change", onTunerFieldChange);
+    if (els.chartTimeframe) els.chartTimeframe.addEventListener("change", onChartTimeframeChange);
   }
   if (els.tunerReset) {
     els.tunerReset.addEventListener("click", resetTunerToLive);

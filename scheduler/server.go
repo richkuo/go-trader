@@ -24,8 +24,7 @@ type StatusServer struct {
 	hlPerpsCoins   []string
 	okxPerpsCoins  []string
 	stateDB        *StateStore
-	candleFetcher  UICandleFetcher
-	candleCache    *UICandleCache
+	candles        *candleService
 	tuning         *tuningRunManager
 
 	strategiesMu      sync.RWMutex
@@ -60,6 +59,8 @@ type StatusServer struct {
 	restartFn         func() error
 
 	paperCloseMarks func(StrategyConfig, *paperClosePlan) (map[string]paperCloseMark, error)
+
+	tradeFeedbackPreWriteHook func()
 
 	perpsErrMu              sync.Mutex
 	lastFuturesErrLoggedAt  time.Time
@@ -97,7 +98,7 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 	symbols := collectPriceSymbols(strategies)
 	futuresSymbols := collectFuturesMarkSymbols(strategies)
 	hlCoins, okxCoins := collectPerpsMarkSymbols(strategies)
-	return &StatusServer{
+	ss := &StatusServer{
 		state:          state,
 		mu:             mu,
 		statusToken:    statusToken,
@@ -107,10 +108,44 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 		okxPerpsCoins:  okxCoins,
 		strategies:     strategies,
 		stateDB:        stateDB,
-		candleFetcher:  FetchUICandles,
-		candleCache:    NewUICandleCache(30 * time.Second),
 		reloadConfig:   requestSIGHUPReload,
 	}
+	ss.candles = newCandleService(newPublishedCandleStore(), newCandleArchiveLoader(nil), stateDB, ss.strategyConfig)
+	return ss
+}
+
+func (ss *StatusServer) ConfigureDashboardCandles(cfg *DashboardCandlesConfig) {
+	if ss == nil {
+		return
+	}
+	ss.candles = newCandleService(ss.candles.published, newCandleArchiveLoader(cfg), ss.stateDB, ss.strategyConfig)
+}
+
+func (ss *StatusServer) StartDashboardCandles(ctx context.Context) {
+	if ss == nil || ss.candles == nil || !ss.candles.archive.enabled() {
+		return
+	}
+	fmt.Printf("[candle-archive] loading %s in the background (refresh every %s)\n", ss.candles.archive.dir, ss.candles.archive.refresh)
+	go ss.candles.archive.run(ctx)
+}
+
+type dashboardCandlesStatus struct {
+	candleArchiveStatus
+	Service candleServiceStatus `json:"service"`
+}
+
+func (ss *StatusServer) dashboardCandlesStatus() dashboardCandlesStatus {
+	if ss == nil || ss.candles == nil {
+		return dashboardCandlesStatus{candleArchiveStatus: candleArchiveStatus{State: candleArchiveStateDisabled}}
+	}
+	return dashboardCandlesStatus{candleArchiveStatus: ss.candles.archive.status(), Service: ss.candles.status()}
+}
+
+func (ss *StatusServer) PublishMarketSnapshot(snap *marketSnapshot, reqs cycleMarketRequirements, shared bool) {
+	if ss == nil || ss.candles == nil {
+		return
+	}
+	ss.candles.published.Publish(snap, reqs, shared)
 }
 
 func (ss *StatusServer) UpdateStrategies(strategies []StrategyConfig) {
@@ -120,6 +155,7 @@ func (ss *StatusServer) UpdateStrategies(strategies []StrategyConfig) {
 	ss.strategiesMu.Lock()
 	defer ss.strategiesMu.Unlock()
 	ss.strategies = append([]StrategyConfig(nil), strategies...)
+	ss.candles.rosterChanged()
 }
 
 // UpdatePaperSources records the display labels of the sources this process
@@ -410,6 +446,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PaperSources         []PaperSourceStatus             `json:"paper_sources,omitempty"`
 		Partitions           []PartitionStatus               `json:"partitions,omitempty"`
 		Egress               egressStatus                    `json:"egress"`
+		DashboardCandles     dashboardCandlesStatus          `json:"dashboard_candles"`
 	}
 
 	ss.strategiesMu.RLock()
@@ -462,6 +499,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ReconciliationGaps:   ss.state.ReconciliationGaps,
 		MarketFeed:           marketFeedStatusBlock(),
 		Egress:               processEgress.status(),
+		DashboardCandles:     ss.dashboardCandlesStatus(),
 	}
 	// Only sources this process actually owns are listed, so the dashboard's
 	// selector can never offer a deployment this process does not read.

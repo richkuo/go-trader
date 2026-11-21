@@ -1210,6 +1210,7 @@ func TestTradeFeedbackAnalysisHistoryPollSkipsBundleBuild(t *testing.T) {
 		return metaCalls
 	}
 	const marks = 50
+	e.history = time.Duration(1500*(marks+2)+40) * time.Hour
 	saveLong := func(i int, note string) {
 		pid := fmt.Sprintf("pos-%02d", i)
 		open := float64(-1500 * (i + 1))

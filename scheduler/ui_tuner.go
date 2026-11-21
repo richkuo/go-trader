@@ -56,6 +56,8 @@ type UISimulateRequest struct {
 type UISimulateResponse struct {
 	StrategyID       string          `json:"strategy_id"`
 	Source           string          `json:"source,omitempty"`
+	Timeframe        string          `json:"timeframe,omitempty"`
+	Origin           string          `json:"origin,omitempty"`
 	LiveMarkers      []UITradeMarker `json:"live_markers"`
 	SimulatedMarkers []UITradeMarker `json:"simulated_markers"`
 	PreviewNote      string          `json:"preview_note,omitempty"`
@@ -147,12 +149,19 @@ func (ss *StatusServer) handleAPIStrategySimulate(w http.ResponseWriter, r *http
 	}
 
 	from, to, _ := parseUITimeQuery(r)
-	candleReq := UICandleRequest{Strategy: sc, From: from, To: to, Limit: limit}
-	candles, source, err := ss.fetchUICandlesForSimulate(candleReq)
-	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, err.Error())
+	var fromUnix, toUnix int64
+	if !from.IsZero() {
+		fromUnix = from.Unix()
+	}
+	if !to.IsZero() {
+		toUnix = to.Unix()
+	}
+	preview, perr := ss.candles.previewBars(r.Context(), sc, fromUnix, toUnix, limit)
+	if perr != nil {
+		writeCandleServiceError(w, perr)
 		return
 	}
+	candles, source := preview.Bars, preview.Source
 
 	livePayload := simulateConfigPayload(liveCfg, ss.regime)
 	simPayload := simulateConfigPayload(simCfg, ss.regime)
@@ -168,7 +177,7 @@ func (ss *StatusServer) handleAPIStrategySimulate(w http.ResponseWriter, r *http
 	if _, ok := req.Overrides["leverage"]; ok {
 		simPayload["leverage_source"] = "tuner_override"
 	}
-	preview, simErr := runTunerPreviewSimulate(candles, livePayload, simPayload)
+	result, simErr := runTunerPreviewSimulate(candles, livePayload, simPayload)
 	if simErr != nil {
 		writeJSONError(w, http.StatusBadGateway, simErr.Error())
 		return
@@ -177,11 +186,13 @@ func (ss *StatusServer) handleAPIStrategySimulate(w http.ResponseWriter, r *http
 	writeJSON(w, UISimulateResponse{
 		StrategyID:       id,
 		Source:           source,
-		LiveMarkers:      preview.Markers["live"],
-		SimulatedMarkers: preview.Markers["simulated"],
-		PreviewNote:      tunerPreviewNote(preview.LiveRefusal, preview.SimulatedRefusal),
-		LiveRefusal:      preview.LiveRefusal,
-		SimulatedRefusal: preview.SimulatedRefusal,
+		Timeframe:        preview.Timeframe,
+		Origin:           preview.Origin,
+		LiveMarkers:      result.Markers["live"],
+		SimulatedMarkers: result.Markers["simulated"],
+		PreviewNote:      tunerPreviewNote(result.LiveRefusal, result.SimulatedRefusal),
+		LiveRefusal:      result.LiveRefusal,
+		SimulatedRefusal: result.SimulatedRefusal,
 	})
 }
 
@@ -246,26 +257,6 @@ func (ss *StatusServer) handleAPIStrategyApplyConfig(w http.ResponseWriter, r *h
 		RestartRequired: restartRequired,
 		Message:         msg,
 	})
-}
-
-func (ss *StatusServer) fetchUICandlesForSimulate(req UICandleRequest) ([]UICandle, string, error) {
-	cacheKey := req.CacheKey()
-	if ss.candleCache != nil {
-		if cached, ok := ss.candleCache.Get(cacheKey); ok {
-			return cached.Candles, cached.Source + ":cached", nil
-		}
-	}
-	if ss.candleFetcher == nil {
-		return nil, "", fmt.Errorf("candle fetcher unavailable")
-	}
-	candles, source, err := ss.candleFetcher(req)
-	if err != nil {
-		return nil, "", err
-	}
-	if ss.candleCache != nil {
-		ss.candleCache.Set(cacheKey, UICandleResponse{Candles: candles, Source: source})
-	}
-	return candles, source, nil
 }
 
 func (ss *StatusServer) strategyHasOpenPosition(id string) bool {

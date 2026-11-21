@@ -127,6 +127,8 @@ func main() {
 			os.Exit(runCPUClass(os.Args[2:]))
 		case "feed-weight-release":
 			os.Exit(runFeedWeightRelease(os.Args[2:]))
+		case "candle-archive":
+			os.Exit(runCandleArchiveCommand(os.Args[2:], os.Stdout, os.Stderr))
 		}
 	}
 
@@ -591,7 +593,9 @@ func main() {
 		go tuningManager.run(shutdownReadOnlyCtx)
 	}
 	armMainLoopDeadline(mainLoopWorkBudget)
+	server.ConfigureDashboardCandles(cfg.DashboardCandles)
 	server.Start(statusBindHost, statusPort)
+	server.StartDashboardCandles(shutdownReadOnlyCtx)
 
 	diagWorker := newTradeDiagnosticsWorker(FetchUICandles, store.UpdateTradeDiagnosticsMetrics)
 	diagWorker.splitStorage = store.Split()
@@ -1154,6 +1158,7 @@ func main() {
 			sharedKey := sharedDeadline.Unix()
 			snap, report := sharedClient.Fetch(shutdownReadOnlyCtx, sharedKey, cycleFeedReqs)
 			feedCtx.Snapshot = snap
+			server.PublishMarketSnapshot(snap, cycleFeedReqs, true)
 			feedCtx.SharedKey = sharedKey
 			globalMarketFeedStatus.setSnapshotID(snap.EvaluationID)
 			fmt.Println(sharedFeedAuditLine(report, len(evaluationMarks), feedEffectiveCadences(cfg, intervals)))
@@ -1169,6 +1174,7 @@ func main() {
 			cycleFeedReqs = cycleRequirementsForDue(dueStrategies, feedReq)
 			evalID := cycleEvaluationID(evaluationMarks, cycle)
 			feedCtx.Snapshot = sealCycleMarketSnapshot(feedOwnerCtx, feedOwner, cycleFeedReqs, evalID, time.Now().UTC())
+			server.PublishMarketSnapshot(feedCtx.Snapshot, cycleFeedReqs, false)
 			for _, ev := range feedLedger.rateLimitReport(feedRateLimitOutstanding(feedOwner)) {
 				fmt.Printf("[feed-ratelimit] evaluation=%s %s\n", evalID, ev.logLine())
 				fmt.Printf("[feed] %s\n", formatFeedRateLimitAlert(ev, marketFeedWebsocket, "scheduler"))

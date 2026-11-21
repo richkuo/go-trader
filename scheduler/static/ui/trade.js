@@ -110,7 +110,9 @@
       return;
     }
     if (!res.ok) {
-      showError("Candle fetch failed: " + (parsed.body.candle_error || res.statusText));
+      const avail = parsed.body.candle_availability;
+      const detail = avail ? avail.detail + " (" + avail.code + ")" : (parsed.body.candle_error || res.statusText);
+      showError("Candle source unavailable: " + detail + ". Fills still show; saving stays off.");
     }
     state.review = parsed.body;
     render();
@@ -254,6 +256,7 @@
     const parts = ["Coverage: " + (cov.status || "none")];
     if (cov.expected) parts.push(cov.present + " of " + cov.expected + " bars");
     if (r.candle_source) parts.push("source " + r.candle_source);
+    if (r.candle_availability) parts.push("candle source unavailable (" + r.candle_availability.code + ")");
     if (r.window) {
       parts.push(r.timeframe + " bars from " + fmtTime(r.window.effective_from) + " to " + fmtTime(r.window.effective_to));
       if (r.window.future_padding_shortened) parts.push("future padding shortened to the latest completed bar");
