@@ -138,7 +138,7 @@ func (l *candleArchiveLoader) check(ctx context.Context) {
 		return
 	}
 	gen, err := loadCandleArchiveGeneration(ctx, l.dir, id, l.limits, now)
-	if !errors.Is(err, errCandleArchiveInterrupted) {
+	if !errors.Is(err, errCandleArchiveInterrupted) && !candleArchiveRefusalTransient(err) {
 		l.mu.Lock()
 		l.attempted = id
 		l.mu.Unlock()

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -144,8 +145,9 @@ type candleArchiveGeneration struct {
 }
 
 type candleArchiveRefusal struct {
-	Series string
-	Msg    string
+	Series    string
+	Msg       string
+	Transient bool
 }
 
 func (e *candleArchiveRefusal) Error() string {
@@ -157,6 +159,17 @@ func (e *candleArchiveRefusal) Error() string {
 
 func archiveRefuse(series, format string, args ...interface{}) error {
 	return &candleArchiveRefusal{Series: series, Msg: fmt.Sprintf(format, args...)}
+}
+
+func archiveRefuseFile(series string, err error) error {
+	var pathErr *fs.PathError
+	var errno syscall.Errno
+	return &candleArchiveRefusal{Series: series, Msg: err.Error(), Transient: errors.As(err, &pathErr) || errors.As(err, &errno)}
+}
+
+func candleArchiveRefusalTransient(err error) bool {
+	var refusal *candleArchiveRefusal
+	return errors.As(err, &refusal) && refusal.Transient
 }
 
 func candleArchiveGenerationID(publishedAtMs int64, manifest []byte) string {
@@ -271,15 +284,15 @@ func loadCandleArchiveGeneration(ctx context.Context, dir, id string, limits can
 	}
 	genRoot := filepath.Join(dir, candleArchiveGenerationsDir)
 	if err := checkArchiveDir(genRoot); err != nil {
-		return nil, archiveRefuse("", "%v", err)
+		return nil, archiveRefuseFile("", err)
 	}
 	genDir := filepath.Join(genRoot, id)
 	if err := checkArchiveDir(genDir); err != nil {
-		return nil, archiveRefuse("", "%v", err)
+		return nil, archiveRefuseFile("", err)
 	}
 	raw, err := readArchiveSmallFile(filepath.Join(genDir, candleArchiveManifestName), candleArchiveMaxManifest)
 	if err != nil {
-		return nil, archiveRefuse("", "%v", err)
+		return nil, archiveRefuseFile("", err)
 	}
 	manifest, err := decodeCandleArchiveManifest(raw)
 	if err != nil {
@@ -291,8 +304,11 @@ func loadCandleArchiveGeneration(ctx context.Context, dir, id string, limits can
 	if got := candleArchiveGenerationID(manifest.PublishedAtMs, raw); got != id {
 		return nil, archiveRefuse("", "generation id %s does not match its manifest (%s)", id, got)
 	}
-	if manifest.PublishedAtMs <= 0 || manifest.PublishedAtMs > now.UTC().UnixMilli() {
+	if manifest.PublishedAtMs <= 0 {
 		return nil, archiveRefuse("", "published_at_ms %d is not a past instant", manifest.PublishedAtMs)
+	}
+	if manifest.PublishedAtMs > now.UTC().UnixMilli() {
+		return nil, &candleArchiveRefusal{Msg: fmt.Sprintf("published_at_ms %d is not a past instant", manifest.PublishedAtMs), Transient: true}
 	}
 	if manifest.ExpiresAtMs <= manifest.PublishedAtMs {
 		return nil, archiveRefuse("", "expires_at_ms %d is not after published_at_ms", manifest.ExpiresAtMs)
@@ -412,11 +428,11 @@ func admitCandleArchiveSeries(ctx context.Context, genDir string, sm candleArchi
 	}
 	path := filepath.Join(genDir, filepath.FromSlash(sm.File))
 	if err := checkArchiveDir(filepath.Dir(path)); err != nil {
-		return nil, archiveRefuse(label, "%v", err)
+		return nil, archiveRefuseFile(label, err)
 	}
 	f, st, err := openArchiveRegular(path)
 	if err != nil {
-		return nil, archiveRefuse(label, "%v", err)
+		return nil, archiveRefuseFile(label, err)
 	}
 	keep := false
 	defer func() {
@@ -444,7 +460,7 @@ func admitCandleArchiveSeries(ctx context.Context, genDir string, sm candleArchi
 		}
 		part := buf[:n*candleArchiveRecordBytes]
 		if _, err := f.ReadAt(part, chunk*sm.ChunkBars*candleArchiveRecordBytes); err != nil {
-			return nil, archiveRefuse(label, "read chunk %d: %v", chunk, err)
+			return nil, archiveRefuseFile(label, fmt.Errorf("read chunk %d: %w", chunk, err))
 		}
 		if sha256.Sum256(part) != chunkSHA[chunk] {
 			return nil, archiveRefuse(label, "chunk %d digest mismatch", chunk)

@@ -961,7 +961,9 @@ func (s *candleService) previewBars(ctx context.Context, sc StrategyConfig, from
 		} else {
 			pp := p
 			page, err := s.execute(ctx, candleWorkKey("preview", candleOriginPublished, publishedToken(pp), id, from, to, limit), false, func(context.Context) (candlePage, error) {
-				return candlePage{Bars: publishedSelect(pp, from, to, 0, limit)}, nil
+				closed := *pp
+				closed.Bars = pp.closedBars()
+				return candlePage{Bars: publishedSelect(&closed, from, to, 0, limit)}, nil
 			})
 			if err != nil {
 				return candlePreviewResult{}, s.serviceError(err)

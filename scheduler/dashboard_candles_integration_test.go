@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -593,6 +594,117 @@ func TestDashboardCandlesArchiveLoaderRefusalsAndFailedRefresh(t *testing.T) {
 		}
 		if _, perr := e.ss.candles.previewBars(context.Background(), dcHLStrategy("hl-eth", "ETH", "1h"), 0, 0, 100); perr == nil || perr.Status != http.StatusServiceUnavailable {
 			t.Fatalf("preview on an expired generation = %+v", perr)
+		}
+	})
+}
+
+func TestDashboardCandlesArchiveLoaderRetriesTransientRefusals(t *testing.T) {
+	latest := time.Now().UTC().Truncate(time.Hour).Add(-2 * time.Hour)
+	good := func() testArchiveSeries {
+		return testArchiveSeries{ID: hlTestIdentity("ETH", "1h"), Bars: testArchiveBars(latest.Add(-99*time.Hour), latest, time.Hour)}
+	}
+	swaps := func(l *candleArchiveLoader) int {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return l.swaps
+	}
+	t.Run("a publish time ahead of the clock is retried", func(t *testing.T) {
+		e := newDCEnv(t, nil, dcHLStrategy("hl-eth", "ETH", "1h"))
+		published := time.Now().UTC().Add(-time.Minute)
+		e.ss.ConfigureDashboardCandles(&DashboardCandlesConfig{ArchiveDir: e.dir})
+		l := e.ss.candles.archive
+		clock := published.Add(-3 * time.Second)
+		l.now = func() time.Time { return clock }
+		id := writeTestCandleArchive(t, e.dir, testArchiveSpec{PublishedAt: published, Series: []testArchiveSeries{good()}})
+		l.check(context.Background())
+		if st := l.status(); st.Generation != "" || st.LastRefreshErr == "" {
+			t.Fatalf("tick 1 with the clock 3 s behind the publish time: %+v", st)
+		}
+		clock = published.Add(time.Second)
+		l.check(context.Background())
+		if st := l.status(); st.Generation != id || st.State != candleArchiveStateReady {
+			t.Fatalf("a later tick with no new publish must admit %s: %+v", id, st)
+		}
+	})
+	t.Run("a bad chunk digest is refused once", func(t *testing.T) {
+		e := newDCEnv(t, nil, dcHLStrategy("hl-eth", "ETH", "1h"))
+		e.ss.ConfigureDashboardCandles(&DashboardCandlesConfig{ArchiveDir: e.dir})
+		l := e.ss.candles.archive
+		id := writeTestCandleArchive(t, e.dir, testArchiveSpec{Series: []testArchiveSeries{good()}})
+		series := filepath.Join(e.dir, candleArchiveGenerationsDir, id, "series", "s000.bars")
+		data, err := os.ReadFile(series)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data[100] ^= 1
+		if err := os.WriteFile(series, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		l.check(context.Background())
+		if st := l.status(); st.Generation != "" || !strings.Contains(st.LastRefreshErr, "digest mismatch") {
+			t.Fatalf("a bad chunk digest: %+v", st)
+		}
+		data[100] ^= 1
+		if err := os.WriteFile(series, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		l.check(context.Background())
+		if st := l.status(); st.Generation != "" {
+			t.Fatalf("a generation refused for its content was read again on the next tick: %+v", st)
+		}
+	})
+	t.Run("an admitted CURRENT settles without a reload", func(t *testing.T) {
+		e := newDCEnv(t, nil, dcHLStrategy("hl-eth", "ETH", "1h"))
+		id := e.archive(testArchiveSpec{Series: []testArchiveSeries{good()}})
+		l := e.ss.candles.archive
+		before := swaps(l)
+		l.check(context.Background())
+		l.check(context.Background())
+		if st := l.status(); st.Generation != id || swaps(l) != before || before != 1 {
+			t.Fatalf("checks of an admitted CURRENT: generation %q swaps %d, want %q and %d", st.Generation, swaps(l), id, before)
+		}
+	})
+}
+
+func TestDashboardCandlesPreviewUsesClosedBars(t *testing.T) {
+	now := time.Now().UTC()
+	forming := now.Truncate(time.Hour)
+	key := feedKeyFor("ETH", "1h")
+	sc := dcHLStrategy("hl-eth", "ETH", "1h")
+	reqs := cycleMarketRequirements{Keys: []cycleMarketRequirement{{Key: key, Required: 100}}}
+	publish := func(e *dcEnv, bars []feedBar) {
+		entry := &marketSnapshotKey{Key: key, IntervalMs: 3_600_000, Bars: bars, Readiness: feedKeyReadiness{Key: key, Ready: true, Required: 100, Status: feedStatusReady}}
+		e.ss.PublishMarketSnapshot(dcSnapshot("eval-1", 3, now, map[marketFeedKey]*marketSnapshotKey{key: entry}), reqs, true)
+	}
+	t.Run("the forming feed bar is absent", func(t *testing.T) {
+		e := newDCEnv(t, nil, sc)
+		publish(e, dcFeedBars(forming.Add(-99*time.Hour), 100, time.Hour))
+		if got := e.ss.candles.published.get(hlTestIdentity("ETH", "1h")); got == nil || got.FormingOpen != forming.Unix() {
+			t.Fatalf("the fixture must hold a forming bar at %d: %+v", forming.Unix(), got)
+		}
+		preview, perr := e.ss.candles.previewBars(context.Background(), sc, 0, 0, 400)
+		if perr != nil || preview.Origin != candleOriginPublished || len(preview.Bars) != 99 || preview.Bars[98].Time != forming.Add(-time.Hour).Unix() {
+			t.Fatalf("preview with a forming feed bar = %+v origin %q bars %d", perr, preview.Origin, len(preview.Bars))
+		}
+	})
+	t.Run("a feed series with no forming bar keeps every bar", func(t *testing.T) {
+		e := newDCEnv(t, nil, sc)
+		publish(e, dcFeedBars(forming.Add(-100*time.Hour), 100, time.Hour))
+		if got := e.ss.candles.published.get(hlTestIdentity("ETH", "1h")); got == nil || got.FormingOpen != 0 {
+			t.Fatalf("the fixture must hold no forming bar: %+v", got)
+		}
+		preview, perr := e.ss.candles.previewBars(context.Background(), sc, 0, 0, 400)
+		if perr != nil || preview.Origin != candleOriginPublished || len(preview.Bars) != 100 || preview.Bars[99].Time != forming.Add(-time.Hour).Unix() {
+			t.Fatalf("preview with closed feed bars = %+v origin %q bars %d", perr, preview.Origin, len(preview.Bars))
+		}
+	})
+	t.Run("the archive origin keeps every finalized bar", func(t *testing.T) {
+		e := newDCEnv(t, nil, sc)
+		latest := forming.Add(-2 * time.Hour)
+		e.archive(testArchiveSpec{Series: []testArchiveSeries{{ID: hlTestIdentity("ETH", "1h"), Bars: testArchiveBars(latest.Add(-99*time.Hour), latest, time.Hour)}}})
+		preview, perr := e.ss.candles.previewBars(context.Background(), sc, 0, 0, 400)
+		if perr != nil || preview.Origin != candleOriginArchive || len(preview.Bars) != 100 || preview.Bars[99].Time != latest.Unix() {
+			t.Fatalf("preview from the archive = %+v origin %q bars %d", perr, preview.Origin, len(preview.Bars))
 		}
 	})
 }
