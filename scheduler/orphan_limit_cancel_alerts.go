@@ -31,7 +31,7 @@ func orphanLimitCancelKeyFor(o PendingLimitOrder) orphanLimitCancelKey {
 
 func orphanLimitCancelSeverity(state orphanLimitCancelState) int {
 	switch state {
-	case orphanLimitStateOffBookUnadoptedFill:
+	case orphanLimitStateOffBookUnadoptedFill, orphanLimitStateOperatorReview:
 		return 3
 	case orphanLimitStateResting:
 		return 2
@@ -96,6 +96,8 @@ func orphanLimitCancelHeadline(state orphanLimitCancelState) string {
 	switch state {
 	case orphanLimitStateOffBookUnadoptedFill:
 		return "limit order filled OFF-BOOK leaving an untracked Hyperliquid position"
+	case orphanLimitStateOperatorReview:
+		return "limit order is off-book with a recorded fill that needs an operator"
 	case orphanLimitStateOffBookRowStuck:
 		return "limit order is off-book but its queue row could not be cleared"
 	case orphanLimitStateResting:
@@ -106,6 +108,9 @@ func orphanLimitCancelHeadline(state orphanLimitCancelState) string {
 }
 
 func orphanLimitCancelRetryNote(state orphanLimitCancelState) string {
+	if state == orphanLimitStateOperatorReview {
+		return "no automatic path may delete this row — confirm the position on the exchange and clear the queue row with manual-clear-limit-row"
+	}
 	if state == orphanLimitStateOffBookUnadoptedFill {
 		return "no automatic retry can change this — restore the strategy, or flatten on the exchange and clear the queue row with manual-clear-limit-row"
 	}
@@ -125,6 +130,14 @@ func formatOrphanLimitCancelDM(o PendingLimitOrder, block string, outcome orphan
 		fmt.Fprintf(&b, "• OR flatten the position yourself on the Hyperliquid UI, then run `go-trader manual-clear-limit-row %d --flattened`. The scheduler cannot see a flatten it does not own, and the order's fill history never changes, so this alert repeats every %s until the queue row is cleared\n",
 			o.OrderOID, effectiveAlertThrottleInterval())
 		b.WriteString("Do not flatten and then restore without clearing the row: the scheduler refuses to book a fill the account no longer holds, so the position stays untracked and this alert keeps repeating.")
+	case orphanLimitStateOperatorReview:
+		fmt.Fprintf(&b, "🚨 **Limit order row needs review: %s**\n", killSwitchLimitOrderLabel(o))
+		fmt.Fprintf(&b, "The order is OFF-BOOK and nothing is resting on Hyperliquid, but its queue row records a fill of %.6f %s: %s.\n",
+			outcome.AdoptedFill, o.Symbol, outcome.Reason)
+		fmt.Fprintf(&b, "• Its owning strategy %q cannot prove that this fill is in the book because %s, so the row is kept as the recovery record\n", o.StrategyID, block)
+		b.WriteString("• The scheduler books nothing from this row and never deletes it on its own\n")
+		fmt.Fprintf(&b, "• Check the %s position on the Hyperliquid UI. Once you have confirmed it is flat, run `go-trader manual-clear-limit-row %d --flattened`; it discards the recovery record only and does not change any book. This alert repeats every %s until then",
+			o.Symbol, o.OrderOID, effectiveAlertThrottleInterval())
 	case orphanLimitStateOffBookRowStuck:
 		fmt.Fprintf(&b, "⚠️ **Limit order queue row not cleared: %s**\n", killSwitchLimitOrderLabel(o))
 		fmt.Fprintf(&b, "The order is OFF-BOOK and nothing is resting on Hyperliquid, so no exchange action is needed: %s.\n", outcome.Reason)

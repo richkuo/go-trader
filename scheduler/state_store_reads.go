@@ -520,20 +520,20 @@ func (st *StateStore) InsertPendingLimitOrder(o PendingLimitOrder) (int64, error
 	return db.InsertPendingLimitOrder(o)
 }
 
-func (st *StateStore) DeletePendingLimitOrder(id int64) error {
+func (st *StateStore) FinalizePendingLimitOrder(f limitRowFinalize) error {
 	db, err := st.liveFile()
 	if err != nil {
 		return err
 	}
-	return db.DeletePendingLimitOrder(id)
+	return db.FinalizePendingLimitOrder(f)
 }
 
-func (st *StateStore) UpdatePendingLimitOrderFill(id int64, filledSize, avgFillPrice, fillFee float64) error {
+func (st *StateStore) MarkPendingLimitOrderOperatorRequiredOnce(id int64, at time.Time) (time.Time, error) {
 	db, err := st.liveFile()
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
-	return db.UpdatePendingLimitOrderFill(id, filledSize, avgFillPrice, fillFee)
+	return db.MarkPendingLimitOrderOperatorRequiredOnce(id, at)
 }
 
 func (st *StateStore) MarkPendingLimitOrderCancelRequested(strategyID, symbol string) (int64, error) {

@@ -137,6 +137,9 @@ func (a *manualEntryAdmission) check(stage string) error {
 				return manualEntryRefused("the standalone ownership lock %s was replaced while this command held it", lock.path)
 			}
 		}
+		if a.part == livePartition {
+			return standaloneLimitQueueRefusal(a.layout)
+		}
 		return nil
 	}
 	if a.pin == nil {

@@ -264,16 +264,46 @@ func newPartialLimitPositionHarness(t *testing.T) (*Config, StrategyConfig, *Sta
 	if err := db.SaveState(state); err != nil {
 		t.Fatalf("save state: %v", err)
 	}
-	if _, err := db.InsertPendingLimitOrder(PendingLimitOrder{
+	rowID, err := db.InsertPendingLimitOrder(PendingLimitOrder{
 		StrategyID: sc.ID, Symbol: sc.Symbol, Side: "long", OrderOID: 9001,
-		LimitPrice: 1990, OrderSize: 1.0, TIF: "Alo", FilledSize: 0.4,
-		AvgFillPrice: 2000, FillFee: 0.2, EntryATR: 50,
+		LimitPrice: 1990, OrderSize: 1.0, TIF: "Alo", EntryATR: 50,
 		CreatedAt: time.Now().UTC().Add(-10 * time.Minute),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("insert pending limit: %v", err)
 	}
+	sealLimitRowFixture(t, db, state, rowID, 0.4, 2000, 0.2)
 	cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{sc}}
 	return cfg, sc, db
+}
+
+// settleLaterLimitFillFixture books a later fill of the harness row through the
+// real reconciler, so the queue row and the book move together to the
+// cumulative fill.
+func settleLaterLimitFillFixture(t *testing.T, cfg *Config, db *StateDB, cum, avgPx, fee float64) {
+	t.Helper()
+	state, err := LoadStateWithDB(cfg, db)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: cum})
+	withStubbedLimitDeps(t,
+		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(true), FilledSize: cum, AvgPx: avgPx, Fee: fee},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			t.Fatal("a later fill must not cancel")
+			return nil, "", nil
+		},
+	)
+	var mu sync.RWMutex
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
+	orders, _ := db.LoadPendingLimitOrders()
+	if len(orders) != 1 || orders[0].FilledSize != cum || !orders[0].fillSealed() {
+		t.Fatalf("later fill not sealed: %+v", orders)
+	}
 }
 
 func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
@@ -351,7 +381,7 @@ func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
 			})
 		}
 	})
-	t.Run("CloseReconcilesStaleSnapshotAgainstAdoptedLimitFill", func(t *testing.T) {
+	t.Run("CloseSizesFromTheCommittedBookAfterALaterSealedFill", func(t *testing.T) {
 		cfg, sc, db := newPartialLimitPositionHarness(t)
 		peer := StrategyConfig{
 			ID: "hl-manual-eth-peer", Type: "manual", Platform: "hyperliquid",
@@ -359,14 +389,7 @@ func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
 			Args: []string{"hold", "ETH", "30m", "--mode=live"},
 		}
 		cfg.Strategies = append(cfg.Strategies, peer)
-
-		orders, _ := db.LoadPendingLimitOrders()
-		if len(orders) != 1 {
-			t.Fatalf("want one resting row, got %d", len(orders))
-		}
-		if err := db.UpdatePendingLimitOrderFill(orders[0].ID, 0.7, 2005, 0.35); err != nil {
-			t.Fatalf("advance watermark: %v", err)
-		}
+		settleLaterLimitFillFixture(t, cfg, db, 0.7, 2005, 0.35)
 
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
@@ -459,6 +482,62 @@ func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
 			t.Fatalf("queued action = %+v, want one full close of 0.7", actions)
 		}
 	})
+	t.Run("FollowOnCloseUsesTheRemainingPositionNotTheCumulativeFill", func(t *testing.T) {
+		cfg, sc, db := staleReconcileCloseHarness(t)
+		st, err := LoadStateWithDB(cfg, db)
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		st.Strategies[sc.ID].Positions[sc.Symbol].Quantity = 0.5
+		if err := db.SaveState(st); err != nil {
+			t.Fatalf("save reduced position: %v", err)
+		}
+		deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
+		var gotCloseQty float64
+		deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, _ hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+			gotCloseQty = size
+			return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4242, Fee: 0.4}}}, "", nil
+		}
+		if _, err := manualCloseCore(deps, sc, manualCloseInputs{StrategyID: sc.ID}); err != nil {
+			t.Fatalf("manual close: %v", err)
+		}
+		actions, _ := db.LoadPendingManualActions()
+		if len(actions) != 1 || actions[0].Quantity != 0.5 {
+			t.Fatalf("queued close = %+v, want 0.5 from the committed book, never the cumulative entry fill 0.7", actions)
+		}
+		if gotCloseQty > 0.5+1e-9 {
+			t.Fatalf("on-chain close size = %g grew past the committed position 0.5", gotCloseQty)
+		}
+	})
+	t.Run("UnsealedLegacyRowRefusesTheFollowOnOrder", func(t *testing.T) {
+		cfg, sc, db := newPartialLimitPositionHarness(t)
+		orders, _ := db.LoadPendingLimitOrders()
+		if err := db.UpdatePendingLimitOrderFill(orders[0].ID, 0.7, 2005, 0.35); err != nil {
+			t.Fatalf("advance watermark through the old statement: %v", err)
+		}
+		withStubbedLimitDeps(t,
+			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+					{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.7, AvgPx: 2005, Fee: 0.35},
+				}}, "", nil
+			},
+			func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+				return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
+			},
+		)
+		deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
+		deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+			t.Error("execute must not run while the row cannot be finalized")
+			return nil, "", errors.New("execute called")
+		}
+		_, err := manualCloseCore(deps, sc, manualCloseInputs{StrategyID: sc.ID})
+		if err == nil || !strings.Contains(err.Error(), "not sealed with the book") {
+			t.Fatalf("err = %v, want a refusal naming the unsealed fill", err)
+		}
+		if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 1 {
+			t.Fatalf("the recovery row must survive, got %+v", orders)
+		}
+	})
 	t.Run("DeferWhenLimitCancelIsUnresolved", func(t *testing.T) {
 		cases := []struct {
 			name     string
@@ -533,13 +612,7 @@ func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
 func staleReconcileCloseHarness(t *testing.T) (*Config, StrategyConfig, *StateDB) {
 	t.Helper()
 	cfg, sc, db := newPartialLimitPositionHarness(t)
-	orders, _ := db.LoadPendingLimitOrders()
-	if len(orders) != 1 {
-		t.Fatalf("want one resting row, got %d", len(orders))
-	}
-	if err := db.UpdatePendingLimitOrderFill(orders[0].ID, 0.7, 2005, 0.35); err != nil {
-		t.Fatalf("advance watermark: %v", err)
-	}
+	settleLaterLimitFillFixture(t, cfg, db, 0.7, 2005, 0.35)
 	withStubbedLimitDeps(t,
 		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{

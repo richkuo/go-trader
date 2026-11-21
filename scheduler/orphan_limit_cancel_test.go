@@ -143,8 +143,9 @@ func TestReconcileCancelLane(t *testing.T) {
 			t.Fatalf("alert must name the order and its order id, got: %s", mock.dms[0].content)
 		}
 	})
-	t.Run("FlushesAnAdoptedFillBeforeClearingTheRow", func(t *testing.T) {
+	t.Run("KeepsASealedFillWithNoEligibleOwnerForReview", func(t *testing.T) {
 		resetOrphanLimitCancelAlerts(t)
+		limitRowReviewAlerts.reset()
 		dbPath := filepath.Join(t.TempDir(), "state.db")
 		db, err := OpenStateDB(dbPath)
 		if err != nil {
@@ -159,17 +160,11 @@ func TestReconcileCancelLane(t *testing.T) {
 			Side: "long", Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-manual-eth-live",
 			OpenedAt: time.Now().UTC(),
 		}
-		if err := db.SaveState(state); err != nil {
-			t.Fatalf("seed save: %v", err)
-		}
 		cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{orphanLaneRoster()}}
 		var mu sync.RWMutex
 
-		db.InsertPendingLimitOrder(PendingLimitOrder{
-			StrategyID: "hl-manual-eth-live", Symbol: "ETH", Side: "long", OrderOID: 9001,
-			LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, FilledSize: 0.3,
-			AvgFillPrice: 2000, CancelRequested: true, CreatedAt: time.Now().UTC(),
-		})
+		row := seedOrphanLaneRow(t, db, "hl-manual-eth-live", true)
+		sealLimitRowFixture(t, db, state, row.ID, 0.3, 2000, 0.4)
 
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
@@ -182,18 +177,22 @@ func TestReconcileCancelLane(t *testing.T) {
 			},
 		)
 
-		reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
+		notifier, mock := newOrphanLaneNotifier()
+		reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
-		if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
-			t.Fatalf("row must be cleared once the adopted fill is flushed, got %+v", orders)
+		orders, _ := db.LoadPendingLimitOrders()
+		if len(orders) != 1 || orders[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("a positive watermark with no eligible owner must stay, marked for an operator, got %+v", orders)
+		}
+		if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "needs review") || !strings.Contains(mock.dms[0].content, "manual-clear-limit-row 9001 --flattened") {
+			t.Fatalf("operator must get one review alert naming the clear command, dms = %+v", mock.dms)
 		}
 		fresh, err := LoadStateWithDB(cfg, db)
 		if err != nil {
 			t.Fatalf("reload: %v", err)
 		}
-		pos := fresh.Strategies["hl-manual-eth-live"].Positions["ETH"]
-		if pos == nil || pos.Quantity != 0.3 {
-			t.Fatalf("the adopted fill must reach the state DB before the row is deleted, position = %+v", pos)
+		if pos := fresh.Strategies["hl-manual-eth-live"].Positions["ETH"]; pos == nil || pos.Quantity != 0.3 {
+			t.Fatalf("the committed book must be untouched, position = %+v", pos)
 		}
 	})
 }

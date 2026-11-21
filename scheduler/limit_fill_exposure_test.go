@@ -184,7 +184,8 @@ func TestReconcilePendingLimitOrdersLiveExposureGate(t *testing.T) {
 		db := newLimitTestStateDB(t)
 		var mu sync.RWMutex
 		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.4})
-		seedLimitExposureRow(t, db, sc.ID, 0.4)
+		row := seedLimitExposureRow(t, db, sc.ID, 0)
+		sealLimitRowFixture(t, db, state, row.ID, 0.4, 2000, 0.2)
 
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {

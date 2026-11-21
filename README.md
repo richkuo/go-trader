@@ -381,6 +381,8 @@ Sizing: mutually exclusive `--size` / `--notional` / `--margin` (default `--marg
 
 **Close defaults (#1115/#1135):** with `regime.enabled` and a resolvable per-regime trail, manual defaults to `trailing_tp_ratchet_regime` (regime trail owns the SL); otherwise `tiered_tp_atr_live` + scalar **2.0×ATR** SL (#1121). Override via `close_strategy`, stop fields, or `user_defaults.manual` (hot-reloadable via SIGHUP). Fleet close ladders live under `user_defaults.close`; standalone `*_atr_mult_regime` defaults live under `user_defaults.regime_atr`.
 
+**Limit fills (#2143):** each fill of a resting limit order saves with its queue row, the position, the fee and the trade in one transaction, so a crash can never leave a fill booked on one side only. A row whose fill the scheduler cannot prove was saved (for example one written by an older build) is never adopted or deleted automatically; the scheduler alerts until you confirm the position and clear it with `manual-clear-limit-row`.
+
 Operator guardrails, refusals, and the queueing model: [SKILL.md](SKILL.md) § Manual Trading.
 
 `manual-update-sl` / `manual-cancel-sl` queue daemon-side cancel-then-place edits — rejected when automated ATR/regime/trailing protection would re-pin next cycle. `force-close` is for live Hyperliquid `type=perps` strategy positions; it submits the reduce-only close and queues the fill for the scheduler to adopt into state/trades. `--dry-run` previews without exchange calls. Limit opens are post-only (ALO) by default or GTC with `--tif Gtc`; scheduler polls fills each cycle.

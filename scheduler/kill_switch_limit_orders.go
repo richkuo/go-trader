@@ -11,6 +11,7 @@ type killSwitchLimitOrderCandidate struct {
 	Script string
 
 	AdoptionBlock string
+	Eligible      bool
 }
 
 func (c killSwitchLimitOrderCandidate) adoptionEligible() bool {
@@ -20,15 +21,14 @@ func (c killSwitchLimitOrderCandidate) adoptionEligible() bool {
 type killSwitchLimitOrderDeps struct {
 	Cancel              func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
 	Status              func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error)
-	Delete              func(id int64) error
-	Flush               func() error
+	Finalize            func(f limitRowFinalize) error
 	MarkCancelRequested func(strategyID, symbol string) (int64, error)
 	Now                 func() time.Time
 }
 
 func (d killSwitchLimitOrderDeps) wired() bool {
-	return d.Cancel != nil && d.Status != nil && d.Delete != nil &&
-		d.Flush != nil && d.MarkCancelRequested != nil
+	return d.Cancel != nil && d.Status != nil && d.Finalize != nil &&
+		d.MarkCancelRequested != nil
 }
 
 func (d killSwitchLimitOrderDeps) now() time.Time {
@@ -109,6 +109,7 @@ func collectKillSwitchLimitOrderCandidates(orders []PendingLimitOrder, roster []
 			Row:           o,
 			Script:        script,
 			AdoptionBlock: killSwitchLimitOrderAdoptionBlock(sc, known),
+			Eligible:      limitRowOwnerEligible(roster, o),
 		})
 	}
 	return candidates, unscripted
@@ -214,7 +215,7 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			report.LogLines = append(report.LogLines,
 				fmt.Sprintf("[WARN] ks-limit: %s status stderr: %s", label, sstderr))
 		}
-		if serr != nil || statusRes == nil || statusRes.Error != "" {
+		if serr != nil {
 			msg := ""
 			if statusRes != nil {
 				msg = statusRes.Error
@@ -222,20 +223,12 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			unresolve(strings.TrimSpace(fmt.Sprintf("cancel unverified: %v %s", serr, msg)))
 			continue
 		}
-		if statusRes.OpenOrdersError != "" {
-			unresolve(fmt.Sprintf("cancel unverified: open-orders state unknown (%s)", statusRes.OpenOrdersError))
+		st, reason := limitStatusEvidence(statusRes, o)
+		if reason != "" {
+			unresolve("cancel unverified: " + reason)
 			continue
 		}
-		st, ok := limitStatusForOID(statusRes, o.OrderOID)
-		if !ok {
-			unresolve("cancel unverified: status response did not include the order")
-			continue
-		}
-		if st.FillsError != "" {
-			unresolve(fmt.Sprintf("cancel unverified: fills unreadable (%s)", st.FillsError))
-			continue
-		}
-		if st.Resting == nil || *st.Resting {
+		if *st.Resting {
 			unresolve("order is still resting on the exchange")
 			continue
 		}
@@ -249,14 +242,8 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			}
 			continue
 		}
-		if o.FilledSize > 0 {
-			if err := deps.Flush(); err != nil {
-				unresolve(fmt.Sprintf("order is off-book but its adopted fill %.6f could not be flushed to the state DB (%v) — queue row kept as the recovery record", o.FilledSize, err))
-				continue
-			}
-		}
-		if err := deps.Delete(o.ID); err != nil {
-			unresolve(fmt.Sprintf("order is off-book but the queue row could not be cleared (%v)", err))
+		if err := deps.Finalize(limitRowFinalize{Row: o, VenueFilled: st.FilledSize, Eligible: c.Eligible}); err != nil {
+			unresolve(fmt.Sprintf("order is off-book but its queue row is kept as the recovery record (%v)", err))
 			continue
 		}
 

@@ -351,6 +351,10 @@ func main() {
 	}
 
 	tradeRecorder = store.InsertTrade
+	if !readOnlyReport {
+		hlLimitOwnershipLoader = store.LoadPendingLimitOrders
+		store.beginLimitRecovery()
+	}
 	modelOnlyCloseUpdater = store.ReconcileModelOnlyClose
 	modelOnlyCloseBasisLoader = store.LoadModelOnlyCloseBasis
 	modelOnlyCloseAbandonMarker = store.MarkModelOnlyCloseAbandoned
@@ -1651,16 +1655,11 @@ func main() {
 						Status: func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error) {
 							return runHyperliquidLimitStatusFn(script, symbol, oids, sinceMs)
 						},
-						Delete: func(id int64) error {
+						Finalize: func(f limitRowFinalize) error {
 							if store == nil {
 								return fmt.Errorf("state db unavailable")
 							}
-							return store.DeletePendingLimitOrder(id)
-						},
-						Flush: func() error {
-							mu.Lock()
-							defer mu.Unlock()
-							return SaveStateWithStore(state, store)
+							return store.FinalizePendingLimitOrder(f)
 						},
 						MarkCancelRequested: func(strategyID, symbol string) (int64, error) {
 							if store == nil {
