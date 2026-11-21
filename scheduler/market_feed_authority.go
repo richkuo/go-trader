@@ -52,6 +52,8 @@ const (
 	feedSharedCoverageNoPolicy = "excluded: no weight policy"
 	feedSharedCoverageLotLocal = "excluded: local lot-metadata ledger"
 
+	feedSharedCoverageKillSwitchLocal = "excluded: local kill-switch position ledger"
+
 	feedAuthorityRecoveryInitial    = "initial_install"
 	feedAuthorityRecoveryMissing    = "record_missing"
 	feedAuthorityRecoveryCorrupt    = "record_corrupt"

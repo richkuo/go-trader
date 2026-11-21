@@ -419,6 +419,18 @@ class OKXExchangeAdapter:
             )
         return self._exchange.fetch_positions() or []
 
+    def fetch_swap_positions_raw(self) -> list:
+        if not self._is_live:
+            raise RuntimeError(
+                "fetch_swap_positions_raw requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
+            )
+        resp = self._exchange.privateGetAccountPositions({"instType": "SWAP"})
+        if not isinstance(resp, dict) or str(resp.get("code")) != "0":
+            raise RuntimeError(f"OKX positions query failed: {resp!r}")
+        if "data" not in resp or not isinstance(resp.get("data"), list):
+            raise RuntimeError(f"OKX positions query returned no position list: {resp!r}")
+        return resp["data"]
+
     @staticmethod
     def order_pair(symbol: str, inst_type: str = "spot") -> str:
         if inst_type == "swap":

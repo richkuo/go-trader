@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -31,28 +32,43 @@ func stubHLLiveCloserWithCancel(errs map[string]error) (HyperliquidLiveCloser, *
 	return closer, &calls, &cancels
 }
 
-func stubHLStateFetcher(positions []HLPosition, err error) (HLStateFetcher, *int) {
+const stubHLEndpoint = "https://hl.stub"
+
+func stubHLStateFetcher(positions []HLPosition, err error) (HLStrictPositionReader, *int) {
 	var calls int
-	fetcher := func(addr string) ([]HLPosition, error) {
+	reader := func(ctx context.Context, target hlPositionTarget) (hlStrictPositionSnapshot, error) {
 		calls++
 		if err != nil {
-			return nil, err
+			return hlStrictPositionSnapshot{}, err
 		}
-		return positions, nil
+		return hlStrictPositionSnapshot{Target: target, Positions: positions}, nil
 	}
-	return fetcher, &calls
+	return reader, &calls
 }
 
-func defaultHLInputs(hlAddr string, fetched bool, positions []HLPosition,
+func withHLBaselineRead(baseline []HLPosition, later HLStrictPositionReader) HLStrictPositionReader {
+	served := false
+	return func(ctx context.Context, target hlPositionTarget) (hlStrictPositionSnapshot, error) {
+		if !served {
+			served = true
+			return hlStrictPositionSnapshot{Target: target, Positions: baseline}, nil
+		}
+		return later(ctx, target)
+	}
+}
+
+func defaultHLInputs(hlAddr string, baselineFromPositions bool, positions []HLPosition,
 	hlLive []StrategyConfig, reason string, timeout time.Duration,
-	closer HyperliquidLiveCloser, fetcher HLStateFetcher) KillSwitchCloseInputs {
+	closer HyperliquidLiveCloser, reader HLStrictPositionReader) KillSwitchCloseInputs {
+	if baselineFromPositions {
+		reader = withHLBaselineRead(positions, reader)
+	}
 	return KillSwitchCloseInputs{
 		HLAddr:          hlAddr,
-		HLStateFetched:  fetched,
-		HLPositions:     positions,
+		HLEndpoint:      stubHLEndpoint,
 		HLLiveAll:       hlLive,
 		HLCloser:        closer,
-		HLFetcher:       fetcher,
+		HLReader:        reader,
 		PortfolioReason: reason,
 		CloseTimeout:    timeout,
 	}
@@ -81,8 +97,8 @@ func TestPlanKillSwitchClose(t *testing.T) {
 		if len(plan.CloseReport.ClosedCoins) != 1 || plan.CloseReport.ClosedCoins[0] != "ETH" {
 			t.Errorf("ClosedCoins = %v, want [ETH]", plan.CloseReport.ClosedCoins)
 		}
-		if *fetchCalls != 0 {
-			t.Errorf("fetcher must not be called when state already fetched, got %d", *fetchCalls)
+		if *fetchCalls != 1 {
+			t.Errorf("one fresh position read must follow the close, got %d", *fetchCalls)
 		}
 		if len(*calls) != 1 || (*calls)[0] != "ETH" {
 			t.Errorf("closer calls = %v, want [ETH]", *calls)
@@ -147,7 +163,7 @@ func TestPlanKillSwitchClose(t *testing.T) {
 			if got, ok := plan.CloseReport.Errors["ETH"]; !ok || got == nil {
 				t.Errorf("expected ETH error to remain in report, got %v", plan.CloseReport.Errors)
 			}
-			if !strings.Contains(strings.Join(plan.LogLines, "\n"), "unable to verify HL state after close error: hl 503") {
+			if !strings.Contains(strings.Join(plan.LogLines, "\n"), "the position read after the last close attempt failed: hl 503") {
 				t.Errorf("expected verification fetch error log line, got %v", plan.LogLines)
 			}
 		})
@@ -175,7 +191,7 @@ func TestPlanKillSwitchClose(t *testing.T) {
 		if !strings.Contains(plan.DiscordMessage, "LATCHED, RETRYING") {
 			t.Errorf("expected LATCHED message on fetch failure, got: %s", plan.DiscordMessage)
 		}
-		if !strings.Contains(plan.DiscordMessage, "Could not fetch") {
+		if !strings.Contains(plan.DiscordMessage, "could not fetch HL positions before the close: hl 503") {
 			t.Errorf("expected fetch-failure detail in message, got: %s", plan.DiscordMessage)
 		}
 	})
