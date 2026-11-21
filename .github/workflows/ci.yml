@@ -504,6 +504,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/check_pre_pr.sh agent-docs
 
+      - name: Agent instructions check fixtures
+        if: ${{ !cancelled() }}
+        run: bash scripts/check_pre_pr.sh agent-docs-fixtures
+
       - name: SKILL.md and POST_UPDATE_HISTORY.md line length
         if: ${{ !cancelled() }}
         run: bash scripts/check_pre_pr.sh doc-lines

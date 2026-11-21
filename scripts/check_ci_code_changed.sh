@@ -13,14 +13,16 @@ g() { git -C "$tmp/repo" -c user.email=ci@example.invalid -c user.name=ci -c ini
 
 git init -q "$tmp/repo"
 g config core.fileMode true
-mkdir -p "$tmp/repo/scheduler/cmd/egress-controller" "$tmp/repo/docs" "$tmp/repo/scripts/fixtures" "$tmp/repo/systemd" "$tmp/repo/.github/workflows"
+mkdir -p "$tmp/repo/scheduler/cmd/egress-controller" "$tmp/repo/docs" "$tmp/repo/scripts/fixtures" "$tmp/repo/systemd" "$tmp/repo/.github/workflows" \
+  "$tmp/repo/.claude/rules" "$tmp/repo/.claude/hooks"
 for f in CLAUDE.md SKILL.md README.md scheduler/executor.go docs/backtesting-registry.md scheduler/cmd/egress-controller/manifest.go \
   scheduler/quote_coordinator.go scripts/merge-paper-instance.sh scripts/update.sh scripts/migrate-service-layout.py \
   scheduler/server.go scheduler/risk.go scheduler/state_presence.go scheduler/update_sh_feature_test.go \
   scheduler/main.go scheduler/probe_cmd.go scheduler/storage_inspect.go scheduler/singleton_lock.go scheduler/inspect_cmd.go \
   scheduler/market_feed_role.go scheduler/version.go .github/workflows/ci.yml scripts/shared-feed-convert.sh \
   scheduler/market_feed_ws.go scheduler/hyperliquid_balance.go scripts/fixtures/shared_feed_venue.py \
-  scripts/test_migrate_service_layout_fixture.sh systemd/go-trader@.service scheduler/config_reload.go; do
+  scripts/test_migrate_service_layout_fixture.sh systemd/go-trader@.service scheduler/config_reload.go \
+  .claude/rules/backtest.md scripts/agent_guide.py scripts/check_agent_docs_fixtures.sh .claude/settings.json .claude/hooks/command_policy.py; do
   printf 'base\n' >"$tmp/repo/$f"
 done
 go_src() {
@@ -145,6 +147,18 @@ none="code=false quote=false egress_docker=false merge_paper=false update=false 
 
 check "docs only, pull request" pull_request merge "$none" 'echo x >>CLAUDE.md; echo x >>SKILL.md; echo x >>README.md'
 check "docs and code, pull request" pull_request merge "$code_only" 'echo x >>CLAUDE.md; echo x >>scheduler/executor.go'
+check "area rule file, pull request" pull_request merge "$none" 'echo x >>.claude/rules/backtest.md'
+check "new area rule file, pull request" pull_request merge "$none" 'echo x >.claude/rules/new-area.md'
+check "generated guide, pull request" pull_request merge "$none" 'echo x >AGENTS.md'
+check "area rule file, guide and generated guide, pull request" pull_request merge "$none" 'echo x >>.claude/rules/backtest.md; echo x >>CLAUDE.md; echo x >AGENTS.md'
+check "area rule file and code, pull request" pull_request merge "$code_only" 'echo x >>.claude/rules/backtest.md; echo x >>scheduler/executor.go'
+check "guide generator, pull request" pull_request merge "$code_only" 'echo x >>scripts/agent_guide.py'
+check "agent docs fixture script, pull request" pull_request merge "$code_only" 'echo x >>scripts/check_agent_docs_fixtures.sh'
+check "Claude settings, pull request" pull_request merge "$code_only" 'echo x >>.claude/settings.json'
+check "Claude hook, pull request" pull_request merge "$code_only" 'echo x >>.claude/hooks/command_policy.py'
+check "nested area rule path, pull request" pull_request merge "$code_only" 'mkdir -p .claude/rules/sub && echo x >.claude/rules/sub/x.md'
+check "non-Markdown area rule path, pull request" pull_request merge "$code_only" 'echo x >.claude/rules/x.sh'
+check "uppercase or underscore area rule name, pull request" pull_request merge "$code_only" 'echo x >.claude/rules/New_Area.md'
 check "docs only, push" push merge "$all" 'echo x >>SKILL.md'
 check "docs only, no event" "" merge "$all" 'echo x >>SKILL.md'
 check "test-read doc, pull request" pull_request merge "$code_only" 'echo x >>docs/backtesting-registry.md'
@@ -189,6 +203,9 @@ check_env "verified docs-only push" push plain "$none" base false 'echo x >>SKIL
 check_env "verified docs-only push, merge head" push merge "$none" base false 'echo x >>SKILL.md; echo x >>CLAUDE.md'
 check_env "two docs-only commits, push" push plain "$none" base false 'echo x >>SKILL.md; g add -A; g commit -q -m d1; echo y >>README.md'
 check_env "code push" push plain "$all" base false 'echo x >>scheduler/executor.go'
+check_env "verified docs-only push, area rule file and generated guide" push plain "$none" base false 'echo x >>.claude/rules/backtest.md; echo x >AGENTS.md'
+check_env "area rule file and generator push" push plain "$all" base false 'echo x >>.claude/rules/backtest.md; echo x >>scripts/agent_guide.py'
+check_env "nested area rule path push" push plain "$all" base false 'mkdir -p .claude/rules/sub && echo x >.claude/rules/sub/x.md'
 check_env "mixed push" push plain "$all" base false 'echo x >>SKILL.md; echo x >>scheduler/executor.go'
 check_env "test-read doc push" push plain "$all" base false 'echo x >>docs/backtesting-registry.md'
 check_env "code renamed into the list, push" push plain "$all" base false 'git rm -q README.md && git mv scheduler/executor.go README.md'
@@ -598,4 +615,4 @@ fi
 if [ "$fail" != 0 ]; then
   exit 1
 fi
-echo "PASS: ci change detector (docs-only pull request merges and verified docs-only pushes skip; code, doubtful pushes (forced, unset, malformed, zero, absent, non-ancestor, empty or failed diff, shallow gaps), no event, test-read doc, renames and non-merge heads run; each suite gate fires on its own paths (the shared feed root proof on conversion, feed implementation, venue endpoint, config parse and reload, template unit and fixture changes), on the workflow and the detector, and on every push that is not a verified docs-only push; test-body-only edits of top-level scheduler Go test files with the same mode and header turn the four service gates off, and every other test file change keeps them; both workflows wire the code output and pass both push values to the detector step, and ci.yml gates jobs and steps only on declared outputs)"
+echo "PASS: ci change detector (docs-only pull request merges and verified docs-only pushes skip, with flat .claude/rules/<name>.md area rule files and the generated AGENTS.md as docs and the guide generator, its fixture script, other .claude files and nested or non-Markdown rule paths as code; code, doubtful pushes (forced, unset, malformed, zero, absent, non-ancestor, empty or failed diff, shallow gaps), no event, test-read doc, renames and non-merge heads run; each suite gate fires on its own paths (the shared feed root proof on conversion, feed implementation, venue endpoint, config parse and reload, template unit and fixture changes), on the workflow and the detector, and on every push that is not a verified docs-only push; test-body-only edits of top-level scheduler Go test files with the same mode and header turn the four service gates off, and every other test file change keeps them; both workflows wire the code output and pass both push values to the detector step, and ci.yml gates jobs and steps only on declared outputs)"

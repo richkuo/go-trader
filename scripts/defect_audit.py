@@ -6,6 +6,7 @@ import collections
 import concurrent.futures
 import fnmatch
 import hashlib
+import importlib.util
 import io
 import json
 import multiprocessing
@@ -2288,7 +2289,30 @@ SAFETY_HINTS = PROTECTED_HINTS + (
     "rollback", "deploy", "retired", "orphan", "corrupt", "state", "journal", "alert", "notif", "trade", "position",
     "loss", "own_share", "correlat", "_marks", "marks_", "mark_price", "wallet", "capital", "leverage", "balance", "quote", "pricing", "portfolio", "execut", "sell", "buy", "cancel", "unconfirmed", "quantit", "commission", "slippage", "robinhood", "hyperliquid", "ibkr", "deribit", "okx",
 )
-RULE_DOCS = ("CLAUDE.md", "SKILL.md", "README.md", "backtest/AUDIT.md", "docs/backtesting-registry.md", "docs/POST_UPDATE_HISTORY.md")
+AGENT_RULES = "CLAUDE.md with the .claude/rules files it lists"
+RULE_DOCS = ("SKILL.md", "README.md", "backtest/AUDIT.md", "docs/backtesting-registry.md", "docs/POST_UPDATE_HISTORY.md")
+
+
+def agent_guide():
+    spec = importlib.util.spec_from_file_location("agent_guide", ROOT / "scripts" / "agent_guide.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def rule_sets():
+    guide = agent_guide()
+    try:
+        rules = guide.rules_text(ROOT)
+    except guide.GuideError as exc:
+        raise AuditError(f"cannot read the agent rules ({AGENT_RULES}): {exc}")
+    docs = "\n".join([rules] + [(ROOT / d).read_text() for d in RULE_DOCS if (ROOT / d).exists()])
+    return docs, guide.guard_globs(rules)
+
+
+def cmd_guard_set(args):
+    docs, guard_globs = rule_sets()
+    print(json.dumps({"guard_globs": guard_globs, "rule_doc_tokens": len(set(re.findall(r"\w+", docs)))}, indent=1))
 
 
 def py_decl_key(rec):
@@ -2313,14 +2337,11 @@ def cmd_prune(args):
         for sid in sites:
             holders[sid].add(rid)
 
-    rule_docs = "\n".join((ROOT / d).read_text() for d in RULE_DOCS if (ROOT / d).exists())
+    rule_docs, guard_globs = rule_sets()
 
     def named_in_rules(r):
         name = r["test"] if r["lang"] == "go" else py_decl_key(r).rsplit("::", 1)[-1]
         return re.search(rf"\b{re.escape(name)}\b", rule_docs) is not None
-
-    claude = (ROOT / "CLAUDE.md").read_text()
-    guard_globs = sorted({g for g in re.findall(r"`([\w./*-]+\.(?:go|py|sh))`", claude) if not g.endswith(("/*.go", "/test_*.py"))})
 
     def safe_path(path):
         text = path.lower().replace("shared_", "")
@@ -2402,7 +2423,7 @@ def cmd_prune(args):
         else:
             plan[rid] = {"rule": "subsumed", "file": r["file"], "declaration": decl(r)[1], "evidence": {"subsumed_by": subsumer[rid], "covered_sites": len(cov[rid]), "subsumer_covered_sites": len(cov[subsumer[rid]]), "detected": {m: sorted(detectors[m] - remove) for m in sorted(det[rid])}}}
     held = sorted(rid for rid in weak | unit | set(subsumer) if rid not in remove)
-    write_json(out / "prune.json", {"rules": {"eligible": "not in a collection that CI runs by file path (options); not excluded or inconclusive; no safety term in the test name, its file path, or the code file it is named for (" + ", ".join(SAFETY_HINTS) + "); none of those files matches a file that CLAUDE.md names as a guardrail (" + ", ".join(guard_globs) + "); no measurement gap; no unmeasured dependency; not named in a rule document (" + ", ".join(RULE_DOCS) + ")", "unit_outside_protected": "an eligible detecting test that ran only in the test process (no child Go, Python, or shell process wrote coverage) and detects no mutant in a file with a safety term or a CLAUDE.md guardrail file; CLAUDE.md allows unit tests only for rare venue states, money math, paper/live parity, DB migrations, and large refactors, which the eligibility filter keeps", "no_detection": "an eligible review candidate with at least one completed mutation and no detection in either round", "subsumed": "an eligible detecting test whose covered sites are a subset of one kept test's covered sites, where every sampled mutant it detects is also detected by a kept test", "declaration": "a Go test function or Python test function is deleted only when every record of it is removed"}, "remove": plan, "held_by_declaration": held})
+    write_json(out / "prune.json", {"rules": {"eligible": "not in a collection that CI runs by file path (options); not excluded or inconclusive; no safety term in the test name, its file path, or the code file it is named for (" + ", ".join(SAFETY_HINTS) + "); none of those files matches a file that the agent rules (" + AGENT_RULES + ") name as a guardrail (" + ", ".join(guard_globs) + "); no measurement gap; no unmeasured dependency; not named in a rule document (" + ", ".join((AGENT_RULES,) + RULE_DOCS) + ")", "unit_outside_protected": "an eligible detecting test that ran only in the test process (no child Go, Python, or shell process wrote coverage) and detects no mutant in a file with a safety term or an agent-rules guardrail file; the agent rules allow unit tests only for rare venue states, money math, paper/live parity, DB migrations, and large refactors, which the eligibility filter keeps", "no_detection": "an eligible review candidate with at least one completed mutation and no detection in either round", "subsumed": "an eligible detecting test whose covered sites are a subset of one kept test's covered sites, where every sampled mutant it detects is also detected by a kept test", "declaration": "a Go test function or Python test function is deleted only when every record of it is removed"}, "remove": plan, "held_by_declaration": held})
     print(json.dumps({"unit_outside_protected": sum(p["rule"] == "unit_outside_protected" for p in plan.values()), "no_detection": sum(p["rule"] == "no_detection" for p in plan.values()), "subsumed": sum(p["rule"] == "subsumed" for p in plan.values()), "held_by_declaration": len(held), "declarations": len({(p["file"], p["declaration"]) for p in plan.values()})}, indent=1))
 
 
@@ -2473,9 +2494,10 @@ def main():
     p.add_argument("--out", required=True)
     p = sub.add_parser("removals")
     p.add_argument("--out", required=True)
+    sub.add_parser("guard-set")
     args = ap.parse_args()
     try:
-        {"plan": cmd_plan, "run": cmd_run, "report": cmd_report, "prune": cmd_prune, "removals": cmd_removals}[args.cmd](args)
+        {"plan": cmd_plan, "run": cmd_run, "report": cmd_report, "prune": cmd_prune, "removals": cmd_removals, "guard-set": cmd_guard_set}[args.cmd](args)
     except AuditError as exc:
         print(f"defect_audit: {exc}", file=sys.stderr)
         sys.exit(1)

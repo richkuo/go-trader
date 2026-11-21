@@ -71,7 +71,7 @@ on_docs_list() {
       return 0
     fi
   done
-  return 1
+  [[ "$1" =~ ^\.claude/rules/[a-z0-9]+(-[a-z0-9]+)*\.md$ ]]
 }
 
 scratch="$(mktemp 2>/dev/null)" || scratch=""
@@ -159,13 +159,7 @@ if [ "${EVENT_NAME:-}" = pull_request ] \
     printf -v "$g" '%s' false
   done
   while IFS= read -r f; do
-    hit=false
-    for d in "${docs_only[@]}"; do
-      if [ "$f" = "$d" ]; then
-        hit=true
-      fi
-    done
-    if [ "$hit" = false ]; then
+    if ! on_docs_list "$f"; then
       code=true
       echo "code change: $f"
     fi
