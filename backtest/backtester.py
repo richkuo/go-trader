@@ -1055,6 +1055,20 @@ def _check_stop_owner_support(request: CloseCapabilityRequest) -> list:
             refuse(str(ratchet_ref["name"]),
                    "trailing_tp_ratchet* cannot combine with trailing_stop_pct")
 
+    if params.get("geometry") == "hyperliquid" \
+            and _finite_number(fields.get("trailing_stop_pct")) == 0:
+        hidden = [key for key in ("stop_loss_margin_pct", "stop_loss_pct",
+                                  "trailing_stop_atr_mult")
+                  if _positive(fields.get(key))]
+        if hidden:
+            refuse("trailing_stop_pct",
+                   f"trailing_stop_pct=0 explicitly disables the stop and would hide "
+                   f"{', '.join(hidden)}, so the strategy would run without the hidden stop; "
+                   f"remove trailing_stop_pct to use the other stop, or remove "
+                   f"{' and '.join(hidden)} to keep the opt-out (stop_loss_atr_mult may "
+                   f"stay alongside trailing_stop_pct=0)",
+                   details={"conflicting_fields": hidden})
+
     def set_field(key: str) -> bool:
         return fields.get(key) is not None if live else _positive(fields.get(key))
 
