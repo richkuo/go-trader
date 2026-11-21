@@ -550,7 +550,7 @@ func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCo
 		if !proof.CanFinalize() {
 			return 0, 0, nil, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, limitOffBookUnverified(proof), cmdName)
 		}
-		if why := verifyLimitWatermarkDurable(d.stateDB, o); why != "" {
+		if why, _ := verifyLimitWatermarkDurable(d.stateDB, o); why != "" {
 			return 0, 0, nil, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but %s — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, why, cmdName)
 		}
 		if err := d.stateDB.DeletePendingLimitOrderIfUnchanged(o); err != nil {

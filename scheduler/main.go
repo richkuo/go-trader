@@ -1666,7 +1666,8 @@ func main() {
 							return store.DeletePendingLimitOrderIfUnchanged(o)
 						},
 						VerifyWatermark: func(o PendingLimitOrder) string {
-							return verifyLimitWatermarkDurable(store, o)
+							why, _ := verifyLimitWatermarkDurable(store, o)
+							return why
 						},
 						Flush: func() error {
 							mu.Lock()

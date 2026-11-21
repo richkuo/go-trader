@@ -335,13 +335,30 @@ func reportLimitFillExposureRefusal(notifier *MultiNotifier, o PendingLimitOrder
 
 func formatLimitFillHeldDM(o PendingLimitOrder, p limitRowProof, reason string, markerNew bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "⚠️ **Limit fill NOT booked: %s**\n", killSwitchLimitOrderLabel(o))
-	fmt.Fprintf(&b, "Strategy %s, coin %s, order %d: the venue reports an executed size of %.6f where the book holds %.6f, and the scheduler cannot book the difference: %s.\n",
-		o.StrategyID, o.Symbol, o.OrderOID, p.Executed, o.FilledSize, reason)
-	b.WriteString("• The scheduler booked NOTHING and deleted NOTHING — the queue row stays as the recovery record\n")
-	if p.Permanent {
-		b.WriteString("• The venue no longer retains the fills of this order, so automatic booking cannot succeed\n")
+	if p.ProvenAboveBooked() {
+		fmt.Fprintf(&b, "⚠️ **Limit fill NOT booked: %s**\n", killSwitchLimitOrderLabel(o))
+		fmt.Fprintf(&b, "Strategy %s, coin %s, order %d: the venue reports an executed size of %.6f where the book holds %.6f, and the scheduler cannot book the difference: %s.\n",
+			o.StrategyID, o.Symbol, o.OrderOID, p.Executed, o.FilledSize, reason)
 	} else {
+		fmt.Fprintf(&b, "⚠️ **Limit row NOT finalized: %s**\n", killSwitchLimitOrderLabel(o))
+		fmt.Fprintf(&b, "Strategy %s, coin %s, order %d: the venue proves an executed size of %.6f, equal to the fill the row records, but the scheduler cannot finalize the row: %s.\n",
+			o.StrategyID, o.Symbol, o.OrderOID, p.Executed, reason)
+	}
+	b.WriteString("• The scheduler booked NOTHING and deleted NOTHING — the queue row stays as the recovery record\n")
+	switch {
+	case p.Permanent:
+		b.WriteString("• The venue no longer retains the fills of this order, so automatic booking cannot succeed\n")
+	case p.Unbookable != "":
+		b.WriteString("• Retrying cannot change this while the book stays as it is: the venue proof is complete and the scheduler's own book refuses the row, so no automatic path books or finalizes it\n")
+		fmt.Fprintf(&b, "• Until the row is resolved, no other limit fill on %s is booked\n", o.Symbol)
+		switch {
+		case markerNew:
+		case !o.OperatorRequiredSince.IsZero() && o.OperatorEvidenceJSON != "":
+			fmt.Fprintf(&b, "• The row carries terminal, off-book proof. Flatten on Hyperliquid any size this order left open that the book does not hold, then clear the record with `go-trader manual-clear-limit-row %d --flattened` — the command books nothing\n", o.OrderOID)
+		default:
+			fmt.Fprintf(&b, "• The row becomes clearable with `go-trader manual-clear-limit-row %d --flattened` only after the scheduler proves the order is terminal and off the book — cancel the order with `go-trader manual-cancel %s` if it still rests\n", o.OrderOID, o.StrategyID)
+		}
+	default:
 		b.WriteString("• The reconciler retries every cycle and books the fill once its complete history matches the order and live exposure supports it\n")
 	}
 	b.WriteString(limitOperatorMarkerNote(o, markerNew))
@@ -350,8 +367,12 @@ func formatLimitFillHeldDM(o PendingLimitOrder, p limitRowProof, reason string, 
 }
 
 func reportLimitFillHeld(notifier *MultiNotifier, o PendingLimitOrder, p limitRowProof, reason string, now time.Time, markerNew bool) string {
+	headline := limitFillExposureHeadline(limitFillExposureHeld)
+	if p.Unbookable != "" {
+		headline = "limit-order row held for an operator: the scheduler's own book refuses it"
+	}
 	fmt.Printf("[WARN] limit: %s %s: venue executed %.6f, book %.6f — %s\n",
-		limitFillExposureHeadline(limitFillExposureHeld), killSwitchLimitOrderLabel(o), p.Executed, o.FilledSize, reason)
+		headline, killSwitchLimitOrderLabel(o), p.Executed, o.FilledSize, reason)
 	if !limitFillExposureAlerts.Record(limitFillExposureKeyFor(o), limitFillExposureHeld, now) && !markerNew {
 		return ""
 	}
@@ -391,8 +412,12 @@ func applyLimitExposureOperatorRequired(store *StateStore, c *limitFillCandidate
 		return false
 	}
 	unbacked := c.refused && c.refusalDecision.Verdict == limitFillExposureUnbacked
-	if limitOperatorRequiredWarranted(c.proof) && (c.proof.Permanent || unbacked) {
+	unbookable := c.proof.Unbookable != ""
+	if limitOperatorRequiredWarranted(c.proof) && (c.proof.Permanent || unbacked || unbookable) {
 		reason := c.proof.Hold
+		if unbookable {
+			reason = c.proof.Unbookable
+		}
 		if unbacked {
 			reason = c.refusalDecision.Reason
 		}

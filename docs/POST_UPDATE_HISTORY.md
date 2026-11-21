@@ -13,7 +13,7 @@ An uncertain row on the same coin holds the group, and sole-owner resync no long
 The first proven but unbooked execution alerts the owner once per throttle interval.
 A terminal, off-book order with a proven unbooked fill that cannot be booked, or with a permanent fill-proof failure, gets a durable marker with row-bound evidence;
 `manual-clear-limit-row <oid> --flattened` needs that evidence and refuses a legacy marker until the daemon revalidates it.
-Operator action: deploy Go and Python together with `bash scripts/update.sh --restart` and roll back together. Updated Go holds every row while an older `check_hyperliquid.py` answers; older Go ignores the new fields. A legacy row whose watermark does not match its durable manual entry trades holds with that reason in the `[limit]` log.
+Operator action: deploy Go and Python together with `bash scripts/update.sh --restart` and roll back together. Updated Go holds every row while an older `check_hyperliquid.py` answers; older Go ignores the new fields. A legacy row whose watermark does not match its durable manual entry trades, and a remainder fill whose booked part was already closed in the book, hold with that reason in the `[limit]` log; once the order is terminal and off the book the row gets the operator marker, and the owner alert names `manual-clear-limit-row <oid> --flattened`.
 
 ### Issue 2117: Discord slash commands are off by default and maintained by a background worker
 

@@ -842,9 +842,14 @@ func cancelOrphanedLimitOrder(state *AppState, cfg *Config, store *StateStore, m
 		out.Reason = proof.holdOr("the order's terminal state and fills are not yet proven")
 		return out
 	}
-	if why := verifyLimitWatermarkDurable(store, o); why != "" {
+	if why, final := verifyLimitWatermarkDurable(store, o); why != "" {
 		out.State = orphanLimitStateUnknown
 		out.Reason = why
+		out.Proof.Hold = why
+		if final {
+			out.State = orphanLimitStateOffBookRowStuck
+			out.Proof.Unbookable = why
+		}
 		return out
 	}
 	unlock, lerr := store.tryLiveManualActionLock()
@@ -922,7 +927,7 @@ func applyOrphanLimitOperatorRequired(store *StateStore, o PendingLimitOrder, ou
 	if outcome.Resolved {
 		return false
 	}
-	if outcome.State == orphanLimitStateOffBookUnadoptedFill && limitOperatorRequiredWarranted(outcome.Proof) {
+	if (outcome.State == orphanLimitStateOffBookUnadoptedFill || outcome.Proof.Unbookable != "") && limitOperatorRequiredWarranted(outcome.Proof) {
 		return recordLimitOperatorRequired(store, &o, outcome.Proof, outcome.Reason, now)
 	}
 	if outcome.Proof.CertainForPeers() {
@@ -1014,13 +1019,16 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 		proof := limitRowStatusProof(sc.Script, o, "status")
 		if proof.Hold == "" {
 			mu.RLock()
-			why := verifyLimitWatermarkDurable(store, o)
+			why, final := verifyLimitWatermarkDurable(store, o)
 			if why == "" && proof.CanBook() {
-				why = verifyLimitIncrementLineage(store, state, o)
+				why, final = verifyLimitIncrementLineage(store, state, o)
 			}
 			mu.RUnlock()
 			if why != "" {
 				proof.Hold = why
+				if final {
+					proof.Unbookable = why
+				}
 			}
 		}
 		c := &limitFillCandidate{order: o, sc: sc, logger: logger, status: proof.Status, proof: proof, polledAt: statusPolledAt}
@@ -1203,6 +1211,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 				warnNotifier(notifier, fmt.Sprintf("[limit-fill] %s %s: %v", r.order.StrategyID, coin, errs[i]))
 				r.applyFailed = true
 				r.blocked = errs[i].Error()
+				r.proof.Unbookable = errs[i].Error()
 				continue
 			}
 			limitFillExposureAlerts.Clear(limitFillExposureKeyFor(r.order))
@@ -1289,7 +1298,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 		switch {
 		case c.refused:
 			reportLimitFillExposureRefusal(notifier, c.order, c.proof.Executed, c.refusalDecision, now, markerNew)
-		case !c.adopted && !c.finalized && c.proof.ProvenAboveBooked():
+		case !c.adopted && !c.finalized && (c.proof.ProvenAboveBooked() || c.proof.Unbookable != ""):
 			reason := c.blocked
 			if reason == "" {
 				reason = c.proof.holdOr("the fill could not be booked this cycle")

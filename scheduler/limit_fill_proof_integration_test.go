@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -122,6 +123,37 @@ func (h *limitProofHarness) dmsContaining(sub string) int {
 		}
 	}
 	return n
+}
+
+func (h *limitProofHarness) closeBookedPosition() {
+	h.t.Helper()
+	h.mu.Lock()
+	delete(h.state.Strategies[h.sc.ID].Positions, "ETH")
+	err := SaveStateWithStore(h.state, h.store)
+	h.mu.Unlock()
+	if err != nil {
+		h.t.Fatalf("save the closed book: %v", err)
+	}
+}
+
+func (h *limitProofHarness) clearCommand(args ...string) int {
+	h.t.Helper()
+	path := writeTestConfig(h.t, h.t.TempDir(), fmt.Sprintf(
+		`{"db_file": %q, "strategies": [{"id": %q, "type": "manual", "platform": "hyperliquid", "symbol": "ETH", "script": %q, "leverage": 10, "timeframe": "30m", "capital": 1000, "args": ["hold", "ETH", "30m", "--mode=live"]}]}`,
+		h.db.path, h.sc.ID, h.sc.Script))
+	return runManualClearLimitRow(append(args, "--config", path))
+}
+
+func (h *limitProofHarness) bookPartialThenCloseItsPosition() {
+	h.t.Helper()
+	withStubbedHLLiveExposure(h.t, HLPosition{Coin: "ETH", Size: 0.4})
+	h.reply(provenLimitStatus(9001, "ETH", "live", 1.0, 0.4, 2000, 0.2))
+	h.run()
+	rows := h.rows()
+	if len(rows) != 1 || rows[0].FilledSize != 0.4 || rows[0].FillProofVersion != limitFillProofVersionAtomic {
+		h.t.Fatalf("the partial fill must be booked atomically first: %+v", rows)
+	}
+	h.closeBookedPosition()
 }
 
 func TestLimitFillProofLifecycle(t *testing.T) {
@@ -268,6 +300,11 @@ func TestLimitFillProofLifecycle(t *testing.T) {
 				return st
 			}()},
 			{"terminal but off-book unverified", limitStatusWithUnknownBook(provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0, 0, 0))},
+			{"lot metadata unknown", func() HyperliquidLimitOrderStatus {
+				st := provenLimitStatus(9001, "ETH", "live", 0.5, 0, 0, 0)
+				st.SzDecimals = nil
+				return st
+			}()},
 			{"explicit zero still distinguishable from missing", func() HyperliquidLimitOrderStatus {
 				st := provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0, 0, 0)
 				st.ExecutedSize = &zero
@@ -435,6 +472,224 @@ func TestLimitFillProofLifecycle(t *testing.T) {
 		h.run()
 		if pos := h.position(); pos == nil || pos.Quantity != 0.5 {
 			t.Fatalf("adoption must proceed once the peer is proven settled: %+v", pos)
+		}
+	})
+
+	t.Run("RemainderFillAfterItsPositionClosedGetsAnOperatorExit", func(t *testing.T) {
+		h := newLimitProofHarness(t, 1.0)
+		h.bookPartialThenCloseItsPosition()
+
+		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.6})
+		h.reply(provenLimitStatus(9001, "ETH", "filled", 1.0, 1.0, 2004, 0.5))
+		h.run()
+		rows := h.rows()
+		if len(rows) != 1 || rows[0].FilledSize != 0.4 || rows[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("a proven remainder the book cannot grow must keep the row and mark it for an operator: %+v", rows)
+		}
+		ev, ok := parseLimitOperatorEvidence(rows[0].OperatorEvidenceJSON)
+		if !ok || !ev.Unbookable || !ev.OffBook || !ev.FillsProven || ev.OrderState != "filled" || ev.ExecutedSize != 1.0 || ev.BookedSize != 0.4 || ev.OrderOID != 9001 {
+			t.Fatalf("the marker must carry row-bound terminal, off-book evidence of the refused booking: %+v", ev)
+		}
+		if pos := h.position(); pos != nil {
+			t.Fatalf("the refused remainder must book nothing: %+v", pos)
+		}
+		if got := h.dmsContaining("manual-clear-limit-row 9001 --flattened"); got != 1 {
+			t.Fatalf("the alert must name the clear command once, got %d dms: %+v", got, h.mock.dms)
+		}
+		if h.dmsContaining("retries every cycle") != 0 {
+			t.Fatalf("the alert must not promise automatic booking for a refused booking, dms = %+v", h.mock.dms)
+		}
+
+		h.run()
+		if got := h.dmsContaining("Limit fill NOT booked"); got != 1 {
+			t.Fatalf("the same condition must alert at most once per throttle interval, got %d dms: %+v", got, h.mock.dms)
+		}
+
+		h.restart()
+		rows = h.rows()
+		if len(rows) != 1 || rows[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("the marker must survive a restart: %+v", rows)
+		}
+		if code := h.clearCommand("9001"); code != 1 || len(h.rows()) != 1 {
+			t.Fatalf("manual-clear-limit-row must refuse without the flatten assertion, exit = %d, rows = %+v", code, h.rows())
+		}
+		if code := h.clearCommand("9001", "--flattened"); code != 0 {
+			t.Fatalf("manual-clear-limit-row --flattened must accept the marked row, exit = %d", code)
+		}
+		if rows := h.rows(); len(rows) != 0 {
+			t.Fatalf("the accepted clear must remove the row: %+v", rows)
+		}
+		if got := h.durableEntryQty(); got != 0.4 {
+			t.Fatalf("the accepted clear must add no trade, durable = %g", got)
+		}
+		if pos := h.position(); pos != nil {
+			t.Fatalf("the accepted clear must book nothing: %+v", pos)
+		}
+	})
+
+	t.Run("LegacyWatermarkMismatchGetsAnOperatorExit", func(t *testing.T) {
+		h := newLimitProofHarness(t, 0.5)
+		if _, err := h.db.db.Exec("UPDATE pending_limit_orders SET filled_size = 0.3, avg_fill_price = 2000 WHERE id = ?", h.rowID); err != nil {
+			t.Fatalf("seed legacy watermark: %v", err)
+		}
+		seedLimitFillLineage(t, h.db, 0, h.sc.ID, "ETH", 9001, 0.2, 2000, "legacy-position")
+		rows := h.rows()
+		if len(rows) != 1 || rows[0].FillProofVersion != 0 || rows[0].FilledSize != 0.3 {
+			t.Fatalf("the seeded row must be a legacy watermark: %+v", rows)
+		}
+		if got := h.durableEntryQty(); got != 0.2 {
+			t.Fatalf("seeded durable entry trades = %g, want 0.2", got)
+		}
+
+		h.reply(provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0.3, 2000, 0.15))
+		h.run()
+		rows = h.rows()
+		if len(rows) != 1 || rows[0].FilledSize != 0.3 || rows[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("a legacy row whose watermark its trades do not back must stay and be marked for an operator: %+v", rows)
+		}
+		ev, ok := parseLimitOperatorEvidence(rows[0].OperatorEvidenceJSON)
+		if !ok || !ev.Unbookable || !ev.OffBook || !ev.FillsProven || ev.OrderState != "cancelled" || ev.ExecutedSize != 0.3 || ev.BookedSize != 0.3 {
+			t.Fatalf("the marker must carry terminal, off-book evidence of the refused finalization: %+v", ev)
+		}
+		if h.dmsContaining("Limit row NOT finalized") != 1 || h.dmsContaining("manual-clear-limit-row 9001 --flattened") != 1 {
+			t.Fatalf("the owner must be told once that the row needs the clear command, dms = %+v", h.mock.dms)
+		}
+		if h.dmsContaining("cancelled with no fill") != 0 || h.dmsContaining("remainder cancelled") != 0 {
+			t.Fatalf("a held row must send no finalization notice, dms = %+v", h.mock.dms)
+		}
+		if code := h.clearCommand("9001", "--flattened"); code != 0 {
+			t.Fatalf("manual-clear-limit-row --flattened must accept the marked legacy row, exit = %d", code)
+		}
+		if rows := h.rows(); len(rows) != 0 {
+			t.Fatalf("the accepted clear must remove the row: %+v", rows)
+		}
+		if got := h.durableEntryQty(); got != 0.2 {
+			t.Fatalf("the accepted clear must add no trade, durable = %g", got)
+		}
+	})
+
+	t.Run("UnbookableRowHoldsItsCoinPeerUntilCleared", func(t *testing.T) {
+		h := newLimitProofHarness(t, 1.0)
+		peer := h.sc
+		peer.ID = "hl-manual-eth-peer"
+		h.cfg.Strategies = append(h.cfg.Strategies, peer)
+		h.state.Strategies[peer.ID] = &StrategyState{ID: peer.ID, Platform: "hyperliquid", Type: "manual", Positions: map[string]*Position{}, Cash: 10000}
+		if err := SaveStateWithStore(h.state, h.store); err != nil {
+			t.Fatalf("save peer strategy: %v", err)
+		}
+		h.bookPartialThenCloseItsPosition()
+
+		if _, err := h.db.InsertPendingLimitOrder(PendingLimitOrder{
+			StrategyID: peer.ID, Symbol: "ETH", Side: "long", OrderOID: 9002,
+			LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("seed peer row: %v", err)
+		}
+		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 1.1})
+		h.status = func() (*HyperliquidLimitStatusResult, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				provenLimitStatus(9001, "ETH", "filled", 1.0, 1.0, 2004, 0.5),
+				provenLimitStatus(9002, "ETH", "live", 0.5, 0.5, 2000, 0.25),
+			}}, nil
+		}
+		peerPosition := func() *Position { return h.state.Strategies[peer.ID].Positions["ETH"] }
+
+		h.run()
+		if pos := peerPosition(); pos != nil {
+			t.Fatalf("a peer fill must not book while the unbookable row is unresolved: %+v", pos)
+		}
+		rows := h.rows()
+		if len(rows) != 2 {
+			t.Fatalf("both rows must be kept: %+v", rows)
+		}
+		first, found := findPendingLimitOrderByOID(rows, 9001)
+		if !found || first.OperatorRequiredSince.IsZero() {
+			t.Fatalf("the unbookable row must carry the operator marker: %+v", rows)
+		}
+
+		if code := h.clearCommand("9001", "--flattened"); code != 0 {
+			t.Fatalf("manual-clear-limit-row --flattened must accept the unbookable row, exit = %d", code)
+		}
+		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.5})
+		h.run()
+		if pos := peerPosition(); pos == nil || pos.Quantity != 0.5 {
+			t.Fatalf("the peer fill must book once the unbookable row is cleared: %+v", pos)
+		}
+		if pos := h.position(); pos != nil {
+			t.Fatalf("the cleared row must book nothing for its own strategy: %+v", pos)
+		}
+	})
+
+	t.Run("OrphanLegacyWatermarkMismatchGetsAnOperatorExit", func(t *testing.T) {
+		h := newLimitProofHarness(t, 0.5)
+		h.cfg.Strategies = []StrategyConfig{orphanLaneRoster()}
+		if _, err := h.db.db.Exec("UPDATE pending_limit_orders SET filled_size = 0.3, avg_fill_price = 2000, cancel_requested = 1 WHERE id = ?", h.rowID); err != nil {
+			t.Fatalf("seed legacy orphan watermark: %v", err)
+		}
+		seedLimitFillLineage(t, h.db, 0, h.sc.ID, "ETH", 9001, 0.2, 2000, "legacy-position")
+
+		h.reply(provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0.3, 2000, 0.15))
+		h.run()
+		rows := h.rows()
+		if len(rows) != 1 || rows[0].FilledSize != 0.3 || rows[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("an orphan legacy row whose watermark its trades do not back must stay and be marked for an operator: %+v", rows)
+		}
+		ev, ok := parseLimitOperatorEvidence(rows[0].OperatorEvidenceJSON)
+		if !ok || !ev.Unbookable || !ev.OffBook || !ev.FillsProven || ev.OrderState != "cancelled" {
+			t.Fatalf("the marker must carry terminal, off-book evidence of the refused finalization: %+v", ev)
+		}
+		if h.cancel != 0 {
+			t.Fatalf("an off-book order must not be cancelled again, cancel calls = %d", h.cancel)
+		}
+		if got := h.dmsContaining("manual-clear-limit-row 9001 --flattened"); got != 1 {
+			t.Fatalf("the owner must be told once that the row needs the clear command, got %d dms: %+v", got, h.mock.dms)
+		}
+		if h.dmsContaining("clears the row once the write succeeds") != 0 {
+			t.Fatalf("the alert must not promise an automatic clear, dms = %+v", h.mock.dms)
+		}
+		if got := clearOperatorRequiredLimitRowRefusal(h.cfg, rows[0], true); got != "" {
+			t.Fatalf("the clear must accept the marked orphan row with --flattened, got %q", got)
+		}
+	})
+
+	t.Run("BookRejectedFirstFillGetsAnOperatorExitAndStillBooksLater", func(t *testing.T) {
+		h := newLimitProofHarness(t, 0.5)
+		h.mu.Lock()
+		h.state.Strategies[h.sc.ID].Positions["ETH"] = &Position{
+			Symbol: "ETH", Quantity: 0.2, InitialQuantity: 0.2, AvgCost: 1990, Side: "long",
+			Multiplier: 1, Leverage: h.sc.Leverage, OwnerStrategyID: h.sc.ID, OpenedAt: time.Now().UTC(),
+			TradePositionID: "other-entry",
+		}
+		err := SaveStateWithStore(h.state, h.store)
+		h.mu.Unlock()
+		if err != nil {
+			t.Fatalf("save the other entry: %v", err)
+		}
+		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.7})
+		h.reply(provenLimitStatus(9001, "ETH", "filled", 0.5, 0.5, 2000, 0.25))
+		h.run()
+		rows := h.rows()
+		if len(rows) != 1 || rows[0].FilledSize != 0 || rows[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("a proven fill the book rejects must keep the row and mark it for an operator: %+v", rows)
+		}
+		if ev, ok := parseLimitOperatorEvidence(rows[0].OperatorEvidenceJSON); !ok || !ev.Unbookable || !ev.OffBook {
+			t.Fatalf("the marker must carry terminal, off-book evidence of the rejected booking: %+v", ev)
+		}
+		if pos := h.position(); pos == nil || pos.Quantity != 0.2 {
+			t.Fatalf("the rejected booking must leave the other entry unchanged: %+v", pos)
+		}
+		if got := h.durableEntryQty(); got != 0 {
+			t.Fatalf("the rejected booking must write no trade, got %g", got)
+		}
+
+		h.closeBookedPosition()
+		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.5})
+		h.run()
+		if pos := h.position(); pos == nil || pos.Quantity != 0.5 {
+			t.Fatalf("the fill must still book once the book accepts it: %+v", pos)
+		}
+		if rows := h.rows(); len(rows) != 0 {
+			t.Fatalf("the booked terminal row must finalize: %+v", rows)
 		}
 	})
 }

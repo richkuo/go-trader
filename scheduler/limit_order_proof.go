@@ -29,6 +29,8 @@ type limitRowProof struct {
 	Permanent bool
 	Hold      string
 
+	Unbookable string
+
 	OpenOrdersError string
 }
 
@@ -115,8 +117,12 @@ func decideLimitRowProof(o PendingLimitOrder, res *HyperliquidLimitStatusResult,
 	if st.Resting != nil && *st.Resting {
 		p.Live = true
 	}
-	if st.OrderState == "" || st.FillsProven == nil || st.SzDecimals == nil {
+	if st.OrderState == "" || st.FillsProven == nil {
 		p.Hold = "the status reply carries no order-status or fill proof (an older check_hyperliquid.py answered), so nothing is booked or deleted until the paired Python is deployed"
+		return p
+	}
+	if st.SzDecimals == nil {
+		p.Hold = fmt.Sprintf("the venue lot metadata for %s is unknown (the status reply carries no lot precision), so sizes cannot be compared in venue lots and nothing is booked or deleted until the venue metadata read succeeds", o.Symbol)
 		return p
 	}
 	if st.Coin != o.Symbol {
@@ -221,6 +227,7 @@ type limitRowOperatorEvidence struct {
 	BookedSize   float64   `json:"booked_size"`
 	FillsProven  bool      `json:"fills_proven"`
 	Permanent    bool      `json:"fill_proof_permanent"`
+	Unbookable   bool      `json:"unbookable"`
 	Reason       string    `json:"reason"`
 	ObservedAt   time.Time `json:"observed_at"`
 }
@@ -236,6 +243,7 @@ func limitOperatorEvidenceFor(o PendingLimitOrder, p limitRowProof, reason strin
 		BookedSize:   o.FilledSize,
 		FillsProven:  p.Proven,
 		Permanent:    p.Permanent,
+		Unbookable:   p.Unbookable != "",
 		Reason:       reason,
 		ObservedAt:   now.UTC(),
 	}
@@ -267,6 +275,9 @@ func limitOperatorRequiredWarranted(p limitRowProof) bool {
 	if p.Permanent {
 		return true
 	}
+	if p.Unbookable != "" {
+		return p.Proven
+	}
 	return p.Hold == "" && p.Proven && p.Increment
 }
 
@@ -282,8 +293,8 @@ func limitOperatorEvidenceRefusal(o PendingLimitOrder) string {
 		return fmt.Sprintf("refusing: the scheduler has not proven that oid=%d is off the book — cancel it on Hyperliquid and let the scheduler record terminal proof first", o.OrderOID)
 	case ev.OrderState != "filled" && ev.OrderState != "cancelled" && ev.OrderState != "rejected":
 		return fmt.Sprintf("refusing: the recorded order state %q for oid=%d is not terminal", ev.OrderState, o.OrderOID)
-	case !ev.Permanent && !(ev.FillsProven && ev.ExecutedSize > ev.BookedSize):
-		return fmt.Sprintf("refusing: the evidence for oid=%d shows neither a proven unbooked fill nor a permanent fill-proof failure, so the scheduler can still resolve it", o.OrderOID)
+	case !ev.Permanent && !(ev.FillsProven && (ev.Unbookable || ev.ExecutedSize > ev.BookedSize)):
+		return fmt.Sprintf("refusing: the evidence for oid=%d shows no proven unbooked fill, no proven execution that the scheduler's own book refuses, and no permanent fill-proof failure, so the scheduler can still resolve it", o.OrderOID)
 	case math.Abs(ev.BookedSize-o.FilledSize) > limitFillEpsilon:
 		return fmt.Sprintf("refusing: the row's booked size %.8f changed since the evidence was recorded (%.8f) — the scheduler revalidates it next poll", o.FilledSize, ev.BookedSize)
 	}
@@ -314,40 +325,40 @@ func limitEntryResyncHeld(strategyID, symbol string) bool {
 	return limitEntryResyncHolds.keys[hlStopFillKey(strategyID, symbol)]
 }
 
-func limitEntryTradeLineage(store *StateStore, o PendingLimitOrder) (string, string) {
+func limitEntryTradeLineage(store *StateStore, o PendingLimitOrder) (string, string, bool) {
 	if store == nil {
-		return "", "the state store is unavailable to cross-check the row's booked fills"
+		return "", "the state store is unavailable to cross-check the row's booked fills", false
 	}
 	qty, positionIDs, err := store.ManualLimitEntryTradeTotals(o.StrategyID, fmt.Sprintf("%d", o.OrderOID))
 	if err != nil {
-		return "", fmt.Sprintf("the row's durable manual limit trades could not be read (%v)", err)
+		return "", fmt.Sprintf("the row's durable manual limit trades could not be read (%v)", err), false
 	}
 	if math.Abs(qty-o.FilledSize) > limitFillEpsilon*math.Max(1, o.FilledSize) {
-		return "", fmt.Sprintf("the row's fill watermark %.8f does not match the %.8f its durable manual limit trades record", o.FilledSize, qty)
+		return "", fmt.Sprintf("the row's fill watermark %.8f does not match the %.8f its durable manual limit trades record", o.FilledSize, qty), true
 	}
 	if len(positionIDs) != 1 {
-		return "", fmt.Sprintf("the row's durable manual limit trades name %d positions, so its lineage is ambiguous", len(positionIDs))
+		return "", fmt.Sprintf("the row's durable manual limit trades name %d positions, so its lineage is ambiguous", len(positionIDs)), true
 	}
-	return positionIDs[0], ""
+	return positionIDs[0], "", false
 }
 
-func verifyLimitWatermarkDurable(store *StateStore, o PendingLimitOrder) string {
+func verifyLimitWatermarkDurable(store *StateStore, o PendingLimitOrder) (string, bool) {
 	if o.FillProofVersion >= limitFillProofVersionAtomic || o.FilledSize <= limitFillEpsilon {
-		return ""
+		return "", false
 	}
-	if _, why := limitEntryTradeLineage(store, o); why != "" {
-		return "the row's fill watermark predates atomic booking and " + why
+	if _, why, final := limitEntryTradeLineage(store, o); why != "" {
+		return "the row's fill watermark predates atomic booking and " + why, final
 	}
-	return ""
+	return "", false
 }
 
-func verifyLimitIncrementLineage(store *StateStore, state *AppState, o PendingLimitOrder) string {
+func verifyLimitIncrementLineage(store *StateStore, state *AppState, o PendingLimitOrder) (string, bool) {
 	if o.FilledSize <= limitFillEpsilon {
-		return ""
+		return "", false
 	}
-	positionID, why := limitEntryTradeLineage(store, o)
+	positionID, why, final := limitEntryTradeLineage(store, o)
 	if why != "" {
-		return why
+		return why, final
 	}
 	var pos *Position
 	if state != nil {
@@ -356,9 +367,9 @@ func verifyLimitIncrementLineage(store *StateStore, state *AppState, o PendingLi
 		}
 	}
 	if pos == nil || pos.Quantity <= 0 || pos.Side != o.Side || pos.TradePositionID != positionID || !manualPositionOwnedByStrategy(pos, o.StrategyID) {
-		return fmt.Sprintf("the %.8f this order already booked is not carried by an open %s position of the same lineage in the book, so a later fill has nothing to grow", o.FilledSize, o.Side)
+		return fmt.Sprintf("the %.8f this order already booked is not carried by an open %s position of the same lineage in the book, so a later fill has nothing to grow", o.FilledSize, o.Side), true
 	}
-	return ""
+	return "", false
 }
 
 func (st *StateStore) tryLiveManualActionLock() (func(), error) {
