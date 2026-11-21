@@ -74,6 +74,34 @@
       "python_refusal": "UNSUPPORTED_STOP_OWNER"
     },
     {
+      "id": "zero_trailing_pct_hides_stop_pct",
+      "strategy": {
+        "trailing_stop_pct": 0,
+        "stop_loss_pct": 2
+      },
+      "go_accept": false,
+      "python_refusal": "UNSUPPORTED_STOP_OWNER"
+    },
+    {
+      "id": "zero_trailing_pct_hides_margin_pct",
+      "strategy": {
+        "trailing_stop_pct": 0,
+        "stop_loss_margin_pct": 20,
+        "leverage": 5
+      },
+      "go_accept": false,
+      "python_refusal": "UNSUPPORTED_STOP_OWNER"
+    },
+    {
+      "id": "zero_trailing_pct_hides_trailing_atr",
+      "strategy": {
+        "trailing_stop_pct": 0,
+        "trailing_stop_atr_mult": 2
+      },
+      "go_accept": false,
+      "python_refusal": "UNSUPPORTED_STOP_OWNER"
+    },
+    {
       "id": "margin_with_defaulted_leverage",
       "strategy": {
         "stop_loss_margin_pct": 20
@@ -138,7 +166,10 @@
       "unified_explicit_zero_scalar": false,
       "unified_null_regime_block": true,
       "unified_positive_pct": false,
-      "unified_use_defaults_false_block": false
+      "unified_use_defaults_false_block": false,
+      "zero_trailing_pct_hides_margin_pct": false,
+      "zero_trailing_pct_hides_stop_pct": false,
+      "zero_trailing_pct_hides_trailing_atr": false
     },
     "geometry": {
       "default_opt_out_custom_drawdown": {
@@ -1174,6 +1205,28 @@
         "arm_trigger": 104,
         "arm_high_water": 0,
         "path": []
+      },
+      "zero_trailing_pct_keeps_fixed_atr": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": 1.5,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": 0
+        },
+        "owner": "fixed_atr",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 3,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 97,
+        "arm_high_water": 0,
+        "path": []
       }
     },
     "resolver_order": {
@@ -1506,6 +1559,22 @@
       },
       "marks": [
         101
+      ]
+    },
+    {
+      "id": "zero_trailing_pct_keeps_fixed_atr",
+      "strategy": {
+        "trailing_stop_pct": 0,
+        "stop_loss_atr_mult": 1.5
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101,
+        102
       ]
     },
     {
