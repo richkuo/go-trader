@@ -5,6 +5,13 @@ Generated file. Do not edit it. Edit CLAUDE.md and the .claude/rules files it li
 Guardrails only;mechanism:SKILL.md,docs/POST_UPDATE_HISTORY.md.Sources:this file+the `.claude/rules/` files listed below;`AGENTS.md`=generated full guide for Codex/Cursor,never hand-edit.
 After any source edit run `python3 -I scripts/agent_guide.py`,verify with `bash scripts/check_pre_pr.sh agent-docs`.Limits:this file<17500B(target 17000),rule file<=8000B,any line<=400B,`AGENTS.md`<=28000B.Shorten,drop no guardrail.
 
+## Agent guide contract
+- Generated: `AGENTS.md`
+- Sources: `CLAUDE.md`, `.claude/rules/*.md`
+- Regenerate: `python3 -I scripts/agent_guide.py`
+- Verify: `bash scripts/check_pre_pr.sh agent-docs`
+- Command files: `scripts/agent_guide.py`, `scripts/check_pre_pr.sh`
+
 ## Area rules
 - Claude Code loads each file below only when it reads or edits a file in that rule's `paths:`.In a subagent,a worktree,after compaction,or before creating a file in an area,Read that rule file first.
 - `.claude/rules/backtest.md`:backtest harness,`shared_strategies/`,`shared_tools/`,registry
@@ -207,5 +214,6 @@ Source .claude/rules/workflows.md. Scope: .github/**
 
 
 - `.github/workflows/claude.yml`:mode routing fail-closed(untrusted/fork=review);no-execution in agent;commit/push implement-only;prompt never holds `"`,`` ` ``,`$`.rk-skills workflow skills=CI-only,no settings pin
+- Root CLAUDE.md `## Agent guide contract`:read from default branch,never edited by a workflow session.`guide_contract_permit` on `implement` ONLY,=exact Regenerate+Verify commands,plain,comma-joined;neither command EVER in any `extra_allowed_tools`.A command change updates block+permit+`Command files` in 1 PR
 
 End of generated guide: 9 area rule files.
