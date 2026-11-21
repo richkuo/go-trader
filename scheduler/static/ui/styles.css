@@ -2116,3 +2116,136 @@ html.dark {
 .chart-attribution a {
   color: inherit;
 }
+
+.chart-frame {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+}
+
+.chart-panel {
+  overflow-y: auto;
+}
+
+.chart-frame:fullscreen {
+  padding: 12px;
+  background: var(--panel);
+  overflow: auto;
+}
+
+.chart-frame:fullscreen .chart-wrap,
+.chart-frame:fullscreen .trade-review-chart {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 320px;
+}
+
+.chart-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.chart-toolbar[hidden] {
+  display: none;
+}
+
+.trade-review-chart-frame .chart-toolbar {
+  margin-top: 12px;
+  padding: 8px 0;
+}
+
+.chart-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.chart-control,
+.chart-control-group,
+.chart-study-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chart-control-label {
+  color: var(--muted);
+}
+
+.chart-select,
+.chart-study-input {
+  padding: 2px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.chart-study-input {
+  width: 64px;
+}
+
+.chart-button {
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chart-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chart-button[aria-pressed="true"] {
+  border-color: var(--focus-border);
+}
+
+.chart-control-note,
+.chart-toolbar-note {
+  margin: 0;
+  color: var(--amber);
+}
+
+.chart-control-note[hidden],
+.chart-toolbar-note[hidden],
+.chart-study-list[hidden],
+.chart-study-status[hidden] {
+  display: none;
+}
+
+.chart-study-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 120px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.chart-study {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.chart-study-label {
+  font-weight: 600;
+}
+
+.chart-study-status {
+  color: var(--muted);
+}
