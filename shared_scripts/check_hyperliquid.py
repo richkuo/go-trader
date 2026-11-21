@@ -2519,21 +2519,28 @@ def _recovery_float(value, label):
     return out
 
 
-def _order_status_evidence(resp):
+def _order_status_parts(resp):
     if not isinstance(resp, dict):
         raise ValueError(f"orderStatus returned no object: {resp!r}")
     top = resp.get("status")
     if top == "unknownOid":
-        return {"found": False}
+        return None
     if top != "order":
         raise ValueError(f"orderStatus returned an unexpected status {top!r}")
     wrapper = resp.get("order")
     if not isinstance(wrapper, dict) or not isinstance(wrapper.get("order"), dict):
         raise ValueError("orderStatus returned no order body")
-    order = wrapper["order"]
     status = str(wrapper.get("status") or "")
     if not status:
         raise ValueError("orderStatus returned no order state")
+    return wrapper, wrapper["order"], status
+
+
+def _order_status_evidence(resp):
+    parts = _order_status_parts(resp)
+    if parts is None:
+        return {"found": False}
+    wrapper, order, status = parts
     oid = int(order.get("oid"))
     orig_sz = _recovery_float(order.get("origSz", order.get("sz")), "origSz")
     remaining_sz = _recovery_float(order.get("sz"), "sz")
@@ -2620,10 +2627,10 @@ def scan_recovery_fills(adapter, since_ms, until_ms=0):
     start = int(since_ms)
     until = int(until_ms or 0)
     fills = []
-    seen = set()
+    seen = {}
     pages = 0
     max_pages = HL_FILLS_RECENT_LIMIT // HL_FILLS_MIN_PAGE + 1
-    scan = {"fills": fills, "window": [], "later": [], "complete": False, "reason": "", "from_ms": int(since_ms), "through_ms": 0, "pages": 0}
+    scan = {"fills": fills, "window": [], "later": [], "complete": False, "reason": "", "from_ms": int(since_ms), "through_ms": 0, "pages": 0, "conflicts": []}
     while True:
         if pages >= max_pages:
             scan["reason"] = f"the fill history needs more than {max_pages} pages"
@@ -2646,8 +2653,10 @@ def scan_recovery_fills(adapter, since_ms, until_ms=0):
             times.append(t)
             key = _recovery_fill_key(f)
             if key in seen:
+                if seen[key] != f:
+                    scan["conflicts"].append(key)
                 continue
-            seen.add(key)
+            seen[key] = f
             fills.append(f)
             added += 1
         if len(fills) >= HL_FILLS_RECENT_LIMIT:
@@ -3287,33 +3296,7 @@ def run_limit_status(symbol, oids, mode, since_ms=0):
         if since_ms <= 0:
             since_ms = int(time.time() * 1000) - 7 * 24 * 60 * 60 * 1000
 
-        open_oids = None
-        open_orders_error = ""
-        try:
-            open_oids = adapter.open_order_oids(symbol)
-        except Exception as oe:
-            open_orders_error = str(oe)
-            print(f"[WARN] open_order_oids({symbol}) failed: {oe}", file=sys.stderr)
-
-        results = []
-        for oid in oids:
-            oid = int(oid)
-            entry = {"oid": oid}
-            if open_oids is not None:
-                entry["resting"] = oid in open_oids
-            else:
-                entry["resting"] = None
-            summary = {}
-            try:
-                summary = adapter.fills_summary_by_oid(oid, since_ms)
-            except Exception as fe:
-                print(f"[WARN] fills_summary_by_oid({oid}) failed: {fe}", file=sys.stderr)
-                entry["fills_error"] = str(fe)
-            entry["filled_size"] = float(summary.get("filled_size", 0) or 0)
-            entry["avg_px"] = float(summary.get("avg_px", 0) or 0)
-            entry["fee"] = float(summary.get("fee", 0) or 0)
-            entry["count"] = int(summary.get("count", 0) or 0)
-            results.append(entry)
+        results, open_orders_error = limit_status_orders(adapter, symbol, [int(oid) for oid in oids], since_ms)
 
         out = {
             "platform": "hyperliquid",
@@ -3373,6 +3356,286 @@ QUOTE_REJECTED_STATUSES = ("rejected", "perpMarginRejected", "reduceOnlyRejected
                            "openInterestIncreaseRejected", "insufficientSpotBalanceRejected", "oracleRejected", "perpMaxPositionRejected")
 
 
+def venue_order_state(status):
+    if status in QUOTE_LIVE_STATUSES:
+        return "live"
+    if status == "triggered":
+        return "triggered"
+    if status == "filled":
+        return "filled"
+    if status in QUOTE_CANCELLED_STATUSES:
+        return "cancelled"
+    if status in QUOTE_REJECTED_STATUSES:
+        return "rejected"
+    return "unknown"
+
+
+LIMIT_TERMINAL_STATES = ("filled", "cancelled", "rejected")
+
+
+def lot_quantity_equal(a, b, lot_decimals):
+    if lot_decimals is None or isinstance(lot_decimals, bool) or not isinstance(lot_decimals, int) or lot_decimals < 0:
+        raise ValueError(f"lot metadata is unknown ({lot_decimals!r}), so quantities cannot be compared in venue lots")
+    half_lot = Decimal(1).scaleb(-lot_decimals) / 2
+    return abs(Decimal(a) - Decimal(b)) < half_lot
+
+
+def _limit_exact_size(order, key, label):
+    raw = order.get(key)
+    if raw is None or isinstance(raw, bool) or (isinstance(raw, str) and not raw.strip()):
+        raise ValueError(f"orderStatus carries no {label}")
+    out = _quote_exact_decimal(raw, label)
+    if out < 0:
+        raise ValueError(f"{label} is negative: {raw!r}")
+    return out
+
+
+def _limit_positive_ms(raw):
+    if raw is None or isinstance(raw, bool):
+        return 0
+    try:
+        out = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return out if out > 0 else 0
+
+
+def limit_order_status_evidence(adapter, symbol, oid):
+    ev = {"order_status": "", "order_state": "unknown", "orig_size": None, "executed_size": None,
+          "placed_ms": 0, "status_ms": 0, "status_error": ""}
+    try:
+        parts = _order_status_parts(adapter.query_order_by_oid(oid))
+    except Exception as e:
+        ev["status_error"] = f"order status unreadable: {e}"
+        return ev
+    if parts is None:
+        ev["status_error"] = "the venue does not know this order id"
+        return ev
+    wrapper, order, status = parts
+    ev["order_status"] = status
+    try:
+        raw_oid = order.get("oid")
+        if raw_oid is None or isinstance(raw_oid, bool) or int(raw_oid) != int(oid) or str(int(raw_oid)) != str(raw_oid).strip():
+            raise ValueError(f"orderStatus answered for order {raw_oid!r}, not the requested {oid}")
+        coin = order.get("coin")
+        if coin != symbol:
+            raise ValueError(f"orderStatus names coin {coin!r}, not the requested {symbol!r}")
+        state = venue_order_state(status)
+        if state == "triggered":
+            state = "live"
+        if state == "unknown":
+            raise ValueError(f"unfamiliar order state {status!r}")
+        orig = _limit_exact_size(order, "origSz", "original size")
+        if orig <= 0:
+            raise ValueError(f"original size is not positive: {order.get('origSz')!r}")
+        remaining = None
+        if state != "filled" or order.get("sz") not in (None, ""):
+            remaining = _limit_exact_size(order, "sz", "remaining size")
+            if remaining > orig:
+                raise ValueError(f"remaining size {remaining} exceeds the original size {orig}")
+        if state == "filled":
+            if remaining is not None and remaining != 0:
+                raise ValueError(f"a filled order reports a remaining size of {remaining}")
+            executed = orig
+        else:
+            executed = orig - remaining
+    except (TypeError, ValueError) as e:
+        ev["status_error"] = f"order status is not usable evidence: {e}"
+        return ev
+    ev.update({
+        "order_state": state,
+        "orig_size": orig,
+        "executed_size": executed,
+        "placed_ms": _limit_positive_ms(order.get("timestamp")),
+        "status_ms": _limit_positive_ms(wrapper.get("statusTimestamp")),
+    })
+    return ev
+
+
+def _limit_fill_oid(f):
+    raw = f.get("oid")
+    if raw is None or isinstance(raw, bool):
+        raise ValueError(f"a fill carries no order id: {f!r}")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"a fill carries an invalid order id: {f!r}")
+
+
+def _limit_fill_totals(fills, symbol, oid, through_ms):
+    qty = Decimal(0)
+    notional = Decimal(0)
+    fee = Decimal(0)
+    count = 0
+    for f in fills:
+        if _limit_fill_oid(f) != oid:
+            continue
+        if f.get("coin") != symbol:
+            raise ValueError(f"a fill of order {oid} names coin {f.get('coin')!r}, not {symbol!r}")
+        sz = _limit_exact_size(f, "sz", "fill size")
+        px = _limit_exact_size(f, "px", "fill price")
+        if sz <= 0 or px <= 0:
+            raise ValueError(f"a fill of order {oid} carries a non-positive size or price (sz={sz}, px={px})")
+        raw_fee = f.get("fee")
+        if raw_fee is None or isinstance(raw_fee, bool) or (isinstance(raw_fee, str) and not raw_fee.strip()):
+            raise ValueError(f"a fill of order {oid} carries no fee")
+        t = _recovery_fill_time(f)
+        if t is None or (through_ms > 0 and t > through_ms):
+            raise ValueError(f"a fill of order {oid} carries a time outside the scanned window: {f.get('time')!r}")
+        qty += sz
+        notional += sz * px
+        fee += _quote_exact_decimal(raw_fee, "fill fee")
+        count += 1
+    return qty, notional, fee, count
+
+
+def _limit_retention_lost(scan, ev):
+    if len(scan.get("fills") or []) < HL_FILLS_RECENT_LIMIT:
+        return False
+    if ev.get("order_state") not in LIMIT_TERMINAL_STATES or not ev.get("executed_size"):
+        return False
+    horizon = ev.get("status_ms") or 0
+    if horizon <= 0:
+        return False
+    times = [_recovery_fill_time(f) for f in scan["fills"]]
+    if not times or None in times:
+        return False
+    return min(times) > horizon
+
+
+def _limit_resting(ev, open_oids, oid):
+    state = ev["order_state"]
+    if open_oids is None:
+        return True if state == "live" else None, ""
+    listed = oid in open_oids
+    if state == "live":
+        if not listed:
+            return True, "the order status reports the order live but the open-order list omits it"
+        return True, ""
+    if state in LIMIT_TERMINAL_STATES:
+        if listed:
+            return None, f"the order status reports {ev['order_status']!r} but the open-order list still carries it"
+        return False, ""
+    return (True if listed else None), ""
+
+
+def limit_status_orders(adapter, symbol, oids, since_ms):
+    lot = None
+    lot_error = ""
+    try:
+        lot = adapter.lot_size_decimals(symbol)
+    except Exception as e:
+        lot_error = f"lot metadata unreadable: {e}"
+    if lot is None and not lot_error:
+        lot_error = f"lot metadata for {symbol} is unknown"
+    evidence = {oid: limit_order_status_evidence(adapter, symbol, oid) for oid in oids}
+    observed_ms = int(time.time() * 1000)
+    open_oids = None
+    open_orders_error = ""
+    try:
+        open_oids = adapter.open_order_oids(symbol)
+    except Exception as oe:
+        open_orders_error = str(oe)
+        print(f"[WARN] open_order_oids({symbol}) failed: {oe}", file=sys.stderr)
+
+    results = []
+    need_scan = []
+    for oid in oids:
+        ev = evidence[oid]
+        entry = {
+            "oid": oid,
+            "coin": symbol,
+            "order_status": ev["order_status"],
+            "order_state": ev["order_state"],
+            "orig_size": None if ev["orig_size"] is None else float(ev["orig_size"]),
+            "executed_size": None if ev["executed_size"] is None else float(ev["executed_size"]),
+            "placed_ms": ev["placed_ms"],
+            "status_ms": ev["status_ms"],
+            "status_error": ev["status_error"],
+            "sz_decimals": lot,
+            "filled_size": 0.0,
+            "avg_px": 0.0,
+            "fee": 0.0,
+            "count": 0,
+            "fills_proven": False,
+            "fills_error": "",
+            "fills_reason": "",
+        }
+        resting = None
+        if not ev["status_error"]:
+            resting, conflict = _limit_resting(ev, open_oids, oid)
+            if conflict:
+                entry["status_error"] = conflict
+        entry["resting"] = resting
+        if entry["status_error"]:
+            entry["fills_error"] = f"the order status is unproven ({entry['status_error']}), so its fills cannot be proven"
+            entry["fills_reason"] = "retryable"
+        elif ev["order_state"] == "live" and ev["executed_size"] == 0:
+            entry["fills_proven"] = True
+        elif lot_error:
+            entry["fills_error"] = lot_error
+            entry["fills_reason"] = "retryable"
+        elif ev["placed_ms"] <= 0:
+            entry["fills_error"] = "the order status carries no placement time, so the fill window cannot be bounded"
+            entry["fills_reason"] = "retryable"
+        else:
+            need_scan.append(entry)
+        results.append(entry)
+
+    if need_scan:
+        start = min([int(since_ms)] + [evidence[e["oid"]]["placed_ms"] for e in need_scan])
+        scan = None
+        scan_error = ""
+        try:
+            scan = scan_recovery_fills(adapter, start)
+        except Exception as e:
+            scan_error = f"fill history unreadable: {e}"
+        for entry in need_scan:
+            _prove_limit_fills(entry, evidence[entry["oid"]], scan, scan_error, symbol, lot, observed_ms)
+    return results, open_orders_error
+
+
+def _prove_limit_fills(entry, ev, scan, scan_error, symbol, lot, observed_ms):
+    oid = entry["oid"]
+    if scan_error:
+        entry["fills_error"] = scan_error
+        entry["fills_reason"] = "retryable"
+        return
+    if not scan["complete"]:
+        if _limit_retention_lost(scan, ev):
+            entry["fills_error"] = (f"the venue retains only its most recent {HL_FILLS_RECENT_LIMIT} fills and the retained history "
+                                    f"starts after this order ended, so its executed size can never be matched to fills")
+            entry["fills_reason"] = "permanent"
+            return
+        entry["fills_error"] = f"the fill history is incomplete: {scan['reason'] or 'unknown reason'}"
+        entry["fills_reason"] = "retryable"
+        return
+    if scan["through_ms"] < observed_ms:
+        entry["fills_error"] = "the fill history does not reach the order status read"
+        entry["fills_reason"] = "retryable"
+        return
+    if scan["conflicts"]:
+        entry["fills_error"] = f"the fill history returned {len(scan['conflicts'])} conflicting duplicate fill row(s)"
+        entry["fills_reason"] = "retryable"
+        return
+    try:
+        qty, notional, fee, count = _limit_fill_totals(scan["fills"], symbol, oid, scan["through_ms"])
+        executed = ev["executed_size"]
+        if not lot_quantity_equal(qty, executed, lot):
+            if qty < executed:
+                raise ValueError(f"the fill history shows {qty} of the {executed} the order executed (fill index lag or a missing fill)")
+            raise ValueError(f"the fill history shows {qty}, more than the {executed} the order executed")
+    except ValueError as e:
+        entry["fills_error"] = str(e)
+        entry["fills_reason"] = "retryable"
+        return
+    entry["fills_proven"] = True
+    entry["filled_size"] = float(executed)
+    entry["avg_px"] = float(notional / qty) if qty > 0 else 0.0
+    entry["fee"] = float(fee)
+    entry["count"] = count
+
+
 def _quote_exact_decimal(value, label):
     _recovery_float(value, label)
     try:
@@ -3428,16 +3691,15 @@ def quote_status_outcome(resp, now_ms):
     except (TypeError, ValueError):
         accepted = 0
     out = {"venue_order_id": str(order.get("oid", "")), "venue_time_ms": ts, "filled_qty": filled_text}
-    if status in QUOTE_LIVE_STATUSES:
+    state = venue_order_state(status)
+    if state == "live":
         out.update({"status": "resting", "accepted_at_ms": accepted})
-    elif status == "triggered":
+    elif state == "triggered":
         out.update({"status": "triggered", "accepted_at_ms": accepted})
-    elif status == "filled":
+    elif state == "filled":
         out.update({"status": "filled"})
-    elif status in QUOTE_CANCELLED_STATUSES:
-        out.update({"status": "cancelled", "detail": status})
-    elif status in QUOTE_REJECTED_STATUSES:
-        out.update({"status": "rejected", "detail": status})
+    elif state in ("cancelled", "rejected"):
+        out.update({"status": state, "detail": status})
     else:
         out.update({"status": "unknown", "detail": f"unfamiliar order state {status!r}"})
     return out

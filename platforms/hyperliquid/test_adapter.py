@@ -242,28 +242,42 @@ class TestLookupFillFeeByOID:
         assert sleeps == [0.1, 0.1]
 
 
-class TestFillsSummaryByOID:
+class TestOpenOrderOIDs:
 
-    def _make_adapter(self):
+    def _make_adapter(self, orders, account="0xABC123"):
         mock_info = MagicMock()
-        mock_info_cls = MagicMock(return_value=mock_info)
-        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        mock_info.open_orders.return_value = orders
+        mod = _load_hl_adapter(mock_info_cls=MagicMock(return_value=mock_info))
         adapter = mod.HyperliquidExchangeAdapter()
-        adapter._account_address = "0xABC123"
-        return adapter, mock_info
+        adapter._account_address = account
+        return adapter
 
-    def test_sums_size_and_size_weighted_vwap(self):
-        adapter, mock_info = self._make_adapter()
-        mock_info.user_fills_by_time.return_value = [
-            {"oid": 100, "sz": "0.4", "px": "2000", "fee": "0.20"},
-            {"oid": 100, "sz": "0.6", "px": "2010", "fee": "0.30"},
-            {"oid": 999, "sz": "5", "px": "1", "fee": "9"},
-        ]
-        out = adapter.fills_summary_by_oid(100, since_ms=1000)
-        assert out["filled_size"] == pytest.approx(1.0)
-        assert out["fee"] == pytest.approx(0.50)
-        assert out["count"] == 2
-        assert out["avg_px"] == pytest.approx(2006.0)
+    def test_filters_validated_orders_by_coin(self):
+        adapter = self._make_adapter([
+            {"coin": "ETH", "oid": 11}, {"coin": "BTC", "oid": 12}, {"coin": "ETH", "oid": 13},
+        ])
+        assert adapter.open_order_oids("ETH") == {11, 13}
+        assert adapter.open_order_oids() == {11, 12, 13}
+
+    def test_an_empty_valid_list_is_evidence_of_no_orders(self):
+        assert self._make_adapter([]).open_order_oids("ETH") == set()
+
+    @pytest.mark.parametrize("orders, account, needle", [
+        ([], "", "requires HYPERLIQUID_ACCOUNT_ADDRESS"),
+        ({"error": "<html>bad gateway</html>"}, "0xABC123", "no list"),
+        (None, "0xABC123", "no list"),
+        (["junk"], "0xABC123", "non-object"),
+        ([{"oid": 11}], "0xABC123", "no coin"),
+        ([{"coin": "BTC", "oid": 11}, {"coin": "ETH"}], "0xABC123", "no order id"),
+        ([{"coin": "ETH", "oid": True}], "0xABC123", "no order id"),
+        ([{"coin": "ETH", "oid": 0}], "0xABC123", "invalid order id"),
+        ([{"coin": "ETH", "oid": "11x"}], "0xABC123", "invalid order id"),
+        ([{"coin": "ETH", "oid": 11}, {"coin": "BTC", "oid": 11}], "0xABC123", "under both"),
+    ])
+    def test_unreadable_or_malformed_lists_raise_instead_of_reporting_no_orders(self, orders, account, needle):
+        adapter = self._make_adapter(orders, account=account)
+        with pytest.raises((RuntimeError, ValueError), match=needle):
+            adapter.open_order_oids("ETH")
 
 
 def test_lot_size_decimals_is_strict_while_sz_decimals_keeps_the_default(subtests):

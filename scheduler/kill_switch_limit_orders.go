@@ -20,8 +20,9 @@ func (c killSwitchLimitOrderCandidate) adoptionEligible() bool {
 type killSwitchLimitOrderDeps struct {
 	Cancel              func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
 	Status              func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error)
-	Delete              func(id int64) error
+	Delete              func(o PendingLimitOrder) error
 	Flush               func() error
+	VerifyWatermark     func(o PendingLimitOrder) string
 	MarkCancelRequested func(strategyID, symbol string) (int64, error)
 	Now                 func() time.Time
 }
@@ -214,40 +215,33 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			report.LogLines = append(report.LogLines,
 				fmt.Sprintf("[WARN] ks-limit: %s status stderr: %s", label, sstderr))
 		}
-		if serr != nil || statusRes == nil || statusRes.Error != "" {
-			msg := ""
-			if statusRes != nil {
-				msg = statusRes.Error
-			}
-			unresolve(strings.TrimSpace(fmt.Sprintf("cancel unverified: %v %s", serr, msg)))
-			continue
-		}
-		if statusRes.OpenOrdersError != "" {
-			unresolve(fmt.Sprintf("cancel unverified: open-orders state unknown (%s)", statusRes.OpenOrdersError))
-			continue
-		}
-		st, ok := limitStatusForOID(statusRes, o.OrderOID)
-		if !ok {
-			unresolve("cancel unverified: status response did not include the order")
-			continue
-		}
-		if st.FillsError != "" {
-			unresolve(fmt.Sprintf("cancel unverified: fills unreadable (%s)", st.FillsError))
-			continue
-		}
-		if st.Resting == nil || *st.Resting {
+		proof := decideLimitRowProof(o, statusRes, serr)
+		if proof.Live {
 			unresolve("order is still resting on the exchange")
 			continue
 		}
-		if st.FilledSize > o.FilledSize+limitFillEpsilon {
-			if c.adoptionEligible() {
-				unresolve(fmt.Sprintf("order is off-book with an unadopted fill (tracked %.6f, exchange %.6f) — queue row kept so the scheduler books the fill before the next flatten",
-					o.FilledSize, st.FilledSize))
+		if proof.ProvenAboveBooked() {
+			if !o.OperatorRequiredSince.IsZero() && o.OperatorEvidenceJSON != "" {
+				unresolve(fmt.Sprintf("order executed %.6f where the book holds %.6f (unadopted fill) and the scheduler marked the row as needing an operator — follow the owner alert for this order (flatten only size the scheduler's book does not hold), then clear the row with `go-trader manual-clear-limit-row %d --flattened`",
+					proof.Executed, o.FilledSize, o.OrderOID))
+			} else if c.adoptionEligible() {
+				unresolve(fmt.Sprintf("order executed %.6f where the book holds %.6f (unadopted fill) — queue row kept so the scheduler books the fill before the next flatten",
+					proof.Executed, o.FilledSize))
 			} else {
-				unresolve(fmt.Sprintf("order is off-book with an unadopted fill (tracked %.6f, exchange %.6f) that NO automatic path can book because %s — restore it to this config as a Hyperliquid-live type=manual strategy so the scheduler adopts the fill; manual intervention required",
-					o.FilledSize, st.FilledSize, c.AdoptionBlock))
+				unresolve(fmt.Sprintf("order executed %.6f where the book holds %.6f (unadopted fill) that NO automatic path can book because %s — restore it to this config as a Hyperliquid-live type=manual strategy so the scheduler adopts the fill; manual intervention required",
+					proof.Executed, o.FilledSize, c.AdoptionBlock))
 			}
 			continue
+		}
+		if !proof.OffBook || !proof.CanFinalize() {
+			unresolve("cancel unverified: " + limitOffBookUnverified(proof))
+			continue
+		}
+		if deps.VerifyWatermark != nil {
+			if why := deps.VerifyWatermark(o); why != "" {
+				unresolve("order is off-book but " + why + " — queue row kept as the recovery record")
+				continue
+			}
 		}
 		if o.FilledSize > 0 {
 			if err := deps.Flush(); err != nil {
@@ -255,7 +249,7 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 				continue
 			}
 		}
-		if err := deps.Delete(o.ID); err != nil {
+		if err := deps.Delete(o); err != nil {
 			unresolve(fmt.Sprintf("order is off-book but the queue row could not be cleared (%v)", err))
 			continue
 		}

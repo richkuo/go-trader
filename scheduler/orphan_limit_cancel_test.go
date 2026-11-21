@@ -78,9 +78,12 @@ func TestReconcileCancelLane(t *testing.T) {
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				stubs.statusCalls++
-				resting := stubs.cancelCalls == 0
+				state := "cancelled"
+				if stubs.cancelCalls == 0 {
+					state = "live"
+				}
 				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: limitTestBoolPtr(resting), FilledSize: 0},
+					provenLimitStatus(9001, "ETH", state, 0.5, 0, 0, 0),
 				}}, "", nil
 			},
 			func(_ string, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
@@ -117,7 +120,7 @@ func TestReconcileCancelLane(t *testing.T) {
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.5, AvgPx: 2000, Fee: 0.7, Count: 1},
+					provenLimitStatus(9001, "ETH", "filled", 0.5, 0.5, 2000, 0.7),
 				}}, "", nil
 			},
 			func(_ string, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
@@ -165,16 +168,19 @@ func TestReconcileCancelLane(t *testing.T) {
 		cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{orphanLaneRoster()}}
 		var mu sync.RWMutex
 
-		db.InsertPendingLimitOrder(PendingLimitOrder{
+		if _, err := db.InsertPendingLimitOrder(PendingLimitOrder{
 			StrategyID: "hl-manual-eth-live", Symbol: "ETH", Side: "long", OrderOID: 9001,
 			LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, FilledSize: 0.3,
 			AvgFillPrice: 2000, CancelRequested: true, CreatedAt: time.Now().UTC(),
-		})
+		}); err != nil {
+			t.Fatalf("seed row: %v", err)
+		}
+		seedLimitFillLineage(t, db, 0, "hl-manual-eth-live", "ETH", 9001, 0.3, 2000, "pos-orphan")
 
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.3, AvgPx: 2000, Fee: 0.4, Count: 1},
+					provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0.3, 2000, 0.4),
 				}}, "", nil
 			},
 			func(_ string, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
@@ -204,8 +210,10 @@ func TestOpenStateDBMigratesOperatorRequiredSinceOntoAnExistingQueue(t *testing.
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if _, err := db.db.Exec("ALTER TABLE pending_limit_orders DROP COLUMN operator_required_since"); err != nil {
-		t.Fatalf("simulate the pre-migration schema: %v", err)
+	for _, col := range []string{"operator_required_since", "operator_evidence_json", "fill_proof_version"} {
+		if _, err := db.db.Exec("ALTER TABLE pending_limit_orders DROP COLUMN " + col); err != nil {
+			t.Fatalf("simulate the pre-migration schema (%s): %v", col, err)
+		}
 	}
 	if _, err := db.db.Exec(`INSERT INTO pending_limit_orders
 		(strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, expires_at, created_at)
@@ -228,15 +236,19 @@ func TestOpenStateDBMigratesOperatorRequiredSinceOntoAnExistingQueue(t *testing.
 	if len(orders) != 1 || orders[0].OrderOID != 9001 {
 		t.Fatalf("the pre-migration row must survive, got %+v", orders)
 	}
-	if !orders[0].OperatorRequiredSince.IsZero() {
-		t.Fatalf("a migrated row must start unmarked, got %+v", orders[0])
+	if !orders[0].OperatorRequiredSince.IsZero() || orders[0].OperatorEvidenceJSON != "" || orders[0].FillProofVersion != 0 {
+		t.Fatalf("a migrated row must start unmarked with a legacy watermark, got %+v", orders[0])
 	}
-	if err := reopened.MarkPendingLimitOrderOperatorRequired(orders[0].ID, time.Now().UTC()); err != nil {
+	evidence := marshalLimitOperatorEvidence(limitRowOperatorEvidence{OrderOID: 9001, Coin: "ETH", OrderState: "filled", OffBook: true, FillsProven: true, ExecutedSize: 0.5})
+	if err := reopened.MarkPendingLimitOrderOperatorRequired(orders[0].ID, orders[0].OrderOID, time.Now().UTC(), evidence); err != nil {
 		t.Fatalf("mark on a migrated row: %v", err)
 	}
+	if err := reopened.MarkPendingLimitOrderOperatorRequired(orders[0].ID, orders[0].OrderOID+1, time.Now().UTC(), evidence); err == nil {
+		t.Fatal("a marker bound to another order id must not reach this row")
+	}
 	orders, _ = reopened.LoadPendingLimitOrders()
-	if orders[0].OperatorRequiredSince.IsZero() {
-		t.Fatalf("the migrated column must persist the marker, got %+v", orders[0])
+	if orders[0].OperatorRequiredSince.IsZero() || orders[0].OperatorEvidenceJSON != evidence {
+		t.Fatalf("the migrated columns must persist the marker and its evidence, got %+v", orders[0])
 	}
 }
 
@@ -246,6 +258,10 @@ func TestClearOperatorRequiredLimitRowRefusalLadder(t *testing.T) {
 		ID: 1, StrategyID: "hl-manual-eth-live", Symbol: "ETH", Side: "long",
 		OrderOID: 9001, OrderSize: 0.5, LimitPrice: 2000,
 		OperatorRequiredSince: marked,
+		OperatorEvidenceJSON: marshalLimitOperatorEvidence(limitRowOperatorEvidence{
+			OrderOID: 9001, Coin: "ETH", OrderStatus: "filled", OrderState: "filled", OffBook: true,
+			ExecutedSize: 0.5, FillsProven: true, ObservedAt: marked,
+		}),
 	}
 
 	adoptable, _ := newLimitTestStrategy()
@@ -276,5 +292,29 @@ func TestClearOperatorRequiredLimitRowRefusalLadder(t *testing.T) {
 
 	if got := clearOperatorRequiredLimitRowRefusal(cfgOrphan, row, true); got != "" {
 		t.Errorf("an operator-required orphaned row with --flattened must clear, got refusal %q", got)
+	}
+
+	legacy := row
+	legacy.OperatorEvidenceJSON = ""
+	if got := clearOperatorRequiredLimitRowRefusal(cfgOrphan, legacy, true); !strings.Contains(got, "carries no terminal, off-book proof") {
+		t.Errorf("a legacy marker with no terminal proof must be revalidated before a clear, got %q", got)
+	}
+	onBook := row
+	onBook.OperatorEvidenceJSON = marshalLimitOperatorEvidence(limitRowOperatorEvidence{OrderOID: 9001, Coin: "ETH", OrderState: "live", ExecutedSize: 0.5, FillsProven: true})
+	if got := clearOperatorRequiredLimitRowRefusal(cfgOrphan, onBook, true); !strings.Contains(got, "has not proven that oid=9001 is off the book") {
+		t.Errorf("a marker without off-book proof must refuse, got %q", got)
+	}
+	settled := row
+	settled.OperatorEvidenceJSON = marshalLimitOperatorEvidence(limitRowOperatorEvidence{OrderOID: 9001, Coin: "ETH", OrderState: "cancelled", OffBook: true, ExecutedSize: 0, FillsProven: true})
+	if got := clearOperatorRequiredLimitRowRefusal(cfgOrphan, settled, true); !strings.Contains(got, "can still resolve it") {
+		t.Errorf("a marker with neither an unbooked fill nor a permanent proof failure must refuse, got %q", got)
+	}
+	permanent := row
+	permanent.OperatorEvidenceJSON = marshalLimitOperatorEvidence(limitRowOperatorEvidence{OrderOID: 9001, Coin: "ETH", OrderState: "cancelled", OffBook: true, ExecutedSize: 0.2, Permanent: true})
+	if got := clearOperatorRequiredLimitRowRefusal(cfgOrphan, permanent, true); got != "" {
+		t.Errorf("a terminal, off-book row with a permanent fill-proof failure must clear with --flattened, got %q", got)
+	}
+	if got := clearOperatorRequiredLimitRowRefusal(cfgOrphan, permanent, false); !strings.Contains(got, "--flattened") {
+		t.Errorf("a permanent proof failure must still require the flatten assertion, got %q", got)
 	}
 }

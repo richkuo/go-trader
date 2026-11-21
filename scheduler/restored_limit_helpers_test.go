@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func limitTestBoolPtr(b bool) *bool { return &b }
@@ -71,4 +73,53 @@ func withStubbedLimitDeps(t *testing.T, status func(script, symbol string, oids 
 		syncHyperliquidProtection = origSync
 		tradeRecorder = origRecorder
 	})
+}
+
+const limitTestLotDecimals = 4
+
+func provenLimitStatus(oid int64, coin, state string, orig, executed, avgPx, fee float64) HyperliquidLimitOrderStatus {
+	raw := map[string]string{"live": "open", "filled": "filled", "cancelled": "canceled", "rejected": "rejected"}[state]
+	resting := state == "live"
+	lots := limitTestLotDecimals
+	proven := true
+	o, e := orig, executed
+	count := 0
+	if executed > 0 {
+		count = 1
+	}
+	return HyperliquidLimitOrderStatus{
+		OID: oid, Coin: coin, Resting: &resting, OrderStatus: raw, OrderState: state,
+		OrigSize: &o, ExecutedSize: &e, SzDecimals: &lots,
+		FilledSize: executed, AvgPx: avgPx, Fee: fee, Count: count, FillsProven: &proven,
+	}
+}
+
+func limitStatusWithUnknownBook(st HyperliquidLimitOrderStatus) HyperliquidLimitOrderStatus {
+	st.Resting = nil
+	return st
+}
+
+func limitStatusWithUnprovenFills(st HyperliquidLimitOrderStatus, reason, kind string) HyperliquidLimitOrderStatus {
+	proven := false
+	st.FillsProven = &proven
+	st.FillsError = reason
+	st.FillsReason = kind
+	st.FilledSize, st.AvgPx, st.Fee, st.Count = 0, 0, 0, 0
+	return st
+}
+
+func seedLimitFillLineage(t *testing.T, db *StateDB, rowID int64, strategyID, symbol string, oid int64, qty, px float64, positionID string) {
+	t.Helper()
+	if rowID > 0 {
+		if _, err := db.db.Exec("UPDATE pending_limit_orders SET fill_proof_version = ? WHERE id = ?", limitFillProofVersionAtomic, rowID); err != nil {
+			t.Fatalf("stamp atomic watermark: %v", err)
+		}
+	}
+	if err := db.InsertTrade(strategyID, Trade{
+		Timestamp: time.Now().UTC(), StrategyID: strategyID, Symbol: symbol, Side: "buy",
+		Quantity: qty, Price: px, Value: qty * px, TradeType: "perps", PositionID: positionID,
+		ExchangeOrderID: fmt.Sprintf("%d", oid), Manual: true,
+	}); err != nil {
+		t.Fatalf("seed limit entry trade: %v", err)
+	}
 }
