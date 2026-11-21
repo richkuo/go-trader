@@ -194,6 +194,37 @@ g add -A
 expect fail "tracked scheduler/CLAUDE.md" "scheduler/CLAUDE.md"
 
 case_start
+mkdir -p "$repo/scheduler"
+printf 'package main\n\nvar zz = Position{}.HedgeFor\n' >"$repo/scheduler/zz_hedge_probe.go"
+g add -A
+expect fail "scheduler file names a hedge with no hedge.md glob" "hedge.md: scheduler/zz_hedge_probe.go names a hedge but matches no paths: glob"
+
+case_start
+mkdir -p "$repo/scheduler"
+printf 'package main\n\nvar zz = Position{}.HedgeFor\n' >"$repo/scheduler/zz_hedge_probe_test.go"
+g add -A
+expect pass "hedge name in a scheduler test file needs no hedge.md glob"
+
+case_start
+mkdir -p "$repo/scheduler"
+printf 'package main\n\nvar zz = Position{}.HedgeFor\n' >"$repo/scheduler/hedge_zz_probe.go"
+g add -A
+expect pass "new scheduler/hedge*.go file is covered by the hedge.md glob"
+
+case_start
+mkdir -p "$repo/shared_tools"
+printf 'import os\n\nd = os.environ["GO_TRADER_ROBINHOOD_SESSION_DIR"]\n' >"$repo/shared_tools/zz_session_probe.py"
+g add -A
+expect fail "file names the Robinhood session directory with no robinhood.md glob" "robinhood.md: shared_tools/zz_session_probe.py names GO_TRADER_ROBINHOOD_SESSION_DIR but matches no paths: glob"
+
+case_start
+g rm -q .claude/rules/hedge.md
+python3 -I -c 'import sys; p = sys.argv[1]; t = open(p).read(); open(p, "w").write("".join(l for l in t.splitlines(True) if "rules/hedge.md" not in l))' "$repo/CLAUDE.md"
+regen
+g add -A
+expect fail "hedge.md removed with its coverage check still required" "hedge.md: required rule file is missing"
+
+case_start
 printf 'x\n' >"$repo/AGENTS.override.md"
 g add -A
 expect fail "tracked AGENTS.override.md" "AGENTS.override.md"

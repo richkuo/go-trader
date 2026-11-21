@@ -23,6 +23,11 @@ MANIFEST_RE = re.compile(r"^- `\.claude/rules/([^`]+)`")
 GLOB_RE = re.compile(r'^  - "([^"\\\s]+)"$')
 SPAN_RE = re.compile(r"``.+?``|`[^`]+`")
 GUARD_RE = re.compile(r"`([\w./*-]+\.(?:go|py|sh))`")
+TEST_EXCLUDES = (":(exclude,glob)**/*_test.go", ":(exclude,glob)**/test_*", ":(exclude,glob)**/*.md", ":(exclude,glob).claude/**", ":(exclude)scripts/agent_guide.py", ":(exclude)scripts/check_agent_docs_fixtures.sh")
+CLOSURES = (
+    ("hedge.md", "names a hedge", ("-i", "-e", "hedge"), (":(glob)scheduler/*.go",)),
+    ("robinhood.md", "names GO_TRADER_ROBINHOOD_SESSION_DIR", ("-e", "GO_TRADER_ROBINHOOD_SESSION_DIR"), (":(glob)**",)),
+)
 
 
 class GuideError(Exception):
@@ -72,6 +77,53 @@ def tracked_rules(root):
     return sorted(p[len(RULES_DIR) + 1:] for p in out.decode().split("\0") if p)
 
 
+def glob_regex(rel, glob):
+    out, i = "", 0
+    while i < len(glob):
+        c = glob[i]
+        if glob.startswith("**/", i):
+            out += "(?:.*/)?"
+            i += 3
+        elif glob.startswith("**", i):
+            out += ".*"
+            i += 2
+        elif c == "*":
+            out += "[^/]*"
+            i += 1
+        elif c == "?":
+            out += "[^/]"
+            i += 1
+        elif c in "[]{}!":
+            raise GuideError(f"{rel}: path {glob!r} uses {c!r}, which the coverage check cannot match; write plain globs")
+        else:
+            out += re.escape(c)
+            i += 1
+    return re.compile(out)
+
+
+def closure_errors(root, rules):
+    errors = []
+    by_name = {n: globs for n, globs, _, _ in rules}
+    for name, what, pattern, scope in CLOSURES:
+        rel = f"{RULES_DIR}/{name}"
+        if name not in by_name:
+            errors.append(f"{rel}: required rule file is missing; its coverage check cannot run")
+            continue
+        r = subprocess.run(["git", "-C", str(root), "grep", "-l", "-I", "-z", *pattern, "--", *scope, *TEST_EXCLUDES], capture_output=True)
+        if r.returncode not in (0, 1):
+            errors.append(f"{rel}: git grep failed: {r.stderr.decode().strip()}")
+            continue
+        try:
+            matchers = [glob_regex(rel, g) for g in by_name[name]]
+        except GuideError as exc:
+            errors.append(str(exc))
+            continue
+        for path in sorted(p for p in r.stdout.decode().split("\0") if p):
+            if not any(m.fullmatch(path) for m in matchers):
+                errors.append(f"{rel}: {path} {what} but matches no paths: glob, so the rule would not load there; add the file to paths: and regenerate")
+    return errors
+
+
 def load(root, check_index=False):
     errors = []
     guide = read_text(root, GUIDE)
@@ -114,6 +166,8 @@ def load(root, check_index=False):
         if len(text.encode()) > RULE_MAX:
             errors.append(f"{RULES_DIR}/{n}: {len(text.encode())} bytes, above the {RULE_MAX}-byte limit")
         rules.append((n, globs, body, text))
+    if check_index:
+        errors.extend(closure_errors(root, rules))
     for rel, text in [(GUIDE, guide)] + [(f"{RULES_DIR}/{n}", t) for n, _, _, t in rules]:
         for i, line in enumerate(text.split("\n"), 1):
             if len(line.encode()) > LINE_MAX:
