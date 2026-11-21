@@ -38,6 +38,7 @@ After any source edit run `python3 -I scripts/agent_guide.py`,verify with `bash 
   - `portfolio_risk.paper`/`paper_sources[].portfolio_risk`:evaluators via `partitionRiskConfig`;nested `paper` rejected.
   - `portfolio_warning.go`:paused off Top Contributors ONLY if flat(`Quantity==0` regular+option).
   - Live `type: options` refused everywhere(`optionsLiveModeConfigError`)
+  - HL perps `trailing_stop_pct:0` beside positive `stop_loss_pct`/`stop_loss_margin_pct`/`trailing_stop_atr_mult`=refused(loader+backtester `UNSUPPORTED_STOP_OWNER`),names each hidden field;beside `stop_loss_atr_mult` valid
 - `close_defaults.go`:system>user>strategy;explicit `tp_tiers` wins;`applyUserCloseDefaultRatchetRegimeTrails` in `loadConfig` BEFORE scalar ATR-stop default
 - `PortfolioScope` from `isLiveArgs`=SOLE mode classifier;`RiskPartition{Scope,Source}`(`live`/`paper`/`paper:<id>`;`paper_source`=`paper_sources` id,never live)=SOLE risk+storage owner.New surface:`activePartitions`,`filterStatesByPartition`/`strategiesInPartition`,never roster.Paper nice ONLY `checkChildPriority`/`hlBatchGroupPriority`;CPU drop-in ONLY `paper_only`
 - State:SQLite-only,idempotent migrations.`AppState.PortfolioRisk`/`CorrelationSnapshot`=per-`RiskPartition` maps,read only via `partitionRisk(IfPresent)`/`partitionCorrelation`;`initial_capital` only via `SetInitialCapital`
