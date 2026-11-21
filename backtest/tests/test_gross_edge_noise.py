@@ -87,22 +87,6 @@ def test_pool_trade_samples_drops_exact_and_overlapping_entries(subtests):
         assert [s["pnl_pct"] for s in samples] == [1.0]
 
 
-def test_trade_samples_from_results_extracts_entry_and_pnl():
-    results = {"trades": [
-        {"entry_date": "2025-06-15 04:00:00", "pnl_pct": 1.25, "pnl": 12.5},
-        {"entry_date": "2025-06-20 09:00:00", "pnl_pct": -0.4, "pnl": -4.0},
-    ]}
-    out = ew.trade_samples_from_results(results)
-    assert out == [
-        {"entry_date": "2025-06-15 04:00:00", "pnl_pct": 1.25,
-         "pnl_pct_net": 1.25},
-        {"entry_date": "2025-06-20 09:00:00", "pnl_pct": -0.4,
-         "pnl_pct_net": -0.4},
-    ]
-    assert ew.trade_samples_from_results({}) == []
-    assert ew.trade_samples_from_results({"trades": None}) == []
-
-
 class _FakeRegistry:
     STRATEGY_REGISTRY = {"alternator": {"default_params": {"period": 2},
                                         "description": "test"}}

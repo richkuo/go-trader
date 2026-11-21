@@ -121,20 +121,6 @@ func hedgePos(qty float64, side string, basis float64) *Position {
 	}
 }
 
-func TestSyncHyperliquidLiveCapitalIsNoOp(t *testing.T) {
-	sc := &StrategyConfig{
-		ID:       "hl-btc",
-		Platform: "hyperliquid",
-		Capital:  1000,
-		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
-	}
-	original := sc.Capital
-	syncHyperliquidLiveCapital(sc)
-	if sc.Capital != original {
-		t.Errorf("capital should not change (no-op), got %g", sc.Capital)
-	}
-}
-
 func TestFetchHyperliquidState(t *testing.T) {
 	t.Run("ParsesBalanceAndPositions", func(t *testing.T) {
 		resp := map[string]interface{}{

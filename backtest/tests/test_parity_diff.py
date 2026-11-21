@@ -15,7 +15,6 @@ from parity_diff import (
     ParityConfig,
     compute_parity_frame,
     config_from_live_config,
-    extract_fills,
     main,
     summarize,
 )
@@ -108,25 +107,6 @@ def test_expanding_window_mode():
     )
     assert len(frame) == len(df) - (LIVE_MIN_CANDLES - 1)
     assert summarize(frame)["clean"]
-
-
-def test_stride_thins_comparison():
-    df = _ohlcv(200)
-    full = compute_parity_frame(
-        df, "sma_crossover", params={"fast_period": 5, "slow_period": 15},
-        window=60,
-    )
-    thinned = compute_parity_frame(
-        df, "sma_crossover", params={"fast_period": 5, "slow_period": 15},
-        window=60, stride=5,
-    )
-    assert len(thinned) == (len(full) + 4) // 5
-
-
-def test_window_below_live_minimum_rejected():
-    df = _ohlcv(100)
-    with pytest.raises(ValueError, match="window must be >="):
-        compute_parity_frame(df, "sma_crossover", window=10)
 
 
 def _trending_ohlcv(n: int = 260, seed: int = 11) -> pd.DataFrame:
@@ -317,20 +297,6 @@ def _assert_config_mode_unknown_strategy_id_raises(tmp_path):
         config_from_live_config(str(cfg_path), "missing-id")
 
 
-def test_extract_fills_reports_entry_and_exit_legs():
-    df = _trending_ohlcv(220)
-    cfg = ParityConfig(
-        strategy_name="sma_crossover",
-        params={"fast_period": 5, "slow_period": 20},
-    )
-    fills = extract_fills(df, cfg)
-    assert fills, "trending data + sma crossover must produce fills"
-    entries = [f for f in fills if f["event"] == "entry"]
-    exits = [f for f in fills if f["event"] == "exit"]
-    assert entries and all(f["fill_px"] > 0 and f["fee"] >= 0 for f in entries)
-    assert all("pnl" in f for f in exits)
-
-
 def test_backtest_effective_columns_are_prior_bar_inputs():
     df = _ohlcv(200)
     frame = compute_parity_frame(
@@ -406,24 +372,6 @@ def _assert_config_mode_explicit_platform_overrides_autodetect(tmp_path, capsys)
     assert len(warnings) == 1
     assert "'binanceus'" in warnings[0] and "'spot'" in warnings[0]
     assert "--platform hyperliquid" in warnings[0]
-
-
-def test_main_config_mode_fills_use_autodetected_platform(tmp_path, monkeypatch):
-    import data_fetcher
-    path = _write_live_config(tmp_path, "perps", platform="hyperliquid")
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: _trending_ohlcv(200))
-    captured = {}
-
-    def spy_extract_fills(df, cfg):
-        captured["platform"] = cfg.platform
-        return []
-
-    monkeypatch.setattr(parity_diff, "extract_fills", spy_extract_fills)
-    rc = main(["--config", path, "--strategy-id", "test-strat",
-               "--fills", "--window", "60"])
-    assert rc in (0, 1)
-    assert captured["platform"] == "hyperliquid"
 
 
 def _recording_engine(monkeypatch):

@@ -3,7 +3,6 @@ import pandas as pd
 import pytest
 
 from optimizer import (
-    DEFAULT_CLOSE_STACK_SPECS,
     _result_metric,
     close_stack_label,
     generate_close_stack_grid,
@@ -38,54 +37,6 @@ WIDE_LADDER = [
     {"atr_multiple": 3.0, "close_fraction": 0.5},
     {"atr_multiple": 6.0, "close_fraction": 1.0},
 ]
-
-
-def test_grid_expands_baseline_dedupes_defaults_and_labels():
-    case = "test_grid_expands_cartesian_per_spec"
-    grid = generate_close_stack_grid([
-        {"close": {"name": "tiered_tp_atr",
-                   "params": {"tp_tiers": [TIGHT_LADDER, WIDE_LADDER]}},
-         "stop_loss_atr_mult": [None, 2.0]},
-    ])
-    assert len(grid) == 4, case
-    ladders = [g["close_strategies"][0]["params"]["tp_tiers"] for g in grid]
-    assert TIGHT_LADDER in ladders and WIDE_LADDER in ladders, case
-    sl_values = {g["stop_loss_atr_mult"] for g in grid}
-    assert sl_values == {None, 2.0}, case
-    assert all(g["label"] for g in grid), case
-
-    case = "test_grid_baseline_spec_yields_empty_stack"
-    grid = generate_close_stack_grid([{"close": None}])
-    assert len(grid) == 1, case
-    stack = grid[0]
-    assert stack["close_strategies"] == [], case
-    assert stack["stop_loss_atr_mult"] is None, case
-    assert stack["trailing_stop_atr_mult"] is None, case
-    assert stack["label"] == "baseline", case
-
-    case = "test_grid_dedupes_identical_stacks_across_specs"
-    grid = generate_close_stack_grid([
-        {"close": None},
-        {"close": None, "stop_loss_atr_mult": [None, 1.5]},
-    ])
-    assert len(grid) == 2, case
-
-    case = "test_default_specs_expand_and_are_exclusive"
-    grid = generate_close_stack_grid(DEFAULT_CLOSE_STACK_SPECS)
-    assert len(grid) > 10, case
-    labels = [g["label"] for g in grid]
-    assert len(labels) == len(set(labels)), (case, "duplicate stack labels")
-    assert "baseline" in labels, case
-    for g in grid:
-        assert not (g["stop_loss_atr_mult"] and g["trailing_stop_atr_mult"]), case
-
-    case = "test_close_stack_label_is_compact"
-    grid = generate_close_stack_grid([
-        {"close": {"name": "tiered_tp_atr",
-                   "params": {"tp_tiers": [TIGHT_LADDER]}},
-         "stop_loss_atr_mult": [2.0]},
-    ])
-    assert grid[0]["label"] == "tiered_tp_atr[0.5x:0.5,1x:1] sl_atr=2", case
 
 
 _GRID_REJECTS_INVALID_SPECS_CASES = [

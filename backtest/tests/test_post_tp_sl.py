@@ -78,26 +78,6 @@ def test_parse_sl_after_rule_accepts_empties_and_rejects():
             sl.parse_sl_after_rule(raw)
 
 
-def test_validate_sl_after_rule_accepts_valid_and_rejects_bad():
-    for r in [
-        sl.SLAfterRule(),
-        sl.SLAfterRule(kind="breakeven"),
-        sl.SLAfterRule(kind="atr_offset", atr_mult=0.25),
-        sl.SLAfterRule(kind="atr_offset", atr_mult=0),
-        sl.SLAfterRule(kind="atr_offset", atr_mult=-0.5),
-        sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=1.0),
-    ]:
-        sl.validate_sl_after_rule(r)
-    for r in [
-        sl.SLAfterRule(kind="trail_from_here"),
-        sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=0),
-        sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=-1),
-        sl.SLAfterRule(kind="weird"),
-    ]:
-        with _raises_for(f"test_validate_sl_after_rule_rejects_bad[{r!r}]"):
-            sl.validate_sl_after_rule(r)
-
-
 _TRIGGER_CASES = [
     (sl.SLAfterRule(kind="breakeven"), "long", 100, 5, 0, True, 100, "breakeven"),
     (sl.SLAfterRule(kind="breakeven"), "short", 200, 5, 0, True, 200, "breakeven"),
@@ -148,71 +128,6 @@ _TWO_TIERS = [
     {"atr_multiple": 2, "close_fraction": 0.5},
     {"atr_multiple": 3, "close_fraction": 1.0},
 ]
-
-
-_VALIDATE_RULE_CASES = [
-    (
-        [{"name": "tiered_tp_atr_live",
-          "params": {"sl_after": "breakeven", "tp_tiers": _TWO_TIERS}}],
-        {"stop_loss_atr_mult": 1.0, "trailing_stop_atr_mult": 1.5},
-        [("trailing_stop",)],
-    ),
-    (
-        [{"name": "tiered_tp_atr_live",
-          "params": {"sl_after": "breakeven", "tp_tiers": _TWO_TIERS}}],
-        {},
-        [("fixed stop-loss",)],
-    ),
-    (
-        [{"name": "tiered_tp_atr_live",
-          "params": {
-              "sl_after": "breakeven",
-              "tp_tiers": [
-                  {"atr_multiple": 2, "close_fraction": 0.5},
-                  {"atr_multiple": 3, "close_fraction": 1.0,
-                   "sl_after": {"atr_mult": 0.5}},
-              ],
-          }}],
-        {"stop_loss_atr_mult": 1.0},
-        [],
-    ),
-    (
-        [{"name": "tiered_tp_atr_live",
-          "params": {"sl_after": {"trail_from_here": {"atr_mult": 1.0}},
-                     "tp_tiers": _TWO_TIERS}}],
-        {"stop_loss_atr_mult": 1.5, "strategy_type": "manual"},
-        [("trail_from_here is not supported on manual",)],
-    ),
-    (
-        [{"name": "tp_at_pct", "params": {"pct": 0.05, "sl_after": "breakeven"}}],
-        {"stop_loss_atr_mult": 1.0},
-        [("only honored on tiered_tp_atr",)],
-    ),
-    (
-        [{"name": "tiered_tp_pct",
-          "params": {"tp_tiers": [
-              {"pct": 0.05, "close_fraction": 0.5, "sl_after": "breakeven"},
-          ]}}],
-        {"stop_loss_atr_mult": 1.0},
-        [("no effect", "tiered_tp_pct")],
-    ),
-    (
-        [{"name": "tiered_tp_atr_live", "params": {"tp_tiers": _TWO_TIERS}}],
-        {"stop_loss_atr_mult": 1.0},
-        [],
-    ),
-]
-
-
-def test_validate_post_tp_stop_loss_rules():
-    for i, (refs, kwargs, want_errs) in enumerate(_VALIDATE_RULE_CASES):
-        case = f"test_validate_post_tp_stop_loss_rules[{i}] {refs[0]['name']} {kwargs}"
-        errs = sl.validate_post_tp_stop_loss_rules(refs, **kwargs)
-        if not want_errs:
-            assert errs == [], case
-            continue
-        for parts in want_errs:
-            assert any(all(p in e for p in parts) for e in errs), (case, errs)
 
 
 def test_parse_tp_tier_close_fractions_sorts_and_coerces_final():

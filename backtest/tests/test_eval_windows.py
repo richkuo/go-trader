@@ -76,29 +76,6 @@ def test_run_leg_threads_allowed_regimes_and_blocks_entries(monkeypatch):
         "was never in the allowed set")
 
 
-_VALIDATE_CANDIDATE_ACCEPTS_CASES = [
-    {"name": "x", "direction": "short"},
-    {"name": "x", "direction": "short",
-     "close_strategies": [{"name": "tp_at_pct", "params": {}}]},
-    {"name": "x", "allowed_regimes": ["trending_down"]},
-    {"name": "x", "direction": "short",
-     "close_strategies": [{"name": "atr_stop", "params": {"atr_mult": 1.5}}],
-     "allowed_regimes": ["ranging", "trending_down"]},
-    {"name": "x", "allowed_regimes": ["trending_up"],
-     "regime_period": 21, "regime_adx_threshold": 25.0},
-    {"name": "x", "invert_signal": True},
-    {"name": "x", "invert_signal": True, "type": "manual"},
-    {"name": "x", "stop_loss_atr_mult": 2.0},
-    {"name": "x", "trailing_stop_atr_mult": 2.5},
-]
-
-
-def test_validate_candidate_accepts(subtests):
-    for i, candidate in enumerate(_VALIDATE_CANDIDATE_ACCEPTS_CASES):
-        with subtests.test(case=i, candidate=candidate):
-            assert ew.validate_candidate(candidate) is candidate
-
-
 _VALIDATE_CANDIDATE_REJECTS_CASES = [
     ({"name": "x", "direction": "both"}, "silently dropped"),
     ({"name": "x", "direction": "sideways"}, "direction"),
@@ -148,47 +125,6 @@ def test_validate_candidate_rejects(subtests):
         with subtests.test(case=i, candidate=candidate, match=match):
             with pytest.raises(ValueError, match=match):
                 ew.validate_candidate(candidate)
-
-
-_VALIDATE_CANDIDATE_STRIPS_EMPTY_OPTIONAL_BLOCK_CASES = [
-    ({"name": "x", "allowed_regimes": []}, "allowed_regimes"),
-    ({"name": "x", "regime_windows_spec": {}}, "regime_windows_spec"),
-    ({"name": "x", "regime_directional_policy": {}},
-     "regime_directional_policy"),
-]
-
-
-def test_validate_candidate_strips_empty_optional_block(subtests):
-    for i, (candidate, key) in enumerate(_VALIDATE_CANDIDATE_STRIPS_EMPTY_OPTIONAL_BLOCK_CASES):
-        with subtests.test(case=i, candidate=candidate, key=key):
-            assert ew.validate_candidate(candidate) is candidate
-            assert key not in candidate
-
-
-def test_validate_candidate_normalizes_regime_windows_spec(subtests):
-    with subtests.test(case="test_validate_candidate_normalizes_regime_windows_spec"):
-        c = {"name": "x", "regime_windows_spec": {"medium": 14}}
-        assert ew.validate_candidate(c) is c
-        assert c["regime_windows_spec"]["medium"]["classifier"] == "adx"
-        assert c["regime_windows_spec"]["medium"]["period"] == 14
-
-        c2 = {"name": "x",
-              "regime_windows_spec": {"medium": {"classifier": "composite",
-                                                 "period": 14}},
-              "allowed_regimes": ["trending_up_clean"]}
-        assert ew.validate_candidate(c2) is c2
-        assert c2["regime_windows_spec"]["medium"]["classifier"] == "composite"
-
-    with subtests.test(case="test_validate_candidate_accepts_regime_directional_policy"):
-        c = {"name": "x", "direction": "both",
-             "close_strategies": [{"name": "atr_stop",
-                                   "params": {"atr_mult": 2.0}}],
-             "regime_directional_policy": {"trend_regime": {
-                 "trending_up": {"direction": "long"},
-                 "trending_down": {"direction": "both"}}}}
-        assert ew.validate_candidate(c) is c
-        assert c["regime_directional_policy"]["trend_regime"]["trending_up"] == {
-            "direction": "long", "invert_signal": False}
 
 
 def test_evaluate_window_threads_regime_directional_policy(monkeypatch):

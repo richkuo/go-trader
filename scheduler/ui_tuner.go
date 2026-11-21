@@ -349,12 +349,6 @@ func cloneStringAnyMap(in map[string]interface{}) map[string]interface{} {
 	return out
 }
 
-func clearStrategySchemaCacheForTest() {
-	strategySchemaCacheMu.Lock()
-	defer strategySchemaCacheMu.Unlock()
-	strategySchemaCache = map[string]strategySchemaCacheEntry{}
-}
-
 func loadStrategyTunerSchema(sc StrategyConfig) (map[string]interface{}, string, error) {
 	name := effectiveOpenStrategy(sc)
 	args := []string{

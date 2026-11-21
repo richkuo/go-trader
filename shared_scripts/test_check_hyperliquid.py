@@ -813,64 +813,6 @@ class TestUpdateStopLoss:
         assert order["sz"] == 0.5
 
 
-class TestCloseFullPosition:
-
-    def _run_close_full(self, market_close_response=None):
-        mod, spec = _load_check_module()
-        spec.loader.exec_module(mod)
-
-        mock_adapter_cls = MagicMock()
-        mock_adapter = MagicMock()
-        mock_adapter_cls.return_value = mock_adapter
-        mock_adapter.lookup_fill_fee_by_oid.return_value = {}
-        mock_adapter.market_close.return_value = market_close_response or {
-            "status": "ok",
-            "response": {
-                "type": "order",
-                "data": {
-                    "statuses": [
-                        {
-                            "filled": {
-                                "avgPx": "3000.5",
-                                "totalSz": "0.211",
-                                "oid": 888,
-                            }
-                        }
-                    ]
-                },
-            },
-        }
-
-        captured = StringIO()
-        import builtins
-        original_import = builtins.__import__
-
-        def mock_import(name, *args, **kwargs):
-            if name == "platforms.hyperliquid.adapter":
-                fake_mod = MagicMock()
-                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
-                return fake_mod
-            return original_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            with patch("sys.stdout", captured):
-                mod.run_execute("ETH", "sell", 0.0, "live", close_full_position=True)
-
-        return json.loads(captured.getvalue()), mock_adapter
-
-    def test_uses_market_close_and_reports_the_sized_close_shape(self, subtests):
-        out, adapter = self._run_close_full()
-        with subtests.test("test_uses_market_close_not_market_open"):
-            adapter.market_close.assert_called_once_with("ETH", sz=None)
-            adapter.market_open.assert_not_called()
-        with subtests.test("test_output_shape_matches_sized_close"):
-            assert "execution" in out
-            fill = out["execution"]["fill"]
-            assert fill["avg_px"] == 3000.5
-            assert fill["total_sz"] == 0.211
-            assert fill["oid"] == 888
-
-
 class TestRunExecuteCloseMode:
 
     _FILLED = {

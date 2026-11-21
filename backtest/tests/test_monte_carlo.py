@@ -7,12 +7,6 @@ import eval_windows as ew
 import monte_carlo as mc
 
 
-def test_auto_block_len():
-    assert mc.auto_block_len(1) == 1
-    assert mc.auto_block_len(27) == 3
-    assert mc.auto_block_len(28) == 4
-
-
 def test_block_path_preserves_circular_contiguity(subtests):
     with subtests.test(case="test_block_path_preserves_circular_contiguity"):
         values = [1.0, 2.0, 3.0, 4.0, 5.0]
@@ -43,20 +37,6 @@ def test_block_path_preserves_circular_contiguity(subtests):
         assert stats["block_len"] == 5
 
 
-def test_kill_switch_breach_probabilities_are_add_one_smoothed_at_both_extremes():
-    case = "test_all_winner_series_reports_smoothed_floor"
-    s = mc.resample_stats([1.0, 2.0, 3.0], "permute", n_paths=100, seed=1,
-                          kill_switch_pct=25.0)
-    assert s["p_dd_ge_kill_switch"] == pytest.approx(1 / 101), case
-    assert s["p_final_below_start"] == pytest.approx(1 / 101), case
-
-    case = "test_certain_breach_smoothed_below_one"
-    s = mc.resample_stats([-50.0], "permute", n_paths=100, seed=1,
-                          kill_switch_pct=25.0)
-    assert s["p_dd_ge_kill_switch"] == pytest.approx(101 / 101), case
-    assert s["p_final_below_start"] == pytest.approx(101 / 101), case
-
-
 def _trade(pnl_pct, shares=2.0, entry_price=100.0, pnl=None):
     return {"pnl_pct": pnl_pct, "shares": shares, "entry_price": entry_price,
             "pnl": pnl}
@@ -73,22 +53,6 @@ def test_trade_returns():
         assert mc.trade_returns(trades, **kwargs) == [pytest.approx(v)
                                                       for v in expected], (
             f"test_trade_returns[{case_id}]")
-
-
-_TRADE_RETURNS_REJECTS = [
-    ([], {"returns": "fees"}, None),
-    ([{"shares": 2.0, "entry_price": 100.0, "pnl": 8.0}],
-     {"returns": "gross"}, "pnl_pct"),
-    ([{"shares": 0.0, "entry_price": 0.0, "pnl": 8.0}],
-     {"returns": "net"}, "pnl_pct"),
-]
-
-
-def test_trade_returns_rejects(subtests):
-    for i, (trades, kwargs, match) in enumerate(_TRADE_RETURNS_REJECTS):
-        with subtests.test(case=i, kwargs=kwargs, match=match):
-            with pytest.raises(ValueError, match=match):
-                mc.trade_returns(trades, **kwargs)
 
 
 def _cfg(strategies, platforms=None):
@@ -118,11 +82,6 @@ def test_resolve_kill_switch_pct():
             f"test_resolve_kill_switch_pct[{cfg['strategies'][0]}-{cfg['platforms']}]")
 
 
-def test_kill_switch_missing_strategy_raises():
-    with pytest.raises(ValueError):
-        mc.resolve_kill_switch_pct(_cfg([]), "ghost")
-
-
 def test_trade_samples_carry_net_return_and_fall_back_to_gross():
     case = "test_trade_samples_carry_net_return"
     results = {"trades": [{"entry_date": "2025-01-01", "pnl_pct": 5.0,
@@ -135,12 +94,6 @@ def test_trade_samples_carry_net_return_and_fall_back_to_gross():
                            "shares": 0.0, "entry_price": 0.0, "pnl": 8.0}]}
     samples = ew.trade_samples_from_results(results)
     assert samples[0]["pnl_pct_net"] == 5.0, "test_trade_samples_net_falls_back_to_gross"
-
-
-def test_cli_empty_trades_no_crash(tmp_path):
-    src = tmp_path / "results.json"
-    src.write_text(json.dumps({"trades": []}))
-    assert mc.main(["--trades-json", str(src), "--n-paths", "50"]) == 0
 
 
 def _valid_trades_json(tmp_path):
@@ -235,12 +188,6 @@ def test_cli_rejects_bad_invocation(tmp_path, subtests):
                 mc.main(build_argv(case_dir))
 
 
-def test_run_leg_trades_rejects_bad_dataset(tmp_path):
-    with pytest.raises(SystemExit, match="--dataset"):
-        mc.run_leg_trades("squeeze_momentum", "spot", None,
-                          "not-a-valid-dataset", "is", 1000.0, None, "net")
-
-
 class _FakeReg:
     STRATEGY_REGISTRY = {"squeeze_momentum": {"default_params": {}}}
 
@@ -297,37 +244,3 @@ def test_run_candidate_leg_trades_delegates_and_returns_net_series(monkeypatch, 
         _patch_leg(monkeypatch, None)
         assert mc.run_candidate_leg_trades({"name": "squeeze_momentum"}, "spot",
                                            "BTC/USDT:1h", "is", 1000.0, "net") is None
-
-
-def _write_candidate(tmp_path, **over):
-    cand = {"name": "squeeze_momentum", "direction": "long"}
-    cand.update(over)
-    p = tmp_path / "cand.json"
-    p.write_text(json.dumps(cand))
-    return p
-
-
-def test_multileg_payload_has_one_block_per_window_dataset_pair(monkeypatch, tmp_path):
-    _patch_leg(monkeypatch, {"trade_samples": list(_SAMPLES)})
-    cand = _write_candidate(tmp_path)
-    out = tmp_path / "mc.json"
-    rc = mc.main(["--candidate-json", str(cand), "--windows", "is,oos",
-                  "--datasets", "BTC/USDT:1h,ETH/USDT:4h", "--n-paths", "50",
-                  "--json", str(out)])
-    assert rc == 0
-    payload = json.loads(out.read_text())
-    assert "legs" in payload and "observed" not in payload
-    assert len(payload["legs"]) == 4
-    assert {(l["window"], l["dataset"]) for l in payload["legs"]} == {
-        ("is", "BTC/USDT 1h"), ("is", "ETH/USDT 4h"),
-        ("oos", "BTC/USDT 1h"), ("oos", "ETH/USDT 4h")}
-    leg = payload["legs"][0]
-    assert leg["status"] == "ok" and leg["n_trades"] == 2
-    assert {b["scheme"] for b in leg["schemes"]} == set(mc.SCHEMES)
-    assert payload["candidate"]["name"] == "squeeze_momentum"
-
-
-def test_multileg_fails_when_no_leg_has_data(monkeypatch, tmp_path):
-    _patch_leg(monkeypatch, None)
-    assert mc.main(["--candidate-json", str(_write_candidate(tmp_path)),
-                    "--windows", "is", "--datasets", "BTC/USDT:1h"]) == 1

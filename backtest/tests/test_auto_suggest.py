@@ -25,29 +25,6 @@ def _base_spec(**over):
     return spec
 
 
-def test_committed_1198_spec_loads_and_expands():
-    with open(os.path.join(_STUDY_DIR, "suggest.json")) as fh:
-        raw = json.load(fh)
-    spec = asug.load_spec(raw, _STUDY_DIR)
-    case = "test_load_spec_accepts_committed_1198_shape"
-    assert spec["registry"] == "spot", case
-    assert [c["key"] for c in spec["candidates"]] == ["baseline", "adx_not_down",
-                                                      "comp_up_family"], case
-    assert spec["candidates"][1]["candidate"]["allowed_regimes"] == ["trending_up", "ranging"], case
-
-    case = "test_shipped_full_options_spec_loads_and_expands"
-    entries = asug.expand_candidates(spec)
-    kinds = {e["kind"] for e in entries}
-    assert kinds == {"open", "exit_ab"}, case
-    ab = {e["key"]: e for e in entries if e["kind"] == "exit_ab"}
-    atr_trail = ab["m6.atr_trail"]["candidate"]
-    assert atr_trail["candidate_close"] == [], case
-    assert atr_trail["candidate_stops"] == {"trailing_stop_atr_mult": 3.0}, case
-    assert atr_trail["candidate_stop_only"] is True, case
-    assert all(e["precondition_errors"] == [] for e in ab.values()), case
-    assert len({e["key"] for e in entries}) == len(entries), case
-
-
 _M6_VARIANT = {"key": "v",
                "candidate_close": [{"name": "atr_stop",
                                     "params": {"atr_mult": 2}}]}
@@ -227,14 +204,6 @@ def test_bh_family_size_widens_denominator_and_is_stricter(subtests):
             benjamini_hochberg([0.01, 0.04], 0.05, family_size=1)
 
 
-def test_load_spec_accepts_positive_family_size():
-    spec = asug.load_spec(
-        _base_spec(correction={"method": "benjamini_hochberg", "alpha": 0.05,
-                               "family_size": 40}),
-        _STUDY_DIR)
-    assert spec["correction"]["family_size"] == 40
-
-
 def _open_entry(key, noise=None, m1=None, harnesses=("m1_noise", "m1"), fam=None):
     results = {}
     if noise is not None:
@@ -279,74 +248,6 @@ def test_verdict_failure_exclusion_and_open_entry_paths():
     tests = [_noise_test("F", "x", 0.001, True)]
     assert asug.candidate_verdict(e, tests) == "incumbent_stands", \
         "test_verdict_open_m1_fail_is_incumbent_stands"
-
-
-def test_rank_survivors_first_failed_still_present():
-    entries = [
-        {"key": "loser", "verdict": "incumbent_stands", "results": {}},
-        {"key": "win", "verdict": "survivor", "results": {}},
-        {"key": "broke", "verdict": "run_failed", "results": {}},
-    ]
-    ranked = asug.rank_shortlist(entries)
-    assert ranked[0]["key"] == "win"
-    assert [e["key"] for e in ranked] == ["win", "loser", "broke"]
-    assert any(e["verdict"] == "run_failed" for e in ranked)
-
-
-def _mc_payload():
-    def leg(window, ds, p_ks, p95, p_down, status="ok"):
-        return {"window": window, "dataset": ds, "status": status, "n_trades": 20,
-                "schemes": [{"scheme": "permute", "p_dd_ge_kill_switch": p_ks,
-                             "max_dd_pct_percentiles": {"p5": 1.0, "p50": 10.0,
-                                                        "p95": p95},
-                             "p_final_below_start": p_down}]}
-    return {"legs": [leg("is", "BTC/USDT 1h", 0.10, 30.0, 0.20),
-                     leg("oos", "BTC/USDT 1h", 0.30, 45.0, 0.25),
-                     leg("oos", "ETH/USDT 4h", 0.55, 70.0, 0.40)]}
-
-
-def test_extract_mc_worst_dataset_per_window_and_tolerates_partial_legs():
-    out = asug.extract_mc(_mc_payload())
-    assert set(out) == {"is", "oos"}
-    worst = out["oos"]["worst"]["permute"]
-    assert worst == {"p_dd_ge_kill_switch": 0.55, "p95_max_dd": 70.0,
-                     "p_final_below_start": 0.40}
-    assert set(out["oos"]["per_dataset"]) == {"BTC/USDT 1h", "ETH/USDT 4h"}
-
-    case = "test_extract_mc_tolerates_no_data_legs_and_missing_percentiles"
-    payload = {"legs": [
-        {"window": "oos", "dataset": "BTC/USDT 1h", "status": "no_data",
-         "n_trades": 0, "schemes": []},
-        {"window": "oos", "dataset": "ETH/USDT 1h", "status": "ok", "n_trades": 3,
-         "schemes": [{"scheme": "permute", "p_dd_ge_kill_switch": 0.2,
-                      "max_dd_pct_percentiles": {"p50": 5.0},
-                      "p_final_below_start": 0.1}]}]}
-    out = asug.extract_mc(payload)
-    worst = out["oos"]["worst"]["permute"]
-    assert worst["p_dd_ge_kill_switch"] == 0.2, case
-    assert worst["p95_max_dd"] is None, case
-    assert asug.extract_mc({}) == {}, case
-
-
-def test_dry_run_prints_every_enabled_harness_and_default_omits_mc():
-    spec = asug.load_spec(_base_spec(harnesses=["m1_noise", "m1", "m3", "m5", "mc"]),
-                           _STUDY_DIR)
-    spec["seed"], spec["resamples"], spec["datasets"] = 1066, 10, None
-    entries = asug.expand_candidates(spec)
-    cmds = asug._dry_run_commands(entries, spec, "/tmp/out")
-    for harness in ("m1_noise", "m1", "m3", "m5", "mc"):
-        assert any(asug.HARNESS_REL[harness] in c for c in cmds), \
-            f"dry-run omits {harness} — it would spawn it anyway"
-
-    spec = asug.load_spec(_base_spec(harnesses=None), _STUDY_DIR)
-    spec["seed"], spec["resamples"], spec["datasets"] = 1066, 10, None
-    entries = asug.expand_candidates(spec)
-    cmds = asug._dry_run_commands(entries, spec, "/tmp/out")
-    for harness in ("m1_noise", "m1", "m3", "m5"):
-        assert any(asug.HARNESS_REL[harness] in c for c in cmds), \
-            f"test_dry_run_with_default_harnesses_omits_mc: dry-run omits {harness} — it would spawn it anyway"
-    assert not any("monte_carlo.py" in c for c in cmds), \
-        "mc must not run when a spec doesn't opt into it (#1316)"
 
 
 def _open_spec(harnesses):

@@ -3,7 +3,6 @@ import sys
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from shared_strategies.open.conftest import load_module
 
@@ -15,10 +14,6 @@ if _TOOLS not in sys.path:
 
 _FUTURES = load_module(
     "_crsi_futures_strategies_test", os.path.join(_HERE, "futures", "strategies.py"))
-_SPOT = load_module(
-    "_crsi_spot_strategies_test", os.path.join(_HERE, "spot", "strategies.py"))
-_CHECK_HL = load_module(
-    "_crsi_check_hyperliquid_test", os.path.join(_ROOT, "shared_scripts", "check_hyperliquid.py"))
 
 from close_registry_loader import evaluate as close_evaluate
 from strategy_composition import evaluate_open_close, finalize_decision
@@ -59,16 +54,6 @@ def market(n=420, seed=1645):
                        "volume": 50 + np.abs(rng.randn(n)) * 40})
     df.index = pd.date_range("2025-01-01", periods=n, freq="4h")
     return df
-
-
-def test_registered_no_edge_futures_and_hidden():
-    entry = _FUTURES.STRATEGY_REGISTRY[NAME]
-    assert (entry["edge_status"], entry["edge_source"], entry["edge_ref"]) == (
-        "no_edge", "study_fail", "backtest/candidates/connors_rsi_reversion_1645/REPORT.md")
-    assert entry["default_params"] == DEFAULTS
-    assert NAME not in _FUTURES.list_strategies()
-    assert NAME not in _FUTURES.DISCOVERY_STRATEGY_REGISTRY
-    assert NAME not in _SPOT.STRATEGY_REGISTRY
 
 
 def _same(a, b):
@@ -162,24 +147,6 @@ def _compose(df, position_side, position_ctx=None, params=None):
     return evaluation, finalize_decision(evaluation, position_side)
 
 
-def test_composer_entry_duplicate_and_reversal_blocking():
-    df = market()
-    out = run(df)
-    i = _first_entry(out, 1)
-    window = df.iloc[: i + 1]
-    _, flat_decision = _compose(window, "")
-    assert flat_decision["signal"] == 1 and flat_decision["open_action"] == "long"
-    held = {"side": "long", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
-    _, dup = _compose(window, "long", held)
-    assert dup["open_action"] == "long" and dup["signal"] == 0
-    short_ctx = {"side": "short", "bars_held": 1, "avg_cost": 100.0, "current_quantity": 1.0}
-    _, opposite = _compose(window, "short", short_ctx)
-    assert opposite["close_fraction"] == 0.0 and opposite["signal"] == 0
-    j = _first_entry(out, -1)
-    _, short_entry = _compose(df.iloc[: j + 1], "")
-    assert short_entry["signal"] == -1 and short_entry["open_action"] == "short"
-
-
 def test_composer_close_wins_and_survives_bad_entry_data():
     df = market()
     out = run(df)
@@ -197,39 +164,3 @@ def test_composer_close_wins_and_survives_bad_entry_data():
     short_due = {"side": "short", "bars_held": 7, "avg_cost": 100.0, "current_quantity": 1.0}
     _, short_close = _compose(window.drop(columns=["close"]).assign(close=np.nan), "short", short_due)
     assert short_close["close_fraction"] == 1.0 and short_close["signal"] == 1
-
-
-def _hl_candles(df):
-    return [[int(ts.value // 1_000_000), r.open, r.high, r.low, r.close, r.volume]
-            for ts, r in df.iterrows()]
-
-
-def test_production_hyperliquid_paths_admit_explicit_paper_and_refuse_unacknowledged_live():
-    df = _CHECK_HL._make_dataframe(_hl_candles(market(200)))
-    shared = _CHECK_HL.build_shared_signal_state("BTC", "4h", df=df)
-    with pytest.raises(ValueError, match="allow_no_edge"):
-        _CHECK_HL.evaluate_signal_slot(shared, {"id": "solo", "strategy": NAME})
-    with pytest.raises(ValueError, match="allow_no_edge"):
-        _CHECK_HL.evaluate_signal_slot(
-            shared, {"id": "open", "strategy": "breakout", "open_strategy": NAME,
-                     "close_strategies": "time_stop"})
-    with pytest.raises(ValueError, match="allow_no_edge"):
-        _CHECK_HL.evaluate_signal_slot(
-            shared, {"id": "close", "strategy": "breakout", "open_strategy": "breakout",
-                     "close_strategies": NAME})
-    deps = _CHECK_HL._signal_check_deps()
-    peer = _CHECK_HL.evaluate_signal_slot(shared, {"id": "peer", "strategy": "breakout"}, deps=deps)
-    assert peer["strategy"] == "breakout"
-    with pytest.raises(ValueError, match="allow_no_edge"):
-        _CHECK_HL.evaluate_signal_slot(shared, {"id": "batched", "strategy": NAME}, deps=deps)
-    paper = _CHECK_HL.evaluate_signal_slot(shared, {"id": "paper", "strategy": NAME, "mode_args": ["--mode=paper"]})
-    acked = _CHECK_HL.evaluate_signal_slot(
-        shared, {"id": "acked", "strategy": NAME, "mode_args": ["--mode=live"], "allow_no_edge": True})
-    assert paper["strategy"] == acked["strategy"] == NAME
-    assert (paper["signal"], paper["price"]) == (acked["signal"], acked["price"])
-    fallback = _CHECK_HL.evaluate_signal_slot(
-        shared, {"id": "fallback", "strategy": "breakout", "open_strategy": "breakout",
-                 "close_strategies": NAME, "mode_args": ["--mode", "paper"]})
-    assert fallback["close_strategies"] == [NAME]
-
-

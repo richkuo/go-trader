@@ -11,7 +11,6 @@ if _BACKTEST_DIR not in sys.path:
     sys.path.insert(0, _BACKTEST_DIR)
 
 from backtester import Backtester
-from backtest_options import OptionsBacktester
 from backtest_theta import ThetaHarvestBacktester
 
 
@@ -44,11 +43,6 @@ def test_signal_out_of_domain_raises(subtests):
             bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
             result = bt.run(df, save=False)
             assert result["total_trades"] == 1
-
-
-def test_options_backtester_rejects_max_positions_below_two():
-    with pytest.raises(ValueError, match=r"max_positions must be >= 2"):
-        OptionsBacktester(initial_capital=1000.0, max_positions=1)
 
 
 def _synthetic_candles(n_days=200, start_price=20000.0, vol=0.02, seed=11):

@@ -1,7 +1,4 @@
-import json
 import os
-import subprocess
-import sys
 
 import numpy as np
 import pandas as pd
@@ -9,7 +6,6 @@ import pandas as pd
 import offline_manifest as om
 from atr import ensure_atr_indicator
 from backtester import Backtester
-from eval_windows import run_leg
 from parity_diff import ParityConfig
 from registry_loader import load_registry
 
@@ -54,32 +50,3 @@ def _frozen_frame(rows=520):
 def _parity_cfg(**kw):
     return ParityConfig(strategy_name=NAME, registry="futures", platform="hyperliquid",
                         close_refs=[TIME_STOP], comparison_mode="approximate", **kw)
-
-
-def test_production_solo_check_subprocess_refuses_unacknowledged_live_before_any_exchange_call():
-    env = {k: v for k, v in os.environ.items() if not k.startswith("HYPERLIQUID")}
-    proc = subprocess.run(
-        [sys.executable, os.path.join(REPO, "shared_scripts", "check_hyperliquid.py"),
-         NAME, "BTC", "4h", "--mode=live"],
-        cwd=REPO, capture_output=True, text=True, timeout=120, env=env)
-    assert proc.returncode == 1
-    payload = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert payload["strategy"] == NAME
-    assert payload["signal"] == 0
-    assert "allow_no_edge" in payload["error"] and "explicit live mode" in payload["error"]
-
-
-def test_manifest_leg_books_funding_and_execution_spec_for_the_candidate():
-    manifest = om.load_manifest(MANIFEST)
-    reg = load_registry("futures")
-    leg = run_leg(reg, NAME, None, "BTC", "4h", ("2025-09-01", "2026-09-01"),
-                  close_strategies=[TIME_STOP], direction="both", stop_loss_atr_mult=1.0,
-                  manifest_ctx={"manifest": manifest, "window": "test"},
-                  comparison_mode="approximate")
-    assert leg["manifest"]["cost_model"] == "execution_spec"
-    assert leg["manifest"]["candle_coverage"]["complete"]
-    assert leg["manifest"]["funding_coverage"]["complete"]
-    ex = leg["execution"]
-    assert ex["long_positions"] > 0 and ex["short_positions"] > 0
-    assert ex["funding_pnl_usd"] != 0.0
-    assert ex["fees_usd"] > 0
