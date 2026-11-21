@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -4466,6 +4468,373 @@ func TestReconcileSoleOwnerStopFillWithOpenRemainder(t *testing.T) {
 			if pos == nil || pos.Quantity != 1 || pos.StopLossOID != stopOID || pos.StopLossTriggerPx != stopTrigger || len(ss.TradeHistory) != 0 {
 				t.Fatalf("cycle %d: position = %+v, want qty 1 with SL %d kept", cycle, pos, stopOID)
 			}
+		}
+	})
+}
+
+func TestReadHyperliquidPositionsStrict(t *testing.T) {
+	const account = "0x00000000000000000000000000000000000000aa"
+	type venue struct {
+		srv   *httptest.Server
+		body  string
+		delay time.Duration
+		mu    sync.Mutex
+		reqs  []map[string]string
+	}
+	newVenue := func(t *testing.T, body string) *venue {
+		v := &venue{body: body}
+		v.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			v.mu.Lock()
+			v.reqs = append(v.reqs, req)
+			body, delay := v.body, v.delay
+			v.mu.Unlock()
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			_, _ = w.Write([]byte(body))
+		}))
+		t.Cleanup(v.srv.Close)
+		return v
+	}
+	metered := func(policy *feedBudgetConfig) (*feedRequestLedger, context.Context) {
+		ledger := newFeedRequestLedger(policy, true, nil)
+		return ledger, withFeedLedger(context.Background(), ledger)
+	}
+
+	t.Run("MatchingNetworkRequestsReachTheMeteredTransport", func(t *testing.T) {
+		main := newVenue(t, `{"assetPositions":[{"type":"oneWay","position":{"coin":"ETH","szi":"-0.3","entryPx":"3000","leverage":{"type":"cross","value":5}}}]}`)
+		test := newVenue(t, `{"assetPositions":[]}`)
+		useHLInfoURLs(t, main.srv.URL, test.srv.URL)
+		for _, network := range []string{"mainnet", "testnet"} {
+			if network == "testnet" {
+				t.Setenv("HYPERLIQUID_TESTNET", "1")
+			}
+			ledger, ctx := metered(wtPolicy(100, 0, 0))
+			target := hlPositionTarget{Account: account, Endpoint: hlInfoEndpoint()}
+			snap, err := readHyperliquidPositionsStrict(ctx, target)
+			if err != nil {
+				t.Fatalf("%s read: %v", network, err)
+			}
+			if snap.Target != target {
+				t.Fatalf("%s snapshot target = %+v, want %+v", network, snap.Target, target)
+			}
+			totals := ledger.snapshot()
+			if totals.ByType["clearinghouseState"] != 1 || totals.ByReason[string(feedRestKillSwitch)] != 1 {
+				t.Fatalf("%s ledger totals = %+v, want one clearinghouseState read charged as %s", network, totals, feedRestKillSwitch)
+			}
+			if network == "mainnet" {
+				if len(snap.Positions) != 1 || snap.Positions[0].Coin != "ETH" || snap.Positions[0].Size != -0.3 || snap.Positions[0].MarginMode != "cross" {
+					t.Fatalf("mainnet positions = %+v, want ETH short 0.3 cross", snap.Positions)
+				}
+			} else if len(snap.Positions) != 0 {
+				t.Fatalf("a valid empty list must read as flat, got %+v", snap.Positions)
+			}
+		}
+		if len(main.reqs) != 1 || len(test.reqs) != 1 {
+			t.Fatalf("requests mainnet=%d testnet=%d, want one each", len(main.reqs), len(test.reqs))
+		}
+		for _, req := range append(main.reqs, test.reqs...) {
+			if req["type"] != "clearinghouseState" || req["user"] != account {
+				t.Fatalf("request = %v, want clearinghouseState for %s", req, account)
+			}
+		}
+	})
+
+	t.Run("IncompleteOrMalformedResponsesFail", func(t *testing.T) {
+		cases := map[string]string{
+			"missing list":       `{"marginSummary":{"accountValue":"1"}}`,
+			"null list":          `{"assetPositions":null}`,
+			"list is an object":  `{"assetPositions":{}}`,
+			"not an object":      `[]`,
+			"no position object": `{"assetPositions":[{"type":"oneWay"}]}`,
+			"missing coin":       `{"assetPositions":[{"position":{"szi":"1"}}]}`,
+			"missing size":       `{"assetPositions":[{"position":{"coin":"ETH"}}]}`,
+			"unparseable size":   `{"assetPositions":[{"position":{"coin":"ETH","szi":"abc"}}]}`,
+			"size underflows":    `{"assetPositions":[{"position":{"coin":"ETH","szi":"1e-400"}}]}`,
+			"duplicate coin":     `{"assetPositions":[{"position":{"coin":"ETH","szi":"1"}},{"position":{"coin":"ETH","szi":"0"}}]}`,
+			"unknown row type":   `{"assetPositions":[{"type":"hedged","position":{"coin":"ETH","szi":"1"}}]}`,
+		}
+		for name, body := range cases {
+			t.Run(name, func(t *testing.T) {
+				v := newVenue(t, body)
+				_, ctx := metered(wtPolicy(100, 0, 0))
+				if _, err := readHyperliquidPositionsStrict(ctx, hlPositionTarget{Account: account, Endpoint: v.srv.URL}); err == nil {
+					t.Fatalf("body %s must not read as a complete position list", body)
+				}
+			})
+		}
+		if got, err := parseHyperliquidPositionsStrict([]byte(`{"assetPositions":[{"position":{"coin":"ETH","szi":"0.0"}}]}`)); err != nil || len(got) != 1 || got[0].Size != 0 {
+			t.Fatalf("a written zero size must parse as zero, got %+v err %v", got, err)
+		}
+	})
+
+	t.Run("MissingIdentityDeniedOrTimedOutReadsFail", func(t *testing.T) {
+		v := newVenue(t, `{"assetPositions":[]}`)
+		_, ctx := metered(wtPolicy(100, 0, 0))
+		if _, err := readHyperliquidPositionsStrict(ctx, hlPositionTarget{Account: "", Endpoint: v.srv.URL}); err == nil {
+			t.Fatal("a read with no account must fail")
+		}
+		if _, err := readHyperliquidPositionsStrict(ctx, hlPositionTarget{Account: "0xaddr", Endpoint: v.srv.URL}); err == nil {
+			t.Fatal("a read with a malformed account must fail")
+		}
+		if _, err := readHyperliquidPositionsStrict(ctx, hlPositionTarget{Account: account}); err == nil {
+			t.Fatal("a read with no endpoint must fail")
+		}
+		if _, err := readHyperliquidPositionsStrict(context.Background(), hlPositionTarget{Account: account, Endpoint: v.srv.URL}); err == nil {
+			t.Fatal("a read with no request ledger must not be sent")
+		}
+		_, denied := metered(wtPolicy(0, 0, 0))
+		if _, err := readHyperliquidPositionsStrict(denied, hlPositionTarget{Account: account, Endpoint: v.srv.URL}); err == nil {
+			t.Fatal("a read the weight ledger refuses must fail")
+		}
+		if len(v.reqs) != 0 {
+			t.Fatalf("refused reads must send nothing, venue saw %d", len(v.reqs))
+		}
+		v.mu.Lock()
+		v.delay = 300 * time.Millisecond
+		v.mu.Unlock()
+		_, ctx = metered(wtPolicy(100, 0, 0))
+		short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+		if _, err := readHyperliquidPositionsStrict(short, hlPositionTarget{Account: account, Endpoint: v.srv.URL}); err == nil {
+			t.Fatal("a timed-out read must fail")
+		}
+	})
+}
+
+func TestKillSwitchHyperliquidCloseAgainstLocalVenue(t *testing.T) {
+	const account = "0x00000000000000000000000000000000000000aa"
+	type venue struct {
+		srv    *httptest.Server
+		mu     sync.Mutex
+		size   map[string]float64
+		reqs   int
+		status int
+	}
+	newVenue := func(t *testing.T, size map[string]float64) *venue {
+		v := &venue{size: size}
+		v.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			v.mu.Lock()
+			v.reqs++
+			if v.status != 0 {
+				status := v.status
+				v.mu.Unlock()
+				w.Header().Set("Retry-After", "30")
+				w.WriteHeader(status)
+				return
+			}
+			coins := make([]string, 0, len(v.size))
+			for coin := range v.size {
+				coins = append(coins, coin)
+			}
+			sort.Strings(coins)
+			rows := make([]string, 0, len(coins))
+			for _, coin := range coins {
+				if v.size[coin] != 0 {
+					rows = append(rows, fmt.Sprintf(`{"type":"oneWay","position":{"coin":%q,"szi":"%g","entryPx":"3000","leverage":{"type":"cross","value":5}}}`, coin, v.size[coin]))
+				}
+			}
+			v.mu.Unlock()
+			_, _ = w.Write([]byte(`{"assetPositions":[` + strings.Join(rows, ",") + `]}`))
+		}))
+		t.Cleanup(v.srv.Close)
+		useHLInfoURLs(t, v.srv.URL, v.srv.URL)
+		return v
+	}
+	requests := func(v *venue) int {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		return v.reqs
+	}
+	venueCloser := func(v *venue, fill float64, failure error) (HyperliquidLiveCloser, *[]string) {
+		var calls []string
+		return func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+			calls = append(calls, symbol)
+			if failure != nil {
+				return nil, failure
+			}
+			v.mu.Lock()
+			v.size[symbol] -= fill
+			v.mu.Unlock()
+			return &HyperliquidCloseResult{Platform: "hyperliquid",
+				Close: &HyperliquidClose{Symbol: symbol, Fill: &HyperliquidCloseFill{TotalSz: fill, AvgPx: 3000}}}, nil
+		}, &calls
+	}
+	eth := StrategyConfig{ID: "hl-eth-live", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "ETH", "1h", "--mode=live"}}
+	tsla := StrategyConfig{ID: "hl-manual-tsla-live", Platform: "hyperliquid", Type: "manual", Symbol: "xyz:TSLA"}
+	inputs := func(roster []StrategyConfig, closer HyperliquidLiveCloser, reader HLStrictPositionReader) KillSwitchCloseInputs {
+		return KillSwitchCloseInputs{HLAddr: account, HLEndpoint: hlInfoEndpoint(), HLLiveAll: roster, HLCloser: closer,
+			HLReader: reader, PortfolioReason: "test", CloseTimeout: 5 * time.Second}
+	}
+	namesNamespace := func(plan KillSwitchClosePlan) bool {
+		return strings.Contains(strings.Join(plan.HLProof.Holds, "; "), "xyz:TSLA")
+	}
+
+	t.Run("NamespaceCoinHoldsFlatProofAndCoveredCoinStillCloses", func(t *testing.T) {
+		v := newVenue(t, map[string]float64{"ETH": 0.5})
+		closer, calls := venueCloser(v, 0.5, nil)
+		plan := planKillSwitchClose(inputs([]StrategyConfig{eth, tsla}, closer, newHLKillSwitchPositionReader(context.Background())))
+		if len(*calls) != 1 || (*calls)[0] != "ETH" || requests(v) != 2 {
+			t.Fatalf("closer calls = %v, reads = %d; want one ETH close between two reads", *calls, requests(v))
+		}
+		if fill, ok := plan.CloseReport.Fills["ETH"]; !ok || fill.TotalSz != 0.5 {
+			t.Fatalf("fills = %+v, want the ETH fill of 0.5", plan.CloseReport.Fills)
+		}
+		if plan.OnChainConfirmedFlat || plan.HLProof.Verified || !namesNamespace(plan) {
+			t.Fatalf("flat = %v, verified = %v, holds = %v; want the latch held and xyz:TSLA named", plan.OnChainConfirmedFlat, plan.HLProof.Verified, plan.HLProof.Holds)
+		}
+		for _, coin := range append(append([]string{}, plan.CloseReport.ClosedCoins...), plan.CloseReport.AlreadyFlat...) {
+			if strings.Contains(coin, ":") {
+				t.Fatalf("namespace coin %s is in a flat list: closed %v, already flat %v", coin, plan.CloseReport.ClosedCoins, plan.CloseReport.AlreadyFlat)
+			}
+		}
+	})
+
+	t.Run("ResidualOnCoveredCoinStaysInErrorsBesideNamespaceHold", func(t *testing.T) {
+		v := newVenue(t, map[string]float64{"ETH": 0.5})
+		closer, calls := venueCloser(v, 0.2, nil)
+		plan := planKillSwitchClose(inputs([]StrategyConfig{eth, tsla}, closer, newHLKillSwitchPositionReader(context.Background())))
+		if len(*calls) != 1 || requests(v) != 2 {
+			t.Fatalf("closer calls = %v, reads = %d; want one close between two reads", *calls, requests(v))
+		}
+		if _, held := plan.CloseReport.Errors["ETH"]; !held {
+			t.Fatalf("errors = %v, want ETH with 0.3 still open", plan.CloseReport.Errors)
+		}
+		if containsString(plan.CloseReport.ClosedCoins, "ETH") || containsString(plan.CloseReport.AlreadyFlat, "ETH") {
+			t.Fatalf("ETH is in a flat list: closed %v, already flat %v", plan.CloseReport.ClosedCoins, plan.CloseReport.AlreadyFlat)
+		}
+		if plan.OnChainConfirmedFlat || !namesNamespace(plan) {
+			t.Fatalf("flat = %v, holds = %v; want the latch held", plan.OnChainConfirmedFlat, plan.HLProof.Holds)
+		}
+	})
+
+	t.Run("NamespaceOnlyRosterSendsNoCloseAndHolds", func(t *testing.T) {
+		v := newVenue(t, map[string]float64{})
+		closer, calls := venueCloser(v, 0, nil)
+		plan := planKillSwitchClose(inputs([]StrategyConfig{tsla}, closer, newHLKillSwitchPositionReader(context.Background())))
+		if len(*calls) != 0 {
+			t.Fatalf("closer calls = %v, want none", *calls)
+		}
+		if plan.OnChainConfirmedFlat || plan.HLProof.Verified || !namesNamespace(plan) {
+			t.Fatalf("flat = %v, verified = %v, holds = %v; want the latch held with the namespace reason", plan.OnChainConfirmedFlat, plan.HLProof.Verified, plan.HLProof.Holds)
+		}
+		if len(plan.CloseReport.ClosedCoins)+len(plan.CloseReport.AlreadyFlat) != 0 {
+			t.Fatalf("flat lists = %v %v, want both empty", plan.CloseReport.ClosedCoins, plan.CloseReport.AlreadyFlat)
+		}
+	})
+
+	heldWithOneClose := func(t *testing.T, v *venue, plan KillSwitchClosePlan, calls []string, readsBefore int, refusal error) {
+		t.Helper()
+		if len(calls) != 1 || calls[0] != "ETH" {
+			t.Fatalf("closer calls = %v, want one ETH close from the cycle-start snapshot (holds %v)", calls, plan.HLProof.Holds)
+		}
+		if requests(v) != readsBefore {
+			t.Fatalf("venue saw %d requests, want %d: both strict reads must be refused before send", requests(v), readsBefore)
+		}
+		if plan.OnChainConfirmedFlat || plan.HLProof.Verified || !strings.Contains(strings.Join(plan.HLProof.Holds, "; "), refusal.Error()) {
+			t.Fatalf("flat = %v, verified = %v, holds = %v; want the latch held and the refused read named (%v)", plan.OnChainConfirmedFlat, plan.HLProof.Verified, plan.HLProof.Holds, refusal)
+		}
+		if len(plan.CloseReport.ClosedCoins)+len(plan.CloseReport.AlreadyFlat) != 0 {
+			t.Fatalf("flat lists = %v %v, want both empty", plan.CloseReport.ClosedCoins, plan.CloseReport.AlreadyFlat)
+		}
+		if _, held := plan.CloseReport.Errors["ETH"]; !held {
+			t.Fatalf("errors = %v, want ETH unverified", plan.CloseReport.Errors)
+		}
+	}
+	cycleStart := func(endpoint string) *hlStrictPositionSnapshot {
+		return &hlStrictPositionSnapshot{Target: hlPositionTarget{Account: account, Endpoint: endpoint}, Positions: []HLPosition{{Coin: "ETH", Size: 0.5}}}
+	}
+	exhaustedFeedReader := func(t *testing.T) HLStrictPositionReader {
+		t.Helper()
+		ledger := newFeedRequestLedger(wtPolicy(2, 0, 0), false, nil)
+		reader := newHLKillSwitchPositionReader(withFeedLedger(context.Background(), ledger))
+		if _, err := reader(context.Background(), hlPositionTarget{Account: account, Endpoint: hlInfoEndpoint()}); err != nil {
+			t.Fatalf("the read that fills the weight window failed: %v", err)
+		}
+		return reader
+	}
+
+	t.Run("WeightExhaustedFeedLedgerStillClosesFromTheCycleStartSnapshot", func(t *testing.T) {
+		v := newVenue(t, map[string]float64{"ETH": 0.5})
+		closer, calls := venueCloser(v, 0.5, nil)
+		in := inputs([]StrategyConfig{eth}, closer, exhaustedFeedReader(t))
+		in.HLCycleStart = cycleStart(hlMainnetURL)
+		before := requests(v)
+		plan := planKillSwitchClose(in)
+		heldWithOneClose(t, v, plan, *calls, before, errFeedWeightRefused)
+	})
+
+	t.Run("PausedHostStillClosesFromTheCycleStartSnapshot", func(t *testing.T) {
+		v := newVenue(t, map[string]float64{"ETH": 0.5})
+		closer, calls := venueCloser(v, 0.5, nil)
+		ledger := newFeedRequestLedger(wtPolicy(100, 0, 0), false, nil)
+		reader := newHLKillSwitchPositionReader(withFeedLedger(context.Background(), ledger))
+		setStatus := func(status int) {
+			v.mu.Lock()
+			v.status = status
+			v.mu.Unlock()
+		}
+		setStatus(http.StatusTooManyRequests)
+		if _, err := reader(context.Background(), hlPositionTarget{Account: account, Endpoint: hlInfoEndpoint()}); !errors.Is(err, errHLInfoRateLimited) {
+			t.Fatalf("the read that meets the rate limit: err = %v, want %v", err, errHLInfoRateLimited)
+		}
+		setStatus(0)
+		in := inputs([]StrategyConfig{eth}, closer, reader)
+		in.HLCycleStart = cycleStart(hlMainnetURL)
+		before := requests(v)
+		plan := planKillSwitchClose(in)
+		heldWithOneClose(t, v, plan, *calls, before, errFeedHostPaused)
+	})
+
+	t.Run("TestnetTargetNeverClosesFromTheMainnetSnapshot", func(t *testing.T) {
+		mainnet := newVenue(t, map[string]float64{"ETH": 0.5})
+		testnet := newVenue(t, map[string]float64{})
+		useHLInfoURLs(t, mainnet.srv.URL, testnet.srv.URL)
+		t.Setenv("HYPERLIQUID_TESTNET", "1")
+		closer, calls := venueCloser(testnet, 0.5, nil)
+		in := inputs([]StrategyConfig{eth}, closer, exhaustedFeedReader(t))
+		in.HLCycleStart = cycleStart(hlMainnetURL)
+		if in.HLEndpoint != testnet.srv.URL {
+			t.Fatalf("close target endpoint = %s, want the testnet venue %s", in.HLEndpoint, testnet.srv.URL)
+		}
+		plan := planKillSwitchClose(in)
+		if len(*calls) != 0 {
+			t.Fatalf("closer calls = %v, want none: the mainnet snapshot must not choose what to close on testnet", *calls)
+		}
+		if plan.OnChainConfirmedFlat || plan.HLProof.Verified || len(plan.HLProof.Holds) == 0 {
+			t.Fatalf("flat = %v, verified = %v, holds = %v; want the latch held", plan.OnChainConfirmedFlat, plan.HLProof.Verified, plan.HLProof.Holds)
+		}
+		if len(plan.CloseReport.ClosedCoins)+len(plan.CloseReport.AlreadyFlat) != 0 {
+			t.Fatalf("flat lists = %v %v, want both empty", plan.CloseReport.ClosedCoins, plan.CloseReport.AlreadyFlat)
+		}
+	})
+
+	t.Run("LocalMeterPassesSixLatchedCyclesInOneWindowAndRefusesABurstAboveItsCap", func(t *testing.T) {
+		v := newVenue(t, map[string]float64{"ETH": 0.5})
+		closer, calls := venueCloser(v, 0, fmt.Errorf("venue rejected the close"))
+		reader := newHLKillSwitchPositionReader(context.Background())
+		for cycle := 1; cycle <= 6; cycle++ {
+			plan := planKillSwitchClose(inputs([]StrategyConfig{eth}, closer, reader))
+			if len(*calls) != cycle || requests(v) != 2*cycle {
+				t.Fatalf("cycle %d: closer calls = %d, reads = %d; want %d and %d (holds %v)", cycle, len(*calls), requests(v), cycle, 2*cycle, plan.HLProof.Holds)
+			}
+			if _, held := plan.CloseReport.Errors["ETH"]; !held || plan.OnChainConfirmedFlat || len(plan.HLProof.Holds) != 0 {
+				t.Fatalf("cycle %d: errors = %v, flat = %v, holds = %v; want ETH held with both reads answered", cycle, plan.CloseReport.Errors, plan.OnChainConfirmedFlat, plan.HLProof.Holds)
+			}
+		}
+		target := hlPositionTarget{Account: account, Endpoint: hlInfoEndpoint()}
+		for requests(v) < hlStrictPositionLedgerPerMin {
+			if _, err := reader(context.Background(), target); err != nil {
+				t.Fatalf("read %d of %d inside the cap failed: %v", requests(v)+1, hlStrictPositionLedgerPerMin, err)
+			}
+		}
+		if _, err := reader(context.Background(), target); !errors.Is(err, errFeedBudgetExhausted) {
+			t.Fatalf("read above the cap: err = %v, want %v", err, errFeedBudgetExhausted)
+		}
+		if requests(v) != hlStrictPositionLedgerPerMin {
+			t.Fatalf("venue saw %d requests, want %d: a refused read must send nothing", requests(v), hlStrictPositionLedgerPerMin)
 		}
 	})
 }

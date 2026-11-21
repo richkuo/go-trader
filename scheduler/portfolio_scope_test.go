@@ -167,7 +167,7 @@ func TestPerScopeRiskIsolation(t *testing.T) {
 		state.partitionRisk(defaultPaperPartition).KillSwitchActive = true
 		state.partitionRisk(defaultPaperPartition).KillSwitchAt = time.Now().UTC()
 
-		if !AutoResetConfirmedFlatKillSwitch(state.partitionRisk(livePartition), 10000, true, "confirmed flat") {
+		if !AutoResetConfirmedFlatKillSwitch(state.partitionRisk(livePartition), 10000, "confirmed flat") {
 			t.Fatal("the live latch must auto-reset when confirmed flat with no owner")
 		}
 		if state.partitionLatched(livePartition) {

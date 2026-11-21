@@ -462,7 +462,7 @@
             "ibkr-opt",
             "rh-eth-spot"
           ],
-          "message": "**PORTFOLIO KILL SWITCH (PAPER)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-btc-short, hl-corrupt, hl-hedged, hl-long, hl-short, ibkr-opt, rh-eth-spot No exchange order was sent. Live strategies are unaffected. Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle.",
+          "message": "**PORTFOLIO KILL SWITCH (PAPER)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-btc-short, hl-corrupt, hl-hedged, hl-long, hl-short, ibkr-opt, rh-eth-spot No exchange order was sent. Live strategies are unaffected. Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle. The drawdown peak stays at its old value until the first eligible paper valuation after this close, which then becomes the new peak.",
           "portfolio_risk": {
             "current_drawdown_pct": "0",
             "current_margin_drawdown_pct": "0",
@@ -470,7 +470,7 @@
             "events": 2,
             "kill_switch_active": false,
             "kill_switch_close_applied": false,
-            "peak_value": "20405",
+            "peak_value": "31000",
             "warning_sent": false
           }
         },
@@ -601,7 +601,7 @@
             "ibkr-opt",
             "rh-eth-spot"
           ],
-          "message": "**PORTFOLIO KILL SWITCH (PAPER)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-btc-short, hl-corrupt, hl-hedged, hl-long, hl-short, ibkr-opt, rh-eth-spot No exchange order was sent. Live strategies are unaffected. Reply to the owner DM with 'reset paper' to clear this latch.",
+          "message": "**PORTFOLIO KILL SWITCH (PAPER)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-btc-short, hl-corrupt, hl-hedged, hl-long, hl-short, ibkr-opt, rh-eth-spot No exchange order was sent. Live strategies are unaffected. Reply to the owner DM prompt with 'reset paper' followed by the prompt's reply code to clear this latch.",
           "portfolio_risk": {
             "current_drawdown_pct": "34.1774193548",
             "current_margin_drawdown_pct": "30.2114803625",
@@ -707,7 +707,7 @@
             "hl-noprice",
             "rh-spot"
           ],
-          "message": "**PORTFOLIO KILL SWITCH (PAPER:ALT)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-noprice, rh-spot No exchange order was sent. Live strategies are unaffected. Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle.",
+          "message": "**PORTFOLIO KILL SWITCH (PAPER:ALT)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-noprice, rh-spot No exchange order was sent. Live strategies are unaffected. Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle. The drawdown peak stays at its old value until the first eligible paper valuation after this close, which then becomes the new peak.",
           "portfolio_risk": {
             "current_drawdown_pct": "0",
             "current_margin_drawdown_pct": "0",
@@ -715,7 +715,7 @@
             "events": 2,
             "kill_switch_active": false,
             "kill_switch_close_applied": false,
-            "peak_value": "1960",
+            "peak_value": "2700",
             "warning_sent": false
           }
         },
@@ -760,7 +760,7 @@
             "hl-noprice",
             "rh-spot"
           ],
-          "message": "**PORTFOLIO KILL SWITCH (PAPER:ALT)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-noprice, rh-spot No exchange order was sent. Live strategies are unaffected. Reply to the owner DM with 'reset paper:alt' to clear this latch.",
+          "message": "**PORTFOLIO KILL SWITCH (PAPER:ALT)**\nportfolio kill switch is latched (triggered at 2026-03-04 05:06:07 UTC, manual reset required)\nPaper books force-closed at mark: hl-noprice, rh-spot No exchange order was sent. Live strategies are unaffected. Reply to the owner DM prompt with 'reset paper:alt' followed by the prompt's reply code to clear this latch.",
           "portfolio_risk": {
             "current_drawdown_pct": "27.4074074074",
             "current_margin_drawdown_pct": "0",

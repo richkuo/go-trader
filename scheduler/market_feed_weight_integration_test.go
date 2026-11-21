@@ -576,7 +576,7 @@ func TestFeedWeightSenderLifecycle(t *testing.T) {
 		if _, err := fetchHyperliquidMidsCtx(ctx, []string{"BTC"}); feedWeightRefusalCause(err) != feedWeightCauseUnfit {
 			t.Fatalf("mids under a zero allocation err = %v, want %s", err, feedWeightCauseUnfit)
 		}
-		if _, err := hlPostInfoTo(ctx, hlMainnetURL, map[string]string{"type": "clearinghouseState"}, 0); feedWeightRefusalCause(err) != feedWeightCauseUnpriced {
+		if _, err := hlPostInfoTo(ctx, hlMainnetURL, map[string]string{"type": "userRole"}, 0); feedWeightRefusalCause(err) != feedWeightCauseUnpriced {
 			t.Fatalf("an unpriced type err = %v, want %s", err, feedWeightCauseUnpriced)
 		}
 		venue.mu.Lock()
@@ -586,7 +586,7 @@ func TestFeedWeightSenderLifecycle(t *testing.T) {
 			t.Fatalf("venue saw %d request(s), want none", n)
 		}
 		disabled := newFeedRequestLedger(nil, false, clock.Now)
-		if _, err := hlPostInfoTo(withFeedLedger(context.Background(), disabled), hlMainnetURL, map[string]string{"type": "clearinghouseState"}, 0); err != nil {
+		if _, err := hlPostInfoTo(withFeedLedger(context.Background(), disabled), hlMainnetURL, map[string]string{"type": "userRole"}, 0); err != nil {
 			t.Fatalf("a ledger with no weight policy refused: %v", err)
 		}
 		if st := disabled.weightStatus(); st.Participation != feedWeightNotEnrolled || st.Totals.Unpriced != 1 {

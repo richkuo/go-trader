@@ -522,6 +522,8 @@ const (
 	feedRestMids      feedRestReason = "mids"
 	feedRestLotMeta   feedRestReason = "lot_metadata"
 
+	feedRestKillSwitch feedRestReason = "kill_switch_positions"
+
 	feedRestAccountingFunding feedRestReason = "accounting_funding"
 
 	feedRestCorrection      feedRestReason = "correction"
