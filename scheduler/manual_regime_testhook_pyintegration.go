@@ -172,7 +172,8 @@ func init() {
 		resting := false
 		out := &HyperliquidLimitStatusResult{Platform: "hyperliquid"}
 		for _, oid := range oids {
-			out.Orders = append(out.Orders, HyperliquidLimitOrderStatus{OID: oid, Resting: &resting, FilledSize: filledSize, AvgPx: fillPx})
+			out.Orders = append(out.Orders, HyperliquidLimitOrderStatus{OID: oid, Coin: symbol, OrderStatus: "canceled", Terminal: true, ExecutedSize: filledSize,
+				Resting: &resting, FilledSize: filledSize, AvgPx: fillPx, FillsComplete: true})
 		}
 		return out, "", nil
 	}

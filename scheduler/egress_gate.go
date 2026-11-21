@@ -20,7 +20,7 @@ import (
 var egressNetworkSubcommands = map[string]bool{
 	"manual-open": true, "manual-add": true, "manual-close": true, "force-close": true,
 	"manual-cancel": true, "manual-update-sl": true, "manual-cancel-sl": true, "backfill": true,
-	"record-observations": true, "robinhood-login": true,
+	"record-observations": true, "robinhood-login": true, "manual-clear-limit-row": true,
 }
 
 var egressOfflineSubcommands = map[string]bool{
@@ -30,7 +30,6 @@ var egressOfflineSubcommands = map[string]bool{
 var egressLocalSubcommands = map[string]bool{
 	"init": true, "export": true, "inspect": true, "storage-inspect": true, "agent-info": true,
 	"diagnostics": true, "feed-fetch": true,
-	"manual-clear-limit-row": true,
 }
 
 func subcommandConfigPath(args []string) string {

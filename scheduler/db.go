@@ -3,7 +3,9 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -400,6 +402,7 @@ CREATE TABLE IF NOT EXISTS pending_limit_orders (
     filled_size REAL NOT NULL DEFAULT 0,
     avg_fill_price REAL NOT NULL DEFAULT 0,
     fill_fee REAL NOT NULL DEFAULT 0,
+    book_filled_size REAL NOT NULL DEFAULT 0,
     entry_atr REAL NOT NULL DEFAULT 0,
     cancel_requested INTEGER NOT NULL DEFAULT 0,
     operator_required_since TEXT NOT NULL DEFAULT '',
@@ -733,6 +736,7 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE portfolio_risk ADD COLUMN drawdown_reading_substituted INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE portfolio_risk ADD COLUMN untrusted_over_limit_since TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE pending_limit_orders ADD COLUMN operator_required_since TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE pending_limit_orders ADD COLUMN book_filled_size REAL NOT NULL DEFAULT 0",
 		"CREATE INDEX IF NOT EXISTS idx_trades_strategy_timestamp ON trades(strategy_id, timestamp DESC, rowid DESC)",
 		"ALTER TABLE kill_switch_events ADD COLUMN scope TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE portfolio_risk ADD COLUMN kill_switch_close_applied INTEGER NOT NULL DEFAULT 0",
@@ -3383,6 +3387,7 @@ type PendingLimitOrder struct {
 	FilledSize      float64
 	AvgFillPrice    float64
 	FillFee         float64
+	BookFilledSize  float64
 	EntryATR        float64
 	CancelRequested bool
 
@@ -3415,7 +3420,7 @@ func (sdb *StateDB) InsertPendingLimitOrder(o PendingLimitOrder) (int64, error) 
 		(strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, expires_at, created_at, regime_snapshots_json, owner_kind, partition_scope, partition_source)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'live', '')`,
 		sid, o.Symbol, o.Side, o.OrderOID, o.LimitPrice, o.OrderSize, o.TIF,
-		o.FilledSize, o.AvgFillPrice, o.FillFee, o.EntryATR, boolToInt(o.CancelRequested),
+		0.0, 0.0, 0.0, o.EntryATR, boolToInt(o.CancelRequested),
 		expiresStr, formatTime(o.CreatedAt.UTC()), marshalRegimeSnapshotsJSON(o.RegimeSnapshots))
 	if err != nil {
 		return 0, err
@@ -3439,7 +3444,15 @@ func (sdb *StateDB) LoadPendingLimitOrders() ([]PendingLimitOrder, error) {
 	if hasSnapshots {
 		snapshotColumn = "COALESCE(regime_snapshots_json, '')"
 	}
-	rows, err := sdb.db.Query(`SELECT id, strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, operator_required_since, expires_at, created_at, ` + snapshotColumn + ` FROM pending_limit_orders ` + filter + ` ORDER BY id`)
+	sealColumn := "0"
+	hasSeal, err := sdb.tableHasColumn("pending_limit_orders", "book_filled_size")
+	if err != nil {
+		return nil, err
+	}
+	if hasSeal {
+		sealColumn = "book_filled_size"
+	}
+	rows, err := sdb.db.Query(`SELECT id, strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, ` + sealColumn + `, entry_atr, cancel_requested, operator_required_since, expires_at, created_at, ` + snapshotColumn + ` FROM pending_limit_orders ` + filter + ` ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("load pending limit orders: %w", err)
 	}
@@ -3449,7 +3462,7 @@ func (sdb *StateDB) LoadPendingLimitOrders() ([]PendingLimitOrder, error) {
 		var o PendingLimitOrder
 		var cancelInt int
 		var operatorStr, expiresStr, createdStr, snapshotsJSON string
-		if err := rows.Scan(&o.ID, &o.StrategyID, &o.Symbol, &o.Side, &o.OrderOID, &o.LimitPrice, &o.OrderSize, &o.TIF, &o.FilledSize, &o.AvgFillPrice, &o.FillFee, &o.EntryATR, &cancelInt, &operatorStr, &expiresStr, &createdStr, &snapshotsJSON); err != nil {
+		if err := rows.Scan(&o.ID, &o.StrategyID, &o.Symbol, &o.Side, &o.OrderOID, &o.LimitPrice, &o.OrderSize, &o.TIF, &o.FilledSize, &o.AvgFillPrice, &o.FillFee, &o.BookFilledSize, &o.EntryATR, &cancelInt, &operatorStr, &expiresStr, &createdStr, &snapshotsJSON); err != nil {
 			return nil, fmt.Errorf("scan pending limit order: %w", err)
 		}
 		o.RegimeSnapshots = parseRegimeSnapshotsJSON(snapshotsJSON)
@@ -3467,14 +3480,119 @@ func (sdb *StateDB) LoadPendingLimitOrders() ([]PendingLimitOrder, error) {
 	return orders, rows.Err()
 }
 
-func (sdb *StateDB) UpdatePendingLimitOrderFill(id int64, filledSize, avgFillPrice, fillFee float64) error {
-	if sdb == nil || sdb.db == nil {
-		return nil
+func (o PendingLimitOrder) fillSealed() bool {
+	return o.BookFilledSize == o.FilledSize
+}
+
+type limitFillSeal struct {
+	Prev         PendingLimitOrder
+	FilledSize   float64
+	AvgFillPrice float64
+	FillFee      float64
+}
+
+var errLimitRowChanged = errors.New("the limit order queue row changed or is gone")
+
+func (sdb *StateDB) sealLimitFillsTx(tx *sql.Tx, seals []limitFillSeal) error {
+	for _, f := range seals {
+		p := f.Prev
+		sid, err := sdb.toStorageID(p.StrategyID)
+		if err != nil {
+			return err
+		}
+		if !p.fillSealed() {
+			return fmt.Errorf("row %d carries an unsealed fill watermark", p.ID)
+		}
+		if !(f.FilledSize > p.FilledSize) || math.IsNaN(f.FilledSize) || math.IsInf(f.FilledSize, 0) {
+			return fmt.Errorf("row %d fill watermark %.10g does not advance %.10g", p.ID, f.FilledSize, p.FilledSize)
+		}
+		cum := f.FilledSize
+		r, err := tx.Exec(`UPDATE pending_limit_orders SET filled_size = ?, book_filled_size = ?, avg_fill_price = ?, fill_fee = ?
+			WHERE id = ? AND owner_kind = 'manual' AND partition_scope = 'live' AND strategy_id = ? AND symbol = ? AND side = ? AND order_oid = ?
+			AND filled_size = ? AND book_filled_size = ?`,
+			cum, cum, f.AvgFillPrice, f.FillFee,
+			p.ID, sid, p.Symbol, p.Side, p.OrderOID, p.FilledSize, p.BookFilledSize)
+		if err != nil {
+			return fmt.Errorf("seal limit row %d: %w", p.ID, err)
+		}
+		if n, _ := r.RowsAffected(); n != 1 {
+			return fmt.Errorf("seal limit row %d (oid=%d): %w", p.ID, p.OrderOID, errLimitRowChanged)
+		}
 	}
-	_, err := sdb.db.Exec(
-		"UPDATE pending_limit_orders SET filled_size = ?, avg_fill_price = ?, fill_fee = ? WHERE id = ? AND owner_kind = 'manual'",
-		filledSize, avgFillPrice, fillFee, id)
-	return err
+	return nil
+}
+
+type limitRowFinalize struct {
+	Row          PendingLimitOrder
+	VenueFilled  float64
+	Eligible     bool
+	OperatorSeal bool
+}
+
+func (sdb *StateDB) FinalizePendingLimitOrder(f limitRowFinalize) error {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	if sdb.readOnly {
+		return fmt.Errorf("%s state file is open read-only", sdb.storageRoleOf())
+	}
+	o := f.Row
+	if math.IsNaN(f.VenueFilled) || math.IsInf(f.VenueFilled, 0) || f.VenueFilled < 0 {
+		return fmt.Errorf("the venue fill size %v is not usable", f.VenueFilled)
+	}
+	if !f.OperatorSeal {
+		if f.VenueFilled > o.FilledSize+limitFillEpsilon {
+			return fmt.Errorf("the venue reports %.10g filled where the row records %.10g, so a later fill is not booked", f.VenueFilled, o.FilledSize)
+		}
+		if o.FilledSize > 0 && !o.fillSealed() {
+			return fmt.Errorf("the recorded fill %.10g is not sealed with the book (seal %.10g)", o.FilledSize, o.BookFilledSize)
+		}
+		if o.FilledSize > 0 && !f.Eligible {
+			return fmt.Errorf("the recorded fill %.10g has no configured Hyperliquid-live manual owner for %s", o.FilledSize, o.Symbol)
+		}
+	} else if o.OperatorRequiredSince.IsZero() {
+		return fmt.Errorf("the row is not marked as needing an operator")
+	}
+	sid, err := sdb.toStorageID(o.StrategyID)
+	if err != nil {
+		return err
+	}
+	query := `DELETE FROM pending_limit_orders WHERE id = ? AND owner_kind = 'manual' AND strategy_id = ? AND symbol = ? AND side = ? AND order_oid = ?
+		AND filled_size = ? AND book_filled_size = ?`
+	args := []interface{}{o.ID, sid, o.Symbol, o.Side, o.OrderOID, o.FilledSize, o.BookFilledSize}
+	if f.OperatorSeal {
+		query += ` AND operator_required_since = ?`
+		args = append(args, formatTime(o.OperatorRequiredSince.UTC()))
+	} else {
+		query += ` AND (filled_size = 0 OR book_filled_size = filled_size)`
+	}
+	r, err := sdb.db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("delete limit row %d: %w", o.ID, err)
+	}
+	if n, _ := r.RowsAffected(); n != 1 {
+		return fmt.Errorf("delete limit row %d (oid=%d): %w", o.ID, o.OrderOID, errLimitRowChanged)
+	}
+	return nil
+}
+
+func (sdb *StateDB) MarkPendingLimitOrderOperatorRequiredOnce(id int64, at time.Time) (time.Time, error) {
+	if sdb == nil || sdb.db == nil {
+		return time.Time{}, fmt.Errorf("state db unavailable")
+	}
+	if _, err := sdb.db.Exec(
+		"UPDATE pending_limit_orders SET operator_required_since = ? WHERE id = ? AND owner_kind = 'manual' AND operator_required_since = ''",
+		formatTime(at.UTC()), id); err != nil {
+		return time.Time{}, err
+	}
+	var since string
+	if err := sdb.db.QueryRow("SELECT operator_required_since FROM pending_limit_orders WHERE id = ? AND owner_kind = 'manual'", id).Scan(&since); err != nil {
+		return time.Time{}, err
+	}
+	if since == "" {
+		return time.Time{}, nil
+	}
+	return parseTime(since), nil
 }
 
 func (sdb *StateDB) MarkPendingLimitOrderCancelRequested(strategyID, symbol string) (int64, error) {
@@ -3510,14 +3628,6 @@ func (sdb *StateDB) ClearPendingLimitOrderOperatorRequired(id int64) error {
 	}
 	_, err := sdb.db.Exec(
 		"UPDATE pending_limit_orders SET operator_required_since = '' WHERE id = ? AND owner_kind = 'manual'", id)
-	return err
-}
-
-func (sdb *StateDB) DeletePendingLimitOrder(id int64) error {
-	if sdb == nil || sdb.db == nil {
-		return nil
-	}
-	_, err := sdb.db.Exec("DELETE FROM pending_limit_orders WHERE id = ? AND owner_kind = 'manual'", id)
 	return err
 }
 

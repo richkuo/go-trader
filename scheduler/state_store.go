@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,16 @@ type StateStore struct {
 	failures       map[RiskPartition]int
 	saveExtra      func(tx *sql.Tx, role storageRole) error
 	holdSignal     func(p RiskPartition, held bool)
+	limitRecovery  limitRecoveryHold
+}
+
+// limitRecoveryHold tracks manual limit fills whose settlement transaction
+// failed. It is separate from the ordinary save-failure count: an unrelated
+// successful save never releases it, and it never feeds the three-strike rule
+// that skips trading and protection work.
+type limitRecoveryHold struct {
+	unknown bool
+	failed  map[int64]string
 }
 
 func newStateStore(layout storageLayout, ident storageIdentityMap) *StateStore {
@@ -459,9 +470,153 @@ func (st *StateStore) recordSaveOutcome(p RiskPartition, err error) {
 	} else {
 		delete(st.failures, p)
 	}
-	if st.holdSignal != nil {
-		st.holdSignal(p, st.failures[p] > 0)
+	st.signalHoldLocked(p)
+}
+
+func (st *StateStore) heldLocked(p RiskPartition) bool {
+	if st.failures[p] > 0 {
+		return true
 	}
+	return p == livePartition && (st.limitRecovery.unknown || len(st.limitRecovery.failed) > 0)
+}
+
+func (st *StateStore) signalHoldLocked(p RiskPartition) {
+	if st.holdSignal != nil {
+		st.holdSignal(p, st.heldLocked(p))
+	}
+}
+
+// beginLimitRecovery holds live entries until the first reconcile pass reads
+// the limit order queue and settles or classifies every row.
+func (st *StateStore) beginLimitRecovery() {
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.limitRecovery.unknown = true
+	st.signalHoldLocked(livePartition)
+}
+
+// noteLimitQueueUnreadable holds live entries: with the queue unreadable no
+// pass can prove which fills are settled.
+func (st *StateStore) noteLimitQueueUnreadable() {
+	st.beginLimitRecovery()
+}
+
+// noteLimitQueueRead drops failed rows that no longer exist after a
+// successful queue read (explicit resolution), and ends the startup hold once
+// a full pass completes.
+func (st *StateStore) noteLimitQueueRead(present []PendingLimitOrder, passComplete bool) {
+	if st == nil {
+		return
+	}
+	live := make(map[int64]bool, len(present))
+	for _, o := range present {
+		live[o.ID] = true
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for id := range st.limitRecovery.failed {
+		if !live[id] {
+			delete(st.limitRecovery.failed, id)
+		}
+	}
+	if passComplete {
+		st.limitRecovery.unknown = false
+	}
+	st.signalHoldLocked(livePartition)
+}
+
+func (st *StateStore) recordLimitSettlementFailure(ids []int64, err error) {
+	if st == nil || len(ids) == 0 {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.limitRecovery.failed == nil {
+		st.limitRecovery.failed = make(map[int64]string)
+	}
+	for _, id := range ids {
+		st.limitRecovery.failed[id] = err.Error()
+	}
+	st.signalHoldLocked(livePartition)
+}
+
+func (st *StateStore) recordLimitSettlementSuccess(ids []int64) {
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, id := range ids {
+		delete(st.limitRecovery.failed, id)
+	}
+	st.signalHoldLocked(livePartition)
+}
+
+func (st *StateStore) recordLimitSettlementClassified(ids []int64) {
+	st.recordLimitSettlementSuccess(ids)
+}
+
+func (st *StateStore) limitRecoveryHeld() bool {
+	if st == nil {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.limitRecovery.unknown || len(st.limitRecovery.failed) > 0
+}
+
+// SettleManualLimitFills commits the prepared books and the fill seals of one
+// coin batch in the primary file's save transaction. The view carries the
+// staged books in place of the published ones; nothing in it reaches the
+// published state unless this returns nil. Any guarded row update that does
+// not match exactly one row rolls the whole batch back.
+func (st *StateStore) SettleManualLimitFills(view *AppState, staged []string, seals []limitFillSeal) error {
+	if st == nil || view == nil {
+		return fmt.Errorf("state store unavailable")
+	}
+	if len(seals) == 0 {
+		return fmt.Errorf("no fill seals to commit")
+	}
+	role := st.layout.roleForPartition(livePartition)
+	if role != storageRolePrimary {
+		return fmt.Errorf("the live partition is owned by the %s state file, not the primary file that holds the limit order queue", role)
+	}
+	db := st.file(role)
+	if db == nil {
+		return fmt.Errorf("primary state file unavailable")
+	}
+	parts := st.layout.partitionsForRole(role)
+	req := st.buildRequest(view, role, parts, true, true)
+	covered := make(map[string]bool, len(req.Strategies))
+	for _, s := range req.Strategies {
+		covered[s.ID] = true
+	}
+	for _, id := range staged {
+		if !covered[id] {
+			return fmt.Errorf("strategy %s is not owned by the primary state file, so its limit fill cannot commit with the queue row", id)
+		}
+	}
+	extra := req.Extra
+	req.Extra = func(tx *sql.Tx) error {
+		if extra != nil {
+			if err := extra(tx); err != nil {
+				return err
+			}
+		}
+		return db.sealLimitFillsTx(tx, seals)
+	}
+	err := db.saveStateSubset(view, req)
+	if err != nil {
+		return err
+	}
+	st.clearAcks(strategyIDs(req.Strategies))
+	for _, p := range parts {
+		st.recordSaveOutcome(p, nil)
+	}
+	return nil
 }
 
 func (st *StateStore) setHoldSignal(signal func(p RiskPartition, held bool)) {
@@ -486,7 +641,39 @@ func (st *StateStore) saveFailures(p RiskPartition) int {
 // holds, the partition takes no position-increasing action; closes, trailing
 // stops, ratchet, protection sync and hedge management keep running.
 func (st *StateStore) persistenceHoldsPartition(p RiskPartition) bool {
-	return st.saveFailures(p) > 0
+	if st == nil {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.heldLocked(p)
+}
+
+func (st *StateStore) persistenceHoldReason(p RiskPartition) string {
+	if st == nil {
+		return ""
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if p == livePartition && len(st.limitRecovery.failed) > 0 {
+		nums := make([]int64, 0, len(st.limitRecovery.failed))
+		for id := range st.limitRecovery.failed {
+			nums = append(nums, id)
+		}
+		sort.Slice(nums, func(i, j int) bool { return nums[i] < nums[j] })
+		ids := make([]string, 0, len(nums))
+		for _, id := range nums {
+			ids = append(ids, strconv.FormatInt(id, 10))
+		}
+		return fmt.Sprintf("a confirmed limit fill on queue row %s is not saved yet — blocked until the scheduler saves that fill or the row is resolved; an unrelated save does not release it", strings.Join(ids, ", "))
+	}
+	if p == livePartition && st.limitRecovery.unknown {
+		return "the scheduler has not completed a full pass over the resting limit order queue since startup or since the queue was last unreadable — blocked until that queue pass completes"
+	}
+	if st.failures[p] > 0 {
+		return "the last state save for this scope failed and has not been acknowledged — blocked until a save succeeds"
+	}
+	return ""
 }
 
 // ------------------------------------------------------------ routed writes

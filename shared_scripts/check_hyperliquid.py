@@ -3276,6 +3276,71 @@ def run_limit_open(symbol, side, size, limit_px, mode, tif="Alo",
         sys.exit(1)
 
 
+LIMIT_STATUS_LIVE_STATES = ("open", "triggered")
+
+
+def limit_order_status_terminal(status):
+    s = str(status or "")
+    if s in LIMIT_STATUS_LIVE_STATES:
+        return False
+    low = s.lower()
+    if s == "filled" or low.endswith("canceled") or low.endswith("cancelled") or low.endswith("rejected") or s == "scheduledCancel":
+        return True
+    return None
+
+
+def limit_order_status_evidence(adapter, symbol, oid, scan, open_oids, open_orders_error):
+    entry = {"oid": oid, "coin": "", "order_status": "", "terminal": False, "executed_sz": 0.0,
+             "filled_size": 0.0, "avg_px": 0.0, "fee": 0.0, "count": 0, "fills_complete": False}
+    entry["resting"] = (oid in open_oids) if open_oids is not None else None
+    try:
+        resp = adapter.query_order_by_oid(oid)
+        order = _order_status_evidence(resp)
+        if not order.get("found"):
+            entry["status_error"] = "the exchange does not know this order id"
+        else:
+            body = resp["order"]["order"]
+            entry["coin"] = str(body.get("coin") or "")
+            if int(order["oid"]) != int(oid):
+                entry["status_error"] = f"the exchange answered for order {order['oid']}, not {oid}"
+            elif entry["coin"] != symbol:
+                entry["status_error"] = f"order {oid} is on {entry['coin']!r}, not {symbol!r}"
+            else:
+                terminal = limit_order_status_terminal(order["status"])
+                entry["order_status"] = order["status"]
+                entry["executed_sz"] = order["executed_sz"]
+                if terminal is None:
+                    entry["status_error"] = f"order {oid} reports an unrecognized state {order['status']!r}"
+                else:
+                    entry["terminal"] = terminal
+    except Exception as se:
+        print(f"[WARN] query_order_by_oid({oid}) failed: {se}", file=sys.stderr)
+        entry["status_error"] = str(se) or type(se).__name__
+    if scan is None or isinstance(scan, Exception):
+        entry["fills_error"] = str(scan) if scan is not None else "fill history unread"
+        return entry
+    if not scan["complete"]:
+        entry["fills_error"] = scan["reason"] or "the fill history is incomplete"
+        return entry
+    try:
+        qty, notional, fee, count, _ = _aggregate_recovery_fills(scan["fills"], oid=oid)
+    except Exception as fe:
+        entry["fills_error"] = str(fe) or type(fe).__name__
+        return entry
+    entry["filled_size"] = qty
+    entry["avg_px"] = (notional / qty) if qty > 0 else 0.0
+    entry["fee"] = fee
+    entry["count"] = count
+    if "status_error" not in entry:
+        executed = entry["executed_sz"]
+        tolerance = max(1e-9, abs(executed) * 1e-6)
+        entry["fills_complete"] = abs(qty - executed) <= tolerance
+    if entry["terminal"] and entry["resting"] is True:
+        entry["status_error"] = f"order {oid} reports terminal state {entry['order_status']!r} while it is listed as resting"
+        entry["fills_complete"] = False
+    return entry
+
+
 def run_limit_status(symbol, oids, mode, since_ms=0):
     if mode != "live":
         print(json.dumps({"error": "--limit-status requires --mode=live"}, cls=SafeEncoder))
@@ -3283,6 +3348,8 @@ def run_limit_status(symbol, oids, mode, since_ms=0):
     try:
         from platforms.hyperliquid.adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
+        if not adapter.account_address:
+            raise RuntimeError("--limit-status requires HYPERLIQUID_ACCOUNT_ADDRESS")
 
         if since_ms <= 0:
             since_ms = int(time.time() * 1000) - 7 * 24 * 60 * 60 * 1000
@@ -3292,28 +3359,19 @@ def run_limit_status(symbol, oids, mode, since_ms=0):
         try:
             open_oids = adapter.open_order_oids(symbol)
         except Exception as oe:
-            open_orders_error = str(oe)
+            open_orders_error = str(oe) or type(oe).__name__
             print(f"[WARN] open_order_oids({symbol}) failed: {oe}", file=sys.stderr)
+
+        scan = None
+        try:
+            scan = scan_recovery_fills(adapter, since_ms)
+        except Exception as fe:
+            print(f"[WARN] fill history scan since {since_ms} failed: {fe}", file=sys.stderr)
+            scan = fe
 
         results = []
         for oid in oids:
-            oid = int(oid)
-            entry = {"oid": oid}
-            if open_oids is not None:
-                entry["resting"] = oid in open_oids
-            else:
-                entry["resting"] = None
-            summary = {}
-            try:
-                summary = adapter.fills_summary_by_oid(oid, since_ms)
-            except Exception as fe:
-                print(f"[WARN] fills_summary_by_oid({oid}) failed: {fe}", file=sys.stderr)
-                entry["fills_error"] = str(fe)
-            entry["filled_size"] = float(summary.get("filled_size", 0) or 0)
-            entry["avg_px"] = float(summary.get("avg_px", 0) or 0)
-            entry["fee"] = float(summary.get("fee", 0) or 0)
-            entry["count"] = int(summary.get("count", 0) or 0)
-            results.append(entry)
+            results.append(limit_order_status_evidence(adapter, symbol, int(oid), scan, open_oids, open_orders_error))
 
         out = {
             "platform": "hyperliquid",

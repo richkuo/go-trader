@@ -799,7 +799,14 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 			skipQtyResync := sc.ID != "" &&
 				math.Abs(statePos.Quantity-qty) > 1e-6 &&
 				hyperliquidAllTiersArmedAndCleared(sc, statePos)
-			if skipQtyResync {
+			growthHold := ""
+			if sc.ID != "" && (side != statePos.Side || qty > statePos.Quantity+1e-9) {
+				growthHold = hlLimitGrowthHolds.reason(sc, sym)
+			}
+			if growthHold != "" {
+				logger.Warn("hl-sync: %s drift state=%.6f %s on-chain=%.6f %s — not growing or flipping the book from venue size because %s",
+					sym, statePos.Quantity, statePos.Side, qty, side, growthHold)
+			} else if skipQtyResync {
 				logger.Info("hl-sync: %s qty drift state=%.6f %s on-chain=%.6f %s (not auto-resyncing — all TP tiers armed/cleared, #777)",
 					sym, statePos.Quantity, statePos.Side, qty, side)
 			} else {
@@ -914,6 +921,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 	allStrategies = withoutQuoteOwned(allStrategies, state)
 	mu.RUnlock()
 	resolveFee, fillHints := buildCachedHyperliquidReconcileFillResolver(accountAddress, allStrategies, state, mu, positions)
+	hlLimitGrowthHolds.refresh(hlLimitOwnershipLoader)
 
 	var pendingAlerts []ProtectionFillAlert
 	var pendingOrphanCloses []RegimeDirectionOrphanCloseJob

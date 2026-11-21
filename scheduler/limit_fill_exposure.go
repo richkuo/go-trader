@@ -328,6 +328,11 @@ type limitFillCandidate struct {
 	refused        bool
 	refusalVerdict limitFillExposureVerdict
 	applyFailed    bool
+	applyErr       error
+	peersBooked    bool
+	deferred       bool
+	settleFailed   bool
+	settled        bool
 }
 
 func applyLimitExposureOperatorRequired(store *StateStore, c *limitFillCandidate, now time.Time) {
@@ -341,11 +346,16 @@ func applyLimitExposureOperatorRequired(store *StateStore, c *limitFillCandidate
 		if !c.order.OperatorRequiredSince.IsZero() {
 			return
 		}
-		if err := store.MarkPendingLimitOrderOperatorRequired(c.order.ID, now); err != nil {
-			fmt.Printf("[limit] failed to persist the operator-required marker on row %d: %v\n", c.order.ID, err)
-			return
+		markLimitRowOperatorRequired(store, &c.order, now)
+		return
+	}
+	if c.applyFailed {
+		if c.order.OperatorRequiredSince.IsZero() {
+			markLimitRowOperatorRequired(store, &c.order, now)
 		}
-		c.order.OperatorRequiredSince = now
+		return
+	}
+	if c.hasFill && !c.settled {
 		return
 	}
 	if c.order.OperatorRequiredSince.IsZero() {
@@ -356,33 +366,4 @@ func applyLimitExposureOperatorRequired(store *StateStore, c *limitFillCandidate
 		return
 	}
 	c.order.OperatorRequiredSince = time.Time{}
-}
-
-func applyCoinLimitFills(
-	state *AppState,
-	cfg *Config,
-	mu *sync.RWMutex,
-	coin string,
-	rows []*limitFillCandidate,
-	totalDelta, onChainNet float64,
-	readErr error,
-	owners int,
-	now time.Time,
-) (limitFillExposureDecision, []int, []error) {
-	mu.Lock()
-	defer mu.Unlock()
-	decision := classifyLimitFillLiveExposure(coin,
-		hyperliquidBookedSignedNetForCoin(cfg.Strategies, state, coin),
-		totalDelta, onChainNet, readErr, owners)
-	decision.Legs = len(rows)
-	if !decision.adopts() {
-		return decision, nil, nil
-	}
-	trades := make([]int, len(rows))
-	errs := make([]error, len(rows))
-	for i, r := range rows {
-		trades[i], errs[i] = applyLimitFillProgress(state, r.sc, r.order, r.status.FilledSize,
-			r.avgPx, r.status.Fee, r.entryATR, resolveATRMethod(r.sc, cfg), now)
-	}
-	return decision, trades, errs
 }

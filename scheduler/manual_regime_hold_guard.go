@@ -451,7 +451,7 @@ func checkManualRegimeHoldGuardWitness(pin manualRegimePin, p RiskPartition) err
 	}
 	pid, _, err := manualRegimeWitnessHolder(manualRegimeWitnessPath(spec.Path), want, offset, pin.owner.Nonce)
 	if errors.Is(err, errManualRegimeNoWitness) {
-		return manualRegimeRefused("the scheduler holds the %s partition: it attests no clear persistence guard (a state save failed and no later save succeeded, the scheduler is draining, or the guard could not be locked again)", partitionLabel(p))
+		return manualRegimeRefused("the scheduler holds the %s partition: it attests no clear persistence guard (a state save failed and no later save succeeded, a confirmed limit fill is not saved yet, the first pass over the limit order queue after startup has not finished, the scheduler is draining, or the guard could not be locked again)", partitionLabel(p))
 	}
 	if err != nil {
 		return manualRegimeRefused("%v", err)
