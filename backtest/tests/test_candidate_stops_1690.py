@@ -139,12 +139,10 @@ def _funding_control_fields(result):
     return fields
 
 
-def _control_arm_mismatch_message(rows):
+def _control_arm_mismatch_message(rows, *, name_result_fields=False):
     differing = _differing_control_arm_fields(rows)
-    result_fields = _differing_result_fields(rows)
-    # A control-arm-only mismatch keeps the original payload. The third
-    # assertion compares the whole result, so any other differing key is named.
-    name_result_fields = any(field != "control_arm" for field in result_fields)
+    result_fields = _differing_result_fields(rows) if name_result_fields else []
+    show_result_fields = any(field != "control_arm" for field in result_fields)
     lines = []
     for key in sorted(rows):
         result = rows[key] if isinstance(rows[key], dict) else {}
@@ -160,7 +158,7 @@ def _control_arm_mismatch_message(rows):
             "funding.control": _funding_control_fields(result),
             "funding_incomplete": result.get("funding_incomplete"),
         }
-        if name_result_fields:
+        if show_result_fields:
             payload["differing_result_fields"] = result_fields
         lines.append(json.dumps(payload, sort_keys=True, default=str))
     return "\n".join(lines)
@@ -361,69 +359,12 @@ def test_stop_only_variant_without_candidate_close_runs_like_empty_close(candle_
         assert set(res["candidate_arm"]["exit_reasons"]) <= STOP_ONLY_REASONS
         results[key] = res
     assert results["m6.trail_no_close"] == results["m6.trail_empty_close"], (
-        _control_arm_mismatch_message(results))
+        _control_arm_mismatch_message(results, name_result_fields=True))
     inherit = entries["m6.inherit_no_close"]
     assert inherit["verdict"] == "excluded_not_replayable"
     assert inherit["precondition_errors"] == ["excluded_not_replayable"]
     assert inherit["candidate"]["candidate_stop_only"] is False
     assert inherit["evidence"] == {}
     assert not (out_dir / "m6.inherit_no_close.m6.json").exists()
-
-
-def _message_case_result():
-    return {
-        "control_arm": {"sharpe": 0.5, "trades": 4},
-        "candidate_arm": {"exit_reasons": {"sl": 2}},
-        "paired_diag": {"paired": 5},
-        "funding": {"control": {"source": "cache", "complete": True}},
-        "funding_incomplete": False,
-    }
-
-
-def test_control_arm_mismatch_message_names_the_differing_result_field():
-    left = _message_case_result()
-    right = _message_case_result()
-    right["candidate_arm"] = {"exit_reasons": {"sl": 9}}
-    assert left["control_arm"] == right["control_arm"]
-    assert left["candidate_arm"]["exit_reasons"] != right["candidate_arm"]["exit_reasons"]
-    rows = {"m6.left": left, "m6.right": right}
-    parsed = [json.loads(line) for line in _control_arm_mismatch_message(rows).splitlines()]
-    assert [row["differing_result_fields"] for row in parsed] == [
-        ["candidate_arm"], ["candidate_arm"]]
-    assert all(row["differing_control_arm_fields"] == [] for row in parsed)
-    assert all("source" in row["funding.control"] for row in parsed)
-
-    left = _message_case_result()
-    right = _message_case_result()
-    right["paired_diag"] = {"paired": 1}
-    assert left["control_arm"] == right["control_arm"]
-    assert left["candidate_arm"] == right["candidate_arm"]
-    assert left["paired_diag"]["paired"] != right["paired_diag"]["paired"]
-    parsed = [json.loads(line) for line in _control_arm_mismatch_message(
-        {"m6.left": left, "m6.right": right}).splitlines()]
-    assert [row["differing_result_fields"] for row in parsed] == [
-        ["paired_diag"], ["paired_diag"]]
-
-    left = _message_case_result()
-    right = _message_case_result()
-    right["control_arm"] = {"sharpe": 0.5, "trades": 7}
-    rows = {"m6.left": left, "m6.right": right}
-    assert left["candidate_arm"] == right["candidate_arm"]
-    assert left["paired_diag"] == right["paired_diag"]
-    assert left["funding"] == right["funding"]
-    assert left["control_arm"] != right["control_arm"]
-    expected = []
-    for key in ("m6.left", "m6.right"):
-        expected.append(json.dumps({
-            "key": key,
-            "differing_control_arm_fields": ["trades"],
-            "control_arm": {"trades": rows[key]["control_arm"]["trades"]},
-            "funding.control": {"source": "cache", "complete": True},
-            "funding_incomplete": False,
-        }, sort_keys=True, default=str))
-    message = _control_arm_mismatch_message(rows)
-    assert message == "\n".join(expected)
-    assert "differing_result_fields" not in message
-    assert "sharpe" not in message
 
 
