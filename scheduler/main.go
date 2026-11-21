@@ -551,6 +551,7 @@ func main() {
 	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
 
 	paperManualPositionWarnings := paperManualPositionStartupWarnings(cfg, state)
+	paperManualPositionWarnings = append(paperManualPositionWarnings, paperManualLimitRowStartupWarnings(cfg, store.LoadPendingLimitOrders)...)
 	for _, msg := range paperManualPositionWarnings {
 		fmt.Printf("[WARN] %s\n", msg)
 	}
@@ -739,11 +740,7 @@ func main() {
 		}
 	}
 
-	if len(paperManualPositionWarnings) > 0 && notifier.HasOwner() {
-		for _, msg := range paperManualPositionWarnings {
-			notifier.SendOwnerDM("[state] WARNING: " + msg)
-		}
-	}
+	sendPaperManualStartupWarnings(notifier, paperManualPositionWarnings)
 
 	notifyDirectionalCertStartupSummary(notifier, directionalCertSummaryLines)
 

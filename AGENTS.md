@@ -71,6 +71,7 @@ After any source edit run `python3 -I scripts/agent_guide.py`,verify with `bash 
 - `scale_in.go`:geometry frozen via `RiskAnchorPrice`,never blended `AvgCost`.
 - `manual*.go`:kill-switch+CB gated;SL edits queue `PendingManualAction`(book written ONLY by re-arm/restore);rejected close never assumes unconfirmed cancel spared trigger;verify-first SL+cancelled-TP restore,NEVER 2nd placement path;unverified=CRITICAL;adopted SL edits never gate;`force-close` live HL perps only.
 - Paper manual(`portfolioScopeFor`):venue cmds+dashboard refuse pre-state via `manualPaperVenueActionRefusal`;record-only+paper-close book;cycle close=`queuePaperManualCycleClose`,never an order.HL writes need `hlWriteAuth`(zero=deny):strategy/hedge/account-recovery ONLY.`paper_only`=no side-effect write;read-only launch never carries write argv
+- Paper manual limit row(`paperManualLimitRowOwner`):ALWAYS due for orphan cancel lane,live script ONLY;no live script=`orphanLimitStateUnscripted`+`operator_required_since` once(clear:`manual-clear-limit-row --flattened`);startup WARN+DM per row
 - CLI `manual-open`/`manual-add` order:`admitManualEntry` pre-store in ALL feed modes,owner marker+witnesses or standalone locks,else REFUSE;waited regime pending rechecks gates.
 - Liquidation guard:CLAMP,never refuse to arm;ONE-WAY TIGHTEN at 0.5% buffer;0=unknown,never persisted;unclampable REFUSES;unreadable outcome keeps state.
 - Boot `validateHLStopWithinBankruptcyBound` mirrors `LoadConfig` stop-owner resolution

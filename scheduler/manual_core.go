@@ -436,7 +436,7 @@ func manualPaperVenueActionRefusal(sc StrategyConfig, cmdName string) error {
 	case "manual-open", "manual-add":
 		guidance = fmt.Sprintf("book a simulated entry with %s %s --record-only --size N --fill-price P", cmdName, sc.ID)
 	case "manual-cancel":
-		guidance = "a paper strategy places no resting order; cancel any order left from an earlier live run on the Hyperliquid UI"
+		guidance = "a paper strategy places no resting order; the scheduler cancels a stored limit order of this strategy on its next cycle through a live Hyperliquid strategy's script, and with no live Hyperliquid strategy in the config you cancel it on the Hyperliquid UI and clear its row with manual-clear-limit-row <order-oid> --flattened"
 	default:
 		guidance = "book a simulated exit with the dashboard or Discord paper-close action"
 	}

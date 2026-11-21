@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func paperManualGuardStandInInterpreter(t *testing.T) func() []string {
@@ -268,49 +270,69 @@ func openMRPStore(t *testing.T, cfgPath string) *StateStore {
 	return store
 }
 
-func paperManualGuardRecoveryVenue(t *testing.T) (func(status string), func(kind string) int) {
+type paperManualGuardRecoveryVenue struct {
+	t      *testing.T
+	dir    string
+	marker string
+}
+
+func newPaperManualGuardRecoveryVenue(t *testing.T) *paperManualGuardRecoveryVenue {
 	t.Helper()
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "launches.log")
-	statusFile := filepath.Join(dir, "status.json")
-	py := filepath.Join(dir, ".venv", "bin", "python3")
+	v := &paperManualGuardRecoveryVenue{t: t, dir: t.TempDir()}
+	v.marker = filepath.Join(v.dir, "launches.log")
+	py := filepath.Join(v.dir, ".venv", "bin", "python3")
 	if err := os.MkdirAll(filepath.Dir(py), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\necho \"$*\" >> '" + marker + "'\ncase \"$*\" in\n*--limit-status*) cat '" + statusFile + "' ;;\n*--cancel-order*) echo '{\"platform\":\"hyperliquid\",\"oid\":9001,\"cancelled\":true}' ;;\n*) echo '{\"platform\":\"hyperliquid\",\"error\":\"unexpected launch\"}'; exit 1 ;;\nesac\n"
+	script := "#!/bin/sh\necho \"$*\" >> '" + v.marker + "'\ncase \"$*\" in\n*--limit-status*) if [ -f '" + v.file("cancelled") + "' ] && [ -f '" + v.file("after.json") + "' ]; then cat '" + v.file("after.json") + "'; else cat '" + v.file("status.json") + "'; fi ;;\n*--cancel-order*) touch '" + v.file("cancelled") + "'; echo '{\"platform\":\"hyperliquid\",\"oid\":9001,\"cancelled\":true}' ;;\n*) echo '{\"platform\":\"hyperliquid\",\"error\":\"unexpected launch\"}'; exit 1 ;;\nesac\n"
 	if err := os.WriteFile(py, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Chdir(dir)
-	setStatus := func(status string) {
-		if err := os.WriteFile(statusFile, []byte(status), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
-			t.Fatal(err)
+	t.Chdir(v.dir)
+	return v
+}
+
+func (v *paperManualGuardRecoveryVenue) file(name string) string {
+	return filepath.Join(v.dir, name)
+}
+
+func (v *paperManualGuardRecoveryVenue) set(status, afterCancel string) {
+	v.t.Helper()
+	for _, name := range []string{"launches.log", "cancelled", "after.json"} {
+		if err := os.Remove(v.file(name)); err != nil && !os.IsNotExist(err) {
+			v.t.Fatal(err)
 		}
 	}
-	count := func(kind string) int {
-		raw, err := os.ReadFile(marker)
-		if os.IsNotExist(err) {
-			return 0
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		n := 0
-		for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-			if strings.Contains(line, kind) {
-				n++
-			}
-		}
-		return n
+	if err := os.WriteFile(v.file("status.json"), []byte(status), 0o600); err != nil {
+		v.t.Fatal(err)
 	}
-	return setStatus, count
+	if afterCancel != "" {
+		if err := os.WriteFile(v.file("after.json"), []byte(afterCancel), 0o600); err != nil {
+			v.t.Fatal(err)
+		}
+	}
+}
+
+func (v *paperManualGuardRecoveryVenue) lines(kind string) []string {
+	v.t.Helper()
+	raw, err := os.ReadFile(v.marker)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		v.t.Fatal(err)
+	}
+	var out []string
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if strings.Contains(line, kind) {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 func TestPaperManualVenueGuardKillSwitchRecoveryRows(t *testing.T) {
-	setStatus, launches := paperManualGuardRecoveryVenue(t)
+	venue := newPaperManualGuardRecoveryVenue(t)
 	paper := StrategyConfig{ID: "pm-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Args: []string{"hold", "ETH", "30m", "--mode=paper"}}
 	live := StrategyConfig{ID: "hl-ema-eth", Type: "perps", Platform: "hyperliquid", Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}}
 	realDeps := func(db *StateDB) killSwitchLimitOrderDeps {
@@ -337,12 +359,12 @@ func TestPaperManualVenueGuardKillSwitchRecoveryRows(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db := newLimitTestStateDB(t)
 			id := seedKillSwitchLimitRow(t, db, paper.ID)
-			setStatus(tc.status)
+			venue.set(tc.status, "")
 			plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{paper, live}, realDeps(db)))
-			if got := launches("--cancel-order"); got != tc.cancels {
+			if got := len(venue.lines("--cancel-order")); got != tc.cancels {
 				t.Fatalf("cancel launches = %d, want %d: %+v", got, tc.cancels, plan.LimitOrderReport)
 			}
-			if tc.cancels == 1 && launches("--oid=9001") != 1 {
+			if tc.cancels == 1 && len(venue.lines("--oid=9001")) != 1 {
 				t.Fatalf("the cancel must name the recovery row order: %+v", plan.LimitOrderReport)
 			}
 			if plan.OnChainConfirmedFlat || plan.LimitOrderReport.ConfirmedClear() || len(plan.LimitOrderReport.Unresolved) != 1 {
@@ -364,7 +386,7 @@ func TestPaperManualVenueGuardKillSwitchRecoveryRows(t *testing.T) {
 	t.Run("only paper strategies remain", func(t *testing.T) {
 		db := newLimitTestStateDB(t)
 		row := seedKillSwitchLimitRow(t, db, paper.ID)
-		setStatus(`{"platform":"hyperliquid","orders":[]}`)
+		venue.set(`{"platform":"hyperliquid","orders":[]}`, "")
 		plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{paper}, realDeps(db)))
 		const want = "no live Hyperliquid strategy with a script remains in this config"
 		if len(plan.LimitOrderReport.Unresolved) != 1 || !strings.Contains(plan.LimitOrderReport.Unresolved[0], want) || !strings.Contains(strings.Join(plan.LimitOrderReport.LogLines, "\n"), want) {
@@ -375,11 +397,148 @@ func TestPaperManualVenueGuardKillSwitchRecoveryRows(t *testing.T) {
 			t.Fatalf("the row must be kept: %v %+v", err, orders)
 		}
 		out := cancelOrphanedLimitOrder(NewAppState(), &Config{Strategies: []StrategyConfig{paper}}, nil, nil, orders[0])
-		if out.Resolved || out.State != orphanLimitStateUnknown || !strings.Contains(out.Reason, want) {
+		if out.Resolved || out.State != orphanLimitStateUnscripted || !strings.Contains(out.Reason, want) {
 			t.Fatalf("the orphan lane must name the missing live strategy: %+v", out)
 		}
-		if launches("") != 0 {
+		if len(venue.lines("")) != 0 {
 			t.Fatal("a paper strategy's script must run no recovery read or cancel")
+		}
+	})
+}
+
+func TestPaperManualVenueGuardLimitRowRecovery(t *testing.T) {
+	e := newMRPEnv(t, 40)
+	const liveScript = "shared_scripts/check_hyperliquid.py"
+	const paperScript = "shared_scripts/paper_owner_marker.py"
+	type fixture struct {
+		path  string
+		cfg   *Config
+		store *StateStore
+	}
+	build := func(name string, livePeer bool) *fixture {
+		t.Helper()
+		dbDir := t.TempDir()
+		path := e.writeConfig(name, func(doc map[string]any) {
+			doc["db_file"] = filepath.Join(dbDir, "state.db")
+			strategies := []any{mrpPaperManualStrategy("pm-args", "short")}
+			if livePeer {
+				strategies = append(strategies, mrpManualStrategy("lm-peer", "short"))
+			}
+			doc["strategies"] = strategies
+		})
+		cfg, err := LoadConfigForProbe(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := &fixture{path: path, cfg: cfg, store: openMRPStore(t, path)}
+		t.Cleanup(func() { f.store.Close() })
+		if _, err := f.store.InsertPendingLimitOrder(PendingLimitOrder{StrategyID: "pm-args", Symbol: "BTC", Side: "long", OrderOID: 9001, LimitPrice: 90, OrderSize: 0.01, TIF: "Alo", CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatalf("seed the paper manual limit row: %v", err)
+		}
+		for i := range cfg.Strategies {
+			if cfg.Strategies[i].ID == "pm-args" {
+				cfg.Strategies[i].Script = paperScript
+			}
+		}
+		return f
+	}
+	rows := func(f *fixture) []PendingLimitOrder {
+		t.Helper()
+		orders, err := f.store.LoadPendingLimitOrders()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return orders
+	}
+	withPeer := build("limit-row-peer.json", true)
+	paperOnly := build("limit-row-paper.json", false)
+	startup := build("limit-row-startup.json", false)
+	venue := newPaperManualGuardRecoveryVenue(t)
+	orphanLimitCancelAlerts.reset()
+	t.Cleanup(orphanLimitCancelAlerts.reset)
+	var mu sync.RWMutex
+
+	t.Run("live peer cancels the paper owned row", func(t *testing.T) {
+		if o := rows(withPeer)[0]; !o.ExpiresAt.IsZero() || o.CancelRequested {
+			t.Fatalf("the seeded row must have no expiry and no cancel request: %+v", o)
+		}
+		venue.set(`{"platform":"hyperliquid","orders":[{"oid":9001,"resting":true,"filled_size":0,"avg_px":0,"fee":0,"count":0}]}`,
+			`{"platform":"hyperliquid","orders":[{"oid":9001,"resting":false,"filled_size":0,"avg_px":0,"fee":0,"count":0}]}`)
+		mock := &mockNotifier{}
+		reconcilePendingLimitOrders(NewAppState(), withPeer.cfg, withPeer.store, &mu, NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner"}), nil)
+		cancels := venue.lines("--cancel-order")
+		if len(cancels) != 1 || !strings.Contains(cancels[0], "--oid=9001") || !strings.Contains(cancels[0], liveScript) {
+			t.Fatalf("one reconcile pass must send one cancel for oid 9001 through the live owner's script: %v", venue.lines(""))
+		}
+		if got := venue.lines(paperScript); len(got) != 0 {
+			t.Fatalf("the paper strategy's script must launch nothing: %v", got)
+		}
+		if got := rows(withPeer); len(got) != 0 {
+			t.Fatalf("the row must be deleted after the status read shows the order off-book with no fill: %+v", got)
+		}
+	})
+
+	t.Run("paper only config marks the row for the operator", func(t *testing.T) {
+		venue.set(`{"platform":"hyperliquid","orders":[]}`, "")
+		mock := &mockNotifier{}
+		reconcilePendingLimitOrders(NewAppState(), paperOnly.cfg, paperOnly.store, &mu, NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner"}), nil)
+		if got := venue.lines(""); len(got) != 0 {
+			t.Fatalf("a config with only paper strategies must launch nothing: %v", got)
+		}
+		got := rows(paperOnly)
+		if len(got) != 1 || got[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("the row must stay and carry the operator-required marker: %+v", got)
+		}
+		if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "pm-args/BTC oid=9001") || !strings.Contains(mock.dms[0].content, "no live Hyperliquid strategy with a script remains") || !strings.Contains(mock.dms[0].content, "manual-clear-limit-row 9001 --flattened") {
+			t.Fatalf("the owner must get one alert that names the row and the clear command: %+v", mock.dms)
+		}
+		paperOnly.store.Close()
+		if r := e.command(paperOnly.path, nil, "manual-clear-limit-row", "9001"); r.code != 1 || !strings.Contains(r.stderr, "pass --flattened") {
+			t.Fatalf("the clear command must ask for --flattened:\n%s", r)
+		}
+		if r := e.command(paperOnly.path, nil, "manual-clear-limit-row", "9001", "--flattened"); r.code != 0 || !strings.Contains(r.stdout, "Cleared queue row") {
+			t.Fatalf("the clear command must clear an operator-required row:\n%s", r)
+		}
+		check := openMRPStore(t, paperOnly.path)
+		defer check.Close()
+		if left, err := check.LoadPendingLimitOrders(); err != nil || len(left) != 0 {
+			t.Fatalf("the cleared row must be gone: %v %+v", err, left)
+		}
+	})
+
+	t.Run("startup warns once for the row with no open position", func(t *testing.T) {
+		const want = "paper manual limit order pm-args/BTC oid=9001"
+		warnings := paperManualLimitRowStartupWarnings(startup.cfg, startup.store.LoadPendingLimitOrders)
+		if len(warnings) != 1 || !strings.Contains(warnings[0], want) {
+			t.Fatalf("one warning must name the strategy, coin and order id: %v", warnings)
+		}
+		mock := &mockNotifier{}
+		sendPaperManualStartupWarnings(NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner"}), warnings)
+		if len(mock.dms) != 1 || mock.dms[0].userID != "owner" || !strings.Contains(mock.dms[0].content, want) {
+			t.Fatalf("the owner must get one direct message that names the row: %+v", mock.dms)
+		}
+		startup.store.Close()
+		run := e.command(startup.path, nil, "--once", "--status-port", strconv.Itoa(htfITFreePort(t)))
+		if run.code != 0 {
+			t.Fatalf("--once failed:\n%s", run)
+		}
+		if n := strings.Count(run.stdout, "[WARN] "+want); n != 1 {
+			t.Fatalf("the run must print one limit order warning, got %d:\n%s", n, run.stdout)
+		}
+		if strings.Contains(run.stdout, "[WARN] paper manual position") {
+			t.Fatalf("no paper position is open, so no position warning is due:\n%s", run.stdout)
+		}
+		if !strings.Contains(run.stdout, "limit order cannot be read or cancelled from this config pm-args/BTC oid=9001") {
+			t.Fatalf("the run must raise the CRITICAL line for the row:\n%s", run.stdout)
+		}
+		if kinds := e.venueKinds(); kinds["cancel"] != 0 || kinds["limit_status"] != 0 || kinds["refused_cancel"] != 0 {
+			t.Fatalf("a config with only paper strategies reached the venue substitute: %v", kinds)
+		}
+		check := openMRPStore(t, startup.path)
+		defer check.Close()
+		left, err := check.LoadPendingLimitOrders()
+		if err != nil || len(left) != 1 || left[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("the run must mark the row for the operator: %v %+v", err, left)
 		}
 	})
 }

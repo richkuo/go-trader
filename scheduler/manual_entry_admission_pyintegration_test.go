@@ -299,7 +299,7 @@ func meaSeed(e *meaEnv, ids ...string) {
 	for _, id := range ids {
 		qty := 0.01
 		if strings.HasSuffix(id, "close") {
-			qty = 0.1
+			qty = 0.2
 		}
 		positions[id] = &Position{Symbol: "BTC", Side: "long", Quantity: qty, InitialQuantity: qty, AvgCost: 100, EntryATR: 0.7, OwnerStrategyID: id, TradePositionID: id + "-pos", OpenedAt: openedAt}
 	}

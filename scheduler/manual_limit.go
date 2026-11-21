@@ -450,8 +450,8 @@ func clearOperatorRequiredLimitRowRefusal(cfg *Config, o PendingLimitOrder, flat
 			o.OrderOID)
 	}
 	if !flattened {
-		return fmt.Sprintf("refusing: pass --flattened to assert that you have confirmed on the Hyperliquid UI that the %s position from oid=%d is closed — the scheduler cannot verify a flatten for a strategy it does not own",
-			o.Symbol, o.OrderOID)
+		return fmt.Sprintf("refusing: pass --flattened to assert that you have confirmed on the Hyperliquid UI that oid=%d no longer rests and that the %s position from it is closed — the scheduler cannot verify a flatten for a strategy it does not own",
+			o.OrderOID, o.Symbol)
 	}
 	return ""
 }
@@ -525,14 +525,14 @@ func runManualClearLimitRow(args []string) int {
 		return 1
 	}
 	if *dryRun {
-		fmt.Printf("[dry-run] would discard the recovery record for oid=%d; the unadopted fill is NOT booked and stays off the ledger\n", o.OrderOID)
+		fmt.Printf("[dry-run] would discard the recovery record for oid=%d; a fill the book does not hold is NOT booked and stays off the ledger\n", o.OrderOID)
 		return 0
 	}
 	if err := stateDB.DeletePendingLimitOrder(o.ID); err != nil {
 		fmt.Fprintf(os.Stderr, "error clearing queue row %d: %v\n", o.ID, err)
 		return 1
 	}
-	fmt.Printf("Cleared queue row %d (oid=%d). Its unadopted fill was never booked, so it stays off the ledger — the scheduler stops alerting on it next cycle.\n",
+	fmt.Printf("Cleared queue row %d (oid=%d). A fill the book does not hold was never booked, so it stays off the ledger — the scheduler stops alerting on it next cycle.\n",
 		o.ID, o.OrderOID)
 	return 0
 }
@@ -727,7 +727,12 @@ const (
 	orphanLimitStateResting
 	orphanLimitStateOffBookUnadoptedFill
 	orphanLimitStateOffBookRowStuck
+	orphanLimitStateUnscripted
 )
+
+func paperManualLimitRowOwner(sc StrategyConfig, known bool) bool {
+	return known && sc.Platform == "hyperliquid" && sc.Type == "manual" && portfolioScopeFor(sc) != ScopeLive
+}
 
 type orphanLimitCancelOutcome struct {
 	Resolved     bool
@@ -772,7 +777,7 @@ func cancelOrphanedLimitOrder(state *AppState, cfg *Config, store *StateStore, m
 	candidates, _ := collectKillSwitchLimitOrderCandidates(
 		[]PendingLimitOrder{o}, killSwitchLimitOrderRoster(cfg.Strategies))
 	if len(candidates) == 0 {
-		out.State = orphanLimitStateUnknown
+		out.State = orphanLimitStateUnscripted
 		out.Reason = "no live Hyperliquid strategy with a script remains in this config to read or cancel it — its on-chain state was never read, so manual intervention is required"
 		return out
 	}
@@ -856,6 +861,14 @@ func applyOrphanLimitOperatorRequired(store *StateStore, o PendingLimitOrder, ou
 		}
 		return
 	}
+	if !outcome.Resolved && outcome.State == orphanLimitStateUnscripted {
+		if o.OperatorRequiredSince.IsZero() {
+			if err := store.MarkPendingLimitOrderOperatorRequired(o.ID, now); err != nil {
+				fmt.Printf("[limit] failed to persist the operator-required marker on row %d: %v\n", o.ID, err)
+			}
+		}
+		return
+	}
 	if !o.OperatorRequiredSince.IsZero() && !outcome.Resolved {
 		if err := store.ClearPendingLimitOrderOperatorRequired(o.ID); err != nil {
 			fmt.Printf("[limit] failed to clear the operator-required marker on row %d: %v\n", o.ID, err)
@@ -897,7 +910,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 		sc, known := scByID[o.StrategyID]
 		if block := killSwitchLimitOrderAdoptionBlock(sc, known); block != "" {
 			expired := !o.ExpiresAt.IsZero() && now.After(o.ExpiresAt)
-			if !o.CancelRequested && !expired {
+			if !o.CancelRequested && !expired && !paperManualLimitRowOwner(sc, known) {
 				fmt.Printf("[limit] skipping row %d: %s (%q) and no cancellation is queued for it\n", o.ID, block, o.StrategyID)
 				continue
 			}

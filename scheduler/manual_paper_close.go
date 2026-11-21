@@ -149,6 +149,49 @@ func queuePaperManualCycleClose(in paperManualCycleCloseInput) paperManualCycleC
 	return paperManualCycleCloseOutcome{Queued: true, Action: booking.Action}
 }
 
+func paperManualLimitRowStartupWarnings(cfg *Config, loader func() ([]PendingLimitOrder, error)) []string {
+	if cfg == nil || loader == nil {
+		return nil
+	}
+	owners := make(map[string]StrategyConfig)
+	for _, sc := range cfg.Strategies {
+		if paperManualLimitRowOwner(sc, true) {
+			owners[sc.ID] = sc
+		}
+	}
+	if len(owners) == 0 {
+		return nil
+	}
+	orders, err := loader()
+	if err != nil {
+		return []string{fmt.Sprintf("paper manual limit orders: the resting limit order queue could not be read (%v), so the scheduler cannot tell whether a paper manual strategy still owns a real Hyperliquid limit order from a release before the paper manual order guard. Check the open orders of each paper manual coin on Hyperliquid.", err)}
+	}
+	sort.SliceStable(orders, func(i, j int) bool {
+		if orders[i].StrategyID != orders[j].StrategyID {
+			return orders[i].StrategyID < orders[j].StrategyID
+		}
+		return orders[i].OrderOID < orders[j].OrderOID
+	})
+	var out []string
+	for _, o := range orders {
+		if _, ok := owners[o.StrategyID]; !ok {
+			continue
+		}
+		out = append(out, fmt.Sprintf("paper manual limit order %s/%s oid=%d (%s %.6f @ $%.4f): a release before the paper manual order guard placed this order on Hyperliquid for a paper manual strategy, and it can still rest and fill as real exposure. The scheduler cancels it on its next cycle through a live Hyperliquid strategy's script. With no live Hyperliquid strategy in this config it raises a CRITICAL alert: then cancel oid=%d on the Hyperliquid UI, close any position it opened and run `go-trader manual-clear-limit-row %d --flattened`.",
+			o.StrategyID, o.Symbol, o.OrderOID, o.Side, o.OrderSize, o.LimitPrice, o.OrderOID, o.OrderOID))
+	}
+	return out
+}
+
+func sendPaperManualStartupWarnings(notifier *MultiNotifier, warnings []string) {
+	if len(warnings) == 0 || notifier == nil || !notifier.HasOwner() {
+		return
+	}
+	for _, msg := range warnings {
+		notifier.SendOwnerDM("[state] WARNING: " + msg)
+	}
+}
+
 func paperManualPositionStartupWarnings(cfg *Config, state *AppState) []string {
 	if cfg == nil || state == nil {
 		return nil
