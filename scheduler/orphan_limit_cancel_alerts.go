@@ -139,7 +139,7 @@ func formatOrphanLimitCancelDM(o PendingLimitOrder, block string, outcome orphan
 		if outcome.Proof.Unbookable != "" {
 			b.WriteString("• The row's recorded fill does not match the durable trades of this order, so the scheduler cannot prove what the book holds for it and never deletes the row by itself\n")
 			fmt.Fprintf(&b, "• Until the row is cleared, no limit fill on %s is booked\n", o.Symbol)
-			fmt.Fprintf(&b, "Compare the %s position on the Hyperliquid UI with the book, flatten any size the book does not hold, then run `go-trader manual-clear-limit-row %d --flattened`. The command books nothing.", o.Symbol, o.OrderOID)
+			b.WriteString(strings.TrimSuffix(limitUnbookableFlattenInstruction(o, outcome.Proof.Executed, outcome.Proof.ProvenAboveBooked()), "\n"))
 		} else {
 			b.WriteString("• This is a scheduler bookkeeping failure, and it is not exposure on the exchange\n")
 			b.WriteString("The reconciler retries every cycle and clears the row once the write succeeds.")
@@ -170,7 +170,9 @@ func reportOrphanLimitCancel(notifier *MultiNotifier, o PendingLimitOrder, block
 		return ""
 	}
 	msg := formatOrphanLimitCancelDM(o, block, outcome)
-	if markerNew {
+	if markerNew && outcome.Proof.Unbookable != "" {
+		msg += "\n• The scheduler recorded durable terminal, off-book proof on this row and marked it as needing an operator"
+	} else if markerNew {
 		msg += "\n" + strings.TrimSuffix(limitOperatorMarkerNote(o, true), "\n")
 	}
 	if notifier != nil && notifier.HasBackends() {

@@ -444,10 +444,21 @@ func clearOperatorRequiredLimitRowRefusal(cfg *Config, o PendingLimitOrder, flat
 		return refusal
 	}
 	if !flattened {
+		if ev, ok := parseLimitOperatorEvidence(o.OperatorEvidenceJSON); ok && ev.Unbookable {
+			return fmt.Sprintf("refusing: pass --flattened to assert that you have confirmed on the Hyperliquid UI that no %s size from oid=%d remains open outside the scheduler's book — the flag does NOT ask you to close size the book holds, and the scheduler cannot verify size it does not track",
+				o.Symbol, o.OrderOID)
+		}
 		return fmt.Sprintf("refusing: pass --flattened to assert that you have confirmed on the Hyperliquid UI that the %s position from oid=%d is closed — the scheduler cannot verify a flatten for a strategy it does not own",
 			o.Symbol, o.OrderOID)
 	}
 	return ""
+}
+
+func clearedLimitRowLedgerNote(o PendingLimitOrder) string {
+	if ev, ok := parseLimitOperatorEvidence(o.OperatorEvidenceJSON); ok && ev.Unbookable && ev.ExecutedSize <= ev.BookedSize+limitFillEpsilon {
+		return "the book keeps the fill it already holds for this order, and nothing is booked or removed"
+	}
+	return "the unadopted fill is NOT booked and stays off the ledger"
 }
 
 func scByIDLookup(cfg *Config, id string) (StrategyConfig, bool) {
@@ -462,7 +473,7 @@ func scByIDLookup(cfg *Config, id string) (StrategyConfig, bool) {
 func runManualClearLimitRow(args []string) int {
 	fs := flag.NewFlagSet("manual-clear-limit-row", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
-	flattened := fs.Bool("flattened", false, "Assert you confirmed on the Hyperliquid UI that the position from this order is closed")
+	flattened := fs.Bool("flattened", false, "Assert you confirmed on the Hyperliquid UI that no position size from this order remains open outside the scheduler's book")
 	dryRun := fs.Bool("dry-run", false, "Print the record that would be discarded without deleting it")
 
 	args = reorderArgsForPositional(args, collectBoolFlagNames(fs))
@@ -518,15 +529,15 @@ func runManualClearLimitRow(args []string) int {
 		return 1
 	}
 	if *dryRun {
-		fmt.Printf("[dry-run] would discard the recovery record for oid=%d; the unadopted fill is NOT booked and stays off the ledger\n", o.OrderOID)
+		fmt.Printf("[dry-run] would discard the recovery record for oid=%d; %s\n", o.OrderOID, clearedLimitRowLedgerNote(o))
 		return 0
 	}
 	if err := stateDB.DeletePendingLimitOrderIfUnchanged(o); err != nil {
 		fmt.Fprintf(os.Stderr, "error clearing queue row %d: %v\n", o.ID, err)
 		return 1
 	}
-	fmt.Printf("Cleared queue row %d (oid=%d). Its unadopted fill was never booked, so it stays off the ledger — the scheduler stops alerting on it next cycle.\n",
-		o.ID, o.OrderOID)
+	fmt.Printf("Cleared queue row %d (oid=%d): %s — the scheduler stops alerting on it next cycle.\n",
+		o.ID, o.OrderOID, clearedLimitRowLedgerNote(o))
 	return 0
 }
 

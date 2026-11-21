@@ -499,6 +499,12 @@ func TestLimitFillProofLifecycle(t *testing.T) {
 		if h.dmsContaining("retries every cycle") != 0 {
 			t.Fatalf("the alert must not promise automatic booking for a refused booking, dms = %+v", h.mock.dms)
 		}
+		if h.dmsContaining("ONLY that unbooked 0.600000") != 1 || h.dmsContaining("flatten the position by hand") != 0 {
+			t.Fatalf("the first alert must tell the operator to flatten only the 0.6 that was never booked, dms = %+v", h.mock.dms)
+		}
+		if h.dmsContaining("no other limit fill on ETH is booked") != 1 {
+			t.Fatalf("a lineage hold must say that it holds the coin's other fills, dms = %+v", h.mock.dms)
+		}
 
 		h.run()
 		if got := h.dmsContaining("Limit fill NOT booked"); got != 1 {
@@ -533,6 +539,17 @@ func TestLimitFillProofLifecycle(t *testing.T) {
 			t.Fatalf("seed legacy watermark: %v", err)
 		}
 		seedLimitFillLineage(t, h.db, 0, h.sc.ID, "ETH", 9001, 0.2, 2000, "legacy-position")
+		h.mu.Lock()
+		h.state.Strategies[h.sc.ID].Positions["ETH"] = &Position{
+			Symbol: "ETH", Quantity: 0.3, InitialQuantity: 0.3, AvgCost: 2000, Side: "long",
+			Multiplier: 1, Leverage: h.sc.Leverage, OwnerStrategyID: h.sc.ID, OpenedAt: time.Now().UTC(),
+			TradePositionID: "legacy-position",
+		}
+		saveErr := SaveStateWithStore(h.state, h.store)
+		h.mu.Unlock()
+		if saveErr != nil {
+			t.Fatalf("save the legacy position: %v", saveErr)
+		}
 		rows := h.rows()
 		if len(rows) != 1 || rows[0].FillProofVersion != 0 || rows[0].FilledSize != 0.3 {
 			t.Fatalf("the seeded row must be a legacy watermark: %+v", rows)
@@ -557,11 +574,20 @@ func TestLimitFillProofLifecycle(t *testing.T) {
 		if h.dmsContaining("cancelled with no fill") != 0 || h.dmsContaining("remainder cancelled") != 0 {
 			t.Fatalf("a held row must send no finalization notice, dms = %+v", h.mock.dms)
 		}
+		if h.dmsContaining("flatten the position by hand") != 0 || h.dmsContaining("ONLY that unbooked") != 0 {
+			t.Fatalf("the first alert must not tell the operator to close size the book holds, dms = %+v", h.mock.dms)
+		}
+		if h.dmsContaining("Do NOT close the position the scheduler's book holds") != 1 || h.dmsContaining("if they match, nothing needs flattening") != 1 {
+			t.Fatalf("the first alert must say the book holds the position and nothing needs flattening when the venue matches, dms = %+v", h.mock.dms)
+		}
 		if code := h.clearCommand("9001", "--flattened"); code != 0 {
 			t.Fatalf("manual-clear-limit-row --flattened must accept the marked legacy row, exit = %d", code)
 		}
 		if rows := h.rows(); len(rows) != 0 {
 			t.Fatalf("the accepted clear must remove the row: %+v", rows)
+		}
+		if pos := h.position(); pos == nil || pos.Quantity != 0.3 {
+			t.Fatalf("the accepted clear must leave the booked position unchanged: %+v", pos)
 		}
 		if got := h.durableEntryQty(); got != 0.2 {
 			t.Fatalf("the accepted clear must add no trade, durable = %g", got)
@@ -647,6 +673,9 @@ func TestLimitFillProofLifecycle(t *testing.T) {
 		if h.dmsContaining("clears the row once the write succeeds") != 0 {
 			t.Fatalf("the alert must not promise an automatic clear, dms = %+v", h.mock.dms)
 		}
+		if h.dmsContaining("flatten the position by hand") != 0 || h.dmsContaining("if they match, nothing needs flattening") != 1 {
+			t.Fatalf("the orphan alert must not tell the operator to close size the book holds, dms = %+v", h.mock.dms)
+		}
 		if got := clearOperatorRequiredLimitRowRefusal(h.cfg, rows[0], true); got != "" {
 			t.Fatalf("the clear must accept the marked orphan row with --flattened, got %q", got)
 		}
@@ -681,6 +710,12 @@ func TestLimitFillProofLifecycle(t *testing.T) {
 		if got := h.durableEntryQty(); got != 0 {
 			t.Fatalf("the rejected booking must write no trade, got %g", got)
 		}
+		if h.dmsContaining("ONLY that unbooked 0.500000") != 1 || h.dmsContaining("flatten the position by hand") != 0 {
+			t.Fatalf("the first alert must tell the operator to flatten only the 0.5 the book does not hold, dms = %+v", h.mock.dms)
+		}
+		if h.dmsContaining("no other limit fill on ETH is booked") != 0 || h.dmsContaining("does not hold the other limit fills on ETH") != 1 {
+			t.Fatalf("a book-rejected row must not claim that it holds the coin's other fills, dms = %+v", h.mock.dms)
+		}
 
 		h.closeBookedPosition()
 		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.5})
@@ -690,6 +725,55 @@ func TestLimitFillProofLifecycle(t *testing.T) {
 		}
 		if rows := h.rows(); len(rows) != 0 {
 			t.Fatalf("the booked terminal row must finalize: %+v", rows)
+		}
+	})
+
+	t.Run("BookRejectedRowDoesNotHoldItsCoinPeer", func(t *testing.T) {
+		h := newLimitProofHarness(t, 0.5)
+		peer := h.sc
+		peer.ID = "hl-manual-eth-peer"
+		h.cfg.Strategies = append(h.cfg.Strategies, peer)
+		h.mu.Lock()
+		h.state.Strategies[peer.ID] = &StrategyState{ID: peer.ID, Platform: "hyperliquid", Type: "manual", Positions: map[string]*Position{}, Cash: 10000}
+		h.state.Strategies[h.sc.ID].Positions["ETH"] = &Position{
+			Symbol: "ETH", Quantity: 0.2, InitialQuantity: 0.2, AvgCost: 1990, Side: "long",
+			Multiplier: 1, Leverage: h.sc.Leverage, OwnerStrategyID: h.sc.ID, OpenedAt: time.Now().UTC(),
+			TradePositionID: "other-entry",
+		}
+		err := SaveStateWithStore(h.state, h.store)
+		h.mu.Unlock()
+		if err != nil {
+			t.Fatalf("save the peer strategy and the other entry: %v", err)
+		}
+		if _, err := h.db.InsertPendingLimitOrder(PendingLimitOrder{
+			StrategyID: peer.ID, Symbol: "ETH", Side: "long", OrderOID: 9002,
+			LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("seed peer row: %v", err)
+		}
+		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 1.2})
+		h.status = func() (*HyperliquidLimitStatusResult, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				provenLimitStatus(9001, "ETH", "filled", 0.5, 0.5, 2000, 0.25),
+				provenLimitStatus(9002, "ETH", "filled", 0.5, 0.5, 2000, 0.25),
+			}}, nil
+		}
+		peerPosition := func() *Position { return h.state.Strategies[peer.ID].Positions["ETH"] }
+
+		h.run()
+		if h.dmsContaining("does not hold the other limit fills on ETH") != 1 || h.dmsContaining("no other limit fill on ETH is booked") != 0 {
+			t.Fatalf("the alert for the rejected row must say that it does not hold its coin peers, dms = %+v", h.mock.dms)
+		}
+		h.run()
+		if pos := peerPosition(); pos == nil || pos.Quantity != 0.5 {
+			t.Fatalf("the peer fill must book while the book-rejected row is unresolved, as the alert says: %+v", pos)
+		}
+		rows := h.rows()
+		if len(rows) != 1 || rows[0].OrderOID != 9001 || rows[0].FilledSize != 0 || rows[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("only the marked book-rejected row must remain: %+v", rows)
+		}
+		if pos := h.position(); pos == nil || pos.Quantity != 0.2 {
+			t.Fatalf("the rejected booking must leave the other entry unchanged: %+v", pos)
 		}
 	})
 }

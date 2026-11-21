@@ -280,6 +280,28 @@ func limitOperatorMarkerNote(o PendingLimitOrder, markerNew bool) string {
 	return fmt.Sprintf("• The scheduler recorded durable terminal, off-book proof on this row and marked it as needing an operator. `go-trader manual-clear-limit-row %d --flattened` now accepts it after you flatten the position by hand, and it books nothing\n", o.OrderOID)
 }
 
+func limitUnbookableFlattenInstruction(o PendingLimitOrder, executed float64, aboveBooked bool) string {
+	if aboveBooked {
+		unbooked := executed - o.FilledSize
+		return fmt.Sprintf("• This order executed %.6f %s and the scheduler booked %.6f of it, so %.6f was never booked. Flatten on Hyperliquid ONLY that unbooked %.6f if it is still open, and do NOT close size the scheduler's book holds. Then clear the record with `go-trader manual-clear-limit-row %d --flattened` — the command books nothing\n",
+			executed, o.Symbol, o.FilledSize, unbooked, unbooked, o.OrderOID)
+	}
+	return fmt.Sprintf("• The venue confirms the %.6f %s fill this row records, so no size from this order is known to be outside the book. Do NOT close the position the scheduler's book holds. Compare the %s position on Hyperliquid with the book: if they match, nothing needs flattening; flatten ONLY size the book does not hold. Then clear the record with `go-trader manual-clear-limit-row %d --flattened` — the command books nothing\n",
+		o.FilledSize, o.Symbol, o.Symbol, o.OrderOID)
+}
+
+func limitUnbookableOperatorNote(o PendingLimitOrder, p limitRowProof, markerNew bool) string {
+	marked := !o.OperatorRequiredSince.IsZero() && o.OperatorEvidenceJSON != ""
+	if !marked && !markerNew {
+		return fmt.Sprintf("• The row becomes clearable with `go-trader manual-clear-limit-row %d --flattened` only after the scheduler proves the order is terminal and off the book — cancel the order with `go-trader manual-cancel %s` if it still rests\n", o.OrderOID, o.StrategyID)
+	}
+	note := ""
+	if markerNew {
+		note = "• The scheduler recorded durable terminal, off-book proof on this row and marked it as needing an operator\n"
+	}
+	return note + limitUnbookableFlattenInstruction(o, p.Executed, p.ProvenAboveBooked())
+}
+
 func formatLimitFillExposureDM(o PendingLimitOrder, exchangeFill float64, d limitFillExposureDecision, markerNew bool) string {
 	var b strings.Builder
 	if d.Verdict == limitFillExposureUnbacked {
@@ -350,18 +372,18 @@ func formatLimitFillHeldDM(o PendingLimitOrder, p limitRowProof, reason string, 
 		b.WriteString("• The venue no longer retains the fills of this order, so automatic booking cannot succeed\n")
 	case p.Unbookable != "":
 		b.WriteString("• Retrying cannot change this while the book stays as it is: the venue proof is complete and the scheduler's own book refuses the row, so no automatic path books or finalizes it\n")
-		fmt.Fprintf(&b, "• Until the row is resolved, no other limit fill on %s is booked\n", o.Symbol)
-		switch {
-		case markerNew:
-		case !o.OperatorRequiredSince.IsZero() && o.OperatorEvidenceJSON != "":
-			fmt.Fprintf(&b, "• The row carries terminal, off-book proof. Flatten on Hyperliquid any size this order left open that the book does not hold, then clear the record with `go-trader manual-clear-limit-row %d --flattened` — the command books nothing\n", o.OrderOID)
-		default:
-			fmt.Fprintf(&b, "• The row becomes clearable with `go-trader manual-clear-limit-row %d --flattened` only after the scheduler proves the order is terminal and off the book — cancel the order with `go-trader manual-cancel %s` if it still rests\n", o.OrderOID, o.StrategyID)
+		if p.Hold != "" {
+			fmt.Fprintf(&b, "• Until the row is resolved, no other limit fill on %s is booked\n", o.Symbol)
+		} else {
+			fmt.Fprintf(&b, "• This row does not hold the other limit fills on %s: each still books when live exposure backs every pending fill on the coin\n", o.Symbol)
 		}
+		b.WriteString(limitUnbookableOperatorNote(o, p, markerNew))
 	default:
 		b.WriteString("• The reconciler retries every cycle and books the fill once its complete history matches the order and live exposure supports it\n")
 	}
-	b.WriteString(limitOperatorMarkerNote(o, markerNew))
+	if p.Unbookable == "" {
+		b.WriteString(limitOperatorMarkerNote(o, markerNew))
+	}
 	fmt.Fprintf(&b, "This alert repeats at most once every %s for this order.", effectiveAlertThrottleInterval())
 	return b.String()
 }

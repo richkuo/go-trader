@@ -222,7 +222,7 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 		}
 		if proof.ProvenAboveBooked() {
 			if !o.OperatorRequiredSince.IsZero() && o.OperatorEvidenceJSON != "" {
-				unresolve(fmt.Sprintf("order executed %.6f where the book holds %.6f (unadopted fill) and the scheduler marked the row as needing an operator — flatten the position by hand, then clear the row with `go-trader manual-clear-limit-row %d --flattened`",
+				unresolve(fmt.Sprintf("order executed %.6f where the book holds %.6f (unadopted fill) and the scheduler marked the row as needing an operator — follow the owner alert for this order (flatten only size the scheduler's book does not hold), then clear the row with `go-trader manual-clear-limit-row %d --flattened`",
 					proof.Executed, o.FilledSize, o.OrderOID))
 			} else if c.adoptionEligible() {
 				unresolve(fmt.Sprintf("order executed %.6f where the book holds %.6f (unadopted fill) — queue row kept so the scheduler books the fill before the next flatten",
