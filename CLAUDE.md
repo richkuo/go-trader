@@ -109,6 +109,7 @@ After any source edit run `python3 -I scripts/agent_guide.py`,verify with `bash 
 
 ## PRs/issues
 - No bare `#N` in lists;verification after `## Summary`.Bodies end `LLM: <model> | <effort> | Harness: <action>`,no `Co-authored-by`
+- Hosted proof note:1 file `docs/hosted-proofs/<issue>.md`,line 1 `Hosted proof run for issue <issue>.`;proof branch ONLY,PR closed unmerged,never merge
 - Long-lived PR:diff `origin/main..HEAD` for reverts.Reviews follow `.github/prompts/pr-review-format-local.md`,never gate on CI;findings restate as invariant,list breaking states(inverse,compound)
 
 ## Deploy
