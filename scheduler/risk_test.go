@@ -996,7 +996,7 @@ func TestKillSwitchLatchResetPaths(t *testing.T) {
 			WarningSent:              true,
 		}
 
-		if ok := AutoResetConfirmedFlatKillSwitch(prs, 1216.07, true, "confirmed flat; no owner configured"); !ok {
+		if ok := AutoResetConfirmedFlatKillSwitch(prs, 1216.07, "confirmed flat; no owner configured"); !ok {
 			t.Fatal("expected auto-reset to return true")
 		}
 		if prs.KillSwitchActive {
@@ -1008,8 +1008,11 @@ func TestKillSwitchLatchResetPaths(t *testing.T) {
 		if prs.WarningSent {
 			t.Error("expected WarningSent=false after confirmed-flat auto-reset")
 		}
-		if prs.PeakValue != 1216.07 {
-			t.Errorf("expected PeakValue re-baselined to post-close value 1216.07; got %.2f", prs.PeakValue)
+		if prs.PeakValue != 1261.87 {
+			t.Errorf("expected PeakValue kept at 1261.87 until the first eligible post-reset reading; got %.2f", prs.PeakValue)
+		}
+		if !prs.PeakRebaselinePending {
+			t.Error("expected the auto-reset to leave the peak rebaseline pending")
 		}
 		if prs.CurrentDrawdownPct != 0 {
 			t.Errorf("expected CurrentDrawdownPct=0; got %.2f", prs.CurrentDrawdownPct)
@@ -1027,8 +1030,8 @@ func TestKillSwitchLatchResetPaths(t *testing.T) {
 		if evt.DrawdownPct != 0 {
 			t.Errorf("expected event drawdown 0; got %.2f", evt.DrawdownPct)
 		}
-		if evt.PortfolioValue != 1216.07 || evt.PeakValue != 1216.07 {
-			t.Errorf("expected event portfolio/peak re-baselined to 1216.07; got portfolio=%.2f peak=%.2f",
+		if evt.PortfolioValue != 1216.07 || evt.PeakValue != 1261.87 {
+			t.Errorf("expected event to record the observed 1216.07 and the kept peak 1261.87; got portfolio=%.2f peak=%.2f",
 				evt.PortfolioValue, evt.PeakValue)
 		}
 		if !strings.Contains(evt.Details, "previous equity drawdown=3.63%") ||
@@ -1046,7 +1049,7 @@ func TestKillSwitchLatchResetPaths(t *testing.T) {
 		}
 
 		if ok := AutoResetConfirmedFlatKillSwitch(
-			prs, 0, false, "confirmed flat on missing-balance cycle",
+			prs, 0, "confirmed flat on missing-balance cycle",
 		); !ok {
 			t.Fatal("expected auto-reset to clear the ownerless latch")
 		}
@@ -1063,8 +1066,8 @@ func TestKillSwitchLatchResetPaths(t *testing.T) {
 		if evt.PortfolioValue != 0 || evt.PeakValue != 10000 {
 			t.Fatalf("event must preserve observed fallback and retained peak: %+v", evt)
 		}
-		if !strings.Contains(evt.Details, "peak retained") ||
-			!strings.Contains(evt.Details, "current equity is not trustworthy") {
+		if !strings.Contains(evt.Details, "peak kept at $10000.00") ||
+			!strings.Contains(evt.Details, "first eligible equity reading") {
 			t.Fatalf("event must explain retained peak: %q", evt.Details)
 		}
 	})

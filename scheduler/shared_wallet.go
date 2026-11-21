@@ -337,6 +337,17 @@ func computeSubsetPortfolioValue(
 	walletBalances map[SharedWalletKey]float64,
 	accountShared map[SharedWalletKey][]string,
 ) (float64, bool) {
+	total, usedFallback, _ := computeSubsetPortfolioValuation(subset, state, prices, walletBalances, accountShared)
+	return total, usedFallback
+}
+
+func computeSubsetPortfolioValuation(
+	subset []StrategyConfig,
+	state *AppState,
+	prices map[string]float64,
+	walletBalances map[SharedWalletKey]float64,
+	accountShared map[SharedWalletKey][]string,
+) (float64, bool, []string) {
 	if accountShared == nil {
 		accountShared = detectSharedWallets(subset)
 	}
@@ -355,6 +366,7 @@ func computeSubsetPortfolioValue(
 	}
 
 	total := 0.0
+	var markValued []string
 
 	for _, sc := range subset {
 		if dedupeIDs[sc.ID] {
@@ -362,6 +374,7 @@ func computeSubsetPortfolioValue(
 		}
 		if s, ok := state.Strategies[sc.ID]; ok {
 			total += PortfolioValue(s, prices)
+			markValued = append(markValued, sc.ID)
 		}
 	}
 
@@ -376,6 +389,7 @@ func computeSubsetPortfolioValue(
 		for _, id := range riskPathWalletMemberIDs(key, subShared[key], subset) {
 			if s, ok := state.Strategies[id]; ok {
 				sumPV += PortfolioValue(s, prices)
+				markValued = append(markValued, id)
 			}
 		}
 		fmt.Printf("[WARN] shared-wallet %s/%s: balance fetch missing, falling back to sum(member PV)=$%.2f (peak will NOT be updated this cycle)\n",
@@ -383,7 +397,8 @@ func computeSubsetPortfolioValue(
 		total += sumPV
 	}
 
-	return total, usedFallback
+	sort.Strings(markValued)
+	return total, usedFallback, markValued
 }
 
 func computeTotalPortfolioValue(

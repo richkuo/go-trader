@@ -1309,7 +1309,7 @@ func killSwitchObservationNote(plan KillSwitchClosePlan) string {
 	if !plan.ObservedAt.IsZero() {
 		when = fmt.Sprintf("the cycle that prepared this prompt (%s)", plan.ObservedAt.UTC().Format(time.RFC3339))
 	}
-	note := fmt.Sprintf("The live position status above is an observation from %s, and positions can change before you reply. Verify current venue positions before you reply.", when)
+	note := fmt.Sprintf("The live position status in this prompt is an observation from %s, and positions can change before you reply. Verify current venue positions before you reply.", when)
 	if !plan.OnChainConfirmedFlat {
 		note += " At that observation the on-chain close was still retrying, and resting stop-losses may already be cancelled ahead of the flatten attempt — do not assume any remaining position is protected."
 	}
@@ -1339,28 +1339,30 @@ func killSwitchInstanceLabel(configPath string) string {
 	return "go-trader"
 }
 
-func formatKillSwitchResetPrompt(instanceLabel, hlAddr string, plan KillSwitchClosePlan, part RiskPartition, latched []RiskPartition) string {
+const killSwitchResetPeakNote = "The drawdown peak is kept until the first eligible equity reading after the reset; that reading becomes the new peak."
+
+func formatKillSwitchResetPrompt(instanceLabel, hlAddr, code string, plan KillSwitchClosePlan, part RiskPartition, latched []RiskPartition) string {
 	identity := instanceLabel
 	if hlAddr != "" && part.IsLive() {
 		identity = fmt.Sprintf("%s (Hyperliquid %s)", identity, hlAddr)
 	}
-	reply := "reset"
+	reply := "reset " + code
 	if len(latched) > 1 {
-		reply = "reset " + part.String()
+		reply = "reset " + part.String() + " " + code
 	}
-	resetNote := fmt.Sprintf("Replying '%s' only clears the %s kill switch latch so trading can resume next cycle — it does not itself close or protect any position.", reply, partitionLabel(part))
+	resetNote := fmt.Sprintf("Replying '%s' only clears the %s kill switch latch so trading can resume at the next cycle boundary. It does not itself close or protect any position. %s", reply, partitionLabel(part), killSwitchResetPeakNote)
 	if part.IsLive() {
 		resetNote += " " + killSwitchObservationNote(plan)
 	}
 	if len(latched) > 1 {
 		resetNote += fmt.Sprintf(" %d scopes are latched (%s); this prompt clears the %s scope only.", len(latched), joinScopeLabels(latched), partitionLabel(part))
 	}
-	return fmt.Sprintf("[KILL SWITCH %s] %s\n%s\n\n%s\nReply '%s' to proceed.", partitionLabel(part), identity, plan.DiscordMessage, resetNote, reply)
+	return fmt.Sprintf("[KILL SWITCH %s] %s\nReply '%s' to proceed (reply code %s belongs to this prompt only).\n%s\n\n%s", partitionLabel(part), identity, reply, code, resetNote, plan.DiscordMessage)
 }
 
-func formatKillSwitchResetPromptForScopes(instanceLabel, hlAddr string, plans map[RiskPartition]KillSwitchClosePlan, parts []RiskPartition, latched []RiskPartition) string {
+func formatKillSwitchResetPromptForScopes(instanceLabel, hlAddr, code string, plans map[RiskPartition]KillSwitchClosePlan, parts []RiskPartition, latched []RiskPartition) string {
 	if len(parts) == 1 {
-		return formatKillSwitchResetPrompt(instanceLabel, hlAddr, plans[parts[0]], parts[0], latched)
+		return formatKillSwitchResetPrompt(instanceLabel, hlAddr, code, plans[parts[0]], parts[0], latched)
 	}
 	sections := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -1374,6 +1376,6 @@ func formatKillSwitchResetPromptForScopes(instanceLabel, hlAddr string, plans ma
 		}
 		sections = append(sections, section)
 	}
-	note := fmt.Sprintf("%d scopes are latched (%s). One reply clears one scope only and does not itself close or protect any position; a new prompt follows for any scope still latched.", len(latched), joinScopeLabels(latched))
-	return fmt.Sprintf("%s\n\n%s\nReply %s to proceed.", strings.Join(sections, "\n\n"), note, killSwitchResetReplyOptions(latched))
+	note := fmt.Sprintf("%d scopes are latched (%s). One reply clears one scope only and does not itself close or protect any position; a new prompt follows for any scope still latched. %s", len(latched), joinScopeLabels(latched), killSwitchResetPeakNote)
+	return fmt.Sprintf("Reply %s to proceed (reply code %s belongs to this prompt only).\n%s\n\n%s", killSwitchResetReplyOptionsWithCode(latched, code), code, note, strings.Join(sections, "\n\n"))
 }

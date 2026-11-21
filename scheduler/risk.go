@@ -338,7 +338,7 @@ func applyQuotePrecisionPeakRebaseline(part RiskPartition, prs *PortfolioRiskSta
 		lines = append(lines, fmt.Sprintf("[WARN] #1820 quote-precision peak rebaseline [%s] %s: peak $%.4f -> $%.4f (value $%.4f, rounding bound $%.4f)",
 			label, sc.ID, oldPeak, newPeak, current, bound))
 	}
-	if prs.QuotePrecisionRebaselined {
+	if prs.QuotePrecisionRebaselined || prs.PeakRebaselinePending {
 		return lines
 	}
 	prs.QuotePrecisionRebaselined = true
@@ -465,8 +465,26 @@ type PortfolioRiskState struct {
 	ManualMarkBasisRebaselined bool `json:"manual_mark_basis_rebaselined,omitempty"`
 	QuotePrecisionRebaselined  bool `json:"quote_precision_rebaselined,omitempty"`
 	KillSwitchCloseApplied     bool `json:"kill_switch_close_applied,omitempty"`
+	PeakRebaselinePending      bool `json:"peak_rebaseline_pending,omitempty"`
 
+	peakRebaselineArmedAt     time.Time
 	retiredPairValuationSince string
+}
+
+func (prs *PortfolioRiskState) armPeakRebaseline() {
+	prs.PeakRebaselinePending = true
+	prs.peakRebaselineArmedAt = tradingNow().UTC()
+}
+
+func (prs *PortfolioRiskState) cancelPeakRebaseline() {
+	prs.PeakRebaselinePending = false
+	prs.peakRebaselineArmedAt = time.Time{}
+}
+
+func clonePortfolioRiskState(prs *PortfolioRiskState) PortfolioRiskState {
+	cp := *prs
+	cp.Events = append([]KillSwitchEvent(nil), prs.Events...)
+	return cp
 }
 
 type SharedWalletBalanceFetcher func(platform string) (float64, error)
@@ -550,6 +568,7 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 	prs.DrawdownReadingSubstituted = false
 	prs.UntrustedOverLimitSince = time.Time{}
 	prs.KillSwitchCloseApplied = false
+	prs.cancelPeakRebaseline()
 	addKillSwitchEvent(prs, "auto_reset", "",
 		0, totalBalance, totalBalance,
 		fmt.Sprintf("startup auto-clear: shared wallets %v reachable, total balance=$%.2f (peak re-baselined)",
@@ -561,12 +580,7 @@ func portfolioPeakRebaselineAvailable(usedPVFallback, usedStaleRiskBalance, pool
 	return !usedPVFallback && !usedStaleRiskBalance && pooledEquityComplete
 }
 
-func AutoResetConfirmedFlatKillSwitch(
-	prs *PortfolioRiskState,
-	rebaselineValue float64,
-	rebaselineAvailable bool,
-	details string,
-) bool {
+func AutoResetConfirmedFlatKillSwitch(prs *PortfolioRiskState, observedValue float64, details string) bool {
 	if prs == nil || !prs.KillSwitchActive {
 		return false
 	}
@@ -577,10 +591,8 @@ func AutoResetConfirmedFlatKillSwitch(
 		details = fmt.Sprintf("%s (previous equity drawdown=%.2f%%, previous margin drawdown=%.2f%%)",
 			details, prevEquityDrawdownPct, prevMarginDrawdownPct)
 	}
-	if !rebaselineAvailable {
-		details = fmt.Sprintf("%s (portfolio peak retained at $%.2f because current equity is not trustworthy)",
-			details, prs.PeakValue)
-	}
+	details = fmt.Sprintf("%s (portfolio peak kept at $%.2f until the first eligible equity reading after this reset and its close pass)",
+		details, prs.PeakValue)
 
 	prs.KillSwitchActive = false
 	prs.KillSwitchAt = time.Time{}
@@ -590,15 +602,13 @@ func AutoResetConfirmedFlatKillSwitch(
 	prs.LastWarningMarginDDPct = 0
 	prs.WarningEquityDeltaPct = 0
 	prs.WarningMarginDeltaPct = 0
-	if rebaselineAvailable {
-		prs.PeakValue = rebaselineValue
-	}
 	prs.CurrentDrawdownPct = 0
 	prs.CurrentMarginDrawdownPct = 0
 	prs.DrawdownReadingSubstituted = false
 	prs.UntrustedOverLimitSince = time.Time{}
 	prs.KillSwitchCloseApplied = false
-	addKillSwitchEvent(prs, "auto_reset", "", 0, rebaselineValue, prs.PeakValue, details)
+	prs.armPeakRebaseline()
+	addKillSwitchEvent(prs, "auto_reset", "", 0, observedValue, prs.PeakValue, details)
 	return true
 }
 
@@ -614,6 +624,7 @@ func ResetPortfolioKillSwitchManual(prs *PortfolioRiskState) float64 {
 	prs.DrawdownReadingSubstituted = false
 	prs.UntrustedOverLimitSince = time.Time{}
 	prs.KillSwitchCloseApplied = false
+	prs.armPeakRebaseline()
 	return priorDrawdownPct
 }
 
@@ -709,6 +720,7 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 	if (equityGuardArmed && !equityLatchDeferred && equityDD > cfg.MaxDrawdownPct) || (!equityGuardArmed && marginDD > cfg.MaxDrawdownPct) {
 		prs.KillSwitchActive = true
 		prs.KillSwitchAt = tradingNow().UTC()
+		prs.cancelPeakRebaseline()
 		prs.WarningSent = false
 		prs.WarnBandEnteredAt = time.Time{}
 		prs.LastWarningEquityDDPct = 0
@@ -1806,10 +1818,10 @@ func paperKillSwitchHeader(part RiskPartition) string {
 // source is latched and would clear the default paper partition when both are,
 // so the instruction always names the partition it belongs to.
 func paperKillSwitchManualResetLine(part RiskPartition) string {
-	return fmt.Sprintf("Reply to the owner DM with 'reset %s' to clear this latch.", part.String())
+	return fmt.Sprintf("Reply to the owner DM prompt with 'reset %s' followed by the prompt's reply code to clear this latch.", part.String())
 }
 
-const paperKillSwitchAutoResetLine = "Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle."
+const paperKillSwitchAutoResetLine = "Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle. The drawdown peak stays at its old value until the first eligible paper valuation after this close, which then becomes the new peak."
 
 func formatPaperKillSwitchMessage(part RiskPartition, reason string, closed []string) string {
 	return formatPaperKillSwitchMessageWithKept(part, reason, closed, nil)
@@ -1844,6 +1856,28 @@ type paperKillSwitchOutcome struct {
 	CloseApplied bool
 	AutoReset    bool
 	Message      string
+
+	preResetRisk    *PortfolioRiskState
+	preResetMessage string
+}
+
+func commitPaperKillSwitchAutoReset(state *AppState, part RiskPartition, out *paperKillSwitchOutcome, save func(RiskPartition) error) error {
+	if out == nil || !out.AutoReset {
+		return nil
+	}
+	err := fmt.Errorf("state store unavailable")
+	if save != nil {
+		err = save(part)
+	}
+	if err == nil {
+		return nil
+	}
+	if out.preResetRisk != nil {
+		*state.partitionRisk(part) = *out.preResetRisk
+	}
+	out.AutoReset = false
+	out.Message = out.preResetMessage
+	return err
 }
 
 // applyPaperKillSwitchCycle runs once per paper partition, on that partition's
@@ -1875,10 +1909,13 @@ func applyPaperKillSwitchCycle(state *AppState, cfg *Config, prices map[string]f
 	if len(out.Kept) > 0 {
 		details = fmt.Sprintf("%s; option legs kept open for settlement: %s", details, strings.Join(out.Kept, ", "))
 	}
-	out.AutoReset = AutoResetConfirmedFlatKillSwitch(prs, paperSR.TotalPV, paperSR.PeakRebaselineAvailable, details)
+	before := clonePortfolioRiskState(prs)
+	out.preResetMessage = out.Message
+	out.AutoReset = AutoResetConfirmedFlatKillSwitch(prs, paperSR.TotalPV, details)
 	if !out.AutoReset {
 		return out
 	}
+	out.preResetRisk = &before
 	if out.Message == "" {
 		out.Message = formatPaperKillSwitchMessageWithKept(paperSR.Partition, paperSR.Reason, nil, out.Kept)
 	}

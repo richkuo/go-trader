@@ -302,6 +302,10 @@ func formatCircuitBreakersResponse(state *AppState, now time.Time) string {
 				prs.UntrustedOverLimitSince.Format("2006-01-02 15:04 UTC"),
 				prs.UntrustedOverLimitSince.Add(untrustedEquityLatchDeferral).Format("2006-01-02 15:04 UTC")))
 		}
+		if !prs.KillSwitchActive && prs.PeakRebaselinePending {
+			sb.WriteString(fmt.Sprintf("Portfolio peak rebaseline WAITING [%s]: peak $%.2f is kept after the kill switch reset until the first eligible equity reading, which becomes the new peak\n",
+				label, prs.PeakValue))
+		}
 	}
 	if len(lines) == 0 {
 		if sb.Len() == 0 {
