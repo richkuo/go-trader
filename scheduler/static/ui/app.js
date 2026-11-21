@@ -3032,8 +3032,6 @@
       afterChartDraw(body);
       return;
     }
-    series.etag = r.etag;
-    series.resp = body;
     const last = chart.lastBarTime();
     const fresh = (body.candles || []).filter(function (c) {
       return last === null || Number(c.time) >= last;
@@ -3044,7 +3042,9 @@
       await recoverChartGap(series, last, Number(tail[0].time));
       return;
     }
-    chart.applyTail(fresh, body.forming_time);
+    if (!chart.applyTail(fresh, body.forming_time)) return;
+    series.etag = r.etag;
+    series.resp = body;
     afterChartDraw(body);
   }
 
