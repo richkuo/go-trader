@@ -3787,8 +3787,11 @@ After any source edit, run the generator and commit `AGENTS.md`; `bash scripts/c
 A rule stays in `CLAUDE.md` when it guards a command or an action with no file open, names two areas, cuts across files that one area glob list cannot cover, or protects money paths that span many files (HL protection, kill switch, storage, risk, locking).
 Claude Code loads a rule file when Read, Write or Edit touches a matching file, or when a Bash command reads one file (`cat`, `head`); Grep and `sed -i` do not load it, and after a Write the rule arrives with the tool result, after the content is written.
 After `/compact`, `CLAUDE.md` loads again and a rule file returns only on the next matching file.
-Each `paths:` glob is relative to the checkout root that holds `.claude/`; the main checkout's rules also match files under `.claude/worktrees/<name>/`, so a session or subagent that reads a worktree file from the main checkout loads both the main and the worktree copy of a rule.
-A subagent with `isolation: worktree` loads the main checkout's rules, not the worktree's.
+Each `paths:` glob is relative to the checkout root that holds `.claude/`.
+A session that starts in a worktree, or moves there with `EnterWorktree`, loads that worktree's rules.
+A main-checkout session or subagent that reads a file under `.claude/worktrees/<name>/` loads the worktree's copy of the rule; a main-checkout rule whose glob ends in `/**` loaded as well (two copies), while `scheduler/hedge*.go` did not.
+A subagent with `isolation: worktree` loads the main checkout's rules for files in its own worktree, not the worktree's copies.
+A subagent cannot call `EnterWorktree` (the tool refuses it from a subagent with a working-directory override).
 Claude Code reads `AGENTS.md` only under the `claude-md-and-agents-md` instruction-file setting, which loads the mirror on top of `CLAUDE.md`; the default `claude-md-or-agents-md` and `claude-md` keep it out.
 Codex and Cursor read `AGENTS.md` and get the complete rule set; the 28000-byte limit keeps the mirror below the Codex `project_doc_max_bytes` default of 32 KiB with margin for other instruction files, and below the 40000-character on-demand limit that Claude Code applies from v2.1.309.
 The loading results above come from `claude -p` runs on Claude Code 2.1.330 with an `InstructionsLoaded` hook in a scratch clone (pull request for issue 2084).
