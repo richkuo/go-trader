@@ -211,10 +211,13 @@
           </div>
           <div id="detail-panel" class="detail-panel">
             <div class="chart-panel">
-              <div class="chart-wrap">
-                <div id="chart"></div>
-                <div id="empty-chart" class="empty-state">No candles yet</div>
-                <div id="chart-failure" class="chart-failure" role="alert" hidden></div>
+              <div id="chart-frame" class="chart-frame">
+                <div id="chart-toolbar" class="chart-toolbar" aria-label="Chart display" hidden></div>
+                <div class="chart-wrap">
+                  <div id="chart"></div>
+                  <div id="empty-chart" class="empty-state">No candles yet</div>
+                  <div id="chart-failure" class="chart-failure" role="alert" hidden></div>
+                </div>
               </div>
               <p class="chart-attribution">TradingView Lightweight Charts™ · Copyright (с) 2025 TradingView, Inc. <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">https://www.tradingview.com/</a> · <a href="/dashboard/lightweight-charts.NOTICE.txt" target="_blank" rel="noopener noreferrer">Notice</a> · <a href="/dashboard/lightweight-charts.LICENSE.txt" target="_blank" rel="noopener noreferrer">License</a></p>
               <div id="trade-history" class="trade-history">
@@ -407,6 +410,7 @@
     </dialog>
     <script src="/dashboard/lightweight-charts.standalone.production.js"></script>
     <script src="/dashboard/chart.js"></script>
+    <script src="/dashboard/storage.js"></script>
     <script src="/dashboard/app.js"></script>
   </body>
 </html>

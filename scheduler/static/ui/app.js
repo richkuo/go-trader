@@ -106,37 +106,11 @@
     return msg;
   }
 
-  function createGuardedStorage(getStorage) {
-    function target() {
-      const storage = getStorage();
-      if (!storage) throw new Error("storage unavailable");
-      return storage;
-    }
+  function blockedStorage() {
     return {
-      read: function (key) {
-        try {
-          const value = target().getItem(key);
-          return { ok: true, value: value === null || value === undefined ? null : String(value) };
-        } catch (_err) {
-          return { ok: false };
-        }
-      },
-      write: function (key, value) {
-        try {
-          target().setItem(key, value);
-          return { ok: true };
-        } catch (_err) {
-          return { ok: false };
-        }
-      },
-      remove: function (key) {
-        try {
-          target().removeItem(key);
-          return { ok: true };
-        } catch (_err) {
-          return { ok: false };
-        }
-      },
+      read: function () { return { ok: false }; },
+      write: function () { return { ok: false }; },
+      remove: function () { return { ok: false }; },
     };
   }
 
@@ -167,6 +141,51 @@
     };
   }
 
+  function positiveFinite(value) {
+    return typeof value === "number" && isFinite(value) && value > 0;
+  }
+
+  function recognizedPartition(partition) {
+    return partition === "live" || partition === "paper" || /^paper:\S+$/.test(typeof partition === "string" ? partition : "");
+  }
+
+  function bookPositionLines(strategy, status, candles) {
+    function none(reason) {
+      return { lines: [], reason: reason };
+    }
+    if (!strategy || !status || !candles) return none("missing_input");
+    if (!recognizedPartition(strategy.partition)) return none("unknown_partition");
+    if (status.id !== strategy.id || candles.strategy_id !== strategy.id) return none("strategy_mismatch");
+    let source = typeof candles.source === "string" ? candles.source : "";
+    if (source.endsWith(":cached")) source = source.slice(0, -":cached".length);
+    if (!source || source === "trades") return none("ambiguous_candles");
+    const symbol = typeof status.symbol === "string" ? status.symbol : "";
+    if (!symbol || symbol !== strategy.symbol) return none("symbol_mismatch");
+    const positions = status.positions && typeof status.positions === "object" && !Array.isArray(status.positions)
+      ? status.positions
+      : {};
+    const matches = Object.keys(positions).filter(function (key) {
+      const pos = positions[key];
+      return !!pos && typeof pos === "object" && (key === symbol || pos.symbol === symbol);
+    });
+    if (matches.some(function (key) { return !!positions[key].hedge_for; })) return none("hedge_row");
+    if (matches.length === 0) return none("flat");
+    if (matches.length !== 1) return none("ambiguous_position");
+    const pos = positions[matches[0]];
+    if (matches[0] !== symbol || (pos.symbol !== undefined && pos.symbol !== symbol)) return none("ambiguous_position");
+    if (!positiveFinite(pos.quantity)) return none("flat");
+    if (typeof pos.position_id !== "string" || pos.position_id === "") return none("no_position_id");
+    const lines = [];
+    if (positiveFinite(pos.avg_cost)) {
+      lines.push({ price: pos.avg_cost, color: "#2563eb", title: "Book entry", style: "dashed" });
+    }
+    const stopOrderKnown = Number.isInteger(pos.stop_loss_oid) && pos.stop_loss_oid > 0;
+    if (positiveFinite(pos.stop_loss_trigger_px) && (strategy.partition !== "live" || stopOrderKnown)) {
+      lines.push({ price: pos.stop_loss_trigger_px, color: "#c23b3b", title: "Book-tracked stop", style: "dashed" });
+    }
+    return { lines: lines, reason: "" };
+  }
+
   function bearerHeaders(token) {
     if (!token || !/^[\t\x20-\x7e\x80-\xff]+$/.test(token)) return {};
     return { Authorization: "Bearer " + token };
@@ -179,7 +198,8 @@
     detailLoadAction: tuningDetailLoadAction,
     applyButtonState: tuningApplyButtonState,
     applyConfirmMessage: tuningApplyConfirmMessage,
-    createGuardedStorage: createGuardedStorage,
+    blockedStorage: blockedStorage,
+    bookPositionLines: bookPositionLines,
     createTokenState: createTokenState,
     bearerHeaders: bearerHeaders,
   };
@@ -192,7 +212,15 @@
   const STATUS_TOKEN_KEY = "goTraderStatusToken";
   const AUTH_CHECKING_TEXT = "Checking the token…";
   const AUTH_CHECK_FAILED_TEXT = "The token check did not finish. Try again.";
-  const guardedStorage = createGuardedStorage(function () { return window.localStorage; });
+  const storageLib = window.GoTraderStorage && typeof window.GoTraderStorage.createGuardedStorage === "function"
+    ? window.GoTraderStorage
+    : null;
+  const guardedStorage = storageLib
+    ? storageLib.createGuardedStorage(function () { return window.localStorage; })
+    : blockedStorage();
+  const chartPreferences = storageLib && typeof storageLib.createPreferenceAccessor === "function"
+    ? storageLib.createPreferenceAccessor(guardedStorage, storageLib.CHART_PREFERENCES_KEY)
+    : null;
   const statusToken = createTokenState(guardedStorage, STATUS_TOKEN_KEY);
 
   if (document.body.dataset.page === "tuning") {
@@ -225,6 +253,7 @@
       feedback: { issued: 0, accepted: 0 },
     },
     chartData: null,
+    statusData: null,
     tradeHistory: null,
     tuner: {
       config: null,
@@ -264,6 +293,8 @@
     empty: document.getElementById("empty-chart"),
     chartFailure: document.getElementById("chart-failure"),
     chartWrap: document.querySelector(".chart-wrap"),
+    chartFrame: document.getElementById("chart-frame"),
+    chartToolbar: document.getElementById("chart-toolbar"),
     tradeHistoryBody: document.getElementById("trade-history-body"),
     tradeHistoryEmpty: document.getElementById("trade-history-empty"),
     tradeHistoryTable: document.querySelector(".trade-history-table"),
@@ -1317,6 +1348,10 @@
     }
     const controller = window.GoTraderChart.create({
       container: els.chart,
+      toolbar: els.chartToolbar,
+      fullscreenTarget: els.chartFrame,
+      preferences: chartPreferences,
+      exportName: function () { return state.activeID; },
       minWidth: 320,
       minHeight: 320,
       isDark: isDarkMode,
@@ -1343,6 +1378,7 @@
     state.activeID = id;
     state.selectionEpoch += 1;
     state.chartData = null;
+    state.statusData = null;
     state.tradeHistory = null;
     if (state.chart) state.chart.clear();
     hideChartFailure();
@@ -2690,6 +2726,20 @@
     return chart.setMarkers(chartMarkersFromResponse(history));
   }
 
+  function currentInput(record) {
+    return !!record && record.strategyID === state.activeID && record.epoch === state.selectionEpoch;
+  }
+
+  function drawPositionLines() {
+    const chart = state.chart;
+    if (!chart) return true;
+    let lines = [];
+    if (currentInput(state.chartData) && currentInput(state.statusData)) {
+      lines = bookPositionLines(activeStrategy(), state.statusData.resp, state.chartData.resp).lines;
+    }
+    return chart.setPriceLines("position", lines);
+  }
+
   function drawChart() {
     const chart = state.chart;
     const data = state.chartData;
@@ -2697,6 +2747,7 @@
     const candles = data.resp.candles || [];
     if (!chart.setData({ candles: candles, source: data.resp.source })) return;
     if (!drawChartMarkers()) return;
+    if (!drawPositionLines()) return;
     hideChartFailure();
     els.empty.style.display = candles.length ? "none" : "flex";
     if (candles.length) chart.fitContent();
@@ -2711,12 +2762,14 @@
       resp = await getJSON("/api/strategies/" + encodeURIComponent(ticket.id) + "/candles?limit=400");
     } catch (err) {
       if (!acceptReply("candles", ticket)) return;
+      state.chartData = null;
+      drawPositionLines();
       if (err.status === 401) throw err;
       showChartFailure("The candle request failed: " + (err.message || String(err)));
       return;
     }
     if (!acceptReply("candles", ticket)) return;
-    state.chartData = { strategyID: ticket.id, resp: resp };
+    state.chartData = { strategyID: ticket.id, epoch: ticket.epoch, resp: resp };
     drawChart();
   }
 
@@ -2923,9 +2976,13 @@
       status = await getJSON("/api/strategies/" + encodeURIComponent(ticket.id) + "/status");
     } catch (err) {
       if (!acceptReply("status", ticket)) return;
+      state.statusData = null;
+      drawPositionLines();
       throw err;
     }
     if (!acceptReply("status", ticket)) return;
+    state.statusData = { strategyID: ticket.id, epoch: ticket.epoch, resp: status };
+    drawPositionLines();
     renderStatus(status);
   }
 
