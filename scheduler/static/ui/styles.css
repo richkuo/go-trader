@@ -665,11 +665,19 @@ h3 {
   padding: 1px 7px;
 }
 
+:root {
+  --trade-history-header: #f6f8f3;
+}
+
+html.dark {
+  --trade-history-header: #131816;
+}
+
 .trade-history {
   flex: 0 0 auto;
   border-top: 1px solid var(--line);
   padding: 12px 14px 14px;
-  background: #fbfcf8;
+  background: var(--sidebar-bg);
 }
 
 .trade-history h3 {
@@ -686,7 +694,7 @@ h3 {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #ffffff;
+  background: var(--panel);
 }
 
 .trade-history-table {
@@ -700,14 +708,14 @@ h3 {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: #f6f8f3;
+  background: var(--trade-history-header);
 }
 
 .trade-history-table th,
 .trade-history-table td {
   padding: 7px 10px;
   text-align: left;
-  border-bottom: 1px solid #edf0ea;
+  border-bottom: 1px solid var(--position-line);
   white-space: nowrap;
 }
 
@@ -1462,6 +1470,12 @@ h3 {
   border-color: #c0392b;
   color: #c0392b;
 }
+
+.tuner-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .trade-confirm-hint {
   font-size: 0.85rem;
 }
