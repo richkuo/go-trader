@@ -72,6 +72,10 @@ func killSwitchLimitOrderRoster(cfgs []StrategyConfig) []StrategyConfig {
 	return out
 }
 
+func killSwitchLimitOrderScriptOwner(sc StrategyConfig) bool {
+	return sc.Platform == "hyperliquid" && hyperliquidIsLive(sc.Args) && portfolioScopeFor(sc) == ScopeLive
+}
+
 func killSwitchLimitOrderAdoptionBlock(sc StrategyConfig, known bool) string {
 	switch {
 	case !known:
@@ -89,7 +93,7 @@ func collectKillSwitchLimitOrderCandidates(orders []PendingLimitOrder, roster []
 	fallbackScript := ""
 	for _, sc := range roster {
 		byID[sc.ID] = sc
-		if fallbackScript == "" {
+		if fallbackScript == "" && killSwitchLimitOrderScriptOwner(sc) {
 			fallbackScript = strings.TrimSpace(sc.Script)
 		}
 	}
@@ -97,7 +101,10 @@ func collectKillSwitchLimitOrderCandidates(orders []PendingLimitOrder, roster []
 	var unscripted []PendingLimitOrder
 	for _, o := range orders {
 		sc, known := byID[o.StrategyID]
-		script := strings.TrimSpace(sc.Script)
+		script := ""
+		if known && killSwitchLimitOrderScriptOwner(sc) {
+			script = strings.TrimSpace(sc.Script)
+		}
 		if script == "" {
 			script = fallbackScript
 		}
@@ -137,9 +144,9 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 	for _, o := range unscripted {
 		label := killSwitchLimitOrderLabel(o)
 		report.Unresolved = append(report.Unresolved,
-			fmt.Sprintf("%s: no Hyperliquid strategy with a script remains in this config to cancel it — manual intervention required", label))
+			fmt.Sprintf("%s: no live Hyperliquid strategy with a script remains in this config to read or cancel it — manual intervention required", label))
 		report.LogLines = append(report.LogLines,
-			fmt.Sprintf("[CRITICAL] ks-limit: resting limit order %s cannot be cancelled — no Hyperliquid strategy with a script remains in this config, manual intervention required (kill switch will retry next cycle)", label))
+			fmt.Sprintf("[CRITICAL] ks-limit: resting limit order %s cannot be cancelled — no live Hyperliquid strategy with a script remains in this config to read or cancel it, manual intervention required (kill switch will retry next cycle)", label))
 	}
 
 	if len(candidates) > 0 && !deps.wired() {
@@ -184,60 +191,98 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			break
 		}
 
-		if _, err := deps.MarkCancelRequested(o.StrategyID, o.Symbol); err != nil {
-			markErr = err
-			report.LogLines = append(report.LogLines,
-				fmt.Sprintf("[WARN] ks-limit: %s could not persist cancel intent: %v", label, err))
-		}
-
-		cancelRes, cstderr, cerr := deps.Cancel(c.Script, o.Symbol, o.OrderOID)
-		if cstderr != "" {
-			report.LogLines = append(report.LogLines,
-				fmt.Sprintf("[WARN] ks-limit: %s cancel stderr: %s", label, cstderr))
-		}
-		if cerr != nil || cancelRes == nil || cancelRes.Error != "" {
-			msg := ""
-			if cancelRes != nil {
-				msg = cancelRes.Error
+		readStatus := func() (HyperliquidLimitOrderStatus, string) {
+			statusRes, sstderr, serr := deps.Status(c.Script, o.Symbol, []int64{o.OrderOID}, limitStatusSinceMs(o.CreatedAt))
+			if sstderr != "" {
+				report.LogLines = append(report.LogLines,
+					fmt.Sprintf("[WARN] ks-limit: %s status stderr: %s", label, sstderr))
 			}
-			unresolve(strings.TrimSpace(fmt.Sprintf("cancel failed: %v %s", cerr, msg)))
-			continue
-		}
-
-		if !roomForCall() {
-			unresolve(fmt.Sprintf("cancel issued but the pass exhausted its %s budget before it could be verified — the flatten proceeded; the kill switch will retry next cycle", effectiveBudget))
-			continue
-		}
-
-		statusRes, sstderr, serr := deps.Status(c.Script, o.Symbol, []int64{o.OrderOID}, limitStatusSinceMs(o.CreatedAt))
-		if sstderr != "" {
-			report.LogLines = append(report.LogLines,
-				fmt.Sprintf("[WARN] ks-limit: %s status stderr: %s", label, sstderr))
-		}
-		if serr != nil || statusRes == nil || statusRes.Error != "" {
-			msg := ""
-			if statusRes != nil {
-				msg = statusRes.Error
+			if serr != nil || statusRes == nil || statusRes.Error != "" {
+				msg := ""
+				if statusRes != nil {
+					msg = statusRes.Error
+				}
+				return HyperliquidLimitOrderStatus{}, strings.TrimSpace(fmt.Sprintf("%v %s", serr, msg))
 			}
-			unresolve(strings.TrimSpace(fmt.Sprintf("cancel unverified: %v %s", serr, msg)))
-			continue
+			if statusRes.OpenOrdersError != "" {
+				return HyperliquidLimitOrderStatus{}, fmt.Sprintf("open-orders state unknown (%s)", statusRes.OpenOrdersError)
+			}
+			st, ok := limitStatusForOID(statusRes, o.OrderOID)
+			if !ok {
+				return HyperliquidLimitOrderStatus{}, "status response did not include the order"
+			}
+			if st.Resting == nil {
+				return HyperliquidLimitOrderStatus{}, "the exchange did not report whether the order is still resting"
+			}
+			return st, ""
 		}
-		if statusRes.OpenOrdersError != "" {
-			unresolve(fmt.Sprintf("cancel unverified: open-orders state unknown (%s)", statusRes.OpenOrdersError))
-			continue
+		fillsUnreadable := func(st HyperliquidLimitOrderStatus) string {
+			if st.FillsError == "" {
+				return ""
+			}
+			return fmt.Sprintf("fills unreadable (%s)", st.FillsError)
 		}
-		st, ok := limitStatusForOID(statusRes, o.OrderOID)
-		if !ok {
-			unresolve("cancel unverified: status response did not include the order")
-			continue
+
+		var st HyperliquidLimitOrderStatus
+		cancelNeeded := true
+		if !c.adoptionEligible() {
+			pre, why := readStatus()
+			if why != "" {
+				unresolve(fmt.Sprintf("recovery row not cancelled: %s — %s, so no cancel is sent until the exchange reports the order", why, c.AdoptionBlock))
+				continue
+			}
+			if !*pre.Resting {
+				if fillsWhy := fillsUnreadable(pre); fillsWhy != "" {
+					unresolve(fmt.Sprintf("recovery row is off-book but its %s — no cancel is needed and the queue row is kept until the fill can be checked", fillsWhy))
+					continue
+				}
+				st = pre
+				cancelNeeded = false
+			} else if !roomForCall() {
+				unresolve(fmt.Sprintf("recovery row verified resting but the pass exhausted its %s budget before the cancel — the flatten proceeded; the kill switch will retry next cycle", effectiveBudget))
+				continue
+			}
 		}
-		if st.FillsError != "" {
-			unresolve(fmt.Sprintf("cancel unverified: fills unreadable (%s)", st.FillsError))
-			continue
-		}
-		if st.Resting == nil || *st.Resting {
-			unresolve("order is still resting on the exchange")
-			continue
+
+		if cancelNeeded {
+			if _, err := deps.MarkCancelRequested(o.StrategyID, o.Symbol); err != nil {
+				markErr = err
+				report.LogLines = append(report.LogLines,
+					fmt.Sprintf("[WARN] ks-limit: %s could not persist cancel intent: %v", label, err))
+			}
+
+			cancelRes, cstderr, cerr := deps.Cancel(c.Script, o.Symbol, o.OrderOID)
+			if cstderr != "" {
+				report.LogLines = append(report.LogLines,
+					fmt.Sprintf("[WARN] ks-limit: %s cancel stderr: %s", label, cstderr))
+			}
+			if cerr != nil || cancelRes == nil || cancelRes.Error != "" {
+				msg := ""
+				if cancelRes != nil {
+					msg = cancelRes.Error
+				}
+				unresolve(strings.TrimSpace(fmt.Sprintf("cancel failed: %v %s", cerr, msg)))
+				continue
+			}
+
+			if !roomForCall() {
+				unresolve(fmt.Sprintf("cancel issued but the pass exhausted its %s budget before it could be verified — the flatten proceeded; the kill switch will retry next cycle", effectiveBudget))
+				continue
+			}
+
+			post, why := readStatus()
+			if why == "" {
+				why = fillsUnreadable(post)
+			}
+			if why != "" {
+				unresolve("cancel unverified: " + why)
+				continue
+			}
+			if *post.Resting {
+				unresolve("order is still resting on the exchange")
+				continue
+			}
+			st = post
 		}
 		if st.FilledSize > o.FilledSize+limitFillEpsilon {
 			if c.adoptionEligible() {

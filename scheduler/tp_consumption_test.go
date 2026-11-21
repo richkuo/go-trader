@@ -419,7 +419,7 @@ func TestUnifiedRegimeCloseStopMoves(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, _, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
 					return tc.reply, "", nil
 				}
 				pos := &Position{
@@ -616,7 +616,7 @@ func TestUnifiedRegimeCloseStopMoves(t *testing.T) {
 		}
 		origUpdate := runHyperliquidUpdateStopLossFunc
 		t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = origUpdate })
-		runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, _, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 8, StopLossTriggerPx: triggerPx}, "", nil
 		}
 		if _, _, _ = runPostTPStopLossAdjustment(sc, st, "ETH", 2100, nil, &mu, nil, lg, nil, nil, nil); pos.TPConsumptions[0].Stage != tpConsumptionDone {

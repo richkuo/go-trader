@@ -891,7 +891,7 @@ func TestReconcileHyperliquidHedgeLeg(t *testing.T) {
 func TestHedgeLegJoinsForceCloseKillSwitchCircuitBreakerAndMarkScopes(t *testing.T) {
 	t.Run("ForceCloseHyperliquidLiveIncludesHeldHedgeCoins", func(t *testing.T) {
 		closed := map[string]bool{}
-		closer := func(symbol string, partialSz *float64, oids []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, oids []int64) (*HyperliquidCloseResult, error) {
 			closed[symbol] = true
 			return closeFill(testHedgePx, 0.4, 3), nil
 		}
@@ -908,7 +908,7 @@ func TestHedgeLegJoinsForceCloseKillSwitchCircuitBreakerAndMarkScopes(t *testing
 	})
 	t.Run("ForceCloseHyperliquidLiveSkipsUnheldHedgeCoin", func(t *testing.T) {
 		closed := map[string]bool{}
-		closer := func(symbol string, partialSz *float64, oids []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, symbol string, partialSz *float64, oids []int64) (*HyperliquidCloseResult, error) {
 			closed[symbol] = true
 			return closeFill(testHedgePx, 1, 3), nil
 		}
@@ -1043,7 +1043,7 @@ func TestHedgeCircuitBreakerCloses(t *testing.T) {
 		var mu sync.RWMutex
 		var calls []string
 		var dms []string
-		closer := func(sym string, partialSz *float64, _ []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, sym string, partialSz *float64, _ []int64) (*HyperliquidCloseResult, error) {
 			sz := 0.0
 			if partialSz != nil {
 				sz = *partialSz
@@ -1081,7 +1081,7 @@ func TestHedgeCircuitBreakerCloses(t *testing.T) {
 		var mu sync.RWMutex
 		var calls []string
 		var dms []string
-		closer := func(sym string, partialSz *float64, _ []int64) (*HyperliquidCloseResult, error) {
+		closer := func(_ hlWriteAuth, sym string, partialSz *float64, _ []int64) (*HyperliquidCloseResult, error) {
 			sz := 0.0
 			if partialSz != nil {
 				sz = *partialSz

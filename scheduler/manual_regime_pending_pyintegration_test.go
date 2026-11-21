@@ -229,9 +229,9 @@ func mrpDirectRoute(t *testing.T, port int, strategyID string) (int, map[string]
 		t.Fatal("no published owner")
 	}
 	challenge, _ := newManualRegimeRandomHex()
-	req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d%s?strategy=%s&partition=paper", port, manualRegimeRoute, strategyID), nil)
+	req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d%s?strategy=%s&partition=live", port, manualRegimeRoute, strategyID), nil)
 	req.Header.Set(manualRegimeChallengeHeader, challenge)
-	req.Header.Set(manualRegimeAuthHeader, manualRegimeRequestMAC(id.Secret, challenge, strategyID, "paper"))
+	req.Header.Set(manualRegimeAuthHeader, manualRegimeRequestMAC(id.Secret, challenge, strategyID, "live"))
 	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -261,8 +261,8 @@ func mrpEnvUint(env map[string]any, key string) uint64 {
 
 func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
 	t.Helper()
-	sc := regimeReadinessManual("pending-add", "paper")
-	peer := regimeReadinessManual("pending-peer", "paper")
+	sc := regimeReadinessManual("pending-add", "live")
+	peer := regimeReadinessManual("pending-peer", "live")
 	peer.CloseStrategy = &StrategyRef{Name: trailingTPRatchetCloseName}
 	peer.TrailingStopATRMultRegime = peer.StopLossATRMultRegime
 	peer.StopLossATRMultRegime = nil
@@ -297,7 +297,7 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 		writeBook(func(st *AppState) {
 			cp := *original
 			st.Strategies[sc.ID].Positions = map[string]*Position{"BTC": &cp}
-			st.partitionRisk(defaultPaperPartition).KillSwitchActive = false
+			st.partitionRisk(livePartition).KillSwitchActive = false
 		})
 	}
 	resetBook()
@@ -327,7 +327,7 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 	executes := 0
 	deps := func() manualCoreDeps {
 		d := newCLIManualCoreDeps(cfg, store, nil)
-		d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		d.execute = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			executes++
 			return &HyperliquidExecuteResult{Platform: "hyperliquid", Execution: &HyperliquidExecution{Action: side, Symbol: symbol, Size: size, Fill: &HyperliquidFill{AvgPx: 100, TotalSz: size, OID: 9100 + int64(executes)}}}, "", nil
 		}
@@ -617,7 +617,7 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 		mutate func(st *AppState)
 		want   string
 	}{
-		{"kill switch", func(st *AppState) { st.partitionRisk(defaultPaperPartition).KillSwitchActive = true }, "kill switch"},
+		{"kill switch", func(st *AppState) { st.partitionRisk(livePartition).KillSwitchActive = true }, "kill switch"},
 		{"replaced position", func(st *AppState) {
 			cp := *original
 			cp.TradePositionID = "pending-add-pos-2"
@@ -659,31 +659,31 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 		clearQueue()
 		return err
 	}
-	err = waitedAdd(func() { globalManualRegimeOwner.signalPersistence(defaultPaperPartition, true) })
-	expectErr(err, "persistence hold", "holds the paper partition")
-	err = waitedAdd(func() { globalManualRegimeOwner.signalPersistence(defaultPaperPartition, false) })
+	err = waitedAdd(func() { globalManualRegimeOwner.signalPersistence(livePartition, true) })
+	expectErr(err, "persistence hold", "holds the live partition")
+	err = waitedAdd(func() { globalManualRegimeOwner.signalPersistence(livePartition, false) })
 	if err != nil {
 		t.Fatalf("persistence hold released after a successful save: %v", err)
 	}
-	err = waitedAdd(func() { globalManualRegimeOwner.signalPersistence(livePartition, true) })
-	globalManualRegimeOwner.signalPersistence(livePartition, false)
+	err = waitedAdd(func() { globalManualRegimeOwner.signalPersistence(defaultPaperPartition, true) })
+	globalManualRegimeOwner.signalPersistence(defaultPaperPartition, false)
 	if err != nil {
-		t.Fatalf("a live persistence hold blocked a paper add: %v", err)
+		t.Fatalf("a paper persistence hold blocked a live add: %v", err)
 	}
 	scheduler := newStateStore(store.layout, store.ident)
 	scheduler.setHoldSignal(globalManualRegimeOwner.signalPersistence)
-	scheduler.recordSaveOutcome(defaultPaperPartition, fmt.Errorf("controlled save failure"))
+	scheduler.recordSaveOutcome(livePartition, fmt.Errorf("controlled save failure"))
 	err = waitedAdd(nil)
-	expectErr(err, "scheduler save failure", "holds the paper partition")
-	scheduler.recordSaveOutcome(defaultPaperPartition, nil)
+	expectErr(err, "scheduler save failure", "holds the live partition")
+	scheduler.recordSaveOutcome(livePartition, nil)
 	if err = waitedAdd(nil); err != nil {
 		t.Fatalf("after the successful save: %v", err)
 	}
-	t.Logf("persistence guard: a save failure holds the waited add, a later successful save releases it, and a live hold leaves the paper partition alone")
+	t.Logf("persistence guard: a save failure holds the waited add, a later successful save releases it, and a paper hold leaves the live partition alone")
 
-	guardPath := manualRegimeHoldGuardPath(store.layout.Files[0].Path, defaultPaperPartition)
+	guardPath := manualRegimeHoldGuardPath(store.layout.Files[0].Path, livePartition)
 	t.Run("persistence-guard-locks", func(t *testing.T) {
-		partition := defaultPaperPartition
+		partition := livePartition
 		owner, _ := globalManualRegimeOwner.identity()
 		check := func() error { return checkManualRegimeHoldGuard(store.layout, partition, owner.Nonce) }
 		probe, err := os.Open(guardPath)
@@ -696,14 +696,14 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 		if err := syscall.Flock(int(probe.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
 			t.Fatal(err)
 		}
-		if err := check(); err == nil || !strings.Contains(err.Error(), "holds the paper partition") {
+		if err := check(); err == nil || !strings.Contains(err.Error(), "holds the live partition") {
 			t.Errorf("save hold with another probe: %v", err)
 		} else {
 			t.Log("save hold with an independent shared probe: the command refused")
 		}
 
 		scheduler.recordSaveOutcome(partition, nil)
-		if err := check(); err == nil || !strings.Contains(err.Error(), "holds the paper partition") {
+		if err := check(); err == nil || !strings.Contains(err.Error(), "holds the live partition") {
 			t.Errorf("save succeeded while the probe held a shared lock: %v", err)
 		}
 		if err := syscall.Flock(int(probe.Fd()), syscall.LOCK_UN); err != nil {
@@ -750,9 +750,9 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				if tc.held {
-					scheduler.recordSaveOutcome(defaultPaperPartition, fmt.Errorf("controlled save failure"))
+					scheduler.recordSaveOutcome(livePartition, fmt.Errorf("controlled save failure"))
 				} else {
-					scheduler.recordSaveOutcome(defaultPaperPartition, nil)
+					scheduler.recordSaveOutcome(livePartition, nil)
 				}
 				bundleReady := tc.result == manualRegimeResultBundle
 				gen := begin([]StrategyConfig{tc.strategy}, bundleReady)
@@ -767,7 +767,7 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 					t.Fatalf("expected one signed %s reply, got %+v", tc.result, seen)
 				}
 				if tc.held {
-					if err == nil || !strings.Contains(err.Error(), "holds the paper partition") || executes != before {
+					if err == nil || !strings.Contains(err.Error(), "holds the live partition") || executes != before {
 						t.Fatalf("expected a persistence hold before execute, got %v with %d execute calls", err, executes-before)
 					}
 					if !bundleReady {
@@ -798,9 +798,9 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 			held    *RiskPartition
 			blocked bool
 		}{
-			{"paper-held", &defaultPaperPartition, true},
-			{"paper-clear", nil, false},
-			{"live-held", &livePartition, false},
+			{"live-held", &livePartition, true},
+			{"live-clear", nil, false},
+			{"paper-held", &defaultPaperPartition, false},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				if tc.held != nil {
@@ -819,7 +819,7 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 				calls := 0
 				originalOpen := runHyperliquidLimitOpenFn
 				t.Cleanup(func() { runHyperliquidLimitOpenFn = originalOpen })
-				runHyperliquidLimitOpenFn = func(script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+				runHyperliquidLimitOpenFn = func(_ hlWriteAuth, script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
 					calls++
 					return &HyperliquidLimitOpenResult{OrderOID: orderOID, Status: "resting"}, "", nil
 				}
@@ -843,13 +843,13 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 					if code != 1 || calls != 0 || len(rows) != 0 {
 						t.Fatalf("held limit open: exit %d, venue calls %d, pending rows %d", code, calls, len(rows))
 					}
-					t.Log("paper save hold refused the signed ready limit open with no venue call or pending row")
+					t.Log("live save hold refused the signed ready limit open with no venue call or pending row")
 					return
 				}
 				if code != 0 || calls != 1 || len(rows) != 1 || rows[0].OrderOID != orderOID || len(rows[0].RegimeSnapshots) == 0 {
 					t.Fatalf("accepted limit open: exit %d, venue calls %d, pending rows %+v", code, calls, rows)
 				}
-				t.Logf("%s accepted the signed ready paper limit open and recorded its order and regime evidence", tc.name)
+				t.Logf("%s accepted the signed ready live limit open and recorded its order and regime evidence", tc.name)
 			})
 		}
 	})
@@ -883,12 +883,12 @@ func regimeReadinessPendingIntegration(t *testing.T, bundles []*RegimeBundle, rc
 	t.Logf("no retry: draining, classification failure and connection refused answer on the first request")
 
 	err = waitedAdd(func() {
-		marker := manualRegimeHoldGuardMarker{Version: manualRegimeHoldGuardVersion, OwnerNonce: func() string { id, _ := globalManualRegimeOwner.identity(); return id.Nonce }(), Partition: defaultPaperPartition.String()}
+		marker := manualRegimeHoldGuardMarker{Version: manualRegimeHoldGuardVersion, OwnerNonce: func() string { id, _ := globalManualRegimeOwner.identity(); return id.Nonce }(), Partition: livePartition.String()}
 		if err := writeManualRegimeJSONFile(guardPath, marker); err != nil {
 			t.Error(err)
 		}
 	})
-	expectErr(err, "replaced guard", "paper partition")
+	expectErr(err, "replaced guard", "live partition")
 	os.Remove(guardPath)
 	err = waitedAdd(nil)
 	expectErr(err, "missing guard", "published no persistence guard")
@@ -1102,7 +1102,7 @@ func regimeReadinessPendingProcess(t *testing.T, mode string) {
 	}
 
 	base := e.venueKinds()
-	ready := e.route(port, "mp-dry", "paper")
+	ready := e.route(port, "mp-dry", "live")
 	if ready.env.Result != manualRegimeResultBundle {
 		t.Fatalf("no settled bundle to forge from: %+v", ready.env)
 	}

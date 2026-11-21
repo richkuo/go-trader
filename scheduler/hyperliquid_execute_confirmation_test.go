@@ -203,7 +203,7 @@ func TestHyperliquidRejectsUnconfirmedFill(t *testing.T) {
 			runHyperliquidExecuteFn = originalExecute
 			liveExecThrottle = originalThrottle
 		})
-		runHyperliquidExecuteFn = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		runHyperliquidExecuteFn = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			return unconfirmedExecuteResult(), "", nil
 		}
 		liveExecThrottle = &LiveExecFailureThrottle{}
@@ -313,7 +313,7 @@ func TestHyperliquidRejectsUnconfirmedFill(t *testing.T) {
 				cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{sc}}
 				deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 				deps.fetchMids = func([]string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
-				deps.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+				deps.execute = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 					result := unconfirmedExecuteResult()
 					if action == "close" {
 						result.CancelStopLossSucceeded = true
@@ -370,7 +370,7 @@ func TestHyperliquidRejectsUnconfirmedFill(t *testing.T) {
 	t.Run("DaemonManualCloseRestoresTheStop", func(t *testing.T) {
 		ss, db, _ := newTradeActionTestServer(t)
 		stubs := stubTradeDeps(t, ss)
-		stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		stubs.execute = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			return &HyperliquidExecuteResult{
 				Execution:                   &HyperliquidExecution{Fill: &HyperliquidFill{}},
 				CancelStopLossSucceeded:     true,
@@ -379,7 +379,7 @@ func TestHyperliquidRejectsUnconfirmedFill(t *testing.T) {
 		}
 		var gotCancelOID int64
 		var gotTrigger, gotSize float64
-		stubs.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		stubs.updateSL = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			gotCancelOID, gotTrigger, gotSize = cancelOID, triggerPx, size
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 222, StopLossTriggerPx: triggerPx}, "", nil
 		}

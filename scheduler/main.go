@@ -171,6 +171,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
+	applyProcessVenueWritePolicy(cfg)
 	exportRobinhoodSessionDir(*configPath, cfg)
 	if code := startEgress(cfg, *configPath, false); code != 0 {
 		os.Exit(code)
@@ -549,6 +550,12 @@ func main() {
 
 	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
 
+	paperManualPositionWarnings := paperManualPositionStartupWarnings(cfg, state)
+	paperManualPositionWarnings = append(paperManualPositionWarnings, paperManualLimitRowStartupWarnings(cfg, store.LoadPendingLimitOrders)...)
+	for _, msg := range paperManualPositionWarnings {
+		fmt.Printf("[WARN] %s\n", msg)
+	}
+
 	for _, part := range startupPartitions {
 		prs := state.partitionRisk(part)
 		if prs.PeakValue != 0 {
@@ -732,6 +739,8 @@ func main() {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
+
+	sendPaperManualStartupWarnings(notifier, paperManualPositionWarnings)
 
 	notifyDirectionalCertStartupSummary(notifier, directionalCertSummaryLines)
 
@@ -1708,7 +1717,7 @@ func main() {
 					HLLimitOrderRoster: killSwitchLimitOrderRoster(cfg.Strategies),
 					HLLimitOrderDeps: killSwitchLimitOrderDeps{
 						Cancel: func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
-							return runHyperliquidCancelOrderFn(script, symbol, oid)
+							return runHyperliquidCancelOrderFn(hlAccountRecoveryWriteAuth(symbol, hlWriteCancel).forOrder(oid), script, symbol, oid)
 						},
 						Status: func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error) {
 							return runHyperliquidLimitStatusFn(script, symbol, oids, sinceMs)
@@ -2713,7 +2722,14 @@ func main() {
 					if feedHeld, feedWhy := feedCtx.feedHoldsSignal(sc); feedHeld {
 						logger.Warn("Market feed: %s — the manual close evaluation is degraded, so no candle-derived close runs; stop-loss, ratchet and protection continue (#1524)", feedWhy)
 					}
-					closeFraction, _, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger, feedCtx)
+					var evalPos *Position
+					mu.RLock()
+					if p := stratState.Positions[sc.Symbol]; p != nil {
+						cp := *p
+						evalPos = &cp
+					}
+					mu.RUnlock()
+					manualEvalResult, closeFraction, manualEvalPrice, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger, feedCtx)
 					manualRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 					if manualOK {
 						mu.Lock()
@@ -2755,6 +2771,10 @@ func main() {
 							hlStep.bindWindow(&mu, trailAt, manualDetail)
 						}
 						completeAndNotifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), manualRatchetAlert, sc, stratState, sc.Symbol, &mu, manualStopEvidence)
+					}
+					if manualOK && closeFraction > 0 && !hyperliquidIsLive(sc.Args) {
+						queuePaperManualCycleClose(paperManualCycleCloseInput{SC: sc, State: stratState, Store: store, Pinned: evalPos, Result: manualEvalResult, Price: manualEvalPrice, Mu: &mu, Logger: logger})
+						break
 					}
 					if manualOK && closeFraction > 0 {
 						mu.RLock()
@@ -2825,7 +2845,7 @@ func main() {
 							}
 							rearmCtx := hlCloseRearmContext{Price: prices[sc.Symbol], PrevStopOID: cancelOID, PrevTPOIDs: cloneInt64s(extraCancelOIDs), PrevTriggerPx: pos.StopLossTriggerPx, PrevHighWater: pos.StopLossHighWaterPx, FillHintsJSON: hlReconcileFillHintsJSON, LiqPxByCoin: hlLiquidationPx, NetSideByCoin: hlNetSideByCoin, Backing: backing}
 							execResult, execStderr, execErr := runHyperliquidExecuteFn(
-								sc.Script, sc.Symbol, closeSide, closeQty,
+								hlStrategyWriteAuth(sc, sc.Symbol, hlWriteExecute), sc.Script, sc.Symbol, closeSide, closeQty,
 								0, cancelOID, 0, "", 0, closeMode, hlExecuteSnapshot{}, extraCancelOIDs...,
 							)
 							if execStderr != "" {
@@ -3931,6 +3951,16 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	} else {
 		logger.Info("Placing live %s %s size=%.6f", side, result.Symbol, size)
 	}
+	execAuth := hlStrategyWriteAuth(sc, result.Symbol, hlWriteExecute)
+	if err := execAuth.check(hlWriteExecute, result.Symbol, 0); err != nil {
+		refusedDirection := directionOpen
+		if posQty > 0 && ((posSide == "long" && side == "sell") || (posSide == "short" && side == "buy")) {
+			refusedDirection = directionClose
+		}
+		logger.Error("CRITICAL: live %s %s not sent: %v", side, result.Symbol, err)
+		notifyLiveExecFailure(notifier, sc, refusedDirection, result.Symbol, err.Error())
+		return nil, false
+	}
 	if result.EntrySubmitGate != nil {
 		tags, gateErr := result.EntrySubmitGate(side, size, slPct)
 		if gateErr != nil {
@@ -3941,7 +3971,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	}
 	result.LiveOrderSubmitted = true
 	result.LiveOrderCancelRequested = cancelOID > 0 || len(extraCancelOIDs) > 0
-	execResult, stderr, err := runHyperliquidExecuteFn(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeMode, walletSnapshot, extraCancelOIDs...)
+	execResult, stderr, err := runHyperliquidExecuteFn(execAuth, sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeMode, walletSnapshot, extraCancelOIDs...)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}

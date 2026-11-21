@@ -7,6 +7,7 @@ paths:
   - "scheduler/db.go"
   - "scheduler/discord_commands.go"
   - "scheduler/hl_perps_step.go"
+  - "scheduler/hl_write_auth.go"
   - "scheduler/hyperliquid_balance.go"
   - "scheduler/hyperliquid_fills.go"
   - "scheduler/hyperliquid_liquidation_guard.go"

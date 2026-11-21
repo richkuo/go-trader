@@ -58,7 +58,7 @@ func placeManualProtectionInline(
 		return nil, "", nil
 	}
 
-	result, stderr, err := runHLSyncProtectionFn(sc.Script, hlProtectionPlan{
+	result, stderr, err := runHLSyncProtectionFn(hlStrategyWriteAuth(sc, sc.Symbol, hlWriteProtection), sc.Script, hlProtectionPlan{
 		Symbol:          sc.Symbol,
 		Side:            side,
 		Size:            fillQty,
@@ -97,6 +97,7 @@ type manualOpenCleanupInput struct {
 	ViewKnown   bool
 	Refetch     func() (hlOnChainCoinView, error)
 	Cfg         *Config
+	Auth        hlWriteAuth
 }
 
 // manualOpenCleanupSoleCoin reports whether config proves no other live
@@ -171,7 +172,7 @@ func attemptManualOpenCleanup(in manualOpenCleanupInput) (bool, string) {
 	if plan.Action != hlCloseSend {
 		return unresolved(in.FillQty, "no close was sent: "+plan.Reason)
 	}
-	req := hlSizedCloseRequest{Symbol: in.Symbol, Side: closeTradeSide(in.Side), Mode: plan.Mode, Size: plan.Size}
+	req := hlSizedCloseRequest{Symbol: in.Symbol, Side: closeTradeSide(in.Side), Mode: plan.Mode, Size: plan.Size, Auth: in.Auth}
 	if !plan.Capped && len(cancelOIDs) > 0 {
 		req.CancelOIDs = cancelOIDs
 		req.CancelMinFill = in.FillQty - hlFullCloseTolerance(in.FillQty)
