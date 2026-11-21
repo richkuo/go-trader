@@ -31,6 +31,7 @@ var paperManualCloseLotLookup = func(coin string) hlLotLookup {
 	if hlLotMetadata == nil {
 		return hlLotLookup{Coin: coin, Reason: "no venue metadata source"}
 	}
+	hlLotMetadata.Ensure(coin)
 	return hlLotMetadata.Lookup(coin)
 }
 

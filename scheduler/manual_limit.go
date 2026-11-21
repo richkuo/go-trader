@@ -762,13 +762,17 @@ func orphanLimitOrderStatus(script string, o PendingLimitOrder) (HyperliquidLimi
 	if !ok {
 		return HyperliquidLimitOrderStatus{}, "status response did not include the order"
 	}
-	if st.FillsError != "" {
-		return HyperliquidLimitOrderStatus{}, fmt.Sprintf("fills unreadable (%s)", st.FillsError)
-	}
 	if st.Resting == nil {
 		return HyperliquidLimitOrderStatus{}, "the exchange did not report whether the order is still resting"
 	}
 	return st, ""
+}
+
+func orphanLimitFillsUnreadable(st HyperliquidLimitOrderStatus) string {
+	if st.FillsError == "" {
+		return ""
+	}
+	return fmt.Sprintf("fills unreadable (%s)", st.FillsError)
 }
 
 func cancelOrphanedLimitOrder(state *AppState, cfg *Config, store *StateStore, mu *sync.RWMutex, o PendingLimitOrder) orphanLimitCancelOutcome {
@@ -806,6 +810,9 @@ func cancelOrphanedLimitOrder(state *AppState, cfg *Config, store *StateStore, m
 		}
 		out.CancelIssued = true
 		st, reason = orphanLimitOrderStatus(script, o)
+		if reason == "" {
+			reason = orphanLimitFillsUnreadable(st)
+		}
 		if reason != "" {
 			out.State = orphanLimitStateUnknown
 			out.Reason = "cancel issued but unverified: " + reason
@@ -816,6 +823,10 @@ func cancelOrphanedLimitOrder(state *AppState, cfg *Config, store *StateStore, m
 			out.Reason = "cancel issued but the order is still resting on the exchange"
 			return out
 		}
+	} else if fillsWhy := orphanLimitFillsUnreadable(st); fillsWhy != "" {
+		out.State = orphanLimitStateUnknown
+		out.Reason = fmt.Sprintf("the order is off-book but its %s — no cancel is needed and the queue row is kept until the fill can be checked", fillsWhy)
+		return out
 	}
 
 	out.ExchangeFill = st.FilledSize

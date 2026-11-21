@@ -453,6 +453,16 @@ func TestPaperManualVenueGuardLimitRowRecovery(t *testing.T) {
 	withPeer := build("limit-row-peer.json", true)
 	paperOnly := build("limit-row-paper.json", false)
 	startup := build("limit-row-startup.json", false)
+	fillsCases := []struct {
+		name, status, after string
+		cancels             int
+		want                string
+		f                   *fixture
+	}{
+		{"resting with unreadable fills", `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":true,"filled_size":0,"avg_px":0,"fee":0,"count":0,"fills_error":"fills fetch failed"}]}`, `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":false,"filled_size":0,"avg_px":0,"fee":0,"count":0,"fills_error":"fills fetch failed"}]}`, 1, "cancel issued but unverified: fills unreadable (fills fetch failed)", build("limit-row-fills-resting.json", true)},
+		{"off book with unreadable fills", `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":false,"filled_size":0,"avg_px":0,"fee":0,"count":0,"fills_error":"fills fetch failed"}]}`, "", 0, "fills unreadable (fills fetch failed)", build("limit-row-fills-offbook.json", true)},
+		{"open orders unreadable", `{"platform":"hyperliquid","orders":[{"oid":9001,"resting":null,"filled_size":0,"avg_px":0,"fee":0,"count":0}],"open_orders_error":"429 rate limited"}`, "", 0, "open-orders state unknown (429 rate limited)", build("limit-row-fills-openorders.json", true)},
+	}
 	venue := newPaperManualGuardRecoveryVenue(t)
 	orphanLimitCancelAlerts.reset()
 	t.Cleanup(orphanLimitCancelAlerts.reset)
@@ -477,6 +487,32 @@ func TestPaperManualVenueGuardLimitRowRecovery(t *testing.T) {
 			t.Fatalf("the row must be deleted after the status read shows the order off-book with no fill: %+v", got)
 		}
 	})
+
+	for _, tc := range fillsCases {
+		t.Run("live peer "+tc.name, func(t *testing.T) {
+			orphanLimitCancelAlerts.reset()
+			venue.set(tc.status, tc.after)
+			mock := &mockNotifier{}
+			reconcilePendingLimitOrders(NewAppState(), tc.f.cfg, tc.f.store, &mu, NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner"}), nil)
+			cancels := venue.lines("--cancel-order")
+			if len(cancels) != tc.cancels {
+				t.Fatalf("cancel launches = %d, want %d: %v", len(cancels), tc.cancels, venue.lines(""))
+			}
+			if tc.cancels == 1 && (!strings.Contains(cancels[0], "--oid=9001") || !strings.Contains(cancels[0], liveScript)) {
+				t.Fatalf("the cancel must name oid 9001 and run through the live owner's script: %v", cancels)
+			}
+			if got := venue.lines(paperScript); len(got) != 0 {
+				t.Fatalf("the paper strategy's script must launch nothing: %v", got)
+			}
+			if got := rows(tc.f); len(got) != 1 || got[0].OrderOID != 9001 {
+				t.Fatalf("the row must stay: %+v", got)
+			}
+			if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "NOT confirmed cancelled: pm-args/BTC oid=9001") || !strings.Contains(mock.dms[0].content, tc.want) {
+				t.Fatalf("the owner must get the state-unknown alert with %q: %+v", tc.want, mock.dms)
+			}
+		})
+	}
+	orphanLimitCancelAlerts.reset()
 
 	t.Run("paper only config marks the row for the operator", func(t *testing.T) {
 		venue.set(`{"platform":"hyperliquid","orders":[]}`, "")

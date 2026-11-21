@@ -3,9 +3,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -342,5 +345,138 @@ func TestPaperManualCycleCloseBooksSimulatedFillsIntegration(t *testing.T) {
 	}
 	if writes != 0 {
 		t.Fatalf("a paper evaluator close reached %d venue write(s)", writes)
+	}
+}
+
+func TestPaperManualCycleCloseFetchesLotMetadataIntegration(t *testing.T) {
+	var mu sync.Mutex
+	requests := map[string]int{}
+	fail := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		requests[fmt.Sprint(body["type"])]++
+		failing := fail
+		mu.Unlock()
+		if failing {
+			http.Error(w, "controlled metadata outage", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"universe":[{"name":"BTC","szDecimals":3},{"name":"ETH","szDecimals":4}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	prevURL, prevCache := hlMainnetURL, hlLotMetadata
+	hlMainnetURL = srv.URL
+	writes := 0
+	prevExec, prevSL, prevCancel := runHyperliquidExecuteFn, runHyperliquidUpdateStopLossFunc, runHyperliquidCancelOrderFn
+	runHyperliquidExecuteFn = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extra ...int64) (*HyperliquidExecuteResult, string, error) {
+		writes++
+		return nil, "", fmt.Errorf("no venue write may run")
+	}
+	runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		writes++
+		return nil, "", fmt.Errorf("no venue write may run")
+	}
+	runHyperliquidCancelOrderFn = func(_ hlWriteAuth, script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+		writes++
+		return nil, "", fmt.Errorf("no venue write may run")
+	}
+	t.Cleanup(func() {
+		hlMainnetURL, hlLotMetadata = prevURL, prevCache
+		runHyperliquidExecuteFn, runHyperliquidUpdateStopLossFunc, runHyperliquidCancelOrderFn = prevExec, prevSL, prevCancel
+	})
+
+	dir := t.TempDir()
+	cfg := &Config{
+		DBFile:          filepath.Join(dir, "live.db"),
+		PaperDBFile:     filepath.Join(dir, "paper.db"),
+		IntervalSeconds: 600,
+		Strategies: []StrategyConfig{
+			{ID: "pm-args", Type: "manual", Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", Args: []string{"hold", "BTC", "1h", "--mode=paper"}, Leverage: 1, Capital: 1000},
+			{ID: "lm-live", Type: "manual", Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", Args: []string{"hold", "BTC", "1h", "--mode=live"}, Leverage: 1, Capital: 1000},
+		},
+	}
+	env := openEntryTestEnv(t, cfg)
+	pos := &Position{Symbol: "BTC", Side: "long", Quantity: 0.667, InitialQuantity: 0.667, AvgCost: 100, EntryATR: 1, OwnerStrategyID: "pm-args", TradePositionID: "pm-args-pos", OpenedAt: time.Now().UTC().Add(-time.Hour).Truncate(time.Second)}
+	env.mu.Lock()
+	env.strat("pm-args").Positions = map[string]*Position{"BTC": pos}
+	env.mu.Unlock()
+	env.saveAll()
+	sc, err := lookupManualStrategy(cfg, "pm-args")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(frac float64) paperManualCycleCloseOutcome {
+		t.Helper()
+		pinned := *pos
+		res := &HyperliquidResult{Symbol: "BTC", Signal: -1, StrategyDecisionFields: StrategyDecisionFields{CloseFraction: frac}}
+		return queuePaperManualCycleClose(paperManualCycleCloseInput{SC: sc, State: env.strat("pm-args"), Store: env.store, Pinned: &pinned, Result: res, Price: 110, Mu: &env.mu, Logger: silentStrategyLogger("pm-args")})
+	}
+	queued := func() []PendingManualAction {
+		t.Helper()
+		rows, err := env.store.LoadPendingManualActions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+	metaRequests := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(requests) > 1 || (len(requests) == 1 && requests["meta"] == 0) {
+			t.Fatalf("only lot metadata reads may reach the venue: %v", requests)
+		}
+		return requests["meta"]
+	}
+
+	hlLotMetadata = newHLLotMetadataCache(nil)
+	if out := run(0.5); out.Queued || !strings.Contains(out.Hold, "lot") {
+		t.Fatalf("a partial paper close must hold while the lot metadata fetch fails: %+v", out)
+	}
+	if metaRequests() == 0 {
+		t.Fatal("the partial paper close must ask the venue for lot metadata")
+	}
+	if rows := queued(); len(rows) != 0 {
+		t.Fatalf("a held partial close must queue nothing: %+v", rows)
+	}
+
+	mu.Lock()
+	fail = false
+	requests = map[string]int{}
+	mu.Unlock()
+	hlLotMetadata = newHLLotMetadataCache(nil)
+	out := run(0.5)
+	if !out.Queued || out.Action.IsFullClose || math.Abs(out.Action.Quantity-0.333) > 1e-12 {
+		t.Fatalf("a fresh process must fetch the lot metadata and queue the floored 0.333 BTC partial close: %+v", out)
+	}
+	if got := metaRequests(); got != 1 {
+		t.Fatalf("the partial close must fetch the lot metadata one time, got %d", got)
+	}
+	if rows := queued(); len(rows) != 1 || rows[0].Action != "close" || math.Abs(rows[0].Quantity-0.333) > 1e-12 {
+		t.Fatalf("one floored close row must be queued: %+v", rows)
+	}
+	env.mu.Lock()
+	drainPendingManualActions(env.state, cfg, env.store)
+	env.mu.Unlock()
+	env.saveAll()
+
+	mu.Lock()
+	fail = true
+	requests = map[string]int{}
+	mu.Unlock()
+	hlLotMetadata = newHLLotMetadataCache(nil)
+	env.mu.RLock()
+	*pos = *env.strat("pm-args").Positions["BTC"]
+	env.mu.RUnlock()
+	if out := run(1); !out.Queued || !out.Action.IsFullClose {
+		t.Fatalf("a full paper close must queue without lot data: %+v", out)
+	}
+	if got := metaRequests(); got != 0 {
+		t.Fatalf("a full close needs no lot metadata read, got %d", got)
+	}
+	if writes != 0 {
+		t.Fatalf("paper cycle closes sent %d venue writes", writes)
 	}
 }
