@@ -37,6 +37,8 @@ var hlInfoWeightRules = map[string]hlInfoWeightRule{
 		Basis: "documented: all other documented info requests have weight 20; fundingHistory has an additional rate limit weight per 20 items returned; responses that take a time range only return 500 elements"},
 	"allMids": {Type: "allMids", Base: 2,
 		Basis: "documented: allMids is in the weight-2 info list"},
+	"clearinghouseState": {Type: "clearinghouseState", Base: 2,
+		Basis: "documented: clearinghouseState is in the weight-2 info list"},
 	"metaAndAssetCtxs": {Type: "metaAndAssetCtxs", Base: 20,
 		Basis: "documented: all other documented info requests have weight 20"},
 	"meta": {Type: "meta", Base: 20,

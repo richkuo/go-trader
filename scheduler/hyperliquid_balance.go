@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -278,6 +279,135 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 	}
 
 	return balance, positions, nil
+}
+
+const (
+	hlStrictPositionReadTimeout  = 10 * time.Second
+	hlStrictPositionMaxBytes     = 4 << 20
+	hlStrictPositionLedgerPerMin = 6
+)
+
+var hlStrictAccountPattern = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
+
+func hlKillSwitchReadLedgerContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if feedLedgerFrom(ctx) != nil {
+		return ctx
+	}
+	weight, _ := hlInfoWeight("clearinghouseState", 0)
+	local := newFeedRequestLedger(&feedBudgetConfig{PerMinute: hlStrictPositionLedgerPerMin, Startup: 1,
+		WeightPerMinute: feedIntPtr(hlStrictPositionLedgerPerMin * weight), WeightStartup: feedIntPtr(0), WeightReserve: feedIntPtr(0)}, true, nil)
+	local.closeOnSuccess = true
+	local.coverage = feedSharedCoverageKillSwitchLocal
+	return withFeedLedger(ctx, local)
+}
+
+func newHLKillSwitchPositionReader(ledgerCtx context.Context) HLStrictPositionReader {
+	ledger := feedLedgerFrom(hlKillSwitchReadLedgerContext(ledgerCtx))
+	return func(ctx context.Context, target hlPositionTarget) (hlStrictPositionSnapshot, error) {
+		return readHyperliquidPositionsStrict(withFeedLedger(ctx, ledger), target)
+	}
+}
+
+func readHyperliquidPositionsStrict(ctx context.Context, target hlPositionTarget) (hlStrictPositionSnapshot, error) {
+	if !hlStrictAccountPattern.MatchString(target.Account) {
+		return hlStrictPositionSnapshot{}, fmt.Errorf("account %q is not a 0x-prefixed 40-hex-digit address", target.Account)
+	}
+	if strings.TrimSpace(target.Endpoint) == "" {
+		return hlStrictPositionSnapshot{}, fmt.Errorf("no Hyperliquid info endpoint for account %s", target.Account)
+	}
+	if feedLedgerFrom(ctx) == nil {
+		return hlStrictPositionSnapshot{}, fmt.Errorf("no request ledger meters this position read; it is not sent")
+	}
+	body, err := json.Marshal(map[string]string{"type": "clearinghouseState", "user": target.Account})
+	if err != nil {
+		return hlStrictPositionSnapshot{}, fmt.Errorf("marshal request: %w", err)
+	}
+	reason := string(feedRestKillSwitch)
+	ctx = withFeedInput(withFeedReason(ctx, reason), reason)
+	var positions []HLPosition
+	err = hlInfoPost(ctx, hlInfoCall{
+		BaseURL: target.Endpoint, Type: "clearinghouseState", Body: body,
+		Timeout: hlStrictPositionReadTimeout, MaxBytes: hlStrictPositionMaxBytes,
+		Decode: func(data []byte) (int, error) {
+			rows, derr := parseHyperliquidPositionsStrict(data)
+			positions = rows
+			return 0, derr
+		},
+	})
+	if err != nil {
+		return hlStrictPositionSnapshot{}, err
+	}
+	return hlStrictPositionSnapshot{Target: target, Positions: positions}, nil
+}
+
+func parseHyperliquidPositionsStrict(data []byte) ([]HLPosition, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil || top == nil {
+		return nil, fmt.Errorf("clearinghouseState response is not a JSON object")
+	}
+	raw, ok := top["assetPositions"]
+	if !ok || strings.TrimSpace(string(raw)) == "null" {
+		return nil, fmt.Errorf("clearinghouseState response has no assetPositions list")
+	}
+	var rows []json.RawMessage
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, fmt.Errorf("clearinghouseState assetPositions is not a list: %w", err)
+	}
+	seen := make(map[string]bool, len(rows))
+	positions := make([]HLPosition, 0, len(rows))
+	for i, r := range rows {
+		var row struct {
+			Type     *string `json:"type"`
+			Position *struct {
+				Coin     *string         `json:"coin"`
+				Szi      json.RawMessage `json:"szi"`
+				EntryPx  json.RawMessage `json:"entryPx"`
+				Leverage *struct {
+					Type  string      `json:"type"`
+					Value json.Number `json:"value"`
+				} `json:"leverage"`
+			} `json:"position"`
+		}
+		if err := json.Unmarshal(r, &row); err != nil {
+			return nil, fmt.Errorf("assetPositions row %d is malformed: %w", i, err)
+		}
+		if row.Position == nil {
+			return nil, fmt.Errorf("assetPositions row %d has no position object", i)
+		}
+		if row.Type != nil && *row.Type != "oneWay" {
+			return nil, fmt.Errorf("assetPositions row %d has position type %q; only oneWay rows can be read as one net size", i, *row.Type)
+		}
+		if row.Position.Coin == nil || strings.TrimSpace(*row.Position.Coin) == "" || strings.TrimSpace(*row.Position.Coin) != *row.Position.Coin {
+			return nil, fmt.Errorf("assetPositions row %d has no usable coin", i)
+		}
+		coin := *row.Position.Coin
+		if seen[coin] {
+			return nil, fmt.Errorf("assetPositions has more than one row for %s", coin)
+		}
+		seen[coin] = true
+		size, err := parseStrictVenueSizeJSON(row.Position.Szi)
+		if err != nil {
+			return nil, fmt.Errorf("assetPositions row %d (%s) szi: %w", i, coin, err)
+		}
+		pos := HLPosition{Coin: coin, Size: size}
+		if px, perr := hlParseNumeric(row.Position.EntryPx); perr == nil && !math.IsNaN(px) && !math.IsInf(px, 0) {
+			pos.EntryPrice = px
+		}
+		if row.Position.Leverage != nil {
+			if lv, lerr := strconv.ParseFloat(row.Position.Leverage.Value.String(), 64); lerr == nil && lv > 0 {
+				pos.Leverage = lv
+			}
+			switch row.Position.Leverage.Type {
+			case "isolated", "cross":
+				pos.MarginMode = row.Position.Leverage.Type
+			}
+		}
+		positions = append(positions, pos)
+	}
+	return positions, nil
 }
 
 func parseHLLiquidationPx(raw json.RawMessage) float64 {
@@ -1902,11 +2032,21 @@ func hlAttemptCloseFromTPFills(s *StrategyState, sym string, pos *Position, reso
 }
 
 type HyperliquidLiveCloseReport struct {
-	ClosedCoins  []string
-	Fills        map[string]HyperliquidCloseFill
-	AlreadyFlat  []string
-	Errors       map[string]error
-	Unconfigured []HLPosition
+	ClosedCoins    []string
+	Fills          map[string]HyperliquidCloseFill
+	AlreadyFlat    []string
+	Errors         map[string]error
+	Unconfigured   []HLPosition
+	Attempts       []hlKillSwitchCloseAttempt
+	ResolvedErrors map[string]error
+}
+
+type hlKillSwitchCloseAttempt struct {
+	Coin          string
+	PreSize       float64
+	RequestedOIDs []int64
+	Result        *HyperliquidCloseResult
+	Err           error
 }
 
 func (r HyperliquidLiveCloseReport) ConfirmedFlat() bool {
@@ -1960,6 +2100,9 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 			slOIDs = stopLossOIDsByCoin[p.Coin]
 		}
 		result, err := closer(p.Coin, nil, slOIDs)
+		report.Attempts = append(report.Attempts, hlKillSwitchCloseAttempt{
+			Coin: p.Coin, PreSize: p.Size, RequestedOIDs: positiveOIDs(slOIDs), Result: result, Err: err,
+		})
 		if err != nil {
 			report.Errors[p.Coin] = err
 			continue
@@ -1968,7 +2111,8 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 			report.AlreadyFlat = append(report.AlreadyFlat, p.Coin)
 			continue
 		}
-		if result != nil && result.Close != nil && result.Close.Fill != nil {
+		if result != nil && result.Close != nil && result.Close.Fill != nil &&
+			finitePositive(result.Close.Fill.TotalSz) && finitePositive(result.Close.Fill.AvgPx) {
 			report.Fills[p.Coin] = *result.Close.Fill
 		}
 		report.ClosedCoins = append(report.ClosedCoins, p.Coin)

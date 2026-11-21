@@ -4469,3 +4469,147 @@ func TestReconcileSoleOwnerStopFillWithOpenRemainder(t *testing.T) {
 		}
 	})
 }
+
+func TestReadHyperliquidPositionsStrict(t *testing.T) {
+	const account = "0x00000000000000000000000000000000000000aa"
+	type venue struct {
+		srv   *httptest.Server
+		body  string
+		delay time.Duration
+		mu    sync.Mutex
+		reqs  []map[string]string
+	}
+	newVenue := func(t *testing.T, body string) *venue {
+		v := &venue{body: body}
+		v.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			v.mu.Lock()
+			v.reqs = append(v.reqs, req)
+			body, delay := v.body, v.delay
+			v.mu.Unlock()
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			_, _ = w.Write([]byte(body))
+		}))
+		t.Cleanup(v.srv.Close)
+		return v
+	}
+	metered := func(policy *feedBudgetConfig) (*feedRequestLedger, context.Context) {
+		ledger := newFeedRequestLedger(policy, true, nil)
+		return ledger, withFeedLedger(context.Background(), ledger)
+	}
+
+	t.Run("MatchingNetworkRequestsReachTheMeteredTransport", func(t *testing.T) {
+		main := newVenue(t, `{"assetPositions":[{"type":"oneWay","position":{"coin":"ETH","szi":"-0.3","entryPx":"3000","leverage":{"type":"cross","value":5}}}]}`)
+		test := newVenue(t, `{"assetPositions":[]}`)
+		useHLInfoURLs(t, main.srv.URL, test.srv.URL)
+		for _, network := range []string{"mainnet", "testnet"} {
+			if network == "testnet" {
+				t.Setenv("HYPERLIQUID_TESTNET", "1")
+			}
+			ledger, ctx := metered(wtPolicy(100, 0, 0))
+			target := hlPositionTarget{Account: account, Endpoint: hlInfoEndpoint()}
+			snap, err := readHyperliquidPositionsStrict(ctx, target)
+			if err != nil {
+				t.Fatalf("%s read: %v", network, err)
+			}
+			if snap.Target != target {
+				t.Fatalf("%s snapshot target = %+v, want %+v", network, snap.Target, target)
+			}
+			totals := ledger.snapshot()
+			if totals.ByType["clearinghouseState"] != 1 || totals.ByReason[string(feedRestKillSwitch)] != 1 {
+				t.Fatalf("%s ledger totals = %+v, want one clearinghouseState read charged as %s", network, totals, feedRestKillSwitch)
+			}
+			if network == "mainnet" {
+				if len(snap.Positions) != 1 || snap.Positions[0].Coin != "ETH" || snap.Positions[0].Size != -0.3 || snap.Positions[0].MarginMode != "cross" {
+					t.Fatalf("mainnet positions = %+v, want ETH short 0.3 cross", snap.Positions)
+				}
+			} else if len(snap.Positions) != 0 {
+				t.Fatalf("a valid empty list must read as flat, got %+v", snap.Positions)
+			}
+		}
+		if len(main.reqs) != 1 || len(test.reqs) != 1 {
+			t.Fatalf("requests mainnet=%d testnet=%d, want one each", len(main.reqs), len(test.reqs))
+		}
+		for _, req := range append(main.reqs, test.reqs...) {
+			if req["type"] != "clearinghouseState" || req["user"] != account {
+				t.Fatalf("request = %v, want clearinghouseState for %s", req, account)
+			}
+		}
+	})
+
+	t.Run("IncompleteOrMalformedResponsesFail", func(t *testing.T) {
+		cases := map[string]string{
+			"missing list":       `{"marginSummary":{"accountValue":"1"}}`,
+			"null list":          `{"assetPositions":null}`,
+			"list is an object":  `{"assetPositions":{}}`,
+			"not an object":      `[]`,
+			"no position object": `{"assetPositions":[{"type":"oneWay"}]}`,
+			"missing coin":       `{"assetPositions":[{"position":{"szi":"1"}}]}`,
+			"missing size":       `{"assetPositions":[{"position":{"coin":"ETH"}}]}`,
+			"unparseable size":   `{"assetPositions":[{"position":{"coin":"ETH","szi":"abc"}}]}`,
+			"size underflows":    `{"assetPositions":[{"position":{"coin":"ETH","szi":"1e-400"}}]}`,
+			"duplicate coin":     `{"assetPositions":[{"position":{"coin":"ETH","szi":"1"}},{"position":{"coin":"ETH","szi":"0"}}]}`,
+			"unknown row type":   `{"assetPositions":[{"type":"hedged","position":{"coin":"ETH","szi":"1"}}]}`,
+		}
+		for name, body := range cases {
+			t.Run(name, func(t *testing.T) {
+				v := newVenue(t, body)
+				_, ctx := metered(wtPolicy(100, 0, 0))
+				if _, err := readHyperliquidPositionsStrict(ctx, hlPositionTarget{Account: account, Endpoint: v.srv.URL}); err == nil {
+					t.Fatalf("body %s must not read as a complete position list", body)
+				}
+			})
+		}
+		if got, err := parseHyperliquidPositionsStrict([]byte(`{"assetPositions":[{"position":{"coin":"ETH","szi":"0.0"}}]}`)); err != nil || len(got) != 1 || got[0].Size != 0 {
+			t.Fatalf("a written zero size must parse as zero, got %+v err %v", got, err)
+		}
+	})
+
+	t.Run("MissingIdentityDeniedOrTimedOutReadsFail", func(t *testing.T) {
+		v := newVenue(t, `{"assetPositions":[]}`)
+		_, ctx := metered(wtPolicy(100, 0, 0))
+		if _, err := readHyperliquidPositionsStrict(ctx, hlPositionTarget{Account: "", Endpoint: v.srv.URL}); err == nil {
+			t.Fatal("a read with no account must fail")
+		}
+		if _, err := readHyperliquidPositionsStrict(ctx, hlPositionTarget{Account: "0xaddr", Endpoint: v.srv.URL}); err == nil {
+			t.Fatal("a read with a malformed account must fail")
+		}
+		if _, err := readHyperliquidPositionsStrict(ctx, hlPositionTarget{Account: account}); err == nil {
+			t.Fatal("a read with no endpoint must fail")
+		}
+		if _, err := readHyperliquidPositionsStrict(context.Background(), hlPositionTarget{Account: account, Endpoint: v.srv.URL}); err == nil {
+			t.Fatal("a read with no request ledger must not be sent")
+		}
+		_, denied := metered(wtPolicy(0, 0, 0))
+		if _, err := readHyperliquidPositionsStrict(denied, hlPositionTarget{Account: account, Endpoint: v.srv.URL}); err == nil {
+			t.Fatal("a read the weight ledger refuses must fail")
+		}
+		if len(v.reqs) != 0 {
+			t.Fatalf("refused reads must send nothing, venue saw %d", len(v.reqs))
+		}
+		v.mu.Lock()
+		v.delay = 300 * time.Millisecond
+		v.mu.Unlock()
+		_, ctx = metered(wtPolicy(100, 0, 0))
+		short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+		if _, err := readHyperliquidPositionsStrict(short, hlPositionTarget{Account: account, Endpoint: v.srv.URL}); err == nil {
+			t.Fatal("a timed-out read must fail")
+		}
+	})
+
+	t.Run("LocalLedgerMetersWhenNoPolicyParticipates", func(t *testing.T) {
+		ctx := hlKillSwitchReadLedgerContext(context.Background())
+		l := feedLedgerFrom(ctx)
+		if l == nil || l.weightStatus().Shared.Coverage != feedSharedCoverageKillSwitchLocal {
+			t.Fatalf("no-feed reads must use the bounded local ledger, got %+v", l)
+		}
+		shared := newFeedRequestLedger(wtPolicy(100, 0, 0), true, nil)
+		if got := feedLedgerFrom(hlKillSwitchReadLedgerContext(withFeedLedger(context.Background(), shared))); got != shared {
+			t.Fatal("a configured feed ledger must meter the kill-switch reads")
+		}
+	})
+}

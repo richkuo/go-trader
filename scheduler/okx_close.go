@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -65,11 +66,53 @@ func defaultOKXPositionsFetcher() ([]OKXPosition, error) {
 	return positions, nil
 }
 
+type okxPositionTarget struct {
+	Account string
+}
+
+type okxStrictPositionRow struct {
+	InstID     string
+	Coin       string
+	PosSide    string
+	MarginMode string
+	Contracts  float64
+}
+
+type okxStrictPositionSnapshot struct {
+	Account string
+	Rows    []okxStrictPositionRow
+}
+
+type OKXStrictPositionReader func(ctx context.Context, target okxPositionTarget) (okxStrictPositionSnapshot, error)
+
+func defaultOKXStrictPositionReader(ctx context.Context, target okxPositionTarget) (okxStrictPositionSnapshot, error) {
+	if strings.TrimSpace(target.Account) == "" {
+		return okxStrictPositionSnapshot{}, fmt.Errorf("no OKX swap account identity (OKX_API_KEY unset)")
+	}
+	snap, stderr, err := RunOKXFetchPositionsStrict(ctx, okxFetchPositionsScript)
+	if stderr != "" {
+		fmt.Fprintf(os.Stderr, "[okx-close] strict fetch_positions stderr: %s\n", stderr)
+	}
+	return snap, err
+}
+
+func okxSwapRouteInstID(coin string) string {
+	return coin + "-USDT-SWAP"
+}
+
 type OKXLiveCloseReport struct {
-	ClosedCoins  []string
-	AlreadyFlat  []string
-	Unconfigured []OKXPosition
-	Errors       map[string]error
+	ClosedCoins    []string
+	AlreadyFlat    []string
+	Unconfigured   []OKXPosition
+	Errors         map[string]error
+	Attempts       []okxKillSwitchCloseAttempt
+	ResolvedErrors map[string]error
+}
+
+type okxKillSwitchCloseAttempt struct {
+	Coin   string
+	Result *OKXCloseResult
+	Err    error
 }
 
 func (r OKXLiveCloseReport) ConfirmedFlat() bool {
@@ -115,6 +158,7 @@ func forceCloseOKXLive(ctx context.Context, positions []OKXPosition, okxLiveAll 
 			continue
 		}
 		result, err := closer(p.Coin, nil)
+		report.Attempts = append(report.Attempts, okxKillSwitchCloseAttempt{Coin: p.Coin, Result: result, Err: err})
 		if err != nil {
 			report.Errors[p.Coin] = err
 			continue

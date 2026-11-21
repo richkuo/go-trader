@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -374,8 +375,8 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 
 		in := KillSwitchCloseInputs{
 			HLAddr:             "0xaddr",
-			HLStateFetched:     true,
-			HLPositions:        []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}},
+			HLEndpoint:         stubHLEndpoint,
+			HLReader:           hlSequenceReader(&seq, []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}),
 			HLLiveAll:          []StrategyConfig{perps},
 			HLCloser:           closer,
 			PortfolioReason:    "portfolio drawdown 25.0% exceeds limit 20.0%",
@@ -390,8 +391,9 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 		if !plan.OnChainConfirmedFlat {
 			t.Fatalf("expected confirmed flat, got %+v", plan.LimitOrderReport)
 		}
-		if len(seq) != 2 || seq[0] != "cancel-limit" || seq[1] != "close:ETH" {
-			t.Fatalf("resting orders must be cancelled before the flatten, sequence = %v", seq)
+		want := []string{"cancel-limit", "read", "close:ETH", "read"}
+		if strings.Join(seq, ",") != strings.Join(want, ",") {
+			t.Fatalf("resting orders must be cancelled before the pre-close read and the flatten, and a fresh read must follow the close; sequence = %v, want %v", seq, want)
 		}
 	})
 	t.Run("LimitCancelBudgetStillLetsTheFlattenRun", func(t *testing.T) {
@@ -536,8 +538,9 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 func killSwitchLimitFlattenInputs(db *StateDB, roster []StrategyConfig, deps killSwitchLimitOrderDeps, closer HyperliquidLiveCloser) KillSwitchCloseInputs {
 	in := killSwitchLimitInputs(db, roster, deps)
 	in.HLAddr = "0xaddr"
-	in.HLStateFetched = true
-	in.HLPositions = []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}
+	in.HLEndpoint = stubHLEndpoint
+	var reads []string
+	in.HLReader = hlSequenceReader(&reads, []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}})
 	in.HLLiveAll = []StrategyConfig{{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
 		Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}}}
 	in.HLCloser = closer
@@ -620,5 +623,17 @@ func TestKillSwitchLimitOrderRoster(t *testing.T) {
 	want := []string{live.ID, paper.ID, perps.ID, scriptless.ID}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Fatalf("roster = %v, want %v (every Hyperliquid strategy, so no queued order is left uncancellable)", ids, want)
+	}
+}
+
+func hlSequenceReader(seq *[]string, baseline []HLPosition) HLStrictPositionReader {
+	reads := 0
+	return func(ctx context.Context, target hlPositionTarget) (hlStrictPositionSnapshot, error) {
+		*seq = append(*seq, "read")
+		reads++
+		if reads == 1 {
+			return hlStrictPositionSnapshot{Target: target, Positions: baseline}, nil
+		}
+		return hlStrictPositionSnapshot{Target: target}, nil
 	}
 }

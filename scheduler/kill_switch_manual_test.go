@@ -120,7 +120,7 @@ func TestPlanKillSwitchCloseManualAndHedgeCoins(t *testing.T) {
 				Platform: "hyperliquid",
 			}, nil
 		}
-		fetcher, _ := stubHLStateFetcher(nil, nil)
+		fetcher, _ := stubHLStateFetcher([]HLPosition{{Coin: "SOL", Size: 40}}, nil)
 
 		in := defaultHLInputs("0xaddr", true, positions, roster,
 			"portfolio drawdown 25.0% exceeds limit 20.0%",

@@ -426,7 +426,7 @@ func (l *feedRequestLedger) priceLocked(reqType string, rows int) (cost, epoch i
 
 func feedWeightRequiredReason(reason string) bool {
 	switch feedRestReason(reason) {
-	case feedRestCorrection, feedRestCorrectionRetry, feedRestLotMeta:
+	case feedRestCorrection, feedRestCorrectionRetry, feedRestLotMeta, feedRestKillSwitch:
 		return false
 	}
 	return reason != "other"
