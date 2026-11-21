@@ -398,6 +398,54 @@ func TestPaperManualVenueGuardKillSwitchRecoveryRows(t *testing.T) {
 		})
 	}
 
+	t.Run("budget exhausted after a resting read keeps the cancel intent", func(t *testing.T) {
+		db := newLimitTestStateDB(t)
+		seedKillSwitchLimitRow(t, db, "removed-strategy")
+		venue.set(paperManualGuardLimitStatus("ETH", "live", 0.5, true, true, ""), "")
+		clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		deps := realDeps(db)
+		deps.Now = func() time.Time { return clock }
+		deps.Status = func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error) {
+			res, stderr, err := RunHyperliquidLimitStatus(script, symbol, oids, sinceMs)
+			clock = clock.Add(time.Hour)
+			return res, stderr, err
+		}
+		plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{live}, deps))
+		if got := venue.lines("--cancel-order"); len(got) != 0 {
+			t.Fatalf("an exhausted budget must send no cancel in this pass: %v", got)
+		}
+		if len(plan.LimitOrderReport.Unresolved) != 1 || !strings.Contains(plan.LimitOrderReport.Unresolved[0], "verified resting but the pass exhausted") {
+			t.Fatalf("the row must stay unresolved with the budget reason: %+v", plan.LimitOrderReport)
+		}
+		orders, err := db.LoadPendingLimitOrders()
+		if err != nil || len(orders) != 1 || !orders[0].CancelRequested {
+			t.Fatalf("the stored row must carry the cancel intent: %v %+v", err, orders)
+		}
+	})
+
+	t.Run("adoptable row keeps one mark and one cancel", func(t *testing.T) {
+		owner := StrategyConfig{ID: "hl-manual-eth-live", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Args: []string{"hold", "ETH", "30m", "--mode=live"}}
+		db := newLimitTestStateDB(t)
+		seedKillSwitchLimitRow(t, db, owner.ID)
+		venue.set(paperManualGuardLimitStatus("ETH", "live", 0.5, true, true, ""), paperManualGuardLimitStatus("ETH", "cancelled", 0.5, false, true, ""))
+		deps := realDeps(db)
+		marks := 0
+		deps.MarkCancelRequested = func(strategyID, symbol string) (int64, error) {
+			marks++
+			return db.MarkPendingLimitOrderCancelRequested(strategyID, symbol)
+		}
+		plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{owner}, deps))
+		if got := venue.lines("--cancel-order"); marks != 1 || len(got) != 1 || len(venue.lines("--limit-status")) != 1 {
+			t.Fatalf("an adoptable row must get one mark, one cancel and one status read after it: marks=%d %v", marks, venue.lines(""))
+		}
+		if !plan.LimitOrderReport.ConfirmedClear() {
+			t.Fatalf("the cancelled adoptable row must resolve: %+v", plan.LimitOrderReport)
+		}
+		if orders, err := db.LoadPendingLimitOrders(); err != nil || len(orders) != 0 {
+			t.Fatalf("the resolved row must be deleted: %v %+v", err, orders)
+		}
+	})
+
 	t.Run("only paper strategies remain", func(t *testing.T) {
 		db := newLimitTestStateDB(t)
 		row := seedKillSwitchLimitRow(t, db, paper.ID)
@@ -430,7 +478,12 @@ func TestPaperManualVenueGuardLimitRowRecovery(t *testing.T) {
 		cfg   *Config
 		store *StateStore
 	}
+	var buildOwned func(name string, livePeer bool, owner string) *fixture
 	build := func(name string, livePeer bool) *fixture {
+		t.Helper()
+		return buildOwned(name, livePeer, "pm-args")
+	}
+	buildOwned = func(name string, livePeer bool, owner string) *fixture {
 		t.Helper()
 		dbDir := t.TempDir()
 		path := e.writeConfig(name, func(doc map[string]any) {
@@ -438,6 +491,9 @@ func TestPaperManualVenueGuardLimitRowRecovery(t *testing.T) {
 			strategies := []any{mrpPaperManualStrategy("pm-args", "short")}
 			if livePeer {
 				strategies = append(strategies, mrpManualStrategy("lm-peer", "short"))
+			}
+			if owner != "pm-args" {
+				strategies = append(strategies, mrpManualStrategy(owner, "short"))
 			}
 			doc["strategies"] = strategies
 		})
@@ -447,14 +503,20 @@ func TestPaperManualVenueGuardLimitRowRecovery(t *testing.T) {
 		}
 		f := &fixture{path: path, cfg: cfg, store: openMRPStore(t, path)}
 		t.Cleanup(func() { f.store.Close() })
-		if _, err := f.store.InsertPendingLimitOrder(PendingLimitOrder{StrategyID: "pm-args", Symbol: "BTC", Side: "long", OrderOID: 9001, LimitPrice: 90, OrderSize: 0.01, TIF: "Alo", CreatedAt: time.Now().UTC()}); err != nil {
+		if _, err := f.store.InsertPendingLimitOrder(PendingLimitOrder{StrategyID: owner, Symbol: "BTC", Side: "long", OrderOID: 9001, LimitPrice: 90, OrderSize: 0.01, TIF: "Alo", CreatedAt: time.Now().UTC()}); err != nil {
 			t.Fatalf("seed the paper manual limit row: %v", err)
 		}
-		for i := range cfg.Strategies {
-			if cfg.Strategies[i].ID == "pm-args" {
-				cfg.Strategies[i].Script = paperScript
+		kept := cfg.Strategies[:0]
+		for _, sc := range cfg.Strategies {
+			if sc.ID == "pm-args" {
+				sc.Script = paperScript
 			}
+			if sc.ID == owner && owner != "pm-args" {
+				continue
+			}
+			kept = append(kept, sc)
 		}
+		cfg.Strategies = kept
 		return f
 	}
 	rows := func(f *fixture) []PendingLimitOrder {
@@ -469,6 +531,7 @@ func TestPaperManualVenueGuardLimitRowRecovery(t *testing.T) {
 	paperOnly := build("limit-row-paper.json", false)
 	startup := build("limit-row-startup.json", false)
 	restored := build("limit-row-restored.json", false)
+	latchReset := buildOwned("limit-row-latch-reset.json", true, "removed-strategy")
 	fillsCases := []struct {
 		name, status, after string
 		cancels             int
@@ -527,6 +590,45 @@ func TestPaperManualVenueGuardLimitRowRecovery(t *testing.T) {
 			}
 		})
 	}
+	orphanLimitCancelAlerts.reset()
+
+	t.Run("kill switch saves the cancel intent for a removed strategy row it does not cancel", func(t *testing.T) {
+		orphanLimitCancelAlerts.reset()
+		venue.set(paperManualGuardLimitStatus("BTC", "live", 0.01, false, true, "429 rate limited"), "")
+		plan := planKillSwitchClose(KillSwitchCloseInputs{
+			PortfolioReason:    "portfolio drawdown 25.0% exceeds limit 20.0%",
+			CloseTimeout:       time.Second,
+			HLLimitOrderLoader: latchReset.store.LoadPendingLimitOrders,
+			HLLimitOrderRoster: killSwitchLimitOrderRoster(latchReset.cfg.Strategies),
+			HLLimitOrderDeps: killSwitchLimitOrderDeps{
+				Cancel: func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+					return RunHyperliquidCancelOrder(hlAccountRecoveryWriteAuth(symbol, hlWriteCancel).forOrder(oid), script, symbol, oid)
+				},
+				Status:              RunHyperliquidLimitStatus,
+				Delete:              latchReset.store.DeletePendingLimitOrderIfUnchanged,
+				Flush:               func() error { return nil },
+				MarkCancelRequested: latchReset.store.MarkPendingLimitOrderCancelRequested,
+			},
+		})
+		if got := venue.lines("--cancel-order"); len(got) != 0 {
+			t.Fatalf("an unknown resting state must send no cancel in the kill switch pass: %v", got)
+		}
+		if len(plan.LimitOrderReport.Unresolved) != 1 || !strings.Contains(plan.LimitOrderReport.Unresolved[0], "open-orders state unknown (429 rate limited)") {
+			t.Fatalf("the row must stay unresolved: %+v", plan.LimitOrderReport)
+		}
+		stored := rows(latchReset)
+		if len(stored) != 1 || !stored[0].CancelRequested {
+			t.Fatalf("the kill switch must save the cancel intent on the row it did not cancel: %+v", stored)
+		}
+		venue.set(paperManualGuardLimitStatus("BTC", "live", 0.01, true, true, ""), paperManualGuardLimitStatus("BTC", "cancelled", 0.01, false, true, ""))
+		reconcilePendingLimitOrders(NewAppState(), latchReset.cfg, latchReset.store, &mu, NewMultiNotifier(notifierBackend{notifier: &mockNotifier{}, ownerID: "owner"}), nil)
+		if cancels := venue.lines("--cancel-order"); len(cancels) != 1 || !strings.Contains(cancels[0], "--oid=9001") {
+			t.Fatalf("after the latch reset the reconciler must send the row to the orphan cancel lane: %v", venue.lines(""))
+		}
+		if got := rows(latchReset); len(got) != 0 {
+			t.Fatalf("the orphan cancel lane must finalize the row: %+v", got)
+		}
+	})
 	orphanLimitCancelAlerts.reset()
 
 	t.Run("paper only config marks the row for the operator", func(t *testing.T) {

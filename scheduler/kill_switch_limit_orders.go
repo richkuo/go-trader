@@ -214,6 +214,12 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			return decideLimitRowProof(o, statusRes, serr)
 		}
 
+		if _, err := deps.MarkCancelRequested(o.StrategyID, o.Symbol); err != nil {
+			markErr = err
+			report.LogLines = append(report.LogLines,
+				fmt.Sprintf("[WARN] ks-limit: %s could not persist cancel intent: %v", label, err))
+		}
+
 		var proof limitRowProof
 		cancelNeeded := true
 		if !c.adoptionEligible() {
@@ -232,12 +238,6 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 		}
 
 		if cancelNeeded {
-			if _, err := deps.MarkCancelRequested(o.StrategyID, o.Symbol); err != nil {
-				markErr = err
-				report.LogLines = append(report.LogLines,
-					fmt.Sprintf("[WARN] ks-limit: %s could not persist cancel intent: %v", label, err))
-			}
-
 			cancelRes, cstderr, cerr := deps.Cancel(c.Script, o.Symbol, o.OrderOID)
 			if cstderr != "" {
 				report.LogLines = append(report.LogLines,
