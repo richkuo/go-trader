@@ -1625,8 +1625,13 @@ func main() {
 				hlVirtualQty = snapshotHyperliquidVirtualQuantities(state.Strategies, hlKillSwitchAll)
 				mu.RUnlock()
 
+				var hlCycleStart *hlStrictPositionSnapshot
+				if hlStateFetched {
+					hlCycleStart = &hlStrictPositionSnapshot{Target: hlPositionTarget{Account: hlAddr, Endpoint: hlMainnetURL}, Positions: hlPositions}
+				}
 				inputs := KillSwitchCloseInputs{
 					HLAddr:            hlAddr,
+					HLCycleStart:      hlCycleStart,
 					HLEndpoint:        hlInfoEndpoint(),
 					HLLiveAll:         hlKillSwitchAll,
 					HLHedgeCoins:      hlHedgeCoins,

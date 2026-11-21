@@ -43,6 +43,7 @@ type KillSwitchCloseInputs struct {
 	HLHedgeCoins      map[string]bool
 	HLCloser          HyperliquidLiveCloser
 	HLReader          HLStrictPositionReader
+	HLCycleStart      *hlStrictPositionSnapshot
 	HLNoFillRecoverer HLNoFillRecoverer
 	HLStopLossOIDs    map[string][]int64
 
@@ -809,6 +810,17 @@ func (p *KillSwitchClosePlan) holdVenue(proof *killSwitchVenueProof, prefix, rea
 		fmt.Sprintf("[CRITICAL] %s: %s — cannot confirm on-chain flat (kill switch will retry next cycle)", prefix, reason))
 }
 
+func (in KillSwitchCloseInputs) hlCycleStartFallback(target hlPositionTarget) (hlStrictPositionSnapshot, bool) {
+	snap := in.HLCycleStart
+	if snap == nil || target.Account == "" || target.Endpoint == "" {
+		return hlStrictPositionSnapshot{}, false
+	}
+	if !strings.EqualFold(snap.Target.Account, target.Account) || snap.Target.Endpoint != target.Endpoint {
+		return hlStrictPositionSnapshot{}, false
+	}
+	return hlStrictPositionSnapshot{Target: target, Positions: snap.Positions}, true
+}
+
 func readHLKillSwitchPositions(in KillSwitchCloseInputs, target hlPositionTarget) (hlStrictPositionSnapshot, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), killSwitchVerifyReadTimeout)
 	defer cancel()
@@ -861,9 +873,16 @@ func planHyperliquidKillSwitchClose(in KillSwitchCloseInputs, plan *KillSwitchCl
 	}
 
 	baseline, err := readHLKillSwitchPositions(in, target)
-	if err != nil {
+	baselineStrict := err == nil
+	if !baselineStrict {
 		plan.holdVenue(proof, "hl-close", fmt.Sprintf("could not fetch HL positions before the close: %v", err))
-		return
+		fallback, ok := in.hlCycleStartFallback(target)
+		if !ok {
+			return
+		}
+		baseline = fallback
+		plan.LogLines = append(plan.LogLines,
+			"[CRITICAL] hl-close: the strict pre-close read failed; closes are sent from the cycle-start position snapshot, which proves no coin flat")
 	}
 
 	recoverSince := time.Now().UTC().Add(-hlKillSwitchNoFillRecoveryLookback)
@@ -894,6 +913,10 @@ func planHyperliquidKillSwitchClose(in KillSwitchCloseInputs, plan *KillSwitchCl
 			dropUncovered()
 		}
 	}
+	if !baselineStrict && err != nil {
+		report.ClosedCoins = nil
+		report.AlreadyFlat = nil
+	}
 	if err == nil {
 		res := evaluateKillSwitchResidual(hlKillSwitchExposureRows(baseline.Positions), hlKillSwitchExposureRows(post.Positions),
 			func(r killSwitchExposureRow) bool { return traded[strings.ToUpper(r.Coin)] })
@@ -919,7 +942,7 @@ func planHyperliquidKillSwitchClose(in KillSwitchCloseInputs, plan *KillSwitchCl
 			}
 		}
 		dropUncovered()
-		proof.Verified = res.flat() && len(report.Errors) == 0 && len(uncovered) == 0
+		proof.Verified = baselineStrict && res.flat() && len(report.Errors) == 0 && len(uncovered) == 0
 		for _, change := range res.Changes {
 			plan.LogLines = append(plan.LogLines, "[CRITICAL] hl-close: exposure changed since the pre-close read: "+change)
 		}
