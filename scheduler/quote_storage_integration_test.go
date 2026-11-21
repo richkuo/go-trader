@@ -97,8 +97,8 @@ func TestQuoteStorageRevisionsRowOwnershipAndIsolation(t *testing.T) {
 	})
 	t.Run("rows_are_invisible_to_every_legacy_pending_limit_path", func(t *testing.T) {
 		e := quoteSettledEnv(t, quoteTestOptions{})
-		var quoteID int64
-		if err := e.db().db.QueryRow(`SELECT id FROM pending_limit_orders WHERE owner_kind = 'quote' ORDER BY id LIMIT 1`).Scan(&quoteID); err != nil {
+		var quoteID, quoteOID int64
+		if err := e.db().db.QueryRow(`SELECT id, order_oid FROM pending_limit_orders WHERE owner_kind = 'quote' ORDER BY id LIMIT 1`).Scan(&quoteID, &quoteOID); err != nil {
 			t.Fatal(err)
 		}
 		manualID, err := e.store.InsertPendingLimitOrder(PendingLimitOrder{StrategyID: quoteTestOwner, Symbol: "ETH", Side: "buy", OrderOID: 7, LimitPrice: 1, OrderSize: 1, TIF: "Alo", CreatedAt: e.clock.Now()})
@@ -114,7 +114,8 @@ func TestQuoteStorageRevisionsRowOwnershipAndIsolation(t *testing.T) {
 		}
 		before := e.quoteRowSignature(t)
 		_ = e.store.UpdatePendingLimitOrderFill(quoteID, 9, 9, 9)
-		_ = e.store.MarkPendingLimitOrderOperatorRequired(quoteID, e.clock.Now())
+		_ = e.store.MarkPendingLimitOrderOperatorRequired(quoteID, quoteOID, e.clock.Now(), `{"oid":1}`)
+		_ = e.store.DeletePendingLimitOrderIfUnchanged(PendingLimitOrder{ID: quoteID, OrderOID: quoteOID})
 		_ = e.store.ClearPendingLimitOrderOperatorRequired(quoteID)
 		_ = e.store.DeletePendingLimitOrder(quoteID)
 		if _, err := e.store.MarkPendingLimitOrderCancelRequested(quoteTestOwner, "BTC"); err != nil {

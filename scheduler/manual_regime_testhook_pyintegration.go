@@ -25,6 +25,9 @@ const (
 	manualEntryTestSaveFaultEnv = "GO_TRADER_TEST_SAVE_FAULT_DIR"
 	manualEntryTestCancelEnv    = "GO_TRADER_TEST_MANUAL_CANCEL_FILLED"
 	manualEntryTestWaitEnv      = "GO_TRADER_TEST_MANUAL_ENTRY_WAIT_MS"
+
+	manualEntryTestLimitOrigSize    = 0.01
+	manualEntryTestLimitLotDecimals = 5
 )
 
 func manualEntryTestStageName(stage string) string {
@@ -170,9 +173,16 @@ func init() {
 			return nil, "", fmt.Errorf("manual venue substitute refuses limit status reads")
 		}
 		resting := false
+		proven := true
+		lots := manualEntryTestLimitLotDecimals
 		out := &HyperliquidLimitStatusResult{Platform: "hyperliquid"}
 		for _, oid := range oids {
-			out.Orders = append(out.Orders, HyperliquidLimitOrderStatus{OID: oid, Resting: &resting, FilledSize: filledSize, AvgPx: fillPx})
+			orig, executed := manualEntryTestLimitOrigSize, filledSize
+			out.Orders = append(out.Orders, HyperliquidLimitOrderStatus{
+				OID: oid, Coin: symbol, Resting: &resting, OrderStatus: "canceled", OrderState: "cancelled",
+				OrigSize: &orig, ExecutedSize: &executed, SzDecimals: &lots,
+				FilledSize: filledSize, AvgPx: fillPx, FillsProven: &proven,
+			})
 		}
 		return out, "", nil
 	}

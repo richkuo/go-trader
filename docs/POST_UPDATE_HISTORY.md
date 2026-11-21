@@ -2,6 +2,19 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 2142: a Hyperliquid limit order row is deleted only after proof that the order ended and every fill is booked
+
+Runtime default; restart-required; the `--limit-status` reply gains proof fields with unchanged arguments; idempotent SQLite migration adds `pending_limit_orders.operator_evidence_json` and `fill_proof_version`; no config key.
+Before this change `fills_summary_by_oid` returned an empty summary on HTTP 429 and after four attempts that found no fill, and `run_limit_status` set `fills_error` only for an exception that reached it, so a failed fill read became a filled size of zero with no error. `open_order_oids` returned an empty set with no account address or with an error object from the SDK, which made every order look off the book. The reconciler then deleted an off-book row with zero booked size as "cancelled with no fill", and the orphan, kill-switch and manual close/add paths accepted the same zero. The fill watermark also reached the database before the strategy book, and sole-owner resync could absorb a pending fill into the book.
+Now `--limit-status` reads `orderStatus` per order id, a validated open-order list, and one shared paged fill scan, and reports `order_status`, `order_state`, `orig_size`, `executed_size`, `status_error`, `fills_proven`, `fills_error` and `fills_reason` (`retryable` or `permanent`).
+One Go rule (`decideLimitRowProof`) books a proven increment through the per-coin exposure gate and deletes a row only on terminal status, verified off-book evidence, proven fills and equality with the durable booked size.
+The book, its trades, pending acknowledgements and the row watermark commit in one live-file transaction under a non-waiting manual-action lock.
+An uncertain row on the same coin holds the group, and sole-owner resync no longer raises quantity or flips side while a row is pending.
+The first proven but unbooked execution alerts the owner once per throttle interval.
+A terminal, off-book order with a proven unbooked fill that cannot be booked, or with a permanent fill-proof failure, gets a durable marker with row-bound evidence;
+`manual-clear-limit-row <oid> --flattened` needs that evidence and refuses a legacy marker until the daemon revalidates it.
+Operator action: deploy Go and Python together with `bash scripts/update.sh --restart` and roll back together. Updated Go holds every row while an older `check_hyperliquid.py` answers; older Go ignores the new fields. A legacy row whose watermark does not match its durable manual entry trades, and a remainder fill whose booked part was already closed in the book, hold with that reason in the `[limit]` log; once the order is terminal and off the book the row gets the operator marker, and the owner alert names `manual-clear-limit-row <oid> --flattened`.
+
 ### Issue 2141: the kill switch proves Hyperliquid and OKX perps flat from a fresh account read
 
 Runtime default; restart-required; no opt-out, config key or SQLite schema change. New `fetch_okx_positions.py --strict` mode with a `--strict --probe-only` startup probe for live OKX perps, a new `cancel_stop_loss_unacknowledged_oids` field in the Hyperliquid close JSON, and a `clearinghouseState` weight rule (2, documented) with request reason `kill_switch_positions`.

@@ -1713,11 +1713,23 @@ func main() {
 						Status: func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error) {
 							return runHyperliquidLimitStatusFn(script, symbol, oids, sinceMs)
 						},
-						Delete: func(id int64) error {
+						Delete: func(o PendingLimitOrder) error {
 							if store == nil {
 								return fmt.Errorf("state db unavailable")
 							}
-							return store.DeletePendingLimitOrder(id)
+							unlock, err := store.tryLiveManualActionLock()
+							if err != nil {
+								return fmt.Errorf("a manual command holds the manual-action lock (%w)", err)
+							}
+							defer unlock()
+							if why := recheckLimitRow(store, o); why != "" {
+								return fmt.Errorf("%s", why)
+							}
+							return store.DeletePendingLimitOrderIfUnchanged(o)
+						},
+						VerifyWatermark: func(o PendingLimitOrder) string {
+							why, _ := verifyLimitWatermarkDurable(store, o)
+							return why
 						},
 						Flush: func() error {
 							mu.Lock()

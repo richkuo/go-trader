@@ -38,7 +38,7 @@ func seedLimitExposureRow(t *testing.T, db *StateDB, strategyID string, filled f
 func offBookFullFillStatus(filled float64) func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 	return func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 		return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-			{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: filled, AvgPx: 2000, Fee: 0.7, Count: 1},
+			provenLimitStatus(9001, "ETH", "filled", filled, filled, 2000, 0.7),
 		}}, "", nil
 	}
 }
@@ -184,12 +184,14 @@ func TestReconcilePendingLimitOrdersLiveExposureGate(t *testing.T) {
 		db := newLimitTestStateDB(t)
 		var mu sync.RWMutex
 		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.4})
-		seedLimitExposureRow(t, db, sc.ID, 0.4)
+		row := seedLimitExposureRow(t, db, sc.ID, 0.4)
+		state.Strategies[sc.ID].Positions["ETH"].TradePositionID = "pos-limit-add"
+		seedLimitFillLineage(t, db, row.ID, sc.ID, "ETH", 9001, 0.4, 2000, "pos-limit-add")
 
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: limitTestBoolPtr(true), FilledSize: 1.0, AvgPx: 2005, Fee: 0.5, Count: 2},
+					provenLimitStatus(9001, "ETH", "live", 0.5, 0.5, 2005, 0.5),
 				}}, "", nil
 			},
 			func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
@@ -294,7 +296,7 @@ func TestReconcilePendingLimitOrdersLiveExposureGate(t *testing.T) {
 		withStubbedLimitDeps(t,
 			func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-					{OID: 9001, Resting: limitTestBoolPtr(true), FilledSize: 0.5, AvgPx: 2000, Fee: 0.7, Count: 1},
+					provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0.3, 2000, 0.7),
 				}}, "", nil
 			},
 			func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
@@ -307,20 +309,20 @@ func TestReconcilePendingLimitOrdersLiveExposureGate(t *testing.T) {
 		if len(orders) != 1 || orders[0].OperatorRequiredSince.IsZero() {
 			t.Fatalf("rows = %+v, want the first pass to mark the row", orders)
 		}
+		if refusal := clearOperatorRequiredLimitRowRefusal(cfg, orders[0], true); refusal != "" {
+			t.Fatalf("a marked terminal, off-book row must accept the hand clear, got %q", refusal)
+		}
 
-		onChain = []HLPosition{{Coin: "ETH", Size: 0.5}}
+		onChain = []HLPosition{{Coin: "ETH", Size: 0.3}}
 		reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 		pos := state.Strategies[sc.ID].Positions["ETH"]
-		if pos == nil || pos.Quantity != 0.5 {
+		if pos == nil || pos.Quantity != 0.3 {
 			t.Fatalf("position = %+v — a marked row must still be polled every cycle and adopt once the exposure returns", pos)
 		}
 		orders, _ = db.LoadPendingLimitOrders()
-		if len(orders) != 1 || !orders[0].OperatorRequiredSince.IsZero() {
-			t.Fatalf("rows = %+v, want the marker cleared once the fill was adopted", orders)
-		}
-		if refusal := clearOperatorRequiredLimitRowRefusal(cfg, orders[0], true); !strings.Contains(refusal, "adopts this fill itself") {
-			t.Fatalf("an adopted row must go back to refusing a hand clear, got %q", refusal)
+		if len(orders) != 0 {
+			t.Fatalf("rows = %+v, want the adopted terminal row finalized with its marker", orders)
 		}
 	})
 }
@@ -411,11 +413,11 @@ func twoCoinLimitStatusStub(tr *limitExposureTrace, ethFilled, btcFilled float64
 		}
 		if symbol == "BTC" {
 			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-				{OID: 9002, Resting: limitTestBoolPtr(false), FilledSize: btcFilled, AvgPx: 60000, Fee: 0.4, Count: 1},
+				provenLimitStatus(9002, "BTC", "filled", btcFilled, btcFilled, 60000, 0.4),
 			}}, "", nil
 		}
 		return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-			{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: ethFilled, AvgPx: 2000, Fee: 0.7, Count: 1},
+			provenLimitStatus(9001, "ETH", "filled", ethFilled, ethFilled, 2000, 0.7),
 		}}, "", nil
 	}
 }
@@ -492,7 +494,7 @@ func runSharedCoinPass(t *testing.T, legs []sharedCoinLeg, onChainETH float64) s
 		func(_ string, _ string, oids []int64, _ int64) (*HyperliquidLimitStatusResult, string, error) {
 			oid := oids[0]
 			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-				{OID: oid, Resting: limitTestBoolPtr(false), FilledSize: fillByOID[oid], AvgPx: 2000, Fee: 0.7, Count: 1},
+				provenLimitStatus(oid, "ETH", "filled", fillByOID[oid], fillByOID[oid], 2000, 0.7),
 			}}, "", nil
 		},
 		noCancelExpected(t),

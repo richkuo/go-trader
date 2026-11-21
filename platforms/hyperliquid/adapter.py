@@ -1055,56 +1055,6 @@ class HyperliquidExchangeAdapter:
                 time.sleep(retry_delay_s)
         return {}
 
-    def fills_summary_by_oid(
-        self,
-        oid: int,
-        since_ms: int,
-        max_retries: int = 4,
-        retry_delay_s: float = 0.5,
-    ) -> dict:
-        if oid <= 0 or not self._account_address:
-            return {}
-        attempt = 0
-        while attempt < max_retries:
-            try:
-                fills = self._info.user_fills_by_time(self._account_address, since_ms)
-            except _HLClientError as exc:
-                if getattr(exc, "status_code", None) == 429:
-                    print(
-                        f"[WARN] fills_summary lookup got HTTP 429 for oid={oid}; not retrying",
-                        file=sys.stderr,
-                    )
-                    return {}
-                fills = None
-            except Exception:
-                fills = None
-            if isinstance(fills, list):
-                matched = [
-                    f for f in fills
-                    if isinstance(f, dict) and _safe_int(f.get("oid")) == int(oid)
-                ]
-                if matched:
-                    size_total = 0.0
-                    notional_total = 0.0
-                    fee_total = 0.0
-                    for f in matched:
-                        sz = _safe_float(f.get("sz"))
-                        px = _safe_float(f.get("px"))
-                        size_total += sz
-                        notional_total += sz * px
-                        fee_total += _safe_float(f.get("fee"))
-                    avg_px = (notional_total / size_total) if size_total > 0 else 0.0
-                    return {
-                        "filled_size": size_total,
-                        "avg_px": avg_px,
-                        "fee": fee_total,
-                        "count": len(matched),
-                    }
-            attempt += 1
-            if attempt < max_retries:
-                time.sleep(retry_delay_s)
-        return {}
-
     def round_perps_trigger_px(self, symbol: str, px: float) -> float:
         sz_decimals = self._sz_decimals(symbol) if self._info else 3
         return _round_perps_px(px, sz_decimals)
@@ -1228,18 +1178,31 @@ class HyperliquidExchangeAdapter:
 
     def open_order_oids(self, symbol: str | None = None) -> set[int]:
         if not self._account_address:
-            return set()
+            raise RuntimeError("open_order_oids requires HYPERLIQUID_ACCOUNT_ADDRESS")
         orders = self._info.open_orders(self._account_address)
-        out: set[int] = set()
-        for order in orders or []:
+        if not isinstance(orders, list):
+            raise ValueError(f"openOrders returned no list: {orders!r}")
+        coins: dict[int, str] = {}
+        for order in orders:
             if not isinstance(order, dict):
-                continue
-            if symbol and order.get("coin") != symbol:
-                continue
-            oid = _safe_int(order.get("oid"))
-            if oid:
-                out.add(oid)
-        return out
+                raise ValueError(f"openOrders returned a non-object entry: {order!r}")
+            coin = order.get("coin")
+            if not isinstance(coin, str) or not coin:
+                raise ValueError(f"openOrders returned an entry with no coin: {order!r}")
+            raw_oid = order.get("oid")
+            if isinstance(raw_oid, bool) or not isinstance(raw_oid, (int, str)):
+                raise ValueError(f"openOrders returned an entry with no order id: {order!r}")
+            try:
+                oid = int(raw_oid)
+            except (TypeError, ValueError):
+                raise ValueError(f"openOrders returned an entry with an invalid order id: {order!r}")
+            if oid <= 0 or str(oid) != str(raw_oid).strip():
+                raise ValueError(f"openOrders returned an entry with an invalid order id: {order!r}")
+            prior = coins.get(oid)
+            if prior is not None and prior != coin:
+                raise ValueError(f"openOrders lists order {oid} under both {prior} and {coin}")
+            coins[oid] = coin
+        return {oid for oid, coin in coins.items() if not symbol or coin == symbol}
 
     def cancel_order_by_oid(self, symbol: str, oid: int) -> dict:
         exchange = self._require_exchange("cancel_order_by_oid")

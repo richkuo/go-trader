@@ -496,18 +496,6 @@ func pendingLimitOrdersForStrategySymbol(stateDB *StateStore, strategyID, symbol
 	return matching, nil
 }
 
-func limitStatusForOID(res *HyperliquidLimitStatusResult, oid int64) (HyperliquidLimitOrderStatus, bool) {
-	if res == nil {
-		return HyperliquidLimitOrderStatus{}, false
-	}
-	for _, st := range res.Orders {
-		if st.OID == oid {
-			return st, true
-		}
-	}
-	return HyperliquidLimitOrderStatus{}, false
-}
-
 func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, cmdName, strategyID, symbol string, beforeCancel func() error) (float64, float64, []int64, error) {
 	orders, err := pendingLimitOrdersForStrategySymbol(d.stateDB, strategyID, symbol)
 	if err != nil {
@@ -552,38 +540,29 @@ func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCo
 		if sstderr != "" {
 			res.errf("[limit-status] %s stderr: %s", strategyID, sstderr)
 		}
-		if serr != nil || statusRes == nil || statusRes.Error != "" {
-			msg := ""
-			if statusRes != nil {
-				msg = statusRes.Error
-			}
-			return 0, 0, nil, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): %v %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, serr, msg, cmdName)
-		}
-		if statusRes.OpenOrdersError != "" {
-			return 0, 0, nil, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): open-orders state unknown (%s) — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, statusRes.OpenOrdersError, cmdName)
-		}
-		st, ok := limitStatusForOID(statusRes, o.OrderOID)
-		if !ok {
-			return 0, 0, nil, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): status response did not include the order — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cmdName)
-		}
-		if st.FillsError != "" {
-			return 0, 0, nil, manualFailf("error: could not verify cancelled limit order fills for %s/%s (oid=%d): %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, st.FillsError, cmdName)
-		}
-		if st.Resting == nil || *st.Resting {
+		proof := decideLimitRowProof(o, statusRes, serr)
+		if proof.Live {
 			return 0, 0, nil, manualFailf("error: resting limit order for %s/%s (oid=%d) is not yet confirmed off-book — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cmdName)
 		}
-		if st.FilledSize > o.FilledSize+limitFillEpsilon {
-			return 0, 0, nil, manualFailf("error: resting limit order for %s/%s (oid=%d) has an unadopted fill (tracked %.6f, exchange %.6f) — cancellation is queued; run/wait for the scheduler to adopt the fill before running %s", strategyID, o.Symbol, o.OrderOID, o.FilledSize, st.FilledSize, cmdName)
+		if proof.ProvenAboveBooked() {
+			return 0, 0, nil, manualFailf("error: resting limit order for %s/%s (oid=%d) has an unadopted fill (tracked %.6f, exchange %.6f) — cancellation is queued; run/wait for the scheduler to adopt the fill before running %s", strategyID, o.Symbol, o.OrderOID, o.FilledSize, proof.Executed, cmdName)
 		}
-		if err := d.stateDB.DeletePendingLimitOrder(o.ID); err != nil {
+		if !proof.CanFinalize() {
+			return 0, 0, nil, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, limitOffBookUnverified(proof), cmdName)
+		}
+		if why, _ := verifyLimitWatermarkDurable(d.stateDB, o); why != "" {
+			return 0, 0, nil, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but %s — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, why, cmdName)
+		}
+		if err := d.stateDB.DeletePendingLimitOrderIfUnchanged(o); err != nil {
 			return 0, 0, nil, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but the queue row could not be cleared (%v) — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, err, cmdName)
 		}
+		st := proof.Status
 		fillPx := st.AvgPx
 		if fillPx <= 0 {
 			fillPx = o.LimitPrice
 		}
-		clearedQty += st.FilledSize
-		clearedNotional += st.FilledSize * fillPx
+		clearedQty += proof.Executed
+		clearedNotional += proof.Executed * fillPx
 		res.outf("Cancelled resting limit remainder: %s %s oid=%d before %s", strategyID, o.Symbol, o.OrderOID, cmdName)
 	}
 	clearedAvgPx := 0.0
