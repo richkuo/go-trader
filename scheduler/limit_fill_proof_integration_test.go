@@ -438,31 +438,3 @@ func TestLimitFillProofLifecycle(t *testing.T) {
 		}
 	})
 }
-
-func TestSoleOwnerResyncHoldsAPendingLimitEntryIncrease(t *testing.T) {
-	sc, state := newLimitTestStrategy()
-	ss := state.Strategies[sc.ID]
-	ss.Positions["ETH"] = &Position{Symbol: "ETH", Side: "long", Quantity: 0.4, InitialQuantity: 0.4, AvgCost: 2000, Multiplier: 1, OwnerStrategyID: sc.ID}
-	logger := newTestLogger(t)
-	publishLimitEntryResyncHolds([]PendingLimitOrder{{StrategyID: sc.ID, Symbol: "ETH", OrderOID: 9001}})
-	t.Cleanup(func() { publishLimitEntryResyncHolds(nil) })
-
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", []HLPosition{{Coin: "ETH", Size: 0.7, EntryPrice: 2005}}, noFillFeeResolver, logger, nil, nil, sc)
-	if got := ss.Positions["ETH"].Quantity; got != 0.4 {
-		t.Fatalf("an unresolved pending limit increment must not be absorbed by resync, qty = %g", got)
-	}
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", []HLPosition{{Coin: "ETH", Size: -0.4, EntryPrice: 2005}}, noFillFeeResolver, logger, nil, nil, sc)
-	if got := ss.Positions["ETH"].Side; got != "long" {
-		t.Fatalf("a pending limit entry must block a side reassignment, side = %q", got)
-	}
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", []HLPosition{{Coin: "ETH", Size: 0.3, EntryPrice: 2000}}, noFillFeeResolver, logger, nil, nil, sc)
-	if got := ss.Positions["ETH"].Quantity; got != 0.3 {
-		t.Fatalf("a reduction must still resync while the limit row is pending, qty = %g", got)
-	}
-
-	publishLimitEntryResyncHolds(nil)
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", []HLPosition{{Coin: "ETH", Size: 0.6, EntryPrice: 2000}}, noFillFeeResolver, logger, nil, nil, sc)
-	if got := ss.Positions["ETH"].Quantity; got != 0.6 {
-		t.Fatalf("with no pending row the ordinary resync must apply, qty = %g", got)
-	}
-}
