@@ -49,7 +49,8 @@ After any source edit run `python3 -I scripts/agent_guide.py`,verify with `bash 
   - Corrupt pos(qty/avgCost<=0)=zero-PnL `*_corrupt` leg,cash untouched.
   - Latch:ONE owner/cycle+partition;`DrawdownReadingSubstituted` always labelled;untrusted over-limit defers,never vetoes.
   - Paper `equityTrusted`=true.
-  - `ResetPortfolioKillSwitchManual`=sole DM reset;`AutoResetConfirmedFlatKillSwitch`/`ClearLatchedKillSwitchSharedWallet` `ScopeLive` only.
+  - `ResetPortfolioKillSwitchManual`=sole DM reset,applied ONLY at cycle boundary(prompt code+latch instance);`AutoResetConfirmedFlatKillSwitch` live+paper;`ClearLatchedKillSwitchSharedWallet` `ScopeLive` only.
+  - Every reset keeps peak+sets `PeakRebaselinePending`;new peak ONLY first eligible reading(`scopePeakRebaselineEligible`),ONE `SavePartition` tx;new latch cancels;pending blocks peak raise+basis migrations.
   - `daily_loss.go`:hold-only,UNLATCHED pure read,PRE-FEE realized PnL,never force-closes,per partition;new `portfolio_risk` gates copy it.
   - `exposure_cap.go`:blocking-only,direction-aware;1 exposure model `computeAssetDeltas`(+`ComputeCorrelation`).
   - `notional_cap.go`:hold-only via `pausedBlocksSignal`,never skips cycle,restart-required.
