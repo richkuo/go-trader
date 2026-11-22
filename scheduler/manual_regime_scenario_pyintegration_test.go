@@ -118,6 +118,27 @@ func (e *mrpEnv) pendingLimits(cfgPath string) []PendingLimitOrder {
 	return rows
 }
 
+func (e *mrpEnv) dropLimitRows(cfgPath, strategyID string) {
+	e.t.Helper()
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	store, err := openToolStateStore(cfg)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer store.Close()
+	for _, row := range e.pendingLimits(cfgPath) {
+		if row.StrategyID != strategyID {
+			continue
+		}
+		if err := store.DeletePendingLimitOrder(row.ID); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+}
+
 func (e *mrpEnv) seedPositions(cfgPath string, positions map[string]*Position) *AppState {
 	e.t.Helper()
 	cfg, err := LoadConfig(cfgPath)
@@ -811,7 +832,20 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 		t.Fatalf("crash-left marker must not authorize a result:\n%s", r)
 	}
 	r = e.command(reloaded, []string{good}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5")
-	e.expectRefused(r, "crash limit", "that no running scheduler has settled")
+	if !strings.Contains(r.stderr, "that no running scheduler has settled") {
+		t.Fatalf("a standalone limit open must refuse while the live limit queue holds the mr-limit row:\n%s", r)
+	}
+	e.dropLimitRows(reloaded, "mr-limit")
+	if rows := e.pendingLimits(reloaded); len(rows) != 0 {
+		t.Fatalf("the live limit queue must be empty before the crash limit case: %+v", rows)
+	}
+	crashVenue := e.venueKinds()
+	r = e.command(reloaded, []string{good}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5")
+	e.expectRefused(r, "crash limit", "unavailable")
+	e.expectNoVenue(crashVenue, "crash limit")
+	if rows := e.pendingLimits(reloaded); len(rows) != 0 {
+		t.Fatalf("the refused crash limit open left a row: %+v", rows)
+	}
 	wrong.stop()
 	t.Logf("restart: add adoption kept original entry evidence through adoption and restart; graceful stop removed the marker; a crash-left marker authorized nothing")
 }

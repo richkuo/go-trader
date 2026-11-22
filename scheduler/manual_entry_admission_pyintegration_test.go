@@ -283,20 +283,7 @@ func (e *meaEnv) seedHeldLimit(strategyID string, oid int64) PendingLimitOrder {
 
 func (e *meaEnv) dropLimits(strategyID string) {
 	e.t.Helper()
-	cfg, err := LoadConfig(e.cfg)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	store, err := openToolStateStore(cfg)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	defer store.Close()
-	for _, row := range e.limitRows(strategyID) {
-		if err := store.DeletePendingLimitOrder(row.ID); err != nil {
-			e.t.Fatal(err)
-		}
-	}
+	e.dropLimitRows(e.cfg, strategyID)
 }
 
 func (e *meaEnv) expectNoRows(what string, venue map[string]int, ids ...string) {
@@ -874,13 +861,40 @@ func regimeReadinessEntryLimitRecovery(t *testing.T, mode string) {
 		t.Logf("%s startup hold: %s refused: %s", mode, c.what, strings.TrimSpace(r.stderr))
 	}
 	e.expectNoRows(mode+" startup hold", venue, p+"open", p+"limit", p+"add")
+	loaded, err := LoadConfig(e.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admitManualEntry(loaded, p+"open"); err == nil || !strings.Contains(err.Error(), "holds the live partition") || !strings.Contains(err.Error(), startup) {
+		t.Fatalf("%s: the entry admission of a live strategy must report the startup hold, got %v", mode, err)
+	}
+	paperAdmission, err := admitManualEntry(loaded, p+"paper")
+	if err != nil {
+		t.Fatalf("%s: the live startup hold refused the entry admission of the paper partition: %v", mode, err)
+	}
+	if err := paperAdmission.check("before placement"); err != nil {
+		t.Fatalf("%s: the live startup hold refused the paper partition at the placement recheck: %v", mode, err)
+	}
+	paperAdmission.Release()
+	recorded := e.run(nil, "manual-open", p+"paper", "--size", "0.01", "--fill-price", "100", "--record-only")
+	if recorded.code != 0 || strings.Contains(recorded.stderr+recorded.stdout, "holds the live partition") {
+		t.Fatalf("%s: the live startup hold blocked a record-only paper open:\n%s", mode, recorded)
+	}
+	if acts := e.actions(); acts[p+"paper/open"] != 1 {
+		t.Fatalf("%s: the record-only paper open queued no action: %v", mode, acts)
+	}
+	e.expectNoVenue(venue, mode+" record-only paper open under the live startup hold")
+	t.Logf("%s startup hold: the entry admission passed the paper partition while it refused the live partition, and a record-only paper open was booked with no order", mode)
 	paperOpen := e.run(nil, open("paper")...)
 	e.expectRefused(paperOpen, mode+" paper open under the live startup hold", "would send a live Hyperliquid order", "no order was sent")
 	if strings.Contains(paperOpen.stderr, "holds the live partition") {
 		t.Fatalf("%s: the live startup hold decided a paper open:\n%s", mode, paperOpen)
 	}
-	e.expectNoRows(mode+" paper open under the live startup hold", venue, p+"paper")
-	t.Logf("%s startup hold: the paper partition kept its clear witness, and a paper open was refused by the paper guard with no order: %s", mode, strings.TrimSpace(paperOpen.stderr))
+	e.expectNoVenue(venue, mode+" paper open under the live startup hold")
+	if acts := e.actions(); acts[p+"paper/open"] != 1 || len(e.limitRows(p+"paper")) != 0 {
+		t.Fatalf("%s: the refused paper open left a row: %v", mode, acts)
+	}
+	t.Logf("%s startup hold: a venue-sending paper open was refused by the paper guard with no order: %s", mode, strings.TrimSpace(paperOpen.stderr))
 
 	if err := os.WriteFile(unreadable, nil, 0o600); err != nil {
 		t.Fatal(err)
