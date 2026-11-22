@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 var manualEntryAdmissionBarrier = func(stage string) {}
@@ -15,6 +16,7 @@ type manualEntryAdmission struct {
 	part       RiskPartition
 	pin        *manualRegimePin
 	owned      *stateOwnership
+	store      *StateStore
 }
 
 type manualEntryRefusal struct {
@@ -121,6 +123,38 @@ func (a *manualEntryAdmission) standalone() bool {
 	return a != nil && a.owned != nil
 }
 
+func (a *manualEntryAdmission) attachStore(store *StateStore) error {
+	if a == nil {
+		return nil
+	}
+	a.store = store
+	return a.check("after the state files opened")
+}
+
+func (a *manualEntryAdmission) checkStandaloneLimitQueue(stage string) error {
+	if a.part != livePartition {
+		return nil
+	}
+	if a.store == nil {
+		if stage == "admission" {
+			return nil
+		}
+		return manualEntryRefused("the live resting limit order queue was not read %s, so a fill while no scheduler ran cannot be ruled out", stage)
+	}
+	rows, err := a.store.LoadPendingLimitOrders()
+	if err != nil {
+		return manualEntryRefused("the live resting limit order queue could not be read %s (%v), so a fill while no scheduler ran cannot be ruled out", stage, err)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	labels := make([]string, 0, len(rows))
+	for _, o := range rows {
+		labels = append(labels, killSwitchLimitOrderLabel(o))
+	}
+	return manualEntryRefused("the live resting limit order queue holds %d row(s) (%s) that no running scheduler has settled, and a saved fill watermark, zero included, cannot prove that the venue had no later fill while no scheduler ran — start the scheduler so it reconciles them before a standalone entry", len(rows), strings.Join(labels, ", "))
+}
+
 func (a *manualEntryAdmission) check(stage string) error {
 	if a == nil {
 		return nil
@@ -137,7 +171,7 @@ func (a *manualEntryAdmission) check(stage string) error {
 				return manualEntryRefused("the standalone ownership lock %s was replaced while this command held it", lock.path)
 			}
 		}
-		return nil
+		return a.checkStandaloneLimitQueue(stage)
 	}
 	if a.pin == nil {
 		return manualEntryRefused("no verified owner")

@@ -25,6 +25,7 @@ const (
 	manualEntryTestSaveFaultEnv = "GO_TRADER_TEST_SAVE_FAULT_DIR"
 	manualEntryTestCancelEnv    = "GO_TRADER_TEST_MANUAL_CANCEL_FILLED"
 	manualEntryTestWaitEnv      = "GO_TRADER_TEST_MANUAL_ENTRY_WAIT_MS"
+	limitQueueTestFaultEnv      = "GO_TRADER_TEST_LIMIT_QUEUE_FAULT_DIR"
 
 	manualEntryTestLimitOrigSize    = 0.01
 	manualEntryTestLimitLotDecimals = 5
@@ -66,6 +67,29 @@ func manualEntryTestInstallSaveFault(dir string) {
 	stateSaveOutcomeFault = func(p RiskPartition) error {
 		if _, err := os.Stat(filepath.Join(dir, manualEntryTestPartitionName(p))); err == nil {
 			return fmt.Errorf("controlled %s save failure", partitionLabel(p))
+		}
+		return nil
+	}
+}
+
+func limitQueueTestInstallFault(dir string) {
+	limitQueueReadFault = func() error {
+		if _, err := os.Stat(filepath.Join(dir, "block")); err == nil {
+			os.WriteFile(filepath.Join(dir, "blocked"), []byte(strconv.Itoa(os.Getpid())), 0o600)
+			deadline := time.Now().Add(5 * time.Minute)
+			for {
+				if _, err := os.Stat(filepath.Join(dir, "block")); err != nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					return fmt.Errorf("controlled limit queue gate was never released")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			os.Remove(filepath.Join(dir, "blocked"))
+		}
+		if _, err := os.Stat(filepath.Join(dir, "unreadable")); err == nil {
+			return fmt.Errorf("controlled limit queue read failure")
 		}
 		return nil
 	}
@@ -132,6 +156,9 @@ func init() {
 	}
 	if dir := os.Getenv(manualEntryTestSaveFaultEnv); dir != "" {
 		manualEntryTestInstallSaveFault(dir)
+	}
+	if dir := os.Getenv(limitQueueTestFaultEnv); dir != "" {
+		limitQueueTestInstallFault(dir)
 	}
 	if raw := os.Getenv(manualEntryTestWaitEnv); raw != "" {
 		ms, err := strconv.Atoi(raw)

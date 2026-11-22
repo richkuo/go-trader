@@ -29,13 +29,57 @@ func manualRegimeHoldGuardPath(dbPath string, p RiskPartition) string {
 	return canonicalDBPath(dbPath) + manualRegimeHoldGuardInfix + strings.ReplaceAll(p.String(), ":", "-") + manualRegimeHoldGuardExt
 }
 
+const (
+	manualRegimeHoldCauseInfix   = ".manual-regime-hold-cause-"
+	manualRegimeHoldCauseVersion = 1
+)
+
+type manualRegimeHoldCauseMarker struct {
+	Version    int      `json:"version"`
+	OwnerNonce string   `json:"owner_nonce"`
+	Partition  string   `json:"partition"`
+	Causes     []string `json:"causes"`
+}
+
+func manualRegimeHoldCausePath(dbPath string, p RiskPartition) string {
+	return canonicalDBPath(dbPath) + manualRegimeHoldCauseInfix + strings.ReplaceAll(p.String(), ":", "-") + manualRegimeHoldGuardExt
+}
+
 type manualRegimeHoldGuard struct {
-	path    string
-	part    RiskPartition
-	f       *os.File
-	clear   bool
-	witness *manualRegimeWitnessFile
-	offset  int64
+	path      string
+	causePath string
+	part      RiskPartition
+	f         *os.File
+	clear     bool
+	witness   *manualRegimeWitnessFile
+	offset    int64
+	cause     string
+}
+
+func (g *manualRegimeHoldGuard) publishCause(nonce string, causes []string) {
+	if len(causes) == 0 {
+		g.withdrawCause()
+		return
+	}
+	key := strings.Join(causes, ",")
+	if g.cause == key {
+		return
+	}
+	marker := manualRegimeHoldCauseMarker{Version: manualRegimeHoldCauseVersion, OwnerNonce: nonce, Partition: g.part.String(), Causes: append([]string(nil), causes...)}
+	if err := writeManualRegimeJSONFile(g.causePath, marker); err != nil {
+		fmt.Printf("[manual-regime] the %s hold cause could not be published (%v); commands report a general hold\n", partitionLabel(g.part), err)
+		os.Remove(g.causePath)
+		g.cause = ""
+		return
+	}
+	g.cause = key
+}
+
+func (g *manualRegimeHoldGuard) withdrawCause() {
+	if err := os.Remove(g.causePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		fmt.Printf("[manual-regime] the stale %s hold cause %s could not be removed: %v\n", partitionLabel(g.part), g.causePath, err)
+	}
+	g.cause = ""
 }
 
 type manualRegimeHoldGuards struct {
@@ -244,7 +288,7 @@ func openManualRegimeHoldGuard(path string, flag int) (*os.File, error) {
 	return f, nil
 }
 
-func prepareManualRegimeHoldGuards(layout storageLayout, nonce string) (*manualRegimeHoldGuards, error) {
+func prepareManualRegimeHoldGuards(layout storageLayout, nonce string, initial func(RiskPartition) []string) (*manualRegimeHoldGuards, error) {
 	g := &manualRegimeHoldGuards{nonce: nonce, guards: make(map[RiskPartition]*manualRegimeHoldGuard)}
 	for _, spec := range layout.Files {
 		if spec.InMemory {
@@ -271,12 +315,19 @@ func prepareManualRegimeHoldGuards(layout storageLayout, nonce string) (*manualR
 				g.release()
 				return nil, fmt.Errorf("persistence guard %s: %w", path, err)
 			}
-			guard := &manualRegimeHoldGuard{path: path, part: part, f: f}
+			guard := &manualRegimeHoldGuard{path: path, causePath: manualRegimeHoldCausePath(spec.Path, part), part: part, f: f}
 			g.guards[part] = guard
 			g.order = append(g.order, part)
 			if marker, err := readManualRegimeHoldGuardMarker(f); err != nil || marker.OwnerNonce != nonce || marker.Partition != part.String() {
 				g.release()
 				return nil, fmt.Errorf("persistence guard %s did not read back after publication", path)
+			}
+			guard.withdrawCause()
+			if initial != nil {
+				if causes := initial(part); len(causes) > 0 {
+					guard.publishCause(nonce, causes)
+					continue
+				}
 			}
 			if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 				g.release()
@@ -290,6 +341,10 @@ func prepareManualRegimeHoldGuards(layout storageLayout, nonce string) (*manualR
 }
 
 func (g *manualRegimeHoldGuards) signal(p RiskPartition, held bool) {
+	g.signalCauses(p, held, nil)
+}
+
+func (g *manualRegimeHoldGuards) signalCauses(p RiskPartition, held bool, causes []string) {
 	if g == nil {
 		return
 	}
@@ -301,7 +356,15 @@ func (g *manualRegimeHoldGuards) signal(p RiskPartition, held bool) {
 	}
 	if held || g.draining {
 		guard.holdLocked()
+		if g.draining {
+			guard.withdrawCause()
+		} else {
+			guard.publishCause(g.nonce, causes)
+		}
 		return
+	}
+	if guard.cause != "" {
+		guard.withdrawCause()
 	}
 	if guard.clear {
 		return
@@ -328,6 +391,7 @@ func (g *manualRegimeHoldGuards) drain() {
 	for _, p := range g.order {
 		if guard := g.guards[p]; guard != nil && guard.f != nil {
 			guard.holdLocked()
+			guard.withdrawCause()
 		}
 	}
 }
@@ -344,6 +408,7 @@ func (g *manualRegimeHoldGuards) release() {
 			continue
 		}
 		guard.holdLocked()
+		guard.withdrawCause()
 		if marker, err := readManualRegimeHoldGuardMarker(guard.f); err == nil && marker.OwnerNonce == g.nonce {
 			if info, lerr := os.Lstat(guard.path); lerr == nil {
 				if held, serr := guard.f.Stat(); serr == nil && os.SameFile(info, held) {
@@ -394,7 +459,7 @@ func checkManualRegimeHoldGuard(layout storageLayout, p RiskPartition, nonce str
 	flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
 	if flockErr == nil {
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		return manualRegimeRefused("the scheduler holds the %s partition: a state save failed and no later save succeeded, or the scheduler is draining", partitionLabel(p))
+		return manualRegimeHoldRefusal(spec.Path, p, nonce, "its persistence guard is released", "a state save failed and no later save succeeded, or the scheduler is draining")
 	}
 	if !errors.Is(flockErr, syscall.EWOULDBLOCK) {
 		return manualRegimeRefused("persistence guard %s unreadable: %v", path, flockErr)
@@ -451,7 +516,7 @@ func checkManualRegimeHoldGuardWitness(pin manualRegimePin, p RiskPartition) err
 	}
 	pid, _, err := manualRegimeWitnessHolder(manualRegimeWitnessPath(spec.Path), want, offset, pin.owner.Nonce)
 	if errors.Is(err, errManualRegimeNoWitness) {
-		return manualRegimeRefused("the scheduler holds the %s partition: it attests no clear persistence guard (a state save failed and no later save succeeded, the scheduler is draining, or the guard could not be locked again)", partitionLabel(p))
+		return manualRegimeHoldRefusal(spec.Path, p, pin.owner.Nonce, "it attests no clear persistence guard", "a state save failed and no later save succeeded, the scheduler is draining or still verifying its resting limit queue, or the guard could not be locked again")
 	}
 	if err != nil {
 		return manualRegimeRefused("%v", err)
@@ -460,4 +525,48 @@ func checkManualRegimeHoldGuardWitness(pin manualRegimePin, p RiskPartition) err
 		return manualRegimeRefused("the %s persistence guard witness is held by process %d, not by the owner of the state files (process %d)", partitionLabel(p), pid, pin.witness)
 	}
 	return checkManualRegimeHoldGuard(pin.layout, p, pin.owner.Nonce)
+}
+
+func readManualRegimeHoldCause(path string) (manualRegimeHoldCauseMarker, error) {
+	f, err := openManualRegimeHoldGuard(path, os.O_RDONLY)
+	if err != nil {
+		return manualRegimeHoldCauseMarker{}, err
+	}
+	defer f.Close()
+	blob, err := io.ReadAll(io.LimitReader(f, manualRegimeHoldGuardMaxBytes+1))
+	if err != nil {
+		return manualRegimeHoldCauseMarker{}, err
+	}
+	if len(blob) > manualRegimeHoldGuardMaxBytes {
+		return manualRegimeHoldCauseMarker{}, fmt.Errorf("exceeds %d bytes", manualRegimeHoldGuardMaxBytes)
+	}
+	var marker manualRegimeHoldCauseMarker
+	if err := decodeManualRegimeStrict(blob, &marker); err != nil {
+		return manualRegimeHoldCauseMarker{}, err
+	}
+	return marker, nil
+}
+
+func verifiedManualRegimeHoldCauses(dbPath string, p RiskPartition, nonce string) ([]string, bool) {
+	marker, err := readManualRegimeHoldCause(manualRegimeHoldCausePath(dbPath, p))
+	if err != nil || marker.Version != manualRegimeHoldCauseVersion || !validManualRegimeNonce(marker.OwnerNonce) ||
+		marker.OwnerNonce != nonce || marker.Partition != p.String() || len(marker.Causes) == 0 {
+		return nil, false
+	}
+	texts := make([]string, 0, len(marker.Causes))
+	for _, c := range marker.Causes {
+		text, ok := persistenceHoldCauseText(c)
+		if !ok {
+			return nil, false
+		}
+		texts = append(texts, text)
+	}
+	return texts, true
+}
+
+func manualRegimeHoldRefusal(dbPath string, p RiskPartition, nonce, lead, general string) *manualRegimeTransportError {
+	if texts, ok := verifiedManualRegimeHoldCauses(dbPath, p, nonce); ok {
+		return manualRegimeRefused("the scheduler holds the %s partition: %s because %s", partitionLabel(p), lead, strings.Join(texts, "; "))
+	}
+	return manualRegimeRefused("the scheduler holds the %s partition: %s (%s)", partitionLabel(p), lead, general)
 }

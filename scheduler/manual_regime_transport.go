@@ -290,6 +290,10 @@ func (o *manualRegimeOwner) identity() (manualRegimeOwnerIdentity, bool) {
 }
 
 func (o *manualRegimeOwner) publish(layout storageLayout) error {
+	return o.publishHeld(layout, nil)
+}
+
+func (o *manualRegimeOwner) publishHeld(layout storageLayout, initial func(RiskPartition) []string) error {
 	nonce, err := newManualRegimeRandomHex()
 	if err != nil {
 		return fmt.Errorf("owner nonce: %w", err)
@@ -335,7 +339,7 @@ func (o *manualRegimeOwner) publish(layout storageLayout) error {
 	if len(written) == 0 {
 		return fmt.Errorf("no on-disk state file to publish an owner marker beside")
 	}
-	guards, err := prepareManualRegimeHoldGuards(layout, nonce)
+	guards, err := prepareManualRegimeHoldGuards(layout, nonce, initial)
 	if err != nil {
 		rollback()
 		return err
@@ -367,6 +371,13 @@ func (o *manualRegimeOwner) signalPersistence(p RiskPartition, held bool) {
 	guards := o.guards
 	o.mu.RUnlock()
 	guards.signal(p, held)
+}
+
+func (o *manualRegimeOwner) signalPersistenceCauses(p RiskPartition, causes []string) {
+	o.mu.RLock()
+	guards := o.guards
+	o.mu.RUnlock()
+	guards.signalCauses(p, len(causes) > 0, causes)
 }
 
 func (o *manualRegimeOwner) localWitness(path, nonce string, offset int64) bool {

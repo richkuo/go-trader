@@ -544,12 +544,12 @@ func (st *StateStore) MarkPendingLimitOrderCancelRequested(strategyID, symbol st
 	return db.MarkPendingLimitOrderCancelRequested(strategyID, symbol)
 }
 
-func (st *StateStore) MarkPendingLimitOrderOperatorRequired(id, orderOID int64, at time.Time, evidenceJSON string) error {
+func (st *StateStore) MarkPendingLimitOrderOperatorRequired(o PendingLimitOrder, at time.Time, evidenceJSON string) error {
 	db, err := st.liveFile()
 	if err != nil {
 		return err
 	}
-	return db.MarkPendingLimitOrderOperatorRequired(id, orderOID, at, evidenceJSON)
+	return db.MarkPendingLimitOrderOperatorRequired(o, at, evidenceJSON)
 }
 
 func (st *StateStore) DeletePendingLimitOrderIfUnchanged(o PendingLimitOrder) error {
@@ -620,12 +620,12 @@ func (st *StateStore) liveFilePath() (string, error) {
 	return db.path, nil
 }
 
-func (st *StateStore) ClearPendingLimitOrderOperatorRequired(id int64) error {
+func (st *StateStore) ClearPendingLimitOrderOperatorRequired(o PendingLimitOrder) error {
 	db, err := st.liveFile()
 	if err != nil {
 		return err
 	}
-	return db.ClearPendingLimitOrderOperatorRequired(id)
+	return db.ClearPendingLimitOrderOperatorRequired(o)
 }
 
 func (st *StateStore) CountPendingLimitOrders(strategyID, symbol string) (int, error) {

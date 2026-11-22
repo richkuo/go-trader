@@ -280,13 +280,29 @@ func limitOperatorMarkerNote(o PendingLimitOrder, markerNew bool) string {
 	return fmt.Sprintf("• The scheduler recorded durable terminal, off-book proof on this row and marked it as needing an operator. `go-trader manual-clear-limit-row %d --flattened` now accepts it after you flatten the position by hand, and it books nothing\n", o.OrderOID)
 }
 
-func limitUnbookableFlattenInstruction(o PendingLimitOrder, executed float64, aboveBooked bool) string {
-	if aboveBooked {
-		unbooked := executed - o.FilledSize
-		return fmt.Sprintf("• This order executed %.6f %s and the scheduler booked %.6f of it, so %.6f was never booked. Flatten on Hyperliquid ONLY that unbooked %.6f if it is still open, and do NOT close size the scheduler's book holds. Then clear the record with `go-trader manual-clear-limit-row %d --flattened` — the command books nothing\n",
-			executed, o.Symbol, o.FilledSize, unbooked, unbooked, o.OrderOID)
+func limitProofWatermarkUnproven(o PendingLimitOrder, p limitRowProof) bool {
+	return p.WatermarkUnproven || limitWatermarkUnproven(o) != ""
+}
+
+func limitUnbookableFlattenInstruction(o PendingLimitOrder, p limitRowProof) string {
+	if limitProofWatermarkUnproven(o, p) {
+		venue := "This pass did not read an executed size for the order from the venue"
+		if p.ExecKnown {
+			venue = fmt.Sprintf("The venue reports an executed size of %.6f for the order, and the scheduler cannot tell how much of that its book holds", p.Executed)
+		}
+		return fmt.Sprintf("• The scheduler cannot prove that the %.6f %s fill this row records reached its book, so it states no booked size for this order. %s. Do NOT close the position the scheduler's book holds. Compare the %s position on Hyperliquid with the book: if they match, nothing needs flattening; flatten ONLY size the book does not hold. Then clear the record with `go-trader manual-clear-limit-row %d --flattened` — the command discards the record, books nothing and leaves the ledger as it is\n",
+			o.FilledSize, o.Symbol, venue, o.Symbol, o.OrderOID)
 	}
-	return fmt.Sprintf("• The venue confirms the %.6f %s fill this row records, so no size from this order is known to be outside the book. Do NOT close the position the scheduler's book holds. Compare the %s position on Hyperliquid with the book: if they match, nothing needs flattening; flatten ONLY size the book does not hold. Then clear the record with `go-trader manual-clear-limit-row %d --flattened` — the command books nothing\n",
+	if p.ProvenAboveBooked() {
+		unbooked := p.Executed - o.FilledSize
+		return fmt.Sprintf("• This order executed %.6f %s and the scheduler booked %.6f of it, so %.6f was never booked. Flatten on Hyperliquid ONLY that unbooked %.6f if it is still open, and do NOT close size the scheduler's book holds. Then clear the record with `go-trader manual-clear-limit-row %d --flattened` — the command books nothing\n",
+			p.Executed, o.Symbol, o.FilledSize, unbooked, unbooked, o.OrderOID)
+	}
+	if p.Proven && p.Settled {
+		return fmt.Sprintf("• The venue confirms the %.6f %s fill this row records, so no size from this order is known to be outside the book. Do NOT close the position the scheduler's book holds. Compare the %s position on Hyperliquid with the book: if they match, nothing needs flattening; flatten ONLY size the book does not hold. Then clear the record with `go-trader manual-clear-limit-row %d --flattened` — the command books nothing\n",
+			o.FilledSize, o.Symbol, o.Symbol, o.OrderOID)
+	}
+	return fmt.Sprintf("• This pass did not confirm from the venue the %.6f %s fill this row records. Do NOT close the position the scheduler's book holds. Compare the %s position on Hyperliquid with the book: if they match, nothing needs flattening; flatten ONLY size the book does not hold. Then clear the record with `go-trader manual-clear-limit-row %d --flattened` — the command books nothing\n",
 		o.FilledSize, o.Symbol, o.Symbol, o.OrderOID)
 }
 
@@ -299,7 +315,7 @@ func limitUnbookableOperatorNote(o PendingLimitOrder, p limitRowProof, markerNew
 	if markerNew {
 		note = "• The scheduler recorded durable terminal, off-book proof on this row and marked it as needing an operator\n"
 	}
-	return note + limitUnbookableFlattenInstruction(o, p.Executed, p.ProvenAboveBooked())
+	return note + limitUnbookableFlattenInstruction(o, p)
 }
 
 func formatLimitFillExposureDM(o PendingLimitOrder, exchangeFill float64, d limitFillExposureDecision, markerNew bool) string {
@@ -357,21 +373,43 @@ func reportLimitFillExposureRefusal(notifier *MultiNotifier, o PendingLimitOrder
 
 func formatLimitFillHeldDM(o PendingLimitOrder, p limitRowProof, reason string, markerNew bool) string {
 	var b strings.Builder
-	if p.ProvenAboveBooked() {
+	unproven := limitProofWatermarkUnproven(o, p)
+	switch {
+	case unproven && p.ExecKnown:
+		fmt.Fprintf(&b, "⚠️ **Limit row NOT finalized: %s**\n", killSwitchLimitOrderLabel(o))
+		fmt.Fprintf(&b, "Strategy %s, coin %s, order %d: the venue reports an executed size of %.6f and the row records a fill of %.6f that the scheduler cannot prove its book holds, so the scheduler states no booked size and cannot book or finalize the row: %s.\n",
+			o.StrategyID, o.Symbol, o.OrderOID, p.Executed, o.FilledSize, reason)
+	case unproven:
+		fmt.Fprintf(&b, "⚠️ **Limit row NOT finalized: %s**\n", killSwitchLimitOrderLabel(o))
+		fmt.Fprintf(&b, "Strategy %s, coin %s, order %d: this pass did not read an executed size for the order from the venue, and the row records a fill of %.6f that the scheduler cannot prove its book holds, so the scheduler cannot book or finalize the row: %s.\n",
+			o.StrategyID, o.Symbol, o.OrderOID, o.FilledSize, reason)
+	case p.ProvenAboveBooked():
 		fmt.Fprintf(&b, "⚠️ **Limit fill NOT booked: %s**\n", killSwitchLimitOrderLabel(o))
 		fmt.Fprintf(&b, "Strategy %s, coin %s, order %d: the venue reports an executed size of %.6f where the book holds %.6f, and the scheduler cannot book the difference: %s.\n",
 			o.StrategyID, o.Symbol, o.OrderOID, p.Executed, o.FilledSize, reason)
-	} else {
+	case p.Proven && p.Settled:
 		fmt.Fprintf(&b, "⚠️ **Limit row NOT finalized: %s**\n", killSwitchLimitOrderLabel(o))
 		fmt.Fprintf(&b, "Strategy %s, coin %s, order %d: the venue proves an executed size of %.6f, equal to the fill the row records, but the scheduler cannot finalize the row: %s.\n",
 			o.StrategyID, o.Symbol, o.OrderOID, p.Executed, reason)
+	case p.ExecKnown:
+		fmt.Fprintf(&b, "⚠️ **Limit row NOT finalized: %s**\n", killSwitchLimitOrderLabel(o))
+		fmt.Fprintf(&b, "Strategy %s, coin %s, order %d: the venue reports an executed size of %.6f where the row records a fill of %.6f, and the scheduler cannot finalize the row: %s.\n",
+			o.StrategyID, o.Symbol, o.OrderOID, p.Executed, o.FilledSize, reason)
+	default:
+		fmt.Fprintf(&b, "⚠️ **Limit row NOT finalized: %s**\n", killSwitchLimitOrderLabel(o))
+		fmt.Fprintf(&b, "Strategy %s, coin %s, order %d: this pass did not read an executed size for the order from the venue, the row records a fill of %.6f, and the scheduler cannot finalize the row: %s.\n",
+			o.StrategyID, o.Symbol, o.OrderOID, o.FilledSize, reason)
 	}
 	b.WriteString("• The scheduler booked NOTHING and deleted NOTHING — the queue row stays as the recovery record\n")
 	switch {
 	case p.Permanent:
 		b.WriteString("• The venue no longer retains the fills of this order, so automatic booking cannot succeed\n")
 	case p.Unbookable != "":
-		b.WriteString("• Retrying cannot change this while the book stays as it is: the venue proof is complete and the scheduler's own book refuses the row, so no automatic path books or finalizes it\n")
+		if p.Proven {
+			b.WriteString("• Retrying cannot change this while the book stays as it is: the venue proof is complete and the scheduler's own book refuses the row, so no automatic path books or finalizes it\n")
+		} else {
+			b.WriteString("• Retrying cannot change this while the book stays as it is: the scheduler's own book refuses the row whatever the venue reports, so no automatic path books or finalizes it\n")
+		}
 		if p.Hold != "" {
 			fmt.Fprintf(&b, "• Until the row is resolved, no other limit fill on %s is booked\n", o.Symbol)
 		} else {
@@ -393,8 +431,16 @@ func reportLimitFillHeld(notifier *MultiNotifier, o PendingLimitOrder, p limitRo
 	if p.Unbookable != "" {
 		headline = "limit-order row held for an operator: the scheduler's own book refuses it"
 	}
-	fmt.Printf("[WARN] limit: %s %s: venue executed %.6f, book %.6f — %s\n",
-		headline, killSwitchLimitOrderLabel(o), p.Executed, o.FilledSize, reason)
+	venue := "venue executed size not read this pass"
+	if p.ExecKnown {
+		venue = fmt.Sprintf("venue executed %.6f", p.Executed)
+	}
+	recorded := fmt.Sprintf("book %.6f", o.FilledSize)
+	if limitProofWatermarkUnproven(o, p) {
+		recorded = fmt.Sprintf("row records an unproven %.6f", o.FilledSize)
+	}
+	fmt.Printf("[WARN] limit: %s %s: %s, %s — %s\n",
+		headline, killSwitchLimitOrderLabel(o), venue, recorded, reason)
 	if !limitFillExposureAlerts.Record(limitFillExposureKeyFor(o), limitFillExposureHeld, now) && !markerNew {
 		return ""
 	}
@@ -425,6 +471,9 @@ type limitFillCandidate struct {
 	booked          int
 	finalized       bool
 	committed       bool
+	binding         string
+	commitFailed    bool
+	review          bool
 	positions       []HLPosition
 	readErr         error
 }
@@ -478,6 +527,7 @@ func applyCoinLimitFills(
 	captured := make(map[string]*[]ReplayDecision)
 	var bookIDs []string
 	var marks []limitFillWatermark
+	var markRows []*limitFillCandidate
 	for i, r := range rows {
 		id := r.order.StrategyID
 		st := staged[id]
@@ -500,10 +550,12 @@ func applyCoinLimitFills(
 			continue
 		}
 		marks = append(marks, limitFillWatermark{
-			ID: r.order.ID, OrderOID: r.order.OrderOID, StrategyID: id,
-			PriorFilled: r.order.FilledSize, PriorFee: r.order.FillFee,
+			ID: r.order.ID, OrderOID: r.order.OrderOID, StrategyID: id, Symbol: r.order.Symbol, Side: r.order.Side,
+			PriorFilled: r.order.FilledSize, PriorAvgPx: r.order.AvgFillPrice, PriorFee: r.order.FillFee,
+			PriorVersion: r.order.FillProofVersion, PriorBinding: r.order.FillProofBinding,
 			Filled: r.proof.Executed, AvgPx: r.avgPx, Fee: r.status.Fee,
 		})
+		markRows = append(markRows, r)
 		r.committed = true
 		if !containsString(bookIDs, id) {
 			bookIDs = append(bookIDs, id)
@@ -521,7 +573,15 @@ func applyCoinLimitFills(
 		for _, r := range rows {
 			r.committed = false
 		}
+		for _, r := range markRows {
+			r.commitFailed = true
+		}
 		return decision, trades, errs, err
+	}
+	for i, r := range markRows {
+		r.binding = marks[i].Binding
+		fmt.Printf("[limit] committed fill: %s %s %.6f %s (was %.6f) @ $%.4f fee $%.4f (oid=%d)\n",
+			r.order.StrategyID, r.order.Side, marks[i].Filled, r.order.Symbol, marks[i].PriorFilled, marks[i].AvgPx, marks[i].Fee, r.order.OrderOID)
 	}
 	for _, id := range bookIDs {
 		live := state.Strategies[id]

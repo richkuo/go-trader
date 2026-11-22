@@ -243,6 +243,44 @@ func (e *meaEnv) seedLimit(strategyID string, oid int64) PendingLimitOrder {
 	return row
 }
 
+func (e *meaEnv) seedHeldLimit(strategyID string, oid int64) PendingLimitOrder {
+	e.t.Helper()
+	seeded := e.seedLimit(strategyID, oid)
+	cfg, err := LoadConfig(e.cfg)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	store, err := openToolStateStore(cfg)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.UpdatePendingLimitOrderFill(seeded.ID, 0.002, 90, 0.001); err != nil {
+		e.t.Fatal(err)
+	}
+	if _, err := store.files[storageRolePrimary].db.Exec(`UPDATE pending_limit_orders SET fill_proof_version = ? WHERE id = ?`, limitFillProofVersionAtomic, seeded.ID); err != nil {
+		e.t.Fatal(err)
+	}
+	rows, err := store.LoadPendingLimitOrders()
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	row, found := findPendingLimitOrderByOID(rows, oid)
+	if !found || row.FillProofBound || row.FillProofVersion != limitFillProofVersionAtomic || row.FilledSize != 0.002 {
+		e.t.Fatalf("the held fixture must be a version-one row with an unbound positive watermark: %+v", rows)
+	}
+	now := time.Now().UTC()
+	evidence := marshalLimitOperatorEvidence(limitRowOperatorEvidence{
+		OrderOID: oid, Coin: row.Symbol, OrderStatus: "canceled", OrderState: "cancelled", OffBook: true,
+		ExecutedSize: row.FilledSize, BookedSize: row.FilledSize, FillsProven: true, Unbookable: true, Unproven: true,
+		Reason: "seeded terminal, off-book proof of an unproven watermark", ObservedAt: now,
+	})
+	if err := store.MarkPendingLimitOrderOperatorRequired(row, now, evidence); err != nil {
+		e.t.Fatal(err)
+	}
+	return row
+}
+
 func (e *meaEnv) dropLimits(strategyID string) {
 	e.t.Helper()
 	cfg, err := LoadConfig(e.cfg)
@@ -400,7 +438,7 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	t.Helper()
 	p := "et-"
 	strategies := []any{}
-	for _, name := range []string{"open-exit", "open-swap", "open-after", "open-shared", "open-excl", "open-ok", "solo", "solo-race", "solo-bound", "solo-limit", "unpub", "add-cx", "add-fill", "record"} {
+	for _, name := range []string{"open-exit", "open-swap", "open-after", "open-shared", "open-excl", "open-ok", "solo", "solo-race", "solo-bound", "solo-limit", "unpub", "add-cx", "add-fill", "record", "held-a", "held-b"} {
 		strategies = append(strategies, meaPlainStrategy(p+name))
 	}
 	strategies = append(strategies, mrpManualStrategy(p+"ratchet", "short"), mrpManualStrategy(p+"ratchet-limit", "short"), mrpManualStrategy(p+"ratchet-unpub", "short"))
@@ -451,6 +489,48 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	}
 	e.dropLimits(p + "add-fill")
 	t.Logf("cancellation: a remainder with an unadopted fill stays queued for the scheduler and the add sends no order")
+
+	heldPx := strconv.FormatFloat(mrpMark()*0.9, 'f', 2, 64)
+	heldLimit := append([]string{"manual-open", p + "held-b", "--size", "0.01", "--limit-price", heldPx}, atr...)
+	opened := "after the state files opened"
+	e.seedHeldLimit(p+"held-a", 4601)
+	venue = e.venueKinds()
+	r = e.run(nil, heldLimit...)
+	e.expectRefused(r, "limit open on a coin held for an operator", p+"held-a/BTC oid=4601", "manual-clear-limit-row 4601 --flattened")
+	e.expectNoRows("limit open on a coin held for an operator", venue, p+"held-b")
+	t.Logf("operator hold: a version-one row with an unbound watermark refused a peer limit open on its coin with no order: %s", strings.TrimSpace(r.stderr))
+
+	e.armGate(opened)
+	pending = e.runAsync(nil, heldLimit...)
+	e.waitGate(opened)
+	if c := e.command(e.cfg, nil, "manual-clear-limit-row", "4601", "--flattened"); c.code != 0 {
+		t.Fatalf("manual-clear-limit-row must clear the marked held row:\n%s", c)
+	}
+	e.releaseGate(opened)
+	r = <-pending
+	if r.code != 0 {
+		t.Fatalf("a limit open must place once the held row was cleared before its placement recheck:\n%s", r)
+	}
+	if got := e.venueKinds(); got["limit_open"] != venue["limit_open"]+1 {
+		t.Fatalf("cleared before the recheck: venue %v -> %v", venue, got)
+	}
+	if rows := e.limitRows(p + "held-b"); len(rows) != 1 || len(e.limitRows(p+"held-a")) != 0 {
+		t.Fatalf("cleared before the recheck: rows %+v", e.pendingLimits(e.cfg))
+	}
+	e.dropLimits(p + "held-b")
+	t.Logf("operator hold: the held row was cleared with manual-clear-limit-row between admission and the placement recheck, and the limit open placed")
+
+	venue = e.venueKinds()
+	e.armGate(placement)
+	pending = e.runAsync(nil, heldLimit...)
+	e.waitGate(placement)
+	e.seedHeldLimit(p+"held-a", 4602)
+	e.releaseGate(placement)
+	r = <-pending
+	e.expectRefused(r, "held row raised before placement", p+"held-a/BTC oid=4602")
+	e.expectNoRows("held row raised before placement", venue, p+"held-b")
+	e.dropLimits(p + "held-a")
+	t.Logf("operator hold: a held row that appeared between admission and the placement recheck refused the limit open with no order: %s", strings.TrimSpace(r.stderr))
 
 	guard, err := os.Open(e.guard(defaultPaperPartition))
 	if err != nil {
@@ -718,4 +798,137 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	}
 	e.expectNoVenue(venue, "dry-run and record-only")
 	t.Logf("unchanged: dry-run and record-only need no entry admission")
+}
+
+func meaLiveStrategy(id string) map[string]any {
+	sc := meaPlainStrategy(id)
+	sc["args"] = []any{"hold", "BTC", "1m", "--mode=live"}
+	return sc
+}
+
+func (e *meaEnv) waitFile(path string, want bool, what string) {
+	e.t.Helper()
+	deadline := time.Now().Add(150 * time.Second)
+	for {
+		_, err := os.Stat(path)
+		if (err == nil) == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			e.t.Fatalf("%s: %s present=%v never reached %v", what, path, err == nil, want)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func regimeReadinessEntryLimitRecovery(t *testing.T, mode string) {
+	t.Helper()
+	p := "lr-"
+	strategies := []any{meaPlainStrategy(p + "paper")}
+	for _, name := range []string{"open", "limit", "add", "open-after", "open-final", "solo", "solo-held"} {
+		strategies = append(strategies, meaLiveStrategy(p+name))
+	}
+	e := newMEAEnv(t, mode, strategies)
+	meaSeed(e, p+"add")
+	queue := t.TempDir()
+	block := filepath.Join(queue, "block")
+	unreadable := filepath.Join(queue, "unreadable")
+	if err := os.WriteFile(block, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if mode == "shared" {
+		feed := e.startFeed()
+		defer feed.stop()
+	}
+	daemon := e.startDaemon(e.cfg, e.port, manualEntryTestSaveFaultEnv+"="+e.faults, limitQueueTestFaultEnv+"="+queue)
+	e.waitFile(filepath.Join(queue, "blocked"), true, "first queue pass")
+	e.waitWitness(defaultPaperPartition, true)
+	if pid := meaWitnessPID(t, e.witnessFile(), e.slot(livePartition)); pid != 0 {
+		t.Fatalf("%s: the live partition published a clear witness (pid %d) before the first queue pass", mode, pid)
+	}
+	atr := []string{"--atr", "0.5"}
+	open := func(id string) []string {
+		return append([]string{"manual-open", p + id, "--size", "0.01"}, atr...)
+	}
+	limitPx := strconv.FormatFloat(mrpMark()*0.9, 'f', 2, 64)
+	limit := append([]string{"manual-open", p + "limit", "--size", "0.01", "--limit-price", limitPx}, atr...)
+	add := []string{"manual-add", p + "add", "--size", "0.01"}
+	startup := "has not finished its first pass over the resting limit order queue"
+	venue := e.venueKinds()
+	for _, c := range []struct {
+		what string
+		args []string
+	}{{"market open", open("open")}, {"limit open", limit}, {"add", add}} {
+		r := e.run(nil, c.args...)
+		e.expectRefused(r, mode+" startup "+c.what, "holds the live partition", startup)
+		t.Logf("%s startup hold: %s refused: %s", mode, c.what, strings.TrimSpace(r.stderr))
+	}
+	e.expectNoRows(mode+" startup hold", venue, p+"open", p+"limit", p+"add")
+	if r := e.run(nil, open("paper")...); r.code != 0 {
+		t.Fatalf("%s: the live startup hold blocked a paper open:\n%s", mode, r)
+	}
+	t.Logf("%s startup hold: a paper open placed while the live partition waited for its first queue pass", mode)
+
+	if err := os.WriteFile(unreadable, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(block)
+	daemon.waitLog("an unreadable limit queue", 120*time.Second, func(out string) bool {
+		return strings.Contains(out, "controlled limit queue read failure")
+	})
+	venue = e.venueKinds()
+	r := e.run(nil, open("open")...)
+	e.expectRefused(r, mode+" unreadable queue", "holds the live partition", "the resting limit order queue could not be read")
+	causePath := manualRegimeHoldCausePath(filepath.Join(e.dir, "state.db"), livePartition)
+	foreign := manualRegimeHoldCauseMarker{Version: manualRegimeHoldCauseVersion, OwnerNonce: strings.Repeat("ef", manualRegimeOwnerNonceBytes), Partition: livePartition.String(), Causes: []string{persistenceHoldLimitQueueUnread}}
+	if err := writeManualRegimeJSONFile(causePath, foreign); err != nil {
+		t.Fatal(err)
+	}
+	r = e.run(nil, open("open")...)
+	e.expectRefused(r, mode+" foreign cause", "holds the live partition", "attests no clear persistence guard (a state save failed")
+	if strings.Contains(r.stderr, "could not be read") {
+		t.Fatalf("%s: a cause bound to another owner was reported as verified:\n%s", mode, r)
+	}
+	e.expectNoVenue(venue, mode+" unreadable queue")
+	t.Logf("%s unreadable queue: the verified cause was named, and a foreign cause fell back to the general refusal", mode)
+
+	os.Remove(unreadable)
+	e.waitWitness(livePartition, true)
+	if _, err := os.Stat(causePath); err == nil {
+		t.Fatalf("%s: the cleared live partition kept a hold cause file", mode)
+	}
+	if r := e.run(nil, open("open-after")...); r.code != 0 {
+		t.Fatalf("%s: a live open after a readable queue pass:\n%s\n%s", mode, r, mrpTimeline(daemon.output()))
+	}
+	t.Logf("%s: after a readable pass with no remaining recovery hold, the live witness cleared and a live open placed", mode)
+
+	placement := "before placement"
+	venue = e.venueKinds()
+	e.armGate(placement)
+	pending := e.runAsync(nil, open("open-final")...)
+	e.waitGate(placement)
+	if err := os.WriteFile(unreadable, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.waitWitness(livePartition, false)
+	e.releaseGate(placement)
+	r = <-pending
+	e.expectRefused(r, mode+" hold before placement", "holds the live partition", "could not be read")
+	e.expectNoRows(mode+" hold before placement", venue, p+"open-final")
+	t.Logf("%s: a queue hold raised after admission refused the final check under the manual-action lock", mode)
+	os.Remove(unreadable)
+	e.waitWitness(livePartition, true)
+	daemon.stop()
+
+	venue = e.venueKinds()
+	if r := e.run(nil, open("solo")...); r.code != 0 {
+		t.Fatalf("%s: a standalone live open with an empty readable queue:\n%s", mode, r)
+	}
+	e.seedLimit(p+"limit", 4601)
+	r = e.run(nil, open("solo-held")...)
+	e.expectRefused(r, mode+" standalone row", "live resting limit order queue holds 1 row(s)", p+"limit/BTC oid=4601")
+	if got := e.venueKinds(); got["execute"] != venue["execute"]+1 {
+		t.Fatalf("%s standalone: venue %v -> %v", mode, venue, got)
+	}
+	t.Logf("%s standalone: an empty live queue let the open place; a zero-watermark row of another strategy refused the next one", mode)
 }

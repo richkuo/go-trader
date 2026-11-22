@@ -39,11 +39,9 @@ type killSwitchLimitStubs struct {
 	statusCalls []int64
 	deleted     []int64
 	marked      []string
-	flushes     int
 
 	clock     time.Time
 	callCost  time.Duration
-	flushErr  error
 	markErr   error
 	clockUsed bool
 }
@@ -78,10 +76,6 @@ func (s *killSwitchLimitStubs) deps(
 		Delete: func(o PendingLimitOrder) error {
 			s.deleted = append(s.deleted, o.ID)
 			return del(o)
-		},
-		Flush: func() error {
-			s.flushes++
-			return s.flushErr
 		},
 		MarkCancelRequested: func(strategyID, symbol string) (int64, error) {
 			s.marked = append(s.marked, strategyID+"/"+symbol)
@@ -468,7 +462,7 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 			t.Errorf("message must name the budget, got: %s", plan.DiscordMessage)
 		}
 	})
-	t.Run("FlushesAdoptedFillBeforeDeletingTheRow", func(t *testing.T) {
+	t.Run("UnprovenPositiveWatermarkKeepsTheRecoveryRow", func(t *testing.T) {
 		sc := killSwitchLimitTestStrategy()
 		db := newLimitTestStateDB(t)
 		id := seedKillSwitchLimitRow(t, db, sc.ID)
@@ -481,40 +475,20 @@ func TestPlanKillSwitchCloseLimitOrders(t *testing.T) {
 
 		plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
 
-		if !plan.OnChainConfirmedFlat {
-			t.Fatalf("a flushed row must resolve, got %+v", plan.LimitOrderReport)
-		}
-		if stubs.flushes != 1 {
-			t.Fatalf("the adopted fill must be flushed exactly once before delete, flushes = %d", stubs.flushes)
-		}
-		if len(stubs.deleted) != 1 || stubs.deleted[0] != id {
-			t.Errorf("delete must still proceed after a successful flush, deleted = %v", stubs.deleted)
-		}
-	})
-	t.Run("FailedFlushKeepsTheRecoveryRow", func(t *testing.T) {
-		sc := killSwitchLimitTestStrategy()
-		db := newLimitTestStateDB(t)
-		id := seedKillSwitchLimitRow(t, db, sc.ID)
-		if err := db.UpdatePendingLimitOrderFill(id, 0.2, 2000, 0.3); err != nil {
-			t.Fatalf("seed watermark: %v", err)
-		}
-
-		stubs := &killSwitchLimitStubs{flushErr: errors.New("disk full")}
-		deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrderIfUnchanged)
-
-		plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
-
 		if plan.OnChainConfirmedFlat || plan.CanAutoResetWithoutOwner() {
-			t.Fatal("a failed flush must block confirmed-flat and auto-reset")
+			t.Fatal("a positive watermark with no commit proof must block confirmed-flat and auto-reset")
+		}
+		if len(stubs.cancelCalls) != 1 {
+			t.Fatalf("the cancel must still be sent, cancel calls = %v", stubs.cancelCalls)
 		}
 		if len(stubs.deleted) != 0 {
-			t.Fatalf("the queue row is the recovery record and must survive a failed flush, deleted = %v", stubs.deleted)
+			t.Fatalf("the queue row is the recovery record and must survive, deleted = %v", stubs.deleted)
 		}
 		if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 1 {
 			t.Fatalf("expected the row retained, got %d", len(orders))
 		}
-		if !strings.Contains(plan.DiscordMessage, "could not be flushed to the state DB") {
-			t.Errorf("message must name the flush failure, got: %s", plan.DiscordMessage)
+		if !strings.Contains(plan.DiscordMessage, "carries no proof that it committed") {
+			t.Errorf("message must name the missing commit proof, got: %s", plan.DiscordMessage)
 		}
 	})
 	t.Run("RecordsCancelIntentBeforeCancelling", func(t *testing.T) {

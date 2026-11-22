@@ -146,7 +146,7 @@ func TestReconcileCancelLane(t *testing.T) {
 			t.Fatalf("alert must name the order and its order id, got: %s", mock.dms[0].content)
 		}
 	})
-	t.Run("FlushesAnAdoptedFillBeforeClearingTheRow", func(t *testing.T) {
+	t.Run("KeepsAPositiveRowOfAnIneligibleOwnerForReview", func(t *testing.T) {
 		resetOrphanLimitCancelAlerts(t)
 		dbPath := filepath.Join(t.TempDir(), "state.db")
 		db, err := OpenStateDB(dbPath)
@@ -190,16 +190,19 @@ func TestReconcileCancelLane(t *testing.T) {
 
 		reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
-		if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
-			t.Fatalf("row must be cleared once the adopted fill is flushed, got %+v", orders)
+		orders, _ := db.LoadPendingLimitOrders()
+		if len(orders) != 1 || orders[0].FilledSize != 0.3 || orders[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("a positive row whose owner cannot carry its fill must stay and be marked for an operator, got %+v", orders)
+		}
+		if ev, ok := parseLimitOperatorEvidence(orders[0].OperatorEvidenceJSON); !ok || !ev.Unbookable || !ev.OffBook || !ev.FillsProven {
+			t.Fatalf("the marker must carry terminal, off-book evidence, got %+v", ev)
 		}
 		fresh, err := LoadStateWithDB(cfg, db)
 		if err != nil {
 			t.Fatalf("reload: %v", err)
 		}
-		pos := fresh.Strategies["hl-manual-eth-live"].Positions["ETH"]
-		if pos == nil || pos.Quantity != 0.3 {
-			t.Fatalf("the adopted fill must reach the state DB before the row is deleted, position = %+v", pos)
+		if pos := fresh.Strategies["hl-manual-eth-live"].Positions["ETH"]; pos == nil || pos.Quantity != 0.3 {
+			t.Fatalf("keeping the row must leave the book unchanged, position = %+v", pos)
 		}
 	})
 }
@@ -240,10 +243,12 @@ func TestOpenStateDBMigratesOperatorRequiredSinceOntoAnExistingQueue(t *testing.
 		t.Fatalf("a migrated row must start unmarked with a legacy watermark, got %+v", orders[0])
 	}
 	evidence := marshalLimitOperatorEvidence(limitRowOperatorEvidence{OrderOID: 9001, Coin: "ETH", OrderState: "filled", OffBook: true, FillsProven: true, ExecutedSize: 0.5})
-	if err := reopened.MarkPendingLimitOrderOperatorRequired(orders[0].ID, orders[0].OrderOID, time.Now().UTC(), evidence); err != nil {
+	if err := reopened.MarkPendingLimitOrderOperatorRequired(orders[0], time.Now().UTC(), evidence); err != nil {
 		t.Fatalf("mark on a migrated row: %v", err)
 	}
-	if err := reopened.MarkPendingLimitOrderOperatorRequired(orders[0].ID, orders[0].OrderOID+1, time.Now().UTC(), evidence); err == nil {
+	other := orders[0]
+	other.OrderOID++
+	if err := reopened.MarkPendingLimitOrderOperatorRequired(other, time.Now().UTC(), evidence); err == nil {
 		t.Fatal("a marker bound to another order id must not reach this row")
 	}
 	orders, _ = reopened.LoadPendingLimitOrders()

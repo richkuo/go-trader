@@ -134,12 +134,16 @@ func formatOrphanLimitCancelDM(o PendingLimitOrder, block string, outcome orphan
 		b.WriteString("Do not flatten and then restore without clearing the row: the scheduler refuses to book a fill the account no longer holds, so the position stays untracked and this alert keeps repeating.")
 	case orphanLimitStateOffBookRowStuck:
 		fmt.Fprintf(&b, "⚠️ **Limit order queue row not cleared: %s**\n", killSwitchLimitOrderLabel(o))
-		fmt.Fprintf(&b, "The order is OFF-BOOK and nothing is resting on Hyperliquid, so no exchange action is needed: %s.\n", outcome.Reason)
+		if limitProofWatermarkUnproven(o, outcome.Proof) {
+			fmt.Fprintf(&b, "The order is OFF-BOOK and nothing is resting on Hyperliquid, so there is nothing left to cancel: %s.\n", outcome.Reason)
+		} else {
+			fmt.Fprintf(&b, "The order is OFF-BOOK and nothing is resting on Hyperliquid, so no exchange action is needed: %s.\n", outcome.Reason)
+		}
 		fmt.Fprintf(&b, "• Its owning strategy %q cannot adopt it because %s, so the cancel-only lane owns the row\n", o.StrategyID, block)
 		if outcome.Proof.Unbookable != "" {
-			b.WriteString("• The row's recorded fill does not match the durable trades of this order, so the scheduler cannot prove what the book holds for it and never deletes the row by itself\n")
+			fmt.Fprintf(&b, "• The scheduler keeps the row for review and never deletes it by itself: %s\n", outcome.Proof.Unbookable)
 			fmt.Fprintf(&b, "• Until the row is cleared, no limit fill on %s is booked\n", o.Symbol)
-			b.WriteString(strings.TrimSuffix(limitUnbookableFlattenInstruction(o, outcome.Proof.Executed, outcome.Proof.ProvenAboveBooked()), "\n"))
+			b.WriteString(strings.TrimSuffix(limitUnbookableFlattenInstruction(o, outcome.Proof), "\n"))
 		} else {
 			b.WriteString("• This is a scheduler bookkeeping failure, and it is not exposure on the exchange\n")
 			b.WriteString("The reconciler retries every cycle and clears the row once the write succeeds.")

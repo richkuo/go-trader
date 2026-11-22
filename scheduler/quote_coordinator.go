@@ -455,8 +455,8 @@ func (a *quoteAdmission) increaseHolds(req quoteDeadlineRequest, extra []string,
 	if daily.Tripped {
 		holds = append(holds, "daily loss limit tripped: "+dailyLossHoldDetail(daily))
 	}
-	if a.store.persistenceHoldsPartition(a.partition) {
-		holds = append(holds, "the partition state file has not saved")
+	if why := a.store.persistenceHoldReason(a.partition); why != "" {
+		holds = append(holds, "the partition is held: "+why)
 	}
 	if q.Contract != nil && q.Contract.OperatorHold {
 		holds = append(holds, "operator hold: "+q.Contract.OperatorHoldReason)
@@ -948,7 +948,9 @@ func (a *quoteAdmission) submitReserved(ctx context.Context, q *quoteOwnerState,
 		if err := a.prices.check(o.Request); err != nil {
 			recheck = err.Error()
 		} else if o.increasesRisk() {
-			if mark <= 0 {
+			if why := a.store.persistenceHoldReason(a.partition); why != "" {
+				recheck = "the partition is held before submission: " + why
+			} else if mark <= 0 {
 				recheck = "no fresh mark to recheck the risk envelope before submission"
 			} else if env := a.envelope(q, s, nil, mark, pos); len(env.Refusals) > 0 {
 				recheck = "the risk envelope changed before submission: " + strings.Join(env.Refusals, "; ")
