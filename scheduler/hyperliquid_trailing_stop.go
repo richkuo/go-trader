@@ -526,7 +526,7 @@ func hyperliquidArmFixedATRStopLossLive(sc StrategyConfig, symbol, side string, 
 	if logger != nil {
 		logger.Info("Arming fixed ATR SL for %s: side=%s qty=%.6f trigger=$%.4f", symbol, side, qty, triggerPx)
 	}
-	result, stderr, err := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, qty, triggerPx, 0)
+	result, stderr, err := runHyperliquidUpdateStopLossFunc(hlStrategyWriteAuth(sc, symbol, hlWriteStop), sc.Script, symbol, side, qty, triggerPx, 0)
 	if stderr != "" && logger != nil {
 		logger.Info("arm fixed SL stderr: %s", stderr)
 	}
@@ -941,7 +941,7 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		symbol, side, mark, newHighWater, newTrigger, currentOID)
 	unlock := lockHyperliquidTrailingUpdate(symbol)
 	defer unlock()
-	result, stderr, err := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, qty, newTrigger, currentOID)
+	result, stderr, err := runHyperliquidUpdateStopLossFunc(hlStrategyWriteAuth(sc, symbol, hlWriteStop), sc.Script, symbol, side, qty, newTrigger, currentOID)
 	if stderr != "" {
 		logger.Info("update stop-loss stderr: %s", stderr)
 	}
@@ -1009,7 +1009,7 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	}
 	retryOutcomeUnknown := false
 	if result.CancelStopLossSucceeded && !restingConfirmed && clampTriggered && !result.StopLossOutcomeUnknown {
-		retryResult, retryOutcome := hlLiquidationPlaceFresh(sc.Script, symbol, side, qty, newTrigger, logger)
+		retryResult, retryOutcome := hlLiquidationPlaceFresh(hlStrategyWriteAuth(sc, symbol, hlWriteStop), sc.Script, symbol, side, qty, newTrigger, logger)
 		switch retryOutcome {
 		case hlReplacePlaced, hlReplaceFilled:
 			result = retryResult

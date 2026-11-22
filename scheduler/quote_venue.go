@@ -428,6 +428,9 @@ func parseQuoteScriptOutput(stdout, stderr []byte, runErr error) (quoteScriptOut
 
 func (v *quoteLiveVenue) sideEffect(args []string) (quoteOrderOutcome, error) {
 	stdout, stderr, err := runPythonSideEffectWithTimeout(v.script, args, quoteVenueScriptTimeout)
+	if isVenueWriteRefused(err) {
+		return quoteOrderOutcome{Status: quoteOutcomeRejected, Detail: err.Error()}, nil
+	}
 	out, perr := parseQuoteScriptOutput(stdout, stderr, err)
 	if out.Outcome != nil && perr != nil && out.Outcome.Status == quoteOutcomeRejected {
 		return *out.Outcome, nil

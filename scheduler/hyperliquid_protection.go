@@ -425,7 +425,7 @@ type jsonNumber interface {
 }
 
 var syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger, reconcileFillHintsJSON []byte) (*HyperliquidProtectionSyncResult, bool) {
-	result, stderr, err := RunHyperliquidSyncProtection(sc.Script, plan, reconcileFillHintsJSON)
+	result, stderr, err := RunHyperliquidSyncProtection(hlStrategyWriteAuth(sc, plan.Symbol, hlWriteProtection), sc.Script, plan, reconcileFillHintsJSON)
 	if stderr != "" && logger != nil {
 		logger.Info("protection sync stderr: %s", stderr)
 	}

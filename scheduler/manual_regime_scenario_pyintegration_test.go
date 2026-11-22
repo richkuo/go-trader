@@ -118,6 +118,27 @@ func (e *mrpEnv) pendingLimits(cfgPath string) []PendingLimitOrder {
 	return rows
 }
 
+func (e *mrpEnv) dropLimitRows(cfgPath, strategyID string) {
+	e.t.Helper()
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	store, err := openToolStateStore(cfg)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer store.Close()
+	for _, row := range e.pendingLimits(cfgPath) {
+		if row.StrategyID != strategyID {
+			continue
+		}
+		if err := store.DeletePendingLimitOrder(row.ID); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+}
+
 func (e *mrpEnv) seedPositions(cfgPath string, positions map[string]*Position) *AppState {
 	e.t.Helper()
 	cfg, err := LoadConfig(cfgPath)
@@ -281,7 +302,7 @@ func (e *mrpEnv) settledGeneration(d *mrpDaemon, port int, strategyID string) mr
 	var key, slot time.Time
 	for attempt := 0; attempt < 5; attempt++ {
 		first, firstOK := mrpLastEval(d.output(), strategyID)
-		got = e.route(port, strategyID, "paper")
+		got = e.route(port, strategyID, "live")
 		second, secondOK := mrpLastEval(d.output(), strategyID)
 		var left time.Duration
 		left, slot, reason = mrpGenerationWindow(first, second, firstOK, secondOK, got, time.Now())
@@ -585,7 +606,7 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 	if r.code != 0 {
 		t.Fatalf("ready limit open:\n%s\n%s", r, mrpTimeline(daemon.output()))
 	}
-	after := e.route(port+1, "mr-ready", "paper")
+	after := e.route(port+1, "mr-ready", "live")
 	if after.env.Generation != before.env.Generation || !after.env.BundleAt.Equal(*before.env.BundleAt) {
 		t.Fatalf("a cycle ran during the evidence window: %d -> %d\n%s", before.env.Generation, after.env.Generation, mrpTimeline(daemon.output()))
 	}
@@ -628,7 +649,7 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 	for _, args := range warmingArgs {
 		warmingRuns = append(warmingRuns, e.command(cfgA, []string{good}, args...))
 	}
-	afterWarming := e.route(port+1, "mr-ready", "paper")
+	afterWarming := e.route(port+1, "mr-ready", "live")
 	if afterWarming.env.Generation != before.env.Generation || afterWarming.env.BundleAt == nil || !afterWarming.env.BundleAt.Equal(*before.env.BundleAt) {
 		t.Fatalf("a cycle ran during the warming evidence window: %d -> %d\n%s", before.env.Generation, afterWarming.env.Generation, mrpTimeline(daemon.output()))
 	}
@@ -685,7 +706,7 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 	r = e.command(cfgA, []string{via}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	e.expectRefused(r, "foreign proof", "no valid owner proof")
 	secretA := e.ownerSecret()
-	_, _, signedBody, _ := e.rawRoute(port+1, "mr-ready", "paper", secretA, nil)
+	_, _, signedBody, _ := e.rawRoute(port+1, "mr-ready", "live", secretA, nil)
 	squatter := newMRPSquatter(t, signedBody)
 	r = e.command(cfgA, []string{mrpURL(squatter.port)}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	e.expectRefused(r, "squatter replaying a real bundle", "no valid owner proof")
@@ -700,10 +721,10 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 			}
 		}
 	}
-	if status, header, _, _ := e.rawRoute(port+1, "mr-ready", "paper", foreignSecret, nil); status != http.StatusUnauthorized || header.Get(manualRegimeProofHeader) != "" {
+	if status, header, _, _ := e.rawRoute(port+1, "mr-ready", "live", foreignSecret, nil); status != http.StatusUnauthorized || header.Get(manualRegimeProofHeader) != "" {
 		t.Fatalf("a request without the owner secret must get an unsigned 401: %d", status)
 	}
-	if status, _, _, _ := e.rawRoute(port+1, "mr-ready", "paper", secretA, map[string]string{"Authorization": "Bearer " + e.token, manualRegimeAuthHeader: ""}); status != http.StatusUnauthorized {
+	if status, _, _, _ := e.rawRoute(port+1, "mr-ready", "live", secretA, map[string]string{"Authorization": "Bearer " + e.token, manualRegimeAuthHeader: ""}); status != http.StatusUnauthorized {
 		t.Fatalf("the status token alone must not authenticate the manual regime route: %d", status)
 	}
 	e.expectNoVenue(base, "authentication")
@@ -752,13 +773,13 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 	daemon.cmd.Process.Signal(syscall.SIGHUP)
 	daemon.waitLog("reload", 30*time.Second, func(s string) bool { return strings.Contains(s, "[reload]") })
 	time.Sleep(time.Second)
-	if got := e.route(port+1, "mr-ready", "paper"); got.status != http.StatusConflict || got.env.Result != manualRegimeResultMismatch {
+	if got := e.route(port+1, "mr-ready", "live"); got.status != http.StatusConflict || got.env.Result != manualRegimeResultMismatch {
 		t.Fatalf("a reload inside the generation must refuse the earlier contract: %d %+v\n%s", got.status, got.env, daemon.output())
 	}
 	r = e.command(reloaded, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	e.expectRefused(r, "reload inside the generation", "HTTP 409")
 	daemon.waitFreshCycle()
-	if got := e.route(port+1, "mr-ready", "paper"); got.status != http.StatusOK {
+	if got := e.route(port+1, "mr-ready", "live"); got.status != http.StatusOK {
 		t.Fatalf("next generation after reload: %+v", got.env)
 	}
 	e.expectNoVenue(base, "reload")
@@ -811,7 +832,20 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 		t.Fatalf("crash-left marker must not authorize a result:\n%s", r)
 	}
 	r = e.command(reloaded, []string{good}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5")
+	if !strings.Contains(r.stderr, "that no running scheduler has settled") {
+		t.Fatalf("a standalone limit open must refuse while the live limit queue holds the mr-limit row:\n%s", r)
+	}
+	e.dropLimitRows(reloaded, "mr-limit")
+	if rows := e.pendingLimits(reloaded); len(rows) != 0 {
+		t.Fatalf("the live limit queue must be empty before the crash limit case: %+v", rows)
+	}
+	crashVenue := e.venueKinds()
+	r = e.command(reloaded, []string{good}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5")
 	e.expectRefused(r, "crash limit", "unavailable")
+	e.expectNoVenue(crashVenue, "crash limit")
+	if rows := e.pendingLimits(reloaded); len(rows) != 0 {
+		t.Fatalf("the refused crash limit open left a row: %+v", rows)
+	}
 	wrong.stop()
 	t.Logf("restart: add adoption kept original entry evidence through adoption and restart; graceful stop removed the marker; a crash-left marker authorized nothing")
 }
@@ -864,7 +898,7 @@ func regimeReadinessProcessSharedChecks(t *testing.T, e *mrpEnv, cfg string, por
 	if r.code != 0 {
 		t.Fatalf("shared ready limit:\n%s\n%s", r, mrpTimeline(daemon.output()))
 	}
-	if after := e.route(port, "mr-ready", "paper"); after.env.Generation != before.env.Generation {
+	if after := e.route(port, "mr-ready", "live"); after.env.Generation != before.env.Generation {
 		t.Fatalf("a cycle ran during the shared evidence window\n%s", mrpTimeline(daemon.output()))
 	}
 	loaded, _ := e.readStore(cfg)

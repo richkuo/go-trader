@@ -45,10 +45,17 @@ func runManualOpen(args []string) int {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
+	applyProcessVenueWritePolicy(cfg)
 
 	sc, ok := findManualStrategy(cfg, strategyID)
 	if !ok {
 		return 1
+	}
+	if !*recordOnly || *limitPrice > 0 {
+		if err := manualPaperVenueActionRefusal(sc, "manual-open"); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return manualCoreExitCode(err)
+		}
 	}
 
 	if *limitPrice > 0 {
@@ -220,9 +227,16 @@ func runManualAdd(args []string) int {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
+	applyProcessVenueWritePolicy(cfg)
 	sc, ok := findManualStrategy(cfg, strategyID)
 	if !ok {
 		return 1
+	}
+	if !*recordOnly {
+		if err := manualPaperVenueActionRefusal(sc, "manual-add"); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return manualCoreExitCode(err)
+		}
 	}
 
 	var admission *manualEntryAdmission
@@ -280,10 +294,15 @@ func runManualClose(args []string) int {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
+	applyProcessVenueWritePolicy(cfg)
 
 	sc, ok := findManualStrategy(cfg, strategyID)
 	if !ok {
 		return 1
+	}
+	if err := manualPaperVenueActionRefusal(sc, "manual-close"); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return manualCoreExitCode(err)
 	}
 
 	stateDB, err := openToolStateStore(cfg)
@@ -330,10 +349,15 @@ func runForceCloseWithClosers(args []string, closer HyperliquidLiveCloser, sized
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
+	applyProcessVenueWritePolicy(cfg)
 
 	sc, sym, ok := findForceCloseStrategy(cfg, strategyID)
 	if !ok {
 		return 1
+	}
+	if err := manualPaperVenueActionRefusal(sc, "force-close"); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return manualCoreExitCode(err)
 	}
 
 	stateDB, err := openToolStateStore(cfg)
@@ -664,6 +688,10 @@ func applyManualActionWithCriticalsInner(state *AppState, cfg *Config, scByID ma
 		closedFull := a.IsFullClose || pos.Quantity-a.Quantity <= 1e-9
 		side := closeTradeSide(pos.Side)
 		closeLabel := operatorCloseLabel(sc)
+		closeFeeSource := FeeSourceUserFills
+		if portfolioScopeFor(sc) != ScopeLive {
+			closeFeeSource = FeeSourceModeled
+		}
 
 		trade := Trade{
 			Timestamp:       now,
@@ -678,7 +706,7 @@ func applyManualActionWithCriticalsInner(state *AppState, cfg *Config, scByID ma
 			PositionID:      ensurePositionTradeID(a.StrategyID, a.Symbol, pos),
 			ExchangeOrderID: a.ExchangeOrderID,
 			ExchangeFee:     a.FillFee,
-			FeeSource:       FeeSourceUserFills,
+			FeeSource:       closeFeeSource,
 			IsClose:         true,
 			RealizedPnL:     a.RealizedPnL + a.FillFee,
 			PnLGross:        true,
@@ -1092,18 +1120,18 @@ func manualRatchetOpeningTrailOrFallback(block *RegimeATRBlock, label string, fa
 	return defaultManualStopLossATRMult, true
 }
 
-func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notifier *MultiNotifier, logger *StrategyLogger, feed *marketFeedContext) (float64, float64, bool) {
+func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notifier *MultiNotifier, logger *StrategyLogger, feed *marketFeedContext) (*HyperliquidResult, float64, float64, bool) {
 	pos := ss.Positions[sc.Symbol]
 	if pos == nil {
-		return 0, 0, true
+		return nil, 0, 0, true
 	}
 
 	posCtx := positionCtxForCheck(sc, pos, cfg.Regime)
 	result, _, price, ok := runHyperliquidCheck(&sc, feed.manualCheckPrices(), posCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, nil, feed)
-	if !ok {
-		return 0, 0, false
+	if !ok || result == nil {
+		return nil, 0, 0, false
 	}
-	return result.CloseFraction, price, true
+	return result, result.CloseFraction, price, true
 }
 
 func resolveManualRegimePayload(sc StrategyConfig, cfg *Config) (RegimePayload, error) {

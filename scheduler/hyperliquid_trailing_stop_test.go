@@ -54,7 +54,7 @@ func TestHyperliquidTrailingStopUpdate(t *testing.T) {
 		old := runHyperliquidUpdateStopLossFunc
 		defer func() { runHyperliquidUpdateStopLossFunc = old }()
 
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			return &HyperliquidStopLossUpdateResult{OpenOrderCheckError: "indexer down"}, "", nil
 		}
 

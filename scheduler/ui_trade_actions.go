@@ -257,11 +257,6 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 		writeJSONError(w, http.StatusServiceUnavailable, "state db not available")
 		return
 	}
-	deps := ss.daemonManualCoreDeps(cfg)
-	if ss.tradeDepsHook != nil {
-		ss.tradeDepsHook(&deps)
-	}
-
 	var sc StrategyConfig
 	var sym string
 	var lookupErr error
@@ -273,6 +268,15 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 	if lookupErr != nil {
 		writeJSONError(w, http.StatusBadRequest, lookupErr.Error())
 		return
+	}
+	if refusal := manualPaperVenueActionRefusal(sc, uiTradeActionCommandName(action)); refusal != nil {
+		writeJSONError(w, http.StatusConflict, refusal.Error())
+		return
+	}
+
+	deps := ss.daemonManualCoreDeps(cfg)
+	if ss.tradeDepsHook != nil {
+		ss.tradeDepsHook(&deps)
 	}
 
 	ss.tradeActionMu.Lock()

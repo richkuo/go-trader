@@ -806,7 +806,7 @@ func pcManualRemoveFixture(t *testing.T) (*pcFixture, string) {
 		Strategies: []StrategyConfig{
 			{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}, Capital: 1000, Paused: true},
 			{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h", "--mode=paper"}, Capital: 100, Leverage: 1, Paused: true},
-			{ID: "man-p", Type: "manual", Platform: "hyperliquid", Symbol: "SOL", Timeframe: "1h", Leverage: 1, Capital: 100, Paused: true},
+			{ID: "man-p", Type: "manual", Platform: "hyperliquid", Symbol: "SOL", Timeframe: "1h", Args: []string{"hold", "SOL", "1h", "--mode=live"}, Leverage: 1, Capital: 100, Paused: true},
 		},
 	}
 	f := newPCFixture(t, cfg)

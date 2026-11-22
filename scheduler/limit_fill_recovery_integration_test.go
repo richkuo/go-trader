@@ -119,7 +119,7 @@ func (h *limitProofHarness) killSwitchPass() killSwitchLimitOrderReport {
 	h.t.Helper()
 	deps := killSwitchLimitOrderDeps{
 		Cancel: func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
-			return runHyperliquidCancelOrderFn(script, symbol, oid)
+			return runHyperliquidCancelOrderFn(hlAccountRecoveryWriteAuth(symbol, hlWriteCancel).forOrder(oid), script, symbol, oid)
 		},
 		Status: func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error) {
 			return runHyperliquidLimitStatusFn(script, symbol, oids, sinceMs)
@@ -668,7 +668,7 @@ func TestLimitRecoveryEntryAdmission(t *testing.T) {
 		deps := func(raise bool) manualCoreDeps {
 			d := ss.daemonManualCoreDeps(cfg)
 			d.fetchMids = func([]string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
-			d.execute = func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+			d.execute = func(hlWriteAuth, string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 				sent++
 				return nil, "", errors.New("must not send")
 			}
@@ -879,7 +879,7 @@ func limitHoldPeer(id, coin string) StrategyConfig {
 func (h *limitProofHarness) limitOpen(sc StrategyConfig, placed *int) (int, string) {
 	h.t.Helper()
 	origOpen := runHyperliquidLimitOpenFn
-	runHyperliquidLimitOpenFn = func(script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+	runHyperliquidLimitOpenFn = func(_ hlWriteAuth, script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
 		*placed++
 		return &HyperliquidLimitOpenResult{Platform: "hyperliquid", Status: "resting", OrderOID: int64(9100 + *placed), LimitPrice: limitPx, TIF: tif}, "", nil
 	}

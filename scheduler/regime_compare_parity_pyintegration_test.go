@@ -437,7 +437,7 @@ func regimeReadinessManual(id, mode string) StrategyConfig {
 
 func regimeReadinessAdmissionIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
 	t.Helper()
-	sc := regimeReadinessManual("readiness-manual", "paper")
+	sc := regimeReadinessManual("readiness-manual", "live")
 	cfg := &Config{Regime: rc, Strategies: []StrategyConfig{sc}}
 	orders, cancels := 0, 0
 	type sentOrder struct {
@@ -445,7 +445,7 @@ func regimeReadinessAdmissionIntegration(t *testing.T, bundles []*RegimeBundle, 
 		size, slPct float64
 	}
 	var sentOrders []sentOrder
-	recorder := func(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	recorder := func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		orders++
 		sentOrders = append(sentOrders, sentOrder{side: side, size: size, slPct: stopLossPct})
 		if cancelStopLossOID != 0 || len(extraCancelOIDs) > 0 {
@@ -458,7 +458,7 @@ func regimeReadinessAdmissionIntegration(t *testing.T, bundles []*RegimeBundle, 
 	t.Cleanup(func() { runHyperliquidExecuteFn = previousExecute })
 	d := manualCoreDeps{cfg: cfg, resolveRegime: func(StrategyConfig) (RegimePayload, error) { return bundles[2].Payload, nil }, execute: recorder, loadState: func(string, string) (manualStateView, error) {
 		return manualStateView{HasStrategy: true, Pos: &Position{Symbol: "BTC", Quantity: 1, AvgCost: 100, Side: "long"}}, nil
-	}, cancelOrder: func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+	}, cancelOrder: func(hlWriteAuth, string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
 		cancels++
 		return nil, "", fmt.Errorf("offline cancellation reached")
 	}}
@@ -685,7 +685,7 @@ func regimeReadinessOnceIntegration(t *testing.T) {
 
 func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
 	t.Helper()
-	sc := regimeReadinessManual("readiness-recovery", "paper")
+	sc := regimeReadinessManual("readiness-recovery", "live")
 	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60, Strategies: []StrategyConfig{sc}}
 	adopted := sc
 	adopted.ID += "-adopted"
@@ -815,7 +815,7 @@ func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, r
 func regimeReadinessStopBackfillIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
 	t.Helper()
 	stop := &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: 2.5}, "trending_down": {ATR: 9}, "ranging": {ATR: 9}}}
-	base := StrategyConfig{Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=paper"}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: stop}
+	base := StrategyConfig{Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=live"}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: stop}
 	ids := []string{"backfill-ready", "backfill-warming", "backfill-limit"}
 	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60}
 	for _, id := range ids {
@@ -1020,7 +1020,7 @@ func regimeReadinessLimitIntegration(t *testing.T, bundles []*RegimeBundle, rc *
 		route.publish(&fresh)
 	}
 	calls := 0
-	withStubbedLimitOpen(t, func(string, string, string, float64, float64, string, string, float64, hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+	withStubbedLimitOpen(t, func(hlWriteAuth, string, string, string, float64, float64, string, string, float64, hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
 		calls++
 		return &HyperliquidLimitOpenResult{Status: "resting", OrderOID: 999}, "", nil
 	})
@@ -1127,7 +1127,7 @@ func regimeReadinessCarryIntegration(t *testing.T, bundles []*RegimeBundle, rc *
 		return addAs(deps, sc)
 	}
 	calls := 0
-	withStubbedLimitOpen(t, func(string, string, string, float64, float64, string, string, float64, hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+	withStubbedLimitOpen(t, func(hlWriteAuth, string, string, string, float64, float64, string, string, float64, hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
 		calls++
 		return &HyperliquidLimitOpenResult{Status: "resting", OrderOID: 999}, "", nil
 	})

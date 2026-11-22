@@ -177,17 +177,29 @@ func init() {
 		fmt.Fprintf(os.Stderr, "%s needs a positive %s\n", manualRegimeTestVenueLogEnv, manualRegimeTestFillPxEnv)
 		os.Exit(1)
 	}
-	runHyperliquidExecuteFn = func(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	runHyperliquidExecuteFn = func(auth hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		if err := auth.check(hlWriteExecute, symbol, 0); err != nil {
+			manualRegimeTestVenueRecord(logPath, map[string]any{"kind": "refused_execute", "symbol": symbol})
+			return nil, "", err
+		}
 		manualRegimeTestVenueRecord(logPath, map[string]any{"kind": "execute", "symbol": symbol, "side": side, "size": size, "cancel_oid": cancelStopLossOID, "extra_cancels": len(extraCancelOIDs)})
 		return &HyperliquidExecuteResult{Platform: "hyperliquid", Execution: &HyperliquidExecution{Action: side, Symbol: symbol, Size: size, Fill: &HyperliquidFill{AvgPx: fillPx, TotalSz: size, OID: 7001}}}, "", nil
 	}
-	runHyperliquidLimitOpenFn = func(script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+	runHyperliquidLimitOpenFn = func(auth hlWriteAuth, script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+		if err := auth.check(hlWriteLimitOpen, symbol, 0); err != nil {
+			manualRegimeTestVenueRecord(logPath, map[string]any{"kind": "refused_limit_open", "symbol": symbol})
+			return nil, "", err
+		}
 		manualRegimeTestVenueRecord(logPath, map[string]any{"kind": "limit_open", "symbol": symbol, "side": side, "size": size, "limit_px": limitPx})
 		return &HyperliquidLimitOpenResult{Platform: "hyperliquid", Status: "resting", OrderOID: 8001, LimitPrice: limitPx, TIF: tif}, "", nil
 	}
 	cancelFilled, cancelOK := os.LookupEnv(manualEntryTestCancelEnv)
 	filledSize, _ := strconv.ParseFloat(cancelFilled, 64)
-	runHyperliquidCancelOrderFn = func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+	runHyperliquidCancelOrderFn = func(auth hlWriteAuth, script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+		if err := auth.check(hlWriteCancel, symbol, oid); err != nil {
+			manualRegimeTestVenueRecord(logPath, map[string]any{"kind": "refused_cancel", "symbol": symbol, "oid": oid})
+			return nil, "", err
+		}
 		manualRegimeTestVenueRecord(logPath, map[string]any{"kind": "cancel", "symbol": symbol, "oid": oid})
 		if cancelOK {
 			return &HyperliquidCancelOrderResult{Platform: "hyperliquid", OID: oid, Cancelled: true}, "", nil

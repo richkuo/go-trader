@@ -70,6 +70,23 @@ func killSwitchLimitOrderRoster(cfgs []StrategyConfig) []StrategyConfig {
 	return out
 }
 
+func killSwitchLimitOrderScriptOwner(sc StrategyConfig) bool {
+	return sc.Platform == "hyperliquid" && hyperliquidIsLive(sc.Args) && portfolioScopeFor(sc) == ScopeLive
+}
+
+func limitRestingStateUnknown(p limitRowProof) string {
+	if !p.Matched {
+		return p.holdOr("status response did not include the order")
+	}
+	if p.Status.Resting == nil {
+		if p.OpenOrdersError != "" {
+			return fmt.Sprintf("open-orders state unknown (%s)", p.OpenOrdersError)
+		}
+		return "the exchange did not report whether the order is still resting"
+	}
+	return ""
+}
+
 func killSwitchLimitOrderAdoptionBlock(sc StrategyConfig, known bool) string {
 	switch {
 	case !known:
@@ -87,7 +104,7 @@ func collectKillSwitchLimitOrderCandidates(orders []PendingLimitOrder, roster []
 	fallbackScript := ""
 	for _, sc := range roster {
 		byID[sc.ID] = sc
-		if fallbackScript == "" {
+		if fallbackScript == "" && killSwitchLimitOrderScriptOwner(sc) {
 			fallbackScript = strings.TrimSpace(sc.Script)
 		}
 	}
@@ -95,7 +112,10 @@ func collectKillSwitchLimitOrderCandidates(orders []PendingLimitOrder, roster []
 	var unscripted []PendingLimitOrder
 	for _, o := range orders {
 		sc, known := byID[o.StrategyID]
-		script := strings.TrimSpace(sc.Script)
+		script := ""
+		if known && killSwitchLimitOrderScriptOwner(sc) {
+			script = strings.TrimSpace(sc.Script)
+		}
 		if script == "" {
 			script = fallbackScript
 		}
@@ -135,9 +155,9 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 	for _, o := range unscripted {
 		label := killSwitchLimitOrderLabel(o)
 		report.Unresolved = append(report.Unresolved,
-			fmt.Sprintf("%s: no Hyperliquid strategy with a script remains in this config to cancel it — manual intervention required", label))
+			fmt.Sprintf("%s: no live Hyperliquid strategy with a script remains in this config to read or cancel it — manual intervention required", label))
 		report.LogLines = append(report.LogLines,
-			fmt.Sprintf("[CRITICAL] ks-limit: resting limit order %s cannot be cancelled — no Hyperliquid strategy with a script remains in this config, manual intervention required (kill switch will retry next cycle)", label))
+			fmt.Sprintf("[CRITICAL] ks-limit: resting limit order %s cannot be cancelled — no live Hyperliquid strategy with a script remains in this config to read or cancel it, manual intervention required (kill switch will retry next cycle)", label))
 	}
 
 	if len(candidates) > 0 && !deps.wired() {
@@ -182,37 +202,60 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			break
 		}
 
+		readProof := func() limitRowProof {
+			statusRes, sstderr, serr := deps.Status(c.Script, o.Symbol, []int64{o.OrderOID}, limitStatusSinceMs(o.CreatedAt))
+			if sstderr != "" {
+				report.LogLines = append(report.LogLines,
+					fmt.Sprintf("[WARN] ks-limit: %s status stderr: %s", label, sstderr))
+			}
+			return decideLimitRowProof(o, statusRes, serr)
+		}
+
 		if _, err := deps.MarkCancelRequested(o.StrategyID, o.Symbol); err != nil {
 			markErr = err
 			report.LogLines = append(report.LogLines,
 				fmt.Sprintf("[WARN] ks-limit: %s could not persist cancel intent: %v", label, err))
 		}
 
-		cancelRes, cstderr, cerr := deps.Cancel(c.Script, o.Symbol, o.OrderOID)
-		if cstderr != "" {
-			report.LogLines = append(report.LogLines,
-				fmt.Sprintf("[WARN] ks-limit: %s cancel stderr: %s", label, cstderr))
-		}
-		if cerr != nil || cancelRes == nil || cancelRes.Error != "" {
-			msg := ""
-			if cancelRes != nil {
-				msg = cancelRes.Error
+		var proof limitRowProof
+		cancelNeeded := true
+		if !c.adoptionEligible() {
+			pre := readProof()
+			if why := limitRestingStateUnknown(pre); why != "" {
+				unresolve(fmt.Sprintf("recovery row not cancelled: %s — %s, so no cancel is sent until the exchange reports the order", why, c.AdoptionBlock))
+				continue
 			}
-			unresolve(strings.TrimSpace(fmt.Sprintf("cancel failed: %v %s", cerr, msg)))
-			continue
+			if !pre.Live {
+				proof = pre
+				cancelNeeded = false
+			} else if !roomForCall() {
+				unresolve(fmt.Sprintf("recovery row verified resting but the pass exhausted its %s budget before the cancel — the flatten proceeded; the kill switch will retry next cycle", effectiveBudget))
+				continue
+			}
 		}
 
-		if !roomForCall() {
-			unresolve(fmt.Sprintf("cancel issued but the pass exhausted its %s budget before it could be verified — the flatten proceeded; the kill switch will retry next cycle", effectiveBudget))
-			continue
-		}
+		if cancelNeeded {
+			cancelRes, cstderr, cerr := deps.Cancel(c.Script, o.Symbol, o.OrderOID)
+			if cstderr != "" {
+				report.LogLines = append(report.LogLines,
+					fmt.Sprintf("[WARN] ks-limit: %s cancel stderr: %s", label, cstderr))
+			}
+			if cerr != nil || cancelRes == nil || cancelRes.Error != "" {
+				msg := ""
+				if cancelRes != nil {
+					msg = cancelRes.Error
+				}
+				unresolve(strings.TrimSpace(fmt.Sprintf("cancel failed: %v %s", cerr, msg)))
+				continue
+			}
 
-		statusRes, sstderr, serr := deps.Status(c.Script, o.Symbol, []int64{o.OrderOID}, limitStatusSinceMs(o.CreatedAt))
-		if sstderr != "" {
-			report.LogLines = append(report.LogLines,
-				fmt.Sprintf("[WARN] ks-limit: %s status stderr: %s", label, sstderr))
+			if !roomForCall() {
+				unresolve(fmt.Sprintf("cancel issued but the pass exhausted its %s budget before it could be verified — the flatten proceeded; the kill switch will retry next cycle", effectiveBudget))
+				continue
+			}
+
+			proof = readProof()
 		}
-		proof := decideLimitRowProof(o, statusRes, serr)
 		if proof.Live {
 			unresolve("order is still resting on the exchange")
 			continue
@@ -224,7 +267,7 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			continue
 		}
 		if proof.ProvenAboveBooked() {
-			if !o.OperatorRequiredSince.IsZero() && o.OperatorEvidenceJSON != "" {
+			if !o.OperatorRequiredSince.IsZero() && o.OperatorEvidenceJSON != "" && !limitRowUnscriptedMarker(o) {
 				unresolve(fmt.Sprintf("order executed %.6f where the book holds %.6f (unadopted fill) and the scheduler marked the row as needing an operator — follow the owner alert for this order (flatten only size the scheduler's book does not hold), then clear the row with `go-trader manual-clear-limit-row %d --flattened`",
 					proof.Executed, o.FilledSize, o.OrderOID))
 			} else if c.adoptionEligible() {
@@ -237,7 +280,11 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			continue
 		}
 		if !proof.OffBook || !proof.CanFinalize() {
-			unresolve("cancel unverified: " + limitOffBookUnverified(proof))
+			if cancelNeeded {
+				unresolve("cancel unverified: " + limitOffBookUnverified(proof))
+			} else {
+				unresolve(fmt.Sprintf("recovery row is not resting, so no cancel is sent, but %s — the queue row is kept until the order and its fills are proven", limitOffBookUnverified(proof)))
+			}
 			continue
 		}
 		if unprovenWatermark != "" {

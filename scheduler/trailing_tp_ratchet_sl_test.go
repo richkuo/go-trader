@@ -34,7 +34,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten(t *testing.T) {
 		var called bool
 		var gotSize, gotTrigger float64
 		var gotCancelOID int64
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			called = true
 			gotSize, gotTrigger, gotCancelOID = size, triggerPx, cancelStopLossOID
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 999001, StopLossTriggerPx: triggerPx}, "", nil
@@ -70,7 +70,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten(t *testing.T) {
 		old := runHyperliquidUpdateStopLossFunc
 		defer func() { runHyperliquidUpdateStopLossFunc = old }()
 		var called bool
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			called = true
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 1, StopLossTriggerPx: triggerPx}, "", nil
 		}
@@ -129,7 +129,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten(t *testing.T) {
 		}}
 		var mu sync.RWMutex
 		var gotSize float64
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			gotSize = size
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 8, StopLossTriggerPx: triggerPx}, "", nil
 		}

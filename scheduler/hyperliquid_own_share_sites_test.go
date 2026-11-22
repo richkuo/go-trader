@@ -35,7 +35,7 @@ func TestOwnSharePlacementSites(t *testing.T) {
 		var got float64
 		old := runHyperliquidUpdateStopLossFunc
 		t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = old })
-		runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, _ float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, size, _ float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			got = size
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 99, StopLossTriggerPx: 95}, "", nil
 		}
@@ -134,13 +134,13 @@ func TestHLShareResizeAndRearm(t *testing.T) {
 			runHyperliquidUpdateStopLossFunc = oldUpdate
 			runHyperliquidCancelOrderFn = oldCancel
 		})
-		runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, trigger float64, cancel int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, size, trigger float64, cancel int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			sizes = append(sizes, size)
 			triggers = append(triggers, trigger)
 			cancels = append(cancels, cancel)
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 77, StopLossTriggerPx: trigger}, "", nil
 		}
-		runHyperliquidCancelOrderFn = func(_, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+		runHyperliquidCancelOrderFn = func(_ hlWriteAuth, _, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
 			cancels = append(cancels, oid)
 			return &HyperliquidCancelOrderResult{Cancelled: true, OID: oid}, "", nil
 		}
@@ -192,7 +192,7 @@ func TestHLShareResizeAndRearm(t *testing.T) {
 		mock := &mockNotifier{}
 		mn := NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner"})
 		states["A"].Positions["ETH"].StopLossOID = 11
-		runHyperliquidCancelOrderFn = func(_, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+		runHyperliquidCancelOrderFn = func(_ hlWriteAuth, _, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
 			return &HyperliquidCancelOrderResult{Cancelled: false, OID: oid, CancelError: "rejected"}, "", nil
 		}
 		runHyperliquidShareResize([]StrategyConfig{a}, state, flat, hlAllOpenOrders{Orders: []hlListedOpenOrder{{OID: 11, Coin: "ETH", Sz: 10}}, Decimals: map[string]int{"ETH": 1}}, false, nil, &mu, mn)
@@ -200,7 +200,7 @@ func TestHLShareResizeAndRearm(t *testing.T) {
 			t.Fatalf("refused cancel alerts=%v", mock.dms)
 		}
 
-		runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, _ float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, size, _ float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			sizes = append(sizes, size)
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 1, StopLossTriggerPx: 90}, "", nil
 		}
@@ -242,7 +242,7 @@ func TestHLShareResizeAndRearm(t *testing.T) {
 		var sizes []float64
 		old := runHyperliquidUpdateStopLossFunc
 		t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = old })
-		runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, trigger float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, size, trigger float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			sizes = append(sizes, size)
 			return &HyperliquidStopLossUpdateResult{StopLossOID: 55, StopLossTriggerPx: trigger}, "", nil
 		}
@@ -281,11 +281,11 @@ func TestHLShareResizeAndRearm(t *testing.T) {
 			runHyperliquidUpdateStopLossFunc = oldUpdate
 			runHyperliquidCancelOrderFn = oldCancel
 		})
-		runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, _ float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, _, _ float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
 			calls++
 			return &HyperliquidStopLossUpdateResult{}, "", nil
 		}
-		runHyperliquidCancelOrderFn = func(_, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+		runHyperliquidCancelOrderFn = func(_ hlWriteAuth, _, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
 			calls++
 			return &HyperliquidCancelOrderResult{Cancelled: true, OID: oid}, "", nil
 		}
@@ -343,7 +343,7 @@ func TestHLShareResizeAndRearm(t *testing.T) {
 		state := &AppState{Strategies: states}
 		oldCancel := runHyperliquidCancelOrderFn
 		t.Cleanup(func() { runHyperliquidCancelOrderFn = oldCancel })
-		runHyperliquidCancelOrderFn = func(_, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+		runHyperliquidCancelOrderFn = func(_ hlWriteAuth, _, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
 			return &HyperliquidCancelOrderResult{Cancelled: true, OID: oid}, "", nil
 		}
 		mock := &mockNotifier{}

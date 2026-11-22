@@ -232,7 +232,7 @@ func TestReconcilePendingLimitOrders(t *testing.T) {
 	})
 }
 
-func withStubbedLimitOpen(t *testing.T, open func(script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error)) {
+func withStubbedLimitOpen(t *testing.T, open func(_ hlWriteAuth, script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error)) {
 	t.Helper()
 	origOpen := runHyperliquidLimitOpenFn
 	runHyperliquidLimitOpenFn = open
@@ -332,7 +332,7 @@ func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
 				}
 				execCalls := 0
 				fill := tc.fill
-				deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+				deps.execute = func(hlWriteAuth, string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 					execCalls++
 					return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &fill}}, "", nil
 				}
@@ -378,7 +378,7 @@ func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
 		)
 		deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 		execCalls := 0
-		deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+		deps.execute = func(hlWriteAuth, string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 			execCalls++
 			return nil, "", errors.New("must not send")
 		}
@@ -428,7 +428,7 @@ func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
 		}
 		sizedDeps := func(cfg *Config, db *StateDB, got *float64, calls *int) manualCoreDeps {
 			deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
-			deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, _ hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+			deps.execute = func(_ hlWriteAuth, _ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, _ hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
 				*got = size
 				*calls++
 				return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4242, Fee: 0.01}}}, "", nil
@@ -469,7 +469,7 @@ func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
 		sc, deps, db := staleReadRowGoneCloseHarness(t)
 		var gotCloseQty float64
 		var gotFullClose bool
-		deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeMode hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+		deps.execute = func(_ hlWriteAuth, _ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeMode hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
 			gotCloseQty = size
 			gotFullClose = closeMode == hlCloseModeWhole
 			return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4242, Fee: 0.4}}}, "", nil
@@ -539,7 +539,7 @@ func TestManualCloseAndAddWithPendingLimit(t *testing.T) {
 						return map[string]float64{sc.Symbol: 2000}, nil
 					}
 				}
-				deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+				deps.execute = func(hlWriteAuth, string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 					t.Error("execute must not run while the limit cancel is unresolved")
 					return nil, "", errors.New("execute called")
 				}

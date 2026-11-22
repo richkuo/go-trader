@@ -45,7 +45,7 @@ func TestHLCloseRearmContract(t *testing.T) {
 				var calls int
 				var gotSize float64
 				var gotOID int64
-				runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 					calls++
 					gotSize, gotOID = size, cancelOID
 					return tc.result, "", nil

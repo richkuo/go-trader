@@ -177,13 +177,18 @@ func (ss *StatusServer) handleAPIConfirm(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		var lookupErr error
+		var lookupSC StrategyConfig
 		if req.Action == "force-close" {
-			_, _, lookupErr = lookupForceCloseStrategy(cfg, req.StrategyID)
+			lookupSC, _, lookupErr = lookupForceCloseStrategy(cfg, req.StrategyID)
 		} else {
-			_, lookupErr = lookupManualStrategy(cfg, req.StrategyID)
+			lookupSC, lookupErr = lookupManualStrategy(cfg, req.StrategyID)
 		}
 		if lookupErr != nil {
 			writeJSONError(w, http.StatusBadRequest, lookupErr.Error())
+			return
+		}
+		if refusal := manualPaperVenueActionRefusal(lookupSC, uiTradeActionCommandName(req.Action)); refusal != nil {
+			writeJSONError(w, http.StatusConflict, refusal.Error())
 			return
 		}
 		if req.Action == "open" || req.Action == "add" {

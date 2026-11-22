@@ -230,6 +230,7 @@ type limitRowOperatorEvidence struct {
 	FillsProven  bool      `json:"fills_proven"`
 	Permanent    bool      `json:"fill_proof_permanent"`
 	Unbookable   bool      `json:"unbookable"`
+	Unscripted   bool      `json:"unscripted,omitempty"`
 	Unproven     bool      `json:"watermark_unproven,omitempty"`
 	Reason       string    `json:"reason"`
 	ObservedAt   time.Time `json:"observed_at"`
@@ -293,6 +294,7 @@ func limitOperatorEvidenceRefusal(o PendingLimitOrder) string {
 	switch {
 	case ev.OrderOID != o.OrderOID || ev.Coin != o.Symbol:
 		return fmt.Sprintf("refusing: the operator-required evidence names %s oid=%d, not this row's %s oid=%d", ev.Coin, ev.OrderOID, o.Symbol, o.OrderOID)
+	case ev.Unscripted:
 	case !ev.OffBook:
 		return fmt.Sprintf("refusing: the scheduler has not proven that oid=%d is off the book — cancel it on Hyperliquid and let the scheduler record terminal proof first", o.OrderOID)
 	case ev.OrderState != "filled" && ev.OrderState != "cancelled" && ev.OrderState != "rejected":

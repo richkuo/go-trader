@@ -430,7 +430,7 @@ func TestHLStepAlerts(t *testing.T) {
 				book: func(t *testing.T, sc StrategyConfig, st *StrategyState, mu *sync.RWMutex, step *hlStepTradeAlerts) {
 					orig := runHyperliquidUpdateStopLossFunc
 					t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = orig })
-					runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, _ float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+					runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, _, _ float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
 						return &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 2000, StopLossSize: 0.4}, "", nil
 					}
 					at := step.historyLen(mu)
@@ -817,7 +817,7 @@ func TestManualTrailingStopFillIsCountedAndMerged(t *testing.T) {
 	hlStepNoRecorder(t)
 	orig := runHyperliquidUpdateStopLossFunc
 	t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = orig })
-	runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, trigger float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+	runHyperliquidUpdateStopLossFunc = func(_ hlWriteAuth, _, _, _ string, size, trigger float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		return &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: trigger, StopLossSize: size}, "", nil
 	}
 	sc := ratchetAlertSC(3.0, tier(1.0, 0, 2.0))

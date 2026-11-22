@@ -211,7 +211,7 @@ func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyC
 	result, stderr, err := func() (*HyperliquidStopLossUpdateResult, string, error) {
 		unlock := lockHyperliquidTrailingUpdate(snap.Symbol)
 		defer unlock()
-		return d.updateSL(sc.Script, snap.Symbol, snap.Side, qty, triggerPx, snap.StopLossOID)
+		return d.updateSL(hlStrategyWriteAuth(sc, snap.Symbol, hlWriteStop), sc.Script, snap.Symbol, snap.Side, qty, triggerPx, snap.StopLossOID)
 	}()
 	if stderr != "" {
 		res.errf("SL re-arm stderr: %s", stderr)
@@ -277,7 +277,7 @@ func removeManualUnconfirmedOrders(d manualCoreDeps, res *manualCoreResult, sc S
 		result, stderr, err := func() (*HyperliquidStopLossUpdateResult, string, error) {
 			unlock := lockHyperliquidTrailingUpdate(snap.Symbol)
 			defer unlock()
-			return d.updateSL(sc.Script, snap.Symbol, snap.Side, 0, 0, snap.StopLossOID)
+			return d.updateSL(hlStrategyWriteAuth(sc, snap.Symbol, hlWriteStop), sc.Script, snap.Symbol, snap.Side, 0, 0, snap.StopLossOID)
 		}()
 		if stderr != "" {
 			res.errf("pre-close stop removal stderr: %s", stderr)

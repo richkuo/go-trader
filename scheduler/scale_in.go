@@ -292,6 +292,11 @@ func runHyperliquidScaleInOrder(sc StrategyConfig, result *HyperliquidResult, ad
 	if result.Signal == -1 {
 		side = "sell"
 	}
+	execAuth := hlStrategyWriteAuth(sc, result.Symbol, hlWriteExecute)
+	if err := execAuth.check(hlWriteExecute, result.Symbol, 0); err != nil {
+		logger.Error("Live scale-in %s not sent: %v", result.Symbol, err)
+		return nil, false
+	}
 	if result.EntrySubmitGate != nil {
 		tags, gateErr := result.EntrySubmitGate(side, addSize, 0)
 		if gateErr != nil {
@@ -302,7 +307,7 @@ func runHyperliquidScaleInOrder(sc StrategyConfig, result *HyperliquidResult, ad
 	}
 	logger.Info("Placing live scale-in %s %s size=%.6f", side, result.Symbol, addSize)
 	result.LiveOrderSubmitted = true
-	execResult, stderr, err := runHyperliquidExecuteFn(sc.Script, result.Symbol, side, addSize, 0, 0, 0, "", 0, hlCloseModeNone, walletSnapshot)
+	execResult, stderr, err := runHyperliquidExecuteFn(execAuth, sc.Script, result.Symbol, side, addSize, 0, 0, 0, "", 0, hlCloseModeNone, walletSnapshot)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
