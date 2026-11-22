@@ -3,7 +3,7 @@ Generated file. Do not edit it. Edit CLAUDE.md and the .claude/rules files it li
 # go-trader
 
 Guardrails only;mechanism:SKILL.md,docs/POST_UPDATE_HISTORY.md.Sources:this file+the `.claude/rules/` files listed below;`AGENTS.md`=generated full guide for Codex/Cursor,never hand-edit.
-After any source edit run `python3 -I scripts/agent_guide.py`,verify with `bash scripts/check_pre_pr.sh agent-docs`.Limits:this file<17500B(target 17000),rule file<=8000B,any line<=400B,`AGENTS.md`<=28000B.Shorten,drop no guardrail.
+After source edits regenerate+verify(contract below).Limits:this file<17500B(target 17000),rule file<=8000B,any line<=400B,`AGENTS.md`<=28000B.Shorten,drop no guardrail.
 
 ## Agent guide contract
 - Generated: `AGENTS.md`
@@ -13,7 +13,7 @@ After any source edit run `python3 -I scripts/agent_guide.py`,verify with `bash 
 - Command files: `scripts/agent_guide.py`, `scripts/check_pre_pr.sh`
 
 ## Area rules
-- Claude Code loads each file below only when it reads or edits a file in that rule's `paths:`.In a subagent,a worktree,after compaction,or before creating a file in an area,Read that rule file first.
+- Claude Code loads each rule file below only for files matching its `paths:`.In a subagent,a worktree,after compaction,or before creating an area file,Read that rule file first.
 - `.claude/rules/backtest.md`:backtest harness,`shared_strategies/`,`shared_tools/`,registry
 - `.claude/rules/deploy.md`:update,layout and feed conversion scripts,units
 - `.claude/rules/discord.md`:Discord commands,config
