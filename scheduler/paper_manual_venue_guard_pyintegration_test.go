@@ -235,10 +235,9 @@ func TestPaperManualVenueGuardCommands(t *testing.T) {
 	if second.code != 0 {
 		t.Fatalf("second --once failed:\n%s", second)
 	}
-	for _, id := range []string{"pm-args", "pm-alt"} {
-		want := "[WARN] paper manual position " + id + "/BTC"
-		if n := strings.Count(second.stdout, want); n != 1 {
-			t.Fatalf("a run with an open paper manual position must warn once for %s, got %d:\n%s", id, n, second.stdout)
+	for _, run := range []mrpRun{first, second} {
+		if strings.Contains(run.stdout, "[WARN] paper manual position") {
+			t.Fatalf("a position booked only by a guarded record-only open sent no order and must not warn:\n%s", run.stdout)
 		}
 	}
 	if strings.Contains(second.stdout, "paper manual position lm-peer") {

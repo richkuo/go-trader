@@ -639,6 +639,9 @@ func applyManualActionWithCriticalsInner(state *AppState, cfg *Config, scByID ma
 			pos.ATRMethodAtOpen = resolveATRMethod(sc, cfg)
 		}
 		pos.TradePositionID = newTradePositionID(a.StrategyID, a.Symbol, now)
+		if paperSimQueueProofHolds(sc, a, "") {
+			pos.PaperSimProof = paperSimPositionProofJSON(pos.TradePositionID)
+		}
 		ss.Positions[a.Symbol] = pos
 
 		trade := Trade{
@@ -686,6 +689,7 @@ func applyManualActionWithCriticalsInner(state *AppState, cfg *Config, scByID ma
 			return nil, fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
 		}
 		closedFull := a.IsFullClose || pos.Quantity-a.Quantity <= 1e-9
+		keepSimProof := paperSimPositionProofHolds(sc, pos) && paperSimQueueProofHolds(sc, a, pos.TradePositionID)
 		side := closeTradeSide(pos.Side)
 		closeLabel := operatorCloseLabel(sc)
 		closeFeeSource := FeeSourceUserFills
@@ -726,6 +730,9 @@ func applyManualActionWithCriticalsInner(state *AppState, cfg *Config, scByID ma
 			preReduceQty := pos.Quantity
 			preReduceBasis := pos.HedgePrimaryQtyBasis
 			pos.Quantity -= a.Quantity
+			if !keepSimProof {
+				pos.PaperSimProof = ""
+			}
 			if sc.Type != "manual" {
 				clearForceCloseCanceledProtectionOIDs(pos, a.StopLossOID, a.TPOIDs)
 			}
@@ -747,7 +754,11 @@ func applyManualActionWithCriticalsInner(state *AppState, cfg *Config, scByID ma
 		if a.Side != "" && a.Side != pos.Side {
 			return nil, fmt.Errorf("scale-in side %q does not match open position side %q for %s/%s", a.Side, pos.Side, a.StrategyID, a.Symbol)
 		}
+		keepSimProof := paperSimPositionProofHolds(sc, pos) && paperSimQueueProofHolds(sc, a, pos.TradePositionID)
 		applyScaleIn(pos, a.Quantity, a.FillPrice)
+		if !keepSimProof {
+			pos.PaperSimProof = ""
+		}
 		trade := Trade{
 			Timestamp:       now,
 			StrategyID:      a.StrategyID,
@@ -783,6 +794,7 @@ func applyManualActionWithCriticalsInner(state *AppState, cfg *Config, scByID ma
 		}
 		pos.StopLossOID = a.StopLossOID
 		pos.StopLossTriggerPx = a.StopLossTriggerPx
+		pos.PaperSimProof = ""
 		noteMovedStopTrigger(pos)
 		fmt.Printf("[manual] applied update-sl: %s %s stop-loss -> $%.4f (OID=%d)\n",
 			a.StrategyID, a.Symbol, a.StopLossTriggerPx, a.StopLossOID)
@@ -796,6 +808,7 @@ func applyManualActionWithCriticalsInner(state *AppState, cfg *Config, scByID ma
 			return nil, fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
 		}
 		clearRecordedStopLoss(pos)
+		pos.PaperSimProof = ""
 		fmt.Printf("[manual] applied cancel-sl: %s %s (stop-loss removed)\n",
 			a.StrategyID, a.Symbol)
 
@@ -817,6 +830,7 @@ func applyManualActionWithCriticalsInner(state *AppState, cfg *Config, scByID ma
 				a.StrategyID, a.Symbol, a.PositionID, pos.TradePositionID)
 			return nil, nil
 		}
+		pos.PaperSimProof = ""
 		conflicts := adoptRestoredTakeProfits(pos, a)
 		fmt.Printf("[manual] applied restore-tp: %s %s take-profit OIDs -> %v (armed %v)\n",
 			a.StrategyID, a.Symbol, pos.TPOIDs, pos.TPArmedTiers)

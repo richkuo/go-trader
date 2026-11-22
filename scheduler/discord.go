@@ -101,15 +101,29 @@ func (d *DiscordNotifier) SendMessage(channelID string, content string) error {
 }
 
 func (d *DiscordNotifier) SendDM(userID, content string) error {
+	_, err := d.SendDMConfirmed(userID, content)
+	return err
+}
+
+func (d *DiscordNotifier) SendDMConfirmed(userID, content string) (string, error) {
 	ch, err := d.transport.UserChannelCreate(userID)
 	if err != nil {
-		return fmt.Errorf("create DM channel: %w", err)
+		return "", fmt.Errorf("create DM channel: %w", err)
+	}
+	if ch == nil || ch.ID == "" {
+		return "", fmt.Errorf("create DM channel: no channel id returned")
 	}
 	if len(content) > 2000 {
 		content = content[:1997] + "..."
 	}
-	_, err = d.transport.ChannelMessageSend(ch.ID, content)
-	return err
+	msg, err := d.transport.ChannelMessageSend(ch.ID, content)
+	if err != nil {
+		return "", err
+	}
+	if msg == nil {
+		return "", nil
+	}
+	return msg.ID, nil
 }
 
 func (d *DiscordNotifier) AskDM(userID, question string, timeout time.Duration) (string, error) {

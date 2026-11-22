@@ -23,6 +23,7 @@ type notifierBackend struct {
 	leaderboardChannel string
 	dmChannels         map[string]string
 	plainText          bool
+	service            string
 	// partitionChannels is each paper partition's own destination set, rebuilt
 	// from that partition's roster on every ReloadConfig.
 	partitionChannels map[RiskPartition][]string
@@ -247,6 +248,59 @@ func (m *MultiNotifier) SendOwnerDMDelivered(content string) bool {
 		}
 	}
 	return delivered
+}
+
+type ownerDMDestination struct {
+	Service  string
+	OwnerID  string
+	notifier Notifier
+}
+
+type confirmedDMSender interface {
+	SendDMConfirmed(userID, content string) (string, error)
+}
+
+func (b notifierBackend) serviceName() string {
+	if b.service != "" {
+		return b.service
+	}
+	if b.plainText {
+		return "telegram"
+	}
+	return "discord"
+}
+
+func (m *MultiNotifier) ownerDMDestinations() []ownerDMDestination {
+	var out []ownerDMDestination
+	seen := make(map[string]bool)
+	for _, b := range m.snapshotBackends() {
+		if b.ownerID == "" {
+			continue
+		}
+		d := ownerDMDestination{Service: b.serviceName(), OwnerID: b.ownerID, notifier: b.notifier}
+		key := d.Service + "\x00" + d.OwnerID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, d)
+	}
+	return out
+}
+
+func (d ownerDMDestination) sendConfirmed(content string) (bool, error) {
+	if d.notifier == nil {
+		return false, fmt.Errorf("no %s notifier", d.Service)
+	}
+	sender, ok := d.notifier.(confirmedDMSender)
+	if !ok {
+		return false, d.notifier.SendDM(d.OwnerID, content)
+	}
+	id, err := sender.SendDMConfirmed(d.OwnerID, content)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(id) != "", nil
 }
 
 func (m *MultiNotifier) AskOwnerDM(question string, timeout time.Duration) (string, error) {

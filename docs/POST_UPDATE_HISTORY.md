@@ -2,6 +2,13 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 2153: the paper manual position warning skips proven simulated positions and DMs each destination once
+
+Runtime default; restart-required; idempotent SQLite migration adds `pending_manual_actions.paper_sim_proof`, `positions.paper_sim_proof` and `positions.paper_warning_receipts_json`; no config key.
+Before this change every daemon start and every `--once` run printed one warning per open paper manual position and DMed the owner, also for a position booked only by a guarded `--record-only` command, and the read-only `--summary` and `--leaderboard` modes sent the DM too. A legacy open still queued at startup entered the book after the startup check, so it did not warn in that run.
+Now the guarded paper record-only open and add and the paper cycle close stamp their queued row with a versioned proof, and the drain carries it to the position in the transaction that acknowledges the row. A row with an order id, stop, take-profit or malformed protection data never proves a position, and any action that could have used the venue clears the proof. A position with no valid proof prints one line per start or `--once` run, including one that the drain books in that run. The scheduler that owns the state files sends one DM per owner destination (Discord, Telegram) and stores a receipt only for a send that the service confirms with a message id; a failed, unconfirmed or unsaved send stays due on a later cycle. Report modes print only.
+Operator action: deploy with `bash scripts/update.sh --restart`. Positions opened before this build have no proof: they keep printing and get one DM per destination after the restart; verify Hyperliquid for real exposure as before. go-trader cannot see orders placed outside it, and a restart between a confirmed send and the receipt save can repeat a DM.
+
 ### Issue 2139: a paper manual strategy sends no Hyperliquid order
 
 Runtime default; restart-required; no config key, no SQLite schema change and no config file format change.

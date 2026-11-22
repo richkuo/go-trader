@@ -42,6 +42,12 @@ type fakeNotifyServices struct {
 	selfDown    bool
 	messageDown bool
 
+	messageNoID  bool
+	telegramDown bool
+	telegramNoID bool
+	telegramMsgs int
+	telegramHang string
+
 	commands  map[string]map[string]map[string]any
 	nextCmdID int
 
@@ -367,6 +373,18 @@ func (f *fakeNotifyServices) setMessageDown(down bool) {
 	f.mu.Unlock()
 }
 
+func (f *fakeNotifyServices) setMessageResults(discordNoID, telegramDown, telegramNoID bool) {
+	f.mu.Lock()
+	f.messageNoID, f.telegramDown, f.telegramNoID = discordNoID, telegramDown, telegramNoID
+	f.mu.Unlock()
+}
+
+func (f *fakeNotifyServices) setTelegramHang(chatID string) {
+	f.mu.Lock()
+	f.telegramHang = chatID
+	f.mu.Unlock()
+}
+
 func (f *fakeNotifyServices) setDown(gateway, self bool) {
 	f.mu.Lock()
 	f.gatewayDown, f.selfDown = gateway, self
@@ -474,7 +492,7 @@ func startFakeNotifyServices(t *testing.T, ca *egressTestCA) (*fakeNotifyService
 			_, _ = io.WriteString(w, `{"id":"5001","type":1}`)
 		case host == "discord.com" && strings.Contains(path, "/channels/") && strings.HasSuffix(path, "/messages"):
 			f.mu.Lock()
-			messageDown := f.messageDown
+			messageDown, messageNoID := f.messageDown, f.messageNoID
 			f.mu.Unlock()
 			if messageDown {
 				f.record("discord.message_refused:"+path, string(body))
@@ -482,6 +500,10 @@ func startFakeNotifyServices(t *testing.T, ca *egressTestCA) (*fakeNotifyService
 				return
 			}
 			f.record("discord.message:"+path, string(body))
+			if messageNoID {
+				_, _ = io.WriteString(w, `{"channel_id":"5001","content":"ok"}`)
+				return
+			}
 			_, _ = io.WriteString(w, `{"id":"7001","channel_id":"5001","content":"ok"}`)
 		case host == "discord.com" && strings.Contains(path, "/applications/"):
 			f.serveCommands(w, r, path, body)
@@ -490,6 +512,35 @@ func startFakeNotifyServices(t *testing.T, ca *egressTestCA) (*fakeNotifyService
 			w.WriteHeader(http.StatusNoContent)
 		case host == "api.telegram.org":
 			method := path[strings.LastIndex(path, "/")+1:]
+			if method == "sendMessage" {
+				f.mu.Lock()
+				down, noID, hang := f.telegramDown, f.telegramNoID, f.telegramHang
+				f.telegramMsgs++
+				msgID := f.telegramMsgs
+				closing := f.closing
+				f.mu.Unlock()
+				if hang != "" && strings.Contains(string(body), `"chat_id":"`+hang+`"`) {
+					f.record("telegram.sendMessage_hung", string(body))
+					select {
+					case <-closing:
+					case <-time.After(60 * time.Second):
+					}
+					_, _ = io.WriteString(w, `{"ok":false,"description":"Gateway Timeout"}`)
+					return
+				}
+				if down {
+					f.record("telegram.sendMessage_refused", string(body))
+					_, _ = io.WriteString(w, `{"ok":false,"description":"Internal Server Error"}`)
+					return
+				}
+				f.record("telegram."+method, string(body))
+				if noID {
+					_, _ = io.WriteString(w, `{"ok":true,"result":{}}`)
+					return
+				}
+				_, _ = fmt.Fprintf(w, `{"ok":true,"result":{"message_id":%d,"chat":{"id":1}}}`, msgID)
+				return
+			}
 			f.record("telegram."+method, string(body))
 			_, _ = io.WriteString(w, `{"ok":true,"result":{"id":1}}`)
 		case host == "api.github.com" && strings.HasSuffix(path, "/issues"):

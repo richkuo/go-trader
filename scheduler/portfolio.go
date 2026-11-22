@@ -64,6 +64,8 @@ type Position struct {
 	AccountKey                      string                    `json:"account_key,omitempty"`
 	VenueAccountID                  string                    `json:"venue_account_id,omitempty"`
 	AccountBindingSource            string                    `json:"account_binding_source,omitempty"`
+	PaperSimProof                   string                    `json:"-"`
+	PaperWarningReceipts            []paperWarningReceipt     `json:"-"`
 }
 
 func (p *Position) isHedgeLeg() bool {

@@ -553,9 +553,10 @@ func main() {
 
 	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
 
-	paperManualPositionWarnings := paperManualPositionStartupWarnings(cfg, state)
-	paperManualPositionWarnings = append(paperManualPositionWarnings, paperManualLimitRowStartupWarnings(cfg, store.LoadPendingLimitOrders)...)
-	for _, msg := range paperManualPositionWarnings {
+	paperManualWarnings := newPaperManualWarningTracker()
+	paperManualWarnings.printNew(collectPaperManualPositionWarnings(cfg, state))
+	paperManualLimitWarnings := paperManualLimitRowStartupWarnings(cfg, store.LoadPendingLimitOrders)
+	for _, msg := range paperManualLimitWarnings {
 		fmt.Printf("[WARN] %s\n", msg)
 	}
 
@@ -743,7 +744,7 @@ func main() {
 		}
 	}
 
-	sendPaperManualStartupWarnings(notifier, paperManualPositionWarnings)
+	sendPaperManualStartupWarnings(notifier, paperManualLimitWarnings)
 
 	notifyDirectionalCertStartupSummary(notifier, directionalCertSummaryLines)
 
@@ -1083,6 +1084,7 @@ func main() {
 		recoverEntryIntents(cfg, state, store, &mu, notifier, logMgr, tradingNow())
 		recoverRobinhoodOrders(cfg, state, store, &mu, notifier, logMgr, time.Now())
 		notifyRobinhoodHeldBooks(state, cfg.Strategies, &mu, notifier, time.Now())
+		runPaperManualPositionWarnings(cfg, state, store, &mu, notifier, paperManualWarnings, ownership != nil)
 
 		resolveCapitalPct(cfg.Strategies)
 
