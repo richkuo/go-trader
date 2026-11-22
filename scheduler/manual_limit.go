@@ -1355,6 +1355,24 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 		}
 	}
 
+	coinHolders := limitCoinOperatorHolders(cfg, orders)
+	for _, c := range candidates {
+		if c.review || c.finalized || c.proof.OffBook || c.order.CancelRequested {
+			continue
+		}
+		holder, held := coinHolders[c.order.Symbol]
+		if !held {
+			continue
+		}
+		if _, err := store.MarkPendingLimitOrderCancelRequested(c.order.StrategyID, c.order.Symbol); err != nil {
+			fmt.Printf("[limit] %s: %s holds %s but the cancellation of this resting order could not be queued (%v) — will retry\n",
+				killSwitchLimitOrderLabel(c.order), killSwitchLimitOrderLabel(holder.order), c.order.Symbol, err)
+			continue
+		}
+		c.order.CancelRequested = true
+		warnNotifier(notifier, limitHeldCoinCancelNotice(c.order, holder))
+	}
+
 	for _, c := range candidates {
 		if c.review || c.finalized || c.proof.OffBook {
 			continue

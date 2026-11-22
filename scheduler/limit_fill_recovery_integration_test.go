@@ -862,6 +862,9 @@ func TestLimitUnprovenWatermarkOperatorText(t *testing.T) {
 		if strings.Contains(text, "Then clear the record") || strings.Contains(text, "the venue proves") {
 			t.Fatalf("the alert must not send the operator to the clear command while the order rests: %s", text)
 		}
+		if rows := h.rows(); !rows[0].CancelRequested || h.cancel != 1 || h.dmsContaining("cancellation queued for this resting order because the row's fill watermark") != 1 {
+			t.Fatalf("the resting remainder of an unproven row must be cancelled once, cancels = %d, rows = %+v, dms = %s", h.cancel, rows, h.dmText())
+		}
 	})
 }
 
@@ -970,4 +973,66 @@ func TestLimitCoinOperatorHoldRefusesNewLimitEntries(t *testing.T) {
 			t.Fatalf("a zero-fill row of an eligible owner must not refuse a peer limit open: code %d, stderr %s", code, stderr)
 		}
 	})
+}
+
+func TestLimitHeldCoinCancelsRestingPeerOrders(t *testing.T) {
+	ethPeer, btcPeer := limitHoldPeer("hl-manual-eth-peer", "ETH"), limitHoldPeer("hl-manual-btc-peer", "BTC")
+	h := newLimitRecoveryHarness(t, 0.5, false, ethPeer, btcPeer)
+	for _, row := range []PendingLimitOrder{
+		{StrategyID: ethPeer.ID, Symbol: "ETH", Side: "long", OrderOID: 9002, LimitPrice: 1900, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, CreatedAt: time.Now().UTC()},
+		{StrategyID: btcPeer.ID, Symbol: "BTC", Side: "long", OrderOID: 9003, LimitPrice: 60000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, CreatedAt: time.Now().UTC()},
+	} {
+		if _, err := h.store.InsertPendingLimitOrder(row); err != nil {
+			t.Fatalf("seed peer row: %v", err)
+		}
+	}
+	withStubbedHLLiveExposure(t)
+	replies := func(own HyperliquidLimitOrderStatus, ethPeerState string) {
+		h.status = func() (*HyperliquidLimitStatusResult, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				own,
+				provenLimitStatus(9002, "ETH", ethPeerState, 0.5, 0, 0, 0),
+				provenLimitStatus(9003, "BTC", "live", 0.5, 0, 0, 0),
+			}}, nil
+		}
+	}
+	queued := func(oid int64) bool {
+		row, found := findPendingLimitOrderByOID(h.rows(), oid)
+		return found && row.CancelRequested
+	}
+	notice := "cancellation queued for this resting order because pending limit row hl-manual-eth-live/ETH oid=9001 holds every limit fill on ETH"
+
+	replies(provenLimitStatus(9001, "ETH", "live", 0.5, 0, 0, 0), "live")
+	h.run()
+	if h.cancel != 0 || queued(9001) || queued(9002) || queued(9003) || h.dmsContaining("cancellation queued") != 0 {
+		t.Fatalf("no row holds a coin yet, so nothing may be cancelled: cancels = %d, rows = %+v, dms = %s", h.cancel, h.rows(), h.dmText())
+	}
+
+	h.seedUnboundWatermark(0.2, 2000, 0.1)
+	replies(provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0.2, 2000, 0.1), "live")
+	h.run()
+	if !queued(9002) || queued(9003) || queued(9001) || h.cancel != 1 {
+		t.Fatalf("the pass after the ETH row became held must request and issue the cancel of the resting ETH peer only: cancels = %d, rows = %+v", h.cancel, h.rows())
+	}
+	if h.dmsContaining(notice) != 1 || h.dmsContaining("hl-manual-eth-peer/ETH oid=9002") < 1 || h.dmsContaining("manual-clear-limit-row 9001 --flattened") < 1 {
+		t.Fatalf("one alert must name the cancelled peer and the holding row, dms = %s", h.dmText())
+	}
+
+	h.run()
+	if h.dmsContaining(notice) != 1 || queued(9003) {
+		t.Fatalf("the cancellation alert must be sent once and BTC must stay untouched, dms = %s", h.dmText())
+	}
+
+	replies(provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0.2, 2000, 0.1), "cancelled")
+	h.run()
+	rows := h.rows()
+	_, peerLeft := findPendingLimitOrderByOID(rows, 9002)
+	_, holderLeft := findPendingLimitOrderByOID(rows, 9001)
+	_, btcLeft := findPendingLimitOrderByOID(rows, 9003)
+	if peerLeft || !holderLeft || !btcLeft {
+		t.Fatalf("the cancelled zero-fill peer must finalize while the held row and the BTC row stay: %+v", rows)
+	}
+	if pos := h.state.Strategies[ethPeer.ID].Positions["ETH"]; pos != nil {
+		t.Fatalf("the cancelled peer must book nothing: %+v", pos)
+	}
 }

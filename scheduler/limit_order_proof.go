@@ -408,15 +408,50 @@ func limitCoinOperatorHold(cfg *Config, store *StateStore, symbol string) (strin
 		if o.Symbol != symbol {
 			continue
 		}
-		var held limitRowProof
-		sc, known := scByIDLookup(cfg, o.StrategyID)
-		if !holdUnprovenLimitWatermark(&held, o) && !holdIneligibleLimitOwner(&held, o, limitRowOwnerBlock(sc, known, o)) {
+		why := limitRowOperatorHold(cfg, o)
+		if why == "" {
 			continue
 		}
 		return fmt.Sprintf("pending limit row %s holds every limit fill on %s until an operator clears it: %s. A new limit order on %s could fill and stay unbooked with no stop-loss, so it is refused — follow the owner alert for that row, clear it with `go-trader manual-clear-limit-row %d --flattened` once the scheduler has marked it, then retry",
-			killSwitchLimitOrderLabel(o), symbol, held.Unbookable, symbol, o.OrderOID), nil
+			killSwitchLimitOrderLabel(o), symbol, why, symbol, o.OrderOID), nil
 	}
 	return "", nil
+}
+
+func limitRowOperatorHold(cfg *Config, o PendingLimitOrder) string {
+	var held limitRowProof
+	sc, known := scByIDLookup(cfg, o.StrategyID)
+	if holdUnprovenLimitWatermark(&held, o) || holdIneligibleLimitOwner(&held, o, limitRowOwnerBlock(sc, known, o)) {
+		return held.Unbookable
+	}
+	return ""
+}
+
+type limitCoinHolder struct {
+	order PendingLimitOrder
+	why   string
+}
+
+func limitCoinOperatorHolders(cfg *Config, orders []PendingLimitOrder) map[string]limitCoinHolder {
+	holders := make(map[string]limitCoinHolder)
+	for _, o := range orders {
+		if _, seen := holders[o.Symbol]; seen {
+			continue
+		}
+		if why := limitRowOperatorHold(cfg, o); why != "" {
+			holders[o.Symbol] = limitCoinHolder{order: o, why: why}
+		}
+	}
+	return holders
+}
+
+func limitHeldCoinCancelNotice(o PendingLimitOrder, holder limitCoinHolder) string {
+	if holder.order.ID == o.ID {
+		return fmt.Sprintf("[limit] %s: cancellation queued for this resting order because %s. A further fill of it could not be booked or protected. The scheduler cancels it on Hyperliquid and keeps the row for an operator; follow the owner alert for this row",
+			killSwitchLimitOrderLabel(o), holder.why)
+	}
+	return fmt.Sprintf("[limit] %s: cancellation queued for this resting order because pending limit row %s holds every limit fill on %s until an operator clears it (%s). A fill of this order could not be booked or protected. The scheduler cancels it on Hyperliquid, and the book keeps any fill it already recorded. Place the order again after the holding row is cleared with `go-trader manual-clear-limit-row %d --flattened`",
+		killSwitchLimitOrderLabel(o), killSwitchLimitOrderLabel(holder.order), o.Symbol, holder.why, holder.order.OrderOID)
 }
 
 func verifyLimitIncrementLineage(store *StateStore, state *AppState, o PendingLimitOrder) (string, bool) {
