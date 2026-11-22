@@ -306,9 +306,7 @@ func (s *candleService) dropPrefixLocked(prefix string) {
 	}
 }
 
-func (s *candleService) cacheGet(key string) (candlePage, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *candleService) cacheGetLocked(key string) (candlePage, bool) {
 	e, ok := s.cache[key]
 	if !ok {
 		return candlePage{}, false
@@ -323,13 +321,11 @@ func (s *candleService) cacheGet(key string) (candlePage, bool) {
 	return e.page, true
 }
 
-func (s *candleService) cacheSet(key string, page candlePage) {
+func (s *candleService) cacheSetLocked(key string, page candlePage) {
 	size := len(key) + 64*len(page.Bars) + 128
 	if size > candleLRUMaxBytes/4 {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if old, ok := s.cache[key]; ok {
 		s.lru.Remove(old.elem)
 		s.cacheBytes -= old.size
@@ -373,16 +369,21 @@ func (s *candleService) admit(ctx context.Context) (func(), error) {
 	}
 }
 
-func (s *candleService) execute(ctx context.Context, key string, cacheable bool, run func(context.Context) (candlePage, error)) (candlePage, error) {
+func (s *candleService) joinLocked(key string, cacheable bool) (candlePage, *candleCall, bool) {
 	if cacheable {
-		if page, ok := s.cacheGet(key); ok {
+		if page, ok := s.cacheGetLocked(key); ok {
 			s.hits.Add(1)
-			return page, nil
+			return page, nil, true
 		}
 	}
-	s.mu.Lock()
 	if call, ok := s.inflight[key]; ok {
-		s.mu.Unlock()
+		return candlePage{}, call, true
+	}
+	return candlePage{}, nil, false
+}
+
+func (s *candleService) execute(ctx context.Context, key string, cacheable bool, run func(context.Context) (candlePage, error)) (candlePage, error) {
+	wait := func(call *candleCall) (candlePage, error) {
 		select {
 		case <-call.done:
 			return call.page, call.err
@@ -390,25 +391,30 @@ func (s *candleService) execute(ctx context.Context, key string, cacheable bool,
 			return candlePage{}, ctx.Err()
 		}
 	}
-	release, err := func() (func(), error) {
-		s.mu.Unlock()
-		return s.admit(ctx)
-	}()
+	s.mu.Lock()
+	page, call, ok := s.joinLocked(key, cacheable)
+	s.mu.Unlock()
+	if ok {
+		if call != nil {
+			return wait(call)
+		}
+		return page, nil
+	}
+	release, err := s.admit(ctx)
 	if err != nil {
 		return candlePage{}, err
 	}
 	s.mu.Lock()
-	if call, ok := s.inflight[key]; ok {
+	page, call, ok = s.joinLocked(key, cacheable)
+	if ok {
 		s.mu.Unlock()
 		release()
-		select {
-		case <-call.done:
-			return call.page, call.err
-		case <-ctx.Done():
-			return candlePage{}, ctx.Err()
+		if call != nil {
+			return wait(call)
 		}
+		return page, nil
 	}
-	call := &candleCall{done: make(chan struct{})}
+	call = &candleCall{done: make(chan struct{})}
 	s.inflight[key] = call
 	s.mu.Unlock()
 	go func() {
@@ -418,10 +424,10 @@ func (s *candleService) execute(ctx context.Context, key string, cacheable bool,
 		cancel()
 		release()
 		call.page, call.err = page, err
-		if err == nil && cacheable {
-			s.cacheSet(key, page)
-		}
 		s.mu.Lock()
+		if err == nil && cacheable {
+			s.cacheSetLocked(key, page)
+		}
 		delete(s.inflight, key)
 		s.mu.Unlock()
 		close(call.done)
