@@ -113,6 +113,8 @@ CREATE TABLE IF NOT EXISTS positions (
     account_key TEXT NOT NULL DEFAULT '',
     venue_account_id TEXT NOT NULL DEFAULT '',
     account_binding_source TEXT NOT NULL DEFAULT '',
+    paper_sim_proof TEXT NOT NULL DEFAULT '',
+    paper_warning_receipts_json TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (strategy_id, symbol)
 );
 
@@ -275,6 +277,7 @@ CREATE TABLE IF NOT EXISTS pending_manual_actions (
     tp_armed_tiers_json TEXT NOT NULL DEFAULT '',
     position_id TEXT NOT NULL DEFAULT '',
     ratchet_fallback_normalize_pending INTEGER NOT NULL DEFAULT 0,
+    paper_sim_proof TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 
@@ -760,6 +763,9 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE pending_limit_orders ADD COLUMN operator_evidence_json TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE pending_limit_orders ADD COLUMN fill_proof_version INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE pending_limit_orders ADD COLUMN fill_proof_binding TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE pending_manual_actions ADD COLUMN paper_sim_proof TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE positions ADD COLUMN paper_sim_proof TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE positions ADD COLUMN paper_warning_receipts_json TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -1151,6 +1157,22 @@ const correlationSnapshotScopedDDL = `CREATE TABLE correlation_snapshot_v2 (
 
 const correlationSnapshotScopedCopySQL = `INSERT INTO correlation_snapshot_v2 (scope, snapshot_json)
     SELECT '', COALESCE(snapshot_json, '{}') FROM correlation_snapshot`
+
+func (sdb *StateDB) optionalTextSelects(table string, columns ...string) (string, error) {
+	out := make([]string, 0, len(columns))
+	for _, col := range columns {
+		has, err := sdb.tableHasColumn(table, col)
+		if err != nil {
+			return "", fmt.Errorf("introspect %s columns: %w", table, err)
+		}
+		if has {
+			out = append(out, "COALESCE("+col+", '') AS "+col)
+		} else {
+			out = append(out, "'' AS "+col)
+		}
+	}
+	return strings.Join(out, ", "), nil
+}
 
 func (sdb *StateDB) tableHasColumn(table, column string) (bool, error) {
 	rows, err := sdb.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
@@ -1715,8 +1737,8 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 	}
 	defer stmtStrat.Close()
 
-	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label, scale_in_count, last_add_price, added_notional_usd, risk_anchor_price, scale_in_resize_pending, ratchet_fallback_normalize_pending, open_profile, direction_certified_at_open, direction_certified_states_json, llm_analysis_requested, llm_verdict, atr_method_at_open, hedge_for, hedge_primary_qty_basis, hurst_at_open, hurst_size_mult, shared_close_hold_usd, shared_close_hold_reason, sl_after_moved, tp_consumptions_json, sl_after_trigger_px, resting_tp_scanned_open_ms, resting_tp_reach_px, resting_tp_stop_trigger_px, regime_snapshots_json, account_key, venue_account_id, account_binding_source)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label, scale_in_count, last_add_price, added_notional_usd, risk_anchor_price, scale_in_resize_pending, ratchet_fallback_normalize_pending, open_profile, direction_certified_at_open, direction_certified_states_json, llm_analysis_requested, llm_verdict, atr_method_at_open, hedge_for, hedge_primary_qty_basis, hurst_at_open, hurst_size_mult, shared_close_hold_usd, shared_close_hold_reason, sl_after_moved, tp_consumptions_json, sl_after_trigger_px, resting_tp_scanned_open_ms, resting_tp_reach_px, resting_tp_stop_trigger_px, regime_snapshots_json, account_key, venue_account_id, account_binding_source, paper_sim_proof, paper_warning_receipts_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare position insert: %w", err)
 	}
@@ -1776,6 +1798,7 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		for _, sym := range sortedPositionSymbols(s.Positions) {
 			pos := s.Positions[sym]
 			positionID := ensurePositionTradeID(s.ID, pos.Symbol, pos)
+			simProof, receiptsJSON := paperWarningColumnsForSave(pos, req.ScopeOf[s.ID])
 			tp1OID, tp2OID := firstTwoTPOIDs(pos.TPOIDs)
 			scaleInResizePending := 0
 			if pos.ScaleInResizePending {
@@ -1793,7 +1816,7 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 			if pos.LLMAnalysisRequested {
 				llmAnalysisRequested = 1
 			}
-			if _, err := stmtPos.Exec(sid, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, sdb.toStorageOwnerID(pos.OwnerStrategyID), formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, ratchetFallbackNormalizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen), llmAnalysisRequested, pos.LLMVerdict, pos.ATRMethodAtOpen, pos.HedgeFor, pos.HedgePrimaryQtyBasis, pos.HurstAtOpen, pos.HurstSizeMult, pos.SharedCloseHoldUSD, pos.SharedCloseHoldReason, boolToInt(pos.SLAfterMoved), marshalTPConsumptionsJSON(pos.TPConsumptions), pos.SLAfterTriggerPx, pos.RestingTPScannedOpenMs, pos.RestingTPReachPx, pos.RestingTPStopTriggerPx, marshalRegimeSnapshotsJSON(pos.RegimeSnapshots), pos.AccountKey, pos.VenueAccountID, pos.AccountBindingSource); err != nil {
+			if _, err := stmtPos.Exec(sid, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, sdb.toStorageOwnerID(pos.OwnerStrategyID), formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, ratchetFallbackNormalizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen), llmAnalysisRequested, pos.LLMVerdict, pos.ATRMethodAtOpen, pos.HedgeFor, pos.HedgePrimaryQtyBasis, pos.HurstAtOpen, pos.HurstSizeMult, pos.SharedCloseHoldUSD, pos.SharedCloseHoldReason, boolToInt(pos.SLAfterMoved), marshalTPConsumptionsJSON(pos.TPConsumptions), pos.SLAfterTriggerPx, pos.RestingTPScannedOpenMs, pos.RestingTPReachPx, pos.RestingTPStopTriggerPx, marshalRegimeSnapshotsJSON(pos.RegimeSnapshots), pos.AccountKey, pos.VenueAccountID, pos.AccountBindingSource, simProof, receiptsJSON); err != nil {
 				return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 			}
 		}
@@ -2257,8 +2280,8 @@ func (sdb *StateDB) writeOneStrategyBookTx(tx *sql.Tx, s *StrategyState, sid str
 		return nil, nil, fmt.Errorf("delete option_positions for %s: %w", s.ID, err)
 	}
 
-	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label, scale_in_count, last_add_price, added_notional_usd, risk_anchor_price, scale_in_resize_pending, ratchet_fallback_normalize_pending, open_profile, direction_certified_at_open, direction_certified_states_json, llm_analysis_requested, llm_verdict, atr_method_at_open, hedge_for, hedge_primary_qty_basis, hurst_at_open, hurst_size_mult, shared_close_hold_usd, shared_close_hold_reason, sl_after_moved, tp_consumptions_json, sl_after_trigger_px, resting_tp_scanned_open_ms, resting_tp_reach_px, resting_tp_stop_trigger_px, regime_snapshots_json, account_key, venue_account_id, account_binding_source)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label, scale_in_count, last_add_price, added_notional_usd, risk_anchor_price, scale_in_resize_pending, ratchet_fallback_normalize_pending, open_profile, direction_certified_at_open, direction_certified_states_json, llm_analysis_requested, llm_verdict, atr_method_at_open, hedge_for, hedge_primary_qty_basis, hurst_at_open, hurst_size_mult, shared_close_hold_usd, shared_close_hold_reason, sl_after_moved, tp_consumptions_json, sl_after_trigger_px, resting_tp_scanned_open_ms, resting_tp_reach_px, resting_tp_stop_trigger_px, regime_snapshots_json, account_key, venue_account_id, account_binding_source, paper_sim_proof, paper_warning_receipts_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("prepare position insert: %w", err)
 	}
@@ -2266,6 +2289,7 @@ func (sdb *StateDB) writeOneStrategyBookTx(tx *sql.Tx, s *StrategyState, sid str
 	for _, sym := range sortedPositionSymbols(s.Positions) {
 		pos := s.Positions[sym]
 		positionID := ensurePositionTradeID(s.ID, pos.Symbol, pos)
+		simProof, receiptsJSON := paperWarningColumnsForSave(pos, scope)
 		tp1OID, tp2OID := firstTwoTPOIDs(pos.TPOIDs)
 		scaleInResizePending := 0
 		if pos.ScaleInResizePending {
@@ -2283,7 +2307,7 @@ func (sdb *StateDB) writeOneStrategyBookTx(tx *sql.Tx, s *StrategyState, sid str
 		if pos.LLMAnalysisRequested {
 			llmAnalysisRequested = 1
 		}
-		if _, err := stmtPos.Exec(sid, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, sdb.toStorageOwnerID(pos.OwnerStrategyID), formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, ratchetFallbackNormalizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen), llmAnalysisRequested, pos.LLMVerdict, pos.ATRMethodAtOpen, pos.HedgeFor, pos.HedgePrimaryQtyBasis, pos.HurstAtOpen, pos.HurstSizeMult, pos.SharedCloseHoldUSD, pos.SharedCloseHoldReason, boolToInt(pos.SLAfterMoved), marshalTPConsumptionsJSON(pos.TPConsumptions), pos.SLAfterTriggerPx, pos.RestingTPScannedOpenMs, pos.RestingTPReachPx, pos.RestingTPStopTriggerPx, marshalRegimeSnapshotsJSON(pos.RegimeSnapshots), pos.AccountKey, pos.VenueAccountID, pos.AccountBindingSource); err != nil {
+		if _, err := stmtPos.Exec(sid, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, sdb.toStorageOwnerID(pos.OwnerStrategyID), formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, ratchetFallbackNormalizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen), llmAnalysisRequested, pos.LLMVerdict, pos.ATRMethodAtOpen, pos.HedgeFor, pos.HedgePrimaryQtyBasis, pos.HurstAtOpen, pos.HurstSizeMult, pos.SharedCloseHoldUSD, pos.SharedCloseHoldReason, boolToInt(pos.SLAfterMoved), marshalTPConsumptionsJSON(pos.TPConsumptions), pos.SLAfterTriggerPx, pos.RestingTPScannedOpenMs, pos.RestingTPReachPx, pos.RestingTPStopTriggerPx, marshalRegimeSnapshotsJSON(pos.RegimeSnapshots), pos.AccountKey, pos.VenueAccountID, pos.AccountBindingSource, simProof, receiptsJSON); err != nil {
 			return nil, nil, fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 		}
 	}
@@ -2691,7 +2715,11 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		return nil, fmt.Errorf("iterate strategies: %w", err)
 	}
 
-	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(tp_armed_tiers_json, '') AS tp_armed_tiers_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(sl_adjusted_tiers_processed, 0) AS sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, COALESCE(regime, '') AS regime, COALESCE(regime_windows_json, '') AS regime_windows_json, COALESCE(regime_pending_label, '') AS regime_pending_label, COALESCE(regime_pending_count, 0) AS regime_pending_count, COALESCE(regime_applied_label, '') AS regime_applied_label, COALESCE(scale_in_count, 0) AS scale_in_count, COALESCE(last_add_price, 0) AS last_add_price, COALESCE(added_notional_usd, 0) AS added_notional_usd, COALESCE(risk_anchor_price, 0) AS risk_anchor_price, COALESCE(scale_in_resize_pending, 0) AS scale_in_resize_pending, COALESCE(ratchet_fallback_normalize_pending, 0) AS ratchet_fallback_normalize_pending, COALESCE(open_profile, '') AS open_profile, COALESCE(direction_certified_at_open, 0) AS direction_certified_at_open, COALESCE(direction_certified_states_json, '') AS direction_certified_states_json, COALESCE(llm_analysis_requested, 0) AS llm_analysis_requested, COALESCE(llm_verdict, '') AS llm_verdict, COALESCE(atr_method_at_open, '') AS atr_method_at_open, COALESCE(hedge_for, '') AS hedge_for, COALESCE(hedge_primary_qty_basis, 0) AS hedge_primary_qty_basis, COALESCE(hurst_at_open, 0) AS hurst_at_open, COALESCE(hurst_size_mult, 0) AS hurst_size_mult, COALESCE(shared_close_hold_usd, 0) AS shared_close_hold_usd, COALESCE(shared_close_hold_reason, '') AS shared_close_hold_reason, COALESCE(sl_after_moved, 0) AS sl_after_moved, COALESCE(tp_consumptions_json, '') AS tp_consumptions_json, COALESCE(sl_after_trigger_px, 0) AS sl_after_trigger_px, COALESCE(resting_tp_scanned_open_ms, 0) AS resting_tp_scanned_open_ms, COALESCE(resting_tp_reach_px, 0) AS resting_tp_reach_px, COALESCE(resting_tp_stop_trigger_px, 0) AS resting_tp_stop_trigger_px, COALESCE(regime_snapshots_json, ''), COALESCE(account_key, ''), COALESCE(venue_account_id, ''), COALESCE(account_binding_source, '') FROM positions")
+	posPaperSelects, err := sdb.optionalTextSelects("positions", "paper_sim_proof", "paper_warning_receipts_json")
+	if err != nil {
+		return nil, err
+	}
+	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(tp_armed_tiers_json, '') AS tp_armed_tiers_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(sl_adjusted_tiers_processed, 0) AS sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, COALESCE(regime, '') AS regime, COALESCE(regime_windows_json, '') AS regime_windows_json, COALESCE(regime_pending_label, '') AS regime_pending_label, COALESCE(regime_pending_count, 0) AS regime_pending_count, COALESCE(regime_applied_label, '') AS regime_applied_label, COALESCE(scale_in_count, 0) AS scale_in_count, COALESCE(last_add_price, 0) AS last_add_price, COALESCE(added_notional_usd, 0) AS added_notional_usd, COALESCE(risk_anchor_price, 0) AS risk_anchor_price, COALESCE(scale_in_resize_pending, 0) AS scale_in_resize_pending, COALESCE(ratchet_fallback_normalize_pending, 0) AS ratchet_fallback_normalize_pending, COALESCE(open_profile, '') AS open_profile, COALESCE(direction_certified_at_open, 0) AS direction_certified_at_open, COALESCE(direction_certified_states_json, '') AS direction_certified_states_json, COALESCE(llm_analysis_requested, 0) AS llm_analysis_requested, COALESCE(llm_verdict, '') AS llm_verdict, COALESCE(atr_method_at_open, '') AS atr_method_at_open, COALESCE(hedge_for, '') AS hedge_for, COALESCE(hedge_primary_qty_basis, 0) AS hedge_primary_qty_basis, COALESCE(hurst_at_open, 0) AS hurst_at_open, COALESCE(hurst_size_mult, 0) AS hurst_size_mult, COALESCE(shared_close_hold_usd, 0) AS shared_close_hold_usd, COALESCE(shared_close_hold_reason, '') AS shared_close_hold_reason, COALESCE(sl_after_moved, 0) AS sl_after_moved, COALESCE(tp_consumptions_json, '') AS tp_consumptions_json, COALESCE(sl_after_trigger_px, 0) AS sl_after_trigger_px, COALESCE(resting_tp_scanned_open_ms, 0) AS resting_tp_scanned_open_ms, COALESCE(resting_tp_reach_px, 0) AS resting_tp_reach_px, COALESCE(resting_tp_stop_trigger_px, 0) AS resting_tp_stop_trigger_px, COALESCE(regime_snapshots_json, ''), COALESCE(account_key, ''), COALESCE(venue_account_id, ''), COALESCE(account_binding_source, ''), " + posPaperSelects + " FROM positions")
 	if err != nil {
 		return nil, fmt.Errorf("load positions: %w", err)
 	}
@@ -2713,7 +2741,8 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		var llmAnalysisRequested int
 		var slAfterMoved int
 		var tpConsumptionsJSON string
-		if err := posRows.Scan(&storedID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &tp1OID, &tp2OID, &tpOIDsJSON, &tpArmedTiersJSON, &slATRMult, &pos.TPTiersJSON, &pos.SLAdjustedTiersProcessed, &postTPTrailingMult, &pos.Regime, &regimeWindowsJSON, &pos.RegimePendingLabel, &pos.RegimePendingCount, &pos.RegimeAppliedLabel, &pos.ScaleInCount, &pos.LastAddPrice, &pos.AddedNotionalUSD, &pos.RiskAnchorPrice, &scaleInResizePending, &ratchetFallbackNormalizePending, &pos.OpenProfile, &directionCertifiedAtOpen, &directionCertifiedStatesJSON, &llmAnalysisRequested, &pos.LLMVerdict, &pos.ATRMethodAtOpen, &pos.HedgeFor, &pos.HedgePrimaryQtyBasis, &pos.HurstAtOpen, &pos.HurstSizeMult, &pos.SharedCloseHoldUSD, &pos.SharedCloseHoldReason, &slAfterMoved, &tpConsumptionsJSON, &pos.SLAfterTriggerPx, &pos.RestingTPScannedOpenMs, &pos.RestingTPReachPx, &pos.RestingTPStopTriggerPx, &regimeSnapshotsJSON, &pos.AccountKey, &pos.VenueAccountID, &pos.AccountBindingSource); err != nil {
+		var paperSimProof, paperReceiptsJSON string
+		if err := posRows.Scan(&storedID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &tp1OID, &tp2OID, &tpOIDsJSON, &tpArmedTiersJSON, &slATRMult, &pos.TPTiersJSON, &pos.SLAdjustedTiersProcessed, &postTPTrailingMult, &pos.Regime, &regimeWindowsJSON, &pos.RegimePendingLabel, &pos.RegimePendingCount, &pos.RegimeAppliedLabel, &pos.ScaleInCount, &pos.LastAddPrice, &pos.AddedNotionalUSD, &pos.RiskAnchorPrice, &scaleInResizePending, &ratchetFallbackNormalizePending, &pos.OpenProfile, &directionCertifiedAtOpen, &directionCertifiedStatesJSON, &llmAnalysisRequested, &pos.LLMVerdict, &pos.ATRMethodAtOpen, &pos.HedgeFor, &pos.HedgePrimaryQtyBasis, &pos.HurstAtOpen, &pos.HurstSizeMult, &pos.SharedCloseHoldUSD, &pos.SharedCloseHoldReason, &slAfterMoved, &tpConsumptionsJSON, &pos.SLAfterTriggerPx, &pos.RestingTPScannedOpenMs, &pos.RestingTPReachPx, &pos.RestingTPStopTriggerPx, &regimeSnapshotsJSON, &pos.AccountKey, &pos.VenueAccountID, &pos.AccountBindingSource, &paperSimProof, &paperReceiptsJSON); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
 		procID, mapped := loaded[storedID]
@@ -2732,6 +2761,8 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		pos.OpenedAt = parseTime(openedAtStr)
 		pos.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, tp1OID, tp2OID)
 		pos.TPArmedTiers = parseTPArmedTiersJSON(tpArmedTiersJSON)
+		pos.PaperSimProof = loadedPositionPaperSimProof(paperSimProof, tpOIDsJSON, tp1OID, tp2OID)
+		pos.PaperWarningReceipts = parsePaperWarningReceipts(paperReceiptsJSON)
 		pos.SLAfterMoved = slAfterMoved != 0
 		pos.TPConsumptions = parseTPConsumptionsJSON(tpConsumptionsJSON)
 		pos.RegimeWindows = parseRegimeWindowsJSON(regimeWindowsJSON)
@@ -3294,6 +3325,7 @@ type PendingManualAction struct {
 	TPArmedTiers                    []bool
 	PositionID                      string
 	RatchetFallbackNormalizePending bool
+	PaperSimProof                   string
 	CreatedAt                       time.Time
 
 	SourceRole storageRole
@@ -3323,12 +3355,12 @@ func insertPendingManualActionRow(exec sqlExecer, sid string, a PendingManualAct
 		ratchetFallbackNormalizePending = 1
 	}
 	_, err := exec.Exec(`INSERT INTO pending_manual_actions
-		(strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, atr_method, realized_pnl, is_full_close, tp_oids_json, prev_tp_oids_json, tp_armed_tiers_json, position_id, ratchet_fallback_normalize_pending, created_at, regime_snapshots_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, atr_method, realized_pnl, is_full_close, tp_oids_json, prev_tp_oids_json, tp_armed_tiers_json, position_id, ratchet_fallback_normalize_pending, created_at, regime_snapshots_json, paper_sim_proof)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sid, a.Action, a.Symbol, a.Side, a.Quantity, a.FillPrice, a.FillFee,
 		a.ExchangeOrderID, a.StopLossOID, a.StopLossTriggerPx, a.EntryATR, a.ATRMethod, a.RealizedPnL,
 		isFullClose, marshalTPOIDsJSON(a.TPOIDs), marshalTPOIDsJSON(a.PrevTPOIDs), marshalTPArmedTiersJSON(a.TPArmedTiers),
-		a.PositionID, ratchetFallbackNormalizePending, formatTime(a.CreatedAt), marshalRegimeSnapshotsJSON(a.RegimeSnapshots))
+		a.PositionID, ratchetFallbackNormalizePending, formatTime(a.CreatedAt), marshalRegimeSnapshotsJSON(a.RegimeSnapshots), a.PaperSimProof)
 	return err
 }
 
@@ -3336,7 +3368,11 @@ func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, nil
 	}
-	rows, err := sdb.db.Query(`SELECT id, strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, COALESCE(atr_method, '') AS atr_method, realized_pnl, COALESCE(is_full_close, 0) AS is_full_close, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(prev_tp_oids_json, '') AS prev_tp_oids_json, COALESCE(tp_armed_tiers_json, '') AS tp_armed_tiers_json, COALESCE(position_id, '') AS position_id, COALESCE(ratchet_fallback_normalize_pending, 0) AS ratchet_fallback_normalize_pending, created_at, COALESCE(regime_snapshots_json, '') FROM pending_manual_actions ORDER BY id`)
+	proofSelect, err := sdb.optionalTextSelects("pending_manual_actions", "paper_sim_proof")
+	if err != nil {
+		return nil, err
+	}
+	rows, err := sdb.db.Query(`SELECT id, strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, COALESCE(atr_method, '') AS atr_method, realized_pnl, COALESCE(is_full_close, 0) AS is_full_close, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(prev_tp_oids_json, '') AS prev_tp_oids_json, COALESCE(tp_armed_tiers_json, '') AS tp_armed_tiers_json, COALESCE(position_id, '') AS position_id, COALESCE(ratchet_fallback_normalize_pending, 0) AS ratchet_fallback_normalize_pending, created_at, COALESCE(regime_snapshots_json, ''), ` + proofSelect + ` FROM pending_manual_actions ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("load pending manual actions: %w", err)
 	}
@@ -3350,7 +3386,8 @@ func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 		var prevTPOIDsJSON string
 		var tpArmedTiersJSON string
 		var ratchetFallbackNormalizePending int
-		if err := rows.Scan(&a.ID, &a.StrategyID, &a.Action, &a.Symbol, &a.Side, &a.Quantity, &a.FillPrice, &a.FillFee, &a.ExchangeOrderID, &a.StopLossOID, &a.StopLossTriggerPx, &a.EntryATR, &a.ATRMethod, &a.RealizedPnL, &isFullCloseInt, &tpOIDsJSON, &prevTPOIDsJSON, &tpArmedTiersJSON, &a.PositionID, &ratchetFallbackNormalizePending, &createdStr, &regimeSnapshotsJSON); err != nil {
+		var paperSimProof string
+		if err := rows.Scan(&a.ID, &a.StrategyID, &a.Action, &a.Symbol, &a.Side, &a.Quantity, &a.FillPrice, &a.FillFee, &a.ExchangeOrderID, &a.StopLossOID, &a.StopLossTriggerPx, &a.EntryATR, &a.ATRMethod, &a.RealizedPnL, &isFullCloseInt, &tpOIDsJSON, &prevTPOIDsJSON, &tpArmedTiersJSON, &a.PositionID, &ratchetFallbackNormalizePending, &createdStr, &regimeSnapshotsJSON, &paperSimProof); err != nil {
 			return nil, fmt.Errorf("scan pending manual action: %w", err)
 		}
 		a.IsFullClose = isFullCloseInt != 0
@@ -3360,6 +3397,7 @@ func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 		a.RatchetFallbackNormalizePending = ratchetFallbackNormalizePending != 0
 		a.CreatedAt = parseTime(createdStr)
 		a.RegimeSnapshots = parseRegimeSnapshotsJSON(regimeSnapshotsJSON)
+		a.PaperSimProof = loadedQueuePaperSimProof(paperSimProof, tpOIDsJSON, prevTPOIDsJSON, tpArmedTiersJSON)
 		a.StrategyID = sdb.fromStorageID(a.StrategyID)
 		a.SourceRole = sdb.storageRoleOf()
 		actions = append(actions, a)

@@ -141,6 +141,7 @@ func queuePaperManualCycleClose(in paperManualCycleCloseInput) paperManualCycleC
 		now = time.Now().UTC()
 	}
 	booking := bookManualCycleClose(sc, &snap, closeSide, closeQty, full, synthetic, nil, now)
+	booking.Action.PaperSimProof = paperSimQueueProofJSON(paperSimKindCycleClose, "close", sc.Symbol, snap.TradePositionID)
 	if err := in.Store.InsertPendingManualAction(booking.Action); err != nil {
 		return logHold(fmt.Sprintf("the simulated close could not be queued: %v", err))
 	}
@@ -193,13 +194,25 @@ func sendPaperManualStartupWarnings(notifier *MultiNotifier, warnings []string) 
 	}
 }
 
-func paperManualPositionStartupWarnings(cfg *Config, state *AppState) []string {
+type paperManualPositionWarning struct {
+	StrategyID string
+	Coin       string
+	PositionID string
+	Text       string
+	Receipts   []paperWarningReceipt
+}
+
+func (w paperManualPositionWarning) identity() string {
+	return w.StrategyID + "\x00" + w.Coin + "\x00" + w.PositionID
+}
+
+func collectPaperManualPositionWarnings(cfg *Config, state *AppState) []paperManualPositionWarning {
 	if cfg == nil || state == nil {
 		return nil
 	}
-	var out []string
+	var out []paperManualPositionWarning
 	for _, sc := range cfg.Strategies {
-		if sc.Type != "manual" || sc.Platform != "hyperliquid" || portfolioScopeFor(sc) == ScopeLive {
+		if !paperManualHLStrategy(sc) {
 			continue
 		}
 		ss := state.Strategies[sc.ID]
@@ -215,9 +228,122 @@ func paperManualPositionStartupWarnings(cfg *Config, state *AppState) []string {
 		sort.Strings(keys)
 		for _, coin := range keys {
 			pos := ss.Positions[coin]
-			out = append(out, fmt.Sprintf("paper manual position %s/%s (%s %.6f, %s partition): a release before the paper manual order guard could send real Hyperliquid orders for a paper manual strategy. If this position, or any open, add, close, stop or limit order for it, dates from such a release, real exposure or protection can remain on the account: verify %s on Hyperliquid before you rely on this paper book. A position booked only with --record-only under the guard sent no order. This warning repeats on each start while the position is open; its trade and order history is kept unchanged.",
-				sc.ID, coin, pos.Side, pos.Quantity, partitionLabel(partitionFor(sc)), coin))
+			if paperSimPositionProofHolds(sc, pos) {
+				continue
+			}
+			positionID := ensurePositionTradeID(sc.ID, coin, pos)
+			out = append(out, paperManualPositionWarning{
+				StrategyID: sc.ID,
+				Coin:       coin,
+				PositionID: positionID,
+				Receipts:   append([]paperWarningReceipt(nil), pos.PaperWarningReceipts...),
+				Text: fmt.Sprintf("paper manual position %s/%s (%s %.6f, %s partition): go-trader cannot prove that this position used only simulated fills. A release before the paper manual order guard could send real Hyperliquid orders for a paper manual strategy. If this position, or any open, add, close, stop or limit order for it, dates from such a release, real exposure or protection can remain on the account: verify %s on Hyperliquid before you rely on this paper book. A position opened with --record-only under the guard and changed only by simulated adds and closes is proven and gets no warning; go-trader cannot see orders placed outside it. This line prints on each start while the position is open; the owner gets one direct message per notification destination for this position. Its trade and order history is kept unchanged.",
+					sc.ID, coin, pos.Side, pos.Quantity, partitionLabel(partitionFor(sc)), coin),
+			})
 		}
 	}
 	return out
+}
+
+type paperManualWarningTracker struct {
+	mu      sync.Mutex
+	printed map[string]bool
+}
+
+func newPaperManualWarningTracker() *paperManualWarningTracker {
+	return &paperManualWarningTracker{printed: make(map[string]bool)}
+}
+
+func (t *paperManualWarningTracker) printNew(warnings []paperManualPositionWarning) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, w := range warnings {
+		key := w.identity()
+		if t.printed[key] {
+			continue
+		}
+		t.printed[key] = true
+		fmt.Printf("[WARN] %s\n", w.Text)
+	}
+}
+
+type paperManualWarningDelivery struct {
+	w    paperManualPositionWarning
+	dest ownerDMDestination
+}
+
+func runPaperManualPositionWarnings(cfg *Config, state *AppState, store *StateStore, mu *sync.RWMutex, notifier *MultiNotifier, tracker *paperManualWarningTracker, ownsState bool) {
+	if cfg == nil || state == nil || mu == nil {
+		return
+	}
+	mu.Lock()
+	warnings := collectPaperManualPositionWarnings(cfg, state)
+	mu.Unlock()
+	tracker.printNew(warnings)
+	if !ownsState || store == nil || notifier == nil || len(warnings) == 0 {
+		return
+	}
+	dests := notifier.ownerDMDestinations()
+	if len(dests) == 0 {
+		return
+	}
+	var confirmed []paperManualWarningDelivery
+	for _, w := range warnings {
+		for _, d := range dests {
+			if paperWarningReceiptHeld(w.Receipts, w.PositionID, d.Service, d.OwnerID) {
+				continue
+			}
+			ok, err := d.sendConfirmed("[state] WARNING: " + w.Text)
+			switch {
+			case err != nil:
+				fmt.Printf("[WARN] paper manual position warning for %s/%s to the %s owner failed: %v; it is sent again on a later cycle\n", w.StrategyID, w.Coin, d.Service, err)
+			case !ok:
+				fmt.Printf("[WARN] paper manual position warning for %s/%s to the %s owner returned no message confirmation; it is sent again on a later cycle\n", w.StrategyID, w.Coin, d.Service)
+			default:
+				confirmed = append(confirmed, paperManualWarningDelivery{w: w, dest: d})
+			}
+		}
+	}
+	if len(confirmed) == 0 {
+		return
+	}
+	scByID := make(map[string]StrategyConfig, len(cfg.Strategies))
+	for _, sc := range cfg.Strategies {
+		scByID[sc.ID] = sc
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var changed []string
+	touched := make(map[string]bool)
+	for _, c := range confirmed {
+		sc, ok := scByID[c.w.StrategyID]
+		ss := state.Strategies[c.w.StrategyID]
+		var pos *Position
+		if ss != nil {
+			pos = ss.Positions[c.w.Coin]
+		}
+		if !ok || !paperManualHLStrategy(sc) || pos == nil || pos.Quantity <= 0 || pos.TradePositionID != c.w.PositionID || !manualPositionOwnedByStrategy(pos, sc.ID) {
+			fmt.Printf("[WARN] paper manual position %s/%s changed while its warning was sent to the %s owner; no receipt is recorded\n", c.w.StrategyID, c.w.Coin, c.dest.Service)
+			continue
+		}
+		if paperWarningReceiptHeld(pos.PaperWarningReceipts, pos.TradePositionID, c.dest.Service, c.dest.OwnerID) {
+			continue
+		}
+		receipts := append([]paperWarningReceipt(nil), pos.PaperWarningReceipts...)
+		pos.PaperWarningReceipts = append(receipts, paperWarningReceipt{Version: paperWarningReceiptVersion, PositionID: pos.TradePositionID, Service: c.dest.Service, Destination: c.dest.OwnerID})
+		fmt.Printf("[state] paper manual position warning for %s/%s confirmed by the %s owner destination\n", c.w.StrategyID, c.w.Coin, c.dest.Service)
+		if !touched[c.w.StrategyID] {
+			touched[c.w.StrategyID] = true
+			changed = append(changed, c.w.StrategyID)
+		}
+	}
+	sort.Strings(changed)
+	for _, id := range changed {
+		if err := store.SaveStrategyBook(state.Strategies[id]); err != nil {
+			fmt.Printf("[WARN] paper manual position warning receipt for %s could not be saved: %v; the receipt stays in memory for the next book save, and a restart before that save can send the message again\n", id, err)
+		}
+	}
 }

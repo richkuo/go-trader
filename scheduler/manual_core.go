@@ -973,6 +973,9 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		RatchetFallbackNormalizePending: ratchetFallbackNormalizePending && stopLossOID > 0 && stopLossTriggerPx > 0,
 		CreatedAt:                       time.Now().UTC(),
 	}
+	if in.RecordOnly && paperManualHLStrategy(sc) {
+		action.PaperSimProof = paperSimQueueProofJSON(paperSimKindRecordOnly, "open", sc.Symbol, "")
+	}
 	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
 		if in.RecordOnly {
 			return res, manualFailf("error queuing action: %v", err)
@@ -1210,6 +1213,9 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 		FillFee:         fillFee,
 		ExchangeOrderID: exchangeOID,
 		CreatedAt:       time.Now().UTC(),
+	}
+	if in.RecordOnly && paperManualHLStrategy(sc) {
+		action.PaperSimProof = paperSimQueueProofJSON(paperSimKindRecordOnly, "add", sc.Symbol, pos.TradePositionID)
 	}
 	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
 		return res, manualFailf("error queuing action: %v", err)

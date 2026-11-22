@@ -758,6 +758,7 @@ func applyLimitFillProgressInner(ss *StrategyState, sc StrategyConfig, o Pending
 	prevQty := pos.Quantity
 	pos.Quantity = prevQty + deltaQty
 	pos.InitialQuantity += deltaQty
+	pos.PaperSimProof = ""
 	if math.Abs(prevQty-o.FilledSize) <= limitFillEpsilon {
 		pos.AvgCost = avgPx
 	} else {

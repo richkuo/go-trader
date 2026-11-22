@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -134,6 +135,11 @@ func (t *TelegramNotifier) apiCall(method string, payload interface{}) (*telegra
 }
 
 func (t *TelegramNotifier) SendMessage(chatID string, content string) error {
+	_, err := t.sendMessageResult(chatID, content)
+	return err
+}
+
+func (t *TelegramNotifier) sendMessageResult(chatID string, content string) (*telegramResponse, error) {
 	if len(content) > telegramMaxMessageLen {
 		content = content[:telegramMaxMessageLen-3] + "..."
 	}
@@ -145,16 +151,30 @@ func (t *TelegramNotifier) SendMessage(chatID string, content string) error {
 
 	resp, err := t.apiCall("sendMessage", payload)
 	if err != nil {
-		return fmt.Errorf("telegram sendMessage: %w", err)
+		return nil, fmt.Errorf("telegram sendMessage: %w", err)
 	}
 	if !resp.OK {
-		return fmt.Errorf("telegram sendMessage: %s", resp.Description)
+		return nil, fmt.Errorf("telegram sendMessage: %s", resp.Description)
 	}
-	return nil
+	return resp, nil
 }
 
 func (t *TelegramNotifier) SendDM(userID, content string) error {
 	return t.SendMessage(userID, content)
+}
+
+func (t *TelegramNotifier) SendDMConfirmed(userID, content string) (string, error) {
+	resp, err := t.sendMessageResult(userID, content)
+	if err != nil {
+		return "", err
+	}
+	var msg struct {
+		MessageID int64 `json:"message_id"`
+	}
+	if len(resp.Result) == 0 || json.Unmarshal(resp.Result, &msg) != nil || msg.MessageID <= 0 {
+		return "", nil
+	}
+	return strconv.FormatInt(msg.MessageID, 10), nil
 }
 
 func (t *TelegramNotifier) AskDM(userID, question string, timeout time.Duration) (string, error) {
