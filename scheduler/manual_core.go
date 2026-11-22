@@ -564,14 +564,18 @@ func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCo
 		if proof.Live {
 			return nil, manualFailf("error: resting limit order for %s/%s (oid=%d) is not yet confirmed off-book — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cmdName)
 		}
+		unprovenWatermark := limitWatermarkUnproven(o)
+		if unprovenWatermark != "" && proof.ProvenAboveBooked() {
+			return nil, manualFailf("error: limit order for %s/%s (oid=%d) executed %.6f on the exchange but %s — refusing %s: the scheduler states no booked size for this order and no automatic path books or clears the row, so follow the owner alert for this order and clear the row with `go-trader manual-clear-limit-row %d --flattened` first", strategyID, o.Symbol, o.OrderOID, proof.Executed, unprovenWatermark, cmdName, o.OrderOID)
+		}
 		if proof.ProvenAboveBooked() {
 			return nil, manualFailf("error: resting limit order for %s/%s (oid=%d) has an unadopted fill (tracked %.6f, exchange %.6f) — cancellation is queued; run/wait for the scheduler to adopt the fill before running %s", strategyID, o.Symbol, o.OrderOID, o.FilledSize, proof.Executed, cmdName)
 		}
 		if !proof.CanFinalize() {
 			return nil, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, limitOffBookUnverified(proof), cmdName)
 		}
-		if why := limitWatermarkUnproven(o); why != "" {
-			return nil, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but %s — refusing %s so the scheduler keeps the row and records it for an operator", strategyID, o.Symbol, o.OrderOID, why, cmdName)
+		if unprovenWatermark != "" {
+			return nil, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but %s — refusing %s so the scheduler keeps the row and records it for an operator", strategyID, o.Symbol, o.OrderOID, unprovenWatermark, cmdName)
 		}
 		if why := recheckLimitRow(d.stateDB, o); why != "" {
 			return nil, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but %s — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, why, cmdName)

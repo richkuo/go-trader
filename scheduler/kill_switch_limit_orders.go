@@ -217,6 +217,12 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			unresolve("order is still resting on the exchange")
 			continue
 		}
+		unprovenWatermark := limitWatermarkUnproven(o)
+		if unprovenWatermark != "" && proof.ProvenAboveBooked() {
+			unresolve(fmt.Sprintf("order executed %.6f on the exchange but %s, so the scheduler states no booked size for this order and NO automatic path books or clears the row — queue row kept as the recovery record for an operator; compare the %s position on Hyperliquid with the scheduler's book, flatten only size the book does not hold, then clear the row with `go-trader manual-clear-limit-row %d --flattened` once the scheduler has marked it; the flatten proceeded and automatic reset waits until the row is cleared",
+				proof.Executed, unprovenWatermark, o.Symbol, o.OrderOID))
+			continue
+		}
 		if proof.ProvenAboveBooked() {
 			if !o.OperatorRequiredSince.IsZero() && o.OperatorEvidenceJSON != "" {
 				unresolve(fmt.Sprintf("order executed %.6f where the book holds %.6f (unadopted fill) and the scheduler marked the row as needing an operator — follow the owner alert for this order (flatten only size the scheduler's book does not hold), then clear the row with `go-trader manual-clear-limit-row %d --flattened`",
@@ -234,8 +240,8 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			unresolve("cancel unverified: " + limitOffBookUnverified(proof))
 			continue
 		}
-		if why := limitWatermarkUnproven(o); why != "" {
-			unresolve("order is off-book but " + why + " — queue row kept as the recovery record for an operator; the flatten proceeded and automatic reset waits until the row is cleared")
+		if unprovenWatermark != "" {
+			unresolve("order is off-book but " + unprovenWatermark + " — queue row kept as the recovery record for an operator; the flatten proceeded and automatic reset waits until the row is cleared")
 			continue
 		}
 		if !c.adoptionEligible() && o.FilledSize > limitFillEpsilon {

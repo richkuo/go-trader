@@ -702,3 +702,165 @@ func TestLimitRecoveryEntryAdmission(t *testing.T) {
 		}
 	})
 }
+
+func (h *limitProofHarness) seedUnprovenRowAboveItsBook() {
+	h.t.Helper()
+	h.seedUnboundWatermark(0.3, 2000, 0.15)
+	seedLimitFillLineage(h.t, h.db, 0, h.sc.ID, "ETH", 9001, 0.2, 2000, "legacy-position")
+	h.setPosition(0.2, "legacy-position")
+}
+
+func (h *limitProofHarness) dmText() string {
+	parts := make([]string, 0, len(h.mock.dms))
+	for _, dm := range h.mock.dms {
+		parts = append(parts, dm.content)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func assertNoUnprovenBookedSizeClaim(t *testing.T, surface, text string) {
+	t.Helper()
+	for _, banned := range []string{
+		"book holds 0.300000", "book holds only 0.300000", "booked 0.300000", "unbooked 0.100000", "ONLY that unbooked",
+		"0.100000 was never booked", "tracked 0.300000", "scheduler books the fill", "adopt the fill", "adopts the fill",
+	} {
+		if strings.Contains(text, banned) {
+			t.Fatalf("%s must not state or do arithmetic on an unproven booked size (%q): %s", surface, banned, text)
+		}
+	}
+}
+
+func TestLimitUnprovenWatermarkOperatorText(t *testing.T) {
+	t.Run("VenueExecutionAboveAnUnboundWatermarkStatesNoBookedSize", func(t *testing.T) {
+		h := newLimitProofHarness(t, 0.5)
+		h.seedUnprovenRowAboveItsBook()
+		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.4})
+		h.reply(provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0.4, 2000, 0.2))
+
+		report := h.killSwitchPass()
+		unresolved := strings.Join(report.Unresolved, "\n")
+		if report.ConfirmedClear() || !strings.Contains(unresolved, "states no booked size") || !strings.Contains(unresolved, "NO automatic path books or clears the row") {
+			t.Fatalf("the kill switch must keep the unproven row and state no booked size: %+v", report)
+		}
+		assertNoUnprovenBookedSizeClaim(t, "the kill-switch reason", unresolved)
+		if rows := h.rows(); len(rows) != 1 || !rows[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("the kill-switch pass must run before any marker exists and keep the row: %+v", rows)
+		}
+
+		d := newCLIManualCoreDeps(h.cfg, h.store, nil)
+		_, err := clearRestingLimitRemainderForPositionAction(d, &manualCoreResult{}, h.sc, "manual-close", h.sc.ID, "ETH", nil)
+		if err == nil || !strings.Contains(err.Error(), "states no booked size") {
+			t.Fatalf("the manual remainder path must refuse the unproven row without a booked size, got %v", err)
+		}
+		assertNoUnprovenBookedSizeClaim(t, "the manual remainder refusal", err.Error())
+
+		h.run()
+		rows := h.rows()
+		if len(rows) != 1 || rows[0].FilledSize != 0.3 || rows[0].FillProofBound || rows[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("the unproven row must stay, unbound, and be marked for an operator: %+v", rows)
+		}
+		if pos := h.position(); pos == nil || pos.Quantity != 0.2 {
+			t.Fatalf("the book must stay at its 0.2: %+v", pos)
+		}
+		text := h.dmText()
+		if h.dmsContaining("Limit row NOT finalized") != 1 || h.dmsContaining("the venue reports an executed size of 0.400000 and the row records a fill of 0.300000 that the scheduler cannot prove its book holds") != 1 {
+			t.Fatalf("the held-fill alert must report the venue size and the unproven record, dms = %s", text)
+		}
+		if h.dmsContaining("flatten ONLY size the book does not hold") != 1 || h.dmsContaining("states no booked size for this order") != 1 {
+			t.Fatalf("the held-fill alert must send the operator to compare the venue with the book, dms = %s", text)
+		}
+		assertNoUnprovenBookedSizeClaim(t, "the held-fill alert", text)
+	})
+
+	t.Run("OrphanLaneAlertForAnUnboundWatermarkStatesNoBookedSize", func(t *testing.T) {
+		h := newLimitProofHarness(t, 0.5)
+		h.seedUnprovenRowAboveItsBook()
+		if _, err := h.store.MarkPendingLimitOrderCancelRequested(h.sc.ID, "ETH"); err != nil {
+			t.Fatalf("queue the cancellation: %v", err)
+		}
+		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.4})
+		h.reply(provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0.4, 2000, 0.2))
+		h.cfg.Strategies = []StrategyConfig{orphanLaneRoster()}
+		h.run()
+		rows := h.rows()
+		if len(rows) != 1 || rows[0].FilledSize != 0.3 || rows[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("the orphan lane must keep the unproven row and mark it: %+v", rows)
+		}
+		if ev, ok := parseLimitOperatorEvidence(rows[0].OperatorEvidenceJSON); !ok || !ev.Unproven || !ev.Unbookable || !ev.OffBook || ev.ExecutedSize != 0.4 {
+			t.Fatalf("the orphan marker must record the unproven watermark with the venue size: %+v", ev)
+		}
+		text := h.dmText()
+		if h.dmsContaining("Limit order queue row not cleared") != 1 || h.dmsContaining("nothing left to cancel") != 1 || h.dmsContaining("flatten ONLY size the book does not hold") != 1 {
+			t.Fatalf("the orphan alert must hold the row for an operator and send them to compare the venue with the book, dms = %s", text)
+		}
+		if h.dmsContaining("UNTRACKED HYPERLIQUID POSITION") != 0 || h.dmsContaining("no exchange action is needed") != 0 {
+			t.Fatalf("the orphan alert must not size an untracked position from the unproven record, dms = %s", text)
+		}
+		assertNoUnprovenBookedSizeClaim(t, "the orphan alert", text)
+	})
+
+	t.Run("BoundWatermarkBelowTheVenueKeepsTheExactFlattenSize", func(t *testing.T) {
+		h := newLimitProofHarness(t, 0.5)
+		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.3})
+		h.reply(provenLimitStatus(9001, "ETH", "live", 0.5, 0.3, 2000, 0.15))
+		h.run()
+		if rows := h.rows(); len(rows) != 1 || rows[0].FilledSize != 0.3 || !rows[0].FillProofBound {
+			t.Fatalf("the 0.3 fill must be booked with a bound proof first: %+v", rows)
+		}
+		h.closeBookedPosition()
+		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.1})
+		h.reply(provenLimitStatus(9001, "ETH", "cancelled", 0.5, 0.4, 2000, 0.2))
+		h.run()
+		rows := h.rows()
+		if len(rows) != 1 || rows[0].FilledSize != 0.3 || rows[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("the refused booking must keep and mark the row: %+v", rows)
+		}
+		if h.dmsContaining("Limit fill NOT booked") != 1 || h.dmsContaining("the scheduler booked 0.300000 of it, so 0.100000 was never booked. Flatten on Hyperliquid ONLY that unbooked 0.100000") != 1 {
+			t.Fatalf("a proven watermark must keep the exact flatten size, dms = %s", h.dmText())
+		}
+	})
+
+	t.Run("UnreadVenueStatusClaimsNoVenueProof", func(t *testing.T) {
+		h := newLimitProofHarness(t, 0.5)
+		h.seedUnprovenRowAboveItsBook()
+		h.status = func() (*HyperliquidLimitStatusResult, error) {
+			return nil, errors.New("HTTP 429")
+		}
+		h.run()
+		rows := h.rows()
+		if len(rows) != 1 || !rows[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("an unread row must stay and carry no terminal marker: %+v", rows)
+		}
+		text := h.dmText()
+		if h.dmsContaining("Limit row NOT finalized") != 1 || h.dmsContaining("this pass did not read an executed size for the order from the venue") != 1 {
+			t.Fatalf("the alert must say the venue was not read, dms = %s", text)
+		}
+		for _, banned := range []string{"the venue proves", "the venue reports an executed size", "The venue reports an executed size", "the venue proof is complete", "The venue confirms", "0.000000", "Then clear the record"} {
+			if strings.Contains(text, banned) {
+				t.Fatalf("the alert must state no venue fact that this pass did not read (%q): %s", banned, text)
+			}
+		}
+		if h.dmsContaining("only after the scheduler proves the order is terminal and off the book") != 1 {
+			t.Fatalf("the alert must say the row is not clearable yet, dms = %s", text)
+		}
+	})
+
+	t.Run("RestingUnprovenRowSaysToCancelFirst", func(t *testing.T) {
+		h := newLimitProofHarness(t, 0.5)
+		h.seedUnprovenRowAboveItsBook()
+		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.3})
+		h.reply(provenLimitStatus(9001, "ETH", "live", 0.5, 0.3, 2000, 0.15))
+		h.run()
+		rows := h.rows()
+		if len(rows) != 1 || !rows[0].OperatorRequiredSince.IsZero() {
+			t.Fatalf("a resting row must stay and carry no terminal marker: %+v", rows)
+		}
+		text := h.dmText()
+		if h.dmsContaining("Limit row NOT finalized") != 1 || h.dmsContaining("cancel the order with `go-trader manual-cancel "+h.sc.ID+"` if it still rests") != 1 {
+			t.Fatalf("the alert must tell the operator to cancel the resting order first, dms = %s", text)
+		}
+		if strings.Contains(text, "Then clear the record") || strings.Contains(text, "the venue proves") {
+			t.Fatalf("the alert must not send the operator to the clear command while the order rests: %s", text)
+		}
+	})
+}

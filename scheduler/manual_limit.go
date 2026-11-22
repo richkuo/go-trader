@@ -830,7 +830,16 @@ func cancelOrphanedLimitOrder(cfg *Config, store *StateStore, o PendingLimitOrde
 		out.ExchangeFill = proof.Executed
 	}
 	if proof.ProvenAboveBooked() {
+		unprovenWatermark := limitWatermarkUnproven(o)
 		switch {
+		case unprovenWatermark != "" && (proof.CanBook() || proof.Permanent):
+			holdUnprovenLimitWatermark(&out.Proof, o)
+			out.State = orphanLimitStateOffBookRowStuck
+			out.Reason = out.Proof.Unbookable
+		case unprovenWatermark != "":
+			out.State = orphanLimitStateUnknown
+			out.Reason = fmt.Sprintf("the exchange reports an executed size of %.6f, but %s, and %s — the row is kept and the proof is retried",
+				proof.Executed, proof.holdOr("its fills are not proven"), unprovenWatermark)
 		case proof.CanBook():
 			out.State = orphanLimitStateOffBookUnadoptedFill
 			out.Reason = fmt.Sprintf(
