@@ -357,7 +357,6 @@ func TestPaperManualVenueGuardKillSwitchRecoveryRows(t *testing.T) {
 			},
 			Status:              RunHyperliquidLimitStatus,
 			Delete:              db.DeletePendingLimitOrderIfUnchanged,
-			Flush:               func() error { return nil },
 			MarkCancelRequested: db.MarkPendingLimitOrderCancelRequested,
 		}
 	}
@@ -459,7 +458,7 @@ func TestPaperManualVenueGuardKillSwitchRecoveryRows(t *testing.T) {
 		if err != nil || len(orders) != 1 || orders[0].ID != row {
 			t.Fatalf("the row must be kept: %v %+v", err, orders)
 		}
-		out := cancelOrphanedLimitOrder(NewAppState(), &Config{Strategies: []StrategyConfig{paper}}, nil, nil, orders[0])
+		out := cancelOrphanedLimitOrder(&Config{Strategies: []StrategyConfig{paper}}, nil, orders[0])
 		if out.Resolved || out.State != orphanLimitStateUnscripted || !strings.Contains(out.Reason, want) {
 			t.Fatalf("the orphan lane must name the missing live strategy: %+v", out)
 		}
@@ -606,7 +605,6 @@ func TestPaperManualVenueGuardLimitRowRecovery(t *testing.T) {
 				},
 				Status:              RunHyperliquidLimitStatus,
 				Delete:              latchReset.store.DeletePendingLimitOrderIfUnchanged,
-				Flush:               func() error { return nil },
 				MarkCancelRequested: latchReset.store.MarkPendingLimitOrderCancelRequested,
 			},
 		})

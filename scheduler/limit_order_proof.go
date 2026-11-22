@@ -31,6 +31,8 @@ type limitRowProof struct {
 
 	Unbookable string
 
+	WatermarkUnproven bool
+
 	OpenOrdersError string
 }
 
@@ -229,6 +231,7 @@ type limitRowOperatorEvidence struct {
 	Permanent    bool      `json:"fill_proof_permanent"`
 	Unbookable   bool      `json:"unbookable"`
 	Unscripted   bool      `json:"unscripted,omitempty"`
+	Unproven     bool      `json:"watermark_unproven,omitempty"`
 	Reason       string    `json:"reason"`
 	ObservedAt   time.Time `json:"observed_at"`
 }
@@ -245,6 +248,7 @@ func limitOperatorEvidenceFor(o PendingLimitOrder, p limitRowProof, reason strin
 		FillsProven:  p.Proven,
 		Permanent:    p.Permanent,
 		Unbookable:   p.Unbookable != "",
+		Unproven:     p.WatermarkUnproven,
 		Reason:       reason,
 		ObservedAt:   now.UTC(),
 	}
@@ -305,7 +309,8 @@ func limitOperatorEvidenceRefusal(o PendingLimitOrder) string {
 
 var limitEntryResyncHolds = struct {
 	sync.Mutex
-	keys map[string]bool
+	keys       map[string]bool
+	unreadable bool
 }{keys: map[string]bool{}}
 
 func publishLimitEntryResyncHolds(orders []PendingLimitOrder) {
@@ -315,6 +320,13 @@ func publishLimitEntryResyncHolds(orders []PendingLimitOrder) {
 	}
 	limitEntryResyncHolds.Lock()
 	limitEntryResyncHolds.keys = keys
+	limitEntryResyncHolds.unreadable = false
+	limitEntryResyncHolds.Unlock()
+}
+
+func holdLimitEntryResyncUnreadable() {
+	limitEntryResyncHolds.Lock()
+	limitEntryResyncHolds.unreadable = true
 	limitEntryResyncHolds.Unlock()
 }
 
@@ -324,7 +336,7 @@ func limitEntryResyncHeld(strategyID, symbol string) bool {
 	}
 	limitEntryResyncHolds.Lock()
 	defer limitEntryResyncHolds.Unlock()
-	return limitEntryResyncHolds.keys[hlStopFillKey(strategyID, symbol)]
+	return limitEntryResyncHolds.unreadable || limitEntryResyncHolds.keys[hlStopFillKey(strategyID, symbol)]
 }
 
 func limitEntryTradeLineage(store *StateStore, o PendingLimitOrder) (string, string, bool) {
@@ -344,14 +356,104 @@ func limitEntryTradeLineage(store *StateStore, o PendingLimitOrder) (string, str
 	return positionIDs[0], "", false
 }
 
-func verifyLimitWatermarkDurable(store *StateStore, o PendingLimitOrder) (string, bool) {
-	if o.FillProofVersion >= limitFillProofVersionAtomic || o.FilledSize <= limitFillEpsilon {
-		return "", false
+func limitWatermarkUnproven(o PendingLimitOrder) string {
+	if o.FilledSize <= limitFillEpsilon || o.FillProofBound {
+		return ""
 	}
-	if _, why, final := limitEntryTradeLineage(store, o); why != "" {
-		return "the row's fill watermark predates atomic booking and " + why, final
+	return fmt.Sprintf("the row's fill watermark %.8f carries no proof that it committed in one transaction with its book, fee and trades (it was written before atomic booking, or an older build advanced it), and neither matching trade totals nor a proof version can show that the book holds it", o.FilledSize)
+}
+
+func holdUnprovenLimitWatermark(p *limitRowProof, o PendingLimitOrder) bool {
+	why := limitWatermarkUnproven(o)
+	if why == "" {
+		return false
 	}
-	return "", false
+	if p.Hold == "" {
+		p.Hold = why
+	}
+	p.Unbookable = why
+	p.WatermarkUnproven = true
+	return true
+}
+
+func limitRowOwnerBlock(sc StrategyConfig, known bool, o PendingLimitOrder) string {
+	if block := killSwitchLimitOrderAdoptionBlock(sc, known); block != "" {
+		return block
+	}
+	if coin := strings.TrimSpace(sc.Symbol); coin != "" && coin != o.Symbol {
+		return fmt.Sprintf("the strategy is configured for %s, not the row's %s", coin, o.Symbol)
+	}
+	return ""
+}
+
+func holdIneligibleLimitOwner(p *limitRowProof, o PendingLimitOrder, block string) bool {
+	if block == "" || o.FilledSize <= limitFillEpsilon {
+		return false
+	}
+	why := fmt.Sprintf("its owner cannot carry the %.8f this order already booked because %s, so the row stays for review", o.FilledSize, block)
+	if p.Hold == "" {
+		p.Hold = why
+	}
+	p.Unbookable = why
+	return true
+}
+
+func limitCoinOperatorHold(cfg *Config, store *StateStore, symbol string) (string, error) {
+	if store == nil {
+		return "", fmt.Errorf("the state store is unavailable")
+	}
+	rows, err := store.LoadPendingLimitOrders()
+	if err != nil {
+		return "", err
+	}
+	for _, o := range rows {
+		if o.Symbol != symbol {
+			continue
+		}
+		why := limitRowOperatorHold(cfg, o)
+		if why == "" {
+			continue
+		}
+		return fmt.Sprintf("pending limit row %s holds every limit fill on %s until an operator clears it: %s. A new limit order on %s could fill and stay unbooked with no stop-loss, so it is refused — follow the owner alert for that row, clear it with `go-trader manual-clear-limit-row %d --flattened` once the scheduler has marked it, then retry",
+			killSwitchLimitOrderLabel(o), symbol, why, symbol, o.OrderOID), nil
+	}
+	return "", nil
+}
+
+func limitRowOperatorHold(cfg *Config, o PendingLimitOrder) string {
+	var held limitRowProof
+	sc, known := scByIDLookup(cfg, o.StrategyID)
+	if holdUnprovenLimitWatermark(&held, o) || holdIneligibleLimitOwner(&held, o, limitRowOwnerBlock(sc, known, o)) {
+		return held.Unbookable
+	}
+	return ""
+}
+
+type limitCoinHolder struct {
+	order PendingLimitOrder
+	why   string
+}
+
+func limitCoinOperatorHolders(cfg *Config, orders []PendingLimitOrder) map[string]limitCoinHolder {
+	holders := make(map[string]limitCoinHolder)
+	for _, o := range orders {
+		if _, seen := holders[o.Symbol]; seen {
+			continue
+		}
+		if why := limitRowOperatorHold(cfg, o); why != "" {
+			holders[o.Symbol] = limitCoinHolder{order: o, why: why}
+		}
+	}
+	return holders
+}
+
+func limitHeldCoinCancelNotice(o PendingLimitOrder, holder limitCoinHolder) string {
+	if holder.order.ID == o.ID {
+		return fmt.Sprintf("[limit] %s: cancellation queued for this resting order because %s. A further fill of it could not be booked or protected. The scheduler cancels it on Hyperliquid and keeps the row for an operator; follow the owner alert for this row",
+			killSwitchLimitOrderLabel(o), holder.why)
+	}
+	return fmt.Sprintf("[limit] %s: cancellation queued for this resting order because pending limit row %s holds every limit fill on %s until an operator clears it (%s). A fill of this order could not be booked or protected. The scheduler cancels it on Hyperliquid, and the book keeps any fill it already recorded. Place the order again after the holding row is cleared with `go-trader manual-clear-limit-row %d --flattened`",
+		killSwitchLimitOrderLabel(o), killSwitchLimitOrderLabel(holder.order), o.Symbol, holder.why, holder.order.OrderOID)
 }
 
 func verifyLimitIncrementLineage(store *StateStore, state *AppState, o PendingLimitOrder) (string, bool) {
@@ -383,9 +485,11 @@ func (st *StateStore) tryLiveManualActionLock() (func(), error) {
 }
 
 func limitRowUnchanged(a, b PendingLimitOrder) bool {
-	return a.ID == b.ID && a.OrderOID == b.OrderOID && a.StrategyID == b.StrategyID && a.Symbol == b.Symbol &&
+	return a.ID == b.ID && a.OrderOID == b.OrderOID && a.StrategyID == b.StrategyID && a.storedOwner == b.storedOwner &&
+		a.Symbol == b.Symbol && a.Side == b.Side &&
 		a.FilledSize == b.FilledSize && a.FillFee == b.FillFee && a.AvgFillPrice == b.AvgFillPrice &&
-		a.FillProofVersion == b.FillProofVersion
+		a.FillProofVersion == b.FillProofVersion && a.FillProofBinding == b.FillProofBinding &&
+		a.OperatorEvidenceJSON == b.OperatorEvidenceJSON
 }
 
 func recheckLimitRow(store *StateStore, o PendingLimitOrder) string {

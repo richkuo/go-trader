@@ -101,6 +101,10 @@ func runManualOpen(args []string) int {
 			return 1
 		}
 		defer stateDB.Close()
+		if err := admission.attachStore(stateDB); err != nil {
+			fmt.Fprintf(os.Stderr, "manual limit-open held: %v\n", err)
+			return 1
+		}
 
 		if !*dryRun {
 			state, _, loadErr := LoadStateWithStore(cfg, stateDB)
@@ -174,6 +178,10 @@ func runManualOpen(args []string) int {
 		return 1
 	}
 	defer stateDB.Close()
+	if err := admission.attachStore(stateDB); err != nil {
+		fmt.Fprintf(os.Stderr, "manual-open held: %v\n", err)
+		return 1
+	}
 
 	notifier, closeNotifier := buildNotifierFromConfig(cfg)
 	defer closeNotifier()
@@ -247,6 +255,10 @@ func runManualAdd(args []string) int {
 		return 1
 	}
 	defer stateDB.Close()
+	if err := admission.attachStore(stateDB); err != nil {
+		fmt.Fprintf(os.Stderr, "manual-add held: %v\n", err)
+		return 1
+	}
 
 	res, coreErr := manualAddCore(newCLIManualEntryDeps(cfg, stateDB, nil, admission), sc, manualAddInputs{
 		StrategyID: strategyID,

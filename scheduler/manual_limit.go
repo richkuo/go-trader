@@ -332,6 +332,15 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 			return 1
 		}
 	}
+	held, heldErr := limitCoinOperatorHold(cfg, stateDB, sc.Symbol)
+	if heldErr != nil {
+		fmt.Fprintf(os.Stderr, "manual limit-open held: the resting limit order queue could not be read before placement (%v), so a row that holds %s fills cannot be ruled out\n", heldErr, sc.Symbol)
+		return 1
+	}
+	if held != "" {
+		fmt.Fprintf(os.Stderr, "manual limit-open held: %s\n", held)
+		return 1
+	}
 
 	res, stderr, err := runHyperliquidLimitOpenFn(hlStrategyWriteAuth(sc, sc.Symbol, hlWriteLimitOpen), sc.Script, sc.Symbol, in.openSide, size, in.limitPrice, in.tif, sc.MarginMode, sc.Leverage, hlExecuteSnapshot{})
 	if stderr != "" {
@@ -452,7 +461,7 @@ func findPendingLimitOrderByOID(orders []PendingLimitOrder, oid int64) (PendingL
 
 func clearOperatorRequiredLimitRowRefusal(cfg *Config, o PendingLimitOrder, flattened bool) string {
 	sc, known := scByIDLookup(cfg, o.StrategyID)
-	block := killSwitchLimitOrderAdoptionBlock(sc, known)
+	block := limitRowOwnerBlock(sc, known, o)
 	if o.OperatorRequiredSince.IsZero() {
 		if block == "" {
 			return fmt.Sprintf("refusing: %s is a Hyperliquid-live type=manual strategy and the reconciler has NOT marked oid=%d as needing an operator, so the scheduler adopts this fill itself — clearing the row would orphan it; let the reconciler converge instead",
@@ -494,10 +503,14 @@ func clearedLimitRowLedgerNote(o PendingLimitOrder) string {
 	if limitRowUnscriptedMarker(o) {
 		return "the scheduler never read this order on the exchange, so nothing is booked or removed in the book"
 	}
-	if ev, ok := parseLimitOperatorEvidence(o.OperatorEvidenceJSON); ok && ev.Unbookable && ev.ExecutedSize <= ev.BookedSize+limitFillEpsilon {
-		return "the book keeps the fill it already holds for this order, and nothing is booked or removed"
+	ev, ok := parseLimitOperatorEvidence(o.OperatorEvidenceJSON)
+	if ok && (ev.Unproven || !o.FillProofBound) && o.FilledSize > limitFillEpsilon {
+		return fmt.Sprintf("the record is discarded and the ledger stays exactly as it is: nothing is booked or removed, and the scheduler does not assume that the recorded fill of %.6f reached the book", o.FilledSize)
 	}
-	return "the unadopted fill is NOT booked and stays off the ledger"
+	if ok && ev.Unbookable && ev.ExecutedSize <= ev.BookedSize+limitFillEpsilon {
+		return "the record is discarded, the book keeps the fill it already holds for this order, and nothing is booked or removed"
+	}
+	return "the record is discarded and the unadopted fill is NOT booked and stays off the ledger"
 }
 
 func scByIDLookup(cfg *Config, id string) (StrategyConfig, bool) {
@@ -722,8 +735,6 @@ func applyLimitFillProgressInner(ss *StrategyState, sc StrategyConfig, o Pending
 		}
 		recordPositionOpen(ss, sc, &trade, pos)
 		ss.Cash -= cumFee
-		fmt.Printf("[limit] applied open: %s %s %.6f %s @ $%.4f (oid=%d)\n",
-			o.StrategyID, o.Side, cumFilled, o.Symbol, avgPx, o.OrderOID)
 		return 1, nil
 	}
 
@@ -776,8 +787,6 @@ func applyLimitFillProgressInner(ss *StrategyState, sc StrategyConfig, o Pending
 	}
 	RecordTrade(ss, trade)
 	ss.Cash -= deltaFee
-	fmt.Printf("[limit] applied partial add: %s %s +%.6f (cum=%.6f) %s @ $%.4f (oid=%d)\n",
-		o.StrategyID, o.Side, deltaQty, cumFilled, o.Symbol, deltaPx, o.OrderOID)
 	return 1, nil
 }
 
@@ -823,7 +832,7 @@ func limitOffBookUnverified(p limitRowProof) string {
 	return "the exchange did not confirm that the order is off the book"
 }
 
-func cancelOrphanedLimitOrder(state *AppState, cfg *Config, store *StateStore, mu *sync.RWMutex, o PendingLimitOrder) orphanLimitCancelOutcome {
+func cancelOrphanedLimitOrder(cfg *Config, store *StateStore, o PendingLimitOrder) orphanLimitCancelOutcome {
 	out := orphanLimitCancelOutcome{AdoptedFill: o.FilledSize}
 
 	candidates, _ := collectKillSwitchLimitOrderCandidates(
@@ -875,7 +884,16 @@ func cancelOrphanedLimitOrder(state *AppState, cfg *Config, store *StateStore, m
 		out.ExchangeFill = proof.Executed
 	}
 	if proof.ProvenAboveBooked() {
+		unprovenWatermark := limitWatermarkUnproven(o)
 		switch {
+		case unprovenWatermark != "" && (proof.CanBook() || proof.Permanent):
+			holdUnprovenLimitWatermark(&out.Proof, o)
+			out.State = orphanLimitStateOffBookRowStuck
+			out.Reason = out.Proof.Unbookable
+		case unprovenWatermark != "":
+			out.State = orphanLimitStateUnknown
+			out.Reason = fmt.Sprintf("the exchange reports an executed size of %.6f, but %s, and %s — the row is kept and the proof is retried",
+				proof.Executed, proof.holdOr("its fills are not proven"), unprovenWatermark)
 		case proof.CanBook():
 			out.State = orphanLimitStateOffBookUnadoptedFill
 			out.Reason = fmt.Sprintf(
@@ -898,14 +916,10 @@ func cancelOrphanedLimitOrder(state *AppState, cfg *Config, store *StateStore, m
 		out.Reason = proof.holdOr("the order's terminal state and fills are not yet proven")
 		return out
 	}
-	if why, final := verifyLimitWatermarkDurable(store, o); why != "" {
-		out.State = orphanLimitStateUnknown
-		out.Reason = why
-		out.Proof.Hold = why
-		if final {
-			out.State = orphanLimitStateOffBookRowStuck
-			out.Proof.Unbookable = why
-		}
+	sc, known := scByIDLookup(cfg, o.StrategyID)
+	if holdUnprovenLimitWatermark(&out.Proof, o) || holdIneligibleLimitOwner(&out.Proof, o, limitRowOwnerBlock(sc, known, o)) {
+		out.State = orphanLimitStateOffBookRowStuck
+		out.Reason = out.Proof.Unbookable
 		return out
 	}
 	unlock, lerr := store.tryLiveManualActionLock()
@@ -919,18 +933,6 @@ func cancelOrphanedLimitOrder(state *AppState, cfg *Config, store *StateStore, m
 		out.State = orphanLimitStateOffBookRowStuck
 		out.Reason = why
 		return out
-	}
-	if o.FilledSize > 0 {
-		mu.Lock()
-		saveErr := SaveStateWithStore(state, store)
-		mu.Unlock()
-		if saveErr != nil {
-			out.State = orphanLimitStateOffBookRowStuck
-			out.Reason = fmt.Sprintf(
-				"its already-booked fill of %.6f could not be flushed to the state DB (%v), so the queue row is kept as the recovery record",
-				o.FilledSize, saveErr)
-			return out
-		}
 	}
 	if err := store.DeletePendingLimitOrderIfUnchanged(o); err != nil {
 		out.State = orphanLimitStateOffBookRowStuck
@@ -955,7 +957,7 @@ func orphanLimitPollDeferred(o PendingLimitOrder, now time.Time) bool {
 func recordLimitOperatorRequired(store *StateStore, o *PendingLimitOrder, p limitRowProof, reason string, now time.Time) bool {
 	ev := limitOperatorEvidenceFor(*o, p, reason, now)
 	blob := marshalLimitOperatorEvidence(ev)
-	if err := store.MarkPendingLimitOrderOperatorRequired(o.ID, o.OrderOID, now, blob); err != nil {
+	if err := store.MarkPendingLimitOrderOperatorRequired(*o, now, blob); err != nil {
 		fmt.Printf("[limit] failed to persist the operator-required marker on row %d: %v\n", o.ID, err)
 		return false
 	}
@@ -972,7 +974,7 @@ func clearLimitOperatorRequired(store *StateStore, o *PendingLimitOrder) {
 	if o.OperatorRequiredSince.IsZero() && o.OperatorEvidenceJSON == "" {
 		return
 	}
-	if err := store.ClearPendingLimitOrderOperatorRequired(o.ID); err != nil {
+	if err := store.ClearPendingLimitOrderOperatorRequired(*o); err != nil {
 		fmt.Printf("[limit] failed to clear the operator-required marker on row %d: %v\n", o.ID, err)
 		return
 	}
@@ -989,7 +991,7 @@ func applyOrphanLimitOperatorRequired(store *StateStore, o PendingLimitOrder, ou
 			return false
 		}
 		blob := marshalLimitOperatorEvidence(limitRowOperatorEvidence{OrderOID: o.OrderOID, Coin: o.Symbol, BookedSize: o.FilledSize, Unscripted: true, Reason: outcome.Reason, ObservedAt: now.UTC()})
-		if err := store.MarkPendingLimitOrderOperatorRequired(o.ID, o.OrderOID, now, blob); err != nil {
+		if err := store.MarkPendingLimitOrderOperatorRequired(o, now, blob); err != nil {
 			fmt.Printf("[limit] failed to persist the operator-required marker on row %d: %v\n", o.ID, err)
 			return false
 		}
@@ -1018,19 +1020,35 @@ func limitPeerScript(cfg *Config, o PendingLimitOrder) string {
 	return candidates[0].Script
 }
 
+var limitQueueReadFault = func() error { return nil }
+
 func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager) []manualAlert {
 	if store == nil {
 		return nil
 	}
-	pending, err := store.LoadPendingOrdersCombined()
-	if err != nil {
-		fmt.Printf("[limit] failed to load pending limit orders: %v\n", err)
+	var orders []PendingLimitOrder
+	manualErr := limitQueueReadFault()
+	if manualErr == nil {
+		orders, manualErr = store.LoadPendingLimitOrders()
+	}
+	if pending, err := store.LoadPendingOrdersCombined(); err != nil {
+		fmt.Printf("[limit] failed to load pending quote orders: %v\n", err)
+	} else {
+		for _, line := range dispatchQuotePendingRows(store, pending.Quote) {
+			fmt.Println(line)
+		}
+	}
+	if manualErr != nil {
+		fmt.Printf("[limit] failed to load pending limit orders: %v — live entries stay held and no book increase or side change is resynced until the queue reads\n", manualErr)
+		holdLimitEntryResyncUnreadable()
+		store.finishLimitRecoveryPass(limitRecoveryPass{unreadable: manualErr.Error()})
 		return nil
 	}
-	for _, line := range dispatchQuotePendingRows(store, pending.Quote) {
-		fmt.Println(line)
+	pass := limitRecoveryPass{read: true, present: make(map[int64]int64, len(orders))}
+	for _, o := range orders {
+		pass.present[o.ID] = o.OrderOID
 	}
-	orders := pending.Manual
+	defer func() { store.finishLimitRecoveryPass(pass) }()
 	publishLimitEntryResyncHolds(orders)
 	if len(orders) == 0 {
 		return nil
@@ -1056,7 +1074,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 		if limitRowUnscriptedMarker(o) && limitPeerScript(cfg, o) != "" {
 			clearLimitOperatorRequired(store, &o)
 		}
-		if block := killSwitchLimitOrderAdoptionBlock(sc, known); block != "" {
+		if block := limitRowOwnerBlock(sc, known, o); block != "" {
 			expired := !o.ExpiresAt.IsZero() && now.After(o.ExpiresAt)
 			if !o.CancelRequested && !expired && !paperManualLimitRowOwner(sc, known) {
 				fmt.Printf("[limit] skipping row %d: %s (%q) and no cancellation is queued for it\n", o.ID, block, o.StrategyID)
@@ -1070,7 +1088,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 				peers[o.Symbol] = append(peers[o.Symbol], limitPeerRow{order: o, reason: "it awaits an operator and its exchange poll is deferred"})
 				continue
 			}
-			outcome := cancelOrphanedLimitOrder(state, cfg, store, mu, o)
+			outcome := cancelOrphanedLimitOrder(cfg, store, o)
 			markerNew := applyOrphanLimitOperatorRequired(store, o, outcome, now)
 			if outcome.Resolved {
 				orphanLimitCancelAlerts.Clear(orphanLimitCancelKeyFor(o))
@@ -1088,12 +1106,10 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 
 		statusPolledAt := time.Now()
 		proof := limitRowStatusProof(sc.Script, o, "status")
-		if proof.Hold == "" {
+		holdUnprovenLimitWatermark(&proof, o)
+		if proof.Hold == "" && proof.CanBook() {
 			mu.RLock()
-			why, final := verifyLimitWatermarkDurable(store, o)
-			if why == "" && proof.CanBook() {
-				why, final = verifyLimitIncrementLineage(store, state, o)
-			}
+			why, final := verifyLimitIncrementLineage(store, state, o)
 			mu.RUnlock()
 			if why != "" {
 				proof.Hold = why
@@ -1115,9 +1131,13 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 	}
 
 	needLock := false
+	readyFill := false
 	for _, c := range candidates {
 		if c.hasFill || c.proof.CanFinalize() {
 			needLock = true
+		}
+		if c.hasFill {
+			readyFill = true
 		}
 	}
 	var unlock func()
@@ -1133,6 +1153,9 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 		blocked := ""
 		if lerr != nil {
 			blocked = fmt.Sprintf("a manual command holds the manual-action lock (%v), so booking and finalization wait for a later cycle", lerr)
+			if readyFill {
+				pass.deferred = true
+			}
 		} else {
 			unlock = u
 		}
@@ -1141,6 +1164,8 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 			rows, rerr := store.LoadPendingLimitOrders()
 			if rerr != nil {
 				blocked = fmt.Sprintf("the queue could not be re-read under the manual-action lock (%v)", rerr)
+				pass.unreadable = rerr.Error()
+				holdLimitEntryResyncUnreadable()
 			} else {
 				fresh = make(map[int64]PendingLimitOrder, len(rows))
 				for _, r := range rows {
@@ -1182,7 +1207,14 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 	sort.Strings(coins)
 
 	for _, o := range skipped {
-		if _, ok := coinRows[o.Symbol]; !ok {
+		positive := o.FilledSize > limitFillEpsilon
+		if _, ok := coinRows[o.Symbol]; !ok && !positive {
+			continue
+		}
+		sc, known := scByID[o.StrategyID]
+		block := limitRowOwnerBlock(sc, known, o)
+		if positive && orphanLimitPollDeferred(o, now) {
+			peers[o.Symbol] = append(peers[o.Symbol], limitPeerRow{order: o, reason: "its owner cannot carry its booked fill, it awaits an operator, and its exchange poll is deferred"})
 			continue
 		}
 		script := limitPeerScript(cfg, o)
@@ -1191,7 +1223,12 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 			continue
 		}
 		peerProof := limitRowStatusProof(script, o, "peer status")
+		holdUnprovenLimitWatermark(&peerProof, o)
+		holdIneligibleLimitOwner(&peerProof, o, block)
 		peers[o.Symbol] = append(peers[o.Symbol], limitPeerRow{order: o, certain: peerProof.CertainForPeers(), reason: peerProof.holdOr("its execution is not settled in the book")})
+		if positive {
+			candidates = append(candidates, &limitFillCandidate{order: o, sc: sc, status: peerProof.Status, proof: peerProof, review: true})
+		}
 	}
 
 	var adopted []*limitFillCandidate
@@ -1199,7 +1236,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 		rows := coinRows[coin]
 		peerWhy := ""
 		for _, c := range candidates {
-			if c.order.Symbol != coin || c.hasFill || c.proof.CertainForPeers() {
+			if c.review || c.order.Symbol != coin || c.hasFill || c.proof.CertainForPeers() {
 				continue
 			}
 			why := c.blocked
@@ -1270,7 +1307,14 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 			continue
 		}
 		if commitErr != nil {
-			warnNotifier(notifier, fmt.Sprintf("[limit-fill] %s: the proven fill could not be committed with its queue rows (%v) — nothing was booked and the rows stay retryable", coin, commitErr))
+			failed := make(map[int64]int64)
+			for _, r := range rows {
+				if r.commitFailed {
+					failed[r.order.ID] = r.order.OrderOID
+				}
+			}
+			store.noteLimitFillCommitFailed(failed)
+			warnNotifier(notifier, fmt.Sprintf("[limit-fill] %s: the proven fill could not be committed with its queue rows (%v) — nothing was booked, the rows stay retryable, and new live entries stay held until the fill commits", coin, commitErr))
 			for _, r := range rows {
 				r.applyFailed = true
 				r.blocked = fmt.Sprintf("the booking could not be committed (%v), so the row stays retryable", commitErr)
@@ -1285,11 +1329,14 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 				r.proof.Unbookable = errs[i].Error()
 				continue
 			}
+			store.clearLimitFillCommitFailed(r.order.ID)
 			limitFillExposureAlerts.Clear(limitFillExposureKeyFor(r.order))
 			r.order.FilledSize = r.proof.Executed
 			r.order.AvgFillPrice = r.avgPx
 			r.order.FillFee = r.status.Fee
 			r.order.FillProofVersion = limitFillProofVersionAtomic
+			r.order.FillProofBinding = r.binding
+			r.order.FillProofBound = true
 			r.proof = decideLimitRowProof(r.order, &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{r.status}}, nil)
 			r.booked = trades[i]
 			r.adopted = true
@@ -1308,19 +1355,8 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 			}
 			continue
 		}
-		if c.blocked != "" || c.applyFailed || !c.proof.CanFinalize() {
+		if c.review || c.blocked != "" || c.applyFailed || !c.proof.CanFinalize() || limitWatermarkUnproven(o) != "" {
 			continue
-		}
-		if o.FilledSize > 0 && o.FillProofVersion < limitFillProofVersionAtomic {
-			mu.Lock()
-			saveErr := SaveStateWithStore(state, store)
-			mu.Unlock()
-			if saveErr != nil {
-				warnNotifier(notifier, fmt.Sprintf(
-					"[limit] %s %s: could not flush adopted fill before finalizing oid=%d (%v) — retrying next cycle",
-					o.StrategyID, o.Symbol, o.OrderOID, saveErr))
-				continue
-			}
 		}
 		if err := store.DeletePendingLimitOrderIfUnchanged(o); err != nil {
 			fmt.Printf("[limit] failed to finalize terminal row %d: %v\n", o.ID, err)
@@ -1332,7 +1368,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 			fmt.Printf("[limit] %s oid=%d fully filled (%.6f %s)\n", o.StrategyID, o.OrderOID, o.FilledSize, o.Symbol)
 		} else if o.FilledSize > 0 {
 			warnNotifier(notifier, fmt.Sprintf(
-				"[limit] %s %s: order no longer resting after partial fill %.6f of %.6f (remainder cancelled on-chain) — position tracked at filled size",
+				"[limit] %s %s: order no longer resting after a recorded fill of %.6f of %.6f (remainder cancelled on-chain) — the book keeps its committed position, including any later reduction, and nothing more is booked for this order",
 				o.StrategyID, o.Symbol, o.FilledSize, o.OrderSize))
 		} else {
 			warnNotifier(notifier, fmt.Sprintf(
@@ -1369,6 +1405,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 		switch {
 		case c.refused:
 			reportLimitFillExposureRefusal(notifier, c.order, c.proof.Executed, c.refusalDecision, now, markerNew)
+		case c.commitFailed:
 		case !c.adopted && !c.finalized && (c.proof.ProvenAboveBooked() || c.proof.Unbookable != ""):
 			reason := c.blocked
 			if reason == "" {
@@ -1378,8 +1415,26 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 		}
 	}
 
+	coinHolders := limitCoinOperatorHolders(cfg, orders)
 	for _, c := range candidates {
-		if c.finalized || c.proof.OffBook {
+		if c.review || c.finalized || c.proof.OffBook || c.order.CancelRequested {
+			continue
+		}
+		holder, held := coinHolders[c.order.Symbol]
+		if !held {
+			continue
+		}
+		if _, err := store.MarkPendingLimitOrderCancelRequested(c.order.StrategyID, c.order.Symbol); err != nil {
+			fmt.Printf("[limit] %s: %s holds %s but the cancellation of this resting order could not be queued (%v) — will retry\n",
+				killSwitchLimitOrderLabel(c.order), killSwitchLimitOrderLabel(holder.order), c.order.Symbol, err)
+			continue
+		}
+		c.order.CancelRequested = true
+		warnNotifier(notifier, limitHeldCoinCancelNotice(c.order, holder))
+	}
+
+	for _, c := range candidates {
+		if c.review || c.finalized || c.proof.OffBook {
 			continue
 		}
 		o := c.order

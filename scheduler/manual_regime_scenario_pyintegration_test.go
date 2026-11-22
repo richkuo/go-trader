@@ -811,7 +811,7 @@ func regimeReadinessProcessWebsocket(t *testing.T, afterBind, duringRestart func
 		t.Fatalf("crash-left marker must not authorize a result:\n%s", r)
 	}
 	r = e.command(reloaded, []string{good}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5")
-	e.expectRefused(r, "crash limit", "unavailable")
+	e.expectRefused(r, "crash limit", "that no running scheduler has settled")
 	wrong.stop()
 	t.Logf("restart: add adoption kept original entry evidence through adoption and restart; graceful stop removed the marker; a crash-left marker authorized nothing")
 }
