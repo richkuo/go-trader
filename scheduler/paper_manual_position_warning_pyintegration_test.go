@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -311,6 +312,131 @@ func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
 		f.expectDMs(t, "pm-recover", before+1, beforeTG+1, "one send per destination across the daemon's cycles")
 		f.once(t, cfg)
 		f.expectDMs(t, "pm-recover", before+1, beforeTG+1, "the receipts saved by the later book save")
+	})
+}
+
+func pmdDebugLog(t *testing.T, path string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["log_level"] = "debug"
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func pmdCycleStarts(out string) int {
+	return strings.Count(out, "=== Cycle ")
+}
+
+func (f *pmdFixture) refusedDiscordDMs(id string) int {
+	needle := "paper manual position " + id + "/BTC"
+	n := 0
+	seen := map[string]bool{}
+	for _, key := range f.services.requestKeys() {
+		if seen[key] || !strings.HasPrefix(key, "discord.message_refused:") || !strings.Contains(key, "/channels/5001/") {
+			continue
+		}
+		seen[key] = true
+		for _, body := range f.services.bodiesFor(key) {
+			if strings.Contains(body, needle) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func TestPaperManualVenueGuardPositionWarningBackoff(t *testing.T) {
+	f := newPMDFixture(t)
+	layouts := pmpLayouts()
+
+	t.Run("a hanging destination costs one timeout per cycle and recovers", func(t *testing.T) {
+		ids := []string{"pm-hang-a", "pm-hang-b", "pm-hang-c"}
+		cfg, dbPath := f.config(t, "pm-hang.json", layouts[0], true, 2, ids...)
+		for _, id := range ids {
+			pmdLegacyOpen(t, cfg, id)
+		}
+		f.services.setTelegramHang(pmdTelegramOwner)
+		f.e.t = t
+		d := f.e.startDaemon(cfg, htfITFreePort(t), f.env...)
+		d.waitLog("the hung telegram send to fail", 120*time.Second, func(out string) bool {
+			return strings.Contains(out, "to the telegram owner failed")
+		})
+		f.services.setTelegramHang("")
+		if n := len(f.services.bodiesFor("telegram.sendMessage_hung")); n != 1 {
+			t.Fatalf("the cycle must stop sending to the hung destination after its first timeout, got %d hung sends:\n%s", n, d.output())
+		}
+		if n := strings.Count(d.output(), "to the telegram owner failed"); n != 1 {
+			t.Fatalf("one telegram failure per cycle, got %d:\n%s", n, d.output())
+		}
+		deadline := time.Now().Add(90 * time.Second)
+		for {
+			done := 0
+			for _, id := range ids {
+				posID, receipts := pmdReceipts(t, dbPath, id)
+				if pmdHasReceipt(receipts, posID, "telegram", pmdTelegramOwner) {
+					done++
+				}
+			}
+			if done == len(ids) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("telegram receipts were never recorded after recovery:\n%s", d.output())
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		d.stop()
+		if n := len(f.services.bodiesFor("telegram.sendMessage_hung")); n != 1 {
+			t.Fatalf("no send may reach the destination after it recovered and before its backoff ended, got %d hung sends", n)
+		}
+		for _, id := range ids {
+			f.expectDMs(t, id, 1, 1, "one telegram send per position after recovery")
+		}
+	})
+
+	t.Run("a refusing destination backs off and others still record", func(t *testing.T) {
+		cfg, dbPath := f.config(t, "pm-refuse.json", layouts[0], true, 2, "pm-refuse")
+		pmdDebugLog(t, cfg)
+		pmdLegacyOpen(t, cfg, "pm-refuse")
+		f.services.setMessageDown(true)
+		defer f.services.setMessageDown(false)
+		f.e.t = t
+		d := f.e.startDaemon(cfg, htfITFreePort(t), f.env...)
+		d.waitLog("three discord failures", 120*time.Second, func(out string) bool {
+			return strings.Count(out, "to the discord owner failed") >= 3
+		})
+		d.stop()
+		out := d.output()
+		attempts := f.refusedDiscordDMs("pm-refuse")
+		cycles := pmdCycleStarts(out)
+		if attempts < 3 || attempts >= cycles {
+			t.Fatalf("refused discord attempts %d must be fewer than the %d cycles:\n%s", attempts, cycles, out)
+		}
+		last := 0
+		for _, want := range []string{"waits 2 cycles", "waits 4 cycles", "waits 8 cycles"} {
+			i := strings.Index(out[last:], want)
+			if i < 0 {
+				t.Fatalf("the discord backoff must double (%s missing after offset %d):\n%s", want, last, out)
+			}
+			last += i + len(want)
+		}
+		posID, receipts := pmdReceipts(t, dbPath, "pm-refuse")
+		if len(receipts) != 1 || !pmdHasReceipt(receipts, posID, "telegram", pmdTelegramOwner) {
+			t.Fatalf("telegram must record its receipt while discord refuses: %+v", receipts)
+		}
+		f.expectDMs(t, "pm-refuse", 0, 1, "telegram sent once while discord refuses")
 	})
 }
 

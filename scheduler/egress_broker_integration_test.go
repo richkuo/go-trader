@@ -46,6 +46,7 @@ type fakeNotifyServices struct {
 	telegramDown bool
 	telegramNoID bool
 	telegramMsgs int
+	telegramHang string
 
 	commands  map[string]map[string]map[string]any
 	nextCmdID int
@@ -378,6 +379,12 @@ func (f *fakeNotifyServices) setMessageResults(discordNoID, telegramDown, telegr
 	f.mu.Unlock()
 }
 
+func (f *fakeNotifyServices) setTelegramHang(chatID string) {
+	f.mu.Lock()
+	f.telegramHang = chatID
+	f.mu.Unlock()
+}
+
 func (f *fakeNotifyServices) setDown(gateway, self bool) {
 	f.mu.Lock()
 	f.gatewayDown, f.selfDown = gateway, self
@@ -507,10 +514,20 @@ func startFakeNotifyServices(t *testing.T, ca *egressTestCA) (*fakeNotifyService
 			method := path[strings.LastIndex(path, "/")+1:]
 			if method == "sendMessage" {
 				f.mu.Lock()
-				down, noID := f.telegramDown, f.telegramNoID
+				down, noID, hang := f.telegramDown, f.telegramNoID, f.telegramHang
 				f.telegramMsgs++
 				msgID := f.telegramMsgs
+				closing := f.closing
 				f.mu.Unlock()
+				if hang != "" && strings.Contains(string(body), `"chat_id":"`+hang+`"`) {
+					f.record("telegram.sendMessage_hung", string(body))
+					select {
+					case <-closing:
+					case <-time.After(60 * time.Second):
+					}
+					_, _ = io.WriteString(w, `{"ok":false,"description":"Gateway Timeout"}`)
+					return
+				}
 				if down {
 					f.record("telegram.sendMessage_refused", string(body))
 					_, _ = io.WriteString(w, `{"ok":false,"description":"Internal Server Error"}`)

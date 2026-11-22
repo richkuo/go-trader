@@ -1493,7 +1493,8 @@ Each open paper manual position with no valid proof prints one `[WARN] paper man
 `--summary` and `--leaderboard` print the line and never send or record a DM.
 When the scheduler owns the state files (daemon and `--once`), each cycle sends the DM to each owner destination (`ownerDMDestinations`: service plus owner id) that has no receipt for this position, outside the book lock.
 Only a send the service confirms with a message id (Discord message id, Telegram `message_id`) adds a receipt (`positions.paper_warning_receipts_json`: version, trade position id, service, destination); the position identity is rechecked under the lock and the book is saved through `StateStore.SaveStrategyBook`.
-A failed or unconfirmed send, no owner destination, or an unreadable receipt leaves that destination due on the next cycle.
+No owner destination or an unreadable receipt leaves that destination due on the next cycle.
+A failed or unconfirmed send leaves it due too, behind an in-memory backoff per destination (`paperManualWarningTracker`): that cycle sends nothing more to it, and it waits 2, 4, 8 and more cycles, at most 64, after each further failure; a confirmed send clears the backoff, and a restart starts with none, so one notification outage costs at most one client timeout per destination per attempt cycle.
 A failed receipt save is logged and the receipt stays in memory for the next book save; a restart before that save can repeat the DM.
 A closed or reopened position has a new trade position id, so it starts with no proof and no receipts.
 The line keeps printing after the receipt is saved.

@@ -245,13 +245,72 @@ func collectPaperManualPositionWarnings(cfg *Config, state *AppState) []paperMan
 	return out
 }
 
+const paperManualWarningMaxBackoffCycles = 64
+
+type paperManualWarningRetry struct {
+	failures  int
+	nextCycle int
+}
+
 type paperManualWarningTracker struct {
 	mu      sync.Mutex
 	printed map[string]bool
+	cycle   int
+	retry   map[string]paperManualWarningRetry
 }
 
 func newPaperManualWarningTracker() *paperManualWarningTracker {
-	return &paperManualWarningTracker{printed: make(map[string]bool)}
+	return &paperManualWarningTracker{printed: make(map[string]bool), retry: make(map[string]paperManualWarningRetry)}
+}
+
+func paperManualWarningDestKey(d ownerDMDestination) string {
+	return d.Service + "\x00" + d.OwnerID
+}
+
+func (t *paperManualWarningTracker) beginCycle() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.cycle++
+	t.mu.Unlock()
+}
+
+func (t *paperManualWarningTracker) destinationDue(d ownerDMDestination) bool {
+	if t == nil {
+		return true
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r, ok := t.retry[paperManualWarningDestKey(d)]
+	return !ok || t.cycle >= r.nextCycle
+}
+
+func (t *paperManualWarningTracker) destinationFailed(d ownerDMDestination) int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.retry == nil {
+		t.retry = make(map[string]paperManualWarningRetry)
+	}
+	key := paperManualWarningDestKey(d)
+	r := t.retry[key]
+	r.failures++
+	wait := min(1<<min(r.failures, 6), paperManualWarningMaxBackoffCycles)
+	r.nextCycle = t.cycle + wait
+	t.retry[key] = r
+	return wait
+}
+
+func (t *paperManualWarningTracker) destinationConfirmed(d ownerDMDestination) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	delete(t.retry, paperManualWarningDestKey(d))
+	t.mu.Unlock()
 }
 
 func (t *paperManualWarningTracker) printNew(warnings []paperManualPositionWarning) {
@@ -279,6 +338,7 @@ func runPaperManualPositionWarnings(cfg *Config, state *AppState, store *StateSt
 	if cfg == nil || state == nil || mu == nil {
 		return
 	}
+	tracker.beginCycle()
 	mu.Lock()
 	warnings := collectPaperManualPositionWarnings(cfg, state)
 	mu.Unlock()
@@ -296,13 +356,19 @@ func runPaperManualPositionWarnings(cfg *Config, state *AppState, store *StateSt
 			if paperWarningReceiptHeld(w.Receipts, w.PositionID, d.Service, d.OwnerID) {
 				continue
 			}
+			if !tracker.destinationDue(d) {
+				continue
+			}
 			ok, err := d.sendConfirmed("[state] WARNING: " + w.Text)
 			switch {
 			case err != nil:
-				fmt.Printf("[WARN] paper manual position warning for %s/%s to the %s owner failed: %v; it is sent again on a later cycle\n", w.StrategyID, w.Coin, d.Service, err)
+				wait := tracker.destinationFailed(d)
+				fmt.Printf("[WARN] paper manual position warning for %s/%s to the %s owner failed: %v; it is sent again on a later cycle (this destination waits %d cycles)\n", w.StrategyID, w.Coin, d.Service, err, wait)
 			case !ok:
-				fmt.Printf("[WARN] paper manual position warning for %s/%s to the %s owner returned no message confirmation; it is sent again on a later cycle\n", w.StrategyID, w.Coin, d.Service)
+				wait := tracker.destinationFailed(d)
+				fmt.Printf("[WARN] paper manual position warning for %s/%s to the %s owner returned no message confirmation; it is sent again on a later cycle (this destination waits %d cycles)\n", w.StrategyID, w.Coin, d.Service, wait)
 			default:
+				tracker.destinationConfirmed(d)
 				confirmed = append(confirmed, paperManualWarningDelivery{w: w, dest: d})
 			}
 		}
