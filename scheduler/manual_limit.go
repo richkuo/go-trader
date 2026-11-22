@@ -316,6 +316,15 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 			return 1
 		}
 	}
+	held, heldErr := limitCoinOperatorHold(cfg, stateDB, sc.Symbol)
+	if heldErr != nil {
+		fmt.Fprintf(os.Stderr, "manual limit-open held: the resting limit order queue could not be read before placement (%v), so a row that holds %s fills cannot be ruled out\n", heldErr, sc.Symbol)
+		return 1
+	}
+	if held != "" {
+		fmt.Fprintf(os.Stderr, "manual limit-open held: %s\n", held)
+		return 1
+	}
 
 	res, stderr, err := runHyperliquidLimitOpenFn(sc.Script, sc.Symbol, in.openSide, size, in.limitPrice, in.tif, sc.MarginMode, sc.Leverage, hlExecuteSnapshot{})
 	if stderr != "" {

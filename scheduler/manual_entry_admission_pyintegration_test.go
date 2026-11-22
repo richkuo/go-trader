@@ -243,6 +243,44 @@ func (e *meaEnv) seedLimit(strategyID string, oid int64) PendingLimitOrder {
 	return row
 }
 
+func (e *meaEnv) seedHeldLimit(strategyID string, oid int64) PendingLimitOrder {
+	e.t.Helper()
+	seeded := e.seedLimit(strategyID, oid)
+	cfg, err := LoadConfig(e.cfg)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	store, err := openToolStateStore(cfg)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.UpdatePendingLimitOrderFill(seeded.ID, 0.002, 90, 0.001); err != nil {
+		e.t.Fatal(err)
+	}
+	if _, err := store.files[storageRolePrimary].db.Exec(`UPDATE pending_limit_orders SET fill_proof_version = ? WHERE id = ?`, limitFillProofVersionAtomic, seeded.ID); err != nil {
+		e.t.Fatal(err)
+	}
+	rows, err := store.LoadPendingLimitOrders()
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	row, found := findPendingLimitOrderByOID(rows, oid)
+	if !found || row.FillProofBound || row.FillProofVersion != limitFillProofVersionAtomic || row.FilledSize != 0.002 {
+		e.t.Fatalf("the held fixture must be a version-one row with an unbound positive watermark: %+v", rows)
+	}
+	now := time.Now().UTC()
+	evidence := marshalLimitOperatorEvidence(limitRowOperatorEvidence{
+		OrderOID: oid, Coin: row.Symbol, OrderStatus: "canceled", OrderState: "cancelled", OffBook: true,
+		ExecutedSize: row.FilledSize, BookedSize: row.FilledSize, FillsProven: true, Unbookable: true, Unproven: true,
+		Reason: "seeded terminal, off-book proof of an unproven watermark", ObservedAt: now,
+	})
+	if err := store.MarkPendingLimitOrderOperatorRequired(row, now, evidence); err != nil {
+		e.t.Fatal(err)
+	}
+	return row
+}
+
 func (e *meaEnv) dropLimits(strategyID string) {
 	e.t.Helper()
 	cfg, err := LoadConfig(e.cfg)
@@ -400,7 +438,7 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	t.Helper()
 	p := "et-"
 	strategies := []any{}
-	for _, name := range []string{"open-exit", "open-swap", "open-after", "open-shared", "open-excl", "open-ok", "solo", "solo-race", "solo-bound", "solo-limit", "unpub", "add-cx", "add-fill", "record"} {
+	for _, name := range []string{"open-exit", "open-swap", "open-after", "open-shared", "open-excl", "open-ok", "solo", "solo-race", "solo-bound", "solo-limit", "unpub", "add-cx", "add-fill", "record", "held-a", "held-b"} {
 		strategies = append(strategies, meaPlainStrategy(p+name))
 	}
 	strategies = append(strategies, mrpManualStrategy(p+"ratchet", "short"), mrpManualStrategy(p+"ratchet-limit", "short"), mrpManualStrategy(p+"ratchet-unpub", "short"))
@@ -451,6 +489,48 @@ func regimeReadinessEntryAdmissionTransitions(t *testing.T) {
 	}
 	e.dropLimits(p + "add-fill")
 	t.Logf("cancellation: a remainder with an unadopted fill stays queued for the scheduler and the add sends no order")
+
+	heldPx := strconv.FormatFloat(mrpMark()*0.9, 'f', 2, 64)
+	heldLimit := append([]string{"manual-open", p + "held-b", "--size", "0.01", "--limit-price", heldPx}, atr...)
+	opened := "after the state files opened"
+	e.seedHeldLimit(p+"held-a", 4601)
+	venue = e.venueKinds()
+	r = e.run(nil, heldLimit...)
+	e.expectRefused(r, "limit open on a coin held for an operator", p+"held-a/BTC oid=4601", "manual-clear-limit-row 4601 --flattened")
+	e.expectNoRows("limit open on a coin held for an operator", venue, p+"held-b")
+	t.Logf("operator hold: a version-one row with an unbound watermark refused a peer limit open on its coin with no order: %s", strings.TrimSpace(r.stderr))
+
+	e.armGate(opened)
+	pending = e.runAsync(nil, heldLimit...)
+	e.waitGate(opened)
+	if c := e.command(e.cfg, nil, "manual-clear-limit-row", "4601", "--flattened"); c.code != 0 {
+		t.Fatalf("manual-clear-limit-row must clear the marked held row:\n%s", c)
+	}
+	e.releaseGate(opened)
+	r = <-pending
+	if r.code != 0 {
+		t.Fatalf("a limit open must place once the held row was cleared before its placement recheck:\n%s", r)
+	}
+	if got := e.venueKinds(); got["limit_open"] != venue["limit_open"]+1 {
+		t.Fatalf("cleared before the recheck: venue %v -> %v", venue, got)
+	}
+	if rows := e.limitRows(p + "held-b"); len(rows) != 1 || len(e.limitRows(p+"held-a")) != 0 {
+		t.Fatalf("cleared before the recheck: rows %+v", e.pendingLimits(e.cfg))
+	}
+	e.dropLimits(p + "held-b")
+	t.Logf("operator hold: the held row was cleared with manual-clear-limit-row between admission and the placement recheck, and the limit open placed")
+
+	venue = e.venueKinds()
+	e.armGate(placement)
+	pending = e.runAsync(nil, heldLimit...)
+	e.waitGate(placement)
+	e.seedHeldLimit(p+"held-a", 4602)
+	e.releaseGate(placement)
+	r = <-pending
+	e.expectRefused(r, "held row raised before placement", p+"held-a/BTC oid=4602")
+	e.expectNoRows("held row raised before placement", venue, p+"held-b")
+	e.dropLimits(p + "held-a")
+	t.Logf("operator hold: a held row that appeared between admission and the placement recheck refused the limit open with no order: %s", strings.TrimSpace(r.stderr))
 
 	guard, err := os.Open(e.guard(defaultPaperPartition))
 	if err != nil {

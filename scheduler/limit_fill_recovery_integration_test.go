@@ -864,3 +864,110 @@ func TestLimitUnprovenWatermarkOperatorText(t *testing.T) {
 		}
 	})
 }
+
+func limitHoldPeer(id, coin string) StrategyConfig {
+	sc, _ := newLimitTestStrategy()
+	sc.ID = id
+	sc.Symbol = coin
+	sc.Args = []string{"hold", coin, "30m", "--mode=live"}
+	return sc
+}
+
+func (h *limitProofHarness) limitOpen(sc StrategyConfig, placed *int) (int, string) {
+	h.t.Helper()
+	origOpen := runHyperliquidLimitOpenFn
+	runHyperliquidLimitOpenFn = func(script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+		*placed++
+		return &HyperliquidLimitOpenResult{Platform: "hyperliquid", Status: "resting", OrderOID: int64(9100 + *placed), LimitPrice: limitPx, TIF: tif}, "", nil
+	}
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	os.Stderr = w
+	code := runManualLimitOpen(h.cfg, sc, h.store, manualLimitOpenInputs{
+		strategyID: sc.ID, side: "long", openSide: "buy", tif: "Alo", size: 0.1, limitPrice: 1900, atr: 50,
+	})
+	os.Stderr = origStderr
+	runHyperliquidLimitOpenFn = origOpen
+	w.Close()
+	var out strings.Builder
+	buf := make([]byte, 4096)
+	for {
+		n, rerr := r.Read(buf)
+		out.Write(buf[:n])
+		if rerr != nil {
+			break
+		}
+	}
+	r.Close()
+	return code, out.String()
+}
+
+func TestLimitCoinOperatorHoldRefusesNewLimitEntries(t *testing.T) {
+	t.Run("UnboundVersionOneRowRefusesAPeerLimitOpenOnItsCoin", func(t *testing.T) {
+		ethPeer, btcPeer := limitHoldPeer("hl-manual-eth-peer", "ETH"), limitHoldPeer("hl-manual-btc-peer", "BTC")
+		h := newLimitRecoveryHarness(t, 0.5, false, ethPeer, btcPeer)
+		h.seedUnboundWatermark(0.2, 2000, 0.1)
+		if _, err := h.db.db.Exec(`UPDATE pending_limit_orders SET fill_proof_version = ? WHERE id = ?`, limitFillProofVersionAtomic, h.rowID); err != nil {
+			t.Fatal(err)
+		}
+		if rows := h.rows(); len(rows) != 1 || rows[0].FillProofVersion != limitFillProofVersionAtomic || rows[0].FillProofBound || rows[0].FilledSize != 0.2 {
+			t.Fatalf("the fixture must be a version-one row with an unbound 0.2 watermark: %+v", rows)
+		}
+		placed := 0
+		code, stderr := h.limitOpen(ethPeer, &placed)
+		if code != 1 || placed != 0 || !strings.Contains(stderr, "hl-manual-eth-live/ETH oid=9001") || !strings.Contains(stderr, "manual-clear-limit-row 9001 --flattened") {
+			t.Fatalf("a limit open on the held coin must refuse before placement and name the row: code %d, placed %d, stderr %s", code, placed, stderr)
+		}
+		if rows := h.rows(); len(rows) != 1 {
+			t.Fatalf("the refused limit open must queue no row: %+v", rows)
+		}
+		code, stderr = h.limitOpen(btcPeer, &placed)
+		if code != 0 || placed != 1 {
+			t.Fatalf("a limit open on a coin with no held row must place: code %d, placed %d, stderr %s", code, placed, stderr)
+		}
+		if err := h.store.DeletePendingLimitOrder(h.rowID); err != nil {
+			t.Fatal(err)
+		}
+		code, stderr = h.limitOpen(ethPeer, &placed)
+		if code != 0 || placed != 2 {
+			t.Fatalf("a limit open must place once the held row is gone: code %d, placed %d, stderr %s", code, placed, stderr)
+		}
+	})
+
+	t.Run("SettledRowOfARemovedOwnerRefusesItsCoinOnly", func(t *testing.T) {
+		ethPeer, btcPeer := limitHoldPeer("hl-manual-eth-peer", "ETH"), limitHoldPeer("hl-manual-btc-peer", "BTC")
+		h := newLimitRecoveryHarness(t, 0.5, false, ethPeer, btcPeer)
+		withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.3})
+		h.reply(provenLimitStatus(9001, "ETH", "live", 0.5, 0.3, 2000, 0.15))
+		h.run()
+		if rows := h.rows(); len(rows) != 1 || rows[0].FilledSize != 0.3 || !rows[0].FillProofBound {
+			t.Fatalf("the fixture must be a proven row with a bound 0.3 watermark: %+v", rows)
+		}
+		h.cfg.Strategies = []StrategyConfig{ethPeer, btcPeer}
+		placed := 0
+		code, stderr := h.limitOpen(ethPeer, &placed)
+		if code != 1 || placed != 0 || !strings.Contains(stderr, "hl-manual-eth-live/ETH oid=9001") || !strings.Contains(stderr, "its owner cannot carry") {
+			t.Fatalf("a limit open on the coin of a removed owner's positive row must refuse and name the row: code %d, placed %d, stderr %s", code, placed, stderr)
+		}
+		code, stderr = h.limitOpen(btcPeer, &placed)
+		if code != 0 || placed != 1 {
+			t.Fatalf("a limit open on BTC with no held BTC row must place: code %d, placed %d, stderr %s", code, placed, stderr)
+		}
+		rows := h.rows()
+		if _, found := findPendingLimitOrderByOID(rows, 9101); len(rows) != 2 || !found {
+			t.Fatalf("the BTC limit open must queue its row beside the held ETH row: %+v", rows)
+		}
+	})
+
+	t.Run("ZeroFillAndProvenRowsOfEligibleOwnersHoldNothing", func(t *testing.T) {
+		ethPeer := limitHoldPeer("hl-manual-eth-peer", "ETH")
+		h := newLimitRecoveryHarness(t, 0.5, false, ethPeer)
+		placed := 0
+		if code, stderr := h.limitOpen(ethPeer, &placed); code != 0 || placed != 1 {
+			t.Fatalf("a zero-fill row of an eligible owner must not refuse a peer limit open: code %d, stderr %s", code, stderr)
+		}
+	})
+}

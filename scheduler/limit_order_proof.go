@@ -396,6 +396,29 @@ func holdIneligibleLimitOwner(p *limitRowProof, o PendingLimitOrder, block strin
 	return true
 }
 
+func limitCoinOperatorHold(cfg *Config, store *StateStore, symbol string) (string, error) {
+	if store == nil {
+		return "", fmt.Errorf("the state store is unavailable")
+	}
+	rows, err := store.LoadPendingLimitOrders()
+	if err != nil {
+		return "", err
+	}
+	for _, o := range rows {
+		if o.Symbol != symbol {
+			continue
+		}
+		var held limitRowProof
+		sc, known := scByIDLookup(cfg, o.StrategyID)
+		if !holdUnprovenLimitWatermark(&held, o) && !holdIneligibleLimitOwner(&held, o, limitRowOwnerBlock(sc, known, o)) {
+			continue
+		}
+		return fmt.Sprintf("pending limit row %s holds every limit fill on %s until an operator clears it: %s. A new limit order on %s could fill and stay unbooked with no stop-loss, so it is refused — follow the owner alert for that row, clear it with `go-trader manual-clear-limit-row %d --flattened` once the scheduler has marked it, then retry",
+			killSwitchLimitOrderLabel(o), symbol, held.Unbookable, symbol, o.OrderOID), nil
+	}
+	return "", nil
+}
+
 func verifyLimitIncrementLineage(store *StateStore, state *AppState, o PendingLimitOrder) (string, bool) {
 	if o.FilledSize <= limitFillEpsilon {
 		return "", false
