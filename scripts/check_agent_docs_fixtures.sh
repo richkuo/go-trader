@@ -52,7 +52,7 @@ expect() {
 
 case_start() { fresh || { echo "FAIL: fixture copy"; exit 1; }; }
 
-pad_lines() { python3 -I -c 'import sys; p, target = sys.argv[1], int(sys.argv[2]); t = open(p).read(); line = "- pad " + "x" * 60 + "\n"; t += line * ((target - len(t.encode())) // len(line)); t += "-" + " " * (target - len(t.encode()) - 2) + "\n" if target - len(t.encode()) >= 2 else ""; open(p, "w").write(t)' "$@"; }
+pad_lines() { python3 -I -c 'import sys; p, target = sys.argv[1], int(sys.argv[2]); t = open(p).read(); line = "- pad " + "x" * 60 + "\n"; t += line * ((target - len(t.encode())) // len(line)); r = target - len(t.encode()); t += ("-" + " " * (r - 2) + "\n") if r >= 2 else "\n" * r; open(p, "w").write(t)' "$@"; }
 
 rule() { printf -- '---\npaths:\n  - "%s"\n---\n\n## %s\n\n- %s\n' "$2" "$3" "$4" >"$repo/.claude/rules/$1"; }
 
