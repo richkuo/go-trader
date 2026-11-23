@@ -36,6 +36,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("notify_ratchet_triggers: %s -> %s", formatNotifyRatchetTriggers(cfg.NotifyRatchetTriggers), formatNotifyRatchetTriggers(next.NotifyRatchetTriggers))
 		cfg.NotifyRatchetTriggers = next.NotifyRatchetTriggers
 	}
+	if !boolPtrEqual(cfg.NotifyPaperCircuitBreakers, next.NotifyPaperCircuitBreakers) {
+		addChange("notify_paper_circuit_breakers: %s -> %s", formatNotifyPaperCircuitBreakers(cfg.NotifyPaperCircuitBreakers), formatNotifyPaperCircuitBreakers(next.NotifyPaperCircuitBreakers))
+		cfg.NotifyPaperCircuitBreakers = next.NotifyPaperCircuitBreakers
+	}
 	if !floatPtrEqual(cfg.DefaultStopLossATRMult, next.DefaultStopLossATRMult) {
 		addChange("default_stop_loss_atr_mult: %s -> %s (applies to strategies opened after restart; existing StopLossATRMult on currently-loaded strategies is unchanged)", formatFloatPtr(cfg.DefaultStopLossATRMult), formatFloatPtr(next.DefaultStopLossATRMult))
 		cfg.DefaultStopLossATRMult = next.DefaultStopLossATRMult
@@ -914,6 +918,16 @@ func formatCBThreshold(p *int) string {
 func formatCircuitBreaker(p *bool) string {
 	if p == nil {
 		return "default(on)"
+	}
+	if *p {
+		return "on"
+	}
+	return "off"
+}
+
+func formatNotifyPaperCircuitBreakers(p *bool) string {
+	if p == nil {
+		return "default-off"
 	}
 	if *p {
 		return "on"

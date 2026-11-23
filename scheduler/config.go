@@ -338,6 +338,8 @@ type Config struct {
 	Egress                   *EgressConfig                `json:"egress,omitempty"`
 	PaperOnly                bool                         `json:"paper_only,omitempty"`
 
+	NotifyPaperCircuitBreakers *bool `json:"notify_paper_circuit_breakers,omitempty"`
+
 	migrationBaseVersion    int
 	migrationBaseVersionSet bool
 	noEdgeMigration         *noEdgeMigrationReport
@@ -524,6 +526,13 @@ func (c *Config) NotifyRatchetTriggersEnabled() bool {
 		return true
 	}
 	return *c.NotifyRatchetTriggers
+}
+
+func (c *Config) NotifyPaperCircuitBreakersEnabled() bool {
+	if c == nil || c.NotifyPaperCircuitBreakers == nil {
+		return false
+	}
+	return *c.NotifyPaperCircuitBreakers
 }
 
 func (sc *StrategyConfig) NotifyRatchetTriggersEnabled(cfg *Config) bool {
