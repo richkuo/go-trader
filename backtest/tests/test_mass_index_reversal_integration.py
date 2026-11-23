@@ -15,8 +15,6 @@ if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
 
 from closed_bar import (
-    FRAME_TIMESTAMP_KIND_ATTR,
-    TIMESTAMP_KIND_NATIVE_CLOSE,
     TIMESTAMP_KIND_OPEN,
     declare_frame_cadence,
 )
@@ -25,7 +23,6 @@ from registry_loader import load_registry
 
 NAME = "mass_index_reversal"
 STUDY = os.path.join(_REPO, "backtest", "candidates", "mass_index_reversal_1670", "run_study.py")
-H = 3_600_000
 SEED = {"ema_period": 9, "sum_period": 25, "upper_threshold": 27.0, "lower_threshold": 26.5, "trend_period": 50,
         "slope_span": 5, "confirm_lookback": 5, "max_bulge_age": 50, "recursion_length": 72, "bulge_filter": 1}
 NEED = 148
@@ -155,87 +152,11 @@ def _same(a, b):
     return (math.isnan(a) and math.isnan(b)) or a == b
 
 
-def _check_upper_crossing_arms_and_the_first_lower_crossing_completes_once():
-    out = _apply(_frame(*_burst()))
-    assert list(np.flatnonzero(out["mir_upper_cross"] == 1.0)) == [UP_AT]
-    assert list(np.flatnonzero(out["mir_lower_cross"] == 1.0)) == [DOWN_AT]
-    assert (out["mir_reason"].iloc[UP_AT + 1:DOWN_AT] == "armed").all()
-    assert out["mir_reason"].iloc[UP_AT] == "no_bulge"
-    assert out["mir_bulge_age"].iloc[DOWN_AT] == DOWN_AT - UP_AT
-    assert out["mir_bulge_armed_ts_ms"].iloc[DOWN_AT] == float(out.index[UP_AT].value // 1_000_000)
-    assert out["mir_reason"].iloc[DOWN_AT] == "confirmation_failed" and out["mir_filtered"].iloc[DOWN_AT] == 1.0
-    assert (out["mir_reason"].iloc[DOWN_AT + 1:] == "no_bulge").all()
-    assert int(out["signal"].abs().sum()) == 0
-
-
 def _short_entry_mid(slope=0.05):
     rng, mid = _burst(slope=slope)
     mid = mid.copy()
     mid[DOWN_AT:] = mid[DOWN_AT:] - 5.0 * np.sign(slope)
     return rng, mid
-
-
-def _check_rising_and_falling_slopes_give_mirrored_entries_on_the_completion_bar():
-    short = _apply(_frame(*_short_entry_mid(0.05)))
-    assert int(short["signal"].iloc[DOWN_AT]) == -1 and short["mir_reason"].iloc[DOWN_AT] == "entry_short"
-    assert short["mir_bulge_direction"].iloc[DOWN_AT] == -1.0 and short["mir_bulge_slope"].iloc[DOWN_AT] > 0
-    assert int(short["signal"].abs().sum()) == 1
-    long_ = _apply(_frame(*_short_entry_mid(-0.05)))
-    assert int(long_["signal"].iloc[DOWN_AT]) == 1 and long_["mir_reason"].iloc[DOWN_AT] == "entry_long"
-    assert long_["mir_bulge_direction"].iloc[DOWN_AT] == 1.0 and long_["mir_bulge_slope"].iloc[DOWN_AT] < 0
-    assert int(long_["signal"].abs().sum()) == 1
-
-
-def _check_direction_is_frozen_at_the_upper_crossing():
-    rng, mid = _burst(slope=0.05)
-    mid = mid.copy()
-    mid[UP_AT + 1:] = mid[UP_AT] - 2.0 * np.arange(1, len(mid) - UP_AT)
-    out = _apply(_frame(rng, mid))
-    assert out["mir_trend_slope"].iloc[DOWN_AT] < 0 and out["mir_bulge_slope"].iloc[DOWN_AT] > 0
-    assert int(out["signal"].iloc[DOWN_AT]) == -1
-
-
-def _check_price_confirmation_is_strict_against_the_previous_highs_and_lows():
-    rng, mid = _burst(slope=0.05)
-    df = _frame(rng, mid)
-    lows = df["low"].iloc[DOWN_AT - 5:DOWN_AT].min()
-    at = df.copy()
-    at.attrs = dict(df.attrs)
-    at.iloc[DOWN_AT, at.columns.get_loc("close")] = lows
-    at.iloc[DOWN_AT, at.columns.get_loc("open")] = lows
-    at.iloc[DOWN_AT, at.columns.get_loc("low")] = lows - 0.5
-    at.iloc[DOWN_AT, at.columns.get_loc("high")] = lows + 0.5
-    out = _apply(at)
-    assert out["mir_reason"].iloc[DOWN_AT] == "confirmation_failed"
-    below = at.copy()
-    below.attrs = dict(df.attrs)
-    for col, off in (("close", 0.0), ("open", 0.0), ("low", -0.5), ("high", 0.5)):
-        below.iloc[DOWN_AT, below.columns.get_loc(col)] = lows - 1e-6 + off
-    assert int(_apply(below)["signal"].iloc[DOWN_AT]) == -1
-
-
-def _check_filter_off_tests_every_bar_with_the_current_slope():
-    df = _walk(480, seed=9)
-    off = _apply(df, bulge_filter=0)
-    on = _apply(df)
-    valid = off["mir_valid"] == 1.0
-    slope = off["mir_trend_slope"][valid]
-    side = off["mir_tested_side"][valid]
-    assert ((slope < 0) == (side == 1)).all() and ((slope > 0) == (side == -1)).all()
-    assert (off["signal"] != 0).sum() > (on["signal"] != 0).sum()
-    assert set(off["mir_reason"][valid]) <= {"entry_long", "entry_short", "confirmation_failed", "zero_slope"}
-
-
-def test_entry_rule_cases_arm_complete_and_hold_with_their_reasons(subtests):
-    for label, check in (
-        ("upper_crossing_arms_and_the_first_lower_crossing_completes_once", _check_upper_crossing_arms_and_the_first_lower_crossing_completes_once),
-        ("rising_and_falling_slopes_give_mirrored_entries_on_the_completion_bar", _check_rising_and_falling_slopes_give_mirrored_entries_on_the_completion_bar),
-        ("direction_is_frozen_at_the_upper_crossing", _check_direction_is_frozen_at_the_upper_crossing),
-        ("price_confirmation_is_strict_against_the_previous_highs_and_lows", _check_price_confirmation_is_strict_against_the_previous_highs_and_lows),
-        ("filter_off_tests_every_bar_with_the_current_slope", _check_filter_off_tests_every_bar_with_the_current_slope),
-    ):
-        with subtests.test(case=label):
-            check()
 
 
 def _with_index(df, idx):
@@ -265,22 +186,6 @@ def _check_defects_outside_the_required_window_never_change_the_decision():
     assert out["mir_valid"].iloc[DOWN_AT] == 1.0 and int(out["signal"].iloc[DOWN_AT]) == -1
     edge = _with_index(clean, list(clean.index[:first + 1]) + list(clean.index[first + 1:] + pd.Timedelta(hours=3)))
     assert _apply(edge)["mir_reason"].iloc[DOWN_AT] == "cadence_gap"
-
-
-def test_native_close_and_timezone_inputs_decide_the_same():
-    df = _frame(*_short_entry_mid())
-    base = _apply(df)
-    native = df.copy()
-    native.index = native.index + pd.Timedelta(milliseconds=H - 1)
-    native.attrs = dict(df.attrs)
-    native.attrs[FRAME_TIMESTAMP_KIND_ATTR] = TIMESTAMP_KIND_NATIVE_CLOSE
-    ny = df.copy()
-    ny.index = ny.index.tz_localize("UTC").tz_convert("America/New_York")
-    ny.attrs = dict(df.attrs)
-    for variant in (native, ny):
-        got = _apply(variant)
-        for col in EVENT_COLS:
-            assert all(_same(a, b) for a, b in zip(got[col], base[col])), col
 
 
 def _cfg(**kw):

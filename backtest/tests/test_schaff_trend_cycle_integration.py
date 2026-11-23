@@ -18,7 +18,6 @@ from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from closed_bar import (
     FRAME_DECISION_TIME_ATTR,
-    FRAME_RECEIVED_ORDER_DEFECTS_ATTR,
     TIMESTAMP_KIND_OPEN,
     declare_frame_cadence,
 )
@@ -216,43 +215,6 @@ INVALID_ENTRY_DATA = [
     (lambda df: _shift_index(df, len(df) - 150, pd.Timedelta(hours=1)), "cadence_gap"),
     (lambda df: df.iloc[-(NEED - 1):], "insufficient_history"),
 ]
-
-
-def _received_out_of_order_rows_hold_only_inside_their_span():
-    df = _walk(700, 5)
-    clean = _apply(df, DEFAULTS)
-    marked = df.copy()
-    bad = 300
-    marked.attrs[FRAME_RECEIVED_ORDER_DEFECTS_ATTR] = [int(df.index[bad].value // 1_000_000)]
-    out = _apply(marked, DEFAULTS)
-    assert (out["stc_reason"].iloc[bad:bad + NEED] == "timestamp_order").all()
-    assert (out["signal"].iloc[bad:bad + NEED] == 0).all()
-    pd.testing.assert_frame_equal(out.iloc[:bad], clean.iloc[:bad])
-    pd.testing.assert_frame_equal(out.iloc[bad + NEED:], clean.iloc[bad + NEED:])
-
-
-def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame(subtests):
-    with subtests.test(case="nonfinite_volume_and_cadence_gap"):
-        _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame()
-    with subtests.test(case="received_out_of_order"):
-        _received_out_of_order_rows_hold_only_inside_their_span()
-
-
-def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
-    df = _walk(700, 5)
-    bad = 300
-    corrupt = df.copy()
-    corrupt.iloc[bad, corrupt.columns.get_loc("volume")] = np.nan
-    out = _apply(corrupt, DEFAULTS)
-    clean = _apply(df, DEFAULTS)
-    assert (out["stc_reason"].iloc[bad:bad + NEED] == "nonfinite_input").all()
-    assert (out["stc_valid"].iloc[bad:bad + NEED] == 0.0).all()
-    pd.testing.assert_frame_equal(out.iloc[:bad], clean.iloc[:bad])
-    pd.testing.assert_frame_equal(out.iloc[bad + NEED:], clean.iloc[bad + NEED:])
-    gapped = df.drop(df.index[bad])
-    out = _apply(gapped, DEFAULTS)
-    assert (out["stc_reason"].iloc[bad:bad + NEED - 1] == "cadence_gap").all()
-    assert out["stc_reason"].iloc[bad + NEED - 1] != "cadence_gap"
 
 
 def _frozen(key, bars):

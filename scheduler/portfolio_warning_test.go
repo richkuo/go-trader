@@ -7,10 +7,6 @@ import (
 	"time"
 )
 
-// TestPortfolioWarningMessageLiveLikeSample is an end-to-end format check that
-// mirrors the live scope state when margin DD crosses the warn threshold: a
-// paused strategy with a frozen -$220 P&L must NOT be named as the lead
-// contributor and the warning must show the "(N paused strateg...)" footnote.
 func TestPortfolioWarningMessageLiveLikeSample(t *testing.T) {
 	cfgStrategies := []StrategyConfig{
 		{ID: "hl-vwap-eth-60", Type: "perps", Args: []string{"--mode=live"}, MarginPerTradeUSD: ptrF(50)},
@@ -39,7 +35,6 @@ func TestPortfolioWarningMessageLiveLikeSample(t *testing.T) {
 		Positions: map[string]*Position{},
 		RiskState: RiskState{CurrentDrawdownPct: 0, DailyPnL: -39.36},
 	}
-	// Realistic live-equity state from the recent /status snapshot
 	state.PortfolioRisk = map[RiskPartition]*PortfolioRiskState{
 		livePartition: {
 			PeakValue:                1014.25,
@@ -74,15 +69,10 @@ func TestPortfolioWarningMessageLiveLikeSample(t *testing.T) {
 	fmt.Println(msg)
 	fmt.Println("===== END WARNING DM =====")
 
-	// Hard assertions on what must NOT and MUST be in the message.
 	mustNotContain := []string{"hl-rmc-eth-live", "hl-tcross-eth-live"}
 	for _, s := range mustNotContain {
-		// find line(s) containing the strategy id in the contributors block.
-		// We tolerate mentions outside Top contributors (e.g., Recent activity).
-		// Filter out the recent activity block where it's allowed.
 		withinContribs := false
 		for _, line := range strings.Split(msg, "\n") {
-			// Lines inside the ``` block following "Top contributors:" are the rule.
 			if strings.HasPrefix(strings.TrimSpace(line), "Top contributors:") {
 				withinContribs = true
 				continue
@@ -104,7 +94,6 @@ func TestPortfolioWarningMessageLiveLikeSample(t *testing.T) {
 		t.Fatalf("expected footnote to mention the opt-in config key, got:\n%s", msg)
 	}
 
-	// Lead line must not name a paused strategy as "leading portfolio drawdown".
 	if strings.Contains(msg, "hl-rmc-eth-live (dd=") || strings.Contains(msg, "hl-tcross-eth-live (dd=") {
 		t.Fatalf("lead attribution named a paused strategy: %s", msg)
 	}

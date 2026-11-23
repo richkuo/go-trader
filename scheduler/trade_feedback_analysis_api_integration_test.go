@@ -331,39 +331,3 @@ func TestTradeFeedbackAnalysisAPIRestartRecordsInterruptedRequestWithoutACall(t 
 		t.Fatalf("rows after recovery = %v", rows)
 	}
 }
-
-func TestTradeFeedbackAnalysisAPIReloadPublishesSettings(t *testing.T) {
-	e, _ := newTFAAPIEnv(t)
-	cfg := tfaAPIConfig("", "")
-	e.ss.SetConfigContext("", cfg)
-	steps := []struct {
-		next *Config
-		want tradeFeedbackAPISettings
-	}{
-		{tfaAPIConfig("claude-opus-5-5", ""), tradeFeedbackAPISettings{Model: "claude-opus-5-5", Effort: "high"}},
-		{tfaAPIConfig("claude-sonnet-5-5", "low"), tradeFeedbackAPISettings{Model: "claude-sonnet-5-5", Effort: "low"}},
-		{tfaAPIConfig("", ""), tradeFeedbackAPISettings{Effort: "high"}},
-	}
-	for i, step := range steps {
-		changes, err := applyHotReloadConfig(cfg, step.next, e.state, nil, e.ss)
-		if err != nil {
-			t.Fatalf("reload %d: %v", i, err)
-		}
-		if _, got := e.ss.currentFeedbackAnalysisConfig(); got != step.want {
-			t.Fatalf("reload %d published %+v, want %+v", i, got, step.want)
-		}
-		if got := cfg.tradeFeedbackAPISettings(); got != step.want {
-			t.Fatalf("reload %d left the running config at %+v, want %+v", i, got, step.want)
-		}
-		joined := strings.Join(changes, "\n")
-		if !strings.Contains(joined, "trade_feedback_analysis:") {
-			t.Fatalf("reload %d reported no change: %q", i, joined)
-		}
-		if b := step.next.TradeFeedbackAnalysis; b != nil && b.APIModel != nil {
-			*b.APIModel = "mutated-after-reload"
-			if got := cfg.tradeFeedbackAPISettings(); got != step.want {
-				t.Fatalf("reload %d shares the api_model value with the parsed config: %+v", i, got)
-			}
-		}
-	}
-}

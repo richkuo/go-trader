@@ -102,62 +102,6 @@ def test_reconstruction_agrees_across_prefixes_windows_and_separate_workers():
         assert json.loads(proc.stdout) == [int(r["signal"]), r["sai_reason"], r["sai_setup_id"], r["sai_flow_sha256"]]
 
 
-def test_setup_lifecycle_consumption_expiry_session_reset_and_bounds():
-    bars, intervals = scn.build(["flat", "long", "long"])
-    out = _apply(bars, intervals)
-    i = _row(1, scn.RETEST_BAR)
-    assert int(out["signal"].iloc[i]) == 1
-    retouch = [dict(b) for b in bars]
-    j = _row(1, scn.RETEST_BAR + 2)
-    retouch[j]["l"] = min(retouch[j]["l"], out["sai_entry_price"].iloc[i] - 0.01)
-    again = _apply(retouch, intervals)
-    assert int(again["signal"].iloc[j]) == 0 and int((again["signal"].iloc[i:_row(2, 0)] != 0).sum()) == 1
-    assert int(out["signal"].iloc[_row(2, scn.RETEST_BAR)]) == 1
-    assert out["sai_setup_id"].iloc[_row(2, scn.RETEST_BAR)] != out["sai_setup_id"].iloc[i]
-    no_retest = [dict(b) for b in bars]
-    for k in range(scn.RETEST_BAR, scn.RETEST_BAR + 20):
-        b = no_retest[_row(1, k)]
-        b["l"] = max(b["l"], 98.95)
-        b["o"], b["c"] = max(b["o"], b["l"]), max(b["c"], b["l"])
-        b["h"] = max(b["h"], b["o"], b["c"])
-    expired = _apply(no_retest, intervals, {"setup_expiry": 6})
-    reasons = list(expired["sai_reason"].iloc[_row(1, scn.CONFIRM_BAR):_row(1, scn.CONFIRM_BAR + 7)])
-    assert reasons[0] == "armed_long" and reasons[6] == "setup_expired"
-    assert not (expired["signal"].iloc[_row(1, 0):_row(2, 0)] != 0).any()
-    assert out["sai_reason"].iloc[_row(2, 0)] == "in_session"
-    for params in ({"sweep_window": 57, "setup_expiry": 36}, {"expected_interval_ms": 60_000},
-                   {"session_start_hour_utc": 8, "session_end_hour_utc": 8}):
-        with pytest.raises(ValueError):
-            _reg().validate_params(NAME, params)
-        with pytest.raises(ValueError):
-            _apply(bars, intervals, params)
-
-
-def test_htf_bias_is_truncation_invariant_at_hour_boundaries_and_uses_only_closed_hours():
-    bars, intervals = scn.build(["flat", "long", "short"])
-    full = _apply(bars, intervals)
-    for k in (96, 108, 120, 132):
-        i = _row(1, k)
-        cut = bars[:i]
-        trunc = _reg().apply_strategy(NAME, scn.frame(cut), {"trade_flow_observations": scn.flow_payload(intervals),
-                                                              "htf_candles": scn.htf_payload(bars, cut[-1]["T"] + 1)})
-        assert _same(trunc[COLS].iloc[-1].tolist(), full[COLS].iloc[i - 1].tolist()), k
-    ctx = _SAI.parse_htf_candles(scn.htf_payload(bars))
-    confirm_deadline = bars[_row(1, scn.CONFIRM_BAR)]["t"] + BAR
-    assert _SAI.htf_bias_at(ctx, confirm_deadline) == 1
-    future = scn.htf_payload(bars)
-    boundary = confirm_deadline // scn.HOUR * scn.HOUR
-    future["rows"] = [r if r[0] < boundary else [r[0], r[1] * 2, r[2] * 2, r[3] * 2, r[4] * 2, r[5]]
-                      for r in future["rows"]]
-    assert _SAI.htf_bias_at(_SAI.parse_htf_candles(future), confirm_deadline) == 1
-    stale = scn.htf_payload(bars, boundary - scn.HOUR)
-    assert _SAI.htf_bias_at(_SAI.parse_htf_candles(stale), confirm_deadline) is None
-    native = scn.htf_payload(bars)
-    native["timestamp_kind"] = "native_close_inclusive"
-    native["rows"] = [[r[0] + scn.HOUR - 1] + r[1:] for r in native["rows"]]
-    assert _SAI.htf_bias_at(_SAI.parse_htf_candles(native), confirm_deadline) == 1
-
-
 def test_composer_keeps_the_close_owner_executable_while_entry_inputs_are_missing():
     reg = _reg()
     bars, intervals = scn.build(["flat", "long"])

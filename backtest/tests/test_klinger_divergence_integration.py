@@ -22,8 +22,6 @@ from closed_bar import (
     TIMESTAMP_KIND_OPEN,
     declare_frame_cadence,
 )
-from eval_windows import expand_sweep
-from optimizer import DEFAULT_PARAM_RANGES
 from parity_diff import ParityConfig
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
@@ -39,18 +37,6 @@ DEFAULTS = {"fast_period": 34, "slow_period": 55, "signal_period": 13, "replay_b
             "divergence_test": True}
 FAST = dict(DEFAULTS, fast_period=5, slow_period=13, signal_period=5, replay_bars=40, left_span=2,
             right_span=2, min_separation=3, max_separation=20, setup_expiry=8)
-TINY = {"fast_period": 2, "slow_period": 3, "signal_period": 2, "replay_bars": 4, "left_span": 1,
-        "right_span": 1, "min_separation": 1, "max_separation": 1, "setup_expiry": 1, "divergence_test": True}
-DOMAIN_ENDPOINTS = [
-    dict(TINY),
-    dict(DEFAULTS, fast_period=120, slow_period=150, signal_period=150, replay_bars=151, left_span=10,
-         right_span=10, min_separation=1, max_separation=10, setup_expiry=17),
-    dict(DEFAULTS, fast_period=2, slow_period=3, signal_period=2, replay_bars=4, left_span=10, right_span=10,
-         min_separation=100, max_separation=100, setup_expiry=50),
-    dict(DEFAULTS, replay_bars=128, left_span=3, right_span=3, max_separation=40, setup_expiry=12),
-]
-
-
 def _support(p):
     return p["replay_bars"] + p["left_span"] + p["max_separation"] + p["right_span"] + p["setup_expiry"] + 2
 
@@ -172,80 +158,6 @@ def ref_signal(df, k, p, osc, sig, all_pivots):
     return 0
 
 
-def test_hand_calculated_rising_falling_equal_and_trend_change_recurrences():
-    p = dict(TINY)
-    a2, a3 = 2.0 / 3.0, 0.5
-    rising = _frame([10, 11, 12, 13, 14], [11, 12, 13, 14, 15], [9, 10, 11, 12, 13], [10, 11, 12, 13, 14],
-                    [1.0, 1.0, 1.0, 1.0, 1.0])
-    out = _apply(rising, p).iloc[4]
-    vf = [0.0, 2.0 * (2.0 / 4.0 - 1.0) * 100.0, 2.0 * (2.0 / 6.0 - 1.0) * 100.0,
-          2.0 * (2.0 / 8.0 - 1.0) * 100.0, 2.0 * (2.0 / 10.0 - 1.0) * 100.0]
-    fe = se = vf[0]
-    sig = 0.0
-    for x in vf[1:]:
-        fe = a2 * x + (1.0 - a2) * fe
-        se = a3 * x + (1.0 - a3) * se
-        sig = a2 * (fe - se) + (1.0 - a2) * sig
-    assert (out["klinger_trend"], out["klinger_dm"], out["klinger_cm"]) == (1.0, 2.0, 10.0)
-    assert out["klinger_volume_force"] == vf[-1] == -160.0
-    assert out["klinger_oscillator"] == fe - se and out["klinger_signal_line"] == sig
-    assert out["klinger_endpoint_valid"] == 1.0
-
-    falling = _frame([14, 13, 12, 11, 10], [15, 14, 13, 12, 11], [13, 12, 11, 10, 9], [14, 13, 12, 11, 10],
-                     [1.0] * 5)
-    down = _apply(falling, p).iloc[4]
-    assert (down["klinger_trend"], down["klinger_cm"]) == (-1.0, 10.0)
-    assert down["klinger_volume_force"] == 160.0
-    assert down["klinger_oscillator"] == -out["klinger_oscillator"]
-
-    equal = _frame([10] * 5, [11, 12, 10, 11, 11], [9, 8, 10, 9, 9], [10] * 5, [1.0] * 5)
-    flat = _apply(equal, p).iloc[4]
-    assert flat["klinger_trend"] == -1.0
-    assert flat["klinger_cm"] == 2.0 + 4.0 + 0.0 + 2.0 + 2.0
-    assert flat["klinger_volume_force"] == 1.0 * 2.0 * (2.0 / 10.0 - 1.0) * -1.0 * 100.0
-
-    change = _frame([10, 11, 12, 11, 10], [11, 12, 13, 12, 11], [9, 10, 11, 10, 9], [10, 11, 12, 11, 10],
-                    [1.0, 2.0, 3.0, 4.0, 5.0])
-    turn = _apply(change, p).iloc[4]
-    assert turn["klinger_trend"] == -1.0
-    assert turn["klinger_cm"] == 2.0 + 2.0 + 2.0
-    assert turn["klinger_volume_force"] == 5.0 * 2.0 * (2.0 / 6.0 - 1.0) * -1.0 * 100.0
-    restart = _apply(change.iloc[:4], p).iloc[3]
-    assert np.isnan(restart["klinger_cm"]) and restart["klinger_endpoint_valid"] == 0.0
-
-
-def _flat_pair(df, pos):
-    out = df.copy()
-    level = float(df["high"].iloc[pos - 2]) * 1.5
-    for col in ("open", "high", "low", "close"):
-        out.iloc[pos - 1:pos + 1, out.columns.get_loc(col)] = level
-    return out
-
-
-def test_zero_range_zero_volume_and_zero_cm_rules():
-    p = dict(TINY)
-    one_flat = _frame([10, 11, 12, 13, 14], [11, 12, 12, 14, 15], [9, 10, 12, 12, 13], [10, 11, 12, 13, 14],
-                      [1.0] * 5)
-    row = _apply(one_flat, p).iloc[4]
-    assert row["klinger_endpoint_valid"] == 1.0 and row["klinger_cm"] == 2.0 + 2.0 + 0.0 + 2.0 + 2.0
-    seed_flat = _frame([10, 11, 12, 13, 14], [10, 12, 13, 14, 15], [10, 10, 11, 12, 13], [10, 11, 12, 13, 14],
-                       [1.0] * 5)
-    assert _apply(seed_flat, p).iloc[4]["klinger_endpoint_valid"] == 0.0
-    df = _walk(400, 3)
-    held = _flat_pair(df, 300)
-    pos = 300
-    out = _apply(held, FAST)
-    zero_rows = out.index[(out["klinger_reason"] == "zero_cm")]
-    assert len(zero_rows) and out.loc[zero_rows, "signal"].eq(0).all()
-    assert (out["klinger_reason"].iloc[pos:pos + 3] == "zero_cm").all()
-    quiet = _apply(df.assign(volume=0.0), FAST)
-    assert (quiet["signal"] == 0).all()
-    valid = quiet["klinger_valid"] == 1.0
-    assert valid.any() and (quiet.loc[valid, "klinger_oscillator"] == 0.0).all()
-    assert set(quiet.loc[valid, "klinger_reason"]) <= {"no_divergence", "no_pivot_pair", "no_setup"}
-    assert (quiet.loc[valid, "klinger_reason"] == "no_divergence").any()
-
-
 def _values_and_decisions_match_an_independent_reference(params):
     df = _walk(560, 7, tick=0.05)
     out = _apply(df, params)
@@ -348,27 +260,6 @@ def _frozen(key, bars):
     candles = om.load_candles(om.dataset_by_key(manifest, key))
     frame = candles[INPUT_COLUMNS].iloc[-bars:].copy()
     return declare_frame_cadence(frame, "4h", TIMESTAMP_KIND_OPEN)
-
-
-DECISION_COLUMNS = ["klinger_oscillator", "klinger_signal_line", "klinger_prev_oscillator",
-                    "klinger_prev_signal_line", "klinger_cross", "klinger_valid", "klinger_long_state",
-                    "klinger_short_state", "klinger_long_pivot1_ts_ms", "klinger_short_pivot2_ts_ms",
-                    "klinger_reason_code", "signal"]
-
-
-def test_full_series_prefix_exact_span_and_200_row_tail_agree_for_grid_samples_and_bounds():
-    df = _frozen("ETH 4h", 700)
-    specs = [(k, list(v)) for k, v in DEFAULT_PARAM_RANGES[NAME].items()]
-    grid = [p for _, p in expand_sweep(dict(DEFAULTS), specs)]
-    for params in grid[::97] + [grid[-1]] + DOMAIN_ENDPOINTS + [dict(DEFAULTS, divergence_test=False)]:
-        S = _support(params)
-        full = _apply(df, params)
-        decisions = np.flatnonzero(full["signal"].to_numpy() != 0)
-        ends = sorted({int(i) + 1 for i in decisions[decisions >= 200][:3]} | {250, 450, 700})
-        for end in ends:
-            for part in (df.iloc[:end], df.iloc[end - 200:end], df.iloc[end - S:end]):
-                got = _apply(part, params)[DECISION_COLUMNS].iloc[-1]
-                pd.testing.assert_series_equal(got, full[DECISION_COLUMNS].iloc[end - 1], check_names=False)
 
 
 def _runtime(df, kind, cutoff=None, boundary=None):

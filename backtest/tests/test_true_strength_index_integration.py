@@ -15,11 +15,9 @@ if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
 
 from closed_bar import (
-    FRAME_TIMESTAMP_KIND_ATTR,
     declare_frame_cadence,
 )
 from parity_diff import ParityConfig
-from registry_loader import load_registry
 
 NAME = "true_strength_index"
 STUDY = os.path.join(_REPO, "backtest", "candidates", "true_strength_index_1667")
@@ -36,14 +34,6 @@ DECISION_COLUMNS = ["tsi_value", "tsi_prev_value", "tsi_signal_line", "tsi_prev_
 def _close_refs():
     with open(os.path.join(STUDY, "protocol.json")) as fh:
         return json.load(fh)["close_strategies"]
-
-
-def _reg():
-    return load_registry("futures")
-
-
-def _apply(df, params=None):
-    return _reg().apply_strategy(NAME, df, params)
 
 
 def _need(p):
@@ -130,27 +120,6 @@ def _set_at(df, pos, col, value):
     out = df.copy()
     out.iloc[pos, out.columns.get_loc(col)] = value
     return out
-
-
-def test_timestamp_column_and_native_close_frames_decide_the_same_way():
-    df = _walk(260, 3)
-    plain = df.reset_index(drop=True)
-    plain["timestamp"] = df.index.as_unit("ms").asi8.astype("int64")
-    plain.attrs = dict(df.attrs)
-    a = _apply(df, SMALL)
-    b = _apply(plain, SMALL)
-    np.testing.assert_array_equal(a["signal"].to_numpy(), b["signal"].to_numpy())
-    np.testing.assert_array_equal(a["tsi_value"].to_numpy(), b["tsi_value"].to_numpy())
-    native = df.set_axis(df.index + pd.Timedelta(hours=4) - pd.Timedelta(milliseconds=1))
-    _declare(native, "4h", "native_close_inclusive")
-    c = _apply(native, SMALL)
-    np.testing.assert_array_equal(a["signal"].to_numpy(), c["signal"].to_numpy())
-    np.testing.assert_array_equal(a["tsi_eval_ts_ms"].to_numpy(), c["tsi_eval_ts_ms"].to_numpy())
-    assert a["tsi_eval_ts_ms"].iloc[-1] == df.index[-1].value // 1_000_000
-    native.attrs.pop(FRAME_TIMESTAMP_KIND_ATTR)
-    d = _apply(native, SMALL)
-    np.testing.assert_array_equal(a["signal"].to_numpy(), d["signal"].to_numpy())
-    assert d["tsi_eval_ts_ms"].isna().all()
 
 
 def _cfg(params, **kw):

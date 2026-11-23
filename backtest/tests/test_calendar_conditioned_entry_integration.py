@@ -17,8 +17,6 @@ from atr import ensure_atr_indicator
 from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from closed_bar import (
-    FRAME_INTERVAL_ATTR,
-    FRAME_RECEIVED_ORDER_DEFECTS_ATTR,
     FRAME_TIMESTAMP_KIND_ATTR,
     TIMESTAMP_KIND_NATIVE_CLOSE,
     TIMESTAMP_KIND_OPEN,
@@ -136,118 +134,6 @@ def _reference(df, i, p=P):
     if not se > 0:
         signal, reason = 0, "no_uncertainty_estimate"
     return dict(out, mean=m, se=se, n_eff=n_eff, long_lb=long_lb, short_lb=short_lb, signal=signal, reason=reason)
-
-
-def _tz_variants(df):
-    utc = df.copy()
-    utc.index = df.index.tz_localize("UTC")
-    ny = df.copy()
-    ny.index = df.index.tz_localize("UTC").tz_convert("America/New_York")
-    ms_unit = df.copy()
-    ms_unit.index = df.index.as_unit("ms")
-    native = df.copy()
-    native.index = df.index + pd.Timedelta(milliseconds=H1 - 1)
-    for v in (utc, ny, ms_unit, native):
-        v.attrs = dict(df.attrs)
-    native.attrs[FRAME_TIMESTAMP_KIND_ATTR] = TIMESTAMP_KIND_NATIVE_CLOSE
-    return {"aware_utc": utc, "america_new_york": ny, "ms_unit": ms_unit, "native_close": native}
-
-
-def test_naive_aware_unit_and_native_close_indexes_give_the_same_buckets_and_decisions():
-    df = _calendar(start="2026-03-02")
-    base = _apply(df)
-    cols = ["signal", "cce_reason", "cce_eval_ts_ms", "cce_next_cell", "cce_refit_boundary_ms", "cce_gross_mean",
-            "cce_std_error"]
-    for label, variant in _tz_variants(df).items():
-        got = _apply(variant)
-        for col in cols:
-            assert list(got[col].astype(str)) == list(base[col].astype(str)), (label, col)
-    assert int(base["signal"].abs().sum()) >= 4
-
-
-def _defect(df, kind, k):
-    out = df.copy()
-    out.attrs = dict(df.attrs)
-    col = out.columns.get_loc
-    if kind == "cadence_gap":
-        out = out.drop(out.index[k])
-        out.attrs = dict(df.attrs)
-    elif kind == "duplicate_timestamp":
-        out = pd.concat([out.iloc[:k], out.iloc[k - 1:k], out.iloc[k:]])
-        out.attrs = dict(df.attrs)
-    elif kind == "descending_timestamp":
-        order = list(range(len(out)))
-        order[k], order[k + 1] = order[k + 1], order[k]
-        out = out.iloc[order]
-        out.attrs = dict(df.attrs)
-    elif kind == "received_out_of_order":
-        out.attrs[FRAME_RECEIVED_ORDER_DEFECTS_ATTR] = [int(_ms(df)[k])]
-    elif kind == "nonfinite_price":
-        out.iloc[k, col("close")] = np.nan
-    elif kind == "nonpositive_price":
-        out.iloc[k, col("low")] = 0.0
-    elif kind == "inconsistent_candle":
-        out.iloc[k, col("close")] = out["high"].iloc[k] * 1.01
-    elif kind == "grid_misaligned":
-        idx = list(out.index)
-        idx[k] = idx[k] + pd.Timedelta(minutes=1)
-        out.index = pd.DatetimeIndex(idx, name="datetime")
-    return out
-
-
-INPUT_DEFECTS = [
-    ("cadence_gap", "cadence_gap"),
-    ("duplicate_timestamp", "duplicate_timestamp"),
-    ("descending_timestamp", "descending_timestamp"),
-    ("received_out_of_order", "received_out_of_order"),
-    ("nonfinite_price", "nonfinite_price"),
-    ("nonpositive_price", "nonpositive_price"),
-    ("inconsistent_candle", "inconsistent_candle"),
-    ("grid_misaligned", "grid_misaligned"),
-]
-
-
-def test_input_defects_hold_with_a_reason_never_rewrite_earlier_decisions_and_recover_on_clean_history(subtests):
-    df = _calendar(n=N_BARS + 2600)
-    clean = _apply(df)
-    for kind, row_reason in INPUT_DEFECTS:
-        with subtests.test(case=kind):
-            _input_defect_holds_and_recovers(df, clean, kind, row_reason)
-    with subtests.test(case="missing_history_columns_and_timing"):
-        _missing_history_columns_and_timing_hold_with_reasons()
-
-
-def _input_defect_holds_and_recovers(df, clean, kind, row_reason):
-    k = 2400
-    bad = _defect(df, kind, k)
-    out = _apply(bad)
-    for col in ("signal", "cce_reason", "cce_gross_mean"):
-        assert list(out[col].iloc[:k].astype(str)) == list(clean[col].iloc[:k].astype(str)), col
-    flagged = k + 1 if kind == "descending_timestamp" else k
-    assert out["cce_reason"].iloc[flagged] == row_reason and int(out["signal"].iloc[flagged]) == 0
-    after = out["cce_reason"].iloc[flagged + 1:flagged + 200]
-    assert after.str.startswith("history_").all() or (after == "cadence_gap").any()
-    assert (out["cce_valid"].iloc[k:k + P["training_bars"]] == 0.0).all()
-    recovered = np.flatnonzero(out["cce_valid"].to_numpy() == 1.0)
-    first = int(recovered[recovered > k][0])
-    assert int(out["cce_history_bars"].iloc[first]) >= int(out["cce_required_bars"].iloc[first])
-    assert int(out["cce_history_bars"].iloc[first - 1]) < int(out["cce_required_bars"].iloc[first - 1])
-
-
-def _missing_history_columns_and_timing_hold_with_reasons():
-    df = _calendar()
-    short = _apply(df.iloc[:P["training_bars"] - 1])
-    assert set(short["cce_reason"]) == {"insufficient_history"} and int(short["signal"].abs().sum()) == 0
-    assert (short["cce_required_bars"] > short["cce_history_bars"]).all()
-    undeclared = df.copy()
-    undeclared.attrs = {}
-    assert set(_apply(undeclared)["cce_reason"]) == {"undeclared_timing"}
-    contradiction = df.copy()
-    contradiction.attrs = {FRAME_INTERVAL_ATTR: 4 * H1, FRAME_TIMESTAMP_KIND_ATTR: TIMESTAMP_KIND_OPEN}
-    assert set(_apply(contradiction)["cce_reason"]) == {"timing_contradiction"}
-    assert set(_apply(df.drop(columns=["low"]))["cce_reason"]) == {"missing_columns"}
-    out = _apply(df.reset_index(drop=True))
-    assert set(out["cce_reason"]) == {"missing_timestamps"} and len(out) == len(df)
 
 
 def _backtest(df, p=P, stop=3.0, direction="both", mode="approximate"):

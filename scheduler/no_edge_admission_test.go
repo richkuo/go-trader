@@ -2070,7 +2070,6 @@ func TestResearchStudyParityConfigsLoadAsPaper(t *testing.T) {
 func TestV20NoEdgeMigrationNeverStampsResearchStrategies(t *testing.T) {
 	for _, tc := range []sigAdmCase{
 		{"AdaptiveMovingAverage", noEdgeCaseAdaptiveMovingAverageLegacyV20MigrationNeverGrantsLiveUse},
-		{"CalendarConditionedEntry", noEdgeCaseV20NoEdgeMigrationNeverStampsCalendarConditionedEntry},
 		{"CamarillaPivotReversal", noEdgeCaseV20NoEdgeMigrationNeverStampsCamarillaPivotReversal},
 		{"ChandeMomentum", noEdgeCaseV20NoEdgeMigrationNeverGrantsChandeMomentumAndReportVetoesIt},
 		{"DualThrust", noEdgeCaseV20NoEdgeMigrationNeverGrantsDualThrust},

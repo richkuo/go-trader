@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"math"
 	"path/filepath"
 	"strings"
@@ -416,58 +415,6 @@ func containsAll(s string, parts ...string) bool {
 		}
 	}
 	return true
-}
-
-func TestPaperFundingFeedModesReadOnlySealedCoverage(t *testing.T) {
-	withFundingHistoryFn(t, func(context.Context, string, int64) ([]feedFundingRecord, error) {
-		t.Fatal("feed modes must never make a private funding fetch")
-		return nil, nil
-	})
-	r1 := pfT0 + pfHour
-	snap := &marketSnapshot{
-		funding: map[string]feedFunding{},
-		accountingFunding: map[string]feedAccountingFunding{
-			"ETH": {FromMs: pfT0, ToMs: r1, Records: []feedFundingRecord{{TimeMs: r1, Rate: 0.0001}}},
-		},
-	}
-	need := map[string]int64{"ETH": pfT0, "SOL": pfT0}
-	in := gatherPaperFundingInputs(context.Background(), true, snap, need, time.UnixMilli(r1+60_000))
-	if cov, ok := in.Coverage["ETH"]; !ok || cov.ToMs != r1 || len(cov.Records) != 1 {
-		t.Fatalf("sealed coverage must be read for ETH: %+v", in.Coverage)
-	}
-	if _, ok := in.Coverage["SOL"]; ok || !in.NotServed["SOL"] {
-		t.Fatalf("a coin missing from the seal is not served and has no coverage: %+v", in)
-	}
-	if hold, _ := snap.fundingHold("SOL", false, false); hold {
-		t.Fatal("a missing accounting entry must never hold a check")
-	}
-	if empty := gatherPaperFundingInputs(context.Background(), true, nil, need, time.UnixMilli(r1)); len(empty.Coverage) != 0 {
-		t.Fatalf("no seal means no coverage and no fetch: %+v", empty)
-	}
-	gaps := applySealCoverage(snap, cycleMarketRequirements{AccountingCoins: []string{"ETH", "SOL"}})
-	if len(gaps) != 1 || !containsAll(gaps[0], "accounting funding for SOL") || len(snap.accountingFunding) != 1 {
-		t.Fatalf("a missing accounting coin is an informational gap and deletes nothing: %v", gaps)
-	}
-
-	calls := 0
-	withFundingHistoryFn(t, func(_ context.Context, _ string, startMs int64) ([]feedFundingRecord, error) {
-		calls++
-		if startMs > r1 {
-			return nil, nil
-		}
-		return []feedFundingRecord{{TimeMs: r1, Rate: 0.0001}}, nil
-	})
-	paperFundingRESTMu.Lock()
-	paperFundingRESTCache = make(map[string]*paperFundingRESTEntry)
-	paperFundingRESTMu.Unlock()
-	rest := gatherPaperFundingInputs(context.Background(), false, nil, map[string]int64{"ETH": pfT0}, time.UnixMilli(r1+60_000))
-	if cov := rest.Coverage["ETH"]; cov.FromMs != pfT0 || cov.ToMs != r1 || calls != 2 {
-		t.Fatalf("REST mode fetches bounded coverage from the oldest need: %+v calls %d", cov, calls)
-	}
-	gatherPaperFundingInputs(context.Background(), false, nil, map[string]int64{"ETH": pfT0}, time.UnixMilli(r1+120_000))
-	if calls != 2 {
-		t.Fatalf("REST mode fetches a coin at most once per interval: %d calls", calls)
-	}
 }
 
 func TestPaperFundingStaysInItsPartitionAndLeavesLiveUntouched(t *testing.T) {

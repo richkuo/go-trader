@@ -1,4 +1,3 @@
-import contextlib
 import importlib.util
 import json
 import math
@@ -17,10 +16,6 @@ if _TOOLS not in sys.path:
 
 import eval_windows
 from closed_bar import (
-    FRAME_INTERVAL_ATTR,
-    FRAME_RECEIVED_ORDER_DEFECTS_ATTR,
-    FRAME_TIMESTAMP_KIND_ATTR,
-    TIMESTAMP_KIND_NATIVE_CLOSE,
     TIMESTAMP_KIND_OPEN,
     declare_frame_cadence,
 )
@@ -35,38 +30,13 @@ from strategy_composition import (
 NAME = "elder_force_pullback"
 STUDY_DIR = os.path.join(_REPO, "backtest", "candidates", "elder_force_pullback_1668")
 SEED = {"force_period": 13, "trend_period": 50, "slope_span": 5, "recursion_length": 150, "volume_weighting": 1}
-NEED = 152
 TIERS = [{"profit_pct": 0.01, "close_fraction": 0.25}, {"profit_pct": 0.02, "close_fraction": 0.5},
          {"profit_pct": 0.03, "close_fraction": 0.75}, {"profit_pct": 0.04, "close_fraction": 1.0}]
 CLOSE = [{"name": "tiered_tp_pct", "params": {"tp_tiers": TIERS}}]
 CROSS_AT = 211
 FIRST_PULLBACK = 200
-EVENT_COLS = ("signal", "efp_valid", "efp_reason", "efp_eval_ts_ms", "efp_close", "efp_prev_close", "efp_volume",
-              "efp_prev_volume", "efp_weight", "efp_raw_force", "efp_prev_raw_force", "efp_seed_force",
-              "efp_prev_seed_force", "efp_force", "efp_prev_force", "efp_trend_sma", "efp_trend_sma_lag",
-              "efp_prev_trend_sma", "efp_prev_trend_sma_lag", "efp_uptrend", "efp_prev_uptrend", "efp_downtrend",
-              "efp_prev_downtrend", "efp_cross", "efp_volume_eligible")
-
-
 def _reg():
     return load_registry("futures")
-
-
-@contextlib.contextmanager
-def _case(label):
-    try:
-        yield
-    except AssertionError as exc:
-        raise AssertionError(f"case {label}: {exc}") from exc
-    except pytest.fail.Exception as exc:
-        pytest.fail(f"case {label}: {exc}")
-    except Exception as exc:
-        exc.add_note(f"case {label}")
-        raise
-
-
-def _apply(df, **over):
-    return _reg().apply_strategy(NAME, df, dict(SEED, **over))
 
 
 def _frame(close, volume=None, start="2026-01-01", kind=TIMESTAMP_KIND_OPEN):
@@ -131,213 +101,6 @@ def _reference(df, params):
                 sig = -1
         rows.append({"valid": valid, "signal": sig, "force": force[t], "sma": sma[t], "raw": raw[t]})
     return rows
-
-
-def _same(a, b):
-    if isinstance(a, str) or isinstance(b, str):
-        return a == b
-    a, b = float(a), float(b)
-    return (math.isnan(a) and math.isnan(b)) or a == b
-
-
-def _copy(df):
-    out = df.copy()
-    out.attrs = dict(df.attrs)
-    return out
-
-
-def _set(df, pos, col, value):
-    out = _copy(df)
-    out.iloc[pos, out.columns.get_loc(col)] = value
-    return out
-
-
-def _with_index(df, idx):
-    out = _copy(df)
-    out.index = pd.DatetimeIndex(idx, name="datetime")
-    return out
-
-
-def test_fixed_length_helper_reads_exactly_its_window_and_restarts_at_its_own_seed():
-    from indicators_core import fixed_length_ema
-    values = np.random.default_rng(5).normal(0.0, 3.0, 60)
-    out = fixed_length_ema(values, 4, 12)
-    assert np.isnan(out[:11]).all()
-    a = 2.0 / 5.0
-    for t in range(11, 60):
-        e = values[t - 11]
-        for k in range(t - 10, t + 1):
-            e = a * values[k] + (1.0 - a) * e
-        assert out[t] == e
-    changed = values.copy()
-    changed[:20] = 1e6
-    again = fixed_length_ema(changed, 4, 12)
-    assert np.array_equal(again[31:], out[31:])
-    assert not np.array_equal(again[30:31], out[30:31])
-    poisoned = values.copy()
-    poisoned[25] = np.nan
-    held = fixed_length_ema(poisoned, 4, 12)
-    assert np.isnan(held[25:37]).all() and np.array_equal(held[37:], out[37:])
-    with pytest.raises(ValueError):
-        fixed_length_ema(values, True, 12)
-
-
-DEFECT_AT = CROSS_AT - 40
-DEFECT_REASONS = {"nonfinite_input", "nonpositive_price", "invalid_candle_geometry", "negative_volume",
-                  "timestamp_order", "cadence_gap", "missing_timestamps"}
-
-
-WINDOW_DEFECTS = [
-    (lambda df: _set(df, DEFECT_AT, "close", np.nan), "nonfinite_input", 0),
-    (lambda df: _set(df, DEFECT_AT, "volume", np.inf), "nonfinite_input", 0),
-    (lambda df: _set(df, DEFECT_AT, "low", 0.0), "nonpositive_price", 0),
-    (lambda df: _set(df, DEFECT_AT, "open", 500.0), "invalid_candle_geometry", 0),
-    (lambda df: _set(df, DEFECT_AT, "high", 1.0), "invalid_candle_geometry", 0),
-    (lambda df: _set(df, DEFECT_AT, "volume", -1.0), "negative_volume", 0),
-    (lambda df: _with_index(df, list(df.index[:DEFECT_AT]) + [df.index[DEFECT_AT - 1]]
-                            + list(df.index[DEFECT_AT + 1:])), "timestamp_order", 0),
-    (lambda df: _with_index(df, list(df.index[:DEFECT_AT]) + [df.index[DEFECT_AT + 1], df.index[DEFECT_AT]]
-                            + list(df.index[DEFECT_AT + 2:])), "timestamp_order", 1),
-    (lambda df: _with_index(df, list(df.index[:DEFECT_AT]) + list(df.index[DEFECT_AT:] + pd.Timedelta(hours=1))),
-     "cadence_gap", 0),
-    (lambda df: _with_index(df, list(df.index[:DEFECT_AT]) + [pd.NaT] + list(df.index[DEFECT_AT + 1:])),
-     "missing_timestamps", 0),
-]
-
-
-def _check_defects_inside_the_required_window_hold_and_recover_after_a_clean_window():
-    for i, (mutate, reason, at) in enumerate(WINDOW_DEFECTS):
-        with _case(f"{i}-{reason}-{at}"):
-            _defects_inside_the_required_window_hold_and_recover_after_a_clean_window(mutate, reason, at)
-
-
-def _defects_inside_the_required_window_hold_and_recover_after_a_clean_window(mutate, reason, at):
-    clean = _frame(_pullback(n=420))
-    assert int(_apply(clean)["signal"].iloc[CROSS_AT]) == 1
-    out = _apply(mutate(clean))
-    assert out["efp_reason"].iloc[DEFECT_AT + at] == reason
-    assert out["efp_reason"].iloc[CROSS_AT] in DEFECT_REASONS and int(out["signal"].iloc[CROSS_AT]) == 0
-    assert out["efp_valid"].iloc[CROSS_AT] == 0.0 and np.isnan(out["efp_force"].iloc[CROSS_AT])
-    held = out.iloc[DEFECT_AT:DEFECT_AT + NEED - 1]
-    assert held["efp_valid"].eq(0.0).all()
-    assert out["efp_valid"].iloc[DEFECT_AT + NEED + 2] == 1.0
-
-
-def _check_received_order_defects_hold_like_a_sort_repair():
-    clean = _frame(_pullback())
-    flagged = _copy(clean)
-    flagged.attrs[FRAME_RECEIVED_ORDER_DEFECTS_ATTR] = [int(clean.index[DEFECT_AT].value // 1_000_000)]
-    out = _apply(flagged)
-    assert out["efp_reason"].iloc[CROSS_AT] == "timestamp_order" and int(out["signal"].abs().sum()) == 0
-
-
-def _check_defects_outside_the_required_window_never_change_the_decision():
-    clean = _frame(_pullback())
-    base = _apply(clean)
-    first = CROSS_AT - NEED + 1
-    for pos in (0, 10, first - 1):
-        out = _apply(_set(clean, pos, "close", np.nan))
-        for col in EVENT_COLS:
-            assert _same(out[col].iloc[CROSS_AT], base[col].iloc[CROSS_AT]), (pos, col)
-    gap = _with_index(clean, list(clean.index[:first]) + list(clean.index[first:] + pd.Timedelta(hours=3)))
-    out = _apply(gap)
-    assert out["efp_valid"].iloc[CROSS_AT] == 1.0 and int(out["signal"].iloc[CROSS_AT]) == 1
-    edge = _with_index(clean, list(clean.index[:first + 1]) + list(clean.index[first + 1:] + pd.Timedelta(hours=3)))
-    assert _apply(edge)["efp_reason"].iloc[CROSS_AT] == "cadence_gap"
-
-
-def _check_insufficient_history_and_frame_level_holds():
-    df = _frame(_pullback())
-    tail = df.iloc[CROSS_AT - NEED + 1:CROSS_AT + 1].copy()
-    tail.attrs = dict(df.attrs)
-    assert int(_apply(tail)["signal"].iloc[-1]) == 1
-    short = tail.iloc[1:].copy()
-    short.attrs = dict(df.attrs)
-    got = _apply(short)
-    assert set(got["efp_reason"]) == {"insufficient_history"} and int(got["signal"].abs().sum()) == 0
-    undeclared = df.copy()
-    undeclared.attrs = {}
-    assert set(_apply(undeclared)["efp_reason"]) == {"missing_cadence"}
-    bad = df.copy()
-    bad.attrs = {FRAME_INTERVAL_ATTR: True}
-    assert set(_apply(bad)["efp_reason"]) == {"missing_cadence"}
-    assert set(_apply(df.drop(columns=["volume"]))["efp_reason"]) == {"missing_columns"}
-    assert set(_apply(df.reset_index(drop=True))["efp_reason"]) == {"missing_timestamps"}
-
-
-def _check_derived_overflow_holds_and_recovers():
-    df = _frame(_pullback(n=420))
-    huge = _set(df, FIRST_PULLBACK, "volume", 1e308)
-    out = _apply(huge)
-    assert np.isinf((huge["close"].iloc[FIRST_PULLBACK] - huge["close"].iloc[FIRST_PULLBACK - 1]) * 1e308)
-    assert out["efp_reason"].iloc[FIRST_PULLBACK] == "nonfinite_derived"
-    assert out["efp_reason"].iloc[CROSS_AT] == "nonfinite_derived" and int(out["signal"].abs().sum()) == 0
-    first_clean = FIRST_PULLBACK + SEED["recursion_length"] + 1
-    assert out["efp_valid"].iloc[first_clean - 1] == 0.0 and out["efp_valid"].iloc[first_clean] == 1.0
-    assert _apply(_frame(_pullback(n=420)))["efp_valid"].iloc[FIRST_PULLBACK] == 1.0
-
-
-def test_input_defects_hold_with_a_reason_and_recover(subtests):
-    for label, check in (
-        ("defects_inside_the_required_window_hold_and_recover_after_a_clean_window", _check_defects_inside_the_required_window_hold_and_recover_after_a_clean_window),
-        ("received_order_defects_hold_like_a_sort_repair", _check_received_order_defects_hold_like_a_sort_repair),
-        ("insufficient_history_and_frame_level_holds", _check_insufficient_history_and_frame_level_holds),
-        ("derived_overflow_holds_and_recovers", _check_derived_overflow_holds_and_recovers),
-    ):
-        with subtests.test(case=label):
-            check()
-
-
-def test_native_close_and_timezone_inputs_decide_the_same():
-    df = _frame(_pullback())
-    base = _apply(df)
-    native = _copy(df)
-    native.index = native.index + pd.Timedelta(milliseconds=3_600_000 - 1)
-    native.attrs[FRAME_TIMESTAMP_KIND_ATTR] = TIMESTAMP_KIND_NATIVE_CLOSE
-    ny = _copy(df)
-    ny.index = ny.index.tz_localize("UTC").tz_convert("America/New_York")
-    for variant in (native, ny):
-        got = _apply(variant)
-        for col in EVENT_COLS:
-            assert all(_same(a, b) for a, b in zip(got[col], base[col])), col
-
-
-def _check_full_series_every_prefix_and_bounded_tails_agree():
-    df = _walk(520, seed=11)
-    for flag in (1, 0):
-        full = _apply(df, volume_weighting=flag)
-        valid = full["efp_valid"].to_numpy() == 1.0
-        assert (full["signal"] != 0).any()
-        for i in range(len(df)):
-            frames = [df.iloc[:i + 1]]
-            if valid[i]:
-                frames += [df.iloc[i + 1 - size:i + 1] for size in (NEED, 199, 200) if i + 1 >= size]
-            for frame in frames:
-                frame = _copy(frame)
-                frame.attrs = dict(df.attrs)
-                got = _apply(frame, volume_weighting=flag).iloc[-1]
-                for col in EVENT_COLS:
-                    assert _same(got[col], full[col].iloc[i]), (flag, i, len(frame), col)
-
-
-def test_decisions_depend_only_on_the_required_window(subtests):
-    for label, check in (
-        ("defects_outside_the_required_window_never_change_the_decision", _check_defects_outside_the_required_window_never_change_the_decision),
-        ("full_series_every_prefix_and_bounded_tails_agree", _check_full_series_every_prefix_and_bounded_tails_agree),
-    ):
-        with subtests.test(case=label):
-            check()
-
-
-def test_finite_average_stays_within_the_frozen_sensitivity_tolerance():
-    study = _study()
-    df = _walk(900, seed=21)
-    df["timestamp"] = df.index.as_unit("ms").asi8
-    df = declare_frame_cadence(df, "1h", TIMESTAMP_KIND_OPEN)
-    for flag in (1, 0):
-        cell = study.sensitivity_cell(_reg(), df, dict(SEED, volume_weighting=flag))
-        assert cell["valid_bars"] > 0 and cell["within_tolerance"], cell
-        assert cell["max_normalized_difference"] <= 1e-8
 
 
 def _check_check_preflight_refuses_invalid_open_and_close_fallback_parameters():

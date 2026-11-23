@@ -104,3 +104,18 @@ func TestRunPendingRobinhoodCircuitCloses(t *testing.T) {
 		}
 	})
 }
+
+func TestRobinhoodLiveOrderCircuitBreakerActivationKeepsTheBook(t *testing.T) {
+	sc := rhLiveSpot("rh-btc", "BTC", 1000)
+	s := NewStrategyState(sc)
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1, InitialQuantity: 1, AvgCost: 1000, Side: "long"}
+	s.RiskState.PeakValue = 2000
+	s.RiskState.MaxDrawdownPct = 10
+	allowed, _ := CheckRisk(&sc, s, 500, map[string]float64{"BTC": 500}, nil, nil)
+	if allowed || !s.RiskState.CircuitBreaker {
+		t.Fatal("expected the circuit breaker to fire")
+	}
+	if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 1 {
+		t.Fatalf("CB activation must keep the Robinhood live book, got %+v", s.Positions)
+	}
+}

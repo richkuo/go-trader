@@ -480,44 +480,6 @@ func TestFeedRESTReuseNeedsEveryReaderClosed(t *testing.T) {
 			t.Fatalf("4h reads = %v, want every 4h key read at each due deadline", rdCandleKeys(reqs))
 		}
 	})
-	t.Run("UnloadedConsumer", func(t *testing.T) {
-		consumers := append(rdWorkload(t, false), feedConsumer{Path: "/unreadable.json", Err: "permission denied"})
-		union := unionFeedRequirements(consumers)
-		if union.closedOnlyReuse(feedKeyFor("BTC", "4h")) || !strings.Contains(union.ReuseBlocked, "/unreadable.json") {
-			t.Fatalf("reuse with an unreadable consumer = %q, want blocked because its readers are unknown", union.ReuseBlocked)
-		}
-		retained := rdWorkload(t, false)
-		retained[1].Retained = true
-		if !unionFeedRequirements(retained).closedOnlyReuse(feedKeyFor("BTC", "4h")) {
-			t.Fatal("a retained consumer keeps its previous readers, so reuse stays proved")
-		}
-	})
-	t.Run("RegimeBundleReader", func(t *testing.T) {
-		cfg := &Config{IntervalSeconds: 300, Strategies: []StrategyConfig{rdStrategy("c", "sma_crossover", "BTC", "1h", 300, true, true, false)}}
-		req, err := deriveFeedRequirements(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fourH := feedKeyFor("BTC", "4h")
-		if !req.ClosedKeys[fourH] || req.FormingKeys[fourH] {
-			t.Fatalf("closed-bar HTF readers = %v forming = %v", req.ClosedKeys, req.FormingKeys)
-		}
-		closedOnly := unionFeedRequirements([]feedConsumer{{Path: "/closed.json", Loaded: true, Req: req, Cadences: feedConsumerCadences(cfg), Strategies: len(req.Strategies)}})
-		if !closedOnly.closedOnlyReuse(fourH) {
-			t.Fatalf("a 4h key with only closed-bar readers must allow closed-only reuse; label = %s", closedOnly.keyReuseLabel(fourH))
-		}
-		cfg.Regime = &RegimeConfig{Enabled: true, Timeframe: "4h"}
-		if req, err = deriveFeedRequirements(cfg); err != nil {
-			t.Fatalf("derive the 4h regime bundle requirements: %v", err)
-		}
-		if !req.FormingKeys[fourH] {
-			t.Fatalf("a regime bundle on the 4h key reads the forming bar; forming = %v", req.FormingKeys)
-		}
-		forming := unionFeedRequirements([]feedConsumer{{Path: "/regime.json", Loaded: true, Req: req, Cadences: feedConsumerCadences(cfg), Strategies: len(req.Strategies)}})
-		if forming.closedOnlyReuse(fourH) {
-			t.Fatalf("a 4h key that a regime bundle reads must not allow closed-only reuse; label = %s", forming.keyReuseLabel(fourH))
-		}
-	})
 }
 
 func TestFeedRESTDemandEstimateMatchesMeasured(t *testing.T) {

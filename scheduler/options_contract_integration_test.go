@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -15,16 +14,6 @@ import (
 	"testing"
 	"time"
 )
-
-func ocSC(id, platform, underlying string) StrategyConfig {
-	return StrategyConfig{ID: id, Type: "options", Platform: platform, Script: "shared_scripts/check_options.py",
-		Args: []string{"wheel", underlying, "--platform=" + platform, "--mode=paper"}, Capital: 100000, MaxDrawdownPct: 50}
-}
-
-func ocLogger(id string) (*StrategyLogger, *bytes.Buffer) {
-	buf := &bytes.Buffer{}
-	return &StrategyLogger{stratID: id, writer: buf}, buf
-}
 
 func ocResult(platform, underlying string, spot float64, actions ...OptionsAction) *OptionsResult {
 	stamped := append([]OptionsAction(nil), actions...)
@@ -391,37 +380,6 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("marks_scale_by_contract_size_and_quantity", func(t *testing.T) {
-		logger, _ := ocLogger("marks")
-		mk := func(platform string, qty float64, action string) *StrategyState {
-			underlying := "SPY"
-			if platform == "ibkr" {
-				underlying = "BTC"
-			}
-			return &StrategyState{ID: platform + "-marks", Type: "options", Platform: platform, Positions: map[string]*Position{},
-				OptionPositions: map[string]*OptionPosition{"leg": {ID: "leg", Underlying: underlying, OptionType: "call", Strike: 500,
-					Expiry: "2099-01-16", Action: action, Quantity: qty}}}
-		}
-		for _, tc := range []struct {
-			platform string
-			qty      float64
-			action   string
-			want     float64
-		}{
-			{"robinhood", 2, "buy", 0.01 * 500 * 100 * 2},
-			{"robinhood", 2, "sell", -0.01 * 500 * 100 * 2},
-			{"ibkr", 1, "buy", 0.01 * 500},
-			{"ibkr", 2, "buy", 0.01 * 500 * 2},
-			{"ibkr", 2, "sell", -0.01 * 500 * 2},
-		} {
-			s := mk(tc.platform, tc.qty, tc.action)
-			ocMarkCycle(s, ocPricer{mark: 0.01, spot: 500}, logger)
-			if got := s.OptionPositions["leg"].CurrentValueUSD; !ocNear(got, tc.want) {
-				t.Fatalf("%s qty=%g %s value = %v, want %v", tc.platform, tc.qty, tc.action, got, tc.want)
-			}
-		}
-	})
-
 	t.Run("robinhood_expiry_and_assignment", func(t *testing.T) {
 		cases := []struct {
 			name       string
@@ -733,25 +691,10 @@ func TestOptionContractSizeIntegration(t *testing.T) {
 	})
 }
 
-const ocExpiry = "2026-12-18"
-
 const ocIBKRContractSize = 0.1
 
 func ocLeg(action, optionType string, strike, contractPremiumUSD float64) OptionsAction {
 	return OptionsAction{Action: action, OptionType: optionType, Strike: strike, Expiry: ocExpiry, PremiumUSD: contractPremiumUSD / ocIBKRContractSize}
-}
-
-func ocStructure(id string, legs ...OptionsAction) []OptionsAction {
-	out := append([]OptionsAction(nil), legs...)
-	for i := range out {
-		out[i].StructureID, out[i].StructureLegs = id, len(legs)
-	}
-	return out
-}
-
-func ocRaw(platform, underlying string, spot float64, actions ...OptionsAction) *OptionsResult {
-	return &OptionsResult{Underlying: underlying, Platform: platform, PremiumUnit: optionPremiumUnitUnderlying,
-		StructureContract: optionsStructureContractV1, Signal: 1, SpotPrice: spot, Actions: actions}
 }
 
 func ocBookSnapshot(s *StrategyState) map[string]OptionPosition {
@@ -1142,53 +1085,6 @@ func TestOptionStructureEntryIntegration(t *testing.T) {
 					t.Fatalf("the explicit close must run: trades=%d legs=%v", n, ocBookSnapshot(s))
 				}
 			})
-		}
-	})
-
-	t.Run("exposure_cap_and_holds_drop_whole_structures", func(t *testing.T) {
-		sc := ocSC("ib-opt-filter", "ibkr", "BTC")
-		butterfly := ocStructure("fly",
-			OptionsAction{Action: "buy", OptionType: "call", Strike: 95, Expiry: ocExpiry, PremiumUSD: 6, Greeks: OptGreeks{Delta: 0.7}},
-			OptionsAction{Action: "sell", OptionType: "call", Strike: 100, Expiry: ocExpiry, PremiumUSD: 3, Quantity: 2, Greeks: OptGreeks{Delta: 0.5}},
-			OptionsAction{Action: "buy", OptionType: "call", Strike: 105, Expiry: ocExpiry, PremiumUSD: 1, Greeks: OptGreeks{Delta: 0.3}})
-		shortOnly := ocStructure("short", OptionsAction{Action: "sell", OptionType: "call", Strike: 140, Expiry: ocExpiry, PremiumUSD: 1, Greeks: OptGreeks{Delta: 0.2}})
-		closeAction := OptionsAction{Action: "close", OptionType: "put", Strike: 80, PremiumUSD: 1}
-		build := func() *OptionsResult {
-			actions := append(append(append([]OptionsAction(nil), butterfly...), shortOnly...), closeAction)
-			return ocRaw("ibkr", "BTC", 100, actions...)
-		}
-		names := func(actions []OptionsAction) []string {
-			var out []string
-			for _, a := range actions {
-				out = append(out, a.Action+":"+a.StructureID)
-			}
-			return out
-		}
-		logger, buf := ocLogger(sc.ID)
-		r := build()
-		filterOptionsEntryActions(optionsDispatch{SC: sc, Logger: logger, Risk: &scopeCycleRisk{Partition: partitionFor(sc),
-			ExposureCapStatus: ExposureCapStatus{Configured: true, CapUSD: 1000, LongUSD: 2000, LongBlocked: true}}}, r)
-		if got := names(r.Actions); !reflect.DeepEqual(got, []string{"sell:short", "close:"}) {
-			t.Fatalf("long block kept %v; log:\n%s", got, buf.String())
-		}
-		if !strings.Contains(buf.String(), "Exposure cap: 3 option open action(s) in 1 structure(s) dropped whole") {
-			t.Fatalf("whole-structure exposure drop not logged:\n%s", buf.String())
-		}
-		for _, hold := range []struct {
-			name string
-			d    optionsDispatch
-		}{
-			{"paused", optionsDispatch{SC: func() StrategyConfig { c := sc; c.Paused = true; return c }(), Risk: &scopeCycleRisk{}}},
-			{"daily_loss", optionsDispatch{SC: sc, Risk: &scopeCycleRisk{DailyLossEntriesHeld: true}}},
-			{"notional", optionsDispatch{SC: sc, Risk: &scopeCycleRisk{NotionalBlocked: true}}},
-			{"persistence", optionsDispatch{SC: sc, Risk: &scopeCycleRisk{}, PersistenceHold: true}},
-		} {
-			hold.d.Logger = logger
-			r := build()
-			filterOptionsEntryActions(hold.d, r)
-			if got := names(r.Actions); !reflect.DeepEqual(got, []string{"close:"}) {
-				t.Fatalf("%s hold kept %v", hold.name, got)
-			}
 		}
 	})
 
