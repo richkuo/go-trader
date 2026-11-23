@@ -481,7 +481,7 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 		if !sc.CircuitBreakerEnabled() {
 			source := "explicit"
 			if sc.CircuitBreaker == nil && sc.paperCircuitBreakerOff {
-				source = "root paper_circuit_breakers:false"
+				source = "paper_circuit_breakers is not true"
 			}
 			fmt.Fprintf(&b, "  circuit_breaker:     off (%s) — drawdown + consecutive-loss halt disabled\n", source)
 		} else if ov := circuitBreakerOverrideSummary(sc); ov != "" {

@@ -538,7 +538,7 @@ func (c *Config) NotifyPaperCircuitBreakersEnabled() bool {
 
 func (c *Config) PaperCircuitBreakersEnabled() bool {
 	if c == nil || c.PaperCircuitBreakers == nil {
-		return true
+		return false
 	}
 	return *c.PaperCircuitBreakers
 }

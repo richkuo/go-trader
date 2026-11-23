@@ -69,12 +69,17 @@ func TestPaperCircuitBreakersRootKeyLoadedConfigIntegration(t *testing.T) {
 
 	defaultCfg := loadPaperCBPolicyConfig(t, nil, paperCBPolicyStrategy("paper-default", "paper", nil))
 	absentAllowed, absentLatched := paperCBPolicyCheckRisk(t, defaultCfg.Strategies[0])
-	if absentAllowed || !absentLatched {
-		t.Fatalf("paper strategy with the root key absent: allowed=%v latched=%v, want blocked and latched", absentAllowed, absentLatched)
+	if !absentAllowed || absentLatched {
+		t.Fatalf("paper strategy with the root key absent: allowed=%v latched=%v, want allowed and not latched", absentAllowed, absentLatched)
+	}
+	onCfg := loadPaperCBPolicyConfig(t, map[string]interface{}{"paper_circuit_breakers": true}, paperCBPolicyStrategy("paper-default", "paper", nil))
+	rootOnAllowed, rootOnLatched := paperCBPolicyCheckRisk(t, onCfg.Strategies[0])
+	if rootOnAllowed || !rootOnLatched {
+		t.Fatalf("paper strategy with paper_circuit_breakers=true: allowed=%v latched=%v, want blocked and latched", rootOnAllowed, rootOnLatched)
 	}
 
-	inspectDefault := formatStrategyInspection(byID["paper-default"], map[string]bool{}, cfg, nil)
-	if !strings.Contains(inspectDefault, "off (root paper_circuit_breakers:false)") || strings.Contains(inspectDefault, "off (explicit)") {
+	inspectDefault := formatStrategyInspection(defaultCfg.Strategies[0], map[string]bool{}, defaultCfg, nil)
+	if !strings.Contains(inspectDefault, "off (paper_circuit_breakers is not true)") || strings.Contains(inspectDefault, "off (explicit)") {
 		t.Fatalf("inspect of a root-disabled paper breaker must name the root key:\n%s", inspectDefault)
 	}
 	inspectOff := formatStrategyInspection(byID["paper-off"], map[string]bool{"circuit_breaker": true}, cfg, nil)

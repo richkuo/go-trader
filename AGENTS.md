@@ -36,7 +36,7 @@ After source edits regenerate+verify.Limits:this file<17500B(target 17000),rule 
 - UI:lock `mu>strategiesMu`,loopback only(container wildcard+token).
 - `config*.go`:`close_strategy` canonical,unknown-key guard.
   - On-chain TP gate!=`len(tiers)>0`.
-  - `CircuitBreaker *bool` via accessors ONLY;`paper_circuit_breakers:false`=load-stamped paper-only off(own `circuit_breaker` wins);`notify_paper_circuit_breakers`(default off)gates paper alerts ONLY.
+  - `CircuitBreaker *bool` via accessors ONLY;`paper_circuit_breakers`(default off)=load-stamped paper-only(own `circuit_breaker` wins);`notify_paper_circuit_breakers`(default off)gates paper alerts ONLY.
   - `portfolio_risk.paper`/`paper_sources[].portfolio_risk`:evaluators via `partitionRiskConfig`;nested `paper` rejected.
   - `portfolio_warning.go`:paused off Top Contributors ONLY if flat(`Quantity==0` regular+option).
   - Live `type: options` refused everywhere(`optionsLiveModeConfigError`)

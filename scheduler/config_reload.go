@@ -933,7 +933,7 @@ func formatCircuitBreaker(p *bool) string {
 
 func formatPaperCircuitBreakers(p *bool) string {
 	if p == nil {
-		return "default-on"
+		return "default-off"
 	}
 	if *p {
 		return "on"
