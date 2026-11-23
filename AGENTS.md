@@ -2,8 +2,8 @@ Generated file. Do not edit it. Edit CLAUDE.md and the .claude/rules files it li
 
 # go-trader
 
-Guardrails only;mechanism:SKILL.md,docs/POST_UPDATE_HISTORY.md.Sources:this file+the `.claude/rules/` files listed below;`AGENTS.md`=generated full guide for Codex/Cursor,never hand-edit.
-After source edits regenerate+verify(contract below).Limits:this file<17500B(target 17000),rule file<=8000B,any line<=400B,`AGENTS.md`<=28000B.Shorten,drop no guardrail.
+Guardrails only;mechanism:SKILL.md,docs/POST_UPDATE_HISTORY.md.`AGENTS.md`=generated guide for Codex/Cursor,never hand-edit.
+After source edits regenerate+verify.Limits:this file<17500B(target 17000),rule file<=8000B,any line<=400B,`AGENTS.md`<=28000B.Shorten,drop no guardrail.
 
 ## Agent guide contract
 - Generated: `AGENTS.md`
@@ -36,7 +36,7 @@ After source edits regenerate+verify(contract below).Limits:this file<17500B(tar
 - UI:lock `mu>strategiesMu`,loopback only(container wildcard+token).
 - `config*.go`:`close_strategy` canonical,unknown-key guard.
   - On-chain TP gate!=`len(tiers)>0`.
-  - `CircuitBreaker *bool` via accessors ONLY.
+  - `CircuitBreaker *bool` via accessors ONLY;`paper_circuit_breakers:false`=load-stamped paper-only off(own `circuit_breaker` wins);`notify_paper_circuit_breakers`(default off)gates paper alerts ONLY.
   - `portfolio_risk.paper`/`paper_sources[].portfolio_risk`:evaluators via `partitionRiskConfig`;nested `paper` rejected.
   - `portfolio_warning.go`:paused off Top Contributors ONLY if flat(`Quantity==0` regular+option).
   - Live `type: options` refused everywhere(`optionsLiveModeConfigError`)
