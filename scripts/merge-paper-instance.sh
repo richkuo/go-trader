@@ -514,6 +514,8 @@ def root_value(cfg, key):
         return (v or "").strip() or "rest"
     if key == "role":
         return (v or "").strip() or "scheduler"
+    if key == "paper_circuit_breakers":
+        return v is True
     return v
 
 def dump_root(cfg, key):

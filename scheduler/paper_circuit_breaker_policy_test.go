@@ -137,3 +137,46 @@ func TestPaperCircuitBreakerAlertGateLoadedConfigIntegration(t *testing.T) {
 		t.Fatal("a paper_source strategy must alert with the key true")
 	}
 }
+
+func TestPaperCircuitBreakersHotReloadLoadedConfigIntegration(t *testing.T) {
+	yes := true
+	strategies := func() []map[string]interface{} {
+		return []map[string]interface{}{
+			paperCBPolicyStrategy("paper-default", "paper", nil),
+			paperCBPolicyStrategy("paper-own-on", "paper", &yes),
+		}
+	}
+	latches := func(cfg *Config) map[string]bool {
+		out := map[string]bool{}
+		for _, sc := range cfg.Strategies {
+			_, latched := paperCBPolicyCheckRisk(t, sc)
+			out[sc.ID] = latched
+		}
+		return out
+	}
+	reload := func(active *Config, root map[string]interface{}) {
+		t.Helper()
+		nextRoot := map[string]interface{}{"db_file": active.DBFile}
+		for k, v := range root {
+			nextRoot[k] = v
+		}
+		next := loadPaperCBPolicyConfig(t, nextRoot, strategies()...)
+		state := &AppState{Strategies: map[string]*StrategyState{}}
+		if _, err := applyHotReloadConfig(active, next, state, nil, nil); err != nil {
+			t.Fatalf("applyHotReloadConfig: %v", err)
+		}
+	}
+
+	active := loadPaperCBPolicyConfig(t, nil, strategies()...)
+	if got := latches(active); got["paper-default"] || !got["paper-own-on"] {
+		t.Fatalf("absent key before reload: latched=%v, want paper-default false and paper-own-on true", got)
+	}
+	reload(active, map[string]interface{}{"paper_circuit_breakers": true})
+	if got := latches(active); !got["paper-default"] || !got["paper-own-on"] {
+		t.Fatalf("after reload absent to true: latched=%v, want both true", got)
+	}
+	reload(active, nil)
+	if got := latches(active); got["paper-default"] || !got["paper-own-on"] {
+		t.Fatalf("after reload true to absent: latched=%v, want paper-default false and paper-own-on true", got)
+	}
+}
