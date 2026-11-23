@@ -78,3 +78,34 @@ func TestOptionStructureEntryExposureCapAndHoldsDropWholeStructures(t *testing.T
 		}
 	}
 }
+
+func TestOptionContractSizeMarksScaleByContractSizeAndQuantity(t *testing.T) {
+	logger, _ := ocLogger("marks")
+	mk := func(platform string, qty float64, action string) *StrategyState {
+		underlying := "SPY"
+		if platform == "ibkr" {
+			underlying = "BTC"
+		}
+		return &StrategyState{ID: platform + "-marks", Type: "options", Platform: platform, Positions: map[string]*Position{},
+			OptionPositions: map[string]*OptionPosition{"leg": {ID: "leg", Underlying: underlying, OptionType: "call", Strike: 500,
+				Expiry: "2099-01-16", Action: action, Quantity: qty}}}
+	}
+	for _, tc := range []struct {
+		platform string
+		qty      float64
+		action   string
+		want     float64
+	}{
+		{"robinhood", 2, "buy", 0.01 * 500 * 100 * 2},
+		{"robinhood", 2, "sell", -0.01 * 500 * 100 * 2},
+		{"ibkr", 1, "buy", 0.01 * 500},
+		{"ibkr", 2, "buy", 0.01 * 500 * 2},
+		{"ibkr", 2, "sell", -0.01 * 500 * 2},
+	} {
+		s := mk(tc.platform, tc.qty, tc.action)
+		ocMarkCycle(s, ocPricer{mark: 0.01, spot: 500}, logger)
+		if got := s.OptionPositions["leg"].CurrentValueUSD; !ocNear(got, tc.want) {
+			t.Fatalf("%s qty=%g %s value = %v, want %v", tc.platform, tc.qty, tc.action, got, tc.want)
+		}
+	}
+}
