@@ -252,7 +252,7 @@ func TestUpdateShellScriptSyntax(t *testing.T) {
 	}
 }
 
-const ciFullRunJobs = 19
+const ciFullRunJobs = 21
 
 type ciCountProblem struct {
 	line int

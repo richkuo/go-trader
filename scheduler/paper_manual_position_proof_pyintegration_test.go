@@ -309,7 +309,6 @@ func TestPaperManualVenueGuardPositionProofSchema(t *testing.T) {
 	cfg, dbPath := pmpConfig(e, "proof-schema.json", layout, "pm-legacy")
 	pmpQueue(t, cfg, PendingManualAction{StrategyID: "pm-legacy", Action: "open", Symbol: "BTC", Side: "short", Quantity: 0.01, FillPrice: 100})
 	pmpOnce(e, cfg)
-	pmpOnce(e, cfg)
 	if cols := pmpColumns(t, dbPath, "positions"); !cols["paper_sim_proof"] || !cols["paper_warning_receipts_json"] {
 		t.Fatalf("the migrated file must carry the position columns: %v", cols)
 	}

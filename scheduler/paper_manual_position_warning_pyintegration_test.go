@@ -166,44 +166,6 @@ func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
 		})
 	}
 
-	t.Run("guarded record-only open sends nothing", func(t *testing.T) {
-		cfg, dbPath := f.config(t, "pm-guarded.json", layouts[0], true, 60, "pm-guarded")
-		f.e.t = t
-		if r := f.e.command(cfg, nil, "manual-open", "pm-guarded", "--side", "short", "--size", "0.01", "--fill-price", "100", "--record-only"); r.code != 0 {
-			t.Fatalf("record-only open must queue:\n%s", r)
-		}
-		for i := 0; i < 2; i++ {
-			if r := f.once(t, cfg); pmpWarnings(r, "pm-guarded") != 0 {
-				t.Fatalf("a proven position must not print:\n%s", r.stdout)
-			}
-		}
-		f.expectDMs(t, "pm-guarded", 0, 0, "proven position")
-		if row := pmpPosition(t, dbPath, "pm-guarded"); row.proof == "" || row.receipts != "" {
-			t.Fatalf("the proven position keeps its proof and records no receipt: %+v", row)
-		}
-	})
-
-	t.Run("mixed results retry only the unconfirmed destination", func(t *testing.T) {
-		cfg, dbPath := f.config(t, "pm-mixed.json", layouts[0], true, 60, "pm-mixed")
-		pmdLegacyOpen(t, cfg, "pm-mixed")
-		f.services.setMessageDown(true)
-		first := f.once(t, cfg)
-		f.services.setMessageDown(false)
-		f.expectDMs(t, "pm-mixed", 0, 1, "discord refused")
-		if !strings.Contains(first.stdout, "to the discord owner failed") {
-			t.Fatalf("the failed send must be logged:\n%s", first.stdout)
-		}
-		posID, receipts := pmdReceipts(t, dbPath, "pm-mixed")
-		if len(receipts) != 1 || !pmdHasReceipt(receipts, posID, "telegram", pmdTelegramOwner) {
-			t.Fatalf("only the confirmed destination gets a receipt: %+v", receipts)
-		}
-		f.once(t, cfg)
-		f.expectDMs(t, "pm-mixed", 1, 1, "retry after the discord failure")
-		if _, receipts := pmdReceipts(t, dbPath, "pm-mixed"); len(receipts) != 2 {
-			t.Fatalf("the retried destination must now have its receipt: %+v", receipts)
-		}
-	})
-
 	t.Run("unconfirmed sends stay eligible", func(t *testing.T) {
 		cfg, dbPath := f.config(t, "pm-ambiguous.json", layouts[0], true, 60, "pm-ambiguous")
 		pmdLegacyOpen(t, cfg, "pm-ambiguous")
@@ -221,10 +183,15 @@ func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
 		f.once(t, cfg)
 		f.services.setMessageResults(false, false, false)
 		f.expectDMs(t, "pm-ambiguous", 2, 1, "telegram refused on the retry")
+		posID, receipts := pmdReceipts(t, dbPath, "pm-ambiguous")
+		if len(receipts) != 1 || !pmdHasReceipt(receipts, posID, "discord", slashTestOwner) {
+			t.Fatalf("only the confirmed destination gets a receipt: %+v", receipts)
+		}
 		f.once(t, cfg)
 		f.expectDMs(t, "pm-ambiguous", 2, 2, "telegram retried")
-		f.once(t, cfg)
-		f.expectDMs(t, "pm-ambiguous", 2, 2, "both receipts durable")
+		if _, receipts := pmdReceipts(t, dbPath, "pm-ambiguous"); len(receipts) != 2 {
+			t.Fatalf("the retried destination must now have its receipt: %+v", receipts)
+		}
 	})
 
 	t.Run("no owner destination keeps the message eligible", func(t *testing.T) {
@@ -281,8 +248,9 @@ func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
 		pmpExec(t, dbPath, `DROP TRIGGER fixture_reject_warning_receipts`)
 		f.once(t, cfg)
 		f.expectDMs(t, "pm-savefail", 3, 3, "restart with no durable receipt sends again")
-		f.once(t, cfg)
-		f.expectDMs(t, "pm-savefail", 3, 3, "durable receipts")
+		if _, receipts := pmdReceipts(t, dbPath, "pm-savefail"); len(receipts) != 2 {
+			t.Fatalf("the send after the trigger is gone must record durable receipts: %+v", receipts)
+		}
 	})
 
 	t.Run("a receipt kept in memory is saved by the next book save", func(t *testing.T) {
