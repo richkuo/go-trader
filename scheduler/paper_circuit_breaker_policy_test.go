@@ -107,6 +107,14 @@ func TestPaperCircuitBreakerAlertGateLoadedConfigIntegration(t *testing.T) {
 	if perStrategyCircuitBreakerAlertEnabled(cfg, sourced) {
 		t.Fatal("a paper_source strategy must not alert with the key false")
 	}
+	absentCfg := loadPaperCBPolicyConfig(t, nil,
+		paperCBPolicyStrategy("paper-default", "paper", nil),
+	)
+	absentSourced := absentCfg.Strategies[0]
+	absentSourced.PaperSource = "x"
+	if perStrategyCircuitBreakerAlertEnabled(absentCfg, absentSourced) {
+		t.Fatal("a paper_source strategy must not alert with the key absent")
+	}
 	if perStrategyCircuitBreakerAlertEnabled(nil, byID["paper-default"]) {
 		t.Fatal("a nil config must not alert for paper")
 	}
