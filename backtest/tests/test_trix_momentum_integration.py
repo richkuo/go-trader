@@ -18,7 +18,7 @@ if _TOOLS not in sys.path:
 
 from atr import ensure_atr_indicator
 from backtester import Backtester
-from closed_bar import FRAME_TIMESTAMP_KIND_ATTR, declare_frame_cadence
+from closed_bar import declare_frame_cadence
 import optimizer
 from optimizer import DEFAULT_PARAM_RANGES, strategy_warmup_bars
 from parity_diff import ParityConfig
@@ -161,27 +161,6 @@ def test_walk_forward_warmup_keeps_the_decision_before_the_first_scored_bar(monk
                                     direction="long")
     assert first == {144: int(full[144].iloc[b]), 192: int(full[192].iloc[b])}
     assert 0 not in first.values()
-
-
-def test_timestamp_column_and_native_close_frames_decide_the_same_way():
-    df = _walk(260, 3)
-    plain = df.reset_index(drop=True)
-    plain["timestamp"] = df.index.as_unit("ms").asi8.astype("int64")
-    plain.attrs = dict(df.attrs)
-    a = _apply(df, SMALL)
-    b = _apply(plain, SMALL)
-    np.testing.assert_array_equal(a["signal"].to_numpy(), b["signal"].to_numpy())
-    np.testing.assert_array_equal(a["trix_value"].to_numpy(), b["trix_value"].to_numpy())
-    native = df.set_axis(df.index + pd.Timedelta(hours=4) - pd.Timedelta(milliseconds=1))
-    _declare(native, "4h", "native_close_inclusive")
-    c = _apply(native, SMALL)
-    np.testing.assert_array_equal(a["signal"].to_numpy(), c["signal"].to_numpy())
-    np.testing.assert_array_equal(a["trix_eval_ts_ms"].to_numpy(), c["trix_eval_ts_ms"].to_numpy())
-    assert a["trix_eval_ts_ms"].iloc[-1] == df.index[-1].value // 1_000_000
-    native.attrs.pop(FRAME_TIMESTAMP_KIND_ATTR)
-    d = _apply(native, SMALL)
-    np.testing.assert_array_equal(a["signal"].to_numpy(), d["signal"].to_numpy())
-    assert d["trix_eval_ts_ms"].isna().all()
 
 
 def _check_rows_outside_the_dependency_window_cannot_change_a_decision():

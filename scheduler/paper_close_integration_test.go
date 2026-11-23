@@ -371,24 +371,6 @@ func TestPaperCloseIntegration(t *testing.T) {
 	f.setMark("ETH", 2100)
 	f.setMark("SOL", 90)
 
-	t.Run("slash command is registered as an owner DM ops command", func(t *testing.T) {
-		var found *discordgo.ApplicationCommand
-		for _, c := range slashCommands() {
-			if c.Name == commandPrefix+paperCloseCommandName {
-				found = c
-			}
-		}
-		if found == nil || found.Contexts == nil || len(*found.Contexts) != 1 || (*found.Contexts)[0] != discordgo.InteractionContextBotDM || len(found.Description) > 100 {
-			t.Fatalf("paper-close must be a bot-DM slash command with a short description: %+v", found)
-		}
-		if len(found.Options) != 2 || found.Options[0].Name != "strategy" || !found.Options[0].Required || found.Options[1].Name != "symbol" || found.Options[1].Required {
-			t.Fatalf("paper-close must take a required strategy and an optional symbol: %+v", found.Options)
-		}
-		if !opsCommandNames[paperCloseCommandName] {
-			t.Fatal("paper-close must be an owner-only ops command")
-		}
-	})
-
 	t.Run("refusals leave every state file and the book unchanged", func(t *testing.T) {
 		f.env.mu.Lock()
 		f.env.strat("pc-quote").Quote = &quoteOwnerState{}

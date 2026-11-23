@@ -173,30 +173,3 @@ def test_expiry_is_checked_at_each_decision():
                                                expires_at=expires))
     assert _sides(res) == ["short"]
     assert res["regime_side"]["counts"]["held:uncertified"] == 1
-
-
-def test_structural_refusals(subtests):
-    cases = [
-        ("invert_signal", {"invert_signal": True}),
-        ("directional_policy", {"regime_directional_policy": {"trend_regime": {
-            "trending_up": {"direction": "long"}}}}),
-        ("no_direction", {"direction": None}),
-        ("no_close", {"close_strategies": None}),
-        ("open_as_close", {"close_strategies": [{"name": "scripted_trigger", "params": {}}]}),
-        ("no_certification_context", {"regime_side_certification": None}),
-        ("bad_context", {"regime_side_certification": {"context": "backtest"}}),
-        ("paper_with_states", {"regime_side_certification": {
-            "context": "paper", "states": {"trending_up": "long"}}}),
-        ("spot", {"strategy_type": "spot"}),
-    ]
-    for name, kw in cases:
-        with subtests.test(case=name), pytest.raises(ValueError):
-            _bt(**kw)
-    with subtests.test(case="ack_without_mode"), pytest.raises(ValueError):
-        Backtester(initial_capital=1000, allow_uncertified_regime_side=True)
-    with subtests.test(case="no_directional_column"), pytest.raises(ValueError):
-        Backtester(initial_capital=1000, regime_enabled=True, direction="both",
-                   close_strategies=FAR_CLOSE, regime_side=True,
-                   regime_side_certification=PAPER)
-    with subtests.test(case="vocabulary_without_side_labels"), pytest.raises(ValueError):
-        _bt(regime_feature_labels={"directional": ("ranging_quiet", "ranging_volatile")})

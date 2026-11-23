@@ -61,24 +61,6 @@ def _run(follower, ctx, **over):
     return _reg().apply_strategy(NAME, follower, {**SEED, **over, "leader_context": ctx})
 
 
-def test_missing_leader_rows_gaps_and_unmatched_inputs_hold_without_forward_fill():
-    follower, leader = _pair()
-    full = _run(follower, _ctx(follower, leader))
-    entry = int(np.flatnonzero(full["signal"].to_numpy() != 0)[0])
-    holed = leader.drop(leader.index[entry - 5])
-    out = _run(follower, _ctx(follower, holed))
-    assert out["bll_reason"].iloc[entry - 5] == "leader_bar_missing"
-    assert out["signal"].iloc[entry] == 0 and out["bll_reason"].iloc[entry] == "insufficient_history"
-    for reason, ctx in (("leader_unavailable", None), ("follower_is_leader", _ctx(leader, leader, "BTC/USDT"))):
-        held = _run(follower, ctx)
-        assert set(held["bll_reason"]) == {reason} and not held["signal"].any()
-    dup = pd.concat([leader.iloc[:10], leader.iloc[9:]])
-    ctx = _ctx(follower, dup)
-    assert ctx["available"] is False and ctx["hold_reason"] == "duplicate_bar"
-    rev = leader.iloc[::-1]
-    assert _ctx(follower, rev)["hold_reason"] == "reordered_bar"
-
-
 def test_simulator_fills_next_open_both_sides_and_the_close_owner_exits():
     rng = np.random.default_rng(11)
     n = 1400

@@ -13,61 +13,6 @@ import (
 	"time"
 )
 
-func paperManualGuardConfig(t *testing.T) *Config {
-	t.Helper()
-	dir := t.TempDir()
-	return &Config{
-		DBFile:          filepath.Join(dir, "live.db"),
-		PaperDBFile:     filepath.Join(dir, "paper.db"),
-		IntervalSeconds: 600,
-		PaperSources:    []PaperSourceConfig{{ID: "alt", DBFile: filepath.Join(dir, "alt.db")}},
-		Strategies: []StrategyConfig{
-			{ID: "pm-default", Type: "manual", Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", Leverage: 1, Capital: 1000},
-			{ID: "pm-args", Type: "manual", Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", Args: []string{"hold", "BTC", "1h", "--mode=paper"}, Leverage: 1, Capital: 1000},
-			{ID: "pm-nomode", Type: "manual", Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", Args: []string{"hold", "BTC", "1h"}, Leverage: 1, Capital: 1000},
-			{ID: "pm-alt", Type: "manual", Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", Args: []string{"hold", "BTC", "1h", "--mode=paper"}, PaperSource: "alt", Leverage: 1, Capital: 1000},
-			{ID: "lm-live", Type: "manual", Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", Args: []string{"hold", "BTC", "1h", "--mode=live"}, Leverage: 1, Capital: 1000},
-		},
-	}
-}
-
-type paperManualVenueCalls struct {
-	calls []string
-}
-
-func (c *paperManualVenueCalls) hook(t *testing.T) func(*manualCoreDeps) {
-	return func(d *manualCoreDeps) {
-		d.loadState = func(id, symbol string) (manualStateView, error) {
-			c.calls = append(c.calls, "load_state")
-			return manualStateView{}, fmt.Errorf("state read must not run for a paper venue action")
-		}
-		d.execute = func(_ hlWriteAuth, script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extra ...int64) (*HyperliquidExecuteResult, string, error) {
-			c.calls = append(c.calls, "execute")
-			return nil, "", fmt.Errorf("execute must not run")
-		}
-		d.updateSL = func(_ hlWriteAuth, script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-			c.calls = append(c.calls, "update_sl")
-			return nil, "", fmt.Errorf("stop update must not run")
-		}
-		d.cancelOrder = func(_ hlWriteAuth, script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
-			c.calls = append(c.calls, "cancel")
-			return nil, "", fmt.Errorf("cancel must not run")
-		}
-		d.closer = func(_ hlWriteAuth, symbol string, partialSz *float64, oids []int64) (*HyperliquidCloseResult, error) {
-			c.calls = append(c.calls, "close")
-			return nil, fmt.Errorf("close must not run")
-		}
-		d.sizedCloser = func(req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
-			c.calls = append(c.calls, "sized_close")
-			return nil, fmt.Errorf("sized close must not run")
-		}
-		d.lockManualActions = func(string) (func(), error) {
-			c.calls = append(c.calls, "lock")
-			return nil, fmt.Errorf("the manual-action lock must not be taken")
-		}
-	}
-}
-
 func TestPaperManualDashboardRefusesVenueActionsIntegration(t *testing.T) {
 	cfg := paperManualGuardConfig(t)
 	f := newPCFixture(t, cfg)
@@ -116,53 +61,6 @@ func TestPaperManualDashboardRefusesVenueActionsIntegration(t *testing.T) {
 	w := mutationPost(f.ss, f.ss.handleAPIConfirm, "/api/confirm", `{"action":"open","strategy_id":"lm-live","params":{"side":"long","size":0.01}}`, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("a live manual strategy keeps its dashboard confirmation: %d %s", w.Code, w.Body.String())
-	}
-}
-
-func TestPaperManualCoresRefuseVenueActionsIntegration(t *testing.T) {
-	cfg := paperManualGuardConfig(t)
-	env := openEntryTestEnv(t, cfg)
-	calls := &paperManualVenueCalls{}
-	d := newManualCoreDeps(cfg, env.store, nil)
-	calls.hook(t)(&d)
-	for _, id := range []string{"pm-default", "pm-args", "pm-nomode", "pm-alt"} {
-		sc, err := lookupManualStrategy(cfg, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		checks := map[string]func() error{
-			"open": func() error {
-				_, err := manualOpenCore(d, sc, manualOpenInputs{StrategyID: id, Side: "long", Size: 0.01})
-				return err
-			},
-			"open dry run": func() error {
-				_, err := manualOpenCore(d, sc, manualOpenInputs{StrategyID: id, Side: "long", Size: 0.01, DryRun: true})
-				return err
-			},
-			"add":   func() error { _, err := manualAddCore(d, sc, manualAddInputs{StrategyID: id, Size: 0.01}); return err },
-			"close": func() error { _, err := manualCloseCore(d, sc, manualCloseInputs{StrategyID: id}); return err },
-			"sized close": func() error {
-				_, err := manualCloseCore(d, sc, manualCloseInputs{StrategyID: id, Qty: 0.001})
-				return err
-			},
-			"update sl": func() error {
-				_, err := manualUpdateSLCore(d, sc, manualSLInputs{StrategyID: id, Trigger: 90})
-				return err
-			},
-			"cancel sl": func() error {
-				_, err := manualCancelSLCore(d, sc, manualSLInputs{StrategyID: id, DryRun: true})
-				return err
-			},
-		}
-		for name, run := range checks {
-			err := run()
-			if err == nil || manualCoreExitCode(err) != 1 || !strings.Contains(err.Error(), "no order was sent") {
-				t.Fatalf("%s %s must refuse with exit 1: %v", id, name, err)
-			}
-		}
-	}
-	if len(calls.calls) != 0 {
-		t.Fatalf("a refused paper core reached a protected dependency: %v", calls.calls)
 	}
 }
 

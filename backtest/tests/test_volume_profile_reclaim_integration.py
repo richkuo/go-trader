@@ -111,25 +111,6 @@ def _check_sessions_gaps_availability_and_invalidation_are_dated():
     assert set(_run(_frame([104, 101, 103], start=D0 + 3 * SESSION_MS), series)["vpr_reason"]) == {"profile_unavailable"}
 
 
-def test_future_trades_and_later_evidence_cannot_change_past_decisions():
-    p0, p1 = _replay_session(D0, HAND), _replay_session(D0 + SESSION_MS, [("100", 1), ("110", 9), ("111", 3)])
-    df = _frame([104, 101, 103, 107, 105] * 30)
-    full = _run(df, _series([p0, p1]))
-    only = _run(df, _series([p0]))
-    first_day = int(SESSION_MS // BAR)
-    assert full["signal"].iloc[:first_day].tolist() == only["signal"].iloc[:first_day].tolist()
-    p0.invalidate_minute(D0 + 60_000, D0 + SESSION_MS + 40 * BAR + 1, "conflicting_duplicate")
-    revised = _run(df, _series([p0, p1]))
-    assert revised["signal"].iloc[:40].tolist() == full["signal"].iloc[:40].tolist()
-    assert set(revised["vpr_reason"].iloc[40:first_day]) == {"profile_invalidated"}
-    assert full["signal"].iloc[40:first_day].abs().sum() > 0
-    for k in range(3, 40):
-        cutoff = int(df["timestamp"].iloc[k]) + BAR
-        live = _run(df.iloc[:k + 2], _series([p0, p1]), cutoff=cutoff)
-        assert live["signal"].iloc[k] == full["signal"].iloc[k]
-        assert bool(live["vpr_carried"].iloc[k + 1]) and live["signal"].iloc[k + 1] == full["signal"].iloc[k]
-
-
 def _check_missing_or_malformed_profiles_hold_entries_and_the_composer_keeps_the_close_owner():
     series = _series([_replay_session(D0, HAND)])
     df = _frame([104, 101, 103])

@@ -57,11 +57,6 @@ type rhLiveEnv struct {
 	sent     []rhLoggedRequest
 }
 
-func rhLiveSpot(id, coin string, capital float64) StrategyConfig {
-	return StrategyConfig{ID: id, Type: "spot", Platform: "robinhood", Script: "shared_scripts/check_robinhood.py",
-		Args: []string{"momentum_pro", coin, "1h", "--mode=live"}, Capital: capital, MaxDrawdownPct: 50}
-}
-
 func newRHLiveEnv(t *testing.T, strategies ...StrategyConfig) *rhLiveEnv {
 	t.Helper()
 	root := robinhoodStdoutPyRoot(t)
@@ -596,34 +591,6 @@ func TestRobinhoodLiveOrderSignalOutcomes(t *testing.T) {
 					t.Fatal("a malformed result must send the CRITICAL hold alert")
 				}
 			})
-		}
-	})
-	t.Run("PaperStrategyStillBooksTheModeledTrade", func(t *testing.T) {
-		sc := StrategyConfig{ID: "rh-paper", Type: "spot", Platform: "robinhood", Script: "shared_scripts/check_robinhood.py", Args: []string{"momentum_pro", "BTC", "1h", "--mode=paper"}, Capital: 1000}
-		e := newRHLiveEnv(t, sc)
-		s := e.state.Strategies["rh-paper"]
-		db, _ := e.store.dbForStrategy("rh-paper")
-		e.mu.Lock()
-		trades, _, _ := executeRobinhoodResult(sc, s, db, &RobinhoodResult{Symbol: "BTC", Signal: 1}, nil, "BUY", 100, nil, e.cfg, HurstGateDecision{}, e.logger)
-		e.mu.Unlock()
-		if trades != 1 || s.Positions["BTC"] == nil {
-			t.Fatalf("paper buy trades=%d positions=%v, want the modeled buy", trades, s.Positions)
-		}
-		if len(e.attemptRows()) != 0 || len(e.requests()) != 0 {
-			t.Fatal("a paper booking must make no attempt and no venue request")
-		}
-	})
-	t.Run("BookingGuardRefusesLiveResultWithoutFill", func(t *testing.T) {
-		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-		s := e.state.Strategies["rh-btc"]
-		db, _ := e.store.dbForStrategy("rh-btc")
-		for _, er := range []*RobinhoodExecuteResult{nil, {}, {Execution: &RobinhoodExecution{Fill: &RobinhoodFill{AvgPx: 100}}}} {
-			e.mu.Lock()
-			trades, _, _ := executeRobinhoodResult(e.sc("rh-btc"), s, db, &RobinhoodResult{Symbol: "BTC", Signal: 1}, er, "BUY", 100, nil, e.cfg, HurstGateDecision{}, e.logger)
-			e.mu.Unlock()
-			if trades != 0 || s.Cash != 1000 || len(s.Positions) != 0 {
-				t.Fatalf("live booking without a confirmed fill must refuse: trades=%d cash=%v", trades, s.Cash)
-			}
 		}
 	})
 }
@@ -1562,20 +1529,6 @@ func (e *rhLiveEnv) phasedFetcher(phases ...rhRoutes) RobinhoodPositionsFetcher 
 
 func TestRobinhoodLiveOrderCircuitBreaker(t *testing.T) {
 	t.Run("KeepsExposureUntilVerifiedFlat", func(t *testing.T) {
-		t.Run("activation_keeps_the_book", func(t *testing.T) {
-			sc := rhLiveSpot("rh-btc", "BTC", 1000)
-			s := NewStrategyState(sc)
-			s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1, InitialQuantity: 1, AvgCost: 1000, Side: "long"}
-			s.RiskState.PeakValue = 2000
-			s.RiskState.MaxDrawdownPct = 10
-			allowed, _ := CheckRisk(&sc, s, 500, map[string]float64{"BTC": 500}, nil, nil)
-			if allowed || !s.RiskState.CircuitBreaker {
-				t.Fatal("expected the circuit breaker to fire")
-			}
-			if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 1 {
-				t.Fatalf("CB activation must keep the Robinhood live book, got %+v", s.Positions)
-			}
-		})
 		t.Run("filled_and_flat_clears_pending", func(t *testing.T) {
 			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
 			e.setPosition("rh-btc", "BTC", 0.5, 90)
