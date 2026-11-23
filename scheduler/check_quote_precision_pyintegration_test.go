@@ -293,6 +293,8 @@ func (s *qpScheduler) config(strategies []StrategyConfig) string {
 		"log_dir":          filepath.Join(s.dir, "logs"),
 		"log_level":        "debug",
 		"strategies":       strategies,
+
+		"paper_circuit_breakers": true,
 	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

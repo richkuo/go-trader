@@ -724,6 +724,37 @@ assert_contains "$out" "diff: channel-plan discord.channels.hyperliquid-paper=C-
 [[ ! -e "$LIVE_CFG.merge-staged" ]] || fail "--diff must not write a staged config"
 [[ ! -e "$JOURNAL" ]] || fail "--diff must not write a journal"
 
+echo "== paper_circuit_breakers compares by effective value"
+set_cb_root() {
+    python3 - "$1" "$2" <<'PY'
+import json, sys
+p, v = sys.argv[1], sys.argv[2]
+cfg = json.load(open(p))
+cfg.pop("paper_circuit_breakers", None)
+if v == "true":
+    cfg["paper_circuit_breakers"] = True
+elif v == "false":
+    cfg["paper_circuit_breakers"] = False
+json.dump(cfg, open(p, "w"))
+PY
+}
+setup cbeffective
+set_cb_root "$PAPER_CFG" false
+set_cb_root "$LIVE_CFG" absent
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "--diff with paper false and live absent exits 0"
+[[ "$out" != *"refuse-on-difference paper_circuit_breakers"* ]] || { echo "$out" >&2; fail "paper false against live absent is the same effective setting"; }
+set_cb_root "$PAPER_CFG" absent
+set_cb_root "$LIVE_CFG" true
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "--diff with paper absent and live true exits 0"
+assert_contains "$out" "diff: refuse-on-difference paper_circuit_breakers" "paper absent against live true still differs"
+set_cb_root "$PAPER_CFG" true
+set_cb_root "$LIVE_CFG" true
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "--diff with both true exits 0"
+[[ "$out" != *"refuse-on-difference paper_circuit_breakers"* ]] || { echo "$out" >&2; fail "both true is the same setting"; }
+
 echo "== --diff names compose refuses it can see without inspect"
 setup diffchannel
 python3 - "$LIVE_CFG" <<'PY'
