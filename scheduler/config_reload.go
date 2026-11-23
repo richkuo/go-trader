@@ -36,6 +36,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("notify_ratchet_triggers: %s -> %s", formatNotifyRatchetTriggers(cfg.NotifyRatchetTriggers), formatNotifyRatchetTriggers(next.NotifyRatchetTriggers))
 		cfg.NotifyRatchetTriggers = next.NotifyRatchetTriggers
 	}
+	if !boolPtrEqual(cfg.PaperCircuitBreakers, next.PaperCircuitBreakers) {
+		addChange("paper_circuit_breakers: %s -> %s (paper strategies without their own circuit_breaker follow it for new fires only; a latched breaker still drains)", formatPaperCircuitBreakers(cfg.PaperCircuitBreakers), formatPaperCircuitBreakers(next.PaperCircuitBreakers))
+		cfg.PaperCircuitBreakers = next.PaperCircuitBreakers
+	}
 	if !boolPtrEqual(cfg.NotifyPaperCircuitBreakers, next.NotifyPaperCircuitBreakers) {
 		addChange("notify_paper_circuit_breakers: %s -> %s", formatNotifyPaperCircuitBreakers(cfg.NotifyPaperCircuitBreakers), formatNotifyPaperCircuitBreakers(next.NotifyPaperCircuitBreakers))
 		cfg.NotifyPaperCircuitBreakers = next.NotifyPaperCircuitBreakers
@@ -157,6 +161,7 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			}
 		}
 		sc.leverageDefaulted = ns.leverageDefaulted
+		sc.paperCircuitBreakerOff = ns.paperCircuitBreakerOff
 		if sc.Leverage != ns.Leverage {
 			addChange("strategy[%s].leverage: %.2fx -> %.2fx", sc.ID, sc.Leverage, ns.Leverage)
 			sc.Leverage = ns.Leverage
@@ -816,6 +821,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.leverageDefaulted = false
+	sc.paperCircuitBreakerOff = false
 	sc.SizingLeverage = 0
 	sc.MarginPerTradeUSD = nil
 	sc.RiskPerTradePct = nil
@@ -918,6 +924,16 @@ func formatCBThreshold(p *int) string {
 func formatCircuitBreaker(p *bool) string {
 	if p == nil {
 		return "default(on)"
+	}
+	if *p {
+		return "on"
+	}
+	return "off"
+}
+
+func formatPaperCircuitBreakers(p *bool) string {
+	if p == nil {
+		return "default-on"
 	}
 	if *p {
 		return "on"

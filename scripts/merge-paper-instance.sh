@@ -442,6 +442,7 @@ REFUSE_ON_DIFFERENCE = [
     "notify_tp_sl_fills",
     "notify_ratchet_triggers",
     "notify_paper_circuit_breakers",
+    "paper_circuit_breakers",
     "platforms",
     "risk_free_rate",
     "alert_throttle_interval",

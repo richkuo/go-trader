@@ -339,6 +339,7 @@ type Config struct {
 	PaperOnly                bool                         `json:"paper_only,omitempty"`
 
 	NotifyPaperCircuitBreakers *bool `json:"notify_paper_circuit_breakers,omitempty"`
+	PaperCircuitBreakers       *bool `json:"paper_circuit_breakers,omitempty"`
 
 	migrationBaseVersion    int
 	migrationBaseVersionSet bool
@@ -535,6 +536,13 @@ func (c *Config) NotifyPaperCircuitBreakersEnabled() bool {
 	return *c.NotifyPaperCircuitBreakers
 }
 
+func (c *Config) PaperCircuitBreakersEnabled() bool {
+	if c == nil || c.PaperCircuitBreakers == nil {
+		return true
+	}
+	return *c.PaperCircuitBreakers
+}
+
 func (sc *StrategyConfig) NotifyRatchetTriggersEnabled(cfg *Config) bool {
 	if sc != nil && sc.NotifyRatchetTriggers != nil {
 		return *sc.NotifyRatchetTriggers
@@ -543,8 +551,11 @@ func (sc *StrategyConfig) NotifyRatchetTriggersEnabled(cfg *Config) bool {
 }
 
 func (sc *StrategyConfig) CircuitBreakerEnabled() bool {
-	if sc == nil || sc.CircuitBreaker == nil {
+	if sc == nil {
 		return true
+	}
+	if sc.CircuitBreaker == nil {
+		return !sc.paperCircuitBreakerOff
 	}
 	return *sc.CircuitBreaker
 }
@@ -667,6 +678,7 @@ type StrategyConfig struct {
 	sharedWalletPoolBudget      bool                     `json:"-"`
 	sharedWalletModeDeferred    bool                     `json:"-"`
 	leverageDefaulted           bool                     `json:"-"`
+	paperCircuitBreakerOff      bool                     `json:"-"`
 	MaxDrawdownPct              float64                  `json:"max_drawdown_pct"`
 	CircuitBreaker              *bool                    `json:"circuit_breaker,omitempty"`
 	CBDrawdownCooldownMinutes   *int                     `json:"cb_drawdown_cooldown_minutes,omitempty"`
@@ -1219,6 +1231,7 @@ func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool,
 			cfg.Strategies[i].Leverage = 1
 			cfg.Strategies[i].leverageDefaulted = true
 		}
+		cfg.Strategies[i].paperCircuitBreakerOff = !cfg.PaperCircuitBreakersEnabled() && portfolioScopeFor(cfg.Strategies[i]) == ScopePaper
 		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].SizingLeverage == 0 && cfg.Strategies[i].RiskPerTradePct == nil {
 			cfg.Strategies[i].SizingLeverage = cfg.Strategies[i].Leverage
 		}
