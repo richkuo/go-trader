@@ -166,6 +166,27 @@ func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
 		})
 	}
 
+	t.Run("mixed results retry only the unconfirmed destination", func(t *testing.T) {
+		cfg, dbPath := f.config(t, "pm-mixed.json", layouts[0], true, 60, "pm-mixed")
+		pmdLegacyOpen(t, cfg, "pm-mixed")
+		f.services.setMessageDown(true)
+		first := f.once(t, cfg)
+		f.services.setMessageDown(false)
+		f.expectDMs(t, "pm-mixed", 0, 1, "discord refused")
+		if !strings.Contains(first.stdout, "to the discord owner failed") {
+			t.Fatalf("the failed send must be logged:\n%s", first.stdout)
+		}
+		posID, receipts := pmdReceipts(t, dbPath, "pm-mixed")
+		if len(receipts) != 1 || !pmdHasReceipt(receipts, posID, "telegram", pmdTelegramOwner) {
+			t.Fatalf("only the confirmed destination gets a receipt: %+v", receipts)
+		}
+		f.once(t, cfg)
+		f.expectDMs(t, "pm-mixed", 1, 1, "retry after the discord failure")
+		if _, receipts := pmdReceipts(t, dbPath, "pm-mixed"); len(receipts) != 2 {
+			t.Fatalf("the retried destination must now have its receipt: %+v", receipts)
+		}
+	})
+
 	t.Run("unconfirmed sends stay eligible", func(t *testing.T) {
 		cfg, dbPath := f.config(t, "pm-ambiguous.json", layouts[0], true, 60, "pm-ambiguous")
 		pmdLegacyOpen(t, cfg, "pm-ambiguous")
