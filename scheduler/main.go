@@ -2398,7 +2398,9 @@ func main() {
 				}
 				cbManageOnly := false
 				if !allowed {
-					notifyPerStrategyCircuitBreakerWithSnapshot(sc, cbSnapshot, reason, pv, sr.TotalPV, stratDB, notifier, sr.KillSwitchFired)
+					if perStrategyCircuitBreakerAlertEnabled(cfg, sc) {
+						notifyPerStrategyCircuitBreakerWithSnapshot(sc, cbSnapshot, reason, pv, sr.TotalPV, stratDB, notifier, sr.KillSwitchFired)
+					}
 					logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
 					if circuitBreakerPermitsManagement(reason, sc.Platform, sc.Type, hlPosQty) {
 						cbManageOnly = true
@@ -3479,6 +3481,13 @@ func notifyPerStrategyCircuitBreakerWithSnapshot(sc StrategyConfig, snap perStra
 	})
 	notifier.SendToAllChannels(msg)
 	notifier.SendOwnerDM(msg)
+}
+
+func perStrategyCircuitBreakerAlertEnabled(cfg *Config, sc StrategyConfig) bool {
+	if portfolioScopeFor(sc) == ScopeLive {
+		return true
+	}
+	return cfg.NotifyPaperCircuitBreakersEnabled()
 }
 
 func isFreshPerStrategyCircuitBreaker(reason string) bool {

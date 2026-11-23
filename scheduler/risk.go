@@ -1700,6 +1700,10 @@ func recordCircuitBreakerSuppression(sc *StrategyConfig, s *StrategyState, cbEna
 	if s == nil {
 		return
 	}
+	if sc != nil && sc.paperCircuitBreakerOff && sc.CircuitBreaker == nil {
+		circuitBreakerSuppressedWarned.Delete(s.ID)
+		return
+	}
 	r := &s.RiskState
 	drawdownBreached := r.CurrentDrawdownPct > r.MaxDrawdownPct
 	lossBreached := r.ConsecutiveLosses >= lossStreakThreshold
