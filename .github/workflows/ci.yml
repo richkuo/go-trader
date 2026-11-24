@@ -58,7 +58,7 @@ jobs:
         run: cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/go-only"
 
       - name: Start the remaining Go tests
-        run: bash scripts/ci_lane.sh start --ram-tmp go -- go -C "$RUNNER_TEMP/go-only/scheduler" test -skip '^TestFeedWeight' ./...
+        run: bash scripts/ci_lane.sh start --ram-tmp go -- go -C "$RUNNER_TEMP/go-only/scheduler" test -skip '^(TestFeedWeight.*|TestL2BookMixedRecordingKeepsEveryImporter|TestL2BookObservationPipeline|TestOpenInterestObservationPipeline|TestPremiumObservationPipeline|TestQuoteReplayRecordingHarness|TestTradeFlowObservationPipeline|TestV3RecordingSchemaTypesEachKind|TestVolumeProfileObservationPipeline)$' ./...
 
       - uses: astral-sh/setup-uv@v10.3.3
 
@@ -152,7 +152,10 @@ jobs:
         run: go -C scheduler build -tags pyintegration -o /dev/null .
 
       - name: Start the remaining Python-backed Go tests
-        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips main -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestFeedWeightSharedProcesses|TestFeedFundingProofRealCheckScript|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRegimeReadinessContract[A-Za-z]*|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestTunerPreviewHandlerOpenStrategyOverrides|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestChartPatternHTFGate[A-Za-z]*|TestRegimeSide[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*|TestHLAgent[A-Za-z]*|TestPaperChildPriority[A-Za-z]*|TestPaperOnlyConfig[A-Za-z]*|TestPaperManualVenueGuard[A-Za-z]*|TestSlashCommandDaemon[A-Za-z]*|TestTradeReviewRealCandleScript[A-Za-z]*|TestTradeFeedbackAnalysisReal[A-Za-z]*|TestCandleArchivePublisherGoldenParity|TestDashboardCandleIsolation[A-Za-z]*|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' -skip '^(TestPaperManualVenueGuard[A-Za-z]*|TestRegimeReadinessContractIntegration|TestRegimeSide[A-Za-z]*|TestMergePaperInstance|TestFeedWeightSharedProcesses|TestDashboardCandleIsolation[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestRegimeReadinessContractProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./...
+        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips main -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestFeedWeightSharedProcesses|TestFeedFundingProofRealCheckScript|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRegimeReadinessContract[A-Za-z]*|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestTunerPreviewHandlerOpenStrategyOverrides|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestChartPatternHTFGate[A-Za-z]*|TestRegimeSide[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*|TestHLAgent[A-Za-z]*|TestPaperChildPriority[A-Za-z]*|TestPaperOnlyConfig[A-Za-z]*|TestPaperManualVenueGuard[A-Za-z]*|TestSlashCommandDaemon[A-Za-z]*|TestTradeReviewRealCandleScript[A-Za-z]*|TestTradeFeedbackAnalysisReal[A-Za-z]*|TestCandleArchivePublisherGoldenParity|TestDashboardCandleIsolation[A-Za-z]*|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' -skip '^(TestPaperManualVenueGuard[A-Za-z]*|TestRegimeReadinessContractIntegration|TestRegimeSide[A-Za-z]*|TestMergePaperInstance|TestFeedWeightSharedProcesses|TestDashboardCandleIsolation[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestRegimeReadinessContractProcesses|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestTunerPreview[A-Za-z]*|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestFeedFundingProofRealCheckScript|TestChartPatternHTFGate[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestPaperOnlyConfig[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*)$' ./...
+
+      - name: Start the check script tests
+        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips check-scripts -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHTFFilterIntegration[A-Za-z]*|TestTunerPreview[A-Za-z]*|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestFeedFundingProofRealCheckScript|TestChartPatternHTFGate[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestPaperOnlyConfig[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*)$' ./...
 
       - name: Start the Robinhood tests
         run: bash scripts/ci_lane.sh start --ram-tmp --no-skips robinhood -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*)$' ./...
@@ -187,7 +190,7 @@ jobs:
         run: uv sync --compile-bytecode
 
       - name: Start the process cycle tests
-        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips process-cycles -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig)$' ./...
+        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips process-cycles -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestRegimeReadinessContractProcesses$' ./...
 
       - name: Wait for every lane
         if: ${{ !cancelled() }}
@@ -355,6 +358,11 @@ jobs:
       - name: Build
         run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
 
+      - name: Give root the same Go toolchain and build cache
+        run: |
+          sudo ln -sfn "$(command -v go)" /usr/local/bin/go
+          sudo go env -w GOCACHE="$(go env GOCACHE)" GOMODCACHE="$(go env GOMODCACHE)"
+
       - name: Service layout migration fixture (root, systemd)
         run: |
           bash scripts/run_ci_shell_suite.sh \
@@ -424,6 +432,11 @@ jobs:
       - name: Build
         run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
 
+      - name: Give root the same Go toolchain and build cache
+        run: |
+          sudo ln -sfn "$(command -v go)" /usr/local/bin/go
+          sudo go env -w GOCACHE="$(go env GOCACHE)" GOMODCACHE="$(go env GOMODCACHE)"
+
       - name: Service layout migration fixture (root, systemd)
         run: |
           bash scripts/run_ci_shell_suite.sh \
@@ -446,6 +459,11 @@ jobs:
 
       - name: Build
         run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
+
+      - name: Give root the same Go toolchain and build cache
+        run: |
+          sudo ln -sfn "$(command -v go)" /usr/local/bin/go
+          sudo go env -w GOCACHE="$(go env GOCACHE)" GOMODCACHE="$(go env GOMODCACHE)"
 
       - name: Service layout migration fixture (root, systemd)
         run: |

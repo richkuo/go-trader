@@ -6,7 +6,7 @@ OUT=$(mktemp -d "${TMPDIR:-/tmp}/book-harness.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
 
 GO_TRADER_L2BOOK_HARNESS_OUT="$OUT/pipe" GO_TRADER_L2BOOK_MIXED_OUT="$OUT/mixed" \
-    go -C "$ROOT/scheduler" test -run '^(TestL2BookObservationPipeline|TestL2BookMixedRecordingKeepsEveryImporter)$' -count=1 .
+    go -C "$ROOT/scheduler" test -exec "$ROOT/scripts/go_test_without_python.sh" -run '^(TestL2BookObservationPipeline|TestL2BookMixedRecordingKeepsEveryImporter)$' -count=1 .
 
 for f in pipe/harness.json pipe/payload_1.json pipe/payload_2.json pipe/payload_eth.json pipe/payload_batch.json pipe/payload_wide.json \
     pipe/recording/run.manifest.json mixed/run.manifest.json; do

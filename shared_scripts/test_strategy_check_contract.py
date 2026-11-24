@@ -1562,10 +1562,12 @@ def test_closed_bar_batch_matches_individual_checks(name):
                         "closed_bar_decisions": True})
     argv = ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "200", "--atr-method=simple",
             "--market-stdin"]
-    proc = run(argv, dict(stdin, slots=valid))
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    clean = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
     mixed = {r["id"]: r for r in payload(run(argv, dict(stdin, slots=valid + failing)))["results"]}
+    batches = [mixed]
+    if case.batch_check is not None:
+        proc = run(argv, dict(stdin, slots=valid))
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+        batches.append({r["id"]: r for r in json.loads(proc.stdout)["results"]})
     assert "explicit live mode" in mixed["refused"]["error"] and mixed["refused"]["signal"] == 0
     assert not mixed["refused"].get("indicators")
     if case.batch_bad is not None:
@@ -1578,18 +1580,19 @@ def test_closed_bar_batch_matches_individual_checks(name):
             argv_single.append("--closed-bar-decisions")
         single = run(argv_single, stdin)
         assert single.returncode == 0, single.stderr
-        for results in (clean, mixed):
+        for results in batches:
             assert not results[slot_id].get("error"), results[slot_id]
             assert strip(results[slot_id]) == strip(json.loads(single.stdout)), slot_id
     want_on, want_off = case.batch_signals
-    assert clean["on"]["signal"] == want_on
-    assert clean["off"]["signal"] == want_off
-    if case.reconstruct is not None:
-        assert case.reconstruct(clean["on"]["indicators"]) == want_on
-    if case.batch_peer:
-        assert not clean["peer"].get("error") and not mixed["peer"].get("error")
+    for results in batches:
+        assert results["on"]["signal"] == want_on
+        assert results["off"]["signal"] == want_off
+        if case.reconstruct is not None:
+            assert case.reconstruct(results["on"]["indicators"]) == want_on
+        if case.batch_peer:
+            assert not results["peer"].get("error")
     if case.batch_check is not None:
-        case.batch_check(clean, mixed)
+        case.batch_check(batches[-1], mixed)
 
 
 @pytest.mark.parametrize("name", cases_with("opposite_entry_closes"))

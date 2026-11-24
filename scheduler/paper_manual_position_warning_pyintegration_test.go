@@ -128,18 +128,52 @@ func pmdLegacyOpen(t *testing.T, cfgPath, id string) {
 	pmpQueue(t, cfgPath, PendingManualAction{StrategyID: id, Action: "open", Symbol: "BTC", Side: "short", Quantity: 0.01, FillPrice: 100})
 }
 
-func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
+func TestPaperManualVenueGuardPositionLifecycle(t *testing.T) {
 	t.Parallel()
-	layouts := pmpLayouts()
-
-	for _, layout := range layouts {
-		t.Run("lifecycle "+layout.name, func(t *testing.T) {
+	for _, layout := range pmpLayouts() {
+		t.Run(layout.name, func(t *testing.T) {
 			t.Parallel()
 			f := newPMDFixture(t)
 			id := "pm-life-" + strings.ReplaceAll(layout.name, " ", "-")
-			cfg, dbPath := f.config(t, id+".json", layout, true, 60, id)
+			cfg, dbPath := f.config(t, id+".json", layout, true, 60, "pm-proven", "pm-legacy", "pm-gone", id)
+			if r := f.run(t, cfg, "manual-open", "pm-proven", "--side", "short", "--size", "0.01", "--fill-price", "100", "--record-only"); r.code != 0 {
+				t.Fatalf("record-only open must queue:\n%s", r)
+			}
+			store := openMRPStore(t, cfg)
+			queued, err := store.LoadPendingManualActions()
+			store.Close()
+			if err != nil || len(queued) != 1 || queued[0].PaperSimProof == "" || queued[0].SourceRole == "" {
+				t.Fatalf("the guarded producer must stamp its queued row: %v %+v", err, queued)
+			}
+			if !strings.Contains(queued[0].PaperSimProof, `"kind":"record_only"`) || !strings.Contains(queued[0].PaperSimProof, `"action":"open"`) {
+				t.Fatalf("the stamp must name the producer and the action: %s", queued[0].PaperSimProof)
+			}
+			pmdLegacyOpen(t, cfg, "pm-legacy")
+			pmdLegacyOpen(t, cfg, "pm-gone")
+			pmpQueue(t, cfg, PendingManualAction{StrategyID: "pm-gone", Action: "close", Symbol: "BTC", Side: "buy", Quantity: 0.01, FillPrice: 100, IsFullClose: true})
 			pmdLegacyOpen(t, cfg, id)
+
 			first := f.once(t, cfg)
+			if n := pmpWarnings(first, "pm-legacy"); n != 1 {
+				t.Fatalf("a legacy open with no order ids drained in this run must warn once, got %d:\n%s", n, first.stdout)
+			}
+			if n := pmpWarnings(first, "pm-proven"); n != 0 {
+				t.Fatalf("a guarded record-only open queued before the first start must not warn:\n%s", first.stdout)
+			}
+			if n := pmpWarnings(first, "pm-gone"); n != 0 {
+				t.Fatalf("a position opened and closed inside the drain must not warn:\n%s", first.stdout)
+			}
+			proven := pmpPosition(t, dbPath, layout.storage("pm-proven"))
+			legacy := pmpPosition(t, dbPath, layout.storage("pm-legacy"))
+			if !proven.found || proven.posID == "" || !strings.Contains(proven.proof, proven.posID) {
+				t.Fatalf("the drained record-only open must carry proof bound to its position id in the owning file: %+v", proven)
+			}
+			if !legacy.found || legacy.proof != "" {
+				t.Fatalf("the legacy open must have no proof: %+v", legacy)
+			}
+			if gone := pmpPosition(t, dbPath, layout.storage("pm-gone")); gone.found {
+				t.Fatalf("the opened and closed position must be gone: %+v", gone)
+			}
 			if n := pmpWarnings(first, id); n != 1 {
 				t.Fatalf("the drained legacy open must print once, got %d:\n%s", n, first.stdout)
 			}
@@ -148,15 +182,33 @@ func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
 			if !pmdHasReceipt(receipts, posID, "discord", slashTestOwner) || !pmdHasReceipt(receipts, posID, "telegram", pmdTelegramOwner) || len(receipts) != 2 {
 				t.Fatalf("each confirmed destination must have a durable receipt in the owning file: %+v", receipts)
 			}
+
+			if r := f.run(t, cfg, "manual-add", "pm-proven", "--size", "0.01", "--fill-price", "101", "--record-only"); r.code != 0 {
+				t.Fatalf("record-only add must queue:\n%s", r)
+			}
 			second := f.once(t, cfg)
+			if pmpWarnings(second, "pm-proven") != 0 || pmpWarnings(second, "pm-legacy") != 1 {
+				t.Fatalf("after a simulated add the proven position stays quiet and the legacy one prints once per run:\n%s", second.stdout)
+			}
+			afterAdd := pmpPosition(t, dbPath, layout.storage("pm-proven"))
+			if afterAdd.qty < 0.0199 || afterAdd.proof != proven.proof {
+				t.Fatalf("a simulated add must keep the proof: %+v", afterAdd)
+			}
 			if n := pmpWarnings(second, id); n != 1 {
 				t.Fatalf("the startup line must print on each run, got %d:\n%s", n, second.stdout)
 			}
 			f.expectDMs(t, id, 1, 1, "second run with durable receipts")
 
+			pmpQueue(t, cfg, PendingManualAction{StrategyID: "pm-proven", Action: "add", Symbol: "BTC", Side: "short", Quantity: 0.01, FillPrice: 102, ExchangeOrderID: "5501"})
 			pmpQueue(t, cfg, PendingManualAction{StrategyID: id, Action: "close", Symbol: "BTC", Side: "buy", Quantity: 0.01, FillPrice: 100, IsFullClose: true})
 			pmdLegacyOpen(t, cfg, id)
 			third := f.once(t, cfg)
+			if n := pmpWarnings(third, "pm-proven"); n != 1 {
+				t.Fatalf("an add queued by a release that could send it to the venue must make the position warn in that run, got %d:\n%s", n, third.stdout)
+			}
+			if after := pmpPosition(t, dbPath, layout.storage("pm-proven")); after.proof != "" {
+				t.Fatalf("the uncertain add must clear the proof: %+v", after)
+			}
 			if n := pmpWarnings(third, id); n != 2 {
 				t.Fatalf("the old position prints at startup and the reopened one prints after the drain, got %d:\n%s", n, third.stdout)
 			}
@@ -165,8 +217,16 @@ func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
 			if newID == posID || len(newReceipts) != 2 || !pmdHasReceipt(newReceipts, newID, "discord", slashTestOwner) || pmdHasReceipt(newReceipts, posID, "discord", slashTestOwner) {
 				t.Fatalf("the reopened position must start with its own receipts: old=%s new=%s %+v", posID, newID, newReceipts)
 			}
+			if kinds := f.e.venueKinds(); kinds["execute"] != 0 || kinds["limit_open"] != 0 || kinds["cancel"] != 0 {
+				t.Fatalf("the paper runs sent venue writes: %v", kinds)
+			}
 		})
 	}
+}
+
+func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
+	t.Parallel()
+	layouts := pmpLayouts()
 
 	t.Run("mixed results retry only the unconfirmed destination", func(t *testing.T) {
 		t.Parallel()

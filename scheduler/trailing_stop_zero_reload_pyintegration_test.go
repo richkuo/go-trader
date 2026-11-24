@@ -199,6 +199,7 @@ func tszReadPosition(t *testing.T, cfgPath, id string) *Position {
 }
 
 func TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop(t *testing.T) {
+	t.Parallel()
 	root := htfITRoot(t)
 	bin := pyintegrationBinary(t)
 	dir := t.TempDir()

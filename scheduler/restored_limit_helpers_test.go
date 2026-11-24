@@ -11,7 +11,7 @@ func limitTestBoolPtr(b bool) *bool { return &b }
 
 func newLimitTestStateDB(t *testing.T) *StateDB {
 	t.Helper()
-	db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+	db, err := openStateDBFromTemplate(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

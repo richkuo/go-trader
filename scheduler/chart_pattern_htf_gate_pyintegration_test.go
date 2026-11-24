@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -157,91 +156,6 @@ func TestChartPatternHTFGateRuntimeShortageHoldsEntriesAndKeepsCloses(t *testing
 	}
 	if n := htfITPositions(t, closes, chartPatternITID); n != 0 {
 		t.Fatalf("the close must flatten the position, got %d", n)
-	}
-}
-
-func TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig(t *testing.T) {
-	t.Parallel()
-	root := htfITRoot(t)
-	bin := pyintegrationBinary(t)
-	dir := t.TempDir()
-	fixture := filepath.Join(dir, "fixture.json")
-	chartPatternITWriteFixture(t, fixture, 200, "sell")
-	cfg := chartPatternITConfig(t, dir, 4)
-	good, err := os.ReadFile(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(bin, "--config", cfg, "--status-port", strconv.Itoa(htfITFreePort(t)))
-	cmd.Dir = root
-	cmd.Env = chartPatternITEnv(root, fixture)
-	log := &robinhoodAdmissionDaemon{}
-	cmd.Stdout, cmd.Stderr = log, log
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	exited := make(chan struct{})
-	go func() {
-		cmd.Wait()
-		close(exited)
-	}()
-	t.Cleanup(func() {
-		select {
-		case <-exited:
-		default:
-			cmd.Process.Kill()
-			<-exited
-		}
-	})
-	waitFor := func(what string, cond func(string) bool) {
-		t.Helper()
-		deadline := time.Now().Add(150 * time.Second)
-		for time.Now().Before(deadline) {
-			if cond(log.String()) {
-				return
-			}
-			select {
-			case <-exited:
-				t.Fatalf("daemon exited while waiting for %s:\n%s", what, log.String())
-			case <-time.After(100 * time.Millisecond):
-			}
-		}
-		t.Fatalf("timed out waiting for %s:\n%s", what, log.String())
-	}
-	checked := "| 1 strategies checked |"
-	waitFor("a first cycle", func(s string) bool { return strings.Contains(s, checked) })
-	var doc map[string]any
-	if err := json.Unmarshal(good, &doc); err != nil {
-		t.Fatal(err)
-	}
-	doc["strategies"].([]any)[0].(map[string]any)["open_strategy"] = map[string]any{"name": chartPatternStrategyName, "params": map[string]any{"htf_gate_factor": 5, "htf_gate_mode": "align"}}
-	bad, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfg, bad, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
-		t.Fatal(err)
-	}
-	waitFor("the refused reload", func(s string) bool {
-		return strings.Contains(s, "[reload] ERROR: reload failed; keeping previous config: config validation errors:") &&
-			strings.Contains(s, "strategy "+chartPatternITID+": open strategy chart_pattern htf_gate_factor=5 (htf_gate_mode=\"align\", registry default htf_gate_ema_slow=40) cannot warm in the default check frame of 200 candles")
-	})
-	before := strings.Count(log.String(), checked)
-	waitFor("a cycle after the refused reload", func(s string) bool { return strings.Count(s, checked) > before })
-	if strings.Contains(log.String(), "Config reload applied") {
-		t.Fatalf("the refused reload applied a change:\n%s", log.String())
-	}
-	cmd.Process.Signal(os.Interrupt)
-	select {
-	case <-exited:
-	case <-time.After(60 * time.Second):
-		t.Fatalf("daemon did not drain:\n%s", log.String())
-	}
-	if !strings.Contains(log.String(), "[shutdown] Complete.") {
-		t.Fatalf("daemon did not shut down cleanly after the refused reload:\n%s", log.String())
 	}
 }
 

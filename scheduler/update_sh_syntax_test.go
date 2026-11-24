@@ -278,23 +278,24 @@ type ciWorkflowJob struct {
 }
 
 var (
-	ciJobHeader   = regexp.MustCompile(`^  ([A-Za-z0-9_-]+):\s*$`)
-	ciRunKey      = regexp.MustCompile(`^(\s*)(- )?run:\s*(.*)$`)
-	ciStepIf      = regexp.MustCompile(`^\s*(- )?if:`)
-	ciShellKey    = regexp.MustCompile(`^\s*(- )?(shell|defaults):`)
-	ciLaneStart   = regexp.MustCompile(`^bash scripts/ci_lane\.sh start (?:--ram-tmp )?(--no-skips )?([a-z][a-z0-9-]*) -- (.+)$`)
-	ciPyLaneCmd   = regexp.MustCompile(`^go -C scheduler test -v -timeout [0-9]+m -tags pyintegration -run '([^']*)'( -skip '([^']*)')? \./\.\.\.$`)
-	ciRunPattern  = regexp.MustCompile(`-run '([^']*)'`)
-	ciSkipPattern = regexp.MustCompile(`-skip '([^']*)'`)
-	ciSuiteInvoke = regexp.MustCompile(`bash scripts/(test_[A-Za-z0-9_.-]+\.sh)`)
-	ciOmissionMsg = regexp.MustCompile(`^\s*echo "((?:NOTE|note): [^"]*)"`)
-	ciShardName   = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
-	ciShellJobKey = regexp.MustCompile(`^\s*(- )?(strategy|matrix|needs):`)
-	ciStepStart   = regexp.MustCompile(`^      - `)
-	ciStepGate    = regexp.MustCompile(`^        if: \$\{\{ needs\.changes\.outputs\.([a-z][a-z0-9_]*) == 'true' \}\}$`)
-	ciJobGate     = regexp.MustCompile(`^    if: \$\{\{ needs\.changes\.outputs\.([a-z][a-z0-9_]*) == 'true' \}\}$`)
-	ciChangesOut  = regexp.MustCompile(`^      ([a-z][a-z0-9_]*): \$\{\{ steps\.diff\.outputs\.([a-z][a-z0-9_]*) \}\}$`)
-	ciPlainKey    = regexp.MustCompile(`^( *)([A-Za-z0-9_-]+):(?:\s+(.*))?$`)
+	ciJobHeader     = regexp.MustCompile(`^  ([A-Za-z0-9_-]+):\s*$`)
+	ciRunKey        = regexp.MustCompile(`^(\s*)(- )?run:\s*(.*)$`)
+	ciStepIf        = regexp.MustCompile(`^\s*(- )?if:`)
+	ciShellKey      = regexp.MustCompile(`^\s*(- )?(shell|defaults):`)
+	ciLaneStart     = regexp.MustCompile(`^bash scripts/ci_lane\.sh start (?:--ram-tmp )?(--no-skips )?([a-z][a-z0-9-]*) -- (.+)$`)
+	ciPyLaneCmd     = regexp.MustCompile(`^go -C scheduler test -v -timeout [0-9]+m -tags pyintegration -run '([^']*)'( -skip '([^']*)')? \./\.\.\.$`)
+	ciRunPattern    = regexp.MustCompile(`-run '([^']*)'`)
+	ciSkipPattern   = regexp.MustCompile(`-skip '([^']*)'`)
+	ciSuiteInvoke   = regexp.MustCompile(`bash scripts/(test_[A-Za-z0-9_.-]+\.sh)`)
+	ciReplayHarness = regexp.MustCompile(`^(?:GO_TRADER_[A-Z0-9_]+_OUT="\$OUT[^" ]*" )+go -C "\$ROOT/scheduler" test -exec "\$ROOT/scripts/go_test_without_python\.sh" -run '\^(\([A-Za-z0-9|]+\)|[A-Za-z0-9]+)\$' -count=1 \.$`)
+	ciOmissionMsg   = regexp.MustCompile(`^\s*echo "((?:NOTE|note): [^"]*)"`)
+	ciShardName     = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	ciShellJobKey   = regexp.MustCompile(`^\s*(- )?(strategy|matrix|needs):`)
+	ciStepStart     = regexp.MustCompile(`^      - `)
+	ciStepGate      = regexp.MustCompile(`^        if: \$\{\{ needs\.changes\.outputs\.([a-z][a-z0-9_]*) == 'true' \}\}$`)
+	ciJobGate       = regexp.MustCompile(`^    if: \$\{\{ needs\.changes\.outputs\.([a-z][a-z0-9_]*) == 'true' \}\}$`)
+	ciChangesOut    = regexp.MustCompile(`^      ([a-z][a-z0-9_]*): \$\{\{ steps\.diff\.outputs\.([a-z][a-z0-9_]*) \}\}$`)
+	ciPlainKey      = regexp.MustCompile(`^( *)([A-Za-z0-9_-]+):(?:\s+(.*))?$`)
 )
 
 const (
@@ -309,6 +310,7 @@ const (
 	ciPyBinaryLine  = "go -C scheduler build -tags pyintegration -o /dev/null ."
 	ciRaceBuildLine = "go -C scheduler test -race -run '^$' ."
 	ciGoOnlyCopy    = `cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/go-only"`
+	ciReplayExec    = `go -C "$ROOT/scheduler" test -exec "$ROOT/scripts/go_test_without_python.sh" -run `
 	ciGoOnlyTest    = `go -C "$RUNNER_TEMP/go-only/scheduler" test `
 )
 
@@ -1090,13 +1092,104 @@ func checkGoOnlyCheckout(t *testing.T, job *ciWorkflowJob) {
 	}
 }
 
-func ciFeedWeightPattern(t *testing.T, name, flag string, re *regexp.Regexp, line string) *regexp.Regexp {
+func ciFeedWeightPattern(t *testing.T, name, flag, want string, re *regexp.Regexp, line string) {
 	t.Helper()
 	m := re.FindAllStringSubmatch(line, -1)
-	if strings.Count(line, flag+" ") != 1 || len(m) != 1 || m[0][1] != ciFeedWeightFilter {
-		t.Fatalf("job %s must pass %s '%s' exactly once, so the go and go-race filters stay complementary: %s", name, flag, ciFeedWeightFilter, line)
+	if strings.Count(line, flag+" ") != 1 || len(m) != 1 || m[0][1] != want {
+		t.Fatalf("job %s must pass %s '%s' exactly once, so the go filter removes only tests that go-race or a replay suite runs: %s", name, flag, want, line)
 	}
-	return compilePyIntegrationPattern(t, name, flag, m[0][1])
+}
+
+func readReplaySuiteTests(t *testing.T, jobs map[string]*ciWorkflowJob, repoRoot string) []string {
+	t.Helper()
+	job := requireCIJob(t, jobs, ciShellSuitesJob)
+	if !job.docsGate || job.jobGate != "" {
+		t.Fatalf("job %s must carry needs: changes and the code condition, never a suite gate, so it runs the replay suites on every code change", ciShellSuitesJob)
+	}
+	var names []string
+	commands := map[string][]string{}
+	for si, step := range job.logical {
+		if job.gates[si] != "" {
+			continue
+		}
+		for _, line := range step {
+			m := ciSuiteInvoke.FindStringSubmatch(line)
+			if m == nil || !strings.HasSuffix(m[1], "_replay.sh") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(repoRoot, "scripts", m[1]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := strings.ReplaceAll(string(data), "\\\n    ", "")
+			if !strings.HasPrefix(text, "#!/usr/bin/env bash\nset -euo pipefail\n") {
+				t.Fatalf("scripts/%s must start with set -euo pipefail, so a failing recording test fails the suite", m[1])
+			}
+			commands[m[1]] = strings.Split(text, "\n")
+			for _, cmd := range commands[m[1]] {
+				if h := ciReplayHarness.FindStringSubmatch(cmd); h != nil {
+					names = append(names, strings.Split(strings.Trim(h[1], "()"), "|")...)
+				}
+			}
+		}
+	}
+	sort.Strings(names)
+	suites := make([]string, 0, len(commands))
+	for suite := range commands {
+		suites = append(suites, suite)
+	}
+	sort.Strings(suites)
+	for _, suite := range suites {
+		for _, cmd := range commands[suite] {
+			for _, name := range names {
+				if strings.Contains(cmd, name) && !strings.Contains(cmd, ciReplayExec) {
+					t.Errorf("scripts/%s runs the recording test %s without %q: %s", suite, name, ciReplayExec, cmd)
+				}
+			}
+		}
+	}
+	return names
+}
+
+func checkReplaySuiteTests(t *testing.T, names []string, schedDir string) {
+	t.Helper()
+	if len(names) == 0 {
+		t.Fatalf("job %s runs no recording test through a replay suite", ciShellSuitesJob)
+	}
+	ordinary := build.Default
+	ordinary.GOOS = "linux"
+	ordinary.GOARCH = "amd64"
+	ordinary.CgoEnabled = true
+	ordinary.BuildTags = nil
+	paths, err := filepath.Glob(filepath.Join(schedDir, "*_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	declared := map[string]bool{}
+	for _, path := range paths {
+		ok, err := ordinary.MatchFile(schedDir, filepath.Base(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			continue
+		}
+		for _, name := range goTestRunnersInFile(t, fset, path) {
+			declared[name] = true
+		}
+	}
+	for i, name := range names {
+		if i > 0 && names[i-1] == name {
+			t.Errorf("two replay suite commands run the recording test %s with only output variables", name)
+		}
+		if !declared[name] {
+			t.Errorf("a replay suite runs %s, but the ordinary build of the scheduler package does not declare it", name)
+		}
+		if regexp.MustCompile(ciFeedWeightFilter).MatchString(name) {
+			t.Errorf("the replay suite test %s matches the feed weight filter %q", name, ciFeedWeightFilter)
+		}
+	}
 }
 
 func checkFeedWeightSplit(t *testing.T, jobs map[string]*ciWorkflowJob, schedDir string, shards []ciPyIntegrationShard) {
@@ -1117,8 +1210,12 @@ func checkFeedWeightSplit(t *testing.T, jobs map[string]*ciWorkflowJob, schedDir
 	if strings.Contains(raceLine, "-skip") || !strings.Contains(raceLine, " -race ") || !strings.Contains(raceLine, " -count=1 ") || !strings.HasSuffix(raceLine, " .") {
 		t.Fatalf("the go-race feed weight command must pass -race and -count=1, no -skip, and name the package .: %s", raceLine)
 	}
-	skip := ciFeedWeightPattern(t, "go", "-skip", ciSkipPattern, goLine)
-	run := ciFeedWeightPattern(t, "go-race", "-run", ciRunPattern, raceLine)
+	replayed := readReplaySuiteTests(t, jobs, filepath.Dir(schedDir))
+	checkReplaySuiteTests(t, replayed, schedDir)
+	ciFeedWeightPattern(t, "go", "-skip", "^(TestFeedWeight.*|"+strings.Join(replayed, "|")+")$", ciSkipPattern, goLine)
+	ciFeedWeightPattern(t, "go-race", "-run", ciFeedWeightFilter, ciRunPattern, raceLine)
+	skip := regexp.MustCompile(ciFeedWeightFilter)
+	run := regexp.MustCompile(ciFeedWeightFilter)
 
 	ordinary := build.Default
 	ordinary.GOOS = "linux"

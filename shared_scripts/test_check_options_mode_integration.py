@@ -149,7 +149,6 @@ MID_RANK_CLOSES = [round(100 * math.exp(0.01 * math.sin(i * 1.7) + 0.01 * math.c
 LOW_RANK_CLOSES = [round(100 * math.exp((0.05 if i < 70 else 0.005) * math.sin(i * 1.7)), 6) for i in range(90)]
 FLAT_RANGE_CLOSES = [100.0, 200.0] * 20
 VOL_PLATFORMS = {
-    "binanceus": ("BTC", 365, [0.631, 78.8]),
     "ibkr": ("BTC", 365, [0.631, 78.8]),
     "robinhood": ("SPY", 252, [0.5243, 78.8]),
 }

@@ -94,7 +94,6 @@ uv run --no-sync python backtest/candidates/chart_pattern_2015/run_study.py sele
 uv run --no-sync python backtest/candidates/chart_pattern_2015/run_study.py judge --cache-db <new path> --work-dir <dir> --workers <n>
 uv run --no-sync python backtest/candidates/chart_pattern_2015/run_study.py verdict
 uv run --no-sync python backtest/candidates/chart_pattern_2015/run_study.py render --check
-uv run --no-sync python -m pytest backtest/tests/test_chart_pattern_2015_integration.py -q
 go -C scheduler build -o <scratch>/go-trader . && <scratch>/go-trader inspect --config backtest/candidates/chart_pattern_2015/arms/ratchet_both/f4.json --all
 ```
 

@@ -95,7 +95,7 @@ func rhIdentityOpen(t *testing.T, cfg *Config) *StateStore {
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	store, err := OpenStateStore(layout, ident)
+	store, err := openStateStoreWith(layout, ident, openStateDBFromTemplate)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
