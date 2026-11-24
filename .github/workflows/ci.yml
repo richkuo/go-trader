@@ -65,8 +65,14 @@ jobs:
       - name: Build the Python-backed Go tests once for every lane
         run: go -C scheduler test -tags pyintegration -run '^$' ./...
 
+      - name: Build the Python-backed binary once for every lane
+        run: go -C scheduler build -tags pyintegration -o /dev/null .
+
       - name: Start the feed and quote tests
         run: bash scripts/ci_lane.sh start --no-skips feed-quotes -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestFeedWeightSharedProcesses|TestDashboardCandleIsolation[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./...
+
+      - name: Start the Robinhood order tests
+        run: bash scripts/ci_lane.sh start --no-skips robinhood-orders -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestRobinhoodLiveOrder[A-Za-z]*$' ./...
 
       - name: Start the regime and update helper tests
         run: bash scripts/ci_lane.sh start --no-skips regime-gates -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractIntegration|TestRegimeSide[A-Za-z]*|TestUpdateHelpersEnvfileParsing790)$' ./...
@@ -131,11 +137,14 @@ jobs:
       - name: Build the Python-backed Go tests once for every lane
         run: go -C scheduler test -tags pyintegration -run '^$' ./...
 
+      - name: Build the Python-backed binary once for every lane
+        run: go -C scheduler build -tags pyintegration -o /dev/null .
+
       - name: Start the remaining Python-backed Go tests
         run: bash scripts/ci_lane.sh start --no-skips main -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestFeedWeightSharedProcesses|TestFeedFundingProofRealCheckScript|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRegimeReadinessContract[A-Za-z]*|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestTunerPreviewHandlerOpenStrategyOverrides|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestChartPatternHTFGate[A-Za-z]*|TestRegimeSide[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*|TestHLAgent[A-Za-z]*|TestPaperChildPriority[A-Za-z]*|TestPaperOnlyConfig[A-Za-z]*|TestPaperManualVenueGuard[A-Za-z]*|TestSlashCommandDaemon[A-Za-z]*|TestTradeReviewRealCandleScript[A-Za-z]*|TestTradeFeedbackAnalysisReal[A-Za-z]*|TestCandleArchivePublisherGoldenParity|TestDashboardCandleIsolation[A-Za-z]*|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' -skip '^(TestPaperManualVenueGuard[A-Za-z]*|TestRegimeReadinessContractIntegration|TestRegimeSide[A-Za-z]*|TestMergePaperInstance|TestFeedWeightSharedProcesses|TestDashboardCandleIsolation[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestRegimeReadinessContractProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./...
 
       - name: Start the Robinhood tests
-        run: bash scripts/ci_lane.sh start --no-skips robinhood -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*)$' ./...
+        run: bash scripts/ci_lane.sh start --no-skips robinhood -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*)$' ./...
 
       - name: Start the paper merge suite
         if: ${{ needs.changes.outputs.merge_paper == 'true' }}

@@ -303,6 +303,7 @@ const (
 	ciLaneScript    = "scripts/ci_lane.sh"
 	ciLaneJoin      = "bash scripts/ci_lane.sh join"
 	ciPyBuildLine   = "go -C scheduler test -tags pyintegration -run '^$' ./..."
+	ciPyBinaryLine  = "go -C scheduler build -tags pyintegration -o /dev/null ."
 	ciRaceBuildLine = "go -C scheduler test -race -run '^$' ."
 	ciGoOnlyCopy    = `cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/go-only"`
 	ciGoOnlyTest    = `go -C "$RUNNER_TEMP/go-only/scheduler" test `
@@ -940,7 +941,7 @@ func readPyIntegrationShard(t *testing.T, name string, job *ciWorkflowJob) []ciP
 	}
 	for _, step := range job.logical {
 		for _, line := range step {
-			if !strings.Contains(line, "pyintegration") || line == ciPyBuildLine {
+			if !strings.Contains(line, "pyintegration") || line == ciPyBuildLine || line == ciPyBinaryLine {
 				continue
 			}
 			if !strings.HasPrefix(line, "bash "+ciLaneScript+" start ") {

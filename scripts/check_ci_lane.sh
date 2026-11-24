@@ -68,17 +68,16 @@ fresh missing
 expect 0 "start of a command that does not exist" start missing -- /nonexistent/command
 expect 1 "join with a command that does not exist" join
 
-fresh stopped
-expect 0 "start of a slow lane" start slow -- bash -c 'echo slow lane output; sleep 20'
-bash "$lane" join >"$tmp/stopped.log" 2>&1 &
+fresh slow
+expect 0 "start of a slow lane" start slow -- sleep 20
+expect 0 "start of a quick lane beside it" start quick -- echo quick lane output
+bash "$lane" join >"$tmp/slow.log" 2>&1 &
 pid=$!
-sleep 2
-kill -TERM "$pid"
-rc=0
-wait "$pid" || rc=$?
-out="$(cat "$tmp/stopped.log")"
-[ "$rc" = 143 ] || bad "a stopped join: exit $rc, want 143"
-says "a stopped join" "slow lane output"
+sleep 3
+kill -KILL "$pid"
+wait "$pid" 2>/dev/null
+out="$(cat "$tmp/slow.log")"
+says "a join stopped before the slow lane ends" "quick lane output"
 pkill -P "$(cat "$RUNNER_TEMP/ci-lanes/slow/pid")" 2>/dev/null
 
 fresh empty
@@ -93,4 +92,4 @@ expect 2 "no action"
 if [ "$fail" != 0 ]; then
   exit 1
 fi
-echo "PASS: ci lanes (every started lane is joined once; a non-zero exit, a lost lane, a missing command and a forbidden --- SKIP fail the join; a stopped join prints the output of unfinished lanes; a repeated name, a start after the join and an empty join fail)"
+echo "PASS: ci lanes (every started lane is joined once; a non-zero exit, a lost lane, a missing command and a forbidden --- SKIP fail the join; each lane is printed when it ends; a repeated name, a start after the join and an empty join fail)"

@@ -48,16 +48,30 @@ lane_names() {
     done
 }
 
-print_lane() {
-    local name="$1" title="$2"
-    echo "::group::lane $name: $title"
+report_lane() {
+    local name="$1" rc took="unknown" failed=0
+    rc="$(cat "$dir/$name/rc")"
+    if [[ -s "$dir/$name/ended" ]]; then
+        took="$(($(cat "$dir/$name/ended") - $(cat "$dir/$name/started")))s"
+    fi
+    echo "::group::lane $name: exit $rc, $took"
     cat "$dir/$name/log" 2>/dev/null || true
     echo "::endgroup::"
+    if [[ "$rc" != "0" ]]; then
+        echo "::error::lane $name exited $rc after $took"
+        failed=1
+    fi
+    if [[ "$(cat "$dir/$name/no-skips")" != "0" ]] && grep -n -- '--- SKIP' "$dir/$name/log"; then
+        echo "::error::lane $name reported --- SKIP, so a test proved nothing"
+        failed=1
+    fi
+    echo "LANE: $name exit $rc $took"
+    return "$failed"
 }
 
 join_lanes() {
     [[ $# -eq 0 ]] || usage
-    local name rc pid took failed=0 pending
+    local name pid failed=0 pending reported=" "
     local names=()
     while IFS= read -r name; do
         names+=("$name")
@@ -70,38 +84,23 @@ join_lanes() {
         echo "::error::the lanes were joined before"
         exit 1
     fi
-    trap 'for name in "${names[@]}"; do [[ -e "$dir/$name/rc" ]] || print_lane "$name" "stopped before it ended"; done; exit 143' INT TERM
     while :; do
         pending=0
         for name in "${names[@]}"; do
-            [[ -e "$dir/$name/rc" ]] && continue
-            pid="$(cat "$dir/$name/pid" 2>/dev/null)"
-            if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+            [[ "$reported" == *" $name "* ]] && continue
+            if [[ ! -e "$dir/$name/rc" ]]; then
+                pid="$(cat "$dir/$name/pid" 2>/dev/null)"
+                if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+                    pending=1
+                    continue
+                fi
                 [[ -e "$dir/$name/rc" ]] || echo lost >"$dir/$name/rc"
-                continue
             fi
-            pending=1
+            report_lane "$name" || failed=1
+            reported+="$name "
         done
         [[ "$pending" == 1 ]] || break
         sleep 1
-    done
-    trap - INT TERM
-    for name in "${names[@]}"; do
-        rc="$(cat "$dir/$name/rc")"
-        took="unknown"
-        if [[ -s "$dir/$name/ended" ]]; then
-            took="$(($(cat "$dir/$name/ended") - $(cat "$dir/$name/started")))s"
-        fi
-        print_lane "$name" "exit $rc, $took"
-        if [[ "$rc" != "0" ]]; then
-            echo "::error::lane $name exited $rc after $took"
-            failed=1
-        fi
-        if [[ "$(cat "$dir/$name/no-skips")" != "0" ]] && grep -n -- '--- SKIP' "$dir/$name/log"; then
-            echo "::error::lane $name reported --- SKIP, so a test proved nothing"
-            failed=1
-        fi
-        echo "LANE: $name exit $rc $took"
     done
     exit "$failed"
 }
