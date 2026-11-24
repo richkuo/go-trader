@@ -866,16 +866,20 @@ func (o *marketFeedOwner) recordsFailed(coin string, seq uint64, err error, run 
 func (o *marketFeedOwner) publishFundingRecords(ctx context.Context, coin string, seq uint64, run feedFundingRun, startMs int64, pending *feedFundingRun, now time.Time) {
 	from := max(run.StartMs, startMs)
 	records := trimFundingRecords(run.Records, from)
+	proved := from == startMs
 	if o.commitFunding(coin, true, seq, func(f *feedFunding) {
 		f.Records, f.HasRecords, f.RecordsErr = records, true, ""
 		f.RecordsFromMs, f.RecordsToMs, f.RecordsThroughMs = from, run.EndMs, feedFundingThrough(records, run.EndMs)
 		f.RecordsFetchedAt, f.FetchedAt = now, now
-		f.waitingForBars, f.recordsLimited, f.recordsWeightHeld = false, false, false
+		f.waitingForBars, f.recordsLimited = false, false
+		if proved {
+			f.recordsWeightHeld = false
+		}
 		f.run = pending
-		if from == startMs && pending == nil {
+		if proved && pending == nil {
 			f.loadProgressAt = time.Time{}
 		}
-	}) {
+	}) && proved {
 		o.validateFundingInput(ctx, coin)
 	}
 }

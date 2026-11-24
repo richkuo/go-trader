@@ -1744,3 +1744,232 @@ func TestFeedFundingWiderLoadIsVisibleBehindTails(t *testing.T) {
 	}
 	t.Fatal("the wider range was never proved with room")
 }
+
+func fcCountWeight(alerts []string, kind string) int {
+	n := 0
+	for _, a := range alerts {
+		if strings.HasPrefix(a, "**MARKET FEED WEIGHT "+kind+"**") {
+			n++
+		}
+	}
+	return n
+}
+
+func fcListsFunding(f *fcFixture, name string) bool {
+	for _, got := range f.owner.FundingLoading() {
+		if got == name {
+			return true
+		}
+	}
+	return false
+}
+
+func fcSetWeight(f *fcFixture, reads, weight int) {
+	ws, wr := 0, 200
+	f.ledger.setLimits(&feedBudgetConfig{PerMinute: reads, Startup: reads, WeightPerMinute: &weight, WeightStartup: &ws, WeightReserve: &wr})
+}
+
+func fcTailDue(f *fcFixture, deadline int64) bool {
+	entry := f.owner.fundingEntry("BTC")
+	now := time.Unix(deadline, 0).UTC().Add(feedSealSettleDelay)
+	if entry.RecordsThroughMs < deadline*1000 {
+		return true
+	}
+	return now.Add(feedSealPrepareBudget).Sub(entry.RecordsFetchedAt) > feedFundingTTL
+}
+
+func TestFeedFundingWeightRecoveryFollowsProvedStart(t *testing.T) {
+	t.Run("WiderTailAndFirstPage", func(t *testing.T) {
+		t0 := rdBase()
+		f := newFCFixture(t, time.Unix(t0-2000, 0).UTC(), func() []feedConsumer {
+			live, paper := fcStrategies()
+			var readers []StrategyConfig
+			for _, sc := range paper {
+				if sc.ID == "paper-BTC-30m-skew" || sc.ID == "paper-BTC-1h-skew" {
+					readers = append(readers, sc)
+				}
+			}
+			consumers := []feedConsumer{rdConsumer(t, "/live.json", live), rdConsumer(t, "/paper.json", readers)}
+			for i := range consumers {
+				consumers[i].Req.AccountingCoins = nil
+			}
+			return consumers
+		})
+		for d := t0; d < t0+600; d += 75 {
+			f.seal(d)
+		}
+		narrow := f.owner.fundingEntry("BTC")
+		if !narrow.HasRecords || fcListsFunding(f, "funding:BTC") {
+			t.Fatalf("loading = %v after the warm-up, want complete BTC records", f.owner.FundingLoading())
+		}
+		f.widen("1h", 3000+220)
+		reload := f.ctx
+		f.ctx = withFeedLedger(context.Background(), newFeedRequestLedger(nil, false, f.clock.Now))
+		done := f.owner.ApplyGeneration(f.ctx, unionFeedRequirements(f.consumers))
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatal("generation did not publish")
+		}
+		f.ctx = reload
+		f.adopt()
+		start := f.owner.fundingRecordStarts(f.owner.fundingWork())["BTC"]
+		if hours := (narrow.RecordsFromMs - start) / hlFundingRecordStepMs; hours < 3000 {
+			t.Fatalf("the reload moved the start %d hours earlier, want about 3000", hours)
+		}
+		candle, _ := hlInfoWeight("candleSnapshot", 3)
+		mids, _ := hlInfoWeight("allMids", 0)
+		page, _ := hlInfoWeight("fundingHistory", hlFundingRowCap)
+		tailRows, _ := hlFundingRowBound(0, hlFundingRecordStepMs)
+		tailW, _ := hlInfoWeight("fundingHistory", tailRows)
+		base := len(f.union.Order)*candle + mids
+		f.enforce(60, 60, base+page-5, 0, 200)
+		var alerts []string
+		f.sealer.rateLimitSend = func(msg string) { alerts = append(alerts, msg) }
+		t1 := t0 + 1200
+		firstRefusal := int64(0)
+		d := t1
+		for ; d <= t1+900; d += 75 {
+			f.seal(d)
+			if f.ledger.status().Weight.Totals.Refused != 0 {
+				firstRefusal = d - t1
+				d += 75
+				break
+			}
+		}
+		fcRequireForcedRead(t, firstRefusal)
+		if fcCountWeight(alerts, "REFUSED") != 1 || !strings.Contains(alerts[0], "funding:BTC") || fcCountWeight(alerts, "RECOVERED") != 0 {
+			t.Fatalf("alerts = %q, want one refusal of funding:BTC and no recovery", alerts)
+		}
+		held := f.owner.fundingEntry("BTC")
+		if !held.recordsWeightHeld || !held.HasRecords || held.RecordsFromMs <= start {
+			t.Fatalf("after the refused wide read BTC = from %d held %t, want the narrow records kept and the weight hold set", held.RecordsFromMs, held.recordsWeightHeld)
+		}
+		for !fcTailDue(f, d) {
+			if d > t1+2400 {
+				t.Fatal("the BTC tail did not become due before the wide pages started")
+			}
+			f.seal(d)
+			if fcCountWeight(alerts, "RECOVERED") != 0 {
+				t.Fatalf("deadline +%ds recovered while the wide read is still refused: %q", d-t1, alerts)
+			}
+			d += 75
+		}
+		fcSetWeight(f, 60, base+tailW+page+8)
+		sawSameSeal := false
+		for ; d < t1+7200; d += 75 {
+			tailsBefore := len(f.logsContaining("coin=BTC mode=tail range"))
+			checkpointsBefore := len(f.logsContaining("coin=BTC mode=checkpoint"))
+			fullBefore := len(f.logsContaining("coin=BTC mode=full"))
+			_, reqs := f.seal(d)
+			wide := 0
+			for _, r := range fundingReads(reqs, "BTC") {
+				if r.Rows > tailRows {
+					wide++
+				}
+			}
+			tailPublished := len(f.logsContaining("coin=BTC mode=tail range")) > tailsBefore
+			checkpointed := len(f.logsContaining("coin=BTC mode=checkpoint")) > checkpointsBefore
+			completed := len(f.logsContaining("coin=BTC mode=full")) > fullBefore
+			entry := f.owner.fundingEntry("BTC")
+			proved := entry.HasRecords && entry.RecordsFromMs <= start && entry.run == nil
+			if !sawSameSeal {
+				if !tailPublished || !checkpointed || completed || wide != 1 {
+					t.Fatalf("deadline +%ds tail=%t checkpoint=%t full=%t wide=%d, want the first wide page and a BTC tail in this preparation", d-t1, tailPublished, checkpointed, completed, wide)
+				}
+				sawSameSeal = true
+				if fcCountWeight(alerts, "RECOVERED") != 0 || !fcListsFunding(f, "funding:BTC") || entry.RecordsFromMs <= start {
+					t.Fatalf("deadline +%ds alerts=%q loading=%v from=%d, want no recovery while the wider range is still loading", d-t1, alerts, f.owner.FundingLoading(), entry.RecordsFromMs)
+				}
+				outstanding := f.owner.weightRefusedInputs()
+				if len(outstanding) != 1 || outstanding[0] != "funding:BTC" {
+					t.Fatalf("outstanding = %v, want funding:BTC still refused", outstanding)
+				}
+			}
+			if !proved {
+				if fcCountWeight(alerts, "RECOVERED") != 0 {
+					t.Fatalf("deadline +%ds recovered before the full range published: %q", d-t1, alerts)
+				}
+				if wide != 1 {
+					t.Fatalf("deadline +%ds sent %d wide BTC pages, want one", d-t1, wide)
+				}
+				continue
+			}
+			if fcCountWeight(alerts, "RECOVERED") != 1 || !strings.Contains(alerts[len(alerts)-1], "funding:BTC") {
+				t.Fatalf("alerts = %q, want exactly one recovery when the full range publishes", alerts)
+			}
+			if fcListsFunding(f, "funding:BTC") || len(f.owner.weightRefusedInputs()) != 0 {
+				t.Fatalf("after the proved range loading=%v outstanding=%v", f.owner.FundingLoading(), f.owner.weightRefusedInputs())
+			}
+			doc, _ := f.seal(d + 75)
+			if fcCountWeight(alerts, "RECOVERED") != 1 {
+				t.Fatalf("alerts = %q, want no second recovery", alerts)
+			}
+			f.requireTruth(doc, "BTC")
+			if hold := f.context(doc, 1).holdFor(f.byID["paper-BTC-1h-skew"]); hold.Held {
+				t.Fatalf("the wider reader is held after its range is proved: %s", hold.Reason)
+			}
+			return
+		}
+		t.Fatal("the wider range was never proved")
+	})
+	t.Run("ColdCoin", func(t *testing.T) {
+		t0 := rdBase()
+		f := newFCFixture(t, time.Unix(t0-2000, 0).UTC(), func() []feedConsumer {
+			paper := []StrategyConfig{rdStrategy("paper-BTC-1h-skew", "funding_skew", "BTC", "1h", 300, true, false, true)}
+			consumers := []feedConsumer{rdConsumer(t, "/paper.json", paper)}
+			(&fcFixture{rdFixture: &rdFixture{t: t}, consumers: consumers}).widen("1h", 520)
+			for i := range consumers {
+				consumers[i].Req.AccountingCoins = nil
+			}
+			return consumers
+		})
+		if e := f.owner.fundingEntry("BTC"); e.HasRecords {
+			t.Fatalf("BTC already has records before the first preparation: from %d", e.RecordsFromMs)
+		}
+		candle, _ := hlInfoWeight("candleSnapshot", 3)
+		mids, _ := hlInfoWeight("allMids", 0)
+		page, _ := hlInfoWeight("fundingHistory", hlFundingRowCap)
+		base := len(f.union.Order)*candle + mids
+		f.enforce(60, 60, base+page-5, 0, 200)
+		var alerts []string
+		f.sealer.rateLimitSend = func(msg string) { alerts = append(alerts, msg) }
+		firstRefusal := int64(0)
+		d := t0
+		for ; d < t0+1500; d += 75 {
+			f.seal(d)
+			if f.ledger.status().Weight.Totals.Refused != 0 {
+				firstRefusal = d - t0
+				d += 75
+				break
+			}
+		}
+		fcRequireForcedRead(t, firstRefusal)
+		cold := f.owner.fundingEntry("BTC")
+		if cold.HasRecords || !cold.recordsWeightHeld || fcCountWeight(alerts, "REFUSED") != 1 || !strings.Contains(alerts[0], "funding:BTC") {
+			t.Fatalf("alerts=%q BTC hasRecords=%t held=%t, want one refusal of a coin with no records", alerts, cold.HasRecords, cold.recordsWeightHeld)
+		}
+		fcSetWeight(f, 60, base+page+8)
+		start := f.owner.fundingRecordStarts(f.owner.fundingWork())["BTC"]
+		for ; d < t0+3600; d += 75 {
+			fullBefore := len(f.logsContaining("coin=BTC mode=full"))
+			f.seal(d)
+			entry := f.owner.fundingEntry("BTC")
+			proved := entry.HasRecords && entry.RecordsFromMs <= start && entry.run == nil
+			if !proved {
+				if fcCountWeight(alerts, "RECOVERED") != 0 {
+					t.Fatalf("deadline +%ds recovered before the cold range published: %q", d-t0, alerts)
+				}
+				continue
+			}
+			if len(f.logsContaining("coin=BTC mode=full")) == fullBefore || fcCountWeight(alerts, "RECOVERED") != 1 || !strings.Contains(alerts[len(alerts)-1], "funding:BTC") {
+				t.Fatalf("alerts=%q full logs=%d, want one recovery when the cold coin loads fully", alerts, len(f.logsContaining("coin=BTC mode=full")))
+			}
+			if fcListsFunding(f, "funding:BTC") {
+				t.Fatalf("funding_loading = %v after the cold coin loaded", f.owner.FundingLoading())
+			}
+			return
+		}
+		t.Fatal("the cold BTC range was never proved")
+	})
+}
