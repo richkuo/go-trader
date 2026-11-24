@@ -382,11 +382,12 @@ func parseCIWorkflowJobs(t *testing.T, path string) (map[string]*ciWorkflowJob, 
 				kept = append(kept, line)
 			}
 		}
-		if gateNeeds != gateIf || gateNeeds > 1 {
+		alwaysRuns := name == "checks" && gateNeeds == 1 && gateIf == 0
+		if !alwaysRuns && (gateNeeds != gateIf || gateNeeds > 1) {
 			job.problems = append(job.problems, fmt.Sprintf("job %s must carry the docs-only gate as exactly one %q line and one %q line (or one suite gate if: ${{ needs.changes.outputs.<gate> == 'true' }}), or neither", name, strings.TrimSpace(ciDocsGateNeeds), strings.TrimSpace(ciDocsGateIf)))
 		}
 		job.raw = kept
-		job.docsGate = gateNeeds > 0 || gateIf > 0
+		job.docsGate = !alwaysRuns && (gateNeeds > 0 || gateIf > 0)
 		stepOf := make([]int, len(job.raw))
 		stepGate := map[int]string{}
 		step := -1

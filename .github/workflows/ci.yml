@@ -117,7 +117,7 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestFeedWeightSharedProcesses|TestFeedFundingProofRealCheckScript|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRegimeReadinessContractIntegration|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestTunerPreviewHandlerOpenStrategyOverrides|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestChartPatternHTFGate[A-Za-z]*|TestRegimeSide[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*|TestHLAgent[A-Za-z]*|TestPaperChildPriority[A-Za-z]*|TestPaperOnlyConfig[A-Za-z]*|TestPaperManualVenueGuard[A-Za-z]*|TestSlashCommandDaemon[A-Za-z]*|TestTradeReviewRealCandleScript[A-Za-z]*|TestTradeFeedbackAnalysisReal[A-Za-z]*|TestCandleArchivePublisherGoldenParity|TestDashboardCandleIsolation[A-Za-z]*|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' -skip '^(TestPaperManualVenueGuard[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestMergePaperInstance|TestFeedWeightSharedProcesses|TestDashboardCandleIsolationProcesses|TestRegimeReadinessContractIntegration|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestFeedWeightSharedProcesses|TestFeedFundingProofRealCheckScript|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRegimeReadinessContract[A-Za-z]*|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestTunerPreviewHandlerOpenStrategyOverrides|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestChartPatternHTFGate[A-Za-z]*|TestRegimeSide[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*|TestHLAgent[A-Za-z]*|TestPaperChildPriority[A-Za-z]*|TestPaperOnlyConfig[A-Za-z]*|TestPaperManualVenueGuard[A-Za-z]*|TestSlashCommandDaemon[A-Za-z]*|TestTradeReviewRealCandleScript[A-Za-z]*|TestTradeFeedbackAnalysisReal[A-Za-z]*|TestCandleArchivePublisherGoldenParity|TestDashboardCandleIsolation[A-Za-z]*|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' -skip '^(TestPaperManualVenueGuard[A-Za-z]*|TestMergePaperInstance|TestFeedWeightSharedProcesses|TestDashboardCandleIsolation[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestRegimeReadinessContractProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
@@ -171,7 +171,7 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -parallel 8 -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractIntegration|TestFeedWeightSharedProcesses|TestDashboardCandleIsolationProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
@@ -198,7 +198,34 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestPaperManualVenueGuard[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestPaperManualVenueGuard[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
+            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
+            exit 1
+          fi
+
+  go-python-integration-feed-quotes:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - uses: astral-sh/setup-uv@v10.3.3
+
+      - name: Install dependencies
+        run: uv sync --compile-bytecode
+
+      - name: Python-backed Go integration tests
+        run: |
+          set -o pipefail
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestFeedWeightSharedProcesses|TestDashboardCandleIsolation[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
@@ -349,38 +376,6 @@ jobs:
             --forbid 'NOTE: systemd is not running; the unit sandbox and the launcher are not checked' \
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" EGRESS_CONTROLLER_BIN="$RUNNER_TEMP/go-trader-egress-controller" EGRESS_FIXTURE_BIN="$RUNNER_TEMP/egress-fixture" EGRESS_VENV_PYTHON=/opt/egress/venv/bin/python3 EGRESS_FIXTURE_REQUIRE_RUN=1 EGRESS_REQUIRE_SYSTEMD=1 bash scripts/test_egress_enforcement.sh
 
-  shell-suites-egress-docker:
-    needs: changes
-    if: ${{ needs.changes.outputs.egress_docker == 'true' }}
-    runs-on: ubuntu-26.04
-    timeout-minutes: 7
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y nftables iproute2
-
-      - name: Build
-        run: |
-          go -C scheduler build -o "$RUNNER_TEMP/go-trader-egress-controller" ./cmd/egress-controller
-          go -C scheduler build -o "$RUNNER_TEMP/egress-fixture" ./cmd/egress-fixture
-
-      - name: Build the image for the egress docker suite
-        run: docker build -t ghcr.io/richkuo/go-trader:egress-ci .
-
-      - name: Egress docker suite (root, rootful Docker)
-        run: |
-          bash scripts/run_ci_shell_suite.sh \
-            --marker 'PASS: egress docker deployment (anchor enforcement, application attestation, relay-only egress, status relay, one-shot commands, anchor restart)' \
-            -- sudo env EGRESS_CONTROLLER_BIN="$RUNNER_TEMP/go-trader-egress-controller" EGRESS_FIXTURE_BIN="$RUNNER_TEMP/egress-fixture" EGRESS_TEST_IMAGE=ghcr.io/richkuo/go-trader:egress-ci EGRESS_DOCKER_FIXTURE_REQUIRE_RUN=1 bash scripts/test_egress_docker.sh
-
   shell-suites-migrate-1:
     needs: changes
     if: ${{ needs.changes.outputs.update == 'true' }}
@@ -497,6 +492,7 @@ jobs:
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='update_recovery_restart' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
   checks:
+    needs: changes
     runs-on: ubuntu-26.04
     timeout-minutes: 7
     steps:
@@ -507,27 +503,37 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Syntax check
-        run: bash scripts/check_pre_pr.sh syntax
+      - name: Every pre-PR check
+        run: bash scripts/check_pre_pr.sh
 
-      - name: Test budget
-        run: bash scripts/check_pre_pr.sh test-budget
+      - uses: actions/setup-go@v7
+        if: ${{ needs.changes.outputs.egress_docker == 'true' }}
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
 
-      - name: Agent instructions size and layout
-        if: ${{ !cancelled() }}
-        run: bash scripts/check_pre_pr.sh agent-docs
+      - name: Install the egress suite tools
+        if: ${{ needs.changes.outputs.egress_docker == 'true' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nftables iproute2
 
-      - name: Agent instructions check fixtures
-        if: ${{ !cancelled() }}
-        run: bash scripts/check_pre_pr.sh agent-docs-fixtures
+      - name: Build the egress suite binaries
+        if: ${{ needs.changes.outputs.egress_docker == 'true' }}
+        run: |
+          go -C scheduler build -o "$RUNNER_TEMP/go-trader-egress-controller" ./cmd/egress-controller
+          go -C scheduler build -o "$RUNNER_TEMP/egress-fixture" ./cmd/egress-fixture
 
-      - name: SKILL.md and POST_UPDATE_HISTORY.md line length
-        if: ${{ !cancelled() }}
-        run: bash scripts/check_pre_pr.sh doc-lines
+      - name: Build the image for the egress docker suite
+        if: ${{ needs.changes.outputs.egress_docker == 'true' }}
+        run: docker build -t ghcr.io/richkuo/go-trader:egress-ci .
 
-      - name: .github/scripts holds only test_workflow_logic.py
-        if: ${{ !cancelled() }}
-        run: bash scripts/check_pre_pr.sh github-scripts
+      - name: Egress docker suite (root, rootful Docker)
+        if: ${{ needs.changes.outputs.egress_docker == 'true' }}
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'PASS: egress docker deployment (anchor enforcement, application attestation, relay-only egress, status relay, one-shot commands, anchor restart)' \
+            -- sudo env EGRESS_CONTROLLER_BIN="$RUNNER_TEMP/go-trader-egress-controller" EGRESS_FIXTURE_BIN="$RUNNER_TEMP/egress-fixture" EGRESS_TEST_IMAGE=ghcr.io/richkuo/go-trader:egress-ci EGRESS_DOCKER_FIXTURE_REQUIRE_RUN=1 bash scripts/test_egress_docker.sh
 
   python-shard:
     name: python-shard (${{ matrix.suite }} ${{ matrix.group }}/${{ matrix.splits }})

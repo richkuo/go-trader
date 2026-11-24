@@ -129,6 +129,7 @@ func pmdLegacyOpen(t *testing.T, cfgPath, id string) {
 }
 
 func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
+	t.Parallel()
 	layouts := pmpLayouts()
 
 	for _, layout := range layouts {
@@ -360,10 +361,12 @@ func (f *pmdFixture) refusedDiscordDMs(id string) int {
 }
 
 func TestPaperManualVenueGuardPositionWarningBackoff(t *testing.T) {
-	f := newPMDFixture(t)
+	t.Parallel()
 	layouts := pmpLayouts()
 
 	t.Run("a hanging destination costs one timeout per cycle and recovers", func(t *testing.T) {
+		t.Parallel()
+		f := newPMDFixture(t)
 		ids := []string{"pm-hang-a", "pm-hang-b", "pm-hang-c"}
 		cfg, dbPath := f.config(t, "pm-hang.json", layouts[0], true, 2, ids...)
 		for _, id := range ids {
@@ -409,6 +412,8 @@ func TestPaperManualVenueGuardPositionWarningBackoff(t *testing.T) {
 	})
 
 	t.Run("a refusing destination backs off and others still record", func(t *testing.T) {
+		t.Parallel()
+		f := newPMDFixture(t)
 		cfg, dbPath := f.config(t, "pm-refuse.json", layouts[0], true, 2, "pm-refuse")
 		pmdDebugLog(t, cfg)
 		pmdLegacyOpen(t, cfg, "pm-refuse")

@@ -265,6 +265,40 @@ assert not live and not strategy["regime"]
 json.dump(out, sys.stdout, allow_nan=False)
 `
 
+func TestRegimeReadinessContractProcesses(t *testing.T) {
+	t.Parallel()
+	t.Run("entry-admission-transitions", func(t *testing.T) {
+		t.Parallel()
+		regimeReadinessEntryAdmissionTransitions(t)
+	})
+	t.Run("once", func(t *testing.T) {
+		t.Parallel()
+		regimeReadinessOnceIntegration(t)
+	})
+	t.Run("process", func(t *testing.T) {
+		t.Parallel()
+		regimeReadinessProcessIntegration(t)
+	})
+	for _, mode := range []string{"websocket", "shared"} {
+		mode := mode
+		t.Run("pending-"+mode, func(t *testing.T) {
+			t.Parallel()
+			regimeReadinessPendingProcess(t, mode)
+		})
+	}
+	for _, mode := range []string{"rest", "websocket", "shared"} {
+		mode := mode
+		t.Run("entry-admission-"+mode, func(t *testing.T) {
+			t.Parallel()
+			regimeReadinessEntryAdmissionProcess(t, mode)
+		})
+		t.Run("entry-limit-recovery-"+mode, func(t *testing.T) {
+			t.Parallel()
+			regimeReadinessEntryLimitRecovery(t, mode)
+		})
+	}
+}
+
 func TestRegimeReadinessContractIntegration(t *testing.T) {
 	root, err := filepath.Abs("..")
 	if err != nil {
@@ -350,39 +384,9 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 	if !reflect.DeepEqual(metricBefore, metricCapture) {
 		t.Fatal("current metric mutation changed captured entry evidence")
 	}
-	t.Run("entry-admission-transitions", func(t *testing.T) {
-		t.Parallel()
-		regimeReadinessEntryAdmissionTransitions(t)
-	})
-	t.Run("once", func(t *testing.T) {
-		t.Parallel()
-		regimeReadinessOnceIntegration(t)
-	})
 	regimeReadinessAdmissionIntegration(t, bundles, rc)
 	regimeReadinessStopBackfillIntegration(t, bundles, rc)
 	regimeReadinessClassifierCaseIntegration(t, root)
-	t.Run("process", func(t *testing.T) {
-		t.Parallel()
-		regimeReadinessProcessIntegration(t)
-	})
-	for _, mode := range []string{"websocket", "shared"} {
-		mode := mode
-		t.Run("pending-"+mode, func(t *testing.T) {
-			t.Parallel()
-			regimeReadinessPendingProcess(t, mode)
-		})
-	}
-	for _, mode := range []string{"rest", "websocket", "shared"} {
-		mode := mode
-		t.Run("entry-admission-"+mode, func(t *testing.T) {
-			t.Parallel()
-			regimeReadinessEntryAdmissionProcess(t, mode)
-		})
-		t.Run("entry-limit-recovery-"+mode, func(t *testing.T) {
-			t.Parallel()
-			regimeReadinessEntryLimitRecovery(t, mode)
-		})
-	}
 	state := &StrategyState{Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100}}, Regime: "stale"}
 	syncStrategyRegimeState(state, bundles[3].Payload, rc)
 	syncStrategyRegimeState(state, bundles[0].Payload, rc)

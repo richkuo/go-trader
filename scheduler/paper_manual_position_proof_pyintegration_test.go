@@ -150,6 +150,7 @@ func pmpWarnings(r mrpRun, id string) int {
 }
 
 func TestPaperManualVenueGuardPositionProofLifecycle(t *testing.T) {
+	t.Parallel()
 	for _, layout := range pmpLayouts() {
 		t.Run(layout.name, func(t *testing.T) {
 			t.Parallel()
@@ -303,6 +304,7 @@ func TestPaperManualVenueGuardPositionProofEvidence(t *testing.T) {
 }
 
 func TestPaperManualVenueGuardPositionProofSchema(t *testing.T) {
+	t.Parallel()
 	e := newMRPEnv(t, 40)
 	layout := pmpLayouts()[0]
 	cfg, dbPath := pmpConfig(e, "proof-schema.json", layout, "pm-legacy")
