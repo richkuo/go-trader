@@ -302,6 +302,9 @@ const (
 	ciDocsGateIf    = "    if: ${{ needs.changes.outputs.code == 'true' }}"
 	ciLaneScript    = "scripts/ci_lane.sh"
 	ciLaneJoin      = "bash scripts/ci_lane.sh join"
+	ciLaneJoinIf    = "        if: ${{ !cancelled() }}"
+	ciLaneJoinGate  = "!cancelled()"
+	ciLaneClock     = `date +%s >"$RUNNER_TEMP/ci-job-started"`
 	ciPyBuildLine   = "go -C scheduler test -tags pyintegration -run '^$' ./..."
 	ciPyBinaryLine  = "go -C scheduler build -tags pyintegration -o /dev/null ."
 	ciRaceBuildLine = "go -C scheduler test -race -run '^$' ."
@@ -409,6 +412,12 @@ func parseCIWorkflowJobs(t *testing.T, path string) (map[string]*ciWorkflowJob, 
 				}
 				stepGate[step] = m[1]
 			}
+			if line == ciLaneJoinIf {
+				if _, dup := stepGate[step]; dup || step < 0 || job.jobGate != "" {
+					job.problems = append(job.problems, fmt.Sprintf("job %s has a step with more than one condition, a condition outside a step, or a step condition inside a job that a suite gate already gates", name))
+				}
+				stepGate[step] = ciLaneJoinGate
+			}
 		}
 		for i := 0; i < len(job.raw); i++ {
 			m := ciRunKey.FindStringSubmatch(job.raw[i])
@@ -441,6 +450,9 @@ func parseCIWorkflowJobs(t *testing.T, path string) (map[string]*ciWorkflowJob, 
 					continue
 				}
 				body = []string{value}
+			}
+			if gate == ciLaneJoinGate && (len(body) != 1 || body[0] != ciLaneJoin) {
+				job.problems = append(job.problems, fmt.Sprintf("job %s runs %q under %q, which is only for the step that runs %q", name, body, strings.TrimSpace(ciLaneJoinIf), ciLaneJoin))
 			}
 			job.logical = append(job.logical, ciLogicalLines(body))
 			job.gates = append(job.gates, gate)
@@ -702,7 +714,7 @@ func requireCIJob(t *testing.T, jobs map[string]*ciWorkflowJob, name string) *ci
 		if strings.Contains(line, "continue-on-error") {
 			t.Fatalf("job %s sets continue-on-error, so a failing suite would not fail CI", name)
 		}
-		if ciStepIf.MatchString(line) && !ciStepGate.MatchString(line) {
+		if ciStepIf.MatchString(line) && !ciStepGate.MatchString(line) && line != ciLaneJoinIf {
 			t.Fatalf("job %s has a conditional (%s), so a suite step might not run; the only step condition allowed is if: ${{ needs.changes.outputs.<gate> == 'true' }}", name, strings.TrimSpace(line))
 		}
 		if ciShellKey.MatchString(line) {
@@ -860,8 +872,8 @@ func readCILanes(t *testing.T, name string, job *ciWorkflowJob) []ciLane {
 				t.Fatalf("job %s runs a lane command after the join: %s", name, line)
 			}
 			if line == ciLaneJoin {
-				if job.gates[si] != job.jobGate || len(lanes) == 0 {
-					t.Fatalf("job %s must join its lanes in a step with no condition, after at least one lane starts", name)
+				if job.gates[si] != ciLaneJoinGate || len(lanes) == 0 {
+					t.Fatalf("job %s must join its lanes in a step with the condition %q, after at least one lane starts, or a failed step hides the output of every lane", name, strings.TrimSpace(ciLaneJoinIf))
 				}
 				joined = true
 				continue
@@ -897,8 +909,22 @@ func checkCILaneJobs(t *testing.T, jobs map[string]*ciWorkflowJob) {
 				uses = true
 			}
 		}
-		if uses && len(readCILanes(t, name, requireCIJob(t, jobs, name))) == 0 {
+		if !uses {
+			continue
+		}
+		job := requireCIJob(t, jobs, name)
+		if len(readCILanes(t, name, job)) == 0 {
 			t.Errorf("job %s names %s but starts no lane", name, ciLaneScript)
+		}
+		first := ""
+		for i, line := range job.raw {
+			if ciStepStart.MatchString(line) && i+1 < len(job.raw) {
+				first = strings.TrimSpace(job.raw[i+1])
+				break
+			}
+		}
+		if first != "run: "+ciLaneClock {
+			t.Errorf("job %s must run %q in its first step, which gives the join its deadline; found %q", name, ciLaneClock, first)
 		}
 	}
 }

@@ -44,6 +44,9 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 7
     steps:
+      - name: Record the job start
+        run: date +%s >"$RUNNER_TEMP/ci-job-started"
+
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
@@ -88,6 +91,7 @@ jobs:
           fi
 
       - name: Wait for every lane
+        if: ${{ !cancelled() }}
         run: bash scripts/ci_lane.sh join
 
   go-race:
@@ -96,6 +100,9 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 7
     steps:
+      - name: Record the job start
+        run: date +%s >"$RUNNER_TEMP/ci-job-started"
+
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
@@ -114,6 +121,7 @@ jobs:
         run: bash scripts/ci_lane.sh start --ram-tmp quote -- go -C scheduler test -race -count=1 -timeout 30m -run '^TestQuote' -skip '^(TestQuoteReplayRunsThePolicyThroughTheRealCoordinator|TestQuoteReplayResumeMatchesAnUninterruptedRun|TestQuoteReplayFaultsRecoverWithTheirStatedClass|TestQuoteReplayRefusesUnsafeStateAndInputs|TestQuoteReplayLaterReceiptsLeaveEarlierDecisionsUnchanged|TestQuoteReplayCoverageAndTimingRefusals|TestQuotePolicyBoundaryCasesThroughTheRealCoordinator)$' .
 
       - name: Wait for every lane
+        if: ${{ !cancelled() }}
         run: bash scripts/ci_lane.sh join
 
   go-python-integration:
@@ -122,6 +130,9 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 7
     steps:
+      - name: Record the job start
+        run: date +%s >"$RUNNER_TEMP/ci-job-started"
+
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
@@ -151,6 +162,7 @@ jobs:
         run: bash scripts/ci_lane.sh start --no-skips merge-paper-instance -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestMergePaperInstance$' ./...
 
       - name: Wait for every lane
+        if: ${{ !cancelled() }}
         run: bash scripts/ci_lane.sh join
 
   go-python-integration-process-cycles:
@@ -159,6 +171,9 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 7
     steps:
+      - name: Record the job start
+        run: date +%s >"$RUNNER_TEMP/ci-job-started"
+
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
@@ -175,6 +190,7 @@ jobs:
         run: bash scripts/ci_lane.sh start --ram-tmp --no-skips process-cycles -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig)$' ./...
 
       - name: Wait for every lane
+        if: ${{ !cancelled() }}
         run: bash scripts/ci_lane.sh join
 
   go-python-integration-paper-manual:
@@ -183,6 +199,9 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 7
     steps:
+      - name: Record the job start
+        run: date +%s >"$RUNNER_TEMP/ci-job-started"
+
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
@@ -199,6 +218,7 @@ jobs:
         run: bash scripts/ci_lane.sh start --ram-tmp --no-skips paper-manual -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestPaperManualVenueGuard[A-Za-z]*$' ./...
 
       - name: Wait for every lane
+        if: ${{ !cancelled() }}
         run: bash scripts/ci_lane.sh join
 
   shell-suites:
