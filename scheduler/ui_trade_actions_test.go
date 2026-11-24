@@ -18,7 +18,7 @@ import (
 func newTradeActionTestServer(t *testing.T) (*StatusServer, *StateDB, *Config) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "state.db")
-	db, err := OpenStateDB(dbPath)
+	db, err := openStateDBFromTemplate(dbPath)
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
 	}

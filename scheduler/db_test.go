@@ -16,7 +16,7 @@ import (
 func openTestDB(t *testing.T) *StateDB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "state.db")
-	db, err := OpenStateDB(path)
+	db, err := openStateDBFromTemplate(path)
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
 	}
@@ -81,7 +81,11 @@ func resetInitialCapitalGuardDedup(t *testing.T) {
 
 func TestOpenStateDB(t *testing.T) {
 	t.Run("OpenStateDB", func(t *testing.T) {
-		db := openTestDB(t)
+		db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatalf("OpenStateDB: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
 
 		var mode string
 		if err := db.db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {

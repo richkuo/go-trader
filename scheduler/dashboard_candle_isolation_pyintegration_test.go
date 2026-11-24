@@ -273,8 +273,10 @@ func dcIsoDrive(t *testing.T, port int, base time.Time, save bool) map[string]in
 }
 
 func TestDashboardCandleIsolationProcesses(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{marketFeedREST, marketFeedWebsocket, marketFeedShared} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			e := newFPEnv(t)
 			if _, err := os.Stat(filepath.Join(e.root, ".venv", "bin", "python3")); err != nil {
 				t.Skipf("repository virtualenv missing (%v); run uv sync", err)
@@ -399,6 +401,7 @@ func newDCIsoCommand(e *fpEnv, stage, cfg string, extra []string) *exec.Cmd {
 }
 
 func TestDashboardCandleIsolationMissingArchiveKeepsStartup(t *testing.T) {
+	t.Parallel()
 	e := newFPEnv(t)
 	if _, err := os.Stat(filepath.Join(e.root, ".venv", "bin", "python3")); err != nil {
 		t.Skipf("repository virtualenv missing (%v); run uv sync", err)

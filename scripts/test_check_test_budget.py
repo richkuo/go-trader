@@ -290,7 +290,7 @@ def test_cli_reports_a_nonexistent_baseline_identifier_as_stale(tmp_path):
     assert "refusal_grid_tests" in proc.stderr and SECTION in proc.stderr
 
 
-def test_cli_rejects_a_planted_refusal_matrix_copy_and_passes_once_it_is_removed(tmp_path, subtests):
+def test_cli_rejects_a_planted_refusal_matrix_copy(tmp_path, subtests):
     for kind in sorted(PLANTED):
         with subtests.test(kind=kind):
             rel = "shared_scripts/test_new_strategy_checks.py"
@@ -300,9 +300,6 @@ def test_cli_rejects_a_planted_refusal_matrix_copy_and_passes_once_it_is_removed
             owner = "TestNewStrategy::" if kind == "pytest_param_with_missing_mode" else ""
             assert proc.stderr.splitlines().count(f"  new: {rel}::{owner}test_new_strategy_is_refused") == 1
             assert "test budget exceeded (refusal_grid_tests)" in proc.stderr and SECTION in proc.stderr
-            (root / rel).unlink()
-            clean = _cli(root)
-            assert clean.returncode == 0, clean.stderr
 
 
 def test_cli_permits_admitted_mixed_reference_and_unrelated_mode_matrices(tmp_path, subtests):

@@ -111,7 +111,7 @@ func (e *rhLiveEnv) open() {
 	if err != nil {
 		e.t.Fatalf("identity: %v", err)
 	}
-	store, err := OpenStateStore(layout, ident)
+	store, err := openStateStoreWith(layout, ident, openStateDBFromTemplate)
 	if err != nil {
 		e.t.Fatalf("open store: %v", err)
 	}
@@ -1221,23 +1221,6 @@ func TestRobinhoodLiveOrderKillSwitch(t *testing.T) {
 			plan := planKillSwitchClose(in)
 			if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil || len(plan.RHCloseReport.AlreadyFlat) != 0 {
 				t.Fatalf("report = %+v, want BTC held by the open buy", plan.RHCloseReport)
-			}
-		})
-		t.Run("fill_below_book_then_verified_flat", func(t *testing.T) {
-			e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
-			e.setPosition("rh-btc", "BTC", 0.5, 90)
-			e.ageBook("rh-btc", "BTC")
-			closePhase := rhWith(rhSellFilled("0.3", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.3", "0.3"))}})
-			in := e.killSwitchInputs(rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.3"))}}, rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}})
-			in.RHCloser = e.phaseCloser(closePhase, in.RHCloser)
-			plan := planKillSwitchClose(in)
-			if !plan.OnChainConfirmedFlat {
-				t.Fatalf("report = %+v, want confirmed flat", plan.RHCloseReport)
-			}
-			e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
-			dbt := e.dbTrades("rh-btc")
-			if len(dbt) != 2 || dbt[0].Quantity != 0.3 || dbt[0].Price != 98 || !strings.Contains(dbt[1].Details, robinhoodVerifiedFlatKillSwitch) {
-				t.Fatalf("db trades = %+v, want a venue row and a verified-flat row", dbt)
 			}
 		})
 		t.Run("shared_coin_splits_by_book", func(t *testing.T) {

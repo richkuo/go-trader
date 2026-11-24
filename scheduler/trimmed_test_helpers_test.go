@@ -34,7 +34,7 @@ func approxEq(a, b float64) bool {
 
 func newLedgerTestDB(t *testing.T) *StateDB {
 	t.Helper()
-	db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+	db, err := openStateDBFromTemplate(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
 	}
@@ -80,7 +80,7 @@ func openSplitStore(t *testing.T, cfg *Config) *StateStore {
 	if err != nil {
 		t.Fatalf("buildStorageIdentityMap: %v", err)
 	}
-	store, err := OpenStateStore(layout, ident)
+	store, err := openStateStoreWith(layout, ident, openStateDBFromTemplate)
 	if err != nil {
 		t.Fatalf("OpenStateStore: %v", err)
 	}

@@ -116,7 +116,7 @@ func newEngineHoldFixture(t *testing.T, l engineHoldLayout) engineHoldFixture {
 
 func (f engineHoldFixture) seed(t *testing.T, path string, stmts ...string) {
 	t.Helper()
-	db, err := OpenStateDB(path)
+	db, err := openStateDBFromTemplate(path)
 	if err != nil {
 		t.Fatal(err)
 	}

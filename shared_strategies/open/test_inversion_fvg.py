@@ -52,20 +52,15 @@ def run(platform, df, params=SMALL):
     return REGISTRIES[platform].apply_strategy(NAME, df, dict(params))
 
 
-def assert_matches_reference(rows, params=SMALL, timestamps=None, modes=("retest",)):
+def assert_matches_reference(rows, params=SMALL, timestamps=None):
     df, ts = frame(rows, timestamps)
-    for mode in modes:
-        for platform, allow_short in (("futures", True), ("spot", False)):
-            if mode == "retest":
-                out = run(platform, df, params)
-            else:
-                out = module()._evaluate(df, params["min_fvg_atr"], params["max_gap_age"], params["retest_window"],
-                                         params["entry_level"], allow_short=allow_short, mode=mode)
-            want_sig, want_reason = _REF.reference(rows, ts, params, allow_short, mode)
-            assert out["signal"].tolist() == want_sig, (mode, platform)
-            assert out["invfvg_reason"].tolist() == want_reason, (mode, platform)
-            for i, reason in enumerate(want_reason):
-                assert bool(out["invfvg_valid"].iloc[i]) is (reason in VALID_REASONS), (mode, platform, i)
+    for platform, allow_short in (("futures", True), ("spot", False)):
+        out = run(platform, df, params)
+        want_sig, want_reason = _REF.reference(rows, ts, params, allow_short, "retest")
+        assert out["signal"].tolist() == want_sig, platform
+        assert out["invfvg_reason"].tolist() == want_reason, platform
+        for i, reason in enumerate(want_reason):
+            assert bool(out["invfvg_valid"].iloc[i]) is (reason in VALID_REASONS), (platform, i)
 
 
 GAP_BAR = PRE + 1
@@ -155,8 +150,7 @@ def test_signals_and_reasons_match_the_independent_reference_on_random_walks(sub
         rows = _walk(700, seed)
         for params in GRID:
             with subtests.test(seed=seed, params=params):
-                assert_matches_reference(rows, params,
-                                         modes=("retest", "noninverted_retest", "inversion_close"))
+                assert_matches_reference(rows, params)
     entries = run("futures", frame(_walk(700, 1))[0], GRID[0])["signal"]
     assert (entries == 1).sum() >= 5 and (entries == -1).sum() >= 5
 

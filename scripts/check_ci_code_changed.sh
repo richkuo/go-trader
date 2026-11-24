@@ -402,6 +402,7 @@ feed_quote_prefix="${feed_lane_prefix}--ram-tmp quote -- go -C scheduler test "
 feed_py_prefix="${feed_lane_prefix}--ram-tmp --no-skips "
 feed_race_build="        run: go -C scheduler test -race -run '^\$' ."
 feed_py_build="        run: go -C scheduler test -tags pyintegration -run '^\$' ./..."
+feed_go_filter="'^(TestFeedWeight.*|TestL2BookMixedRecordingKeepsEveryImporter|TestL2BookObservationPipeline|TestOpenInterestObservationPipeline|TestPremiumObservationPipeline|TestQuoteReplayRecordingHarness|TestTradeFlowObservationPipeline|TestV3RecordingSchemaTypesEachKind|TestVolumeProfileObservationPipeline)\$'"
 feed_code_if="    if: \${{ needs.changes.outputs.code == 'true' }}"
 feed_quote_if="        if: \${{ needs.changes.outputs.quote == 'true' }}"
 
@@ -468,14 +469,16 @@ feed_check_step() {
 }
 
 feed_check_cmd() {
-  local job="$1" mode="$2" args="$3" want_flag want_pkg label tok next i=0 nfilter=0 filters="" pkgs="" race=0 nocache=0 last=-1 lastpos=-2
+  local job="$1" mode="$2" args="$3" want_flag want_pkg want_filter label tok next i=0 nfilter=0 filters="" pkgs="" race=0 nocache=0 last=-1 lastpos=-2
   local -a toks
   if [ "$mode" = go ]; then
     want_flag=-skip
+    want_filter="$feed_go_filter"
     want_pkg=./...
     label="the test command"
   else
     want_flag=-run
+    want_filter="'^TestFeedWeight'"
     want_pkg=.
     label="the feed weight command"
   fi
@@ -521,8 +524,8 @@ feed_check_cmd() {
     i=$((i + 1))
   done
   filters="${filters# }"
-  if [ "$nfilter" != 1 ] || [ "$filters" != "'^TestFeedWeight'" ]; then
-    split_err "job $job: $label must pass $want_flag '^TestFeedWeight' exactly once, found ${filters:-none}"
+  if [ "$nfilter" != 1 ] || [ "$filters" != "$want_filter" ]; then
+    split_err "job $job: $label must pass $want_flag $want_filter exactly once, found ${filters:-none}"
   fi
   if [ "$mode" = race ] && [ "$race" != 1 ]; then
     split_err "job $job: the feed weight command lacks -race"
@@ -631,7 +634,7 @@ if [ "$n" != 1 ] || [ "$b" != 0 ]; then
   fail=1
 fi
 if [ "$split_fail" = 0 ]; then
-  echo "ok: ci.yml go and go-race split the feed weight tests (the go lane runs ./... with -skip '^TestFeedWeight' and no other selection flag, the feed-weight lane runs -race -count=1 -run '^TestFeedWeight' . in an unconditional step, both under the code gate and joined once, and TestShellSuiteCIWiring has no build constraint)"
+  echo "ok: ci.yml go and go-race split the feed weight tests (the go lane runs ./... with one pinned -skip of the feed weight family and the recording tests of the replay suites, and no other selection flag, the feed-weight lane runs -race -count=1 -run '^TestFeedWeight' . in an unconditional step, both under the code gate and joined once, and TestShellSuiteCIWiring has no build constraint)"
 fi
 
 if [ "$fail" != 0 ]; then
