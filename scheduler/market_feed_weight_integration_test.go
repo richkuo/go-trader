@@ -339,11 +339,11 @@ func TestFeedWeightSenderLifecycle(t *testing.T) {
 		if st.Totals.Debt != observed-reserved || observed-reserved != 1 || st.Charged != observed || len(st.Violations) != 1 || st.Violations[0].State != "repriced_at_cap" {
 			t.Fatalf("after one extra row weight = %+v, want debt %d, charged %d and a repriced violation", st, observed-reserved, observed)
 		}
-		events := ledger.weightReport(nil)
+		events := ledger.weightReport(nil, nil)
 		if len(events) != 1 || events[0].Kind != feedWeightEventViolation || events[0].Observed != 61 {
 			t.Fatalf("violation report = %+v, want one violation summary", events)
 		}
-		if again := ledger.weightReport(nil); len(again) != 0 {
+		if again := ledger.weightReport(nil, nil); len(again) != 0 {
 			t.Fatalf("second report = %+v, want the violation alerted once", again)
 		}
 
@@ -413,7 +413,7 @@ func TestFeedWeightSenderLifecycle(t *testing.T) {
 		if _, err := fetchHyperliquidCandleSnapshot(ctx, "BTC", "1m", start, end); err == nil {
 			t.Fatal("the first 61-row response was accepted against its 60-row bound")
 		}
-		if events := ledger.weightReport(nil); len(events) != 1 || events[0].State != "repriced_at_cap" {
+		if events := ledger.weightReport(nil, nil); len(events) != 1 || events[0].State != "repriced_at_cap" {
 			t.Fatalf("first violation report = %+v, want one repriced summary", events)
 		}
 		debt := ledger.weightStatus().Totals.Debt
@@ -427,7 +427,7 @@ func TestFeedWeightSenderLifecycle(t *testing.T) {
 		if st.Totals.Reserved-before != capCost || st.Totals.Debt != debt || st.Violations[0].State != "repriced_at_cap" {
 			t.Fatalf("weight after the capped read = %+v, want %d reserved, debt unchanged at %d and the state still repriced", st, capCost, debt)
 		}
-		if again := ledger.weightReport(nil); len(again) != 0 {
+		if again := ledger.weightReport(nil, nil); len(again) != 0 {
 			t.Fatalf("report after the capped read = %+v, want no second violation alert", again)
 		}
 	})
@@ -442,7 +442,7 @@ func TestFeedWeightSenderLifecycle(t *testing.T) {
 		if _, err := fetchHyperliquidCandleSnapshot(ctx, "BTC", "1m", base.Add(-4998*time.Minute).UnixMilli(), end); err == nil {
 			t.Fatal("a 5001-row response was accepted")
 		}
-		events := ledger.weightReport(nil)
+		events := ledger.weightReport(nil, nil)
 		if len(events) != 1 || events[0].State != "blocked" || events[0].Enforced {
 			t.Fatalf("violation report = %+v, want one unenforced blocked summary", events)
 		}
@@ -793,7 +793,7 @@ func TestFeedWeightOwners(t *testing.T) {
 		venue := newWTVenue(t, clock.Now)
 		venue.set(func(v *wtVenue) { v.noCandles = map[string]bool{"AAA": true}; v.fundingRows = 3 })
 		req := rlRequirements(5, 60, "AAA", "BTC")
-		req.Funding["AAA"] = feedFundingNeed{Records: true}
+		req.Funding["AAA"] = feedFundingNeed{Records: true}.withReader(feedKeyFor("AAA", "1m"), 5)
 		req.Funding["BTC"] = feedFundingNeed{Scalar: true}
 		ledger := newFeedRequestLedger(wtPolicy(600, 400, 200), true, clock.Now)
 		ledger.openStartup()
@@ -869,11 +869,11 @@ func TestFeedWeightOwners(t *testing.T) {
 		owner.feedMu.Lock()
 		var firstClose int64
 		if st := owner.keys[feedKeyFor("AAA", "1m")]; st != nil && len(st.Bars) > 0 {
-			first := len(st.Bars) - 5
+			first := len(st.Bars) - 5 - feedFundingRowMargin
 			if first < 0 {
 				first = 0
 			}
-			firstClose = st.Bars[first].CloseMs
+			firstClose = st.Bars[first].row().TimestampMs
 		}
 		got := owner.funding["AAA"]
 		owner.feedMu.Unlock()
@@ -899,7 +899,7 @@ func TestFeedWeightOwners(t *testing.T) {
 		if n := len(venue.requests("candleSnapshot")); n != 0 {
 			t.Fatalf("a zero embedded allocation sent %d request(s)", n)
 		}
-		events := ledger.weightReport(owner.weightRefusedInputs())
+		events := ledger.weightReport(owner.weightRefusedInputs(), owner.weightInputRequired)
 		if len(events) != 1 || events[0].Kind != feedWeightEventStart || fmt.Sprint(events[0].Inputs) != "[AAA|1m BBB|1m]" {
 			t.Fatalf("embedded report = %+v, want one start summary with sorted inputs", events)
 		}
@@ -910,13 +910,13 @@ func TestFeedWeightOwners(t *testing.T) {
 				t.Fatalf("a weight refusal raised %+v", a)
 			}
 		}
-		if events := ledger.weightReport(owner.weightRefusedInputs()); len(events) != 0 {
+		if events := ledger.weightReport(owner.weightRefusedInputs(), owner.weightInputRequired); len(events) != 0 {
 			t.Fatalf("report while still refused = %+v, want no duplicate summary", events)
 		}
 		ledger.setLimits((&feedWeightBudgetConfig{WeightPerMinute: feedIntPtr(500), WeightStartup: feedIntPtr(0), WeightReserve: feedIntPtr(0)}).budget())
 		clock.Advance(feedHistoryRefusalFloor + feedHistoryJitterSpan(feedHistoryRefusalFloor))
 		runFeedHistoryPass(t, owner, ctx)
-		events = ledger.weightReport(owner.weightRefusedInputs())
+		events = ledger.weightReport(owner.weightRefusedInputs(), owner.weightInputRequired)
 		if len(events) != 1 || events[0].Kind != feedWeightEventRecover {
 			t.Fatalf("report after recovery = %+v, want one recovery summary", events)
 		}

@@ -483,7 +483,9 @@ def test_funding_records_after_the_decision_boundary_cannot_change_the_decision(
         market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff)
         market["funding"] = {"BTC": {"current": 0.0, "avg_7d": 0.0, "has_scalar": False,
                                      "records": records, "has_records": True,
-                                     "fetched_at_ms": cutoff, "source": "rest"}}
+                                     "fetched_at_ms": cutoff, "source": "rest",
+                                     "records_contract": 1, "records_from_ms": bars[0]["t"],
+                                     "records_to_ms": cutoff, "records_through_ms": cutoff}}
         proc = _run(CHECK_HL, ["funding_skew", "BTC", "1h", "--mode=paper", "--market-stdin",
                                "--closed-bar-decisions"], {"v": 2, "market": market})
         assert proc.returncode == 0, proc.stderr + proc.stdout

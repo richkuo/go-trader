@@ -473,14 +473,14 @@ func (s *feedSealer) reportWeight(key int64) {
 			}
 		}
 	}
-	for _, ev := range s.ledger.weightReport(s.owner.weightRefusedInputs()) {
+	for _, ev := range s.ledger.weightReport(s.owner.weightRefusedInputs(), s.owner.weightInputRequired) {
 		s.logf("[feed-weight] key=%d source=%s instance=%s %s", key, s.source, s.instance, ev.logLine())
 		send := s.rateLimitSend
 		if send == nil {
 			send = s.alertHook
 		}
-		if send != nil {
-			send(formatFeedWeightAlert(ev, s.source, s.instance))
+		if msg := formatFeedWeightAlert(ev, s.source, s.instance); send != nil && msg != "" {
+			send(msg)
 		}
 	}
 }
@@ -512,6 +512,7 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 		beforeWeight = s.ledger.weightSnapshot()
 	}
 	prepCtx, cancel := context.WithDeadline(ctx, s.sealAt(key).Add(s.prepare))
+	coverageAtStart := s.owner.coverageMatches(reqs.FundingCoverage)
 	rep := s.prepareFor(prepCtx, key, reqs, coverage)
 	cancel()
 	delta, budgetLines := s.budgetLines(key, before, beforeWeight, rep)
@@ -533,11 +534,28 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 	if rep.ReadyOnlyRefreshed {
 		markUnrefreshedKeysNotReady(snap, rep, key)
 	}
-	doc, err := feedSealDocFromSnapshot(snap, key, s.source, s.instance)
-	var blob []byte
-	var hash string
-	if err == nil {
-		blob, hash, err = encodeFeedSeal(doc)
+	stripped := false
+	unproved := func() bool {
+		if stripped || coverageAtStart && !s.coverageReplaced(reqs.FundingCoverage) {
+			return false
+		}
+		if stripped = snap.stripFundingCoverage(feedFundingCoverageChanged); stripped {
+			s.logf("[feed-funding] key=%d mode=unproved reason=%q", key, feedFundingCoverageChanged)
+		}
+		return stripped
+	}
+	unproved()
+	build := func() (*feedSealDoc, []byte, string, error) {
+		d, derr := feedSealDocFromSnapshot(snap, key, s.source, s.instance)
+		if derr != nil {
+			return nil, nil, "", derr
+		}
+		b, h, derr := encodeFeedSeal(d)
+		return d, b, h, derr
+	}
+	doc, blob, hash, err := build()
+	if err == nil && unproved() {
+		doc, blob, hash, err = build()
 	}
 	prepDur := frozenAt.Sub(startedAt)
 	if err != nil {
@@ -899,8 +917,15 @@ func (s *feedSealer) sealBytes(key int64) []byte {
 	return nil
 }
 
+func (s *feedSealer) coverageReplaced(captured string) bool {
+	s.mu.Lock()
+	current := s.reqs.FundingCoverage
+	s.mu.Unlock()
+	return current != captured || !s.owner.coverageMatches(captured)
+}
+
 func (s *feedSealer) coverageSealVersionLocked() int {
-	return feedSealVersionFor(s.coverage.hasObservationKind(feedObservationOpenInterest), len(s.coverage.AccountingCoins) > 0, s.coverage.hasObservationKind(feedObservationTradeFlow), len(s.coverage.Macro) > 0, s.coverage.hasObservationKind(feedObservationVolumeProfile), len(s.coverage.Books) > 0, s.coverage.hasObservationKind(feedObservationPerpPremium))
+	return feedCoverageSealVersion(feedSealVersionFor(s.coverage.hasObservationKind(feedObservationOpenInterest), len(s.coverage.AccountingCoins) > 0, s.coverage.hasObservationKind(feedObservationTradeFlow), len(s.coverage.Macro) > 0, s.coverage.hasObservationKind(feedObservationVolumeProfile), len(s.coverage.Books) > 0, s.coverage.hasObservationKind(feedObservationPerpPremium)), fundingRecordsNeeded(s.coverage.Funding))
 }
 
 func (s *feedSealer) coverageSealVersion() int {
@@ -952,8 +977,7 @@ func (s *feedSealer) describe() *feedDescribe {
 	}
 	sort.Strings(fundingCoins)
 	for _, c := range fundingCoins {
-		need := s.coverage.Funding[c]
-		d.Funding = append(d.Funding, feedDescribeFunding{Coin: c, Scalar: need.Scalar, Records: need.Records})
+		d.Funding = append(d.Funding, describeFunding(c, s.coverage.Funding[c]))
 	}
 	for _, key := range s.coverage.observationKeys() {
 		d.Observations = append(d.Observations, feedDescribeObservation{
@@ -1031,6 +1055,7 @@ func fullCycleRequirements(req feedRequirements) cycleMarketRequirements {
 	for coin, need := range req.Funding {
 		out.Funding[coin] = need
 	}
+	out.FundingCoverage = fundingCoverageID(req.Funding)
 	out.AccountingCoins = append(out.AccountingCoins, req.AccountingCoins...)
 	return out
 }
@@ -1132,7 +1157,7 @@ func (srv *feedUnixServer) handle(conn net.Conn) {
 			Instance:       srv.sealer.instance,
 			Source:         srv.sealer.source,
 			Generation:     srv.sealer.owner.Generation(),
-			SealVersion:    feedSealVersionFor(describeHasObservationKind(d, feedObservationOpenInterest), len(d.AccountingFunding) > 0, describeHasObservationKind(d, feedObservationTradeFlow), len(d.Macro) > 0, describeHasObservationKind(d, feedObservationVolumeProfile), len(d.Books) > 0, describeHasObservationKind(d, feedObservationPerpPremium)),
+			SealVersion:    feedCoverageSealVersion(feedSealVersionFor(describeHasObservationKind(d, feedObservationOpenInterest), len(d.AccountingFunding) > 0, describeHasObservationKind(d, feedObservationTradeFlow), len(d.Macro) > 0, describeHasObservationKind(d, feedObservationVolumeProfile), len(d.Books) > 0, describeHasObservationKind(d, feedObservationPerpPremium)), describeHasFundingContract(d)),
 			PayloadVersion: marketSnapshotVersion,
 			Describe:       d,
 		}

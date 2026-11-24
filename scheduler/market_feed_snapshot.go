@@ -57,6 +57,13 @@ type marketFundingPayload struct {
 	FetchedAtMs int64               `json:"fetched_at_ms"`
 	Source      string              `json:"source"`
 	Error       string              `json:"error,omitempty"`
+
+	ScalarError      string `json:"scalar_error,omitempty"`
+	RecordsError     string `json:"records_error,omitempty"`
+	RecordsContract  int    `json:"records_contract,omitempty"`
+	RecordsFromMs    int64  `json:"records_from_ms,omitempty"`
+	RecordsToMs      int64  `json:"records_to_ms,omitempty"`
+	RecordsThroughMs int64  `json:"records_through_ms,omitempty"`
 }
 
 type marketPayload struct {
@@ -122,6 +129,7 @@ type cycleMarketRequirements struct {
 	Keys            []cycleMarketRequirement
 	Coins           []string
 	Funding         map[string]feedFundingNeed
+	FundingCoverage string
 	Observations    map[feedObservationKey]int64
 	AccountingCoins []string
 	Macro           map[feedMacroKey]int64
@@ -160,10 +168,7 @@ func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMa
 			raise(entry.ResearchHTF, entry.ResearchHTFRow)
 		}
 		if entry.FundingScalar || entry.FundingRecords {
-			f := funding[entry.Coin]
-			f.Scalar = f.Scalar || entry.FundingScalar
-			f.Records = f.Records || entry.FundingRecords
-			funding[entry.Coin] = f
+			funding[entry.Coin] = funding[entry.Coin].merge(entry.fundingNeed())
 		}
 		for key, window := range entry.observationNeeds() {
 			if existing, ok := observations[key]; !ok || window > existing {
@@ -182,7 +187,7 @@ func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMa
 	for _, coin := range req.MidCoins {
 		coins[coin] = true
 	}
-	out := cycleMarketRequirements{Funding: funding, Observations: observations, Macro: macro, Books: books}
+	out := cycleMarketRequirements{Funding: funding, FundingCoverage: fundingCoverageID(req.Funding), Observations: observations, Macro: macro, Books: books}
 	out.AccountingCoins = append(out.AccountingCoins, req.AccountingCoins...)
 	for key, required := range need {
 		out.Keys = append(out.Keys, cycleMarketRequirement{Key: key, Required: required})
@@ -203,27 +208,6 @@ func (o *marketFeedOwner) publishedKey(key marketFeedKey) bool {
 
 func (o *marketFeedOwner) recoverKeyOnce(ctx context.Context, key marketFeedKey) error {
 	return o.fetchIncremental(ctx, key, feedRestRecovery)
-}
-
-func (o *marketFeedOwner) earliestFrameBarMs(reqs cycleMarketRequirements) map[string]int64 {
-	o.feedMu.Lock()
-	defer o.feedMu.Unlock()
-	out := make(map[string]int64)
-	for _, cr := range reqs.Keys {
-		st := o.keys[cr.Key]
-		if st == nil || len(st.Bars) == 0 {
-			continue
-		}
-		start := len(st.Bars) - cr.Required
-		if start < 0 {
-			start = 0
-		}
-		first := st.Bars[start].CloseMs
-		if existing, ok := out[cr.Key.Symbol]; !ok || first < existing {
-			out[cr.Key.Symbol] = first
-		}
-	}
-	return out
 }
 
 func sealCycleMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycleMarketRequirements,
@@ -254,8 +238,7 @@ func prepareMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycleMa
 			}
 		}
 	}
-	o.EnsureFunding(ctx, o.earliestFrameBarMs(reqs))
-	o.EnsureAccountingFunding(ctx)
+	o.EnsureFunding(ctx, feedFundingPlan{Needs: reqs.Funding, CoverageID: reqs.FundingCoverage})
 }
 
 func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, evaluationID string, now, cutoff time.Time) *marketSnapshot {
@@ -298,14 +281,13 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 			snap.mids[coin] = mid
 		}
 	}
+	coverageOK := o.coverageMatchesLocked(reqs.FundingCoverage)
 	for coin, need := range reqs.Funding {
 		if !need.Scalar && !need.Records {
 			continue
 		}
-		if f, ok := o.funding[coin]; ok && f != nil {
-			cp := *f
-			cp.Records = append([]feedFundingRecord(nil), f.Records...)
-			snap.funding[coin] = cp
+		if f, ok := o.freezeFundingLocked(coin, need, now.UTC(), coverageOK); ok {
+			snap.funding[coin] = f
 		}
 	}
 	o.tickTradeFlowsLocked(now.UTC().UnixMilli())
@@ -587,30 +569,16 @@ func marketPayloadFor(s *marketSnapshot, frames []marketPayloadFrameSpec, coins 
 			FetchedAtMs: f.FetchedAt.UnixMilli(),
 			Source:      f.Source,
 			Error:       f.Err,
+
+			ScalarError:      f.ScalarErr,
+			RecordsError:     f.RecordsErr,
+			RecordsContract:  f.RecordsContract,
+			RecordsFromMs:    f.RecordsFromMs,
+			RecordsToMs:      f.RecordsToMs,
+			RecordsThroughMs: f.RecordsThroughMs,
 		}
 	}
 	return payload, nil
-}
-
-func (s *marketSnapshot) fundingHold(coin string, scalar, records bool) (bool, string) {
-	if !scalar && !records {
-		return false, ""
-	}
-	if s == nil {
-		return true, fmt.Sprintf("no sealed funding for %s", coin)
-	}
-	f, ok := s.funding[coin]
-	switch {
-	case !ok:
-		return true, fmt.Sprintf("no sealed funding for %s", coin)
-	case f.Err != "":
-		return true, fmt.Sprintf("funding fetch for %s failed: %s", coin, f.Err)
-	case scalar && !f.HasScalar:
-		return true, fmt.Sprintf("sealed funding for %s carries no current rate", coin)
-	case records && !f.HasRecords:
-		return true, fmt.Sprintf("sealed funding for %s carries no history", coin)
-	}
-	return false, ""
 }
 
 type marketStdinEnvelope struct {

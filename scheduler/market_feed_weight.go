@@ -398,9 +398,18 @@ type feedWeightEvent struct {
 	Enforced bool
 }
 
-func (l *feedRequestLedger) weightReport(outstanding []string) []feedWeightEvent {
+func (l *feedRequestLedger) weightReport(outstanding []string, required func(string) bool) []feedWeightEvent {
 	if l == nil {
 		return nil
+	}
+	l.mu.Lock()
+	refused := sortedFeedSet(l.wEpisode.inputs)
+	l.mu.Unlock()
+	retiredInputs := make(map[string]bool)
+	for _, input := range refused {
+		if required != nil && !required(input) {
+			retiredInputs[input] = true
+		}
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -438,10 +447,29 @@ func (l *feedRequestLedger) weightReport(outstanding []string) []feedWeightEvent
 		out = append(out, feedWeightEvent{Kind: feedWeightEventStart, OpenedAt: ep.openedAt, Inputs: sortedFeedSet(inputs), Refused: ep.refused})
 		return out
 	}
-	if !ep.successAfter || len(outstanding) > 0 {
+	recovered, retired := map[string]bool{}, map[string]bool{}
+	for input := range ep.inputs {
+		switch {
+		case retiredInputs[input]:
+			retired[input] = true
+		case ep.valid[input]:
+			recovered[input] = true
+		default:
+			return out
+		}
+	}
+	if len(outstanding) > 0 {
 		return out
 	}
-	out = append(out, feedWeightEvent{Kind: feedWeightEventRecover, OpenedAt: ep.openedAt, Inputs: sortedFeedSet(ep.inputs), Refused: ep.refused})
+	if len(recovered) == 0 {
+		out = append(out, feedWeightEvent{Kind: feedWeightEventRetired, OpenedAt: ep.openedAt, Inputs: sortedFeedSet(retired), Refused: ep.refused})
+		*ep = feedWeightEpisode{}
+		return out
+	}
+	if !ep.successAfter {
+		return out
+	}
+	out = append(out, feedWeightEvent{Kind: feedWeightEventRecover, OpenedAt: ep.openedAt, Inputs: sortedFeedSet(recovered), Refused: ep.refused})
 	*ep = feedWeightEpisode{}
 	return out
 }
@@ -463,10 +491,12 @@ func formatFeedWeightAlert(ev feedWeightEvent, source, instance string) string {
 		return fmt.Sprintf("**MARKET FEED WEIGHT BOUND VIOLATED** [%s] a %s response returned %d rows over its %d-row bound; the excess is charged as debt and later %s reads are %s (instance %s).",
 			source, ev.Type, ev.Observed, ev.Bound, ev.Type, after, instance)
 	case feedWeightEventRecover:
-		return fmt.Sprintf("**MARKET FEED WEIGHT RECOVERED** [%s] a required read succeeded and no weight-refused input is outstanding (refused inputs %s; %d refused request(s); instance %s).",
+		return fmt.Sprintf("**MARKET FEED WEIGHT RECOVERED** [%s] every weight-refused input that is still required passed validation again (recovered inputs %s; %d refused request(s); instance %s).",
 			source, joinFeedNames(ev.Inputs), ev.Refused, instance)
+	case feedWeightEventRetired:
+		return ""
 	}
-	return fmt.Sprintf("**MARKET FEED WEIGHT REFUSED** [%s] this owner's venue weight allocation refused required reads. Refused inputs: %s. Consumers hold entries on those inputs; protection continues on verified inputs (instance %s).",
+	return fmt.Sprintf("**MARKET FEED WEIGHT REFUSED** [%s] this owner's venue weight allocation refused required reads. Refused inputs: %s. Consumers can hold entries when a required input is unavailable from the selected feed; protection continues on verified inputs (instance %s).",
 		source, joinFeedNames(ev.Inputs), instance)
 }
 
@@ -489,23 +519,16 @@ func estimateFeedUnionWeight(union feedRequirements) string {
 	if len(union.MidCoins) > 0 {
 		mids, _ = hlInfoWeight("allMids", 0)
 	}
-	scalar, records := 0, 0
-	ctxW, _ := hlInfoWeight("metaAndAssetCtxs", 0)
-	avgRows, _ := hlFundingRowBound(0, int64(hlFundingAvgWindowDays)*86_400_000)
-	avgW, _ := hlInfoWeight("fundingHistory", avgRows)
+	funding := estimateFeedFunding(union)
 	pageW, _ := hlInfoWeightAtCap("fundingHistory")
-	for _, need := range union.Funding {
-		if need.Scalar {
-			scalar += ctxW + avgW
-			largest = max(largest, ctxW, avgW)
-		}
-		if need.Records {
-			records++
-			largest = max(largest, pageW)
-		}
+	if funding.ScalarCoins > 0 {
+		largest = max(largest, funding.ContextWeight, funding.AverageWeight)
+	}
+	if funding.RecordCoins > 0 {
+		largest = max(largest, pageW)
 	}
 	return fmt.Sprintf("weight estimate (informational, first passes only): bootstrap=%d for %d keys; refresh=%d per deadline for candles plus mids=%d; funding scalar=%d per refresh; funding records for %d coin(s) and accounting funding at up to %d per page; largest_read=%d",
-		bootstrap, len(union.Order), refresh, mids, scalar, records, pageW, largest)
+		bootstrap, len(union.Order), refresh, mids, funding.scalarWeight(), funding.RecordCoins, pageW, largest)
 }
 
 func formatMarketFeedWeightBudget(b *feedWeightBudgetConfig) string {
@@ -545,10 +568,28 @@ func feedDeadlineClassLabel(cadences []int, deadline int64) string {
 	return strings.Join(parts, "+")
 }
 
-func estimateFeedDemandLines(union feedRequirements, source string) []string {
-	if source != feedSourceREST {
-		return []string{fmt.Sprintf("weight demand source=%s: candles arrive on the venue socket, so no per-deadline candle reads are estimated; funding and accounting reads follow the lines below", source)}
-	}
+type feedDemandWindow struct {
+	SpanSeconds int64
+	Weight      int
+	Reads       int
+	Keys        int
+	Deadlines   int
+	At          int64
+}
+
+type feedDemandModel struct {
+	Cadences   []int
+	Problem    string
+	Classes    []*feedDemandClass
+	MinSpacing int64
+	Nominal    feedDemandWindow
+	Completion feedDemandWindow
+	MidsWeight int
+	Funding    feedFundingDemand
+}
+
+func modelFeedDemand(union feedRequirements) feedDemandModel {
+	m := feedDemandModel{Funding: estimateFeedFunding(union)}
 	cadenceSet := make(map[int]bool)
 	for _, key := range union.Order {
 		for _, c := range union.KeyCadences[key] {
@@ -557,32 +598,30 @@ func estimateFeedDemandLines(union feedRequirements, source string) []string {
 			}
 		}
 	}
-	cadences := make([]int, 0, len(cadenceSet))
 	for c := range cadenceSet {
-		cadences = append(cadences, c)
+		m.Cadences = append(m.Cadences, c)
 	}
-	sort.Ints(cadences)
-	candleW, _ := hlInfoWeight("candleSnapshot", 3)
-	midsW := 0
+	sort.Ints(m.Cadences)
+	candleW, _ := hlInfoWeight("candleSnapshot", feedIncrementalRows)
+	midsReads := 0
 	if len(union.MidCoins) > 0 {
-		midsW, _ = hlInfoWeight("allMids", 0)
+		m.MidsWeight, _ = hlInfoWeight("allMids", 0)
+		midsReads = 1
 	}
-	var out []string
-	if len(cadences) == 0 {
-		return []string{"weight demand source=rest: no key has a cadence, so no deadline reads are estimated"}
+	if len(m.Cadences) == 0 {
+		m.Problem = "no key has a cadence, so no deadline reads are estimated"
+		return m
 	}
 	horizon := feedDemandHorizonSeconds
-	for _, c := range cadences {
+	for _, c := range m.Cadences {
 		if horizon%int64(c) != 0 {
-			horizon = 0
-			break
+			m.Problem = fmt.Sprintf("cadences %s do not divide one day, so the deadline cycle is not simulated", formatCadences(m.Cadences))
+			m.MinSpacing = feedCadenceSpacing(m.Cadences)
+			return m
 		}
 	}
-	if horizon == 0 {
-		return []string{fmt.Sprintf("weight demand source=rest: cadences %s do not divide one day, so the deadline cycle is not simulated", formatCadences(cadences))}
-	}
 	deadlineSet := make(map[int64]bool)
-	for _, c := range cadences {
+	for _, c := range m.Cadences {
 		for d := int64(0); d < horizon; d += int64(c) {
 			deadlineSet[d] = true
 		}
@@ -593,9 +632,8 @@ func estimateFeedDemandLines(union feedRequirements, source string) []string {
 	}
 	sort.Slice(deadlines, func(i, j int) bool { return deadlines[i] < deadlines[j] })
 	lastFetchBar := make(map[marketFeedKey]int64)
-	weightAt := make([]int, len(deadlines))
+	weightAt, readsAt, keysAt := make([]int, len(deadlines)), make([]int, len(deadlines)), make([]int, len(deadlines))
 	classes := make(map[string]*feedDemandClass)
-	var classOrder []string
 	for pass := 0; pass < 2; pass++ {
 		for i, d := range deadlines {
 			due, reused, w := 0, 0, 0
@@ -619,13 +657,13 @@ func estimateFeedDemandLines(union feedRequirements, source string) []string {
 			if pass == 0 {
 				continue
 			}
-			weightAt[i] = w + midsW
-			label := feedDeadlineClassLabel(cadences, d)
+			weightAt[i], readsAt[i], keysAt[i] = w+m.MidsWeight, due-reused+midsReads, due
+			label := feedDeadlineClassLabel(m.Cadences, d)
 			cl := classes[label]
 			if cl == nil {
 				cl = &feedDemandClass{Label: label}
 				classes[label] = cl
-				classOrder = append(classOrder, label)
+				m.Classes = append(m.Classes, cl)
 			}
 			cl.Deadlines++
 			cl.DueMax = max(cl.DueMax, due)
@@ -634,66 +672,206 @@ func estimateFeedDemandLines(union feedRequirements, source string) []string {
 			cl.CandleTotal += w
 		}
 	}
-	sort.Strings(classOrder)
-	for _, label := range classOrder {
-		cl := classes[label]
-		out = append(out, fmt.Sprintf("weight demand source=rest class=%s deadlines_per_day=%d keys_due_max=%d reused_max=%d candle_weight_max=%d candle_weight_avg=%d mids=%d",
-			cl.Label, cl.Deadlines, cl.DueMax, cl.ReusedMax, cl.CandleMax, cl.CandleTotal/max(cl.Deadlines, 1), midsW))
-	}
-	peak, peakAt, peakCount := 0, int64(0), 0
+	sort.Slice(m.Classes, func(i, j int) bool { return m.Classes[i].Label < m.Classes[j].Label })
 	n := len(deadlines)
-	for i := 0; i < n; i++ {
-		d := deadlines[i] + horizon
-		sum, count := 0, 0
-		for k := 0; k < n; k++ {
-			j := (i - k + n) % n
-			t := deadlines[j] + horizon
-			if j > i {
-				t -= horizon
-			}
-			if d-t >= 60 {
-				break
-			}
-			sum += weightAt[j]
-			count++
+	m.MinSpacing = horizon
+	for i := range deadlines {
+		next := deadlines[(i+1)%n]
+		if i == n-1 {
+			next += horizon
 		}
-		if sum > peak {
-			peak, peakAt, peakCount = sum, deadlines[i], count
+		m.MinSpacing = min(m.MinSpacing, next-deadlines[i])
+	}
+	window := func(span int64) feedDemandWindow {
+		best := feedDemandWindow{SpanSeconds: span}
+		for i := 0; i < n; i++ {
+			cur := feedDemandWindow{SpanSeconds: span, At: deadlines[i]}
+			for k := 0; k < n; k++ {
+				j := (i - k + n) % n
+				t := deadlines[j]
+				if j > i {
+					t -= horizon
+				}
+				if deadlines[i]-t >= span {
+					break
+				}
+				cur.Weight += weightAt[j]
+				cur.Reads += readsAt[j]
+				cur.Keys += keysAt[j]
+				cur.Deadlines++
+			}
+			if cur.Weight > best.Weight {
+				best = cur
+			}
+		}
+		return best
+	}
+	m.Nominal = window(int64(feedBudgetWindow / time.Second))
+	m.Completion = window(int64((feedBudgetWindow + feedSealPrepareBudget) / time.Second))
+	return m
+}
+
+func feedCadenceSpacing(cadences []int) int64 {
+	gcd := func(a, b int64) int64 {
+		for b != 0 {
+			a, b = b, a%b
+		}
+		return a
+	}
+	spacing := int64(0)
+	for i, a := range cadences {
+		if spacing == 0 || int64(a) < spacing {
+			spacing = int64(a)
+		}
+		for _, b := range cadences[i+1:] {
+			if g := gcd(int64(a), int64(b)); g < spacing {
+				spacing = g
+			}
 		}
 	}
-	fundingTotal, fundingLine := estimateFeedFundingDemand(union)
+	return spacing
+}
+
+func estimateFeedDemandLines(union feedRequirements, source string) []string {
+	if source != feedSourceREST {
+		return []string{fmt.Sprintf("weight demand source=%s: candles arrive on the venue socket, so no per-deadline candle reads are estimated; funding and accounting reads follow the lines below", source)}
+	}
+	m := modelFeedDemand(union)
+	if m.Problem != "" {
+		return append([]string{"weight demand source=rest: " + m.Problem}, m.Funding.lines()...)
+	}
+	var out []string
+	for _, cl := range m.Classes {
+		out = append(out, fmt.Sprintf("weight demand source=rest class=%s deadlines_per_day=%d keys_due_max=%d reused_max=%d candle_weight_max=%d candle_weight_avg=%d mids=%d",
+			cl.Label, cl.Deadlines, cl.DueMax, cl.ReusedMax, cl.CandleMax, cl.CandleTotal/max(cl.Deadlines, 1), m.MidsWeight))
+	}
 	out = append(out, fmt.Sprintf("weight demand source=rest rolling_60s_peak candles_and_mids=%d at day offset %ds (%d deadline(s), class %s) with_funding_expiry=%d",
-		peak, peakAt, peakCount, feedDeadlineClassLabel(cadences, peakAt), peak+fundingTotal))
-	out = append(out, fundingLine)
-	out = append(out, "weight demand assumptions: warm history (one incremental candle read of at most 3 rows per due key); closed_only keys are read once at the first due deadline after each bar close and reused until the next close; a read is charged from its deadline for 60s, so completion delay can shift overlaps; funding expiries are assumed to coincide with the peak deadline; non-participating owners on the host are not included")
+		m.Nominal.Weight, m.Nominal.At, m.Nominal.Deadlines, feedDeadlineClassLabel(m.Cadences, m.Nominal.At), m.Nominal.Weight+m.Funding.steadyWeight()))
+	out = append(out, fmt.Sprintf("weight demand overlap nominal: min_deadline_spacing=%ds window=%ds adjacent_preparations_share_a_window=%t keys_due=%d weight_peak=%d",
+		m.MinSpacing, m.Nominal.SpanSeconds, m.MinSpacing < m.Nominal.SpanSeconds, m.Nominal.Keys, m.Nominal.Weight))
+	out = append(out, fmt.Sprintf("weight demand overlap completion_based: window=%ds (a read that settles at the end of its %ds preparation budget stays charged for %ds) adjacent_preparations_can_share_a_window=%t keys_due=%d weight_peak=%d; a preparation that settles within %ds of its start shares none",
+		m.Completion.SpanSeconds, int64(feedSealPrepareBudget/time.Second), int64(feedBudgetWindow/time.Second), m.MinSpacing < m.Completion.SpanSeconds, m.Completion.Keys, m.Completion.Weight, max(m.MinSpacing-m.Nominal.SpanSeconds, 0)))
+	out = append(out, fmt.Sprintf("request demand source=rest rolling_60s_peak reads=%d (candles and mids) steady_funding_reads=%d required_per_minute=%d (peak, steady funding and one read kept for mids); completion_based reads=%d",
+		m.Nominal.Reads, m.Funding.steadyReads(), m.requiredRequests(), m.Completion.Reads))
+	out = append(out, m.Funding.lines()...)
+	out = append(out, "weight demand assumptions: warm history (one incremental candle read of at most 3 rows per due key); closed_only keys are read once at the first due deadline after each bar close and reused until the next close; a nominal read is charged from its deadline for 60s; with_funding_expiry assumes that every steady funding read coincides with the peak deadline, and the preparation spreads them; non-participating owners on the host are not included")
 	return out
 }
 
-func estimateFeedFundingDemand(union feedRequirements) (int, string) {
-	ctxW, _ := hlInfoWeight("metaAndAssetCtxs", 0)
-	avgRows, _ := hlFundingRowBound(0, int64(hlFundingAvgWindowDays)*86_400_000)
-	avgW, _ := hlInfoWeight("fundingHistory", avgRows)
-	tailRows, _ := hlFundingRowBound(0, hlFundingRecordStepMs)
-	tailW, _ := hlInfoWeight("fundingHistory", tailRows)
-	pageW, _ := hlInfoWeightAtCap("fundingHistory")
-	scalarCoins, recordCoins := 0, 0
-	coins := make([]string, 0, len(union.Funding))
-	for coin := range union.Funding {
-		coins = append(coins, coin)
+func (m feedDemandModel) requiredRequests() int {
+	return m.Nominal.Reads + m.Funding.steadyReads() + 1
+}
+
+func feedDemandWarnings(union feedRequirements, source string, budget *feedBudgetConfig) []string {
+	if source != feedSourceREST {
+		return nil
 	}
-	sort.Strings(coins)
-	for _, coin := range coins {
+	m := modelFeedDemand(union)
+	var out []string
+	window := int64(feedBudgetWindow / time.Second)
+	if m.MinSpacing > 0 && m.MinSpacing < window {
+		out = append(out, fmt.Sprintf("cadences %s put adjacent preparations %ds apart, inside one %ds budget window, so their reads share one allocation", formatCadences(m.Cadences), m.MinSpacing, window))
+	}
+	if m.Problem != "" || budget == nil {
+		return out
+	}
+	if policy := budget.weightPolicy(); policy != nil {
+		if m.Nominal.Weight > policy.PerMinute {
+			out = append(out, fmt.Sprintf("estimated candle and mids demand %d per %ds is above the steady allocation weight_per_minute=%d", m.Nominal.Weight, window, policy.PerMinute))
+		} else if total := m.Nominal.Weight + m.Funding.steadyWeight(); total > policy.PerMinute {
+			out = append(out, fmt.Sprintf("estimated candle, mids and steady funding demand %d per %ds is above the steady allocation weight_per_minute=%d", total, window, policy.PerMinute))
+		}
+		if limit := (hlRESTWeightCeiling - policy.Reserve) * 2 / 3; m.Nominal.Weight > limit {
+			out = append(out, fmt.Sprintf("estimated candle and mids demand %d is above %d, the largest measured peak that derived calibration accepts at weight_reserve=%d", m.Nominal.Weight, limit, policy.Reserve))
+		}
+	}
+	if need := m.requiredRequests(); need > budget.PerMinute {
+		out = append(out, fmt.Sprintf("estimated request demand %d per %ds is above per_minute=%d", need, window, budget.PerMinute))
+	}
+	return out
+}
+
+type feedFundingLoadBound struct {
+	Coin    string
+	Hours   int64
+	Pages   int64
+	Weight  int
+	Readers string
+}
+
+type feedFundingDemand struct {
+	ScalarCoins      int
+	DirectAverages   int
+	RecordCoins      int
+	AccountingCoins  int
+	ContextWeight    int
+	AverageWeight    int
+	TailWeight       int
+	AccountingWeight int
+	Loads            []feedFundingLoadBound
+}
+
+func estimateFeedFunding(union feedRequirements) feedFundingDemand {
+	var d feedFundingDemand
+	d.ContextWeight, _ = hlInfoWeight("metaAndAssetCtxs", 0)
+	avgRows, _ := hlFundingRowBound(0, int64(hlFundingAvgWindowDays)*86_400_000)
+	d.AverageWeight, _ = hlInfoWeight("fundingHistory", avgRows)
+	tailRows, _ := hlFundingRowBound(0, hlFundingRecordStepMs)
+	d.TailWeight, _ = hlInfoWeight("fundingHistory", tailRows)
+	overlapRows, _ := hlFundingRowBound(0, feedAccountingOverlap.Milliseconds()+2*feedAccountingCadence.Milliseconds())
+	overlapW, _ := hlInfoWeight("fundingHistory", overlapRows)
+	d.AccountingWeight = overlapW + d.TailWeight
+	d.AccountingCoins = len(union.AccountingCoins)
+	for _, coin := range sortedFundingCoins(union.Funding) {
 		need := union.Funding[coin]
 		if need.Scalar {
-			scalarCoins++
+			d.ScalarCoins++
+			if !need.Records || need.rangeHours() <= int64(hlFundingAvgWindowDays)*24 {
+				d.DirectAverages++
+			}
 		}
-		if need.Records {
-			recordCoins++
+		if !need.Records {
+			continue
 		}
+		d.RecordCoins++
+		b := feedFundingLoadBound{Coin: coin, Hours: need.rangeHours(), Readers: need.readerList()}
+		rows := b.Hours + 1
+		b.Pages = (rows + hlFundingRowCap - 1) / hlFundingRowCap
+		for left := rows; left > 0; left -= hlFundingRowCap {
+			w, _ := hlInfoWeight("fundingHistory", int(min(left, hlFundingRowCap)))
+			b.Weight += w
+		}
+		d.Loads = append(d.Loads, b)
 	}
-	scalar := scalarCoins * (ctxW + avgW)
-	tail := recordCoins * tailW
-	total := scalar + tail
-	return total, fmt.Sprintf("weight demand funding: scalar=%d per %ds for %d coin(s) (metaAndAssetCtxs %d plus 7-day fundingHistory %d each); strategy_records_tail=%d per %ds for %d coin(s) (one bounded page of %d each, plus one terminal page of %d when the newest hour is not yet published); strategy_records_full=%d per page on first load, a wider frame or a refused tail; accounting=%d per page for %d coin(s), measured separately",
-		scalar, int(feedFundingTTL/time.Second), scalarCoins, ctxW, avgW, tail, int(feedFundingTTL/time.Second), recordCoins, tailW, tailW, pageW, pageW, len(union.AccountingCoins))
+	return d
+}
+
+func (d feedFundingDemand) scalarWeight() int {
+	if d.ScalarCoins == 0 {
+		return 0
+	}
+	return d.ContextWeight + d.DirectAverages*d.AverageWeight
+}
+
+func (d feedFundingDemand) steadyWeight() int {
+	return d.scalarWeight() + d.RecordCoins*d.TailWeight
+}
+
+func (d feedFundingDemand) steadyReads() int {
+	reads := d.DirectAverages + d.RecordCoins
+	if d.ScalarCoins > 0 {
+		reads++
+	}
+	return reads
+}
+
+func (d feedFundingDemand) lines() []string {
+	ttl := int(feedFundingTTL / time.Second)
+	out := []string{fmt.Sprintf("weight demand funding: scalar=%d per %ds for %d coin(s) (one shared metaAndAssetCtxs %d, %d direct 7-day fundingHistory read(s) of %d where the record range does not prove the window); strategy_records_tail=%d per %ds and after each hour for %d coin(s) (one bounded page of %d each); accounting=%d per hour for %d coin(s) (up to %d each), spread over %ds; cold pages use only the residual request and weight allowance",
+		d.scalarWeight(), ttl, d.ScalarCoins, d.ContextWeight, d.DirectAverages, d.AverageWeight, d.RecordCoins*d.TailWeight, ttl, d.RecordCoins, d.TailWeight,
+		d.AccountingCoins*d.AccountingWeight, d.AccountingCoins, d.AccountingWeight, int(feedAccountingSlack/time.Second))}
+	for _, b := range d.Loads {
+		out = append(out, fmt.Sprintf("weight demand funding full load coin=%s range_hours=%d pages_max=%d weight_max=%d readers=%s", b.Coin, b.Hours, b.Pages, b.Weight, b.Readers))
+	}
+	return out
 }

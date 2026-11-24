@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 const (
@@ -130,6 +128,14 @@ func (e feedStrategyRequirement) observationNeeds() map[feedObservationKey]int64
 		out[premiumKeyFor(e.Coin)] = e.PremiumWindow
 	}
 	return out
+}
+
+func (e feedStrategyRequirement) fundingNeed() feedFundingNeed {
+	need := feedFundingNeed{Scalar: e.FundingScalar, Records: e.FundingRecords}
+	if e.FundingRecords {
+		need = need.withReader(e.Signal, e.SignalLookback)
+	}
+	return need
 }
 
 func (e feedStrategyRequirement) readsClosedOnly(key marketFeedKey) bool {
@@ -373,10 +379,7 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 		entry.FundingScalar = slotName == fundingScalarStrategyName
 		entry.FundingRecords = openName == fundingRecordsStrategyName
 		if entry.FundingScalar || entry.FundingRecords {
-			need := req.Funding[symbol]
-			need.Scalar = need.Scalar || entry.FundingScalar
-			need.Records = need.Records || entry.FundingRecords
-			req.Funding[symbol] = need
+			req.Funding[symbol] = req.Funding[symbol].merge(entry.fundingNeed())
 		}
 
 		if feedStrategyUsesOpenInterest(sc) {
@@ -650,6 +653,8 @@ func (o *marketFeedOwner) publishGeneration(req feedRequirements, token uint64, 
 	}
 	o.dropUnneededObservationsLocked(req.Observations)
 	o.dropUnneededBooksLocked(req.Books)
+	o.retireFundingLocked(req.Funding)
+	o.fundingCoverage = fundingCoverageID(req.Funding)
 	o.published = make(map[marketFeedKey]bool, len(req.Order))
 	for _, key := range req.Order {
 		o.published[key] = true
@@ -666,108 +671,6 @@ func (o *marketFeedOwner) fundingWork() map[string]feedFundingNeed {
 		out[coin] = need
 	}
 	return out
-}
-
-const feedFundingTTL = 5 * time.Minute
-
-func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[string]int64) {
-	needs := o.fundingWork()
-	if len(needs) == 0 {
-		return
-	}
-	base := withFeedReason(ctx, string(feedRestFunding))
-	coins := make([]string, 0, len(needs))
-	for coin := range needs {
-		coins = append(coins, coin)
-	}
-	sort.Strings(coins)
-	now := o.now()
-	for _, coin := range coins {
-		need := needs[coin]
-		o.feedMu.Lock()
-		existing := o.funding[coin]
-		var retained []feedFundingRecord
-		retainedFrom := int64(0)
-		if existing != nil && existing.Err == "" && existing.HasRecords {
-			retained = append(retained, existing.Records...)
-			retainedFrom = existing.recordsFromMs
-		}
-		wasLimited := existing != nil && existing.rateLimited
-		frameStart, frameKnown := earliestBarMs[coin]
-		coversFrame := !need.Records || !frameKnown || (retainedFrom > 0 && retainedFrom <= frameStart)
-		fresh := existing != nil && existing.Err == "" && now.Sub(existing.FetchedAt) < feedFundingTTL &&
-			(!need.Scalar || existing.HasScalar) && (!need.Records || existing.HasRecords) && coversFrame
-		o.feedMu.Unlock()
-		if fresh {
-			continue
-		}
-		ctx := withFeedInput(base, "funding:"+coin)
-		entry := &feedFunding{FetchedAt: now, Source: "rest"}
-		var fetchErr error
-		if need.Scalar {
-			current, err := fetchHyperliquidFundingRateFn(ctx, coin)
-			if err != nil {
-				entry.Err, fetchErr = err.Error(), err
-			} else {
-				avg, avgErr := hlFundingAverage7d(ctx, coin, now)
-				if avgErr != nil {
-					entry.Err, fetchErr = avgErr.Error(), avgErr
-				} else {
-					entry.Current, entry.Avg7d, entry.HasScalar = current, avg, true
-				}
-			}
-		}
-		waitingForBars := false
-		if need.Records && entry.Err == "" {
-			startMs, ok := earliestBarMs[coin]
-			if !ok || startMs <= 0 {
-				waitingForBars = true
-				entry.Err = fmt.Sprintf("funding records for %s wait for the first candle bar of its key; no fundingHistory read is sent without a frame start", coin)
-			} else {
-				records, err := o.fundingRecordsRefresh(ctx, coin, retained, retainedFrom, startMs, now)
-				if err != nil {
-					entry.Err, fetchErr = err.Error(), err
-				} else {
-					entry.Records, entry.HasRecords, entry.recordsFromMs = records, true, startMs
-				}
-			}
-		}
-		if entry.Err != "" {
-			entry.rateLimited = wasLimited || feedRateLimitErr(fetchErr)
-			entry.weightHeld = errors.Is(fetchErr, errFeedWeightRefused)
-			entry.waitingForBars = waitingForBars
-			if !waitingForBars || existing == nil || !existing.waitingForBars {
-				o.logf("[feed] funding %s: %s", coin, entry.Err)
-			}
-			if !feedRateLimitErr(fetchErr) && !entry.weightHeld && !waitingForBars {
-				o.raiseAlert(feedKeyFor(coin, ""), "funding_failed", entry.Err)
-			}
-		}
-		o.feedMu.Lock()
-		o.funding[coin] = entry
-		o.feedMu.Unlock()
-	}
-}
-
-func (o *marketFeedOwner) fundingRecordsRefresh(ctx context.Context, coin string, retained []feedFundingRecord, retainedFrom, startMs int64, now time.Time) ([]feedFundingRecord, error) {
-	endMs := now.UTC().UnixMilli()
-	if retainedFrom > 0 && retainedFrom <= startMs && len(retained) > 0 && retained[len(retained)-1].TimeMs >= startMs {
-		records, pages, err := hlFundingRecordsTail(ctx, coin, retained, startMs, endMs)
-		if err == nil {
-			o.logf("[feed-funding] coin=%s mode=tail range=[%d,%d] anchor=%d pages=%d records=%d", coin, startMs, endMs, retained[len(retained)-1].TimeMs, pages, len(records))
-			return records, nil
-		}
-		if !errors.Is(err, errFundingTailMismatch) && !errors.Is(err, errFundingRangeIncomplete) {
-			return nil, err
-		}
-		o.logf("[feed-funding] coin=%s mode=tail pages=%d refused: %v; reading the full range", coin, pages, err)
-	}
-	records, pages, err := hlFundingRecordsRange(ctx, coin, startMs, endMs, hlFundingMaxRangePasses)
-	if err != nil {
-		return nil, err
-	}
-	o.logf("[feed-funding] coin=%s mode=full range=[%d,%d] pages=%d records=%d", coin, startMs, endMs, pages, len(records))
-	return records, nil
 }
 
 func premiumStrategyIDs(cfg *Config) []string {

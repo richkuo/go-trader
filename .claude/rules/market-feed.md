@@ -31,6 +31,10 @@ paths:
   - Seal bytes immutable;missed/evicted/pre-start key=`unavailable`,NEVER current data;sealer never takes `mu`.
   - Consumer(`websocket|shared`):1 sealed stdin `marketSnapshot`,paper funding=seal;missing frame=error,NEVER private fetch;1 deadline/cycle,non-nil degraded snapshot,primary>backup;ready backup fills ONLY missing|unready candle key,never by lookback.
   - `/info` ONLY `hlInfoPost`,weight held pre-send(shared:durable,no heap fallback),refund ONLY `settle`;candle window>5000 rows NEVER sent;429=host pause,no retry,`rate_limited` til post-pause fetch,never unhealthy.
-  - Key ready ONLY after verified full history(lookback|venue edge)+REST deadline refresh,except `feedClosedFrameReuse`(closed-bar-only readers,host pause refuses,seal v9 `forming_bar_omitted`);funding tail falls back to full;WS seal/repair incremental-only.
+  - Key ready ONLY after verified full history(lookback|venue edge)+REST deadline refresh,except `feedClosedFrameReuse`(closed-bar-only readers,host pause refuses,seal v9 `forming_bar_omitted`);WS seal/repair incremental-only.
+  - Funding range=`funding_skew` readers ONLY(union by coin+key,retained config kept);seal v10 proof,consumer+check hold on missing proof,earlier frame,stale read,boundary past `records_through_ms`;coverage id equal at prepare+freeze+publish.
+  - Funding checkpoint:validated pages ONLY,boundary recheck,never in a seal;complete records survive scalar/transient failure;conflict|missing anchor invalidates.
+  - REST order:candles(fixed admission)>mids>due funding+accounting>cold pages(residual room ONLY;deferral!=refusal);workers joined before freeze.
+  - Weight recovery DM ONLY when every refused still-required input passed its OWN validation;removed input=retired,never recovered.
   - Correction:outside `feedMu`,closed bars only,never `LastRecvAt`/seals/readiness.
   - Weight file(not SQLite):no `flock` wait under mutex;never unlink locks;stopped owner holds `weight_reserve`(cap=ceiling-max reserve of ANY owner),lowered ONLY by same key(register|full-policy reload|`feed-weight-release`)

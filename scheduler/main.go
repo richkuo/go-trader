@@ -1223,10 +1223,12 @@ func main() {
 				fmt.Printf("[feed] %s\n", formatFeedRateLimitAlert(ev, marketFeedWebsocket, "scheduler"))
 				feedRateLimitSender.enqueue(formatFeedRateLimitAlert(ev, marketFeedWebsocket, "scheduler"))
 			}
-			for _, ev := range feedLedger.weightReport(feedOwner.weightRefusedInputs()) {
+			for _, ev := range feedLedger.weightReport(feedOwner.weightRefusedInputs(), feedOwner.weightInputRequired) {
 				fmt.Printf("[feed-weight] evaluation=%s %s\n", evalID, ev.logLine())
-				fmt.Printf("[feed] %s\n", formatFeedWeightAlert(ev, marketFeedWebsocket, "scheduler"))
-				feedRateLimitSender.enqueue(formatFeedWeightAlert(ev, marketFeedWebsocket, "scheduler"))
+				if msg := formatFeedWeightAlert(ev, marketFeedWebsocket, "scheduler"); msg != "" {
+					fmt.Printf("[feed] %s\n", msg)
+					feedRateLimitSender.enqueue(msg)
+				}
 			}
 			for _, ev := range feedAuthority.sharedReport() {
 				msg := formatFeedSharedAlert(ev, marketFeedWebsocket, "scheduler", feedAuthority.key)

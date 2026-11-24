@@ -243,18 +243,18 @@ func TestPaperFundingFeedAccountingWindowRefreshesMergesAndKeepsCoverageOnConfli
 	owner.feedMu.Unlock()
 	window := feedAccountingWindow.Milliseconds()
 
-	owner.EnsureAccountingFunding(context.Background())
+	owner.EnsureFunding(context.Background(), feedFundingPlan{})
 	first := *owner.accountingFunding["ETH"]
 	if starts[0] != nowMs-window || first.FromMs != nowMs-window || first.ToMs != nowMs || first.Err != "" {
 		t.Fatalf("first fetch must start at now-W and cover through the last record: start %d entry %+v", starts[0], first)
 	}
-	owner.EnsureAccountingFunding(context.Background())
+	owner.EnsureFunding(context.Background(), feedFundingPlan{})
 	if len(starts) != 1 {
 		t.Fatalf("a fetch inside the refresh interval must be skipped, got starts %v", starts)
 	}
 
 	advance(2 * time.Hour)
-	owner.EnsureAccountingFunding(context.Background())
+	owner.EnsureFunding(context.Background(), feedFundingPlan{})
 	second := *owner.accountingFunding["ETH"]
 	if starts[1] != first.ToMs-feedAccountingOverlap.Milliseconds() {
 		t.Fatalf("incremental fetch start %d, want last record minus overlap %d", starts[1], first.ToMs-feedAccountingOverlap.Milliseconds())
@@ -268,12 +268,12 @@ func TestPaperFundingFeedAccountingWindowRefreshesMergesAndKeepsCoverageOnConfli
 
 	conflictAt = second.ToMs - hour
 	advance(2 * time.Minute)
-	owner.EnsureAccountingFunding(context.Background())
+	owner.EnsureFunding(context.Background(), feedFundingPlan{})
 	if len(starts) != 2 {
 		t.Fatalf("no refresh is due before the next hourly record can exist, got starts %v", starts)
 	}
 	advance(time.Hour)
-	owner.EnsureAccountingFunding(context.Background())
+	owner.EnsureFunding(context.Background(), feedFundingPlan{})
 	third := *owner.accountingFunding["ETH"]
 	if third.Err == "" || third.ToMs != second.ToMs || len(third.Records) != len(second.Records) {
 		t.Fatalf("a changed rate must keep the previous coverage and flag the error: %+v", third.Err)

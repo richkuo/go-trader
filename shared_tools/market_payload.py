@@ -1,5 +1,8 @@
 MARKET_PAYLOAD_VERSION = 4
 
+FUNDING_RECORDS_CONTRACT = 1
+FUNDING_RECORDS_MAX_AGE_MS = 300_000
+
 TRADE_FLOW_STRATEGIES = frozenset({"cumulative_volume_delta_divergence", "sweep_absorption_ifvg"})
 
 
@@ -100,6 +103,8 @@ def market_funding(market, coin: str, error_cls=None) -> dict:
 
 def market_funding_scalar(market, coin: str, error_cls=None) -> dict:
     entry = market_funding(market, coin, error_cls)
+    if entry.get("scalar_error"):
+        _fail(error_cls, f"market payload funding scalar for {coin} failed: {entry['scalar_error']}")
     if not entry.get("has_scalar"):
         _fail(error_cls, f"market payload carries no current funding rate for {coin}")
     return {
@@ -108,15 +113,49 @@ def market_funding_scalar(market, coin: str, error_cls=None) -> dict:
     }
 
 
-def market_funding_records(market, coin: str, start_ms: int, error_cls=None) -> list:
+def _funding_coverage(market, entry: dict, coin: str, start_ms: int, boundary_ms, error_cls) -> tuple:
+    contract = entry.get("records_contract")
+    if isinstance(contract, bool) or contract != FUNDING_RECORDS_CONTRACT:
+        _fail(error_cls, f"market payload funding for {coin} carries record coverage contract {contract!r}, "
+                         f"want {FUNDING_RECORDS_CONTRACT}")
+    bounds = [entry.get(k) for k in ("records_from_ms", "records_to_ms", "records_through_ms")]
+    if any(isinstance(b, bool) or not isinstance(b, int) for b in bounds) or not 0 < bounds[0] <= bounds[1] <= bounds[2]:
+        _fail(error_cls, f"market payload funding coverage for {coin} is malformed: {bounds!r}")
+    from_ms, to_ms, through_ms = bounds
+    if int(start_ms) < from_ms:
+        _fail(error_cls, f"the selected frame for {coin} starts at {int(start_ms)}, before the proved funding range "
+                         f"that starts at {from_ms}")
+    if boundary_ms is not None:
+        if through_ms < int(boundary_ms):
+            _fail(error_cls, f"the funding records for {coin} are proved through {through_ms}, before the closed "
+                             f"decision boundary {int(boundary_ms)}")
+        return from_ms, to_ms
+    sealed_at_ms = (market or {}).get("sealed_at_ms")
+    if isinstance(sealed_at_ms, bool) or not isinstance(sealed_at_ms, int) or sealed_at_ms <= 0:
+        _fail(error_cls, f"market payload has no seal time to age the funding records for {coin}")
+    if sealed_at_ms - to_ms > FUNDING_RECORDS_MAX_AGE_MS:
+        _fail(error_cls, f"the proved funding read for {coin} ended {sealed_at_ms - to_ms} ms before the seal, over the "
+                         f"{FUNDING_RECORDS_MAX_AGE_MS} ms limit")
+    return from_ms, to_ms
+
+
+def market_funding_records(market, coin: str, start_ms: int, error_cls=None, boundary_ms=None) -> list:
     entry = market_funding(market, coin, error_cls)
+    if entry.get("records_error"):
+        _fail(error_cls, f"market payload funding records for {coin} failed: {entry['records_error']}")
     if not entry.get("has_records"):
         _fail(error_cls, f"market payload carries no funding history for {coin}")
+    from_ms, to_ms = _funding_coverage(market, entry, coin, start_ms, boundary_ms, error_cls)
     out = []
+    last = from_ms - 1
     for record in entry.get("records") or []:
         if not isinstance(record, dict):
             _fail(error_cls, f"market payload funding record for {coin} is malformed")
         ts = int(record.get("time") or 0)
+        if ts <= last or ts > to_ms:
+            _fail(error_cls, f"market payload funding record for {coin} at {ts} is out of order or outside the proved "
+                             f"range [{from_ms}, {to_ms}]")
+        last = ts
         if ts < int(start_ms):
             continue
         out.append({"rate": float(record.get("rate") or 0.0), "time": ts})

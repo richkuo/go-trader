@@ -583,10 +583,8 @@ func (o *marketFeedOwner) rateLimitedInputs() []string {
 		}
 	}
 	for coin, f := range o.funding {
-		if f != nil && f.rateLimited {
-			if need, ok := o.fundingNeeds[coin]; ok && (need.Scalar || need.Records) {
-				out = append(out, "funding:"+coin)
-			}
+		if need := o.fundingNeeds[coin]; f != nil && (f.scalarLimited && need.Scalar || f.recordsLimited && need.Records) {
+			out = append(out, "funding:"+coin)
 		}
 	}
 	for coin, f := range o.accountingFunding {
@@ -601,10 +599,61 @@ func (o *marketFeedOwner) rateLimitedInputs() []string {
 	return out
 }
 
-func (o *marketFeedOwner) setMidsWeightHeld(held bool) {
+func (o *marketFeedOwner) holdMidsWeight(coins []string) {
 	o.feedMu.Lock()
 	defer o.feedMu.Unlock()
-	o.midsWeightHeld = held
+	for _, coin := range coins {
+		o.midsWeightHeld[coin] = true
+	}
+}
+
+func (o *marketFeedOwner) validateMidsWeight(mids map[string]float64) bool {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	for coin := range o.midsWeightHeld {
+		if !o.midCoins[coin] || isFiniteFeedPrice(mids[coin]) {
+			delete(o.midsWeightHeld, coin)
+		}
+	}
+	return len(o.midsWeightHeld) == 0
+}
+
+func (o *marketFeedOwner) midsWeightHeldLocked() bool {
+	for coin := range o.midsWeightHeld {
+		if o.midCoins[coin] {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *marketFeedOwner) weightInputRequired(input string) bool {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	if coin, ok := strings.CutPrefix(input, "accounting_funding:"); ok {
+		return o.accountingCoins[coin]
+	}
+	if coin, ok := strings.CutPrefix(input, "funding:"); ok {
+		need := o.fundingNeeds[coin]
+		return need.Scalar || need.Records
+	}
+	switch input {
+	case "mids":
+		return len(o.midCoins) > 0
+	case feedFundingContextInput:
+		for _, need := range o.fundingNeeds {
+			if need.Scalar {
+				return true
+			}
+		}
+		return false
+	}
+	for key := range o.keys {
+		if key.PayloadID() == input {
+			return true
+		}
+	}
+	return false
 }
 
 func (o *marketFeedOwner) weightRefusedInputs() []string {
@@ -620,10 +669,8 @@ func (o *marketFeedOwner) weightRefusedInputs() []string {
 		}
 	}
 	for coin, f := range o.funding {
-		if f != nil && f.weightHeld {
-			if need, ok := o.fundingNeeds[coin]; ok && (need.Scalar || need.Records) {
-				out = append(out, "funding:"+coin)
-			}
+		if need := o.fundingNeeds[coin]; f != nil && (f.scalarWeightHeld && need.Scalar || f.recordsWeightHeld && need.Records) {
+			out = append(out, "funding:"+coin)
 		}
 	}
 	for coin, f := range o.accountingFunding {
@@ -631,7 +678,7 @@ func (o *marketFeedOwner) weightRefusedInputs() []string {
 			out = append(out, "accounting_funding:"+coin)
 		}
 	}
-	if o.midsWeightHeld && len(o.midCoins) > 0 {
+	if o.midsWeightHeldLocked() {
 		out = append(out, "mids")
 	}
 	sort.Strings(out)

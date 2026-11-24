@@ -394,6 +394,9 @@ def test_market_payload_serves_frames_mid_and_funding_without_fetching(mod, subt
             "records": [{"rate": 0.0004, "time": rows[0][0] - 10},
                         {"rate": 0.0005, "time": rows[0][0] + 10}],
             "has_records": True, "fetched_at_ms": 1_700_000_000_000, "source": "rest",
+            "records_contract": 1, "records_from_ms": rows[0][0] - 10,
+            "records_to_ms": max(1_700_000_000_000, rows[0][0] + 10),
+            "records_through_ms": max(1_700_000_000_000, rows[0][0] + 10),
         }
         shared = mod.build_shared_signal_state(
             "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",

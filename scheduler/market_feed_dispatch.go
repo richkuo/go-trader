@@ -212,7 +212,7 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 			optionalTimed[entry.ResearchHTF] = true
 			forming[entry.ResearchHTF] = forming[entry.ResearchHTF] || !entry.readsClosedOnly(entry.ResearchHTF)
 		}
-		if held, why := c.Snapshot.fundingHold(entry.Coin, entry.FundingScalar, entry.FundingRecords); held {
+		if held, why := c.Snapshot.fundingReaderHold(entry); held {
 			return nil, fmt.Errorf("strategy %s: %s", sc.ID, why)
 		}
 		for key, window := range entry.observationNeeds() {
@@ -316,7 +316,7 @@ func (c *marketFeedContext) holdFor(sc StrategyConfig) feedHold {
 			return feedHold{Held: true, Key: entry.Leader, Reason: why}
 		}
 	}
-	if held, why := c.Snapshot.fundingHold(entry.Coin, entry.FundingScalar, entry.FundingRecords); held {
+	if held, why := c.Snapshot.fundingReaderHold(entry); held {
 		return feedHold{Held: true, Key: entry.Signal, Reason: why}
 	}
 	if held, why := c.Snapshot.macroHold(entry); held {

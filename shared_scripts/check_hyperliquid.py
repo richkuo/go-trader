@@ -760,7 +760,8 @@ def _shared_decision_funding_records(shared, symbol, start_ms, boundary_ms):
     try:
         if market is not None:
             try:
-                records = market_funding_records(market, symbol, start_ms, MarketPayloadError)
+                records = market_funding_records(market, symbol, start_ms, MarketPayloadError,
+                                                 boundary_ms=boundary_ms)
             except MarketPayloadError as e:
                 raise ClosedBarHold(str(e))
         else:

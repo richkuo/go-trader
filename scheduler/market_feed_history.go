@@ -89,6 +89,7 @@ type feedFetchTicket struct {
 	intervalMs int64
 	seq        uint64
 	loop       bool
+	validated  bool
 }
 
 func (o *marketFeedOwner) admitKeyFetch(key marketFeedKey, reason feedRestReason, incrementalOnly bool) (*feedFetchTicket, error) {
@@ -182,7 +183,11 @@ func (o *marketFeedOwner) executeKeyFetch(ctx context.Context, t *feedFetchTicke
 	defer o.feedMu.Unlock()
 	released = true
 	t.st.historyInflight = false
-	return o.completeKeyFetchLocked(t, hist, err, requestedAt)
+	err = o.completeKeyFetchLocked(t, hist, err, requestedAt)
+	if t.validated {
+		feedLedgerFrom(ctx).weightInputValidated(t.key.PayloadID())
+	}
+	return err
 }
 
 func (o *marketFeedOwner) completeKeyFetchLocked(t *feedFetchTicket, hist hlCandleHistory, err error, requestedAt time.Time) error {
@@ -229,7 +234,6 @@ func (o *marketFeedOwner) completeKeyFetchLocked(t *feedFetchTicket, hist hlCand
 			key, feedStatusRateLimited, errFeedHostPaused)
 	}
 	st.rlSeq = 0
-	st.weightHeld = false
 	st.sharedHeld = false
 	if t.full {
 		if verr := feedHistoryCompletionError(t, hist, out); verr != nil {
@@ -264,6 +268,10 @@ func (o *marketFeedOwner) completeKeyFetchLocked(t *feedFetchTicket, hist hlCand
 	st.Status = feedStatusReady
 	st.StatusDetail = ""
 	st.restVerified = !st.needsHistory()
+	if !st.needsHistory() && st.repairFromMs == 0 {
+		st.weightHeld = false
+		t.validated = true
+	}
 	return nil
 }
 

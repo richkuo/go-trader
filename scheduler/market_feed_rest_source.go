@@ -11,6 +11,12 @@ import (
 const (
 	feedRESTRetryBackoff = time.Second
 	feedRESTRetryMargin  = 3 * time.Second
+
+	feedRESTCandleWorkers = 4
+	feedRESTMidsSlot      = 6 * time.Second
+	feedRESTMidsHold      = 8 * time.Second
+	feedRESTFreezeReserve = 500 * time.Millisecond
+	feedIncrementalRows   = 3
 )
 
 type feedPrepareReport struct {
@@ -159,13 +165,117 @@ func (r *feedRESTSource) canRetry(ctx context.Context, err error) bool {
 	return true
 }
 
+type feedRESTRead struct {
+	key    marketFeedKey
+	ticket *feedFetchTicket
+	err    error
+	sent   bool
+}
+
+func (r *feedRESTSource) readKeys(ctx context.Context, reads []*feedRESTRead, reason feedRestReason) {
+	pool := newFeedOrderedPool(feedRESTCandleWorkers)
+	for _, rd := range reads {
+		pool.acquire()
+		if err := ctx.Err(); err != nil {
+			rd.err = fmt.Errorf("the candle window of this preparation ended before the read was admitted: %w", err)
+			pool.release()
+			continue
+		}
+		t, err := r.owner.admitKeyFetch(rd.key, reason, false)
+		if err != nil {
+			rd.err = err
+			pool.release()
+			continue
+		}
+		rd.ticket, rd.sent = t, true
+		pool.start(ctx, func(jctx context.Context) { rd.err = r.owner.executeKeyFetch(jctx, t) })
+	}
+	pool.wg.Wait()
+}
+
+func feedPhaseContext(ctx context.Context, reserve time.Duration) (context.Context, context.CancelFunc) {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+	if left := time.Until(dl); left <= 2*reserve {
+		reserve = left / 2
+	}
+	return context.WithDeadline(ctx, dl.Add(-reserve))
+}
+
+func feedUpcomingDeadlines(cadences map[marketFeedKey][]int, deadline int64, span time.Duration) []int64 {
+	set := make(map[int]bool)
+	for _, list := range cadences {
+		for _, c := range list {
+			if c > 0 {
+				set[c] = true
+			}
+		}
+	}
+	seen := make(map[int64]bool)
+	var out []int64
+	for c := range set {
+		step := int64(c)
+		for d := (deadline/step + 1) * step; d-deadline <= int64(span/time.Second); d += step {
+			if !seen[d] {
+				seen[d] = true
+				out = append(out, d)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func feedFundingPlanFor(deadline int64, reqs cycleMarketRequirements, coverage feedRequirements) feedFundingPlan {
+	plan := feedFundingPlan{Needs: reqs.Funding, CoverageID: reqs.FundingCoverage, CutoffMs: deadline * 1000}
+	upcoming := feedUpcomingDeadlines(coverage.KeyCadences, deadline, feedAccountingSlack)
+	for _, d := range upcoming {
+		plan.Upcoming = append(plan.Upcoming, time.Unix(d, 0).UTC().Add(feedSealSettleDelay))
+	}
+	if len(upcoming) == 0 {
+		return plan
+	}
+	candleW, _ := hlInfoWeight("candleSnapshot", feedIncrementalRows)
+	midsW, _ := hlInfoWeight("allMids", 0)
+	for _, cr := range reqs.Keys {
+		if feedKeyDueAt(coverage.KeyCadences[cr.Key], upcoming[0]) {
+			plan.NextWeight += candleW
+			plan.NextReads++
+		}
+	}
+	if len(reqs.Coins) > 0 {
+		plan.NextWeight += midsW
+		plan.NextReads++
+	}
+	return plan
+}
+
 func (r *feedRESTSource) prepare(ctx context.Context, deadline int64, reqs cycleMarketRequirements, coverage feedRequirements) feedPrepareReport {
 	rep := feedPrepareReport{RefreshedKeys: make(map[marketFeedKey]bool), ReadyOnlyRefreshed: true,
 		DueKeys: make(map[marketFeedKey]bool), InflightKeys: make(map[marketFeedKey]bool), DeferredKeys: make(map[marketFeedKey]time.Time),
 		ReusedKeys: make(map[marketFeedKey]bool), ReuseRefused: make(map[marketFeedKey]string)}
+	r.prepareCandles(ctx, deadline, reqs, coverage, &rep)
+	midsAt, read := r.prepareMids(ctx, deadline, reqs, &rep)
+	fundingCtx, cancel := feedPhaseContext(ctx, feedRESTFreezeReserve)
+	defer cancel()
+	if read {
+		var cancelMids context.CancelFunc
+		fundingCtx, cancelMids = context.WithDeadline(fundingCtx, midsAt.Add(feedRESTMidsHold))
+		defer cancelMids()
+	}
+	r.owner.EnsureFunding(fundingCtx, feedFundingPlanFor(deadline, reqs, coverage))
+	return rep
+}
+
+func (r *feedRESTSource) prepareCandles(ctx context.Context, deadline int64, reqs cycleMarketRequirements, coverage feedRequirements, rep *feedPrepareReport) {
 	cutoffMs := deadline * 1000
 	midsWeight, _ := hlInfoWeight("allMids", 0)
-	keyed := withFeedKeepWeight(withFeedKeep(ctx, 1), midsWeight)
+	candleCtx, cancel := feedPhaseContext(ctx, feedRESTMidsSlot+feedRESTFreezeReserve)
+	defer cancel()
+	keyed := withFeedKeepWeight(withFeedKeep(candleCtx, 1), midsWeight)
+	var reads []*feedRESTRead
 	for _, cr := range restRefreshOrder(reqs, coverage) {
 		key := cr.Key
 		if _, tracked := r.owner.readinessFor(key); !tracked || !r.owner.publishedKey(key) {
@@ -182,75 +292,96 @@ func (r *feedRESTSource) prepare(ctx context.Context, deadline int64, reqs cycle
 			}
 			rep.ReuseProofFetched++
 		}
-		t, err := r.owner.admitKeyFetch(key, feedRestRefresh, false)
-		if err == nil {
-			err = r.owner.executeKeyFetch(keyed, t)
-			if r.canRetry(ctx, err) && sleepCtx(ctx, r.backoff) == nil {
-				if rt, rerr := r.owner.admitKeyFetch(key, feedRestRetry, false); rerr == nil {
-					t, err = rt, r.owner.executeKeyFetch(keyed, rt)
-				}
+		reads = append(reads, &feedRESTRead{key: key})
+	}
+	r.readKeys(keyed, reads, feedRestRefresh)
+	var retries []*feedRESTRead
+	for _, rd := range reads {
+		if rd.sent && r.canRetry(candleCtx, rd.err) {
+			retries = append(retries, rd)
+		}
+	}
+	if len(retries) > 0 && sleepCtx(candleCtx, r.backoff) == nil {
+		again := make([]*feedRESTRead, 0, len(retries))
+		for _, rd := range retries {
+			again = append(again, &feedRESTRead{key: rd.key})
+		}
+		r.readKeys(keyed, again, feedRestRetry)
+		for i, rd := range again {
+			if rd.sent {
+				retries[i].ticket, retries[i].err = rd.ticket, rd.err
 			}
 		}
-		if err == nil {
-			rep.Refreshed++
-			rep.RefreshedKeys[key] = true
-			continue
-		}
-		var notDue *feedHistoryNotDueError
-		switch {
-		case errors.As(err, &notDue):
-			rep.DeferredKeys[key] = notDue.DueAt
-		case errors.Is(err, errFeedKeyInflight):
-			rep.InflightKeys[key] = true
-		case feedFetchTypedResult(err):
-		case errors.Is(err, errFeedWeightRefused):
-			r.owner.markTicketUnready(t, feedStatusBudget, fmt.Sprintf("refresh for deadline %d was refused by the weight allocation: %v", deadline, err))
-			r.owner.markTicketSharedHeld(t, feedSharedHeldErr(err))
-			rep.WeightRefused = append(rep.WeightRefused, key.PayloadID())
-		case errors.Is(err, errFeedBudgetExhausted):
-			r.owner.markTicketUnready(t, feedStatusBudget, fmt.Sprintf("refresh for deadline %d was refused: %v", deadline, err))
-			rep.Refused = append(rep.Refused, key.PayloadID())
-		case feedRateLimitErr(err):
-			r.owner.markTicketRateLimited(t, fmt.Sprintf("refresh for deadline %d was held by a venue rate limit: %v", deadline, err))
-			rep.Paused = append(rep.Paused, key.PayloadID())
-		default:
-			r.owner.markTicketUnready(t, feedStatusFailed, fmt.Sprintf("refresh for deadline %d failed: %v", deadline, err))
-			rep.Failed = append(rep.Failed, key.PayloadID())
-		}
-		r.logf("[feed] %s: refresh for deadline %d: %v", key, deadline, err)
 	}
-
-	r.owner.EnsureFunding(keyed, r.owner.earliestFrameBarMs(reqs))
-	r.owner.EnsureAccountingFunding(keyed)
-
-	if len(reqs.Coins) > 0 {
-		midCtx := withFeedInput(withFeedReason(ctx, string(feedRestMids)), "mids")
-		mids, err := fetchHyperliquidMidsCtxFn(midCtx, reqs.Coins)
-		if r.canRetry(ctx, err) && sleepCtx(ctx, r.backoff) == nil {
-			mids, err = fetchHyperliquidMidsCtxFn(withFeedInput(withFeedReason(ctx, string(feedRestRetry)), "mids"), reqs.Coins)
-		}
-		switch {
-		case err == nil:
-			r.owner.IngestMids(mids, r.owner.now(), feedSourceREST)
-			r.owner.setMidsRateLimited(false)
-			r.owner.setMidsWeightHeld(false)
-		case errors.Is(err, errFeedWeightRefused):
-			r.owner.setMidsWeightHeld(true)
-			rep.WeightRefused = append(rep.WeightRefused, "mids")
-			r.logf("[feed] mids for deadline %d: %v", deadline, err)
-		case errors.Is(err, errFeedBudgetExhausted):
-			rep.Refused = append(rep.Refused, "mids")
-			r.logf("[feed] mids for deadline %d: %v", deadline, err)
-		case feedRateLimitErr(err):
-			r.owner.setMidsRateLimited(true)
-			rep.Paused = append(rep.Paused, "mids")
-			r.logf("[feed] mids for deadline %d: %v", deadline, err)
-		default:
-			rep.Failed = append(rep.Failed, "mids")
-			r.logf("[feed] mids for deadline %d: %v", deadline, err)
-		}
+	for _, rd := range reads {
+		r.recordCandleRead(deadline, rd, rep)
 	}
-	return rep
+}
+
+func (r *feedRESTSource) recordCandleRead(deadline int64, rd *feedRESTRead, rep *feedPrepareReport) {
+	key, t, err := rd.key, rd.ticket, rd.err
+	if err == nil {
+		rep.Refreshed++
+		rep.RefreshedKeys[key] = true
+		return
+	}
+	var notDue *feedHistoryNotDueError
+	switch {
+	case errors.As(err, &notDue):
+		rep.DeferredKeys[key] = notDue.DueAt
+	case errors.Is(err, errFeedKeyInflight):
+		rep.InflightKeys[key] = true
+	case feedFetchTypedResult(err):
+	case errors.Is(err, errFeedWeightRefused):
+		r.owner.markTicketUnready(t, feedStatusBudget, fmt.Sprintf("refresh for deadline %d was refused by the weight allocation: %v", deadline, err))
+		r.owner.markTicketSharedHeld(t, feedSharedHeldErr(err))
+		rep.WeightRefused = append(rep.WeightRefused, key.PayloadID())
+	case errors.Is(err, errFeedBudgetExhausted):
+		r.owner.markTicketUnready(t, feedStatusBudget, fmt.Sprintf("refresh for deadline %d was refused: %v", deadline, err))
+		rep.Refused = append(rep.Refused, key.PayloadID())
+	case feedRateLimitErr(err):
+		r.owner.markTicketRateLimited(t, fmt.Sprintf("refresh for deadline %d was held by a venue rate limit: %v", deadline, err))
+		rep.Paused = append(rep.Paused, key.PayloadID())
+	default:
+		r.owner.markTicketUnready(t, feedStatusFailed, fmt.Sprintf("refresh for deadline %d failed: %v", deadline, err))
+		rep.Failed = append(rep.Failed, key.PayloadID())
+	}
+	r.logf("[feed] %s: refresh for deadline %d: %v", key, deadline, err)
+}
+
+func (r *feedRESTSource) prepareMids(ctx context.Context, deadline int64, reqs cycleMarketRequirements, rep *feedPrepareReport) (time.Time, bool) {
+	if len(reqs.Coins) == 0 {
+		return time.Time{}, false
+	}
+	midsCtx, cancel := context.WithTimeout(ctx, feedRESTMidsSlot)
+	defer cancel()
+	midsCtx = withFeedInput(withFeedReason(midsCtx, string(feedRestMids)), "mids")
+	mids, err := fetchHyperliquidMidsCtxFn(midsCtx, reqs.Coins)
+	if r.canRetry(midsCtx, err) && sleepCtx(midsCtx, r.backoff) == nil {
+		mids, err = fetchHyperliquidMidsCtxFn(withFeedReason(midsCtx, string(feedRestRetry)), reqs.Coins)
+	}
+	if err == nil {
+		r.owner.IngestMids(mids, r.owner.now(), feedSourceREST)
+		r.owner.setMidsRateLimited(false)
+		if r.owner.validateMidsWeight(mids) {
+			feedLedgerFrom(ctx).weightInputValidated("mids")
+		}
+		return time.Now(), true
+	}
+	switch {
+	case errors.Is(err, errFeedWeightRefused):
+		r.owner.holdMidsWeight(reqs.Coins)
+		rep.WeightRefused = append(rep.WeightRefused, "mids")
+	case errors.Is(err, errFeedBudgetExhausted):
+		rep.Refused = append(rep.Refused, "mids")
+	case feedRateLimitErr(err):
+		r.owner.setMidsRateLimited(true)
+		rep.Paused = append(rep.Paused, "mids")
+	default:
+		rep.Failed = append(rep.Failed, "mids")
+	}
+	r.logf("[feed] mids for deadline %d: %v", deadline, err)
+	return time.Time{}, false
 }
 
 func formatFeedReuseLines(deadline int64, source, instance string, rep feedPrepareReport) []string {

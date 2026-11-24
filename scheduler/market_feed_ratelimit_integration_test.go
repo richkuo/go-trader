@@ -150,7 +150,7 @@ func TestFeedRateLimitPause(t *testing.T) {
 				return err
 			},
 			"metaAndAssetCtxs": func() error {
-				_, err := fetchHyperliquidFundingRate(ctx, "BTC")
+				_, err := fetchHyperliquidFundingContexts(ctx)
 				return err
 			},
 			"fundingHistory": func() error {

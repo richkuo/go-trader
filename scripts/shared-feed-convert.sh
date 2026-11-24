@@ -418,6 +418,7 @@ def feed_keys_ready(status_path):
         print("unreadable: /status has no market_feed.keys")
         return
     waiting = sorted("%s=%s" % (k.get("key"), k.get("status")) for k in mf["keys"] if k.get("ready") is not True)
+    waiting += sorted("%s=loading" % name for name in s.get("funding_loading") or [])
     print("not_ready: " + " ".join(waiting) if waiting else "ready")
 
 def feed_max_cadence(status_path):
@@ -1369,7 +1370,7 @@ wait_backup_steady() {
                 rm -f "$tmp"
                 return 0
             fi
-            state="every key ready since $since, but no deadline after that is sealed yet (last sealed ${seal:-none})"
+            state="every key and funding input ready since $since, but no deadline after that is sealed yet (last sealed ${seal:-none})"
         else
             since=""
         fi
@@ -1398,7 +1399,7 @@ cmd_calibrate() {
     port=$(feed_port backup)
     [[ "$(py budget-complete "$(feed_config backup)")" == "yes" ]] || opt_budget_json >/dev/null \
         || die 2 "$(feed_config backup) has no complete weight policy; pass all five budget flags (--per-minute, --startup, --weight-per-minute, --weight-startup, --weight-reserve). Nothing changed"
-    log "waiting until every backup key is ready and a later deadline is sealed (up to ${steady_base}s plus the longest cadence), so calibration measures the steady feed"
+    log "waiting until every backup key is ready, every funding input is loaded and a later deadline is sealed (up to ${steady_base}s plus the longest cadence), so calibration measures the steady feed"
     steady=$(wait_backup_steady "$port" "$steady_base") \
         || die 24 "the backup is not steady: ${steady}; a backup that is still loading history or has not sealed a deadline since cannot be measured. Nothing changed"
     cad=$(max_cadence)

@@ -245,7 +245,7 @@ func (c *sharedFeedClient) roundTrip(ctx context.Context, socket string, req fee
 	if head.V != feedWireVersion || !feedSealVersionSupported(head.SealVersion) || head.PayloadVersion != marketSnapshotVersion {
 		return h, nil, &feedEndpointError{Kind: feedErrIncompatible, Detail: fmt.Sprintf(
 			"feed speaks wire v%d, seal v%d, payload v%d; this consumer needs wire v%d, seal v%d through v%d, payload v%d",
-			head.V, head.SealVersion, head.PayloadVersion, feedWireVersion, feedSealVersionBase, feedSealVersionClosedReuse, marketSnapshotVersion)}
+			head.V, head.SealVersion, head.PayloadVersion, feedWireVersion, feedSealVersionBase, feedSealVersionFunding, marketSnapshotVersion)}
 	}
 	if err := decodeFeedStrict(blob, &h); err != nil {
 		return h, nil, &feedEndpointError{Kind: feedErrMalformed, Detail: fmt.Sprintf("reply header: %v", err)}
@@ -778,8 +778,12 @@ func applySealCoverage(snap *marketSnapshot, reqs cycleMarketRequirements) []str
 		if !need.Scalar && !need.Records {
 			continue
 		}
-		if _, ok := snap.funding[coin]; !ok {
+		f, ok := snap.funding[coin]
+		switch {
+		case !ok:
 			gaps = append(gaps, fmt.Sprintf("funding for %s is not in the seal", coin))
+		case need.Records && f.RecordsContract != feedFundingRecordsContract:
+			gaps = append(gaps, fmt.Sprintf("funding records for %s carry coverage contract %d, want %d", coin, f.RecordsContract, feedFundingRecordsContract))
 		}
 	}
 	obsKeys := make([]feedObservationKey, 0, len(reqs.Observations))
@@ -898,8 +902,15 @@ func sharedFeedCompatibilityLines(prefix string, descs []feedEndpointDescription
 		for _, coin := range fundingCoins {
 			need := req.Funding[coin]
 			got := fundingServed[coin]
-			if (need.Scalar && !got.Scalar) || (need.Records && !got.Records) {
+			switch {
+			case (need.Scalar && !got.Scalar) || (need.Records && !got.Records):
 				gaps = append(gaps, "funding "+coin+" not served")
+			case need.Records && got.RecordsContract != feedFundingRecordsContract:
+				gaps = append(gaps, fmt.Sprintf("funding records %s coverage contract %d, want %d", coin, got.RecordsContract, feedFundingRecordsContract))
+			case need.Records:
+				for _, gap := range got.need().covers(need) {
+					gaps = append(gaps, fmt.Sprintf("funding records %s reader %s", coin, gap))
+				}
 			}
 		}
 		obsServed := make(map[feedObservationKey]int64, len(desc.Observations))
