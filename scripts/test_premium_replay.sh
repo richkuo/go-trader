@@ -6,7 +6,7 @@ OUT=$(mktemp -d "${TMPDIR:-/tmp}/premium-harness.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
 
 GO_TRADER_PREMIUM_HARNESS_OUT="$OUT" GO_TRADER_V3_KINDS_OUT="$OUT/v3" \
-    go -C "$ROOT/scheduler" test -run '^(TestPremiumObservationPipeline|TestV3RecordingSchemaTypesEachKind)$' -count=1 .
+    go -C "$ROOT/scheduler" test -exec "$ROOT/scripts/go_test_without_python.sh" -run '^(TestPremiumObservationPipeline|TestV3RecordingSchemaTypesEachKind)$' -count=1 .
 
 for f in harness.json payload_btc_1.json payload_btc_e.json payload_eth_e.json payload_btc_2.json recording/run.manifest.json \
     v3/premium/run.manifest.json v3/book/run.manifest.json v3/mixed/run.manifest.json; do

@@ -287,7 +287,7 @@ var (
 	ciRunPattern    = regexp.MustCompile(`-run '([^']*)'`)
 	ciSkipPattern   = regexp.MustCompile(`-skip '([^']*)'`)
 	ciSuiteInvoke   = regexp.MustCompile(`bash scripts/(test_[A-Za-z0-9_.-]+\.sh)`)
-	ciReplayHarness = regexp.MustCompile(`^(?:GO_TRADER_[A-Z0-9_]+_OUT="\$OUT[^" ]*" )+go -C "\$ROOT/scheduler" test -run '\^(\([A-Za-z0-9|]+\)|[A-Za-z0-9]+)\$' -count=1 \.$`)
+	ciReplayHarness = regexp.MustCompile(`^(?:GO_TRADER_[A-Z0-9_]+_OUT="\$OUT[^" ]*" )+go -C "\$ROOT/scheduler" test -exec "\$ROOT/scripts/go_test_without_python\.sh" -run '\^(\([A-Za-z0-9|]+\)|[A-Za-z0-9]+)\$' -count=1 \.$`)
 	ciOmissionMsg   = regexp.MustCompile(`^\s*echo "((?:NOTE|note): [^"]*)"`)
 	ciShardName     = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	ciShellJobKey   = regexp.MustCompile(`^\s*(- )?(strategy|matrix|needs):`)
