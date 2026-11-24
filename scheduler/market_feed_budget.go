@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ const (
 	feedWeightCauseBound     = "bound_blocked"
 	feedWeightEventStart     = "weight_refused"
 	feedWeightEventRecover   = "weight_recovered"
+	feedWeightEventRetired   = "weight_retired"
 	feedWeightEventViolation = "bound_violation"
 )
 
@@ -69,6 +71,76 @@ type feedReasonCtxKey struct{}
 type feedKeepCtxKey struct{}
 type feedKeepWeightCtxKey struct{}
 type feedInputCtxKey struct{}
+type feedTurnCtxKey struct{}
+
+type feedTurn struct {
+	ready <-chan struct{}
+	done  chan struct{}
+	once  sync.Once
+}
+
+func (t *feedTurn) enter(ctx context.Context) error {
+	if t == nil {
+		return nil
+	}
+	select {
+	case <-t.ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (t *feedTurn) leave() {
+	if t != nil {
+		t.once.Do(func() { close(t.done) })
+	}
+}
+
+func feedTurnFrom(ctx context.Context) *feedTurn {
+	if ctx == nil {
+		return nil
+	}
+	t, _ := ctx.Value(feedTurnCtxKey{}).(*feedTurn)
+	return t
+}
+
+type feedOrderedPool struct {
+	slots chan struct{}
+	prev  <-chan struct{}
+	wg    sync.WaitGroup
+}
+
+func newFeedOrderedPool(workers int) *feedOrderedPool {
+	ready := make(chan struct{})
+	close(ready)
+	return &feedOrderedPool{slots: make(chan struct{}, max(workers, 1)), prev: ready}
+}
+
+func (p *feedOrderedPool) acquire() { p.slots <- struct{}{} }
+
+func (p *feedOrderedPool) release() { <-p.slots }
+
+func (p *feedOrderedPool) start(ctx context.Context, job func(context.Context)) {
+	turn := &feedTurn{ready: p.prev, done: make(chan struct{})}
+	p.prev = turn.done
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		defer p.release()
+		defer turn.leave()
+		job(context.WithValue(ctx, feedTurnCtxKey{}, turn))
+	}()
+}
+
+func runFeedOrdered(ctx context.Context, workers int, jobs []func(context.Context)) {
+	pool := newFeedOrderedPool(workers)
+	for _, job := range jobs {
+		pool.acquire()
+		pool.start(ctx, job)
+	}
+	pool.wg.Wait()
+}
 
 type feedWeightCharge struct {
 	at      time.Time
@@ -92,6 +164,7 @@ type feedWeightEpisode struct {
 	open         bool
 	openedAt     time.Time
 	inputs       map[string]bool
+	valid        map[string]bool
 	refused      int
 	startSent    bool
 	successAfter bool
@@ -397,6 +470,54 @@ type feedAcquireSpec struct {
 	rows       int
 }
 
+func (l *feedRequestLedger) roomUntil(host string, upcoming []time.Time, nextWeight, nextReads int) (int, int) {
+	if l == nil {
+		return math.MaxInt32, math.MaxInt32
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.clock().UTC()
+	l.pruneLocked(now)
+	if h := l.hosts[host]; h != nil && now.Before(h.until) {
+		return 0, 0
+	}
+	weight, requests := math.MaxInt32, math.MaxInt32
+	if l.weight != nil {
+		weight = l.weight.PerMinute - l.steadyUsedLocked()
+		if l.authority != nil {
+			weight = min(weight, l.authority.sharedRoom(host))
+		}
+	}
+	if l.enforce {
+		requests = l.perMinute - len(l.window)
+	}
+	for i, at := range upcoming {
+		if !at.Before(now.Add(feedSealPrepareBudget + feedBudgetWindow)) {
+			break
+		}
+		keep := at.Add(-feedBudgetWindow)
+		if l.weight != nil {
+			alive := l.wOpenSteady
+			for _, c := range l.wCharges {
+				if c.at.After(keep) {
+					alive += c.weight - c.startup
+				}
+			}
+			weight = min(weight, l.weight.PerMinute-alive-(i+1)*nextWeight)
+		}
+		if l.enforce {
+			alive := 0
+			for _, sent := range l.window {
+				if sent.After(keep) {
+					alive++
+				}
+			}
+			requests = min(requests, l.perMinute-alive-(i+1)*nextReads)
+		}
+	}
+	return max(weight, 0), max(requests, 0)
+}
+
 func (l *feedRequestLedger) acquire(host, reason, reqType, input string, keep int) (*feedRequestPermit, error) {
 	return l.acquireSpec(feedAcquireSpec{host: host, reason: reason, reqType: reqType, input: input, keep: keep, rows: -1}, false)
 }
@@ -446,6 +567,7 @@ func (l *feedRequestLedger) countWeightRefusalLocked(spec feedAcquireSpec, cause
 		ep.open = true
 		ep.openedAt = now
 		ep.inputs = map[string]bool{}
+		ep.valid = map[string]bool{}
 		ep.refused = 0
 		ep.startSent = false
 	}
@@ -453,6 +575,18 @@ func (l *feedRequestLedger) countWeightRefusalLocked(spec feedAcquireSpec, cause
 	ep.refused++
 	if spec.input != "" {
 		ep.inputs[spec.input] = true
+		delete(ep.valid, spec.input)
+	}
+}
+
+func (l *feedRequestLedger) weightInputValidated(input string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if ep := &l.wEpisode; ep.open && ep.inputs[input] {
+		ep.valid[input] = true
 	}
 }
 

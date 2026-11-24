@@ -503,10 +503,24 @@ type feedFunding struct {
 	Source     string
 	Err        string
 
-	rateLimited    bool
-	weightHeld     bool
-	waitingForBars bool
-	recordsFromMs  int64
+	ScalarErr        string
+	RecordsErr       string
+	ScalarFetchedAt  time.Time
+	RecordsFetchedAt time.Time
+	RecordsContract  int
+	RecordsFromMs    int64
+	RecordsToMs      int64
+	RecordsThroughMs int64
+
+	scalarLimited     bool
+	recordsLimited    bool
+	scalarWeightHeld  bool
+	recordsWeightHeld bool
+	waitingForBars    bool
+	openedAt          time.Time
+	progressAt        time.Time
+	recordsSeq        uint64
+	run               *feedFundingRun
 }
 
 type feedRestReason string
@@ -554,6 +568,12 @@ type marketFeedOwner struct {
 	midCoins     map[string]bool
 	funding      map[string]*feedFunding
 	fundingNeeds map[string]feedFundingNeed
+
+	fundingCoverage   string
+	fundingSeq        uint64
+	fundingLastServed string
+	accountingDue     map[string]time.Time
+
 	observations map[feedObservationKey]*feedObservationState
 	tradeFlows   map[feedObservationKey]*feedTradeFlowState
 	books        map[feedObservationKey]*feedBookState
@@ -591,7 +611,7 @@ type marketFeedOwner struct {
 
 	fetchSeq        uint64
 	midsRateLimited bool
-	midsWeightHeld  bool
+	midsWeightHeld  map[string]bool
 
 	historyJitter  func(time.Duration) time.Duration
 	historyTick    time.Duration
@@ -600,12 +620,6 @@ type marketFeedOwner struct {
 	alerts chan feedAlert
 	clock  func() time.Time
 	logf   func(string, ...any)
-}
-
-type feedFundingNeed struct {
-	Scalar  bool
-	Records bool
-	StartMs int64
 }
 
 func newMarketFeedOwner(clock func() time.Time, logf func(string, ...any)) *marketFeedOwner {
@@ -632,6 +646,8 @@ func newMarketFeedOwner(clock func() time.Time, logf func(string, ...any)) *mark
 
 		accountingCoins:   make(map[string]bool),
 		accountingFunding: make(map[string]*feedAccountingFunding),
+		accountingDue:     make(map[string]time.Time),
+		midsWeightHeld:    make(map[string]bool),
 		macro:             make(map[feedMacroKey]*feedMacroPrepared),
 		macroNeeds:        make(map[feedMacroKey]feedMacroNeed),
 		corrOffsets:       append([]time.Duration(nil), feedCorrectionOffsets...),

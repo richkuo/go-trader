@@ -38,12 +38,21 @@ type rdVenue struct {
 	fundingConflict map[string]int64
 	fundingDrop     map[string]int64
 	fundingFail     map[string]bool
+
+	delay       func(rdRequest) time.Duration
+	status      map[string]int
+	ctxBroken   map[string]bool
+	midsMissing map[string]bool
+	noClose     bool
+	limitKey    marketFeedKey
+	badRows     map[string]bool
 }
 
 func newRDVenue(t *testing.T, clock *hlLotTestClock) *rdVenue {
 	t.Helper()
 	v := &rdVenue{clock: clock, fail: map[string]bool{}, mids: http.StatusOK,
-		fundingConflict: map[string]int64{}, fundingDrop: map[string]int64{}, fundingFail: map[string]bool{}}
+		fundingConflict: map[string]int64{}, fundingDrop: map[string]int64{}, fundingFail: map[string]bool{},
+		status: map[string]int{}, ctxBroken: map[string]bool{}, midsMissing: map[string]bool{}, badRows: map[string]bool{}}
 	v.srv = httptest.NewServer(http.HandlerFunc(v.handle))
 	t.Cleanup(v.srv.Close)
 	return v
@@ -59,6 +68,16 @@ func rdFormingClose(coin string, openMs, intervalMs int64, at time.Time) float64
 
 func rdFundingRate(coin string, hourMs int64) float64 {
 	return float64((hourMs/hlFundingRecordStepMs)%13+int64(len(coin))) / 100000
+}
+
+func rdScalar(coin string) float64 {
+	return float64(len(coin)) / 1_000_000
+}
+
+func (v *rdVenue) set(fn func(v *rdVenue)) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	fn(v)
 }
 
 func (v *rdVenue) record(r rdRequest) {
@@ -101,12 +120,44 @@ func (v *rdVenue) handle(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	now := v.clock.Now()
 	w.Header().Set("Content-Type", "application/json")
+	v.mu.Lock()
+	delay, forced, noClose := v.delay, v.status[body.Type], v.noClose
+	if body.Type == "candleSnapshot" && v.limitKey.Symbol == body.Req.Coin && v.limitKey.Timeframe == body.Req.Interval {
+		forced = http.StatusTooManyRequests
+	}
+	if st := v.status[body.Type+":"+body.Coin]; st != 0 {
+		forced = st
+	}
+	v.mu.Unlock()
+	if delay != nil {
+		time.Sleep(delay(rdRequest{Type: body.Type, Coin: body.Coin + body.Req.Coin, Interval: body.Req.Interval, Start: body.StartTime, End: body.EndTime}))
+	}
+	if forced != 0 {
+		v.record(rdRequest{Type: body.Type, Coin: body.Coin + body.Req.Coin, Interval: body.Req.Interval, Start: body.StartTime, End: body.EndTime, At: now})
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(forced)
+		return
+	}
 	switch body.Type {
+	case "metaAndAssetCtxs":
+		universe, ctxs := []any{}, []any{}
+		v.mu.Lock()
+		for _, c := range rdCoins {
+			universe = append(universe, map[string]any{"name": c})
+			if v.ctxBroken[c] {
+				ctxs = append(ctxs, map[string]any{"funding": "broken"})
+			} else {
+				ctxs = append(ctxs, map[string]any{"funding": strconv.FormatFloat(rdScalar(c), 'f', -1, 64)})
+			}
+		}
+		v.mu.Unlock()
+		v.record(rdRequest{Type: body.Type, At: now})
+		json.NewEncoder(w).Encode([]any{map[string]any{"universe": universe}, ctxs})
 	case "candleSnapshot":
 		coin, interval := body.Req.Coin, body.Req.Interval
 		step, _ := hlCandleIntervalMs(interval)
 		v.mu.Lock()
-		fail := v.fail[coin+"|"+interval]
+		fail, bad := v.fail[coin+"|"+interval], v.badRows[coin+"|"+interval]
 		v.mu.Unlock()
 		if fail {
 			v.record(rdRequest{Type: body.Type, Coin: coin, Interval: interval, Start: body.Req.StartTime, End: body.Req.EndTime, At: now})
@@ -120,8 +171,15 @@ func (v *rdVenue) handle(w http.ResponseWriter, r *http.Request) {
 			if open+step > nowMs {
 				c = rdFormingClose(coin, open, step, now)
 			}
-			rows = append(rows, map[string]any{"t": open, "T": open + step - 1, "o": "100", "h": strconv.FormatFloat(c+5, 'f', -1, 64),
-				"l": "90", "c": strconv.FormatFloat(c, 'f', -1, 64), "v": "5"})
+			row := map[string]any{"t": open, "T": open + step - 1, "o": "100", "h": strconv.FormatFloat(c+5, 'f', -1, 64),
+				"l": "90", "c": strconv.FormatFloat(c, 'f', -1, 64), "v": "5"}
+			if noClose {
+				delete(row, "T")
+			}
+			if bad && open+step <= nowMs && open+3*step > nowMs {
+				row["h"] = "1"
+			}
+			rows = append(rows, row)
 		}
 		v.record(rdRequest{Type: body.Type, Coin: coin, Interval: interval, Start: body.Req.StartTime, End: body.Req.EndTime, At: now, Rows: len(rows)})
 		json.NewEncoder(w).Encode(rows)
@@ -136,9 +194,13 @@ func (v *rdVenue) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out := map[string]string{}
+		v.mu.Lock()
 		for _, c := range rdCoins {
-			out[c] = "101"
+			if !v.midsMissing[c] {
+				out[c] = "101"
+			}
 		}
+		v.mu.Unlock()
 		json.NewEncoder(w).Encode(out)
 	case "fundingHistory":
 		coin := body.Coin
@@ -337,8 +399,8 @@ func TestFeedRESTDemandEligibilityAndReuse(t *testing.T) {
 	if got := formatCadences(union.KeyCadences[fourH]); got != "300s" {
 		t.Fatalf("4h cadences = %s, want 300s: only the 300s consumer reads it", got)
 	}
-	if got := formatCadences(union.KeyCadences[fiveM]); got != "90s,300s" {
-		t.Fatalf("5m cadences = %s, want 90s,300s: the drawdown acceleration reaches 90s", got)
+	if got := formatCadences(union.KeyCadences[fiveM]); got != "75s,300s" {
+		t.Fatalf("5m cadences = %s, want 75s,300s: the drawdown acceleration reaches 75s", got)
 	}
 
 	doc, reqs := f.seal(t0)
@@ -354,12 +416,12 @@ func TestFeedRESTDemandEligibilityAndReuse(t *testing.T) {
 		t.Fatalf("4h at its own close = %+v, want a fresh ready read", r)
 	}
 
-	doc, reqs = f.seal(t0 + 90)
+	doc, reqs = f.seal(t0 + 75)
 	if n := len(rdCandleKeys(reqs)); n != 10 || rdTimeframeCount(reqs, "4h") != 0 || rdTimeframeCount(reqs, "1h") != 0 {
-		t.Fatalf("90s-only deadline read %v, want only the ten 5m and 15m keys the 90s cadence can reach", rdCandleKeys(reqs))
+		t.Fatalf("75s-only deadline read %v, want only the ten 5m and 15m keys the 75s cadence can reach", rdCandleKeys(reqs))
 	}
 	if r := rdSealKey(t, doc, fourH).Readiness; r.Ready || r.Status != string(feedStatusNotDue) {
-		t.Fatalf("4h at a 90s-only deadline = %+v, want not_due and not ready", r)
+		t.Fatalf("4h at a 75s-only deadline = %+v, want not_due and not ready", r)
 	}
 
 	doc, reqs = f.seal(t0 + 300)
@@ -487,7 +549,7 @@ func TestFeedRESTDemandEstimateMatchesMeasured(t *testing.T) {
 	f, _ := newRDFixture(t, time.Unix(t0-600, 0).UTC(), func() []feedConsumer { return rdWorkload(t, false) })
 	lines := estimateFeedDemandLines(f.union, feedSourceREST)
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"class=90s ", "class=300s ", "class=90s+300s ", "rolling_60s_peak", "weight demand funding:", "assumptions"} {
+	for _, want := range []string{"class=75s ", "class=75s+300s ", "rolling_60s_peak", "weight demand funding:", "assumptions"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("estimate lines lack %q:\n%s", want, joined)
 		}
@@ -505,7 +567,7 @@ func TestFeedRESTDemandEstimateMatchesMeasured(t *testing.T) {
 	var charges []charge
 	var deadlines []int64
 	for d := t0; d <= t0+2700; d++ {
-		if d%90 == 0 || d%300 == 0 {
+		if d%75 == 0 || d%300 == 0 {
 			deadlines = append(deadlines, d)
 		}
 	}
@@ -552,16 +614,30 @@ func TestFeedFundingRecordTail(t *testing.T) {
 		defer logMu.Unlock()
 		logs = append(logs, fmt.Sprintf(f, a...))
 	})
+	const frameRows = 960
+	needs := map[string]feedFundingNeed{}
+	frameStart := map[string]int64{}
+	setFrame := func(coin string, startMs int64) {
+		key := feedKeyFor(coin, "1h")
+		st := newFeedKeyState(key, hlFundingRecordStepMs, frameRows)
+		for open := startMs; open+hlFundingRecordStepMs <= clock.Now().UnixMilli()+hlFundingRecordStepMs && len(st.Bars) < frameRows+feedFundingRowMargin; open += hlFundingRecordStepMs {
+			st.Bars = append(st.Bars, feedBar{OpenMs: open, CloseMs: open + hlFundingRecordStepMs - 1, Open: 100, High: 101, Low: 99, Close: 100, Volume: 1})
+		}
+		owner.feedMu.Lock()
+		defer owner.feedMu.Unlock()
+		owner.keys[key] = st
+		frameStart[coin] = startMs
+	}
 	owner.feedMu.Lock()
-	owner.fundingNeeds = map[string]feedFundingNeed{}
 	for _, c := range rdCoins {
-		owner.fundingNeeds[c] = feedFundingNeed{Records: true}
+		needs[c] = feedFundingNeed{Records: true}.withReader(feedKeyFor(c, "1h"), frameRows)
+		owner.fundingNeeds[c] = needs[c]
 	}
 	owner.feedMu.Unlock()
-	frameStart := map[string]int64{}
 	for _, c := range rdCoins {
-		frameStart[c] = (t0 - 40*86_400) * 1000
+		setFrame(c, (t0-40*86_400)*1000)
 	}
+	ensure := func() { owner.EnsureFunding(ctx, feedFundingPlan{Needs: needs}) }
 	truth := func(coin string, startMs int64) []feedFundingRecord {
 		var out []feedFundingRecord
 		published := clock.Now().Add(-venue.fundingLag).UnixMilli()
@@ -602,7 +678,7 @@ func TestFeedFundingRecordTail(t *testing.T) {
 	}
 
 	mark := venue.mark()
-	owner.EnsureFunding(ctx, frameStart)
+	ensure()
 	check("first load")
 	for c, pages := range pagesByCoin(venue.since(mark, "")) {
 		if len(pages) != 2 || pages[0].Start != frameStart[c] || pages[0].Rows != hlFundingRowCap || pages[1].Rows >= hlFundingRowCap {
@@ -611,11 +687,11 @@ func TestFeedFundingRecordTail(t *testing.T) {
 	}
 
 	clock.Advance(feedFundingTTL + time.Minute)
-	for c := range frameStart {
-		frameStart[c] += 2 * hlFundingRecordStepMs
+	for _, c := range rdCoins {
+		setFrame(c, frameStart[c]+2*hlFundingRecordStepMs)
 	}
 	mark = venue.mark()
-	owner.EnsureFunding(ctx, frameStart)
+	ensure()
 	check("tail")
 	for c, pages := range pagesByCoin(venue.since(mark, "")) {
 		owner.feedMu.Lock()
@@ -631,7 +707,7 @@ func TestFeedFundingRecordTail(t *testing.T) {
 	venue.fundingLag = 2 * time.Hour
 	venue.mu.Unlock()
 	mark = venue.mark()
-	owner.EnsureFunding(ctx, frameStart)
+	ensure()
 	for c, pages := range pagesByCoin(venue.since(mark, "")) {
 		if len(pages) < 2 || pages[0].Rows != 0 {
 			t.Fatalf("%s tail with the anchor no longer published = %+v, want an empty tail then a full read", c, pages)
@@ -650,7 +726,7 @@ func TestFeedFundingRecordTail(t *testing.T) {
 	venue.fundingConflict["BTC"] = anchor
 	venue.mu.Unlock()
 	mark = venue.mark()
-	owner.EnsureFunding(ctx, frameStart)
+	ensure()
 	if pages := pagesByCoin(venue.since(mark, ""))["BTC"]; len(pages) < 2 {
 		t.Fatalf("BTC conflict pages = %+v, want the refused tail followed by a full read", pages)
 	}
@@ -662,14 +738,14 @@ func TestFeedFundingRecordTail(t *testing.T) {
 	}
 	check("conflict")
 	clock.Advance(feedFundingTTL + time.Minute)
-	owner.EnsureFunding(ctx, frameStart)
+	ensure()
 	check("after conflict")
 
 	clock.Advance(feedFundingTTL + time.Minute)
 	venue.mu.Lock()
 	venue.fundingFail["ETH"] = true
 	venue.mu.Unlock()
-	owner.EnsureFunding(ctx, frameStart)
+	ensure()
 	snap := freezeMarketSnapshot(owner, cycleMarketRequirements{Funding: map[string]feedFundingNeed{"ETH": {Records: true}}}, "x", clock.Now(), clock.Now())
 	if held, why := snap.fundingHold("ETH", false, true); !held {
 		t.Fatal("a failed funding read must hold readers")
@@ -680,29 +756,27 @@ func TestFeedFundingRecordTail(t *testing.T) {
 	venue.fundingFail["ETH"] = false
 	venue.mu.Unlock()
 	clock.Advance(time.Second)
+	owner.feedMu.Lock()
+	ethAnchor := owner.funding["ETH"].Records[len(owner.funding["ETH"].Records)-1].TimeMs
+	owner.feedMu.Unlock()
 	mark = venue.mark()
-	owner.EnsureFunding(ctx, frameStart)
-	if pages := pagesByCoin(venue.since(mark, ""))["ETH"]; len(pages) == 0 || pages[0].Start != frameStart["ETH"] {
-		t.Fatalf("ETH recovery pages = %+v, want a full read from the frame start", pages)
+	ensure()
+	if pages := pagesByCoin(venue.since(mark, ""))["ETH"]; len(pages) != 1 || pages[0].Start != ethAnchor {
+		t.Fatalf("ETH recovery pages = %+v, want one tail page from the complete records kept through the failed read", pages)
 	}
 	check("recovery")
 
-	wider := map[string]int64{}
-	for c, v := range frameStart {
-		wider[c] = v
-	}
-	wider["SOL"] -= 10 * hlFundingRecordStepMs
+	setFrame("SOL", frameStart["SOL"]-10*hlFundingRecordStepMs)
 	clock.Advance(time.Second)
 	mark = venue.mark()
-	owner.EnsureFunding(ctx, wider)
+	ensure()
 	pages := pagesByCoin(venue.since(mark, ""))
-	if len(pages["SOL"]) == 0 || pages["SOL"][0].Start != wider["SOL"] {
+	if len(pages["SOL"]) == 0 || pages["SOL"][0].Start != frameStart["SOL"] {
 		t.Fatalf("a wider SOL frame before expiry read %+v, want a full read from the earlier start", pages["SOL"])
 	}
 	if len(pages["BTC"]) != 0 {
 		t.Fatalf("an unchanged BTC frame before expiry read %+v, want the cache", pages["BTC"])
 	}
-	frameStart = wider
 	check("wider frame")
 
 	logMu.Lock()
@@ -729,7 +803,7 @@ func TestFeedRESTReuseConsumerReaderMismatch(t *testing.T) {
 	fresh, _ := f.seal(t0)
 	reused, _ := f.seal(t0 + 300)
 	fourH := feedKeyFor("BTC", "4h")
-	if reused.V != feedSealVersionClosedReuse || !rdSealKey(t, reused, fourH).FormingBarOmitted {
+	if reused.V != feedSealVersionFunding || !rdSealKey(t, reused, fourH).FormingBarOmitted {
 		t.Fatal("reused 4h frame did not carry the versioned forming-bar omission")
 	}
 

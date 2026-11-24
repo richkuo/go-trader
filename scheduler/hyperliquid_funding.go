@@ -18,6 +18,7 @@ const (
 	hlFundingFetchTimeout   = 20 * time.Second
 	hlFundingAvgWindowDays  = 7
 	hlFundingMaxRangePasses = 64
+	hlFundingPublishGraceMs = int64(120_000)
 )
 
 func hlPostInfo(ctx context.Context, payload any) ([]byte, error) {
@@ -74,7 +75,13 @@ func hlInfoPost(ctx context.Context, call hlInfoCall) error {
 			bound = -1
 		}
 	}
+	turn := feedTurnFrom(ctx)
+	if err := turn.enter(ctx); err != nil {
+		turn.leave()
+		return err
+	}
 	permit, err := feedBudgetAcquireBounded(ctx, call.BaseURL, call.Type, bound)
+	turn.leave()
 	if err != nil {
 		return err
 	}
@@ -144,19 +151,40 @@ func hlParseNumeric(raw json.RawMessage) (float64, error) {
 	return strconv.ParseFloat(asString, 64)
 }
 
-var fetchHyperliquidFundingRateFn = fetchHyperliquidFundingRate
+var fetchHyperliquidFundingContextsFn = fetchHyperliquidFundingContexts
 
-func fetchHyperliquidFundingRate(ctx context.Context, coin string) (float64, error) {
-	data, err := hlPostInfo(ctx, map[string]string{"type": "metaAndAssetCtxs"})
+type hlFundingContext struct {
+	Rate float64
+	Err  error
+}
+
+func fetchHyperliquidFundingContexts(ctx context.Context) (map[string]hlFundingContext, error) {
+	var out map[string]hlFundingContext
+	body, err := json.Marshal(map[string]string{"type": "metaAndAssetCtxs"})
 	if err != nil {
-		return 0, err
+		return nil, fmt.Errorf("marshal metaAndAssetCtxs request: %w", err)
 	}
+	err = hlInfoPost(ctx, hlInfoCall{
+		BaseURL: hlMainnetURL, Type: "metaAndAssetCtxs", Body: body, Timeout: hlFundingFetchTimeout,
+		Decode: func(data []byte) (int, error) {
+			contexts, derr := parseHyperliquidFundingContexts(data)
+			out = contexts
+			return 0, derr
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func parseHyperliquidFundingContexts(data []byte) (map[string]hlFundingContext, error) {
 	var payload []json.RawMessage
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return 0, fmt.Errorf("parse metaAndAssetCtxs: %w", err)
+		return nil, fmt.Errorf("parse metaAndAssetCtxs: %w", err)
 	}
 	if len(payload) < 2 {
-		return 0, fmt.Errorf("metaAndAssetCtxs response has %d elements, want 2", len(payload))
+		return nil, fmt.Errorf("metaAndAssetCtxs response has %d elements, want 2", len(payload))
 	}
 	var meta struct {
 		Universe []struct {
@@ -164,26 +192,50 @@ func fetchHyperliquidFundingRate(ctx context.Context, coin string) (float64, err
 		} `json:"universe"`
 	}
 	if err := json.Unmarshal(payload[0], &meta); err != nil {
-		return 0, fmt.Errorf("parse metaAndAssetCtxs universe: %w", err)
+		return nil, fmt.Errorf("parse metaAndAssetCtxs universe: %w", err)
 	}
-	var ctxs []map[string]json.RawMessage
+	var ctxs []json.RawMessage
 	if err := json.Unmarshal(payload[1], &ctxs); err != nil {
-		return 0, fmt.Errorf("parse metaAndAssetCtxs contexts: %w", err)
+		return nil, fmt.Errorf("parse metaAndAssetCtxs contexts: %w", err)
 	}
+	out := make(map[string]hlFundingContext, len(meta.Universe))
 	for i, asset := range meta.Universe {
-		if asset.Name != coin {
+		if _, seen := out[asset.Name]; seen {
 			continue
 		}
 		if i >= len(ctxs) {
-			return 0, fmt.Errorf("metaAndAssetCtxs has no context for %s", coin)
+			out[asset.Name] = hlFundingContext{Err: fmt.Errorf("metaAndAssetCtxs has no context for %s", asset.Name)}
+			continue
 		}
-		raw, ok := ctxs[i]["funding"]
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(ctxs[i], &fields); err != nil || fields == nil {
+			out[asset.Name] = hlFundingContext{Err: fmt.Errorf("metaAndAssetCtxs context for %s is malformed", asset.Name)}
+			continue
+		}
+		raw, ok := fields["funding"]
 		if !ok {
-			return 0, nil
+			out[asset.Name] = hlFundingContext{}
+			continue
 		}
-		return hlParseNumeric(raw)
+		rate, err := hlParseNumeric(raw)
+		if err == nil && (math.IsNaN(rate) || math.IsInf(rate, 0)) {
+			err = fmt.Errorf("value is not finite")
+		}
+		if err != nil {
+			out[asset.Name] = hlFundingContext{Err: fmt.Errorf("metaAndAssetCtxs funding for %s: %w", asset.Name, err)}
+			continue
+		}
+		out[asset.Name] = hlFundingContext{Rate: rate}
 	}
-	return 0, fmt.Errorf("metaAndAssetCtxs has no universe entry for %s", coin)
+	return out, nil
+}
+
+func hlFundingContextRate(contexts map[string]hlFundingContext, coin string) (float64, error) {
+	c, ok := contexts[coin]
+	if !ok {
+		return 0, fmt.Errorf("metaAndAssetCtxs has no universe entry for %s", coin)
+	}
+	return c.Rate, c.Err
 }
 
 var fetchHyperliquidFundingHistoryFn = fetchHyperliquidFundingHistory
@@ -254,21 +306,28 @@ func parseHyperliquidFundingHistory(data []byte, startMs, endMs int64) ([]feedFu
 	return out, nil
 }
 
+func hlFundingAverageStart(endMs int64) int64 {
+	return endMs - int64(hlFundingAvgWindowDays)*86_400_000
+}
+
 func hlFundingAverage7d(ctx context.Context, coin string, now time.Time) (float64, error) {
 	endMs := now.UTC().UnixMilli()
-	startMs := endMs - int64(hlFundingAvgWindowDays)*86_400_000
-	records, err := fetchHyperliquidFundingHistoryFn(ctx, coin, startMs, endMs)
+	records, err := fetchHyperliquidFundingHistoryFn(ctx, coin, hlFundingAverageStart(endMs), endMs)
 	if err != nil {
 		return 0, err
 	}
+	return hlFundingMean(records), nil
+}
+
+func hlFundingMean(records []feedFundingRecord) float64 {
 	if len(records) == 0 {
-		return 0, nil
+		return 0
 	}
 	sum := 0.0
 	for _, r := range records {
 		sum += r.Rate
 	}
-	return sum / float64(len(records)), nil
+	return sum / float64(len(records))
 }
 
 type feedFundingCoverage struct {
@@ -326,13 +385,8 @@ func hlFundingPagedRecords(ctx context.Context, coin string, startMs, endMs int6
 
 var (
 	errFundingRangeIncomplete = errors.New("the funding history range is not proved complete")
-	errFundingTailMismatch    = errors.New("the funding history tail does not start with the retained anchor record")
+	errFundingTailMismatch    = errors.New("the funding history page does not start with the retained boundary record")
 )
-
-func hlFundingRecordsSince(ctx context.Context, coin string, startMs int64, now time.Time) ([]feedFundingRecord, error) {
-	records, _, err := hlFundingRecordsRange(ctx, coin, startMs, now.UTC().UnixMilli(), hlFundingMaxRangePasses)
-	return records, err
-}
 
 func hlFundingRangeProvedComplete(pageRows int, lastMs, endMs int64) bool {
 	if pageRows == 0 {
@@ -341,89 +395,70 @@ func hlFundingRangeProvedComplete(pageRows int, lastMs, endMs int64) bool {
 	if pageRows >= hlFundingRowCap {
 		return false
 	}
-	return endMs < (lastMs/hlFundingRecordStepMs+1)*hlFundingRecordStepMs
+	lastHour, endHour := lastMs/hlFundingRecordStepMs, endMs/hlFundingRecordStepMs
+	if lastHour >= endHour {
+		return true
+	}
+	return lastHour == endHour-1 && endMs%hlFundingRecordStepMs <= hlFundingPublishGraceMs
 }
 
-func hlFundingRecordsRange(ctx context.Context, coin string, startMs, endMs int64, maxPasses int) ([]feedFundingRecord, int, error) {
-	if endMs < startMs {
-		return nil, 0, fmt.Errorf("fundingHistory %s range end %d is before its start %d", coin, endMs, startMs)
-	}
-	var out []feedFundingRecord
-	cursor := startMs
-	pages := 0
-	for pass := 0; pass < maxPasses; pass++ {
-		records, err := fetchHyperliquidFundingHistoryFn(ctx, coin, cursor, endMs)
-		pages++
-		if err != nil {
-			return nil, pages, err
+func hlFundingPageRecords(coin string, rows []feedFundingRecord, fromMs, endMs int64) ([]feedFundingRecord, error) {
+	out := make([]feedFundingRecord, 0, len(rows))
+	for _, r := range rows {
+		if math.IsNaN(r.Rate) || math.IsInf(r.Rate, 0) {
+			return nil, fmt.Errorf("fundingHistory %s record at %d carries a non-finite rate", coin, r.TimeMs)
 		}
-		page := append([]feedFundingRecord(nil), records...)
-		sort.SliceStable(page, func(i, j int) bool { return page[i].TimeMs < page[j].TimeMs })
-		var lastT int64
-		kept := 0
-		for i, r := range page {
-			if math.IsNaN(r.Rate) || math.IsInf(r.Rate, 0) {
-				return nil, pages, fmt.Errorf("fundingHistory %s record at %d carries a non-finite rate", coin, r.TimeMs)
+		if r.TimeMs < fromMs || r.TimeMs > endMs || r.TimeMs <= 0 {
+			return nil, fmt.Errorf("fundingHistory %s record at %d is outside the requested [%d, %d] interval", coin, r.TimeMs, fromMs, endMs)
+		}
+		if n := len(out); n > 0 {
+			prev := out[n-1]
+			if r.TimeMs < prev.TimeMs {
+				return nil, fmt.Errorf("fundingHistory %s record at %d follows a later record at %d", coin, r.TimeMs, prev.TimeMs)
 			}
-			if r.TimeMs < cursor || r.TimeMs > endMs || r.TimeMs <= 0 {
-				return nil, pages, fmt.Errorf("fundingHistory %s record at %d is outside the requested [%d, %d] interval", coin, r.TimeMs, cursor, endMs)
-			}
-			if i > 0 && r.TimeMs == page[i-1].TimeMs {
-				if r.Rate != page[i-1].Rate {
-					return nil, pages, fmt.Errorf("fundingHistory %s has conflicting records at %d (rate %v and %v)", coin, r.TimeMs, page[i-1].Rate, r.Rate)
+			if r.TimeMs == prev.TimeMs {
+				if r.Rate != prev.Rate {
+					return nil, fmt.Errorf("fundingHistory %s has conflicting records at %d (rate %v and %v)", coin, r.TimeMs, prev.Rate, r.Rate)
 				}
 				continue
 			}
-			out = append(out, r)
-			lastT = r.TimeMs
-			kept++
-		}
-		if hlFundingRangeProvedComplete(len(records), lastT, endMs) {
-			return out, pages, nil
-		}
-		if kept == 0 || lastT < cursor {
-			return nil, pages, fmt.Errorf("fundingHistory %s page from %d made no progress: %w", coin, cursor, errFundingRangeIncomplete)
-		}
-		if lastT >= endMs {
-			return out, pages, nil
-		}
-		cursor = lastT + 1
-	}
-	return nil, pages, fmt.Errorf("fundingHistory %s range [%d, %d] needed more than %d pages: %w", coin, startMs, endMs, maxPasses, errFundingRangeIncomplete)
-}
-
-func hlFundingRecordsTail(ctx context.Context, coin string, retained []feedFundingRecord, startMs, endMs int64) ([]feedFundingRecord, int, error) {
-	if len(retained) == 0 {
-		return nil, 0, fmt.Errorf("fundingHistory %s has no retained record to anchor a tail: %w", coin, errFundingTailMismatch)
-	}
-	anchor := retained[len(retained)-1]
-	if anchor.TimeMs < startMs || anchor.TimeMs > endMs {
-		return nil, 0, fmt.Errorf("fundingHistory %s anchor at %d is outside the required range [%d, %d]: %w", coin, anchor.TimeMs, startMs, endMs, errFundingTailMismatch)
-	}
-	tail, pages, err := hlFundingRecordsRange(ctx, coin, anchor.TimeMs, endMs, hlFundingMaxRangePasses)
-	if err != nil {
-		return nil, pages, err
-	}
-	if len(tail) == 0 || tail[0].TimeMs != anchor.TimeMs {
-		return nil, pages, fmt.Errorf("fundingHistory %s tail from %d did not return the anchor record: %w", coin, anchor.TimeMs, errFundingTailMismatch)
-	}
-	if tail[0].Rate != anchor.Rate {
-		return nil, pages, fmt.Errorf("fundingHistory %s anchor at %d changed rate from %v to %v: %w", coin, anchor.TimeMs, anchor.Rate, tail[0].Rate, errFundingTailMismatch)
-	}
-	out := make([]feedFundingRecord, 0, len(retained)+len(tail)-1)
-	var last int64
-	for _, r := range retained {
-		if r.TimeMs < startMs {
-			continue
-		}
-		if len(out) > 0 && r.TimeMs <= last {
-			return nil, pages, fmt.Errorf("fundingHistory %s retained records are not strictly increasing at %d: %w", coin, r.TimeMs, errFundingTailMismatch)
 		}
 		out = append(out, r)
-		last = r.TimeMs
 	}
-	out = append(out, tail[1:]...)
-	return out, pages, nil
+	return out, nil
+}
+
+func hlFundingReadPage(ctx context.Context, coin string, cursor, endMs int64, boundary *feedFundingRecord) ([]feedFundingRecord, bool, error) {
+	from := cursor
+	if boundary != nil {
+		from = boundary.TimeMs
+	}
+	if endMs < from {
+		return nil, false, fmt.Errorf("fundingHistory %s range end %d is before its start %d", coin, endMs, from)
+	}
+	rows, err := fetchHyperliquidFundingHistoryFn(ctx, coin, from, endMs)
+	if err != nil {
+		return nil, false, err
+	}
+	page, err := hlFundingPageRecords(coin, rows, from, endMs)
+	if err != nil {
+		return nil, false, err
+	}
+	lastMs := int64(0)
+	if n := len(page); n > 0 {
+		lastMs = page[n-1].TimeMs
+	}
+	complete := hlFundingRangeProvedComplete(len(rows), lastMs, endMs) || (len(page) > 0 && lastMs >= endMs)
+	if boundary == nil {
+		return page, complete, nil
+	}
+	if len(page) == 0 || page[0].TimeMs != boundary.TimeMs {
+		return nil, false, fmt.Errorf("fundingHistory %s page from %d did not return the boundary record: %w", coin, boundary.TimeMs, errFundingTailMismatch)
+	}
+	if page[0].Rate != boundary.Rate {
+		return nil, false, fmt.Errorf("fundingHistory %s boundary record at %d changed rate from %v to %v: %w", coin, boundary.TimeMs, boundary.Rate, page[0].Rate, errFundingTailMismatch)
+	}
+	return page[1:], complete, nil
 }
 
 func hlFundingRecordsCoverage(ctx context.Context, coin string, startMs int64, now time.Time, maxPasses int) (feedFundingCoverage, error) {

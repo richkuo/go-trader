@@ -84,10 +84,10 @@ func TestPremiumObservationPipeline(t *testing.T) {
 	clock := func() time.Time { return time.UnixMilli(clockMs.Load()).UTC() }
 
 	var infoCalls atomic.Int64
-	origRate, origHistory, origMids := fetchHyperliquidFundingRateFn, fetchHyperliquidFundingHistoryFn, fetchHyperliquidMidsCtxFn
-	fetchHyperliquidFundingRateFn = func(context.Context, string) (float64, error) {
+	origRate, origHistory, origMids := fetchHyperliquidFundingContextsFn, fetchHyperliquidFundingHistoryFn, fetchHyperliquidMidsCtxFn
+	fetchHyperliquidFundingContextsFn = func(context.Context) (map[string]hlFundingContext, error) {
 		infoCalls.Add(1)
-		return 0, fmt.Errorf("no private fetch is allowed")
+		return nil, fmt.Errorf("no private fetch is allowed")
 	}
 	fetchHyperliquidFundingHistoryFn = func(context.Context, string, int64, int64) ([]feedFundingRecord, error) {
 		infoCalls.Add(1)
@@ -98,7 +98,7 @@ func TestPremiumObservationPipeline(t *testing.T) {
 		return nil, fmt.Errorf("no private fetch is allowed")
 	}
 	defer func() {
-		fetchHyperliquidFundingRateFn, fetchHyperliquidFundingHistoryFn, fetchHyperliquidMidsCtxFn = origRate, origHistory, origMids
+		fetchHyperliquidFundingContextsFn, fetchHyperliquidFundingHistoryFn, fetchHyperliquidMidsCtxFn = origRate, origHistory, origMids
 	}()
 
 	stubFeedCandleSnapshot(t, func(coin, interval string, startMs, endMs int64) ([]hlCandleRaw, error) {
@@ -553,7 +553,7 @@ func TestPremiumObservationPipeline(t *testing.T) {
 	for _, tc := range []struct {
 		sealVersion int
 		compatible  bool
-	}{{feedSealVersionBase, true}, {feedSealVersionMacro, true}, {feedSealVersionProfile, true}, {feedSealVersionPremium, true}, {feedSealVersionClosedReuse + 1, false}} {
+	}{{feedSealVersionBase, true}, {feedSealVersionMacro, true}, {feedSealVersionProfile, true}, {feedSealVersionPremium, true}, {feedSealVersionFunding, true}, {feedSealVersionFunding + 1, false}} {
 		peer := oiTestOldPeer(t, sockDir, tc.sealVersion)
 		_, _, err := client.roundTrip(ctx, peer, feedWireRequest{V: feedWireVersion, Op: feedWireOpDescribe})
 		if tc.compatible != (err == nil) {

@@ -25,6 +25,7 @@ const (
 	feedSealVersionBooks       = 7
 	feedSealVersionPremium     = 8
 	feedSealVersionClosedReuse = 9
+	feedSealVersionFunding     = 10
 	feedWireMaxRequestBytes    = 4 << 10
 	feedWireMaxHeaderBytes     = 1 << 20
 	feedSealMaxBytes           = 64 << 20
@@ -74,10 +75,53 @@ type feedDescribeKey struct {
 	Required  int    `json:"required"`
 }
 
+type feedDescribeFundingReader struct {
+	Host      string `json:"host"`
+	Namespace string `json:"namespace"`
+	Symbol    string `json:"symbol"`
+	Timeframe string `json:"timeframe"`
+	Rows      int    `json:"rows"`
+}
+
 type feedDescribeFunding struct {
 	Coin    string `json:"coin"`
 	Scalar  bool   `json:"scalar"`
 	Records bool   `json:"records"`
+
+	RecordsContract int                         `json:"records_contract,omitempty"`
+	Readers         []feedDescribeFundingReader `json:"readers,omitempty"`
+}
+
+func (f feedDescribeFunding) need() feedFundingNeed {
+	need := feedFundingNeed{Scalar: f.Scalar, Records: f.Records}
+	for _, r := range f.Readers {
+		need = need.withReader(marketFeedKey{Host: r.Host, Namespace: r.Namespace, Symbol: r.Symbol, Timeframe: r.Timeframe}, r.Rows)
+	}
+	return need
+}
+
+func describeFunding(coin string, need feedFundingNeed) feedDescribeFunding {
+	out := feedDescribeFunding{Coin: coin, Scalar: need.Scalar, Records: need.Records}
+	if !need.Records {
+		return out
+	}
+	out.RecordsContract = feedFundingRecordsContract
+	for _, r := range need.Readers {
+		out.Readers = append(out.Readers, feedDescribeFundingReader{Host: r.Key.Host, Namespace: r.Key.Namespace, Symbol: r.Key.Symbol, Timeframe: r.Key.Timeframe, Rows: r.Rows})
+	}
+	return out
+}
+
+func describeHasFundingContract(d *feedDescribe) bool {
+	if d == nil {
+		return false
+	}
+	for _, f := range d.Funding {
+		if f.RecordsContract != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 type feedDescribeObservation struct {
@@ -173,6 +217,65 @@ type feedSealFunding struct {
 	FetchedAtMs int64               `json:"fetched_at_ms"`
 	Source      string              `json:"source"`
 	Error       string              `json:"error"`
+
+	RecordsContract    int    `json:"records_contract,omitempty"`
+	RecordsFromMs      int64  `json:"records_from_ms,omitempty"`
+	RecordsToMs        int64  `json:"records_to_ms,omitempty"`
+	RecordsThroughMs   int64  `json:"records_through_ms,omitempty"`
+	RecordsFetchedAtMs int64  `json:"records_fetched_at_ms,omitempty"`
+	RecordsError       string `json:"records_error,omitempty"`
+	ScalarError        string `json:"scalar_error,omitempty"`
+	ScalarFetchedAtMs  int64  `json:"scalar_fetched_at_ms,omitempty"`
+}
+
+func (f feedSealFunding) contractFieldsEmpty() bool {
+	return f.RecordsFromMs == 0 && f.RecordsToMs == 0 && f.RecordsThroughMs == 0 && f.RecordsFetchedAtMs == 0 &&
+		f.RecordsError == "" && f.ScalarError == "" && f.ScalarFetchedAtMs == 0
+}
+
+func validateFeedSealFunding(f feedSealFunding) error {
+	if math.IsNaN(f.Current) || math.IsInf(f.Current, 0) || math.IsNaN(f.Avg7d) || math.IsInf(f.Avg7d, 0) {
+		return fmt.Errorf("seal funding %s carries a non-finite rate", f.Coin)
+	}
+	switch f.RecordsContract {
+	case 0:
+		if !f.contractFieldsEmpty() {
+			return fmt.Errorf("seal funding %s carries record coverage fields with no contract", f.Coin)
+		}
+		return nil
+	case feedFundingRecordsContract:
+	default:
+		return fmt.Errorf("seal funding %s declares record contract %d, want %d", f.Coin, f.RecordsContract, feedFundingRecordsContract)
+	}
+	if f.Error != "" {
+		return fmt.Errorf("seal funding %s carries a joined error beside its record contract", f.Coin)
+	}
+	if !f.HasRecords {
+		if len(f.Records) > 0 || f.RecordsFromMs != 0 || f.RecordsToMs != 0 || f.RecordsThroughMs != 0 {
+			return fmt.Errorf("seal funding %s carries coverage with no usable records", f.Coin)
+		}
+		if f.RecordsError == "" {
+			return fmt.Errorf("seal funding %s has no records and no reason", f.Coin)
+		}
+		return nil
+	}
+	if f.RecordsError != "" || f.RecordsFromMs <= 0 || f.RecordsToMs < f.RecordsFromMs || f.RecordsThroughMs < f.RecordsToMs || f.RecordsFetchedAtMs <= 0 {
+		return fmt.Errorf("seal funding %s coverage [%d, %d] through %d fetched at %d is malformed", f.Coin, f.RecordsFromMs, f.RecordsToMs, f.RecordsThroughMs, f.RecordsFetchedAtMs)
+	}
+	last := f.RecordsFromMs - 1
+	for i, r := range f.Records {
+		if math.IsNaN(r.Rate) || math.IsInf(r.Rate, 0) {
+			return fmt.Errorf("seal funding %s record %d carries a non-finite rate", f.Coin, i)
+		}
+		if r.TimeMs <= last || r.TimeMs > f.RecordsToMs {
+			return fmt.Errorf("seal funding %s record %d time %d is out of order or outside [%d, %d]", f.Coin, i, r.TimeMs, f.RecordsFromMs, f.RecordsToMs)
+		}
+		last = r.TimeMs
+	}
+	if f.RecordsThroughMs != feedFundingThrough(f.Records, f.RecordsToMs) {
+		return fmt.Errorf("seal funding %s claims coverage through %d, its records and read end prove %d", f.Coin, f.RecordsThroughMs, feedFundingThrough(f.Records, f.RecordsToMs))
+	}
+	return nil
 }
 
 type feedSealObservationSample struct {
@@ -339,7 +442,14 @@ func feedSealVersionFor(hasObservations, hasAccounting, hasTrades, hasMacro, has
 }
 
 func feedSealVersionSupported(v int) bool {
-	return v == feedSealVersionBase || v == feedSealVersion || v == feedSealVersionAccounting || v == feedSealVersionTrades || v == feedSealVersionMacro || v == feedSealVersionProfile || v == feedSealVersionBooks || v == feedSealVersionPremium || v == feedSealVersionClosedReuse
+	return v == feedSealVersionBase || v == feedSealVersion || v == feedSealVersionAccounting || v == feedSealVersionTrades || v == feedSealVersionMacro || v == feedSealVersionProfile || v == feedSealVersionBooks || v == feedSealVersionPremium || v == feedSealVersionClosedReuse || v == feedSealVersionFunding
+}
+
+func feedCoverageSealVersion(base int, fundingRecords bool) int {
+	if fundingRecords {
+		return feedSealVersionFunding
+	}
+	return base
 }
 
 func (doc *feedSealDoc) hasMacro() bool {
@@ -461,7 +571,21 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 			FetchedAtMs: feedTimeMs(f.FetchedAt),
 			Source:      f.Source,
 			Error:       f.Err,
+
+			RecordsContract: f.RecordsContract,
 		})
+		if f.RecordsContract != 0 {
+			sf := &doc.Funding[len(doc.Funding)-1]
+			sf.Error = ""
+			sf.RecordsFromMs, sf.RecordsToMs, sf.RecordsThroughMs = f.RecordsFromMs, f.RecordsToMs, f.RecordsThroughMs
+			sf.RecordsError, sf.ScalarError = f.RecordsErr, f.ScalarErr
+			if f.HasRecords {
+				sf.RecordsFetchedAtMs = feedTimeMs(f.RecordsFetchedAt)
+			}
+			if f.HasScalar {
+				sf.ScalarFetchedAtMs = feedTimeMs(f.ScalarFetchedAt)
+			}
+		}
 	}
 	obsKeys := make([]feedObservationKey, 0, len(snap.observations))
 	for k := range snap.observations {
@@ -506,6 +630,11 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 }
 
 func (doc *feedSealDoc) contentVersion() int {
+	for _, f := range doc.Funding {
+		if f.RecordsContract != 0 {
+			return feedSealVersionFunding
+		}
+	}
 	for _, key := range doc.Keys {
 		if key.FormingBarOmitted {
 			return feedSealVersionClosedReuse
@@ -714,7 +843,7 @@ func decodeFeedSeal(blob []byte, wantKey int64) (*feedSealDoc, error) {
 		return nil, errors.New("seal bytes are not in canonical form")
 	}
 	if !feedSealVersionSupported(doc.V) {
-		return nil, fmt.Errorf("seal version %d, want %d through %d", doc.V, feedSealVersionBase, feedSealVersionClosedReuse)
+		return nil, fmt.Errorf("seal version %d, want %d through %d", doc.V, feedSealVersionBase, feedSealVersionFunding)
 	}
 	if want := doc.contentVersion(); doc.V != want {
 		return nil, fmt.Errorf("seal version %d does not match the content version %d", doc.V, want)
@@ -771,8 +900,8 @@ func validateFeedSealDoc(doc *feedSealDoc) error {
 		if i > 0 && doc.Funding[i-1].Coin >= f.Coin {
 			return fmt.Errorf("seal funding is not strictly ordered at %s", f.Coin)
 		}
-		if math.IsNaN(f.Current) || math.IsInf(f.Current, 0) || math.IsNaN(f.Avg7d) || math.IsInf(f.Avg7d, 0) {
-			return fmt.Errorf("seal funding %s carries a non-finite rate", f.Coin)
+		if err := validateFeedSealFunding(f); err != nil {
+			return err
 		}
 	}
 	if err := validateFeedSealObservations(doc.Observations); err != nil {
@@ -906,6 +1035,15 @@ func (doc *feedSealDoc) snapshot() *marketSnapshot {
 			FetchedAt:  feedMsTime(f.FetchedAtMs),
 			Source:     f.Source,
 			Err:        f.Error,
+
+			ScalarErr:        f.ScalarError,
+			RecordsErr:       f.RecordsError,
+			ScalarFetchedAt:  feedMsTime(f.ScalarFetchedAtMs),
+			RecordsFetchedAt: feedMsTime(f.RecordsFetchedAtMs),
+			RecordsContract:  f.RecordsContract,
+			RecordsFromMs:    f.RecordsFromMs,
+			RecordsToMs:      f.RecordsToMs,
+			RecordsThroughMs: f.RecordsThroughMs,
 		}
 	}
 	return snap

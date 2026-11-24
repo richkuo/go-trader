@@ -1878,6 +1878,23 @@ func (a *feedWeightAuthority) statusView() feedSharedStatus {
 	return st
 }
 
+func (a *feedWeightAuthority) sharedRoom(host string) int {
+	st := a.statusView()
+	if st.Registry != "ok" || st.Recovery != nil {
+		return 0
+	}
+	room := st.Capacity
+	for _, h := range st.Hosts {
+		if h.Host == host {
+			if h.Pause != "clear" {
+				return 0
+			}
+			room -= h.Used
+		}
+	}
+	return int(max(room, 0))
+}
+
 func (a *feedWeightAuthority) noteRefusal(r *feedWeightRefusal) {
 	if r == nil {
 		return

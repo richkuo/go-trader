@@ -350,10 +350,7 @@ func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 			coins[coin] = true
 		}
 		for coin, need := range c.Req.Funding {
-			f := union.Funding[coin]
-			f.Scalar = f.Scalar || need.Scalar
-			f.Records = f.Records || need.Records
-			union.Funding[coin] = f
+			union.Funding[coin] = union.Funding[coin].merge(need)
 		}
 		for key, window := range c.Req.Observations {
 			union.addObservation(key, window)
@@ -426,8 +423,8 @@ func estimateFeedSealBytes(union feedRequirements) int {
 		total += feedEstimateKeyBytes + (union.Keys[key]+hlFeedHistoryMargin)*feedEstimateBarBytes
 	}
 	total += len(union.MidCoins) * feedEstimateCoinBytes
-	for range union.Funding {
-		total += 7 * 24 * 64
+	for _, need := range union.Funding {
+		total += feedEstimateCoinBytes + int(max(need.rangeHours(), 7*24)+1)*feedEstimateAccountingRecordBytes
 	}
 	for key, window := range union.Observations {
 		if key.Kind == feedObservationVolumeProfile {
@@ -553,6 +550,12 @@ func formatFeedBudgetConfig(source string, b *feedBudgetConfig) string {
 	return fmt.Sprintf("request budget: per_minute=%d startup=%d requests (%s, source %s); %s", b.PerMinute, b.Startup, mode, source, formatFeedWeightPolicy(b.weightPolicy()))
 }
 
+func printFeedDemandWarnings(prefix string, union feedRequirements, cfg *FeedRoleConfig) {
+	for _, w := range feedDemandWarnings(union, cfg.Source, cfg.RequestBudget) {
+		fmt.Printf("%s WARN feed demand: %s (the feed starts; refused or late inputs seal not ready)\n", prefix, w)
+	}
+}
+
 func newFeedInstanceID(now time.Time) string {
 	host, _ := os.Hostname()
 	if host == "" {
@@ -665,6 +668,7 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	ctx := withFeedLedger(baseCtx, ledger)
 	fmt.Printf("[feed] %s\n", formatFeedBudgetConfig(cfg.Feed.Source, cfg.Feed.RequestBudget))
 	fmt.Printf("[feed] %s\n", hlWeightTableLine())
+	printFeedDemandWarnings("[feed]", union, cfg.Feed)
 	var authority *feedWeightAuthority
 	if policy := cfg.Feed.RequestBudget.weightPolicy(); policy != nil {
 		authority = newFeedWeightAuthority(feedAuthorityRoleFeed, configPath, feedLogf)
@@ -895,6 +899,7 @@ func (rt *feedRuntime) reload() {
 		fmt.Fprintf(os.Stderr, "[reload] ERROR: reload rejected; keeping the previous feed generation: shared weight registration refused the new budget: %v\n", err)
 		return
 	}
+	printFeedDemandWarnings("[reload]", union, next.Feed)
 	fmt.Printf("[reload] %s; startup allowances, charged history, reservations and host pauses are kept\n", formatFeedBudgetConfig(next.Feed.Source, next.Feed.RequestBudget))
 	select {
 	case <-rt.owner.ApplyGeneration(rt.ctx, union):
@@ -1089,6 +1094,7 @@ func runFeedProbe(configPath, identity string) int {
 	for _, line := range estimateFeedDemandLines(union, cfg.Feed.Source) {
 		fmt.Printf("probe: %s\n", line)
 	}
+	printFeedDemandWarnings("probe:", union, cfg.Feed)
 	if policy := cfg.Feed.RequestBudget.weightPolicy(); policy != nil {
 		if !printFeedAuthorityForecast(feedAuthorityRoleFeed, identity, policy) {
 			return ExitProbeFailure

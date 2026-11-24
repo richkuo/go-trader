@@ -2,6 +2,19 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 2165: the REST backup feed delivers its inputs inside its weight allocation and reports recovery per input
+
+Runtime default; restart-required; seal version 10 for coins with funding record readers; drawdown-warning check interval 75 seconds; no config key, SQLite schema or wire protocol change.
+Before this change the REST backup read the strategy funding history from the earliest bar of any candle key of the coin, so a 4h lead-lag key could ask for 25 pages that no funding reader used. A later page failure dropped every earlier page, a scalar failure dropped the records, each scalar coin sent its own `metaAndAssetCtxs` read, and the mids read came last in a sequential 20-second preparation.
+With 90-second and 300-second cadences, adjacent deadlines were 30 or 60 seconds apart and two preparations shared one 60-second budget window. A weight recovery DM could follow a success of an input that was never refused.
+Now each record reader contributes its own signal key and rows, the seal carries the proved range, and a reader holds when its selected frame, its closed boundary or the read age is outside that proof.
+A cold load keeps validated pages in an owner-local checkpoint and resumes from its boundary record, inside the weight and requests that the current window and the next deadline leave. Complete records survive a transient failure.
+One context read serves every scalar coin, and a proved record range replaces the seven-day read. Candle reads run four at a time in a fixed admission order, then mids, then funding; due funding is spread over the upcoming deadlines inside its freshness limits.
+The local weight recovery DM waits until every refused input that is still required passes its own validation; a removed input is retired without a recovery report.
+`probe`, feed start and reload print demand, overlap and full-load bounds, and warn without refusing a valid policy.
+Operator action: move both schedulers and both feeds to one build in one maintenance window with `bash scripts/update.sh --restart`, consumers first and feeds next. Version 10 is refused by an older consumer, which then degrades with entries held and protection running; a new consumer on an older feed holds `funding_skew` entries and has no 75-second seals until the feed restarts.
+Check the consumer coverage lines, run `shared-feed-convert.sh calibrate` with no fixed flags, and keep the rollout open until one warmed hour has zero request and weight refusals with every required input ready and one representative deadline served from the backup with current protection inputs.
+
 ### Issue 2153: the paper manual position warning skips proven simulated positions and DMs each destination once
 
 Runtime default; restart-required; idempotent SQLite migration adds `pending_manual_actions.paper_sim_proof`, `positions.paper_sim_proof` and `positions.paper_warning_receipts_json`; no config key.
