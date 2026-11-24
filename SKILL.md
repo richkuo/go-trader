@@ -3989,6 +3989,7 @@ That test compares the feed weight tests the `go` filter removes across the modu
 **Python-backed Go test shards.** Go runs a test that calls `t.Parallel` beside the other parallel tests after the sequential tests end. A test that uses `t.Setenv`, `t.Chdir` or a package-level hook stays sequential, and many do, so CI also splits the tests into lanes by measured time.
 The `main` lane of `go-python-integration` holds the only copy of the allowlist in its `-run` regex and passes `-skip` for the families that the other lanes run. A job with more than one such lane builds the test package and the `pyintegration` binary first, so the lanes share the compile results.
 The other lanes:
+- `check-scripts` (`go-python-integration`): the HTF filter, tuner preview, closed bar entry allowance, funding proof, chart pattern HTF gate, options live mode, quote venue and quote replay Python, resting TP rule, paper-only config and paper research scheduler families.
 - `robinhood` (`go-python-integration`): the Robinhood families except the order tests.
 - `robinhood-orders` (`go`): `TestRobinhoodLiveOrder*`.
 - `merge-paper-instance` (`go-python-integration`): only `TestMergePaperInstance`, under the step-level `merge_paper` gate. The suite runs its three sections (single paper fold, several sources, new target) at the same time, each with its own directory.
