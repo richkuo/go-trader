@@ -150,10 +150,10 @@ func pmpWarnings(r mrpRun, id string) int {
 }
 
 func TestPaperManualVenueGuardPositionProofLifecycle(t *testing.T) {
-	e := newMRPEnv(t, 40)
 	for _, layout := range pmpLayouts() {
 		t.Run(layout.name, func(t *testing.T) {
-			e.t = t
+			t.Parallel()
+			e := newMRPEnv(t, 40)
 			cfg, dbPath := pmpConfig(e, "proof-"+strings.ReplaceAll(layout.name, " ", "-")+".json", layout, "pm-proven", "pm-legacy", "pm-gone")
 			if r := e.command(cfg, nil, "manual-open", "pm-proven", "--side", "short", "--size", "0.01", "--fill-price", "100", "--record-only"); r.code != 0 {
 				t.Fatalf("record-only open must queue:\n%s", r)
@@ -218,7 +218,6 @@ func TestPaperManualVenueGuardPositionProofLifecycle(t *testing.T) {
 			}
 		})
 	}
-	e.t = t
 }
 
 func TestPaperManualVenueGuardPositionProofEvidence(t *testing.T) {

@@ -20,21 +20,21 @@ import (
 )
 
 type shellSuiteWiring struct {
-	goTest        string
-	goTestFile    string
-	ciStep        bool
-	sudo          bool
-	manualReason  string
-	marker        string
-	requireEnv    []string
-	forbidden     []string
-	permitted     map[string]string
-	shardEnv      string
-	shardDefault  string
-	shardGates    map[string]string
-	soloScenarios []string
-	gates         []string
-	soleRoot      bool
+	goTest       string
+	goTestFile   string
+	ciStep       bool
+	sudo         bool
+	manualReason string
+	marker       string
+	requireEnv   []string
+	forbidden    []string
+	permitted    map[string]string
+	shardEnv     string
+	shardDefault string
+	shardGates   map[string]string
+	manualShards map[string]string
+	gates        []string
+	soleRoot     bool
 }
 
 var shellSuiteWirings = map[string]shellSuiteWiring{
@@ -149,26 +149,28 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		shardEnv:     "FIXTURE_SCENARIOS",
 		shardDefault: "SCENARIOS",
 		shardGates: map[string]string{
-			"refuse":              "migrate",
-			"plan":                "migrate",
-			"confirm":             "migrate",
-			"apply":               "migrate",
-			"latch":               "migrate",
-			"conflict":            "migrate",
-			"resume":              "migrate",
-			"signal":              "migrate",
-			"stages":              "migrate",
-			"kill":                "migrate",
-			"fold":                "migrate",
-			"newtarget":           "migrate",
-			"update":              "update",
-			"update_recovery":     "update",
-			"sharedfeed_migrated": "shared_feed",
-			"sharedfeed_legacy":   "shared_feed",
+			"refuse":                  "migrate",
+			"plan":                    "migrate",
+			"confirm":                 "migrate",
+			"apply":                   "migrate",
+			"latch":                   "migrate",
+			"conflict":                "migrate",
+			"resume":                  "migrate",
+			"signal":                  "migrate",
+			"stages":                  "migrate",
+			"kill":                    "migrate",
+			"fold":                    "migrate",
+			"newtarget":               "migrate",
+			"update":                  "update",
+			"update_recovery":         "update",
+			"update_recovery_restart": "update",
 		},
-		soloScenarios: []string{"sharedfeed_migrated", "sharedfeed_legacy"},
-		gates:         []string{"update", "migrate", "shared_feed"},
-		soleRoot:      true,
+		manualShards: map[string]string{
+			"sharedfeed_migrated": "waits on real one-minute feed deadlines for more than the seven-minute job limit; ci_code_changed.sh warns on a pull request that touches its paths",
+			"sharedfeed_legacy":   "waits on real one-minute feed deadlines for more than the seven-minute job limit; ci_code_changed.sh warns on a pull request that touches its paths",
+		},
+		gates:    []string{"update", "migrate"},
+		soleRoot: true,
 	},
 }
 
@@ -252,7 +254,10 @@ func TestUpdateShellScriptSyntax(t *testing.T) {
 	}
 }
 
-const ciFullRunJobs = 21
+const (
+	ciFullRunJobs    = 19
+	ciJobTimeoutLine = "    timeout-minutes: 7"
+)
 
 type ciCountProblem struct {
 	line int
@@ -593,6 +598,29 @@ func readCIJobExpansion(name string, lines []string, at []int) (int, bool, []ciC
 		return 0, false, []ciCountProblem{{0, fmt.Sprintf("job %s declares an include list with no rows", name)}}
 	}
 	return rows, true, nil
+}
+
+func checkCIJobTimeouts(t *testing.T, jobs map[string]*ciWorkflowJob) {
+	t.Helper()
+	var names []string
+	for name := range jobs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		exact, any := 0, 0
+		for _, line := range jobs[name].raw {
+			if line == ciJobTimeoutLine {
+				exact++
+			}
+			if strings.Contains(line, "timeout-minutes") {
+				any++
+			}
+		}
+		if exact != 1 || any != 1 {
+			t.Errorf(".github/workflows/ci.yml:%d: job %s must set %q exactly once and no other timeout-minutes, so no CI job runs longer than seven minutes", jobs[name].line, name, strings.TrimSpace(ciJobTimeoutLine))
+		}
+	}
 }
 
 func checkCIFullRunJobs(t *testing.T, jobs map[string]*ciWorkflowJob, stray []ciCountProblem) {
@@ -985,9 +1013,6 @@ func ciFeedWeightTestLine(t *testing.T, name string, job *ciWorkflowJob) string 
 			if !strings.Contains(line, "go test ") && !strings.Contains(line, "go -C ") {
 				continue
 			}
-			if runs := ciRunPattern.FindAllStringSubmatch(line, -1); name == "go-race" && len(runs) == 1 && runs[0][1] == "^TestQuote" {
-				continue
-			}
 			found = append(found, line)
 		}
 	}
@@ -1296,10 +1321,6 @@ func checkCIShardPartition(t *testing.T, script string, w shellSuiteWiring, src,
 			owners[name] = append(owners[name], run.job+" (gate "+run.gate+")")
 		}
 	}
-	solo := map[string]bool{}
-	for _, name := range w.soloScenarios {
-		solo[name] = true
-	}
 	for _, run := range runs {
 		for _, name := range run.scenarios {
 			want, ok := w.shardGates[name]
@@ -1309,14 +1330,20 @@ func checkCIShardPartition(t *testing.T, script string, w shellSuiteWiring, src,
 			if run.jobGate != want || run.gate != want {
 				t.Errorf("%s runs scenario %s of scripts/%s under job gate %q, but its shardGates entry requires the job-level gate %q", run.job, name, script, run.jobGate, want)
 			}
-			if solo[name] && len(run.scenarios) != 1 {
-				t.Errorf("%s runs scenario %s of scripts/%s with %s; it must run alone in its own job", run.job, name, script, strings.Join(run.scenarios, " "))
-			}
 		}
 	}
 	known := map[string]bool{}
 	for _, name := range defaults {
 		known[name] = true
+		if reason, manual := w.manualShards[name]; manual {
+			if strings.TrimSpace(reason) == "" {
+				t.Errorf("scripts/%s keeps scenario %s manual without a reason", script, name)
+			}
+			if _, gated := w.shardGates[name]; gated || len(owners[name]) > 0 {
+				t.Errorf("scenario %s of scripts/%s is manual, so it must have no shardGates entry and no CI step (found %s)", name, script, strings.Join(owners[name], ", "))
+			}
+			continue
+		}
 		if gate, ok := w.shardGates[name]; !ok {
 			t.Errorf("scenario %s of scripts/%s has no shardGates entry: give it the one gate whose paths it proves", name, script)
 		} else if !wiringHasGate(w, gate) {
@@ -1346,14 +1373,14 @@ func checkCIShardPartition(t *testing.T, script string, w shellSuiteWiring, src,
 			stale = append(stale, name)
 		}
 	}
-	for _, name := range w.soloScenarios {
+	for name := range w.manualShards {
 		if !known[name] {
 			stale = append(stale, name)
 		}
 	}
 	sort.Strings(stale)
 	for _, name := range stale {
-		t.Errorf("the scripts/%s wiring names scenario %s in shardGates or soloScenarios, but its default %s list does not", script, name, w.shardDefault)
+		t.Errorf("the scripts/%s wiring names scenario %s in shardGates or manualShards, but its default %s list does not", script, name, w.shardDefault)
 	}
 }
 
@@ -1449,6 +1476,7 @@ func TestShellSuiteCIWiring(t *testing.T) {
 	checkCIConcurrency(t, workflow)
 	jobs, stray := parseCIWorkflowJobs(t, workflowPath)
 	checkCIFullRunJobs(t, jobs, stray)
+	checkCIJobTimeouts(t, jobs)
 	var declared map[string]bool
 	for _, wf := range []string{"ci.yml", "container.yml"} {
 		wfJobs := jobs

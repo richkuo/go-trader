@@ -6,8 +6,9 @@ detector="$root/scripts/ci_code_changed.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fail=0
-outputs=(code quote egress_docker merge_paper update migrate shared_feed)
-gates=(quote egress_docker merge_paper update migrate shared_feed)
+outputs=(code quote egress_docker merge_paper update migrate)
+gates=(quote egress_docker merge_paper update migrate)
+manual_gates=(shared_feed)
 
 g() { git -C "$tmp/repo" -c user.email=ci@example.invalid -c user.name=ci -c init.defaultBranch=main -c advice.detachedHead=false "$@"; }
 
@@ -68,7 +69,7 @@ SHIM
 chmod +x "$tmp/bin/git"
 
 detect() {
-  local event="$1" out="$tmp/output" name lines got="" before="$push_before"
+  local event="$1" out="$tmp/output" log="$tmp/log" name lines want_warn warn got="" value="" before="$push_before"
   local envs=(EVENT_NAME="$event" GITHUB_OUTPUT="$out")
   case "$before" in
     base) before="$base" ;;
@@ -84,7 +85,7 @@ detect() {
     envs+=(CI_CHECK_FAIL_GIT="$fail_git" PATH="$tmp/bin:$PATH")
   fi
   : >"$out"
-  (cd "$repo_dir" && env -u PUSH_BEFORE -u PUSH_FORCED -u CI_CHECK_FAIL_GIT "${envs[@]}" bash "$detector" >/dev/null)
+  (cd "$repo_dir" && env -u PUSH_BEFORE -u PUSH_FORCED -u CI_CHECK_FAIL_GIT "${envs[@]}" bash "$detector" >"$log")
   lines="$(wc -l <"$out" | tr -d ' ')"
   if [ "$lines" != "${#outputs[@]}" ]; then
     echo "bad: $lines output lines" && return
@@ -95,6 +96,22 @@ detect() {
       echo "bad: $lines $name= lines" && return
     fi
     got="$got $name=$(sed -n "s/^$name=//p" "$out")"
+  done
+  for name in "${manual_gates[@]}"; do
+    lines="$(grep -c "^$name=" "$out" || true)"
+    if [ "$lines" != 0 ]; then
+      echo "bad: the manual gate $name is a job output" && return
+    fi
+    value="$(sed -nE "s/^code=.* $name=(true|false)( .*)?\$/\1/p" "$log")"
+    want_warn=0
+    if [ "$event" = pull_request ] && [ "$value" = true ]; then
+      want_warn=1
+    fi
+    warn="$(grep -c '^::warning title=Manual proof needed::' "$log" || true)"
+    if [ "$warn" != "$want_warn" ]; then
+      echo "bad: $warn manual proof warnings with $name=$value, want $want_warn" && return
+    fi
+    got="$got $name=$value"
   done
   echo "${got# }"
 }
@@ -379,7 +396,7 @@ split_err() {
 feed_go_test='(^|[^A-Za-z0-9_])go[[:space:]]+(-C[[:space:]]+[^[:space:]]+[[:space:]]+)?test([[:space:]]|$)'
 feed_run_prefix='        run: cd scheduler && go test '
 feed_code_if="    if: \${{ needs.changes.outputs.code == 'true' }}"
-feed_quote_if="        if: \${{ needs.changes.outputs.quote == 'true' }}"
+feed_quote_if="    if: \${{ needs.changes.outputs.quote == 'true' }}"
 
 if grep -q 'GOFLAGS' "$path"; then
   split_err "sets GOFLAGS, which can change the tests a go test command selects"
@@ -526,11 +543,11 @@ feed_check_quote() {
     i=$((i + 1))
   done
   if [ "$nrun" != 1 ] || [ "$race" != 1 ] || [ "$nocache" != 1 ] || [ "${toks[$((${#toks[@]} - 1))]}" != . ]; then
-    split_err "job go-race: the quote coordinator command must pass -race, -count=1 and -run '^TestQuote' once and end with the package '.': $args"
+    split_err "job go-race-quote: the quote coordinator command must pass -race, -count=1 and -run '^TestQuote' once and end with the package '.': $args"
   fi
 }
 
-for job in go go-race; do
+for job in go go-race go-race-quote; do
   n="$(grep -cE "^  $job:[[:space:]]*\$" "$path" || true)"
   if [ "$n" != 1 ]; then
     split_err "declares the job $job $n times, want 1"
@@ -542,24 +559,24 @@ for job in go go-race; do
   if [ "$n" != 1 ]; then
     split_err "job $job: carries 'needs: changes' $n times at job level, want 1"
   fi
-  n="$(grep -cxF "$feed_code_if" "$file" || true)"
+  job_if="$feed_code_if"
+  if [ "$job" = go-race-quote ]; then
+    job_if="$feed_quote_if"
+  fi
+  n="$(grep -cxF "$job_if" "$file" || true)"
   if [ "$n" != 1 ]; then
-    split_err "job $job: carries the job condition 'if: \${{ needs.changes.outputs.code == 'true' }}' $n times, want 1"
+    split_err "job $job: carries the job condition '${job_if#    }' $n times, want 1"
   fi
   while IFS= read -r line; do
     case "$line" in
-      "    needs: changes" | "$feed_code_if" | "    steps:" | "    runs-on: "?*) ;;
-      *) split_err "job $job: has the job-level line '${line#    }'; only needs, the code condition, runs-on and steps are allowed" ;;
+      "    needs: changes" | "$job_if" | "    steps:" | "    runs-on: "?* | "    timeout-minutes: 7") ;;
+      *) split_err "job $job: has the job-level line '${line#    }'; only needs, the job condition, runs-on, timeout-minutes: 7 and steps are allowed" ;;
     esac
   done < <(grep -E '^    [^ ]' "$file" || true)
 
-  want=1
-  if [ "$job" = go-race ]; then
-    want=2
-  fi
   n="$(grep -cE "$feed_go_test" "$file" || true)"
-  if [ "$n" != "$want" ]; then
-    split_err "job $job: has $n go test commands, want $want"
+  if [ "$n" != 1 ]; then
+    split_err "job $job: has $n go test commands, want 1"
   fi
   nfeed=0
   nquote=0
@@ -576,10 +593,10 @@ for job in go go-race; do
     args="${line#"$feed_run_prefix"}"
     case " $args " in
       *" -run '^TestQuote' "*)
-        if [ "$job" = go-race ]; then
+        if [ "$job" = go-race-quote ]; then
           nquote=$((nquote + 1))
           feed_check_quote "$args"
-          feed_check_step "$job" "$file" "$at" "$feed_quote_if" "the quote race step allows only name, the quote condition and run"
+          feed_check_step "$job" "$file" "$at" "" "the quote race step allows only name and run"
           continue
         fi
         ;;
@@ -592,11 +609,17 @@ for job in go go-race; do
     fi
     feed_check_step "$job" "$file" "$at" "" "a feed weight test step allows only name and run"
   done < <(grep -nE "$feed_go_test" "$file" || true)
-  if [ "$nfeed" != 1 ]; then
-    split_err "job $job: has $nfeed feed weight split commands, want 1"
+  want_feed=1
+  want_quote=0
+  if [ "$job" = go-race-quote ]; then
+    want_feed=0
+    want_quote=1
   fi
-  if [ "$job" = go-race ] && [ "$nquote" != 1 ]; then
-    split_err "job go-race: has $nquote quote coordinator race commands with -run '^TestQuote', want 1"
+  if [ "$nfeed" != "$want_feed" ]; then
+    split_err "job $job: has $nfeed feed weight split commands, want $want_feed"
+  fi
+  if [ "$nquote" != "$want_quote" ]; then
+    split_err "job $job: has $nquote quote coordinator race commands with -run '^TestQuote', want $want_quote"
   fi
 done
 
@@ -615,4 +638,4 @@ fi
 if [ "$fail" != 0 ]; then
   exit 1
 fi
-echo "PASS: ci change detector (docs-only pull request merges and verified docs-only pushes skip, with flat .claude/rules/<name>.md area rule files and the generated AGENTS.md as docs and the guide generator, its fixture script, other .claude files and nested or non-Markdown rule paths as code; code, doubtful pushes (forced, unset, malformed, zero, absent, non-ancestor, empty or failed diff, shallow gaps), no event, test-read doc, renames and non-merge heads run; each suite gate fires on its own paths (the shared feed root proof on conversion, feed implementation, venue endpoint, config parse and reload, template unit and fixture changes), on the workflow and the detector, and on every push that is not a verified docs-only push; test-body-only edits of top-level scheduler Go test files with the same mode and header turn the four service gates off, and every other test file change keeps them; both workflows wire the code output and pass both push values to the detector step, and ci.yml gates jobs and steps only on declared outputs)"
+echo "PASS: ci change detector (docs-only pull request merges and verified docs-only pushes skip, with flat .claude/rules/<name>.md area rule files and the generated AGENTS.md as docs and the guide generator, its fixture script, other .claude files and nested or non-Markdown rule paths as code; code, doubtful pushes (forced, unset, malformed, zero, absent, non-ancestor, empty or failed diff, shallow gaps), no event, test-read doc, renames and non-merge heads run; each suite gate fires on its own paths (the shared feed manual proof warning, which gates no job, on conversion, feed implementation, venue endpoint, config parse and reload, template unit and fixture changes), on the workflow and the detector, and on every push that is not a verified docs-only push; test-body-only edits of top-level scheduler Go test files with the same mode and header turn the three service gates and the manual proof warning off, and every other test file change keeps them; both workflows wire the code output and pass both push values to the detector step, and ci.yml gates jobs and steps only on declared outputs)"

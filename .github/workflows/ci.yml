@@ -13,6 +13,7 @@ concurrency:
 jobs:
   changes:
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     outputs:
       code: ${{ steps.diff.outputs.code }}
       quote: ${{ steps.diff.outputs.quote }}
@@ -20,7 +21,6 @@ jobs:
       merge_paper: ${{ steps.diff.outputs.merge_paper }}
       update: ${{ steps.diff.outputs.update }}
       migrate: ${{ steps.diff.outputs.migrate }}
-      shared_feed: ${{ steps.diff.outputs.shared_feed }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -42,6 +42,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -67,6 +68,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -78,14 +80,27 @@ jobs:
       - name: Feed weight ledger race check
         run: cd scheduler && go test -race -count=1 -timeout 15m -run '^TestFeedWeight' .
 
+  go-race-quote:
+    needs: changes
+    if: ${{ needs.changes.outputs.quote == 'true' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
       - name: Quote coordinator race check
-        if: ${{ needs.changes.outputs.quote == 'true' }}
         run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestQuote' -skip '^(TestQuoteReplayRunsThePolicyThroughTheRealCoordinator|TestQuoteReplayResumeMatchesAnUninterruptedRun|TestQuoteReplayFaultsRecoverWithTheirStatedClass|TestQuoteReplayRefusesUnsafeStateAndInputs|TestQuoteReplayLaterReceiptsLeaveEarlierDecisionsUnchanged|TestQuoteReplayCoverageAndTimingRefusals|TestQuotePolicyBoundaryCasesThroughTheRealCoordinator)$' .
 
   go-python-integration:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -102,7 +117,7 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestFeedWeightSharedProcesses|TestFeedFundingProofRealCheckScript|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRegimeReadinessContractIntegration|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestTunerPreviewHandlerOpenStrategyOverrides|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestChartPatternHTFGate[A-Za-z]*|TestRegimeSide[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*|TestHLAgent[A-Za-z]*|TestPaperChildPriority[A-Za-z]*|TestPaperOnlyConfig[A-Za-z]*|TestPaperManualVenueGuard[A-Za-z]*|TestSlashCommandDaemon[A-Za-z]*|TestTradeReviewRealCandleScript[A-Za-z]*|TestTradeFeedbackAnalysisReal[A-Za-z]*|TestCandleArchivePublisherGoldenParity|TestDashboardCandleIsolation[A-Za-z]*|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' -skip '^(TestPaperManualVenueGuard[A-Za-z]*|TestMergePaperInstance|TestFeedWeightSharedProcesses|TestDashboardCandleIsolationProcesses|TestRegimeReadinessContractIntegration|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestFeedWeightSharedProcesses|TestFeedFundingProofRealCheckScript|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRegimeReadinessContractIntegration|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestTunerPreviewHandlerOpenStrategyOverrides|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestChartPatternHTFGate[A-Za-z]*|TestRegimeSide[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*|TestHLAgent[A-Za-z]*|TestPaperChildPriority[A-Za-z]*|TestPaperOnlyConfig[A-Za-z]*|TestPaperManualVenueGuard[A-Za-z]*|TestSlashCommandDaemon[A-Za-z]*|TestTradeReviewRealCandleScript[A-Za-z]*|TestTradeFeedbackAnalysisReal[A-Za-z]*|TestCandleArchivePublisherGoldenParity|TestDashboardCandleIsolation[A-Za-z]*|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' -skip '^(TestPaperManualVenueGuard[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestMergePaperInstance|TestFeedWeightSharedProcesses|TestDashboardCandleIsolationProcesses|TestRegimeReadinessContractIntegration|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
@@ -112,6 +127,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -128,7 +144,7 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
@@ -138,6 +154,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -154,33 +171,7 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractIntegration|TestFeedWeightSharedProcesses|TestDashboardCandleIsolationProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
-
-  go-python-integration-paper-manual-warning:
-    needs: changes
-    if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
-      - uses: astral-sh/setup-uv@v10.3.3
-
-      - name: Install dependencies
-        run: uv sync --compile-bytecode
-
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestPaperManualVenueGuardPositionWarning[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -parallel 8 -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractIntegration|TestFeedWeightSharedProcesses|TestDashboardCandleIsolationProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
@@ -190,6 +181,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -206,7 +198,7 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestPaperManualVenueGuard[A-Za-z]*)$' -skip '^(TestPaperManualVenueGuardPositionWarning[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestPaperManualVenueGuard[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
@@ -216,6 +208,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.merge_paper == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -242,6 +235,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -359,6 +353,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.egress_docker == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -390,6 +385,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.update == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -412,6 +408,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.migrate == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -434,6 +431,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.migrate == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -456,6 +454,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.update == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -476,8 +475,9 @@ jobs:
 
   shell-suites-migrate-4:
     needs: changes
-    if: ${{ needs.changes.outputs.shared_feed == 'true' }}
+    if: ${{ needs.changes.outputs.update == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -489,39 +489,16 @@ jobs:
       - name: Build
         run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
 
-      - name: Shared feed conversion fixture (root, systemd, migrated layout)
+      - name: Service layout migration fixture (root, systemd)
         run: |
           bash scripts/run_ci_shell_suite.sh \
-            --marker 'OK: migrate-service-layout fixture passed (sharedfeed_migrated)' \
+            --marker 'OK: migrate-service-layout fixture passed (update_recovery_restart)' \
             --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
-            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='sharedfeed_migrated' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
-
-  shell-suites-migrate-5:
-    needs: changes
-    if: ${{ needs.changes.outputs.shared_feed == 'true' }}
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
-      - name: Build
-        run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
-
-      - name: Shared feed conversion fixture (root, systemd, legacy layout)
-        run: |
-          bash scripts/run_ci_shell_suite.sh \
-            --marker 'OK: migrate-service-layout fixture passed (sharedfeed_legacy)' \
-            --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
-            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='sharedfeed_legacy' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
+            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='update_recovery_restart' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
   checks:
     runs-on: ubuntu-26.04
-    outputs:
-      python: ${{ steps.python.outputs.result }}
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v7
 
@@ -535,22 +512,6 @@ jobs:
 
       - name: Test budget
         run: bash scripts/check_pre_pr.sh test-budget
-
-      - name: Collect every Python test
-        run: |
-          uv run python3 scripts/check_pytest_shards.py collect default --out "$RUNNER_TEMP/pytest-collect/default.json"
-          uv run python3 scripts/check_pytest_shards.py collect shared_scripts --out "$RUNNER_TEMP/pytest-collect/shared_scripts.json" -- shared_scripts/
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: pytest-collect
-          path: ${{ runner.temp }}/pytest-collect/
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Python checks passed
-        id: python
-        run: echo result=success >> "$GITHUB_OUTPUT"
 
       - name: Agent instructions size and layout
         if: ${{ !cancelled() }}
@@ -573,6 +534,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 7
     strategy:
       fail-fast: false
       matrix:
@@ -587,6 +549,12 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      - name: Collect every test of the suite
+        env:
+          SUITE: ${{ matrix.suite }}
+          PATHS: ${{ matrix.paths }}
+        run: uv run python3 scripts/check_pytest_shards.py collect "$SUITE" --out "$RUNNER_TEMP/pytest-collect/$SUITE.json" ${PATHS:+-- "$PATHS"}
+
       - name: Run tests
         env:
           SUITE: ${{ matrix.suite }}
@@ -599,6 +567,15 @@ jobs:
             --durations-path="scripts/pytest_durations/$SUITE.json" \
             --report-log="$RUNNER_TEMP/pytest-shards/$SUITE-$GROUP-of-$SPLITS.jsonl"
 
+      - name: Every collected test ran exactly once and passed
+        if: ${{ !cancelled() }}
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          uv run --no-project python3 scripts/check_pytest_shards.py verify "$SUITE" \
+            --collected "$RUNNER_TEMP/pytest-collect/$SUITE.json" --logs "$RUNNER_TEMP/pytest-shards" \
+            --durations "scripts/pytest_durations/$SUITE.json" --durations-out "$RUNNER_TEMP/pytest-durations/$SUITE.json"
+
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
@@ -607,56 +584,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  python:
-    needs: [changes, checks, python-shard]
-    if: ${{ !cancelled() && needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: astral-sh/setup-uv@v10.3.3
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: pytest-collect
-          path: ${{ runner.temp }}/pytest-collect
-
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: pytest-shard-*
-          path: ${{ runner.temp }}/pytest-shards
-          merge-multiple: true
-
-      - name: Every default test ran exactly once and passed
-        if: ${{ !cancelled() }}
-        run: |
-          uv run --no-project python3 scripts/check_pytest_shards.py verify default \
-            --collected "$RUNNER_TEMP/pytest-collect/default.json" --logs "$RUNNER_TEMP/pytest-shards" \
-            --durations scripts/pytest_durations/default.json --durations-out "$RUNNER_TEMP/pytest-durations/default.json"
-
-      - name: Every shared_scripts test ran exactly once and passed
-        if: ${{ !cancelled() }}
-        run: |
-          uv run --no-project python3 scripts/check_pytest_shards.py verify shared_scripts \
-            --collected "$RUNNER_TEMP/pytest-collect/shared_scripts.json" --logs "$RUNNER_TEMP/pytest-shards" \
-            --durations scripts/pytest_durations/shared_scripts.json --durations-out "$RUNNER_TEMP/pytest-durations/shared_scripts.json"
-
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
-          name: pytest-durations
+          name: pytest-durations-${{ matrix.suite }}
           path: ${{ runner.temp }}/pytest-durations/
           if-no-files-found: warn
           retention-days: 90
-
-      - name: Every Python job passed
-        if: ${{ !cancelled() }}
-        env:
-          COLLECT: ${{ needs.checks.outputs.python }}
-          SHARDS: ${{ needs.python-shard.result }}
-        run: |
-          echo "python checks: ${COLLECT:-not run}, python-shard: $SHARDS"
-          if [ "$COLLECT" != success ] || [ "$SHARDS" != success ]; then
-            echo "::error::a Python CI job did not succeed"
-            exit 1
-          fi

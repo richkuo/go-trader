@@ -129,11 +129,12 @@ func pmdLegacyOpen(t *testing.T, cfgPath, id string) {
 }
 
 func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
-	f := newPMDFixture(t)
 	layouts := pmpLayouts()
 
 	for _, layout := range layouts {
 		t.Run("lifecycle "+layout.name, func(t *testing.T) {
+			t.Parallel()
+			f := newPMDFixture(t)
 			id := "pm-life-" + strings.ReplaceAll(layout.name, " ", "-")
 			cfg, dbPath := f.config(t, id+".json", layout, true, 60, id)
 			pmdLegacyOpen(t, cfg, id)
@@ -167,6 +168,8 @@ func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
 	}
 
 	t.Run("mixed results retry only the unconfirmed destination", func(t *testing.T) {
+		t.Parallel()
+		f := newPMDFixture(t)
 		cfg, dbPath := f.config(t, "pm-mixed.json", layouts[0], true, 60, "pm-mixed")
 		pmdLegacyOpen(t, cfg, "pm-mixed")
 		f.services.setMessageDown(true)
@@ -188,6 +191,8 @@ func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
 	})
 
 	t.Run("unconfirmed sends stay eligible", func(t *testing.T) {
+		t.Parallel()
+		f := newPMDFixture(t)
 		cfg, dbPath := f.config(t, "pm-ambiguous.json", layouts[0], true, 60, "pm-ambiguous")
 		pmdLegacyOpen(t, cfg, "pm-ambiguous")
 		f.services.setMessageResults(true, false, true)
@@ -216,6 +221,8 @@ func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
 	})
 
 	t.Run("no owner destination keeps the message eligible", func(t *testing.T) {
+		t.Parallel()
+		f := newPMDFixture(t)
 		noOwner, dbPath := f.config(t, "pm-noowner.json", layouts[0], false, 60, "pm-noowner")
 		pmdLegacyOpen(t, noOwner, "pm-noowner")
 		if r := f.once(t, noOwner); pmpWarnings(r, "pm-noowner") != 1 {
@@ -231,6 +238,8 @@ func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
 	})
 
 	t.Run("read-only reports print and never send", func(t *testing.T) {
+		t.Parallel()
+		f := newPMDFixture(t)
 		cfg, dbPath := f.config(t, "pm-report.json", layouts[0], false, 60, "pm-report")
 		pmdLegacyOpen(t, cfg, "pm-report")
 		f.once(t, cfg)
@@ -252,6 +261,8 @@ func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
 	rejectReceipts := `CREATE TRIGGER fixture_reject_warning_receipts BEFORE INSERT ON positions WHEN NEW.paper_warning_receipts_json <> '' BEGIN SELECT RAISE(ABORT, 'fixture rejects warning receipts'); END`
 
 	t.Run("an unsaved receipt does not suppress the next run", func(t *testing.T) {
+		t.Parallel()
+		f := newPMDFixture(t)
 		cfg, dbPath := f.config(t, "pm-savefail.json", layouts[0], true, 60, "pm-savefail")
 		pmdLegacyOpen(t, cfg, "pm-savefail")
 		f.once(t, cfg)
@@ -275,6 +286,8 @@ func TestPaperManualVenueGuardPositionWarningDelivery(t *testing.T) {
 	})
 
 	t.Run("a receipt kept in memory is saved by the next book save", func(t *testing.T) {
+		t.Parallel()
+		f := newPMDFixture(t)
 		cfg, dbPath := f.config(t, "pm-recover.json", layouts[0], true, 2, "pm-recover")
 		pmdLegacyOpen(t, cfg, "pm-recover")
 		f.once(t, cfg)
