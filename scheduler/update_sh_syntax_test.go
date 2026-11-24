@@ -310,6 +310,7 @@ const (
 	ciPyBinaryLine  = "go -C scheduler build -tags pyintegration -o /dev/null ."
 	ciRaceBuildLine = "go -C scheduler test -race -run '^$' ."
 	ciGoOnlyCopy    = `cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/go-only"`
+	ciReplayExec    = `go -C "$ROOT/scheduler" test -exec "$ROOT/scripts/go_test_without_python.sh" -run `
 	ciGoOnlyTest    = `go -C "$RUNNER_TEMP/go-only/scheduler" test `
 )
 
@@ -1106,6 +1107,7 @@ func readReplaySuiteTests(t *testing.T, jobs map[string]*ciWorkflowJob, repoRoot
 		t.Fatalf("job %s must carry needs: changes and the code condition, never a suite gate, so it runs the replay suites on every code change", ciShellSuitesJob)
 	}
 	var names []string
+	commands := map[string][]string{}
 	for si, step := range job.logical {
 		if job.gates[si] != "" {
 			continue
@@ -1123,7 +1125,8 @@ func readReplaySuiteTests(t *testing.T, jobs map[string]*ciWorkflowJob, repoRoot
 			if !strings.HasPrefix(text, "#!/usr/bin/env bash\nset -euo pipefail\n") {
 				t.Fatalf("scripts/%s must start with set -euo pipefail, so a failing recording test fails the suite", m[1])
 			}
-			for _, cmd := range strings.Split(text, "\n") {
+			commands[m[1]] = strings.Split(text, "\n")
+			for _, cmd := range commands[m[1]] {
 				if h := ciReplayHarness.FindStringSubmatch(cmd); h != nil {
 					names = append(names, strings.Split(strings.Trim(h[1], "()"), "|")...)
 				}
@@ -1131,6 +1134,20 @@ func readReplaySuiteTests(t *testing.T, jobs map[string]*ciWorkflowJob, repoRoot
 		}
 	}
 	sort.Strings(names)
+	suites := make([]string, 0, len(commands))
+	for suite := range commands {
+		suites = append(suites, suite)
+	}
+	sort.Strings(suites)
+	for _, suite := range suites {
+		for _, cmd := range commands[suite] {
+			for _, name := range names {
+				if strings.Contains(cmd, name) && !strings.Contains(cmd, ciReplayExec) {
+					t.Errorf("scripts/%s runs the recording test %s without %q: %s", suite, name, ciReplayExec, cmd)
+				}
+			}
+		}
+	}
 	return names
 }
 
