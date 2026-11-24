@@ -255,7 +255,7 @@ func TestUpdateShellScriptSyntax(t *testing.T) {
 }
 
 const (
-	ciFullRunJobs    = 19
+	ciFullRunJobs    = 15
 	ciJobTimeoutLine = "    timeout-minutes: 7"
 )
 
@@ -282,12 +282,12 @@ var (
 	ciRunKey      = regexp.MustCompile(`^(\s*)(- )?run:\s*(.*)$`)
 	ciStepIf      = regexp.MustCompile(`^\s*(- )?if:`)
 	ciShellKey    = regexp.MustCompile(`^\s*(- )?(shell|defaults):`)
-	ciTeeTarget   = regexp.MustCompile(`2>&1 \| tee ("[^"]+"|\S+)$`)
+	ciLaneStart   = regexp.MustCompile(`^bash scripts/ci_lane\.sh start (--no-skips )?([a-z][a-z0-9-]*) -- (.+)$`)
+	ciPyLaneCmd   = regexp.MustCompile(`^go -C scheduler test -v -timeout [0-9]+m -tags pyintegration -run '([^']*)'( -skip '([^']*)')? \./\.\.\.$`)
 	ciRunPattern  = regexp.MustCompile(`-run '([^']*)'`)
 	ciSkipPattern = regexp.MustCompile(`-skip '([^']*)'`)
 	ciSuiteInvoke = regexp.MustCompile(`bash scripts/(test_[A-Za-z0-9_.-]+\.sh)`)
 	ciOmissionMsg = regexp.MustCompile(`^\s*echo "((?:NOTE|note): [^"]*)"`)
-	ciGateEcho    = regexp.MustCompile("^echo \"[^\"$`\\\\]*\"$")
 	ciShardName   = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	ciShellJobKey = regexp.MustCompile(`^\s*(- )?(strategy|matrix|needs):`)
 	ciStepStart   = regexp.MustCompile(`^      - `)
@@ -300,6 +300,12 @@ var (
 const (
 	ciDocsGateNeeds = "    needs: changes"
 	ciDocsGateIf    = "    if: ${{ needs.changes.outputs.code == 'true' }}"
+	ciLaneScript    = "scripts/ci_lane.sh"
+	ciLaneJoin      = "bash scripts/ci_lane.sh join"
+	ciPyBuildLine   = "go -C scheduler test -tags pyintegration -run '^$' ./..."
+	ciRaceBuildLine = "go -C scheduler test -race -run '^$' ."
+	ciGoOnlyCopy    = `cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/go-only"`
+	ciGoOnlyTest    = `go -C "$RUNNER_TEMP/go-only/scheduler" test `
 )
 
 func parseCIWorkflowJobs(t *testing.T, path string) (map[string]*ciWorkflowJob, []ciCountProblem) {
@@ -772,8 +778,16 @@ func goTestFuncBody(t *testing.T, path, name string) string {
 
 const ciPyIntegrationJob = "go-python-integration"
 
+type ciLane struct {
+	name    string
+	gate    string
+	noSkips bool
+	command string
+}
+
 type ciPyIntegrationShard struct {
 	job  string
+	lane string
 	gate string
 	run  *regexp.Regexp
 	skip *regexp.Regexp
@@ -797,7 +811,11 @@ func readPyIntegrationShards(t *testing.T, jobs map[string]*ciWorkflowJob) []ciP
 	}
 	var named []string
 	for name, job := range jobs {
+		holds := name == "go"
 		if strings.HasPrefix(name, ciPyIntegrationJob+"-") {
+			holds = true
+		}
+		if holds {
 			named = append(named, name)
 			continue
 		}
@@ -806,14 +824,14 @@ func readPyIntegrationShards(t *testing.T, jobs map[string]*ciWorkflowJob) []ciP
 		}
 		for _, line := range job.raw {
 			if strings.Contains(line, "pyintegration") {
-				t.Fatalf("job %s runs pyintegration tests outside the %s shard jobs: %s", name, ciPyIntegrationJob, strings.TrimSpace(line))
+				t.Fatalf("job %s runs pyintegration tests outside the go and %s jobs: %s", name, ciPyIntegrationJob, strings.TrimSpace(line))
 			}
 		}
 	}
 	sort.Strings(named)
 	shards := readPyIntegrationShard(t, ciPyIntegrationJob, requireCIJob(t, jobs, ciPyIntegrationJob))
-	if len(shards) != 1 || shards[0].gate != "" {
-		t.Fatalf("%s must hold the allowlist in exactly one go test step with no condition", ciPyIntegrationJob)
+	if shards[0].lane != "main" || shards[0].gate != "" {
+		t.Fatalf("%s must hold the allowlist in its first lane, named main, with no condition", ciPyIntegrationJob)
 	}
 	if jobs[ciPyIntegrationJob].jobGate != "" || jobs[ciShellSuitesJob] == nil || jobs[ciShellSuitesJob].jobGate != "" {
 		t.Fatalf("%s and %s must run on every code change, never under a suite gate", ciPyIntegrationJob, ciShellSuitesJob)
@@ -822,6 +840,66 @@ func readPyIntegrationShards(t *testing.T, jobs map[string]*ciWorkflowJob) []ciP
 		shards = append(shards, readPyIntegrationShard(t, name, requireCIJob(t, jobs, name))...)
 	}
 	return shards
+}
+
+func readCILanes(t *testing.T, name string, job *ciWorkflowJob) []ciLane {
+	t.Helper()
+	var lanes []ciLane
+	seen := map[string]bool{}
+	joined := false
+	for si, step := range job.logical {
+		for _, line := range step {
+			if !strings.Contains(line, ciLaneScript) {
+				continue
+			}
+			if len(step) != 1 {
+				t.Fatalf("job %s must run %s in a step of one command: %s", name, ciLaneScript, line)
+			}
+			if joined {
+				t.Fatalf("job %s runs a lane command after the join: %s", name, line)
+			}
+			if line == ciLaneJoin {
+				if job.gates[si] != job.jobGate || len(lanes) == 0 {
+					t.Fatalf("job %s must join its lanes in a step with no condition, after at least one lane starts", name)
+				}
+				joined = true
+				continue
+			}
+			m := ciLaneStart.FindStringSubmatch(line)
+			if m == nil {
+				t.Fatalf("job %s has a lane command this guard cannot read: %s", name, line)
+			}
+			if seen[m[2]] {
+				t.Fatalf("job %s starts lane %s twice", name, m[2])
+			}
+			seen[m[2]] = true
+			lanes = append(lanes, ciLane{name: m[2], gate: job.gates[si], noSkips: m[1] != "", command: m[3]})
+		}
+	}
+	if len(lanes) > 0 && !joined {
+		t.Fatalf("job %s starts lanes but never runs %q, so a failing lane passes", name, ciLaneJoin)
+	}
+	return lanes
+}
+
+func checkCILaneJobs(t *testing.T, jobs map[string]*ciWorkflowJob) {
+	t.Helper()
+	var names []string
+	for name := range jobs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		uses := false
+		for _, line := range jobs[name].raw {
+			if strings.Contains(line, ciLaneScript) {
+				uses = true
+			}
+		}
+		if uses && len(readCILanes(t, name, requireCIJob(t, jobs, name))) == 0 {
+			t.Errorf("job %s names %s but starts no lane", name, ciLaneScript)
+		}
+	}
 }
 
 func compilePyIntegrationPattern(t *testing.T, job, flag, pattern string) *regexp.Regexp {
@@ -839,94 +917,36 @@ func compilePyIntegrationPattern(t *testing.T, job, flag, pattern string) *regex
 func readPyIntegrationShard(t *testing.T, name string, job *ciWorkflowJob) []ciPyIntegrationShard {
 	t.Helper()
 	var shards []ciPyIntegrationShard
-	labels := map[string]bool{}
-	for si, step := range job.logical {
-		var shard *ciPyIntegrationShard
-		label := name
-		if job.gates[si] != "" && job.jobGate == "" {
-			label = name + " (" + job.gates[si] + " step)"
-		}
-		pipefail := false
-		teeLog := ""
-		gateOpen := false
-		gateExits := false
-		sawSkipGate := false
-		for _, line := range step {
-			runs := ciRunPattern.FindAllStringSubmatch(line, -1)
-			skips := ciSkipPattern.FindAllStringSubmatch(line, -1)
-			if strings.Count(line, "-run") != len(runs) || strings.Count(line, "-skip") != len(skips) {
-				t.Fatalf("%s has a -run or -skip flag this guard cannot read: %s", label, line)
-			}
-			if gateOpen {
-				switch {
-				case line == "fi":
-					if !gateExits {
-						t.Fatalf("the %s SKIP gate must run exit 1 before fi, or a --- SKIP line does not fail the step", label)
-					}
-					gateOpen = false
-					sawSkipGate = true
-				case line == "exit 1":
-					gateExits = true
-				case ciGateEcho.MatchString(line):
-				default:
-					t.Fatalf("the %s SKIP gate may hold only plain echo lines and exit 1 before fi: %s", label, line)
-				}
-				continue
-			}
-			if line == "set -o pipefail" {
-				pipefail = true
-			}
-			if teeLog != "" && strings.Contains(line, "--- SKIP") {
-				want := "if grep -n -- '--- SKIP' " + teeLog + "; then"
-				if line != want {
-					t.Fatalf("the %s SKIP gate must be exactly %q: %s", label, want, line)
-				}
-				gateOpen = true
-				gateExits = false
-				continue
-			}
-			if len(runs) == 0 {
-				if len(skips) > 0 {
-					t.Fatalf("%s has a -skip flag outside its go test line: %s", label, line)
-				}
-				continue
-			}
-			if shard != nil || len(runs) != 1 || len(skips) > 1 {
-				t.Fatalf("%s must have exactly one -run '...' argument and at most one -skip '...' argument in each step", label)
-			}
-			if !strings.HasPrefix(line, "go -C scheduler test ") || !strings.Contains(line, " -tags pyintegration ") || !strings.Contains(line, " -v ") {
-				t.Fatalf("the %s -run line must be a verbose pyintegration go test: %s", label, line)
-			}
-			if !pipefail {
-				t.Fatalf("the %s step must run set -o pipefail before the piped go test, or a failing test passes: %s", label, line)
-			}
-			tee := ciTeeTarget.FindStringSubmatch(line)
-			if tee == nil {
-				t.Fatalf("the %s go test must end with 2>&1 | tee <log> so the SKIP gate reads its output: %s", label, line)
-			}
-			teeLog = tee[1]
-			shard = &ciPyIntegrationShard{job: label, gate: job.gates[si], run: compilePyIntegrationPattern(t, label, "-run", runs[0][1])}
-			if len(skips) == 1 {
-				shard.skip = compilePyIntegrationPattern(t, label, "-skip", skips[0][1])
-			}
-		}
-		if gateOpen {
-			t.Fatalf("the %s SKIP gate has no closing fi", label)
-		}
-		if shard == nil {
+	for _, lane := range readCILanes(t, name, job) {
+		if !strings.Contains(lane.command, "pyintegration") {
 			continue
 		}
-		if !sawSkipGate {
-			t.Fatalf("%s does not fail when a selected test reports --- SKIP in the log its go test writes", label)
+		m := ciPyLaneCmd.FindStringSubmatch(lane.command)
+		if m == nil {
+			t.Fatalf("%s lane %s must be one verbose pyintegration go test with -timeout, one -run '...', at most one -skip '...' and the packages ./...: %s", name, lane.name, lane.command)
 		}
-		if labels[label] {
-			t.Fatalf("%s has more than one go test step with the same condition", label)
+		if !lane.noSkips {
+			t.Fatalf("%s lane %s must start with --no-skips, or a --- SKIP line does not fail the job", name, lane.name)
 		}
-		labels[label] = true
-		shards = append(shards, *shard)
+		label := name + " lane " + lane.name
+		shard := ciPyIntegrationShard{job: label, lane: lane.name, gate: lane.gate, run: compilePyIntegrationPattern(t, label, "-run", m[1])}
+		if m[2] != "" {
+			shard.skip = compilePyIntegrationPattern(t, label, "-skip", m[3])
+		}
+		shards = append(shards, shard)
 	}
 	if len(shards) == 0 {
-		t.Fatalf("%s has no -run '...' argument", name)
+		t.Fatalf("%s starts no pyintegration lane", name)
+	}
+	for _, step := range job.logical {
+		for _, line := range step {
+			if !strings.Contains(line, "pyintegration") || line == ciPyBuildLine {
+				continue
+			}
+			if !strings.HasPrefix(line, "bash "+ciLaneScript+" start ") {
+				t.Fatalf("%s runs pyintegration tests outside a lane: %s", name, line)
+			}
+		}
 	}
 	return shards
 }
@@ -1006,21 +1026,41 @@ func goTestRunnersInFile(t *testing.T, fset *token.FileSet, path string) []strin
 
 const ciFeedWeightFilter = "^TestFeedWeight"
 
-func ciFeedWeightTestLine(t *testing.T, name string, job *ciWorkflowJob) string {
+func ciFeedWeightTestLine(t *testing.T, name string, job *ciWorkflowJob, lane, prefix string) string {
 	t.Helper()
-	var found []string
-	for _, step := range job.logical {
-		for _, line := range step {
-			if !strings.Contains(line, "go test ") && !strings.Contains(line, "go -C ") {
-				continue
+	found := ""
+	for _, l := range readCILanes(t, name, job) {
+		if l.name == lane {
+			if l.gate != "" {
+				t.Fatalf("job %s lane %s must have no condition", name, lane)
 			}
-			found = append(found, line)
+			found = l.command
 		}
 	}
-	if len(found) != 1 {
-		t.Fatalf("job %s has %d go test commands that split the feed weight tests, want 1: %q", name, len(found), found)
+	if !strings.HasPrefix(found, prefix) {
+		t.Fatalf("job %s must start lane %s with a command that begins %q: %q", name, lane, prefix, found)
 	}
-	return found[0]
+	return found
+}
+
+func checkGoOnlyCheckout(t *testing.T, job *ciWorkflowJob) {
+	t.Helper()
+	copied := false
+	for _, line := range job.raw {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasSuffix(trimmed, "run: "+ciGoOnlyCopy) {
+			copied = true
+		}
+		if !copied && (strings.Contains(trimmed, "setup-uv") || strings.Contains(trimmed, "uv sync")) {
+			t.Fatalf("job go sets up Python before %q, so the Go tests could read the Python environment", ciGoOnlyCopy)
+		}
+		if strings.Contains(trimmed, "go-only") && !strings.HasSuffix(trimmed, ciGoOnlyCopy) && !strings.Contains(trimmed, " -- "+ciGoOnlyTest) {
+			t.Fatalf("job go changes the Go-only checkout outside its copy and its test lane: %s", trimmed)
+		}
+	}
+	if !copied {
+		t.Fatalf("job go must run %q before any Python setup, so the Go tests prove that they need no Python environment", ciGoOnlyCopy)
+	}
 }
 
 func ciFeedWeightPattern(t *testing.T, name, flag string, re *regexp.Regexp, line string) *regexp.Regexp {
@@ -1041,8 +1081,9 @@ func checkFeedWeightSplit(t *testing.T, jobs map[string]*ciWorkflowJob, schedDir
 			t.Fatalf("job %s must carry needs: changes and the code condition, never a suite gate, so it runs on every code change", name)
 		}
 	}
-	goLine := ciFeedWeightTestLine(t, "go", goJob)
-	raceLine := ciFeedWeightTestLine(t, "go-race", raceJob)
+	checkGoOnlyCheckout(t, goJob)
+	goLine := ciFeedWeightTestLine(t, "go", goJob, "go", ciGoOnlyTest)
+	raceLine := ciFeedWeightTestLine(t, "go-race", raceJob, "feed-weight", "go -C scheduler test ")
 	if strings.Contains(goLine, "-run") || !strings.HasSuffix(goLine, " ./...") {
 		t.Fatalf("job go must select tests only with -skip and name the packages ./...: %s", goLine)
 	}
@@ -1478,6 +1519,7 @@ func TestShellSuiteCIWiring(t *testing.T) {
 	jobs, stray := parseCIWorkflowJobs(t, workflowPath)
 	checkCIFullRunJobs(t, jobs, stray)
 	checkCIJobTimeouts(t, jobs)
+	checkCILaneJobs(t, jobs)
 	var declared map[string]bool
 	for _, wf := range []string{"ci.yml", "container.yml"} {
 		wfJobs := jobs

@@ -51,8 +51,25 @@ jobs:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
 
-      - name: Remaining Go tests
-        run: cd scheduler && go test -skip '^TestFeedWeight' ./...
+      - name: Copy the checkout before any Python setup
+        run: cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/go-only"
+
+      - name: Start the remaining Go tests
+        run: bash scripts/ci_lane.sh start go -- go -C "$RUNNER_TEMP/go-only/scheduler" test -skip '^TestFeedWeight' ./...
+
+      - uses: astral-sh/setup-uv@v10.3.3
+
+      - name: Install dependencies
+        run: uv sync --compile-bytecode
+
+      - name: Build the Python-backed Go tests once for every lane
+        run: go -C scheduler test -tags pyintegration -run '^$' ./...
+
+      - name: Start the feed and quote tests
+        run: bash scripts/ci_lane.sh start --no-skips feed-quotes -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestFeedWeightSharedProcesses|TestDashboardCandleIsolation[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./...
+
+      - name: Start the regime and update helper tests
+        run: bash scripts/ci_lane.sh start --no-skips regime-gates -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractIntegration|TestRegimeSide[A-Za-z]*|TestUpdateHelpersEnvfileParsing790)$' ./...
 
       - name: Format check (every tracked Go file)
         run: |
@@ -63,6 +80,9 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+
+      - name: Wait for every lane
+        run: bash scripts/ci_lane.sh join
 
   go-race:
     needs: changes
@@ -77,24 +97,18 @@ jobs:
           go-version: '1.26'
           cache-dependency-path: scheduler/go.sum
 
-      - name: Feed weight ledger race check
-        run: cd scheduler && go test -race -count=1 -timeout 15m -run '^TestFeedWeight' .
+      - name: Build the race tests once for every lane
+        run: go -C scheduler test -race -run '^$' .
 
-  go-race-quote:
-    needs: changes
-    if: ${{ needs.changes.outputs.quote == 'true' }}
-    runs-on: ubuntu-26.04
-    timeout-minutes: 7
-    steps:
-      - uses: actions/checkout@v7
+      - name: Start the feed weight ledger race check
+        run: bash scripts/ci_lane.sh start feed-weight -- go -C scheduler test -race -count=1 -timeout 15m -run '^TestFeedWeight' .
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
+      - name: Start the quote coordinator race check
+        if: ${{ needs.changes.outputs.quote == 'true' }}
+        run: bash scripts/ci_lane.sh start quote -- go -C scheduler test -race -count=1 -timeout 30m -run '^TestQuote' -skip '^(TestQuoteReplayRunsThePolicyThroughTheRealCoordinator|TestQuoteReplayResumeMatchesAnUninterruptedRun|TestQuoteReplayFaultsRecoverWithTheirStatedClass|TestQuoteReplayRefusesUnsafeStateAndInputs|TestQuoteReplayLaterReceiptsLeaveEarlierDecisionsUnchanged|TestQuoteReplayCoverageAndTimingRefusals|TestQuotePolicyBoundaryCasesThroughTheRealCoordinator)$' .
 
-      - name: Quote coordinator race check
-        run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestQuote' -skip '^(TestQuoteReplayRunsThePolicyThroughTheRealCoordinator|TestQuoteReplayResumeMatchesAnUninterruptedRun|TestQuoteReplayFaultsRecoverWithTheirStatedClass|TestQuoteReplayRefusesUnsafeStateAndInputs|TestQuoteReplayLaterReceiptsLeaveEarlierDecisionsUnchanged|TestQuoteReplayCoverageAndTimingRefusals|TestQuotePolicyBoundaryCasesThroughTheRealCoordinator)$' .
+      - name: Wait for every lane
+        run: bash scripts/ci_lane.sh join
 
   go-python-integration:
     needs: changes
@@ -114,41 +128,21 @@ jobs:
       - name: Install dependencies
         run: uv sync --compile-bytecode
 
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestFeedWeightSharedProcesses|TestFeedFundingProofRealCheckScript|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRegimeReadinessContract[A-Za-z]*|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestTunerPreviewHandlerOpenStrategyOverrides|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestChartPatternHTFGate[A-Za-z]*|TestRegimeSide[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*|TestHLAgent[A-Za-z]*|TestPaperChildPriority[A-Za-z]*|TestPaperOnlyConfig[A-Za-z]*|TestPaperManualVenueGuard[A-Za-z]*|TestSlashCommandDaemon[A-Za-z]*|TestTradeReviewRealCandleScript[A-Za-z]*|TestTradeFeedbackAnalysisReal[A-Za-z]*|TestCandleArchivePublisherGoldenParity|TestDashboardCandleIsolation[A-Za-z]*|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' -skip '^(TestPaperManualVenueGuard[A-Za-z]*|TestRegimeReadinessContractIntegration|TestRegimeSide[A-Za-z]*|TestMergePaperInstance|TestFeedWeightSharedProcesses|TestDashboardCandleIsolation[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestRegimeReadinessContractProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
+      - name: Build the Python-backed Go tests once for every lane
+        run: go -C scheduler test -tags pyintegration -run '^$' ./...
 
-  go-python-integration-robinhood:
-    needs: changes
-    if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-26.04
-    timeout-minutes: 7
-    steps:
-      - uses: actions/checkout@v7
+      - name: Start the remaining Python-backed Go tests
+        run: bash scripts/ci_lane.sh start --no-skips main -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestFeedWeightSharedProcesses|TestFeedFundingProofRealCheckScript|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRegimeReadinessContract[A-Za-z]*|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestTunerPreviewHandlerOpenStrategyOverrides|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestChartPatternHTFGate[A-Za-z]*|TestRegimeSide[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestPaperResearchScheduler[A-Za-z]*|TestHLAgent[A-Za-z]*|TestPaperChildPriority[A-Za-z]*|TestPaperOnlyConfig[A-Za-z]*|TestPaperManualVenueGuard[A-Za-z]*|TestSlashCommandDaemon[A-Za-z]*|TestTradeReviewRealCandleScript[A-Za-z]*|TestTradeFeedbackAnalysisReal[A-Za-z]*|TestCandleArchivePublisherGoldenParity|TestDashboardCandleIsolation[A-Za-z]*|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' -skip '^(TestPaperManualVenueGuard[A-Za-z]*|TestRegimeReadinessContractIntegration|TestRegimeSide[A-Za-z]*|TestMergePaperInstance|TestFeedWeightSharedProcesses|TestDashboardCandleIsolation[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestRegimeReadinessContractProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./...
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
+      - name: Start the Robinhood tests
+        run: bash scripts/ci_lane.sh start --no-skips robinhood -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*)$' ./...
 
-      - uses: astral-sh/setup-uv@v10.3.3
+      - name: Start the paper merge suite
+        if: ${{ needs.changes.outputs.merge_paper == 'true' }}
+        run: bash scripts/ci_lane.sh start --no-skips merge-paper-instance -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestMergePaperInstance$' ./...
 
-      - name: Install dependencies
-        run: uv sync --compile-bytecode
-
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodAccountBinding[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestRobinhoodSpotCoinAdmission[A-Za-z]*|TestRobinhoodRegimeClasses[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
+      - name: Wait for every lane
+        run: bash scripts/ci_lane.sh join
 
   go-python-integration-process-cycles:
     needs: changes
@@ -168,14 +162,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --compile-bytecode
 
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop|TestUpdateHelpersEnvfileParsing790)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
+      - name: Start the process cycle tests
+        run: bash scripts/ci_lane.sh start --no-skips process-cycles -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' ./...
+
+      - name: Wait for every lane
+        run: bash scripts/ci_lane.sh join
 
   go-python-integration-paper-manual:
     needs: changes
@@ -195,68 +186,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --compile-bytecode
 
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestPaperManualVenueGuard[A-Za-z]*|TestRegimeReadinessContractIntegration|TestRegimeSide[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
+      - name: Start the paper manual tests
+        run: bash scripts/ci_lane.sh start --no-skips paper-manual -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestPaperManualVenueGuard[A-Za-z]*$' ./...
 
-  go-python-integration-feed-quotes:
-    needs: changes
-    if: ${{ needs.changes.outputs.code == 'true' }}
-    runs-on: ubuntu-26.04
-    timeout-minutes: 7
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
-      - uses: astral-sh/setup-uv@v10.3.3
-
-      - name: Install dependencies
-        run: uv sync --compile-bytecode
-
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestFeedWeightSharedProcesses|TestDashboardCandleIsolation[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestRobinhoodOptionMarks[A-Za-z]*|TestIBKROptionMarks[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
-
-  go-python-integration-merge-paper-instance:
-    needs: changes
-    if: ${{ needs.changes.outputs.merge_paper == 'true' }}
-    runs-on: ubuntu-26.04
-    timeout-minutes: 7
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
-      - uses: astral-sh/setup-uv@v10.3.3
-
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestMergePaperInstance$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
+      - name: Wait for every lane
+        run: bash scripts/ci_lane.sh join
 
   shell-suites:
     needs: changes
@@ -505,6 +439,9 @@ jobs:
 
       - name: Every pre-PR check
         run: bash scripts/check_pre_pr.sh
+
+      - name: Check the lane runner
+        run: bash scripts/check_ci_lane.sh
 
       - uses: actions/setup-go@v7
         if: ${{ needs.changes.outputs.egress_docker == 'true' }}

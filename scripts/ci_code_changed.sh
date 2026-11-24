@@ -9,7 +9,7 @@ every_gate=(.github/workflows/ci.yml scripts/ci_code_changed.sh scripts/check_ci
 gate_patterns() {
   case "$1" in
     quote)
-      pats=('scheduler/*quote*.go' scheduler/go.mod scheduler/go.sum)
+      pats=('scheduler/*quote*.go' scheduler/go.mod scheduler/go.sum scripts/ci_lane.sh)
       ;;
     egress_docker)
       pats=('scheduler/cmd/egress-controller/*' 'scheduler/cmd/egress-fixture/*' 'scheduler/internal/egresspolicy/*'
@@ -24,7 +24,7 @@ gate_patterns() {
         'scheduler/config*.go' 'scheduler/*db*.go' 'scheduler/state*.go' 'scheduler/storage*.go' 'scheduler/inspect*.go'
         'scheduler/risk_partition*.go' 'scheduler/singleton_lock*.go' 'scheduler/manual_action_lock*.go'
         scheduler/main.go scheduler/version.go scheduler/server.go scheduler/update_sh_feature_test.go
-        scheduler/go.mod scheduler/go.sum)
+        scheduler/go.mod scheduler/go.sum scripts/ci_lane.sh)
       ;;
     update)
       pats=(scripts/update.sh 'scripts/update_*' scripts/install-service.sh scripts/migrate-service-layout.py

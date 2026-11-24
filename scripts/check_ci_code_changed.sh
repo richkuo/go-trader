@@ -17,7 +17,7 @@ g config core.fileMode true
 mkdir -p "$tmp/repo/scheduler/cmd/egress-controller" "$tmp/repo/docs" "$tmp/repo/scripts/fixtures" "$tmp/repo/systemd" "$tmp/repo/.github/workflows" \
   "$tmp/repo/.claude/rules" "$tmp/repo/.claude/hooks"
 for f in CLAUDE.md SKILL.md README.md scheduler/executor.go docs/backtesting-registry.md scheduler/cmd/egress-controller/manifest.go \
-  scheduler/quote_coordinator.go scripts/merge-paper-instance.sh scripts/update.sh scripts/migrate-service-layout.py \
+  scheduler/quote_coordinator.go scripts/ci_lane.sh scripts/merge-paper-instance.sh scripts/update.sh scripts/migrate-service-layout.py \
   scheduler/server.go scheduler/risk.go scheduler/state_presence.go scheduler/update_sh_feature_test.go \
   scheduler/main.go scheduler/probe_cmd.go scheduler/storage_inspect.go scheduler/singleton_lock.go scheduler/inspect_cmd.go \
   scheduler/market_feed_role.go scheduler/version.go .github/workflows/ci.yml scripts/shared-feed-convert.sh \
@@ -184,6 +184,7 @@ check "code renamed into the list, pull request" pull_request merge "$code_only"
 check "head is not a merge commit, pull request" pull_request plain "$all" 'echo x >>SKILL.md'
 check "quote coordinator, pull request" pull_request merge "code=true quote=true egress_docker=false merge_paper=false update=false migrate=false shared_feed=false" 'echo x >>scheduler/quote_coordinator.go'
 check "egress controller, pull request" pull_request merge "code=true quote=false egress_docker=true merge_paper=false update=false migrate=false shared_feed=false" 'echo x >>scheduler/cmd/egress-controller/manifest.go'
+check "lane runner, pull request" pull_request merge "code=true quote=true egress_docker=false merge_paper=true update=false migrate=false shared_feed=false" 'echo x >>scripts/ci_lane.sh'
 check "merge script, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=false migrate=true shared_feed=false" 'echo x >>scripts/merge-paper-instance.sh'
 check "update script, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=false update=true migrate=false shared_feed=true" 'echo x >>scripts/update.sh'
 check "layout tool, pull request" pull_request merge "code=true quote=false egress_docker=false merge_paper=true update=true migrate=true shared_feed=true" 'echo x >>scripts/migrate-service-layout.py'
@@ -394,9 +395,15 @@ split_err() {
   fail=1
 }
 feed_go_test='(^|[^A-Za-z0-9_])go[[:space:]]+(-C[[:space:]]+[^[:space:]]+[[:space:]]+)?test([[:space:]]|$)'
-feed_run_prefix='        run: cd scheduler && go test '
+feed_lane_prefix='        run: bash scripts/ci_lane.sh start '
+feed_go_prefix="${feed_lane_prefix}go -- go -C \"\$RUNNER_TEMP/go-only/scheduler\" test "
+feed_race_prefix="${feed_lane_prefix}feed-weight -- go -C scheduler test "
+feed_quote_prefix="${feed_lane_prefix}quote -- go -C scheduler test "
+feed_py_prefix="${feed_lane_prefix}--no-skips "
+feed_race_build="        run: go -C scheduler test -race -run '^\$' ."
+feed_py_build="        run: go -C scheduler test -tags pyintegration -run '^\$' ./..."
 feed_code_if="    if: \${{ needs.changes.outputs.code == 'true' }}"
-feed_quote_if="    if: \${{ needs.changes.outputs.quote == 'true' }}"
+feed_quote_if="        if: \${{ needs.changes.outputs.quote == 'true' }}"
 
 if grep -q 'GOFLAGS' "$path"; then
   split_err "sets GOFLAGS, which can change the tests a go test command selects"
@@ -447,7 +454,7 @@ feed_check_step() {
       esac
     fi
     case "$line" in
-      "$feed_run_prefix"*) continue ;;
+      "$feed_lane_prefix"*) continue ;;
     esac
     if [ -n "$allow_if" ] && [ "$line" = "$allow_if" ]; then
       continue
@@ -543,11 +550,11 @@ feed_check_quote() {
     i=$((i + 1))
   done
   if [ "$nrun" != 1 ] || [ "$race" != 1 ] || [ "$nocache" != 1 ] || [ "${toks[$((${#toks[@]} - 1))]}" != . ]; then
-    split_err "job go-race-quote: the quote coordinator command must pass -race, -count=1 and -run '^TestQuote' once and end with the package '.': $args"
+    split_err "job go-race: the quote coordinator command must pass -race, -count=1 and -run '^TestQuote' once and end with the package '.': $args"
   fi
 }
 
-for job in go go-race go-race-quote; do
+for job in go go-race; do
   n="$(grep -cE "^  $job:[[:space:]]*\$" "$path" || true)"
   if [ "$n" != 1 ]; then
     split_err "declares the job $job $n times, want 1"
@@ -559,67 +566,59 @@ for job in go go-race go-race-quote; do
   if [ "$n" != 1 ]; then
     split_err "job $job: carries 'needs: changes' $n times at job level, want 1"
   fi
-  job_if="$feed_code_if"
-  if [ "$job" = go-race-quote ]; then
-    job_if="$feed_quote_if"
-  fi
-  n="$(grep -cxF "$job_if" "$file" || true)"
+  n="$(grep -cxF "$feed_code_if" "$file" || true)"
   if [ "$n" != 1 ]; then
-    split_err "job $job: carries the job condition '${job_if#    }' $n times, want 1"
+    split_err "job $job: carries the job condition '${feed_code_if#    }' $n times, want 1"
   fi
   while IFS= read -r line; do
     case "$line" in
-      "    needs: changes" | "$job_if" | "    steps:" | "    runs-on: "?* | "    timeout-minutes: 7") ;;
+      "    needs: changes" | "$feed_code_if" | "    steps:" | "    runs-on: "?* | "    timeout-minutes: 7") ;;
       *) split_err "job $job: has the job-level line '${line#    }'; only needs, the job condition, runs-on, timeout-minutes: 7 and steps are allowed" ;;
     esac
   done < <(grep -E '^    [^ ]' "$file" || true)
 
-  n="$(grep -cE "$feed_go_test" "$file" || true)"
-  if [ "$n" != 1 ]; then
-    split_err "job $job: has $n go test commands, want 1"
-  fi
   nfeed=0
   nquote=0
   while IFS= read -r hit; do
     at="${hit%%:*}"
     line="${hit#*:}"
-    case "$line" in
-      "$feed_run_prefix"[!\ ]*) ;;
-      *)
-        split_err "job $job: runs go test in a form this check cannot read: ${line#"${line%%[! ]*}"}"
-        continue
+    case "$job:$line" in
+      "go:$feed_go_prefix"[!\ ]*)
+        nfeed=$((nfeed + 1))
+        feed_check_cmd "$job" go "${line#"$feed_go_prefix"}"
+        feed_check_step "$job" "$file" "$at" "" "a feed weight test step allows only name and run"
         ;;
-    esac
-    args="${line#"$feed_run_prefix"}"
-    case " $args " in
-      *" -run '^TestQuote' "*)
-        if [ "$job" = go-race-quote ]; then
-          nquote=$((nquote + 1))
-          feed_check_quote "$args"
-          feed_check_step "$job" "$file" "$at" "" "the quote race step allows only name and run"
-          continue
+      "go-race:$feed_race_prefix"[!\ ]*)
+        nfeed=$((nfeed + 1))
+        feed_check_cmd "$job" race "${line#"$feed_race_prefix"}"
+        feed_check_step "$job" "$file" "$at" "" "a feed weight test step allows only name and run"
+        ;;
+      "go-race:$feed_quote_prefix"[!\ ]*" -run '^TestQuote' "*)
+        nquote=$((nquote + 1))
+        feed_check_quote "${line#"$feed_quote_prefix"}"
+        feed_check_step "$job" "$file" "$at" "$feed_quote_if" "the quote race step allows only name, the quote condition and run"
+        if ! feed_step_lines "$file" "$at" | grep -qxF "$feed_quote_if"; then
+          split_err "job $job: the quote race step lacks the condition '${feed_quote_if#        }'"
         fi
         ;;
+      "go:$feed_py_build" | "go-race:$feed_race_build") ;;
+      "go:$feed_py_prefix"[a-z]*" -- go -C scheduler test -v -timeout "*" -tags pyintegration "*) ;;
+      *) split_err "job $job: runs go test in a form this check cannot read: ${line#"${line%%[! ]*}"}" ;;
     esac
-    nfeed=$((nfeed + 1))
-    if [ "$job" = go ]; then
-      feed_check_cmd "$job" go "$args"
-    else
-      feed_check_cmd "$job" race "$args"
-    fi
-    feed_check_step "$job" "$file" "$at" "" "a feed weight test step allows only name and run"
   done < <(grep -nE "$feed_go_test" "$file" || true)
-  want_feed=1
   want_quote=0
-  if [ "$job" = go-race-quote ]; then
-    want_feed=0
+  if [ "$job" = go-race ]; then
     want_quote=1
   fi
-  if [ "$nfeed" != "$want_feed" ]; then
-    split_err "job $job: has $nfeed feed weight split commands, want $want_feed"
+  if [ "$nfeed" != 1 ]; then
+    split_err "job $job: has $nfeed feed weight split commands, want 1"
   fi
   if [ "$nquote" != "$want_quote" ]; then
     split_err "job $job: has $nquote quote coordinator race commands with -run '^TestQuote', want $want_quote"
+  fi
+  n="$(grep -cxF '        run: bash scripts/ci_lane.sh join' "$file" || true)"
+  if [ "$n" != 1 ]; then
+    split_err "job $job: joins its lanes $n times, want 1"
   fi
 done
 
@@ -632,7 +631,7 @@ if [ "$n" != 1 ] || [ "$b" != 0 ]; then
   fail=1
 fi
 if [ "$split_fail" = 0 ]; then
-  echo "ok: ci.yml go and go-race split the feed weight tests (go runs ./... with -skip '^TestFeedWeight' and no other selection flag, go-race runs -race -count=1 -run '^TestFeedWeight' . in an unconditional step, both under the code gate, and TestShellSuiteCIWiring has no build constraint)"
+  echo "ok: ci.yml go and go-race split the feed weight tests (the go lane runs ./... with -skip '^TestFeedWeight' and no other selection flag, the feed-weight lane runs -race -count=1 -run '^TestFeedWeight' . in an unconditional step, both under the code gate and joined once, and TestShellSuiteCIWiring has no build constraint)"
 fi
 
 if [ "$fail" != 0 ]; then
