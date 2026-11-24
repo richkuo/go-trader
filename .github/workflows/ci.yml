@@ -75,7 +75,7 @@ jobs:
         run: bash scripts/ci_lane.sh start --ram-tmp --no-skips robinhood-orders -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestRobinhoodLiveOrder[A-Za-z]*$' ./...
 
       - name: Start the regime and update helper tests
-        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips regime-gates -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractIntegration|TestRegimeSide[A-Za-z]*|TestUpdateHelpersEnvfileParsing790)$' ./...
+        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips regime-gates -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractIntegration|TestRegimeSide[A-Za-z]*|TestUpdateHelpersEnvfileParsing790|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' ./...
 
       - name: Format check (every tracked Go file)
         run: |
@@ -172,7 +172,7 @@ jobs:
         run: uv sync --compile-bytecode
 
       - name: Start the process cycle tests
-        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips process-cycles -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig|TestZeroTrailingStopPctReloadKeepsTheTrailingATRStop)$' ./...
+        run: bash scripts/ci_lane.sh start --ram-tmp --no-skips process-cycles -- go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestRegimeReadinessContractProcesses|TestChartPatternHTFGateRefusedReloadKeepsThePreviousConfig)$' ./...
 
       - name: Wait for every lane
         run: bash scripts/ci_lane.sh join
