@@ -282,7 +282,7 @@ var (
 	ciRunKey      = regexp.MustCompile(`^(\s*)(- )?run:\s*(.*)$`)
 	ciStepIf      = regexp.MustCompile(`^\s*(- )?if:`)
 	ciShellKey    = regexp.MustCompile(`^\s*(- )?(shell|defaults):`)
-	ciLaneStart   = regexp.MustCompile(`^bash scripts/ci_lane\.sh start (--no-skips )?([a-z][a-z0-9-]*) -- (.+)$`)
+	ciLaneStart   = regexp.MustCompile(`^bash scripts/ci_lane\.sh start (?:--ram-tmp )?(--no-skips )?([a-z][a-z0-9-]*) -- (.+)$`)
 	ciPyLaneCmd   = regexp.MustCompile(`^go -C scheduler test -v -timeout [0-9]+m -tags pyintegration -run '([^']*)'( -skip '([^']*)')? \./\.\.\.$`)
 	ciRunPattern  = regexp.MustCompile(`-run '([^']*)'`)
 	ciSkipPattern = regexp.MustCompile(`-skip '([^']*)'`)

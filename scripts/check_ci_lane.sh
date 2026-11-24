@@ -80,6 +80,17 @@ out="$(cat "$tmp/slow.log")"
 says "a join stopped before the slow lane ends" "quick lane output"
 pkill -P "$(cat "$RUNNER_TEMP/ci-lanes/slow/pid")" 2>/dev/null
 
+fresh ram
+mkdir "$tmp/ram-dir"
+export CI_LANE_RAM_DIR="$tmp/ram-dir"
+expect 0 "start of a lane with a memory temp directory" start --ram-tmp --no-skips ram -- bash -c 'echo "tmp=$TMPDIR"'
+expect 0 "join of a lane with a memory temp directory" join
+says "a lane with a memory temp directory" "tmp=$tmp/ram-dir/ci-lane."
+fresh ram-missing
+export CI_LANE_RAM_DIR="$tmp/no-such-dir"
+expect 2 "a lane with no memory temp directory" start --ram-tmp other -- true
+unset CI_LANE_RAM_DIR
+
 fresh empty
 expect 1 "join with no lane" join
 expect 0 "first start of a name" start twice -- true

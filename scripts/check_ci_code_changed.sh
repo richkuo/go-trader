@@ -396,10 +396,10 @@ split_err() {
 }
 feed_go_test='(^|[^A-Za-z0-9_])go[[:space:]]+(-C[[:space:]]+[^[:space:]]+[[:space:]]+)?test([[:space:]]|$)'
 feed_lane_prefix='        run: bash scripts/ci_lane.sh start '
-feed_go_prefix="${feed_lane_prefix}go -- go -C \"\$RUNNER_TEMP/go-only/scheduler\" test "
-feed_race_prefix="${feed_lane_prefix}feed-weight -- go -C scheduler test "
-feed_quote_prefix="${feed_lane_prefix}quote -- go -C scheduler test "
-feed_py_prefix="${feed_lane_prefix}--no-skips "
+feed_go_prefix="${feed_lane_prefix}--ram-tmp go -- go -C \"\$RUNNER_TEMP/go-only/scheduler\" test "
+feed_race_prefix="${feed_lane_prefix}--ram-tmp feed-weight -- go -C scheduler test "
+feed_quote_prefix="${feed_lane_prefix}--ram-tmp quote -- go -C scheduler test "
+feed_py_prefix="${feed_lane_prefix}--ram-tmp --no-skips "
 feed_race_build="        run: go -C scheduler test -race -run '^\$' ."
 feed_py_build="        run: go -C scheduler test -tags pyintegration -run '^\$' ./..."
 feed_code_if="    if: \${{ needs.changes.outputs.code == 'true' }}"

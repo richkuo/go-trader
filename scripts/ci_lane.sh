@@ -2,7 +2,7 @@
 set -uo pipefail
 
 usage() {
-    echo "usage: $0 start [--no-skips] <name> -- <command> [args...]" >&2
+    echo "usage: $0 start [--ram-tmp] [--no-skips] <name> -- <command> [args...]" >&2
     echo "       $0 join" >&2
     exit 2
 }
@@ -10,7 +10,11 @@ usage() {
 dir="${RUNNER_TEMP:?set RUNNER_TEMP to the job temp directory}/ci-lanes"
 
 start_lane() {
-    local no_skips=0 name
+    local no_skips=0 ram_tmp=0 tmp name
+    if [[ "${1:-}" == "--ram-tmp" ]]; then
+        ram_tmp=1
+        shift
+    fi
     if [[ "${1:-}" == "--no-skips" ]]; then
         no_skips=1
         shift
@@ -28,6 +32,10 @@ start_lane() {
         exit 1
     fi
     echo "$no_skips" >"$dir/$name/no-skips" || exit 2
+    if [[ "$ram_tmp" == 1 ]]; then
+        tmp="$(mktemp -d "${CI_LANE_RAM_DIR:-/dev/shm}/ci-lane.XXXXXX")" || exit 2
+        export TMPDIR="$tmp"
+    fi
     date +%s >"$dir/$name/started" || exit 2
     nohup bash -c '
         lane=$1
