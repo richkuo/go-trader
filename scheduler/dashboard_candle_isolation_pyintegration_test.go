@@ -344,15 +344,27 @@ func TestDashboardCandleIsolationProcesses(t *testing.T) {
 			}
 			time.Sleep(2 * time.Second)
 
-			stA, feedA := dcIsoReadStatus(t, port), feedPrint()
-			venueA, shimA := len(e.venue.snapshot()), dcIsoShimLines(t, shimLog)
-			time.Sleep(2 * time.Second)
-			venueB, shimB := len(e.venue.snapshot()), dcIsoShimLines(t, shimLog)
-			stB, feedB := dcIsoReadStatus(t, port), feedPrint()
-			quietVenue, quietSpawns := venueB-venueA, dcIsoCandleSpawns(shimB)-dcIsoCandleSpawns(shimA)
-			if quietVenue != 0 || dcIsoFeedFingerprint(stA) != dcIsoFeedFingerprint(stB) || feedA != feedB {
-				t.Fatalf("fixture: the venue or the feed moved %d requests (%v) in a quiet interval; the window cannot attribute traffic\n%s\n%s\nfeed %s\nfeed %s",
+			shimA := dcIsoShimLines(t, shimLog)
+			var venueB, quietVenue, quietSpawns int
+			var shimB []string
+			var stB dcIsoStatus
+			var feedB string
+			for attempt := 1; ; attempt++ {
+				stA, feedA := dcIsoReadStatus(t, port), feedPrint()
+				venueA := len(e.venue.snapshot())
+				time.Sleep(2 * time.Second)
+				venueB, shimB = len(e.venue.snapshot()), dcIsoShimLines(t, shimLog)
+				stB, feedB = dcIsoReadStatus(t, port), feedPrint()
+				quietVenue, quietSpawns = venueB-venueA, dcIsoCandleSpawns(shimB)-dcIsoCandleSpawns(shimA)
+				if quietVenue == 0 && dcIsoFeedFingerprint(stA) == dcIsoFeedFingerprint(stB) && feedA == feedB {
+					break
+				}
+				moved := fmt.Sprintf("the venue or the feed moved %d requests (%v) in a quiet interval; the window cannot attribute traffic\n%s\n%s\nfeed %s\nfeed %s",
 					quietVenue, dcIsoArrivalTypes(e.venue.snapshot()[venueA:venueB]), dcIsoFeedFingerprint(stA), dcIsoFeedFingerprint(stB), feedA, feedB)
+				if attempt == 5 {
+					t.Fatalf("fixture: %s", moved)
+				}
+				t.Logf("quiet window %d: %s", attempt, moved)
 			}
 			venueB = len(e.venue.snapshot())
 			shimB = dcIsoShimLines(t, shimLog)
