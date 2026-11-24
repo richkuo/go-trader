@@ -275,6 +275,10 @@ func fundingReaderStart(bars []feedBar, rows int) (int64, bool) {
 func (o *marketFeedOwner) fundingRecordStarts(needs map[string]feedFundingNeed) map[string]int64 {
 	o.feedMu.Lock()
 	defer o.feedMu.Unlock()
+	return o.fundingRecordStartsLocked(needs)
+}
+
+func (o *marketFeedOwner) fundingRecordStartsLocked(needs map[string]feedFundingNeed) map[string]int64 {
 	nowMs := o.now().UnixMilli()
 	out := make(map[string]int64, len(needs))
 	for coin, need := range needs {
@@ -362,6 +366,16 @@ func (o *marketFeedOwner) fundingEntry(coin string) feedFunding {
 		return *f
 	}
 	return feedFunding{Source: "rest"}
+}
+
+func (o *marketFeedOwner) requiredFundingRecords(coin string) (feedFunding, bool) {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	f := o.funding[coin]
+	if f == nil || !o.fundingNeeds[coin].Records {
+		return feedFunding{}, false
+	}
+	return *f, true
 }
 
 func (o *marketFeedOwner) commitFunding(coin string, records bool, seq uint64, fn func(f *feedFunding)) bool {
@@ -493,9 +507,6 @@ func (o *marketFeedOwner) openFundingEntries(needs map[string]feedFundingNeed, s
 		}
 		if next.openedAt.IsZero() {
 			next.openedAt = now
-		}
-		if next.progressAt.IsZero() {
-			next.progressAt = now
 		}
 		if need.Scalar && !next.HasScalar && next.ScalarErr == "" {
 			next.ScalarErr = "the funding scalar is not fetched yet"
@@ -858,16 +869,23 @@ func (o *marketFeedOwner) publishFundingRecords(ctx context.Context, coin string
 	if o.commitFunding(coin, true, seq, func(f *feedFunding) {
 		f.Records, f.HasRecords, f.RecordsErr = records, true, ""
 		f.RecordsFromMs, f.RecordsToMs, f.RecordsThroughMs = from, run.EndMs, feedFundingThrough(records, run.EndMs)
-		f.RecordsFetchedAt, f.FetchedAt, f.progressAt = now, now, now
+		f.RecordsFetchedAt, f.FetchedAt = now, now
 		f.waitingForBars, f.recordsLimited, f.recordsWeightHeld = false, false, false
 		f.run = pending
+		if from == startMs && pending == nil {
+			f.loadProgressAt = time.Time{}
+		}
 	}) {
 		o.validateFundingInput(ctx, coin)
 	}
 }
 
 func (o *marketFeedOwner) refreshFundingTail(ctx context.Context, coin string, startMs int64, now time.Time) {
-	entry := o.fundingEntry(coin)
+	entry, required := o.requiredFundingRecords(coin)
+	if !required || !entry.tailAnchored(startMs) {
+		o.logf("[feed-funding] coin=%s mode=tail skipped: the retained records changed after this preparation chose the read", coin)
+		return
+	}
 	endMs := now.UTC().UnixMilli()
 	run := feedFundingRun{StartMs: max(entry.RecordsFromMs, startMs), EndMs: endMs}
 	run.Records = trimFundingRecords(entry.Records, run.StartMs)
@@ -921,27 +939,59 @@ type feedFundingLoad struct {
 	seq       uint64
 	resumed   bool
 	restarted bool
+	overdue   bool
 	done      bool
+}
+
+func (o *marketFeedOwner) openFundingLoads(needs map[string]feedFundingNeed, starts map[string]int64, now time.Time, horizon time.Duration, cutoffMs int64) []string {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	var coins []string
+	for _, coin := range sortedFundingCoins(needs) {
+		f := o.funding[coin]
+		start, known := starts[coin]
+		if f == nil || !known || !needs[coin].Records || !o.fundingNeeds[coin].Records {
+			continue
+		}
+		next := *f
+		if fundingLoadNeeded(next, start, now.Add(horizon), cutoffMs) {
+			coins = append(coins, coin)
+			if next.loadProgressAt.IsZero() {
+				next.loadProgressAt = now
+			}
+		} else {
+			next.loadProgressAt = time.Time{}
+		}
+		o.funding[coin] = &next
+	}
+	return coins
 }
 
 func (o *marketFeedOwner) loadFundingHistory(base context.Context, needs map[string]feedFundingNeed, starts map[string]int64, now time.Time, horizon time.Duration, plan feedFundingPlan) {
 	endMs := now.UTC().UnixMilli()
-	needed := func(coin string) bool {
-		return fundingLoadNeeded(o.fundingEntry(coin), starts[coin], now.Add(horizon), plan.CutoffMs)
-	}
-	var coins []string
-	for _, coin := range sortedFundingCoins(needs) {
-		if _, ok := starts[coin]; ok && needs[coin].Records && needed(coin) {
-			coins = append(coins, coin)
-		}
-	}
+	coins := o.openFundingLoads(needs, starts, now, horizon, plan.CutoffMs)
 	if len(coins) == 0 {
 		return
 	}
-	var loads []*feedFundingLoad
-	for _, coin := range o.rotateFundingCoins(coins) {
-		loads = append(loads, &feedFundingLoad{coin: coin})
+	latest := now
+	if len(plan.Upcoming) > 0 {
+		latest = plan.Upcoming[0]
 	}
+	latest = latest.Add(horizon)
+	overdue := func(coin string) bool {
+		entry, required := o.requiredFundingRecords(coin)
+		return required && !entry.loadProgressAt.IsZero() && latest.Sub(entry.loadProgressAt) > feedFundingDeferralLimit
+	}
+	var loads, waiting []*feedFundingLoad
+	for _, coin := range o.rotateFundingCoins(coins) {
+		ld := &feedFundingLoad{coin: coin, overdue: overdue(coin)}
+		if ld.overdue {
+			loads = append(loads, ld)
+		} else {
+			waiting = append(waiting, ld)
+		}
+	}
+	loads = append(loads, waiting...)
 	ledger := feedLedgerFrom(base)
 	host := feedHostOf(hlMainnetURL)
 	slowest := feedFundingReadFloor
@@ -956,7 +1006,12 @@ func (o *marketFeedOwner) loadFundingHistory(base context.Context, needs map[str
 				cursor++
 				continue
 			}
-			entry := o.fundingEntry(ld.coin)
+			entry, required := o.requiredFundingRecords(ld.coin)
+			if !required {
+				ld.done = true
+				cursor++
+				continue
+			}
 			ld.seq = entry.recordsSeq
 			ld.run = feedFundingRun{StartMs: starts[ld.coin], EndMs: endMs}
 			if entry.run != nil && entry.run.StartMs <= ld.run.StartMs {
@@ -967,7 +1022,7 @@ func (o *marketFeedOwner) loadFundingHistory(base context.Context, needs map[str
 			}
 			w := ld.run.readWeight()
 			starved := !room.fits(w, 1)
-			if starved && (ld.resumed || len(jobs) > 0 || now.Sub(entry.progressAt) <= feedFundingDeferralLimit) || !feedTimeFor(base, slowest) {
+			if starved && (ld.resumed || len(jobs) > 0 || !ld.overdue) || !feedTimeFor(base, slowest) {
 				break
 			}
 			room.take(w, 1)
@@ -987,13 +1042,7 @@ func (o *marketFeedOwner) loadFundingHistory(base context.Context, needs map[str
 		}
 		runFeedOrdered(base, feedFundingWorkers, jobs)
 	}
-	var loading []string
-	for _, coin := range coins {
-		if needed(coin) {
-			loading = append(loading, coin)
-		}
-	}
-	if len(loading) > 0 {
+	if loading := o.openFundingLoads(needs, starts, now, horizon, plan.CutoffMs); len(loading) > 0 {
 		o.logf("[feed-funding] mode=loading coins=%s", joinFeedNames(loading))
 	}
 }
@@ -1020,7 +1069,7 @@ func (o *marketFeedOwner) loadFundingPage(ctx context.Context, ld *feedFundingLo
 	default:
 		detail := fmt.Sprintf("%s: %d page(s) and %d record(s) of the range [%d, %d] are verified through %d", feedFundingLoading, next.Pages, len(next.Records), next.StartMs, next.EndMs, next.cursor()-1)
 		if !o.commitFunding(ld.coin, true, ld.seq, func(f *feedFunding) {
-			f.run, f.waitingForBars, f.progressAt = &next, false, now
+			f.run, f.waitingForBars, f.loadProgressAt = &next, false, now
 			if !f.HasRecords {
 				f.RecordsErr = detail
 			}
@@ -1064,9 +1113,10 @@ func (o *marketFeedOwner) FundingLoading() []string {
 	o.feedMu.Lock()
 	defer o.feedMu.Unlock()
 	out := []string{}
+	starts := o.fundingRecordStartsLocked(o.fundingNeeds)
 	for coin, need := range o.fundingNeeds {
 		f := o.funding[coin]
-		if need.Records && (f == nil || !f.HasRecords || f.run != nil) {
+		if need.Records && (f == nil || !f.HasRecords || f.run != nil || !o.fundingFramesLoadedLocked(need) || f.RecordsFromMs > starts[coin]) {
 			out = append(out, "funding:"+coin)
 		}
 		if need.Scalar && (f == nil || !f.HasScalar) {
@@ -1082,6 +1132,15 @@ func (o *marketFeedOwner) FundingLoading() []string {
 	return out
 }
 
+func (o *marketFeedOwner) fundingFramesLoadedLocked(need feedFundingNeed) bool {
+	for _, r := range need.Readers {
+		if st := o.keys[r.Key]; st == nil || st.needsHistory() {
+			return false
+		}
+	}
+	return true
+}
+
 func (o *marketFeedOwner) retireFundingLocked(needs map[string]feedFundingNeed) {
 	for coin, f := range o.funding {
 		need, ok := needs[coin]
@@ -1094,6 +1153,7 @@ func (o *marketFeedOwner) retireFundingLocked(needs map[string]feedFundingNeed) 
 			next.Records, next.HasRecords, next.RecordsErr, next.run = nil, false, "", nil
 			next.RecordsFromMs, next.RecordsToMs, next.RecordsThroughMs = 0, 0, 0
 			next.recordsWeightHeld, next.recordsLimited, next.waitingForBars = false, false, false
+			next.loadProgressAt = time.Time{}
 			o.fundingSeq++
 			next.recordsSeq = o.fundingSeq
 		}

@@ -1457,6 +1457,7 @@ func TestFeedFundingStarvedLoadBecomesVisible(t *testing.T) {
 	f.enforce(60, 60, 25*candle+mids, 0, 200)
 	var alerts []string
 	f.sealer.rateLimitSend = func(msg string) { alerts = append(alerts, msg) }
+	firstRefusal := int64(0)
 	for d := t0; d < t0+1500; d += 75 {
 		doc, _ := f.seal(d)
 		for _, k := range doc.Keys {
@@ -1465,11 +1466,281 @@ func TestFeedFundingStarvedLoadBecomesVisible(t *testing.T) {
 			}
 		}
 		refused := f.ledger.status().Weight.Totals.Refused
-		if d < t0+int64(feedFundingDeferralLimit/time.Second) && refused != 0 {
-			t.Fatalf("deadline +%ds counts %d refusals, want expected deferral to stay apart from refusal", d-t0, refused)
+		if refused != 0 && firstRefusal == 0 {
+			firstRefusal = d - t0
 		}
 	}
+	fcRequireForcedRead(t, firstRefusal)
 	if len(alerts) != 1 || !strings.Contains(alerts[0], "WEIGHT REFUSED") {
 		t.Fatalf("alerts = %q, want one refusal once the deferral limit passed", alerts)
 	}
+}
+
+func fcRequireForcedRead(t *testing.T, firstRefusal int64) {
+	t.Helper()
+	limit := int64(feedFundingDeferralLimit / time.Second)
+	if firstRefusal > limit || firstRefusal < limit-150 {
+		t.Fatalf("first refusal at +%ds, want expected deferral first and one forced read at the last preparation inside the %ds limit", firstRefusal, limit)
+	}
+}
+
+func (f *fcFixture) removeFunding(coin string, scalar bool) {
+	for i := range f.consumers {
+		req := &f.consumers[i].Req
+		if _, ok := req.Funding[coin]; !ok {
+			continue
+		}
+		strategies, funding := map[string]feedStrategyRequirement{}, map[string]feedFundingNeed{}
+		for id, e := range req.Strategies {
+			if e.Coin != coin || !(e.FundingRecords || (scalar && e.FundingScalar)) {
+				strategies[id] = e
+			}
+		}
+		for c, need := range req.Funding {
+			if c != coin {
+				funding[c] = need
+			} else if !scalar {
+				funding[c] = feedFundingNeed{Scalar: true}
+			}
+		}
+		req.Strategies, req.Funding = strategies, funding
+	}
+}
+
+func (f *fcFixture) publish() bool {
+	select {
+	case <-f.owner.ApplyGeneration(f.ctx, unionFeedRequirements(f.consumers)):
+		return true
+	case <-time.After(30 * time.Second):
+		f.t.Error("generation did not publish")
+		return false
+	}
+}
+
+func (f *fcFixture) adopt() {
+	f.union = unionFeedRequirements(f.consumers)
+	f.sealer.setGeneration(f.union, unionFeedCadences(f.consumers), f.clock.Now().Add(-time.Hour))
+}
+
+func TestFeedFundingReloadBetweenChoiceAndTail(t *testing.T) {
+	t0 := rdBase()
+	warm := func(t *testing.T) *fcFixture {
+		t.Helper()
+		f := newFCFixture(t, time.Unix(t0-2000, 0).UTC(), func() []feedConsumer { return fcWorkload(t) })
+		for d := t0; d < t0+600; d += 75 {
+			f.seal(d)
+		}
+		for _, coin := range rdCoins {
+			if e := f.owner.fundingEntry(coin); !e.HasRecords {
+				t.Fatalf("%s has no records after the warm-up: %s", coin, e.Err)
+			}
+		}
+		return f
+	}
+	others := func(t *testing.T, f *fcFixture, doc *feedSealDoc, removed string) {
+		t.Helper()
+		for _, coin := range rdCoins {
+			if coin != removed {
+				f.requireTruth(doc, coin)
+			}
+		}
+	}
+	for _, st := range []struct {
+		name string
+		all  bool
+	}{{"RecordsReaderRemoved", false}, {"EveryFundingNeedRemoved", true}} {
+		t.Run(st.name, func(t *testing.T) {
+			f := warm(t)
+			f.clock.mu.Lock()
+			f.clock.now = time.Unix(t0+1200, 0).UTC()
+			f.clock.mu.Unlock()
+			now := f.clock.Now()
+			needs := f.owner.requiredFunding(f.owner.fundingWork())
+			starts := f.owner.fundingRecordStarts(needs)
+			items := f.owner.fundingItems(needs, starts, now, 0, feedFundingPlan{Needs: needs, CutoffMs: now.UnixMilli()})
+			chosen := false
+			for _, it := range items {
+				chosen = chosen || (it.kind == feedFundingItemRecords && it.coin == "BTC" && it.dueAt == 0)
+			}
+			if !chosen {
+				t.Fatalf("items = %+v, want a due BTC tail", items)
+			}
+			f.removeFunding("BTC", st.all)
+			f.publish()
+			mark := f.venue.mark()
+			f.owner.runFundingItems(f.ctx, items, needs, starts, now)
+			if len(f.logsContaining("coin=BTC mode=tail skipped")) != 1 {
+				t.Fatal("the stale BTC tail job did not skip")
+			}
+			for _, r := range fundingReads(f.venue.since(mark, ""), "BTC") {
+				if r.Start > now.UnixMilli()-6*86_400_000 {
+					t.Fatalf("the stale BTC tail job sent %+v", r)
+				}
+			}
+			f.owner.feedMu.Lock()
+			entry := f.owner.funding["BTC"]
+			f.owner.feedMu.Unlock()
+			switch {
+			case st.all && entry != nil:
+				t.Fatalf("a stale job restored the removed coin: %+v", *entry)
+			case !st.all && (entry == nil || entry.HasRecords || len(entry.Records) != 0 || entry.run != nil):
+				t.Fatalf("a stale job committed records: %+v", entry)
+			}
+			f.adopt()
+			doc, _ := f.seal(t0 + 1275)
+			for _, e := range doc.Funding {
+				if e.Coin == "BTC" && (st.all || e.RecordsContract != 0 || e.HasRecords || len(e.Records) != 0) {
+					t.Fatalf("the next seal carries BTC funding %+v", e)
+				}
+			}
+			others(t, f, doc, "BTC")
+		})
+	}
+	t.Run("QueuedFifthTail", func(t *testing.T) {
+		f := warm(t)
+		var once sync.Once
+		before, early := len(f.logsContaining("mode=tail")), -1
+		f.venue.set(func(v *rdVenue) {
+			v.delay = func(r rdRequest) time.Duration {
+				if r.Type == "metaAndAssetCtxs" || r.Type == "fundingHistory" {
+					once.Do(func() {
+						f.removeFunding("SOL", false)
+						f.publish()
+						early = len(f.logsContaining("mode=tail")) - before
+					})
+				}
+				return 0
+			}
+		})
+		f.seal(t0 + 1500)
+		f.venue.set(func(v *rdVenue) { v.delay = nil })
+		if early != 0 {
+			t.Fatalf("%d tail jobs ended before the reload published, want the pool still full", early)
+		}
+		hype, sol := f.logsContaining("coin=HYPE mode=tail range"), f.logsContaining("coin=SOL mode=tail skipped")
+		if len(hype) == 0 || len(sol) != 1 {
+			t.Fatalf("HYPE tails %v and SOL skips %v, want the queued fifth tail to start after the reload and skip", hype, sol)
+		}
+		if e := f.owner.fundingEntry("SOL"); e.HasRecords || len(e.Records) != 0 {
+			t.Fatalf("a stale job committed SOL records: %+v", e)
+		}
+		f.adopt()
+		doc, _ := f.seal(t0 + 1575)
+		if e := f.fundingOf(doc, "SOL"); e.RecordsContract != 0 || e.HasRecords {
+			t.Fatalf("the next seal carries SOL records %+v", e)
+		}
+		others(t, f, doc, "SOL")
+	})
+}
+
+func TestFeedFundingWiderLoadIsVisibleBehindTails(t *testing.T) {
+	t0 := rdBase()
+	f := newFCFixture(t, time.Unix(t0-2000, 0).UTC(), func() []feedConsumer {
+		live, paper := fcStrategies()
+		var readers []StrategyConfig
+		for _, sc := range paper {
+			if sc.ID == "paper-BTC-30m-skew" || sc.ID == "paper-BTC-1h-skew" {
+				readers = append(readers, sc)
+			}
+		}
+		consumers := []feedConsumer{rdConsumer(t, "/live.json", live), rdConsumer(t, "/paper.json", readers)}
+		for i := range consumers {
+			consumers[i].Req.AccountingCoins = nil
+		}
+		return consumers
+	})
+	for d := t0; d < t0+600; d += 75 {
+		f.seal(d)
+	}
+	listed := func() bool {
+		for _, name := range f.owner.FundingLoading() {
+			if name == "funding:BTC" {
+				return true
+			}
+		}
+		return false
+	}
+	narrow := f.owner.fundingEntry("BTC")
+	if listed() || !narrow.HasRecords {
+		t.Fatalf("loading = %v after the warm-up, want complete BTC records", f.owner.FundingLoading())
+	}
+	f.widen("1h", 3000+220)
+	enforced := f.ctx
+	f.ctx = withFeedLedger(context.Background(), newFeedRequestLedger(nil, false, f.clock.Now))
+	done := f.owner.ApplyGeneration(f.ctx, unionFeedRequirements(f.consumers))
+	if !listed() {
+		t.Fatal("funding_loading does not list BTC before the wider frame is loaded")
+	}
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("generation did not publish")
+	}
+	f.ctx = enforced
+	f.adopt()
+	if !listed() {
+		t.Fatal("funding_loading does not list BTC right after the reload published")
+	}
+	start := f.owner.fundingRecordStarts(f.owner.fundingWork())["BTC"]
+	if hours := (narrow.RecordsFromMs - start) / hlFundingRecordStepMs; hours < 3000 {
+		t.Fatalf("the reload moved the start %d hours earlier, want about 3000", hours)
+	}
+	candle, _ := hlInfoWeight("candleSnapshot", 3)
+	mids, _ := hlInfoWeight("allMids", 0)
+	page, _ := hlInfoWeight("fundingHistory", hlFundingRowCap)
+	f.enforce(60, 60, len(f.union.Order)*candle+mids+page-5, 0, 200)
+	var alerts []string
+	f.sealer.rateLimitSend = func(msg string) { alerts = append(alerts, msg) }
+	t1 := t0 + 1200
+	firstRefusal, tails, last := int64(0), 0, int64(0)
+	for d := t1; d <= t1+900; d += 75 {
+		mark := f.venue.mark()
+		doc, _ := f.seal(d)
+		if !listed() {
+			t.Fatalf("deadline +%ds: funding_loading %v does not list BTC", d-t1, f.owner.FundingLoading())
+		}
+		entry := f.owner.fundingEntry("BTC")
+		if !entry.HasRecords || entry.RecordsFromMs <= start || entry.run != nil {
+			t.Fatalf("deadline +%ds: entry from %d run %v, want the narrow records kept", d-t1, entry.RecordsFromMs, entry.run)
+		}
+		if entry.RecordsToMs != last {
+			last = entry.RecordsToMs
+			tails++
+		}
+		for _, r := range fundingReads(f.venue.since(mark, ""), "BTC") {
+			if r.Rows == hlFundingRowCap {
+				t.Fatalf("deadline +%ds sent a wide page without room", d-t1)
+			}
+		}
+		if hold := f.context(doc, 1).holdFor(f.byID["paper-BTC-1h-skew"]); !hold.Held {
+			t.Fatalf("deadline +%ds evaluates the wider reader on narrow records", d-t1)
+		}
+		if f.ledger.status().Weight.Totals.Refused != 0 && firstRefusal == 0 {
+			firstRefusal = d - t1
+		}
+	}
+	if tails < 3 {
+		t.Fatalf("%d tails published during the starved load, want at least 3", tails)
+	}
+	fcRequireForcedRead(t, firstRefusal)
+	if len(alerts) != 1 || !strings.Contains(alerts[0], "WEIGHT REFUSED") || !strings.Contains(alerts[0], "funding:BTC") {
+		t.Fatalf("alerts = %q, want one refusal that names funding:BTC", alerts)
+	}
+	f.enforce(60, 60, 900, 100, 200)
+	for d := t1 + 975; d < t1+2400; d += 75 {
+		f.seal(d)
+		entry := f.owner.fundingEntry("BTC")
+		if proved := entry.HasRecords && entry.RecordsFromMs <= f.owner.fundingRecordStarts(f.owner.fundingWork())["BTC"]; proved == listed() {
+			t.Fatalf("deadline +%ds: proved=%t and funding_loading=%v", d-t1, proved, f.owner.FundingLoading())
+		}
+		if !listed() {
+			doc, _ := f.seal(d + 75)
+			f.requireTruth(doc, "BTC")
+			if hold := f.context(doc, 1).holdFor(f.byID["paper-BTC-1h-skew"]); hold.Held {
+				t.Fatalf("the wider reader is held after its range is proved: %s", hold.Reason)
+			}
+			return
+		}
+	}
+	t.Fatal("the wider range was never proved with room")
 }

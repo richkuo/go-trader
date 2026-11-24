@@ -518,7 +518,7 @@ type feedFunding struct {
 	recordsWeightHeld bool
 	waitingForBars    bool
 	openedAt          time.Time
-	progressAt        time.Time
+	loadProgressAt    time.Time
 	recordsSeq        uint64
 	run               *feedFundingRun
 }
