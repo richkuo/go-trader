@@ -44,7 +44,7 @@ phase_done() {
     PHASE_US=$(fixture_now_us)
 }
 PY3=$(command -v python3)
-SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply latch conflict resume signal stages kill fold update newtarget update_recovery sharedfeed_migrated sharedfeed_legacy}"
+SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply latch conflict resume signal stages kill fold update newtarget update_recovery update_recovery_restart sharedfeed_migrated sharedfeed_legacy}"
 HELPERS="$SCRIPT_DIR/update_helpers.sh"
 FIXTURE_GO="${FIXTURE_GO:-$(command -v go || true)}"
 
@@ -1410,16 +1410,27 @@ PY
 }
 
 scenario_update_recovery() {
-    note "snapshot recovery across rsync and git modes, pre-swap, mid-swap, post-swap, signal interruption, and incomplete marker (#1865)"
-    local port=$((BASE_PORT + 20)) unit="go-trader-$ID-rec.service" inst="rec-$ID" src="/root/gt-$ID-rec"
-    local origin="$WORK/rec-origin.git" rsync_clone="$WORK/rec-rsync-src" rec_root="/var/lib/go-trader-update-rec-$ID"
-    local br tree tunit stale_sha v1_sha v2_sha v1_ver
+    note "snapshot recovery across rsync and git modes: health mismatch, pre-swap and mid-swap failures (#1865)"
+    update_recovery_run swap rec "$((BASE_PORT + 20))"
+}
+
+scenario_update_recovery_restart() {
+    note "snapshot recovery of post-swap failures, signal interruption, lock contention and the incomplete marker (#1865)"
+    update_recovery_run restart recr "$((BASE_PORT + 21))"
+}
+
+update_recovery_run() {
+    local part="$1" name="$2" port="$3"
+    local unit="go-trader-$ID-$name.service" inst="$name-$ID" src="/root/gt-$ID-$name"
+    local origin="$WORK/$name-origin.git" rsync_clone="$WORK/$name-rsync-src" rec_root="/var/lib/go-trader-update-$name-$ID"
+    local br tree tunit stale_sha v1_sha v2_sha v1_ver fstage
+    local base_managed base_venv base_bin base_prev base_idx pid_before
     INSTANCES+=("$inst")
     CREATED_DIRS+=("$rec_root")
     chmod 0755 "$WORK"
     mkdir -p "$rec_root"
     chmod 0755 "$rec_root"
-    make_deployment rec "$port" split paper_only
+    make_deployment "$name" "$port" split paper_only
     br=$(git -C "$src" symbolic-ref --short HEAD)
     git init -q --bare -b "$br" "$origin"
     git -C "$src" remote add origin "$origin"
@@ -1496,28 +1507,28 @@ EOS
         [[ "$(health_field "$port" version)" == "$v1_ver" ]] || fail "$label: /health version $(health_field "$port" version) != $v1_ver"
     }
 
-    note "rsync mode with stale deployment .git HEAD: /health mismatch restores exact pre-update tree, not stale HEAD"
-    runuser -u go-trader -- env HOME="$WORK" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" git -C "$tree" reset -q "$stale_sha"
-    [[ "$(root_git "$tree" rev-parse HEAD)" == "$stale_sha" ]] || fail "did not set stale HEAD"
-    local base_managed base_venv base_bin base_prev base_idx pid_before
-    base_managed=$(fixture_managed_manifest "$tree")
-    base_venv=$(fixture_venv_manifest "$tree")
-    base_bin=$(file_fp "$tree/go-trader")
-    base_prev=$(file_fp "$tree/go-trader.prev")
-    base_idx=$(file_fp "$tree/.git/index")
-    sql "$tree/scheduler/state.db" "INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, details) VALUES ('hl-rec-a', '2026-09-05T00:00:00Z', 'ETH', 'buy', 1, 100, 100, 'pre-rsync-$ID')"
-    expect_exit 1 run_update "$tree" PATH="$curl_wrap_dir:$STUBBIN:$PATH" CURL_FAIL_HEALTH_COUNT_FILE="$WORK/fail-health-1" HEALTH_TIMEOUT=3 UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --rsync-from "$rsync_clone" --restart
-    assert_baseline_restored "rsync-health-mismatch" "$stale_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
-    [[ -n "$(sql "$tree/scheduler/state.db" "SELECT 1 FROM trades WHERE details = 'pre-rsync-$ID'")" ]] || fail "rsync recovery lost state.db trade"
+    if [[ "$part" == "swap" ]]; then
+        note "rsync mode with stale deployment .git HEAD: /health mismatch restores exact pre-update tree, not stale HEAD"
+        runuser -u go-trader -- env HOME="$WORK" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" git -C "$tree" reset -q "$stale_sha"
+        [[ "$(root_git "$tree" rev-parse HEAD)" == "$stale_sha" ]] || fail "did not set stale HEAD"
+        base_managed=$(fixture_managed_manifest "$tree")
+        base_venv=$(fixture_venv_manifest "$tree")
+        base_bin=$(file_fp "$tree/go-trader")
+        base_prev=$(file_fp "$tree/go-trader.prev")
+        base_idx=$(file_fp "$tree/.git/index")
+        sql "$tree/scheduler/state.db" "INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, details) VALUES ('hl-$name-a', '2026-09-05T00:00:00Z', 'ETH', 'buy', 1, 100, 100, 'pre-rsync-$ID')"
+        expect_exit 1 run_update "$tree" PATH="$curl_wrap_dir:$STUBBIN:$PATH" CURL_FAIL_HEALTH_COUNT_FILE="$WORK/fail-health-1" HEALTH_TIMEOUT=3 UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --rsync-from "$rsync_clone" --restart
+        assert_baseline_restored "rsync-health-mismatch" "$stale_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
+        [[ -n "$(sql "$tree/scheduler/state.db" "SELECT 1 FROM trades WHERE details = 'pre-rsync-$ID'")" ]] || fail "rsync recovery lost state.db trade"
 
-    note "rsync mode pre-swap failures (partial rsync, uv sync, build, probe): trader PID unchanged"
-    local fstage
-    for fstage in rsync_mid sync build probe; do
-        pid_before=$(unit_prop "$tunit" MainPID)
-        expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="$fstage" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-rsync-$fstage" UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --rsync-from "$rsync_clone" --restart
-        assert_baseline_restored "rsync-$fstage" "$stale_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
-        [[ "$(unit_prop "$tunit" MainPID)" == "$pid_before" ]] || fail "rsync-$fstage changed running trader PID ($pid_before -> $(unit_prop "$tunit" MainPID))"
-    done
+        note "rsync mode pre-swap failures (partial rsync, uv sync, build, probe): trader PID unchanged"
+        for fstage in rsync_mid sync build probe; do
+            pid_before=$(unit_prop "$tunit" MainPID)
+            expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="$fstage" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-rsync-$fstage" UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --rsync-from "$rsync_clone" --restart
+            assert_baseline_restored "rsync-$fstage" "$stale_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
+            [[ "$(unit_prop "$tunit" MainPID)" == "$pid_before" ]] || fail "rsync-$fstage changed running trader PID ($pid_before -> $(unit_prop "$tunit" MainPID))"
+        done
+    fi
 
     note "git mode with local staged, unstaged, and untracked edits outside build paths"
     runuser -u go-trader -- env HOME="$WORK" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" git -C "$tree" reset -q "$v1_sha"
@@ -1528,19 +1539,24 @@ EOS
     base_prev=$(file_fp "$tree/go-trader.prev")
     base_idx=$(file_fp "$tree/.git/index")
 
-    expect_exit 1 run_update "$tree" PATH="$curl_wrap_dir:$STUBBIN:$PATH" CURL_FAIL_HEALTH_COUNT_FILE="$WORK/fail-health-git" HEALTH_TIMEOUT=3 UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
-    assert_baseline_restored "git-health-mismatch" "$v1_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
-    grep -q "staged-doc-edit" "$tree/SKILL.md" || fail "git recovery lost staged SKILL.md edit"
-    grep -q "unstaged-readme-edit" "$tree/README.md" || fail "git recovery lost unstaged README.md edit"
-    [[ -f "$tree/docs/local_untracked.md" ]] || fail "git recovery lost untracked file"
+    if [[ "$part" == "swap" ]]; then
+        expect_exit 1 run_update "$tree" PATH="$curl_wrap_dir:$STUBBIN:$PATH" CURL_FAIL_HEALTH_COUNT_FILE="$WORK/fail-health-git" HEALTH_TIMEOUT=3 UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+        assert_baseline_restored "git-health-mismatch" "$v1_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
+        grep -q "staged-doc-edit" "$tree/SKILL.md" || fail "git recovery lost staged SKILL.md edit"
+        grep -q "unstaged-readme-edit" "$tree/README.md" || fail "git recovery lost unstaged README.md edit"
+        [[ -f "$tree/docs/local_untracked.md" ]] || fail "git recovery lost untracked file"
 
-    note "git mode pre-swap and mid-swap failures (failed pull, uv sync, build, probe, ownership, journal, swap_between_renames): trader PID unchanged"
-    for fstage in pull sync build probe ownership journal swap_between_renames; do
-        pid_before=$(unit_prop "$tunit" MainPID)
-        expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="$fstage" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-git-$fstage" UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
-        assert_baseline_restored "git-$fstage" "$v1_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
-        [[ "$(unit_prop "$tunit" MainPID)" == "$pid_before" ]] || fail "git-$fstage changed running trader PID ($pid_before -> $(unit_prop "$tunit" MainPID))"
-    done
+        note "git mode pre-swap and mid-swap failures (failed pull, uv sync, build, probe, ownership, journal, swap_between_renames): trader PID unchanged"
+        for fstage in pull sync build probe ownership journal swap_between_renames; do
+            pid_before=$(unit_prop "$tunit" MainPID)
+            expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="$fstage" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-git-$fstage" UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+            assert_baseline_restored "git-$fstage" "$v1_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
+            [[ "$(unit_prop "$tunit" MainPID)" == "$pid_before" ]] || fail "git-$fstage changed running trader PID ($pid_before -> $(unit_prop "$tunit" MainPID))"
+        done
+        systemctl stop "$tunit"
+        echo "update recovery OK (swap)"
+        return 0
+    fi
 
     note "post-swap unit install and daemon-reload failures keep running PID; restart_cmd and is_active_timeout recover service"
     local tpl_file="/etc/systemd/system/go-trader@.service"
@@ -1584,7 +1600,7 @@ EOS
 
     local all_rec_root="$WORK/all-rec-root"
     mkdir -p "$all_rec_root"
-    ln -s "$tree" "$all_rec_root/go-trader-rec"
+    ln -s "$tree" "$all_rec_root/go-trader-$name"
     expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="build" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-all-build" UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" bash scripts/update.sh --all --restart --update-all-root "$all_rec_root"
     assert_baseline_restored "all-build-fail" "$v1_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
 
@@ -1666,7 +1682,7 @@ EOS
     expect_exit 0 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
     [[ "$(root_git "$tree" rev-parse HEAD)" == "$v2_sha" ]] || fail "post-clear update did not advance to v2"
     systemctl stop "$tunit"
-    echo "update recovery OK"
+    echo "update recovery OK (restart)"
 }
 
 SF_ENDPOINT_FILE=scheduler/hyperliquid_balance.go

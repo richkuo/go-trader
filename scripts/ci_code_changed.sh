@@ -2,13 +2,14 @@
 set -uo pipefail
 
 docs_only=(CLAUDE.md AGENTS.md README.md SKILL.md docs/POST_UPDATE_HISTORY.md docs/DOCKER.md)
-gates=(quote egress_docker merge_paper update migrate shared_feed)
+gates=(quote egress_docker merge_paper update migrate)
+manual_gates=(shared_feed)
 every_gate=(.github/workflows/ci.yml scripts/ci_code_changed.sh scripts/check_ci_code_changed.sh)
 
 gate_patterns() {
   case "$1" in
     quote)
-      pats=('scheduler/*quote*.go' scheduler/go.mod scheduler/go.sum)
+      pats=('scheduler/*quote*.go' scheduler/go.mod scheduler/go.sum scripts/ci_lane.sh)
       ;;
     egress_docker)
       pats=('scheduler/cmd/egress-controller/*' 'scheduler/cmd/egress-fixture/*' 'scheduler/internal/egresspolicy/*'
@@ -23,7 +24,7 @@ gate_patterns() {
         'scheduler/config*.go' 'scheduler/*db*.go' 'scheduler/state*.go' 'scheduler/storage*.go' 'scheduler/inspect*.go'
         'scheduler/risk_partition*.go' 'scheduler/singleton_lock*.go' 'scheduler/manual_action_lock*.go'
         scheduler/main.go scheduler/version.go scheduler/server.go scheduler/update_sh_feature_test.go
-        scheduler/go.mod scheduler/go.sum)
+        scheduler/go.mod scheduler/go.sum scripts/ci_lane.sh)
       ;;
     update)
       pats=(scripts/update.sh 'scripts/update_*' scripts/install-service.sh scripts/migrate-service-layout.py
@@ -155,7 +156,7 @@ if [ "${EVENT_NAME:-}" = pull_request ] \
   && files=$(git diff --name-only --no-renames HEAD^1 HEAD) \
   && [ -n "$files" ]; then
   code=false
-  for g in "${gates[@]}"; do
+  for g in "${gates[@]}" "${manual_gates[@]}"; do
     printf -v "$g" '%s' false
   done
   while IFS= read -r f; do
@@ -163,7 +164,7 @@ if [ "${EVENT_NAME:-}" = pull_request ] \
       code=true
       echo "code change: $f"
     fi
-    for g in "${gates[@]}"; do
+    for g in "${gates[@]}" "${manual_gates[@]}"; do
       if in_gate "$f" "$g"; then
         printf -v "$g" '%s' true
         echo "$g change: $f"
@@ -179,7 +180,7 @@ if [ "${EVENT_NAME:-}" = pull_request ] \
   fi
 elif [ "${EVENT_NAME:-}" = push ] && push_docs_only; then
   code=false
-  for g in "${gates[@]}"; do
+  for g in "${gates[@]}" "${manual_gates[@]}"; do
     printf -v "$g" '%s' false
   done
   echo "verified docs-only push: every path from PUSH_BEFORE to HEAD is on the docs-only list"
@@ -189,4 +190,7 @@ echo "code=$code" >>"$out"
 for g in "${gates[@]}"; do
   echo "$g=${!g}" >>"$out"
 done
+if [ "${EVENT_NAME:-}" = pull_request ] && [ "$shared_feed" = true ]; then
+  echo "::warning title=Manual proof needed::this change touches shared-feed conversion paths; no CI job runs the sharedfeed_migrated and sharedfeed_legacy scenarios, so run both by hand on a disposable Linux systemd host (SKILL.md, Root proof on real units)"
+fi
 echo "code=$code quote=$quote egress_docker=$egress_docker merge_paper=$merge_paper update=$update migrate=$migrate shared_feed=$shared_feed (event ${EVENT_NAME:-unset})"
