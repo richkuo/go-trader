@@ -1060,6 +1060,28 @@ func (o *marketFeedOwner) markFundingCoinServed(coin string) {
 	o.fundingLastServed = coin
 }
 
+func (o *marketFeedOwner) FundingLoading() []string {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	out := []string{}
+	for coin, need := range o.fundingNeeds {
+		f := o.funding[coin]
+		if need.Records && (f == nil || !f.HasRecords || f.run != nil) {
+			out = append(out, "funding:"+coin)
+		}
+		if need.Scalar && (f == nil || !f.HasScalar) {
+			out = append(out, "funding_scalar:"+coin)
+		}
+	}
+	for coin := range o.accountingCoins {
+		if a := o.accountingFunding[coin]; a == nil || a.ToMs == 0 {
+			out = append(out, "accounting_funding:"+coin)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (o *marketFeedOwner) retireFundingLocked(needs map[string]feedFundingNeed) {
 	for coin, f := range o.funding {
 		need, ok := needs[coin]

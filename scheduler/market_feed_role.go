@@ -1047,6 +1047,8 @@ func (rt *feedRuntime) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"key_coverage":   feedKeyCoverageStatus(rt.sealer.coverageSnapshot(), rt.sealer.source),
 		"request_budget": rt.ledger.status(),
 		"egress":         processEgress.status(),
+
+		"funding_loading": rt.owner.FundingLoading(),
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

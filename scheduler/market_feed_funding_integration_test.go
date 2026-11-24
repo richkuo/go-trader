@@ -281,6 +281,9 @@ func TestFeedFundingColdLoadConverges(t *testing.T) {
 				}
 			}
 			e := f.fundingOf(doc, coin)
+			if loading := strings.Join(f.owner.FundingLoading(), ",") + ","; !e.HasRecords && !strings.Contains(loading, "funding:"+coin+",") {
+				t.Fatalf("deadline %d loading inputs %s do not name %s", d, loading, coin)
+			}
 			if complete[coin] == 0 && e.HasRecords {
 				complete[coin] = d
 			}
@@ -326,6 +329,9 @@ func TestFeedFundingColdLoadConverges(t *testing.T) {
 	}
 	if final == t0 {
 		t.Fatal("the cold load finished in one preparation, so the fixture allocation proves nothing")
+	}
+	if loading := f.owner.FundingLoading(); len(loading) != 0 {
+		t.Fatalf("funding inputs still loading after the cold load: %v", loading)
 	}
 	for _, coin := range rdCoins {
 		f.requireTruth(last, coin)

@@ -267,6 +267,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if self.path.startswith("/status"):
             ready = mode != "loading"
             body = {"consumers": [{"cadences": [5]}],
+                    "funding_loading": ["funding:BTC"] if mode == "funding" else [],
                     "market_feed": {"keys": [{"key": "BTC|1h", "status": "ready" if ready else "budget_exhausted", "ready": ready}]}}
         else:
             b = json.load(open(config))["feed"]["request_budget"]
@@ -333,6 +334,14 @@ rc=0
 grep -q "the backup is not steady: not_ready: BTC|1h=budget_exhausted" "$WORK/cal-loading.out" || fail "calibrate did not name the key that is not ready: $(cat "$WORK/cal-loading.out")"
 [[ "$(sha "$CONFIG")" == "$before" ]] || fail "calibrate changed the config while a backup key was not ready"
 ok "calibrate refuses a backup whose key has not loaded its history, names the key and keeps the config"
+
+echo funding >"$HEALTH_MODE"
+rc=0
+(OPT_WINDOW=2 SHARED_FEED_CONVERT_SEAL_TIMEOUT=0 cmd_calibrate) >"$WORK/cal-funding.out" 2>&1 || rc=$?
+[[ $rc -eq 24 ]] || fail "calibrate on a backup whose funding history is still loading exited $rc, want 24: $(cat "$WORK/cal-funding.out")"
+grep -q "the backup is not steady: not_ready: funding:BTC=loading" "$WORK/cal-funding.out" || fail "calibrate did not name the funding input that is loading: $(cat "$WORK/cal-funding.out")"
+[[ "$(sha "$CONFIG")" == "$before" ]] || fail "calibrate changed the config while a funding input was loading"
+ok "calibrate refuses a backup whose funding history is still loading, so the cold pages never set the measured peak"
 
 echo hostile >"$HEALTH_MODE"
 py set-budget "$CONFIG" '{"per_minute":120,"startup":60,"weight_per_minute":600,"weight_startup":400,"weight_reserve":200}'
