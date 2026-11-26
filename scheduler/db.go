@@ -788,6 +788,9 @@ func (sdb *StateDB) migrateSchema() error {
 	if err := sdb.migrateRobinhoodOrderSchema(); err != nil {
 		return err
 	}
+	if err := sdb.migrateOKXProtectionSchema(); err != nil {
+		return err
+	}
 	if err := sdb.migrateQuoteSchema(); err != nil {
 		return err
 	}
@@ -1967,6 +1970,9 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		if err := sdb.writeRobinhoodOrderGuardTx(tx, s, true); err != nil {
 			return err
 		}
+		if err := sdb.writeOKXProtectionTx(tx, s); err != nil {
+			return err
+		}
 	}
 
 	scopeFilter, scopeArgs := scopePlaceholders(req.Scopes)
@@ -2085,6 +2091,7 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		s.pendingTradeDiagnostics = nil
 		pruneEntryGuardAfterCommit(s)
 		pruneRobinhoodOrderGuardAfterCommit(s, true)
+		pruneOKXProtectionAfterCommit(s)
 		s.robinhoodPartitionSavePending = false
 	}
 	for _, f := range flushed {
@@ -2186,6 +2193,9 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 	if err := sdb.writeRobinhoodOrderGuardTx(tx, s, false); err != nil {
 		return err
 	}
+	if err := sdb.writeOKXProtectionTx(tx, s); err != nil {
+		return err
+	}
 
 	if err := deletePendingManualActionsByID(tx, ackIDs); err != nil {
 		return err
@@ -2218,6 +2228,7 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 	}
 	pruneEntryGuardAfterCommit(s)
 	pruneRobinhoodOrderGuardAfterCommit(s, false)
+	pruneOKXProtectionAfterCommit(s)
 	enqueueFlushedDiagnostics(flushedDiags)
 	return nil
 }
@@ -3653,6 +3664,9 @@ func (sdb *StateDB) commitLimitFillAdoption(books []*StrategyState, scope Portfo
 		if err := sdb.writeRobinhoodOrderGuardTx(tx, s, false); err != nil {
 			return err
 		}
+		if err := sdb.writeOKXProtectionTx(tx, s); err != nil {
+			return err
+		}
 	}
 	if err := deletePendingManualActionsByID(tx, ackIDs); err != nil {
 		return err
@@ -3702,6 +3716,7 @@ func (sdb *StateDB) commitLimitFillAdoption(books []*StrategyState, scope Portfo
 		}
 		pruneEntryGuardAfterCommit(s)
 		pruneRobinhoodOrderGuardAfterCommit(s, false)
+		pruneOKXProtectionAfterCommit(s)
 	}
 	enqueueFlushedDiagnostics(diags)
 	return nil

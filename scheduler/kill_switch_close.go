@@ -58,6 +58,7 @@ type KillSwitchCloseInputs struct {
 	OKXCloser       OKXLiveCloser
 	OKXAccount      string
 	OKXReader       OKXStrictPositionReader
+	OKXStopPrep     func(symbols []string)
 
 	RHLiveCrypto        []StrategyConfig
 	RHLiveOptions       []StrategyConfig
@@ -1045,6 +1046,9 @@ func planOKXKillSwitchClose(in KillSwitchCloseInputs, plan *KillSwitchClosePlan)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.OKXCloseTimeout))
+	if in.OKXStopPrep != nil && len(order) > 0 {
+		in.OKXStopPrep(order)
+	}
 	plan.OKXCloseReport = forceCloseOKXLive(ctx, closeInput, in.OKXLiveAllPerps, in.OKXCloser)
 	cancel()
 	report := &plan.OKXCloseReport

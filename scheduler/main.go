@@ -510,6 +510,19 @@ func main() {
 		for _, line := range robinhoodOrderStartupLines(state) {
 			fmt.Println(line)
 		}
+		if err := store.LoadOKXProtections(state, cfg.Strategies); err != nil {
+			msg := fmt.Sprintf("OKX stop protection: %v", err)
+			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: refusing to start: %s (exit %d)\n", msg, ExitStorageOwnership)
+			sendStartupRefusalDM(notifier, "Storage layout", fmt.Sprintf("%s (exit %d)", msg, ExitStorageOwnership))
+			cleanupNotifier()
+			os.Exit(ExitStorageOwnership)
+		}
+		if err := validateOKXStopStartup(state, cfg.Strategies); err != nil {
+			fmt.Fprintf(os.Stderr, "[okx-stop] CRITICAL: refusing to start: %v\n", err)
+			sendStartupRefusalDM(notifier, "OKX stop", err.Error())
+			cleanupNotifier()
+			os.Exit(1)
+		}
 		notifyRobinhoodHeldBooks(state, cfg.Strategies, &sync.RWMutex{}, notifier, time.Now())
 	}
 
@@ -1756,6 +1769,19 @@ func main() {
 					OKXCloser:           defaultOKXLiveCloser,
 					OKXAccount:          okxEntryAccountKey("swap"),
 					OKXReader:           defaultOKXStrictPositionReader,
+					OKXStopPrep: func(symbols []string) {
+						for _, sym := range symbols {
+							for _, sc := range cfg.Strategies {
+								if !okxPerpsStrategy(sc) || !strings.EqualFold(okxSymbol(sc.Args), sym) {
+									continue
+								}
+								ss := state.Strategies[sc.ID]
+								if err := cancelOKXProtection(store, sc, ss, &mu, nil); err != nil {
+									fmt.Printf("[CRITICAL] okx-close: stop cancel for %s is uncertain: %v; the reduce-only close still runs\n", sym, err)
+								}
+							}
+						}
+					},
 					RHLiveCrypto:        rhLiveCrypto,
 					RHLiveOptions:       rhLiveOptions,
 					RHCloser:            newRobinhoodEmergencyCloser(rhEmergencyDeps, robinhoodOriginKillSwitch),
@@ -2051,6 +2077,7 @@ func main() {
 				if len(okxLivePerps) > 0 && okxHasCreds {
 					runPendingOKXCircuitCloses(
 						shutdownSideEffectCtx,
+						store,
 						state,
 						cfg.Strategies,
 						okxHasCreds,

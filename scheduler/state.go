@@ -106,6 +106,7 @@ type StrategyState struct {
 
 	EntryGuard                    *entryGuardState     `json:"-"`
 	RobinhoodOrders               *robinhoodOrderGuard `json:"-"`
+	OKXProtection                 *okxProtection       `json:"-"`
 	Quote                         *quoteOwnerState     `json:"-"`
 	deferTradePersist             bool
 	robinhoodPartitionSavePending bool

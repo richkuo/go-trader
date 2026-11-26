@@ -37,6 +37,8 @@ type entryIntentRequest struct {
 	StopExpiresAfterMs int64   `json:"stop_expires_after_ms,omitempty"`
 	Script             string  `json:"script"`
 	SubmittedAtMs      int64   `json:"submitted_at_ms,omitempty"`
+	StopOwner          string  `json:"stop_owner,omitempty"`
+	AlgoClientID       string  `json:"algo_client_id,omitempty"`
 }
 
 type entryIntentEvidence struct {
@@ -187,6 +189,20 @@ func reserveLiveEntryIntent(store *StateStore, sc StrategyConfig, s *StrategySta
 		if in.ClientOrderID, err = newOKXClientOrderID(); err != nil {
 			return nil, err
 		}
+		owner, ownerErr := okxExplicitStopOwner(sc)
+		if ownerErr != nil {
+			return nil, ownerErr
+		}
+		if owner != "" {
+			if !okxStopScriptOK(sc) {
+				return nil, fmt.Errorf("an OKX perps exchange stop requires check_okx.py")
+			}
+			if in.InitialStopClientID, err = newOKXClientOrderID(); err != nil {
+				return nil, err
+			}
+			req.StopOwner = owner
+			req.AlgoClientID = in.InitialStopClientID
+		}
 	default:
 		return nil, fmt.Errorf("provider %q has no live entry recovery contract", provider)
 	}
@@ -211,6 +227,15 @@ func reserveLiveEntryIntent(store *StateStore, sc StrategyConfig, s *StrategySta
 	if err := store.ReserveEntryIntent(s, in); err != nil {
 		release()
 		return nil, err
+	}
+	if req.StopOwner != "" {
+		if err := reserveOKXStop(store, sc, s, in, req.StopOwner); err != nil {
+			next := *in
+			next.EvidenceJSON = marshalEntryJSON(entryIntentEvidence{Outcome: "no_fill", Detail: err.Error(), ObservedAtMs: tradingNow().UnixMilli()})
+			_ = store.TransitionEntryIntent(s.ID, &next, []string{entryIntentReserved}, entryIntentNoFill)
+			release()
+			return nil, err
+		}
 	}
 	g.Intents[in.IntentID] = in
 	holdLiveEntryAttempt(in, release)

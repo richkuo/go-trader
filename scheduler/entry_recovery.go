@@ -578,6 +578,9 @@ func bookRecoveredEntry(cfg *Config, store *StateStore, mu *sync.RWMutex, job *e
 		notifier.SendOwnerDM(fmt.Sprintf("**LIVE ENTRY RECOVERED** [%s] %s %s entry %s booked from venue evidence: %.8f @ $%.4f (order %s). Check protection on the next cycle.",
 			sc.ID, in.Symbol, in.TargetSide, in.IntentID, ev.FilledQty, ev.AvgPx, ev.VenueOrderID))
 	}
+	if committed && in.Provider == entryProviderOKX && okxStopWanted(sc) {
+		armOKXStopAfterEntry(store, sc, s, mu, in, &OKXFill{AvgPx: ev.AvgPx, TotalSz: ev.FilledQty, Fee: ev.Fee, OID: ev.VenueOrderID}, notifier, logger)
+	}
 	return trades
 }
 

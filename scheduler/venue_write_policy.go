@@ -39,6 +39,9 @@ var venueWriteDispatchFlags = map[string]bool{
 	"--limit-open":       true,
 	"--cancel-order":     true,
 	"--resolve-order":    true,
+	"--op=place":         true,
+	"--op=amend":         true,
+	"--op=cancel":        true,
 }
 
 func venueCloseScript(script string) bool {

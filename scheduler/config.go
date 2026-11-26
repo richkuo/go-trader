@@ -2298,8 +2298,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if pct < 0 || pct > 50 {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct must be in [0, 50], got %g", prefix, pct))
 			}
-			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
-				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			if sc.Type != "perps" || (sc.Platform != "hyperliquid" && sc.Platform != "okx") {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct is only supported for HL or OKX perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 		}
 
@@ -2330,8 +2330,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if pct < 0 || pct > 50 {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct must be in [0, 50], got %g", prefix, pct))
 			}
-			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
-				errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			if sc.Type != "perps" || (sc.Platform != "hyperliquid" && sc.Platform != "okx") {
+				errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct is only supported for HL or OKX perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 			fixedPct := 0.0
 			if sc.StopLossPct != nil {
@@ -2344,7 +2344,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if pct > 0 && (fixedPct > 0 || marginPct > 0) {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct is mutually exclusive with stop_loss_pct and stop_loss_margin_pct", prefix))
 			}
-			if pct == 0 && sc.Type == "perps" && sc.Platform == "hyperliquid" {
+			if pct == 0 && sc.Type == "perps" && (sc.Platform == "hyperliquid" || sc.Platform == "okx") {
 				var hidden, hiddenNames []string
 				addHidden := func(name string, v float64) {
 					hidden = append(hidden, fmt.Sprintf("%s=%g", name, v))
@@ -2400,8 +2400,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if mult < 0 {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult must be >= 0, got %g", prefix, mult))
 			}
-			if (sc.Type != "perps" && sc.Type != "manual") || sc.Platform != "hyperliquid" {
-				errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			if !((sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual")) || (sc.Platform == "okx" && sc.Type == "perps")) {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult is only supported for HL or OKX perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 			if mult > 0 {
 				fixedPct := 0.0
@@ -2439,8 +2439,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct must be in [0, 100], got %g", prefix, pct))
 			}
 			manualRatchet := sc.Type == "manual" && strategyUsesTrailingTPRatchetClose(sc)
-			if sc.Platform != "hyperliquid" || (sc.Type != "perps" && !manualRatchet) {
-				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct is only supported for HL perps strategies or HL manual trailing_tp_ratchet strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			if !((sc.Platform == "hyperliquid" && (sc.Type == "perps" || manualRatchet)) || (sc.Platform == "okx" && sc.Type == "perps")) {
+				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct is only supported for HL perps strategies, HL manual trailing_tp_ratchet strategies, or OKX perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 			fixedTrailingPct := 0.0
 			if sc.TrailingStopPct != nil {
@@ -2453,6 +2453,17 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			regimeTrail := sc.TrailingStopATRMultRegime.IsConfigured()
 			if fixedTrailingPct <= 0 && atrMult <= 0 && !regimeTrail {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct requires trailing_stop_pct > 0, trailing_stop_atr_mult > 0, or trailing_stop_atr_mult_regime", prefix))
+			}
+		}
+
+		if sc.Platform == "okx" && sc.Type == "perps" {
+			if sc.StopLossATRMultRegime.IsConfigured() || sc.TrailingStopATRMultRegime.IsConfigured() || strategyUsesUnifiedRegimeClose(sc) {
+				errs = append(errs, fmt.Sprintf("%s: OKX perps does not support regime ATR stops, trailing ATR regime stops, or a unified regime close", prefix))
+			}
+			if owner, ownerErr := okxExplicitStopOwner(sc); ownerErr != nil {
+				errs = append(errs, fmt.Sprintf("%s: %s", prefix, ownerErr.Error()))
+			} else if owner != "" && !okxStopScriptOK(sc) {
+				errs = append(errs, fmt.Sprintf("%s: an OKX perps exchange stop requires script check_okx.py", prefix))
 			}
 		}
 
@@ -2471,6 +2482,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
+		errs = append(errs, msg)
+	}
+	for _, msg := range okxPerpsStopOverlapErrors(cfg.Strategies) {
 		errs = append(errs, msg)
 	}
 

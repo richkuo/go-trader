@@ -875,6 +875,27 @@ def uses_hyperliquid_stop_geometry(platform, strategy_type) -> bool:
             and str(strategy_type or "").strip().lower() == "perps")
 
 
+def uses_okx_stop_geometry(platform, strategy_type) -> bool:
+    return (str(platform or "").strip().lower() == "okx"
+            and str(strategy_type or "").strip().lower() == "perps")
+
+
+def _okx_instrument_inputs(spec) -> dict:
+    if not isinstance(spec, dict):
+        raise ValueError(
+            "OKX stop backtest needs okx_instrument with tick, lot, ct_val, mmr, fee and equity; "
+            "a candle close is not a mark")
+    out = {}
+    for key in ("tick", "lot", "ct_val", "mmr", "fee", "equity"):
+        value = spec.get(key)
+        if value is None or str(value).strip() == "":
+            raise ValueError(f"OKX stop backtest needs okx_instrument.{key}")
+        out[key] = str(value)
+    return out
+    return (str(platform or "").strip().lower() == "okx"
+            and str(strategy_type or "").strip().lower() == "perps")
+
+
 def _finite_number(value) -> Optional[float]:
     if value is None or isinstance(value, bool):
         return None
@@ -925,7 +946,9 @@ def _regime_block_active(block) -> bool:
 
 
 def resolve_static_stop_owner(fields: Mapping, blocks: Mapping, unified: bool,
-                              hyperliquid: bool) -> str:
+                              hyperliquid: bool, okx_perps: bool = False) -> str:
+    if okx_perps and not hyperliquid:
+        return _resolve_okx_stop_owner(fields, blocks, unified)
     if not hyperliquid:
         return "legacy"
     tsp = _finite_number(fields.get("trailing_stop_pct"))
@@ -954,6 +977,36 @@ def resolve_static_stop_owner(fields: Mapping, blocks: Mapping, unified: bool,
     if _positive(fields.get("max_drawdown_pct")):
         return "drawdown_fallback"
     return "none"
+
+
+def _resolve_okx_stop_owner(fields: Mapping, blocks: Mapping, unified: bool) -> str:
+    if unified:
+        return "unified_regime"
+    if _regime_block_active(blocks.get("stop_loss_atr_mult_regime")):
+        return "fixed_atr_regime"
+    if _regime_block_active(blocks.get("trailing_stop_atr_mult_regime")) or _positive(fields.get("trailing_stop_atr_mult")):
+        return "trailing_atr"
+    if _positive(fields.get("stop_loss_margin_pct")):
+        return "margin_pct"
+    tsp = _finite_number(fields.get("trailing_stop_pct"))
+    tsp_present = fields.get("trailing_stop_pct") is not None
+    if tsp_present and tsp is not None and tsp > 0:
+        return "trailing_pct"
+    if tsp_present and tsp == 0:
+        if _positive(fields.get("stop_loss_pct")) or _positive(fields.get("stop_loss_margin_pct")) or _positive(fields.get("trailing_stop_atr_mult")):
+            return "trailing_pct"
+        if _positive(fields.get("stop_loss_atr_mult")):
+            return "fixed_atr"
+        return "none"
+    if _positive(fields.get("stop_loss_atr_mult")):
+        return "fixed_atr"
+    if fields.get("stop_loss_pct") is not None:
+        return "fixed_pct" if _positive(fields.get("stop_loss_pct")) else "none"
+    if any(fields.get(key) is not None for key in (
+            "stop_loss_pct", "stop_loss_atr_mult", "trailing_stop_pct",
+            "stop_loss_margin_pct", "trailing_stop_atr_mult")):
+        return "none"
+    return "legacy"
 
 
 def resolve_risk_stop_owner(fields: Mapping, unified: bool,
@@ -1055,7 +1108,7 @@ def _check_stop_owner_support(request: CloseCapabilityRequest) -> list:
             refuse(str(ratchet_ref["name"]),
                    "trailing_tp_ratchet* cannot combine with trailing_stop_pct")
 
-    if params.get("geometry") == "hyperliquid" \
+    if params.get("geometry") in ("hyperliquid", "okx") \
             and _finite_number(fields.get("trailing_stop_pct")) == 0:
         hidden = [key for key in ("stop_loss_margin_pct", "stop_loss_pct",
                                   "trailing_stop_atr_mult")
@@ -1068,6 +1121,11 @@ def _check_stop_owner_support(request: CloseCapabilityRequest) -> list:
                    f"{' and '.join(hidden)} to keep the opt-out (stop_loss_atr_mult may "
                    f"stay alongside trailing_stop_pct=0)",
                    details={"conflicting_fields": hidden})
+
+    if params.get("geometry") == "okx" and owner not in ("trailing_pct", "fixed_atr", "fixed_pct", "none", "legacy"):
+        refuse("stop_owner",
+               f"OKX perps supports stop_loss_pct, stop_loss_atr_mult and trailing_stop_pct; "
+               f"resolved owner {owner} is not one of those")
 
     def set_field(key: str) -> bool:
         return fields.get(key) is not None if live else _positive(fields.get(key))
@@ -1498,12 +1556,20 @@ def build_stop_capability_context(*, platform, strategy_type, close_refs, fields
         labels = regime_labels
     blocks, _ = _parse_stop_regime_blocks(plain, labels, live)
     unified = _unified_close_params(refs) is not None
+    okx_perps = uses_okx_stop_geometry(platform, strategy_type)
+    hyperliquid = uses_hyperliquid_stop_geometry(platform, strategy_type)
     owner = resolve_static_stop_owner(
-        plain, blocks, unified, uses_hyperliquid_stop_geometry(platform, strategy_type))
+        plain, blocks, unified, hyperliquid, okx_perps=okx_perps)
+    if owner == "legacy" or (okx_perps and owner in ("legacy", "none")):
+        geometry = "legacy"
+    elif okx_perps:
+        geometry = "okx"
+    else:
+        geometry = "hyperliquid"
     parameters = {
         "fields": plain,
         "admission": "live" if live else "direct",
-        "geometry": "legacy" if owner == "legacy" else "hyperliquid",
+        "geometry": geometry,
         "regime_labels": list(labels) if labels else None,
         "risk_per_trade_pct": _jsonable_stop_value(risk_per_trade_pct),
         "unified_close": unified,
@@ -2634,7 +2700,8 @@ class Backtester:
                  regime_side: bool = False,
                  allow_uncertified_regime_side: bool = False,
                  regime_side_certification: Optional[dict] = None,
-                 htf_filter: bool = False):
+                 htf_filter: bool = False,
+                 okx_instrument: Optional[dict] = None):
         # regime_label_windows is the loader's plan. Callers splat
         # load_strategy_config into this constructor; the columns themselves
         # arrive only through regime_label_columns.
@@ -2718,7 +2785,9 @@ class Backtester:
         )
         self._stop_owner = self._stop_context.resolved_stop_owner["name"]
         self._stop_parameters = _thaw_json(self._stop_context.resolved_stop_owner["parameters"])
-        self._hl_stop_geometry = self._stop_owner != "legacy"
+        self._okx_stop_geometry = self._stop_parameters.get("geometry") == "okx"
+        self._hl_stop_geometry = self._stop_owner != "legacy" and not self._okx_stop_geometry
+        self._okx_instrument = _okx_instrument_inputs(okx_instrument) if self._okx_stop_geometry else None
         self._stop_admission_live = self._stop_parameters["admission"] == "live"
         self.leverage = _finite_number(leverage)
         self._perps_sizing = normalize_perps_sizing(perps_sizing, self.leverage)
@@ -3786,7 +3855,11 @@ class Backtester:
             except (TypeError, ValueError):
                 seed_hwm = 0.0
             hwm_anchor = max(effective_entry, seed_hwm)
-            if self._hl_stop_geometry:
+            if self._okx_stop_geometry:
+                sl_trigger_px, sl_high_water_px, _ = self._okx_arm_stop(
+                    "long", avg_cost, entry_atr_value, self._okx_mark_text(df.iloc[0]), abs(position),
+                )
+            elif self._hl_stop_geometry:
                 sl_trigger_px, sl_high_water_px, _ = self._hl_arm_stop(
                     "long", avg_cost, entry_atr_value, self._run_position_regime,
                     hwm_anchor, high_water=hwm_anchor,
@@ -4246,6 +4319,22 @@ class Backtester:
             fill_price = row["open"] if has_open else row["close"]
             mark_price = row["close"]
             signal = row["signal"]
+            if self._okx_stop_geometry:
+                okx_mark = self._okx_mark_text(row)
+                mark_price = float(okx_mark)
+                if position != 0 and sl_trigger_px > 0:
+                    side_now = "long" if position > 0 else "short"
+                    if self._okx_breached(side_now, okx_mark):
+                        _book_close(
+                            idx, 1.0, float(self._okx_fill_text(side_now, okx_mark)),
+                            self.slippage_pct, "okx_stop", mark_price, avg_cost,
+                            decision_bar=decision_idx,
+                        )
+                        signal = 0
+                    else:
+                        trailed = self._okx_trail_stop(side_now, avg_cost, entry_atr_value, okx_mark, abs(position))
+                        if trailed is not None:
+                            sl_trigger_px, sl_high_water_px = trailed
             entry_fraction = (
                 float(row["_entry_fraction"]) if has_entry_fraction else 1.0
             )
@@ -4516,7 +4605,13 @@ class Backtester:
                         shares * effective_price, hurst_size_mult,
                     )
                     stamp_open_from_label(_entry_stamp(row), row)
-                    if self._hl_stop_geometry:
+                    if self._okx_stop_geometry:
+                        sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._okx_arm_stop(
+                            "long", avg_cost, entry_atr_value, self._okx_mark_text(row), abs(position),
+                        )
+                        sl_tiers_processed = 0
+                        post_tp_trail_mult = None
+                    elif self._hl_stop_geometry:
                         sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
                             "long", avg_cost, entry_atr_value, self._run_position_regime,
                             mark_price, event_date=idx,
@@ -4598,7 +4693,13 @@ class Backtester:
                         shares * effective_price, hurst_size_mult,
                     )
                     stamp_open_from_label(_entry_stamp(row), row)
-                    if self._hl_stop_geometry:
+                    if self._okx_stop_geometry:
+                        sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._okx_arm_stop(
+                            "short", avg_cost, entry_atr_value, self._okx_mark_text(row), abs(position),
+                        )
+                        sl_tiers_processed = 0
+                        post_tp_trail_mult = None
+                    elif self._hl_stop_geometry:
                         sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
                             "short", avg_cost, entry_atr_value, self._run_position_regime,
                             mark_price, event_date=idx,
@@ -5037,7 +5138,11 @@ class Backtester:
                     sl_trigger_px = 0.0
                     sl_high_water_px = mark_price
                     sl_pierce_armed = False
-                    if self._hl_stop_geometry:
+                    if self._okx_stop_geometry:
+                        sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._okx_arm_stop(
+                            "short", avg_cost, entry_atr_value, self._okx_mark_text(row), abs(position),
+                        )
+                    elif self._hl_stop_geometry:
                         sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
                             "short", avg_cost, entry_atr_value, self._run_position_regime,
                             mark_price, event_date=idx,
@@ -5143,7 +5248,11 @@ class Backtester:
                     sl_trigger_px = 0.0
                     sl_high_water_px = mark_price
                     sl_pierce_armed = False
-                    if self._hl_stop_geometry:
+                    if self._okx_stop_geometry:
+                        sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._okx_arm_stop(
+                            "long", avg_cost, entry_atr_value, self._okx_mark_text(row), abs(position),
+                        )
+                    elif self._hl_stop_geometry:
                         sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
                             "long", avg_cost, entry_atr_value, self._run_position_regime,
                             mark_price, event_date=idx,
@@ -6000,6 +6109,96 @@ class Backtester:
         payload = {"event": event, "owner": self._stop_owner}
         payload.update(fields)
         self._stop_observer(payload)
+
+    def _okx_points(self, fraction) -> str:
+        from decimal import Decimal
+        if fraction is None:
+            return ""
+        return format(Decimal(str(fraction)) * Decimal("100"), "f")
+
+    def _okx_mark_text(self, row) -> str:
+        from decimal import Decimal
+        if "okx_mark" not in getattr(row, "index", ()):
+            raise ValueError("OKX stop backtest needs an okx_mark column on every bar; a candle close is not a mark")
+        value = row["okx_mark"]
+        text = value.strip() if isinstance(value, str) else format(Decimal(str(value)), "f")
+        if text == "" or Decimal(text) <= 0:
+            raise ValueError("OKX stop backtest needs an okx_mark column on every bar; a candle close is not a mark")
+        return text
+
+    def _okx_contracts(self, coin_qty: float) -> str:
+        from okx_stop_geometry import contracts_from_coin
+        return contracts_from_coin(format(coin_qty, "f"), self._okx_instrument["ct_val"], self._okx_instrument["lot"])
+
+    def _okx_spec(self, side: str, entry: float, mark: str, entry_atr: float, contracts: str, previous: str, high: str) -> dict:
+        owner = {
+            "fixed_pct": "stop_loss_pct",
+            "fixed_atr": "stop_loss_atr_mult",
+            "trailing_pct": "trailing_stop_pct",
+        }.get(self._stop_owner, "")
+        pct = ""
+        atr = ""
+        if owner == "trailing_stop_pct":
+            pct = self._okx_points(self.trailing_stop_pct)
+        elif owner == "stop_loss_pct":
+            pct = self._okx_points(self.stop_loss_pct)
+        elif owner == "stop_loss_atr_mult" and self.stop_loss_atr_mult is not None:
+            atr = format(self.stop_loss_atr_mult, "f")
+        inst = self._okx_instrument
+        return {
+            "side": side,
+            "owner": owner,
+            "entry": format(entry, "f"),
+            "mark": mark,
+            "entry_atr": format(entry_atr, "f") if entry_atr else "",
+            "high_water": high,
+            "previous_trigger": previous,
+            "pct": pct,
+            "atr_mult": atr,
+            "min_move_pct": self._okx_points(self.trailing_stop_min_move_pct),
+            "tick": inst["tick"],
+            "equity": inst["equity"],
+            "contracts": contracts,
+            "ct_val": inst["ct_val"],
+            "mmr": inst["mmr"],
+            "fee": inst["fee"],
+            "require_venue_liq": False,
+        }
+
+    def _okx_arm_stop(self, side: str, anchor: float, entry_atr: float, mark: str, coin_qty: float):
+        from okx_stop_geometry import finalize_stop
+        done = finalize_stop(self._okx_spec(side, anchor, mark, entry_atr, self._okx_contracts(coin_qty), "", ""))
+        self._okx_trigger_text = done["trigger"]
+        self._okx_high_text = done["high_water"]
+        return float(done["trigger"]), float(done["high_water"] or 0), True
+
+    def _okx_breached(self, side: str, mark: str) -> bool:
+        from decimal import Decimal
+        trigger = getattr(self, "_okx_trigger_text", "")
+        if not trigger:
+            return False
+        mark_px = Decimal(mark)
+        trigger_px = Decimal(trigger)
+        if side == "long":
+            return mark_px <= trigger_px
+        return mark_px >= trigger_px
+
+    def _okx_fill_text(self, side: str, mark: str) -> str:
+        from okx_stop_geometry import stop_fill_price
+        return format(stop_fill_price(side, mark, self._okx_trigger_text), "f")
+
+    def _okx_trail_stop(self, side: str, entry: float, entry_atr: float, mark: str, coin_qty: float):
+        from okx_stop_geometry import finalize_stop
+        if self._stop_owner != "trailing_pct":
+            return None
+        done = finalize_stop(self._okx_spec(
+            side, entry, mark, entry_atr, self._okx_contracts(coin_qty),
+            getattr(self, "_okx_trigger_text", ""), getattr(self, "_okx_high_text", ""),
+        ))
+        self._okx_high_text = done["high_water"]
+        if done["moved"]:
+            self._okx_trigger_text = done["trigger"]
+        return float(self._okx_trigger_text or 0), float(self._okx_high_text or 0)
 
     def _hl_arm_stop(self, side: str, anchor: float, entry_atr: float, label: str,
                      mark: float, high_water: float = 0.0,

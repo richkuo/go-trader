@@ -76,6 +76,7 @@ After source edits regenerate+verify.Limits:this file<17500B(target 17000),rule 
 - Liquidation guard:CLAMP,never refuse to arm;ONE-WAY TIGHTEN at 0.5% buffer;0=unknown,never persisted;unclampable REFUSES;unreadable outcome keeps state.
 - Boot `validateHLStopWithinBankruptcyBound` mirrors `LoadConfig` stop-owner resolution
 - HL protection:reduce-only;on-chain TP needs `strategyUsesTieredTPATRClose`+live=`close_owner` marker+echo(no echo=hold),NEVER nil `CloseStrategy`;evaluator fallback ONLY if nothing rests/armed+tiers unplaceable.
+- OKX perps stop:opt-in;arm after save;geometry or refuse
   - `SLAfterMoved`:kept trigger ONLY,tighter-only;lost=CRITICAL.
   - Shared floor:<$10 shared-coin close escalates ONLY if every peer flat on-chain(refetched)+in book,pre SL blocks,else 1 alert+hold;`venue_rejected` never resends;re-arm(7 owners) same-cycle ONLY after SUBMITTED cancel;any 2nd refusal holds;manual guard skips queued-row symbol;failed-close owner re-arms SL leg ONLY,3 blocks=CRITICAL;unknown TP place=armed,no re-place.
   - Operator floor(`decideOperatorSharedCloseFloor`):same test+side+no larger,else refuse,no hold;unreadable mark skips escalation
@@ -90,7 +91,7 @@ After source edits regenerate+verify.Limits:this file<17500B(target 17000),rule 
 - Limit rows:`decideLimitRowProof`=SOLE book+delete rule(reconcile,orphan,kill switch,manual close/add);delete ONLY terminal+off-book+proven fills==durable booked,guarded;no proof fields/unknown=hold,NEVER 0;uncertain coin peer holds group;book+trades+watermark ONE tx under try manual lock;marker ONLY terminal off-book evidence;`open_order_oids` raises,never empty on unreadable
   - Positive watermark proven ONLY by `fill_proof_binding`(written in `CommitLimitFillAdoption` tx),never trade totals/version;unproven or ineligible-owner positive row=kept+marker,never deleted.Live persistence hold covers startup queue pass,unreadable queue,failed fill commit;saves clear only save failures
   - Unproven/ineligible-owner positive row holds its coin:new limit open refused pre-send under manual-action lock(`limitCoinOperatorHold`),eligible-owner resting orders on it cancel-queued;its operator text states no booked size
-- `shared_scripts/`:check scripts take `--regime-payload-json`,probed at start.Lot gate(floor,never full close):live partial=`check_hyperliquid.py`,no lot=no gate;HL perps paper(+opens/adds)=Go,sub-min/no lot=HOLD+no write+quiet cycle.`platforms/<name>/adapter.py`:1 `*ExchangeAdapter`,platform-qualified imports;option types=`shared_tools/option_types.py`;HL `_sz_decimals()` via `name_to_asset`.
+- `shared_scripts/`:check scripts take `--regime-payload-json`,probed at start.Lot gate(floor,never full close):live partial=`check_hyperliquid.py`,no lot=no gate;HL perps paper(+opens/adds)=Go,sub-min/no lot=HOLD+no write+quiet cycle.`platforms/<name>/adapter.py`:1 `*ExchangeAdapter`,platform-qualified imports;options=`shared_tools/option_types.py`;HL `_sz_decimals()`=`name_to_asset`.
 - `shared_strategies/`:open SSoT `open/registry.py`;`open/{spot,futures}/strategies.py`=shims,never edit.Close:`close/registry.py` via `from close_registry_loader import ..`,never bare `import registry`.HL tier parity:`tp_model: resting_limit` evaluators=`buildHyperliquidProtectionPlan`(SSoT `tp_tier_parity.json`);`close_tier_fill_price` paper-only;ladder load=`validateTPTierLadders`.
 
 ## Patterns
@@ -131,7 +132,7 @@ After source edits regenerate+verify.Limits:this file<17500B(target 17000),rule 
 - HL perps backtests `--funding charge`;incomplete=refuse save,block promotion.Backtester rejects HL-live-only closes(`regime_window_divergence`/`tiered_tp_atr_live_regime_dynamic`);no options regime gating.M1-M6,auto_suggest,regime promotion,`tune_live.py`=SUGGEST-ONLY:never write live defaults/config/PRs.
 
 ## Testing
-- Unit tests only if no run proves it or regression silent:rare venue states(partial/rejected/unknown),money math(sizing/PnL/fees),paper/live parity,DB migrations,large refactors.
+- Unit tests only if no run proves it or regression silent:rare venue states,money math,paper/live parity,DB migrations,large refactors.
   - Deribit/OKX/Luno/TopStep:no venue tests.
   - Else run real binaries/scripts(build/`probe`/`--once`);PR lists commands+log lines/criterion.
   - Kept test edit/removal:Outdated/Wrong/Obsolete+checkable ground,disclosed in commit+PR;no ground=fix code

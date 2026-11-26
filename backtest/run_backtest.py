@@ -1839,6 +1839,7 @@ def run_single_backtest(
     regime_side: bool = False,
     allow_uncertified_regime_side: bool = False,
     regime_side_certification: Optional[dict] = None,
+    okx_instrument: Optional[dict] = None,
 ) -> Optional[dict]:
     if strategy_name in BOOK_INPUT_STRATEGIES:
         try:
@@ -2189,6 +2190,7 @@ def run_single_backtest(
         allow_uncertified_regime_side=bool(allow_uncertified_regime_side),
         regime_side_certification=regime_side_certification if regime_side else None,
         htf_filter=bool(htf_filter and regime_side),
+        okx_instrument=okx_instrument,
         **(feature_label_kwargs(regime_label_plan) if label_columns else {}),
     )
     if regime_side:

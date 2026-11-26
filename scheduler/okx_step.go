@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -92,6 +93,26 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 	var trades int
 	var detail string
 	if result, signalStr, price, ok := check(sc, okxPosCtx, logger); ok {
+		if okxIsLive(sc.Args) {
+			reconcileOKXProtection(store, sc, stratState, mu, notifier, logger)
+		}
+		if !okxIsLive(sc.Args) && okxStopWanted(sc) && okxPosQty > 0 {
+			breached, fillPx, paperErr := okxPaperRestingStop(sc, stratState, mu, result.Symbol, okxCash, logger)
+			if paperErr != nil {
+				logger.Warn("OKX paper stop: %s held — %v", signalStr, paperErr)
+				if result.CloseFraction == 0 && !result.CloseReduceOnly {
+					result.Signal = 0
+				}
+			} else if breached {
+				if okxPosSide == "short" {
+					result.Signal = 1
+				} else {
+					result.Signal = -1
+				}
+				result.CloseFraction = 1
+				price = fillPx
+			}
+		}
 		validatedRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 		result.Regime = &validatedRegime
 		prices[result.Symbol] = price
@@ -142,9 +163,33 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 			result.Signal = 0
 		}
 		entryAdm := admitClosedBarEntry(sc, stratState, mu, result.Symbol, result.StrategyDecisionFields, result.Signal, result.CloseFraction, okxPosQty, okxPosSide, tradingNow())
+		if !entryAdm.Applies && okxStopWanted(sc) {
+			entryAdm = admitOKXStopEntry(sc, stratState, result.Symbol, result.Signal, result.CloseFraction, okxPosQty, okxPosSide, tradingNow())
+		}
 		logEntryAdmission(entryAdm, signalStr, logger)
 		applyEntryAdmission(entryAdm, &result.Signal, &result.CloseFraction)
 		result.CloseReduceOnly = entryAdm.CloseOnly
+		if okxIsLive(sc.Args) && stratState.OKXProtection.holdsNewExposure() && result.Signal != 0 && result.CloseFraction == 0 && !result.CloseReduceOnly {
+			logger.Warn("OKX stop: %s held — protection %s is unresolved", signalStr, stratState.OKXProtection.AlgoClientID)
+			result.Signal = 0
+		}
+		if okxIsLive(sc.Args) && okxStopWanted(sc) && result.Signal != 0 && entryAdm.admitted() {
+			if _, err := okxPreflightAllowsEntry(result.Symbol); err != nil {
+				logger.Warn("OKX stop: %s held — %v", signalStr, err)
+				result.Signal = 0
+			}
+		}
+		if !okxIsLive(sc.Args) && okxStopWanted(sc) && result.Signal != 0 && result.CloseFraction == 0 && !result.CloseReduceOnly {
+			sizing := PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators))
+			size, sizeOK, reason := perpsLiveOrderSize(result.Signal, price, okxCash, okxPosQty, okxAvgCost, sizing, okxPosSide, EffectiveDirection(sc), result.CloseFraction)
+			if !sizeOK {
+				logger.Warn("OKX paper stop: %s held — %s", signalStr, reason)
+				result.Signal = 0
+			} else if _, err := okxPaperReference(result.Symbol, strconv.FormatFloat(size, 'f', -1, 64)); err != nil {
+				logger.Warn("OKX paper stop: %s held — %v", signalStr, err)
+				result.Signal = 0
+			}
+		}
 		mu.Lock()
 		syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 		mu.Unlock()
@@ -162,6 +207,11 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 			}
 		}
 		if okxIsLive(sc.Args) && result.Signal != 0 && !liveExecFailed {
+			if result.CloseFraction >= 1 || result.CloseReduceOnly {
+				if err := cancelOKXProtection(store, sc, stratState, mu, logger); err != nil {
+					logger.Error("CRITICAL: OKX stop cancel before close is uncertain: %v; the reduce-only close still runs", err)
+				}
+			}
 			er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, okxPosLeverage, hurstDecision, notifier, logger)
 			if ok2 {
 				execResult = er
@@ -179,6 +229,17 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 			trades, detail, cashAlert = executeOKXResult(sc, stratState, stratDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 			finishEntryBookingLocked(store, stratState, entryAdm, okxEntryIntent, entryAt, endEntryBooking(), okxEntryEvidence(execResult), logger)
 			mu.Unlock()
+			if okxIsLive(sc.Args) && okxEntryIntent != nil && execResult != nil && confirmOKXEntryFill(execResult) == nil && okxStopWanted(sc) {
+				armOKXStopAfterEntry(store, sc, stratState, mu, okxEntryIntent, execResult.Execution.Fill, notifier, logger)
+			}
+			if !okxIsLive(sc.Args) && okxStopWanted(sc) && okxPosQty == 0 && trades > 0 {
+				okxArmPaperPosition(sc, stratState, mu, result.Symbol, okxCash, logger)
+			}
+			if okxIsLive(sc.Args) && result.CloseFraction > 0 && result.CloseFraction < 1 && execResult != nil {
+				if p := stratState.OKXProtection; p != nil && p.Status == okxProtectArmed {
+					okxTrailAndAmend(store, sc, stratState, mu, p, notifier, logger)
+				}
+			}
 			if cashAlert != "" {
 				notifySpotLiveCashOverBudget(notifier, cashAlert)
 				mu.RLock()

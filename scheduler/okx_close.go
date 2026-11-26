@@ -263,6 +263,7 @@ func computeOKXCircuitCloseQty(coin, strategyID string, okxPositions []OKXPositi
 
 func runPendingOKXCircuitCloses(
 	ctx context.Context,
+	store *StateStore,
 	state *AppState,
 	strategies []StrategyConfig,
 	okxHasCreds bool,
@@ -423,6 +424,11 @@ func runPendingOKXCircuitCloses(
 			}
 			if sz <= 1e-15 {
 				continue
+			}
+			if ss := state.Strategies[j.stratID]; ss != nil && ss.OKXProtection.unresolved() {
+				if err := cancelOKXProtection(store, *sc, ss, mu, nil); err != nil {
+					fmt.Printf("[CRITICAL] okx-circuit-close: stop cancel for %s is uncertain: %v; the reduce-only close still runs\n", c.Symbol, err)
+				}
 			}
 			partial := sz
 			_, err := closer(c.Symbol, &partial)
